@@ -590,7 +590,7 @@ local function compileSprite(romFs, spriteId, graphics, archive, staticArchive)
   return visual, atlas
 end
 
-local function _compile(romFs)
+local function _loadInputs(romFs)
   assert(romFs and romFs.readOverlay and romFs.openNarc, "compile requires a RomFs-shaped object")
 
   local overlayBytes, overlayInfo = romFs:readOverlay(manifest.overlay.cpu, manifest.overlay.overlayId)
@@ -618,52 +618,88 @@ local function _compile(romFs)
   local staticArchiveBytes = must(romFs:read(staticArchiveInfo.fileId))
   local staticArchive = must(romFs:openNarc(manifest.staticModels.archive.alias))
 
-  local source = {
-    -- The logical table span only, not the whole overlay: a change anywhere else
-    -- in overlay 1 must not invalidate compiled actors.
+  return {
+    graphics = graphics,
+    overlayInfo = overlayInfo,
+    archiveInfo = archiveInfo,
+    archiveBytes = archiveBytes,
+    archive = archive,
+    staticArchiveInfo = staticArchiveInfo,
+    staticArchiveBytes = staticArchiveBytes,
+    staticArchive = staticArchive,
+    -- The logical table span only, not the whole overlay: a change anywhere
+    -- else in overlay 1 must not invalidate compiled actors.
     overlaySha1 = Hashing.sha1hex(
       overlayBytes:sub(graphics.tableOffset + 1, graphics.tableOffset + graphics.spanBytes)
     ),
   }
+end
 
-  local spriteIds, variableSprites = selectedSpriteIds(romFs)
-  local visuals, atlases = {}, {}
-  for _, spriteId in ipairs(spriteIds) do
-    visuals[spriteId], atlases[spriteId] = compileSprite(romFs, spriteId, graphics, archive, staticArchive)
-  end
-
-  local dependencies = {
+local function _dependenciesFragment(inputs, romFs)
+  return {
     cacheFormat = FieldActorCache.FORMAT,
     schema = FieldActorCache.SCHEMA,
     manifestSchema = manifest.schema,
-    mapCatalogVersion = MapCatalog.VERSION,
     versionRomSha1 = romFs:metadata().sha1,
     overlay = {
       cpu = manifest.overlay.cpu,
       overlayId = manifest.overlay.overlayId,
-      ramAddress = overlayInfo.ramAddress,
-      tableOffset = graphics.tableOffset,
-      spanBytes = graphics.spanBytes,
-      spanSha1 = source.overlaySha1,
+      ramAddress = inputs.overlayInfo.ramAddress,
+      tableOffset = inputs.graphics.tableOffset,
+      spanBytes = inputs.graphics.spanBytes,
+      spanSha1 = inputs.overlaySha1,
     },
     archive = {
-      symbol = archiveInfo.symbol,
-      alias = archiveInfo.alias,
-      narcId = archiveInfo.narcId,
-      fileId = archiveInfo.fileId,
-      path = archiveInfo.path,
-      sha1 = Hashing.sha1hex(archiveBytes),
+      symbol = inputs.archiveInfo.symbol,
+      alias = inputs.archiveInfo.alias,
+      narcId = inputs.archiveInfo.narcId,
+      fileId = inputs.archiveInfo.fileId,
+      path = inputs.archiveInfo.path,
+      sha1 = Hashing.sha1hex(inputs.archiveBytes),
     },
     staticArchive = {
-      symbol = staticArchiveInfo.symbol,
-      alias = staticArchiveInfo.alias,
-      narcId = staticArchiveInfo.narcId,
-      fileId = staticArchiveInfo.fileId,
-      path = staticArchiveInfo.path,
-      sha1 = Hashing.sha1hex(staticArchiveBytes),
+      symbol = inputs.staticArchiveInfo.symbol,
+      alias = inputs.staticArchiveInfo.alias,
+      narcId = inputs.staticArchiveInfo.narcId,
+      fileId = inputs.staticArchiveInfo.fileId,
+      path = inputs.staticArchiveInfo.path,
+      sha1 = Hashing.sha1hex(inputs.staticArchiveBytes),
     },
-    spriteIds = spriteIds,
   }
+end
+
+-- Compile one set of field-actor sprites through the shared overlay/model
+-- pipeline. Producer-side reuse for follower visuals, which resolve through
+-- the same graphics tables and normalize into the same visual definitions;
+-- the caller owns visual-ID assignment and publication.
+function FieldActorCompiler.compileSprites(romFs, spriteIds)
+  local inputs = _loadInputs(romFs)
+  local visuals, atlases = {}, {}
+  for _, spriteId in ipairs(spriteIds) do
+    visuals[spriteId], atlases[spriteId] =
+      compileSprite(romFs, spriteId, inputs.graphics, inputs.archive, inputs.staticArchive)
+  end
+  return {
+    visuals = visuals,
+    atlases = atlases,
+    graphics = inputs.graphics,
+    dependencies = _dependenciesFragment(inputs, romFs),
+  }
+end
+
+local function _compile(romFs)
+  local inputs = _loadInputs(romFs)
+
+  local spriteIds, variableSprites = selectedSpriteIds(romFs)
+  local visuals, atlases = {}, {}
+  for _, spriteId in ipairs(spriteIds) do
+    visuals[spriteId], atlases[spriteId] =
+      compileSprite(romFs, spriteId, inputs.graphics, inputs.archive, inputs.staticArchive)
+  end
+
+  local dependencies = _dependenciesFragment(inputs, romFs)
+  dependencies.mapCatalogVersion = MapCatalog.VERSION
+  dependencies.spriteIds = spriteIds
 
   local index = {
     schema = FieldActorCache.INDEX_SCHEMA,
@@ -672,7 +708,7 @@ local function _compile(romFs)
     -- Sprite IDs the runtime must resolve through field variables before
     -- lookup; every value they take is one of the compiled player graphics.
     variableSprites = variableSprites,
-    recordCount = graphics.recordCount,
+    recordCount = inputs.graphics.recordCount,
     -- The runtime-facing actor configuration: the semantic avatar state
     -- capabilities and the variable-sprite policy come from this generated
     -- block, never from the source manifest. The manifest's addresses,
@@ -694,11 +730,11 @@ local function _compile(romFs)
     -- Per-sprite source identity (graphics record, key-table resolutions, and
     -- static-model members) for the CLI inspectors; the runtime visuals carry
     -- no source fields.
-    records = graphics.bySpriteId,
-    descriptors = graphics.descriptors,
-    modelKeys = graphics.modelMembers.byKey,
-    timelineKeys = graphics.timelineMembers.byKey,
-    staticModels = graphics.staticModels,
+    records = inputs.graphics.bySpriteId,
+    descriptors = inputs.graphics.descriptors,
+    modelKeys = inputs.graphics.modelMembers.byKey,
+    timelineKeys = inputs.graphics.timelineMembers.byKey,
+    staticModels = inputs.graphics.staticModels,
   }
 
   return {

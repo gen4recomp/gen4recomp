@@ -182,6 +182,18 @@ DerivedAssetContract.intro = {
   provenanceSchema = "g4-intro-provenance-v1",
 }
 
+-- The mon class carries the complete species/form/move/ability/growth
+-- catalog plus the party-icon and portrait atlases with their selection
+-- manifests. Following-mon drawable definitions stay in the field-actor
+-- class; the catalog references field-actor visual IDs only.
+DerivedAssetContract.mons = {
+  cacheFormat = "mon-cache-v1",
+  catalogSchema = "g4-mon-catalog-v1",
+  indexSchema = "g4-mon-index-v1",
+  iconManifestSchema = "g4-mon-icon-manifest-v1",
+  portraitManifestSchema = "g4-mon-portrait-manifest-v1",
+}
+
 DerivedAssetContract.audio = {
   cacheFormat = "g4-audio-cache-v1",
   -- The index carries the per-class symbol maps sequenceBySymbol and

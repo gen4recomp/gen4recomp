@@ -77,6 +77,7 @@ function T.resolves_map_asset_aliases()
     { alias = "field_texture_animations", narcId = 139, path = "a/1/3/9" },
     { alias = "field_area_texture_srt", narcId = 140, path = "a/1/4/0" },
     { alias = "follower_params", narcId = 141, path = "a/1/4/1" },
+    { alias = "pokemon_graphics_other", narcId = 114, path = "a/1/1/4" },
   }
   for _, c in ipairs(cases) do
     local e = HgssArchives.resolve(c.alias)
@@ -88,7 +89,7 @@ end
 
 function T.alias_list_is_complete_and_deterministic()
   local list = HgssArchives.aliasList()
-  Assert.equal(#list, 39)
+  Assert.equal(#list, 40)
   -- Sorted ascending by narcId, with deterministic alias ordering for shared roles.
   for i = 2, #list do
     local previous = list[i - 1]

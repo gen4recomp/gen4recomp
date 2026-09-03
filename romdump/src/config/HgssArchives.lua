@@ -26,6 +26,7 @@ local ALIAS_TO_SYMBOL = {
   personal = "NARC_poketool_personal_personal",
   growth_tables = "NARC_poketool_personal_growtbl",
   pokemon_graphics = "NARC_poketool_pokegra_pokegra",
+  pokemon_graphics_other = "NARC_poketool_pokegra_otherpoke",
   moves = "NARC_poketool_waza_waza_tbl",
   field_scripts = "NARC_fielddata_script_scr_seq",
   field_script_headers = "NARC_fielddata_script_scr_seq",

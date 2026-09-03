@@ -225,8 +225,18 @@ local function decodePalette(data, opts)
   local depth = reader:u32le(ttlpOffset + 8)
   local paletteBytes = reader:u32le(ttlpOffset + 0x10)
   local dataOffset = reader:u32le(ttlpOffset + 0x14)
-  if depth ~= 3 and depth ~= 4 then
-    Errors.raise("FONT_FORMAT_INVALID", "palette depth " .. depth .. " is not 3 (4bpp) or 4 (8bpp)", { depth = depth })
+  -- Single-palette NCLR members (pokegra/otherpoke portrait palettes) carry
+  -- depth word 0xA0004 with 16 colors at the standard offset instead of the
+  -- bank form's 3. The word is advisory: retail NNS loaders consume both
+  -- forms, the color layout and every structural bound below are identical,
+  -- and the decoded colors match the addressed graphics. Anything else is
+  -- still malformed.
+  if depth ~= 3 and depth ~= 4 and depth ~= 0xA0004 then
+    Errors.raise(
+      "FONT_FORMAT_INVALID",
+      "palette depth " .. depth .. " is not 3 (4bpp), 4 (8bpp), or the single-palette form",
+      { depth = depth }
+    )
   end
   if paletteBytes > FieldFontDecoder.MAX_PALETTE_BYTES then
     Errors.raise(

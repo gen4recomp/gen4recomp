@@ -1,4 +1,4 @@
--- Builds field, global, and physical-cell derived assets for one version.
+-- Builds field, mon, global, and physical-cell derived assets for one version.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldCameraCompiler = require("romdump.src.digest.field.FieldCameraCompiler")
@@ -8,6 +8,9 @@ local FieldMapDataCacheWriter = require("romdump.src.digest.field.FieldMapDataCa
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldActorCompiler = require("romdump.src.digest.actor.FieldActorCompiler")
 local FieldActorCacheWriter = require("romdump.src.digest.actor.FieldActorCacheWriter")
+local FollowingMonVisualCompiler = require("romdump.src.digest.FollowingMonVisualCompiler")
+local MonCatalogCompiler = require("romdump.src.digest.MonCatalogCompiler")
+local MonCacheWriter = require("romdump.src.digest.MonCacheWriter")
 local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
 local FieldFontCacheWriter = require("romdump.src.digest.ui.FieldFontCacheWriter")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
@@ -150,8 +153,52 @@ function FieldCacheBuild.build(context)
   if not actor then
     return nil, err
   end
+  -- Follower visuals extend the actor sprite index, so they must merge before
+  -- the actor class is published; the mon catalog below validates its
+  -- follower references against this merged index.
+  bundle, err = FollowingMonVisualCompiler.compile(context.romFs)
+  local follower = requireBundle(bundle, err)
+  if not follower then
+    return nil, err
+  end
+  FollowingMonVisualCompiler.mergeIntoActorBundle(actor, follower)
   writeIfStale(context, actor, FieldActorCacheWriter, FieldActorCacheWriter.isReady, "field actors", function(value)
     return string.format(" (%d sprites)", #value.index.spriteIds)
+  end)
+
+  bundle, err = MonCatalogCompiler.compileAll(context.romFs)
+  local mons = requireBundle(bundle, err)
+  if not mons then
+    return nil, err
+  end
+  local actorSpriteIds = {}
+  for _, spriteId in ipairs(actor.index.spriteIds) do
+    actorSpriteIds[spriteId] = true
+  end
+  local monSpecies = 0
+  for speciesKey, species in pairs(mons.catalog.species) do
+    monSpecies = monSpecies + 1
+    for formId, form in pairs(species.forms) do
+      if form.follower ~= nil then
+        local followerRefs = { form.follower.visualId }
+        if form.follower.female ~= nil then
+          followerRefs[#followerRefs + 1] = form.follower.female.visualId
+        end
+        for _, visualId in ipairs(followerRefs) do
+          if not actorSpriteIds[visualId] then
+            return nil,
+              Errors.new(
+                "MON_CATALOG_FOLLOWER_UNRESOLVED",
+                "catalog follower visual is absent from the actor index",
+                { species = speciesKey, form = formId, visualId = visualId }
+              )
+          end
+        end
+      end
+    end
+  end
+  writeIfStale(context, mons, MonCacheWriter, MonCacheWriter.isReady, "mons", function()
+    return string.format(" (%d species)", monSpecies)
   end)
 
   local fieldBundles

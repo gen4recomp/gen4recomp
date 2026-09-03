@@ -22,6 +22,7 @@ local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local MonCache = require("libs.assets.src.MonCache")
 
 local T = {}
 
@@ -95,6 +96,13 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-intro-assets-v10",
       provenanceSchema = "g4-intro-provenance-v1",
     },
+    mons = {
+      cacheFormat = "mon-cache-v1",
+      catalogSchema = "g4-mon-catalog-v1",
+      indexSchema = "g4-mon-index-v1",
+      iconManifestSchema = "g4-mon-icon-manifest-v1",
+      portraitManifestSchema = "g4-mon-portrait-manifest-v1",
+    },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
       -- The sequence vocabulary and initial-volume domain are strict current
@@ -147,6 +155,11 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(FieldEmoteAssetCache.FORMAT, DerivedAssetContract.fieldEmotes.cacheFormat)
   Assert.equal(FieldEmoteAssetCache.SCHEMA, DerivedAssetContract.fieldEmotes.schema)
   Assert.equal(FieldEffectAssetCache.FORMAT, DerivedAssetContract.fieldEffects.cacheFormat)
+  Assert.equal(MonCache.FORMAT, DerivedAssetContract.mons.cacheFormat)
+  Assert.equal(MonCache.CATALOG_SCHEMA, DerivedAssetContract.mons.catalogSchema)
+  Assert.equal(MonCache.INDEX_SCHEMA, DerivedAssetContract.mons.indexSchema)
+  Assert.equal(MonCache.ICON_MANIFEST_SCHEMA, DerivedAssetContract.mons.iconManifestSchema)
+  Assert.equal(MonCache.PORTRAIT_MANIFEST_SCHEMA, DerivedAssetContract.mons.portraitManifestSchema)
 end
 
 return { tests = T }
