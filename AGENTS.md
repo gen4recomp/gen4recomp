@@ -33,6 +33,7 @@ Read the narrowest authoritative source instead of duplicating it:
 - `libs/hgss/AGENTS.md`: recreated HGSS runtime mechanism ownership.
 - `libs/ui/AGENTS.md`: shared game-independent widget ownership.
 - `libs/assets/AGENTS.md`: generated/mod-facing asset contract rules.
+- `libs/mons/AGENTS.md`: mon/party domain and Generation-IV representation rules.
 - `app/AGENTS.md`: process, launcher, and provisioning rules.
 - `game/AGENTS.md`: game-agnostic lifecycle and host-adapter rules.
 - `game/hgss/AGENTS.md`: concrete HGSS application composition and policy rules.

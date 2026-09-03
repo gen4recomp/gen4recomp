@@ -37,6 +37,10 @@ alongside the existing foundation and asset packages.
   does not own launcher, story, or new-game policy.
 - `libs/assets` owns g4recomp-defined generated and mod-facing serialization, validation,
   paths, and schemas.
+- `libs/mons` owns the roster-independent mon/party domain with semantic records,
+  Generation-IV creation, legality, and boxed serialization. It depends downward on
+  assets and foundations only; it does not know HGSS story, field, script, or
+  presentation policy.
 - `romdump` owns supported-ROM identity, HGSS source interpretation, lowering, and derived
   asset compilation. It may consume lower reusable packages but never HGSS runtime code.
 - `app` owns the process shell, launcher, version selection, provisioning, and process exit

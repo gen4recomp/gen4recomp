@@ -11,6 +11,7 @@ this positive package graph and rejects unknown first-party targets:
 
 ```text
 libs/assets ──► codec, errors, math
+libs/mons ────► assets, codec, errors, math
 libs/nds ─────► codec, errors, math
 libs/script ──► assets, codec, errors, math, storage
 libs/hgss ────► nds, script, assets, codec, errors, math, storage
@@ -39,6 +40,7 @@ the only runtime path that reaches `romdump`, and only for ROM provisioning.
 | Mod scripting | `libs/script/` | the `gen4.script` runtime, composition, scheduling, and persistence |
 | Nintendo formats | `libs/nds/` | reusable DS, Nitro, NNS, graphics, and renderer mechanisms |
 | Asset contracts | `libs/assets/` | generated schemas, cache paths/readiness, validation, and mod-facing text forms |
+| Mon domain | `libs/mons/` | semantic mon records, parties, Generation-IV creation/legality/codec, and the mons save bucket |
 | Source digestion | `romdump/` | ROM access, NARC/HGSS interpretation, provenance, and derived-asset production |
 
 Source-specific parsing belongs in `romdump`, even when pure. A structure
@@ -59,6 +61,7 @@ game/src/     generic game host and adapters
 game/hgss/    concrete HeartGold/SoulSilver application
 romdump/      source ingestion and asset production (`love romdump/`)
 libs/assets/  generated and mod-facing contracts
+libs/mons/    semantic mon/party domain and Generation-IV representation
 libs/codec/   serialization primitives
 libs/storage/ cache, save, and staged publication
 libs/errors/  structured errors
