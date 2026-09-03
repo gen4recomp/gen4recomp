@@ -23,7 +23,7 @@ local FollowingMonVisualCompiler = {}
 
 ---@generic T
 ---@param value T?
----@param err any?
+---@param err unknown?
 ---@return T
 local function must(value, err)
   if value == nil then
@@ -59,6 +59,8 @@ end
 -- runtime visual ID. Shiny state needs no separate visual: the source
 -- sprite selection ignores shininess (FollowMon_GetSpriteID takes no shiny
 -- input) and carries it as runtime object state instead.
+---@param romFs RomFs
+---@return table<string, unknown>|nil, Errors.Error|string|nil
 function FollowingMonVisualCompiler.compile(romFs)
   local paramIndexes = reachableParamIndexes()
   local spriteIds = {}
@@ -108,7 +110,8 @@ function FollowingMonVisualCompiler.compile(romFs)
   end)
   if not ok then
     if Errors.is(result) then
-      return nil, result
+      local failure = result --[[@as Errors.Error|string]]
+      return nil, failure
     end
     error(result, 0)
   end

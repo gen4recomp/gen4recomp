@@ -28,7 +28,7 @@ local FRONT_FACING = 2
 
 ---@generic T
 ---@param value T?
----@param err any?
+---@param err unknown?
 ---@return T
 local function must(value, err)
   if value == nil then

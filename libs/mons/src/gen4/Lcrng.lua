@@ -35,14 +35,14 @@ function Lcrng.new(seedU32)
   return build(seedU32, 0)
 end
 
----@param record table
+---@param record { state: integer, calls: integer }
 ---@return Gen4Lcrng
 function Lcrng.restore(record)
   Lcrng.validate(record)
   return build(record.state, record.calls)
 end
 
----@param record table
+---@param record { state: integer, calls: integer }
 ---@return boolean
 function Lcrng.validate(record)
   if type(record) ~= "table" then

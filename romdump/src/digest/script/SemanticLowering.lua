@@ -19,7 +19,10 @@ local SemanticLowering = {}
 -- HGSS GoToIf condition codes.
 local CONDITION_OPERATORS = { [0] = "lt", [1] = "eq", [2] = "gt", [3] = "le", [4] = "ge", [5] = "ne" }
 
--- An explicit unsupported node for one instruction.
+-- The explicit unsupported node for one instruction. Commands the
+-- authoritative catalog marks deferred keep their dependency category and
+-- source-backed explanation on the node; anything else keeps the generic
+-- lowering reason. The runtime fails only if a script reaches the node.
 ---@param ins table<string, unknown>
 ---@param reason string
 ---@return table<string, unknown>
@@ -27,6 +30,14 @@ local function unsupportedStep(ins, reason)
   local arguments = {}
   for index, operand in ipairs(ins.operands) do
     arguments[index] = Operands.operandValue(operand)
+  end
+  local deferral = CommandCatalog.deferredReason(ins.opcode)
+  if CommandCatalog.disposition(ins.opcode) == "deferred" and deferral ~= nil then
+    reason = "deferred (" .. deferral .. ")"
+    local note = CommandCatalog.deferredNote(ins.opcode)
+    if note ~= nil then
+      reason = reason .. ": " .. note
+    end
   end
   return {
     op = "unsupported",

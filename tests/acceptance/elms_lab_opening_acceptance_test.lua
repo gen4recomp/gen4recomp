@@ -42,6 +42,7 @@ local function harness()
         },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
+        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
       }
     end,
   })

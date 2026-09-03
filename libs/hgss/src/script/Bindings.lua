@@ -6,15 +6,18 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 
 ---@class Bindings
+---@field mons HgssMonService|nil the live HGSS mon service, injected by game composition
 local Bindings = {}
 Bindings.__index = Bindings
 Bindings.CANONICAL_INERT_SCRIPT = "runtime.inert_interaction"
 
 local INVALID_INTENT = "SCRIPT_BINDING_INVALID_INTENT"
 
+---@param opts { mons: HgssMonService|nil }?
 ---@return Bindings
-function Bindings.new()
-  return setmetatable({}, Bindings)
+function Bindings.new(opts)
+  opts = opts or {}
+  return setmetatable({ mons = opts.mons }, Bindings)
 end
 
 ---@param intent table<string, unknown> InteractionIntent

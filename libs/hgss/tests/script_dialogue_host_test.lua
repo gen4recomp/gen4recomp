@@ -340,4 +340,112 @@ function T.player_name_resolution_is_unchanged()
   Assert.isFalse(formatted.hadUnresolvedSubstitutions)
 end
 
+-- Mon and party text identities resolve through the injected live service
+-- and its catalog; out-of-range positions fail explicitly, and a host
+-- without a service keeps faulting instead of rendering a marker.
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local MonsSave = require("libs.mons.src.MonsSave")
+local Party = require("libs.mons.src.Party")
+local Lcrng = require("libs.mons.src.gen4.Lcrng")
+
+local function monsHost()
+  local catalog = CatalogFixture.makeCatalog()
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xEEEEEEEE):capture(), catalog:fingerprint())
+  local service = HgssMonService.new({
+    catalog = catalog,
+    bucket = bucket,
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+  Assert.isTrue(service:giveMon({
+    species = "CHIKORITA",
+    level = 5,
+    heldItem = "NONE",
+    form = 0,
+    location = 7,
+    date = CatalogFixture.metDate(),
+  }))
+  local factory = CatalogFixture.makeFactory(0x1234, catalog)
+  local nicknamed = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 5 }))
+  nicknamed.nickname = "GNARLY"
+  Assert.isTrue(service:addMon(nicknamed))
+  local charmap = {}
+  for key, code in pairs(CatalogFixture.CHARMAP) do
+    charmap[key] = code
+  end
+  for byte = string.byte("a"), string.byte("z") do
+    local char = string.char(byte)
+    if charmap[char] == nil then
+      charmap[char] = 0x2000 + byte
+    end
+  end
+  local _, controller = host({})
+  local withMons = ScriptDialogueHost.new({
+    controller = controller,
+    provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542) }))),
+    layout = function(formatted)
+      return formatted
+    end,
+    fontDef = { charmap = charmap },
+    player = {
+      name = function()
+        return "Gold"
+      end,
+      gender = function()
+        return 0
+      end,
+    },
+    world = {
+      getVar = function(_, id)
+        return id
+      end,
+    },
+    mons = service,
+  })
+  return withMons
+end
+
+function T.party_text_resolves_species_nickname_move_and_nature()
+  local withMons = monsHost()
+  local function textAt(descriptor)
+    withMons:openMessage({})
+    withMons:startPrint("msg.hgss.0542.00000", { [0] = descriptor })
+    local hostObject = withMons --[[@as { _controller: { request: { message: { text: string } }|nil } }]]
+    return assert(hostObject._controller.request).message.text
+  end
+  Assert.equal(textAt({ text = "party_species_name", position = 0 }), "CHIKORITA")
+  Assert.equal(textAt({ text = "party_nickname", position = 1 }), "GNARLY")
+  Assert.equal(textAt({ text = "party_nickname", position = 0 }), "CHIKORITA")
+  Assert.equal(textAt({ text = "species_name", value = 158 }), "TOTODILE")
+  Assert.equal(textAt({ text = "move_name", value = 33 }), "Tackle")
+  Assert.equal(textAt({ text = "nature_name", value = 0 }), "Hardy")
+  Assert.equal(textAt({ text = "party_mon_move_name", position = 0, moveSlot = 0 }), "Tackle")
+end
+
+function T.party_text_out_of_range_fails_explicitly()
+  local withMons = monsHost()
+  withMons:openMessage({})
+  local err = Assert.throws(function()
+    withMons:startPrint("msg.hgss.0542.00000", { [0] = { text = "party_species_name", position = 9 } })
+  end)
+  Assert.isTrue(Errors.is(err))
+end
+
+function T.party_text_without_a_service_stays_unsupported()
+  local h = host({})
+  h:openMessage({})
+  local err = Assert.throws(function()
+    h:startPrint("msg.hgss.0542.00000", { [0] = { text = "party_species_name", position = 0 } })
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_UNSUPPORTED_REACHABLE")
+end
+
 return { tests = T }

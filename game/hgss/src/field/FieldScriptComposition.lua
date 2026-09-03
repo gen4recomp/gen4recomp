@@ -12,6 +12,7 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field fontDef table<string, unknown>
 ---@field audioService table<string, unknown>
 ---@field loadedGame table<string, unknown>?
+---@field mons table<string, unknown>? live HGSS mon service for mon/party script operations and text
 local FieldScriptComposition = {}
 
 ---@param runtime FieldRuntime
@@ -58,6 +59,7 @@ function FieldScriptComposition.compose(runtime, options)
     contextChoice = runtime.contextChoiceProvider,
     menu = runtime.menuHost,
     startMenuReopen = { request = requestStartMenuReopen },
+    mons = options.mons,
   })
   local function restore()
     if options.loadedGame then

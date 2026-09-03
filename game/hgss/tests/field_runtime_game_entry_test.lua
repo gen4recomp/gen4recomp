@@ -167,6 +167,11 @@ local function captureRuntime(overrides)
       end,
     },
     playTime = PlayTime.new(17),
+    monService = {
+      capture = function()
+        return require("libs.mons.src.MonsSave").empty("test-catalog-fingerprint", 7)
+      end,
+    },
     saveValidation = {
       contexts = {},
       contextLoader = function()
@@ -226,6 +231,7 @@ function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
   Assert.equal(valid.audio.fieldMusicOverride, 123)
   Assert.equal(valid.weatherId, 11)
   Assert.equal(valid.world.objects.schema, "g4-field-objects-v1")
+  Assert.equal(valid.mons.schema, "g4-mons-save-v1", "every save captures the mons bucket")
   Assert.equal(scriptCaptureCalls, 1)
   Assert.equal(validationCalls, 1)
 end

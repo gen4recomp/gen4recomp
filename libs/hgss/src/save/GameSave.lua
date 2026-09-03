@@ -1,13 +1,13 @@
 -- Defines the strict project-owned GameSave record. The storage service owns
--- publication, while PlayerData, world, scripts, UI, and audio modules may
--- inject their authoritative validators at this boundary. Pure domain code.
+-- publication, while PlayerData, world, scripts, UI, audio, and mons modules
+-- may inject their authoritative validators at this boundary. Pure domain code.
 
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v1"
+GameSave.SCHEMA = "g4-game-save-v2"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -19,6 +19,7 @@ local TOP_LEVEL_FIELDS = {
   fieldX = true,
   fieldZ = true,
   mapId = true,
+  mons = true,
   playTimeSeconds = true,
   playerData = true,
   saveId = true,
@@ -205,6 +206,7 @@ local function validate(record, opts)
     end
   end
   local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
+  local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
   local canonicalAvatar = validateAvatar(record)
@@ -215,6 +217,7 @@ local function validate(record, opts)
   canonical.playerData = canonicalPlayerData
   canonical.world = world
   canonical.scripts = canonicalScripts
+  canonical.mons = canonicalMons
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
   canonical.avatar = canonicalAvatar

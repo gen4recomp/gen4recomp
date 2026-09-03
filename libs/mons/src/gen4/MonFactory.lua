@@ -16,19 +16,19 @@ local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
 
 ---@class MonFactory
----@field private _catalog table
----@field private _rng table
----@field private _charmap table
----@field private _games table<string, integer>
----@field private _languages table<string, integer>
----@field private _items table<string, integer>
----@field private _balls table<string, integer>
+---@field private _catalog MonCatalog
+---@field private _rng Gen4Lcrng
+---@field private _charmap table<string, unknown>
+---@field private _games table<string, unknown>
+---@field private _languages table<string, unknown>
+---@field private _items table<string, unknown>
+---@field private _balls table<string, unknown>
 ---@field private _game string
 ---@field private _language string
 local MonFactory = {}
 MonFactory.__index = MonFactory
 
----@param args table
+---@param args { catalog: MonCatalog, rng: Gen4Lcrng, charmap: table<string, unknown>, games: table<string, unknown>, languages: table<string, unknown>, items: table<string, unknown>, balls: table<string, unknown>, game: string, language: string }
 ---@return MonFactory
 function MonFactory.new(args)
   assert(type(args) == "table", "factory requires an argument record")
@@ -54,7 +54,7 @@ function MonFactory.new(args)
   }, MonFactory)
 end
 
----@return table
+---@return MonsSave.Context
 function MonFactory:_context()
   return {
     catalog = self._catalog,
@@ -76,16 +76,16 @@ local function splitIvDraw(draw)
   }
 end
 
----@param record table
----@return table
+---@param record table<string, unknown>
+---@return table<string, unknown>
 function MonFactory:_finish(record)
   local canonical = Mon.validate(record, self:_context())
   NativeLegality.project(canonical, self:_context())
   return canonical
 end
 
----@param request table
----@return table
+---@param request { species: string, level: integer, form: integer, profile: { name: string, gender: integer, trainerId: integer }, ball: string, location: integer, terrain: integer, date: { year: integer, month: integer, day: integer } }
+---@return table<string, unknown>
 function MonFactory:createNormal(request)
   assert(type(request) == "table", "normal creation requires a request record")
   local species = self._catalog:species(request.species)
@@ -178,8 +178,8 @@ function MonFactory:createNormal(request)
   return self:_finish(record)
 end
 
----@param request table
----@return table
+---@param request { species: string, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: unknown }
+---@return table<string, unknown>
 function MonFactory:createStarter(request)
   assert(type(request) == "table", "starter creation requires a request record")
   return self:createNormal({
@@ -190,12 +190,12 @@ function MonFactory:createStarter(request)
     ball = "POKE_BALL",
     location = request.location,
     terrain = 12,
-    date = request.date,
+    date = request.date --[[@as { year: integer, month: integer, day: integer }]],
   })
 end
 
----@param request table
----@return table
+---@param request { species: string, level: integer, profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer }, heldItem?: string, form?: integer, ability?: string }
+---@return table<string, unknown>
 function MonFactory:createScriptGift(request)
   assert(type(request) == "table", "script-gift creation requires a request record")
   local mon = self:createNormal({

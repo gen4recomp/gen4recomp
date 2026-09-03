@@ -35,7 +35,7 @@ local MonCatalogCompiler = {}
 
 ---@generic T
 ---@param value T?
----@param err any?
+---@param err unknown?
 ---@return T
 local function must(value, err)
   if value == nil then
@@ -65,7 +65,7 @@ end
 ---@param id integer
 ---@param what string
 ---@param code string
----@param context table
+---@param context Errors.Context
 ---@return string|nil, Errors.Error|nil
 local function lookupKey(keys, id, what, code, context)
   local key = keys[id]
@@ -84,8 +84,8 @@ end
 -- identities stay numeric here; the catalog assembly maps them to semantic
 -- keys so one failed lookup names the offending member.
 ---@param member string
----@param context table|nil
----@return table|nil, Errors.Error|nil
+---@param context Errors.Context|nil
+---@return table<string, unknown>|nil, Errors.Error|nil
 function MonCatalogCompiler.decodePersonal(member, context)
   context = context or {}
   local ok, sizeErr = checkSize(member, MonSources.PERSONAL_SIZE, "MON_PERSONAL_BAD_SIZE", context)
@@ -210,8 +210,8 @@ end
 -- Source order (including repeated levels) is semantic: initial-moveset
 -- selection consumes entries positionally, so entries are never re-sorted.
 ---@param member string
----@param context table|nil
----@return table|nil, Errors.Error|nil
+---@param context Errors.Context|nil
+---@return table<integer, table<string, unknown>>|nil, Errors.Error|nil
 function MonCatalogCompiler.decodeLearnset(member, context)
   context = context or {}
   if #member == 0 or #member % 2 ~= 0 then
@@ -258,8 +258,8 @@ end
 -- MoveAttr vocabulary; the trailing word is verified zero padding on
 -- supported dumps.
 ---@param entry string
----@param context table|nil
----@return table|nil, Errors.Error|nil
+---@param context Errors.Context|nil
+---@return table<string, unknown>|nil, Errors.Error|nil
 function MonCatalogCompiler.decodeMove(entry, context)
   context = context or {}
   local ok, sizeErr = checkSize(entry, MonSources.MOVE_ENTRY_SIZE, "MON_MOVE_BAD_SIZE", context)
@@ -317,8 +317,8 @@ end
 -- Decode one 44-byte evolution member into raw slots. Zero-method slots
 -- are omitted; every other slot must name a known method and target.
 ---@param member string
----@param context table|nil
----@return table|nil, Errors.Error|nil
+---@param context Errors.Context|nil
+---@return table<integer, table<string, unknown>>|nil, Errors.Error|nil
 function MonCatalogCompiler.decodeEvolution(member, context)
   context = context or {}
   local ok, sizeErr = checkSize(member, MonSources.EVO_MEMBER_SIZE, "MON_EVO_BAD_SIZE", context)
@@ -358,8 +358,8 @@ end
 -- Decode one growth-table member (101 u32 cumulative experience values for
 -- levels 0..100) into the 100 level values runtime creation consumes.
 ---@param member string
----@param context table|nil
----@return table|nil, Errors.Error|nil
+---@param context Errors.Context|nil
+---@return table<integer, integer>|nil, Errors.Error|nil
 function MonCatalogCompiler.decodeGrowth(member, context)
   context = context or {}
   local expected = MonSources.GROWTH_ENTRY_COUNT * 4
@@ -383,11 +383,11 @@ end
 -- Decode one display-text bank into its message texts indexed by native id.
 -- Banks are selected by MonSources.messageBanks (src/message_format.c call
 -- sites, content-verified for descriptions); every message must tokenize.
----@param messagesNarc table
+---@param messagesNarc Narc
 ---@param bankId integer
 ---@param expectedCount integer
 ---@param label string
----@return table|nil, Errors.Error|nil
+---@return table<integer, string>|nil, Errors.Error|nil
 local function decodeTextBank(messagesNarc, bankId, expectedCount, label)
   local member, memberErr = messagesNarc:readMember(bankId)
   if not member then
@@ -424,10 +424,10 @@ local function decodeTextBank(messagesNarc, bankId, expectedCount, label)
   return texts
 end
 
----@param texts table
+---@param texts table<integer, string>
 ---@param id integer
 ---@param what string
----@param context table
+---@param context Errors.Context
 ---@return string|nil, Errors.Error|nil
 local function requireText(texts, id, what, context)
   local text = texts[id]
@@ -515,21 +515,22 @@ local function normalizeEvolution(slot, context)
   return entry
 end
 
----@param romFs table
+---@param romFs RomFs
 ---@param alias string
----@return table|nil, Errors.Error|nil
+---@return Narc|nil, Errors.Error|nil
 local function openArchive(romFs, alias)
   local archive, err = romFs:openNarc(alias)
   if not archive then
     if Errors.is(err) then
-      return nil, err
+      local failure = err --[[@as Errors.Error]]
+      return nil, failure
     end
     return nil, Errors.new("MON_ARCHIVE_UNAVAILABLE", "mon archive " .. alias .. " is unavailable", { alias = alias })
   end
   return archive
 end
 
----@param archive table
+---@param archive Narc
 ---@param memberId integer
 ---@param alias string
 ---@return string|nil, Errors.Error|nil
@@ -537,7 +538,8 @@ local function readMember(archive, memberId, alias)
   local member, err = archive:readMember(memberId)
   if not member then
     if Errors.is(err) then
-      return nil, err
+      local failure = err --[[@as Errors.Error]]
+      return nil, failure
     end
     return nil,
       Errors.new(
@@ -574,12 +576,12 @@ end
 -- carry every reachable variant.
 ---@param speciesId integer
 ---@param form integer
----@param personal table
----@param learnsets table<integer, table>
----@param evos table<integer, table>
----@param tpArchive table
----@param romFs table
----@return table|nil, Errors.Error|nil
+---@param personal table<string, unknown>
+---@param learnsets table<integer, table<integer, table<string, unknown>>>
+---@param evos table<integer, table<integer, table<string, unknown>>>
+---@param tpArchive Narc
+---@param romFs RomFs
+---@return table<string, unknown>|nil, Errors.Error|nil
 local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchive, romFs)
   local context = { archive = "personal", memberId = MonSources.resolvePersonalMember(speciesId, form) }
   local speciesKey = must(MonSources.speciesKeys[speciesId])
@@ -710,9 +712,9 @@ end
 -- personal member must be reachable: base species and egg members become
 -- species records, form pseudo-members attach to their parent species form,
 -- and anything else fails the build instead of dropping silently.
----@param romFs table
----@param opts table|nil
----@return table|nil, Errors.Error|string|nil
+---@param romFs RomFs
+---@param opts table<string, unknown>|nil
+---@return table<string, unknown>|nil, Errors.Error|string|nil
 function MonCatalogCompiler.compileCatalog(romFs, opts)
   opts = opts or {}
   local versionId = opts.versionId or romFs:version()
@@ -942,9 +944,9 @@ end
 -- inputs, manifests, content hashes, and the completion marker. Every
 -- catalog selector must resolve to a manifest entry before the bundle
 -- leaves this function.
----@param romFs table
----@param opts table|nil
----@return table|nil, Errors.Error|string|nil
+---@param romFs RomFs
+---@param opts table<string, unknown>|nil
+---@return table<string, unknown>|nil, Errors.Error|string|nil
 function MonCatalogCompiler.compileAll(romFs, opts)
   opts = opts or {}
   local catalog, err = MonCatalogCompiler.compileCatalog(romFs, opts)

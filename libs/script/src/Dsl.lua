@@ -194,6 +194,16 @@ function M.partyNickname(position)
   return text("party_nickname", { position = position })
 end
 
+function M.partyMonMoveName(position, moveSlot)
+  assert(type(position) == "number" and position % 1 == 0, "party position must be an integer")
+  assert(type(moveSlot) == "number" and moveSlot % 1 == 0, "move slot must be an integer")
+  return text("party_mon_move_name", { position = position, moveSlot = moveSlot })
+end
+
+function M.natureName(v)
+  return text("nature_name", { value = v })
+end
+
 function M.trainerClassName(v)
   return text("trainer_class_name", { value = v })
 end
@@ -671,6 +681,114 @@ end
 
 function M.random(spec)
   return op("random", spec)
+end
+
+-- Mon and party constructors. Each takes the single canonical spec table
+-- named by the schema fields; slots are zero-based party positions.
+function M.giveMon(spec)
+  return op("give_mon", spec)
+end
+function M.returnLoanMon(spec)
+  return op("return_loan_mon", spec)
+end
+function M.setMonMove(spec)
+  return op("set_mon_move", spec)
+end
+function M.monHasMove(spec)
+  return op("mon_has_move", spec)
+end
+function M.partySlotWithMove(spec)
+  return op("party_slot_with_move", spec)
+end
+function M.countMonMoves(spec)
+  return op("count_mon_moves", spec)
+end
+function M.monForgetMove(spec)
+  return op("mon_forget_move", spec)
+end
+function M.monGetMove(spec)
+  return op("mon_get_move", spec)
+end
+function M.partyCount(spec)
+  return op("party_count", spec)
+end
+function M.partyCountNotEgg(spec)
+  return op("party_count_not_egg", spec)
+end
+function M.partyCountEgg(spec)
+  return op("party_count_egg", spec)
+end
+function M.countAliveMons(spec)
+  return op("count_alive_mons", spec)
+end
+function M.partyCountAtOrBelowLevel(spec)
+  return op("party_count_at_or_below_level", spec)
+end
+function M.countSpecies(spec)
+  return op("count_species", spec)
+end
+function M.partySlotWithSpecies(spec)
+  return op("party_slot_with_species", spec)
+end
+function M.partySlotWithNature(spec)
+  return op("party_slot_with_nature", spec)
+end
+function M.partySlotWithFatefulEncounter(spec)
+  return op("party_slot_with_fateful_encounter", spec)
+end
+function M.partyMonSpecies(spec)
+  return op("party_mon_species", spec)
+end
+function M.partyMonIsMine(spec)
+  return op("party_mon_is_mine", spec)
+end
+function M.partyMonNature(spec)
+  return op("party_mon_nature", spec)
+end
+function M.partyMonFriendship(spec)
+  return op("party_mon_friendship", spec)
+end
+function M.monAddFriendship(spec)
+  return op("mon_add_friendship", spec)
+end
+function M.monSubFriendship(spec)
+  return op("mon_sub_friendship", spec)
+end
+function M.partyMonGender(spec)
+  return op("party_mon_gender", spec)
+end
+function M.partyMonContestValue(spec)
+  return op("party_mon_contest_value", spec)
+end
+function M.monAddContestValue(spec)
+  return op("mon_add_contest_value", spec)
+end
+function M.partyMonForm(spec)
+  return op("party_mon_form", spec)
+end
+function M.partyMonRibbonCount(spec)
+  return op("party_mon_ribbon_count", spec)
+end
+function M.partyRibbonCount(spec)
+  return op("party_ribbon_count", spec)
+end
+function M.partyHasPokerus(spec)
+  return op("party_has_pokerus", spec)
+end
+function M.partyLead(spec)
+  return op("party_lead", spec)
+end
+function M.partyLeadAlive(spec)
+  return op("party_lead_alive", spec)
+end
+function M.partyLegalCheck(spec)
+  return op("party_legal_check", spec)
+end
+function M.checkKyogreGroudon(spec)
+  return op("check_kyogre_groudon", spec)
+end
+function M.healParty(spec)
+  return op("heal_party", spec)
 end
 function M.unsupported(spec)
   return op("unsupported", spec)

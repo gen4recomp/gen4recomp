@@ -12,6 +12,9 @@ local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local RepoFs = require("game.src.RepoFs")
+local CacheFs = require("libs.storage.src.CacheFs")
+local MonCache = require("libs.assets.src.MonCache")
+local MonCatalog = require("libs.mons.src.MonCatalog")
 
 ---@class HgssGameOptions
 ---@field versionId string
@@ -35,6 +38,14 @@ local function fieldStateOptions(options, saveStore, saveValidation, extra)
 end
 
 local function newGameCandidate(saveStore, versionId)
+  -- The domain catalog behind the unpublished mons bucket resolves lazily
+  -- inside candidate construction, so application routing never touches
+  -- cache IO: the candidate carries the exact fingerprint the field
+  -- runtime validates against.
+  local function loadMonCatalog()
+    local cacheFs = CacheFs.forVersion(versionId)
+    return MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  end
   return NewGame.createCandidate({
     saveService = saveStore,
     versionId = versionId,
@@ -46,6 +57,8 @@ local function newGameCandidate(saveStore, versionId)
       fieldZ = 6,
       sourceFacing = 1,
     },
+    catalogLoader = loadMonCatalog,
+    nowSeconds = os.time(),
   })
 end
 

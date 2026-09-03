@@ -14,6 +14,11 @@ local AudioCache = require("libs.assets.src.audio.AudioCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local Errors = require("libs.errors.src.Errors")
 local FieldScriptCompatibility = require("game.hgss.src.field.FieldScriptCompatibility")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local MonCache = require("libs.assets.src.MonCache")
+local MonCatalog = require("libs.mons.src.MonCatalog")
+local MonsErrors = require("libs.mons.src.errors")
+local MonsSave = require("libs.mons.src.MonsSave")
 
 ---@class GameSaveValidation
 ---@field contexts table<string, table<string, unknown>>
@@ -24,8 +29,9 @@ GameSaveValidation.__index = GameSaveValidation
 
 ---@param cacheFs CacheFs
 ---@param overrideFs table<string, unknown>
+---@param versionId string
 ---@return table<string, unknown>
-local function contextForCache(cacheFs, overrideFs)
+local function contextForCache(cacheFs, overrideFs, versionId)
   local fontDef = FieldFontLoader.load(cacheFs)
   local manifest, loadError = cacheFs:loadLua(FieldUiAssetCache.manifestPath())
   if not manifest then
@@ -47,11 +53,26 @@ local function contextForCache(cacheFs, overrideFs)
     assert(type(sequenceId) == "number" and sequence.id == sequenceId, "audio index sequence identity is invalid")
     audioSequenceIds[sequenceId] = true
   end
+  -- The mon catalog behind every mons bucket validated in this version:
+  -- loaded once per version context through the ready cache path, then
+  -- held as the immutable domain catalog its fingerprint belongs to.
+  local monRoot = MonCache.loadCatalog(cacheFs)
+  local monCatalog = MonCatalog.new(monRoot)
+  local monLanguage = monRoot.version.language
+  assert(
+    HgssMonService.GAMES[versionId] ~= nil,
+    "GameSave validation requires a native game identity for " .. tostring(versionId)
+  )
+  assert(
+    HgssMonService.LANGUAGES[monLanguage] ~= nil,
+    "GameSave validation requires a native language identity for " .. tostring(monLanguage)
+  )
   return {
     charmap = fontDef.charmap,
     frameIndexes = frameIndexes,
     audioSequenceIds = audioSequenceIds,
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
+    monCatalog = monCatalog,
   }
 end
 
@@ -72,7 +93,11 @@ function GameSaveValidation:_context(versionId)
     return context
   end
   context = self.contextLoader and self.contextLoader(versionId)
-    or contextForCache(CacheFs.forVersion(versionId), assert(self.overrideFs, "override filesystem is required"))
+    or contextForCache(
+      CacheFs.forVersion(versionId),
+      assert(self.overrideFs, "override filesystem is required"),
+      versionId
+    )
   assert(type(context) == "table", "GameSave validation context must be a table")
   assert(type(context.audioSequenceIds) == "table", "GameSave validation audio sequence ids are required")
   assert(type(context.scriptCompatibility) == "table", "GameSave script compatibility context is required")
@@ -105,12 +130,37 @@ function GameSaveValidation:validate(record, context)
     local function audioValidate(value)
       return FieldAudioSave.validate(value, selected)
     end
+    -- The single application owner of mons validation context: the domain
+    -- catalog, its fingerprint, the generated charmap, the native
+    -- version/language mapping, and the structural met-date checks owned by
+    -- the mon record validator. A context without a mon catalog fails
+    -- closed: no bucket is ever accepted unvalidated.
+    local function monsValidate(value)
+      local monCatalog = selected.monCatalog
+      if monCatalog == nil then
+        MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons validation requires a mon catalog", {})
+      end
+      assert(monCatalog ~= nil, "mons validation requires a mon catalog")
+      -- MonsSave.validate reports success as a boolean; the canonical
+      -- bucket itself is what the save record carries forward, so a
+      -- re-validated record never degrades the bucket into `true`.
+      MonsSave.validate(value, {
+        catalog = monCatalog,
+        charmap = selected.charmap,
+        games = selected.monGames or HgssMonService.GAMES,
+        languages = selected.monLanguages or HgssMonService.LANGUAGES,
+        items = selected.monItems or HgssMonService.ITEMS,
+        balls = selected.monBalls or HgssMonService.BALLS,
+      })
+      return value
+    end
     return GameSave.validate(record, {
       playerDataValidate = playerDataValidate,
       scriptsValidate = scriptsValidate,
       worldValidate = worldValidate,
       auxiliaryUiValidate = auxiliaryUiValidate,
       audioValidate = audioValidate,
+      monsValidate = monsValidate,
     })
   end)
   if ok then

@@ -28,8 +28,9 @@ function Party.new()
   return build()
 end
 
----@param value any
----@return any
+---@generic T
+---@param value T
+---@return T
 local function copyValue(value)
   if type(value) ~= "table" then
     return value
@@ -56,14 +57,14 @@ function Party:count()
 end
 
 ---@param slot0 integer
----@return table
+---@return table<string, unknown>
 function Party:get(slot0)
   checkSlot(slot0, #self._mons, "party slot")
   return copyValue(self._mons[slot0 + 1])
 end
 
 -- Adds a copy of the mon; false when full, without mutation.
----@param mon table
+---@param mon table<string, unknown>
 ---@return boolean
 function Party:add(mon)
   assert(type(mon) == "table", "party add requires a mon record")
@@ -76,7 +77,7 @@ function Party:add(mon)
 end
 
 ---@param slot0 integer
----@return table
+---@return table<string, unknown>
 function Party:remove(slot0)
   checkSlot(slot0, #self._mons, "party removal")
   local removed = table.remove(self._mons, slot0 + 1)
@@ -97,7 +98,16 @@ function Party:swap(left0, right0)
   end
 end
 
----@param predicate fun(mon: table): boolean
+---@param slot0 integer
+---@param mon table<string, unknown>
+function Party:set(slot0, mon)
+  checkSlot(slot0, #self._mons, "party slot")
+  assert(type(mon) == "table", "party set requires a mon record")
+  self._mons[slot0 + 1] = copyValue(mon)
+  self._revision = self._revision + 1
+end
+
+---@param predicate fun(mon: table<string, unknown>): boolean
 ---@return integer?
 function Party:findFirst(predicate)
   assert(type(predicate) == "function", "party search requires a predicate")
@@ -137,8 +147,8 @@ function Party:capture()
   return { max = Party.MAX, mons = copyValue(self._mons) }
 end
 
----@param snapshot table
----@param context table
+---@param snapshot table<string, unknown>
+---@param context table<string, unknown>
 ---@return boolean
 function Party.validate(snapshot, context)
   assert(type(context) == "table", "party validation requires a context")
@@ -174,8 +184,8 @@ function Party.validate(snapshot, context)
   return true
 end
 
----@param snapshot table
----@param context table
+---@param snapshot table<string, unknown>
+---@param context table<string, unknown>
 ---@return Party
 function Party.restore(snapshot, context)
   Party.validate(snapshot, context)

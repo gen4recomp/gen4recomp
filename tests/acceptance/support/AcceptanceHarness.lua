@@ -1023,6 +1023,17 @@ function AcceptanceHarness.new(options)
       return FieldRuntime.new(game, runtimeOptions)
     end,
     gameFactory = options.gameFactory or function(versionId, map)
+      -- The required mons bucket resolves through the warmed version
+      -- cache. Fake versions (exercised with stub runtimes that never
+      -- read it) have no cache entry, so the bucket is best-effort here;
+      -- a real runtime still asserts its presence loudly at boot.
+      local mons = nil
+      local monBucketOk, monBucket = pcall(function()
+        return require("tests.support.MonBucket").emptyForVersion(versionId)
+      end)
+      if monBucketOk then
+        mons = monBucket
+      end
       return {
         saveId = "save-00000001",
         versionId = versionId,
@@ -1041,6 +1052,7 @@ function AcceptanceHarness.new(options)
         },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
+        mons = mons,
       }
     end,
     saveNamespace = options.saveNamespace or defaultNamespace,

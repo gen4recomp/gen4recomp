@@ -882,6 +882,10 @@ return {
     },
     [131] = {
       name = "ScrCmd_SetStarterChoice",
+      feature = "starter",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "setting the starter choice needs the starter application",
       widths = {
         [1] = 2,
       },
@@ -925,6 +929,9 @@ return {
     },
     [137] = {
       name = "ScrCmd_GiveMon",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -936,6 +943,10 @@ return {
     },
     [138] = {
       name = "ScrCmd_GiveEgg",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "egg creation and hatching need the egg/daycare lifecycle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -943,6 +954,9 @@ return {
     },
     [139] = {
       name = "ScrCmd_SetMonMove",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -951,6 +965,9 @@ return {
     },
     [140] = {
       name = "ScrCmd_MonHasMove",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -959,6 +976,9 @@ return {
     },
     [141] = {
       name = "ScrCmd_GetPartySlotWithMove",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1104,6 +1124,10 @@ return {
     },
     [167] = {
       name = "ScrCmd_ChooseStarter",
+      feature = "starter",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "starter choice needs the blocking starter application",
       widths = {},
     },
     [168] = {
@@ -1271,6 +1295,8 @@ return {
     [193] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferMonSpeciesName",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1319,6 +1345,8 @@ return {
     [199] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferPartyMonNick",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1341,6 +1369,8 @@ return {
     [202] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferSpeciesName",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1351,6 +1381,8 @@ return {
     [203] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferStarterSpeciesName",
+      feature = "mons",
+      disposition = "supported",
       widths = {
         [1] = 1,
       },
@@ -1369,6 +1401,10 @@ return {
     },
     [206] = {
       name = "ScrCmd_GetStarterChoice",
+      feature = "starter",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "reading the starter choice needs the starter application",
       widths = {
         [1] = 2,
       },
@@ -1478,6 +1514,10 @@ return {
     },
     [222] = {
       name = "ScrCmd_PartyCheckForDouble",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "double-battle party rules need the battle engine",
       widths = {
         [1] = 2,
       },
@@ -1573,12 +1613,18 @@ return {
     },
     [238] = {
       name = "ScrCmd_PartyHasPokerus",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [239] = {
       name = "ScrCmd_MonGetGender",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1611,24 +1657,40 @@ return {
     },
     [243] = {
       name = "ScrCmd_CountJohtoDexSeen",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex counts need persisted seen/caught state",
       widths = {
         [1] = 2,
       },
     },
     [244] = {
       name = "ScrCmd_CountJohtoDexOwned",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex counts need persisted seen/caught state",
       widths = {
         [1] = 2,
       },
     },
     [245] = {
       name = "ScrCmd_CountNationalDexSeen",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex counts need persisted seen/caught state",
       widths = {
         [1] = 2,
       },
     },
     [246] = {
       name = "ScrCmd_CountNationalDexOwned",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex counts need persisted seen/caught state",
       widths = {
         [1] = 2,
       },
@@ -1639,6 +1701,10 @@ return {
     },
     [248] = {
       name = "ScrCmd_GetDexEvalResult",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex evaluation needs persisted seen/caught state",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1835,6 +1901,9 @@ return {
     },
     [282] = {
       name = "ScrCmd_HealParty",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [283] = {
@@ -1874,12 +1943,20 @@ return {
     },
     [290] = {
       name = "ScrCmd_CheckPokedex",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex flags need persisted seen/caught state",
       widths = {
         [1] = 2,
       },
     },
     [291] = {
       name = "ScrCmd_GivePokedex",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex flags need persisted seen/caught state",
       widths = {},
     },
     [292] = {
@@ -1996,10 +2073,18 @@ return {
     },
     [312] = {
       name = "ScrCmd_BufferDaycareMonNicks",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare state needs the egg/daycare lifecycle",
       widths = {},
     },
     [313] = {
       name = "ScrCmd_GetDaycareState",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare state needs the egg/daycare lifecycle",
       widths = {
         [1] = 2,
       },
@@ -2092,6 +2177,9 @@ return {
     },
     [332] = {
       name = "ScrCmd_GetPartyCount",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -2125,6 +2213,9 @@ return {
     },
     [337] = {
       name = "ScrCmd_BufferNatureName",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2214,6 +2305,10 @@ return {
     },
     [349] = {
       name = "ScrCmd_PartySelectUI",
+      feature = "party_ui",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "party selection needs the party-screen selection context",
       widths = {},
     },
     [350] = {
@@ -2222,6 +2317,10 @@ return {
     },
     [351] = {
       name = "ScrCmd_GetPartySelection",
+      feature = "party_ui",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "reading the party selection needs the party-screen selection context",
       widths = {
         [1] = 2,
       },
@@ -2243,6 +2342,9 @@ return {
     },
     [354] = {
       name = "ScrCmd_GetPartyMonSpecies",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2250,6 +2352,9 @@ return {
     },
     [355] = {
       name = "ScrCmd_PartyMonIsMine",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2257,12 +2362,18 @@ return {
     },
     [356] = {
       name = "ScrCmd_PartyCountNotEgg",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [357] = {
       name = "ScrCmd_CountAliveMons",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2270,12 +2381,19 @@ return {
     },
     [358] = {
       name = "ScrCmd_CountAliveMonsAndPC",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pc_storage",
+      deferredNote = "counts including PC boxes need box storage",
       widths = {
         [1] = 2,
       },
     },
     [359] = {
       name = "ScrCmd_PartyCountEgg",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -2288,6 +2406,10 @@ return {
     },
     [361] = {
       name = "ScrCmd_RetrieveDaycareMon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare retrieval needs the egg/daycare lifecycle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2295,6 +2417,11 @@ return {
     },
     [362] = {
       name = "ScrCmd_GiveLoanMon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "the loaned-mon table and NPC OT transfer need the trade application",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 1,
@@ -2303,6 +2430,11 @@ return {
     },
     [363] = {
       name = "ScrCmd_CheckReturnLoanMon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "the loaned-mon table and NPC OT transfer need the trade application",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2311,16 +2443,27 @@ return {
     },
     [364] = {
       name = "ScrCmd_ReturnLoanMon",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [365] = {
       name = "ScrCmd_ResetDaycareEgg",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare eggs need the egg/daycare lifecycle",
       widths = {},
     },
     [366] = {
       name = "ScrCmd_GiveDaycareEgg",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare eggs need the egg/daycare lifecycle",
       widths = {},
     },
     [367] = {
@@ -2339,6 +2482,10 @@ return {
     },
     [369] = {
       name = "ScrCmd_EggHatchAnim",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "egg hatching needs the egg/daycare lifecycle",
       widths = {},
     },
     [370] = {
@@ -2356,12 +2503,20 @@ return {
     },
     [372] = {
       name = "ScrCmd_GetTailDaycareMonSpeciesAndNick",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare state needs the egg/daycare lifecycle",
       widths = {
         [1] = 2,
       },
     },
     [373] = {
       name = "ScrCmd_PutMonInDaycare",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare deposit needs the egg/daycare lifecycle",
       widths = {
         [1] = 2,
       },
@@ -2419,6 +2574,9 @@ return {
     },
     [382] = {
       name = "ScrCmd_MonGetFriendship",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2426,6 +2584,9 @@ return {
     },
     [383] = {
       name = "ScrCmd_MonAddFriendship",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2433,6 +2594,9 @@ return {
     },
     [384] = {
       name = "ScrCmd_MonSubtractFriendship",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2456,12 +2620,20 @@ return {
     },
     [387] = {
       name = "ScrCmd_GetDaycareCompatibility",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare compatibility needs the egg/daycare lifecycle",
       widths = {
         [1] = 2,
       },
     },
     [388] = {
       name = "ScrCmd_CheckDaycareEgg",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare eggs need the egg/daycare lifecycle",
       widths = {
         [1] = 2,
       },
@@ -2488,6 +2660,10 @@ return {
     },
     [392] = {
       name = "ScrCmd_BufferMonSize",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "mon size records need the record application beyond direct fields",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2516,6 +2692,9 @@ return {
     },
     [396] = {
       name = "ScrCmd_CountMonMoves",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2523,6 +2702,9 @@ return {
     },
     [397] = {
       name = "ScrCmd_MonForgetMove",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2530,6 +2712,9 @@ return {
     },
     [398] = {
       name = "ScrCmd_MonGetMove",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2538,6 +2723,9 @@ return {
     },
     [399] = {
       name = "ScrCmd_BufferPartyMonMoveName",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2732,12 +2920,20 @@ return {
     },
     [423] = {
       name = "ScrCmd_CheckJohtoDexComplete",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex completion needs persisted seen/caught state",
       widths = {
         [1] = 2,
       },
     },
     [424] = {
       name = "ScrCmd_CheckNationalDexComplete",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex completion needs persisted seen/caught state",
       widths = {
         [1] = 2,
       },
@@ -2764,6 +2960,10 @@ return {
     },
     [428] = {
       name = "ScrCmd_MonGiveMail",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "mail",
+      deferredNote = "mail needs the mailbox structures and flows",
       widths = {
         [1] = 2,
       },
@@ -2803,6 +3003,9 @@ return {
     },
     [434] = {
       name = "ScrCmd_PartyCountMonsAtOrBelowLevel",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2952,6 +3155,9 @@ return {
     },
     [457] = {
       name = "ScrCmd_MonGetNature",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2959,6 +3165,9 @@ return {
     },
     [458] = {
       name = "ScrCmd_GetPartySlotWithNature",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3052,6 +3261,10 @@ return {
     },
     [470] = {
       name = "ScrCmd_LoadNPCTrade",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "trade needs the trade application and OT transfer",
       widths = {
         [1] = 1,
       },
@@ -3064,18 +3277,30 @@ return {
     },
     [472] = {
       name = "ScrCmd_NPCTradeGetReqSpecies",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "trade needs the trade application and OT transfer",
       widths = {
         [1] = 2,
       },
     },
     [473] = {
       name = "ScrCmd_NPCTradeExec",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "trade needs the trade application and OT transfer",
       widths = {
         [1] = 2,
       },
     },
     [474] = {
       name = "ScrCmd_NPCTradeEnd",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "trade needs the trade application and OT transfer",
       widths = {},
     },
     [475] = {
@@ -3088,6 +3313,10 @@ return {
     },
     [477] = {
       name = "ScrCmd_NatDexFlagAction",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "dex flags need persisted seen/caught state",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3095,6 +3324,9 @@ return {
     },
     [478] = {
       name = "ScrCmd_MonGetRibbonCount",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3102,12 +3334,19 @@ return {
     },
     [479] = {
       name = "ScrCmd_GetPartyRibbonCount",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
     },
     [480] = {
       name = "ScrCmd_MonHasRibbon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "ribbon identity to stored-bit mapping needs the ribbon application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3116,6 +3355,10 @@ return {
     },
     [481] = {
       name = "ScrCmd_GiveRibbon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "ribbon identity to stored-bit mapping needs the ribbon application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3123,6 +3366,10 @@ return {
     },
     [482] = {
       name = "ScrCmd_BufferRibbonName",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "ribbon names need the ribbon application",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3236,6 +3483,9 @@ return {
     },
     [496] = {
       name = "ScrCmd_GetPartyLead",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3307,6 +3557,10 @@ return {
     },
     [506] = {
       name = "ScrCmd_BufferBoxMonNick",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pc_storage",
+      deferredNote = "box nicknames need box storage",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3445,6 +3699,9 @@ return {
     },
     [529] = {
       name = "ScrCmd_GetPartyLeadAlive",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3531,6 +3788,9 @@ return {
     },
     [542] = {
       name = "ScrCmd_MonGetContestValue",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3802,6 +4062,9 @@ return {
     },
     [584] = {
       name = "ScrCmd_PartyLegalCheck",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3866,6 +4129,10 @@ return {
     },
     [596] = {
       name = "ScrCmd_596",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "active follower control needs the following-mon controller",
       widths = {
         [1] = 2,
       },
@@ -3886,24 +4153,44 @@ return {
     },
     [600] = {
       name = "ScrCmd_600",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "active follower control needs the following-mon controller",
       widths = {},
     },
     [601] = {
       name = "ScrCmd_FollowMonFacePlayer",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower facing needs the following-mon controller",
       widths = {},
     },
     [602] = {
       name = "ScrCmd_ToggleFollowingPokemonMovement",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower movement control needs the following-mon controller",
       widths = {
         [1] = 2,
       },
     },
     [603] = {
       name = "ScrCmd_WaitFollowingPokemonMovement",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower movement wait needs the following-mon controller",
       widths = {},
     },
     [604] = {
       name = "ScrCmd_FollowingPokemonMovement",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower movement needs the following-mon controller",
       widths = {
         [1] = 2,
       },
@@ -3929,6 +4216,10 @@ return {
     },
     [609] = {
       name = "ScrCmd_609",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "active follower presence needs the following-mon controller",
       widths = {},
     },
     [610] = {
@@ -4003,6 +4294,10 @@ return {
     },
     [621] = {
       name = "ScrCmd_PlaceStarterBallsInElmsLab",
+      feature = "starter",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "placing the starter balls needs the starter application",
       widths = {},
     },
     [622] = {
@@ -4072,6 +4367,9 @@ return {
     },
     [632] = {
       name = "ScrCmd_CountPartyMonsOfSpecies",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4177,6 +4475,9 @@ return {
     },
     [647] = {
       name = "ScrCmd_GetPartySlotWithSpecies",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4345,6 +4646,10 @@ return {
     },
     [671] = {
       name = "ScrCmd_SetFavoriteMon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "favorite-mon presentation needs the contest application",
       widths = {},
     },
     [672] = {
@@ -4367,6 +4672,10 @@ return {
     },
     [674] = {
       name = "ScrCmd_CountTranformedRotomsInParty",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "item_flow",
+      deferredNote = "Rotom form changes need the appliance item application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4383,6 +4692,9 @@ return {
     },
     [676] = {
       name = "ScrCmd_GetPartyMonForm",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4459,6 +4771,9 @@ return {
     },
     [688] = {
       name = "ScrCmd_GetPartySlotWithFatefulEncounter",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4466,12 +4781,20 @@ return {
     },
     [689] = {
       name = "ScrCmd_CommSanitizeParty",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "trade sanitizing needs the trade application and OT transfer",
       widths = {
         [1] = 2,
       },
     },
     [690] = {
       name = "ScrCmd_DaycareSanitizeMon",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare state needs the egg/daycare lifecycle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4526,6 +4849,10 @@ return {
     },
     [698] = {
       name = "ScrCmd_FollowerPokeIsEventTrigger",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower event triggers need the following-mon controller",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4579,6 +4906,10 @@ return {
     },
     [707] = {
       name = "ScrCmd_CheckMonSeen",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "seen flags need persisted seen/caught state",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4600,6 +4931,10 @@ return {
     },
     [711] = {
       name = "ScrCmd_FollowMonInteract",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower interaction needs the following-mon controller",
       widths = {},
     },
     [712] = {
@@ -4622,6 +4957,10 @@ return {
     },
     [715] = {
       name = "ScrCmd_UpdateDaycareMonObjects",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare objects need the egg/daycare lifecycle",
       widths = {},
     },
     [716] = {
@@ -4701,6 +5040,10 @@ return {
     },
     [727] = {
       name = "ScrCmd_GetFollowPokePartyIndex",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower party index needs the following-mon controller",
       widths = {
         [1] = 2,
       },
@@ -4805,6 +5148,10 @@ return {
     },
     [744] = {
       name = "ScrCmd_CreatePokeathlonFriendshipRoomStatues",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "friendship statues need the contest application",
       widths = {},
     },
     [745] = {
@@ -4980,6 +5327,10 @@ return {
     },
     [776] = {
       name = "ScrCmd_GiveTogepiEgg",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "egg gifts need the egg/daycare lifecycle",
       widths = {},
     },
     [777] = {
@@ -4991,6 +5342,10 @@ return {
     },
     [778] = {
       name = "ScrCmd_GiveSpikyEarPichu",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "the event-locked Spiky-Ear form needs the special-event application",
       widths = {},
     },
     [779] = {
@@ -5009,6 +5364,10 @@ return {
     },
     [781] = {
       name = "ScrCmd_KenyaCheckPartyOrMailbox",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "mail",
+      deferredNote = "mailbox checks need the mailbox structures and flows",
       widths = {
         [1] = 2,
       },
@@ -5019,6 +5378,10 @@ return {
     },
     [783] = {
       name = "ScrCmd_SetFollowMonInhibitState",
+      feature = "following_mon",
+      disposition = "deferred",
+      deferredReason = "special_follower_event",
+      deferredNote = "follower inhibit state needs the following-mon controller",
       widths = {
         [1] = 1,
       },
@@ -5032,6 +5395,10 @@ return {
     },
     [785] = {
       name = "ScrCmd_BugContestAction",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "bug contest rules need the contest application",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -5039,12 +5406,20 @@ return {
     },
     [786] = {
       name = "ScrCmd_BufferBugContestWinner",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "bug contest results need the contest application",
       widths = {
         [1] = 1,
       },
     },
     [787] = {
       name = "ScrCmd_JudgeBugContest",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "bug contest judging needs the contest application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5053,6 +5428,10 @@ return {
     },
     [788] = {
       name = "ScrCmd_BufferBugContestMonNick",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "bug contest state needs the contest application",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -5060,12 +5439,20 @@ return {
     },
     [789] = {
       name = "ScrCmd_BugContestGetTimeLeft",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "bug contest timing needs the contest application",
       widths = {
         [1] = 1,
       },
     },
     [790] = {
       name = "ScrCmd_IsBugContestantRegistered",
+      feature = "mons",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "bug contest registration needs the contest application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5272,6 +5659,9 @@ return {
     },
     [827] = {
       name = "ScrCmd_GetPartyMonForm2",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5279,6 +5669,9 @@ return {
     },
     [828] = {
       name = "ScrCmd_MonAddContestValue",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 1,
@@ -5329,6 +5722,9 @@ return {
     },
     [836] = {
       name = "ScrCmd_CheckKyogreGroudonInParty",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -5387,6 +5783,9 @@ return {
     },
     [845] = {
       name = "ScrCmd_BufferPartyMonSpeciesNameIndef",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,

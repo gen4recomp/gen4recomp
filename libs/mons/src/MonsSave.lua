@@ -13,13 +13,16 @@ local Mon = require("libs.mons.src.Mon")
 local MonsErrors = require("libs.mons.src.errors")
 local Party = require("libs.mons.src.Party")
 
+---@alias MonsSave.Bucket { schema: string, catalogFingerprint: string, rng: { state: integer, calls: integer }, party: table<string, unknown> }
+---@alias MonsSave.Context { catalog: MonCatalog, charmap: table<string, unknown>, games: table<string, unknown>, languages: table<string, unknown>, items: table<string, unknown>, balls: table<string, unknown> }
 ---@class MonsSave
 local MonsSave = {}
 
 MonsSave.SCHEMA = "g4-mons-save-v1"
 
----@param value any
----@return any
+---@generic T
+---@param value T
+---@return T
 local function copyValue(value)
   if type(value) ~= "table" then
     return value
@@ -31,7 +34,7 @@ local function copyValue(value)
   return out
 end
 
----@param bucket table
+---@param bucket MonsSave.Bucket
 local function checkShape(bucket)
   if type(bucket) ~= "table" then
     MonsErrors.raise(MonsErrors.SAVE_INVALID, "mons bucket must be a record", {})
@@ -55,10 +58,26 @@ local function checkShape(bucket)
   end
 end
 
----@param partySnapshot table
+---@param fingerprint string
+---@param seedU32 integer
+---@return MonsSave.Bucket
+function MonsSave.empty(fingerprint, seedU32)
+  assert(type(fingerprint) == "string" and fingerprint ~= "", "mons empty requires a catalog fingerprint")
+  assert(
+    type(seedU32) == "number" and seedU32 % 1 == 0 and seedU32 >= 0 and seedU32 <= 0xFFFFFFFF,
+    "mons empty requires an unsigned 32-bit seed"
+  )
+  local seed = seedU32
+  if seed == 0 then
+    seed = 1
+  end
+  return MonsSave.capture(Party.new():capture(), Lcrng.new(seed):capture(), fingerprint)
+end
+
+---@param partySnapshot table<string, unknown>
 ---@param rngCapture { state: integer, calls: integer }
 ---@param fingerprint string
----@return table
+---@return MonsSave.Bucket
 function MonsSave.capture(partySnapshot, rngCapture, fingerprint)
   assert(type(partySnapshot) == "table", "mons capture requires a party snapshot")
   assert(type(rngCapture) == "table", "mons capture requires a generator capture")
@@ -78,8 +97,8 @@ function MonsSave.capture(partySnapshot, rngCapture, fingerprint)
   }
 end
 
----@param bucket table
----@param context table
+---@param bucket MonsSave.Bucket
+---@param context MonsSave.Context
 ---@return boolean
 function MonsSave.validate(bucket, context)
   assert(type(context) == "table", "mons validation requires a context")
@@ -117,8 +136,8 @@ function MonsSave.validate(bucket, context)
   return true
 end
 
----@param bucket table
----@param context table
+---@param bucket MonsSave.Bucket
+---@param context MonsSave.Context
 ---@return { party: Party, rng: Gen4Lcrng }
 function MonsSave.restore(bucket, context)
   assert(type(context) == "table", "mons restore requires a context")

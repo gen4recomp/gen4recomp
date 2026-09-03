@@ -615,6 +615,232 @@ local function handleBufferText(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- Mon and party operations. Each handler evaluates its semantic operands
+-- through the run semantics, calls exactly one named operation on the
+-- injected mons service, and writes the source result convention to the
+-- result reference: 1 or 0 for booleans, the zero-based slot or 6 for
+-- searches and leads. No handler dispatches on a source opcode; the node
+-- op already names the behavior.
+local function monsFor(run)
+  return requireService(run, "mons")
+end
+
+local function evalField(node, run, name)
+  return semanticsFor(run).evaluateValue(node[name], run)
+end
+
+local function evalOptional(node, run, name)
+  if node[name] == nil then
+    return nil
+  end
+  return semanticsFor(run).evaluateValue(node[name], run)
+end
+
+local function writeMonsResult(node, run, value)
+  semanticsFor(run).writeRef(node.result, value, run)
+end
+
+local function writeMonsBool(node, run, value)
+  writeMonsResult(node, run, value and 1 or 0)
+end
+
+local function writeMonsSlot(node, run, slot)
+  writeMonsResult(node, run, slot == nil and 6 or slot)
+end
+
+local function handleGiveMon(node, run)
+  local added = monsFor(run):giveMon({
+    species = evalField(node, run, "species"),
+    level = evalField(node, run, "level"),
+    heldItem = evalOptional(node, run, "heldItem"),
+    form = evalOptional(node, run, "form"),
+    ability = evalOptional(node, run, "ability"),
+  })
+  writeMonsBool(node, run, added)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleReturnLoanMon(node, run)
+  monsFor(run):returnLoanMon(evalField(node, run, "slot"))
+  if node.result ~= nil then
+    writeMonsBool(node, run, true)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleSetMonMove(node, run)
+  monsFor(run):setMove(evalField(node, run, "slot"), evalField(node, run, "moveSlot"), evalField(node, run, "move"))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleMonHasMove(node, run)
+  writeMonsBool(node, run, monsFor(run):monHasMove(evalField(node, run, "slot"), evalField(node, run, "move")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartySlotWithMove(node, run)
+  writeMonsSlot(node, run, monsFor(run):partySlotWithMove(evalField(node, run, "move")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleCountMonMoves(node, run)
+  writeMonsResult(node, run, monsFor(run):countMonMoves(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleMonForgetMove(node, run)
+  monsFor(run):deleteMove(evalField(node, run, "slot"), evalField(node, run, "moveSlot"))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleMonGetMove(node, run)
+  writeMonsResult(node, run, monsFor(run):monMove(evalField(node, run, "slot"), evalField(node, run, "moveSlot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyCount(node, run)
+  writeMonsResult(node, run, monsFor(run):partyCount())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyCountNotEgg(node, run)
+  writeMonsResult(node, run, monsFor(run):partyCountNotEgg())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyCountEgg(node, run)
+  writeMonsResult(node, run, monsFor(run):partyCountEgg())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleCountAliveMons(node, run)
+  writeMonsResult(node, run, monsFor(run):countAliveMons(evalOptional(node, run, "excludeSlot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyCountAtOrBelowLevel(node, run)
+  writeMonsResult(node, run, monsFor(run):partyCountAtOrBelowLevel(evalField(node, run, "level")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleCountSpecies(node, run)
+  writeMonsResult(node, run, monsFor(run):countSpecies(evalField(node, run, "species")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartySlotWithSpecies(node, run)
+  writeMonsSlot(node, run, monsFor(run):partySlotWithSpecies(evalField(node, run, "species")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartySlotWithNature(node, run)
+  writeMonsSlot(node, run, monsFor(run):partySlotWithNature(evalField(node, run, "nature")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartySlotWithFatefulEncounter(node, run)
+  writeMonsSlot(node, run, monsFor(run):partySlotWithFatefulEncounter(evalOptional(node, run, "species")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonSpecies(node, run)
+  writeMonsResult(node, run, monsFor(run):partyMonSpecies(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonIsMine(node, run)
+  writeMonsBool(node, run, monsFor(run):partyMonIsMine(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonNature(node, run)
+  writeMonsResult(node, run, monsFor(run):monNature(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonFriendship(node, run)
+  writeMonsResult(node, run, monsFor(run):monFriendship(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleMonAddFriendship(node, run)
+  monsFor(run):monAddFriendship(evalField(node, run, "slot"), evalField(node, run, "amount"))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleMonSubFriendship(node, run)
+  monsFor(run):monSubFriendship(evalField(node, run, "slot"), evalField(node, run, "amount"))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonGender(node, run)
+  writeMonsResult(node, run, monsFor(run):monGender(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonContestValue(node, run)
+  writeMonsResult(
+    node,
+    run,
+    monsFor(run):monContestValue(evalField(node, run, "slot"), evalField(node, run, "contestType"))
+  )
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleMonAddContestValue(node, run)
+  monsFor(run):monAddContestValue(
+    evalField(node, run, "slot"),
+    evalField(node, run, "contestType"),
+    evalField(node, run, "amount")
+  )
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonForm(node, run)
+  writeMonsResult(node, run, monsFor(run):monForm(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonRibbonCount(node, run)
+  writeMonsResult(node, run, monsFor(run):monRibbonCount(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyRibbonCount(node, run)
+  writeMonsResult(node, run, monsFor(run):partyRibbonCount())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyHasPokerus(node, run)
+  writeMonsBool(node, run, monsFor(run):partyHasPokerus())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyLead(node, run)
+  writeMonsSlot(node, run, monsFor(run):leadSlot())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyLeadAlive(node, run)
+  writeMonsSlot(node, run, monsFor(run):leadAliveSlot())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyLegalCheck(node, run)
+  writeMonsBool(node, run, monsFor(run):partyLegal())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleCheckKyogreGroudon(node, run)
+  writeMonsBool(node, run, monsFor(run):hasKyogreGroudon())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleHealParty(_, run)
+  monsFor(run):healParty()
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handleLockPlayer(_, run)
   requireForeground(run, "lock_player")
   run.environment:acquireLock(ScriptEnvironment.LOCK_PLAYER, nil, run.instance.instanceId)
@@ -1215,6 +1441,41 @@ HANDLERS.copy_local = handleCopyLocal
 HANDLERS.add_local = handleAddLocal
 HANDLERS.sub_local = handleSubLocal
 HANDLERS.buffer_text = handleBufferText
+HANDLERS.give_mon = handleGiveMon
+HANDLERS.return_loan_mon = handleReturnLoanMon
+HANDLERS.set_mon_move = handleSetMonMove
+HANDLERS.mon_has_move = handleMonHasMove
+HANDLERS.party_slot_with_move = handlePartySlotWithMove
+HANDLERS.count_mon_moves = handleCountMonMoves
+HANDLERS.mon_forget_move = handleMonForgetMove
+HANDLERS.mon_get_move = handleMonGetMove
+HANDLERS.party_count = handlePartyCount
+HANDLERS.party_count_not_egg = handlePartyCountNotEgg
+HANDLERS.party_count_egg = handlePartyCountEgg
+HANDLERS.count_alive_mons = handleCountAliveMons
+HANDLERS.party_count_at_or_below_level = handlePartyCountAtOrBelowLevel
+HANDLERS.count_species = handleCountSpecies
+HANDLERS.party_slot_with_species = handlePartySlotWithSpecies
+HANDLERS.party_slot_with_nature = handlePartySlotWithNature
+HANDLERS.party_slot_with_fateful_encounter = handlePartySlotWithFatefulEncounter
+HANDLERS.party_mon_species = handlePartyMonSpecies
+HANDLERS.party_mon_is_mine = handlePartyMonIsMine
+HANDLERS.party_mon_nature = handlePartyMonNature
+HANDLERS.party_mon_friendship = handlePartyMonFriendship
+HANDLERS.mon_add_friendship = handleMonAddFriendship
+HANDLERS.mon_sub_friendship = handleMonSubFriendship
+HANDLERS.party_mon_gender = handlePartyMonGender
+HANDLERS.party_mon_contest_value = handlePartyMonContestValue
+HANDLERS.mon_add_contest_value = handleMonAddContestValue
+HANDLERS.party_mon_form = handlePartyMonForm
+HANDLERS.party_mon_ribbon_count = handlePartyMonRibbonCount
+HANDLERS.party_ribbon_count = handlePartyRibbonCount
+HANDLERS.party_has_pokerus = handlePartyHasPokerus
+HANDLERS.party_lead = handlePartyLead
+HANDLERS.party_lead_alive = handlePartyLeadAlive
+HANDLERS.party_legal_check = handlePartyLegalCheck
+HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
+HANDLERS.heal_party = handleHealParty
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
 HANDLERS.lock_all = handleLockAll

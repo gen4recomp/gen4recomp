@@ -451,6 +451,324 @@ local function bufferStarterSpeciesName(ins)
   return { op = "buffer_text", slot = Operands.operandValue(ins.operands[1]), value = { text = "starter_species_name" } }
 end
 
+-- Mon and party lowering. Every handler converts source operands to
+-- semantic DSL values: party/move slots ride value-or-variable references,
+-- native species/move/item/ability identities ride through as scalars for
+-- the service to resolve once through the catalog, and result operands
+-- ride output variable references. Source timing stays immediate: every
+-- node below is a same-tick operation. No handler fabricates a fallback
+-- write and no runtime branch switches on the source opcode afterwards.
+
+-- The source default-ability sentinels: 0 (observed in every vanilla
+-- gift) and 0xFFFF both keep the PID-selected ability instead of naming
+-- one. A nonzero operand is a native ability identity.
+local DEFAULT_ABILITY_SENTINELS = { [0] = true, [0xFFFF] = true }
+
+local function abilityOrNil(operand)
+  local raw = Operands.operandValue(operand)
+  if DEFAULT_ABILITY_SENTINELS[raw] then
+    return nil
+  end
+  return Operands.varRef(operand)
+end
+
+local function giveMon(ins)
+  -- ScrCmd_GiveMon species, level, held item, form, ability, result: the
+  -- current map section resolves at the service before creation, creation
+  -- consumes its exact draws even when the party is full, and only the
+  -- Pokedex update is omitted.
+  return {
+    op = "give_mon",
+    species = Operands.varRef(ins.operands[1]),
+    level = Operands.varRef(ins.operands[2]),
+    heldItem = Operands.varRef(ins.operands[3]),
+    form = Operands.varRef(ins.operands[4]),
+    ability = abilityOrNil(ins.operands[5]),
+    result = Operands.varRef(ins.operands[6]),
+  }
+end
+
+local function returnLoanMon(ins)
+  return {
+    op = "return_loan_mon",
+    slot = Operands.varRef(ins.operands[1]),
+  }
+end
+
+local function setMonMove(ins)
+  return {
+    op = "set_mon_move",
+    slot = Operands.varRef(ins.operands[1]),
+    moveSlot = Operands.varRef(ins.operands[2]),
+    move = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function monHasMove(ins)
+  -- ScrCmd_MonHasMove result, move, slot: the result comes first.
+  return {
+    op = "mon_has_move",
+    result = Operands.varRef(ins.operands[1]),
+    move = Operands.varRef(ins.operands[2]),
+    slot = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function partySlotWithMove(ins)
+  -- ScrCmd_GetPartySlotWithMove result, move.
+  return {
+    op = "party_slot_with_move",
+    result = Operands.varRef(ins.operands[1]),
+    move = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function countMonMoves(ins)
+  -- ScrCmd_CountMonMoves result, slot.
+  return {
+    op = "count_mon_moves",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function monForgetMove(ins)
+  return {
+    op = "mon_forget_move",
+    slot = Operands.varRef(ins.operands[1]),
+    moveSlot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function monGetMove(ins)
+  -- ScrCmd_MonGetMove result, slot, move slot.
+  return {
+    op = "mon_get_move",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+    moveSlot = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function partyCount(ins)
+  return { op = "party_count", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyCountNotEgg(ins)
+  return { op = "party_count_not_egg", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyCountEgg(ins)
+  return { op = "party_count_egg", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyCountAtOrBelowLevel(ins)
+  -- ScrCmd_PartyCountMonsAtOrBelowLevel result, level.
+  return {
+    op = "party_count_at_or_below_level",
+    result = Operands.varRef(ins.operands[1]),
+    level = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function countSpecies(ins)
+  -- ScrCmd_CountPartyMonsOfSpecies result, species.
+  return {
+    op = "count_species",
+    result = Operands.varRef(ins.operands[1]),
+    species = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partySlotWithSpecies(ins)
+  -- ScrCmd_GetPartySlotWithSpecies result, species.
+  return {
+    op = "party_slot_with_species",
+    result = Operands.varRef(ins.operands[1]),
+    species = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partySlotWithNature(ins)
+  -- ScrCmd_GetPartySlotWithNature result, nature, matching the other
+  -- party search commands. The command is unreached in the vanilla
+  -- corpus; the order follows the search family.
+  return {
+    op = "party_slot_with_nature",
+    result = Operands.varRef(ins.operands[1]),
+    nature = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partySlotWithFatefulEncounter(ins)
+  -- ScrCmd_GetPartySlotWithFatefulEncounter result, species.
+  return {
+    op = "party_slot_with_fateful_encounter",
+    result = Operands.varRef(ins.operands[1]),
+    species = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function countAliveMons(ins)
+  -- ScrCmd_CountAliveMons result, excluded slot: the count covers every
+  -- conscious non-egg party mon except the slot operand, which carries
+  -- the party size when nothing is excluded.
+  return {
+    op = "count_alive_mons",
+    result = Operands.varRef(ins.operands[1]),
+    excludeSlot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonSpecies(ins)
+  return {
+    op = "party_mon_species",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonIsMine(ins)
+  return {
+    op = "party_mon_is_mine",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonNature(ins)
+  return {
+    op = "party_mon_nature",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonFriendship(ins)
+  -- ScrCmd_MonGetFriendship result, slot.
+  return {
+    op = "party_mon_friendship",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function monAddFriendship(ins)
+  -- ScrCmd_MonAddFriendship amount, slot: the amount comes first.
+  return {
+    op = "mon_add_friendship",
+    amount = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function monSubFriendship(ins)
+  -- ScrCmd_MonSubtractFriendship amount, slot, matching the addition.
+  return {
+    op = "mon_sub_friendship",
+    amount = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonGender(ins)
+  return {
+    op = "party_mon_gender",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonContestValue(ins)
+  return {
+    op = "party_mon_contest_value",
+    slot = Operands.varRef(ins.operands[1]),
+    contestType = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function monAddContestValue(ins)
+  return {
+    op = "mon_add_contest_value",
+    slot = Operands.varRef(ins.operands[1]),
+    contestType = Operands.varRef(ins.operands[2]),
+    amount = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function partyMonForm(ins)
+  return {
+    op = "party_mon_form",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyMonRibbonCount(ins)
+  return {
+    op = "party_mon_ribbon_count",
+    slot = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyRibbonCount(ins)
+  return { op = "party_ribbon_count", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyHasPokerus(ins)
+  return { op = "party_has_pokerus", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyLead(ins)
+  return { op = "party_lead", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyLeadAlive(ins)
+  return { op = "party_lead_alive", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function partyLegalCheck(ins)
+  return { op = "party_legal_check", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function checkKyogreGroudon(ins)
+  return { op = "check_kyogre_groudon", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function healParty()
+  return { op = "heal_party" }
+end
+
+local function bufferNatureName(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = { text = "nature_name", value = Operands.varRef(ins.operands[2]) },
+  }
+end
+
+local function bufferPartyMonMoveName(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = {
+      text = "party_mon_move_name",
+      position = Operands.varRef(ins.operands[2]),
+      moveSlot = Operands.varRef(ins.operands[3]),
+    },
+  }
+end
+
+local function bufferPartyMonSpeciesNameIndef(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = { text = "party_species_name", position = Operands.varRef(ins.operands[2]) },
+  }
+end
+
 local function bufferMapName(ins)
   return {
     op = "buffer_text",
@@ -729,6 +1047,45 @@ return {
   [200] = bufferTrainerClassName,
   [202] = bufferSpeciesName,
   [203] = bufferStarterSpeciesName,
+  [137] = giveMon,
+  [139] = setMonMove,
+  [140] = monHasMove,
+  [141] = partySlotWithMove,
+  [238] = partyHasPokerus,
+  [239] = partyMonGender,
+  [282] = healParty,
+  [332] = partyCount,
+  [337] = bufferNatureName,
+  [354] = partyMonSpecies,
+  [355] = partyMonIsMine,
+  [356] = partyCountNotEgg,
+  [359] = partyCountEgg,
+  [357] = countAliveMons,
+  [364] = returnLoanMon,
+  [382] = partyMonFriendship,
+  [383] = monAddFriendship,
+  [384] = monSubFriendship,
+  [396] = countMonMoves,
+  [397] = monForgetMove,
+  [398] = monGetMove,
+  [399] = bufferPartyMonMoveName,
+  [434] = partyCountAtOrBelowLevel,
+  [457] = partyMonNature,
+  [458] = partySlotWithNature,
+  [478] = partyMonRibbonCount,
+  [479] = partyRibbonCount,
+  [496] = partyLead,
+  [529] = partyLeadAlive,
+  [542] = partyMonContestValue,
+  [584] = partyLegalCheck,
+  [632] = countSpecies,
+  [647] = partySlotWithSpecies,
+  [676] = partyMonForm,
+  [688] = partySlotWithFatefulEncounter,
+  [827] = partyMonForm,
+  [828] = monAddContestValue,
+  [836] = checkKyogreGroudon,
+  [845] = bufferPartyMonSpeciesNameIndef,
   [210] = bufferMapName,
   [338] = setObjectPosition,
   [339] = movePersonFacing,

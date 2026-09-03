@@ -18,6 +18,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 ---@field private _fontDef table<string, unknown>
 ---@field private _player table<string, unknown>|nil
 ---@field private _world table<string, unknown>|nil world state { getVar(id) -> unknown }
+---@field private _mons HgssMonService|nil the live HGSS mon service for party/mon text
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
 ---@field private _pendingNode table<string, unknown>|nil
 local ScriptDialogueHost = {}
@@ -63,13 +64,91 @@ local function scopedNameGlyphs(provider, bankId, messageId, fontDef)
   return tokens
 end
 
+-- Evaluates a text-operand that may be a literal scalar or a variable
+-- reference through the world state.
+---@param operand unknown
+---@param world table<string, unknown>|nil
+---@return unknown
+local function evaluateTextOperand(operand, world)
+  if type(operand) == "table" and operand.value == "var" then
+    if world == nil or world.getVar == nil then
+      local context = { operand = operand }
+      ---@cast context Errors.Context
+      Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "buffered text variable requires the world state", context)
+    end
+    local worldState = world --[[@as { getVar: fun(self: table, id: unknown): unknown }]]
+    return worldState:getVar(operand.id)
+  end
+  return operand
+end
+
+-- Mon/party text identities. Returns the display string, or nil when the
+-- descriptor names a form owned elsewhere. Out-of-range party positions
+-- fail through the service's structured slot validation rather than
+-- rendering an empty window.
+---@param kind string
+---@param descriptor table<string, unknown>
+---@param mons HgssMonService the live HGSS mon service
+---@param world table<string, unknown>|nil
+---@return string|nil
+local function resolveMonsTextValue(kind, descriptor, mons, world)
+  local Mon = require("libs.mons.src.Mon")
+  local catalog = mons:catalog()
+  if kind == "party_species_name" then
+    local position = evaluateTextOperand(descriptor.position, world)
+    local mon = mons:partyMon(position)
+    return catalog:species(mon.species).name
+  elseif kind == "party_nickname" then
+    local position = evaluateTextOperand(descriptor.position, world)
+    return Mon.displayName(mons:partyMon(position), catalog)
+  elseif kind == "species_name" then
+    local identity = evaluateTextOperand(descriptor.value, world)
+    if type(identity) == "number" then
+      return catalog:speciesByNativeId(identity).name
+    end
+    return catalog:species(identity --[[@as string]]).name
+  elseif kind == "move_name" then
+    local identity = evaluateTextOperand(descriptor.value, world)
+    if type(identity) == "number" then
+      return catalog:moveByNativeId(identity).name
+    end
+    return catalog:move(identity --[[@as string]]).name
+  elseif kind == "party_mon_move_name" then
+    local position = evaluateTextOperand(descriptor.position, world)
+    local moveSlot = evaluateTextOperand(descriptor.moveSlot, world)
+    local mon = mons:partyMon(position)
+    local entry
+    if type(moveSlot) == "number" then
+      entry = mon.moves[moveSlot + 1]
+    end
+    if type(moveSlot) ~= "number" or entry == nil then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "party move slot is out of range",
+        { position = position, moveSlot = moveSlot }
+      )
+    end
+    assert(entry ~= nil, "move entry carries the validated move")
+    return catalog:move(entry.move).name
+  elseif kind == "nature_name" then
+    local nature = evaluateTextOperand(descriptor.value, world)
+    return require("libs.hgss.src.mons.HgssMonService").natureName(nature --[[@as integer]])
+  end
+  return nil
+end
+
+-- Text-value descriptor resolvers for the implemented forms: player name,
+-- integers backed by a variable, and mon/party identities resolved through
+-- the injected live mon service and its catalog. Any other form is a fault:
+-- the resolver contract never leaves a marker visible in the stream.
 ---@param descriptor table<string, unknown>
 ---@param player table<string, unknown>
 ---@param fontDef table<string, unknown>
 ---@param world table<string, unknown>|nil
 ---@param provider FieldMessageProvider
+---@param mons HgssMonService|nil the live HGSS mon service
 ---@return table<string, unknown>|nil replacementTokens
-local function resolveTextValue(descriptor, player, fontDef, world, provider)
+local function resolveTextValue(descriptor, player, fontDef, world, provider, mons)
   if type(descriptor) ~= "table" or descriptor.text == nil then
     return nil
   end
@@ -92,6 +171,12 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider)
     local worldState = world --[[@as { getVar: fun(self: table, id: unknown): unknown }]]
     return FieldMessageProvider.asciiGlyphTokens(tostring(worldState:getVar(value.id)), fontDef)
   end
+  if mons ~= nil and type(kind) == "string" then
+    local resolved = resolveMonsTextValue(kind, descriptor, mons, world)
+    if resolved ~= nil then
+      return FieldMessageProvider.asciiGlyphTokens(resolved, fontDef)
+    end
+  end
   Errors.raise(
     ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE,
     "unsupported buffered text form " .. tostring(kind),
@@ -99,7 +184,7 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider)
   )
 end
 
----@param opts table<string, unknown> { controller, provider, layout, fontDef, player, world, frameIndex? }
+---@param opts table<string, unknown> { controller, provider, layout, fontDef, player, world, mons?, frameIndex? }
 ---@return ScriptDialogueHost
 function ScriptDialogueHost.new(opts)
   assert(
@@ -124,6 +209,7 @@ function ScriptDialogueHost.new(opts)
     _fontDef = opts.fontDef,
     _player = opts.player,
     _world = opts.world,
+    _mons = opts.mons,
     _frameIndex = frameIndex,
   }, ScriptDialogueHost)
 end
@@ -183,7 +269,7 @@ function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
       local function resolveSubstitution(_, args, _)
         local slot = args and args[1]
         local descriptor = bindings[slot] or textArgs[slot]
-        return resolveTextValue(descriptor, self._player, self._fontDef, self._world, self._provider)
+        return resolveTextValue(descriptor, self._player, self._fontDef, self._world, self._provider, self._mons)
       end
       resolvers[token.control] = resolveSubstitution
     end

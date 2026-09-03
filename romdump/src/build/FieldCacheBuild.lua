@@ -156,20 +156,20 @@ function FieldCacheBuild.build(context)
   -- Follower visuals extend the actor sprite index, so they must merge before
   -- the actor class is published; the mon catalog below validates its
   -- follower references against this merged index.
-  bundle, err = FollowingMonVisualCompiler.compile(context.romFs)
-  local follower = requireBundle(bundle, err)
+  local followerBundle, followerErr = FollowingMonVisualCompiler.compile(context.romFs)
+  local follower = requireBundle(followerBundle, followerErr)
   if not follower then
-    return nil, err
+    return nil, followerErr
   end
   FollowingMonVisualCompiler.mergeIntoActorBundle(actor, follower)
   writeIfStale(context, actor, FieldActorCacheWriter, FieldActorCacheWriter.isReady, "field actors", function(value)
     return string.format(" (%d sprites)", #value.index.spriteIds)
   end)
 
-  bundle, err = MonCatalogCompiler.compileAll(context.romFs)
-  local mons = requireBundle(bundle, err)
+  local monBundle, monErr = MonCatalogCompiler.compileAll(context.romFs)
+  local mons = requireBundle(monBundle, monErr)
   if not mons then
-    return nil, err
+    return nil, monErr
   end
   local actorSpriteIds = {}
   for _, spriteId in ipairs(actor.index.spriteIds) do

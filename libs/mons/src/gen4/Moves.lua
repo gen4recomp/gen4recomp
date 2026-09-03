@@ -9,10 +9,10 @@
 ---@class Moves
 local Moves = {}
 
----@param learnset table
+---@param learnset { level: integer, move: string }[]
 ---@param level integer
----@param catalog table
----@return table
+---@param catalog MonCatalog
+---@return { move: string, pp: integer, ppUps: integer }[]
 function Moves.initial(learnset, level, catalog)
   assert(type(learnset) == "table", "learnset must be a table")
   assert(

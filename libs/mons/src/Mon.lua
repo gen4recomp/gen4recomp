@@ -68,7 +68,7 @@ local CAPSULE_FIELDS = { id = true, seals = true }
 local SEAL_FIELDS = { x = true, y = true, graphic = true }
 local DATE_FIELDS = { year = true, month = true, day = true }
 
----@param record table
+---@param record table<string, unknown>
 ---@param allowed table<string, boolean>
 ---@param what string
 local function checkKeys(record, allowed, what)
@@ -79,7 +79,7 @@ local function checkKeys(record, allowed, what)
   end
 end
 
----@param value any
+---@param value unknown
 ---@param bound integer
 ---@param what string
 local function checkIntRange(value, bound, what)
@@ -88,26 +88,26 @@ local function checkIntRange(value, bound, what)
   end
 end
 
----@param value any
+---@param value unknown
 ---@param what string
 local function checkU8(value, what)
   checkIntRange(value, 255, what)
 end
 
----@param value any
+---@param value unknown
 ---@param what string
 local function checkU16(value, what)
   checkIntRange(value, 65535, what)
 end
 
----@param value any
+---@param value unknown
 ---@param what string
 local function checkU32(value, what)
   checkIntRange(value, 4294967295, what)
 end
 
----@param text any
----@param charmap table
+---@param text unknown
+---@param charmap table<string, integer>
 ---@param capacity integer
 ---@param what string
 ---@return integer
@@ -128,7 +128,7 @@ local function checkText(text, charmap, capacity, what)
   return glyphs
 end
 
----@param date any
+---@param date unknown
 ---@param what string
 local function checkDate(date, what)
   if type(date) ~= "table" then
@@ -146,8 +146,8 @@ local function checkDate(date, what)
   end
 end
 
----@param value any
----@return any
+---@param value unknown
+---@return unknown
 local function copyValue(value)
   if type(value) ~= "table" then
     return value
@@ -161,15 +161,15 @@ end
 
 -- Maximum power points for a move: base value plus one fifth per power-point
 -- up, at most three ups.
----@param definition table
+---@param definition table<string, unknown>
 ---@return integer
 local function maxPp(definition)
   return definition.basePp + 3 * math.floor(definition.basePp / 5)
 end
 
----@param record table
----@param context table
----@return table
+---@param record table<string, unknown>
+---@param context table<string, unknown>
+---@return table<string, unknown>
 function Mon.validate(record, context)
   assert(type(context) == "table", "mon validation requires a context")
   assert(context.catalog ~= nil, "mon validation requires a catalog")
@@ -405,8 +405,8 @@ function Mon.validate(record, context)
   return copyValue(record)
 end
 
----@param record table
----@param catalog table
+---@param record table<string, unknown>
+---@param catalog MonCatalog
 ---@return string
 function Mon.displayName(record, catalog)
   assert(type(record) == "table", "display name requires a mon record")

@@ -70,6 +70,37 @@ function CommandCatalog.widths(opcode)
   return entry ~= nil and entry.widths or nil
 end
 
+-- Mon-family disposition metadata. The authoritative entries live in the
+-- pinned reference table; these accessors are the single query path for
+-- lowering and audits so no second disposition list can drift.
+---@param opcode integer
+---@return string|nil
+function CommandCatalog.feature(opcode)
+  local entry = ScriptCommands.byOpcode[opcode]
+  return entry ~= nil and entry.feature or nil
+end
+
+---@param opcode integer
+---@return string|nil
+function CommandCatalog.disposition(opcode)
+  local entry = ScriptCommands.byOpcode[opcode]
+  return entry ~= nil and entry.disposition or nil
+end
+
+---@param opcode integer
+---@return string|nil
+function CommandCatalog.deferredReason(opcode)
+  local entry = ScriptCommands.byOpcode[opcode]
+  return entry ~= nil and entry.deferredReason or nil
+end
+
+---@param opcode integer
+---@return string|nil
+function CommandCatalog.deferredNote(opcode)
+  local entry = ScriptCommands.byOpcode[opcode]
+  return entry ~= nil and entry.deferredNote or nil
+end
+
 -- Arg-dependent width variants for one opcode (evaluated in order against
 -- the base operand values; the first match adds `extra` widths); nil when
 -- the opcode has a fixed width.

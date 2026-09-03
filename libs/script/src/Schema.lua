@@ -110,6 +110,13 @@ Schema.TEXT_VALUES = {
   species_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   party_species_name = { fields = { position = { type = "scalar_or_value", required = true } } },
   party_nickname = { fields = { position = { type = "scalar_or_value", required = true } } },
+  party_mon_move_name = {
+    fields = {
+      position = { type = "scalar_or_value", required = true },
+      moveSlot = { type = "scalar_or_value", required = true },
+    },
+  },
+  nature_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   trainer_class_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   starter_species_name = { fields = {} },
   map_name = { fields = { value = { type = "scalar_or_value", required = true } } },
@@ -703,6 +710,215 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- Mon and party operations. Every node names a semantic service behavior;
+  -- no node carries a source opcode, and slot positions are zero-based party
+  -- slots. Search results write the zero-based slot or 6 when no mon
+  -- matches; boolean results write 1 or 0.
+  give_mon = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+      level = { type = "scalar_or_value", required = true },
+      heldItem = { type = "scalar_or_value" },
+      form = { type = "scalar_or_value" },
+      ability = { type = "scalar_or_value" },
+      result = { type = "value", required = true },
+    },
+  },
+  return_loan_mon = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value" },
+    },
+  },
+  set_mon_move = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      moveSlot = { type = "scalar_or_value", required = true },
+      move = { type = "scalar_or_value", required = true },
+    },
+  },
+  mon_has_move = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      move = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_slot_with_move = {
+    fields = {
+      move = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  count_mon_moves = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  mon_forget_move = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      moveSlot = { type = "scalar_or_value", required = true },
+    },
+  },
+  mon_get_move = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      moveSlot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_count = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_count_not_egg = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_count_egg = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  count_alive_mons = {
+    fields = {
+      excludeSlot = { type = "scalar_or_value" },
+      result = { type = "value", required = true },
+    },
+  },
+  party_count_at_or_below_level = {
+    fields = {
+      level = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  count_species = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_slot_with_species = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_slot_with_nature = {
+    fields = {
+      nature = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_slot_with_fateful_encounter = {
+    fields = {
+      species = { type = "scalar_or_value" },
+      result = { type = "value", required = true },
+    },
+  },
+  party_mon_species = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_mon_is_mine = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_mon_nature = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_mon_friendship = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  mon_add_friendship = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  mon_sub_friendship = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  party_mon_gender = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_mon_contest_value = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      contestType = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  mon_add_contest_value = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      contestType = { type = "scalar_or_value", required = true },
+      amount = { type = "scalar_or_value", required = true },
+    },
+  },
+  party_mon_form = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_mon_ribbon_count = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  party_ribbon_count = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_has_pokerus = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_lead = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_lead_alive = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_legal_check = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  check_kyogre_groudon = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  heal_party = { fields = {} },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },
@@ -790,6 +1006,12 @@ Schema.CONSTRUCTORS = {
         notes = "Read-only party lookup.",
       },
       { signature = "S.partyNickname(position)", canonical = "text=party_nickname", notes = "Read-only party lookup." },
+      {
+        signature = "S.partyMonMoveName(position, moveSlot)",
+        canonical = "text=party_mon_move_name",
+        notes = "Read-only party lookup.",
+      },
+      { signature = "S.natureName(value)", canonical = "text=nature_name", notes = "Native 0..24 nature identity." },
       { signature = "S.trainerClassName(value)", canonical = "text=trainer_class_name", notes = "" },
       {
         signature = "S.starterSpeciesName()",
@@ -1204,6 +1426,183 @@ Schema.CONSTRUCTORS = {
         canonical = "op=unsupported",
         notes = "Requires command/name/source metadata sufficient for diagnostics.",
       },
+    },
+  },
+  {
+    section = "Mon and party constructors",
+    notes = "Semantic mon/party operations executed through the injected mons service. Slots are zero-based party positions; search results write the slot or 6 when no mon matches; boolean results write 1 or 0.",
+    rows = {
+      {
+        signature = "S.giveMon(spec)",
+        canonical = "op=give_mon",
+        notes = "spec={species,level,heldItem?,form?,ability?,result}.",
+      },
+      {
+        signature = "S.returnLoanMon(spec)",
+        canonical = "op=return_loan_mon",
+        notes = "spec={slot,result?}.",
+      },
+      {
+        signature = "S.setMonMove(spec)",
+        canonical = "op=set_mon_move",
+        notes = "spec={slot,moveSlot,move}.",
+      },
+      {
+        signature = "S.monHasMove(spec)",
+        canonical = "op=mon_has_move",
+        notes = "spec={slot,move,result}.",
+      },
+      {
+        signature = "S.partySlotWithMove(spec)",
+        canonical = "op=party_slot_with_move",
+        notes = "spec={move,result}.",
+      },
+      {
+        signature = "S.countMonMoves(spec)",
+        canonical = "op=count_mon_moves",
+        notes = "spec={slot,result}.",
+      },
+      {
+        signature = "S.monForgetMove(spec)",
+        canonical = "op=mon_forget_move",
+        notes = "spec={slot,moveSlot}.",
+      },
+      {
+        signature = "S.monGetMove(spec)",
+        canonical = "op=mon_get_move",
+        notes = "spec={slot,moveSlot,result}; the result is the native move identity.",
+      },
+      {
+        signature = "S.partyCount(spec)",
+        canonical = "op=party_count",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.partyCountNotEgg(spec)",
+        canonical = "op=party_count_not_egg",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.partyCountEgg(spec)",
+        canonical = "op=party_count_egg",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.countAliveMons(spec)",
+        canonical = "op=count_alive_mons",
+        notes = "spec={excludeSlot?,result}; party members only, never PC storage.",
+      },
+      {
+        signature = "S.partyCountAtOrBelowLevel(spec)",
+        canonical = "op=party_count_at_or_below_level",
+        notes = "spec={level,result}.",
+      },
+      {
+        signature = "S.countSpecies(spec)",
+        canonical = "op=count_species",
+        notes = "spec={species,result}.",
+      },
+      {
+        signature = "S.partySlotWithSpecies(spec)",
+        canonical = "op=party_slot_with_species",
+        notes = "spec={species,result}.",
+      },
+      {
+        signature = "S.partySlotWithNature(spec)",
+        canonical = "op=party_slot_with_nature",
+        notes = "spec={nature,result}.",
+      },
+      {
+        signature = "S.partySlotWithFatefulEncounter(spec)",
+        canonical = "op=party_slot_with_fateful_encounter",
+        notes = "spec={species?,result}.",
+      },
+      {
+        signature = "S.partyMonSpecies(spec)",
+        canonical = "op=party_mon_species",
+        notes = "spec={slot,result}; the result is the native species identity.",
+      },
+      {
+        signature = "S.partyMonIsMine(spec)",
+        canonical = "op=party_mon_is_mine",
+        notes = "spec={slot,result}.",
+      },
+      {
+        signature = "S.partyMonNature(spec)",
+        canonical = "op=party_mon_nature",
+        notes = "spec={slot,result}.",
+      },
+      {
+        signature = "S.partyMonFriendship(spec)",
+        canonical = "op=party_mon_friendship",
+        notes = "spec={slot,result}.",
+      },
+      {
+        signature = "S.monAddFriendship(spec)",
+        canonical = "op=mon_add_friendship",
+        notes = "spec={slot,amount}; clamped to 0..255.",
+      },
+      {
+        signature = "S.monSubFriendship(spec)",
+        canonical = "op=mon_sub_friendship",
+        notes = "spec={slot,amount}; clamped to 0..255.",
+      },
+      {
+        signature = "S.partyMonGender(spec)",
+        canonical = "op=party_mon_gender",
+        notes = "spec={slot,result}; 0 male, 1 female, 2 genderless.",
+      },
+      {
+        signature = "S.partyMonContestValue(spec)",
+        canonical = "op=party_mon_contest_value",
+        notes = "spec={slot,contestType,result}.",
+      },
+      {
+        signature = "S.monAddContestValue(spec)",
+        canonical = "op=mon_add_contest_value",
+        notes = "spec={slot,contestType,amount}; clamped to 0..255.",
+      },
+      {
+        signature = "S.partyMonForm(spec)",
+        canonical = "op=party_mon_form",
+        notes = "spec={slot,result}.",
+      },
+      {
+        signature = "S.partyMonRibbonCount(spec)",
+        canonical = "op=party_mon_ribbon_count",
+        notes = "spec={slot,result}.",
+      },
+      {
+        signature = "S.partyRibbonCount(spec)",
+        canonical = "op=party_ribbon_count",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.partyHasPokerus(spec)",
+        canonical = "op=party_has_pokerus",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.partyLead(spec)",
+        canonical = "op=party_lead",
+        notes = "spec={result}; 6 when the party is empty.",
+      },
+      {
+        signature = "S.partyLeadAlive(spec)",
+        canonical = "op=party_lead_alive",
+        notes = "spec={result}; 6 when no mon is conscious.",
+      },
+      {
+        signature = "S.partyLegalCheck(spec)",
+        canonical = "op=party_legal_check",
+        notes = "spec={result}.",
+      },
+      {
+        signature = "S.checkKyogreGroudon(spec)",
+        canonical = "op=check_kyogre_groudon",
+        notes = "spec={result}.",
+      },
+      { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores the party to full health." },
     },
   },
 }

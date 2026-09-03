@@ -164,8 +164,8 @@ local function decodeText(reader, offset, count, reverse, what)
   return table.concat(glyphs)
 end
 
----@param projection table
----@param context table
+---@param projection NativeLegality.Projection
+---@param context MonsSave.Context
 ---@return string, string, string, string
 local function serializeBlocks(projection, context)
   local writerA = BinaryWriter.new()
@@ -244,7 +244,15 @@ local function serializeBlocks(projection, context)
   writerB:u16(0) -- met location, secondary region
 
   local writerC = BinaryWriter.new()
-  for _, unit in ipairs(encodeText(projection.nicknameText, context.charmap, NativeLegality.NICKNAME_CAPACITY)) do
+  for _, unit in
+    ipairs(
+      encodeText(
+        projection.nicknameText,
+        context.charmap --[[@as table<string, integer>]],
+        NativeLegality.NICKNAME_CAPACITY
+      )
+    )
+  do
     writerC:u16(unit)
   end
   writerC:u8(0)
@@ -253,7 +261,11 @@ local function serializeBlocks(projection, context)
   writerC:u32(math.floor(projection.ribbonsDs2 / 4294967296))
 
   local writerD = BinaryWriter.new()
-  for _, unit in ipairs(encodeText(projection.otText, context.charmap, NativeLegality.OT_NAME_CAPACITY)) do
+  for _, unit in
+    ipairs(
+      encodeText(projection.otText, context.charmap --[[@as table<string, integer>]], NativeLegality.OT_NAME_CAPACITY)
+    )
+  do
     writerD:u16(unit)
   end
   local eggYearByte = 0
@@ -309,8 +321,8 @@ local function placeAndChecksum(blocks, personality)
   return words, checksumWords(words)
 end
 
----@param mon table
----@param context table
+---@param mon table<string, unknown>
+---@param context MonsSave.Context
 ---@return string
 function BoxCodec.encode(mon, context)
   assert(type(mon) == "table", "encoding requires a mon record")
@@ -332,9 +344,9 @@ function BoxCodec.encode(mon, context)
   return bytes
 end
 
----@param mon table
----@param context table
----@return table
+---@param mon table<string, unknown>
+---@param context MonsSave.Context
+---@return table<string, unknown>
 function BoxCodec.project(mon, context)
   assert(type(mon) == "table", "projection requires a mon record")
   assert(type(context) == "table", "projection requires a context")
@@ -373,7 +385,7 @@ end
 -- Any structured failure below the byte boundary becomes a codec failure so
 -- decoding never publishes a record the bytes cannot support.
 ---@param fn function
----@return any
+---@return unknown
 local function tryDecode(fn)
   local ok, value = pcall(fn)
   if ok then
@@ -386,8 +398,8 @@ local function tryDecode(fn)
 end
 
 ---@param bytes string
----@param context table
----@return table
+---@param context MonsSave.Context
+---@return table<string, unknown>
 function BoxCodec.decode(bytes, context)
   assert(type(context) == "table", "decoding requires a context")
   if type(bytes) ~= "string" or #bytes ~= BoxCodec.SIZE then
@@ -433,11 +445,11 @@ function BoxCodec.decode(bytes, context)
     end
     local readerA, readerB, readerC, readerD = logical[1], logical[2], logical[3], logical[4]
 
-    local items = reverseMap(context.items)
-    local games = reverseMap(context.games)
-    local languages = reverseMap(context.languages)
-    local balls = reverseMap(context.balls)
-    local glyphs = reverseMap(context.charmap)
+    local items = reverseMap(context.items --[[@as table<string, integer>]])
+    local games = reverseMap(context.games --[[@as table<string, integer>]])
+    local languages = reverseMap(context.languages --[[@as table<string, integer>]])
+    local balls = reverseMap(context.balls --[[@as table<string, integer>]])
+    local glyphs = reverseMap(context.charmap --[[@as table<string, integer>]])
 
     local speciesKey = catalog:speciesKeyByNativeId(readerA:u16le(0))
     local species = catalog:species(speciesKey)
@@ -622,7 +634,7 @@ function BoxCodec.decode(bytes, context)
     end
     NativeLegality.project(projection, context)
     return projection
-  end)
+  end) --[[@as table<string, unknown>]]
 end
 
 return BoxCodec

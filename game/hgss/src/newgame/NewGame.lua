@@ -5,6 +5,8 @@
 local GameSave = require("libs.hgss.src.save.GameSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
+local MonsSave = require("libs.mons.src.MonsSave")
+local U32 = require("libs.codec.src.U32")
 
 local NewGame = {}
 
@@ -21,6 +23,31 @@ local function assertMapIdentity(mapIdentity)
   assert(type(mapIdentity.fieldX) == "number" and mapIdentity.fieldX % 1 == 0, "NewGame fieldX must be an integer")
   assert(type(mapIdentity.fieldZ) == "number" and mapIdentity.fieldZ % 1 == 0, "NewGame fieldZ must be an integer")
   assert(SOURCE_FACING[mapIdentity.sourceFacing] ~= nil, "NewGame source facing is invalid")
+end
+
+-- One-time opening generator seed: the Fowler-Noll-Vo hash (FNV-1) over the
+-- save identity and the injected timestamp, mapped through unsigned 32-bit
+-- arithmetic. The trainer id is rolled later at Oak finalization and cannot
+-- seed the candidate bucket; save identity plus timestamp carry uniqueness.
+-- A zero digest never persists as a generator state.
+---@param saveId string
+---@param nowSeconds integer
+---@return integer
+local function deriveMonSeed(saveId, nowSeconds)
+  assert(type(saveId) == "string", "seed derivation requires the save identity")
+  assert(
+    type(nowSeconds) == "number" and nowSeconds % 1 == 0 and nowSeconds >= 0,
+    "seed derivation requires a non-negative integer timestamp"
+  )
+  local text = saveId .. ":" .. tostring(nowSeconds)
+  local hash = 2166136261
+  for index = 1, #text do
+    hash = (U32.mul(hash, 16777619) + string.byte(text, index)) % U32.MOD
+  end
+  if hash == 0 then
+    return 1
+  end
+  return hash
 end
 
 ---@param options table<string, unknown>
@@ -51,6 +78,31 @@ function NewGame.createCandidate(options)
   end
   options.eventState:setFlag(openingFlag)
 
+  -- The unpublished candidate carries the required empty mons bucket when
+  -- the caller supplies the domain catalog (directly, or lazily through a
+  -- loader so application routing stays free of cache IO): the catalog
+  -- fingerprint plus the one-time generator seed persist before any save
+  -- validates. An explicit seed wins for deterministic tests; otherwise
+  -- the save identity and injected timestamp derive it. No starter exists
+  -- yet.
+  local mons = nil
+  local catalog = options.catalog
+  if catalog == nil and type(options.catalogLoader) == "function" then
+    catalog = options.catalogLoader()
+  end
+  if catalog ~= nil then
+    assert(type(catalog.fingerprint) == "function", "NewGame mon catalog must expose its fingerprint")
+    local seed = options.monSeed
+    if seed == nil then
+      seed = deriveMonSeed(saveId, options.nowSeconds ~= nil and options.nowSeconds or os.time())
+    end
+    assert(
+      type(seed) == "number" and seed % 1 == 0 and seed >= 0 and seed <= 0xFFFFFFFF,
+      "NewGame mon seed must be an unsigned 32-bit integer"
+    )
+    mons = MonsSave.empty(catalog:fingerprint(), seed)
+  end
+
   return {
     saveId = saveId,
     versionId = options.versionId,
@@ -66,6 +118,7 @@ function NewGame.createCandidate(options)
     worldState = options.eventState,
     surfaceId = nil,
     playerData = nil,
+    mons = mons,
   }
 end
 

@@ -2,16 +2,23 @@
 -- in-memory field construction.
 
 local Assert = require("tests.support.Assert")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local MonsSave = require("libs.mons.src.MonsSave")
 
 local T = {}
+
+local function monsBucket()
+  return MonsSave.empty(CatalogFixture.makeCatalog():fingerprint(), 7)
+end
 
 local function context()
   return {
     charmap = { G = 1, O = 2, L = 3, D = 4 },
     frameIndexes = { [0] = true },
     audioSequenceIds = { [7] = true },
+    monCatalog = CatalogFixture.makeCatalog(),
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -31,7 +38,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v1",
+    schema = "g4-game-save-v2",
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -58,6 +65,7 @@ local function record(saveId, versionId, playerData)
     },
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
+    mons = monsBucket(),
   }
 end
 

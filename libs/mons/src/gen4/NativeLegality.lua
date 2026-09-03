@@ -17,11 +17,14 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@class NativeLegality
 local NativeLegality = {}
 
+---@alias NativeLegality.Mon { schema: string, species: string, form: integer, personality: integer, experience: integer, friendship: integer, ability: string, heldItem: string, markings: integer, evs: table<string, integer>, contest: table<string, integer>, moves: { move: string, pp: integer, ppUps: integer }[], ivs: table<string, integer>, isEgg: boolean, nickname?: string, ribbons: { ds1: integer, gba: integer, ds2: integer }, fatefulEncounter: boolean, shinyLeaves: integer, egg: { location: integer, date?: { year: integer, month: integer, day: integer } }, met: { location: integer, date: { year: integer, month: integer, day: integer }, level: integer, terrain: integer }, origin: { trainerId: integer, trainerName: string, trainerGender: integer, game: string, ball: string, language: string }, pokerus: integer, mood: integer, condition?: { status: integer, currentHp: integer }, capsule?: table<string, unknown>, mail?: table<string, unknown> }
+---@alias NativeLegality.Projection { personality: integer, speciesId: integer, heldItemId: integer, trainerId: integer, experience: integer, friendship: integer, abilityId: integer, markings: integer, languageId: integer, evs: table<string, integer>, contest: table<string, integer>, ribbonsDs1: integer, moves: { id: integer, pp: integer, ppUps: integer }[], ivs: table<string, integer>, isEgg: boolean, hasNickname: boolean, ribbonsGba: integer, fateful: boolean, genderCode: integer, form: integer, leaves: integer, nicknameText: string, gameId: integer, ribbonsDs2: integer, otText: string, eggYear: integer, eggMonth: integer, eggDay: integer, metYear: integer, metMonth: integer, metDay: integer, eggLocation: integer, metLocation: integer, pokerus: integer, ballId: integer, metLevel: integer, trainerGender: integer, terrain: integer, mood: integer }
+
 NativeLegality.NICKNAME_CAPACITY = 11
 NativeLegality.OT_NAME_CAPACITY = 8
 
 ---@param text string
----@param charmap table
+---@param charmap table<string, unknown>
 ---@param capacity integer
 ---@param what string
 local function checkShapedText(text, charmap, capacity, what)
@@ -40,9 +43,9 @@ local function checkShapedText(text, charmap, capacity, what)
   end
 end
 
----@param mon table
----@param context table
----@return table
+---@param mon NativeLegality.Mon
+---@param context MonsSave.Context
+---@return NativeLegality.Projection
 function NativeLegality.project(mon, context)
   assert(type(mon) == "table", "legality projection requires a mon record")
   assert(type(context) == "table", "legality projection requires a context")
@@ -153,13 +156,13 @@ function NativeLegality.project(mon, context)
   return {
     personality = mon.personality,
     speciesId = species.nativeId,
-    heldItemId = context.items[mon.heldItem],
+    heldItemId = context.items[mon.heldItem] --[[@as integer]],
     trainerId = mon.origin.trainerId,
     experience = mon.experience,
     friendship = mon.friendship,
     abilityId = abilityDefinition.nativeId,
     markings = mon.markings,
-    languageId = context.languages[mon.origin.language],
+    languageId = context.languages[mon.origin.language] --[[@as integer]],
     evs = {
       hp = mon.evs.hp,
       attack = mon.evs.attack,
@@ -194,7 +197,7 @@ function NativeLegality.project(mon, context)
     form = mon.form,
     leaves = mon.shinyLeaves,
     nicknameText = nicknameText,
-    gameId = context.games[mon.origin.game],
+    gameId = context.games[mon.origin.game] --[[@as integer]],
     ribbonsDs2 = mon.ribbons.ds2,
     otText = mon.origin.trainerName,
     eggYear = mon.egg.date ~= nil and mon.egg.date.year or 0,
@@ -206,7 +209,7 @@ function NativeLegality.project(mon, context)
     eggLocation = mon.egg.location,
     metLocation = mon.met.location,
     pokerus = mon.pokerus,
-    ballId = context.balls[mon.origin.ball],
+    ballId = context.balls[mon.origin.ball] --[[@as integer]],
     metLevel = mon.met.level,
     trainerGender = mon.origin.trainerGender,
     terrain = mon.met.terrain,

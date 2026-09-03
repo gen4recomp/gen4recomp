@@ -12,7 +12,7 @@ local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local MonsErrors = require("libs.mons.src.errors")
 
 ---@class MonCatalog
----@field private _root table
+---@field private _root table<string, unknown>
 ---@field private _speciesByNative table<integer, string>
 ---@field private _moveByNative table<integer, string>
 ---@field private _abilityByNative table<integer, string>
@@ -20,8 +20,8 @@ local MonsErrors = require("libs.mons.src.errors")
 local MonCatalog = {}
 MonCatalog.__index = MonCatalog
 
----@param value any
----@return any
+---@param value unknown
+---@return unknown
 local function copyValue(value)
   if type(value) ~= "table" then
     return value
@@ -62,7 +62,7 @@ local function fingerprintText(text)
   return string.format("%08x", hash)
 end
 
----@param root table
+---@param root table<string, unknown>
 ---@return MonCatalog
 function MonCatalog.new(root)
   assert(type(root) == "table", "MonCatalog requires the generated asset root")
@@ -115,7 +115,7 @@ function MonCatalog:fingerprint()
 end
 
 ---@param key string
----@return table
+---@return table<string, unknown>
 function MonCatalog:species(key)
   assert(type(key) == "string", "species lookup requires a string key")
   local definition = self._root.species[key]
@@ -142,14 +142,14 @@ function MonCatalog:speciesKeyByNativeId(nativeId)
 end
 
 ---@param nativeId integer
----@return table
+---@return table<string, unknown>
 function MonCatalog:speciesByNativeId(nativeId)
   return self._root.species[self:speciesKeyByNativeId(nativeId)]
 end
 
 ---@param speciesKey string
 ---@param form integer
----@return table
+---@return table<string, unknown>
 function MonCatalog:form(speciesKey, form)
   local definition = self:species(speciesKey)
   local formDefinition = definition.forms[form]
@@ -165,7 +165,7 @@ function MonCatalog:form(speciesKey, form)
 end
 
 ---@param key string
----@return table
+---@return table<string, unknown>
 function MonCatalog:move(key)
   assert(type(key) == "string", "move lookup requires a string key")
   local definition = self._root.moves[key]
@@ -192,13 +192,13 @@ function MonCatalog:moveKeyByNativeId(nativeId)
 end
 
 ---@param nativeId integer
----@return table
+---@return table<string, unknown>
 function MonCatalog:moveByNativeId(nativeId)
   return self._root.moves[self:moveKeyByNativeId(nativeId)]
 end
 
 ---@param key string
----@return table
+---@return table<string, unknown>
 function MonCatalog:ability(key)
   assert(type(key) == "string", "ability lookup requires a string key")
   local definition = self._root.abilities[key]
@@ -225,7 +225,7 @@ function MonCatalog:abilityKeyByNativeId(nativeId)
 end
 
 ---@param nativeId integer
----@return table
+---@return table<string, unknown>
 function MonCatalog:abilityByNativeId(nativeId)
   return self._root.abilities[self:abilityKeyByNativeId(nativeId)]
 end
@@ -242,27 +242,27 @@ function MonCatalog:growthCurve(key)
   return curve
 end
 
----@param selector table
----@return table
+---@param selector table<string, unknown>
+---@return table<string, unknown>
 local function formOfSelector(self, selector)
   assert(type(selector) == "table", "form selection requires a mon or selector record")
   return self:form(selector.species, selector.form)
 end
 
----@param monOrSelector table
+---@param monOrSelector table<string, unknown>
 ---@return string
 function MonCatalog:iconSelection(monOrSelector)
   return formOfSelector(self, monOrSelector).icon
 end
 
----@param monOrSelector table
+---@param monOrSelector table<string, unknown>
 ---@return string
 function MonCatalog:portraitSelection(monOrSelector)
   return formOfSelector(self, monOrSelector).portrait
 end
 
----@param monOrSelector table
----@return table?
+---@param monOrSelector table<string, unknown>
+---@return table<string, unknown>?
 function MonCatalog:followerSelection(monOrSelector)
   return formOfSelector(self, monOrSelector).follower
 end
