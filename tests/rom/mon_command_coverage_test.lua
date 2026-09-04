@@ -40,6 +40,75 @@ local ALLOWED_DEFERRALS = {
 local LAB_MEMBER = 843
 local LAB_SCRIPTS = { [0] = "dispatcher", [11] = "welcome", [12] = "starter" }
 
+-- The fifteen reviewed commands with their semantic evidence owner. Each row
+-- names one behavior fixture that fails if the reviewed wrong behavior
+-- returns; disposition or handler presence alone never counts as coverage.
+local CONFORMANCE = {
+  { opcode = 140, fixture = "libs.script.tests.core.mons_retail_queries_test", test = "move_queries_mask_eggs" },
+  { opcode = 141, fixture = "libs.script.tests.core.mons_retail_queries_test", test = "move_queries_mask_eggs" },
+  {
+    opcode = 354,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "species_queries_mask_eggs_and_use_exact_sentinels",
+  },
+  {
+    opcode = 355,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "ownership_compares_trainer_identity_with_inverted_polarity",
+  },
+  {
+    opcode = 383,
+    fixture = "libs.script.tests.core.mons_retail_friendship_test",
+    test = "held_item_percent_applies_after_increments_with_integer_division",
+  },
+  { opcode = 434, fixture = "libs.script.tests.core.mons_retail_queries_test", test = "level_census_skips_eggs" },
+  {
+    opcode = 457,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "nature_lookup_and_search_use_retail_conventions",
+  },
+  {
+    opcode = 458,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "nature_lookup_and_search_use_retail_conventions",
+  },
+  {
+    opcode = 479,
+    fixture = "libs.script.tests.core.mons_retail_aggregation_test",
+    test = "ribbon_census_counts_distinct_kinds_once_ignoring_eggs",
+  },
+  {
+    opcode = 584,
+    fixture = "libs.script.tests.core.mons_retail_aggregation_test",
+    test = "representable_parties_report_no_checksum_failure",
+  },
+  {
+    opcode = 605,
+    fixture = "libs.script.tests.core.follower_ops_runtime_test",
+    test = "reposition_operation_places_through_the_controller",
+  },
+  {
+    opcode = 608,
+    fixture = "libs.script.tests.core.follower_transition_runtime_test",
+    test = "transition_starts_and_continues_in_the_same_tick",
+  },
+  {
+    opcode = 632,
+    fixture = "libs.script.tests.core.mons_retail_aggregation_test",
+    test = "species_zero_enters_duplicate_detection_among_non_eggs",
+  },
+  {
+    opcode = 647,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "species_queries_mask_eggs_and_use_exact_sentinels",
+  },
+  {
+    opcode = 828,
+    fixture = "libs.script.tests.core.mons_retail_aggregation_test",
+    test = "contest_updates_saturate_and_honor_source_no_ops",
+  },
+}
+
 local function familyEntries()
   local entries = {}
   for opcode, entry in pairs(ScriptCommands.byOpcode) do
@@ -84,6 +153,32 @@ local function loweringKeys()
     end
   end
   return keys
+end
+
+function T.reviewed_commands_carry_semantic_evidence()
+  local problems = {}
+  local seen = {}
+  for _, row in ipairs(CONFORMANCE) do
+    seen[row.opcode] = (seen[row.opcode] or 0) + 1
+    local entry = ScriptCommands.byOpcode[row.opcode]
+    if entry == nil or entry.disposition ~= "supported" then
+      problems[#problems + 1] = row.opcode .. ":not supported"
+    else
+      local ok, module = pcall(require, row.fixture)
+      local suite = ok and (module.tests or module) or nil
+      if type(suite) ~= "table" or type(suite[row.test]) ~= "function" then
+        problems[#problems + 1] = row.opcode .. ":missing semantic fixture " .. row.fixture .. "." .. row.test
+      end
+    end
+  end
+  Assert.equal(#CONFORMANCE, 15, "the inventory pins exactly the fifteen reviewed commands")
+  local distinct = 0
+  for _ in pairs(seen) do
+    distinct = distinct + 1
+  end
+  Assert.equal(distinct, 15, "every reviewed opcode appears exactly once")
+  table.sort(problems)
+  Assert.equal(#problems, 0, "every reviewed command links to a behavior fixture: " .. table.concat(problems, ", "))
 end
 
 function T.every_family_entry_carries_exactly_one_disposition()

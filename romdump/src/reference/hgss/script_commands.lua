@@ -883,9 +883,8 @@ return {
     [131] = {
       name = "ScrCmd_SetStarterChoice",
       feature = "starter",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "setting the starter choice needs the starter application",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },

@@ -41,6 +41,8 @@ local T = {
 local MAP = "MAP_NEW_BARK_ELMS_LAB_1F"
 local FLAG_PREVENT_ESCAPE = FieldScriptSymbols.flagsByName.FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE
 local FLAG_GOT_STARTER = FieldScriptSymbols.flagsByName.FLAG_GOT_STARTER
+local VAR_SCENE_ELMS_LAB = FieldScriptSymbols.variablesByName.VAR_SCENE_ELMS_LAB
+local VAR_SCENE_NEW_BARK_TOWN_OW = FieldScriptSymbols.variablesByName.VAR_SCENE_NEW_BARK_TOWN_OW
 local ELM_SCRIPT = "vanilla.hgss.scr_seq.0843.script_000"
 local STARTER_SCRIPT = "vanilla.hgss.scr_seq.0843.script_012"
 local SEED = 7
@@ -123,6 +125,77 @@ local function pump(game, ticks, stop, modal)
     return { stopped = true }
   end
   return { stopped = false }
+end
+
+-- Drives the starter script to its source End through production ticks only.
+-- The optional nickname branch is declined deterministically through the
+-- contextual cancel edge (vanilla result one skips the nickname branch).
+-- Records the 605 placement plus the nonblocking 608 start while driving.
+---@param game AcceptanceGame
+---@param scriptId string
+---@return table observed, table outcome
+local function driveStarterToEnd(game, scriptId)
+  local observed = {
+    saw605 = false,
+    sawTransitionStart = false,
+    transitionStartEnded = nil,
+    sawTransitionComplete = false,
+    declinedNickname = false,
+  }
+  for _ = 1, 9000 do
+    if game.runtime.errorText then
+      return observed, { fault = game.runtime.errorText }
+    end
+    local snapshot = game:snapshot()
+    local partnerId = game.runtime.actors:partnerId()
+    if partnerId ~= nil and snapshot.actors[partnerId] ~= nil then
+      local partner = snapshot.actors[partnerId]
+      if
+        partner.fieldX == snapshot.player.fieldX + 1
+        and partner.fieldZ == snapshot.player.fieldZ
+        and partner.facing == "west"
+      then
+        observed.saw605 = true
+      end
+    end
+    local transition = game.runtime.followingMonTransition
+    local instances = transition ~= nil and transition:status().instances or {}
+    if #instances > 0 and not observed.sawTransitionStart then
+      observed.sawTransitionStart = true
+      local ended = false
+      for _, record in ipairs(game:recordsNamed("script.ended")) do
+        if record.payload.scriptId == scriptId then
+          ended = true
+        end
+      end
+      observed.transitionStartEnded = ended
+    end
+    if observed.sawTransitionStart and #instances == 0 then
+      observed.sawTransitionComplete = true
+    end
+    for _, record in ipairs(game:recordsNamed("script.ended")) do
+      if record.payload.scriptId == scriptId then
+        return observed, { ended = record.payload }
+      end
+    end
+    if game:contextChoiceStatus() ~= nil then
+      game.runtime:pressCancel()
+      game:step()
+      game.runtime:releaseCancel()
+      observed.declinedNickname = true
+    elseif snapshot.dialogue.modal then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    elseif game.runtime.starterChoice:isActive() then
+      game.runtime:pressAction()
+      game:step()
+      game.runtime:releaseAction()
+    else
+      game:step()
+    end
+  end
+  return observed, { ended = nil }
 end
 
 local function partyCount(game)
@@ -363,11 +436,7 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
 
     -- Blocking choice at the opening cursor: one pre-created candidate
     -- enters the party with no reroll.
-    local sawFade = false
     local chosen = pump(game, 1200, function()
-      if game.runtime.screenFade:status().active then
-        sawFade = true
-      end
       return partyCount(game) == 1
     end, true)
     Assert.isNil(chosen.fault, "the starter flow must choose without a runtime fault")
@@ -383,30 +452,58 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     Assert.equal(awarded.met.date.day, 1, "the candidate met on the fixed host date")
     Assert.equal(boxedHex(game.runtime.monService, versionId, 0), EXPECTED_HEX, "party bytes equal the fixed vector")
 
-    -- The script continues past the choice: the 605 follow-up tail runs,
-    -- then the script halts on the explicitly deferred 608 neighbor while
-    -- the field recovers cleanly.
-    local continued = pump(game, 3000, function()
-      local snapshot = game:snapshot()
-      return game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER)
-        and not snapshot.fieldLocked
-        and not snapshot.dialogue.modal
-        and snapshot.transition.phase == "idle"
-    end)
-    Assert.isNil(continued.fault, "the resumed starter script must run without a runtime fault")
-    Assert.isTrue(continued.stopped, "the source script must continue and set its own starter flag")
-    Assert.isTrue(sawFade, "the starter flow must pass through the source fade order")
-    Assert.isTrue(game.runtime.screenFade:status().completed, "the field fade must complete")
-    local halted = false
+    -- The script continues past the choice through the 605 placement, the
+    -- nonblocking 608 start, the source wait, the declined nickname branch,
+    -- and the remaining follower movements to its real source End.
+    local observed, outcome = driveStarterToEnd(game, STARTER_SCRIPT)
+    Assert.isNil(outcome.fault, "the starter script must run without a runtime fault")
+    Assert.notNil(outcome.ended, "the starter script must reach its source End")
+    Assert.isTrue(outcome.ended.completed == true, "the starter script must complete normally")
+    Assert.equal(outcome.ended.reason, "completed", "the starter script must end with the normal reason")
     for _, record in ipairs(game:recordsNamed("script.ended")) do
       if record.payload.scriptId == STARTER_SCRIPT then
-        halted = record.payload.completed == false and record.payload.reason == "SCRIPT_UNSUPPORTED_REACHABLE"
+        Assert.isFalse(
+          record.payload.reason == "SCRIPT_UNSUPPORTED_REACHABLE",
+          "the starter script must never halt as unsupported"
+        )
       end
     end
-    Assert.isTrue(halted, "the starter script ends on the explicitly deferred halt after the tail")
-    Assert.isNil(game.runtime.errorText, "the halt releases the field without a runtime fault")
+    Assert.isTrue(observed.saw605, "605 places the partner east of the player facing west")
+    Assert.isTrue(observed.sawTransitionStart, "608 starts its transient effect")
+    Assert.isFalse(observed.transitionStartEnded, "608 continues the script in the same tick")
+    Assert.isTrue(observed.sawTransitionComplete, "the transient effect retires on field ticks")
+    Assert.isTrue(observed.declinedNickname, "the journey declines the optional nickname branch")
+    Assert.isNil(game.runtime.monService:partyMon(0).nickname, "declining keeps the species name")
+    Assert.isTrue(
+      game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER),
+      "the source script sets its own starter flag"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_SCENE_ELMS_LAB),
+      1,
+      "the source script advances the lab scene"
+    )
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_SCENE_NEW_BARK_TOWN_OW),
+      1,
+      "the source script advances the town scene"
+    )
+    Assert.isFalse(
+      game.runtime.scripts.worldState:isFlagSet(FLAG_PREVENT_ESCAPE),
+      "the source script clears the lab confinement flag"
+    )
+    Assert.isTrue(game.runtime.screenFade:status().completed, "the field fade must complete")
+    Assert.isFalse(game:snapshot().fieldLocked, "the completed script releases the field")
+    Assert.isFalse(game:snapshot().dialogue.modal, "the completed script leaves no dialogue behind")
+    Assert.isNil(game:contextChoiceStatus(), "the declined choice leaves no active prompt")
+    Assert.isNil(game.runtime.errorText, "completion releases the field without a runtime fault")
     Assert.equal(game:snapshot().mapSymbol, MAP, "the flow restores the same lab map")
     Assert.equal(game.runtime.actors:partnerId(), "field:partner", "the awarded lead installs its follower")
+    Assert.equal(
+      #(game.runtime.followingMonTransition and game.runtime.followingMonTransition:status().instances or {}),
+      0,
+      "the transient effect retires before party inspection"
+    )
     local partnerId = assert(game.runtime.actors:partnerId(), "the partner installs with the starter")
 
     -- Party screen through the start menu: the awarded instance is
@@ -485,7 +582,14 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     -- Save through the production store, tear the runtime down, continue
     -- from storage, and verify identity on the other side.
     Assert.isTrue(game.runtime.monService:partyLegal(), "the party is legal before save")
+    Assert.equal(game.runtime.monService:partyMon(0).met.location, 126, "the saved starter keeps its native section")
     local bytesBefore = boxedHex(game.runtime.monService, versionId, 0)
+    Assert.equal(bytesBefore, EXPECTED_HEX, "the pre-save bytes equal the fixed vector")
+    Assert.equal(
+      #(game.runtime.followingMonTransition and game.runtime.followingMonTransition:status().instances or {}),
+      0,
+      "no transient effect survives into save"
+    )
     Assert.isTrue(game.runtime:captureGameSave() ~= nil, "quit-save requires a stable captured game")
     game:save()
     game:restart()
@@ -496,8 +600,20 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     end, 120)
     Assert.equal(partyCount(game), 1, "continue restores exactly the chosen mon")
     Assert.equal(game.runtime.monService:partyMon(0).species, "CHIKORITA", "continue restores the chosen species")
+    Assert.equal(game.runtime.monService:partyMon(0).met.location, 126, "continue restores the native map section")
     Assert.equal(boxedHex(game.runtime.monService, versionId, 0), EXPECTED_HEX, "continue preserves exact bytes")
     Assert.equal(boxedHex(game.runtime.monService, versionId, 0), bytesBefore, "save/continue changes no byte")
+    Assert.equal(game.runtime.scripts.worldState:getVar(VAR_SCENE_ELMS_LAB), 1, "continue preserves the lab scene")
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(VAR_SCENE_NEW_BARK_TOWN_OW),
+      1,
+      "continue preserves the town scene"
+    )
+    Assert.equal(
+      #(game.runtime.followingMonTransition and game.runtime.followingMonTransition:status().instances or {}),
+      0,
+      "continue starts with no transient effect"
+    )
     Assert.isTrue(game.runtime.monService:partyLegal(), "the restored mon passes native legality")
     Assert.equal(rngCalls(game), 3 * EXPECTED_DRAWS_PER_CANDIDATE, "continue restores the exact generator state")
     Assert.isNil(game.runtime.errorText, "continue runs without a runtime fault")
@@ -585,6 +701,69 @@ function T.tests.continue_rejects_a_foreign_catalog_fingerprint_before_publicati
   if not againOk then
     error(againErr, 0)
   end
+end
+
+-- Follower permission through production composition: an allowed map keeps
+-- the partner installed while a suppressed map drops only the visible
+-- partner and preserves the party. Both boots use the live mon service and
+-- the field follower controller; no map, actor, or permission stand-in.
+local function giveStarterLead(game, species)
+  Assert.isTrue(
+    game.runtime.monService:giveMon({ species = species, level = 5, heldItem = "NONE", form = 0 }),
+    "the permission probe requires a party lead"
+  )
+end
+
+function T.tests.follower_stays_visible_on_an_allowed_map()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local game = harness():boot({ versionId = versionId, map = "MAP_BURNED_TOWER_1F", save = "fresh" })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    giveStarterLead(game, "CHIKORITA")
+    game:advanceUntil("partner publishes on the allowed map", function()
+      return game.runtime.actors:partnerId() ~= nil
+    end, 240)
+    Assert.equal(game.runtime.monService:partyCount(), 1, "publication never duplicates the party")
+    Assert.equal(
+      game.runtime.monService:partyMon(0).species,
+      "CHIKORITA",
+      "the allowed map preserves the lead identity"
+    )
+    Assert.equal(game:renderAttempts(), 0, "the probe must stop before GPU rendering")
+  end, debug.traceback)
+  local namespace = game.saveNamespace
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isNil(love.filesystem.getInfo(namespace), "teardown removes the isolated save namespace")
+end
+
+function T.tests.follower_suppression_preserves_the_party()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local game = harness():boot({ versionId = versionId, map = "MAP_BELL_TOWER_1F", save = "fresh" })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    giveStarterLead(game, "DIGLETT")
+    for _ = 1, 240 do
+      game:step()
+    end
+    Assert.equal(game.runtime.monService:partyCount(), 1, "suppression never drops the party")
+    Assert.equal(
+      game.runtime.monService:partyMon(0).species,
+      "DIGLETT",
+      "the suppressed map preserves the lead identity"
+    )
+    Assert.isNil(game.runtime.actors:partnerId(), "the burrowing lead stays unpublished on the tower map")
+    Assert.isNil(game.runtime.errorText, "suppression runs without a runtime fault")
+    Assert.equal(game:renderAttempts(), 0, "the probe must stop before GPU rendering")
+  end, debug.traceback)
+  local namespace = game.saveNamespace
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isNil(love.filesystem.getInfo(namespace), "teardown removes the isolated save namespace")
 end
 
 return T

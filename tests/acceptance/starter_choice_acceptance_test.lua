@@ -312,14 +312,52 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
 
     -- The field script, not the application, owns story continuation: the
     -- source sets its own starter flag and releases the field only after
-    -- presentation is restored.
-    local continued = pump(game, 800, function()
+    -- presentation is restored. The resumed tail runs 605/608, the nickname
+    -- menu (declined deterministically through the contextual cancel edge,
+    -- the source no-nickname branch), follower movements, and the closing
+    -- scene updates, so the driver must answer the context menu the same
+    -- way instead of pumping dialogue alone.
+    local continued = (function()
+      for _ = 1, 9000 do
+        if game.runtime.errorText then
+          return { fault = game.runtime.errorText }
+        end
+        local snapshot = game:snapshot()
+        if
+          game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER)
+          and not snapshot.fieldLocked
+          and not snapshot.dialogue.modal
+          and snapshot.transition.phase == "idle"
+        then
+          return { stopped = true }
+        end
+        if game:contextChoiceStatus() ~= nil then
+          game.runtime:pressCancel()
+          game:step()
+          game.runtime:releaseCancel()
+        elseif snapshot.dialogue.modal then
+          game.runtime:pressAction()
+          game:step()
+          game.runtime:releaseAction()
+        elseif game.runtime.starterChoice:isActive() then
+          game.runtime:pressAction()
+          game:step()
+          game.runtime:releaseAction()
+        else
+          game:step()
+        end
+      end
       local snapshot = game:snapshot()
-      return game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER)
+      if
+        game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER)
         and not snapshot.fieldLocked
         and not snapshot.dialogue.modal
         and snapshot.transition.phase == "idle"
-    end)
+      then
+        return { stopped = true }
+      end
+      return { stopped = false }
+    end)()
     Assert.isNil(continued.fault, "the resumed starter script must run without a runtime fault")
     Assert.isTrue(continued.stopped, "the source script must continue and set its own starter flag")
     Assert.isTrue(sawFade, "the starter flow must pass through the source fade order")

@@ -18,18 +18,22 @@ local function entry(opcode)
   return assert(found)
 end
 
-local function lowerSingle(opcode)
-  local widths = CommandCatalog.widths(opcode) or {}
-  local operands = {}
-  for index = 1, #widths do
-    operands[index] = 0
-  end
+local function lowerWith(opcode, operands)
   local lowered = SemanticLowering.lowerScript(
     { instructions = { { opcode = opcode, operands = operands, offset = 0 } } },
     { member = 12, scripts = {}, movements = {} },
     { stdCatalog = SourceCatalog.catalog() }
   )
   return lowered.items
+end
+
+local function lowerSingle(opcode)
+  local widths = CommandCatalog.widths(opcode) or {}
+  local operands = {}
+  for index = 1, #widths do
+    operands[index] = 0
+  end
+  return lowerWith(opcode, operands)
 end
 
 function T.starter_command_is_supported_with_blocking_timing()
@@ -65,6 +69,28 @@ function T.hgss_composition_registers_the_blocking_starter_task()
   local ok, impl = pcall(TaskRegistry.resolveCurrent, registry, "choose_starter")
   Assert.isTrue(ok, "the starter task is registered for blocking execution")
   Assert.isTrue(type(impl) == "table", "the registered starter task is a task implementation")
+end
+
+-- ScrCmd_SetStarterChoice stores its variable operand into VAR_PLAYER_STARTER
+-- and continues in the same tick (pinned scrcmd_c.c ScrCmd_SetStarterChoice:
+-- ScriptGetVar, Save_VarsFlags_SetStarter, return FALSE). It needs no
+-- application: the starter scene already published the party, so the command
+-- is one existing variable store.
+function T.starter_choice_store_is_supported_with_same_tick_timing()
+  local tagged = entry(131)
+  Assert.equal(tagged.disposition, "supported", "the starter-choice store is supported here")
+  Assert.equal(tagged.feature, "starter", "the starter-choice store belongs to the starter family")
+  Assert.isNil(tagged.deferredReason, "a supported starter command carries no deferral category")
+  Assert.equal(tagged.classification, "continue_same_tick", "the starter-choice store continues like the source scene")
+end
+
+function T.starter_choice_store_lowers_to_the_starter_variable()
+  local items = lowerWith(131, { 0x4001 })
+  Assert.equal(#items, 1, "the starter-choice store lowers to one step")
+  Assert.equal(items[1].op, "set_var", "the starter-choice store lowers to the existing variable store")
+  Assert.equal(items[1].variable, "VAR_PLAYER_STARTER", "the store names the source starter variable")
+  Assert.deepEqual(items[1].value, { value = "var", id = 0x4001 }, "the source value-or-variable operand rides through")
+  Assert.isNil(items[1].command, "variable semantics dispatch no source opcode number")
 end
 
 return { tests = T }

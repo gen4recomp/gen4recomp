@@ -557,6 +557,20 @@ local function chooseStarter(_)
   return { op = "choose_starter" }
 end
 
+-- ScrCmd_SetStarterChoice carries one value-or-variable operand. It stores
+-- the operand into the player-starter script variable and continues in the
+-- same tick (pinned pokeheartgold scrcmd_c.c ScrCmd_SetStarterChoice). The
+-- starter scene already published the party, so the command reuses the
+-- existing variable store; the symbolic name resolves through the field
+-- variable catalog at runtime.
+local function setStarterChoice(ins)
+  return {
+    op = "set_var",
+    variable = "VAR_PLAYER_STARTER",
+    value = Operands.varRef(ins.operands[1]),
+  }
+end
+
 local function giveMon(ins)
   -- ScrCmd_GiveMon species, level, held item, form, ability, result: the
   -- current map section resolves at the service before creation, creation
@@ -1147,6 +1161,7 @@ return {
   [203] = bufferStarterSpeciesName,
   [137] = giveMon,
   [167] = chooseStarter,
+  [131] = setStarterChoice,
   [139] = setMonMove,
   [140] = monHasMove,
   [141] = partySlotWithMove,
