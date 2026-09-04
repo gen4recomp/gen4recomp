@@ -30,6 +30,7 @@ local TASK_MODULES = {
   "libs.hgss.src.script.tasks.ContextChoiceTask",
   "libs.hgss.src.script.tasks.MenuTask",
   "libs.hgss.src.script.tasks.ChooseStarterTask",
+  "libs.hgss.src.script.tasks.PartySelectTask",
   "libs.hgss.src.script.tasks.ActorOscillationTask",
 }
 

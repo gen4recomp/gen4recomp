@@ -55,6 +55,7 @@ local StartMenuController = require("libs.hgss.src.ui.StartMenuController")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
 local TrainerCardController = require("libs.hgss.src.ui.TrainerCardController")
+local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
@@ -833,33 +834,12 @@ function FieldRuntime:_load()
     self.cancelKeys = cancelBindings()
     self.menuKeys = menuBindings()
 
-    -- The field application catalogue: the registry holds child destinations
-    -- only, and the runtime registers the production destinations itself --
-    -- the Trainer Card is the concrete one. Its factory copies the immutable
-    -- profile fields from the authoritative player-data record into the
-    -- close-input-only controller, and must return a fully usable controller
-    -- or raise. The catalogue is immutable after construction; canonical
-    -- unimplemented destinations get capability state, never dummy
-    -- factories. The Start Menu is not a registry entry: the application
-    -- host composes it through its own menu factory.
     local function playSequence(sequence)
       if self.audio then
         self.audio:play(sequence)
       end
     end
-    local function trainerCardFactory()
-      return TrainerCardController.new({
-        profile = self.playerData.profile,
-        playTimeSeconds = self.playTime:seconds(),
-        effect = playSequence,
-      })
-    end
-    local applicationDescriptors = {
-      {
-        id = FieldApplicationIds.TRAINER_CARD,
-        factory = trainerCardFactory,
-      },
-    }
+    local applicationDescriptors = self:_applicationDescriptors()
     local function menuFactory(rememberedActionId)
       return self:_composeStartMenu(rememberedActionId)
     end
@@ -1232,6 +1212,53 @@ end
 -- enabled state. Construct the controller with the selection remembered
 -- across a child-application round trip. Return nil only when no source-present
 -- actions exist; disabled entries are visible and remain in the menu.
+-- The field application catalogue: the registry holds child destinations
+-- only, and the runtime registers the production destinations itself. Each
+-- factory must return a fully usable controller or raise. The catalogue is
+-- immutable after construction; canonical unimplemented destinations get
+-- capability state, never dummy factories. The Start Menu is not a registry
+-- entry: the application host composes it through its own menu factory.
+-- A method (rather than an inline block in _load) so the boot closure stays
+-- under the VM upvalue limit: file-level owners are upvalues of this small
+-- method instead of the giant boot function.
+---@return { id: string, factory: fun(...): table<string, unknown> }[] application descriptors for FieldApplicationRegistry.new
+function FieldRuntime:_applicationDescriptors()
+  local function playSequence(sequence)
+    if self.audio then
+      self.audio:play(sequence)
+    end
+  end
+  local function trainerCardFactory()
+    -- The Trainer Card factory copies the immutable profile fields from the
+    -- authoritative player-data record into the close-input-only
+    -- controller.
+    return TrainerCardController.new({
+      profile = self.playerData.profile,
+      playTimeSeconds = self.playTime:seconds(),
+      effect = playSequence,
+    })
+  end
+  local function measurePartyViewport()
+    return self.viewport.width, self.viewport.height
+  end
+  local function partyScreenFactory()
+    return PartyScreenState.new({
+      service = self.monService,
+      measureViewport = measurePartyViewport,
+    })
+  end
+  return {
+    {
+      id = FieldApplicationIds.TRAINER_CARD,
+      factory = trainerCardFactory,
+    },
+    {
+      id = FieldApplicationIds.POKEMON,
+      factory = partyScreenFactory,
+    },
+  }
+end
+
 ---@param rememberedActionId string?
 ---@return StartMenuController? nil when the source has no present actions
 function FieldRuntime:_composeStartMenu(rememberedActionId)
@@ -1260,9 +1287,17 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
   end
 
   -- Compose source policy with implementation capability: set enabled to
-  -- true only when both source-enabled AND implementation-available.
+  -- true only when both source-enabled AND implementation-available. The
+  -- party action additionally requires an owned mon: an empty party must
+  -- never offer a usable route into the party screen, even past the
+  -- starter progression gate.
   local entries = {}
   for index, source in ipairs(sourceEntries) do
+    local implemented = implementationAvailable(self, source)
+    local enabled = source.sourceEnabled and implemented
+    if enabled and source.id == "vanilla.pokemon" then
+      enabled = self.monService:partyCount() > 0
+    end
     entries[index] = {
       id = source.id,
       displayPosition = source.displayPosition,
@@ -1270,8 +1305,8 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
       targetApplication = source.targetApplication,
       sourcePresent = true,
       sourceEnabled = source.sourceEnabled,
-      implemented = implementationAvailable(self, source),
-      enabled = source.sourceEnabled and implementationAvailable(self, source),
+      implemented = implemented,
+      enabled = enabled,
     }
   end
 

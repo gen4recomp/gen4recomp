@@ -923,6 +923,17 @@ Schema.OPERATIONS = {
     },
   },
   heal_party = { fields = {} },
+  -- Party-screen selection. The launch node blocks on the party_select
+  -- task with the source selection context; the completed slot parks on
+  -- the script instance for the companion result node, which copies it
+  -- (or the source cancellation value) into its variable and rejects
+  -- anything else.
+  party_select = { fields = {} },
+  party_select_result = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },
@@ -1611,6 +1622,16 @@ Schema.CONSTRUCTORS = {
         signature = "S.chooseStarter(spec)",
         canonical = "op=choose_starter",
         notes = "spec optional; the blocking starter application publishes the confirmed candidate.",
+      },
+      {
+        signature = "S.partySelect(spec)",
+        canonical = "op=party_select",
+        notes = "Blocks on the party screen in selection mode.",
+      },
+      {
+        signature = "S.partySelectResult(spec)",
+        canonical = "op=party_select_result",
+        notes = "spec={result}; copies the slot or 255 on cancel.",
       },
     },
   },

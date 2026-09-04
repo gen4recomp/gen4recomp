@@ -737,6 +737,19 @@ local function partyLeadAlive(ins)
   return { op = "party_lead_alive", result = Operands.varRef(ins.operands[1]) }
 end
 
+-- The shared party-screen selection context. Opcode 349 opens the screen
+-- in selection mode (PARTY_MENU_CONTEXT_3: every occupied slot selects, B
+-- cancels) and blocks; the completed slot parks on the script instance
+-- (the same instance-scoped handoff the menu builder uses) for the
+-- companion result command. Opcode 351 reads that handoff into its result
+-- variable.
+local function partySelectUI()
+  return { op = "party_select" }
+end
+
+local function partySelectionResult(ins)
+  return { op = "party_select_result", result = Operands.varRef(ins.operands[1]) }
+end
 local function partyLegalCheck(ins)
   return { op = "party_legal_check", result = Operands.varRef(ins.operands[1]) }
 end
@@ -1064,6 +1077,8 @@ return {
   [239] = partyMonGender,
   [282] = healParty,
   [332] = partyCount,
+  [349] = partySelectUI,
+  [351] = partySelectionResult,
   [337] = bufferNatureName,
   [354] = partyMonSpecies,
   [355] = partyMonIsMine,

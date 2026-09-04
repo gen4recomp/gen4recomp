@@ -793,6 +793,12 @@ end
 function M.healParty(spec)
   return op("heal_party", spec)
 end
+function M.partySelect(spec)
+  return op("party_select", spec)
+end
+function M.partySelectResult(spec)
+  return op("party_select_result", spec)
+end
 function M.unsupported(spec)
   return op("unsupported", spec)
 end

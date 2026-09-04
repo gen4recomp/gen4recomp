@@ -58,6 +58,7 @@ local BLOCKING_OPS = {
   ask_yes_no = true,
   context_choice = true,
   choose_starter = true,
+  party_select = true,
   menu_exec = true,
   warp = true,
   call_common = true,

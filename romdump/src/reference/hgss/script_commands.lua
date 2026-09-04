@@ -2303,11 +2303,10 @@ return {
       },
     },
     [349] = {
+      classification = "native_wait",
       name = "ScrCmd_PartySelectUI",
       feature = "party_ui",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "party selection needs the party-screen selection context",
+      disposition = "supported",
       widths = {},
     },
     [350] = {
@@ -2315,11 +2314,10 @@ return {
       widths = {},
     },
     [351] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetPartySelection",
       feature = "party_ui",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "reading the party selection needs the party-screen selection context",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },

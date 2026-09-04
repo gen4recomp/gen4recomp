@@ -1415,6 +1415,13 @@ function HgssMonService:partyHasPokerus()
 end
 
 ---@param slot0 integer
+---@return { level: integer, maxHp: integer }
+function HgssMonService:partyMonDerived(slot0)
+  local mon = self:_liveMon(slot0)
+  return { level = self:_level(mon), maxHp = self:_maxHp(mon) }
+end
+
+---@param slot0 integer
 ---@return integer
 function HgssMonService:monForm(slot0)
   return self:_liveMon(slot0).form

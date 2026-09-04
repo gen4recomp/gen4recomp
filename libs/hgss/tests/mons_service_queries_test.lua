@@ -213,4 +213,16 @@ function T.heal_party_restores_full_health()
   Assert.equal(service:partyRevision(), revision + 2, "each restored mon is one owned mutation")
 end
 
+function T.derived_display_values_come_from_the_service_owners()
+  local _, service = twoMonService()
+  local derived = service:partyMonDerived(0)
+  Assert.equal(derived.level, 5, "gifted starters open at level five")
+  Assert.isTrue(derived.maxHp > 0, "max HP derives positive at level five")
+  local mon = service:partyMon(0)
+  Assert.equal(mon.condition.currentHp, derived.maxHp, "fresh mons open at full health")
+  Assert.throws(function()
+    service:partyMonDerived(9)
+  end, "derived reads outside the party fail")
+end
+
 return { tests = T }

@@ -849,6 +849,39 @@ local function handleHealParty(_, run)
   monsFor(run):healParty()
   return Runtime.OUTCOME_CONTINUE
 end
+local function handlePartySelect(_, run)
+  requireForeground(run, "party_select")
+  monsFor(run)
+  -- The source selection context (PARTY_MENU_CONTEXT_3): every occupied
+  -- slot is eligible and B cancels. The completed slot parks on the
+  -- script instance for the companion result node; no game variable is
+  -- touched here.
+  return blockOnTask(run, "party_select", {
+    request = {
+      mode = "select",
+      initialSlot = 0,
+      eligibility = { policy = "occupied" },
+      allowCancel = true,
+    },
+  })
+end
+local function handlePartySelectResult(node, run)
+  requireForeground(run, "party_select_result")
+  -- The instance-scoped handoff the selection task parked: a completed
+  -- zero-based slot or the source cancellation value. Anything else means
+  -- the result command ran without its launch, and raw args sentinels
+  -- never reach script variables.
+  local value = run.instance.locals.__party_selection
+  if type(value) ~= "number" or value % 1 ~= 0 or (value > 5 and value ~= 255) or value < 0 then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "party selection holds no completed slot",
+      { scriptId = run.instance.scriptId, value = value }
+    )
+  end
+  semanticsFor(run).writeRef(node.result, value, run)
+  return Runtime.OUTCOME_CONTINUE
+end
 
 local function handleLockPlayer(_, run)
   requireForeground(run, "lock_player")
@@ -1498,6 +1531,8 @@ HANDLERS.party_lead_alive = handlePartyLeadAlive
 HANDLERS.party_legal_check = handlePartyLegalCheck
 HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
 HANDLERS.heal_party = handleHealParty
+HANDLERS.party_select = handlePartySelect
+HANDLERS.party_select_result = handlePartySelectResult
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
 HANDLERS.lock_all = handleLockAll

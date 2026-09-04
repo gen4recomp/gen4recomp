@@ -12,6 +12,8 @@ local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
+local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
+local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local WindowConfig = require("game.src.WindowConfig")
 
 ---@class FieldPresentationResourcesRuntime
@@ -30,6 +32,8 @@ local WindowConfig = require("game.src.WindowConfig")
 ---@field signpostRenderer FieldSignpostRenderer?
 ---@field startMenuRenderer StartMenuRenderer?
 ---@field trainerCardRenderer TrainerCardRenderer?
+---@field partyScreenRenderer PartyScreenRenderer?
+---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
 ---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
@@ -73,6 +77,8 @@ function FieldPresentationResources.new(runtime)
       manifest = runtime.uiManifest,
       text = textRenderer,
     })
+    self.partyScreenRenderer = PartyScreenRenderer.new()
+    self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
@@ -119,6 +125,11 @@ function FieldPresentationResources:dispose()
     self.trainerCardRenderer:release()
     self.trainerCardRenderer = nil
   end
+  if self.monIconProvider then
+    self.monIconProvider:release()
+    self.monIconProvider = nil
+  end
+  self.partyScreenRenderer = nil
   if self.textRenderer then
     self.textRenderer:release()
     self.textRenderer = nil
