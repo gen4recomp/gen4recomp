@@ -132,6 +132,12 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   local runtimeMap = resolution.destinationMap
   local physical = (prepared and prepared.physical) or resolution.physical
   local residency = assert(prepared and prepared.residency, "prepared residency transaction required")
+  -- The follower clears before the old map leaves residency; the manager
+  -- retires the old entry afterwards and the controller reinstalls once the
+  -- new actor map publishes.
+  if runtime.followingMon then
+    runtime.followingMon:handleMapExit()
+  end
   assert(runtime.residency):commitTransition(residency)
   local previousCoverage
   if physical then

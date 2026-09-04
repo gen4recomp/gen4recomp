@@ -205,6 +205,7 @@ end
 ---@field mons table<string, unknown>|nil the live HGSS mon service for mon/party script operations and text (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterProvider table<string, unknown>|nil the default starter roster for the blocking starter task (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterChoice table<string, unknown>|nil the modal starter-choice surface the blocking task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -384,6 +385,7 @@ function FieldScripts.new(opts)
       mons = opts.mons,
       starterProvider = opts.starterProvider,
       starterChoice = opts.starterChoice,
+      followingMon = opts.followingMon,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

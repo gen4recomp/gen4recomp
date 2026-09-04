@@ -934,6 +934,44 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- Follower operations. Every node routes to the one field following
+  -- controller through the injected collaborator; boolean results write 1
+  -- or 0, and the explicit movement carries one decoded movement action.
+  follower_is_active = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  follower_partner_state = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  follower_face_player = { fields = {} },
+  follower_set_paused = {
+    fields = {
+      paused = { type = "scalar_or_value", required = true },
+    },
+  },
+  follower_wait = { fields = {} },
+  follower_start_movement = {
+    fields = {
+      movement = { type = "movement_action", required = true },
+    },
+  },
+  follower_set_param = {
+    fields = {
+      a = { type = "scalar_or_value", required = true },
+      b = { type = "scalar_or_value", required = true },
+    },
+  },
+  follower_is_event_trigger = {
+    fields = {
+      kind = { type = "scalar_or_value", required = true },
+      param = { type = "scalar_or_value" },
+      result = { type = "value", required = true },
+    },
+  },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },

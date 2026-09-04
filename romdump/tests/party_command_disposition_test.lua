@@ -141,17 +141,11 @@ local FAMILY = {
 }
 
 -- Commands owned by later follower work. They stay deferred here with
--- their concrete current dependency. The starter and party-selection
--- entries flipped to supported with their blocking applications.
+-- their concrete current dependency. The starter, party-selection, and
+-- core follower entries flipped to supported with their blocking
+-- applications.
 local LATER_OWNED = {
-  [596] = "following_mon",
   [600] = "following_mon",
-  [601] = "following_mon",
-  [602] = "following_mon",
-  [603] = "following_mon",
-  [604] = "following_mon",
-  [609] = "following_mon",
-  [698] = "following_mon",
   [711] = "following_mon",
   [727] = "following_mon",
   [783] = "following_mon",

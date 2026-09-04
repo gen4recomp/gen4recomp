@@ -287,42 +287,42 @@ local function checkMessage(context, v, path, field)
   fail(context, ScriptErrors.SCRIPT_INVALID_REFERENCE, path, "unknown message reference form", { field = field })
 end
 
+local function checkMovementAction(context, item, actionPath, field)
+  if type(item) ~= "table" then
+    fail(context, ScriptErrors.SCRIPT_SCHEMA_INVALID, actionPath, "movement action must be a table", { field = field })
+  end
+  local name = item.action
+  if type(name) ~= "string" then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_UNKNOWN_OPERATION,
+      actionPath,
+      "movement action is missing a name",
+      { field = field }
+    )
+  end
+  local spec = Schema.MOVEMENT_ACTIONS[name]
+  if not spec then
+    fail(
+      context,
+      ScriptErrors.SCRIPT_UNKNOWN_OPERATION,
+      actionPath,
+      "unknown movement action",
+      { field = field, action = name }
+    )
+  end
+  checkFields(context, name, spec.fields, item, actionPath, { action = true })
+end
+
 local function checkMovement(context, v, path, field)
   local count = checkArray(context, v, path, field)
   for i = 1, count do
-    local item = v[i]
-    local actionPath = path .. "/" .. tostring(i - 1)
-    if type(item) ~= "table" then
-      fail(
-        context,
-        ScriptErrors.SCRIPT_SCHEMA_INVALID,
-        actionPath,
-        "movement action must be a table",
-        { field = field }
-      )
-    end
-    local name = item.action
-    if type(name) ~= "string" then
-      fail(
-        context,
-        ScriptErrors.SCRIPT_UNKNOWN_OPERATION,
-        actionPath,
-        "movement action is missing a name",
-        { field = field }
-      )
-    end
-    local spec = Schema.MOVEMENT_ACTIONS[name]
-    if not spec then
-      fail(
-        context,
-        ScriptErrors.SCRIPT_UNKNOWN_OPERATION,
-        actionPath,
-        "unknown movement action",
-        { field = field, action = name }
-      )
-    end
-    checkFields(context, name, spec.fields, item, actionPath, { action = true })
+    checkMovementAction(context, v[i], path .. "/" .. tostring(i - 1), field)
   end
+end
+
+local function checkMovementActionField(context, v, path, field)
+  checkMovementAction(context, v, path, field)
 end
 
 local function checkMenuStep(context, step, path)
@@ -542,6 +542,7 @@ local function checkConditionList(context, v, path, field)
 end
 CHECKERS.message = checkMessage
 CHECKERS.movement = checkMovement
+CHECKERS.movement_action = checkMovementActionField
 CHECKERS.steps = checkSteps
 local function checkCases(context, v, path, field)
   if type(v) ~= "table" then
@@ -711,6 +712,7 @@ CHECKERS.condition = checkCondition
 CHECKERS.condition_list = checkConditionList
 CHECKERS.message = checkMessage
 CHECKERS.movement = checkMovement
+CHECKERS.movement_action = checkMovementActionField
 CHECKERS.steps = checkSteps
 CHECKERS.cases = checkCases
 CHECKERS.args = checkArgs

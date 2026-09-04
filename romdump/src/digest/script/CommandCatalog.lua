@@ -26,19 +26,10 @@ for opcode, entry in pairs(ScriptCommands.byOpcode) do
     CommandCatalog.CLASSIFICATION[opcode] = entry.classification
   end
 end
--- ScrCmd_609 checks for a following Pokémon and returns FALSE when none is
--- present. The opening path has no follower, so its supported semantics are
--- one scheduler yield; active followers remain explicitly unsupported.
-CommandCatalog.CLASSIFICATION[609] = CommandCatalog.YIELD
-
--- Opcode 582 (the special-spawn setter) and opcode 729 (the follower-active
--- query) have real supported semantics with no follower subsystem required:
--- 582 records a source location, 729 writes the no-follower false result.
--- Opcodes 596/600 are genuine active-follower behavior with no implemented
--- follower subsystem; they stay unclassified so they fall through to the
--- explicit unsupported default and fault loudly if a script ever reaches
--- them, instead of masquerading as a successful no-op.
-for _, opcode in ipairs({ 582, 729 }) do
+-- Opcode 582 (the special-spawn setter) has real supported same-tick
+-- semantics without a catalog classification entry, so it keeps its explicit
+-- override here. Follower opcodes carry their own table classifications.
+for _, opcode in ipairs({ 582 }) do
   CommandCatalog.CLASSIFICATION[opcode] = CommandCatalog.CONTINUE
 end
 

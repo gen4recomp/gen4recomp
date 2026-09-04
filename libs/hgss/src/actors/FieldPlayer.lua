@@ -47,6 +47,8 @@ local FieldTraversal = require("libs.hgss.src.world.FieldTraversal")
 ---@field private _gestureTick integer?
 ---@field private _gestureOffsetY number
 ---@field private _scriptedMotion table<string, unknown>?
+---@field private _movementRevision integer committed tile commits observed by followers
+---@field private _lastTraversalKind string traversal kind of the last committed tile
 local FieldPlayer = {}
 FieldPlayer.__index = FieldPlayer
 
@@ -190,6 +192,8 @@ function FieldPlayer.new(options)
     _gesturePose = nil,
     _gestureTick = nil,
     _gestureOffsetY = 0,
+    _movementRevision = 0,
+    _lastTraversalKind = "idle",
   }, FieldPlayer)
 end
 
@@ -642,6 +646,7 @@ function FieldPlayer:_advanceStep()
   self.motion = "idle"
   self.progressTicks = 0
   self.from, self.to = nil, nil
+  self:_commitTile("walk")
   return true
 end
 
@@ -666,6 +671,7 @@ function FieldPlayer:_advanceJump()
   self.motion = "idle"
   self.progressTicks = 0
   self.from, self.to = nil, nil
+  self:_commitTile("jump")
   return true
 end
 
@@ -740,6 +746,39 @@ function FieldPlayer:updateFixed(input)
   return false
 end
 
+-- One revision per committed tile: ordinary steps and jumps bump on their
+-- commit tick, scripted locomotion bumps when it changes tiles, and
+-- teleports bump unconditionally. Interpolation, turns, and blocked input
+-- never bump, so followers replay exactly the tiles the player settled on.
+---@return integer
+function FieldPlayer:movementRevision()
+  return self._movementRevision
+end
+
+-- The last committed player anchor: map identity, tile, height, stable
+-- surface identity, facing, and traversal kind. Facing and map read live so
+-- turns and coverage rebases are visible without a revision bump.
+---@return table<string, unknown>
+function FieldPlayer:committedAnchor()
+  return {
+    mapId = self.currentMap.mapId,
+    fieldX = self.fieldX,
+    fieldZ = self.fieldZ,
+    worldY = self.worldY,
+    surfaceId = self.surfaceId,
+    cellKey = self.committedSourceCellKey,
+    sourceSurfaceId = self.committedSourceSurfaceId,
+    facing = self.facing,
+    traversalKind = self._lastTraversalKind,
+  }
+end
+
+---@param kind string
+function FieldPlayer:_commitTile(kind)
+  self._movementRevision = self._movementRevision + 1
+  self._lastTraversalKind = kind
+end
+
 function FieldPlayer:renderPosition(alpha)
   alpha = alpha == nil and 1 or math.max(0, math.min(1, alpha))
   return {
@@ -793,6 +832,7 @@ function FieldPlayer:setScriptPosition(position)
   self._gestureTick = nil
   self._gestureOffsetY = 0
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
+  self:_commitTile("scripted")
 end
 
 function FieldPlayer:clearGesturePresentation()
@@ -959,10 +999,14 @@ function FieldPlayer:commitScriptedAction()
     return
   end
   if self.to then
+    local moved = self.to.fieldX ~= self.fieldX or self.to.fieldZ ~= self.fieldZ
     self.fieldX, self.fieldZ = self.to.fieldX, self.to.fieldZ
     self.localX, self.localZ = self.to.localX, self.to.localZ
     self.worldX, self.worldY, self.worldZ = self.to.worldX, self.to.worldY, self.to.worldZ
     self.surfaceId = self.to.surfaceId
+    if moved then
+      self:_commitTile("scripted")
+    end
   end
   if m.action == "gesture" then
     local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")

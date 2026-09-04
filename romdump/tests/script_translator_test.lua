@@ -968,12 +968,10 @@ T["unclassified sound commands stay attributed unsupported"] = function()
   Assert.isFalse(report.complete)
 end
 
--- No-follower opening semantics: opcode 729 (follower-active query) writes
--- the explicit no-follower result to its destination variable instead of
--- disappearing as a noop; opcodes 596/600 have no implemented follower
--- subsystem, so they must stay attributed-unsupported rather than a
--- fabricated successful no-op.
-T["opcode 729 writes the explicit no-follower result"] = function()
+-- Follower-active query semantics: opcode 729 (follower-active query)
+-- reads the live controller state into its destination variable instead of
+-- a constant.
+T["opcode 729 reads live follower state"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
@@ -988,9 +986,8 @@ T["opcode 729 writes the explicit no-follower result"] = function()
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.deepEqual(lowered.items[1], {
-    op = "set_var",
-    variable = { value = "var", id = "VAR_SPECIAL_x8008" },
-    value = 0,
+    op = "follower_is_active",
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
     provenance = { offsets = { 32 }, opcodes = { 729 } },
   })
   Assert.equal(#lowered.unsupported, 0)
@@ -1022,8 +1019,8 @@ T["opcode 144 lowers to the friend sprite value"] = function()
 end
 
 -- Opcode 294 (CheckBadge) has no persisted gym-badge subsystem; every badge
--- check in the fresh-game opening window is source-correctly false, the same
--- explicit-result pattern as opcode 729's no-follower query.
+-- check in the fresh-game opening window is source-correctly false, written
+-- as an explicit constant result.
 T["opcode 294 writes the explicit no-badge result"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
@@ -1047,7 +1044,7 @@ T["opcode 294 writes the explicit no-badge result"] = function()
   Assert.equal(#lowered.unsupported, 0)
 end
 
-T["opcodes 596 and 600 stay explicitly unsupported without a follower subsystem"] = function()
+T["opcode 596 reads live partner state while 600 stays deferred"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
@@ -1060,15 +1057,18 @@ T["opcodes 596 and 600 stay explicitly unsupported without a follower subsystem"
       },
     },
   })
-  Assert.equal(CommandCatalog.classification(596), CommandCatalog.UNSUPPORTED)
+  Assert.equal(CommandCatalog.classification(596), CommandCatalog.CONTINUE)
   Assert.equal(CommandCatalog.classification(600), CommandCatalog.UNSUPPORTED)
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
-  Assert.equal(#lowered.unsupported, 2)
-  Assert.equal(lowered.unsupported[1].command, 596)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_596")
-  Assert.equal(lowered.unsupported[2].command, 600)
-  Assert.equal(lowered.unsupported[2].originalName, "ScrCmd_600")
+  Assert.deepEqual(lowered.items[1], {
+    op = "follower_partner_state",
+    result = { value = "var", id = "VAR_SPECIAL_x8008" },
+    provenance = { offsets = { 32 }, opcodes = { 596 } },
+  })
+  Assert.equal(#lowered.unsupported, 1)
+  Assert.equal(lowered.unsupported[1].command, 600)
+  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_600")
 end
 
 -- Opcode 582 (the source special-spawn setter) must lower to a named

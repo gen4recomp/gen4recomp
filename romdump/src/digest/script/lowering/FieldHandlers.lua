@@ -289,6 +289,9 @@ local function genderedMessage(ins)
 end
 
 local function yieldFollowerCheck()
+  -- ScrCmd_609 settles/updates the active follower and yields one scheduler
+  -- tick; the controller settles through the normal fixed-tick update during
+  -- the yield, with or without an installed partner.
   return { op = "yield_tick" }
 end
 
@@ -327,6 +330,75 @@ local function updateAvatarState(_)
   return { op = "apply_avatar_transitions" }
 end
 
+-- Follower lowering. Every operation below routes to the one field
+-- following controller through the injected collaborator; the node op
+-- already names the behavior, so the runtime never switches on opcodes.
+local function followerPartnerState(ins)
+  -- ScrCmd_596 writes the partner-state query into its result variable.
+  return { op = "follower_partner_state", result = Operands.varRef(ins.operands[1]) }
+end
+
+local function followerFacePlayer()
+  return { op = "follower_face_player" }
+end
+
+local function followerSetPaused(ins)
+  -- ScrCmd_ToggleFollowingPokemonMovement carries 0 (resume) or 1 (pause);
+  -- the value rides through so scripts driving it from a variable keep
+  -- working.
+  return { op = "follower_set_paused", paused = Operands.varRef(ins.operands[1]) }
+end
+
+local function followerWait()
+  return { op = "follower_wait" }
+end
+
+local function followerStartMovement(ins)
+  -- ScrCmd_FollowingPokemonMovement carries a movement code in the shared
+  -- movement family (corpus: 48 fast zero jump, 55 fast near jump). Decode
+  -- it at lowering so the runtime executes one ordinary scripted action; a
+  -- code outside the supported matrix stays an explicit unsupported node.
+  local code = Operands.operandValue(ins.operands[1])
+  local decoded = MovementDecoder.decode({ movementCode = code, count = 1 })
+  if decoded == nil then
+    return {
+      op = "unsupported",
+      command = 604,
+      arguments = { code },
+      sourceOffset = ins.offset,
+      reason = "ScrCmd_FollowingPokemonMovement movement code outside the supported matrix",
+    }
+  end
+  return { op = "follower_start_movement", movement = decoded[1] }
+end
+
+local function followerSetParam(ins)
+  -- ScrCmd_605 (the Elm follow-up state operation) carries two small
+  -- params (corpus pairs {0,1}, {3,2}, {2,3}); both ride through opaquely
+  -- into controller state on the same tick.
+  return {
+    op = "follower_set_param",
+    a = Operands.operandValue(ins.operands[1]),
+    b = Operands.operandValue(ins.operands[2]),
+  }
+end
+
+local function followerIsEventTrigger(ins)
+  -- ScrCmd_FollowerPokeIsEventTrigger carries its kind, a trigger parameter,
+  -- and the result variable (corpus kinds 1/2 with two variable operands).
+  return {
+    op = "follower_is_event_trigger",
+    kind = Operands.operandValue(ins.operands[1]),
+    param = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function followerIsActive(ins)
+  -- ScrCmd_729 writes the live active-state query into its result variable.
+  return { op = "follower_is_active", result = Operands.varRef(ins.operands[1]) }
+end
+
 local function setSpecialSpawn(ins)
   return {
     op = "set_special_spawn",
@@ -336,10 +408,6 @@ local function setSpecialSpawn(ins)
     warpId = -1,
     direction = "south",
   }
-end
-
-local function setFollowerInactive(ins)
-  return { op = "set_var", variable = Operands.varRef(ins.operands[1]), value = 0 }
 end
 
 local function setBadgeInactive(ins)
@@ -1128,8 +1196,15 @@ return {
   [752] = menuExecute,
   [581] = lockLastTalkedActor,
   [582] = setSpecialSpawn,
+  [596] = followerPartnerState,
+  [601] = followerFacePlayer,
+  [602] = followerSetPaused,
+  [603] = followerWait,
+  [604] = followerStartMovement,
+  [605] = followerSetParam,
   [609] = yieldFollowerCheck,
-  [729] = setFollowerInactive,
+  [698] = followerIsEventTrigger,
+  [729] = followerIsActive,
   [294] = setBadgeInactive,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,

@@ -257,21 +257,7 @@ local function handleRequestStartMenu(_, run)
   return Runtime.OUTCOME_STOP
 end
 
-local function handleYieldTick(node, run)
-  if node.source and node.source.opcodes then
-    for _, opcode in ipairs(node.source.opcodes) do
-      if opcode == 609 then
-        local actors = assert(requireService(run, "actors"))
-        if actors:partnerId() ~= nil then
-          Errors.raise(ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE, "opcode 609 follower path is unsupported", {
-            scriptId = run.instance.scriptId,
-            command = 609,
-          })
-        end
-        break
-      end
-    end
-  end
+local function handleYieldTick(_, _)
   return Runtime.OUTCOME_YIELD_TICK
 end
 
@@ -880,6 +866,61 @@ local function handlePartySelectResult(node, run)
     )
   end
   semanticsFor(run).writeRef(node.result, value, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+-- Follower operations. Each handler calls exactly one named operation on
+-- the injected following-mon collaborator (the field controller behind the
+-- `followingMon` service) and writes the source result convention: 1 or 0
+-- for booleans. No handler switches on a source opcode; the node op
+-- already names the behavior.
+local function followingMonFor(run)
+  return requireService(run, "followingMon")
+end
+
+local function handleFollowerIsActive(node, run)
+  writeMonsBool(node, run, followingMonFor(run):isActive())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleFollowerPartnerState(node, run)
+  writeMonsBool(node, run, followingMonFor(run):partnerActorId() ~= nil)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleFollowerFacePlayer(_, run)
+  followingMonFor(run):facePlayer()
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleFollowerSetPaused(node, run)
+  assert(node.paused ~= nil, "follower pause requires its source operand")
+  local paused = semanticsFor(run).evaluateValue(node.paused, run)
+  followingMonFor(run):setMovementPaused(paused ~= 0 and paused ~= false)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleFollowerWait(node, run)
+  return blockOnTask(run, "follower_wait", { node = node })
+end
+
+local function handleFollowerStartMovement(node, run)
+  assert(type(node.movement) == "table", "follower movement requires the decoded movement")
+  followingMonFor(run):startMovement(node.movement)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleFollowerSetParam(node, run)
+  local a = semanticsFor(run).evaluateValue(node.a, run)
+  local b = semanticsFor(run).evaluateValue(node.b, run)
+  followingMonFor(run):setParam(a, b)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleFollowerIsEventTrigger(node, run)
+  local kind = semanticsFor(run).evaluateValue(node.kind, run)
+  local param = node.param ~= nil and semanticsFor(run).evaluateValue(node.param, run) or nil
+  writeMonsBool(node, run, followingMonFor(run):isEventTrigger(kind, param))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -1533,6 +1574,14 @@ HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
 HANDLERS.heal_party = handleHealParty
 HANDLERS.party_select = handlePartySelect
 HANDLERS.party_select_result = handlePartySelectResult
+HANDLERS.follower_is_active = handleFollowerIsActive
+HANDLERS.follower_partner_state = handleFollowerPartnerState
+HANDLERS.follower_face_player = handleFollowerFacePlayer
+HANDLERS.follower_set_paused = handleFollowerSetPaused
+HANDLERS.follower_wait = handleFollowerWait
+HANDLERS.follower_start_movement = handleFollowerStartMovement
+HANDLERS.follower_set_param = handleFollowerSetParam
+HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
 HANDLERS.lock_all = handleLockAll

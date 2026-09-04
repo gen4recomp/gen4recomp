@@ -31,6 +31,7 @@ local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerAvatarState = require("libs.hgss.src.actors.FieldPlayerAvatarState")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
 local FieldZoneIdentity = require("libs.hgss.src.world.FieldZoneIdentity")
+local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
@@ -116,6 +117,7 @@ local WindowConfig = require("game.src.WindowConfig")
 ---@field monCatalog MonCatalog the immutable domain mon catalog behind the live party
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
+---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
 ---@field session FieldSession
 ---@field actors FieldActorManager
 ---@field actorAssets FieldActorAssets
@@ -934,6 +936,19 @@ function FieldRuntime:_load()
       mapSection = monMetMapSection,
       date = monMetDate,
     })
+    -- The one following-mon controller: derived follower presentation over
+    -- the live party, driven once per fixed tick after the session update.
+    -- The player accessor tracks warp rebinds, so the controller never holds
+    -- a stale player across map swaps.
+    local function currentPlayer()
+      return self.player
+    end
+    self.followingMon = FollowingMonController.new({
+      service = self.monService,
+      catalog = self.monCatalog,
+      actors = self.actors,
+      playerOf = currentPlayer,
+    })
     local scriptComposition = require("game.hgss.src.field.FieldScriptComposition").compose(self, {
       cacheFs = cacheFs,
       layoutMessage = layoutMessage,
@@ -943,6 +958,7 @@ function FieldRuntime:_load()
       mons = self.monService,
       starterProvider = self.starterProvider,
       starterChoice = self.starterChoice,
+      followingMon = self.followingMon,
     })
     self.scripts = scriptComposition.scripts
     scriptComposition.restore()
@@ -1101,6 +1117,12 @@ function FieldRuntime:update(dt)
     self.session.accumulator = self.session.accumulator - FIXED_DT
     self.session:updateFixed()
     fieldExecuted = fieldExecuted + 1
+    -- The follower reconciles once per fixed tick, after player and
+    -- transition commits inside the session update and before the next
+    -- tick's actor finalization and draw reads.
+    if self.followingMon then
+      self.followingMon:update()
+    end
     if self.applicationHost:error() and not self.errorText then
       self.errorText = tostring(self.applicationHost:error())
     end
@@ -1588,6 +1610,10 @@ function FieldRuntime:_releaseAll()
     self.residency:dispose()
   end
   self.residency = nil
+  if self.followingMon then
+    self.followingMon:dispose()
+  end
+  self.followingMon = nil
   if self.actors then
     self.actors:dispose()
   end
