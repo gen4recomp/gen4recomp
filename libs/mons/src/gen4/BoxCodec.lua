@@ -445,18 +445,13 @@ function BoxCodec.decode(bytes, context)
     end
     local readerA, readerB, readerC, readerD = logical[1], logical[2], logical[3], logical[4]
 
-    local items = reverseMap(context.items --[[@as table<string, integer>]])
-    local games = reverseMap(context.games --[[@as table<string, integer>]])
-    local languages = reverseMap(context.languages --[[@as table<string, integer>]])
-    local balls = reverseMap(context.balls --[[@as table<string, integer>]])
-    local glyphs = reverseMap(context.charmap --[[@as table<string, integer>]])
+    local games = reverseMap(context.games)
+    local languages = reverseMap(context.languages)
+    local glyphs = reverseMap(context.charmap)
 
     local speciesKey = catalog:speciesKeyByNativeId(readerA:u16le(0))
     local species = catalog:species(speciesKey)
-    local heldItem = items[readerA:u16le(2)]
-    if heldItem == nil then
-      MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed held item is unknown", {})
-    end
+    local heldItem = catalog:itemKeyByNativeId(readerA:u16le(2))
     local trainerId = readerA:u32le(4)
     local experience = readerA:u32le(8)
     local friendship = readerA:u8(12)
@@ -548,8 +543,8 @@ function BoxCodec.decode(bytes, context)
     if readerD:u8(30) ~= storedBall then
       MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed ball fields disagree", {})
     end
-    local ball = balls[storedBall]
-    if ball == nil then
+    local ball = catalog:itemKeyByNativeId(storedBall)
+    if not catalog:item(ball).isBall then
       MonsErrors.raise(MonsErrors.CODEC_INVALID, "boxed ball is unknown", {})
     end
     local metLevel = levelByte % 128

@@ -28,7 +28,6 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _language string
 ---@field private _mapSection integer|fun(): integer|nil
 ---@field private _date MonDate|(fun(): MonDate)|nil
----@field private _itemById table<integer, string>|nil
 local HgssMonService = {}
 HgssMonService.__index = HgssMonService
 
@@ -45,578 +44,6 @@ HgssMonService.LANGUAGES = {
   german = 5,
   spanish = 7,
   korean = 8,
-}
-
--- Native item identities 0..536 in source order (pret/pokeheartgold,
--- include/constants/items.h ITEM_* minus prefix, via romdump MonSources).
--- Index i carries the key for native identity i - 1.
-local ITEM_IDS = {
-  "NONE",
-  "MASTER_BALL",
-  "ULTRA_BALL",
-  "GREAT_BALL",
-  "POKE_BALL",
-  "SAFARI_BALL",
-  "NET_BALL",
-  "DIVE_BALL",
-  "NEST_BALL",
-  "REPEAT_BALL",
-  "TIMER_BALL",
-  "LUXURY_BALL",
-  "PREMIER_BALL",
-  "DUSK_BALL",
-  "HEAL_BALL",
-  "QUICK_BALL",
-  "CHERISH_BALL",
-  "POTION",
-  "ANTIDOTE",
-  "BURN_HEAL",
-  "ICE_HEAL",
-  "AWAKENING",
-  "PARLYZ_HEAL",
-  "FULL_RESTORE",
-  "MAX_POTION",
-  "HYPER_POTION",
-  "SUPER_POTION",
-  "FULL_HEAL",
-  "REVIVE",
-  "MAX_REVIVE",
-  "FRESH_WATER",
-  "SODA_POP",
-  "LEMONADE",
-  "MOOMOO_MILK",
-  "ENERGYPOWDER",
-  "ENERGY_ROOT",
-  "HEAL_POWDER",
-  "REVIVAL_HERB",
-  "ETHER",
-  "MAX_ETHER",
-  "ELIXIR",
-  "MAX_ELIXIR",
-  "LAVA_COOKIE",
-  "BERRY_JUICE",
-  "SACRED_ASH",
-  "HP_UP",
-  "PROTEIN",
-  "IRON",
-  "CARBOS",
-  "CALCIUM",
-  "RARE_CANDY",
-  "PP_UP",
-  "ZINC",
-  "PP_MAX",
-  "OLD_GATEAU",
-  "GUARD_SPEC_",
-  "DIRE_HIT",
-  "X_ATTACK",
-  "X_DEFENSE",
-  "X_SPEED",
-  "X_ACCURACY",
-  "X_SPECIAL",
-  "X_SP__DEF",
-  "POKE_DOLL",
-  "FLUFFY_TAIL",
-  "BLUE_FLUTE",
-  "YELLOW_FLUTE",
-  "RED_FLUTE",
-  "BLACK_FLUTE",
-  "WHITE_FLUTE",
-  "SHOAL_SALT",
-  "SHOAL_SHELL",
-  "RED_SHARD",
-  "BLUE_SHARD",
-  "YELLOW_SHARD",
-  "GREEN_SHARD",
-  "SUPER_REPEL",
-  "MAX_REPEL",
-  "ESCAPE_ROPE",
-  "REPEL",
-  "SUN_STONE",
-  "MOON_STONE",
-  "FIRE_STONE",
-  "THUNDERSTONE",
-  "WATER_STONE",
-  "LEAF_STONE",
-  "TINYMUSHROOM",
-  "BIG_MUSHROOM",
-  "PEARL",
-  "BIG_PEARL",
-  "STARDUST",
-  "STAR_PIECE",
-  "NUGGET",
-  "HEART_SCALE",
-  "HONEY",
-  "GROWTH_MULCH",
-  "DAMP_MULCH",
-  "STABLE_MULCH",
-  "GOOEY_MULCH",
-  "ROOT_FOSSIL",
-  "CLAW_FOSSIL",
-  "HELIX_FOSSIL",
-  "DOME_FOSSIL",
-  "OLD_AMBER",
-  "ARMOR_FOSSIL",
-  "SKULL_FOSSIL",
-  "RARE_BONE",
-  "SHINY_STONE",
-  "DUSK_STONE",
-  "DAWN_STONE",
-  "OVAL_STONE",
-  "ODD_KEYSTONE",
-  "GRISEOUS_ORB",
-  "UNUSED_113",
-  "UNUSED_114",
-  "UNUSED_115",
-  "UNUSED_116",
-  "UNUSED_117",
-  "UNUSED_118",
-  "UNUSED_119",
-  "UNUSED_120",
-  "UNUSED_121",
-  "UNUSED_122",
-  "UNUSED_123",
-  "UNUSED_124",
-  "UNUSED_125",
-  "UNUSED_126",
-  "UNUSED_127",
-  "UNUSED_128",
-  "UNUSED_129",
-  "UNUSED_130",
-  "UNUSED_131",
-  "UNUSED_132",
-  "UNUSED_133",
-  "UNUSED_134",
-  "ADAMANT_ORB",
-  "LUSTROUS_ORB",
-  "GRASS_MAIL",
-  "FLAME_MAIL",
-  "BUBBLE_MAIL",
-  "BLOOM_MAIL",
-  "TUNNEL_MAIL",
-  "STEEL_MAIL",
-  "HEART_MAIL",
-  "SNOW_MAIL",
-  "SPACE_MAIL",
-  "AIR_MAIL",
-  "MOSAIC_MAIL",
-  "BRICK_MAIL",
-  "CHERI_BERRY",
-  "CHESTO_BERRY",
-  "PECHA_BERRY",
-  "RAWST_BERRY",
-  "ASPEAR_BERRY",
-  "LEPPA_BERRY",
-  "ORAN_BERRY",
-  "PERSIM_BERRY",
-  "LUM_BERRY",
-  "SITRUS_BERRY",
-  "FIGY_BERRY",
-  "WIKI_BERRY",
-  "MAGO_BERRY",
-  "AGUAV_BERRY",
-  "IAPAPA_BERRY",
-  "RAZZ_BERRY",
-  "BLUK_BERRY",
-  "NANAB_BERRY",
-  "WEPEAR_BERRY",
-  "PINAP_BERRY",
-  "POMEG_BERRY",
-  "KELPSY_BERRY",
-  "QUALOT_BERRY",
-  "HONDEW_BERRY",
-  "GREPA_BERRY",
-  "TAMATO_BERRY",
-  "CORNN_BERRY",
-  "MAGOST_BERRY",
-  "RABUTA_BERRY",
-  "NOMEL_BERRY",
-  "SPELON_BERRY",
-  "PAMTRE_BERRY",
-  "WATMEL_BERRY",
-  "DURIN_BERRY",
-  "BELUE_BERRY",
-  "OCCA_BERRY",
-  "PASSHO_BERRY",
-  "WACAN_BERRY",
-  "RINDO_BERRY",
-  "YACHE_BERRY",
-  "CHOPLE_BERRY",
-  "KEBIA_BERRY",
-  "SHUCA_BERRY",
-  "COBA_BERRY",
-  "PAYAPA_BERRY",
-  "TANGA_BERRY",
-  "CHARTI_BERRY",
-  "KASIB_BERRY",
-  "HABAN_BERRY",
-  "COLBUR_BERRY",
-  "BABIRI_BERRY",
-  "CHILAN_BERRY",
-  "LIECHI_BERRY",
-  "GANLON_BERRY",
-  "SALAC_BERRY",
-  "PETAYA_BERRY",
-  "APICOT_BERRY",
-  "LANSAT_BERRY",
-  "STARF_BERRY",
-  "ENIGMA_BERRY",
-  "MICLE_BERRY",
-  "CUSTAP_BERRY",
-  "JABOCA_BERRY",
-  "ROWAP_BERRY",
-  "BRIGHTPOWDER",
-  "WHITE_HERB",
-  "MACHO_BRACE",
-  "EXP__SHARE",
-  "QUICK_CLAW",
-  "SOOTHE_BELL",
-  "MENTAL_HERB",
-  "CHOICE_BAND",
-  "KINGS_ROCK",
-  "SILVERPOWDER",
-  "AMULET_COIN",
-  "CLEANSE_TAG",
-  "SOUL_DEW",
-  "DEEPSEATOOTH",
-  "DEEPSEASCALE",
-  "SMOKE_BALL",
-  "EVERSTONE",
-  "FOCUS_BAND",
-  "LUCKY_EGG",
-  "SCOPE_LENS",
-  "METAL_COAT",
-  "LEFTOVERS",
-  "DRAGON_SCALE",
-  "LIGHT_BALL",
-  "SOFT_SAND",
-  "HARD_STONE",
-  "MIRACLE_SEED",
-  "BLACKGLASSES",
-  "BLACK_BELT",
-  "MAGNET",
-  "MYSTIC_WATER",
-  "SHARP_BEAK",
-  "POISON_BARB",
-  "NEVERMELTICE",
-  "SPELL_TAG",
-  "TWISTEDSPOON",
-  "CHARCOAL",
-  "DRAGON_FANG",
-  "SILK_SCARF",
-  "UPGRADE",
-  "SHELL_BELL",
-  "SEA_INCENSE",
-  "LAX_INCENSE",
-  "LUCKY_PUNCH",
-  "METAL_POWDER",
-  "THICK_CLUB",
-  "STICK",
-  "RED_SCARF",
-  "BLUE_SCARF",
-  "PINK_SCARF",
-  "GREEN_SCARF",
-  "YELLOW_SCARF",
-  "WIDE_LENS",
-  "MUSCLE_BAND",
-  "WISE_GLASSES",
-  "EXPERT_BELT",
-  "LIGHT_CLAY",
-  "LIFE_ORB",
-  "POWER_HERB",
-  "TOXIC_ORB",
-  "FLAME_ORB",
-  "QUICK_POWDER",
-  "FOCUS_SASH",
-  "ZOOM_LENS",
-  "METRONOME",
-  "IRON_BALL",
-  "LAGGING_TAIL",
-  "DESTINY_KNOT",
-  "BLACK_SLUDGE",
-  "ICY_ROCK",
-  "SMOOTH_ROCK",
-  "HEAT_ROCK",
-  "DAMP_ROCK",
-  "GRIP_CLAW",
-  "CHOICE_SCARF",
-  "STICKY_BARB",
-  "POWER_BRACER",
-  "POWER_BELT",
-  "POWER_LENS",
-  "POWER_BAND",
-  "POWER_ANKLET",
-  "POWER_WEIGHT",
-  "SHED_SHELL",
-  "BIG_ROOT",
-  "CHOICE_SPECS",
-  "FLAME_PLATE",
-  "SPLASH_PLATE",
-  "ZAP_PLATE",
-  "MEADOW_PLATE",
-  "ICICLE_PLATE",
-  "FIST_PLATE",
-  "TOXIC_PLATE",
-  "EARTH_PLATE",
-  "SKY_PLATE",
-  "MIND_PLATE",
-  "INSECT_PLATE",
-  "STONE_PLATE",
-  "SPOOKY_PLATE",
-  "DRACO_PLATE",
-  "DREAD_PLATE",
-  "IRON_PLATE",
-  "ODD_INCENSE",
-  "ROCK_INCENSE",
-  "FULL_INCENSE",
-  "WAVE_INCENSE",
-  "ROSE_INCENSE",
-  "LUCK_INCENSE",
-  "PURE_INCENSE",
-  "PROTECTOR",
-  "ELECTIRIZER",
-  "MAGMARIZER",
-  "DUBIOUS_DISC",
-  "REAPER_CLOTH",
-  "RAZOR_CLAW",
-  "RAZOR_FANG",
-  "TM01",
-  "TM02",
-  "TM03",
-  "TM04",
-  "TM05",
-  "TM06",
-  "TM07",
-  "TM08",
-  "TM09",
-  "TM10",
-  "TM11",
-  "TM12",
-  "TM13",
-  "TM14",
-  "TM15",
-  "TM16",
-  "TM17",
-  "TM18",
-  "TM19",
-  "TM20",
-  "TM21",
-  "TM22",
-  "TM23",
-  "TM24",
-  "TM25",
-  "TM26",
-  "TM27",
-  "TM28",
-  "TM29",
-  "TM30",
-  "TM31",
-  "TM32",
-  "TM33",
-  "TM34",
-  "TM35",
-  "TM36",
-  "TM37",
-  "TM38",
-  "TM39",
-  "TM40",
-  "TM41",
-  "TM42",
-  "TM43",
-  "TM44",
-  "TM45",
-  "TM46",
-  "TM47",
-  "TM48",
-  "TM49",
-  "TM50",
-  "TM51",
-  "TM52",
-  "TM53",
-  "TM54",
-  "TM55",
-  "TM56",
-  "TM57",
-  "TM58",
-  "TM59",
-  "TM60",
-  "TM61",
-  "TM62",
-  "TM63",
-  "TM64",
-  "TM65",
-  "TM66",
-  "TM67",
-  "TM68",
-  "TM69",
-  "TM70",
-  "TM71",
-  "TM72",
-  "TM73",
-  "TM74",
-  "TM75",
-  "TM76",
-  "TM77",
-  "TM78",
-  "TM79",
-  "TM80",
-  "TM81",
-  "TM82",
-  "TM83",
-  "TM84",
-  "TM85",
-  "TM86",
-  "TM87",
-  "TM88",
-  "TM89",
-  "TM90",
-  "TM91",
-  "TM92",
-  "HM01",
-  "HM02",
-  "HM03",
-  "HM04",
-  "HM05",
-  "HM06",
-  "HM07",
-  "HM08",
-  "EXPLORER_KIT",
-  "LOOT_SACK",
-  "RULE_BOOK",
-  "POKE_RADAR",
-  "POINT_CARD",
-  "JOURNAL",
-  "SEAL_CASE",
-  "FASHION_CASE",
-  "SEAL_BAG",
-  "PAL_PAD",
-  "WORKS_KEY",
-  "OLD_CHARM",
-  "GALACTIC_KEY",
-  "RED_CHAIN",
-  "TOWN_MAP",
-  "VS__SEEKER",
-  "COIN_CASE",
-  "OLD_ROD",
-  "GOOD_ROD",
-  "SUPER_ROD",
-  "SPRAYDUCK",
-  "POFFIN_CASE",
-  "BICYCLE",
-  "SUITE_KEY",
-  "OAKS_LETTER",
-  "LUNAR_WING",
-  "MEMBER_CARD",
-  "AZURE_FLUTE",
-  "S_S__TICKET",
-  "CONTEST_PASS",
-  "MAGMA_STONE",
-  "PARCEL",
-  "COUPON_1",
-  "COUPON_2",
-  "COUPON_3",
-  "STORAGE_KEY",
-  "SECRETPOTION",
-  "VS__RECORDER",
-  "GRACIDEA",
-  "SECRET_KEY",
-  "APRICORN_BOX",
-  "UNOWN_REPORT",
-  "BERRY_POTS",
-  "DOWSING_MCHN",
-  "BLUE_CARD",
-  "SLOWPOKETAIL",
-  "CLEAR_BELL",
-  "CARD_KEY",
-  "BASEMENT_KEY",
-  "SQUIRTBOTTLE",
-  "RED_SCALE",
-  "LOST_ITEM",
-  "PASS",
-  "MACHINE_PART",
-  "SILVER_WING",
-  "RAINBOW_WING",
-  "MYSTERY_EGG",
-  "RED_APRICORN",
-  "YLW_APRICORN",
-  "BLU_APRICORN",
-  "GRN_APRICORN",
-  "PNK_APRICORN",
-  "WHT_APRICORN",
-  "BLK_APRICORN",
-  "FAST_BALL",
-  "LEVEL_BALL",
-  "LURE_BALL",
-  "HEAVY_BALL",
-  "LOVE_BALL",
-  "FRIEND_BALL",
-  "MOON_BALL",
-  "SPORT_BALL",
-  "PARK_BALL",
-  "PHOTO_ALBUM",
-  "GB_SOUNDS",
-  "TIDAL_BELL",
-  "RAGECANDYBAR",
-  "DATA_CARD_01",
-  "DATA_CARD_02",
-  "DATA_CARD_03",
-  "DATA_CARD_04",
-  "DATA_CARD_05",
-  "DATA_CARD_06",
-  "DATA_CARD_07",
-  "DATA_CARD_08",
-  "DATA_CARD_09",
-  "DATA_CARD_10",
-  "DATA_CARD_11",
-  "DATA_CARD_12",
-  "DATA_CARD_13",
-  "DATA_CARD_14",
-  "DATA_CARD_15",
-  "DATA_CARD_16",
-  "DATA_CARD_17",
-  "DATA_CARD_18",
-  "DATA_CARD_19",
-  "DATA_CARD_20",
-  "DATA_CARD_21",
-  "DATA_CARD_22",
-  "DATA_CARD_23",
-  "DATA_CARD_24",
-  "DATA_CARD_25",
-  "DATA_CARD_26",
-  "DATA_CARD_27",
-  "JADE_ORB",
-  "LOCK_CAPSULE",
-  "RED_ORB",
-  "BLUE_ORB",
-  "ENIGMA_STONE",
-}
-
--- Native ball identities are the ball subset of the item identities.
-local BALL_KEYS = {
-  "MASTER_BALL",
-  "ULTRA_BALL",
-  "GREAT_BALL",
-  "POKE_BALL",
-  "SAFARI_BALL",
-  "NET_BALL",
-  "DIVE_BALL",
-  "NEST_BALL",
-  "REPEAT_BALL",
-  "TIMER_BALL",
-  "LUXURY_BALL",
-  "PREMIER_BALL",
-  "DUSK_BALL",
-  "HEAL_BALL",
-  "QUICK_BALL",
-  "CHERISH_BALL",
-  "PARK_BALL",
-  "FAST_BALL",
-  "LEVEL_BALL",
-  "LURE_BALL",
-  "HEAVY_BALL",
-  "LOVE_BALL",
-  "FRIEND_BALL",
-  "MOON_BALL",
-  "SPORT_BALL",
 }
 
 -- Source gender values written at the script variable boundary.
@@ -660,31 +87,6 @@ local NATURE_NAMES = {
 -- Contest value keys in native contest-type order.
 local CONTEST_KEYS = { "cool", "beauty", "cute", "smart", "tough", "sheen" }
 
----@param ids string[]
----@return table<string, integer>
-local function keyTable(ids)
-  local out = {}
-  for index, key in ipairs(ids) do
-    out[key] = index - 1
-  end
-  return out
-end
-
-HgssMonService.ITEMS = keyTable(ITEM_IDS)
-
----@return table<string, integer>
-local function ballTable()
-  local out = {}
-  for _, key in ipairs(BALL_KEYS) do
-    local nativeId = HgssMonService.ITEMS[key]
-    assert(nativeId ~= nil, "ball identity is missing from the item table: " .. key)
-    out[key] = nativeId
-  end
-  return out
-end
-
-HgssMonService.BALLS = ballTable()
-
 ---@param nature integer
 ---@return string
 function HgssMonService.natureName(nature)
@@ -704,8 +106,8 @@ end
 ---@field game string
 ---@field language string
 ---@field charmap table<string, unknown>
----@field games table<string, unknown>?
----@field languages table<string, unknown>?
+---@field games table<string, integer>?
+---@field languages table<string, integer>?
 ---@field items table<string, unknown>?
 ---@field balls table<string, unknown>?
 ---@field mapSection? integer|fun(): integer|nil
@@ -723,17 +125,15 @@ function HgssMonService.new(opts)
   assert(type(opts.charmap) == "table", "mon service requires a charmap")
   local games = opts.games or HgssMonService.GAMES
   local languages = opts.languages or HgssMonService.LANGUAGES
-  local items = opts.items or HgssMonService.ITEMS
-  local balls = opts.balls or HgssMonService.BALLS
   assert(type(games) == "table" and games[opts.game] ~= nil, "mon service game must resolve")
   assert(type(languages) == "table" and languages[opts.language] ~= nil, "mon service language must resolve")
+  -- Item and ball identities resolve through the generated catalog alone;
+  -- no runtime numbering table is built or consulted.
   local context = {
     catalog = opts.catalog,
     charmap = opts.charmap,
     games = games,
     languages = languages,
-    items = items,
-    balls = balls,
   }
   local restored = MonsSave.restore(opts.bucket, context)
   local profile = {
@@ -749,8 +149,6 @@ function HgssMonService.new(opts)
     charmap = opts.charmap,
     games = games,
     languages = languages,
-    items = items,
-    balls = balls,
     game = opts.game,
     language = opts.language,
   })
@@ -859,26 +257,6 @@ function HgssMonService:_abilityKeyOrNil(value)
   error("unreachable", 0)
 end
 
----@param tableName string
----@param cacheField string
----@return table<integer, string>
-function HgssMonService:_reverseIdentities(tableName, cacheField)
-  local cached = self[cacheField]
-  if cached ~= nil then
-    return cached
-  end
-  local forward = self._context[tableName]
-  assert(type(forward) == "table", "mon service identity table is required: " .. tableName)
-  local reverse = {}
-  for key, nativeId in pairs(forward) do
-    if reverse[nativeId] == nil then
-      reverse[nativeId] = key
-    end
-  end
-  self[cacheField] = reverse
-  return reverse
-end
-
 ---@param value string|integer|nil
 ---@return string
 function HgssMonService:_itemKey(value)
@@ -886,23 +264,25 @@ function HgssMonService:_itemKey(value)
     return "NONE"
   end
   if type(value) == "string" then
-    local items = self._context.items
-    assert(type(items) == "table", "mon service item table is required")
-    if items[value] == nil then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown held item " .. value, { item = value })
-    end
+    self._catalog:item(value)
     return value
   end
   if type(value) == "number" and value % 1 == 0 then
-    local key = self:_reverseIdentities("items", "_itemById")[value]
-    if key == nil then
-      MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown native item identity " .. value, { nativeId = value })
-    end
-    assert(key ~= nil, "identity table carries the resolved key")
-    return key
+    return self._catalog:itemKeyByNativeId(value)
   end
   MonsErrors.raise(MonsErrors.RECORD_INVALID, "held item identity must be a key or native id", {})
   error("unreachable", 0)
+end
+
+---@return integer|nil
+function HgssMonService:_currentMapSection()
+  local section = self._mapSection
+  if type(section) == "function" then
+    return section()
+  elseif type(section) == "number" then
+    return section
+  end
+  return nil
 end
 
 ---@param request table<string, unknown>
@@ -914,14 +294,7 @@ function HgssMonService:_metLocation(request)
     end
     return request.location
   end
-  local section = self._mapSection
-  ---@type integer|nil
-  local value = nil
-  if type(section) == "function" then
-    value = section()
-  elseif type(section) == "number" then
-    value = section
-  end
+  local value = self:_currentMapSection()
   if type(value) ~= "number" or value % 1 ~= 0 or value < 0 then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "script-gift creation requires the current map section", {})
   end
@@ -1477,6 +850,272 @@ function HgssMonService:healParty()
     mon.condition = { status = 0, currentHp = self:_maxHp(mon) }
     self:_store(index, mon)
   end
+end
+
+-- Source-shaped script operations. Each mirrors one reviewed HGSS party
+-- script command's observable behavior (pret/pokeheartgold
+-- src/scrcmd_party.c): egg masking, exact result sentinels, inverted
+-- ownership polarity, duplicate-species mode, ribbon-kind aggregation, the
+-- friendship bonus order, and contest no-op cases. Numeric results are the
+-- exact values the script variable carries; party records never store
+-- sentinels. The clean query/mutation methods above stay for non-script
+-- callers and keep their conventional contracts.
+---@param slot0 integer
+---@param move string|integer
+---@return boolean
+function HgssMonService:scriptMonHasMove(slot0, move)
+  local key = self:_moveKey(move)
+  local mon = self:_liveMon(slot0)
+  if mon.isEgg then
+    return false
+  end
+  for _, entry in ipairs(mon.moves) do
+    if entry.move == key then
+      return true
+    end
+  end
+  return false
+end
+
+---@param move string|integer
+---@return integer
+function HgssMonService:scriptSlotWithMove(move)
+  local key = self:_moveKey(move)
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg then
+      for _, entry in ipairs(mon.moves) do
+        if entry.move == key then
+          return index
+        end
+      end
+    end
+  end
+  return 6
+end
+
+---@param slot0 integer
+---@return integer
+function HgssMonService:scriptPartyMonSpecies(slot0)
+  local mon = self:_liveMon(slot0)
+  if mon.isEgg then
+    return 0
+  end
+  return self._catalog:species(mon.species).nativeId
+end
+
+-- Ownership compares only the numeric trainer identity with source u16
+-- width: equal identities report FALSE (0) and differing identities
+-- report TRUE (1).
+---@param slot0 integer
+---@return integer
+function HgssMonService:scriptPartyMonOwnershipResult(slot0)
+  if type(slot0) ~= "number" or slot0 % 1 ~= 0 or slot0 < 0 or slot0 >= self._party:count() then
+    return 0
+  end
+  if self._party:get(slot0).origin.trainerId % 65536 == self._profile.trainerId % 65536 then
+    return 0
+  end
+  return 1
+end
+
+---@param level integer
+---@return integer
+function HgssMonService:scriptCountAtOrBelowLevel(level)
+  if type(level) ~= "number" or level % 1 ~= 0 or level < 1 or level > 100 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "level bound must be an integer in 1..100", {})
+  end
+  local count = 0
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and self:_level(mon) <= level then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- Out-of-range slots and eggs read nature zero instead of faulting.
+---@param slot0 integer
+---@return integer
+function HgssMonService:scriptMonNature(slot0)
+  if type(slot0) ~= "number" or slot0 % 1 ~= 0 or slot0 < 0 or slot0 >= self._party:count() then
+    return 0
+  end
+  local mon = self._party:get(slot0)
+  if mon.isEgg then
+    return 0
+  end
+  return Personality.nature(mon.personality)
+end
+
+---@param nature integer
+---@return integer
+function HgssMonService:scriptSlotWithNature(nature)
+  if type(nature) ~= "number" or nature % 1 ~= 0 or nature < 0 or nature > 24 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "nature must be an integer in 0..24", {})
+  end
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and Personality.nature(mon.personality) == nature then
+      return index
+    end
+  end
+  return 255
+end
+
+-- A zero species operand is duplicate detection among non-eggs: 1 as soon
+-- as any two share a species, else 0. Any other operand counts exact
+-- non-egg matches. Eggs never contribute on either path.
+---@param species string|integer
+---@return integer
+function HgssMonService:scriptCountSpecies(species)
+  if type(species) == "number" and species == 0 then
+    local seen = {}
+    for index = 0, self._party:count() - 1 do
+      local mon = self._party:get(index)
+      if not mon.isEgg then
+        if seen[mon.species] then
+          return 1
+        end
+        seen[mon.species] = true
+      end
+    end
+    return 0
+  end
+  local key = self:_speciesKey(species)
+  local count = 0
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and mon.species == key then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+---@param species string|integer
+---@return integer
+function HgssMonService:scriptSlotWithSpecies(species)
+  if type(species) == "number" and species == 0 then
+    -- No non-egg party mon carries species zero, so the source scan simply
+    -- misses instead of faulting.
+    return 255
+  end
+  local key = self:_speciesKey(species)
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and mon.species == key then
+      return index
+    end
+  end
+  return 255
+end
+
+---@param field string
+---@param bit integer
+---@return boolean
+function HgssMonService:_anyNonEggRibbonBit(field, bit)
+  local place = 2 ^ bit
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and math.floor(mon.ribbons[field] / place) % 2 == 1 then
+      return true
+    end
+  end
+  return false
+end
+
+-- Ribbon-kind aggregation: every source ribbon kind is one bit in the three
+-- boxed ribbon fields, except the two spare bits no kind ever sets (the ds1
+-- spare at bit 28 and the ds2 spare at bit 20). Each represented kind counts
+-- once no matter how many mons own it, and eggs never contribute.
+---@return integer
+function HgssMonService:scriptPartyRibbonCount()
+  local count = 0
+  for bit = 0, 27 do
+    if self:_anyNonEggRibbonBit("ds1", bit) then
+      count = count + 1
+    end
+  end
+  for bit = 0, 31 do
+    if self:_anyNonEggRibbonBit("gba", bit) then
+      count = count + 1
+    end
+  end
+  for bit = 0, 19 do
+    if self:_anyNonEggRibbonBit("ds2", bit) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- The narrow checksum-failed-egg query, not broad native legality.
+-- Semantic records cannot carry checksum failure and the boxed codec
+-- rejects corrupt bytes, so every representable party reports FALSE (0).
+---@return integer
+function HgssMonService:scriptPartyLegalResult()
+  return 0
+end
+
+-- Friendship mutation in source order: a zero modifier bypasses every
+-- bonus; otherwise the Luxury Ball and current-native-section increments
+-- apply first, the friendship-boost held item scales the running total by
+-- 150 percent with integer division, and the final value saturates at 255.
+-- The section comparison reads the native map-section identity against the
+-- mon's egg location, and the item fact comes from the generated catalog.
+---@param slot0 integer
+---@param amount integer
+---@return integer
+function HgssMonService:scriptAddFriendship(slot0, amount)
+  if type(amount) ~= "number" or amount % 1 ~= 0 or amount < 0 or amount > 65535 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "friendship modifier must be an integer in 0..65535", {})
+  end
+  local mon = self:_liveMon(slot0)
+  local modifier = amount
+  if modifier ~= 0 then
+    if mon.origin.ball == "LUXURY_BALL" then
+      modifier = modifier + 1
+    end
+    if self:_currentMapSection() == mon.egg.location then
+      modifier = modifier + 1
+    end
+    if self._catalog:item(mon.heldItem).friendshipBoost then
+      modifier = math.floor(modifier * 150 / 100)
+    end
+  end
+  mon.friendship = math.min(255, mon.friendship + modifier)
+  self:_store(slot0, mon)
+  return mon.friendship
+end
+
+-- Contest mutation: a selector at or above six is a silent no-op, a maxed
+-- sheen blocks the update entirely, and any other selector adds the
+-- modifier to its contest value with saturation at 255. Large source-valid
+-- modifiers saturate instead of failing.
+---@param slot0 integer
+---@param selector integer
+---@param amount integer
+---@return integer
+function HgssMonService:scriptAddContestValue(slot0, selector, amount)
+  if type(amount) ~= "number" or amount % 1 ~= 0 or amount < 0 or amount > 65535 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "contest modifier must be an integer in 0..65535", {})
+  end
+  if type(selector) ~= "number" or selector % 1 ~= 0 or selector < 0 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "contest selector must be a non-negative integer", {})
+  end
+  local mon = self:_liveMon(slot0)
+  if selector >= 6 then
+    return mon.contest.sheen
+  end
+  local key = CONTEST_KEYS[selector + 1]
+  if mon.contest.sheen == 255 then
+    return mon.contest[key]
+  end
+  mon.contest[key] = math.min(255, mon.contest[key] + amount)
+  self:_store(slot0, mon)
+  return mon.contest[key]
 end
 
 return HgssMonService

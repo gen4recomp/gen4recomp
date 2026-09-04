@@ -2,8 +2,9 @@
 -- derived cache through field entry, the lab welcome, Elm's dispatcher, the
 -- real starter script, the party screen, follower traversal, save,
 -- teardown, and continue. Fixed inputs throughout: seed-7 mons bucket,
--- GOLD/gender-0/trainer-1 profile, host date 2000-01-01, lab map 61. The
--- choice cursor never moves, so the first roster slot is deterministic.
+-- GOLD/gender-0/trainer-1 profile, host date 2000-01-01, native map section
+-- 126 (Elm's lab). The choice cursor never moves, so the first roster slot
+-- is deterministic.
 --
 -- The expected native bytes below are a literal produced independently
 -- from the pinned source algorithm (CreateBoxMon/CreateMon personality,
@@ -44,9 +45,9 @@ local ELM_SCRIPT = "vanilla.hgss.scr_seq.0843.script_000"
 local STARTER_SCRIPT = "vanilla.hgss.scr_seq.0843.script_012"
 local SEED = 7
 local EXPECTED_DRAWS_PER_CANDIDATE = 4
--- First roster candidate (seed 7, GOLD/trainer 1, 2000-01-01, map 61).
+-- First roster candidate (seed 7, GOLD/trainer 1, 2000-01-01, section 126).
 local EXPECTED_HEX =
-  "6cccf03b00009004e71873ef1e90542f38b61e8010d325ccf6b473f9d7755134e1f338a11ffc394f02a43e93ac09a343e167698bc92de1a5cacda9c8949631903b1f2503ff39671fd8e7b16645fcfc7c358a5a03737a075bea41c89f5000995e16f22865dbba6a1895e94fa0a65898a354ae125a77c6d0796befb11cdcad98e28c8b3aaebd0c601c"
+  "6cccf03b0000d10401cc855a0b30fa9e2c5a104b9a3b7b9374ba3f8fae86510962d9c6692508ce8be4ec2691a6e1bd9ac6d28e5b6ba193986b3e5766c780e5938acb2dec997d1a76b138d069162654d0cef342a7e30cda3a47fa657861403dd1a9aded22409e28a3efeb1e05661054a75c5f025a2467ae0019c984791e858d713049c20a905c7a12"
 local POKEMON_ACTION = "vanilla.pokemon"
 local PARTY_APPLICATION = "pokemon"
 
@@ -76,8 +77,6 @@ local function productionContext(service, versionId)
     charmap = assert(fontDef.charmap, "production font carries the encoding charmap"),
     games = HgssMonService.GAMES,
     languages = HgssMonService.LANGUAGES,
-    items = HgssMonService.ITEMS,
-    balls = HgssMonService.BALLS,
   }
 end
 
@@ -378,7 +377,7 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     Assert.equal(awarded.species, "CHIKORITA", "the opening cursor holds the first roster slot")
     Assert.equal(rngCalls(game), 3 * EXPECTED_DRAWS_PER_CANDIDATE, "creation draws exactly three candidates")
     Assert.isTrue(game.runtime.monService:partyLegal(), "the chosen starter passes native legality")
-    Assert.equal(awarded.met.location, 61, "the candidate met on the lab map")
+    Assert.equal(awarded.met.location, 126, "the candidate met in the lab's native section")
     Assert.equal(awarded.met.date.year, 2000, "the candidate met on the fixed host date")
     Assert.equal(awarded.met.date.month, 1, "the candidate met on the fixed host date")
     Assert.equal(awarded.met.date.day, 1, "the candidate met on the fixed host date")
@@ -534,7 +533,7 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
     language = MonCache.loadCatalog(cacheFs).version.language,
     charmap = assert(FieldFontLoader.load(cacheFs).charmap, "production font carries the charmap"),
     mapSection = function()
-      return 61
+      return 126
     end,
     date = function()
       return { year = 2000, month = 1, day = 1 }
@@ -543,7 +542,7 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   local hexes = {}
   for _, speciesKey in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do
     local candidate = service:buildStarter(speciesKey)
-    Assert.equal(candidate.met.location, 61, "probe candidates share the journey map")
+    Assert.equal(candidate.met.location, 126, "probe candidates share the journey section")
     hexes[#hexes + 1] = toHex(BoxCodec.encode(candidate, productionContext(service, versionId)))
   end
   Assert.equal(service:partyCount(), 0, "generation never publishes into the party")

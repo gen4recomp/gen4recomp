@@ -604,9 +604,12 @@ end
 -- Mon and party operations. Each handler evaluates its semantic operands
 -- through the run semantics, calls exactly one named operation on the
 -- injected mons service, and writes the source result convention to the
--- result reference: 1 or 0 for booleans, the zero-based slot or 6 for
--- searches and leads. No handler dispatches on a source opcode; the node
--- op already names the behavior.
+-- result reference: 1 or 0 for booleans, an exact script integer for the
+-- source-shaped queries (whose sentinels differ by command: move search
+-- leaves the party size 6, nature/species search leaves 255, nature lookup
+-- reads 0), and the zero-based slot or 6 for the remaining searches and
+-- leads. No handler dispatches on a source opcode; the node op already
+-- names the behavior.
 local function monsFor(run)
   return requireService(run, "mons")
 end
@@ -669,12 +672,12 @@ local function handleSetMonMove(node, run)
 end
 
 local function handleMonHasMove(node, run)
-  writeMonsBool(node, run, monsFor(run):monHasMove(evalField(node, run, "slot"), evalField(node, run, "move")))
+  writeMonsBool(node, run, monsFor(run):scriptMonHasMove(evalField(node, run, "slot"), evalField(node, run, "move")))
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handlePartySlotWithMove(node, run)
-  writeMonsSlot(node, run, monsFor(run):partySlotWithMove(evalField(node, run, "move")))
+  writeMonsResult(node, run, monsFor(run):scriptSlotWithMove(evalField(node, run, "move")))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -714,22 +717,22 @@ local function handleCountAliveMons(node, run)
 end
 
 local function handlePartyCountAtOrBelowLevel(node, run)
-  writeMonsResult(node, run, monsFor(run):partyCountAtOrBelowLevel(evalField(node, run, "level")))
+  writeMonsResult(node, run, monsFor(run):scriptCountAtOrBelowLevel(evalField(node, run, "level")))
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handleCountSpecies(node, run)
-  writeMonsResult(node, run, monsFor(run):countSpecies(evalField(node, run, "species")))
+  writeMonsResult(node, run, monsFor(run):scriptCountSpecies(evalField(node, run, "species")))
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handlePartySlotWithSpecies(node, run)
-  writeMonsSlot(node, run, monsFor(run):partySlotWithSpecies(evalField(node, run, "species")))
+  writeMonsResult(node, run, monsFor(run):scriptSlotWithSpecies(evalField(node, run, "species")))
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handlePartySlotWithNature(node, run)
-  writeMonsSlot(node, run, monsFor(run):partySlotWithNature(evalField(node, run, "nature")))
+  writeMonsResult(node, run, monsFor(run):scriptSlotWithNature(evalField(node, run, "nature")))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -739,17 +742,17 @@ local function handlePartySlotWithFatefulEncounter(node, run)
 end
 
 local function handlePartyMonSpecies(node, run)
-  writeMonsResult(node, run, monsFor(run):partyMonSpecies(evalField(node, run, "slot")))
+  writeMonsResult(node, run, monsFor(run):scriptPartyMonSpecies(evalField(node, run, "slot")))
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handlePartyMonIsMine(node, run)
-  writeMonsBool(node, run, monsFor(run):partyMonIsMine(evalField(node, run, "slot")))
+  writeMonsResult(node, run, monsFor(run):scriptPartyMonOwnershipResult(evalField(node, run, "slot")))
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handlePartyMonNature(node, run)
-  writeMonsResult(node, run, monsFor(run):monNature(evalField(node, run, "slot")))
+  writeMonsResult(node, run, monsFor(run):scriptMonNature(evalField(node, run, "slot")))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -759,7 +762,7 @@ local function handlePartyMonFriendship(node, run)
 end
 
 local function handleMonAddFriendship(node, run)
-  monsFor(run):monAddFriendship(evalField(node, run, "slot"), evalField(node, run, "amount"))
+  monsFor(run):scriptAddFriendship(evalField(node, run, "slot"), evalField(node, run, "amount"))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -783,7 +786,7 @@ local function handlePartyMonContestValue(node, run)
 end
 
 local function handleMonAddContestValue(node, run)
-  monsFor(run):monAddContestValue(
+  monsFor(run):scriptAddContestValue(
     evalField(node, run, "slot"),
     evalField(node, run, "contestType"),
     evalField(node, run, "amount")
@@ -802,7 +805,7 @@ local function handlePartyMonRibbonCount(node, run)
 end
 
 local function handlePartyRibbonCount(node, run)
-  writeMonsResult(node, run, monsFor(run):partyRibbonCount())
+  writeMonsResult(node, run, monsFor(run):scriptPartyRibbonCount())
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -822,7 +825,7 @@ local function handlePartyLeadAlive(node, run)
 end
 
 local function handlePartyLegalCheck(node, run)
-  writeMonsBool(node, run, monsFor(run):partyLegal())
+  writeMonsResult(node, run, monsFor(run):scriptPartyLegalResult())
   return Runtime.OUTCOME_CONTINUE
 end
 

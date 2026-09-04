@@ -28,8 +28,6 @@ local function productionContext(catalog, cacheFs)
     charmap = assert(fontDef.charmap, "production font carries the encoding charmap"),
     games = HgssMonService.GAMES,
     languages = HgssMonService.LANGUAGES,
-    items = HgssMonService.ITEMS,
-    balls = HgssMonService.BALLS,
   }
 end
 
@@ -50,8 +48,6 @@ function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
     charmap = context.charmap,
     games = context.games,
     languages = context.languages,
-    items = context.items,
-    balls = context.balls,
     game = versionId,
     language = root.version.language,
   })

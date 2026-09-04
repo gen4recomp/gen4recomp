@@ -19,16 +19,14 @@ local Stats = require("libs.mons.src.gen4.Stats")
 ---@field private _catalog MonCatalog
 ---@field private _rng Gen4Lcrng
 ---@field private _charmap table<string, unknown>
----@field private _games table<string, unknown>
----@field private _languages table<string, unknown>
----@field private _items table<string, unknown>
----@field private _balls table<string, unknown>
+---@field private _games table<string, integer>
+---@field private _languages table<string, integer>
 ---@field private _game string
 ---@field private _language string
 local MonFactory = {}
 MonFactory.__index = MonFactory
 
----@param args { catalog: MonCatalog, rng: Gen4Lcrng, charmap: table<string, unknown>, games: table<string, unknown>, languages: table<string, unknown>, items: table<string, unknown>, balls: table<string, unknown>, game: string, language: string }
+---@param args { catalog: MonCatalog, rng: Gen4Lcrng, charmap: table<string, unknown>, games: table<string, integer>, languages: table<string, integer>, game: string, language: string }
 ---@return MonFactory
 function MonFactory.new(args)
   assert(type(args) == "table", "factory requires an argument record")
@@ -37,8 +35,6 @@ function MonFactory.new(args)
   assert(type(args.charmap) == "table", "factory requires a charmap")
   assert(type(args.games) == "table", "factory requires a game table")
   assert(type(args.languages) == "table", "factory requires a language table")
-  assert(type(args.items) == "table", "factory requires an item table")
-  assert(type(args.balls) == "table", "factory requires a ball table")
   assert(type(args.game) == "string" and args.games[args.game] ~= nil, "factory game must resolve")
   assert(type(args.language) == "string" and args.languages[args.language] ~= nil, "factory language must resolve")
   return setmetatable({
@@ -47,8 +43,6 @@ function MonFactory.new(args)
     _charmap = args.charmap,
     _games = args.games,
     _languages = args.languages,
-    _items = args.items,
-    _balls = args.balls,
     _game = args.game,
     _language = args.language,
   }, MonFactory)
@@ -61,8 +55,6 @@ function MonFactory:_context()
     charmap = self._charmap,
     games = self._games,
     languages = self._languages,
-    items = self._items,
-    balls = self._balls,
   }
 end
 
@@ -99,7 +91,14 @@ function MonFactory:createNormal(request)
   end
   local profile = request.profile
   assert(type(profile) == "table", "normal creation requires an owner profile")
-  if self._balls[request.ball] == nil then
+  if type(request.ball) ~= "string" then
+    MonsErrors.raise(
+      MonsErrors.RECORD_INVALID,
+      "normal creation ball must resolve",
+      { policy = "normal", species = request.species }
+    )
+  end
+  if not self._catalog:item(request.ball).isBall then
     MonsErrors.raise(
       MonsErrors.RECORD_INVALID,
       "normal creation ball must resolve",

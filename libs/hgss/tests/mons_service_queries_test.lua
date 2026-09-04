@@ -156,6 +156,39 @@ function T.gifts_accept_native_identities_and_default_ability_sentinels()
   Assert.isTrue(gift(service, "EEVEE", { ability = 0xFFFF }), "the all-bits ability sentinel keeps the default ability")
 end
 
+function T.native_item_identities_resolve_through_the_catalog_alone()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xEEEEEEEE):capture(), catalog:fingerprint()),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    -- Independently maintained runtime maps disagree with the catalog about
+    -- the same semantic item; creation still resolves the generated
+    -- identity because nothing consults these maps.
+    items = { NONE = 0, SITRUS_BERRY = 999 },
+    balls = { POKE_BALL = 999 },
+    mapSection = 7,
+    date = CatalogFixture.metDate(),
+  })
+  Assert.isTrue(
+    service:giveMon({
+      species = "CHIKORITA",
+      level = 5,
+      heldItem = 158,
+      form = 0,
+      location = 7,
+      date = CatalogFixture.metDate(),
+    }),
+    "a native item identity resolves without runtime tables"
+  )
+  Assert.equal(service:partyMon(0).heldItem, "SITRUS_BERRY", "the generated catalog names the native identity")
+end
+
 function T.gifts_resolve_context_location_and_date_from_the_service()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0xCCCCCCCC, {

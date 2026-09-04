@@ -913,14 +913,13 @@ function FieldRuntime:_load()
     -- host clock at creation time.
     local monBucket = loadedGame and loadedGame.mons or assert(self.game.mons, "finalized game mons bucket is required")
     local function monMetMapSection()
-      -- Interim section identity: the runtime map id stands in for the
-      -- native map-section identity until a mapsec table ships with map
-      -- data. The value is write-only metadata in this increment (no
-      -- summary, legality, or script consumer reads it) and round-trips
-      -- exactly through save and native encoding.
       local currentMap = self.session and self.session.currentMap or self.runtimeMap
-      assert(currentMap and currentMap.mapId, "mon met location requires the active map")
-      return currentMap.mapId
+      local nativeId = currentMap and currentMap.mapSectionNativeId or nil
+      assert(
+        type(nativeId) == "number" and nativeId % 1 == 0 and nativeId >= 0,
+        "mon met location requires the active native map section"
+      )
+      return nativeId
     end
     local function monMetDate()
       local now = self.localClock:nowLocal()

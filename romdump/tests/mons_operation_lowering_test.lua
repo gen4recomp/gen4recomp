@@ -79,6 +79,21 @@ function T.gift_ability_sentinels_keep_the_default_ability()
   Assert.equal(named.form, 1)
 end
 
+function T.contest_selector_rides_as_a_raw_immediate_byte()
+  -- ScrCmd_MonAddContestValue (828) reads slot and modifier as variables
+  -- but the contest selector as a raw byte (ScriptReadByte): the lowered
+  -- node must carry the selector as an immediate number, never as a
+  -- variable reference.
+  local add = lowerSingle(828, { 0x8000, 3, 0x8001 })
+  Assert.equal(add.op, "mon_add_contest_value")
+  Assert.deepEqual(add.slot, { value = "var", id = 0x8000 })
+  Assert.equal(add.contestType, 3, "the selector is an immediate byte")
+  Assert.deepEqual(add.amount, { value = "var", id = 0x8001 })
+  local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+  local widths = assert(ScriptCommands.byOpcode[828]).widths
+  Assert.equal(widths[2], 1, "the selector operand stays one byte wide")
+end
+
 function T.loan_give_and_check_defer_to_the_trade_application()
   local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
   for _, opcode in ipairs({ 362, 363 }) do

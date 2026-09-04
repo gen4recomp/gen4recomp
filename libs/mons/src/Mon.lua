@@ -209,9 +209,10 @@ function Mon.validate(record, context)
       { ability = record.ability }
     )
   end
-  if context.items == nil or context.items[record.heldItem] == nil then
+  if type(record.heldItem) ~= "string" then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown held item " .. tostring(record.heldItem), {})
   end
+  catalog:item(record.heldItem)
   checkU8(record.markings, "markings")
 
   if type(record.evs) ~= "table" then
@@ -347,7 +348,10 @@ function Mon.validate(record, context)
   if context.games == nil or context.games[record.origin.game] == nil then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown game " .. tostring(record.origin.game), {})
   end
-  if context.balls == nil or context.balls[record.origin.ball] == nil then
+  if type(record.origin.ball) ~= "string" then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(record.origin.ball), {})
+  end
+  if not catalog:item(record.origin.ball).isBall then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(record.origin.ball), {})
   end
   if context.languages == nil or context.languages[record.origin.language] == nil then

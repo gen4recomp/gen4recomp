@@ -59,13 +59,18 @@ function NativeLegality.project(mon, context)
   end
 
   local abilityDefinition = catalog:ability(mon.ability)
-  if context.items == nil or context.items[mon.heldItem] == nil then
+  if type(mon.heldItem) ~= "string" then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown held item " .. tostring(mon.heldItem), {})
   end
+  local heldDefinition = catalog:item(mon.heldItem)
   if context.games == nil or context.games[mon.origin.game] == nil then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown game " .. tostring(mon.origin.game), {})
   end
-  if context.balls == nil or context.balls[mon.origin.ball] == nil then
+  if type(mon.origin.ball) ~= "string" then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(mon.origin.ball), {})
+  end
+  local ballDefinition = catalog:item(mon.origin.ball)
+  if not ballDefinition.isBall then
     MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown ball " .. tostring(mon.origin.ball), {})
   end
   if context.languages == nil or context.languages[mon.origin.language] == nil then
@@ -156,7 +161,7 @@ function NativeLegality.project(mon, context)
   return {
     personality = mon.personality,
     speciesId = species.nativeId,
-    heldItemId = context.items[mon.heldItem] --[[@as integer]],
+    heldItemId = heldDefinition.nativeId,
     trainerId = mon.origin.trainerId,
     experience = mon.experience,
     friendship = mon.friendship,
@@ -209,7 +214,7 @@ function NativeLegality.project(mon, context)
     eggLocation = mon.egg.location,
     metLocation = mon.met.location,
     pokerus = mon.pokerus,
-    ballId = context.balls[mon.origin.ball] --[[@as integer]],
+    ballId = ballDefinition.nativeId,
     metLevel = mon.met.level,
     trainerGender = mon.origin.trainerGender,
     terrain = mon.met.terrain,

@@ -149,8 +149,6 @@ function GameSaveValidation:validate(record, context)
         charmap = selected.charmap,
         games = selected.monGames or HgssMonService.GAMES,
         languages = selected.monLanguages or HgssMonService.LANGUAGES,
-        items = selected.monItems or HgssMonService.ITEMS,
-        balls = selected.monBalls or HgssMonService.BALLS,
       })
       return value
     end
