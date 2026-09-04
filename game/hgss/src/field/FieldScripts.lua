@@ -203,6 +203,8 @@ end
 ---@field playerAvatar table<string, unknown>|nil avatar transition owner wired into the player facade (required together with avatarApplier)
 ---@field avatarApplier (fun(): table<string, unknown>|nil)|nil pending-transition materializer wired into the player facade (required together with playerAvatar)
 ---@field mons table<string, unknown>|nil the live HGSS mon service for mon/party script operations and text (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field starterProvider table<string, unknown>|nil the default starter roster for the blocking starter task (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field starterChoice table<string, unknown>|nil the modal starter-choice surface the blocking task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -380,6 +382,8 @@ function FieldScripts.new(opts)
       startMenuReopen = opts.startMenuReopen,
       effects = opts.effects,
       mons = opts.mons,
+      starterProvider = opts.starterProvider,
+      starterChoice = opts.starterChoice,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

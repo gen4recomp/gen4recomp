@@ -1125,9 +1125,8 @@ return {
     [167] = {
       name = "ScrCmd_ChooseStarter",
       feature = "starter",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "starter choice needs the blocking starter application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {},
     },
     [168] = {

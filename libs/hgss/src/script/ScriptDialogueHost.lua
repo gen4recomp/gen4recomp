@@ -98,6 +98,15 @@ local function resolveMonsTextValue(kind, descriptor, mons, world)
     local position = evaluateTextOperand(descriptor.position, world)
     local mon = mons:partyMon(position)
     return catalog:species(mon.species).name
+  elseif kind == "starter_species_name" then
+    -- The published starter is the lead of the previously empty party: the
+    -- starter task inserts the confirmed candidate at slot zero and the
+    -- resumed script owns every later party change. Before selection the
+    -- party is empty and the slot lookup fails through structured party
+    -- validation; the modal presentation names its own candidates and never
+    -- reads this global.
+    local mon = mons:partyMon(0)
+    return catalog:species(mon.species).name
   elseif kind == "party_nickname" then
     local position = evaluateTextOperand(descriptor.position, world)
     return Mon.displayName(mons:partyMon(position), catalog)

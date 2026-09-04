@@ -1017,6 +1017,28 @@ function HgssMonService:swapPartyMons(left0, right0)
   self._party:swap(left0, right0)
 end
 
+-- Builds one starter candidate through the source starter policy without
+-- touching the party. The starter task pre-creates all three candidates
+-- through this operation and publishes the confirmed instance with addMon,
+-- so generation never observes party fullness and confirmation never
+-- rerolls. Species and form validation run before any generator draw.
+---@param speciesKey string
+---@param metContext { location: integer?, date: MonDate|(fun(): MonDate)|nil }?
+---@return table<string, unknown>
+function HgssMonService:buildStarter(speciesKey, metContext)
+  assert(type(speciesKey) == "string", "starter creation requires a species key")
+  local species = self:_speciesKey(speciesKey)
+  self._catalog:form(species, 0)
+  local context = metContext or {}
+  assert(type(context) == "table", "starter met context must be a record")
+  return self._factory:createStarter({
+    species = species,
+    profile = self._profile,
+    location = self:_metLocation(context),
+    date = self:_metDate(context),
+  })
+end
+
 -- Creates the starter candidate through the source starter policy and
 -- inserts the exact instance into the party.
 ---@param speciesKey string
@@ -1025,12 +1047,7 @@ end
 function HgssMonService:createStarter(speciesKey, metContext)
   assert(type(speciesKey) == "string", "starter creation requires a species key")
   assert(type(metContext) == "table", "starter creation requires a met context")
-  local mon = self._factory:createStarter({
-    species = self:_speciesKey(speciesKey),
-    profile = self._profile,
-    location = metContext.location,
-    date = metContext.date,
-  })
+  local mon = self:buildStarter(speciesKey, metContext)
   local added = self._party:add(mon)
   assert(added, "starter selection requires a free party slot")
   return self._party:get(self._party:count() - 1)

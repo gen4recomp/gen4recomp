@@ -660,6 +660,15 @@ local function handleGiveMon(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+-- Blocking starter selection: the foreground script owns the field until
+-- the starter task publishes the confirmed candidate and restores the
+-- field presentation. The task carries no result ref; the party holds the
+-- published mon and the resumed script owns its story flags.
+local function handleChooseStarter(node, run)
+  requireForeground(run, "choose_starter")
+  return blockOnTask(run, "choose_starter", { node = node })
+end
+
 local function handleReturnLoanMon(node, run)
   monsFor(run):returnLoanMon(evalField(node, run, "slot"))
   if node.result ~= nil then
@@ -887,6 +896,18 @@ local function handleReleaseActor(node, run)
 end
 
 local function handleFacePlayer(node, run)
+  -- An interaction without an object (background and coordinate triggers)
+  -- has nothing to turn toward the player: the default self-facing is a
+  -- no-op instead of a missing-actor fault. An explicit actor reference
+  -- still resolves strictly below.
+  local actorRef = node.actor
+  local trigger = run.instance and run.instance.trigger
+  if
+    (actorRef == nil or actorRef == "self" or (type(actorRef) == "table" and actorRef.special == "self"))
+    and (trigger == nil or trigger.selfActor == nil)
+  then
+    return Runtime.OUTCOME_CONTINUE
+  end
   local actorId = semanticsFor(run).requireActor(node.actor, run)
   local facing = run.services.player:facing()
   run.services.actors:setFacing(actorId, OPPOSITE_FACING[facing])
@@ -1442,6 +1463,7 @@ HANDLERS.add_local = handleAddLocal
 HANDLERS.sub_local = handleSubLocal
 HANDLERS.buffer_text = handleBufferText
 HANDLERS.give_mon = handleGiveMon
+HANDLERS.choose_starter = handleChooseStarter
 HANDLERS.return_loan_mon = handleReturnLoanMon
 HANDLERS.set_mon_move = handleSetMonMove
 HANDLERS.mon_has_move = handleMonHasMove

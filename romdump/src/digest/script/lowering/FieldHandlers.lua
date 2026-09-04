@@ -472,6 +472,14 @@ local function abilityOrNil(operand)
   return Operands.varRef(operand)
 end
 
+-- ScrCmd_ChooseStarter carries no operands. It lowers to the blocking
+-- starter operation: the runtime pre-creates all three candidates, runs
+-- the modal choice, and publishes the confirmed instance before the
+-- script continues with its own story flags.
+local function chooseStarter(_)
+  return { op = "choose_starter" }
+end
+
 local function giveMon(ins)
   -- ScrCmd_GiveMon species, level, held item, form, ability, result: the
   -- current map section resolves at the service before creation, creation
@@ -1048,6 +1056,7 @@ return {
   [202] = bufferSpeciesName,
   [203] = bufferStarterSpeciesName,
   [137] = giveMon,
+  [167] = chooseStarter,
   [139] = setMonMove,
   [140] = monHasMove,
   [141] = partySlotWithMove,

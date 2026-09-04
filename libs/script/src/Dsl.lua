@@ -688,6 +688,9 @@ end
 function M.giveMon(spec)
   return op("give_mon", spec)
 end
+function M.chooseStarter(spec)
+  return op("choose_starter", spec)
+end
 function M.returnLoanMon(spec)
   return op("return_loan_mon", spec)
 end

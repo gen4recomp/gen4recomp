@@ -724,6 +724,10 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- Blocking starter selection. The runtime pre-creates the three
+  -- provider-ordered candidates, runs the modal choice, and publishes the
+  -- exact confirmed instance; the resumed script owns its story flags.
+  choose_starter = { fields = {} },
   return_loan_mon = {
     fields = {
       slot = { type = "scalar_or_value", required = true },
@@ -1603,6 +1607,11 @@ Schema.CONSTRUCTORS = {
         notes = "spec={result}.",
       },
       { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores the party to full health." },
+      {
+        signature = "S.chooseStarter(spec)",
+        canonical = "op=choose_starter",
+        notes = "spec optional; the blocking starter application publishes the confirmed candidate.",
+      },
     },
   },
 }

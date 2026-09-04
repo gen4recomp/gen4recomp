@@ -435,6 +435,33 @@ T["missing actor fault through binding path"] = function()
   Assert.equal(fault.code, "SCRIPT_ACTOR_NOT_FOUND")
 end
 
+-- 15b. An interaction without an object has nothing to turn toward the
+-- player: the default self-facing continues instead of faulting, while an
+-- explicit missing actor still fails through the binding path above.
+T["background trigger self-facing continues without an actor"] = function()
+  local p = platform()
+  local resource = script("vanilla.hgss.scr_seq.0843.script_012", {
+    S.facePlayer({}),
+    S.stop(),
+  })
+  p.registry:installBase(resource.id, resource, "generated")
+  local composed = assert(p.composition:effective(resource.id))
+  local trigger = {
+    kind = "background",
+    mapId = 61,
+    backgroundId = 9,
+    scriptId = resource.id,
+    selfActor = nil,
+    playerFacing = "north",
+  }
+  p.scheduler:createForeground(composed, trigger, 100)
+  p.scheduler:step(100, nil)
+  p.scheduler:step(101, nil)
+  Assert.isNil(p.services.events:eventFor("script.error", "script-00000001"), "actorless facing is a no-op")
+  local ended = assert(p.services.events:eventFor("script.ended", "script-00000001"))
+  Assert.isTrue(ended.completed, "the background script runs past facing to its stop")
+end
+
 -- 16. Map transition cancellation: a warp cancels the foreground environment,
 -- releasing locks and tasks.
 T["map transition cancels scripts"] = function()

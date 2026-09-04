@@ -57,6 +57,7 @@ local BLOCKING_OPS = {
   fade_music_in = true,
   ask_yes_no = true,
   context_choice = true,
+  choose_starter = true,
   menu_exec = true,
   warp = true,
   call_common = true,
