@@ -401,6 +401,13 @@ local function followerIsActive(ins)
   return { op = "follower_is_active", result = Operands.varRef(ins.operands[1]) }
 end
 
+local function followerTransition()
+  -- The follower transition carries no operands. It starts one transient
+  -- visual through the transition owner and continues in the same tick; the
+  -- field fixed tick advances the visual afterwards.
+  return { op = "follower_transition" }
+end
+
 local function setSpecialSpawn(ins)
   return {
     op = "set_special_spawn",
@@ -1204,6 +1211,7 @@ return {
   [603] = followerWait,
   [604] = followerStartMovement,
   [605] = followerReposition,
+  [608] = followerTransition,
   [609] = yieldFollowerCheck,
   [698] = followerIsEventTrigger,
   [729] = followerIsActive,

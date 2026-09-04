@@ -927,6 +927,11 @@ local function handleFollowerIsEventTrigger(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+local function handleFollowerTransition(_, run)
+  requireService(run, "followerTransition"):start()
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handleLockPlayer(_, run)
   requireForeground(run, "lock_player")
   run.environment:acquireLock(ScriptEnvironment.LOCK_PLAYER, nil, run.instance.instanceId)
@@ -1585,6 +1590,7 @@ HANDLERS.follower_wait = handleFollowerWait
 HANDLERS.follower_start_movement = handleFollowerStartMovement
 HANDLERS.follower_reposition = handleFollowerReposition
 HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
+HANDLERS.follower_transition = handleFollowerTransition
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
 HANDLERS.lock_all = handleLockAll

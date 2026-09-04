@@ -14,12 +14,13 @@ local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 local T = {}
 
 -- The required core: queries, face/pause/wait/movement, the Elm
--- follow-up state operation, settle, and the event-trigger check.
-local REQUIRED_SUPPORTED = { 596, 601, 602, 603, 604, 605, 609, 698, 729 }
+-- follow-up state operation, the nonblocking transition, settle, and the
+-- event-trigger check.
+local REQUIRED_SUPPORTED = { 596, 601, 602, 603, 604, 605, 608, 609, 698, 729 }
 
 -- Opaque neighbours that recipe-tracing must still classify explicitly;
 -- they may stay deferred only under a documented allowed reason.
-local EXPLICIT_ONLY = { 595, 597, 598, 599, 600, 606, 607, 608 }
+local EXPLICIT_ONLY = { 595, 597, 598, 599, 600, 606, 607 }
 
 local function disposition(opcode)
   local entry = ScriptCommands.byOpcode[opcode]
@@ -38,6 +39,15 @@ end
 
 T["follower settle command is supported"] = function()
   Assert.equal(disposition(609), "supported", "the settle/update check must run controller semantics")
+end
+
+T["follower transition command is supported and same-tick"] = function()
+  Assert.equal(disposition(608), "supported", "the transition must start through the transition owner")
+  Assert.equal(
+    CommandCatalog.classification(608),
+    CommandCatalog.CONTINUE,
+    "the transition must continue in the same tick without a wait task"
+  )
 end
 
 T["follower family has complete dispositions"] = function(romFs)

@@ -972,6 +972,7 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  follower_transition = { fields = {} },
   unsupported = {
     fields = {
       command = { type = "integer", required = true },

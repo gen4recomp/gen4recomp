@@ -46,4 +46,17 @@ function T.follower_active_query_reads_live_controller_state()
   Assert.deepEqual(active.result, { value = "var", id = 0x800C }, "the source result variable rides through")
 end
 
+function T.follower_transition_command_lowers_to_a_no_operand_same_tick_node()
+  Assert.equal(CommandCatalog.disposition(608), "supported", "the transition command must be supported")
+  Assert.equal(
+    CommandCatalog.classification(608),
+    CommandCatalog.CONTINUE,
+    "the transition command must continue in the same tick"
+  )
+  Assert.deepEqual(CommandCatalog.widths(608), {}, "the transition command carries no operands")
+  local node = lowerSingle(608, {})
+  Assert.equal(node.op, "follower_transition", "the transition must lower to transition semantics")
+  Assert.isNil(node.command, "transition semantics dispatch no source opcode number")
+end
+
 return { tests = T }

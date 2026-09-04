@@ -14,6 +14,7 @@ local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
 local WindowConfig = require("game.src.WindowConfig")
 
 ---@class FieldPresentationResourcesRuntime
@@ -34,6 +35,7 @@ local WindowConfig = require("game.src.WindowConfig")
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
+---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation; the inert stub upholds the draw/dispose surface for definition-less compositions
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
 ---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
@@ -79,6 +81,33 @@ function FieldPresentationResources.new(runtime)
     })
     self.partyScreenRenderer = PartyScreenRenderer.new()
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
+    -- The transient follower-transition presentation shares the field effect
+    -- pool. Its renderer-backed part instances replace the runtime's
+    -- headless factory, so script-started transitions render through the
+    -- exact generated resources while keeping controller timing.
+    -- Partially constructed runtimes without the generated definition keep
+    -- the inert stub below.
+    if runtime.followerTransitionDefinition ~= nil and runtime.followingMonTransition ~= nil then
+      local transitionRenderer = FollowingMonTransitionRenderer.new(
+        { transition = runtime.followerTransitionDefinition },
+        entrancePool
+      )
+      self.followingMonTransitionRenderer = transitionRenderer
+      local function transitionModelFactory(part)
+        local renderer = assert(self.followingMonTransitionRenderer, "follower transition renderer is unavailable")
+        return renderer:newInstance(part)
+      end
+      runtime.followingMonTransition:setModelFactory(transitionModelFactory)
+    else
+      local function inertTransitionDrawItems()
+        return {}
+      end
+      local function inertTransitionDispose() end
+      self.followingMonTransitionRenderer = {
+        drawItems = inertTransitionDrawItems,
+        dispose = inertTransitionDispose,
+      } --[[@as FollowingMonTransitionRenderer]]
+    end
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
@@ -130,6 +159,10 @@ function FieldPresentationResources:dispose()
     self.monIconProvider = nil
   end
   self.partyScreenRenderer = nil
+  if self.followingMonTransitionRenderer then
+    self.followingMonTransitionRenderer:dispose()
+    self.followingMonTransitionRenderer = nil
+  end
   if self.textRenderer then
     self.textRenderer:release()
     self.textRenderer = nil

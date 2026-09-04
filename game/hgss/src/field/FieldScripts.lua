@@ -198,14 +198,8 @@ end
 ---@field auxiliaryUi AuxiliaryFieldUi logical auxiliary field UI state
 ---@field contextChoice ContextChoiceProvider contextual two-choice provider
 ---@field menu FieldMenuHost modal field menu host
----@field startMenuReopen table<string, unknown>|nil optional { request: fun() } service for the opcode-61 Start Menu reopen (absent -> SCRIPT_SERVICE_MISSING on use)
----@field effects table<string, unknown>|nil semantic field-effect controller (absent -> SCRIPT_SERVICE_MISSING on reveal)
----@field playerAvatar table<string, unknown>|nil avatar transition owner wired into the player facade (required together with avatarApplier)
----@field avatarApplier (fun(): table<string, unknown>|nil)|nil pending-transition materializer wired into the player facade (required together with playerAvatar)
----@field mons table<string, unknown>|nil the live HGSS mon service for mon/party script operations and text (absent -> SCRIPT_SERVICE_MISSING on use)
----@field starterProvider table<string, unknown>|nil the default starter roster for the blocking starter task (absent -> SCRIPT_SERVICE_MISSING on use)
----@field starterChoice table<string, unknown>|nil the modal starter-choice surface the blocking task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -386,6 +380,7 @@ function FieldScripts.new(opts)
       starterProvider = opts.starterProvider,
       starterChoice = opts.starterChoice,
       followingMon = opts.followingMon,
+      followerTransition = opts.followerTransition,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

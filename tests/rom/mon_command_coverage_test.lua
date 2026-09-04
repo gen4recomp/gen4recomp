@@ -200,7 +200,8 @@ end
 function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
   local archive, memberIrs = FieldScripts.decode(romFs)
   local found = {}
-  local halt = {}
+  local transitions = {}
+  local staleHalts = {}
   FieldScripts.eachScript(archive, memberIrs, function(member, index, structured, lowered)
     if member == LAB_MEMBER and LAB_SCRIPTS[index] ~= nil then
       found[index] = true
@@ -221,8 +222,11 @@ function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
         for _, code in ipairs((item.provenance or {}).opcodes or {}) do
           note(code)
         end
+        if item.op == "follower_transition" and index == 12 then
+          transitions[#transitions + 1] = item
+        end
         if item.op == "unsupported" and item.command == 608 then
-          halt[#halt + 1] = index
+          staleHalts[#staleHalts + 1] = index
         end
       end
       local undispositioned = {}
@@ -244,12 +248,12 @@ function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
     Assert.isTrue(found[index] == true, "the corpus must carry the lab " .. role .. " script")
   end
   -- The starter script runs the choice, the starter flag, the 605 follow-up
-  -- tail, and the pause query, then halts on the explicitly deferred 608
-  -- neighbor (special follower event): the default first-visit path ends
-  -- the script there with an explicit unsupported fault while the field
-  -- recovers cleanly. Pinning the halt point keeps the truncation visible.
-  table.sort(halt)
-  Assert.deepEqual(halt, { 12 }, "exactly the starter script lowers deferred 608 to an explicit halt")
+  -- tail, and the pause query, then starts the nonblocking follower
+  -- transition and keeps going: the transition lowers to one no-operand
+  -- semantic node, never to an explicit unsupported halt.
+  Assert.equal(#staleHalts, 0, "no script may still halt on the transition command")
+  Assert.equal(#transitions, 1, "exactly the starter script lowers one transition node")
+  Assert.isNil(transitions[1].command, "transition semantics dispatch no source opcode number")
 end
 
 return RomSuite.fromFacts(T)

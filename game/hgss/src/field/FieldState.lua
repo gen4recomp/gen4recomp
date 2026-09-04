@@ -242,6 +242,11 @@ function FieldState:_worldParts(alpha)
   local terrain = self.runtime.fieldTerrainEffectController
   local terrainRenderer = resources.fieldTerrainEffectRenderer
   worldParts[8] = terrainRenderer and terrainRenderer:drawItems(terrain:status(), self.runtime.runtimeMap) or NO_DRAWS
+  local transition = self.runtime.followingMonTransition
+  local transitionRenderer = resources.followingMonTransitionRenderer
+  worldParts[9] = (transition and transitionRenderer)
+      and transitionRenderer:drawItems(transition:status(), self.runtime.runtimeMap)
+    or NO_DRAWS
   return worldParts
 end
 
@@ -820,6 +825,7 @@ function FieldState:dispose()
     self.worldParts[5] = nil
     self.worldParts[7] = nil
     self.worldParts[8] = nil
+    self.worldParts[9] = nil
   end
   self.worldActorItems = nil
   self.spriteItems = nil

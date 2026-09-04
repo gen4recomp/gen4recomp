@@ -138,6 +138,9 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   if runtime.followingMon then
     runtime.followingMon:handleMapExit()
   end
+  if runtime.followingMonTransition then
+    runtime.followingMonTransition:clear()
+  end
   assert(runtime.residency):commitTransition(residency)
   local previousCoverage
   if physical then

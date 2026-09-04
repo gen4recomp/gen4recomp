@@ -4232,9 +4232,8 @@ return {
     [608] = {
       name = "ScrCmd_608",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "opcode 608 adjoins the Elm follow-up state operation and stays deferred pending a source trace",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [609] = {
