@@ -14,6 +14,7 @@
 -- installed split is kept so a future flag re-enters without redesign.
 
 local Errors = require("libs.errors.src.Errors")
+local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local Personality = require("libs.mons.src.gen4.Personality")
@@ -26,6 +27,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _catalog MonCatalog mon catalog { species, followerSelection }
 ---@field _actors FieldActorManager
 ---@field _playerOf fun(): FieldPlayer player anchor source { movementRevision, committedAnchor }
+---@field _mapOf fun(mapId: integer): table<string, unknown>? read-only runtime map metadata { followMode, mapSymbol }
 ---@field _lastMapId integer?
 ---@field _lastPartyRevision integer?
 ---@field _lead table<string, unknown>?
@@ -35,7 +37,6 @@ FollowingMonController.__index = FollowingMonController
 ---@field _queue table<string, unknown>[]
 ---@field _paused boolean
 ---@field _action { kind: string, progress: integer, duration: integer }?
----@field _lastParams { a: integer, b: integer }?
 ---@field _suspended boolean
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
 ---@field isEnabled fun(self: FollowingMonController): boolean
@@ -48,17 +49,18 @@ FollowingMonController.__index = FollowingMonController
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
 ---@field settleMovement fun(self: FollowingMonController)
 ---@field startMovement fun(self: FollowingMonController, action: table<string, unknown>)
+---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
 ---@field isEventTrigger fun(self: FollowingMonController, kind: integer, param: unknown): boolean
----@field setParam fun(self: FollowingMonController, a: integer, b: integer)
----@field lastParams fun(self: FollowingMonController): { a: integer, b: integer }?
 ---@field dispose fun(self: FollowingMonController)
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
 ---@field _reconcileLead fun(self: FollowingMonController)
+---@field _permitted fun(self: FollowingMonController, mapId: integer): boolean
 ---@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?): FieldActorManager.PartnerSpec
 ---@field _tryInstall fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
 ---@field _tryUpdate fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
 ---@field _publish fun(self: FollowingMonController, mapId: integer)
+---@field _suppress fun(self: FollowingMonController)
 ---@field _clearAll fun(self: FollowingMonController)
 ---@field _discontinuity fun(self: FollowingMonController, mapId: integer)
 ---@field _handleMapChange fun(self: FollowingMonController, mapId: integer)
@@ -79,6 +81,41 @@ local DELTAS = {
 
 local OPPOSITE_FACING = { north = "south", south = "north", west = "east", east = "west" }
 
+-- The tower floors where the burrowing species stay unpublished even though
+-- the map mode itself allows followers (pret/pokeheartgold
+-- FollowMon_DiglettPermissionCheck). Keyed by semantic map symbol, never by
+-- display name.
+local BURROWING_BLOCKED_MAPS = {
+  MAP_BELL_TOWER_1F = true,
+  MAP_BELL_TOWER_2F = true,
+  MAP_BELL_TOWER_3F = true,
+  MAP_BELL_TOWER_4F = true,
+  MAP_BELL_TOWER_5F = true,
+  MAP_BELL_TOWER_6F = true,
+  MAP_BELL_TOWER_7F = true,
+  MAP_BELL_TOWER_8F = true,
+  MAP_BELL_TOWER_9F = true,
+  MAP_BELL_TOWER_ROOF = true,
+  MAP_BELL_TOWER_10F = true,
+}
+
+local BURROWING_SPECIES = { DIGLETT = true, DUGTRIO = true }
+
+-- The source player-relative placement offsets: 0 north, 1 south, 2 west,
+-- 3 east. Any other selector keeps the copied player tile unchanged.
+local REPOSITION_OFFSETS = {
+  [0] = { x = 0, z = -1 },
+  [1] = { x = 0, z = 1 },
+  [2] = { x = -1, z = 0 },
+  [3] = { x = 1, z = 0 },
+}
+
+local ZERO_OFFSET = { x = 0, z = 0 }
+
+-- The source facing-direction mapping shared with field actors: 0 north,
+-- 1 south, 2 west, 3 east.
+local FACING_BY_RAW = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
+
 -- Trigger kinds the controller answers from live state (corpus-observed
 -- 1/2). Anything else is outside the delivered trigger contract and reads
 -- false rather than faulting the script.
@@ -89,6 +126,7 @@ local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
 ---@field catalog MonCatalog mon catalog { species, followerSelection }
 ---@field actors FieldActorManager
 ---@field playerOf fun(): FieldPlayer player anchor source { movementRevision, committedAnchor }
+---@field mapOf (fun(mapId: integer): table<string, unknown>?)? read-only runtime map metadata lookup
 
 ---@param opts FollowingMonControllerOptions
 ---@return FollowingMonController
@@ -98,11 +136,27 @@ function FollowingMonController.new(opts)
   assert(opts.catalog and opts.catalog.followerSelection, "following controller requires the mon catalog")
   assert(opts.actors and opts.actors.installPartner, "following controller requires the partner actor seam")
   assert(type(opts.playerOf) == "function", "following controller requires the player anchor source")
+  if opts.mapOf ~= nil then
+    assert(type(opts.mapOf) == "function", "following controller map lookup must be a function")
+  end
+  local actors = assert(opts.actors)
+  local mapOf = opts.mapOf
+  if mapOf == nil then
+    -- The actor manager's current entries carry the same generated runtime
+    -- map records, so composition without an explicit lookup still reads
+    -- the live map metadata rather than a default.
+    local function actorEntryMap(mapId)
+      local entry = actors.maps[mapId]
+      return entry and entry.runtimeMap or nil
+    end
+    mapOf = actorEntryMap
+  end
   local self = setmetatable({
     _service = opts.service,
     _catalog = opts.catalog,
-    _actors = opts.actors,
+    _actors = actors,
     _playerOf = opts.playerOf,
+    _mapOf = mapOf,
     _lastMapId = nil,
     _lastPartyRevision = nil,
     _lead = nil,
@@ -112,7 +166,6 @@ function FollowingMonController.new(opts)
     _queue = {},
     _paused = false,
     _action = nil,
-    _lastParams = nil,
     _suspended = false,
   }, FollowingMonController)
   ---@cast self FollowingMonController
@@ -198,7 +251,46 @@ function FollowingMonController:_reconcileLead()
     form = snapshot.form,
     personality = snapshot.personality,
     visualId = descriptor.visualId,
+    size = descriptor.size,
   }
+  assert(type(self._lead.size) == "number" and self._lead.size % 1 == 0, "follower size is required for map permission")
+end
+
+-- The source follower permission (pret/pokeheartgold
+-- FollowMon_GetPermissionBySpeciesAndMap): the burrowing check runs before
+-- the map mode, a prevented map publishes nothing, a height-restricted map
+-- admits only size-zero followers, and an allowed map admits every lead. A
+-- missing map record or an unknown follow mode is a hard generated-data
+-- failure, never a silent allow.
+---@param self FollowingMonController
+---@param mapId integer
+---@return boolean
+function FollowingMonController:_permitted(mapId)
+  assert(self._lead ~= nil, "follower permission requires a lead identity")
+  local map = self._mapOf(mapId)
+  if map == nil then
+    Errors.raise(FieldErrors.FIELD_MAP_UNKNOWN, "no runtime map for follower permission", { mapId = mapId })
+  end
+  assert(map ~= nil, "follower permission requires the current map record")
+  if BURROWING_SPECIES[self._lead.species] and BURROWING_BLOCKED_MAPS[map.mapSymbol] then
+    return false
+  end
+  local mode = map.followMode
+  if mode == "ALLOW" then
+    return true
+  end
+  if mode == "PREVENT" then
+    return false
+  end
+  if mode == "HEIGHT_RESTRICT" then
+    return self._lead.size == 0
+  end
+  Errors.raise(
+    FieldErrors.FIELD_MAP_WORLD_INVALID,
+    "unknown follower map mode; rebuild the derived cache",
+    { mapId = mapId, followMode = mode }
+  )
+  error("unreachable after unknown follower map mode")
 end
 
 ---@return boolean
@@ -216,7 +308,14 @@ end
 ---@return boolean
 ---@param self FollowingMonController
 function FollowingMonController:isVisible()
-  return self:isActive()
+  if not self:isActive() then
+    return false
+  end
+  local mapId = self._actors.currentMapId
+  if mapId == nil then
+    return false
+  end
+  return self:_permitted(mapId)
 end
 
 ---@return string?
@@ -245,22 +344,10 @@ function FollowingMonController:_spec(mapId, fieldX, fieldZ, facing, worldY)
   }
 end
 
--- Only the data fault that means "not installable yet" (a descriptor
--- visual the actor set does not compile) answers nil; programmer misuse
--- propagates.
----@param err unknown
----@return boolean
-local function isVisualMissing(err)
-  if not Errors.is(err) then
-    return false
-  end
-  ---@cast err Errors.Error
-  return err.code == FieldErrors.ACTOR_PARTNER_VISUAL_MISSING
-end
-
--- Install, catching only the data fault that means "not installable yet" (a
--- descriptor visual the actor set does not compile). Programmer misuse
--- propagates. Answers nil when the tile cannot take the partner.
+-- Install, catching only a classified physical placement rejection (the
+-- tile cannot take the partner right now, so a later tick retries).
+-- Missing visuals, invalid specs, and every other structured failure
+-- propagate. Answers nil when the tile cannot take the partner.
 ---@param self FollowingMonController
 ---@param spec FieldActorManager.PartnerSpec
 ---@return string?
@@ -269,7 +356,7 @@ function FollowingMonController:_tryInstall(spec)
   if ok then
     return id
   end
-  if isVisualMissing(id) then
+  if FieldActorManager.isPlacementRejection(id) then
     return nil
   end
   error(id)
@@ -283,7 +370,7 @@ function FollowingMonController:_tryUpdate(spec)
   if ok then
     return id
   end
-  if isVisualMissing(id) then
+  if FieldActorManager.isPlacementRejection(id) then
     return nil
   end
   error(id)
@@ -324,10 +411,10 @@ function FollowingMonController:_publish(mapId)
   end
 end
 
--- Cancel in-flight presentation, drop the queue and the actor, and forget
--- the published identity. Idempotent: every path below tolerates absence.
+-- Drop visible presentation, the in-flight step, and the queue without
+-- touching party identity. Idempotent: every path below tolerates absence.
 ---@param self FollowingMonController
-function FollowingMonController:_clearAll()
+function FollowingMonController:_suppress()
   local partnerId = self._actors:partnerId()
   if partnerId ~= nil then
     self._actors:cancelScriptedMovement(partnerId)
@@ -335,8 +422,15 @@ function FollowingMonController:_clearAll()
   self._actors:clearPartner()
   self._action = nil
   self._queue = {}
-  self._lead = nil
   self._published = nil
+end
+
+-- Cancel in-flight presentation, drop the queue and the actor, and forget
+-- the published identity. Idempotent: every path below tolerates absence.
+---@param self FollowingMonController
+function FollowingMonController:_clearAll()
+  self:_suppress()
+  self._lead = nil
 end
 
 -- A discontinuous anchor (teleport, jump, map mismatch, bad surface): drop
@@ -353,7 +447,7 @@ function FollowingMonController:_discontinuity(mapId)
   self._queue = {}
   self._actors:clearPartner()
   self._published = nil
-  if self._lead ~= nil then
+  if self._lead ~= nil and self:_permitted(mapId) then
     local anchor = self._playerOf():committedAnchor()
     if anchor.mapId == mapId then
       local behind = behindTile(anchor)
@@ -449,8 +543,11 @@ function FollowingMonController:_driveQueue(mapId)
     { action = "walk", direction = direction, speed = FollowingMonController.TRAIL_SPEED }
   )
   if not ok then
-    self:_discontinuity(mapId)
-    return
+    if FieldActorManager.isPlacementRejection(err) then
+      self:_discontinuity(mapId)
+      return
+    end
+    error(err)
   end
   assert(err == nil, "scripted begin answers through the actor, not a value")
   self._action = {
@@ -510,6 +607,14 @@ function FollowingMonController:update()
   end
   if not self:isActive() then
     self:_clearAll()
+    return
+  end
+  if not self:_permitted(mapId) then
+    -- Permission lost: clear the visible partner but keep the party-derived
+    -- lead, so returning to an allowed map republishes the same follower.
+    -- The player baseline keeps tracking so no stale anchor replays later.
+    self:_suppress()
+    self:_observePlayer(mapId)
     return
   end
   if not sameIdentity(self._published, self._lead) then
@@ -593,8 +698,11 @@ function FollowingMonController:startMovement(action)
     surfaceBandDelta = action.surfaceBandDelta,
   })
   if not ok then
-    self:_discontinuity(assert(self._actors.currentMapId, "follower map is required"))
-    return
+    if FieldActorManager.isPlacementRejection(err) then
+      self:_discontinuity(assert(self._actors.currentMapId, "follower map is required"))
+      return
+    end
+    error(err)
   end
   assert(err == nil, "scripted begin answers through the actor, not a value")
   self._action = { kind = "explicit", progress = 0, duration = MovementCalibration.actionTicks(action) }
@@ -628,19 +736,51 @@ function FollowingMonController:isEventTrigger(kind, _)
   return self._actors:partnerId() ~= nil
 end
 
--- Record the source parameter/state operation. Both params ride through
--- opaquely; the controller owns no param-driven behavior in this increment.
----@param a integer
----@param b integer
+-- Direct player-relative placement: copy the player's committed tile,
+-- offset one tile by the source selector (0 north, 1 south, 2 west,
+-- 3 east, anything else no offset), and face the partner per the source
+-- direction byte. An absent partner is a no-op. Stale trail and in-flight
+-- presentation clear first so normal following resumes from the placed
+-- tile. A classified physical placement rejection reconciles canonically
+-- behind the player instead of faulting the script; every other failure
+-- propagates.
+---@param offsetSelector integer source placement selector
+---@param directionRaw integer source facing direction
 ---@param self FollowingMonController
-function FollowingMonController:setParam(a, b)
-  self._lastParams = { a = a, b = b }
-end
-
----@return { a: integer, b: integer }?
----@param self FollowingMonController
-function FollowingMonController:lastParams()
-  return self._lastParams
+function FollowingMonController:repositionRelativeToPlayer(offsetSelector, directionRaw)
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil then
+    return
+  end
+  local facing = FACING_BY_RAW[directionRaw]
+  if facing == nil then
+    Errors.raise(
+      FieldErrors.ACTOR_PARTNER_FACING_INVALID,
+      "unsupported partner facing " .. tostring(directionRaw),
+      { facing = directionRaw }
+    )
+  end
+  assert(facing ~= nil, "partner facing validation is required")
+  local anchor = self._playerOf():committedAnchor()
+  local offset = REPOSITION_OFFSETS[offsetSelector] or ZERO_OFFSET
+  self._actors:cancelScriptedMovement(partnerId)
+  self._action = nil
+  self._queue = {}
+  local mapId = assert(self._actors.currentMapId, "follower map is required")
+  local ok, err = pcall(
+    self._actors.setPosition,
+    self._actors,
+    partnerId,
+    { fieldX = anchor.fieldX + offset.x, fieldZ = anchor.fieldZ + offset.z, worldY = anchor.worldY }
+  )
+  if not ok then
+    if FieldActorManager.isPlacementRejection(err) then
+      self:_discontinuity(mapId)
+      return
+    end
+    error(err)
+  end
+  self._actors:setFacing(partnerId, facing)
 end
 
 -- Release follower state without touching saved data. The manager owns the

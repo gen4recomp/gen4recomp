@@ -372,12 +372,14 @@ local function followerStartMovement(ins)
   return { op = "follower_start_movement", movement = decoded[1] }
 end
 
-local function followerSetParam(ins)
-  -- ScrCmd_605 (the Elm follow-up state operation) carries two small
-  -- params (corpus pairs {0,1}, {3,2}, {2,3}); both ride through opaquely
-  -- into controller state on the same tick.
+local function followerReposition(ins)
+  -- The player-relative partner placement carries two bytes: the first
+  -- selects the tile offset around the player (0 north, 1 south, 2 west,
+  -- 3 east, anything else the player tile itself) and the second faces the
+  -- partner. Both ride through for the controller's direct placement on the
+  -- same tick.
   return {
-    op = "follower_set_param",
+    op = "follower_reposition",
     a = Operands.operandValue(ins.operands[1]),
     b = Operands.operandValue(ins.operands[2]),
   }
@@ -1201,7 +1203,7 @@ return {
   [602] = followerSetPaused,
   [603] = followerWait,
   [604] = followerStartMovement,
-  [605] = followerSetParam,
+  [605] = followerReposition,
   [609] = yieldFollowerCheck,
   [698] = followerIsEventTrigger,
   [729] = followerIsActive,

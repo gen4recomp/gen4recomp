@@ -317,7 +317,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         -- Source policy gates the party route on starter progression; the
         -- owned mon alone is not enough.
         do
-          local FieldScriptSymbols = require("libs.assets.src.FieldScriptSymbols")
+          local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
           runtime.scripts.worldState:setFlag(FieldScriptSymbols.flagsByName.FLAG_GOT_STARTER)
         end
         runtime:pressMenu()

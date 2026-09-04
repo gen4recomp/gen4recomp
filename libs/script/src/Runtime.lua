@@ -913,10 +913,10 @@ local function handleFollowerStartMovement(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
-local function handleFollowerSetParam(node, run)
-  local a = semanticsFor(run).evaluateValue(node.a, run)
-  local b = semanticsFor(run).evaluateValue(node.b, run)
-  followingMonFor(run):setParam(a, b)
+local function handleFollowerReposition(node, run)
+  local offset = semanticsFor(run).evaluateValue(node.a, run)
+  local direction = semanticsFor(run).evaluateValue(node.b, run)
+  followingMonFor(run):repositionRelativeToPlayer(offset, direction)
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -1583,7 +1583,7 @@ HANDLERS.follower_face_player = handleFollowerFacePlayer
 HANDLERS.follower_set_paused = handleFollowerSetPaused
 HANDLERS.follower_wait = handleFollowerWait
 HANDLERS.follower_start_movement = handleFollowerStartMovement
-HANDLERS.follower_set_param = handleFollowerSetParam
+HANDLERS.follower_reposition = handleFollowerReposition
 HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer

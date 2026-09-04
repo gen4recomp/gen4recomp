@@ -44,8 +44,8 @@ local function follower(overrides)
       calls[#calls + 1] = "isMovementSettled"
       return self._settled
     end,
-    setParam = function(_, a, b)
-      calls[#calls + 1] = { "setParam", a, b }
+    repositionRelativeToPlayer = function(_, offset, direction)
+      calls[#calls + 1] = { "repositionRelativeToPlayer", offset, direction }
     end,
     isEventTrigger = function(self, kind, param)
       calls[#calls + 1] = { "isEventTrigger", kind, param }
@@ -142,11 +142,11 @@ function T.explicit_movement_starts_through_the_controller()
   Assert.deepEqual(followingMon._calls[1][2], action, "the decoded movement rides through")
 end
 
-function T.param_operation_records_both_params()
+function T.reposition_operation_places_through_the_controller()
   local followingMon = follower()
   local run = runWith(followingMon)
-  Assert.equal(Runtime.executeNode({ op = "follower_set_param", a = 3, b = 2 }, run), Runtime.OUTCOME_CONTINUE)
-  Assert.deepEqual(followingMon._calls[1], { "setParam", 3, 2 }, "both params reach the controller")
+  Assert.equal(Runtime.executeNode({ op = "follower_reposition", a = 3, b = 2 }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(followingMon._calls[1], { "repositionRelativeToPlayer", 3, 2 }, "both bytes reach the controller")
 end
 
 function T.event_trigger_check_writes_the_source_boolean()

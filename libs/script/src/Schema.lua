@@ -959,7 +959,7 @@ Schema.OPERATIONS = {
       movement = { type = "movement_action", required = true },
     },
   },
-  follower_set_param = {
+  follower_reposition = {
     fields = {
       a = { type = "scalar_or_value", required = true },
       b = { type = "scalar_or_value", required = true },

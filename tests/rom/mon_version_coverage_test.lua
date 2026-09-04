@@ -94,7 +94,7 @@ function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
     end
   end)
   Assert.isTrue(ops.choose_starter == true, versionId .. " lab script reaches the starter choice")
-  Assert.isTrue(ops.follower_set_param == true, versionId .. " lab script carries the follow-up tail")
+  Assert.isTrue(ops.follower_reposition == true, versionId .. " lab script carries the follow-up tail")
 end
 
 return RomSuite.fromFacts(T)

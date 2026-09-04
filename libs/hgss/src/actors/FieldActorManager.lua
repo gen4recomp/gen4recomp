@@ -170,6 +170,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _restoreEntry fun(self: FieldActorManager, entry: FieldActorManager.Entry, snapshot: table<string, unknown>?)
 ---@field captureObjects fun(self: FieldActorManager): table<string, unknown>
 ---@field new fun(opts: FieldActorManagerOptions): FieldActorManager
+---@field isPlacementRejection fun(err: unknown): boolean
 ---@class FieldActorManager.Actor: FieldObjectActor
 ---@field movementType string
 ---@field animationPaused boolean?
@@ -1200,6 +1201,18 @@ local function movementErrorIsBlocked(err)
   return err.code == FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE or SurfaceResolver.isStepRejection(err)
 end
 
+-- The one shared physical placement/step rejection classification: a tile
+-- outside coverage or a destination surface beyond the reachable step is a
+-- placement the caller waits out or steps around. Every other structured
+-- failure (ambiguous or missing surfaces, occupancy conflicts, programmer
+-- faults, data corruption) propagates unchanged through this predicate's
+-- callers.
+---@param err unknown
+---@return boolean
+function FieldActorManager.isPlacementRejection(err)
+  return movementErrorIsBlocked(err)
+end
+
 local function samePhysicalCandidate(runtimeMap, left, right)
   if left.fieldX ~= right.fieldX or left.fieldZ ~= right.fieldZ then
     return false
@@ -1915,10 +1928,10 @@ local function partnerEvent(spec)
   }
 end
 
--- Resolve the partner tile surface without mutating the entry. A tile the
--- terrain cannot place (outside residency, no walkable surface, ambiguous
--- stack) is a placement state the controller waits out, so it answers nil;
--- any other failure propagates.
+-- Resolve the partner tile surface without mutating the entry. Only a
+-- classified physical placement rejection (outside residency or coverage,
+-- or a destination surface beyond the reachable step) answers nil so the
+-- controller waits it out; any other failure propagates.
 ---@param entry FieldActorManager.Entry
 ---@param spec FieldActorManager.PartnerSpec
 ---@return table<string, unknown>? surface
@@ -1938,10 +1951,10 @@ local function resolvePartnerSurface(entry, spec)
   if ok then
     return surface
   end
-  if not Errors.is(surface) then
-    error(surface)
+  if FieldActorManager.isPlacementRejection(surface) then
+    return nil
   end
-  return nil
+  error(surface)
 end
 
 -- Acquire the new visual and construct the replacement actor without
@@ -2004,9 +2017,9 @@ local function publishPartner(self, entry, actor)
   end
 end
 
--- Install the dynamic partner on the current map. A tile the terrain cannot
--- place answers nil (the controller waits for a committed step); anything
--- else either publishes exactly one partner or raises.
+-- Install the dynamic partner on the current map. A classified physical
+-- placement rejection answers nil (the controller waits for a committed
+-- step); anything else either publishes exactly one partner or raises.
 ---@param spec FieldActorManager.PartnerSpec
 ---@return string? actorId
 ---@param self FieldActorManager
