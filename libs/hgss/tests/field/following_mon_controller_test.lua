@@ -40,6 +40,8 @@ local function runtimeMap(mapId)
   return {
     mapId = mapId or 61,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     coordinateOrigin = { x = 0, z = 0 },
     scene = {},
     fieldData = { events = { objects = {}, background = {}, warps = {}, coordinates = {} } },

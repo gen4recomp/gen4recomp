@@ -87,4 +87,30 @@ function T.catalog_indexes_definitions_and_selects_presentations()
   end)
 end
 
+function T.catalog_resolves_item_identities_through_the_generated_collection()
+  local catalog = CatalogFixture.makeCatalog()
+
+  Assert.equal(catalog:itemKeyByNativeId(0), "NONE")
+  Assert.equal(catalog:itemKeyByNativeId(4), "POKE_BALL")
+  local ball = catalog:item("POKE_BALL")
+  Assert.equal(ball.nativeId, 4)
+  Assert.isTrue(ball.isBall)
+  Assert.isFalse(ball.friendshipBoost)
+  local plain = catalog:itemByNativeId(158)
+  Assert.equal(plain.nativeId, 158)
+  Assert.isFalse(plain.isBall)
+  throwsCode("MON_RECORD_INVALID", function()
+    catalog:item("BOGUS_ITEM")
+  end)
+  throwsCode("MON_RECORD_INVALID", function()
+    catalog:itemKeyByNativeId(9999)
+  end)
+
+  -- The item index survives input-root mutation like every other index.
+  local root = CatalogFixture.buildAssetRoot()
+  local frozen = require("libs.mons.src.MonCatalog").new(root)
+  root.items.POKE_BALL = nil
+  Assert.equal(frozen:item("POKE_BALL").nativeId, 4)
+end
+
 return { tests = T }

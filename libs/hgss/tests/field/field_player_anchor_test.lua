@@ -31,6 +31,8 @@ local function playerAt(fieldX, fieldZ, facing)
     mapId = 61,
     mapSymbol = "test-map",
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     coordinateOrigin = { x = 0, z = 0 },
     scene = {},
     fieldData = {},

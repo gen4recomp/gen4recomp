@@ -52,7 +52,8 @@ local function fixture(mapCount)
       music = { day = "SEQ_X", night = "SEQ_X", flagOverrides = {}, traversalOverrides = {} },
       soundplates = {},
     }
-    world.maps[#world.maps + 1] = { id = mapId, symbol = symbol }
+    world.maps[#world.maps + 1] =
+      { id = mapId, symbol = symbol, mapSection = "TEST_SECTION", mapSectionNativeId = 7, followMode = "ALLOW" }
     world.byId[mapId] = #world.maps
     world.bySymbol[symbol] = mapId
   end
@@ -174,6 +175,43 @@ function T.reads_transition_environment_without_loading_a_scene()
   Assert.equal(loader:transitionEnvironment(0), "outdoors")
   Assert.equal(loader:residentCount(), 0)
   loader:release()
+end
+
+function T.carries_the_generated_compat_identity_onto_the_runtime_map()
+  local cache, world, sceneLoader = fixture(1)
+  world.maps[1].mapSection = "NEW_BARK_TOWN"
+  world.maps[1].mapSectionNativeId = 126
+  world.maps[1].followMode = "HEIGHT_RESTRICT"
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+  local map = loader:load(0)
+  Assert.equal(map.mapSection, "NEW_BARK_TOWN")
+  Assert.equal(map.mapSectionNativeId, 126)
+  Assert.equal(map.followMode, "HEIGHT_RESTRICT")
+  loader:release()
+end
+
+function T.rejects_world_records_with_missing_or_malformed_compat_fields()
+  local cases = {
+    { nativeId = nil, followMode = "ALLOW", label = "missing native identity" },
+    { nativeId = 126.5, followMode = "ALLOW", label = "fractional native identity" },
+    { nativeId = -1, followMode = "ALLOW", label = "negative native identity" },
+    { nativeId = 126, followMode = nil, label = "missing follow mode" },
+    { nativeId = 126, followMode = "SOMETIMES", label = "unknown follow mode" },
+  }
+  for _, case in ipairs(cases) do
+    local cache, world, sceneLoader = fixture(1)
+    world.maps[1].mapSectionNativeId = case.nativeId
+    world.maps[1].followMode = case.followMode
+    local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader })
+    local err = Assert.throws(function()
+      loader:load(0)
+    end, case.label .. " must fail the runtime boundary")
+    Assert.isTrue(
+      Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
+      case.label .. " must raise FIELD_MAP_WORLD_INVALID"
+    )
+    loader:release()
+  end
 end
 
 function T.rejects_missing_or_unknown_transition_environment_at_runtime_load()

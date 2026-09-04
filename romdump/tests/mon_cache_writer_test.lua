@@ -28,6 +28,16 @@ local function manifestFor(schema, image)
   }
 end
 
+local function fullItems()
+  local items = {}
+  for nativeId = 0, 536 do
+    items["ITEM_" .. nativeId] = { nativeId = nativeId, isBall = false, friendshipBoost = false }
+  end
+  items["ITEM_0"] = nil
+  items["NONE"] = { nativeId = 0, isBall = false, friendshipBoost = false }
+  return items
+end
+
 local function bundle(marker)
   local MonCache = require("libs.assets.src.MonCache")
   local pixels = string.rep("\0", 16)
@@ -36,7 +46,7 @@ local function bundle(marker)
     zeroCurve[level] = 0
   end
   local catalog = {
-    schema = "g4-mon-catalog-v1",
+    schema = "g4-mon-catalog-v2",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},
@@ -51,6 +61,7 @@ local function bundle(marker)
       unused_6 = zeroCurve,
       unused_7 = zeroCurve,
     },
+    items = fullItems(),
   }
   local iconManifest = manifestFor("g4-mon-icon-manifest-v1", MonCache.iconImagePath())
   local portraitManifest = manifestFor("g4-mon-portrait-manifest-v1", MonCache.portraitImagePath())

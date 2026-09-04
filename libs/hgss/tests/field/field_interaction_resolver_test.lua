@@ -27,6 +27,8 @@ local function map(backgrounds)
     mapId = 61,
     mapSymbol = "test-map",
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     cameraType = 4,
     coordinateOrigin = { x = 0, z = 0 },
     scene = {},

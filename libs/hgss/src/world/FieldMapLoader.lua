@@ -35,6 +35,8 @@ FieldMapLoader.__index = FieldMapLoader
 ---@field mapId integer
 ---@field mapSymbol string
 ---@field mapSection string
+---@field mapSectionNativeId integer exact numeric MAPSEC_* identity; never the header id
+---@field followMode string source map-header follow policy: ALLOW, HEIGHT_RESTRICT, or PREVENT
 ---@field sceneRuntime table<string, unknown>|nil presentation-only visual scene runtime
 ---@field mapProps MapProps? semantic door/prop resolver; present for logical (non-outdoor) maps, which load an eager central collision regardless of presentation
 ---@field scene table<string, unknown>
@@ -327,6 +329,30 @@ function FieldMapLoader:load(idOrSymbol, _)
     return existing.runtimeMap
   end
 
+  -- The generated world manifest is the sole source of map compatibility
+  -- metadata. A stale world without the exact native section identity and
+  -- source follow mode fails here; the header id is never a substitute.
+  local FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
+  if
+    type(record.mapSectionNativeId) ~= "number"
+    or record.mapSectionNativeId % 1 ~= 0
+    or record.mapSectionNativeId < 0
+    or record.mapSectionNativeId > 65535
+  then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest map section native identity is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if FOLLOW_MODES[record.followMode] ~= true then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest follow mode is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+
   local mapDir = MapAssetCache.mapDir(record.id)
   local scene = loadRequired(self.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
   local fieldData =
@@ -468,6 +494,8 @@ function FieldMapLoader:load(idOrSymbol, _)
       mapId = record.id,
       mapSymbol = record.symbol,
       mapSection = record.mapSection,
+      mapSectionNativeId = record.mapSectionNativeId,
+      followMode = record.followMode,
       sceneRuntime = sceneRuntime,
       mapProps = mapProps,
       scene = scene,

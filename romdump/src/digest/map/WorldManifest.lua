@@ -66,9 +66,33 @@ function WorldManifest.build(entries, excluded, compileExcluded)
   end
   table.sort(maps, sortById)
 
+  -- The runtime map compatibility contract: every renderable entry carries
+  -- its semantic section, the exact numeric MAPSEC_* identity, and the
+  -- source follow mode. Stale or hand-built entries without them fail here
+  -- instead of publishing a world the runtime would have to default.
+  local FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
   for _, e in ipairs(maps) do
     if type(e.mapSection) ~= "string" or e.mapSection == "" then
       Errors.raise("WORLD_MANIFEST_MAP_SECTION_INVALID", "map section is missing", { id = e.id })
+    end
+    if
+      type(e.mapSectionNativeId) ~= "number"
+      or e.mapSectionNativeId % 1 ~= 0
+      or e.mapSectionNativeId < 0
+      or e.mapSectionNativeId > 65535
+    then
+      Errors.raise(
+        "WORLD_MANIFEST_MAP_SECTION_ID_INVALID",
+        "map section native identity must be a u16 integer",
+        { id = e.id, mapSectionNativeId = e.mapSectionNativeId }
+      )
+    end
+    if FOLLOW_MODES[e.followMode] ~= true then
+      Errors.raise(
+        "WORLD_MANIFEST_FOLLOW_MODE_INVALID",
+        "map follow mode must be ALLOW, HEIGHT_RESTRICT, or PREVENT",
+        { id = e.id, followMode = e.followMode }
+      )
     end
   end
 

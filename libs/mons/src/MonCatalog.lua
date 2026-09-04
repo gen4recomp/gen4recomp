@@ -16,6 +16,7 @@ local MonsErrors = require("libs.mons.src.errors")
 ---@field private _speciesByNative table<integer, string>
 ---@field private _moveByNative table<integer, string>
 ---@field private _abilityByNative table<integer, string>
+---@field private _itemByNative table<integer, string>
 ---@field private _fingerprint string
 local MonCatalog = {}
 MonCatalog.__index = MonCatalog
@@ -73,6 +74,7 @@ function MonCatalog.new(root)
     _speciesByNative = {},
     _moveByNative = {},
     _abilityByNative = {},
+    _itemByNative = {},
     _fingerprint = "",
   }, MonCatalog)
   for key, species in pairs(owned.species) do
@@ -104,6 +106,16 @@ function MonCatalog.new(root)
       )
     end
     self._abilityByNative[ability.nativeId] = key
+  end
+  for key, item in pairs(owned.items) do
+    if self._itemByNative[item.nativeId] ~= nil then
+      MonsErrors.raise(
+        MonsErrors.RECORD_INVALID,
+        "duplicate native item identity " .. tostring(item.nativeId),
+        { item = key }
+      )
+    end
+    self._itemByNative[item.nativeId] = key
   end
   self._fingerprint = fingerprintText(LuaWriter.encode(owned))
   return self
@@ -228,6 +240,39 @@ end
 ---@return table<string, unknown>
 function MonCatalog:abilityByNativeId(nativeId)
   return self._root.abilities[self:abilityKeyByNativeId(nativeId)]
+end
+
+---@param key string
+---@return table<string, unknown>
+function MonCatalog:item(key)
+  assert(type(key) == "string", "item lookup requires a string key")
+  local definition = self._root.items[key]
+  if definition == nil then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown item " .. key, { item = key })
+  end
+  assert(definition ~= nil, "catalog index carries the validated entry")
+  return definition
+end
+
+---@param nativeId integer
+---@return string
+function MonCatalog:itemKeyByNativeId(nativeId)
+  local key = self._itemByNative[nativeId]
+  if key == nil then
+    MonsErrors.raise(
+      MonsErrors.RECORD_INVALID,
+      "unknown native item identity " .. tostring(nativeId),
+      { nativeId = nativeId }
+    )
+  end
+  assert(key ~= nil, "catalog index carries the validated entry")
+  return key
+end
+
+---@param nativeId integer
+---@return table<string, unknown>
+function MonCatalog:itemByNativeId(nativeId)
+  return self._root.items[self:itemKeyByNativeId(nativeId)]
 end
 
 ---@param key string

@@ -100,6 +100,8 @@ local function mapFor(coverage)
     mapId = 60,
     mapSymbol = "projection-test",
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     coordinateOrigin = { x = originX, z = originZ },
     physicalOrigin = coverage.origin,
     collision = coverage.region.collision,

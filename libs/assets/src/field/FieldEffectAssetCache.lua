@@ -147,6 +147,49 @@ local function validTrainerRevealDefinition(definition)
     and validLifecycle(lifecycle, clip.frameCount)
 end
 
+-- The follower-transition definition: exactly two compiled models (one
+-- static companion, one animated model carrying the single source clip),
+-- the once lifecycle with the traced prelude tick count and the exact
+-- compiled clip frame count, and the normalized placement offset.
+local function validTransitionDefinition(definition)
+  if type(definition.lifetime) ~= "nil" or type(definition.animation) ~= "nil" then
+    return false
+  end
+  if type(definition.models) ~= "table" or #definition.models ~= 2 then
+    return false
+  end
+  local animatedClip = nil
+  for _, model in ipairs(definition.models) do
+    if type(model) ~= "table" then
+      return false
+    end
+    if model.kind == "nitro-dynamic" then
+      if animatedClip ~= nil then
+        return false
+      end
+      local animations = model.animations
+      local clip = type(animations) == "table" and animations[1]
+      if type(animations) ~= "table" or #animations ~= 1 or type(clip) ~= "table" then
+        return false
+      end
+      animatedClip = clip
+    elseif model.kind ~= "static" then
+      return false
+    end
+  end
+  if animatedClip == nil then
+    return false
+  end
+  if type(definition.model) ~= "nil" then
+    return false
+  end
+  local lifecycle = definition.lifecycle
+  if type(lifecycle) ~= "table" or lifecycle.mode ~= "once" or lifecycle.preludeTicks ~= 2 then
+    return false
+  end
+  return validLifecycle(lifecycle, animatedClip.frameCount) and validPlacement(definition.placementOffset)
+end
+
 function FieldEffectAssetCache.indexPath()
   return INDEX
 end
@@ -178,7 +221,14 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
   if not loaded or type(index) ~= "table" or index.schema ~= Contract.fieldEffects.indexSchema then
     return false
   end
-  local required = { "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment" }
+  local required = {
+    "warp_entrance",
+    "tall_grass",
+    "very_tall_grass",
+    "trainer_reveal",
+    "surf_attachment",
+    "follower_transition",
+  }
   if type(index.effects) ~= "table" then
     return false
   end
@@ -189,12 +239,20 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
   if effectCount ~= #required then
     return false
   end
+  local expectedKinds = {
+    warp_entrance = "model",
+    tall_grass = "animated_model",
+    very_tall_grass = "animated_model",
+    trainer_reveal = "animated_model",
+    surf_attachment = "model",
+    follower_transition = "transition",
+  }
   for _, kind in ipairs(required) do
     local entry = index.effects and index.effects[kind]
-    local expectedKind = (kind == "warp_entrance" or kind == "surf_attachment") and "model" or "animated_model"
+
     if
       type(entry) ~= "table"
-      or entry.kind ~= expectedKind
+      or entry.kind ~= expectedKinds[kind]
       or entry.definition ~= kind
       or entry.path ~= FieldEffectAssetCache.definitionPath(kind)
     then
@@ -204,17 +262,30 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     if not definitionLoaded or type(definition) ~= "table" then
       return false
     end
-    local valid, err = pcall(ModelAsset.validate, definition.model)
-    if not valid then
-      return false, err
+    local descriptors = definition.models or { definition.model }
+    if kind ~= "follower_transition" and definition.models ~= nil then
+      return false
     end
-    local referenced, paths = pcall(ModelAsset.referencedPaths, definition.model)
-    if not referenced then
-      return false, paths
+    local descriptorCount = 0
+    for _ in ipairs(descriptors) do
+      descriptorCount = descriptorCount + 1
     end
-    for _, path in ipairs(paths) do
-      if not cacheFs:exists(path) then
-        return false
+    if descriptorCount == 0 then
+      return false
+    end
+    for _, descriptor in ipairs(descriptors) do
+      local valid, err = pcall(ModelAsset.validate, descriptor)
+      if not valid then
+        return false, err
+      end
+      local referenced, paths = pcall(ModelAsset.referencedPaths, descriptor)
+      if not referenced then
+        return false, paths
+      end
+      for _, path in ipairs(paths) do
+        if not cacheFs:exists(path) then
+          return false
+        end
       end
     end
     if kind == "warp_entrance" and (type(definition.lifetime) ~= "number" or definition.lifetime <= 0) then
@@ -230,6 +301,10 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       end
     elseif kind == "surf_attachment" then
       if not validSurfDefinition(definition) then
+        return false
+      end
+    elseif kind == "follower_transition" then
+      if not validTransitionDefinition(definition) then
         return false
       end
     end

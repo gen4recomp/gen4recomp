@@ -4,10 +4,12 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
+local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
 local FieldEffectPatternAnimation = require("romdump.src.digest.field.FieldEffectPatternAnimation")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
 local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
 local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -278,6 +280,187 @@ end
 
 local compileDynamicModel = compileDynamicEffect
 
+-- Compile the transient follower effect from its two source models and the
+-- single animation member. The animation rides the shared Nitro dispatch
+-- (member 164 decodes on the NSBTA path, unlike the pattern animations of
+-- the grass/trainer effects), and the clip attaches to the selection's
+-- animated model. The companion model compiles static through the same path
+-- as the warp entrance. The traced source-model-unit placement offset
+-- normalizes through MapUnits, and the lifecycle carries the exact compiled
+-- clip frame count with the traced two-tick prelude.
+local function compileTransitionEffect(narc, animationNarc, animationArchive, key, section, role, source)
+  if #source.modelMembers ~= 2 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "the follower transition requires exactly two source models", {
+      effect = key,
+      modelMembers = source.modelMembers,
+    })
+  end
+  if #source.animationMembers ~= 1 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "the follower transition requires exactly one source animation", {
+      effect = key,
+      animationMembers = source.animationMembers,
+    })
+  end
+  if source.lifecycle == nil or source.lifecycle.mode ~= "once" then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "the follower transition requires a once lifecycle", {
+      effect = key,
+      lifecycle = source.lifecycle,
+    })
+  end
+  local preludeTicks = source.lifecycle.preludeTicks
+  if type(preludeTicks) ~= "number" or preludeTicks % 1 ~= 0 or preludeTicks < 1 then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "the follower transition requires a positive prelude tick count", {
+      effect = key,
+      preludeTicks = preludeTicks,
+    })
+  end
+  if type(source.placementOffset) ~= "table" then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "the follower transition requires a placement offset", {
+      effect = key,
+    })
+  end
+  assert(
+    type(source.placementOffset.x) == "number"
+      and type(source.placementOffset.y) == "number"
+      and type(source.placementOffset.z) == "number",
+    "follower-transition placement offset must carry numeric axes"
+  )
+
+  local animationMemberId = source.animationMembers[1]
+  local animationBytes = member(animationNarc, animationMemberId, animationArchive)
+  local decoded, decodeErr = NitroAnimation.decode(animationBytes, {
+    alias = animationArchive,
+    memberId = animationMemberId,
+  })
+  if not decoded then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "follower-transition animation could not be decoded", {
+      archive = animationArchive,
+      memberId = animationMemberId,
+      error = decodeErr,
+    })
+  end
+  assert(decoded)
+  local clip = MapPropAnimCompiler.compileDecoded(decoded, {
+    name = assert(decoded.animations[1]).name,
+    id = key .. ":animation",
+    source = {
+      type = "field-effect",
+      format = decoded.format,
+      archive = animationArchive,
+      memberId = animationMemberId,
+      sha1 = Hashing.sha1hex(animationBytes),
+    },
+  })
+
+  local animatedMemberId = source.animatedModelMember
+  local animatedSelected = false
+  for _, memberId in ipairs(source.modelMembers) do
+    if memberId == animatedMemberId then
+      animatedSelected = true
+      break
+    end
+  end
+  if not animatedSelected then
+    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "the follower-transition animated model is not selected", {
+      effect = key,
+      animatedModelMember = animatedMemberId,
+    })
+  end
+
+  -- Decode both source models once: the animated member takes the clip, the
+  -- companion compiles static.
+  local decodedModels = {}
+  for _, memberId in ipairs(source.modelMembers) do
+    local modelBytes = member(narc, memberId)
+    decodedModels[memberId] = {
+      bytes = modelBytes,
+      decoded = assert(Nsbmd.decode(modelBytes, {
+        alias = "field_static_models",
+        memberId = memberId,
+        section = section,
+      })),
+    }
+  end
+
+  local meshes, textures = {}, {}
+  local descriptors = {}
+  local modelSha1s = {}
+  for _, memberId in ipairs(source.modelMembers) do
+    local modelBytes = decodedModels[memberId].bytes
+    if memberId == animatedMemberId then
+      local decodedModel = decodedModels[memberId].decoded
+      local model = decodedModel.models[1]
+      if not model or not decodedModel.embeddedTextures then
+        Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "field-effect dynamic model is incomplete", {
+          archive = "field_static_models",
+          memberId = memberId,
+        })
+      end
+      local descriptor, unresolved = DynamicModelCompiler.compile(
+        model,
+        decodedModel,
+        decodedModel.embeddedTextures,
+        { clips = { clip } },
+        {
+          role = role,
+          modelArchive = "field_static_models",
+          modelMemberId = memberId,
+          modelName = model.name,
+          textureArchive = "field_static_models",
+          textureMemberId = memberId,
+        },
+        memberId,
+        textures,
+        meshes
+      )
+      if #unresolved > 0 then
+        Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "field-effect dynamic model has unresolved materials", {
+          archive = "field_static_models",
+          memberId = memberId,
+          unresolved = unresolved,
+        })
+      end
+      descriptor.key = key .. "-" .. model.name
+      rewriteEffectPaths(descriptor)
+      ModelAsset.validate(descriptor)
+      descriptors[#descriptors + 1] = descriptor
+      modelSha1s[#modelSha1s + 1] = Hashing.sha1hex(modelBytes)
+    else
+      local probe = assert(Nsbmd.decode(modelBytes, {
+        alias = "field_static_models",
+        memberId = memberId,
+        section = section,
+      }))
+      local probeModel = probe.models[1]
+      assert(probeModel, "field-effect companion model is missing")
+      local descriptor, staticMeshes, staticTextures, sha =
+        compileModel(narc, memberId, key .. "-" .. probeModel.name, section, role)
+      for sha1, mesh in pairs(staticMeshes) do
+        meshes[sha1] = mesh
+      end
+      for sha1, texture in pairs(staticTextures) do
+        textures[sha1] = texture
+      end
+      descriptors[#descriptors + 1] = descriptor
+      modelSha1s[#modelSha1s + 1] = sha
+    end
+  end
+  local offsetX, offsetY, offsetZ =
+    MapUnits.toTiles(source.placementOffset.x, source.placementOffset.y, source.placementOffset.z)
+  return {
+    models = descriptors,
+    lifecycle = {
+      mode = "once",
+      frameCount = clip.frameCount,
+      preludeTicks = preludeTicks,
+    },
+    placementOffset = { x = offsetX, y = offsetY, z = offsetZ },
+  },
+    meshes,
+    textures,
+    modelSha1s
+end
+
 function Compiler.compile(romFs, hashLua)
   assert(romFs and romFs.openNarc, "field-effect compiler requires RomFs")
   hashLua = hashLua or Hashing.hashLua
@@ -338,6 +521,15 @@ function Compiler.compile(romFs, hashLua)
     "surf-attachment-effect",
     "field-effect"
   )
+  local transition, transitionMeshes, transitionTextures, transitionSha1s = compileTransitionEffect(
+    narc,
+    animationNarc,
+    FieldEffects.animationArchive.alias,
+    "follower-transition",
+    "follower-transition-effect",
+    "field-effect-transition",
+    FieldEffects.effects.follower_transition
+  )
   for sha1, mesh in pairs(tallMeshes) do
     meshes[sha1] = mesh
   end
@@ -360,6 +552,12 @@ function Compiler.compile(romFs, hashLua)
     meshes[sha1] = mesh
   end
   for sha1, texture in pairs(surfTextures) do
+    textures[sha1] = texture
+  end
+  for sha1, mesh in pairs(transitionMeshes) do
+    meshes[sha1] = mesh
+  end
+  for sha1, texture in pairs(transitionTextures) do
     textures[sha1] = texture
   end
   local surfPresentation = assert(surfSelection.presentation, "surf attachment presentation is required")
@@ -424,6 +622,7 @@ function Compiler.compile(romFs, hashLua)
         },
       },
     },
+    follower_transition = transition,
   }
   local index = {
     schema = Contract.fieldEffects.indexSchema,
@@ -453,10 +652,19 @@ function Compiler.compile(romFs, hashLua)
         definition = "surf_attachment",
         path = FieldEffectAssetCache.definitionPath("surf_attachment"),
       },
+      follower_transition = {
+        kind = "transition",
+        definition = "follower_transition",
+        path = FieldEffectAssetCache.definitionPath("follower_transition"),
+      },
     },
   }
+  local memberSha1 = { warpSha, tallSha, veryTallSha, trainerRevealSha, surfSha }
+  for _, sha1 in ipairs(transitionSha1s) do
+    memberSha1[#memberSha1 + 1] = sha1
+  end
   local depHash = hashLua({
-    memberSha1 = { warpSha, tallSha, veryTallSha, trainerRevealSha, surfSha },
+    memberSha1 = memberSha1,
     sourceHashes = sourceHashesByKind,
     index = index,
     effects = effects,

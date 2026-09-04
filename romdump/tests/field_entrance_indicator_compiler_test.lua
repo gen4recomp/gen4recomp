@@ -8,6 +8,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
+    "libs.nds.src.nitro.g3d.NitroAnimation",
     "romdump.src.digest.field.FieldEffectPatternAnimation",
     "romdump.src.digest.model.ModelAssetCompiler",
     "romdump.src.digest.model.DynamicModelCompiler",
@@ -23,6 +24,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
 
   local modelMembers = {}
   local animationMembers = {}
+  local nitroAnimationMembers = {}
   local invalidSelector = false
   package.loaded["romdump.src.config.FieldEffects"] = {
     archive = { alias = "field_static_models" },
@@ -61,6 +63,13 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
           yawDegrees = { north = 180, south = 0, west = 270, east = 90 },
         },
       },
+      follower_transition = {
+        modelMembers = { 129, 104 },
+        animationMembers = { 164 },
+        animatedModelMember = 104,
+        lifecycle = { mode = "once", preludeTicks = 2 },
+        placementOffset = { x = 0, y = 6, z = 0 },
+      },
     },
   }
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
@@ -72,6 +81,16 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
           textures = { { name = "texture" } },
           palettes = { { name = "palette" } },
         },
+      }
+    end,
+  }
+  package.loaded["libs.nds.src.nitro.g3d.NitroAnimation"] = {
+    decode = function(bytes, context)
+      nitroAnimationMembers[#nitroAnimationMembers + 1] = context.memberId
+      return {
+        format = "NSBTA",
+        bytes = bytes,
+        animations = { { name = "mb_out", recordOffset = 0, resource = { numFrame = 8 } } },
       }
     end,
   }
@@ -194,16 +213,21 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   Assert.isTrue(ok, tostring(result))
-  Assert.equal(#modelMembers, 5)
+  Assert.equal(#modelMembers, 9)
   Assert.equal(modelMembers[1], 85)
   Assert.equal(modelMembers[2], 126)
   Assert.equal(modelMembers[3], 122)
   Assert.equal(modelMembers[4], 124)
   Assert.equal(modelMembers[5], 86)
+  Assert.equal(modelMembers[6], 129)
+  Assert.equal(modelMembers[7], 104)
+  Assert.equal(modelMembers[8], 129)
+  Assert.equal(modelMembers[9], 129)
   Assert.equal(#animationMembers, 3)
   Assert.equal(animationMembers[1], 140)
   Assert.equal(animationMembers[2], 146)
   Assert.equal(animationMembers[3], 148)
+  Assert.deepEqual(nitroAnimationMembers, { 164 })
   local animation = result.effects.tall_grass.model.animations[1]
   Assert.equal(animation.source.memberId, 140)
   Assert.equal(animation.frameCount, 13)
@@ -248,6 +272,23 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.equal(surf.presentation.yawDegrees.east, 90)
   Assert.equal(result.index.effects.surf_attachment.kind, "model")
   Assert.equal(result.index.effects.surf_attachment.definition, "surf_attachment")
+  local transition = result.effects.follower_transition
+  Assert.notNil(transition, "the transition must compile from the traced members")
+  Assert.equal(#transition.models, 2)
+  Assert.equal(transition.models[1].key, "follower-transition-model-129")
+  Assert.equal(transition.models[1].kind, "static")
+  Assert.equal(transition.models[2].key, "follower-transition-model-104")
+  Assert.equal(transition.models[2].kind, "nitro-dynamic")
+  local transitionClip = assert(transition.models[2].animations[1])
+  Assert.equal(transitionClip.source.memberId, 164)
+  Assert.equal(transitionClip.source.format, "NSBTA")
+  Assert.equal(transitionClip.frameCount, 8)
+  Assert.equal(transition.lifecycle.mode, "once")
+  Assert.equal(transition.lifecycle.frameCount, 8)
+  Assert.equal(transition.lifecycle.preludeTicks, 2)
+  Assert.equal(transition.placementOffset.x, 0)
+  Assert.equal(transition.placementOffset.y, 0.375)
+  Assert.equal(transition.placementOffset.z, 0)
 
   invalidSelector = true
   local invalidOk, invalidErr = pcall(compiler.compile, romFs)
@@ -260,6 +301,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
+    "libs.nds.src.nitro.g3d.NitroAnimation",
     "romdump.src.digest.field.FieldEffectPatternAnimation",
     "romdump.src.digest.model.ModelAssetCompiler",
     "romdump.src.digest.model.DynamicModelCompiler",
@@ -274,11 +316,20 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function()
       return {
-        models = { { materials = { { name = "effect" } } } },
+        models = { { name = "mock-effect", materials = { { name = "target" } } } },
         embeddedTextures = {
           textures = { { name = "texture" } },
           palettes = { { name = "palette" } },
         },
+      }
+    end,
+  }
+  package.loaded["libs.nds.src.nitro.g3d.NitroAnimation"] = {
+    decode = function(bytes)
+      return {
+        format = "NSBTA",
+        bytes = bytes,
+        animations = { { name = "mb_out", recordOffset = 0, resource = { numFrame = 8 } } },
       }
     end,
   }
@@ -375,6 +426,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   Assert.isTrue(ok, tostring(result))
   Assert.equal(result.model.batches[1].geometry, FieldEffectAssetCache.geometryPath("mesh"))
   Assert.equal(result.model.materials[1].texture, FieldEffectAssetCache.texturePath("texture"))
+  Assert.notNil(result.effects.follower_transition, "the transition compiles alongside the entrance effects")
   Assert.isNil(result.model.memberId)
   Assert.isNil(result.manifest)
   Assert.isNil(result.archive)

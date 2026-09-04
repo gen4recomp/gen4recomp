@@ -62,6 +62,8 @@ local function runtimeMap(blocked, plates)
     mapId = 60,
     mapSymbol = "test-map",
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     coordinateOrigin = { x = 0, z = 0 },
     scene = {},
     fieldData = {},

@@ -134,9 +134,18 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     schema = "g4-field-effect-index-v2",
     effects = {},
   }
-  for _, kind in ipairs({ "warp_entrance", "tall_grass", "very_tall_grass", "trainer_reveal", "surf_attachment" }) do
+  for _, kind in ipairs({
+    "warp_entrance",
+    "tall_grass",
+    "very_tall_grass",
+    "trainer_reveal",
+    "surf_attachment",
+    "follower_transition",
+  }) do
     index.effects[kind] = {
-      kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model" or "animated_model",
+      kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
+        or kind == "follower_transition" and "transition"
+        or "animated_model",
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
     }
@@ -172,6 +181,20 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
             yawDegrees = { north = 180, south = 0, west = 270, east = 90 },
           },
         }
+      end
+      if kind == "follower_transition" then
+        local transition = {
+          models = { validModel(), validDynamicModel() },
+          lifecycle = { mode = "once", frameCount = 4, preludeTicks = 2 },
+          placementOffset = { x = 0, y = 0.375, z = 0 },
+        }
+        if extra.omitTransitionLifecycle then
+          transition.lifecycle = nil
+        end
+        if extra.omitTransitionPlacement then
+          transition.placementOffset = nil
+        end
+        return transition
       end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
@@ -238,7 +261,7 @@ T.tests["accepts the current format and rejects the previous format"] = function
       ["texture-a"] = true,
       ["texture-variant"] = true,
       ["grass.mesh"] = true,
-    }, "field-effect-cache-v6:rom:dep"),
+    }, "field-effect-cache-v7:rom:dep"),
     EXPECTED_MARKER
   )
   Assert.isFalse(staleReady)
@@ -423,6 +446,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "surf_attachment",
         path = FieldEffectAssetCache.definitionPath("surf_attachment"),
       },
+      follower_transition = {
+        kind = "transition",
+        definition = "follower_transition",
+        path = FieldEffectAssetCache.definitionPath("follower_transition"),
+      },
     },
   }
   if mutateIndex ~= nil then
@@ -442,6 +470,13 @@ local function surfCache(surfDefinition, mutateIndex)
       end
       if kind == "surf_attachment" then
         return surfDefinition
+      end
+      if kind == "follower_transition" then
+        return {
+          models = { validModel(), validDynamicModel() },
+          lifecycle = { mode = "once", frameCount = 4, preludeTicks = 2 },
+          placementOffset = { x = 0, y = 0.375, z = 0 },
+        }
       end
       if kind == "trainer_reveal" then
         return {
@@ -535,6 +570,25 @@ T.tests["rejects non-finite surf offsets"] = function()
     FieldEffectAssetCache.isReady(surfCache(infinite), SURF_MARKER),
     "surf attachment with an infinite offset must not be ready"
   )
+end
+
+T.tests["rejects the transition without lifecycle or placement metadata"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local missingLifecycle = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { omitTransitionLifecycle = true }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(missingLifecycle, "the transition without lifecycle metadata must not be ready")
+  local missingPlacement = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { omitTransitionPlacement = true }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(missingPlacement, "the transition without placement metadata must not be ready")
 end
 
 return T

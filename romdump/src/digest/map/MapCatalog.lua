@@ -10,7 +10,7 @@ local COUNT = 540
 local byId = {}
 local bySymbol = {}
 
-assert(reference.schema == 1, "unsupported HGSS map reference schema")
+assert(reference.schema == 2, "unsupported HGSS map reference schema")
 assert(reference.count == COUNT, "HGSS map reference must contain 540 records")
 
 MapCatalog.VERSION = "hgss-map-catalog-v1:" .. reference.source.commit

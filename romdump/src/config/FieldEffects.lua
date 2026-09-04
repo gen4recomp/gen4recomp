@@ -79,5 +79,21 @@ return {
         yawDegrees = { north = 180, south = 0, west = 270, east = 90 },
       },
     },
+    follower_transition = {
+      -- The transient follower effect: source models 129 ("monsterball") and
+      -- 104 ("mb_out") plus the texture animation bound to model 104.
+      -- animatedModelMember names the clip target explicitly so a swapped or
+      -- corrupt companion can never silently rebind the animation.
+      -- placementOffset carries the traced source-model-unit vertical offset;
+      -- the compiler normalizes it into runtime tiles.
+      modelMembers = { 129, 104 },
+      animationMembers = { 164 },
+      animatedModelMember = 104,
+      lifecycle = {
+        mode = "once",
+        preludeTicks = 2,
+      },
+      placementOffset = { x = 0, y = 6, z = 0 },
+    },
   },
 }

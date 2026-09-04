@@ -98,7 +98,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     mons = {
       cacheFormat = "mon-cache-v1",
-      catalogSchema = "g4-mon-catalog-v1",
+      catalogSchema = "g4-mon-catalog-v2",
       indexSchema = "g4-mon-index-v1",
       iconManifestSchema = "g4-mon-icon-manifest-v1",
       portraitManifestSchema = "g4-mon-portrait-manifest-v1",

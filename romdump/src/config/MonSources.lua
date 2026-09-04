@@ -4265,4 +4265,68 @@ function MonSources.followerVisualId(paramIndex)
   return MonSources.FOLLOWER_VISUAL_ID_BASE + paramIndex
 end
 
+-- Item hold-effect constant driving the mon friendship fact
+-- (HOLD_EFFECT_FRIENDSHIP_UP in include/constants/items.h).
+MonSources.HOLD_EFFECT_FRIENDSHIP_UP = 53
+
+-- item_data member layout (struct ItemData in include/item.h): fixed 34-byte
+-- rows with the hold-effect byte at offset 2.
+MonSources.ITEM_DATA_SIZE = 34
+MonSources.ITEM_DATA_HOLD_EFFECT_OFFSET = 2
+
+-- Ball classification by source item identity: ITEM_* 1..16 plus the later
+-- ball additions 492..500, matching the BALL_* 1..25 vocabulary in
+-- include/constants/balls.h.
+MonSources.ballItemIds = {
+  [1] = true,
+  [2] = true,
+  [3] = true,
+  [4] = true,
+  [5] = true,
+  [6] = true,
+  [7] = true,
+  [8] = true,
+  [9] = true,
+  [10] = true,
+  [11] = true,
+  [12] = true,
+  [13] = true,
+  [14] = true,
+  [15] = true,
+  [16] = true,
+  [492] = true,
+  [493] = true,
+  [494] = true,
+  [495] = true,
+  [496] = true,
+  [497] = true,
+  [498] = true,
+  [499] = true,
+  [500] = true,
+}
+
+-- item_data NARC member for a native item identity, from the ITEMNARC_PARAM
+-- column of src/item.c sItemNarcIds. Identities without their own data row
+-- (the UNUSED 113..134 block and the dataless EXPLORER_KIT 428) share member
+-- 0; identities past each gap shift by the gap width.
+function MonSources.itemDataMember(nativeId)
+  assert(
+    type(nativeId) == "number" and nativeId % 1 == 0 and nativeId >= 0 and nativeId <= 536,
+    "item identity must be 0..536"
+  )
+  if nativeId <= 112 then
+    return nativeId
+  end
+  if nativeId <= 134 then
+    return 0
+  end
+  if nativeId <= 427 then
+    return nativeId - 22
+  end
+  if nativeId == 428 then
+    return 0
+  end
+  return nativeId - 23
+end
+
 return MonSources

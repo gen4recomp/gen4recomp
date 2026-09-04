@@ -184,6 +184,8 @@ local function actorMap(mapId, events)
   return {
     mapId = mapId,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     mapSymbol = "test-map",
     coordinateOrigin = { x = 0, z = 0 },
     collision = {

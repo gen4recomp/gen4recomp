@@ -77,6 +77,8 @@ function T.off_window_solid_actor_blocks_without_publishing_destination_state()
   local destination = {
     mapId = 62,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     mapSymbol = "destination",
     coordinateOrigin = { x = 0, z = 0 },
     collision = {
@@ -101,6 +103,8 @@ function T.off_window_solid_actor_blocks_without_publishing_destination_state()
   local source = {
     mapId = 61,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     mapSymbol = "source",
     coordinateOrigin = { x = 0, z = 0 },
     collision = {
@@ -199,6 +203,8 @@ function T.resident_but_inactive_neighbor_blocks_and_interacts_through_read_only
   local destination = {
     mapId = 62,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     mapSymbol = "destination",
     coordinateOrigin = { x = 0, z = 0 },
     collision = {
@@ -290,6 +296,8 @@ function T.autonomous_reservation_blocks_player_movement_but_not_interaction()
   local source = {
     mapId = 61,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     mapSymbol = "source",
     coordinateOrigin = { x = 0, z = 0 },
     collision = {

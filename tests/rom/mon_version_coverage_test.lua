@@ -14,7 +14,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
-local MapResolver = require("romdump.src.digest.MapResolver")
+local MapResolver = require("romdump.src.digest.map.MapResolver")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}

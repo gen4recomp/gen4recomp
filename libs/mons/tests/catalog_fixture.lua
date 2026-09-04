@@ -60,6 +60,25 @@ function CatalogFixture.profile()
   return { name = "RED", gender = 0, trainerId = 2271560481 }
 end
 
+-- Synthetic item collection satisfying the generated catalog contract: every
+-- source native identity 0..536 resolves exactly once. Only the domain-known
+-- keys carry meaningful ball facts; the rest are inert placeholders.
+function CatalogFixture.itemTable()
+  local known = { NONE = 0, POKE_BALL = 4, GREAT_BALL = 3, SITRUS_BERRY = 158 }
+  local items = {}
+  local covered = {}
+  for key, nativeId in pairs(known) do
+    items[key] = { nativeId = nativeId, isBall = nativeId == 4 or nativeId == 3, friendshipBoost = false }
+    covered[nativeId] = true
+  end
+  for nativeId = 0, 536 do
+    if not covered[nativeId] then
+      items["ITEM_" .. nativeId] = { nativeId = nativeId, isBall = false, friendshipBoost = false }
+    end
+  end
+  return items
+end
+
 function CatalogFixture.metDate()
   return { year = 2009, month = 9, day = 13 }
 end
@@ -197,7 +216,7 @@ end
 
 function CatalogFixture.buildAssetRoot()
   local root = {
-    schema = "g4-mon-catalog-v1",
+    schema = "g4-mon-catalog-v2",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = speciesEntry({
@@ -326,6 +345,7 @@ function CatalogFixture.buildAssetRoot()
       WONDER_GUARD = abilityEntry(25, "Wonder Guard"),
     },
     growthCurves = growthTables(),
+    items = CatalogFixture.itemTable(),
   }
   assert(MonAssetSchema.assertCatalog(root))
   return root

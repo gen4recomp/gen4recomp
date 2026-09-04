@@ -19,6 +19,8 @@ local function map(mapId)
     mapId = mapId,
     mapSymbol = "map-" .. mapId,
     mapSection = "section-" .. mapId,
+    mapSectionNativeId = mapId,
+    followMode = "ALLOW",
     scene = {},
     fieldData = {},
     cameraType = 0,

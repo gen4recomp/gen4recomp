@@ -149,4 +149,46 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
   Assert.equal(cache:read(FieldEffectAssetCache.markerPath()), bundle.marker)
 end
 
+T.tests["publishes multi-model transition definitions and aborts on a missing reference"] = function()
+  local oldEncode = MeshWriter.encode
+  MeshWriter.encode = function()
+    return "encoded-mesh"
+  end
+  local function bundleFor(secondTexture)
+    local first, second = model(), model()
+    second.materials[1].texture = secondTexture
+    return {
+      marker = "field-effect-cache-v3:rom:dep",
+      index = {
+        schema = "g4-field-effect-index-v1",
+        effects = {
+          follower_transition = {
+            path = FieldEffectAssetCache.definitionPath("follower_transition"),
+            definition = "follower_transition",
+          },
+        },
+      },
+      effects = {
+        follower_transition = {
+          models = { first, second },
+          lifecycle = { mode = "once", frameCount = 8, preludeTicks = 2 },
+          placementOffset = { x = 0, y = 0.375, z = 0 },
+        },
+      },
+      meshes = { ["mesh-key"] = {} },
+      textures = { ["texture-key"] = { width = 1, height = 1, pixels = "rgba" } },
+    }
+  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local ok, err = pcall(Writer.write, cache, bundleFor(FieldEffectAssetCache.texturePath("texture-key")))
+  MeshWriter.encode = oldEncode
+  Assert.isTrue(ok, tostring(err))
+  Assert.isTrue(cache:exists(FieldEffectAssetCache.definitionPath("follower_transition"), "file"))
+
+  local broken = CacheFs.forVersion("heartgold", FakeCache.new())
+  local badOk = pcall(Writer.write, broken, bundleFor(FieldEffectAssetCache.texturePath("absent-key")))
+  Assert.isFalse(badOk, "a transition with a missing referenced asset must not publish")
+  Assert.isFalse(broken:exists(FieldEffectAssetCache.markerPath(), "file"))
+end
+
 return T

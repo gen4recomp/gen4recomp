@@ -24,10 +24,17 @@ function Writer.write(cacheFs, bundle)
     end
     for kind, definition in pairs(bundle.effects) do
       tx.stage:writeLua(FieldEffectAssetCache.definitionPath(kind), definition)
-      local model = assert(definition.model)
-      ModelAsset.validate(model)
-      for _, path in ipairs(ModelAsset.referencedPaths(model)) do
-        assert(tx.stage:exists(path), "field-effect referenced asset is missing: " .. path)
+      local descriptors = definition.models
+      if descriptors == nil then
+        local single = assert(definition.model, "field-effect definition has no model")
+        descriptors = { single }
+      end
+      assert(#descriptors >= 1, "field-effect definition carries no model")
+      for _, descriptor in ipairs(descriptors) do
+        ModelAsset.validate(descriptor)
+        for _, path in ipairs(ModelAsset.referencedPaths(descriptor)) do
+          assert(tx.stage:exists(path), "field-effect referenced asset is missing: " .. path)
+        end
       end
     end
     tx.stage:writeLua(FieldEffectAssetCache.indexPath(), bundle.index)

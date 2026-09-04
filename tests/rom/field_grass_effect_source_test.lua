@@ -38,6 +38,9 @@ local function cacheFor(bundle)
       if kind ~= nil and bundle.effects[kind] ~= nil then
         return bundle.effects[kind]
       end
+      if path == FieldEffectAssetCache.definitionPath("follower_transition") then
+        return bundle.effects.follower_transition
+      end
       error("unexpected field-effect cache path " .. path)
     end,
     exists = function()

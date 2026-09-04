@@ -330,6 +330,8 @@ local function realActorStepSession()
     },
     mapSymbol = "test-map",
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     scene = {},
     cameraType = 0,
     release = function() end,

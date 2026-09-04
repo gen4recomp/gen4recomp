@@ -69,7 +69,7 @@ function T.hex_narc_id_from_disassembly_resolves_through_decimal_conversion_not_
 end
 
 function T.map_catalog_is_complete_and_well_typed()
-  Assert.equal(maps.schema, 1)
+  Assert.equal(maps.schema, 2)
   Assert.equal(maps.count, 540)
   local symbols = {}
   for id = 0, 539 do
@@ -114,6 +114,30 @@ function T.new_bark_records_are_stable()
     lab.messageMemberId,
     lab.eventMemberId,
   }, { 100, 25, 843, 616, 543, 58 })
+end
+
+function T.map_compat_identities_are_source_exact()
+  local town = maps.byId[60]
+  local lab = maps.byId[61]
+  Assert.equal(town.mapSection, "NEW_BARK_TOWN")
+  Assert.equal(town.mapSectionNativeId, 126)
+  Assert.equal(town.followMode, "ALLOW")
+  Assert.equal(lab.mapSection, "NEW_BARK_TOWN")
+  Assert.equal(lab.mapSectionNativeId, 126)
+  Assert.equal(lab.followMode, "HEIGHT_RESTRICT")
+  for id = 0, 539 do
+    local record = assert(maps.byId[id])
+    Assert.isTrue(
+      type(record.mapSectionNativeId) == "number"
+        and record.mapSectionNativeId % 1 == 0
+        and record.mapSectionNativeId >= 0,
+      "map " .. id .. " carries an exact native map-section identity"
+    )
+    Assert.isTrue(
+      record.followMode == "ALLOW" or record.followMode == "HEIGHT_RESTRICT" or record.followMode == "PREVENT",
+      "map " .. id .. " carries a source follow mode"
+    )
+  end
 end
 
 -- The five signpost window commands (MAPSIGNCOMMAND_*) are the source-faithful

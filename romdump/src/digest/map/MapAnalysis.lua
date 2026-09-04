@@ -50,6 +50,12 @@ function MapAnalysis.analyze(romFs)
     result.symbol = record.symbol
     result.mapCode = record.mapCode
     result.mapSection = record.mapSection
+    result.mapSectionNativeId = assert(
+      record.mapSectionNativeId,
+      "HGSS map reference record " .. record.id .. " carries no native map-section identity"
+    )
+    result.followMode =
+      assert(record.followMode, "HGSS map reference record " .. record.id .. " carries no source follow mode")
     result.matrixMemberId = record.matrixMemberId
     results[#results + 1] = result
   end
