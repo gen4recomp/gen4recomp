@@ -9,14 +9,34 @@ local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local FieldScripts = require("tests.rom.support.FieldScripts")
 local RomSuite = require("tests.rom.support.RomSuite")
+local MonScriptCommands = require("romdump.src.reference.hgss.mon_script_commands")
 local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 
 local T = {}
 
--- The authoritative family tags for this feature area. Keyword matching is
--- not used: an opcode belongs to the gate exactly when the reference
--- catalog tags it.
+-- Catalog feature tags select the existing support/defer policy. Inventory
+-- membership comes from MonScriptCommands and is never derived here.
 local FAMILY = { mons = true, starter = true, following_mon = true, party_ui = true }
+
+-- These are compatibility mappings, not a second category authority. An
+-- untagged catalog member is intentionally accepted; inventory shape owns the
+-- closed category set.
+local ALLOWED_CATALOG_FEATURES = {
+  mon = { mons = true },
+  party = { mons = true },
+  -- Starter scripts also use the shared mon catalog family for source
+  -- commands that only buffer or query starter species.
+  starter = { starter = true, mons = true },
+  party_ui = { party_ui = true },
+  following_mon = { following_mon = true },
+  pokedex = { mons = true },
+  daycare = { mons = true },
+  trade = { mons = true },
+  mail = { mons = true },
+  contest = { mons = true },
+  cry = { audio = true },
+  special_event = { mons = true },
+}
 
 -- The only deferral categories the supported command set allows. A new category is
 -- a deliberate design decision, so it must update this list explicitly.
@@ -111,10 +131,12 @@ local CONFORMANCE = {
 
 local function familyEntries()
   local entries = {}
-  for opcode, entry in pairs(ScriptCommands.byOpcode) do
-    if FAMILY[entry.feature] then
-      entries[#entries + 1] = { opcode = opcode, entry = entry }
-    end
+  for _, inventory in ipairs(MonScriptCommands.commands) do
+    entries[#entries + 1] = {
+      opcode = inventory.opcode,
+      inventory = inventory,
+      entry = ScriptCommands.byOpcode[inventory.opcode],
+    }
   end
   table.sort(entries, function(a, b)
     return a.opcode < b.opcode
@@ -181,13 +203,43 @@ function T.reviewed_commands_carry_semantic_evidence()
   Assert.equal(#problems, 0, "every reviewed command links to a behavior fixture: " .. table.concat(problems, ", "))
 end
 
+function T.inventory_entries_match_catalog()
+  local problems = {}
+  for _, item in ipairs(familyEntries()) do
+    if item.entry == nil then
+      problems[#problems + 1] = item.opcode .. ":" .. item.inventory.category .. ":missing catalog entry"
+    else
+      local allowed = ALLOWED_CATALOG_FEATURES[item.inventory.category]
+      if allowed ~= nil and item.entry.feature ~= nil and allowed[item.entry.feature] ~= true then
+        problems[#problems + 1] = item.opcode
+          .. ":"
+          .. CommandCatalog.name(item.opcode)
+          .. ":"
+          .. item.inventory.category
+          .. ":unexpected catalog feature "
+          .. tostring(item.entry.feature)
+      end
+    end
+  end
+  table.sort(problems)
+  Assert.equal(
+    #problems,
+    0,
+    "every inventoried command joins compatible catalog metadata: " .. table.concat(problems, ", ")
+  )
+end
+
 function T.every_family_entry_carries_exactly_one_disposition()
   local seenFeatures = {}
   local problems = {}
   for _, item in ipairs(familyEntries()) do
-    seenFeatures[item.entry.feature] = true
-    if item.entry.disposition ~= "supported" and item.entry.disposition ~= "deferred" then
-      problems[#problems + 1] = item.opcode .. ":" .. CommandCatalog.name(item.opcode)
+    if item.entry == nil then
+      problems[#problems + 1] = item.opcode .. ":missing catalog entry"
+    elseif FAMILY[item.entry.feature] then
+      seenFeatures[item.entry.feature] = true
+      if item.entry.disposition ~= "supported" and item.entry.disposition ~= "deferred" then
+        problems[#problems + 1] = item.opcode .. ":" .. CommandCatalog.name(item.opcode)
+      end
     end
   end
   for feature in pairs(FAMILY) do
@@ -201,7 +253,7 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   local reached = reachedOpcodes(romFs)
   local problems = {}
   for _, item in ipairs(familyEntries()) do
-    if item.entry.disposition == "supported" then
+    if item.entry ~= nil and FAMILY[item.entry.feature] and item.entry.disposition == "supported" then
       -- Zero-operand commands carry no width entries; a present table may
       -- be empty, while a missing table must be compensated by real
       -- decoded bytes in the corpus (the decoder's unknown-opcode path
@@ -234,7 +286,7 @@ end
 function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
   local problems = {}
   for _, item in ipairs(familyEntries()) do
-    if item.entry.disposition == "deferred" then
+    if item.entry ~= nil and FAMILY[item.entry.feature] and item.entry.disposition == "deferred" then
       if ALLOWED_DEFERRALS[item.entry.deferredReason] ~= true then
         problems[#problems + 1] = item.opcode .. ":unexpected deferral category"
       end
