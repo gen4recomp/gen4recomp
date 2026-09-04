@@ -37,7 +37,9 @@ function T.filler_candidate_keeps_actor_lookup_in_the_current_logical_map()
   local source = {
     mapId = CURRENT_MAP_ID,
     mapSection = "test-section",
+    mapSectionNativeId = 7,
     mapSymbol = "source",
+    followMode = "ALLOW",
     coordinateOrigin = { x = 0, z = 0 },
     collision = {
       containsLocal = function(_, fieldX, fieldZ)

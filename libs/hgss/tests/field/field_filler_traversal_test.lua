@@ -88,6 +88,8 @@ local function newOutdoorMap(coverage)
     mapId = SOURCE_MAP_ID,
     mapSymbol = "filler-traversal-test",
     mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
     coordinateOrigin = { x = coverage.origin.x, z = coverage.origin.z },
     physicalOrigin = coverage.origin,
     collision = coverage.region.collision,
