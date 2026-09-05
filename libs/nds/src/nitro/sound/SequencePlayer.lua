@@ -142,6 +142,7 @@ local bit = require("bit")
 ---@field isPlayerPlaying fun(self: SequencePlayer, playerId: integer): boolean
 ---@field isPlaying fun(self: SequencePlayer): boolean
 ---@field setHandleFader fun(self: SequencePlayer, handle: table<string, unknown>, level: integer)
+---@field setHandleTrackPitch fun(self: SequencePlayer, handle: table<string, unknown>, pitch: integer)
 ---@field pauseHandle fun(self: SequencePlayer, handle: table<string, unknown>)
 ---@field resumeHandle fun(self: SequencePlayer, handle: table<string, unknown>)
 ---@field stopHandle fun(self: SequencePlayer, handle: table<string, unknown>)
@@ -480,6 +481,10 @@ local function userPitchFor(track)
   return math.floor(track.bend * (track.bendRange * 64) / 128)
 end
 
+local function effectiveUserPitch(instance, track)
+  return userPitchFor(track) + instance.externalTrackPitch
+end
+
 -- The note's effective envelope: a set track override replaces exactly that
 -- stage of the voice envelope (SND_seq.c TrackPlayNote applies each
 -- non-0xFF override to the channel after allocation).
@@ -606,7 +611,7 @@ local function startNote(provider, mixer, instance, track, midiKey, velocity, le
   spec.key = midiKey
   -- The TrackInit user pitch (SND_seq.c TrackInit pitchBend 0, mapped to
   -- the voice by TrackUpdateChannel): bend 0 is no bend.
-  spec.userPitch = userPitchFor(track)
+  spec.userPitch = effectiveUserPitch(instance, track)
   spec.velocity = velocity
   local indefinite = voice.envelope.release == 0xFF
   local envelope = effectiveEnvelope(track, voice)
@@ -683,7 +688,7 @@ local function pushTrackValues(self, instance, track)
     expression = clamp(track.expression, 0, 127),
     sequenceVolume = clamp(instance.sequenceVolume, 0, 127),
     trackPanOffset = track.pan,
-    userPitch = userPitchFor(track),
+    userPitch = effectiveUserPitch(instance, track),
     lfo = track.mod,
     -- The player fader rides the same queue as a dB-domain attenuation.
     fader = NnsSoundMath.decibel(instance.outerPlayerVolume) + instance.outerFaderDb,
@@ -1431,6 +1436,9 @@ local function startSequenceInstance(self, handle, sequence, bank, enforceBank, 
     -- state moves it and the control-step push delivers its dB-domain
     -- attenuation to the player's voices.
     outerFaderDb = NnsSoundMath.decibel(127),
+    -- External handle-level user pitch, kept separate from the track's
+    -- SSEQ bend state and reset for every new sequence instance.
+    externalTrackPitch = 0,
     -- The transport pause flag (NNS SND_PlayerPause): while paused the
     -- timeline freezes and no control values are pushed; the pause release
     -- already freed the channels.
@@ -1528,6 +1536,36 @@ function SequencePlayer:setHandleFader(handle, level)
     return
   end
   instance.outerFaderDb = NnsSoundMath.decibel(level)
+  for trackId = 0, TRACK_COUNT - 1 do
+    local track = instance.tracks[trackId]
+    if track ~= nil then
+      pushTrackValues(self, instance, track)
+    end
+  end
+end
+
+-- Adds an external user-pitch offset to every track attached to one handle.
+-- This is a live channel control: active voices receive the resulting pitch
+-- through the same update queue as SSEQ track controls, while new voices use
+-- the instance value in their initial note spec.
+---@param handle table<string, unknown>
+---@param pitch integer
+---@return nil
+function SequencePlayer:setHandleTrackPitch(handle, pitch)
+  validateHandle(self, handle)
+  assert(
+    type(pitch) == "number"
+      and pitch == pitch
+      and pitch ~= math.huge
+      and pitch ~= -math.huge
+      and pitch == math.floor(pitch),
+    "track pitch must be a finite integer"
+  )
+  local instance = self._handleAttachments[handle]
+  if instance == nil then
+    return
+  end
+  instance.externalTrackPitch = pitch
   for trackId = 0, TRACK_COUNT - 1 do
     local track = instance.tracks[trackId]
     if track ~= nil then

@@ -1327,7 +1327,7 @@ end
 local function handlePlayCry(node, run)
   requireService(run, "audio"):playCry(
     semanticsFor(run).evaluateValue(node.species, run),
-    semanticsFor(run).evaluateValue(node.form, run)
+    semanticsFor(run).evaluateValue(node.pattern, run)
   )
   return Runtime.OUTCOME_CONTINUE
 end

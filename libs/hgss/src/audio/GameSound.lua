@@ -62,7 +62,7 @@ local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
 ---@field currentMusic fun(self: GameSound): integer?
 ---@field playFanfare fun(self: GameSound, idOrSymbol: integer|string)
 ---@field isFanfarePlaying fun(self: GameSound): boolean
----@field playCry fun(self: GameSound, species: integer, form: integer)
+---@field playCry fun(self: GameSound, species: integer, pattern: integer)
 ---@field isCryFinished fun(self: GameSound): boolean
 ---@field fadeMusicOut fun(self: GameSound, spec: { target: integer, durationTicks: integer })
 ---@field fadeMusicIn fun(self: GameSound, spec: { durationTicks: integer })
@@ -405,15 +405,15 @@ end
 -- plays through it when injected, with the facade tracking activity for
 -- the wait and stability predicates.
 ---@param species integer
----@param form integer
-function GameSound:playCry(species, form)
+---@param pattern integer
+function GameSound:playCry(species, pattern)
   if self._cry == nil then
     Errors.raise(AudioErrors.AUDIO_CRY_UNAVAILABLE, "no cry subsystem is available", {
       species = species,
-      form = form,
+      pattern = pattern,
     })
   end
-  self._cry:play(species, form)
+  self._cry:play(species, pattern)
   self._cryActive = true
 end
 
@@ -527,6 +527,9 @@ end
 -- ramp is skipped while generic ramps keep advancing (only the script music
 -- fade carries the freeze).
 function GameSound:updateSoundFrame()
+  if self._cry ~= nil and type(self._cry.update) == "function" then
+    self._cry:update()
+  end
   if self._fanfare ~= nil and not self._player:isPlayerPlaying(self._fanfare.playerId) then
     self._fanfare.frames = self._fanfare.frames - 1
     if self._fanfare.frames <= 0 then

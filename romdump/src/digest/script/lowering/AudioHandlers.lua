@@ -15,8 +15,9 @@ local function waitSound(ins)
 end
 
 local function playCry(ins)
-  -- PlayCryEx reads both operands through ScriptGetVar (scrcmd_sound.c).
-  return { op = "play_cry", species = Operands.varRef(ins.operands[1]), form = Operands.varRef(ins.operands[2]) }
+  -- PlayCryEx reads both operands through ScriptGetVar (scrcmd_sound.c); its
+  -- second script operand is the cry pattern, not a mon form.
+  return { op = "play_cry", species = Operands.varRef(ins.operands[1]), pattern = Operands.varRef(ins.operands[2]) }
 end
 
 local function waitCry()

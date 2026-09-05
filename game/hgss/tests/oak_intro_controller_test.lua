@@ -88,8 +88,8 @@ local function audio()
     play = function(_, id)
       record("effect", id)
     end,
-    playCry = function(_, species, form)
-      record("cry", { species = species, form = form })
+    playCry = function(_, species, pattern)
+      record("cry", { species = species, pattern = pattern })
     end,
     updateSoundFrame = function()
       record("sound_frame")

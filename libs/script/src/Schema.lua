@@ -633,7 +633,7 @@ Schema.OPERATIONS = {
   play_cry = {
     fields = {
       species = { type = "scalar_or_value", required = true },
-      form = { type = "scalar_or_value", default = 0 },
+      pattern = { type = "scalar_or_value", default = 0 },
     },
   },
   wait_cry = { fields = {} },
@@ -1461,7 +1461,7 @@ Schema.CONSTRUCTORS = {
       { signature = "S.playSound(spec)", canonical = "op=play_sound", notes = "spec={sound}." },
       { signature = "S.stopSound(spec)", canonical = "op=stop_sound", notes = "spec={sound}." },
       { signature = "S.waitSound(spec)", canonical = "op=wait_sound", notes = "spec={sound}." },
-      { signature = "S.playCry(spec)", canonical = "op=play_cry", notes = "spec={species,form=0}." },
+      { signature = "S.playCry(spec)", canonical = "op=play_cry", notes = "spec={species,pattern=0}." },
       { signature = "S.waitCry(spec)", canonical = "op=wait_cry", notes = "spec optional." },
       { signature = "S.playFanfare(spec)", canonical = "op=play_fanfare", notes = "spec={fanfare}." },
       { signature = "S.waitFanfare(spec)", canonical = "op=wait_fanfare", notes = "spec optional." },

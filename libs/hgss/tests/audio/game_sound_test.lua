@@ -755,9 +755,13 @@ end
 function T.cry_with_a_subsystem_reports_completion()
   local played = {}
   local cryState = { finished = false }
+  local updates = 0
   local cry = {
-    play = function(_, species, form)
-      played[#played + 1] = { species = species, form = form }
+    play = function(_, species, pattern)
+      played[#played + 1] = { species = species, pattern = pattern }
+    end,
+    update = function()
+      updates = updates + 1
     end,
     isFinished = function()
       return cryState.finished
@@ -765,7 +769,9 @@ function T.cry_with_a_subsystem_reports_completion()
   }
   local sound = newGameSound(nil, { cry = cry })
   sound:playCry(133, 1)
-  Assert.deepEqual(played, { { species = 133, form = 1 } })
+  Assert.deepEqual(played, { { species = 133, pattern = 1 } })
+  sound:updateSoundFrame()
+  Assert.equal(updates, 1, "the sound frame advances the cry cleanup owner")
   Assert.isFalse(sound:isCryFinished(), "the cry is still active")
   cryState.finished = true
   Assert.isTrue(sound:isCryFinished())

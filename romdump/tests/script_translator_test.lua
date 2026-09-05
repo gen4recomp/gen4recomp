@@ -871,7 +871,7 @@ T["se waits and fanfare var operands lower as value references"] = function()
 end
 
 -- both PlayCry operands are read through ScriptGetVar
--- (PlayCryEx(var1, var0, ...) in scrcmd_sound.c), so the form operand must
+-- (PlayCryEx(var1, var0, ...) in scrcmd_sound.c), so the pattern operand must
 -- lower to a value reference like the species already does.
 T["play cry lowers both operands as value references"] = function()
   local bytes = ScriptFixture.member({
@@ -889,9 +889,9 @@ T["play cry lowers both operands as value references"] = function()
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   Assert.deepEqual(lowered.items[1].species, { value = "var", id = "VAR_0x4000" })
   Assert.deepEqual(
-    lowered.items[1].form,
+    lowered.items[1].pattern,
     { value = "var", id = "VAR_0x4001" },
-    "the cry form operand is a value reference"
+    "the cry pattern operand is a value reference"
   )
 end
 

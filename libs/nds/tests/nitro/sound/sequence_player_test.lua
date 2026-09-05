@@ -1827,6 +1827,45 @@ function T.held_voices_receive_pitch_bend_updates_in_place()
   Assert.isNil(push.partial.key, "the update changes pitch without replacing the voice's midi key")
 end
 
+function T.handle_track_pitch_updates_live_voices_and_resets_on_replacement()
+  local mixer = stubMixer()
+  local player, provider = engine({
+    [0] = seq({
+      { op = "note", key = 60, velocity = 127, duration = 100 },
+      { op = "end" },
+    }),
+  }, { mixer = mixer })
+  local handle = player:createHandle()
+  player:play(handle, provider:sequence(0), provider:bank(12))
+  player:render(250)
+
+  Assert.equal(#mixer.log.noteOns, 1, "the initial play starts one voice")
+  Assert.equal(#mixer.log.noteOffs, 0, "the initial voice is still ringing")
+  Assert.equal(mixer.log.noteOns[1].userPitch, 0, "new instances start at zero external pitch")
+  player:setHandleTrackPitch(handle, -96)
+  Assert.equal(#mixer.log.noteOns, 1, "external pitch does not restart an active note")
+  local pitchUpdate
+  for _, candidate in ipairs(mixer.log.updates) do
+    if candidate.partial.userPitch == -96 then
+      pitchUpdate = candidate
+      break
+    end
+  end
+  local observedPitches = {}
+  for _, candidate in ipairs(mixer.log.updates) do
+    observedPitches[#observedPitches + 1] = tostring(candidate.partial.userPitch)
+  end
+  Assert.notNil(
+    pitchUpdate,
+    "external pitch reaches the live voice as user pitch (observed " .. table.concat(observedPitches, ",") .. ")"
+  )
+
+  player:play(handle, provider:sequence(0), provider:bank(12))
+  player:render(250)
+  Assert.equal(#mixer.log.noteOns, 2, "replacement starts a fresh voice")
+  Assert.equal(mixer.log.noteOns[2].userPitch, 0, "replacement resets external pitch")
+end
+
 -- The player queues control changes (volume, pan, expression, fader, LFO,
 -- user pitch) to its live voices as events; it has no independently rounded
 -- control clock of its own -- the mixer owns the 192 Hz cadence -- so a

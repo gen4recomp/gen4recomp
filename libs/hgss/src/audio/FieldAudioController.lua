@@ -506,8 +506,8 @@ function FieldAudioController:temporaryMusic(idOrSymbol)
   self._sound:temporaryMusic(idOrSymbol)
 end
 
-function FieldAudioController:playCry(species, form)
-  self._sound:playCry(species, form)
+function FieldAudioController:playCry(species, pattern)
+  self._sound:playCry(species, pattern)
 end
 
 function FieldAudioController:isCryFinished()

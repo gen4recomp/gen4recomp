@@ -22,13 +22,21 @@ local function isInteger(value)
     and value == math.floor(value)
 end
 
-local function unavailable(species, form, reason)
-  Errors.raise(AudioErrors.AUDIO_CRY_UNAVAILABLE, reason, { species = species, form = form })
+local PATTERN_BEHAVIORS = {
+  [0] = { externalPitch = 0 },
+  [1] = { externalPitch = 0, cleanupTicks = 20 },
+  [11] = { externalPitch = -96 },
+  [12] = { externalPitch = -96, cleanupTicks = 20 },
+}
+
+local function unavailable(species, pattern, reason)
+  Errors.raise(AudioErrors.AUDIO_CRY_UNAVAILABLE, reason, { species = species, pattern = pattern })
 end
 
 ---@class CryPlayer
 ---@field new fun(opts: { player: SequencePlayer, provider: AudioAssetProvider }): CryPlayer
----@field play fun(self: CryPlayer, species: integer, form: integer|nil)
+---@field play fun(self: CryPlayer, species: integer, pattern: integer|nil)
+---@field update fun(self: CryPlayer)
 ---@field isFinished fun(self: CryPlayer): boolean
 
 ---@param opts { player: SequencePlayer, provider: AudioAssetProvider }
@@ -39,6 +47,7 @@ function CryPlayer.new(opts)
     _player = opts.player,
     _provider = opts.provider,
     _handle = opts.player:createHandle(),
+    _cleanupTicks = nil,
   }, CryPlayer) --[[@as CryPlayer]]
 end
 
@@ -46,24 +55,52 @@ end
 -- Resolving assets before stopping the current handle leaves an active cry
 -- untouched when a replacement request is invalid or absent from the cache.
 ---@param species integer
----@param form integer|nil
-function CryPlayer:play(species, form)
-  if form == nil then
-    form = 0
+---@param pattern integer|nil
+function CryPlayer:play(species, pattern)
+  if pattern == nil then
+    pattern = 0
   end
   if not isInteger(species) or species < 1 or species > MAX_STANDARD_SPECIES then
-    unavailable(species, form, "standard cry species must be a supported integer")
+    unavailable(species, pattern, "standard cry species must be a supported integer")
   end
-  if not isInteger(form) or form ~= 0 then
-    unavailable(species, form, "only standard form 0 cries are supported")
+  local behavior = isInteger(pattern) and PATTERN_BEHAVIORS[pattern] or nil
+  if behavior == nil then
+    unavailable(species, pattern, "unsupported cry pattern")
   end
+  assert(behavior ~= nil, "cry pattern behavior must be available")
 
   local sequence = self._provider:sequence(STANDARD_CRY_SEQUENCE_ID)
   local bank = self._provider:bank(species)
   self._player:stopHandle(self._handle)
   local accepted = self._player:playWithBankOverride(self._handle, sequence, bank)
   if not accepted then
-    unavailable(species, form, "the standard cry was rejected by the audio player")
+    unavailable(species, pattern, "the standard cry was rejected by the audio player")
+  end
+  self._player:setHandleTrackPitch(self._handle, 0)
+  if behavior.externalPitch ~= 0 then
+    self._player:setHandleTrackPitch(self._handle, behavior.externalPitch)
+  end
+  self._cleanupTicks = behavior.cleanupTicks
+end
+
+-- Patterns 1 and 12 schedule the retail 20-tick cry cleanup task. The source
+-- fades the cry player at its midpoint and stops the cry lifecycle at the end;
+-- the private handle is the corresponding owner in the recreated runtime.
+function CryPlayer:update()
+  if self._cleanupTicks == nil then
+    return
+  end
+  if self:isFinished() then
+    self._cleanupTicks = nil
+    return
+  end
+  if self._cleanupTicks == 10 then
+    self._player:setHandleFader(self._handle, 0)
+  end
+  self._cleanupTicks = self._cleanupTicks - 1
+  if self._cleanupTicks <= 0 then
+    self._player:stopHandle(self._handle)
+    self._cleanupTicks = nil
   end
 end
 

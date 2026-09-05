@@ -1,4 +1,4 @@
--- CryPlayer contract: standard form-0 cries resolve the generated generic
+-- CryPlayer contract: standard pattern-0 cries resolve the generated generic
 -- cry sequence and the species bank through the shared engine player. The
 -- player owns busy/completion state; this suite pins the subsystem the
 -- production composition injects.
@@ -19,6 +19,8 @@ local function newRecordingCry()
     startCount = 0,
     stopCount = 0,
     playing = false,
+    pitchChanges = {},
+    faderChanges = {},
   }
   local provider = {
     sequence = function(_, id)
@@ -51,6 +53,14 @@ local function newRecordingCry()
       state.startedBank = resolvedBank
       handle.playing = true
       return true
+    end,
+    setHandleTrackPitch = function(_, handle, pitch)
+      state.pitchHandle = handle
+      state.pitchChanges[#state.pitchChanges + 1] = pitch
+    end,
+    setHandleFader = function(_, handle, level)
+      state.faderHandle = handle
+      state.faderChanges[#state.faderChanges + 1] = level
     end,
     isHandlePlaying = function(_, handle)
       return handle.playing
@@ -86,16 +96,16 @@ function T.replacing_a_cry_stops_the_previous_handle()
   Assert.isFalse(cry:isFinished(), "the replacement cry remains busy")
 end
 
-function T.unsupported_cry_forms_fail_at_the_semantic_boundary()
+function T.unsupported_cry_patterns_fail_at_the_semantic_boundary()
   local cry = newRecordingCry()
   local err = Assert.throws(function()
-    cry:play(183, 1)
+    cry:play(183, 99)
   end)
   Assert.isTrue(Errors.is(err), "unsupported cries must use a structured audio error")
   Assert.equal(err.code, AudioErrors.AUDIO_CRY_UNAVAILABLE)
 end
 
-function T.species_and_form_are_finite_integers_in_the_standard_domain()
+function T.species_and_pattern_are_finite_integers_in_the_standard_domain()
   local cry = newRecordingCry()
   for _, species in ipairs({ 0, 183.5, 494 }) do
     local err = Assert.throws(function()
@@ -105,12 +115,47 @@ function T.species_and_form_are_finite_integers_in_the_standard_domain()
     Assert.equal(err.code, AudioErrors.AUDIO_CRY_UNAVAILABLE)
   end
   local err = Assert.throws(function()
-    local invalidForm = 0.5
-    ---@cast invalidForm integer
-    cry:play(183, invalidForm)
+    local invalidPattern = 0.5
+    ---@cast invalidPattern integer
+    cry:play(183, invalidPattern)
   end)
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, AudioErrors.AUDIO_CRY_UNAVAILABLE)
+end
+
+function T.pattern_11_applies_external_pitch_after_standard_admission()
+  local cry, state = newRecordingCry()
+  cry:play(183, 11)
+
+  Assert.deepEqual(state.pitchChanges, { 0, -96 }, "pattern 11 modifies the admitted cry handle")
+  Assert.equal(state.pitchHandle, state, "pattern pitch stays on the private handle")
+end
+
+function T.pattern_1_runs_the_source_twenty_tick_cleanup()
+  local cry, state = newRecordingCry()
+  cry:play(183, 1)
+
+  for _ = 1, 10 do
+    cry:update()
+  end
+  Assert.deepEqual(state.faderChanges, {}, "pattern 1 keeps the cry audible before the cleanup midpoint")
+  cry:update()
+  Assert.deepEqual(state.faderChanges, { 0 }, "pattern 1 fades the private cry handle at tick 11")
+  for _ = 1, 9 do
+    cry:update()
+  end
+  Assert.equal(state.stopCount, 2, "pattern 1 stops the private cry handle at tick 20")
+end
+
+function T.pattern_12_combines_cleanup_with_source_pitch()
+  local cry, state = newRecordingCry()
+  cry:play(183, 12)
+
+  Assert.deepEqual(state.pitchChanges, { 0, -96 }, "pattern 12 applies the source pitch modifier")
+  for _ = 1, 11 do
+    cry:update()
+  end
+  Assert.deepEqual(state.faderChanges, { 0 }, "pattern 12 applies the same cleanup task as pattern 1")
 end
 
 function T.missing_standard_assets_keep_provider_error_attribution()
