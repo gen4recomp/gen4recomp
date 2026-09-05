@@ -47,6 +47,7 @@ function T.tests.action_facing_filler_stays_in_the_current_logical_map()
         },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
+        mons = require("tests.support.MonBucket").emptyForVersion(versionId),
       }
     end,
   })
