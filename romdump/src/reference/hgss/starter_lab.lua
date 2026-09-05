@@ -1,0 +1,14 @@
+-- Source-derived Elm's Lab starter-ball reference. Positions are the raw
+-- placed-model coordinates recovered from the map's source data; runtime
+-- scaling and transform normalization belong to the map producer.
+
+return {
+  mapId = 61,
+  mapSymbol = "MAP_NEW_BARK_ELMS_LAB_1F",
+  modelMemberId = 0x8D,
+  positions = {
+    { x = 131, y = 0, z = 65 },
+    { x = 141, y = 0, z = 65 },
+    { x = 136, y = 0, z = 72 },
+  },
+}

@@ -44,8 +44,10 @@ end
 local function onlyModel(bundle)
   local found
   for _, model in pairs(bundle.models) do
-    assert(not found, "expected exactly one building model")
-    found = model
+    if model.memberId == MapRomFixture.BUILDING_MODEL_MEMBER_ID then
+      assert(not found, "expected one authored building model")
+      found = model
+    end
   end
   return assert(found, "expected one building model")
 end
@@ -225,15 +227,15 @@ function T.building_with_no_named_bindings_compiles_as_a_no_op()
   Assert.isNil(model.materials[1].texture)
 end
 
-function T.a_map_with_no_placed_buildings_never_opens_the_building_pack()
-  -- Areas with no placed buildings point buildingTexturePackId at one of the
-  -- four-byte placeholder members of building_textures, which is not a Nitro
-  -- file. HGSS never extracts a TEX0 it has no models to bind, so neither does
-  -- the compiler.
-  local bundle = assert(compile({ buildings = "", buildingPack = false }))
-  Assert.deepEqual(bundle.models, {})
+function T.a_map_with_no_placed_buildings_still_compiles_starter_ball_assets()
+  local bundle = assert(compile({ buildings = "" }))
+  local modelCount = 0
+  for _ in pairs(bundle.models) do
+    modelCount = modelCount + 1
+  end
+  Assert.equal(modelCount, 1)
   Assert.equal(#bundle.scene.buildingInstances, 0)
-  Assert.isNil(bundle.dependencies.buildingTextureMemberSha1)
+  Assert.notNil(bundle.scene.runtimeProps.starterBalls)
   Assert.isNil(bundle.scene.source, "source identity lives in the dependency record")
 end
 

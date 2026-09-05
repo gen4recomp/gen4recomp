@@ -4395,9 +4395,8 @@ return {
     [621] = {
       name = "ScrCmd_PlaceStarterBallsInElmsLab",
       feature = "starter",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "placing the starter balls needs the starter application",
+      classification = "continue_same_tick",
+      disposition = "supported",
       widths = {},
     },
     [622] = {

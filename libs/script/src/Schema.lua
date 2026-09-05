@@ -728,6 +728,7 @@ Schema.OPERATIONS = {
   -- provider-ordered candidates, runs the modal choice, and publishes the
   -- exact confirmed instance; the resumed script owns its story flags.
   choose_starter = { fields = {} },
+  place_starter_balls = { fields = {} },
   return_loan_mon = {
     fields = {
       slot = { type = "scalar_or_value", required = true },

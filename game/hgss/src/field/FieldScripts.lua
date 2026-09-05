@@ -200,6 +200,7 @@ end
 ---@field menu FieldMenuHost modal field menu host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
 
 ---@class FieldScripts
 ---@field registry table<string, unknown>
@@ -381,6 +382,7 @@ function FieldScripts.new(opts)
       starterChoice = opts.starterChoice,
       followingMon = opts.followingMon,
       followerTransition = opts.followerTransition,
+      starterBalls = opts.starterBalls,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

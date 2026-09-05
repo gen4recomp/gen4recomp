@@ -110,6 +110,7 @@ local MapSceneLoader = {}
 ---@field bounds table<string, unknown>
 ---@field mapDraws table[]
 ---@field staticBuildingDraws table[]
+---@field runtimePropDraws table[] runtime-owned static prop draw lane
 ---@field animatedBuildingDraws table[]
 ---@field lighting table<string, unknown>
 ---@field edgeColors table<string, unknown>
@@ -263,7 +264,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
   -- equivalent seeds `transform` and the scene bounds. Draw items carry no
   -- submission numbers: final queue traversal orders every part and draw in
   -- source order, positionally.
-  local function drawItem(batch, materials, instanceTransform)
+  local function drawItem(batch, materials, instanceTransform, includeInBounds)
     local meshResource = pool:meshFor(batch.geometry)
     checkpoint()
     local billboardBase, billboardCenter, billboardScale
@@ -279,7 +280,9 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
       )
     end
     local transform = billboardBase or instanceTransform
-    growBoundsAabb(meshResource.bounds, transform)
+    if includeInBounds ~= false then
+      growBoundsAabb(meshResource.bounds, transform)
+    end
     local state = batchDrawState(batch)
     return {
       mesh = meshResource.mesh,
@@ -588,6 +591,46 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
   runtime.bounds = bounds
   runtime.mapDraws = mapDraws
   runtime.staticBuildingDraws = staticBuildingDraws
+  runtime.runtimePropDraws = {}
+  local runtimePropDrawsByOwner = {}
+  runtime.runtimePropDrawsByOwner = runtimePropDrawsByOwner
+
+  local function refreshRuntimePropDraws()
+    local draws = {}
+    for _, ownerDraws in pairs(runtimePropDrawsByOwner) do
+      for _, draw in ipairs(ownerDraws) do
+        draws[#draws + 1] = draw
+      end
+    end
+    runtime.runtimePropDraws = draws
+  end
+
+  -- Runtime-owned static props replace one semantic owner lane atomically:
+  -- all new GPU-backed draw records are assembled before the old lane is
+  -- published. The descriptor and model resources remain owned by the scene
+  -- pool, while the immutable authored building list is never rebuilt.
+  function runtime:replaceRuntimeStaticProps(ownerKey, placements)
+    assert(type(ownerKey) == "string" and #ownerKey > 0, "runtime prop owner key is required")
+    assert(type(placements) == "table", "runtime prop placements are required")
+    local starterBalls = assert(self.scene.runtimeProps and self.scene.runtimeProps.starterBalls)
+    local desc = descriptorFor(starterBalls.model)
+    if desc.descriptor.kind ~= "static" then
+      Errors.raise(
+        FieldErrors.MAP_SCENE_UNKNOWN_MODEL_KIND,
+        "runtime prop model must be static: " .. starterBalls.model,
+        { modelKey = starterBalls.model, kind = desc.descriptor.kind }
+      )
+    end
+    local nextDraws = {}
+    for _, placement in ipairs(placements) do
+      assert(type(placement) == "table" and type(placement.transform) == "table")
+      for _, batch in ipairs(desc.descriptor.batches) do
+        nextDraws[#nextDraws + 1] = drawItem(batch, desc.materials, placement.transform, false)
+      end
+    end
+    runtimePropDrawsByOwner[ownerKey] = nextDraws
+    refreshRuntimePropDraws()
+  end
   -- Build the frame-0 animated items inside the load build: the scene
   -- is renderable immediately after load, and the animation clocks never
   -- advanced (the first tick's updateAnimated starts them).
@@ -646,6 +689,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
     buildingInstances = #scene.buildingInstances,
     animatedInstances = #animatedInstances,
     animatedModelCount = animatedModelCount,
+    runtimePropDraws = #runtime.runtimePropDraws,
   }
 
   function runtime:release()

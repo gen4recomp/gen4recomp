@@ -97,6 +97,9 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     indices[#indices + 1] = placement.index
     placementIndicesByMember[placement.modelMemberId] = indices
   end
+  for _, memberId in ipairs(opts.requiredModelMembers or {}) do
+    uniqueMembers[memberId] = true
+  end
   local memberIds = sortedNumbers(uniqueMembers)
 
   local bldNarc, bldTexPack, bldTexSha1
@@ -195,6 +198,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     archiveAlias = archiveAlias,
     buildingTextureMemberId = #memberIds > 0 and area.buildingTexturePackId or nil,
     buildingTextureMemberSha1 = bldTexSha1,
+    modelKeyOf = modelKeyOf,
   }
 end
 

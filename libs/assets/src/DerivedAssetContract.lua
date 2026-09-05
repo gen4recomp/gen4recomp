@@ -71,6 +71,8 @@
 -- intro OBJ geometry: animated widgets retain one OAM-origin pivot across
 -- frames and publish source-reference centers for responsive placement.
 -- field map schema 9: generated object events publish semantic movement types
+-- map scene schema 10: Elm's Lab publishes the generated starter-ball model
+-- reference and its normalized runtime placement transforms.
 -- instead of raw HGSS movement selectors.
 
 local DerivedAssetContract = {}
@@ -86,7 +88,7 @@ DerivedAssetContract.map = {
   -- the per-polygon fog gate (fogEnabled, PolygonState.FIELDS), and scenes
   -- carry the map's base weather ID plus its resolved global HGSS fog preset
   -- (scene.weatherId, scene.fog).
-  sceneSchema = "g4-map-scene-v9",
+  sceneSchema = "g4-map-scene-v10",
   terrainSchema = "g4-terrain-surfaces-v1",
   collisionVersion = 1,
 }

@@ -8,6 +8,7 @@
 -- open RomFs) but the raw Nitro formats stop here.
 
 local MapResolver = require("romdump.src.digest.map.MapResolver")
+local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 local AreaData = require("romdump.src.digest.map.AreaData")
 local LandData = require("romdump.src.digest.map.LandData")
 local HgssBdhc = require("romdump.src.digest.map.HgssBdhc")
@@ -18,6 +19,7 @@ local HgssFieldLightProfile = require("romdump.src.digest.field.HgssFieldLightPr
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
 local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
+local Matrix4 = require("libs.math.src.Matrix4")
 local Hashing = require("romdump.src.digest.Hashing")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
@@ -229,11 +231,29 @@ local function _compile(romFs, idOrSymbol, opts)
     resourceCache = opts.resourceCache,
     meshes = meshes,
     textures = textures,
+    requiredModelMembers = resolved.map.symbol == StarterLab.mapSymbol and { StarterLab.modelMemberId } or nil,
   })
   appendUnresolved(unresolvedMaterials, { unresolved = buildingCompiled.unresolvedMaterials })
   local archiveAlias = buildingCompiled.archiveAlias
   local buildingInstances = buildingCompiled.buildingInstances
   local models = buildingCompiled.models
+
+  local runtimeProps
+  local starterModelKey = buildingCompiled.modelKeyOf[StarterLab.modelMemberId]
+  if resolved.map.symbol == StarterLab.mapSymbol then
+    assert(starterModelKey, "Elm's Lab starter-ball model was not compiled")
+    local placements = {}
+    for _, position in ipairs(StarterLab.positions) do
+      local x, y, z = MapUnits.toRuntime(position.x, position.y, position.z, mapModel.info.posScale)
+      placements[#placements + 1] = { transform = Matrix4.toArray(Matrix4.translate(x, y, z)) }
+    end
+    runtimeProps = {
+      starterBalls = {
+        model = starterModelKey,
+        placements = placements,
+      },
+    }
+  end
 
   local neighbors, textureSrt, neighborChunkByMember =
     compileNeighborAssets(romFs, resolved, mapId, terrainAnimationCompiler, meshes, textures, unresolvedMaterials)
@@ -278,6 +298,14 @@ local function _compile(romFs, idOrSymbol, opts)
     },
     animationListMemberSha1s = buildingCompiled.animationListMemberSha1s,
   }
+  if runtimeProps then
+    dependencies.runtimeProps = {
+      starterBalls = {
+        modelMemberId = StarterLab.modelMemberId,
+        positions = StarterLab.positions,
+      },
+    }
+  end
   -- The animation sources are producer provenance like every other
   -- dependency: the fldtanime table hash unconditionally, only the used
   -- replacement members, and the selected area NSBTA member -- merged before
@@ -343,6 +371,7 @@ local function _compile(romFs, idOrSymbol, opts)
     -- WeatherManager_SetWeather call on field init. Derived from weatherId
     -- in this one place so the two fields cannot diverge.
     fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(resolved.map.weather)),
+    runtimeProps = runtimeProps,
   }
 
   return {

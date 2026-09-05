@@ -953,6 +953,11 @@ local function handleFollowerTransition(_, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+local function handlePlaceStarterBalls(_, run)
+  requireService(run, "starterBalls"):placeStarterBalls()
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handleLockPlayer(_, run)
   requireForeground(run, "lock_player")
   run.environment:acquireLock(ScriptEnvironment.LOCK_PLAYER, nil, run.instance.instanceId)
@@ -1616,6 +1621,7 @@ HANDLERS.follower_start_movement = handleFollowerStartMovement
 HANDLERS.follower_reposition = handleFollowerReposition
 HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
 HANDLERS.follower_transition = handleFollowerTransition
+HANDLERS.place_starter_balls = handlePlaceStarterBalls
 HANDLERS.lock_player = handleLockPlayer
 HANDLERS.release_player = handleReleasePlayer
 HANDLERS.lock_all = handleLockAll

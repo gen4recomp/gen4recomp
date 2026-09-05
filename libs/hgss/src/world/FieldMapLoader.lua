@@ -508,10 +508,20 @@ function FieldMapLoader:load(idOrSymbol, _)
       coordinateOrigin = { x = scene.matrix.worldOriginX, z = scene.matrix.worldOriginZ },
       physicalOrigin = nil,
       neighborRuntime = neighborRuntime,
+      runtimePropSelections = {},
       released = false,
     }
     function runtimeMap:probePhysicalCell(_, _)
       return nil
+    end
+    function runtimeMap:replaceRuntimeStaticProps(ownerKey, placements)
+      assert(type(ownerKey) == "string" and #ownerKey > 0, "runtime prop owner key is required")
+      assert(type(placements) == "table", "runtime prop placements are required")
+      local nextPlacements = {}
+      for index, placement in ipairs(placements) do
+        nextPlacements[index] = placement
+      end
+      self.runtimePropSelections[ownerKey] = nextPlacements
     end
     function runtimeMap:release()
       releaseAggregate(self)

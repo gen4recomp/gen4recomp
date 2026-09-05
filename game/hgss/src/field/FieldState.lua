@@ -201,13 +201,14 @@ function FieldState:_worldParts(alpha)
   local resources = assert(self.presentationResources, "field presentation resources are unavailable")
   local runtimeMap = self.runtime.runtimeMap
   local worldParts = self.worldParts
+  local sceneRuntime = runtimeMap.sceneRuntime
   if runtimeMap.coverage then
     worldParts[1] = runtimeMap.coverage:worldParts()
     worldParts[2] = NO_DRAWS
     worldParts[3] = NO_DRAWS
     worldParts[4] = NO_DRAWS
   else
-    local sceneRuntime = assert(runtimeMap.sceneRuntime, "field scene presentation is unavailable")
+    sceneRuntime = assert(sceneRuntime, "field scene presentation is unavailable")
     worldParts[1] = sceneRuntime.mapDraws
     worldParts[2] = sceneRuntime.staticBuildingDraws
     worldParts[3] = sceneRuntime.animatedBuildingDraws
@@ -247,6 +248,7 @@ function FieldState:_worldParts(alpha)
   worldParts[9] = (transition and transitionRenderer)
       and transitionRenderer:drawItems(transition:status(), self.runtime.runtimeMap)
     or NO_DRAWS
+  worldParts[10] = sceneRuntime and sceneRuntime.runtimePropDraws or NO_DRAWS
   return worldParts
 end
 
@@ -826,6 +828,7 @@ function FieldState:dispose()
     self.worldParts[7] = nil
     self.worldParts[8] = nil
     self.worldParts[9] = nil
+    self.worldParts[10] = nil
   end
   self.worldActorItems = nil
   self.spriteItems = nil

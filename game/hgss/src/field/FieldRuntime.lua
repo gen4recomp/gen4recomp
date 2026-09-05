@@ -71,6 +71,23 @@ local LocalClock = require("game.src.LocalClock")
 local RepoFs = require("game.src.RepoFs")
 local WindowConfig = require("game.src.WindowConfig")
 
+local function composeStarterBalls(runtime)
+  local StarterLabBallController = require("libs.hgss.src.field.StarterLabBallController")
+  local function currentScene()
+    local current = runtime.session and runtime.session.currentMap or runtime.runtimeMap
+    return assert(current and (current.sceneRuntime or current))
+  end
+  return StarterLabBallController.new({
+    eventState = runtime.eventState,
+    party = runtime.monService,
+    flags = {
+      gotTm51 = FieldScriptSymbols.flagsByName.FLAG_GOT_TM51_FROM_FALKNER,
+      metPasserbyBoy = FieldScriptSymbols.flagsByName.FLAG_MET_PASSERBY_BOY,
+    },
+    sceneOf = currentScene,
+  })
+end
+
 ---@class FieldRuntimeOptions
 ---@field zoomConfig table<string, unknown>?
 ---@field viewportWidth integer?
@@ -121,6 +138,7 @@ local WindowConfig = require("game.src.WindowConfig")
 ---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
 ---@field followingMonTransition FollowingMonTransitionController|nil the one transient follower-transition owner (nil after teardown)
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
+---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller (nil after teardown)
 ---@field session FieldSession
 ---@field actors FieldActorManager
 ---@field actorAssets FieldActorAssets
@@ -997,6 +1015,7 @@ function FieldRuntime:_load()
       playerOf = currentPlayer,
       mapOf = currentMap,
     })
+    self.starterBalls = composeStarterBalls(self)
     -- The one follower-transition owner: the transient visual the
     -- nonblocking transition command starts, advanced once per fixed tick
     -- after the follower reconciles. A missing or malformed generated
@@ -1015,6 +1034,7 @@ function FieldRuntime:_load()
       starterChoice = self.starterChoice,
       followingMon = self.followingMon,
       followerTransition = self.followingMonTransition,
+      starterBalls = self.starterBalls,
     })
     self.scripts = scriptComposition.scripts
     scriptComposition.restore()
@@ -1699,6 +1719,7 @@ function FieldRuntime:_releaseAll()
     self.followingMonTransition:dispose()
   end
   self.followingMonTransition = nil
+  self.starterBalls = nil
   self.followerTransitionDefinition = nil
   if self.actors then
     self.actors:dispose()

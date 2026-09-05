@@ -65,7 +65,7 @@ function T.completeness_and_ready(romFs, version)
   Assert.equal(bundle.terrain.schema, "g4-terrain-surfaces-v1")
   Assert.isTrue(c:exists(MapAssetCache.terrainPath(MAP_ID)), "terrain artifact on disk")
 
-  Assert.equal(#sortedKeys(bundle.models), 9) -- unique indoor building models
+  Assert.equal(#sortedKeys(bundle.models), 10) -- unique indoor building models plus starter balls
   Assert.equal(#bundle.scene.buildingInstances, 15) -- placed instances
 
   -- Polygon state lives on batch records, not material records.

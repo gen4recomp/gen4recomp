@@ -408,6 +408,10 @@ local function followerTransition()
   return { op = "follower_transition" }
 end
 
+local function placeStarterBalls()
+  return { op = "place_starter_balls" }
+end
+
 local function setSpecialSpawn(ins)
   return {
     op = "set_special_spawn",
@@ -1264,6 +1268,7 @@ return {
   [604] = followerStartMovement,
   [605] = followerReposition,
   [608] = followerTransition,
+  [621] = placeStarterBalls,
   [609] = yieldFollowerCheck,
   [698] = followerIsEventTrigger,
   [729] = followerIsActive,

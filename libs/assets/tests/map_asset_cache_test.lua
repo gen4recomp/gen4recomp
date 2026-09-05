@@ -379,6 +379,23 @@ local function raisesSceneInvalid(scene)
   Assert.equal(err.code, "MAP_CACHE_SCENE_INVALID")
 end
 
+function T.elms_lab_requires_strict_starter_ball_runtime_props()
+  local scene = baseScene()
+  scene.mapSymbol = "MAP_NEW_BARK_ELMS_LAB_1F"
+  raisesSceneInvalid(scene)
+
+  scene.runtimeProps = { starterBalls = { model = "indoor:141:model", placements = {} } }
+  raisesSceneInvalid(scene)
+
+  scene.runtimeProps.starterBalls.placements = {
+    { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 } },
+    { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1 } },
+    { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1 } },
+  }
+  scene.runtimeProps.starterBalls.placements[2].transform[6] = 0 / 0
+  raisesSceneInvalid(scene)
+end
+
 -- Write a full ready map for `scene`, with exactly the given extra image
 -- paths present (written explicitly, never derived from the traversal under
 -- test).

@@ -30,6 +30,7 @@ MapRomFixture.MATRIX_MEMBER_ID = 100
 MapRomFixture.AREA_DATA_MEMBER_ID = 25
 MapRomFixture.LAND_DATA_MEMBER_ID = 244
 MapRomFixture.BUILDING_MODEL_MEMBER_ID = 38
+MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID = 141
 MapRomFixture.MAP_TEXTURE_PACK_ID = 3
 MapRomFixture.BUILDING_TEXTURE_PACK_ID = 7
 
@@ -141,6 +142,12 @@ function MapRomFixture.build(opts)
       origHeight = 8,
       triangle = { { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 3 } },
     })
+  local starterBallModel = opts.starterBallModel
+    or NsbmdFixture.build({
+      untextured = true,
+      modelName = "pokeball",
+      triangle = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 } },
+    })
 
   local members = {
     map_matrices = { [MapRomFixture.MATRIX_MEMBER_ID] = matrixMember(MapRomFixture.LAND_DATA_MEMBER_ID) },
@@ -172,12 +179,17 @@ function MapRomFixture.build(opts)
           palettes = { MapRomFixture.BUILDING_PALETTE },
         }),
     },
-    interior_build_models = { [MapRomFixture.BUILDING_MODEL_MEMBER_ID] = buildingModel },
+    interior_build_models = {
+      [MapRomFixture.BUILDING_MODEL_MEMBER_ID] = buildingModel,
+      [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = starterBallModel,
+    },
     -- Animation-list archives: one 0x18-byte record per model member; the
     -- default record carries no animations (first u16 0xFFFF). The shared
     -- animation archive is never read when no record references it.
-    interior_build_anim_list = opts.interiorBuildAnimList
-      or { [MapRomFixture.BUILDING_MODEL_MEMBER_ID] = NB.u16(0xFFFF) .. string.rep("\0", 0x16) },
+    interior_build_anim_list = opts.interiorBuildAnimList or {
+      [MapRomFixture.BUILDING_MODEL_MEMBER_ID] = NB.u16(0xFFFF) .. string.rep("\0", 0x16),
+      [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = NB.u16(0xFFFF) .. string.rep("\0", 0x16),
+    },
     build_anim = opts.buildAnim or { [0] = "\0" },
     -- The fldtanime table (member 0) is an unconditional terrain-compile
     -- dependency; the default is a valid zero-record table so maps with no
