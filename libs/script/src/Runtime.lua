@@ -746,6 +746,18 @@ local function handlePartyMonSpecies(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+local function handlePartyMonTypes(node, run)
+  local type1, type2 = monsFor(run):monTypes(evalField(node, run, "slot"))
+  semanticsFor(run).writeRef(node.type1, type1, run)
+  semanticsFor(run).writeRef(node.type2, type2, run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyMonLevel(node, run)
+  writeMonsResult(node, run, monsFor(run):scriptMonLevel(evalField(node, run, "slot")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handlePartyMonIsMine(node, run)
   writeMonsResult(node, run, monsFor(run):scriptPartyMonOwnershipResult(evalField(node, run, "slot")))
   return Runtime.OUTCOME_CONTINUE
@@ -799,6 +811,11 @@ local function handlePartyMonForm(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+local function handleSetMonForm(node, run)
+  monsFor(run):setMonForm(evalField(node, run, "slot"), evalField(node, run, "form"))
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handlePartyMonRibbonCount(node, run)
   writeMonsResult(node, run, monsFor(run):monRibbonCount(evalField(node, run, "slot")))
   return Runtime.OUTCOME_CONTINUE
@@ -811,6 +828,11 @@ end
 
 local function handlePartyHasPokerus(node, run)
   writeMonsBool(node, run, monsFor(run):partyHasPokerus())
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handlePartyHasHeldItem(node, run)
+  writeMonsBool(node, run, monsFor(run):partyHasHeldItem(evalField(node, run, "item")))
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -1563,6 +1585,8 @@ HANDLERS.party_slot_with_species = handlePartySlotWithSpecies
 HANDLERS.party_slot_with_nature = handlePartySlotWithNature
 HANDLERS.party_slot_with_fateful_encounter = handlePartySlotWithFatefulEncounter
 HANDLERS.party_mon_species = handlePartyMonSpecies
+HANDLERS.party_mon_types = handlePartyMonTypes
+HANDLERS.party_mon_level = handlePartyMonLevel
 HANDLERS.party_mon_is_mine = handlePartyMonIsMine
 HANDLERS.party_mon_nature = handlePartyMonNature
 HANDLERS.party_mon_friendship = handlePartyMonFriendship
@@ -1572,9 +1596,11 @@ HANDLERS.party_mon_gender = handlePartyMonGender
 HANDLERS.party_mon_contest_value = handlePartyMonContestValue
 HANDLERS.mon_add_contest_value = handleMonAddContestValue
 HANDLERS.party_mon_form = handlePartyMonForm
+HANDLERS.set_mon_form = handleSetMonForm
 HANDLERS.party_mon_ribbon_count = handlePartyMonRibbonCount
 HANDLERS.party_ribbon_count = handlePartyRibbonCount
 HANDLERS.party_has_pokerus = handlePartyHasPokerus
+HANDLERS.party_has_held_item = handlePartyHasHeldItem
 HANDLERS.party_lead = handlePartyLead
 HANDLERS.party_lead_alive = handlePartyLeadAlive
 HANDLERS.party_legal_check = handlePartyLegalCheck

@@ -3488,6 +3488,9 @@ return {
     },
     [497] = {
       name = "ScrCmd_GetMonTypes",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3738,6 +3741,9 @@ return {
     },
     [535] = {
       name = "ScrCmd_MonGetLevel",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4586,6 +4592,9 @@ return {
     },
     [659] = {
       name = "ScrCmd_SetMonForm",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4888,6 +4897,9 @@ return {
     },
     [701] = {
       name = "ScrCmd_MonHasItem",
+      feature = "mons",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,

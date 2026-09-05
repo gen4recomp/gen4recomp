@@ -830,6 +830,19 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  party_mon_types = {
+    fields = {
+      type1 = { type = "value", required = true },
+      type2 = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
+  party_mon_level = {
+    fields = {
+      result = { type = "value", required = true },
+      slot = { type = "scalar_or_value", required = true },
+    },
+  },
   party_mon_is_mine = {
     fields = {
       slot = { type = "scalar_or_value", required = true },
@@ -886,6 +899,12 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  set_mon_form = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      form = { type = "scalar_or_value", required = true },
+    },
+  },
   party_mon_ribbon_count = {
     fields = {
       slot = { type = "scalar_or_value", required = true },
@@ -899,6 +918,12 @@ Schema.OPERATIONS = {
   },
   party_has_pokerus = {
     fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  party_has_held_item = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
       result = { type = "value", required = true },
     },
   },

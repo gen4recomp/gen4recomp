@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
+local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 
 local T = {}
 
@@ -60,6 +61,36 @@ function T.result_first_queries_keep_the_source_order()
   Assert.equal(species.species, 479)
 end
 
+function T.direct_mon_commands_keep_their_source_operand_order()
+  for _, opcode in ipairs({ 497, 535, 659, 701 }) do
+    local entry = assert(ScriptCommands.byOpcode[opcode])
+    Assert.equal(entry.feature, "mons")
+    Assert.equal(entry.disposition, "supported")
+    Assert.equal(entry.classification, "continue_same_tick")
+  end
+
+  local types = lowerSingle(497, { 0x8001, 0x8002, 0x8000 })
+  Assert.equal(types.op, "party_mon_types")
+  Assert.deepEqual(types.type1, { value = "var", id = 0x8001 })
+  Assert.deepEqual(types.type2, { value = "var", id = 0x8002 })
+  Assert.deepEqual(types.slot, { value = "var", id = 0x8000 })
+
+  local level = lowerSingle(535, { 0x8001, 0x8000 })
+  Assert.equal(level.op, "party_mon_level")
+  Assert.deepEqual(level.result, { value = "var", id = 0x8001 })
+  Assert.deepEqual(level.slot, { value = "var", id = 0x8000 })
+
+  local form = lowerSingle(659, { 0x8000, 0x8001 })
+  Assert.equal(form.op, "set_mon_form")
+  Assert.deepEqual(form.slot, { value = "var", id = 0x8000 })
+  Assert.deepEqual(form.form, { value = "var", id = 0x8001 })
+
+  local item = lowerSingle(701, { 0x8000, 0x8001 })
+  Assert.equal(item.op, "party_has_held_item")
+  Assert.deepEqual(item.item, { value = "var", id = 0x8000 })
+  Assert.deepEqual(item.result, { value = "var", id = 0x8001 })
+end
+
 function T.amount_first_friendship_keeps_the_source_order()
   local add = lowerSingle(383, { 10, 0x8004 })
   Assert.equal(add.op, "mon_add_friendship")
@@ -89,13 +120,11 @@ function T.contest_selector_rides_as_a_raw_immediate_byte()
   Assert.deepEqual(add.slot, { value = "var", id = 0x8000 })
   Assert.equal(add.contestType, 3, "the selector is an immediate byte")
   Assert.deepEqual(add.amount, { value = "var", id = 0x8001 })
-  local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
   local widths = assert(ScriptCommands.byOpcode[828]).widths
   Assert.equal(widths[2], 1, "the selector operand stays one byte wide")
 end
 
 function T.loan_give_and_check_defer_to_the_trade_application()
-  local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
   for _, opcode in ipairs({ 362, 363 }) do
     local tagged = assert(ScriptCommands.byOpcode[opcode])
     Assert.equal(tagged.disposition, "deferred")

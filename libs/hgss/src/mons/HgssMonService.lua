@@ -87,6 +87,29 @@ local NATURE_NAMES = {
 -- Contest value keys in native contest-type order.
 local CONTEST_KEYS = { "cool", "beauty", "cute", "smart", "tough", "sheen" }
 
+-- Generated catalog type keys project to the native Gen-IV identities only
+-- when a script result crosses the HGSS adapter boundary.
+local NATIVE_TYPE_IDS = {
+  normal = 0,
+  fighting = 1,
+  flying = 2,
+  poison = 3,
+  ground = 4,
+  rock = 5,
+  bug = 6,
+  ghost = 7,
+  steel = 8,
+  mystery = 9,
+  fire = 10,
+  water = 11,
+  grass = 12,
+  electric = 13,
+  psychic = 14,
+  ice = 15,
+  dragon = 16,
+  dark = 17,
+}
+
 ---@param nature integer
 ---@return string
 function HgssMonService.natureName(nature)
@@ -798,6 +821,49 @@ end
 ---@return integer
 function HgssMonService:monForm(slot0)
   return self:_liveMon(slot0).form
+end
+
+---@param slot0 integer
+---@return integer, integer
+function HgssMonService:monTypes(slot0)
+  local mon = self:_liveMon(slot0)
+  local form = self._catalog:form(mon.species, mon.form)
+  local type1 = NATIVE_TYPE_IDS[form.types[1]]
+  local type2 = NATIVE_TYPE_IDS[form.types[2] or form.types[1]]
+  assert(type1 ~= nil and type2 ~= nil, "catalog form carries known native type keys")
+  return type1, type2
+end
+
+---@param slot0 integer
+---@return integer
+function HgssMonService:scriptMonLevel(slot0)
+  local mon = self:_liveMon(slot0)
+  if mon.isEgg then
+    return 0
+  end
+  return self:_level(mon)
+end
+
+---@param slot0 integer
+---@param form integer
+function HgssMonService:setMonForm(slot0, form)
+  local mon = self:_liveMon(slot0)
+  self._catalog:form(mon.species, form)
+  mon.form = form
+  self:_store(slot0, mon)
+end
+
+---@param item string|integer
+---@return boolean
+function HgssMonService:partyHasHeldItem(item)
+  local key = self:_itemKey(item)
+  for index = 0, self._party:count() - 1 do
+    local mon = self._party:get(index)
+    if not mon.isEgg and mon.heldItem == key then
+      return true
+    end
+  end
+  return false
 end
 
 ---@return boolean

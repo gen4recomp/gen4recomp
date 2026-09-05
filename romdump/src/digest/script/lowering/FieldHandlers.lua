@@ -727,6 +727,39 @@ local function partyMonSpecies(ins)
   }
 end
 
+local function partyMonTypes(ins)
+  return {
+    op = "party_mon_types",
+    type1 = Operands.varRef(ins.operands[1]),
+    type2 = Operands.varRef(ins.operands[2]),
+    slot = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function partyMonLevel(ins)
+  return {
+    op = "party_mon_level",
+    result = Operands.varRef(ins.operands[1]),
+    slot = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function setMonForm(ins)
+  return {
+    op = "set_mon_form",
+    slot = Operands.varRef(ins.operands[1]),
+    form = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function partyHasHeldItem(ins)
+  return {
+    op = "party_has_held_item",
+    item = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
 local function partyMonIsMine(ins)
   return {
     op = "party_mon_is_mine",
@@ -1173,6 +1206,7 @@ return {
   [351] = partySelectionResult,
   [337] = bufferNatureName,
   [354] = partyMonSpecies,
+  [497] = partyMonTypes,
   [355] = partyMonIsMine,
   [356] = partyCountNotEgg,
   [359] = partyCountEgg,
@@ -1192,12 +1226,15 @@ return {
   [479] = partyRibbonCount,
   [496] = partyLead,
   [529] = partyLeadAlive,
+  [535] = partyMonLevel,
   [542] = partyMonContestValue,
   [584] = partyLegalCheck,
   [632] = countSpecies,
   [647] = partySlotWithSpecies,
+  [659] = setMonForm,
   [676] = partyMonForm,
   [688] = partySlotWithFatefulEncounter,
+  [701] = partyHasHeldItem,
   [827] = partyMonForm,
   [828] = monAddContestValue,
   [836] = checkKyogreGroudon,

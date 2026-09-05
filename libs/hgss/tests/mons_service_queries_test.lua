@@ -9,6 +9,7 @@ local Errors = require("libs.errors.src.Errors")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
+local MonCatalog = require("libs.mons.src.MonCatalog")
 local Party = require("libs.mons.src.Party")
 
 local T = {}
@@ -55,6 +56,13 @@ local function twoMonService(seed, opts)
   return catalog, service
 end
 
+local function formTypeCatalog(types)
+  local root = CatalogFixture.buildAssetRoot()
+  root.species.EEVEE.forms[1].types = types
+  root.species.EEVEE.forms[1].abilities = { "RUN_AWAY", "ADAPTABILITY" }
+  return MonCatalog.new(root)
+end
+
 function T.counts_observe_the_live_party()
   local _, service = twoMonService()
   Assert.equal(service:partyCount(), 2)
@@ -99,6 +107,33 @@ function T.reads_derive_identity_values_without_storing_them()
   Assert.isFalse(service:hasKyogreGroudon(), "the fixture party holds no cover mascot")
   Assert.equal(service:monMove(0, 0), catalog:move("TACKLE").nativeId)
   Assert.equal(service:countMonMoves(0), 2, "the starter opens with two level-up moves")
+end
+
+function T.script_type_queries_project_semantic_keys_to_native_ids()
+  local cases = {
+    { "normal", 0 },
+    { "mystery", 9 },
+    { "dark", 17 },
+  }
+  for _, case in ipairs(cases) do
+    local catalog = formTypeCatalog({ case[1], case[1] })
+    local service = openService(catalog, 0xA1000000 + case[2])
+    Assert.isTrue(gift(service, "EEVEE", { form = 1 }), "the typed form enters the party")
+    local type1, type2 = service:monTypes(0)
+    Assert.equal(type1, case[2], "type one uses the native Gen-IV projection")
+    Assert.equal(type2, case[2], "type two uses the native Gen-IV projection")
+  end
+end
+
+function T.script_queries_leave_party_revision_unchanged()
+  local catalog = formTypeCatalog({ "fire", "dark" })
+  local service = openService(catalog, 0xA2000000)
+  Assert.isTrue(gift(service, "EEVEE", { form = 1, heldItem = "SITRUS_BERRY" }))
+  local revision = service:partyRevision()
+  service:monTypes(0)
+  service:scriptMonLevel(0)
+  Assert.isTrue(service:partyHasHeldItem(158))
+  Assert.equal(service:partyRevision(), revision, "direct mon queries do not publish a party mutation")
 end
 
 function T.bounded_mutations_clamp_and_bump_revision_once()
