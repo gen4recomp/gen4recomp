@@ -16,7 +16,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local StarterChoiceState = require("game.hgss.src.starters.StarterChoiceState")
-local FieldScriptScreenFade = require("libs.hgss.src.field.FieldScriptScreenFade")
+local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 

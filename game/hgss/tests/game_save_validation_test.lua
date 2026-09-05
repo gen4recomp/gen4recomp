@@ -218,7 +218,7 @@ function T.complete_validation_canonicalizes_a_missing_avatar_to_walking()
   Assert.isNil(candidate.avatar)
   local valid = assert(service:validate(candidate))
   Assert.deepEqual(valid.avatar, { state = "walking" }, "a legacy record without avatar state loads as walking")
-  Assert.equal(valid.schema, "g4-game-save-v1", "canonicalization must not bump the schema")
+  Assert.equal(valid.schema, "g4-game-save-v2", "canonicalization must not bump the schema")
 end
 
 function T.complete_validation_round_trips_every_durable_avatar_state()

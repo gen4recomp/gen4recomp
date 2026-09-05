@@ -16,6 +16,8 @@ local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+local PngWriter = require("libs.assets.src.PngWriter")
+local MonCache = require("libs.assets.src.MonCache")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -31,6 +33,25 @@ local JOYSTICK = {
 local function presentationCache()
   local cache = FieldUiFixture.cacheWithFontAndFrames()
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
+  cache:writeLua(MonCache.iconManifestPath(), {
+    schema = MonCache.ICON_MANIFEST_SCHEMA,
+    image = MonCache.iconImagePath(),
+    entries = {
+      ["TEST/f0"] = {
+        x = 0,
+        y = 0,
+        width = 32,
+        height = 32,
+        frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
+      },
+    },
+    representative = { "TEST/f0" },
+  })
+  local pixels = {}
+  for _ = 1, 64 * 64 do
+    pixels[#pixels + 1] = string.char(255, 0, 0, 255)
+  end
+  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
   cache:write(
     FieldActorCache.indexPath(),
     LuaWriter.encode({ schema = FieldActorCache.INDEX_SCHEMA, spriteIds = { 0 } })
