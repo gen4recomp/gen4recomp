@@ -38,7 +38,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local AudioErrors = require("libs.hgss.src.audio.AudioErrors")
-local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
+local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 
 ---@class GameSound
 ---@field private _provider AudioAssetProvider
@@ -51,6 +51,7 @@ local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
 ---@field private _fanfare table<string, unknown>|nil
 ---@field private _faders table<integer, GameSoundPlayerFader>
 ---@field private _handles table<integer, table<string, unknown>>
+---@field private _faderTimeline PlayerFaderTimeline
 ---@field private _cryActive boolean
 ---@field new fun(opts: { provider: AudioAssetProvider, player: SequencePlayer, completionAvailable: boolean?, cry: table<string, unknown>?, mapMusic: fun(): integer|string|nil? }): GameSound
 ---@field play fun(self: GameSound, idOrSymbol: integer|string)
@@ -116,9 +117,6 @@ local FANFARE_POST_WAIT_FRAMES = 15
 -- boundary (HGSS GF_SndHandleMoveVolume(0, 128, 15) on soundplate exit).
 local PLAYER_FADER_FULL = 127
 local SOURCE_FULL_RESTORE = 128
--- The fixed NNS logical-player domain: fader ramps
--- iterate ascending over these ids, never in Lua table order.
-local NNS_PLAYER_COUNT = 32
 
 ---@param opts { provider: AudioAssetProvider, player: SequencePlayer, completionAvailable: boolean?, cry: table<string, unknown>?, mapMusic: fun(): integer|string|nil? }
 ---@return GameSound
@@ -143,6 +141,7 @@ function GameSound.new(opts)
     _queuedMusicReplacement = nil,
     _fanfare = nil,
     _faders = {},
+    _faderTimeline = PlayerFaderTimeline.new(),
     _handles = {},
     _cryActive = false,
   } ---@type GameSound
@@ -203,6 +202,7 @@ end
 -- holds after creating a fresh instance: full level and no active ramp.
 ---@param playerId integer
 function GameSound:_resetPlayerFader(playerId)
+  self._faderTimeline:reset(playerId, PLAYER_FADER_FULL)
   self._faders[playerId] = { level = PLAYER_FADER_FULL, ramp = nil }
 end
 
@@ -241,7 +241,6 @@ function GameSound:_replaceFaderRamp(playerId, target, durationFrames, kind, sto
     self._queuedMusicReplacement = nil
   end
   local fader = self:_faderFor(playerId)
-  self:_applyFader(playerId, fader.level)
   fader.ramp = {
     start = fader.level,
     target = target,
@@ -250,6 +249,27 @@ function GameSound:_replaceFaderRamp(playerId, target, durationFrames, kind, sto
     kind = kind,
     stopWhenDone = stopWhenDone,
   }
+  self._faderTimeline:replace(playerId, target, durationFrames, function(level)
+    fader.level = self:_applyFader(playerId, level)
+    return fader.level
+  end, function()
+    fader.ramp = nil
+    if stopWhenDone then
+      self._player:stopHandle(self:_handleForPlayer(playerId))
+      self:_resetPlayerFader(playerId)
+    elseif
+      self._queuedMusicReplacement ~= nil
+      and kind == "music"
+      and self._queuedMusicReplacement.sourceMusicId == self._currentMusic
+      and self._queuedMusicReplacement.sourcePlayerId == playerId
+    then
+      local destinationId = self._queuedMusicReplacement.destinationId
+      self._queuedMusicReplacement = nil
+      self:_stopBgmPlayer()
+      local destination = self:_startSequence(destinationId)
+      self._currentMusic = destination.id
+    end
+  end)
 end
 
 -- Stops only the recorded BGM sequence and releases its canonical handle;
@@ -476,6 +496,7 @@ function GameSound:fadeMusicIn(spec)
   -- creation pushes the snapped 0 as its start level.
   fader.level = 0
   fader.ramp = nil
+  self._faderTimeline:reset(playerId, 0)
   self:_replaceFaderRamp(playerId, PLAYER_FADER_FULL, spec.durationTicks, "music", false)
 end
 
@@ -547,39 +568,10 @@ end
 -- level. The script music fade freeze is the fanfare's: while a fanfare is
 -- active, ramps tagged as music fades do not advance.
 function GameSound:_advanceFaderRamps()
-  for playerId = 0, NNS_PLAYER_COUNT - 1 do
+  self._faderTimeline:update(function(playerId)
     local fader = self._faders[playerId]
-    if fader ~= nil and fader.ramp ~= nil then
-      local ramp = fader.ramp
-      if not (self._fanfare ~= nil and ramp.kind == "music") then
-        ramp.elapsedFrames = ramp.elapsedFrames + 1
-        local level = ramp.start
-          + NnsSoundMath.cDiv(ramp.elapsedFrames * (ramp.target - ramp.start), ramp.durationFrames)
-        -- Store the level actually applied (a full-restore interpolation may
-        -- compute 128 on its final frame; the record keeps the normalized 127
-        -- so it always equals what SequencePlayer holds).
-        fader.level = self:_applyFader(playerId, level)
-        if ramp.elapsedFrames >= ramp.durationFrames then
-          fader.ramp = nil
-          if ramp.stopWhenDone then
-            self._player:stopHandle(self:_handleForPlayer(playerId))
-            self:_resetPlayerFader(playerId)
-          elseif
-            self._queuedMusicReplacement ~= nil
-            and ramp.kind == "music"
-            and self._queuedMusicReplacement.sourceMusicId == self._currentMusic
-            and self._queuedMusicReplacement.sourcePlayerId == playerId
-          then
-            local destinationId = self._queuedMusicReplacement.destinationId
-            self._queuedMusicReplacement = nil
-            self:_stopBgmPlayer()
-            local destination = self:_startSequence(destinationId)
-            self._currentMusic = destination.id
-          end
-        end
-      end
-    end
-  end
+    return fader ~= nil and not (self._fanfare ~= nil and fader.ramp ~= nil and fader.ramp.kind == "music")
+  end)
 end
 
 -- Releases the fanfare handle and lifts the current BGM's transport pause.

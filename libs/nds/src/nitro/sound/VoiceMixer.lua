@@ -70,7 +70,9 @@ local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
 ---@field private _channelGeneration table<integer, integer>
 ---@field new fun(opts: { sampleRate: integer, observer: table<string, unknown>? }): VoiceMixer
 ---@field noteOn fun(self: VoiceMixer, spec: table<string, unknown>): { channel: integer, generation: integer } | nil
+---@field waveOn fun(self: VoiceMixer, spec: table<string, unknown>): { channel: integer, generation: integer } | nil
 ---@field noteOff fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, releaseOverride: integer?)
+---@field stopVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer })
 ---@field updateVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, partial: table<string, unknown>)
 ---@field advanceTrackTick fun(self: VoiceMixer, handle: { channel: integer, generation: integer })
 ---@field retargetTiedVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, spec: table<string, unknown>)
@@ -294,6 +296,7 @@ local function newVoice(spec)
       trackPanOffset = spec.trackPanOffset or 0,
       panRange = spec.panRange or 127,
       lfo = spec.lfo or { target = 0, depth = 0, range = 1, speed = 16, delay = 0 },
+      fixedTimer = spec.fixedTimer,
       dirty = true,
     },
     sweepPitch = spec.sweepPitch or 0,
@@ -314,6 +317,7 @@ local function newVoice(spec)
     ownerPlayerId = spec.ownerPlayerId,
     ownerTrackSlot = spec.ownerTrackSlot,
     baseTimer = PSG_BASE_TIMER,
+    fixedTimer = spec.fixedTimer,
   }
   if generator.kind == "sample" then
     -- The spec carries the provider-decoded PCM array (shared, immutable);
@@ -359,6 +363,9 @@ local function applyPending(voice)
     voice.userPan = math.floor((pending.trackPanOffset * pending.panRange + 0x40) / 128)
   end
   voice.lfoParam = pending.lfo
+  if pending.fixedTimer ~= nil then
+    voice.fixedTimer = pending.fixedTimer
+  end
   -- The tie partials: key retunes the pitch path, userPitch offsets it,
   -- velocity re-enters the dB sum; all leave the envelope and the
   -- release/attack status alone.
@@ -459,7 +466,7 @@ local function syncRegisters(voice)
   end
   pan = pan + voice.userPan
   voice.volume = NnsSoundMath.calcChannelVolume(vol)
-  local timer = NnsSoundMath.calcTimer(voice.baseTimer, pitch)
+  local timer = voice.fixedTimer or NnsSoundMath.calcTimer(voice.baseTimer, pitch)
   if voice.generator.kind == "square" then
     timer = bit.band(timer, 0xFFFC)
   end
@@ -588,7 +595,17 @@ function VoiceMixer:noteOn(spec)
   )
   assert(spec.pan ~= nil and spec.trackPriority ~= nil, "voice spec requires pan/trackPriority")
   local priority = spec.channelPriority + spec.trackPriority
-  local channel = allocateChannel(self, spec.generator.kind, spec.channelMask, priority)
+  local channel, victim
+  if spec.fixedChannel ~= nil then
+    assert(spec.fixedChannel >= 0 and spec.fixedChannel < CHANNEL_COUNT and spec.fixedChannel % 1 == 0)
+    channel = spec.fixedChannel
+    victim = self._channels[channel]
+    if victim ~= nil and priority < victim.priority then
+      return nil
+    end
+  else
+    channel, victim = allocateChannel(self, spec.generator.kind, spec.channelMask, priority)
+  end
   if channel == nil then
     return nil
   end
@@ -613,6 +630,43 @@ function VoiceMixer:noteOn(spec)
   syncRegisters(voice)
   self._channels[channel] = voice
   return { channel = channel, generation = voice.generation }
+end
+
+-- Starts a raw WaveOut-style sample on a fixed channel through the same
+-- generation/liveness table used by sequence voices.
+---@param spec { channel: integer, pcm: integer[], metadata: table<string, unknown>, volume: integer, pan: integer, speed: integer }
+---@return { channel: integer, generation: integer } | nil
+function VoiceMixer:waveOn(spec)
+  assert(spec and (spec.channel == 14 or spec.channel == 15), "WaveOut channel must be 14 or 15")
+  assert(type(spec.pcm) == "table" and type(spec.metadata) == "table", "WaveOut requires sample data")
+  assert(spec.volume >= 0 and spec.volume <= 127 and spec.volume % 1 == 0, "WaveOut volume must be 0..127")
+  assert(spec.pan >= 0 and spec.pan <= 127 and spec.pan % 1 == 0, "WaveOut pan must be 0..127")
+  assert(spec.speed > 0 and spec.speed <= 0xFFFF and spec.speed % 1 == 0, "WaveOut speed must be a timer")
+  local loop = spec.metadata.loop
+  assert(loop and loop.startFrame ~= nil and loop.endFrame ~= nil, "WaveOut sample requires loop bounds")
+  return self:noteOn({
+    fixedChannel = spec.channel,
+    fixedTimer = spec.speed,
+    generator = { kind = "sample", sample = "waveout" },
+    pcm = spec.pcm,
+    baseTimer = spec.speed,
+    loop = loop,
+    loopEnabled = false,
+    key = 60,
+    originalKey = 60,
+    velocity = 127,
+    trackVolume = spec.volume,
+    expression = 127,
+    sequenceVolume = 127,
+    fader = 0,
+    pan = spec.pan,
+    trackPanOffset = 0,
+    channelMask = bit.lshift(1, spec.channel),
+    trackPriority = 127,
+    channelPriority = 127,
+    envelope = { attack = 127, decay = 127, sustain = 127, release = 0xFF },
+    length = -1,
+  })
 end
 
 -- Starts or updates the release of the voice a handle names. A stale handle
@@ -642,6 +696,16 @@ function VoiceMixer:noteOff(handle, releaseOverride)
   if not voice.released then
     voice.released = true
     voice.envStatus = "release"
+  end
+end
+
+-- Immediately removes a voice for the internal WaveOut stop path. A stale
+-- generation is harmless, just like noteOff and updateVoice.
+---@param handle { channel: integer, generation: integer }
+function VoiceMixer:stopVoice(handle)
+  local voice = self._channels[handle.channel]
+  if voice ~= nil and voice.generation == handle.generation then
+    self._channels[handle.channel] = nil
   end
 end
 

@@ -13,6 +13,10 @@ local function recordingCry()
     bankId = nil,
     pitch = nil,
     pitchChanges = {},
+    initialVolume = nil,
+    pan = nil,
+    fader = nil,
+    faderChanges = {},
     startedHandle = nil,
     playing = false,
     stopCount = 0,
@@ -50,6 +54,19 @@ local function recordingCry()
       Assert.equal(attached, handle, "cry pitch stays on the private handle")
       state.pitch = pitch
       state.pitchChanges[#state.pitchChanges + 1] = pitch
+    end,
+    setHandleInitialVolume = function(_, attached, level)
+      Assert.equal(attached, handle, "cry initial volume stays on the private handle")
+      state.initialVolume = level
+    end,
+    setHandleTrackPan = function(_, attached, pan)
+      Assert.equal(attached, handle, "cry pan stays on the private handle")
+      state.pan = pan
+    end,
+    setHandleFader = function(_, attached, level)
+      Assert.equal(attached, handle, "cry fader stays on the private handle")
+      state.fader = level
+      state.faderChanges[#state.faderChanges + 1] = level
     end,
     isHandlePlaying = function(_, attached)
       Assert.equal(attached, handle, "cry completion reads its private handle")

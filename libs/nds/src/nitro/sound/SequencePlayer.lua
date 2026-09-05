@@ -148,6 +148,8 @@ local bit = require("bit")
 ---@field stopHandle fun(self: SequencePlayer, handle: table<string, unknown>)
 ---@field releaseHandle fun(self: SequencePlayer, handle: table<string, unknown>)
 ---@field isHandlePlaying fun(self: SequencePlayer, handle: table<string, unknown>): boolean
+---@field setHandleInitialVolume fun(self: SequencePlayer, handle: table<string, unknown>, level: integer)
+---@field setHandleTrackPan fun(self: SequencePlayer, handle: table<string, unknown>, panOffset: integer)
 ---@field stopSequence fun(self: SequencePlayer, sequenceId: integer)
 
 local SequencePlayer = {}
@@ -625,7 +627,7 @@ local function startNote(provider, mixer, instance, track, midiKey, velocity, le
   spec.fader = NnsSoundMath.decibel(instance.outerPlayerVolume) + instance.outerFaderDb
   spec.envelope = envelope
   spec.pan = voice.pan
-  spec.trackPanOffset = track.pan
+  spec.trackPanOffset = track.pan + instance.externalTrackPan
   spec.trackPriority = track.priority
   spec.channelPriority = sequence.player.channelPriority
   spec.channelMask = instance.channelMask
@@ -687,7 +689,7 @@ local function pushTrackValues(self, instance, track)
     trackVolume = clamp(track.volume, 0, 127),
     expression = clamp(track.expression, 0, 127),
     sequenceVolume = clamp(instance.sequenceVolume, 0, 127),
-    trackPanOffset = track.pan,
+    trackPanOffset = track.pan + instance.externalTrackPan,
     userPitch = effectiveUserPitch(instance, track),
     lfo = track.mod,
     -- The player fader rides the same queue as a dB-domain attenuation.
@@ -1439,6 +1441,8 @@ local function startSequenceInstance(self, handle, sequence, bank, enforceBank, 
     -- External handle-level user pitch, kept separate from the track's
     -- SSEQ bend state and reset for every new sequence instance.
     externalTrackPitch = 0,
+    -- External handle-level track pan, reset for every new sequence instance.
+    externalTrackPan = 0,
     -- The transport pause flag (NNS SND_PlayerPause): while paused the
     -- timeline freezes and no control values are pushed; the pause release
     -- already freed the channels.
@@ -1566,6 +1570,56 @@ function SequencePlayer:setHandleTrackPitch(handle, pitch)
     return
   end
   instance.externalTrackPitch = pitch
+  for trackId = 0, TRACK_COUNT - 1 do
+    local track = instance.tracks[trackId]
+    if track ~= nil then
+      pushTrackValues(self, instance, track)
+    end
+  end
+end
+
+-- Sets the handle's player-volume contribution for live voices and future
+-- notes on the attached sequence instance.
+---@param handle table<string, unknown>
+---@param level integer
+---@return nil
+function SequencePlayer:setHandleInitialVolume(handle, level)
+  validateHandle(self, handle)
+  assert(level >= 0 and level <= 127 and level % 1 == 0, "initial volume must be an integer in 0..127")
+  local instance = self._handleAttachments[handle]
+  if instance == nil then
+    return
+  end
+  instance.outerPlayerVolume = level
+  for trackId = 0, TRACK_COUNT - 1 do
+    local track = instance.tracks[trackId]
+    if track ~= nil then
+      pushTrackValues(self, instance, track)
+    end
+  end
+end
+
+-- Sets the external track-pan offset used by the NNS handle controls. The
+-- source track pan remains independently owned and the two offsets are added
+-- when a track update reaches its voices.
+---@param handle table<string, unknown>
+---@param panOffset integer
+---@return nil
+function SequencePlayer:setHandleTrackPan(handle, panOffset)
+  validateHandle(self, handle)
+  assert(
+    type(panOffset) == "number"
+      and panOffset == panOffset
+      and panOffset ~= math.huge
+      and panOffset ~= -math.huge
+      and panOffset == math.floor(panOffset),
+    "track pan must be a finite integer"
+  )
+  local instance = self._handleAttachments[handle]
+  if instance == nil then
+    return
+  end
+  instance.externalTrackPan = panOffset
   for trackId = 0, TRACK_COUNT - 1 do
     local track = instance.tracks[trackId]
     if track ~= nil then

@@ -6,6 +6,7 @@ local FieldAudioController = require("libs.hgss.src.audio.FieldAudioController")
 local GameSound = require("libs.hgss.src.audio.GameSound")
 local SequencePlayer = require("libs.nds.src.nitro.sound.SequencePlayer")
 local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
+local WaveOutPlayer = require("libs.nds.src.nitro.sound.WaveOutPlayer")
 
 local AudioRuntime = {}
 
@@ -37,7 +38,7 @@ function AudioRuntime.compose(opts)
     mixer = mixer,
     provider = provider,
   })
-  local cry = CryPlayer.new({ player = player, provider = provider })
+  local cry = CryPlayer.new({ player = player, provider = provider, waveOut = WaveOutPlayer.new({ mixer = mixer }) })
   local sound = GameSound.new({
     provider = provider,
     player = player,

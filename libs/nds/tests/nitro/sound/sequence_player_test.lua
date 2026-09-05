@@ -1866,6 +1866,40 @@ function T.handle_track_pitch_updates_live_voices_and_resets_on_replacement()
   Assert.equal(mixer.log.noteOns[2].userPitch, 0, "replacement resets external pitch")
 end
 
+function T.handle_volume_and_pan_controls_reach_live_and_future_voices()
+  local mixer = stubMixer()
+  local player, provider = engine({
+    [0] = seq({
+      { op = "note_wait", amount = 0 },
+      { op = "note", key = 60, velocity = 127, duration = 8 },
+      { op = "wait", duration = 1 },
+      { op = "note", key = 62, velocity = 127, duration = 8 },
+      { op = "end" },
+    }),
+  }, { mixer = mixer })
+  local handle = player:createHandle()
+  player:play(handle, provider:sequence(0), provider:bank(12))
+  player:render(250)
+
+  player:setHandleInitialVolume(handle, 80)
+  player:setHandleTrackPan(handle, 12)
+  local latest = mixer.log.updates[#mixer.log.updates].partial
+  Assert.equal(latest.trackPanOffset, 12, "external track pan reaches the active voice")
+  Assert.equal(
+    latest.fader,
+    NnsSoundMath.decibel(80) + NnsSoundMath.decibel(127),
+    "initial volume reaches the active voice through the outer volume sum"
+  )
+
+  player:render(1000)
+  Assert.equal(mixer.log.noteOns[2].trackPanOffset, 12, "external track pan is retained for a later note")
+  Assert.equal(
+    mixer.log.noteOns[2].fader,
+    NnsSoundMath.decibel(80) + NnsSoundMath.decibel(127),
+    "initial volume is retained for a later note on the same instance"
+  )
+end
+
 -- The player queues control changes (volume, pan, expression, fader, LFO,
 -- user pitch) to its live voices as events; it has no independently rounded
 -- control clock of its own -- the mixer owns the 192 Hz cadence -- so a
