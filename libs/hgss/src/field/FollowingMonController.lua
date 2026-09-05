@@ -32,6 +32,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field _lastPartyRevision integer?
 ---@field _lead table<string, unknown>?
 ---@field _published table<string, unknown>?
+---@field _pendingHiddenLead table<string, unknown>?
+---@field _mapEntry boolean
 ---@field _lastPlayerRevision integer?
 ---@field _lastAnchor table<string, unknown>?
 ---@field _queue table<string, unknown>[]
@@ -57,7 +59,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
 ---@field _reconcileLead fun(self: FollowingMonController)
 ---@field _permitted fun(self: FollowingMonController, mapId: integer): boolean
----@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?): FieldActorManager.PartnerSpec
+---@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?, initiallyVisible: boolean?): FieldActorManager.PartnerSpec
 ---@field _tryInstall fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
 ---@field _tryUpdate fun(self: FollowingMonController, spec: FieldActorManager.PartnerSpec): string?
 ---@field _publish fun(self: FollowingMonController, mapId: integer)
@@ -162,6 +164,8 @@ function FollowingMonController.new(opts)
     _lastPartyRevision = nil,
     _lead = nil,
     _published = nil,
+    _pendingHiddenLead = nil,
+    _mapEntry = false,
     _lastPlayerRevision = nil,
     _lastAnchor = nil,
     _queue = {},
@@ -239,14 +243,16 @@ end
 -- no actor operations at all.
 ---@param self FollowingMonController
 function FollowingMonController:_reconcileLead()
+  local previous = self._lead
   local slot = self._service:leadAliveSlot()
   local snapshot = slot ~= nil and self._service:partyMon(slot) or nil
   local descriptor = snapshot ~= nil and self:_descriptor(snapshot) or nil
   if snapshot == nil or descriptor == nil then
     self._lead = nil
+    self._pendingHiddenLead = nil
     return
   end
-  self._lead = {
+  local lead = {
     slot = slot,
     species = snapshot.species,
     form = snapshot.form,
@@ -255,14 +261,26 @@ function FollowingMonController:_reconcileLead()
     size = descriptor.size,
     objectParam = descriptor.objectParam,
   }
-  assert(type(self._lead.size) == "number" and self._lead.size % 1 == 0, "follower size is required for map permission")
+  assert(type(lead.size) == "number" and lead.size % 1 == 0, "follower size is required for map permission")
   assert(
-    type(self._lead.objectParam) == "number"
-      and self._lead.objectParam % 1 == 0
-      and self._lead.objectParam >= 0
-      and self._lead.objectParam <= 0xFFFF,
+    type(lead.objectParam) == "number"
+      and lead.objectParam % 1 == 0
+      and lead.objectParam >= 0
+      and lead.objectParam <= 0xFFFF,
     "follower object parameter is required"
   )
+  if previous == nil then
+    if not self._mapEntry and self._actors:partnerId() == nil then
+      self._pendingHiddenLead = lead
+    else
+      self._pendingHiddenLead = nil
+    end
+  elseif not sameIdentity(previous, lead) then
+    self._pendingHiddenLead = nil
+  elseif self._pendingHiddenLead ~= nil and not sameIdentity(self._pendingHiddenLead, lead) then
+    self._pendingHiddenLead = nil
+  end
+  self._lead = lead
 end
 
 -- The source follower permission (pret/pokeheartgold
@@ -353,8 +371,9 @@ end
 ---@param fieldZ integer
 ---@param facing string
 ---@param worldY number?
+---@param initiallyVisible boolean?
 ---@return FieldActorManager.PartnerSpec spec
-function FollowingMonController:_spec(mapId, fieldX, fieldZ, facing, worldY)
+function FollowingMonController:_spec(mapId, fieldX, fieldZ, facing, worldY, initiallyVisible)
   assert(self._lead ~= nil, "partner placement requires a lead identity")
   return {
     numericId = FollowingMonController.PARTNER_NUMERIC_ID,
@@ -364,6 +383,7 @@ function FollowingMonController:_spec(mapId, fieldX, fieldZ, facing, worldY)
     fieldZ = fieldZ,
     facing = facing,
     worldY = worldY,
+    initiallyVisible = initiallyVisible,
   }
 end
 
@@ -417,13 +437,21 @@ function FollowingMonController:_publish(mapId)
     end
     return
   end
+  local initiallyVisible = nil
+  if self._pendingHiddenLead ~= nil then
+    assert(
+      self._lead ~= nil and sameIdentity(self._pendingHiddenLead, self._lead),
+      "pending follower birth identity is stale"
+    )
+    initiallyVisible = false
+  end
   local anchor = self._playerOf():committedAnchor()
   local behind = behindTile(anchor)
-  local id = self:_tryInstall(self:_spec(mapId, behind.x, behind.z, anchor.facing, anchor.worldY))
+  local id = self:_tryInstall(self:_spec(mapId, behind.x, behind.z, anchor.facing, anchor.worldY, initiallyVisible))
   if id == nil and self._queue[1] ~= nil then
     local head = self._queue[1]
     if head.mapId == mapId then
-      id = self:_tryInstall(self:_spec(mapId, head.fieldX, head.fieldZ, head.facing, head.worldY))
+      id = self:_tryInstall(self:_spec(mapId, head.fieldX, head.fieldZ, head.facing, head.worldY, initiallyVisible))
       if id ~= nil then
         table.remove(self._queue, 1)
       end
@@ -431,6 +459,7 @@ function FollowingMonController:_publish(mapId)
   end
   if id ~= nil then
     self._published = self._lead
+    self._pendingHiddenLead = nil
   end
 end
 
@@ -446,6 +475,7 @@ function FollowingMonController:_suppress()
   self._action = nil
   self._queue = {}
   self._published = nil
+  self._pendingHiddenLead = nil
 end
 
 -- Cancel in-flight presentation, drop the queue and the actor, and forget
@@ -470,6 +500,7 @@ function FollowingMonController:_discontinuity(mapId)
   self._queue = {}
   self._actors:clearPartner()
   self._published = nil
+  self._pendingHiddenLead = nil
   if self._lead ~= nil and self:_permitted(mapId) then
     local anchor = self._playerOf():committedAnchor()
     if anchor.mapId == mapId then
@@ -489,9 +520,11 @@ end
 ---@param mapId integer
 function FollowingMonController:_handleMapChange(mapId)
   self._lastMapId = mapId
+  self._mapEntry = true
   self._queue = {}
   self._action = nil
   self._published = nil
+  self._pendingHiddenLead = nil
   self._lastPlayerRevision = nil
   self._lastAnchor = nil
 end
@@ -628,6 +661,7 @@ function FollowingMonController:update()
     self._lastPartyRevision = partyRevision
     self:_reconcileLead()
   end
+  self._mapEntry = false
   if not self:isActive() then
     self:_clearAll()
     return
@@ -661,6 +695,8 @@ function FollowingMonController:handleMapExit()
   self._queue = {}
   self._actors:clearPartner()
   self._published = nil
+  self._pendingHiddenLead = nil
+  self._mapEntry = false
   self._suspended = true
 end
 
@@ -815,7 +851,9 @@ function FollowingMonController:dispose()
   self._actors:clearPartner()
   self._lead = nil
   self._published = nil
+  self._pendingHiddenLead = nil
   self._lastMapId = nil
+  self._mapEntry = false
   self._suspended = false
 end
 

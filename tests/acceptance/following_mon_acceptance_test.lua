@@ -151,6 +151,10 @@ function T.tests.gifted_lead_appears_as_the_reserved_partner_actor()
     local id = assert(partnerId(game), "the lead gift must install one partner actor")
     Assert.notNil(settled.actors[id], "the partner must be a real actor in the draw/interaction set")
     Assert.equal(id, "field:partner", "the partner keeps its stable actor identity")
+    Assert.isFalse(
+      game.runtime.actors:isVisible(id),
+      "a newly acquired mid-map follower is published hidden before its reveal event"
+    )
     Assert.isTrue(game.runtime.monService:partyCount() == 1, "the party still holds exactly the gifted lead")
   end)
 end

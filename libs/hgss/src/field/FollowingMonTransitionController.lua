@@ -124,8 +124,7 @@ local function liveTarget(self, instance)
 end
 
 -- Starts one transient instance on the current partner. Returns false without
--- allocating anything when no partner is available. A successfully captured
--- partner is hidden before the prelude begins.
+-- allocating anything when no partner is available.
 ---@return boolean
 function FollowingMonTransitionController:start()
   local partnerId = self.actors:partnerId()
@@ -170,9 +169,6 @@ function FollowingMonTransitionController:start()
   if liveTarget(self, instance) == nil then
     release(instance)
     return false
-  end
-  if self.actors:isVisible(partnerId) then
-    self.actors:hide(partnerId)
   end
   self.instances[#self.instances + 1] = instance
   return true

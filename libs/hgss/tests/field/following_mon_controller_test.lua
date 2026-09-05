@@ -132,12 +132,19 @@ local function service()
   }
 end
 
-local function world()
+local function world(options)
+  options = options or {}
   local map = runtimeMap(61)
   local assets = fakeAssets({ [20153] = true, [20154] = true })
   local mgr = FieldActorManager.new({ assets = assets, policy = POLICY })
   mgr:enterMap(map, FieldEventState.new())
-  local player = FieldPlayer.new({ currentMap = map, fieldX = 4, fieldZ = 5, surfaceId = 0, facing = "south" })
+  local player = FieldPlayer.new({
+    currentMap = map,
+    fieldX = options.fieldX or 4,
+    fieldZ = options.fieldZ or 5,
+    surfaceId = 0,
+    facing = options.facing or "south",
+  })
   local svc = service()
   local catalog = CatalogFixture.makeCatalog()
   local controller = FollowingMonController.new({
@@ -189,6 +196,52 @@ function T.eligible_lead_installs_behind_the_player()
   Assert.equal(actor.fieldX, 4, "initial placement is the tile behind the player")
   Assert.equal(actor.fieldZ, 4, "initial placement is the tile behind the player")
   Assert.equal(actor.facing, "south", "installation keeps the player facing")
+  w.mgr:dispose()
+end
+
+function T.mid_map_lead_birth_installs_hidden_but_map_entry_stays_visible()
+  local mapEntry = world()
+  mapEntry.svc:setLead(0, mon())
+  tick(mapEntry, 2)
+  local visible = assert(mapEntry.mgr:getById("field:partner"), "a map-entry lead installs a partner")
+  Assert.isTrue(visible.visible, "normal map-entry reconstruction remains visible")
+  mapEntry.mgr:dispose()
+
+  local midMap = world()
+  tick(midMap, 1)
+  midMap.svc:setLead(0, mon())
+  tick(midMap, 2)
+  local hidden = assert(midMap.mgr:getById("field:partner"), "the mid-map lead birth installs a partner")
+  Assert.isFalse(hidden.visible, "a newly published mid-map lead starts hidden")
+  midMap.mgr:dispose()
+end
+
+function T.hidden_birth_retries_after_placement_rejection()
+  local w = world({ fieldX = 0, facing = "east" })
+  tick(w, 1)
+  w.svc:setLead(0, mon())
+  tick(w, 1)
+  Assert.isNil(w.mgr:partnerId(), "an unplaceable hidden birth remains unpublished")
+
+  w.player.facing = "south"
+  tick(w, 1)
+  local actor = assert(w.mgr:getById("field:partner"), "the hidden birth retries on a later tick")
+  Assert.isFalse(actor.visible, "the retry keeps the hidden publication intent")
+  w.mgr:dispose()
+end
+
+function T.invalidated_hidden_birth_does_not_apply_to_a_replacement_lead()
+  local w = world({ fieldX = 0, facing = "east" })
+  tick(w, 1)
+  w.svc:setLead(0, mon("CHIKORITA"))
+  tick(w, 1)
+  Assert.isNil(w.mgr:partnerId(), "the first lead is still waiting for placement")
+
+  w.player.facing = "south"
+  w.svc:setLead(0, mon("TOTODILE"))
+  tick(w, 1)
+  local actor = assert(w.mgr:getById("field:partner"), "the replacement lead publishes")
+  Assert.isTrue(actor.visible, "a replacement lead does not inherit stale hidden intent")
   w.mgr:dispose()
 end
 

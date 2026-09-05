@@ -310,6 +310,39 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
     local species = game.runtime.monService:partyMon(0).species
     Assert.isTrue(VANILLA_TRIO[species] == true, "the added mon is one of the three lab candidates")
 
+    -- The party publication is the source-hidden birth boundary. The
+    -- following transition then owns only the effect and reveals the same
+    -- actor at its second fixed update.
+    local partnerId = game.runtime.actors:partnerId()
+    game:advanceUntil("starter follower publication", function()
+      return game.runtime.actors:partnerId() ~= nil
+    end, 120)
+    Assert.equal(game.runtime.actors:partnerId(), partnerId or "field:partner")
+    Assert.isFalse(
+      game.runtime.actors:isVisible("field:partner"),
+      "the newly acquired starter follower is hidden before its reveal transition"
+    )
+
+    local prelude = game:advanceUntil("follower transition reaches its first update", function()
+      local instances = game.runtime.followingMonTransition:status().instances
+      return #instances == 1 and instances[1].phase == "prelude" and instances[1].preludeAge == 1
+    end, 9000)
+    Assert.isFalse(
+      game.runtime.actors:isVisible("field:partner"),
+      "the captured follower stays hidden after the first transition update"
+    )
+    Assert.equal(prelude.transition.phase, "idle", "the follower effect does not own the field transition")
+
+    game:step()
+    local revealed = game.runtime.followingMonTransition:status().instances
+    Assert.equal(#revealed, 1, "the follower effect remains live at its reveal boundary")
+    Assert.equal(revealed[1].phase, "animated", "the second update switches to the animated phase")
+    Assert.equal(revealed[1].frame, 0, "the animated phase starts at frame zero")
+    Assert.isTrue(
+      game.runtime.actors:isVisible("field:partner"),
+      "the captured follower reveals at exactly the second transition update"
+    )
+
     -- The field script, not the application, owns story continuation: the
     -- source sets its own starter flag and releases the field only after
     -- presentation is restored. The resumed tail runs 605/608, the nickname

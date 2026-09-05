@@ -1859,6 +1859,7 @@ local PARTNER_FACINGS = { north = true, south = true, west = true, east = true }
 ---@field facing FieldDirection
 ---@field worldY number? terrain surface hint for stacked maps
 ---@field solid boolean? must be absent or false; the partner never blocks
+---@field initiallyVisible boolean? install-only visibility; absent means visible
 
 ---@param spec FieldActorManager.PartnerSpec
 ---@param self FieldActorManager
@@ -1873,6 +1874,9 @@ local function checkPartnerSpec(self, spec)
   end
   if spec.solid == true then
     Errors.raise(FieldErrors.ACTOR_PARTNER_SOLID_INVALID, "the partner actor is never solid", {})
+  end
+  if spec.initiallyVisible ~= nil then
+    assert(type(spec.initiallyVisible) == "boolean", "partner initial visibility must be boolean when present")
   end
   if not PARTNER_FACINGS[spec.facing] then
     Errors.raise(
@@ -1964,8 +1968,9 @@ end
 ---@param entry FieldActorManager.Entry
 ---@param spec FieldActorManager.PartnerSpec
 ---@param surface table<string, unknown>
+---@param initiallyVisible boolean?
 ---@return FieldActorManager.Actor
-local function constructPartner(self, entry, spec, surface)
+local function constructPartner(self, entry, spec, surface, initiallyVisible)
   local asset = self:_acquireVisual(spec.visualId, PARTNER_ACTOR_ID)
   local actor = nil ---@type FieldActorManager.Actor?
   local ok, err = pcall(function()
@@ -1993,6 +1998,7 @@ local function constructPartner(self, entry, spec, surface)
       idlePresentation = idlePresentation,
     }) --[[@as FieldActorManager.Actor]]
     actor.actorId = PARTNER_ACTOR_ID
+    actor:setVisible(initiallyVisible ~= false)
   end)
   if not ok then
     self.assets:release(spec.visualId)
@@ -2037,7 +2043,7 @@ function FieldActorManager:installPartner(spec)
   if surface == nil then
     return nil
   end
-  publishPartner(self, entry, constructPartner(self, entry, spec, surface))
+  publishPartner(self, entry, constructPartner(self, entry, spec, surface, spec.initiallyVisible))
   return PARTNER_ACTOR_ID
 end
 
@@ -2063,7 +2069,7 @@ function FieldActorManager:updatePartner(spec)
   if surface == nil then
     return nil
   end
-  local actor = constructPartner(self, entry, spec, surface)
+  local actor = constructPartner(self, entry, spec, surface, old.visible)
   self:_destroy(entry, old)
   publishPartner(self, entry, actor)
   return PARTNER_ACTOR_ID
