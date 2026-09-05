@@ -14,10 +14,6 @@ local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 
 local T = {}
 
--- Catalog feature tags select the existing support/defer policy. Inventory
--- membership comes from MonScriptCommands and is never derived here.
-local FAMILY = { mons = true, starter = true, following_mon = true, party_ui = true }
-
 -- These are compatibility mappings, not a second category authority. An
 -- untagged catalog member is intentionally accepted; inventory shape owns the
 -- closed category set.
@@ -155,7 +151,7 @@ local CONFORMANCE = {
   {
     opcode = 701,
     fixture = "libs.script.tests.core.mons_retail_queries_test",
-    test = "mon_has_item_skips_eggs",
+    test = "mon_has_item_includes_eggs",
   },
   {
     opcode = 828,
@@ -247,12 +243,9 @@ function T.reviewed_commands_carry_semantic_evidence()
       end
     end
   end
-  Assert.equal(#CONFORMANCE, 22, "the conformance table pins exactly the twenty-two reviewed commands")
-  local distinct = 0
-  for _ in pairs(seen) do
-    distinct = distinct + 1
+  for opcode, count in pairs(seen) do
+    Assert.equal(count, 1, "reviewed opcode " .. tostring(opcode) .. " appears exactly once")
   end
-  Assert.equal(distinct, 22, "every reviewed opcode appears exactly once")
   local inventoryOnly = 0
   for opcode in pairs(inventory) do
     if seen[opcode] == nil then
@@ -290,23 +283,18 @@ function T.inventory_entries_match_catalog()
   )
 end
 
-function T.every_family_entry_carries_exactly_one_disposition()
-  local seenFeatures = {}
+function T.every_inventory_entry_carries_exactly_one_disposition()
   local problems = {}
   for _, item in ipairs(familyEntries()) do
     if item.entry == nil then
       problems[#problems + 1] = item.opcode .. ":missing catalog entry"
-    elseif FAMILY[item.entry.feature] then
-      seenFeatures[item.entry.feature] = true
+    else
       if item.entry.disposition ~= "supported" and item.entry.disposition ~= "deferred" then
         problems[#problems + 1] = item.opcode .. ":" .. CommandCatalog.name(item.opcode)
       end
     end
   end
-  for feature in pairs(FAMILY) do
-    Assert.isTrue(seenFeatures[feature] == true, "the gate must see feature " .. feature)
-  end
-  Assert.equal(#problems, 0, "every family entry carries one disposition: " .. table.concat(problems, ", "))
+  Assert.equal(#problems, 0, "every inventory entry carries one disposition: " .. table.concat(problems, ", "))
 end
 
 function T.supported_entries_carry_widths_timing_and_lowering(romFs)
@@ -314,7 +302,7 @@ function T.supported_entries_carry_widths_timing_and_lowering(romFs)
   local reached = reachedOpcodes(romFs)
   local problems = {}
   for _, item in ipairs(familyEntries()) do
-    if item.entry ~= nil and FAMILY[item.entry.feature] and item.entry.disposition == "supported" then
+    if item.entry ~= nil and item.entry.disposition == "supported" then
       -- Zero-operand commands carry no width entries; a present table may
       -- be empty, while a missing table must be compensated by real
       -- decoded bytes in the corpus (the decoder's unknown-opcode path
@@ -347,7 +335,7 @@ end
 function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
   local problems = {}
   for _, item in ipairs(familyEntries()) do
-    if item.entry ~= nil and FAMILY[item.entry.feature] and item.entry.disposition == "deferred" then
+    if item.entry ~= nil and item.entry.disposition == "deferred" then
       if ALLOWED_DEFERRALS[item.entry.deferredReason] ~= true then
         problems[#problems + 1] = item.opcode .. ":unexpected deferral category"
       end
@@ -365,7 +353,7 @@ function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
     for _, item in ipairs(lowered.items) do
       if item.op == "unsupported" and type(item.command) == "number" then
         local tagged = ScriptCommands.byOpcode[item.command]
-        if tagged ~= nil and FAMILY[tagged.feature] and tagged.disposition ~= "deferred" then
+        if tagged ~= nil and tagged.disposition ~= "deferred" then
           reached[#reached + 1] = tostring(item.command) .. ":" .. CommandCatalog.name(item.command)
         end
       end
@@ -440,7 +428,7 @@ function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
       local undispositioned = {}
       for _, code in ipairs(codes) do
         local tagged = ScriptCommands.byOpcode[code]
-        if tagged ~= nil and FAMILY[tagged.feature] and tagged.disposition == nil then
+        if tagged ~= nil and tagged.disposition == nil then
           undispositioned[#undispositioned + 1] = code .. ":" .. CommandCatalog.name(code)
         end
       end

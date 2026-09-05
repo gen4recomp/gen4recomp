@@ -859,7 +859,7 @@ function HgssMonService:partyHasHeldItem(item)
   local key = self:_itemKey(item)
   for index = 0, self._party:count() - 1 do
     local mon = self._party:get(index)
-    if not mon.isEgg and mon.heldItem == key then
+    if mon.heldItem == key then
       return true
     end
   end

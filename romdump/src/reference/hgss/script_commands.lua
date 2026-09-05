@@ -532,6 +532,7 @@ return {
     },
     [76] = {
       classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_PlayCry",
       widths = {
         [1] = 2,
@@ -540,6 +541,7 @@ return {
     },
     [77] = {
       classification = "native_wait",
+      disposition = "supported",
       name = "ScrCmd_WaitCry",
       widths = {},
     },
@@ -617,22 +619,34 @@ return {
     },
     [89] = {
       name = "ScrCmd_ChatotHasCry",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "Chatot recording needs the Chatot application",
       widths = {
         [1] = 2,
       },
     },
     [90] = {
       name = "ScrCmd_ChatotStartRecording",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "Chatot recording needs the Chatot application",
       widths = {
         [1] = 2,
       },
     },
     [91] = {
       name = "ScrCmd_ChatotStopRecording",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "Chatot recording needs the Chatot application",
       widths = {},
     },
     [92] = {
       name = "ScrCmd_ChatotSaveRecording",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "Chatot recording needs the Chatot application",
       widths = {},
     },
     [93] = {
@@ -1387,12 +1401,18 @@ return {
     },
     [204] = {
       name = "ScrCmd_BufferDPPtRivalStarterSpeciesName",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "starter application needs the cross-generation starter-name buffers",
       widths = {
         [1] = 1,
       },
     },
     [205] = {
       name = "ScrCmd_BufferDPPtFriendStarterSpeciesName",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "starter application needs the cross-generation starter-name buffers",
       widths = {
         [1] = 1,
       },
@@ -2310,6 +2330,9 @@ return {
     },
     [350] = {
       name = "ScrCmd_350",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "party-selection application behavior is not implemented",
       widths = {},
     },
     [351] = {
@@ -2323,6 +2346,9 @@ return {
     },
     [352] = {
       name = "ScrCmd_PokemonSummaryScreen",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the Pokemon summary application is not implemented",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2331,6 +2357,9 @@ return {
     },
     [353] = {
       name = "ScrCmd_GetMoveSelection",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "move-selection application behavior is not implemented",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2464,6 +2493,9 @@ return {
     },
     [367] = {
       name = "ScrCmd_BufferDaycareWithdrawCost",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare withdrawal buffers need the egg/daycare lifecycle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2492,6 +2524,9 @@ return {
     },
     [371] = {
       name = "ScrCmd_BufferDaycareMonGrowth",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare growth buffers need the egg/daycare lifecycle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2600,6 +2635,9 @@ return {
     },
     [385] = {
       name = "ScrCmd_BufferDaycareMonStats",
+      disposition = "deferred",
+      deferredReason = "egg_daycare",
+      deferredNote = "daycare stat buffers need the egg/daycare lifecycle",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2636,6 +2674,9 @@ return {
     },
     [389] = {
       name = "ScrCmd_PlayerHasSpecies",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the complete party species query is not implemented",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2942,6 +2983,9 @@ return {
     },
     [426] = {
       name = "ScrCmd_KenyaCheck",
+      disposition = "deferred",
+      deferredReason = "mail",
+      deferredNote = "Kenya checks need the mail structures and flows",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -2984,6 +3028,9 @@ return {
     },
     [432] = {
       name = "ScrCmd_GetFossilPokemon",
+      disposition = "deferred",
+      deferredReason = "item_flow",
+      deferredNote = "fossil restoration needs the item application flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3009,6 +3056,9 @@ return {
     },
     [435] = {
       name = "ScrCmd_SurvivePoisoning",
+      disposition = "deferred",
+      deferredReason = "battle",
+      deferredNote = "battle poison survival needs the battle application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3244,6 +3294,9 @@ return {
     },
     [468] = {
       name = "ScrCmd_MoveTutorInit",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "move tutor initialization needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3267,6 +3320,9 @@ return {
     },
     [471] = {
       name = "ScrCmd_GetOfferedSpecies",
+      disposition = "deferred",
+      deferredReason = "trade",
+      deferredNote = "NPC trade species need the trade application and OT transfer",
       widths = {
         [1] = 2,
       },
@@ -3305,6 +3361,9 @@ return {
     },
     [476] = {
       name = "ScrCmd_EnablePokedexFormDetection",
+      disposition = "deferred",
+      deferredReason = "pokedex",
+      deferredNote = "Pokedex form detection needs persisted dex state",
       widths = {},
     },
     [477] = {
@@ -3373,6 +3432,9 @@ return {
     },
     [483] = {
       name = "ScrCmd_GetEVTotal",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "EV total queries need the remaining mon application surface",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3623,6 +3685,9 @@ return {
     },
     [517] = {
       name = "ScrCmd_517",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the retail mon command remains opaque and unimplemented",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3630,12 +3695,18 @@ return {
     },
     [518] = {
       name = "ScrCmd_518",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the retail mon command remains opaque and unimplemented",
       widths = {
         [1] = 2,
       },
     },
     [519] = {
       name = "ScrCmd_519",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the retail mon command remains opaque and unimplemented",
       widths = {
         [1] = 2,
       },
@@ -3674,6 +3745,9 @@ return {
     },
     [525] = {
       name = "ScrCmd_525",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the retail mon command remains opaque and unimplemented",
       widths = {
         [1] = 2,
       },
@@ -4545,6 +4619,9 @@ return {
     },
     [653] = {
       name = "ScrCmd_MoveTutorChooseMove",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "move tutor choice needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4554,6 +4631,9 @@ return {
     },
     [654] = {
       name = "ScrCmd_TutorMoveTeachInSlot",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "move tutor teaching needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4562,6 +4642,9 @@ return {
     },
     [655] = {
       name = "ScrCmd_TutorMoveGetPrice",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "move tutor pricing needs the tutor application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4576,6 +4659,9 @@ return {
     },
     [657] = {
       name = "ScrCmd_StatJudge",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "stat judging needs the judge application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4585,6 +4671,9 @@ return {
     },
     [658] = {
       name = "ScrCmd_BufferStatName",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "stat-name buffers need the remaining mon application surface",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4654,6 +4743,9 @@ return {
     },
     [668] = {
       name = "ScrCmd_BufferTypeName",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "type-name buffers need the remaining mon application surface",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4668,6 +4760,9 @@ return {
     },
     [670] = {
       name = "ScrCmd_GetHiddenPowerType",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "Hidden Power queries need the remaining mon application surface",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4683,6 +4778,9 @@ return {
     },
     [672] = {
       name = "ScrCmd_GetFavoriteMon",
+      disposition = "deferred",
+      deferredReason = "contest_ribbon_application",
+      deferredNote = "favorite-mon queries need the contest application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4691,6 +4789,9 @@ return {
     },
     [673] = {
       name = "ScrCmd_GetOwnedRotomForms",
+      disposition = "deferred",
+      deferredReason = "item_flow",
+      deferredNote = "Rotom form ownership needs the appliance item application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4712,6 +4813,9 @@ return {
     },
     [675] = {
       name = "ScrCmd_UpdateRotomForm",
+      disposition = "deferred",
+      deferredReason = "item_flow",
+      deferredNote = "Rotom form updates need the appliance item application",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4794,6 +4898,9 @@ return {
     },
     [687] = {
       name = "ScrCmd_687",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the retail mon command remains opaque and unimplemented",
       widths = {
         [1] = 2,
       },
@@ -4866,6 +4973,9 @@ return {
     },
     [696] = {
       name = "ScrCmd_696",
+      disposition = "deferred",
+      deferredReason = "party_special_application",
+      deferredNote = "the retail mon command remains opaque and unimplemented",
       widths = {
         [1] = 2,
       },

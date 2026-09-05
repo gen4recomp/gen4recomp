@@ -89,6 +89,41 @@ function T.searches_report_zero_based_slots_or_nothing()
   Assert.isNil(service:partySlotWithFatefulEncounter(), "no setup mon is fateful")
 end
 
+function T.held_item_queries_include_eggs_and_exact_matches()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x44444444)
+  local factory = CatalogFixture.makeFactory(0x55555555, catalog)
+  local egg = factory:createNormal({
+    species = "EEVEE",
+    level = 5,
+    form = 0,
+    profile = CatalogFixture.profile(),
+    ball = "POKE_BALL",
+    location = 7,
+    terrain = 4,
+    date = CatalogFixture.metDate(),
+  })
+  egg.isEgg = true
+  egg.heldItem = "SITRUS_BERRY"
+  Assert.isTrue(service:addMon(egg), "the item-carrying egg enters the party")
+
+  local other = factory:createNormal({
+    species = "CHIKORITA",
+    level = 5,
+    form = 0,
+    profile = CatalogFixture.profile(),
+    ball = "POKE_BALL",
+    location = 7,
+    terrain = 4,
+    date = CatalogFixture.metDate(),
+  })
+  other.heldItem = "POKE_BALL"
+  Assert.isTrue(service:addMon(other), "the nonmatching mon enters the party")
+
+  Assert.isTrue(service:partyHasHeldItem(158), "an egg-held item satisfies the query")
+  Assert.isFalse(service:partyHasHeldItem(3), "an absent held item does not satisfy the query")
+end
+
 function T.reads_derive_identity_values_without_storing_them()
   local catalog, service = twoMonService()
   Assert.equal(service:partyMonSpecies(0), catalog:species("CHIKORITA").nativeId)

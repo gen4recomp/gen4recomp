@@ -364,7 +364,7 @@ function T.set_mon_form_validates_and_mutates_only_form()
   Assert.equal(service:partyRevision(), invalidRevision, "an invalid form does not publish a mutation")
 end
 
-function T.mon_has_item_skips_eggs()
+function T.mon_has_item_includes_eggs()
   local catalog = CatalogFixture.makeCatalog()
   local service = emptyService(catalog, 0x44444444)
   local egg = factoryMon(catalog, { species = "EEVEE", level = 5, form = 0 })
@@ -376,13 +376,17 @@ function T.mon_has_item_skips_eggs()
   Assert.isTrue(service:addMon(other), "the ordinary non-matching mon must enter the party")
 
   local first = executeSource(service, 701, { 0x8000, 0x8001 }, { [0x8000] = 158 })
-  Assert.equal(first[0x8001], 0, "an egg holding the requested item does not satisfy the query")
+  Assert.equal(first[0x8001], 1, "an egg holding the requested item satisfies the query")
 
   local matching = factoryMon(catalog, { species = "TOTODILE", level = 5, form = 0 })
   matching.heldItem = "SITRUS_BERRY"
   Assert.isTrue(service:addMon(matching), "the matching ordinary mon must enter the party")
   local second = executeSource(service, 701, { 0x8000, 0x8001 }, { [0x8000] = 158 })
-  Assert.equal(second[0x8001], 1, "the party query finds the first exact non-egg item match")
+  Assert.equal(second[0x8001], 1, "the party query remains true after an ordinary exact item match is added")
+
+  local noMatch = emptyService(catalog, 0x44444445)
+  local none = executeSource(noMatch, 701, { 0x8000, 0x8001 }, { [0x8000] = 158 })
+  Assert.equal(none[0x8001], 0, "a party with no matching held item returns false")
 end
 
 return { tests = T }

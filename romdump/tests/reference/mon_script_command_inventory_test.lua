@@ -28,6 +28,20 @@ local CATEGORIES = {
 -- opaque command is identified by its stable source opcode until its retail
 -- meaning is represented by the producer inventory.
 local EXPECTED_SOURCE_MEMBERS = {
+  [89] = true,
+  [90] = true,
+  [91] = true,
+  [92] = true,
+  [204] = true,
+  [205] = true,
+  [350] = true,
+  [353] = true,
+  [367] = true,
+  [371] = true,
+  [385] = true,
+  [483] = true,
+  [658] = true,
+  [668] = true,
   [497] = "mon",
   [517] = "mon",
   [535] = "mon",
@@ -65,23 +79,41 @@ function T.inventory_shape_is_valid()
   Assert.equal(#problems, 0, "inventory rows are unique and classified: " .. table.concat(problems, ", "))
 end
 
-function T.source_family_includes_untagged_direct_commands()
+function T.source_family_includes_audited_commands()
   local members = join(MonScriptCommands.byOpcode, ScriptCommands.byOpcode)
   local missing = {}
-  for opcode, category in pairs(EXPECTED_SOURCE_MEMBERS) do
+  for opcode, expectedCategory in pairs(EXPECTED_SOURCE_MEMBERS) do
     local row = members[opcode]
-    if row == nil or row.catalog == nil or row.inventory.category ~= category then
+    if row == nil or row.catalog == nil or row.inventory == nil then
       local name = row and row.catalog and CommandCatalog.name(opcode) or "missing catalog entry"
-      missing[#missing + 1] = tostring(opcode) .. ":" .. category .. ":" .. name
+      missing[#missing + 1] = tostring(opcode) .. ":missing inventory/catalog row:" .. name
+    elseif type(row.inventory.category) ~= "string" or CATEGORIES[row.inventory.category] ~= true then
+      missing[#missing + 1] = tostring(opcode) .. ":invalid category"
+    elseif type(expectedCategory) == "string" and row.inventory.category ~= expectedCategory then
+      missing[#missing + 1] = tostring(opcode) .. ":unexpected category " .. row.inventory.category
     end
   end
   table.sort(missing)
   Assert.equal(
     #missing,
     0,
-    "source inventory must expose direct commands independently of catalog feature tags: "
+    "source inventory must expose audited commands independently of catalog feature tags: "
       .. table.concat(missing, ", ")
   )
+end
+
+function T.every_inventory_member_has_explicit_disposition()
+  local problems = {}
+  for _, inventory in ipairs(MonScriptCommands.commands) do
+    local entry = ScriptCommands.byOpcode[inventory.opcode]
+    if entry == nil then
+      problems[#problems + 1] = tostring(inventory.opcode) .. ":missing catalog entry"
+    elseif entry.disposition ~= "supported" and entry.disposition ~= "deferred" then
+      problems[#problems + 1] = tostring(inventory.opcode) .. ":missing disposition"
+    end
+  end
+  table.sort(problems)
+  Assert.equal(#problems, 0, "every inventoried command has an explicit disposition: " .. table.concat(problems, ", "))
 end
 
 function T.catalog_feature_tag_does_not_remove_an_inventory_member()
