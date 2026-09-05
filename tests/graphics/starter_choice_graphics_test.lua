@@ -6,6 +6,11 @@
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local FieldState = require("game.hgss.src.field.FieldState")
+local StarterChoiceState = require("game.hgss.src.starters.StarterChoiceState")
+local FieldScriptScreenFade = require("libs.hgss.src.field.FieldScriptScreenFade")
+local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
@@ -46,6 +51,75 @@ local function opaquePixels(image, width, height)
     end
   end
   return found
+end
+
+local function nonBlackPixels(image, width, height)
+  local found = 0
+  for y = 0, height - 1, 4 do
+    for x = 0, width - 1, 4 do
+      local red, green, blue, alpha = image:getPixel(x, y)
+      if alpha > 0.5 and math.max(red, green, blue) > 0.05 then
+        found = found + 1
+      end
+    end
+  end
+  return found
+end
+
+local function fieldStateWithStarter(starter, width, height)
+  local screenFade = FieldScriptScreenFade.new()
+  screenFade:startFade({ direction = "out", color = "black", duration = 1, speed = 1 })
+  screenFade:updateSourceFrame()
+  local state = setmetatable({
+    runtime = {
+      runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      camera = { zoom = 1 },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(width, height, { mode = "expanded" }),
+      transition = { fadeAlpha = 0 },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        status = function()
+          return { phase = "closed", fadeAlpha = 0 }
+        end,
+      },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      screenFade = screenFade,
+      screenTopology = topology(width, height),
+      starterChoice = starter,
+      resizePresentation = function() end,
+    },
+    _pollPresentationTopology = false,
+    renderer = { draw = function() end },
+    worldParts = {},
+    spriteItems = {},
+    textRenderer = { drawText = function() end },
+  }, FieldState)
+  state._worldParts = function()
+    return {}
+  end
+  return state
 end
 
 function T.starter_choice_draws_disjoint_candidates_in_both_modes(scope)
@@ -93,6 +167,31 @@ function T.starter_choice_draws_disjoint_candidates_in_both_modes(scope)
       "confirmation draws visible candidate and prompt frames"
     )
   end
+end
+
+function T.composed_starter_choice_remains_visible_over_an_opaque_field_fade(scope)
+  local catalog = CatalogFixture.makeCatalog()
+  local starter = StarterChoiceState.new({ catalog = catalog })
+  starter:open(0, {
+    { species = "CHIKORITA" },
+    { species = "TOTODILE" },
+    { species = "EEVEE" },
+  })
+
+  local width, height = love.graphics.getDimensions()
+  local canvas = scope:own(love.graphics.newCanvas(width, height))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 1)
+  fieldStateWithStarter(starter, width, height):draw()
+  love.graphics.setCanvas()
+  local image = scope:own(canvas:newImageData())
+  local red, green, blue = image:getPixel(0, 0)
+  Assert.isTrue(red < 0.01 and green < 0.01 and blue < 0.01, "the opaque field fade remains black underneath")
+  Assert.isTrue(
+    nonBlackPixels(image, width, height) > 20,
+    "the active starter application must leave visible pixels above the field fade"
+  )
+  starter:dispose()
 end
 
 return GraphicsSmoke.suite(T)

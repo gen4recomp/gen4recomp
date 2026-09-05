@@ -263,6 +263,72 @@ local function stateWith(runtime)
   }, FieldState)
 end
 
+local function drawOrderState(starterActive)
+  local events = {}
+  local starter
+  if starterActive then
+    starter = {
+      isActive = function()
+        return true
+      end,
+      drawPresentation = function()
+        events[#events + 1] = "starter"
+      end,
+    }
+  end
+  local state = setmetatable({
+    runtime = {
+      runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
+      session = {
+        renderAlpha = function()
+          return 0.5
+        end,
+      },
+      camera = { zoom = 1 },
+      destinationWorldPresentable = function()
+        return true
+      end,
+      acknowledgeDestinationPresentation = function() end,
+      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+      transition = { fadeAlpha = 0 },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
+      applicationHost = {
+        status = function()
+          return { phase = "closed", fadeAlpha = 0 }
+        end,
+      },
+      menuHost = {
+        presentation = function()
+          return nil
+        end,
+      },
+      starterChoice = starter,
+      resizePresentation = function() end,
+    },
+    _pollPresentationTopology = false,
+    renderer = { draw = function() end },
+    worldParts = {},
+    spriteItems = {},
+    textRenderer = {},
+  }, FieldState)
+  state._worldParts = function()
+    return {}
+  end
+  state._drawScriptScreenFadeIfNeeded = function()
+    events[#events + 1] = "script_fade"
+  end
+  return state, events
+end
+
 function T.world_parts_refresh_replaced_scene_neighbor_and_actor_draws()
   local mapDraws = { { kind = "map" } }
   local staticBuildingDraws = { { kind = "static-building" } }
@@ -408,6 +474,18 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
+end
+
+function T.active_starter_presentation_is_drawn_after_the_script_fade()
+  local state, events = drawOrderState(true)
+  state:draw()
+  Assert.deepEqual(events, { "script_fade", "starter" }, "the chooser owns the top application layer")
+end
+
+function T.inactive_starter_preserves_the_script_fade_as_the_final_cover()
+  local state, events = drawOrderState(false)
+  state:draw()
+  Assert.deepEqual(events, { "script_fade" }, "the field fade remains visible without the chooser")
 end
 
 function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentation()

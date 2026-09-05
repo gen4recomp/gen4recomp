@@ -432,6 +432,7 @@ function FieldState:draw()
     resources.menuRenderer:draw(presentation)
   end
   self:_drawEntryCoverIfNeeded(width, height)
+  self:_drawScriptScreenFadeIfNeeded()
   -- The script-owned starter modal draws over the restored field while the
   -- blocking choice owns it. Portraits load once on first presentation;
   -- headless compositions never reach this path.
@@ -442,7 +443,6 @@ function FieldState:draw()
   if self.development then
     self:_drawHud()
   end
-  self:_drawScriptScreenFadeIfNeeded()
 end
 
 local function rectUnion(existing, rect)
