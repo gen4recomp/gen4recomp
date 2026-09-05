@@ -26,28 +26,55 @@ local function actor(actorId, objectEventId)
   return value
 end
 
-function T.store_owns_ordered_identity_and_reverse_indexes()
+local function flagEvent(objectEventId, eventFlag)
+  local value = { eventFlag = eventFlag, objectEventId = objectEventId }
+  ---@cast value FieldActorEvent
+  return value
+end
+
+function T.direct_store_owns_identity_order_and_manager_slots()
   local store = FieldActorStore.new()
-  local mapEntry = store:createMap(map())
   local first = actor("first", 4)
   local second = actor("second", 9)
 
-  store:addActor(mapEntry, first)
-  store:addActor(mapEntry, second)
-  Assert.equal(store:getActor(mapEntry, "first"), first)
-  Assert.equal(store:getActorByIndex(mapEntry, 9), "second")
-  Assert.deepEqual(store:orderedActors(mapEntry), { first, second })
+  store:indexEvent(flagEvent(4, 401))
+  store:indexEvent(flagEvent(9, 401))
+  Assert.equal(#store:eventsForFlag(401), 2)
+  Assert.equal(#store:eventsForFlag(402), 0)
 
-  store:removeActor(mapEntry, first)
-  Assert.isNil(store:getActor(mapEntry, "first"))
-  Assert.deepEqual(store:orderedActors(mapEntry), { second })
+  store:addActor(first)
+  store:addActor(second)
+  Assert.equal(store:getActor("first"), first)
+  Assert.equal(store:getActorByIndex(9), "second")
+  Assert.deepEqual(store:orderedActors(), { first, second })
+
+  local firstSlot = store:assignManagerSlot(first)
+  local secondSlot = store:assignManagerSlot(second)
+  Assert.equal(secondSlot, firstSlot + 1)
+  Assert.equal(store:managerSlot(first), firstSlot)
+  Assert.isTrue(store:hasManagerSlot("first"))
+  Assert.deepEqual(store:actorsByManagerSlot(), { first, second })
+
+  store:releaseManagerSlot(first)
+  Assert.isFalse(store:hasManagerSlot("first"))
+  store:assignManagerSlot(first, 0)
+  Assert.equal(store:managerSlot(first), 0)
+
+  store:replaceManagerSlots({ [0] = second, [1] = first })
+  Assert.equal(store:managerSlot(second), 0)
+  Assert.equal(store:managerSlot(first), 1)
+  Assert.deepEqual(store:actorsByManagerSlot(), { second, first })
+
+  store:removeActor(first)
+  Assert.isNil(store:getActor("first"))
+  Assert.deepEqual(store:orderedActors(), { second })
 end
 
-function T.occupancy_owns_claim_and_reservation_conflicts()
+function T.direct_occupancy_orders_claims_and_reservations_through_a_slot_callback()
   local slots = { first = 0, second = 1 }
   local occupancy = FieldActorOccupancy.new({
     runtimeMap = map(),
-    managerSlot = function(_, current)
+    managerSlot = function(current)
       return slots[current.actorId]
     end,
   })

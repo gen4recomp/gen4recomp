@@ -5,21 +5,11 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
 ---@class FieldActorOccupancy
 ---@field runtimeMap RuntimeFieldMap
----@field managerSlot fun(self: FieldActorOccupancy, actor: FieldActorManager.Actor): integer
+---@field _occupied table<string, FieldActorManager.Actor[]>
+---@field _reservations table<string, { actorId: string, candidate: FieldOccupancyCandidate }>
+---@field _managerSlot fun(actor: FieldActorManager.Actor): integer
 local FieldActorOccupancy = {}
 FieldActorOccupancy.__index = FieldActorOccupancy
-
----@class FieldActorOccupancy.State
----@field occupied table<string, FieldActorManager.Actor[]>
----@field reservations table<string, { actorId: string, candidate: FieldOccupancyCandidate }>
-
-local states = setmetatable({}, { __mode = "k" })
-
----@param occupancy FieldActorOccupancy
----@return FieldActorOccupancy.State
-local function stateOf(occupancy)
-  return assert(states[occupancy], "field actor occupancy is not initialized")
-end
 
 ---@param runtimeMap RuntimeFieldMap
 ---@param candidate FieldOccupancyCandidate
@@ -68,17 +58,19 @@ local function contains(bucket, actor)
   return false
 end
 
----@param options { runtimeMap: RuntimeFieldMap, managerSlot: fun(self: FieldActorOccupancy, actor: FieldActorManager.Actor): integer }
+---@param options { runtimeMap: RuntimeFieldMap, managerSlot: fun(actor: FieldActorManager.Actor): integer }
 ---@return FieldActorOccupancy
 function FieldActorOccupancy.new(options)
   assert(
     type(options) == "table" and options.runtimeMap and options.managerSlot,
     "field actor occupancy requires owners"
   )
-  local occupancy =
-    setmetatable({ runtimeMap = options.runtimeMap, managerSlot = options.managerSlot }, FieldActorOccupancy)
-  states[occupancy] = { occupied = {}, reservations = {} }
-  return occupancy
+  return setmetatable({
+    runtimeMap = options.runtimeMap,
+    _occupied = {},
+    _reservations = {},
+    _managerSlot = options.managerSlot,
+  }, FieldActorOccupancy)
 end
 
 ---@param candidate FieldOccupancyCandidate
@@ -90,14 +82,14 @@ end
 ---@param candidate FieldOccupancyCandidate
 ---@return FieldActorManager.Actor?
 function FieldActorOccupancy:winner(candidate)
-  local bucket = stateOf(self).occupied[self:key(candidate)]
+  local bucket = self._occupied[self:key(candidate)]
   return bucket and bucket[1] or nil
 end
 
 ---@param key string
 ---@return FieldActorManager.Actor?
 function FieldActorOccupancy:winnerByKey(key)
-  local bucket = stateOf(self).occupied[key]
+  local bucket = self._occupied[key]
   return bucket and bucket[1] or nil
 end
 
@@ -105,33 +97,32 @@ end
 ---@param actor FieldActorManager.Actor
 ---@return boolean
 function FieldActorOccupancy:contains(candidate, actor)
-  return contains(stateOf(self).occupied[self:key(candidate)], actor)
+  return contains(self._occupied[self:key(candidate)], actor)
 end
 
 ---@param key string
 ---@param actor FieldActorManager.Actor
 ---@return boolean
 function FieldActorOccupancy:containsByKey(key, actor)
-  return contains(stateOf(self).occupied[key], actor)
+  return contains(self._occupied[key], actor)
 end
 
 ---@param actor FieldActorManager.Actor
 ---@param candidate FieldOccupancyCandidate
 function FieldActorOccupancy:claim(actor, candidate)
-  local state = stateOf(self)
   local key = self:key(candidate)
-  local bucket = state.occupied[key]
+  local bucket = self._occupied[key]
   if bucket == nil then
-    state.occupied[key] = { actor }
+    self._occupied[key] = { actor }
     return
   end
   if contains(bucket, actor) then
     return
   end
-  local actorSlot = self:managerSlot(actor)
+  local actorSlot = self._managerSlot(actor)
   local insertPosition = #bucket + 1
   for index, occupant in ipairs(bucket) do
-    if self:managerSlot(occupant) > actorSlot then
+    if self._managerSlot(occupant) > actorSlot then
       insertPosition = index
       break
     end
@@ -156,9 +147,8 @@ end
 ---@param actor FieldActorManager.Actor
 ---@param candidate FieldOccupancyCandidate
 function FieldActorOccupancy:release(actor, candidate)
-  local state = stateOf(self)
   local key = self:key(candidate)
-  local bucket = state.occupied[key]
+  local bucket = self._occupied[key]
   if bucket == nil then
     return
   end
@@ -166,7 +156,7 @@ function FieldActorOccupancy:release(actor, candidate)
     if occupant == actor then
       table.remove(bucket, index)
       if #bucket == 0 then
-        state.occupied[key] = nil
+        self._occupied[key] = nil
       end
       return
     end
@@ -176,8 +166,7 @@ end
 ---@param actor FieldActorManager.Actor
 ---@param key string
 function FieldActorOccupancy:releaseByKey(actor, key)
-  local state = stateOf(self)
-  local bucket = state.occupied[key]
+  local bucket = self._occupied[key]
   if bucket == nil then
     return
   end
@@ -185,7 +174,7 @@ function FieldActorOccupancy:releaseByKey(actor, key)
     if occupant == actor then
       table.remove(bucket, index)
       if #bucket == 0 then
-        state.occupied[key] = nil
+        self._occupied[key] = nil
       end
       return
     end
@@ -216,53 +205,45 @@ end
 ---@param candidate FieldOccupancyCandidate
 ---@return string
 function FieldActorOccupancy:reserve(actorId, candidate)
-  local state = stateOf(self)
   local key = self:key(candidate)
-  assert(state.reservations[key] == nil, "occupancy reservation is already claimed")
-  assert(state.occupied[key] == nil or #state.occupied[key] == 0, "occupancy reservation targets an occupied cell")
-  state.reservations[key] = { actorId = actorId, candidate = candidate }
+  assert(self._reservations[key] == nil, "occupancy reservation is already claimed")
+  assert(self._occupied[key] == nil or #self._occupied[key] == 0, "occupancy reservation targets an occupied cell")
+  self._reservations[key] = { actorId = actorId, candidate = candidate }
   return key
 end
 
 ---@param candidate FieldOccupancyCandidate
 ---@return { actorId: string, candidate: FieldOccupancyCandidate }?
 function FieldActorOccupancy:reservation(candidate)
-  return stateOf(self).reservations[self:key(candidate)]
+  return self._reservations[self:key(candidate)]
 end
 
 ---@param candidate FieldOccupancyCandidate
 ---@param actorId string?
 function FieldActorOccupancy:cancelReservation(candidate, actorId)
-  local state = stateOf(self)
   local key = self:key(candidate)
-  local reservation = state.reservations[key]
+  local reservation = self._reservations[key]
   if reservation == nil then
     return
   end
   if actorId ~= nil then
     assert(reservation.actorId == actorId, "occupancy reservation owner disagrees on cancellation")
   end
-  state.reservations[key] = nil
+  self._reservations[key] = nil
 end
 
 ---@param key string
 ---@return { actorId: string, candidate: FieldOccupancyCandidate }?
 function FieldActorOccupancy:reservationByKey(key)
-  return stateOf(self).reservations[key]
+  return self._reservations[key]
 end
 
 ---@param key string
 ---@param actorLookup fun(actorId: string): FieldActorManager.Actor?
 ---@return FieldActorManager.Actor?
 function FieldActorOccupancy:reservedActor(key, actorLookup)
-  local reservation = assert(stateOf(self).reservations[key], "occupancy reservation is missing")
+  local reservation = assert(self._reservations[key], "occupancy reservation is missing")
   return assert(actorLookup(reservation.actorId), "autonomous reservation actor is missing")
-end
-
----@param actor FieldActorManager.Actor
----@return integer
-function FieldActorOccupancy:managerSlot(actor)
-  return self.managerSlot(self, actor)
 end
 
 return FieldActorOccupancy

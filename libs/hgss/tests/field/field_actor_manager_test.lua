@@ -1215,6 +1215,41 @@ function T.enter_map_replaces_the_same_map_id_without_losing_the_new_entry()
   mgr:dispose()
 end
 
+function T.published_facade_follows_replace_then_leave_without_retired_actors()
+  local assets = fakeAssets({ [99] = true, [34] = true })
+  local eventState = FieldEventState.new()
+  local mgr = FieldActorManager.new({ assets = assets, policy = POLICY })
+  mgr:enterMap(runtimeMap({ object({ objectEventId = 0, x = 2, z = 3 }) }, 61), eventState)
+  Assert.equal(mgr.currentMapId, 61)
+  Assert.notNil(mgr:getById("map:61:object:0"))
+
+  mgr:enterMap(runtimeMap({ object({ objectEventId = 5, spriteId = 34, x = 4, z = 3 }) }, 61), eventState)
+  Assert.notNil(mgr:getById("map:61:object:5"), "the replacement entry must be published")
+  Assert.isNil(mgr:getById("map:61:object:0"), "the replaced entry must retire once the replacement publishes")
+  Assert.equal(#mgr:actorsOf(61), 1)
+  Assert.equal(assert(getAt(mgr, 61, 4, 3, 0)).actorId, "map:61:object:5")
+  Assert.isNil(getAt(mgr, 61, 2, 3, 0))
+  Assert.equal(mgr.currentMapId, 61)
+
+  mgr:enterMap(runtimeMap({ object({ objectEventId = 7, spriteId = 34, x = 6, z = 3 }) }, 60), eventState)
+  Assert.isNil(mgr.maps[61], "entering a destination retires the previous active entry")
+  Assert.equal(#mgr:actorsOf(61), 0)
+  Assert.isNil(mgr:getById("map:61:object:5"))
+  Assert.isNil(getAt(mgr, 61, 4, 3, 0))
+  Assert.isNil(mgr:getCollisionAt(61, candidate(4, 3, 0)))
+  Assert.notNil(mgr:getById("map:60:object:7"))
+  Assert.equal(mgr.currentMapId, 60)
+  Assert.equal(assets:total(), 1, "only the active entry's visual remains referenced")
+
+  mgr:leaveMap(60)
+  Assert.equal(#mgr:actorsOf(60), 0)
+  Assert.isNil(mgr:getById("map:60:object:7"))
+  Assert.isNil(getAt(mgr, 60, 6, 3, 0))
+  Assert.isNil(mgr:getCollisionAt(60, candidate(6, 3, 0)))
+  Assert.equal(assets:total(), 0, "leaving the active map releases every visual")
+  mgr:dispose()
+end
+
 -- A runtime map without the compiled object collection is a malformed
 -- record, never an empty map: enterMap fails and rolls the entry back, the
 -- same shape as a mid-construction actor failure.
