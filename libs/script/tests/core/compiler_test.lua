@@ -163,7 +163,7 @@ local function allOpsScript()
     S.playSound({ sound = "SEQ_SE_DP_SELECT" }),
     S.stopSound({ sound = "SEQ_SE_DP_SELECT" }),
     S.waitSound({ sound = "SEQ_SE_DP_SELECT" }),
-    S.playCry({ species = S.var("species"), form = 0 }),
+    S.playCry({ species = S.var("species"), pattern = 0 }),
     S.waitCry(),
     S.playFanfare({ fanfare = "SEQ_ME_POKEGET" }),
     S.waitFanfare(),

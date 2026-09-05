@@ -98,7 +98,7 @@ function T.active_query_writes_live_controller_state()
   Assert.equal(idleStored[0x800C], 0, "an inactive follower reads false, never a constant")
 end
 
-function T.partner_state_query_writes_integer_controller_state()
+function T.partner_state_reports_source_object_param_nibble()
   local present, stored = runWith(follower({ _installed = "field:partner", _sourceState = 3 }))
   Assert.equal(
     Runtime.executeNode({ op = "follower_partner_state", result = var(0x800C) }, present),

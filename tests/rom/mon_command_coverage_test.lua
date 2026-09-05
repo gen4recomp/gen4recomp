@@ -60,10 +60,20 @@ local ALLOWED_DEFERRALS = {
 local LAB_MEMBER = 843
 local LAB_SCRIPTS = { [0] = "dispatcher", [11] = "welcome", [12] = "starter" }
 
--- The fifteen reviewed commands with their semantic evidence owner. Each row
+-- The reviewed commands with their semantic evidence owner. Each row
 -- names one behavior fixture that fails if the reviewed wrong behavior
 -- returns; disposition or handler presence alone never counts as coverage.
 local CONFORMANCE = {
+  {
+    opcode = 76,
+    fixture = "libs.hgss.tests.audio.cry_player_test",
+    test = "play_cry_pattern_11_applies_source_pitch",
+  },
+  {
+    opcode = 77,
+    fixture = "libs.script.tests.core.audio_runtime_test",
+    test = "wait_cry_ignores_unrelated_audio",
+  },
   { opcode = 140, fixture = "libs.script.tests.core.mons_retail_queries_test", test = "move_queries_mask_eggs" },
   { opcode = 141, fixture = "libs.script.tests.core.mons_retail_queries_test", test = "move_queries_mask_eggs" },
   {
@@ -98,9 +108,24 @@ local CONFORMANCE = {
     test = "ribbon_census_counts_distinct_kinds_once_ignoring_eggs",
   },
   {
+    opcode = 497,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "get_mon_types_returns_current_form_native_ids",
+  },
+  {
+    opcode = 535,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "mon_get_level_masks_eggs",
+  },
+  {
     opcode = 584,
     fixture = "libs.script.tests.core.mons_retail_aggregation_test",
     test = "representable_parties_report_no_checksum_failure",
+  },
+  {
+    opcode = 596,
+    fixture = "libs.script.tests.core.follower_ops_runtime_test",
+    test = "partner_state_reports_source_object_param_nibble",
   },
   {
     opcode = 605,
@@ -109,8 +134,8 @@ local CONFORMANCE = {
   },
   {
     opcode = 608,
-    fixture = "libs.script.tests.core.follower_transition_runtime_test",
-    test = "transition_starts_and_continues_in_the_same_tick",
+    fixture = "libs.hgss.tests.field.following_mon_transition_controller_test",
+    test = "transition_hides_then_reveals_captured_partner",
   },
   {
     opcode = 632,
@@ -121,6 +146,16 @@ local CONFORMANCE = {
     opcode = 647,
     fixture = "libs.script.tests.core.mons_retail_queries_test",
     test = "species_queries_mask_eggs_and_use_exact_sentinels",
+  },
+  {
+    opcode = 659,
+    fixture = "libs.hgss.tests.mons.hgss_mon_service_test",
+    test = "set_mon_form_validates_and_mutates_only_form",
+  },
+  {
+    opcode = 701,
+    fixture = "libs.script.tests.core.mons_retail_queries_test",
+    test = "mon_has_item_skips_eggs",
   },
   {
     opcode = 828,
@@ -180,25 +215,51 @@ end
 function T.reviewed_commands_carry_semantic_evidence()
   local problems = {}
   local seen = {}
+  local inventory = {}
+  for _, item in ipairs(MonScriptCommands.commands) do
+    inventory[item.opcode] = item
+  end
   for _, row in ipairs(CONFORMANCE) do
     seen[row.opcode] = (seen[row.opcode] or 0) + 1
     local entry = ScriptCommands.byOpcode[row.opcode]
-    if entry == nil or entry.disposition ~= "supported" then
-      problems[#problems + 1] = row.opcode .. ":not supported"
+    local source = inventory[row.opcode]
+    if source == nil then
+      problems[#problems + 1] = row.opcode .. ":missing inventory entry"
+    elseif
+      entry == nil
+      or (source.category == "cry" and CommandCatalog.classification(row.opcode) == CommandCatalog.UNSUPPORTED)
+      or (source.category ~= "cry" and entry.disposition ~= "supported")
+    then
+      problems[#problems + 1] = row.opcode .. ":" .. source.category .. ":not supported"
     else
       local ok, module = pcall(require, row.fixture)
       local suite = ok and (module.tests or module) or nil
       if type(suite) ~= "table" or type(suite[row.test]) ~= "function" then
-        problems[#problems + 1] = row.opcode .. ":missing semantic fixture " .. row.fixture .. "." .. row.test
+        problems[#problems + 1] = row.opcode
+          .. ":"
+          .. source.category
+          .. ":"
+          .. CommandCatalog.name(row.opcode)
+          .. ":missing semantic fixture "
+          .. row.fixture
+          .. "."
+          .. row.test
       end
     end
   end
-  Assert.equal(#CONFORMANCE, 15, "the inventory pins exactly the fifteen reviewed commands")
+  Assert.equal(#CONFORMANCE, 22, "the conformance table pins exactly the twenty-two reviewed commands")
   local distinct = 0
   for _ in pairs(seen) do
     distinct = distinct + 1
   end
-  Assert.equal(distinct, 15, "every reviewed opcode appears exactly once")
+  Assert.equal(distinct, 22, "every reviewed opcode appears exactly once")
+  local inventoryOnly = 0
+  for opcode in pairs(inventory) do
+    if seen[opcode] == nil then
+      inventoryOnly = inventoryOnly + 1
+    end
+  end
+  Assert.isTrue(inventoryOnly > 0, "the source inventory contains commands outside conformance evidence")
   table.sort(problems)
   Assert.equal(#problems, 0, "every reviewed command links to a behavior fixture: " .. table.concat(problems, ", "))
 end

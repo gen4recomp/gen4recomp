@@ -628,7 +628,7 @@ function T.accepts_value_reference_sound_and_cry_operands()
       S.playSound({ sound = S.var("VAR_SE") }),
       S.stopSound({ sound = S.var("VAR_SE") }),
       S.waitSound({ sound = S.var("VAR_SE") }),
-      S.playCry({ species = S.var("VAR_SPECIES"), form = S.var("VAR_FORM") }),
+      S.playCry({ species = S.var("VAR_SPECIES"), pattern = S.var("VAR_PATTERN") }),
       S.playFanfare({ fanfare = S.var("VAR_FANFARE") }),
       S.stop(),
     },
@@ -638,7 +638,7 @@ function T.accepts_value_reference_sound_and_cry_operands()
     id = "x",
     steps = {
       S.playSound({ sound = "SEQ_SE_DP_SELECT" }),
-      S.playCry({ species = "SPECIES_CYNDAQUIL", form = 0 }),
+      S.playCry({ species = "SPECIES_CYNDAQUIL", pattern = 0 }),
       S.stop(),
     },
   })

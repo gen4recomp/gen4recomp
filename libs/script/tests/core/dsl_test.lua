@@ -814,13 +814,13 @@ local CASES = {
     function()
       return S.playCry({ species = S.var("species") })
     end,
-    { op = "play_cry", species = { value = "var", id = "species" }, form = 0 },
+    { op = "play_cry", species = { value = "var", id = "species" }, pattern = 0 },
   },
-  play_cry_form = {
+  play_cry_pattern = {
     function()
-      return S.playCry({ species = "SPECIES_PICHU", form = 1 })
+      return S.playCry({ species = "SPECIES_PICHU", pattern = 1 })
     end,
-    { op = "play_cry", species = "SPECIES_PICHU", form = 1 },
+    { op = "play_cry", species = "SPECIES_PICHU", pattern = 1 },
   },
   wait_cry = {
     function()
@@ -906,11 +906,11 @@ local CASES = {
     end,
     { op = "wait_sound", sound = { value = "var", id = "VAR_SE" } },
   },
-  play_cry_form_var = {
+  play_cry_pattern_var = {
     function()
-      return S.playCry({ species = "SPECIES_CYNDAQUIL", form = S.var("VAR_FORM") })
+      return S.playCry({ species = "SPECIES_CYNDAQUIL", pattern = S.var("VAR_PATTERN") })
     end,
-    { op = "play_cry", species = "SPECIES_CYNDAQUIL", form = { value = "var", id = "VAR_FORM" } },
+    { op = "play_cry", species = "SPECIES_CYNDAQUIL", pattern = { value = "var", id = "VAR_PATTERN" } },
   },
   play_fanfare_var = {
     function()

@@ -103,10 +103,10 @@ function FakeAudioBackend:isFanfarePlaying()
   return self:currentFanfare() ~= nil
 end
 
-function FakeAudioBackend:playCry(species, form)
+function FakeAudioBackend:playCry(species, pattern)
   local token = "cry:" .. tostring(species)
   self.playing[token] = true
-  self.calls[#self.calls + 1] = { op = "playCry", species = species, form = form }
+  self.calls[#self.calls + 1] = { op = "playCry", species = species, pattern = pattern }
 end
 
 function FakeAudioBackend:currentCry()
@@ -385,7 +385,7 @@ end
 T["cry wait blocks until the cry finishes"] = function()
   local h = harness({ audio = true })
   local resource = script("test.cry", {
-    S.playCry({ species = "SPECIES_CYNDAQUIL", form = 0 }),
+    S.playCry({ species = "SPECIES_CYNDAQUIL", pattern = 0 }),
     S.waitCry(),
     S.setVar({ variable = "VAR_AFTER", value = 1 }),
     S.stop(),
@@ -898,7 +898,7 @@ T["cry and fanfare waits poll semantic completion states"] = function()
   local h = harness({ audio = true })
   h.services.advanceAsync = nil
   local resource = script("test.cryfan", {
-    S.playCry({ species = "SPECIES_CYNDAQUIL", form = 0 }),
+    S.playCry({ species = "SPECIES_CYNDAQUIL", pattern = 0 }),
     S.waitCry(),
     S.playFanfare({ fanfare = "SEQ_ME_POKEGET" }),
     S.waitFanfare(),
@@ -935,11 +935,11 @@ T["audio handlers evaluate value references before the service call"] = function
   local resource = script("test.audioval", {
     S.setVar({ variable = "VAR_SE", value = 1500 }),
     S.setVar({ variable = "VAR_SPECIES", value = 25 }),
-    S.setVar({ variable = "VAR_FORM", value = 1 }),
+    S.setVar({ variable = "VAR_PATTERN", value = 1 }),
     S.setVar({ variable = "VAR_FANFARE", value = 42 }),
     S.playSound({ sound = S.var("VAR_SE") }),
     S.stopSound({ sound = S.var("VAR_SE") }),
-    S.playCry({ species = S.var("VAR_SPECIES"), form = S.var("VAR_FORM") }),
+    S.playCry({ species = S.var("VAR_SPECIES"), pattern = S.var("VAR_PATTERN") }),
     S.playFanfare({ fanfare = S.var("VAR_FANFARE") }),
     S.stop(),
   })
@@ -948,7 +948,7 @@ T["audio handlers evaluate value references before the service call"] = function
   Assert.equal(h.audio.calls[1].id, 1500, "play_sound resolves the sequence reference")
   Assert.equal(h.audio.calls[2].id, 1500, "stop_sound resolves the sequence reference")
   Assert.equal(h.audio.calls[3].species, 25, "play_cry resolves the species reference")
-  Assert.equal(h.audio.calls[3].form, 1, "play_cry resolves the form reference")
+  Assert.equal(h.audio.calls[3].pattern, 1, "play_cry resolves the pattern reference")
   Assert.equal(h.audio.calls[4].fanfare, 42, "play_fanfare resolves the fanfare reference")
 end
 

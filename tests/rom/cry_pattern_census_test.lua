@@ -13,7 +13,7 @@ local FIXTURE_PATTERNS = { 0, 1, 11, 12 }
 local PATTERN_FIXTURES = {
   [0] = "standard_cries_use_the_generic_sequence_and_species_bank",
   [1] = "pattern_1_runs_the_source_twenty_tick_cleanup",
-  [11] = "pattern_11_applies_external_pitch_after_standard_admission",
+  [11] = "play_cry_pattern_11_applies_source_pitch",
   [12] = "pattern_12_combines_cleanup_with_source_pitch",
 }
 

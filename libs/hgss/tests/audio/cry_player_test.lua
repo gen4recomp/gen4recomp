@@ -123,7 +123,7 @@ function T.species_and_pattern_are_finite_integers_in_the_standard_domain()
   Assert.equal(err.code, AudioErrors.AUDIO_CRY_UNAVAILABLE)
 end
 
-function T.pattern_11_applies_external_pitch_after_standard_admission()
+function T.play_cry_pattern_11_applies_source_pitch()
   local cry, state = newRecordingCry()
   cry:play(183, 11)
 
