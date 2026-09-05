@@ -110,6 +110,12 @@ local function partyCount(game)
   return game.runtime.monService:partyCount()
 end
 
+local function starterBallCount(game)
+  local runtimeMap = assert(game.runtime.runtimeMap, "Elm's lab runtime map is loaded")
+  local selections = assert(runtimeMap.runtimePropSelections, "starter-ball runtime selections are published")
+  return #assert(selections.starter_balls, "the starter-ball owner publishes its selected placements")
+end
+
 local function directionToward(fromX, fromZ, toX, toZ)
   if toX > fromX then
     return "east"
@@ -158,6 +164,7 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
   withGame(function(game)
     game:waitForFieldEntry()
     Assert.equal(partyCount(game), 0, "a fresh save starts Elm's Lab with an empty party")
+    Assert.equal(starterBallCount(game), 3, "a fresh lab initializes all three source starter-ball placements")
 
     -- Finish the genuine welcome scene first: walk the real spawn into
     -- the lab's entry-hallway trigger, then drive the started foreground
@@ -327,6 +334,11 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
       local instances = game.runtime.followingMonTransition:status().instances
       return #instances == 1 and instances[1].phase == "prelude" and instances[1].preludeAge == 1
     end, 9000)
+    local partner = assert(game:snapshot().actors[partnerId], "the starter follower remains installed after 605")
+    local player = game:snapshot().player
+    Assert.equal(partner.fieldX, player.fieldX + 1, "605 places the follower one tile east of the player")
+    Assert.equal(partner.fieldZ, player.fieldZ, "605 preserves the player's row")
+    Assert.equal(partner.facing, "west", "605 faces the follower back toward the player")
     Assert.isFalse(
       game.runtime.actors:isVisible("field:partner"),
       "the captured follower stays hidden after the first transition update"
@@ -351,6 +363,15 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
     -- scene updates, so the driver must answer the context menu the same
     -- way instead of pumping dialogue alone.
     local continued = (function()
+      local function starterEnded()
+        for _, record in ipairs(recordsNamed(game, "script.ended")) do
+          if record.payload.scriptId == STARTER_SCRIPT then
+            return record.payload.completed == true
+          end
+        end
+        return false
+      end
+
       for _ = 1, 9000 do
         if game.runtime.errorText then
           return { fault = game.runtime.errorText }
@@ -361,6 +382,7 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
           and not snapshot.fieldLocked
           and not snapshot.dialogue.modal
           and snapshot.transition.phase == "idle"
+          and starterEnded()
         then
           return { stopped = true }
         end
@@ -386,6 +408,7 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
         and not snapshot.fieldLocked
         and not snapshot.dialogue.modal
         and snapshot.transition.phase == "idle"
+        and starterEnded()
       then
         return { stopped = true }
       end
@@ -393,6 +416,19 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
     end)()
     Assert.isNil(continued.fault, "the resumed starter script must run without a runtime fault")
     Assert.isTrue(continued.stopped, "the source script must continue and set its own starter flag")
+    local starterEnd = nil
+    for _, record in ipairs(recordsNamed(game, "script.ended")) do
+      if record.payload.scriptId == STARTER_SCRIPT then
+        starterEnd = record.payload
+      end
+    end
+    Assert.notNil(starterEnd, "the starter script must reach its source End")
+    local completedEnd = assert(starterEnd) ---@type { completed: boolean?, reason: string? }
+    Assert.isTrue(completedEnd.completed == true, "the starter script must complete normally")
+    Assert.isFalse(
+      completedEnd.reason == "SCRIPT_UNSUPPORTED_REACHABLE",
+      "the journey must not halt on an unsupported command"
+    )
     Assert.isTrue(sawFade, "the starter flow must pass through the source fade order")
     Assert.isTrue(
       game.runtime.screenFade:status().completed,
@@ -401,6 +437,12 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
     Assert.equal(partyCount(game), 1, "restoration keeps exactly the chosen mon")
     Assert.isTrue(game.runtime.monService:partyLegal(), "the chosen starter passes native legality after the full flow")
     Assert.equal(game:snapshot().mapSymbol, MAP, "the flow restores the same lab map")
+
+    game:save()
+    game:restart()
+    game:waitForFieldEntry()
+    Assert.equal(partyCount(game), 1, "the chosen starter survives a normal production restart")
+    Assert.equal(starterBallCount(game), 2, "lab reload reconstructs two balls from the party story state")
   end)
 end
 

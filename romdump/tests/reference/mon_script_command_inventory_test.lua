@@ -47,6 +47,7 @@ local EXPECTED_SOURCE_MEMBERS = {
   [535] = "mon",
   [659] = "mon",
   [701] = "mon",
+  [621] = "starter",
 }
 
 local function join(inventory, catalog)
@@ -72,7 +73,7 @@ function T.inventory_shape_is_valid()
       problems[#problems + 1] = tostring(record.opcode) .. ":invalid category"
     end
   end
-  for _, opcode in ipairs({ 76, 77, 497, 535, 596, 608, 659, 701 }) do
+  for _, opcode in ipairs({ 76, 77, 497, 535, 596, 608, 621, 659, 701 }) do
     Assert.isTrue(seen[opcode] == true, "inventory must include opcode " .. opcode)
   end
   table.sort(problems)
@@ -126,6 +127,22 @@ function T.catalog_feature_tag_does_not_remove_an_inventory_member()
   local joined = join(inventory, catalog)
 
   Assert.notNil(joined[517], "an inventoried opcode remains in the joined audit when its catalog feature tag is absent")
+end
+
+function T.inventory_membership_and_disposition_are_independent_of_feature_metadata()
+  local inventory = {
+    [517] = { opcode = 517, category = "mon" },
+    [621] = { opcode = 621, category = "starter" },
+  }
+  local catalog = {
+    [517] = { feature = nil, disposition = "deferred" },
+    [621] = { feature = "starter", disposition = "supported" },
+  }
+  local joined = join(inventory, catalog)
+
+  Assert.notNil(joined[517], "a featureless inventoried command remains in the membership join")
+  Assert.equal(joined[517].catalog.disposition, "deferred", "disposition is read after membership is established")
+  Assert.equal(joined[621].catalog.disposition, "supported", "supported starter evidence remains joined independently")
 end
 
 return { tests = T }

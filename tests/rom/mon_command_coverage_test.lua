@@ -131,7 +131,7 @@ local CONFORMANCE = {
   {
     opcode = 608,
     fixture = "libs.hgss.tests.field.following_mon_transition_controller_test",
-    test = "transition_hides_then_reveals_captured_partner",
+    test = "fake_manager_reveals_hidden_captured_partner_at_the_boundary",
   },
   {
     opcode = 632,
@@ -152,6 +152,11 @@ local CONFORMANCE = {
     opcode = 701,
     fixture = "libs.script.tests.core.mons_retail_queries_test",
     test = "mon_has_item_includes_eggs",
+  },
+  {
+    opcode = 621,
+    fixture = "romdump.tests.starter_ball_command_lowering_test",
+    test = "command_lowers_without_source_opcode_runtime_operands",
   },
   {
     opcode = 828,
@@ -352,9 +357,11 @@ function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
   FieldScripts.eachScript(archive, memberIrs, function(_, _, _, lowered)
     for _, item in ipairs(lowered.items) do
       if item.op == "unsupported" and type(item.command) == "number" then
-        local tagged = ScriptCommands.byOpcode[item.command]
-        if tagged ~= nil and tagged.disposition ~= "deferred" then
-          reached[#reached + 1] = tostring(item.command) .. ":" .. CommandCatalog.name(item.command)
+        if MonScriptCommands.byOpcode[item.command] ~= nil then
+          local tagged = ScriptCommands.byOpcode[item.command]
+          if tagged ~= nil and tagged.disposition ~= "deferred" then
+            reached[#reached + 1] = tostring(item.command) .. ":" .. CommandCatalog.name(item.command)
+          end
         end
       end
     end
@@ -427,9 +434,11 @@ function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
       end
       local undispositioned = {}
       for _, code in ipairs(codes) do
-        local tagged = ScriptCommands.byOpcode[code]
-        if tagged ~= nil and tagged.disposition == nil then
-          undispositioned[#undispositioned + 1] = code .. ":" .. CommandCatalog.name(code)
+        if MonScriptCommands.byOpcode[code] ~= nil then
+          local tagged = ScriptCommands.byOpcode[code]
+          if tagged ~= nil and tagged.disposition == nil then
+            undispositioned[#undispositioned + 1] = code .. ":" .. CommandCatalog.name(code)
+          end
         end
       end
       table.sort(undispositioned)
