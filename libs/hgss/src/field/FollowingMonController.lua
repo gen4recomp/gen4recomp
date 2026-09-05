@@ -43,6 +43,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field isActive fun(self: FollowingMonController): boolean
 ---@field isVisible fun(self: FollowingMonController): boolean
 ---@field partnerActorId fun(self: FollowingMonController): string?
+---@field partnerSourceState fun(self: FollowingMonController): integer
 ---@field update fun(self: FollowingMonController)
 ---@field handleMapExit fun(self: FollowingMonController)
 ---@field setMovementPaused fun(self: FollowingMonController, paused: boolean)
@@ -252,8 +253,16 @@ function FollowingMonController:_reconcileLead()
     personality = snapshot.personality,
     visualId = descriptor.visualId,
     size = descriptor.size,
+    objectParam = descriptor.objectParam,
   }
   assert(type(self._lead.size) == "number" and self._lead.size % 1 == 0, "follower size is required for map permission")
+  assert(
+    type(self._lead.objectParam) == "number"
+      and self._lead.objectParam % 1 == 0
+      and self._lead.objectParam >= 0
+      and self._lead.objectParam <= 0xFFFF,
+    "follower object parameter is required"
+  )
 end
 
 -- The source follower permission (pret/pokeheartgold
@@ -322,6 +331,20 @@ end
 ---@param self FollowingMonController
 function FollowingMonController:partnerActorId()
   return self._actors:partnerId()
+end
+
+---@return integer
+---@param self FollowingMonController
+function FollowingMonController:partnerSourceState()
+  if self._lead == nil then
+    return 0
+  end
+  local objectParam = self._lead.objectParam
+  assert(
+    type(objectParam) == "number" and objectParam % 1 == 0 and objectParam >= 0 and objectParam <= 0xFFFF,
+    "follower object parameter is required"
+  )
+  return math.floor(objectParam / 256) % 16
 end
 
 ---@param self FollowingMonController

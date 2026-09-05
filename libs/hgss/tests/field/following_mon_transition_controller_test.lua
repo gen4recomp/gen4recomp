@@ -8,11 +8,19 @@
 -- authoritative without ROM or GPU state.
 
 local Assert = require("tests.support.Assert")
+local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
+local FieldActorFixture = require("tests.support.FieldActorFixture")
+local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FollowingMonTransitionController = require("libs.hgss.src.field.FollowingMonTransitionController")
+local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 local T = {}
 
 local PARTNER_ID = "field:partner"
+
+local POLICY = {
+  variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
+}
 
 local function definition(clipFrames)
   return {
@@ -117,6 +125,63 @@ local function fakeFactory(made, failsAfter)
   end
 end
 
+local function realManager()
+  local assets = {
+    knows = function(_, spriteId)
+      return spriteId == 20153
+    end,
+    acquire = function(_, spriteId)
+      return { spriteId = spriteId, visual = FieldActorFixture.visual(spriteId) }
+    end,
+    release = function() end,
+  }
+  local map = {
+    mapId = 61,
+    mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = 0, y = 1, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+    mapSymbol = "test-map",
+    scene = {},
+    terrainDependencyHash = "test-terrain",
+    fieldRegion = {},
+    cameraType = 4,
+    fieldData = { events = { objects = {}, background = {}, warps = {}, coordinates = {} } },
+    release = function() end,
+    updateAnimated = function() end,
+  }
+  local actors = FieldActorManager.new({ assets = assets, policy = POLICY })
+  actors:enterMap(map, FieldEventState.new())
+  actors:installPartner({
+    numericId = 253,
+    visualId = 20153,
+    mapId = 61,
+    fieldX = 4,
+    fieldZ = 5,
+    facing = "south",
+  })
+  return actors
+end
+
 local function controller(actors, clipFrames, made, failsAfter)
   clipFrames = clipFrames or 5
   made = made or {}
@@ -161,7 +226,7 @@ function T.start_captures_the_partner_without_consuming_prelude()
   Assert.equal(#actors._hides, 0, "starting performs no hide")
 end
 
-function T.two_updates_switch_parts_and_reveal_the_partner_once()
+function T.fake_manager_reveals_hidden_captured_partner_at_the_boundary()
   local actors = fakeActors()
   actors:install(partnerRecord())
   local transitions = controller(actors)
@@ -185,16 +250,46 @@ function T.two_updates_switch_parts_and_reveal_the_partner_once()
   Assert.isTrue(actors:isVisible(PARTNER_ID), "the partner stays visible after the reveal")
 end
 
+function T.transition_hides_then_reveals_captured_partner()
+  local actors = realManager()
+  local made = {}
+  local constructionVisibility = {}
+  local makePlayer = fakeFactory(made)
+  local transitions = FollowingMonTransitionController.new({
+    actors = actors,
+    definition = definition(5),
+    modelFactory = function(part, descriptor)
+      constructionVisibility[#constructionVisibility + 1] = actors:isVisible(PARTNER_ID)
+      return makePlayer(part, descriptor)
+    end,
+  })
+
+  Assert.isTrue(actors:isVisible(PARTNER_ID), "a real manager installation starts visible")
+  Assert.isTrue(transitions:start(), "the real manager partner starts the transition")
+  Assert.deepEqual(constructionVisibility, { true, true }, "construction completes before the partner is hidden")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "start hides the captured partner after construction")
+
+  transitions:updateFixed()
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the real partner stays hidden through the prelude")
+
+  transitions:updateFixed()
+  Assert.isTrue(actors:isVisible(PARTNER_ID), "the existing reveal boundary shows the real partner")
+  Assert.equal(#made, 2, "the transition used two synthetic model players")
+  actors:dispose()
+end
+
 function T.reveal_stays_idempotent_over_an_already_visible_partner()
   local actors = fakeActors()
   actors:install(partnerRecord({ visible = true }))
   local transitions = controller(actors)
   transitions:start()
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the visible partner hides for the prelude")
+  Assert.equal(#actors._hides, 1, "the captured visible partner hides once")
   transitions:updateFixed()
   Assert.equal(#actors._shows, 0, "the prelude adds no visibility change")
   transitions:updateFixed()
   Assert.equal(#actors._shows, 1, "the boundary reveal still runs once")
-  Assert.equal(#actors._hides, 0, "an already-visible partner is never hidden first")
+  Assert.equal(#actors._hides, 1, "the reveal does not hide the partner again")
   Assert.isTrue(actors:isVisible(PARTNER_ID), "the partner remains visible")
 end
 
@@ -280,10 +375,12 @@ end
 
 function T.repeated_starts_stay_independent()
   local actors = fakeActors()
-  actors:install(partnerRecord())
+  actors:install(partnerRecord({ visible = true }))
   local transitions, made = controller(actors)
   Assert.isTrue(transitions:start(), "the first start creates an instance")
   Assert.isTrue(transitions:start(), "a repeated start creates its own instance")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "repeated starts keep the captured partner hidden")
+  Assert.equal(#actors._hides, 1, "repeated starts hide the generation only once")
   Assert.equal(#transitions:status().instances, 2, "both transient instances stay live")
   Assert.equal(#made, 4, "each instance owns both mutable effect parts")
   Assert.isTrue(made[1] ~= made[3], "repeated starts never share mutable animation state")
@@ -298,9 +395,10 @@ end
 
 function T.failed_second_start_preserves_the_live_instance()
   local actors = fakeActors()
-  actors:install(partnerRecord())
+  actors:install(partnerRecord({ visible = true }))
   local transitions, made = controller(actors, 5, {}, 3)
   Assert.isTrue(transitions:start(), "the first start succeeds")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the first transition owns the hidden prelude")
   local ok = pcall(function()
     transitions:start()
   end)
@@ -308,6 +406,8 @@ function T.failed_second_start_preserves_the_live_instance()
   Assert.equal(#transitions:status().instances, 1, "the live instance survives the failed start")
   Assert.equal(made[1].disposed, false, "the live instance keeps its model state")
   Assert.equal(made[3].disposed, true, "the failed start releases its partial model state")
+  Assert.equal(#actors._hides, 1, "the failed start does not hide the captured generation again")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the failed start preserves the live transition visibility")
 end
 
 function T.clear_and_dispose_release_exactly_once()

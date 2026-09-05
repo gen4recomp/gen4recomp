@@ -109,9 +109,23 @@ local function release(instance)
   end
 end
 
+---@param self FollowingMonTransitionController
+---@param instance table<string, unknown>
+---@return FieldActorManager.Actor|nil the live partner when the captured generation still owns the stable id
+local function liveTarget(self, instance)
+  local current = self.actors:getById(instance.targetActorId)
+  if current == nil or current ~= instance.targetActor then
+    return nil
+  end
+  if current.mapId ~= instance.targetMapId or current.spriteId ~= instance.targetSpriteId then
+    return nil
+  end
+  return current
+end
+
 -- Starts one transient instance on the current partner. Returns false without
--- allocating anything when no partner is available. Starting never consumes a
--- prelude update and never changes partner visibility.
+-- allocating anything when no partner is available. A successfully captured
+-- partner is hidden before the prelude begins.
 ---@return boolean
 function FollowingMonTransitionController:start()
   local partnerId = self.actors:partnerId()
@@ -134,7 +148,8 @@ function FollowingMonTransitionController:start()
     initialInstance:dispose()
     error("transition model factory returned no animated instance")
   end
-  self.instances[#self.instances + 1] = {
+
+  local instance = {
     targetActor = partner,
     targetActorId = partnerId,
     targetMapId = partner.mapId,
@@ -152,21 +167,15 @@ function FollowingMonTransitionController:start()
     frame = 0,
     frameCount = self.frameCount,
   }
+  if liveTarget(self, instance) == nil then
+    release(instance)
+    return false
+  end
+  if self.actors:isVisible(partnerId) then
+    self.actors:hide(partnerId)
+  end
+  self.instances[#self.instances + 1] = instance
   return true
-end
-
----@param self FollowingMonTransitionController
----@param instance table<string, unknown>
----@return FieldActorManager.Actor|nil the live partner when the captured generation still owns the stable id
-local function liveTarget(self, instance)
-  local current = self.actors:getById(instance.targetActorId)
-  if current == nil or current ~= instance.targetActor then
-    return nil
-  end
-  if current.mapId ~= instance.targetMapId or current.spriteId ~= instance.targetSpriteId then
-    return nil
-  end
-  return current
 end
 
 function FollowingMonTransitionController:updateFixed()

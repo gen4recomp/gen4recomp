@@ -192,6 +192,14 @@ function T.eligible_lead_installs_behind_the_player()
   w.mgr:dispose()
 end
 
+function T.partner_source_state_reads_the_generated_object_parameter_nibble()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.equal(w.controller:partnerSourceState(), 4, "the source state masks the generated object parameter")
+  w.mgr:dispose()
+end
+
 function T.ineligible_leads_never_install()
   local w = world()
   w.svc:setLead(0, mon("EEVEE"))

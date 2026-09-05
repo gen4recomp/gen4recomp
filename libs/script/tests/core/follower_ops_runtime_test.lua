@@ -17,6 +17,7 @@ local function follower(overrides)
     _calls = calls,
     _active = overrides._active == true,
     _installed = overrides._installed,
+    _sourceState = overrides._sourceState,
     _trigger = overrides._trigger == true,
     _settled = overrides._settled ~= false,
     isActive = function(self)
@@ -30,6 +31,10 @@ local function follower(overrides)
     partnerActorId = function(self)
       calls[#calls + 1] = "partnerActorId"
       return self._installed
+    end,
+    partnerSourceState = function(self)
+      calls[#calls + 1] = "partnerSourceState"
+      return self._sourceState
     end,
     facePlayer = function()
       calls[#calls + 1] = "facePlayer"
@@ -93,19 +98,20 @@ function T.active_query_writes_live_controller_state()
   Assert.equal(idleStored[0x800C], 0, "an inactive follower reads false, never a constant")
 end
 
-function T.partner_state_query_writes_controller_state()
-  local present, stored = runWith(follower({ _installed = "field:partner" }))
+function T.partner_state_query_writes_integer_controller_state()
+  local present, stored = runWith(follower({ _installed = "field:partner", _sourceState = 3 }))
   Assert.equal(
     Runtime.executeNode({ op = "follower_partner_state", result = var(0x800C) }, present),
     Runtime.OUTCOME_CONTINUE
   )
-  Assert.equal(stored[0x800C], 1, "an installed partner reads one")
-  local absent, absentStored = runWith(follower({ _installed = nil }))
+  Assert.equal(stored[0x800C], 3, "the source follower state remains an integer")
+  Assert.equal(present.services.followingMon._calls[1], "partnerSourceState", "the source state owns the query")
+  local absent, absentStored = runWith(follower({ _sourceState = 0 }))
   Assert.equal(
     Runtime.executeNode({ op = "follower_partner_state", result = var(0x800C) }, absent),
     Runtime.OUTCOME_CONTINUE
   )
-  Assert.equal(absentStored[0x800C], 0, "a missing partner reads zero")
+  Assert.equal(absentStored[0x800C], 0, "zero source state remains zero")
 end
 
 function T.face_player_delegates_to_the_controller()

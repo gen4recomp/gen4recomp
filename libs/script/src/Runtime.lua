@@ -896,9 +896,8 @@ end
 
 -- Follower operations. Each handler calls exactly one named operation on
 -- the injected following-mon collaborator (the field controller behind the
--- `followingMon` service) and writes the source result convention: 1 or 0
--- for booleans. No handler switches on a source opcode; the node op
--- already names the behavior.
+-- `followingMon` service) and writes its source-shaped result. No handler
+-- switches on a source opcode; the node op already names the behavior.
 local function followingMonFor(run)
   return requireService(run, "followingMon")
 end
@@ -909,7 +908,7 @@ local function handleFollowerIsActive(node, run)
 end
 
 local function handleFollowerPartnerState(node, run)
-  writeMonsBool(node, run, followingMonFor(run):partnerActorId() ~= nil)
+  writeMonsResult(node, run, followingMonFor(run):partnerSourceState())
   return Runtime.OUTCOME_CONTINUE
 end
 
