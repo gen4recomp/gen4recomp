@@ -28,10 +28,8 @@ end
 local function representative_selections_address_rendered_pixels(_, context)
   local MonCache = require("libs.assets.src.MonCache")
   local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-  local ready = 0
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      ready = ready + 1
       local cache = CacheFs.forVersion(versionId)
       local icons = assert(cache:loadLua(MonCache.iconManifestPath()), versionId .. " icon manifest must load")
       local portraits =
@@ -72,10 +70,11 @@ local function representative_selections_address_rendered_pixels(_, context)
       Assert.isTrue(followers > 0, versionId .. " must carry follower visuals")
     end
   end
-  Assert.isTrue(ready > 0, "derived-cache capability promised a ready game version")
   context = context -- capability is asserted by the runner
 end
 
-return GraphicsSmoke.suite({
+local suite = GraphicsSmoke.suite({
   representative_selections_address_rendered_pixels = representative_selections_address_rendered_pixels,
 })
+suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+return suite
