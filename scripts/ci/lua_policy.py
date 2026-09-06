@@ -107,10 +107,16 @@ def _consume_type(text: str, index: int) -> int | None:
     if index >= total:
         return None
     if text[index] in "\"'`":
-        end = _consume_balanced(text, index, text[index], text[index])
-        if end is None:
-            return None
-        return _consume_suffixes(text, end)
+        delimiter = text[index]
+        index += 1
+        while index < total:
+            if delimiter in "\"'" and text[index] == "\\" and index + 1 < total:
+                index += 2
+                continue
+            if text[index] == delimiter:
+                return _consume_suffixes(text, index + 1)
+            index += 1
+        return None
     if text.startswith("fun", index) and (
         index + 3 >= total or (not text[index + 3].isalnum() and text[index + 3] != "_")
     ):

@@ -544,6 +544,60 @@ return fixtures
         self.assertEqual(len(bare), 1)
         self.assertEqual(explicit, [])
 
+    def test_literal_first_unions_find_builtin_any(self) -> None:
+        positive_forms = (
+            ('---@param value "ready" | any', "param", 1),
+            ("---@param value 'ready' | any", "param", 1),
+            ('---@field value "ready" | any', "field", 1),
+            ("---@field value 'ready' & any", "field", 1),
+            ('---@return "ready" | any', "return", 1),
+            ('---@type "ready" | any', "type", 1),
+            ('---@vararg "ready" | any', "vararg", 1),
+            ("---@return `T` | any", "return", 1),
+            ('---@param value "ready"|any', "param", 1),
+            ('---@param value "a\\"ny" | any', "param", 1),
+        )
+        for source, expected_annotation, expected_count in positive_forms:
+            with self.subTest(source=source):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "fixture.lua"
+                    path.write_text(source + "\n", encoding="utf-8")
+                    findings = POLICY.scan_file(path)
+
+                explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+                self.assertEqual(len(explicit), expected_count)
+                for finding in explicit:
+                    self.assertEqual(finding["annotation"], expected_annotation)
+                    self.assertEqual(finding["type"], "any")
+                    self.assertEqual(finding["line"], 1)
+
+    def test_literal_text_any_is_not_builtin_any(self) -> None:
+        negative_forms = (
+            '---@param value "any" | string',
+            "---@param value 'any' | string",
+            "---@param value `any` | string",
+            '---@field value "any" | string',
+            '---@return "any" | string',
+        )
+        for source in negative_forms:
+            with self.subTest(source=source):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "fixture.lua"
+                    path.write_text(source + "\n", encoding="utf-8")
+                    findings = POLICY.scan_file(path)
+
+                explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+                self.assertEqual(explicit, [])
+
+    def test_production_check_rejects_unapproved_literal_first_any(self) -> None:
+        source = '---@param value "ready" | any\nlocal function accepts(value) return value end\nreturn {}\n'
+        with fixture_repository({"app/src/fixture.lua": source}) as root:
+            result = run_policy_check(root, scope="production")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("app/src/fixture.lua", result.stderr)
+        self.assertIn("explicit-any", result.stderr)
+
     def test_production_mixed_inline_and_full_line_any_share_exact_inventory(self) -> None:
         source = (
             "---@param value any\n"
