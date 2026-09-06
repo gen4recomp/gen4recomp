@@ -379,21 +379,106 @@ local function raisesSceneInvalid(scene)
   Assert.equal(err.code, "MAP_CACHE_SCENE_INVALID")
 end
 
-function T.elms_lab_requires_strict_starter_ball_runtime_props()
+local function translationTransform(x, y, z)
+  return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1 }
+end
+
+local function ownerGroup(model, transforms)
+  local placements = {}
+  for _, t in ipairs(transforms or { { 0, 0, 0 } }) do
+    placements[#placements + 1] = { transform = translationTransform(t[1], t[2], t[3]) }
+  end
+  return { model = model, placements = placements }
+end
+
+function T.runtime_prop_groups_validate_by_owner_and_close_model_references()
   local scene = baseScene()
-  scene.mapSymbol = "MAP_NEW_BARK_ELMS_LAB_1F"
-  raisesSceneInvalid(scene)
-
-  scene.runtimeProps = { starterBalls = { model = "indoor:141:model", placements = {} } }
-  raisesSceneInvalid(scene)
-
-  scene.runtimeProps.starterBalls.placements = {
-    { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 } },
-    { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1 } },
-    { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1 } },
+  scene.runtimeProps = {
+    lamp_oil = ownerGroup("indoor:1:aaa", { { 1, 0, 2 } }),
+    river_foam = ownerGroup("indoor:2:bbb", { { 3, 0, 4 }, { 5, 0, 6 } }),
   }
-  scene.runtimeProps.starterBalls.placements[2].transform[6] = 0 / 0
-  raisesSceneInvalid(scene)
+  local paths = MapAssetCache.referencedPaths(scene, nil)
+  Assert.isTrue(contains(paths, MapAssetCache.modelPath("indoor:1:aaa")), "first owner model path is closed")
+  Assert.isTrue(contains(paths, MapAssetCache.modelPath("indoor:2:bbb")), "second owner model path is closed")
+end
+
+function T.empty_runtime_prop_placement_lists_are_valid()
+  local scene = baseScene()
+  scene.runtimeProps = { quiet_corner = { model = "indoor:1:aaa", placements = {} } }
+  local paths = MapAssetCache.referencedPaths(scene, nil)
+  Assert.isTrue(contains(paths, MapAssetCache.modelPath("indoor:1:aaa")), "the known model is still referenced")
+end
+
+function T.a_map_without_runtime_props_stays_valid()
+  Assert.isTrue(type(MapAssetCache.referencedPaths(baseScene(), nil)) == "table")
+end
+
+function T.malformed_runtime_prop_groups_raise_scene_invalid_with_owner_context()
+  local cases = {
+    { owner = "lamp_oil", group = "not-a-table" },
+    { owner = "lamp_oil", group = { placements = {} } },
+    { owner = "lamp_oil", group = { model = "", placements = {} } },
+    { owner = "lamp_oil", group = { model = 42, placements = {} } },
+    { owner = "lamp_oil", group = { model = "indoor:1:aaa" } },
+    { owner = "lamp_oil", group = { model = "indoor:1:aaa", placements = { named = 1 } } },
+    { owner = "lamp_oil", group = { model = "indoor:1:aaa", placements = { {} } } },
+    {
+      owner = "lamp_oil",
+      group = { model = "indoor:1:aaa", placements = { { transform = { 1, 0 } } } },
+    },
+    {
+      owner = "lamp_oil",
+      group = {
+        model = "indoor:1:aaa",
+        placements = { { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 / 0 } } },
+      },
+    },
+    {
+      owner = "lamp_oil",
+      group = {
+        model = "indoor:1:aaa",
+        placements = { { transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, math.huge } } },
+      },
+    },
+  }
+  for _, case in ipairs(cases) do
+    local scene = baseScene()
+    scene.runtimeProps = { [case.owner] = case.group }
+    local err = Assert.throws(function()
+      MapAssetCache.referencedPaths(scene, nil)
+    end)
+    Assert.equal(err.code, "MAP_CACHE_SCENE_INVALID")
+    Assert.isTrue(tostring(err.message):find(case.owner, 1, true) ~= nil, "the failure names the offending owner")
+  end
+  for _, badKey in ipairs({ "", 42 }) do
+    local scene = baseScene()
+    scene.runtimeProps = { [badKey] = ownerGroup("indoor:1:aaa") }
+    local err = Assert.throws(function()
+      MapAssetCache.referencedPaths(scene, nil)
+    end)
+    Assert.equal(err.code, "MAP_CACHE_SCENE_INVALID")
+  end
+end
+
+function T.runtime_prop_model_files_are_traversed_generically()
+  local c = cache()
+  local modelKey = "indoor:1:abc"
+  local modelPath = MapAssetCache.modelPath(modelKey)
+  local meshPath = "assets/generated/maps/geometry/prop.g4mesh"
+  c:write(
+    modelPath,
+    string.format(
+      "return { schema = %q, key = %q, memberId = 1, kind = 'static', batches = { { geometry = %q, cullMode = 'back', polygonMode = 'modulation', polygonId = 0, polygonAlpha = 31, lightMask = 15, translucentDepthWrite = false, depthEqual = false, fogEnabled = true } }, materials = {} }\n",
+      ModelAsset.SCHEMA,
+      modelKey,
+      meshPath
+    )
+  )
+  local scene = baseScene()
+  scene.runtimeProps = { harbor_lantern = ownerGroup(modelKey) }
+  local paths = MapAssetCache.referencedPaths(scene, c)
+  Assert.isTrue(contains(paths, modelPath), "the owner model descriptor is referenced")
+  Assert.isTrue(contains(paths, meshPath), "the owner model geometry is traversed")
 end
 
 -- Write a full ready map for `scene`, with exactly the given extra image

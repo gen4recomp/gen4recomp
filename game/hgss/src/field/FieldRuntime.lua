@@ -72,7 +72,7 @@ local RepoFs = require("game.src.RepoFs")
 local WindowConfig = require("game.src.WindowConfig")
 
 local function composeStarterBalls(runtime)
-  local StarterLabBallController = require("libs.hgss.src.field.StarterLabBallController")
+  local StarterLabBallController = require("game.hgss.src.field.StarterLabBallController")
   local function currentScene()
     local current = runtime.session and runtime.session.currentMap or runtime.runtimeMap
     return assert(current and (current.sceneRuntime or current))

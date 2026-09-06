@@ -2,7 +2,7 @@
 -- records and replaces one scene-owned runtime-prop owner.
 
 local Assert = require("tests.support.Assert")
-local StarterLabBallController = require("libs.hgss.src.field.StarterLabBallController")
+local StarterLabBallController = require("game.hgss.src.field.StarterLabBallController")
 
 local T = {}
 
@@ -13,7 +13,7 @@ local function scene()
     { transform = { "third" } },
   }
   local result = {
-    scene = { runtimeProps = { starterBalls = { model = "indoor:141:model", placements = placements } } },
+    scene = { runtimeProps = { starter_balls = { model = "indoor:141:model", placements = placements } } },
     replacements = {},
   }
   function result:replaceRuntimeStaticProps(owner, selected)
@@ -70,7 +70,7 @@ end
 
 function T.repeated_execution_replaces_one_owner_without_mutating_descriptor()
   local controller, currentScene = makeController({}, 1)
-  local placements = currentScene.scene.runtimeProps.starterBalls.placements
+  local placements = currentScene.scene.runtimeProps.starter_balls.placements
   controller:placeStarterBalls()
   controller:placeStarterBalls()
   Assert.equal(#currentScene.replacements, 2)

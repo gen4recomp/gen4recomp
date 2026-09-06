@@ -244,11 +244,11 @@ local function _compile(romFs, idOrSymbol, opts)
     assert(starterModelKey, "Elm's Lab starter-ball model was not compiled")
     local placements = {}
     for _, position in ipairs(StarterLab.positions) do
-      local x, y, z = MapUnits.toRuntime(position.x, position.y, position.z, mapModel.info.posScale)
+      local x, y, z = MapUnits.toTiles(position.x, position.y, position.z)
       placements[#placements + 1] = { transform = Matrix4.toArray(Matrix4.translate(x, y, z)) }
     end
     runtimeProps = {
-      starterBalls = {
+      starter_balls = {
         model = starterModelKey,
         placements = placements,
       },
@@ -300,7 +300,7 @@ local function _compile(romFs, idOrSymbol, opts)
   }
   if runtimeProps then
     dependencies.runtimeProps = {
-      starterBalls = {
+      starter_balls = {
         modelMemberId = StarterLab.modelMemberId,
         positions = StarterLab.positions,
       },

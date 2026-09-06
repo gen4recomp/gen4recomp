@@ -227,16 +227,59 @@ function T.building_with_no_named_bindings_compiles_as_a_no_op()
   Assert.isNil(model.materials[1].texture)
 end
 
+local function laboLandModel(posScale)
+  return NsbmdFixture.build({
+    modelName = "labo01",
+    textureName = MapRomFixture.MAP_TEXTURE,
+    paletteName = MapRomFixture.MAP_PALETTE,
+    origHeight = 8,
+    triangle = { { 0, 0, 0 }, { 2, 0, 0 }, { 0, 0, 3 } },
+    posScale = posScale,
+  })
+end
+
 function T.a_map_with_no_placed_buildings_still_compiles_starter_ball_assets()
-  local bundle = assert(compile({ buildings = "" }))
+  local bundle = assert(compile({ buildings = "", landModel = laboLandModel(64) }))
   local modelCount = 0
   for _ in pairs(bundle.models) do
     modelCount = modelCount + 1
   end
   Assert.equal(modelCount, 1)
   Assert.equal(#bundle.scene.buildingInstances, 0)
-  Assert.notNil(bundle.scene.runtimeProps.starterBalls)
+  local group = assert(bundle.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
+  local descriptor = assert(bundle.models[group.model], "the starter model key resolves to a compiled model")
+  Assert.equal(descriptor.memberId, MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID)
+  Assert.equal(#group.placements, 3)
+  local expected = {
+    { x = 8.1875, y = 0, z = 4.0625 },
+    { x = 8.8125, y = 0, z = 4.0625 },
+    { x = 8.5, y = 0, z = 4.5 },
+  }
+  for index, want in ipairs(expected) do
+    local transform = group.placements[index].transform
+    Assert.equal(transform[13], want.x, "starter placement " .. index .. " x")
+    Assert.equal(transform[14], want.y, "starter placement " .. index .. " y")
+    Assert.equal(transform[15], want.z, "starter placement " .. index .. " z")
+  end
   Assert.isNil(bundle.scene.source, "source identity lives in the dependency record")
+end
+
+function T.starter_ball_translations_ignore_the_map_model_pos_scale()
+  local expected = {
+    { x = 8.1875, y = 0, z = 4.0625 },
+    { x = 8.8125, y = 0, z = 4.0625 },
+    { x = 8.5, y = 0, z = 4.5 },
+  }
+  for _, posScale in ipairs({ 1, 64 }) do
+    local bundle = assert(compile({ buildings = "", landModel = laboLandModel(posScale) }))
+    local group = assert(bundle.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
+    for index, want in ipairs(expected) do
+      local transform = group.placements[index].transform
+      Assert.equal(transform[13], want.x, "posScale " .. posScale .. " placement " .. index .. " x")
+      Assert.equal(transform[14], want.y, "posScale " .. posScale .. " placement " .. index .. " y")
+      Assert.equal(transform[15], want.z, "posScale " .. posScale .. " placement " .. index .. " z")
+    end
+  end
 end
 
 function T.terrain_does_not_see_building_textures()

@@ -612,13 +612,14 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
   function runtime:replaceRuntimeStaticProps(ownerKey, placements)
     assert(type(ownerKey) == "string" and #ownerKey > 0, "runtime prop owner key is required")
     assert(type(placements) == "table", "runtime prop placements are required")
-    local starterBalls = assert(self.scene.runtimeProps and self.scene.runtimeProps.starterBalls)
-    local desc = descriptorFor(starterBalls.model)
+    local runtimeProps = assert(self.scene.runtimeProps, "scene has no runtime props for owner " .. ownerKey)
+    local group = assert(runtimeProps[ownerKey], "scene has no runtime props for owner " .. ownerKey)
+    local desc = descriptorFor(group.model)
     if desc.descriptor.kind ~= "static" then
       Errors.raise(
         FieldErrors.MAP_SCENE_UNKNOWN_MODEL_KIND,
-        "runtime prop model must be static: " .. starterBalls.model,
-        { modelKey = starterBalls.model, kind = desc.descriptor.kind }
+        "runtime prop model must be static for owner " .. ownerKey .. ": " .. group.model,
+        { ownerKey = ownerKey, modelKey = group.model, kind = desc.descriptor.kind }
       )
     end
     local nextDraws = {}

@@ -1,6 +1,6 @@
--- Source-derived Elm's Lab starter-ball reference. Positions are the raw
--- placed-model coordinates recovered from the map's source data; runtime
--- scaling and transform normalization belong to the map producer.
+-- Source-derived Elm's Lab starter-ball reference. Positions are the retail
+-- VecFx32 map-prop base translations passed to MapPropManager_LoadOne, already
+-- post-map-model-posScale; tile normalization belongs to the map producer.
 
 return {
   mapId = 61,

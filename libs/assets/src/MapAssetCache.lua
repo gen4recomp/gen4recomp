@@ -42,8 +42,6 @@ MapAssetCache.TERRAIN_SCHEMA = Contract.map.terrainSchema
 local DERIVED_DATA = "data/generated"
 local DERIVED_ASSETS = "assets/generated"
 
-local STARTER_LAB_SYMBOL = "MAP_NEW_BARK_ELMS_LAB_1F"
-
 function MapAssetCache.mapDir(mapId)
   return string.format("%s/maps/%04d", DERIVED_DATA, mapId)
 end
@@ -113,40 +111,44 @@ local function isFiniteNumber(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
-local function checkStarterBalls(scene, invalid)
-  if scene.mapSymbol ~= STARTER_LAB_SYMBOL then
+-- Optional owner-keyed runtime static-prop groups. Owner keys are opaque to
+-- this source-independent cache layer: every group names the model descriptor
+-- its placements instance, and validation is structural only (non-empty owner
+-- and model keys, an array of placements, one 16-component finite transform
+-- each). Owner identity rides every diagnostic.
+---@param scene MapAssetCache.Scene
+---@param invalid fun(reason: string)
+local function checkRuntimeProps(scene, invalid)
+  local runtimeProps = scene.runtimeProps
+  if runtimeProps == nil then
     return
   end
-  local runtimeProps = scene.runtimeProps
-  if type(runtimeProps) ~= "table" or type(runtimeProps.starterBalls) ~= "table" then
-    invalid("Elm's Lab requires runtimeProps.starterBalls")
+  if type(runtimeProps) ~= "table" then
+    invalid("runtimeProps must be a table keyed by owner")
   end
-  local props = runtimeProps --[[@as table]]
-  local starterBalls = assert(props.starterBalls)
-  if type(starterBalls.model) ~= "string" or #starterBalls.model == 0 then
-    invalid("runtimeProps.starterBalls.model must be a non-empty model key")
-  end
-  if not Validate.isArray(starterBalls.placements) or #starterBalls.placements ~= 3 then
-    invalid("runtimeProps.starterBalls.placements must contain exactly three records")
-  end
-  for index, placement in ipairs(starterBalls.placements) do
-    if type(placement) ~= "table" or not Validate.isArray(placement.transform) or #placement.transform ~= 16 then
-      invalid("starter-ball placement " .. index .. " must carry a sixteen-component transform")
+  local groups = runtimeProps --[[@as table]]
+  for ownerKey, group in pairs(groups) do
+    local where = "runtimeProps[" .. tostring(ownerKey) .. "]"
+    if type(ownerKey) ~= "string" or #ownerKey == 0 then
+      invalid("a runtime prop owner key must be a non-empty string")
     end
-    for component = 1, 16 do
-      if not isFiniteNumber(placement.transform[component]) then
-        invalid("starter-ball placement " .. index .. " has a non-finite transform component")
+    if type(group) ~= "table" then
+      invalid(where .. " must be a record")
+    end
+    if type(group.model) ~= "string" or #group.model == 0 then
+      invalid(where .. ".model must be a non-empty model key")
+    end
+    if not Validate.isArray(group.placements) then
+      invalid(where .. ".placements must be an array")
+    end
+    for index, placement in ipairs(group.placements) do
+      if type(placement) ~= "table" or not Validate.isArray(placement.transform) or #placement.transform ~= 16 then
+        invalid(where .. " placement " .. index .. " must carry a sixteen-component transform")
       end
-    end
-    local transform = placement.transform
-    for _, component in ipairs({ 1, 6, 11, 16 }) do
-      if transform[component] ~= 1 then
-        invalid("starter-ball placement " .. index .. " has a non-unit transform diagonal")
-      end
-    end
-    for _, component in ipairs({ 2, 3, 5, 7, 9, 10 }) do
-      if transform[component] ~= 0 then
-        invalid("starter-ball placement " .. index .. " has a non-identity rotation")
+      for component = 1, 16 do
+        if not isFiniteNumber(placement.transform[component]) then
+          invalid(where .. " placement " .. index .. " has a non-finite transform component")
+        end
       end
     end
   end
@@ -313,7 +315,7 @@ function MapAssetCache.referencedPaths(scene, cacheFs)
   ---@cast materials table[]
   ---@cast neighbors table[]
   ---@cast buildingInstances table[]
-  checkStarterBalls(scene, invalid)
+  checkRuntimeProps(scene, invalid)
 
   local terrain = scene.terrain
   if terrain and type(terrain) == "table" and terrain.file then
@@ -447,25 +449,38 @@ function MapAssetCache.referencedPaths(scene, cacheFs)
       paths[#paths + 1] = path
     end
   end
-  if scene.mapSymbol == STARTER_LAB_SYMBOL then
-    local starterBalls = assert(scene.runtimeProps.starterBalls)
-    local modelPath = MapAssetCache.modelPath(starterBalls.model)
-    paths[#paths + 1] = modelPath
-    local desc = cacheFs and cacheFs:loadLua(modelPath)
-    if type(desc) ~= "table" then
-      invalid("starter-ball model descriptor does not load: " .. starterBalls.model)
+  local runtimeProps = scene.runtimeProps
+  if type(runtimeProps) == "table" then
+    local ownerKeys = {}
+    for ownerKey in pairs(runtimeProps) do
+      ownerKeys[#ownerKeys + 1] = ownerKey
     end
-    local ok, referenced = pcall(ModelAsset.referencedPaths, desc)
-    if not ok then
-      local errorValue = referenced ---@cast errorValue Errors.Error
-      if Errors.is(errorValue) and errorValue.code == ModelAsset.ERROR_INVALID then
-        invalid("starter-ball model descriptor is malformed: " .. starterBalls.model)
+    table.sort(ownerKeys)
+    for _, ownerKey in ipairs(ownerKeys) do
+      local group = runtimeProps[ownerKey] --[[@as table]]
+      local context = "runtime prop owner " .. tostring(ownerKey)
+      local modelPath = MapAssetCache.modelPath(group.model)
+      paths[#paths + 1] = modelPath
+      -- Without a filesystem the descriptor's files cannot be traversed; the
+      -- recorded descriptor path is the full closure available.
+      if cacheFs ~= nil then
+        local desc = cacheFs:loadLua(modelPath)
+        if type(desc) ~= "table" then
+          invalid(context .. " model descriptor does not load: " .. group.model)
+        end
+        local ok, referenced = pcall(ModelAsset.referencedPaths, desc)
+        if not ok then
+          local errorValue = referenced ---@cast errorValue Errors.Error
+          if Errors.is(errorValue) and errorValue.code == ModelAsset.ERROR_INVALID then
+            invalid(context .. " model descriptor is malformed: " .. group.model)
+          end
+          error(errorValue)
+        end
+        local referencedPaths = referenced ---@type string[]
+        for _, path in ipairs(referencedPaths) do
+          paths[#paths + 1] = path
+        end
       end
-      error(errorValue)
-    end
-    local referencedPaths = referenced ---@type string[]
-    for _, path in ipairs(referencedPaths) do
-      paths[#paths + 1] = path
     end
   end
   return paths

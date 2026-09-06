@@ -48,7 +48,7 @@ end
 local function descriptor(game)
   local scene = assert(game.runtime.runtimeMap and game.runtime.runtimeMap.scene, "Elm's generated scene is loaded")
   local runtimeProps = assert(scene.runtimeProps, "Elm's generated scene publishes runtime props")
-  local starterBalls = assert(runtimeProps.starterBalls, "Elm's scene publishes starter-ball props")
+  local starterBalls = assert(runtimeProps.starter_balls, "Elm's scene publishes starter-ball props")
   Assert.equal(type(starterBalls.model), "string", "starter-ball props use a semantic model key")
   Assert.isTrue(starterBalls.model ~= "", "starter-ball model key is non-empty")
   Assert.equal(type(starterBalls.placements), "table", "starter-ball props publish placements")
@@ -60,6 +60,17 @@ local function descriptor(game)
   for index, placement in ipairs(starterBalls.placements) do
     Assert.equal(type(placement), "table", "starter-ball placement " .. index .. " is a record")
     assertIdentityTransform(placement.transform, "starter-ball placement " .. index)
+  end
+  local expected = {
+    { x = 8.1875, y = 0, z = 4.0625 },
+    { x = 8.8125, y = 0, z = 4.0625 },
+    { x = 8.5, y = 0, z = 4.5 },
+  }
+  for index, want in ipairs(expected) do
+    local transform = starterBalls.placements[index].transform
+    Assert.equal(transform[13], want.x, "starter-ball placement " .. index .. " x is source-normalized")
+    Assert.equal(transform[14], want.y, "starter-ball placement " .. index .. " y is source-normalized")
+    Assert.equal(transform[15], want.z, "starter-ball placement " .. index .. " z is source-normalized")
   end
   return starterBalls
 end

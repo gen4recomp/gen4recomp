@@ -17,7 +17,7 @@ end
 
 function StarterLabBallController:placeStarterBalls()
   local current = assert(self.sceneOf(), "starter-ball placement requires a current map")
-  local descriptor = assert(current.scene and current.scene.runtimeProps and current.scene.runtimeProps.starterBalls)
+  local descriptor = assert(current.scene and current.scene.runtimeProps and current.scene.runtimeProps.starter_balls)
   local placements = assert(descriptor.placements)
   local count
   if self.eventState:isFlagSet(self.flags.gotTm51) then

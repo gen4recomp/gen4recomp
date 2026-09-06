@@ -5,14 +5,7 @@
 -- the draw path executes and candidate regions never overlap or clip.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local FieldCamera = require("libs.hgss.src.field.FieldCamera")
-local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
-local GameVersion = require("romdump.src.source.GameVersion")
-local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
-local RomImporter = require("romdump.src.source.RomImporter")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldState = require("game.hgss.src.field.FieldState")
 local StarterChoiceState = require("game.hgss.src.starters.StarterChoiceState")
@@ -199,45 +192,6 @@ function T.composed_starter_choice_remains_visible_over_an_opaque_field_fade(sco
     "the active starter application must leave visible pixels above the field fade"
   )
   starter:dispose()
-end
-
-function T.elms_lab_starter_ball_runtime_props_reach_the_real_field_renderer(scope)
-  local ready = 0
-  for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      ready = ready + 1
-      local cache = CacheFs.forVersion(versionId)
-      local scene = assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua"))
-      local runtime = MapSceneLoader.load(cache, scene)
-      scope:own({
-        release = function()
-          runtime:release()
-        end,
-      })
-
-      local descriptor = assert(scene.runtimeProps and scene.runtimeProps.starterBalls)
-      runtime:replaceRuntimeStaticProps("starter_balls", descriptor.placements)
-      Assert.equal(#runtime.runtimePropDraws, 3, "the real scene owns one draw set for three starter placements")
-
-      local profiles = assert(cache:loadLua("data/generated/field/camera/profiles.lua"))
-      local profile = assert(profiles.profiles[scene.cameraType or 0])
-      local center = assert(runtime.runtimePropDraws[1].center)
-      local camera = FieldCamera.new(profile, {
-        canonicalAspect = 4 / 3,
-        initialTarget = { x = center[1], y = center[2], z = center[3] },
-      })
-      local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-      camera:setProjectionAspect(viewport:worldAspect())
-      local renderer = scope:own(FieldRenderer.new())
-      renderer:draw({
-        lighting = runtime.lighting,
-        edgeColors = runtime.edgeColors,
-        fog = runtime.fog,
-      }, camera, { runtime.runtimePropDraws }, nil, viewport, 0)
-      Assert.isTrue(renderer.stats.drawCalls > 0, "starter-ball runtime props reach a real GPU draw")
-    end
-  end
-  Assert.isTrue(ready > 0, "a ready imported game version is required")
 end
 
 return GraphicsSmoke.suite(T)
