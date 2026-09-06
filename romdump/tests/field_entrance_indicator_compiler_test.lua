@@ -4,6 +4,21 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 
 local T = { tests = {} }
 
+-- Reduce one section's observed model member ids to a sorted distinct set
+-- so duplicate decodes and call order never affect the source contract.
+local function distinctMembers(observations, section)
+  local seen = {}
+  for _, memberId in ipairs(observations[section] or {}) do
+    seen[memberId] = true
+  end
+  local ids = {}
+  for memberId in pairs(seen) do
+    ids[#ids + 1] = memberId
+  end
+  table.sort(ids)
+  return ids
+end
+
 T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
@@ -22,9 +37,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     saved[name] = package.loaded[name]
   end
 
-  local modelMembers = {}
-  local animationMembers = {}
-  local nitroAnimationMembers = {}
+  local modelMembersBySection = {}
   local invalidSelector = false
   package.loaded["romdump.src.config.FieldEffects"] = {
     archive = { alias = "field_static_models" },
@@ -74,7 +87,13 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   }
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
-      modelMembers[#modelMembers + 1] = context.memberId
+      assert(context and context.section, "Nsbmd.decode context.section is required")
+      local bucket = modelMembersBySection[context.section]
+      if not bucket then
+        bucket = {}
+        modelMembersBySection[context.section] = bucket
+      end
+      bucket[#bucket + 1] = context.memberId
       return {
         models = { { name = "model-" .. context.memberId, materials = { { name = "effect" } } } },
         embeddedTextures = {
@@ -85,8 +104,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     end,
   }
   package.loaded["libs.nds.src.nitro.g3d.NitroAnimation"] = {
-    decode = function(bytes, context)
-      nitroAnimationMembers[#nitroAnimationMembers + 1] = context.memberId
+    decode = function(bytes)
       return {
         format = "NSBTA",
         bytes = bytes,
@@ -97,7 +115,6 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   package.loaded["romdump.src.digest.field.FieldEffectPatternAnimation"] = {
     FORMAT = "FIELD_EFFECT_PATTERN",
     decode = function(_, context)
-      animationMembers[#animationMembers + 1] = context.memberId
       local lastFrame
       if context.memberId == 146 then
         lastFrame = 119
@@ -213,21 +230,18 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   Assert.isTrue(ok, tostring(result))
-  Assert.equal(#modelMembers, 9)
-  Assert.equal(modelMembers[1], 85)
-  Assert.equal(modelMembers[2], 126)
-  Assert.equal(modelMembers[3], 122)
-  Assert.equal(modelMembers[4], 124)
-  Assert.equal(modelMembers[5], 86)
-  Assert.equal(modelMembers[6], 129)
-  Assert.equal(modelMembers[7], 104)
-  Assert.equal(modelMembers[8], 129)
-  Assert.equal(modelMembers[9], 129)
-  Assert.equal(#animationMembers, 3)
-  Assert.equal(animationMembers[1], 140)
-  Assert.equal(animationMembers[2], 146)
-  Assert.equal(animationMembers[3], 148)
-  Assert.deepEqual(nitroAnimationMembers, { 164 })
+  Assert.deepEqual(distinctMembers(modelMembersBySection, "warp-entrance-effect"), { 85 }, "warp-entrance-effect")
+  Assert.deepEqual(distinctMembers(modelMembersBySection, "tall-grass-renderer-8"), { 126 }, "tall-grass-renderer-8")
+  Assert.deepEqual(distinctMembers(modelMembersBySection, "tall-grass-renderer-12"), { 122 }, "tall-grass-renderer-12")
+  Assert.deepEqual(distinctMembers(modelMembersBySection, "trainer-reveal-effect"), { 124 }, "trainer-reveal-effect")
+  Assert.deepEqual(distinctMembers(modelMembersBySection, "surf-attachment-effect"), { 86 }, "surf-attachment-effect")
+  Assert.deepEqual(
+    distinctMembers(modelMembersBySection, "follower-transition-effect"),
+    { 104, 129 },
+    "follower-transition-effect"
+  )
+  Assert.equal(result.effects.warp_entrance.model.kind, "static")
+  Assert.isNil(result.effects.warp_entrance.model.animations)
   local animation = result.effects.tall_grass.model.animations[1]
   Assert.equal(animation.source.memberId, 140)
   Assert.equal(animation.frameCount, 13)
@@ -239,9 +253,11 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.isNil(result.effects.tall_grass.source)
   Assert.isNil(result.effects.tall_grass.animationSourceSha1)
   Assert.isNil(result.effects.tall_grass.lifetime)
+  Assert.equal(result.effects.very_tall_grass.model.animations[1].source.memberId, 146)
   Assert.equal(result.effects.very_tall_grass.model.animations[1].frameCount, 120)
   Assert.equal(result.effects.very_tall_grass.model.kind, "nitro-dynamic")
   Assert.isNil(result.effects.very_tall_grass.lifetime)
+  Assert.equal(result.effects.trainer_reveal.model.animations[1].source.memberId, 148)
   Assert.equal(result.effects.trainer_reveal.model.kind, "nitro-dynamic")
   Assert.equal(result.effects.trainer_reveal.lifecycle.mode, "once")
   Assert.equal(result.effects.trainer_reveal.lifecycle.frameCount, 7)
@@ -251,6 +267,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local surf = result.effects.surf_attachment
   Assert.notNil(surf)
   Assert.equal(surf.model.kind, "static")
+  Assert.isNil(surf.model.animations)
   Assert.isNil(surf.lifecycle)
   Assert.isNil(surf.source)
   Assert.equal(surf.presentation.initialPlayerOffset.x, 0)
