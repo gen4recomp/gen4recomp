@@ -23,6 +23,32 @@ REPORT = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(REPORT)
 
 
+def _write_production_fixture(repository: Path) -> dict[str, int]:
+    sources = {
+        "game/a.lua": "local value = {}\nfunction value.compute()\nreturn 1\nend\nreturn value\n",
+        "game/b.lua": "local other = {}\nfunction other.compute()\nreturn 2\nend\nreturn other\n",
+        "game/data-only.lua": "return {\n1,\n2,\n3,\n}\n",
+    }
+    for relative, content in sources.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "codehealth-test@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Code Health Test"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    return {relative: len(content.splitlines()) for relative, content in sources.items()}
+
+
+def _write_lizard_fixture(path: Path) -> None:
+    with path.open("w", newline="", encoding="utf-8") as report_file:
+        writer = csv.DictWriter(report_file, fieldnames=["NLOC", "CCN", "file", "function"])
+        writer.writeheader()
+        writer.writerow({"NLOC": "30", "CCN": "7", "file": "game/a.lua", "function": "compute"})
+        writer.writerow({"NLOC": "2", "CCN": "2", "file": "game/a.lua", "function": "helper"})
+        writer.writerow({"NLOC": "15", "CCN": "4", "file": "game/b.lua", "function": "compute"})
+
+
 class CodeHealthReportTest(unittest.TestCase):
     """Protect report parsing, scope validation, and summary links."""
 
@@ -534,6 +560,154 @@ class CodeHealthReportTest(unittest.TestCase):
         self.assertIn('href="reports/graphify/graph.json" download', html)
         self.assertNotIn('href="reports/luals/check.json"', html)
         self.assertIn("INFERRED", html)
+
+    def run_structure_report_mode(
+        self, repository: Path, lizard_csv: Path, output: Path
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "--lizard-csv",
+                str(lizard_csv),
+                "--structure-report",
+                str(output),
+                "--repository-root",
+                str(repository),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_structure_report_mode_writes_minimal_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repo"
+            repository.mkdir()
+            expected_lines = _write_production_fixture(repository)
+            lizard_csv = root / "functions.csv"
+            _write_lizard_fixture(lizard_csv)
+            output = root / "quality-report.json"
+            result = self.run_structure_report_mode(repository, lizard_csv, output)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            model = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(model["schemaVersion"], 4)
+            source_rows = {row["path"]: row for row in model["source"]["files"]}
+            self.assertEqual(
+                {path: source_rows[path]["physicalLines"] for path in expected_lines},
+                expected_lines,
+            )
+            for row in model["source"]["files"]:
+                self.assertGreater(row["bytes"], 0)
+            directories = {row["path"]: row["directProductionFiles"] for row in model["directories"]["files"]}
+            self.assertEqual(directories.get("game"), 3)
+            structure = {row["path"]: row for row in model["structure"]["files"]}
+            self.assertEqual(structure["game/a.lua"]["maxCcn"], 7)
+            self.assertEqual(structure["game/a.lua"]["maxNloc"], 30)
+            self.assertEqual(structure["game/b.lua"]["maxCcn"], 4)
+            self.assertEqual(structure["game/b.lua"]["maxNloc"], 15)
+            self.assertIn("game/data-only.lua", source_rows)
+
+    def test_structure_report_agrees_with_census_and_lizard_maxima(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repo"
+            repository.mkdir()
+            _write_production_fixture(repository)
+            lizard_csv = root / "functions.csv"
+            _write_lizard_fixture(lizard_csv)
+            output = root / "quality-report.json"
+            result = self.run_structure_report_mode(repository, lizard_csv, output)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            model = json.loads(output.read_text(encoding="utf-8"))
+            expected_source, expected_directories = REPORT._source_census(repository)
+            self.assertEqual(
+                {row["path"]: row for row in model["source"]["files"]},
+                {row["path"]: row for row in expected_source["files"]},
+            )
+            self.assertEqual(
+                {row["path"]: row for row in model["directories"]["files"]},
+                {row["path"]: row for row in expected_directories["files"]},
+            )
+            expected_lizard = REPORT._parse_lizard_report(lizard_csv)["files"]
+            actual_structure = {row["path"]: row for row in model["structure"]["files"]}
+            for path, metrics in expected_lizard.items():
+                self.assertIn(path, actual_structure)
+                self.assertEqual(actual_structure[path]["maxCcn"], metrics["maxCcn"])
+                self.assertEqual(actual_structure[path]["maxNloc"], metrics["maxNloc"])
+            data_row = actual_structure.get("game/data-only.lua")
+            self.assertTrue(
+                data_row is None
+                or (data_row.get("maxCcn") in (None, 0) and data_row.get("maxNloc") in (None, 0))
+            )
+
+    def test_structure_report_rejects_mixed_or_missing_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            both = subprocess.run(
+                [
+                    sys.executable,
+                    str(MODULE_PATH),
+                    "--site-root",
+                    str(root / "site"),
+                    "--lizard-csv",
+                    str(root / "functions.csv"),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(both.returncode, 0)
+            missing_output = subprocess.run(
+                [sys.executable, str(MODULE_PATH), "--lizard-csv", str(root / "functions.csv")],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(missing_output.returncode, 0)
+
+    def test_full_site_command_still_writes_quality_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            site_root = Path(directory) / "site"
+            reports_root = site_root / "codehealth" / "reports"
+            (reports_root / "lizard").mkdir(parents=True)
+            (reports_root / "jscpd").mkdir(parents=True)
+            (reports_root / "graphify").mkdir(parents=True)
+            with (reports_root / "lizard" / "functions.csv").open("w", newline="", encoding="utf-8") as report_file:
+                writer = csv.DictWriter(report_file, fieldnames=["NLOC", "CCN", "file", "function"])
+                writer.writeheader()
+                writer.writerow({"NLOC": "10", "CCN": "3", "file": "game/a.lua", "function": "compute"})
+            (reports_root / "jscpd" / "jscpd-report.json").write_text(
+                json.dumps(
+                    {"statistics": {"total": {"sources": 1, "clones": 0, "duplicatedLines": 0, "percentage": 0}}}
+                ),
+                encoding="utf-8",
+            )
+            (reports_root / "graphify" / "graph.json").write_text(
+                json.dumps(
+                    {
+                        "directed": True,
+                        "nodes": [{"id": "a", "source_file": "game/a.lua"}],
+                        "links": [
+                            {
+                                "source": "a",
+                                "target": "a",
+                                "relation": "imports",
+                                "confidence": "EXTRACTED",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(REPORT, "_git_commit", return_value="b" * 40), mock.patch.object(
+                REPORT, "_version", return_value="test"
+            ):
+                self.assertEqual(REPORT.main(["--site-root", str(site_root)]), 0)
+            model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(model["schemaVersion"], 4)
+            self.assertTrue((site_root / "codehealth" / "index.html").exists())
 
 
 if __name__ == "__main__":

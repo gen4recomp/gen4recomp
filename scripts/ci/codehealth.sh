@@ -91,9 +91,6 @@ graphify export callflow-html \
   --output "$GRAPHIFY_REPORT_ROOT/callflow.html"
 
 python3 scripts/ci/codehealth_report.py --site-root tmp/codehealth-site
-python3 scripts/ci/check_structure_budget.py \
-  --report "$SITE_ROOT/codehealth/quality-report.json" \
-  --baseline scripts/ci/structure-baseline.json
 
 for required_file in \
   index.html \

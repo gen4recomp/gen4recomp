@@ -376,6 +376,13 @@ def _parse_graphify_report(path: Path) -> dict[str, Any]:
     }
 
 
+def _lizard_maxima(lizard: dict[str, Any], path: str) -> tuple[Any, Any]:
+    metrics = lizard["files"].get(path)
+    if metrics is None:
+        return None, None
+    return metrics.get("maxCcn"), metrics.get("maxNloc")
+
+
 def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -> dict[str, Any]:
     lizard_files: dict[str, dict[str, int | float]] = lizard["files"]
     graphify_files: dict[str, int] = graphify["files"]
@@ -392,6 +399,7 @@ def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -
         lizard_metrics = lizard_files.get(path)
         lizard_functions = int(lizard_metrics["functions"]) if lizard_metrics is not None else 0
         graphify_callables = graphify_files.get(path, 0)
+        max_ccn, max_nloc = _lizard_maxima(lizard, path)
         files.append(
             {
                 "path": path,
@@ -400,8 +408,8 @@ def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -
                 "callableVisibility": (
                     graphify_callables / lizard_functions if lizard_functions else None
                 ),
-                "maxCcn": lizard_metrics["maxCcn"] if lizard_metrics is not None else None,
-                "maxNloc": lizard_metrics["maxNloc"] if lizard_metrics is not None else None,
+                "maxCcn": max_ccn,
+                "maxNloc": max_nloc,
                 "importFanIn": fan_in[path],
                 "importFanOut": fan_out[path],
             }
@@ -673,19 +681,61 @@ def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
     return model
 
 
+def _build_structure_report(lizard_csv: Path, repository_root: Path) -> dict[str, Any]:
+    lizard = _parse_lizard_report(lizard_csv)
+    source, directories = _source_census(repository_root)
+    files = []
+    for row in source["files"]:
+        path = row["path"]
+        max_ccn, max_nloc = _lizard_maxima(lizard, path)
+        files.append({"path": path, "maxCcn": max_ccn, "maxNloc": max_nloc})
+    files.sort(key=lambda row: row["path"])
+    return {
+        "schemaVersion": 4,
+        "source": source,
+        "directories": directories,
+        "structure": {"files": files},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--site-root", required=True, type=Path)
+    parser.add_argument("--site-root", type=Path, default=None)
+    parser.add_argument("--lizard-csv", type=Path, default=None)
+    parser.add_argument("--structure-report", type=Path, default=None)
+    parser.add_argument("--repository-root", type=Path, default=None)
     args = parser.parse_args(argv)
-    site_root = args.site_root.resolve()
-    repository_root = Path(__file__).resolve().parents[2]
+    site_mode = args.site_root is not None
+    structure_mode = args.lizard_csv is not None or args.structure_report is not None
+    if site_mode == structure_mode:
+        parser.error("exactly one of --site-root or --lizard-csv/--structure-report is required")
+    if structure_mode and (args.lizard_csv is None or args.structure_report is None):
+        parser.error("--lizard-csv and --structure-report are both required for structure-report mode")
+    if site_mode:
+        site_root = args.site_root.resolve()
+        repository_root = Path(__file__).resolve().parents[2]
+        try:
+            model = _build_model(site_root, repository_root)
+            quality_report = site_root / "codehealth" / "quality-report.json"
+            summary_page = site_root / "codehealth" / "index.html"
+            quality_report.write_text(json.dumps(model, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            summary_page.write_text(_render_summary(model), encoding="utf-8")
+            _load_json(quality_report)
+        except (OSError, ValueError) as error:
+            print(f"codehealth report: {error}", flush=True)
+            return 1
+        return 0
+    repository_root = (
+        args.repository_root.resolve()
+        if args.repository_root is not None
+        else Path(__file__).resolve().parents[2]
+    )
     try:
-        model = _build_model(site_root, repository_root)
-        quality_report = site_root / "codehealth" / "quality-report.json"
-        summary_page = site_root / "codehealth" / "index.html"
-        quality_report.write_text(json.dumps(model, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        summary_page.write_text(_render_summary(model), encoding="utf-8")
-        _load_json(quality_report)
+        model = _build_structure_report(args.lizard_csv, repository_root)
+        args.structure_report.write_text(
+            json.dumps(model, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        _load_json(args.structure_report)
     except (OSError, ValueError) as error:
         print(f"codehealth report: {error}", flush=True)
         return 1

@@ -6,9 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import subprocess
 from pathlib import Path
 import sys
 from typing import Any
+
+
+BASELINE_RELATIVE_PATH = "scripts/ci/structure-baseline.json"
 
 
 CLASSIFICATIONS = {"refactor", "retained-schema-catalog", "retained-algorithm", "retained-state-owner"}
@@ -113,7 +117,46 @@ def _validate_report(report: dict[str, Any]) -> tuple[dict[str, dict[str, Any]],
     return all_files, directory_entries
 
 
-def check(report: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
+def _metric_or_zero(entry: dict[str, Any], field: str) -> int | float:
+    value = entry.get(field)
+    if value is None:
+        return 0
+    assert isinstance(value, (int, float))
+    return value
+
+
+def _load_base_baseline(ref: str) -> dict[str, Any] | None:
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    commit = (resolved.stdout or "").strip()
+    if resolved.returncode != 0 or not commit:
+        raise ValueError(f"invalid base ref {ref!r}: no such commit")
+    shown = subprocess.run(
+        ["git", "show", f"{commit}:{BASELINE_RELATIVE_PATH}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if shown.returncode != 0:
+        return None
+    try:
+        value = json.loads(shown.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"base baseline at {ref} is not valid JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError(f"base baseline at {ref} must contain a JSON object")
+    return value
+
+
+def check(
+    report: dict[str, Any],
+    baseline: dict[str, Any],
+    base_baseline: dict[str, Any] | None = None,
+) -> list[str]:
     thresholds, baseline_files, baseline_directories = _validate_baseline(baseline)
     current_files, current_directories = _validate_report(report)
     findings: list[str] = []
@@ -139,14 +182,33 @@ def check(report: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
         if current_baseline.get("deleted") is True:
             findings.append(f"current file is marked deleted in baseline: {path}")
             continue
-        metrics = (("maxCcn", "CCN"), ("maxNloc", "NLOC"))
-        for field, label in metrics:
-            value = entry.get(field)
-            if value is not None and value > current_baseline[field]:
-                findings.append(f"file ceiling exceeded: {path} {label}={value} ceiling={current_baseline[field]}")
-        if physical_lines is not None and physical_lines > current_baseline["physicalLines"]:
+        current_ccn = _metric_or_zero(entry, "maxCcn")
+        current_nloc = _metric_or_zero(entry, "maxNloc")
+        for field, label, current_value in (
+            ("maxCcn", "CCN", current_ccn),
+            ("maxNloc", "NLOC", current_nloc),
+        ):
+            if current_value != current_baseline[field]:
+                findings.append(
+                    f"file baseline is not exact: {path} {label} current={current_value} ceiling={current_baseline[field]}"
+                )
+        if physical_lines is not None and physical_lines != current_baseline["physicalLines"]:
+            if physical_lines > current_baseline["physicalLines"]:
+                findings.append(
+                    f"file ceiling exceeded: {path} physicalLines={physical_lines} ceiling={current_baseline['physicalLines']}"
+                )
+            else:
+                findings.append(
+                    f"file baseline is not exact: {path} physicalLines current={physical_lines} ceiling={current_baseline['physicalLines']}"
+                )
+        if (
+            current_ccn <= thresholds["maxCcn"]
+            and current_nloc <= thresholds["maxNloc"]
+            and (physical_lines is None or physical_lines <= thresholds["maxPhysicalLines"])
+        ):
             findings.append(
-                f"file ceiling exceeded: {path} physicalLines={physical_lines} ceiling={current_baseline['physicalLines']}"
+                f"stale file baseline entry is fully within global thresholds: {path} "
+                f"CCN={current_ccn} NLOC={current_nloc} physicalLines={physical_lines}"
             )
 
     for path, entry in sorted(current_directories.items()):
@@ -157,10 +219,52 @@ def check(report: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
                 findings.append(f"unclassified directory hotspot: {path} directProductionFiles={value}")
         elif current_baseline.get("deleted") is True:
             findings.append(f"current directory is marked deleted in baseline: {path}")
-        elif value > current_baseline["directProductionFiles"]:
-            findings.append(
-                f"directory ceiling exceeded: {path} directProductionFiles={value} ceiling={current_baseline['directProductionFiles']}"
-            )
+        else:
+            if value != current_baseline["directProductionFiles"]:
+                if value > current_baseline["directProductionFiles"]:
+                    findings.append(
+                        f"directory ceiling exceeded: {path} directProductionFiles={value} ceiling={current_baseline['directProductionFiles']}"
+                    )
+                else:
+                    findings.append(
+                        f"directory baseline is not exact: {path} directProductionFiles current={value} ceiling={current_baseline['directProductionFiles']}"
+                    )
+            if value <= thresholds["maxDirectProductionFiles"]:
+                findings.append(
+                    f"stale directory baseline entry is fully within global thresholds: {path} directProductionFiles={value}"
+                )
+
+    if base_baseline is not None:
+        base_thresholds, base_files, base_directories = _validate_baseline(base_baseline)
+        for field in THRESHOLD_FIELDS:
+            if thresholds[field] > base_thresholds[field]:
+                findings.append(
+                    f"global threshold increased: {field} candidate={thresholds[field]} base={base_thresholds[field]}"
+                )
+        for path, entry in sorted(baseline_files.items()):
+            if entry.get("deleted") is True:
+                continue
+            base_entry = base_files.get(path)
+            if base_entry is None or base_entry.get("deleted") is True:
+                findings.append(f"new grandfathered file path absent from base baseline: {path}")
+                continue
+            for field, label in (("maxCcn", "CCN"), ("maxNloc", "NLOC"), ("physicalLines", "physicalLines")):
+                if entry[field] > base_entry[field]:
+                    findings.append(
+                        f"file ceiling increased over base baseline: {path} {label} candidate={entry[field]} base={base_entry[field]}"
+                    )
+        for path, entry in sorted(baseline_directories.items()):
+            if entry.get("deleted") is True:
+                continue
+            base_entry = base_directories.get(path)
+            if base_entry is None or base_entry.get("deleted") is True:
+                findings.append(f"new grandfathered directory path absent from base baseline: {path}")
+                continue
+            if entry["directProductionFiles"] > base_entry["directProductionFiles"]:
+                findings.append(
+                    f"directory ceiling increased over base baseline: {path} directProductionFiles "
+                    f"candidate={entry['directProductionFiles']} base={base_entry['directProductionFiles']}"
+                )
     return findings
 
 
@@ -168,9 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--baseline", required=True, type=Path)
+    parser.add_argument("--base-ref", default=None)
     args = parser.parse_args(argv)
     try:
-        findings = check(_load_object(args.report), _load_object(args.baseline))
+        base_object = _load_base_baseline(args.base_ref) if args.base_ref is not None else None
+        findings = check(_load_object(args.report), _load_object(args.baseline), base_object)
     except ValueError as error:
         print(f"structure budget: {error}", file=sys.stderr)
         return 1

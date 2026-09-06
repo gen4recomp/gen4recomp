@@ -1,72 +1,390 @@
 {
   "schemaVersion": 1,
-  "thresholds": {"maxCcn": 25, "maxNloc": 100, "maxPhysicalLines": 1200, "maxDirectProductionFiles": 40},
-  "files": {
-    "game/hgss/src/field/FieldRuntime.lua": {"classification":"refactor","rationale":"mixed field runtime orchestration hotspot","maxCcn":37,"maxNloc":313,"physicalLines":1865},
-    "game/hgss/src/field/FieldScripts.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":19,"maxNloc":130,"physicalLines":445},
-    "game/hgss/src/field/FieldState.lua": {"classification":"refactor","rationale":"mixed field state orchestration hotspot","maxCcn":30,"maxNloc":123,"physicalLines":1043},
-    "game/hgss/src/newgame/OakIntroController.lua": {"classification":"refactor","rationale":"Oak introduction facade after timeline/profile extraction","maxCcn":27,"maxNloc":70,"physicalLines":275},
-    "game/hgss/src/newgame/OakIntroLayout.lua": {"classification":"refactor","rationale":"Oak introduction layout facade after scene/profile extraction","maxCcn":18,"maxNloc":67,"physicalLines":265},
-    "game/hgss/src/newgame/OakIntroRenderer.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":28,"maxNloc":105,"physicalLines":395},
-    "libs/assets/src/audio/AudioBank.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":33,"maxNloc":57,"physicalLines":250},
-    "libs/assets/src/model/CompiledNsbtaClip.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":34,"maxNloc":70,"physicalLines":179},
-    "libs/assets/src/field/FieldActorCache.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":36,"maxNloc":77,"physicalLines":591},
-    "libs/assets/src/field/FieldEffectAssetCache.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":35,"maxNloc":69,"physicalLines":240},
-    "libs/assets/src/field/FieldMessageText.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":21,"maxNloc":104,"physicalLines":400},
-    "libs/assets/src/field/FieldScriptSymbols.lua": {"classification":"retained-schema-catalog","rationale":"large source catalog consumed as a cohesive reference","maxCcn":0,"maxNloc":0,"physicalLines":2642},
-    "libs/assets/src/field/FieldUiAssetCache.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":36,"maxNloc":139,"physicalLines":544},
-    "libs/assets/src/newgame/IntroAssetCache.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":34,"maxNloc":66,"physicalLines":393},
-    "libs/assets/src/MapAssetCache.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":31,"maxNloc":97,"physicalLines":503},
-    "libs/assets/src/model/ModelAsset.lua": {"classification":"retained-schema-catalog","rationale":"cohesive generated asset schema and validator owner","maxCcn":24,"maxNloc":59,"physicalLines":999},
-    "libs/assets/src/newgame/NewGameInitCache.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":26,"maxNloc":65,"physicalLines":185},
-    "libs/assets/src/model/NsbmdSbcEvaluator.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":33,"maxNloc":127,"physicalLines":395},
-    "libs/hgss/src/actors/FieldActorManager.lua": {"classification":"refactor","rationale":"mixed field actor orchestration hotspot","maxCcn":30,"maxNloc":104,"physicalLines":2274},
-    "libs/hgss/src/world/FieldCoverage.lua": {"classification":"retained-state-owner","rationale":"cohesive field coverage state owner","maxCcn":27,"maxNloc":101,"physicalLines":978},
-    "libs/hgss/src/world/FieldMapLoader.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":25,"maxNloc":122,"physicalLines":633},
-    "libs/hgss/src/interaction/FieldMessageProvider.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":26,"maxNloc":111,"physicalLines":404},
-    "libs/hgss/src/actors/FieldPlayer.lua": {"classification":"retained-state-owner","rationale":"cohesive field player lifecycle owner","maxCcn":20,"maxNloc":100,"physicalLines":1091},
-    "libs/hgss/src/field/FieldSession.lua": {"classification":"refactor","rationale":"mixed field session orchestration hotspot","maxCcn":111,"maxNloc":330,"physicalLines":1018},
-    "libs/hgss/src/field/FieldMapEntryController.lua": {"classification":"refactor","rationale":"field map-entry lifecycle owner","maxCcn":26,"maxNloc":76,"physicalLines":206},
-    "libs/hgss/src/transition/FieldTransition.lua": {"classification":"retained-state-owner","rationale":"cohesive field transition lifecycle owner","maxCcn":42,"maxNloc":87,"physicalLines":941},
-    "libs/hgss/src/world/FieldWeatherResolver.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":26,"maxNloc":52,"physicalLines":78},
-    "libs/hgss/src/presentation/MapSceneLoader.lua": {"classification":"retained-state-owner","rationale":"cohesive map scene loading lifecycle owner","maxCcn":16,"maxNloc":38,"physicalLines":846},
-    "libs/hgss/src/save/FieldObjectSave.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":36,"maxNloc":91,"physicalLines":365},
-    "libs/hgss/src/save/GameSaveStore.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":41,"maxNloc":92,"physicalLines":451},
-    "libs/hgss/src/script/tasks/MovementTask.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":48,"maxNloc":119,"physicalLines":343},
-    "libs/hgss/src/ui/FieldDialogueController.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":30,"maxNloc":79,"physicalLines":755},
-    "libs/hgss/src/ui/FieldMenuHost.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":36,"maxNloc":87,"physicalLines":302},
-    "libs/hgss/src/ui/StartMenuController.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":26,"maxNloc":60,"physicalLines":409},
-    "libs/nds/src/gx/GxDisplayList.lua": {"classification":"retained-algorithm","rationale":"cohesive display-list renderer algorithm","maxCcn":25,"maxNloc":124,"physicalLines":1064},
-    "libs/nds/src/love/GxRenderer.lua": {"classification":"retained-algorithm","rationale":"cohesive LÖVE renderer algorithm","maxCcn":31,"maxNloc":159,"physicalLines":1209},
-    "libs/nds/src/nitro/sound/NnsSoundMath.lua": {"classification":"retained-schema-catalog","rationale":"large source catalog consumed as a cohesive reference","maxCcn":8,"maxNloc":31,"physicalLines":1979},
-    "libs/nds/src/nitro/sound/Sdat.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":26,"maxNloc":164,"physicalLines":499},
-    "libs/nds/src/nitro/sound/SequencePlayer.lua": {"classification":"retained-state-owner","rationale":"realtime audio sequence state owner","maxCcn":32,"maxNloc":151,"physicalLines":1891},
-    "libs/nds/src/nitro/sound/VoiceMixer.lua": {"classification":"retained-state-owner","rationale":"realtime audio voice state owner","maxCcn":33,"maxNloc":60,"physicalLines":838},
-    "libs/script/src/Runtime.lua": {"classification":"retained-state-owner","rationale":"script runtime state owner","maxCcn":6,"maxNloc":28,"physicalLines":1316},
-    "libs/script/src/Scheduler.lua": {"classification":"retained-state-owner","rationale":"script scheduler state owner","maxCcn":21,"maxNloc":76,"physicalLines":1416},
-    "libs/script/src/Schema.lua": {"classification":"retained-schema-catalog","rationale":"cohesive script schema and catalog owner","maxCcn":0,"maxNloc":0,"physicalLines":1211},
-    "libs/script/src/ScriptSave.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":37,"maxNloc":116,"physicalLines":508},
-    "romdump/src/CacheBuilder.lua": {"classification":"refactor","rationale":"batch cache publication facade","maxCcn":13,"maxNloc":48,"physicalLines":141},
-    "romdump/src/digest/actor/FieldActorCompiler.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":20,"maxNloc":107,"physicalLines":725},
-    "romdump/src/digest/field/FieldCellCompiler.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":15,"maxNloc":142,"physicalLines":184},
-    "romdump/src/digest/field/FieldEntranceIndicatorCompiler.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":12,"maxNloc":192,"physicalLines":474},
-    "romdump/src/digest/ui/FieldUiCompiler.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":10,"maxNloc":121,"physicalLines":766},
-    "romdump/src/digest/ui/G2dDecoder.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":29,"maxNloc":181,"physicalLines":635},
-    "romdump/src/digest/newgame/IntroAssetCompiler.lua": {"classification":"refactor","rationale":"intro source mapping and manifest facade","maxCcn":21,"maxNloc":101,"physicalLines":508},
-    "romdump/src/digest/map/MapAssetCompiler.lua": {"classification":"refactor","rationale":"single-map assembly facade","maxCcn":8,"maxNloc":180,"physicalLines":375},
-    "romdump/src/digest/map/MapAssetInspector.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":17,"maxNloc":223,"physicalLines":833},
-    "romdump/src/digest/map/TerrainBoundaryConformer.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":24,"maxNloc":124,"physicalLines":745},
-    "romdump/src/digest/audio/SequenceLowering.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":37,"maxNloc":116,"physicalLines":392},
-    "romdump/src/digest/script/CommandCatalog.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":30,"maxNloc":39,"physicalLines":128},
-    "romdump/src/digest/script/ScriptBinaryDecoder.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":31,"maxNloc":61,"physicalLines":682},
-    "romdump/src/digest/script/SemanticLowering.lua": {"classification":"refactor","rationale":"production hotspot awaiting ownership split","maxCcn":50,"maxNloc":157,"physicalLines":443},
-    "romdump/src/reference/hgss/maps.lua": {"classification":"retained-schema-catalog","rationale":"large source catalog consumed as a cohesive reference","maxCcn":0,"maxNloc":0,"physicalLines":17847},
-    "romdump/src/reference/hgss/script_commands.lua": {"classification":"retained-schema-catalog","rationale":"large source catalog consumed as a cohesive reference","maxCcn":0,"maxNloc":0,"physicalLines":5460},
-    "romdump/src/reference/hgss/sndseq.lua": {"classification":"retained-schema-catalog","rationale":"large source catalog consumed as a cohesive reference","maxCcn":0,"maxNloc":0,"physicalLines":1388}
+  "thresholds": {
+    "maxCcn": 25,
+    "maxNloc": 100,
+    "maxPhysicalLines": 1200,
+    "maxDirectProductionFiles": 40
   },
-  "directories": {
-    "libs/assets/src": {"classification":"refactor","rationale":"mixed-responsibility directory awaiting ownership split","directProductionFiles":44},
-    "libs/hgss/src/field": {"classification":"refactor","rationale":"mixed-responsibility directory awaiting ownership split","directProductionFiles":53},
-    "romdump/src/digest": {"classification":"refactor","rationale":"mixed-responsibility directory awaiting ownership split","directProductionFiles":89}
-  }
+  "files": {
+    "game/hgss/src/field/FieldRuntime.lua": {
+      "classification": "refactor",
+      "rationale": "mixed field runtime orchestration hotspot",
+      "maxCcn": 34,
+      "maxNloc": 280,
+      "physicalLines": 1555
+    },
+    "game/hgss/src/field/FieldScripts.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 19,
+      "maxNloc": 130,
+      "physicalLines": 445
+    },
+    "game/hgss/src/newgame/OakIntroRenderer.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 28,
+      "maxNloc": 105,
+      "physicalLines": 395
+    },
+    "libs/assets/src/MapAssetCache.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 31,
+      "maxNloc": 97,
+      "physicalLines": 503
+    },
+    "libs/assets/src/audio/AudioBank.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 33,
+      "maxNloc": 57,
+      "physicalLines": 250
+    },
+    "libs/assets/src/field/FieldActorCache.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 36,
+      "maxNloc": 77,
+      "physicalLines": 591
+    },
+    "libs/assets/src/field/FieldEffectAssetCache.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 35,
+      "maxNloc": 69,
+      "physicalLines": 240
+    },
+    "libs/assets/src/field/FieldMessageText.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 21,
+      "maxNloc": 104,
+      "physicalLines": 400
+    },
+    "libs/assets/src/field/FieldScriptSymbols.lua": {
+      "classification": "retained-schema-catalog",
+      "rationale": "large source catalog consumed as a cohesive reference",
+      "maxCcn": 0,
+      "maxNloc": 0,
+      "physicalLines": 2642
+    },
+    "libs/assets/src/field/FieldUiAssetCache.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 36,
+      "maxNloc": 139,
+      "physicalLines": 544
+    },
+    "libs/assets/src/model/CompiledNsbtaClip.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 34,
+      "maxNloc": 70,
+      "physicalLines": 179
+    },
+    "libs/assets/src/model/NsbmdSbcEvaluator.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 33,
+      "maxNloc": 127,
+      "physicalLines": 395
+    },
+    "libs/assets/src/newgame/IntroAssetCache.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 34,
+      "maxNloc": 66,
+      "physicalLines": 393
+    },
+    "libs/assets/src/newgame/NewGameInitCache.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 26,
+      "maxNloc": 65,
+      "physicalLines": 185
+    },
+    "libs/hgss/src/actors/FieldActorManager.lua": {
+      "classification": "refactor",
+      "rationale": "mixed field actor orchestration hotspot",
+      "maxCcn": 30,
+      "maxNloc": 104,
+      "physicalLines": 2262
+    },
+    "libs/hgss/src/field/FieldMapEntryController.lua": {
+      "classification": "refactor",
+      "rationale": "field map-entry lifecycle owner",
+      "maxCcn": 26,
+      "maxNloc": 76,
+      "physicalLines": 206
+    },
+    "libs/hgss/src/field/FieldSession.lua": {
+      "classification": "refactor",
+      "rationale": "mixed field session orchestration hotspot",
+      "maxCcn": 32,
+      "maxNloc": 95,
+      "physicalLines": 932
+    },
+    "libs/hgss/src/interaction/FieldMessageProvider.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 26,
+      "maxNloc": 111,
+      "physicalLines": 404
+    },
+    "libs/hgss/src/save/FieldObjectSave.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 36,
+      "maxNloc": 91,
+      "physicalLines": 365
+    },
+    "libs/hgss/src/save/GameSaveStore.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 41,
+      "maxNloc": 92,
+      "physicalLines": 451
+    },
+    "libs/hgss/src/script/tasks/MovementTask.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 48,
+      "maxNloc": 119,
+      "physicalLines": 343
+    },
+    "libs/hgss/src/transition/FieldTransition.lua": {
+      "classification": "retained-state-owner",
+      "rationale": "cohesive field transition lifecycle owner",
+      "maxCcn": 42,
+      "maxNloc": 87,
+      "physicalLines": 941
+    },
+    "libs/hgss/src/ui/FieldDialogueController.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 30,
+      "maxNloc": 79,
+      "physicalLines": 755
+    },
+    "libs/hgss/src/ui/FieldMenuHost.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 36,
+      "maxNloc": 87,
+      "physicalLines": 302
+    },
+    "libs/hgss/src/ui/StartMenuController.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 26,
+      "maxNloc": 60,
+      "physicalLines": 409
+    },
+    "libs/hgss/src/world/FieldCoverage.lua": {
+      "classification": "retained-state-owner",
+      "rationale": "cohesive field coverage state owner",
+      "maxCcn": 27,
+      "maxNloc": 101,
+      "physicalLines": 978
+    },
+    "libs/hgss/src/world/FieldMapLoader.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 25,
+      "maxNloc": 122,
+      "physicalLines": 633
+    },
+    "libs/hgss/src/world/FieldWeatherResolver.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 26,
+      "maxNloc": 52,
+      "physicalLines": 78
+    },
+    "libs/nds/src/gx/GxDisplayList.lua": {
+      "classification": "retained-algorithm",
+      "rationale": "cohesive display-list renderer algorithm",
+      "maxCcn": 25,
+      "maxNloc": 124,
+      "physicalLines": 1064
+    },
+    "libs/nds/src/love/GxRenderer.lua": {
+      "classification": "retained-algorithm",
+      "rationale": "cohesive L\u00d6VE renderer algorithm",
+      "maxCcn": 31,
+      "maxNloc": 159,
+      "physicalLines": 1209
+    },
+    "libs/nds/src/nitro/sound/NnsSoundMath.lua": {
+      "classification": "retained-schema-catalog",
+      "rationale": "large source catalog consumed as a cohesive reference",
+      "maxCcn": 8,
+      "maxNloc": 31,
+      "physicalLines": 1979
+    },
+    "libs/nds/src/nitro/sound/Sdat.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 26,
+      "maxNloc": 164,
+      "physicalLines": 499
+    },
+    "libs/nds/src/nitro/sound/SequencePlayer.lua": {
+      "classification": "retained-state-owner",
+      "rationale": "realtime audio sequence state owner",
+      "maxCcn": 32,
+      "maxNloc": 151,
+      "physicalLines": 1891
+    },
+    "libs/nds/src/nitro/sound/VoiceMixer.lua": {
+      "classification": "retained-state-owner",
+      "rationale": "realtime audio voice state owner",
+      "maxCcn": 33,
+      "maxNloc": 60,
+      "physicalLines": 838
+    },
+    "libs/script/src/Runtime.lua": {
+      "classification": "retained-state-owner",
+      "rationale": "script runtime state owner",
+      "maxCcn": 6,
+      "maxNloc": 28,
+      "physicalLines": 1316
+    },
+    "libs/script/src/Scheduler.lua": {
+      "classification": "retained-state-owner",
+      "rationale": "script scheduler state owner",
+      "maxCcn": 21,
+      "maxNloc": 76,
+      "physicalLines": 1416
+    },
+    "libs/script/src/Schema.lua": {
+      "classification": "retained-schema-catalog",
+      "rationale": "cohesive script schema and catalog owner",
+      "maxCcn": 0,
+      "maxNloc": 0,
+      "physicalLines": 1211
+    },
+    "libs/script/src/ScriptSave.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 37,
+      "maxNloc": 116,
+      "physicalLines": 508
+    },
+    "romdump/src/digest/actor/FieldActorCompiler.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 20,
+      "maxNloc": 107,
+      "physicalLines": 725
+    },
+    "romdump/src/digest/audio/SequenceLowering.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 37,
+      "maxNloc": 116,
+      "physicalLines": 392
+    },
+    "romdump/src/digest/field/FieldCellCompiler.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 15,
+      "maxNloc": 142,
+      "physicalLines": 184
+    },
+    "romdump/src/digest/field/FieldEntranceIndicatorCompiler.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 12,
+      "maxNloc": 192,
+      "physicalLines": 474
+    },
+    "romdump/src/digest/map/MapAssetCompiler.lua": {
+      "classification": "refactor",
+      "rationale": "single-map assembly facade",
+      "maxCcn": 8,
+      "maxNloc": 180,
+      "physicalLines": 375
+    },
+    "romdump/src/digest/map/MapAssetInspector.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 17,
+      "maxNloc": 223,
+      "physicalLines": 833
+    },
+    "romdump/src/digest/map/TerrainBoundaryConformer.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 24,
+      "maxNloc": 124,
+      "physicalLines": 745
+    },
+    "romdump/src/digest/newgame/IntroAssetCompiler.lua": {
+      "classification": "refactor",
+      "rationale": "intro source mapping and manifest facade",
+      "maxCcn": 21,
+      "maxNloc": 101,
+      "physicalLines": 508
+    },
+    "romdump/src/digest/script/CommandCatalog.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 30,
+      "maxNloc": 39,
+      "physicalLines": 128
+    },
+    "romdump/src/digest/script/ScriptBinaryDecoder.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 31,
+      "maxNloc": 61,
+      "physicalLines": 682
+    },
+    "romdump/src/digest/script/SemanticLowering.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 50,
+      "maxNloc": 157,
+      "physicalLines": 443
+    },
+    "romdump/src/digest/ui/FieldUiCompiler.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 10,
+      "maxNloc": 121,
+      "physicalLines": 766
+    },
+    "romdump/src/digest/ui/G2dDecoder.lua": {
+      "classification": "refactor",
+      "rationale": "production hotspot awaiting ownership split",
+      "maxCcn": 29,
+      "maxNloc": 181,
+      "physicalLines": 635
+    },
+    "romdump/src/reference/hgss/maps.lua": {
+      "classification": "retained-schema-catalog",
+      "rationale": "large source catalog consumed as a cohesive reference",
+      "maxCcn": 0,
+      "maxNloc": 0,
+      "physicalLines": 17847
+    },
+    "romdump/src/reference/hgss/script_commands.lua": {
+      "classification": "retained-schema-catalog",
+      "rationale": "large source catalog consumed as a cohesive reference",
+      "maxCcn": 0,
+      "maxNloc": 0,
+      "physicalLines": 5460
+    },
+    "romdump/src/reference/hgss/sndseq.lua": {
+      "classification": "retained-schema-catalog",
+      "rationale": "large source catalog consumed as a cohesive reference",
+      "maxCcn": 0,
+      "maxNloc": 0,
+      "physicalLines": 1388
+    }
+  },
+  "directories": {}
 }
