@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 
 local T = {}
@@ -105,7 +106,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
       return false
     end,
   }
-  return setmetatable({
+  local runtime = setmetatable({
     weatherCatalog = catalog,
     weatherClock = clock,
     eventState = FieldEventState.new(),
@@ -163,6 +164,8 @@ local function runtimeWithClock(catalog, calls, currentMap)
     },
     fieldEntranceIndicator = { updateFixed = function() end },
   }, FieldRuntime)
+  runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
+  return runtime
 end
 
 function T.runtime_samples_weather_on_activation_and_selects_the_matching_fog()

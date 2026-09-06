@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local FieldNavigationBoundary = require("libs.hgss.src.world.FieldNavigationBoundary")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 
@@ -69,6 +70,7 @@ local function runtimeForSwap(sourceCoverage)
     },
     scripts = { onMapSwap = function() end },
   }, FieldRuntime)
+  runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return runtime, sourceRuntimeMap
 end
 

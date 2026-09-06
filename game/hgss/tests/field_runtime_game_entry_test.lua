@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {}
@@ -179,6 +180,9 @@ local function captureRuntime(overrides)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
   end
+  if runtime.saveCoordinator == nil then
+    runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
+  end
   return runtime
 end
 
@@ -282,6 +286,7 @@ function T.manual_save_keeps_publication_state_across_menu_openings()
       end,
     },
   }, FieldRuntime)
+  runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
   runtime._captureManualSaveFromMenu = function()
     return { saveId = "save-00000001" }
   end
@@ -304,6 +309,7 @@ function T.failed_first_manual_save_remains_retryable_as_first_publication()
       end,
     },
   }, FieldRuntime)
+  runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)
   runtime._captureManualSaveFromMenu = function()
     return { saveId = "save-00000001" }
   end
@@ -406,6 +412,128 @@ function T.captureGameSave_defers_while_avatar_state_is_unstable()
   local tempSnapshot, tempReason = temporary:captureGameSave()
   Assert.isNil(tempSnapshot)
   Assert.isTrue(type(tempReason) == "string" and tempReason ~= "")
+end
+
+function T.constructor_applies_defaults_and_keeps_injected_identities()
+  local originalLoad = FieldRuntime._load
+  FieldRuntime._load = function() end
+  local function validEntry()
+    return {
+      saveId = "save-00000001",
+      versionId = "heartgold",
+      location = {
+        mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
+        fieldX = 6,
+        fieldZ = 6,
+        facing = "south",
+      },
+      playerData = {
+        profile = { name = "GOLD", gender = 0, trainerId = 1, money = 3000 },
+        options = { textSpeed = "mid", textFrame = 0 },
+      },
+      playTime = PlayTime.new(),
+      worldState = {},
+    }
+  end
+  local ok, err = xpcall(function()
+    local WindowConfig = require("game.src.WindowConfig")
+    local defaulted = FieldRuntime.new(validEntry())
+    Assert.equal(defaulted.viewportWidth, WindowConfig.REFERENCE_WIDTH)
+    Assert.equal(defaulted.viewportHeight, WindowConfig.REFERENCE_HEIGHT)
+    Assert.equal(defaulted.presentation, false)
+    Assert.notNil(defaulted.overrideFs)
+    Assert.notNil(defaulted.saveValidation)
+    Assert.notNil(defaulted.localClock)
+    Assert.notNil(defaulted.zoom)
+    Assert.notNil(defaulted.saveCoordinator)
+    Assert.notNil(defaulted.worldSwapCoordinator)
+    Assert.equal(
+      defaulted.saveValidation.overrideFs,
+      defaulted.overrideFs,
+      "the default validation dependency must share the effective repository filesystem"
+    )
+
+    local overrideFs = { injectedOverride = true }
+    local saveValidation = { injectedValidation = true }
+    local localClock = { injectedClock = true }
+    local injected = FieldRuntime.new(validEntry(), {
+      overrideFs = overrideFs,
+      saveValidation = saveValidation,
+      localClock = localClock,
+      viewportWidth = 800,
+      viewportHeight = 600,
+      presentation = true,
+    })
+    Assert.equal(injected.overrideFs, overrideFs)
+    Assert.equal(injected.saveValidation, saveValidation)
+    Assert.equal(injected.localClock, localClock)
+    Assert.equal(injected.viewportWidth, 800)
+    Assert.equal(injected.viewportHeight, 600)
+    Assert.equal(injected.presentation, true)
+
+    Assert.throws(function()
+      FieldRuntime.new(nil, {})
+    end, "a missing game must fail construction")
+    Assert.throws(function()
+      FieldRuntime.new({}, {})
+    end, "a game without a version must fail construction")
+    Assert.throws(function()
+      FieldRuntime.new({ versionId = "" }, {})
+    end, "a game with a blank version must fail construction")
+  end, debug.traceback)
+  FieldRuntime._load = originalLoad
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.required_coordinators_are_reused_and_never_rebuilt_after_construction()
+  local saveCalls = 0
+  local abortCalls = 0
+  local saveCoordinator = {
+    save = function(_)
+      saveCalls = saveCalls + 1
+    end,
+  }
+  local worldSwapCoordinator = {
+    abort = function(_, resolution, prepared)
+      abortCalls = abortCalls + 1
+      Assert.isNil(resolution)
+      Assert.isNil(prepared)
+    end,
+  }
+  local runtime = setmetatable({
+    saveCoordinator = saveCoordinator,
+    worldSwapCoordinator = worldSwapCoordinator,
+  }, FieldRuntime)
+  runtime:_saveCheckpoint()
+  runtime:_disposePreparedSwap(nil, nil)
+  Assert.equal(saveCalls, 1)
+  Assert.equal(abortCalls, 1)
+  Assert.equal(runtime.saveCoordinator, saveCoordinator, "repeated saves must reuse the constructed coordinator")
+  Assert.equal(
+    runtime.worldSwapCoordinator,
+    worldSwapCoordinator,
+    "repeated swaps must reuse the constructed coordinator"
+  )
+
+  runtime.saveCoordinator = nil
+  runtime._captureManualSaveFromMenu = function()
+    return { saveId = "save-00000001" }
+  end
+  runtime.saveStore = {
+    publishFirst = function() end,
+    save = function() end,
+  }
+  runtime.savePublished = false
+  Assert.throws(function()
+    runtime:_saveCheckpoint()
+  end, "a missing save coordinator must fail instead of rebuilding a replacement")
+
+  runtime.worldSwapCoordinator = nil
+  Assert.throws(function()
+    runtime:_disposePreparedSwap(nil, nil)
+  end, "a missing world-swap coordinator must fail instead of rebuilding a replacement")
 end
 
 return { tests = T }

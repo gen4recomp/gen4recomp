@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local FieldResidencyCoordinator = require("libs.hgss.src.world.FieldResidencyCoordinator")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 
 local T = {}
 
@@ -177,6 +178,7 @@ local function fixture(options)
       end,
     },
   }, FieldRuntime)
+  runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return {
     actors = actors,
     coordinator = coordinator,

@@ -57,9 +57,13 @@ local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntrance
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local FieldPresentation = require("data.manifests.field_presentation")
-local FieldRuntimeComposition = require("game.hgss.src.field.FieldRuntimeComposition")
+local FieldZoom = require("libs.hgss.src.presentation.FieldZoom")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
+local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local LocalClock = require("game.src.LocalClock")
+local RepoFs = require("game.src.RepoFs")
+local WindowConfig = require("game.src.WindowConfig")
 
 ---@class FieldRuntimeOptions
 ---@field zoomConfig table<string, unknown>?
@@ -100,6 +104,8 @@ local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 ---@field saveValidation GameSaveValidation? shared semantic GameSave validator
 ---@field savePublished boolean whether the reserved record has been published
+---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner
+---@field worldSwapCoordinator FieldWorldSwapCoordinator required staged transition/world owner
 ---@field playerData table<string, unknown> the validated profile/options authority (PlayerData shape)
 ---@field avatar table<string, unknown> the gender-selected compiled avatar capability
 ---@field playerAvatar FieldPlayerAvatarState? the one avatar transition owner
@@ -451,8 +457,30 @@ local function headlessMapProps(runtimeMap, cacheFs)
 end
 
 function FieldRuntime.new(game, options)
-  local composition = FieldRuntimeComposition.compose(game, options)
-  local self = setmetatable(composition.runtimeState, FieldRuntime)
+  assert(type(game) == "table", "field runtime requires a finalized or loaded game")
+  assert(type(game.versionId) == "string" and game.versionId ~= "", "field runtime game version is required")
+  options = options or {}
+  local effectiveOverrideFs = options.overrideFs or RepoFs.new(love.filesystem.getSourceBaseDirectory())
+  local self = setmetatable({
+    game = game,
+    versionId = game.versionId,
+    saveId = game.saveId,
+    viewportWidth = options.viewportWidth or WindowConfig.REFERENCE_WIDTH,
+    viewportHeight = options.viewportHeight or WindowConfig.REFERENCE_HEIGHT,
+    screenTopology = options.screenTopology,
+    overrideFs = effectiveOverrideFs,
+    presentation = options.presentation == true,
+    scriptHosts = options.scriptHosts,
+    dayNight = options.dayNight,
+    audioOutput = options.audioOutput,
+    saveStore = options.saveStore,
+    saveValidation = options.saveValidation or GameSaveValidation.new({ overrideFs = effectiveOverrideFs }),
+    savePublished = false,
+    localClock = options.localClock or LocalClock.system(),
+    weatherClock = options.weatherClock,
+    errorText = nil,
+    zoom = FieldZoom.new(options.zoomConfig or FieldPresentation.zoom),
+  }, FieldRuntime)
   self.saveCoordinator = FieldSaveCoordinator.new(self)
   self.worldSwapCoordinator = FieldWorldSwapCoordinator.new(self)
   self.weatherClock = self.weatherClock or defaultWeatherClock(self.localClock)
@@ -1301,8 +1329,7 @@ end
 ---@return string|table<string, unknown>? reason validation or stability failure
 ---@param allowMenu boolean?
 function FieldRuntime:_captureGameSave(allowMenu)
-  self.saveCoordinator = self.saveCoordinator or FieldSaveCoordinator.new(self)
-  return self.saveCoordinator:capture(allowMenu == true)
+  return assert(self.saveCoordinator, "field runtime has no save coordinator"):capture(allowMenu == true)
 end
 
 function FieldRuntime:captureGameSave()
@@ -1310,13 +1337,11 @@ function FieldRuntime:captureGameSave()
 end
 
 function FieldRuntime:_captureManualSaveFromMenu()
-  self.saveCoordinator = self.saveCoordinator or FieldSaveCoordinator.new(self)
-  return self.saveCoordinator:captureManual()
+  return assert(self.saveCoordinator, "field runtime has no save coordinator"):captureManual()
 end
 
 function FieldRuntime:_saveCheckpoint()
-  self.saveCoordinator = self.saveCoordinator or FieldSaveCoordinator.new(self)
-  return self.saveCoordinator:save()
+  return assert(self.saveCoordinator, "field runtime has no save coordinator"):save()
 end
 
 -- Apply effective weather to a runtime map: resolve the catalog rules
@@ -1357,8 +1382,11 @@ end
 ---@param matrixMemberId integer
 ---@return FieldRuntimePhysicalSwap
 function FieldRuntime:_stagePhysicalCoverage(logicalMap, position, matrixMemberId)
-  self.worldSwapCoordinator = self.worldSwapCoordinator or FieldWorldSwapCoordinator.new(self)
-  return self.worldSwapCoordinator:stagePhysicalCoverage(logicalMap, position, matrixMemberId)
+  return assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator"):stagePhysicalCoverage(
+    logicalMap,
+    position,
+    matrixMemberId
+  )
 end
 
 -- Fallible warp preparation, run by FieldTransition while the source map is
@@ -1369,8 +1397,7 @@ end
 ---@param facing FieldDirection
 ---@return table<string, unknown> prepared destination player, camera, and player visual
 function FieldRuntime:_prepareSwap(resolution, facing)
-  self.worldSwapCoordinator = self.worldSwapCoordinator or FieldWorldSwapCoordinator.new(self)
-  return self.worldSwapCoordinator:prepare(resolution, facing)
+  return assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator"):prepare(resolution, facing)
 end
 
 -- Dispose only transition-owned physical state. A reused coverage remains
@@ -1379,8 +1406,7 @@ end
 ---@param prepared table<string, unknown>?
 ---@return nil
 function FieldRuntime:_disposePreparedSwap(resolution, prepared)
-  self.worldSwapCoordinator = self.worldSwapCoordinator or FieldWorldSwapCoordinator.new(self)
-  return self.worldSwapCoordinator:abort(resolution, prepared)
+  return assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator"):abort(resolution, prepared)
 end
 
 -- The irreversible current-map ownership transfer, run by FieldTransition
@@ -1390,8 +1416,11 @@ end
 ---@param prepared table<string, unknown>
 ---@return nil
 function FieldRuntime:_commitSwap(resolution, _, prepared)
-  self.worldSwapCoordinator = self.worldSwapCoordinator or FieldWorldSwapCoordinator.new(self)
-  return self.worldSwapCoordinator:commit(resolution, _, prepared)
+  return assert(self.worldSwapCoordinator, "field runtime has no world-swap coordinator"):commit(
+    resolution,
+    _,
+    prepared
+  )
 end
 
 function FieldRuntime:destinationWorldPresentable()
