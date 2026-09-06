@@ -15,6 +15,8 @@ from typing import Any
 _ANNOTATION = re.compile(r"^\s*---@([A-Za-z][\w-]*)(?:\s+(.*))?$")
 _DIRECTIVE = re.compile(r"^\s*---@diagnostic\b(.*)$")
 _BARE_TABLE = re.compile(r"(?<![A-Za-z0-9_])table(?![A-Za-z0-9_<\[])")
+_EXPLICIT_ANY = re.compile(r"(?<![A-Za-z0-9_])any(?![A-Za-z0-9_])")
+_POLICY_DEBT_CATEGORIES = {"explicit-any"}
 _VALID_DIRECTIVE_STATES = {"disable", "disable-next-line", "enable", "enable-next-line"}
 _HARD_BANNED_CATEGORIES = {
     "undefined-field",
@@ -105,8 +107,11 @@ def scan_file(path: Path) -> list[dict[str, Any]]:
         if annotation is None:
             continue
         tag, payload = annotation.groups()
-        if _BARE_TABLE.search(_type_text(tag, payload or "")) is not None:
+        type_text = _type_text(tag, payload or "")
+        if _BARE_TABLE.search(type_text) is not None:
             findings.append(_finding(path, line_number, "bare-table", annotation=tag, type="table"))
+        if _EXPLICIT_ANY.search(type_text) is not None:
+            findings.append(_finding(path, line_number, "explicit-any", annotation=tag, type="any"))
     return findings
 
 
@@ -187,9 +192,16 @@ def _load_exceptions(repository_root: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"non-portable Lua path: {relative_path!r}")
         except (AttributeError, ValueError) as error:
             raise ValueError(f"{_EXCEPTIONS_RELATIVE_PATH}: entry {index}: {error}") from error
-        if not isinstance(category, str) or category not in _KNOWN_CATEGORIES:
+        if not isinstance(category, str) or (
+            category not in _KNOWN_CATEGORIES and category not in _POLICY_DEBT_CATEGORIES
+        ):
             raise ValueError(f"{_EXCEPTIONS_RELATIVE_PATH}: entry {index} has unknown category {category!r}")
-        if category not in _ALLOWED_CATEGORIES[scope]:
+        if category in _POLICY_DEBT_CATEGORIES:
+            if scope != "production":
+                raise ValueError(
+                    f"{_EXCEPTIONS_RELATIVE_PATH}: entry {index} cannot allow {category!r} in {scope} scope"
+                )
+        elif category not in _ALLOWED_CATEGORIES[scope]:
             raise ValueError(
                 f"{_EXCEPTIONS_RELATIVE_PATH}: entry {index} cannot allow {category!r} in {scope} scope"
             )
@@ -270,6 +282,19 @@ def _policy_violations(
             if _source_scope(repository_root, path) == "production":
                 violations.append(f"{path}:{line}: bare-table; use a shaped or named contract")
             continue
+        if kind == "explicit-any":
+            if _source_scope(repository_root, path) == "production":
+                key = ("production", path, "explicit-any")
+                matching = [
+                    entry for entry in exceptions if (entry["scope"], entry["path"], entry["category"]) == key
+                ]
+                if not matching:
+                    violations.append(f"{path}:{line}: explicit-any; use a named or shaped contract")
+                    continue
+                exception_counts[key] = exception_counts.get(key, 0) + 1
+                if exception_counts[key] > matching[0]["maxOccurrences"]:
+                    violations.append(f"{path}:{line}: exception category explicit-any exceeds occurrence limit")
+            continue
         if kind == "malformed-directive":
             violations.append(f"{path}:{line}: malformed diagnostic directive")
             continue
@@ -303,7 +328,7 @@ def _policy_violations(
         key = (entry["scope"], entry["path"], entry["category"])
         if exception_counts.get(key, 0) == 0:
             violations.append(
-                f"{entry['path']}: stale exception for {entry['category']} has no matching directive"
+                f"{entry['path']}: stale exception for {entry['category']} has no matching occurrence"
             )
     if scope == "production":
         violations = [

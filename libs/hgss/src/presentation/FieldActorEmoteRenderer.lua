@@ -25,8 +25,9 @@ local PoseContract = require("libs.assets.src.model.PoseContract")
 
 local IDENTITY_MODEL_NORMAL = Matrix3.identity()
 
-local Renderer = {}
-Renderer.__index = Renderer
+---@class FieldActorEmoteRenderer
+local FieldActorEmoteRenderer = {}
+FieldActorEmoteRenderer.__index = FieldActorEmoteRenderer
 
 -- kind -> field-emote descriptor. Only "exclamation" is proven/compiled today;
 -- other schema-approved kinds stay unmapped until their own source model is
@@ -76,8 +77,8 @@ end
 
 ---@param modelsByKind table<string, table<string, unknown>> emote kind -> field-emote descriptor
 ---@param pool table<string, unknown> GpuAssetPool-shaped mesh/image pool
----@return table<string, unknown>
-function Renderer.new(modelsByKind, pool)
+---@return FieldActorEmoteRenderer
+function FieldActorEmoteRenderer.new(modelsByKind, pool)
   assert(type(modelsByKind) == "table", "field emote renderer requires its compiled models by kind")
   assert(pool and pool.meshFor and pool.imageFor and pool.build, "field emote renderer requires an asset pool")
   local prepared = {}
@@ -95,13 +96,13 @@ function Renderer.new(modelsByKind, pool)
     preparedModel.anchorOffset = descriptor.anchorOffset
     prepared[kind] = preparedModel
   end
-  return setmetatable({ prepared = prepared }, Renderer)
+  return setmetatable({ prepared = prepared }, FieldActorEmoteRenderer)
 end
 
 -- records: FieldActorManager:drawRecords() output. Returns one draw item per
 -- (visible batch) of every record whose activeEmoteKind has a compiled
 -- model.
-function Renderer:drawItems(records)
+function FieldActorEmoteRenderer:drawItems(records)
   local items = {}
   if not records then
     return items
@@ -155,8 +156,8 @@ function Renderer:drawItems(records)
   return items
 end
 
-function Renderer:dispose()
+function FieldActorEmoteRenderer:dispose()
   self.prepared = nil
 end
 
-return Renderer
+return FieldActorEmoteRenderer

@@ -211,14 +211,18 @@ end
 
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local LuaWriter = require("libs.codec.src.LuaWriter")
+local CacheFs = require("libs.storage.src.CacheFs")
+local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 
 -- Drives a production-composed Oak state through profile selection into
 -- the shrink animation using semantic input only.
@@ -262,6 +266,101 @@ local function presentationCache()
   return cache
 end
 
+-- The terrain-effect bundle the real terrain renderer acquires during the
+-- boot: one synthetic triangle mesh per effect kind, written into the same
+-- presentation cache the boot reads through.
+local function terrainEffects(cache)
+  cache:write(
+    "test/terrain-grass.mesh",
+    MeshWriter.encode({
+      vertices = {
+        {
+          x = 0,
+          y = 0,
+          z = 0,
+          u = 0,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+        {
+          x = 1,
+          y = 0,
+          z = 0,
+          u = 1,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+        {
+          x = 0,
+          y = 0,
+          z = 1,
+          u = 0,
+          v = 1,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+      },
+      indices = { 0, 1, 2 },
+    })
+  )
+  local function effect()
+    return {
+      model = {
+        dynamic = {
+          nodes = {
+            { name = "root", translation = { 0, 0, 0 }, rotation = { 0, 0, 0 }, scale = { 1, 1, 1 } },
+          },
+          batches = {
+            {
+              id = "grass",
+              nodeIndex = 0,
+              materialIndex = 0,
+              geometry = "test/terrain-grass.mesh",
+              alphaClass = "cutout",
+              cullMode = "back",
+              polygonAlpha = 31,
+              polygonMode = "modulation",
+              polygonId = 0,
+              translucentDepthWrite = false,
+              depthEqual = false,
+              lightMask = 15,
+              fogEnabled = false,
+            },
+          },
+        },
+        materials = { { id = 0, name = "grass", wrap = { x = "clamp", y = "clamp" } } },
+        animations = {},
+      },
+      placementOffset = { x = 0, y = 0, z = 0 },
+    }
+  end
+  return {
+    tall_grass = effect(),
+    very_tall_grass = effect(),
+    trainer_reveal = effect(),
+  }
+end
+
 -- A covered field entry over a stubbed runtime: the presentation resources
 -- are real, so the first drawn frame proves the player/runtime is
 -- constructed beneath the entry black.
@@ -277,6 +376,12 @@ local function bootCoveredField(scope)
   })
   local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight })
   local cache = presentationCache()
+  local terrain = terrainEffects(cache)
+  -- The stubbed runtime draws through the real scene renderer, so it needs
+  -- a real camera owner rather than a zoom-only literal.
+  local cameraProfiles =
+    assert(CacheFs.forVersion(AcceptanceHarness.defaultVersion()):loadLua("data/generated/field/camera/profiles.lua"))
+  local camera = FieldCamera.new(cameraProfiles.profiles[0], { canonicalAspect = 4 / 3 })
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
     return setmetatable({
@@ -331,7 +436,19 @@ local function bootCoveredField(scope)
       runtimeMap = {
         mapId = 61,
         mapSymbol = "MAP_NEW_BARK",
-        sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} },
+        sceneRuntime = {
+          mapDraws = {},
+          staticBuildingDraws = {},
+          animatedBuildingDraws = {},
+          edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
+          fog = (function()
+            local fogTable = {}
+            for index = 1, 32 do
+              fogTable[index] = 0
+            end
+            return { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable }
+          end)(),
+        },
       },
       player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
       session = {
@@ -344,18 +461,20 @@ local function bootCoveredField(scope)
       end,
       acknowledgeDestinationPresentation = function() end,
       viewport = viewport,
-      camera = { zoom = 1 },
+      camera = camera,
       transition = { fadeAlpha = 0 },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
         end,
       },
-      fieldTerrainEffectController = {
-        status = function()
-          return {}
+      fieldEffectAssets = { effects = terrain },
+      fieldTerrainEffectController = FieldTerrainEffectController.new({
+        effects = terrain,
+        modelFactory = function()
+          error("the terrain model factory is installed by presentation resources", 0)
         end,
-      },
+      }),
       dialogue = {
         isModal = function()
           return false

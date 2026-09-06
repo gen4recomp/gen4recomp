@@ -142,7 +142,7 @@ local function disposableState()
     fieldEmotePool = resources.fieldEmotePool,
     renderer = resources.renderer,
   }, FieldPresentationResources)
-  local actorPresentation = FieldActorPresentation.new(runtime, {
+  local actorPresentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
     assets = resources.presentationActorAssets --[[@as FieldActorPresentationAssets]],
   })
   local state = setmetatable({

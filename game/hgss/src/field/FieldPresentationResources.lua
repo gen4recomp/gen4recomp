@@ -14,25 +14,34 @@ local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local WindowConfig = require("game.src.WindowConfig")
 
+---@class FieldPresentationResourcesRuntime
+---@field cacheFs CacheFs
+---@field uiManifest table<string, unknown>
+---@field windowStyles FieldWindowStyles
+---@field fieldEntranceIndicatorAsset table<string, unknown>
+---@field fieldEmoteModels table<string, table<string, unknown>>
+---@field fieldEffectAssets table<string, unknown>
+---@field fieldTerrainEffectController FieldTerrainEffectController
+
 ---@class FieldPresentationResources
----@field renderer any
----@field dialogueRenderer any
+---@field renderer FieldRenderer?
+---@field dialogueRenderer FieldDialogueRenderer?
 ---@field menuRenderer FieldMenuRenderer
----@field signpostRenderer FieldSignpostRenderer
----@field startMenuRenderer StartMenuRenderer
----@field trainerCardRenderer TrainerCardRenderer
----@field textRenderer FieldTextRenderer
----@field fieldEntranceIndicatorPool GpuAssetPool
----@field fieldEntranceIndicatorRenderer any
----@field fieldSurfRenderer any
+---@field signpostRenderer FieldSignpostRenderer?
+---@field startMenuRenderer StartMenuRenderer?
+---@field trainerCardRenderer TrainerCardRenderer?
+---@field textRenderer FieldTextRenderer?
+---@field fieldEntranceIndicatorPool GpuAssetPool?
+---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
+---@field fieldSurfRenderer FieldStaticEffectRenderer?
 ---@field surfPresentation table<string, unknown>
----@field fieldEmotePool GpuAssetPool
----@field fieldEmoteRenderer any
----@field fieldTerrainEffectRenderer any
+---@field fieldEmotePool GpuAssetPool?
+---@field fieldEmoteRenderer FieldActorEmoteRenderer?
+---@field fieldTerrainEffectRenderer FieldTerrainEffectRenderer?
 local FieldPresentationResources = {}
 FieldPresentationResources.__index = FieldPresentationResources
 
----@param runtime table<string, unknown>
+---@param runtime FieldPresentationResourcesRuntime
 ---@return FieldPresentationResources
 function FieldPresentationResources.new(runtime)
   local self = setmetatable({}, FieldPresentationResources)
@@ -41,17 +50,18 @@ function FieldPresentationResources.new(runtime)
       clearColor = WindowConfig.BACKGROUND_COLOR,
       worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
     })
-    self.textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs })
+    local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs })
+    self.textRenderer = textRenderer
     self.dialogueRenderer = FieldDialogueRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
-      text = self.textRenderer,
+      text = textRenderer,
     })
     self.menuRenderer = FieldMenuRenderer.new()
     self.signpostRenderer = FieldSignpostRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
-      text = self.textRenderer,
+      text = textRenderer,
       windowStyles = runtime.windowStyles,
     })
     self.startMenuRenderer = StartMenuRenderer.new({
@@ -61,36 +71,29 @@ function FieldPresentationResources.new(runtime)
     self.trainerCardRenderer = TrainerCardRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
-      text = self.textRenderer,
+      text = textRenderer,
     })
-    self.fieldEntranceIndicatorPool = GpuAssetPool.new(runtime.cacheFs)
+    local entrancePool = GpuAssetPool.new(runtime.cacheFs)
+    self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
-      FieldStaticEffectRenderer.new(runtime.fieldEntranceIndicatorAsset.model, self.fieldEntranceIndicatorPool)
-    local surfEffects = runtime.fieldEntranceIndicatorAsset and runtime.fieldEntranceIndicatorAsset.effects
+      FieldStaticEffectRenderer.new(runtime.fieldEntranceIndicatorAsset.model, entrancePool)
+    local surfEffects = runtime.fieldEntranceIndicatorAsset.effects
     local surfAttachment =
       assert(surfEffects and surfEffects.surf_attachment, "field-effect cache is missing surf_attachment")
     self.surfPresentation = assert(surfAttachment.presentation, "field-effect cache is missing surf presentation")
-    self.fieldSurfRenderer = FieldStaticEffectRenderer.new(surfAttachment.model, self.fieldEntranceIndicatorPool)
-    self.fieldEmotePool = GpuAssetPool.new(runtime.cacheFs)
-    self.fieldEmoteRenderer = FieldActorEmoteRenderer.new(runtime.fieldEmoteModels, self.fieldEmotePool)
-    if runtime.fieldEffectAssets and runtime.fieldEffectAssets.effects then
-      self.fieldTerrainEffectRenderer =
-        FieldTerrainEffectRenderer.new(runtime.fieldEffectAssets, self.fieldEntranceIndicatorPool)
-      local function terrainModelFactory(kind)
-        return self.fieldTerrainEffectRenderer:newInstance(kind)
-      end
-      runtime.fieldTerrainEffectController:setModelFactory(terrainModelFactory)
-    else
-      local function emptyDrawItems()
-        return {}
-      end
-      local function emptyDispose() end
-
-      self.fieldTerrainEffectRenderer = {
-        drawItems = emptyDrawItems,
-        dispose = emptyDispose,
-      }
+    self.fieldSurfRenderer = FieldStaticEffectRenderer.new(surfAttachment.model, entrancePool)
+    local emotePool = GpuAssetPool.new(runtime.cacheFs)
+    self.fieldEmotePool = emotePool
+    self.fieldEmoteRenderer = FieldActorEmoteRenderer.new(runtime.fieldEmoteModels, emotePool)
+    local fieldEffectAssets = assert(runtime.fieldEffectAssets, "field terrain-effect assets are unavailable")
+    local terrainEffectRenderer = FieldTerrainEffectRenderer.new(fieldEffectAssets, entrancePool)
+    self.fieldTerrainEffectRenderer = terrainEffectRenderer
+    local function terrainModelFactory(kind)
+      return terrainEffectRenderer:newInstance(kind)
     end
+    local fieldTerrainEffectController =
+      assert(runtime.fieldTerrainEffectController, "field terrain-effect controller is unavailable")
+    fieldTerrainEffectController:setModelFactory(terrainModelFactory)
   end)
   if not ok then
     self:dispose()

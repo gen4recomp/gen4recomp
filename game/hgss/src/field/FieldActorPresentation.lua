@@ -9,11 +9,16 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 ---@class FieldActorPresentationOptions
 ---@field assets FieldActorPresentationAssets? injected provider-shaped owner for focused tests
 
+---@class FieldActorPresentationRuntime
+---@field cacheFs CacheFs?
+---@field actors FieldActorManager
+---@field playerVisual FieldPlayerVisual
+
 ---@class FieldActorPresentation
----@field runtime table<string, unknown>
+---@field runtime FieldActorPresentationRuntime
 ---@field assets FieldActorPresentationAssets
 ---@field _presentationSpriteRefs table<integer, boolean>
----@field _lastActorManager table<string, unknown>?
+---@field _lastActorManager FieldActorManager?
 ---@field _lastActorVisualRevision integer?
 ---@field _lastPlayerSpriteId integer?
 ---@field _actorRecords table[]?
@@ -21,14 +26,16 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 local FieldActorPresentation = {}
 FieldActorPresentation.__index = FieldActorPresentation
 
----@param runtime table<string, unknown>
+---@param runtime FieldActorPresentationRuntime
 ---@param options FieldActorPresentationOptions?
 ---@return FieldActorPresentation
 function FieldActorPresentation.new(runtime, options)
   options = options or {}
   local self = setmetatable({
     runtime = runtime,
-    assets = options.assets or FieldActorAssetProvider.new(runtime.cacheFs),
+    assets = options.assets or FieldActorAssetProvider.new(
+      assert(runtime.cacheFs, "field actor presentation cache filesystem is unavailable")
+    ),
     _presentationSpriteRefs = {},
     _lastActorManager = nil,
     _lastActorVisualRevision = nil,

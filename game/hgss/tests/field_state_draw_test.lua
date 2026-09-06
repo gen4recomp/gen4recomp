@@ -116,7 +116,7 @@ local function presentationState(assets, actorIds)
       drawRecord = function()
         return actorRecord("field:player", 99)
       end,
-    },
+    } --[[@as any]],
     runtimeMap = { sceneRuntime = { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} } },
     fieldEntranceIndicator = {
       status = function()
@@ -124,7 +124,7 @@ local function presentationState(assets, actorIds)
       end,
     },
   }
-  local actorPresentation = FieldActorPresentation.new(runtime, {
+  local actorPresentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
     assets = assets --[[@as FieldActorPresentationAssets]],
   })
   return setmetatable({
@@ -697,12 +697,12 @@ function T.draw_rejects_a_sprite_without_presentation_residency()
       drawRecord = function()
         return actorRecord("field:player", 99)
       end,
-    },
+    } --[[@as any]],
     actors = {
       drawRecords = function()
         return {}
       end,
-    },
+    } --[[@as any]],
   }, {
     assets = assets --[[@as FieldActorPresentationAssets]],
   })

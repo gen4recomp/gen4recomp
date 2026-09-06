@@ -7,8 +7,9 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local FixedPoint = require("libs.math.src.FixedPoint")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 
-local Renderer = {}
-Renderer.__index = Renderer
+---@class FieldStaticEffectRenderer
+local FieldStaticEffectRenderer = {}
+FieldStaticEffectRenderer.__index = FieldStaticEffectRenderer
 
 local function materials(asset, pool)
   local out = {}
@@ -25,7 +26,10 @@ local function materials(asset, pool)
   return out
 end
 
-function Renderer.new(model, pool)
+---@param model table<string, unknown>
+---@param pool table<string, unknown>
+---@return FieldStaticEffectRenderer
+function FieldStaticEffectRenderer.new(model, pool)
   assert(model and model.batches and model.materials, "field effect asset model is required")
   assert(pool and pool.meshFor and pool.imageFor and pool.build, "field effect asset pool is required")
   local prepared = pool:build(function()
@@ -50,10 +54,10 @@ function Renderer.new(model, pool)
     end
     return { model = model, batches = batches }
   end)
-  return setmetatable({ prepared = prepared }, Renderer)
+  return setmetatable({ prepared = prepared }, FieldStaticEffectRenderer)
 end
 
-function Renderer:drawItems(status)
+function FieldStaticEffectRenderer:drawItems(status)
   if not status or not status.visible then
     return {}
   end
@@ -92,8 +96,8 @@ function Renderer:drawItems(status)
   return items
 end
 
-function Renderer:dispose()
+function FieldStaticEffectRenderer:dispose()
   self.prepared = nil
 end
 
-return Renderer
+return FieldStaticEffectRenderer

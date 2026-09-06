@@ -357,6 +357,122 @@ local second = true
         self.assertIn("undefined-field", result.stderr)
         self.assertIn("invisible", result.stderr)
 
+    def test_scan_detects_standalone_any_across_type_positions(self) -> None:
+        source = """\
+---@param direct any
+---@param optional any?
+---@return string|any
+---@field values table<string, any>
+---@type fun(value: any): unknown
+---@param union string | any | nil
+local value = 1
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.lua"
+            path.write_text(source, encoding="utf-8")
+            findings = POLICY.scan_file(path)
+
+        explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+        self.assertEqual([finding["line"] for finding in explicit], [1, 2, 3, 4, 5, 6])
+
+    def test_scan_ignores_unknown_and_identifiers_containing_any(self) -> None:
+        source = """\
+---@param value unknown
+---@param values ManyValues
+---@param companion string
+-- Any prose comment mentioning any value is not an annotation type.
+local anything = 1
+if type(anything) == "table" then
+  return anything
+end
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.lua"
+            path.write_text(source, encoding="utf-8")
+            findings = POLICY.scan_file(path)
+
+        explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+        self.assertEqual(explicit, [])
+
+    def test_scan_detects_any_at_renderer_and_runtime_view_seams(self) -> None:
+        source = """\
+---@class FixturePresentationResources
+---@field renderer any
+---@field fieldTerrainEffectRenderer any
+---@param runtime table<string, unknown>
+local fixtures = {}
+return fixtures
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.lua"
+            path.write_text(source, encoding="utf-8")
+            findings = POLICY.scan_file(path)
+
+        explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+        self.assertEqual([finding["line"] for finding in explicit], [2, 3])
+
+    def test_production_any_without_an_exact_exception_fails_the_check(self) -> None:
+        source = "---@param value any\nlocal function accepts(value) return value end\nreturn {}\n"
+        with fixture_repository({"app/src/fixture.lua": source}) as root:
+            result = run_policy_check(root, scope="production")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("app/src/fixture.lua", result.stderr)
+        self.assertIn("explicit-any", result.stderr)
+
+    def test_exact_production_any_exception_passes_at_or_below_its_limit(self) -> None:
+        source = "---@param value any\nlocal function accepts(value) return value end\nreturn {}\n"
+        exceptions = [
+            {
+                "scope": "production",
+                "path": "app/src/fixture.lua",
+                "category": "explicit-any",
+                "maxOccurrences": 1,
+                "rationale": "Legacy production type debt carried from before this change.",
+            }
+        ]
+        with fixture_repository({"app/src/fixture.lua": source}, exceptions=exceptions) as root:
+            result = run_policy_check(root, scope="production")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_production_any_exception_limit_and_staleness_are_enforced(self) -> None:
+        overused = (
+            "---@param first any\nlocal first = true\n"
+            "---@param second any\nlocal second = true\n"
+        )
+        limited = [
+            {
+                "scope": "production",
+                "path": "app/src/fixture.lua",
+                "category": "explicit-any",
+                "maxOccurrences": 1,
+                "rationale": "Only one legacy production occurrence is permitted.",
+            }
+        ]
+        with fixture_repository({"app/src/fixture.lua": overused}, exceptions=limited) as root:
+            exceeded = run_policy_check(root, scope="production")
+
+        self.assertNotEqual(exceeded.returncode, 0)
+        self.assertIn("app/src/fixture.lua", exceeded.stderr)
+        self.assertIn("occurrence", exceeded.stderr.lower())
+
+        stale = [
+            {
+                "scope": "production",
+                "path": "app/src/fixture.lua",
+                "category": "explicit-any",
+                "maxOccurrences": 1,
+                "rationale": "The annotation was improved so this entry must ratchet away.",
+            }
+        ]
+        with fixture_repository({"app/src/fixture.lua": "return {}\n"}, exceptions=stale) as root:
+            unused = run_policy_check(root, scope="production")
+
+        self.assertNotEqual(unused.returncode, 0)
+        self.assertIn("app/src/fixture.lua", unused.stderr)
+        self.assertIn("stale", unused.stderr.lower())
+
     def test_current_first_party_tree_is_clean_under_the_strict_policy(self) -> None:
         result = run_policy_check(REPOSITORY_ROOT)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -11,8 +11,10 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local LuaWriter = require("libs.codec.src.LuaWriter")
+local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
@@ -38,6 +40,101 @@ local function presentationCache()
   return cache
 end
 
+-- The terrain-effect bundle the real terrain renderer acquires during the
+-- boot: one synthetic triangle mesh per effect kind, written into the same
+-- presentation cache the boot reads through.
+local function terrainEffects(cache)
+  cache:write(
+    "test/terrain-grass.mesh",
+    MeshWriter.encode({
+      vertices = {
+        {
+          x = 0,
+          y = 0,
+          z = 0,
+          u = 0,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+        {
+          x = 1,
+          y = 0,
+          z = 0,
+          u = 1,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+        {
+          x = 0,
+          y = 0,
+          z = 1,
+          u = 0,
+          v = 1,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+      },
+      indices = { 0, 1, 2 },
+    })
+  )
+  local function effect()
+    return {
+      model = {
+        dynamic = {
+          nodes = {
+            { name = "root", translation = { 0, 0, 0 }, rotation = { 0, 0, 0 }, scale = { 1, 1, 1 } },
+          },
+          batches = {
+            {
+              id = "grass",
+              nodeIndex = 0,
+              materialIndex = 0,
+              geometry = "test/terrain-grass.mesh",
+              alphaClass = "cutout",
+              cullMode = "back",
+              polygonAlpha = 31,
+              polygonMode = "modulation",
+              polygonId = 0,
+              translucentDepthWrite = false,
+              depthEqual = false,
+              lightMask = 15,
+              fogEnabled = false,
+            },
+          },
+        },
+        materials = { { id = 0, name = "grass", wrap = { x = "clamp", y = "clamp" } } },
+        animations = {},
+      },
+      placementOffset = { x = 0, y = 0, z = 0 },
+    }
+  end
+  return {
+    tall_grass = effect(),
+    very_tall_grass = effect(),
+    trainer_reveal = effect(),
+  }
+end
+
 -- Boots a real FieldState with a stubbed FieldRuntime that carries every
 -- field draw/input touches. The entry cover under test is requested through
 -- the public construction option only; no test-only internal field is set.
@@ -58,6 +155,7 @@ local function boot(withCover)
   })
   local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight })
   local cache = presentationCache()
+  local terrain = terrainEffects(cache)
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
     return setmetatable({
@@ -79,6 +177,13 @@ local function boot(withCover)
           model = { batches = {}, materials = {} },
         },
       },
+      fieldEffectAssets = { effects = terrain },
+      fieldTerrainEffectController = FieldTerrainEffectController.new({
+        effects = terrain,
+        modelFactory = function()
+          error("the terrain model factory is installed by presentation resources", 0)
+        end,
+      }),
       windowStyles = {
         resolve = function() end,
       },
@@ -135,11 +240,6 @@ local function boot(withCover)
           return { visible = false }
         end,
       },
-      fieldTerrainEffectController = {
-        status = function()
-          return {}
-        end,
-      },
       dialogue = {
         isModal = function()
           return false
@@ -192,7 +292,7 @@ local function boot(withCover)
       worlds = worlds + 1
     end,
     release = function() end,
-  }
+  } --[[@as any]]
   return state,
     {
       input = input,

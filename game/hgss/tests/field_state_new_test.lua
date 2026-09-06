@@ -8,11 +8,13 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local LuaWriter = require("libs.codec.src.LuaWriter")
+local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
@@ -36,12 +38,109 @@ local function presentationCache()
   return cache
 end
 
+-- The terrain-effect bundle the real terrain renderer acquires during the
+-- boot: one synthetic triangle mesh per effect kind, written into the same
+-- presentation cache the boot reads through.
+local function terrainEffects(cache)
+  cache:write(
+    "test/terrain-grass.mesh",
+    MeshWriter.encode({
+      vertices = {
+        {
+          x = 0,
+          y = 0,
+          z = 0,
+          u = 0,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+        {
+          x = 1,
+          y = 0,
+          z = 0,
+          u = 1,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+        {
+          x = 0,
+          y = 0,
+          z = 1,
+          u = 0,
+          v = 1,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        },
+      },
+      indices = { 0, 1, 2 },
+    })
+  )
+  local function effect()
+    return {
+      model = {
+        dynamic = {
+          nodes = {
+            { name = "root", translation = { 0, 0, 0 }, rotation = { 0, 0, 0 }, scale = { 1, 1, 1 } },
+          },
+          batches = {
+            {
+              id = "grass",
+              nodeIndex = 0,
+              materialIndex = 0,
+              geometry = "test/terrain-grass.mesh",
+              alphaClass = "cutout",
+              cullMode = "back",
+              polygonAlpha = 31,
+              polygonMode = "modulation",
+              polygonId = 0,
+              translucentDepthWrite = false,
+              depthEqual = false,
+              lightMask = 15,
+              fogEnabled = false,
+            },
+          },
+        },
+        materials = { { id = 0, name = "grass", wrap = { x = "clamp", y = "clamp" } } },
+        animations = {},
+      },
+      placementOffset = { x = 0, y = 0, z = 0 },
+    }
+  end
+  return {
+    tall_grass = effect(),
+    very_tall_grass = effect(),
+    trainer_reveal = effect(),
+  }
+end
+
 -- The stubbed presentation runtime every FieldState boot reads: the cache
 -- and manifest the renderers draw through, the entrance bundle carrying the
 -- compiled surf attachment, and the actor/player edges the draw sync uses.
 local function stubPresentationRuntime(cache)
+  cache = cache or presentationCache()
+  local effects = terrainEffects(cache)
   return setmetatable({
-    cacheFs = cache or presentationCache(),
+    cacheFs = cache,
     uiManifest = FieldUiFixture.manifest(),
     fieldEntranceIndicatorAsset = {
       model = { batches = {}, materials = {} },
@@ -59,6 +158,13 @@ local function stubPresentationRuntime(cache)
         model = { batches = {}, materials = {} },
       },
     },
+    fieldEffectAssets = { effects = effects },
+    fieldTerrainEffectController = FieldTerrainEffectController.new({
+      effects = effects,
+      modelFactory = function()
+        error("the terrain model factory is installed by presentation resources", 0)
+      end,
+    }),
     windowStyles = {
       resolve = function() end,
     },
@@ -159,6 +265,22 @@ function T.state_composes_explicit_presentation_owners()
   state:dispose()
 end
 
+-- Valid production-shaped construction installs the terrain model factory on
+-- the runtime controller: the installed factory resolves through the real
+-- terrain renderer instead of the boot placeholder.
+function T.state_construction_installs_the_terrain_model_factory()
+  local state = bootWithCapturedRuntimeOptions(fieldStateOptions())
+  local factory = state.runtime.fieldTerrainEffectController.modelFactory
+  Assert.isTrue(type(factory) == "function", "presentation construction installs the terrain model factory")
+  local ok, err = pcall(factory, "missing-kind")
+  Assert.isFalse(ok, "the installed factory resolves through the real terrain renderer")
+  Assert.isTrue(
+    tostring(err):find("terrain renderer is missing", 1, true) ~= nil,
+    "the installed factory resolves through the real terrain renderer: " .. tostring(err)
+  )
+  state:dispose()
+end
+
 function T.update_forwards_to_the_runtime()
   local updates = 0
   local state = setmetatable({
@@ -238,6 +360,27 @@ function T.update_after_dispose_is_a_programming_error()
   Assert.throws(function()
     state:update(0.016)
   end)
+end
+
+-- Presentation construction requires the real terrain-effect collaborators:
+-- a runtime without field-effect assets and the terrain-effect controller is
+-- a loud boot failure, never a world with silently missing terrain effects.
+function T.state_construction_fails_when_terrain_effect_collaborators_are_missing()
+  local originalNew = FieldRuntime.new
+  FieldRuntime.new = function(_, _)
+    local runtime = stubPresentationRuntime(presentationCache())
+    runtime.fieldEffectAssets = nil
+    runtime.fieldTerrainEffectController = nil
+    return runtime
+  end
+  local game = { saveId = "save-00000001", versionId = "heartgold" }
+  local ok, err = pcall(FieldState.new, game, fieldStateOptions())
+  FieldRuntime.new = originalNew
+  Assert.isFalse(ok, "missing terrain-effect collaborators must fail the boot")
+  Assert.isTrue(
+    tostring(err):find("terrain-effect", 1, true) ~= nil or tostring(err):find("terrain effect", 1, true) ~= nil,
+    "a missing terrain-effect collaborator must fail loudly: " .. tostring(err)
+  )
 end
 
 return { tests = T }

@@ -338,7 +338,7 @@ function T.field_state_draw_sends_same_scale_to_both_renderers()
         gotDialogue = c
       end
     end,
-  }
+  } --[[@as any]]
   local presentationResources = state.presentationResources --[[@as any]]
   presentationResources.signpostRenderer = {
     draw = function(_, a, b, c, d)

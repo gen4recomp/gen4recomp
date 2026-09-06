@@ -89,7 +89,7 @@ function FieldState.new(game, options)
     _entryAccumulator = 0,
   }, FieldState)
   local ok, err = pcall(function()
-    self.presentationResources = FieldPresentationResources.new(runtime)
+    self.presentationResources = FieldPresentationResources.new(runtime --[[@as FieldPresentationResourcesRuntime]])
     local width, height = love.graphics.getDimensions()
     -- The initial presentation-geometry sync: pointer input must work
     -- before the user has resized the window, so the runtime computes and
@@ -100,7 +100,7 @@ function FieldState.new(game, options)
       local font = love.graphics.getFont() --[[@as FieldState.Font]]
       return font:getWidth(text)
     end)
-    self.actorPresentation = FieldActorPresentation.new(runtime)
+    self.actorPresentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]])
     self.actorPresentation:sync()
   end)
   if not ok then
