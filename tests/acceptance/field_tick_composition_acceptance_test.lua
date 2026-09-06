@@ -19,7 +19,7 @@ local T = {
 local TOWN = "MAP_NEW_BARK"
 local LAB_1F = "MAP_NEW_BARK_ELMS_LAB_1F"
 local ELM_ACTOR_ID = "map:61:object:0"
-local VAR_SCENE_ELMS_LAB = FieldScriptSymbols.variablesByName.VAR_SCENE_ELMS_LAB
+local FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE = FieldScriptSymbols.flagsByName.FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE
 
 local function labHarness()
   return AcceptanceHarness.new({
@@ -66,15 +66,26 @@ local function recordsNamed(game, name)
   return records
 end
 
-local function stepExactlyOnce(game)
+local function stepExactlyOnce(game, direction)
   local before = game:snapshot()
-  local after
-  if before.dialogue.modal then
+  local advanceDialogue = before.dialogue.modal
+  if advanceDialogue then
     game.runtime:pressAction()
-    after = game:step()
+  end
+  if direction ~= nil then
+    game.runtime:press(direction)
+  end
+  local ok, after = pcall(function()
+    return game:step()
+  end)
+  if direction ~= nil then
+    game.runtime:release(direction)
+  end
+  if advanceDialogue then
     game.runtime:releaseAction()
-  else
-    after = game:step()
+  end
+  if not ok then
+    error(after, 0)
   end
   Assert.equal(after.tick, before.tick + 1, "one production harness step must execute one field tick")
   return before, after
@@ -91,12 +102,23 @@ function T.tests.foreground_field_script_preserves_phase_ownership_and_tick_cade
     end, 60)
     local starts = recordsNamed(game, "script.started")
     Assert.equal(#starts, baselineStarts + 1, "the field-entry interaction must start one foreground script")
-    local playerAtStart = game:snapshot().player
+    -- The selected start pins the lab script's north walk: scripted movement
+    -- keeps X at 4 while stepping Z from 10 to 7 under the field lock, so an
+    -- injected ordinary east step would stand out as X drift.
+    local startPlayer = game:snapshot().player
+    Assert.equal(startPlayer.fieldX, 4, "the scene setup must select the north-walk start column")
+    Assert.equal(startPlayer.fieldZ, 10, "the scene setup must select the north-walk start row")
+    local sawScriptedPlayerMovement = false
     local sawActorMovement = false
     local completed = false
 
     for _ = 1, 600 do
-      local before, after = stepExactlyOnce(game)
+      local before, after
+      if game:snapshot().fieldLocked then
+        before, after = stepExactlyOnce(game, "east")
+      else
+        before, after = stepExactlyOnce(game)
+      end
       if after.fieldLocked then
         local elm = assert(after.actors[ELM_ACTOR_ID], "the foreground field script must retain its actor world")
         if before.actors[ELM_ACTOR_ID] then
@@ -107,23 +129,29 @@ function T.tests.foreground_field_script_preserves_phase_ownership_and_tick_cade
         end
         Assert.equal(
           after.player.fieldX,
-          playerAtStart.fieldX,
-          "script ownership must precede ordinary player input for the tick"
+          startPlayer.fieldX,
+          "ordinary east input must not move the player while the script owns input"
         )
-        Assert.equal(
-          after.player.fieldZ,
-          playerAtStart.fieldZ,
-          "script ownership must keep ordinary player movement frozen"
-        )
+        if after.player.fieldZ ~= startPlayer.fieldZ then
+          sawScriptedPlayerMovement = true
+        end
       end
-      if not after.fieldLocked and game.runtime.scripts.worldState:getVar(VAR_SCENE_ELMS_LAB) == 1 then
+      if not after.fieldLocked and after.foregroundScript == nil then
         completed = true
         break
       end
     end
 
+    Assert.isTrue(sawScriptedPlayerMovement, "the script-owned player walk must advance while the field is locked")
     Assert.isTrue(sawActorMovement, "the production script phase must still advance actor presentation")
     Assert.isTrue(completed, "the foreground field script must reach its source completion boundary")
+    Assert.isTrue(
+      game.runtime.scripts.worldState:isFlagSet(FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE),
+      "the started script must set its durable completion flag before releasing the field"
+    )
+    local finalPlayer = game:snapshot().player
+    Assert.equal(finalPlayer.fieldX, 4, "the scripted walk must keep the start column")
+    Assert.equal(finalPlayer.fieldZ, 7, "the scripted walk must reach the end of the north path")
     Assert.isFalse(game:snapshot().fieldLocked, "script completion must release field ownership")
     Assert.equal(#recordsNamed(game, "script.started"), baselineStarts + 1)
   end)
