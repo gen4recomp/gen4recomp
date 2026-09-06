@@ -473,6 +473,117 @@ return fixtures
         self.assertIn("app/src/fixture.lua", unused.stderr)
         self.assertIn("stale", unused.stderr.lower())
 
+    def test_explicit_any_supported_type_surfaces_find_builtin_any(self) -> None:
+        positive_forms = (
+            ("---@param value any", "param", 1),
+            ("---@alias Name any", "alias", 1),
+            ("---@cast value any", "cast", 1),
+            ("---@cast value +any", "cast", 1),
+            ("---@cast value -any", "cast", 1),
+            ("---@class Child: any", "class", 1),
+            ("---@class Child: Base, any", "class", 1),
+            ("---@field value any", "field", 1),
+            ("---@generic T: any", "generic", 1),
+            ("---@generic T: any, U: any", "generic", 2),
+            ("---@operator add(any): integer", "operator", 1),
+            ("---@overload fun(value: string): any", "overload", 1),
+            ("---@overload fun(callback: fun(value: any)): string", "overload", 1),
+            ("---@return any", "return", 1),
+            ("---@type any", "type", 1),
+            ("---@vararg any", "vararg", 1),
+            ("local value = source --[[@as any]]", "as", 1),
+            ("local values = source --[=[@as any[]]=]", "as", 1),
+            ("local value = source --[[@as any]] .. source --[[@as any]]", "as", 2),
+        )
+        for source, expected_annotation, expected_count in positive_forms:
+            with self.subTest(source=source):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "fixture.lua"
+                    path.write_text(source + "\n", encoding="utf-8")
+                    findings = POLICY.scan_file(path)
+
+                explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+                self.assertEqual(len(explicit), expected_count)
+                for finding in explicit:
+                    self.assertEqual(finding["annotation"], expected_annotation)
+                    self.assertEqual(finding["type"], "any")
+                    self.assertEqual(finding["line"], 1)
+
+    def test_explicit_any_ignores_names_prose_literals_and_identifiers(self) -> None:
+        negative_forms = (
+            "---@param value unknown",
+            "---@param value ManyValues",
+            "---@param value string accepts any value",
+            "---@generic any",
+            "---@generic T: string",
+            "---@class any: Base",
+            "---@alias Token \"any\" | \"other\"",
+            "---@alias Token `any`",
+            "local anything = 1",
+            "local company = 1",
+            "local value = source --[[@as string]]",
+            "local value = source --[[not an assertion]]",
+            "local value = source --[=[@as any]]",
+        )
+        for source in negative_forms:
+            with self.subTest(source=source):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "fixture.lua"
+                    path.write_text(source + "\n", encoding="utf-8")
+                    findings = POLICY.scan_file(path)
+
+                explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+                self.assertEqual(explicit, [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fixture.lua"
+            path.write_text("---@param value table\n", encoding="utf-8")
+            findings = POLICY.scan_file(path)
+        bare = [finding for finding in findings if finding["kind"] == "bare-table"]
+        explicit = [finding for finding in findings if finding["kind"] == "explicit-any"]
+        self.assertEqual(len(bare), 1)
+        self.assertEqual(explicit, [])
+
+    def test_production_mixed_inline_and_full_line_any_share_exact_inventory(self) -> None:
+        source = (
+            "---@param value any\n"
+            "local value = source --[[@as any]]\n"
+            "return {}\n"
+        )
+
+        def entry(maximum: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "scope": "production",
+                    "path": "app/src/fixture.lua",
+                    "category": "explicit-any",
+                    "maxOccurrences": maximum,
+                    "rationale": "Legacy production type debt carried from before this change.",
+                }
+            ]
+
+        with fixture_repository({"app/src/fixture.lua": source}, exceptions=entry(2)) as root:
+            exact = run_policy_check(root, scope="production")
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+
+        with fixture_repository({"app/src/fixture.lua": source}, exceptions=entry(1)) as root:
+            exceeded = run_policy_check(root, scope="production")
+        self.assertNotEqual(exceeded.returncode, 0)
+        self.assertIn("app/src/fixture.lua", exceeded.stderr)
+        self.assertIn("occurrence", exceeded.stderr.lower())
+
+        with fixture_repository({"app/src/fixture.lua": source}, exceptions=[]) as root:
+            missing = run_policy_check(root, scope="production")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("app/src/fixture.lua", missing.stderr)
+        self.assertIn("explicit-any", missing.stderr)
+
+        with fixture_repository({"app/src/fixture.lua": "return {}\n"}, exceptions=entry(2)) as root:
+            stale = run_policy_check(root, scope="production")
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("app/src/fixture.lua", stale.stderr)
+        self.assertIn("stale", stale.stderr.lower())
+
     def test_current_first_party_tree_is_clean_under_the_strict_policy(self) -> None:
         result = run_policy_check(REPOSITORY_ROOT)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -15,7 +15,6 @@ from typing import Any
 _ANNOTATION = re.compile(r"^\s*---@([A-Za-z][\w-]*)(?:\s+(.*))?$")
 _DIRECTIVE = re.compile(r"^\s*---@diagnostic\b(.*)$")
 _BARE_TABLE = re.compile(r"(?<![A-Za-z0-9_])table(?![A-Za-z0-9_<\[])")
-_EXPLICIT_ANY = re.compile(r"(?<![A-Za-z0-9_])any(?![A-Za-z0-9_])")
 _POLICY_DEBT_CATEGORIES = {"explicit-any"}
 _VALID_DIRECTIVE_STATES = {"disable", "disable-next-line", "enable", "enable-next-line"}
 _HARD_BANNED_CATEGORIES = {
@@ -53,6 +52,361 @@ def _load_scope_module():
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)
     return module
+
+
+def _consume_suffixes(text: str, index: int) -> int:
+    total = len(text)
+    while index < total:
+        if text[index] == "?":
+            index += 1
+        elif text[index] == "[" and index + 1 < total and text[index + 1] == "]":
+            index += 2
+        else:
+            break
+    return index
+
+
+def _consume_balanced(text: str, start: int, opener: str, closer: str) -> int | None:
+    if start >= len(text) or text[start] != opener:
+        return None
+    depth = 0
+    index = start
+    total = len(text)
+    while index < total:
+        char = text[index]
+        if char in "\"'`":
+            quote = char
+            index += 1
+            while index < total:
+                if quote in "\"'" and text[index] == "\\" and index + 1 < total:
+                    index += 2
+                    continue
+                if text[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if char == opener:
+            depth += 1
+            index += 1
+            continue
+        if char == closer:
+            depth -= 1
+            index += 1
+            if depth == 0:
+                return index
+            continue
+        index += 1
+    return None
+
+
+def _consume_type(text: str, index: int) -> int | None:
+    total = len(text)
+    while index < total and text[index].isspace():
+        index += 1
+    if index >= total:
+        return None
+    if text[index] in "\"'`":
+        end = _consume_balanced(text, index, text[index], text[index])
+        if end is None:
+            return None
+        return _consume_suffixes(text, end)
+    if text.startswith("fun", index) and (
+        index + 3 >= total or (not text[index + 3].isalnum() and text[index + 3] != "_")
+    ):
+        index += 3
+        while index < total and text[index].isspace():
+            index += 1
+        if index >= total or text[index] != "(":
+            return None
+        end = _consume_balanced(text, index, "(", ")")
+        if end is None:
+            return None
+        index = end
+        cursor = index
+        while cursor < total and text[cursor].isspace():
+            cursor += 1
+        if cursor < total and text[cursor] == ":":
+            nested = _consume_type_list(text, cursor + 1, allow_comma=True)
+            if nested is None:
+                return None
+            return nested
+        return _consume_suffixes(text, index)
+    if text[index] in "{(":
+        opener = text[index]
+        closer = "}" if opener == "{" else ")"
+        end = _consume_balanced(text, index, opener, closer)
+        if end is None:
+            return None
+        return _consume_suffixes(text, end)
+    if text.startswith("...", index):
+        return _consume_suffixes(text, index + 3)
+    if text[index].isalpha() or text[index] == "_":
+        while index < total and (text[index].isalnum() or text[index] in "_."):
+            index += 1
+        cursor = index
+        while cursor < total and text[cursor].isspace():
+            cursor += 1
+        if cursor < total and text[cursor] == "<":
+            end = _consume_balanced(text, cursor, "<", ">")
+            if end is None:
+                return None
+            index = end
+        return _consume_suffixes(text, index)
+    return None
+
+
+def _consume_type_list(text: str, index: int, *, allow_comma: bool) -> int | None:
+    end = _consume_type(text, index)
+    if end is None:
+        return None
+    total = len(text)
+    while True:
+        cursor = end
+        while cursor < total and text[cursor].isspace():
+            cursor += 1
+        if cursor < total and text[cursor] in "|&":
+            candidate = _consume_type(text, cursor + 1)
+            if candidate is None:
+                break
+            end = candidate
+            continue
+        if allow_comma and cursor < total and text[cursor] == ",":
+            candidate = _consume_type(text, cursor + 1)
+            if candidate is None:
+                break
+            end = candidate
+            continue
+        break
+    return end
+
+
+def _leading_type_prefix(text: str, *, allow_comma: bool) -> str:
+    end = _consume_type_list(text, 0, allow_comma=allow_comma)
+    if end is None:
+        return ""
+    return text[:end]
+
+
+def _scan_depth(text: str, index: int, depth: dict[str, int]) -> bool:
+    for opener, closer in (("<", ">"), ("{", "}"), ("(", ")"), ("[", "]")):
+        if text[index] == opener:
+            depth[opener] += 1
+            return True
+        if text[index] == closer:
+            depth[opener] -= 1
+            return True
+    return False
+
+
+def _find_top_level_char(text: str, target: str) -> int | None:
+    depth: dict[str, int] = {"<": 0, "{": 0, "(": 0, "[": 0}
+    index = 0
+    total = len(text)
+    while index < total:
+        char = text[index]
+        if char in "\"'`":
+            quote = char
+            index += 1
+            while index < total:
+                if quote in "\"'" and text[index] == "\\" and index + 1 < total:
+                    index += 2
+                    continue
+                if text[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if _scan_depth(text, index, depth):
+            index += 1
+            continue
+        if char == target and all(value == 0 for value in depth.values()):
+            return index
+        index += 1
+    return None
+
+
+def _split_top_level(text: str, separator: str) -> list[str]:
+    parts: list[str] = []
+    depth: dict[str, int] = {"<": 0, "{": 0, "(": 0, "[": 0}
+    current: list[str] = []
+    index = 0
+    total = len(text)
+    while index < total:
+        char = text[index]
+        if char in "\"'`":
+            quote = char
+            current.append(char)
+            index += 1
+            while index < total:
+                current.append(text[index])
+                if quote in "\"'" and text[index] == "\\" and index + 1 < total:
+                    current.append(text[index + 1])
+                    index += 2
+                    continue
+                if text[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if _scan_depth(text, index, depth):
+            current.append(char)
+            index += 1
+            continue
+        if char == separator and all(value == 0 for value in depth.values()):
+            parts.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return parts
+
+
+def _find_matching_bracket(text: str, start: int, opener: str, closer: str) -> int | None:
+    end = _consume_balanced(text, start, opener, closer)
+    if end is None:
+        return None
+    return end - 1
+
+
+def _count_any_in_region(region: str) -> int:
+    count = 0
+    index = 0
+    total = len(region)
+    while index < total:
+        char = region[index]
+        if char in "\"'`":
+            quote = char
+            index += 1
+            while index < total:
+                if quote in "\"'" and region[index] == "\\" and index + 1 < total:
+                    index += 2
+                    continue
+                if region[index] == quote:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if region.startswith("any", index):
+            previous = region[index - 1] if index > 0 else ""
+            following = region[index + 3] if index + 3 < total else ""
+            if (previous == "" or (not previous.isalnum() and previous != "_")) and (
+                following == "" or (not following.isalnum() and following != "_")
+            ):
+                count += 1
+                index += 3
+                continue
+        index += 1
+    return count
+
+
+def _explicit_any_regions(tag: str, payload: str) -> list[str]:
+    text = (payload or "").strip()
+    if tag == "param":
+        fields = text.split(None, 1)
+        if len(fields) < 2:
+            return []
+        prefix = _leading_type_prefix(fields[1], allow_comma=False)
+        return [prefix] if prefix else []
+    if tag == "field":
+        rest = text
+        scoped = re.match(r"^(?:public|private|protected)\s+(.*)$", rest, re.DOTALL)
+        if scoped is not None:
+            rest = scoped.group(1).strip()
+        if not rest:
+            return []
+        if rest.startswith("["):
+            closing = _find_matching_bracket(rest, 0, "[", "]")
+            if closing is None:
+                return []
+            regions: list[str] = []
+            key = rest[1:closing].strip()
+            if key:
+                regions.append(key)
+            after = rest[closing + 1 :].strip()
+            if after:
+                prefix = _leading_type_prefix(after, allow_comma=False)
+                if prefix:
+                    regions.append(prefix)
+            return regions
+        fields = rest.split(None, 1)
+        if len(fields) < 2:
+            return []
+        prefix = _leading_type_prefix(fields[1], allow_comma=False)
+        return [prefix] if prefix else []
+    if tag in {"return", "type", "vararg"}:
+        if not text:
+            return []
+        prefix = _leading_type_prefix(text, allow_comma=True)
+        return [prefix] if prefix else []
+    if tag == "alias":
+        fields = text.split(None, 1)
+        if len(fields) < 2:
+            return []
+        return [fields[1]]
+    if tag == "cast":
+        fields = text.split(None, 1)
+        if len(fields) < 2:
+            return []
+        return [fields[1]]
+    if tag == "class":
+        colon = _find_top_level_char(text, ":")
+        if colon is None:
+            return []
+        parents = text[colon + 1 :].strip()
+        return [parents] if parents else []
+    if tag == "generic":
+        if not text:
+            return []
+        regions = []
+        for part in _split_top_level(text, ","):
+            candidate = part.strip()
+            if not candidate:
+                continue
+            colon = _find_top_level_char(candidate, ":")
+            if colon is None:
+                continue
+            bound = candidate[colon + 1 :].strip()
+            if bound:
+                regions.append(bound)
+        return regions
+    if tag in {"operator", "overload"}:
+        return [text] if text else []
+    return []
+
+
+def _inline_as_types(line: str) -> list[str]:
+    asserted: list[str] = []
+    index = 0
+    total = len(line)
+    while True:
+        start = line.find("--[", index)
+        if start == -1:
+            break
+        cursor = start + 3
+        level = 0
+        while cursor < total and line[cursor] == "=":
+            level += 1
+            cursor += 1
+        if cursor >= total or line[cursor] != "[":
+            index = start + 1
+            continue
+        content_start = cursor + 1
+        closer = "]" + "=" * level + "]"
+        end = line.find(closer, content_start)
+        if end == -1:
+            index = start + 1
+            continue
+        content = line[content_start:end]
+        stripped = content.lstrip()
+        if stripped.startswith("@as") and (len(stripped) == 3 or stripped[3].isspace()):
+            asserted_type = stripped[3:].strip()
+            if asserted_type:
+                asserted.append(asserted_type)
+        index = end + len(closer)
+    return asserted
 
 
 def _type_text(tag: str, payload: str) -> str:
@@ -105,13 +459,20 @@ def scan_file(path: Path) -> list[dict[str, Any]]:
             continue
         annotation = _ANNOTATION.match(line)
         if annotation is None:
+            for asserted in _inline_as_types(line):
+                for _ in range(_count_any_in_region(asserted)):
+                    findings.append(_finding(path, line_number, "explicit-any", annotation="as", type="any"))
             continue
         tag, payload = annotation.groups()
         type_text = _type_text(tag, payload or "")
         if _BARE_TABLE.search(type_text) is not None:
             findings.append(_finding(path, line_number, "bare-table", annotation=tag, type="table"))
-        if _EXPLICIT_ANY.search(type_text) is not None:
-            findings.append(_finding(path, line_number, "explicit-any", annotation=tag, type="any"))
+        for region in _explicit_any_regions(tag, payload or ""):
+            for _ in range(_count_any_in_region(region)):
+                findings.append(_finding(path, line_number, "explicit-any", annotation=tag, type="any"))
+        for asserted in _inline_as_types(line):
+            for _ in range(_count_any_in_region(asserted)):
+                findings.append(_finding(path, line_number, "explicit-any", annotation="as", type="any"))
     return findings
 
 
