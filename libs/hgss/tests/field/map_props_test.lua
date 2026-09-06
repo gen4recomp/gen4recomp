@@ -95,8 +95,11 @@ end
 -- A placement record in the scene shape: transform + the model-space AABB
 -- (footprint) the loader stamps from the model's geometry. The precomputed
 -- ownership index resolves by pivot (transform translation), so bounds no
--- longer participate in the door lookup.
-local function placement(index, modelKey, wx, wz, halfExtent, doorSoundType)
+-- longer participate in the door lookup. `doorSoundType`/`doorRoles` carry
+-- the generated door semantics FieldMapLoader reads off the model
+-- descriptor (see ModelDoorMetadata); a nil `doorRoles` means the model
+-- owns no door.open/door.close animation role.
+local function placement(index, modelKey, wx, wz, halfExtent, doorSoundType, doorRoles)
   return {
     placementIndex = index,
     modelKey = modelKey,
@@ -110,7 +113,26 @@ local function placement(index, modelKey, wx, wz, halfExtent, doorSoundType)
       maxZ = halfExtent,
     } or nil,
     doorSoundType = doorSoundType,
+    doorRoles = doorRoles,
   }
+end
+
+-- Generated door semantics for a synthetic tied placement: a door.open role
+-- that finishes after 3 ticks and a door.close role that finishes after 5,
+-- so the selected owner's playback proves which role durations were kept.
+local function semanticRoles()
+  return { open = { frameCount = 3 }, close = { frameCount = 5 } }
+end
+
+-- Reads one role duration out of a candidate's compact role summary,
+-- accepting either the full generated shape ({ open = { frameCount = n } })
+-- or a bare numeric shorthand ({ open = n }).
+local function roleFrameCount(summary, role)
+  local entry = summary[role]
+  if type(entry) == "table" then
+    return entry.frameCount
+  end
+  return entry
 end
 
 -- The default door fixture scene: the door model (a 2x2-tile footprint) is
@@ -289,13 +311,13 @@ function T.door_at_finish_state_does_not_depend_on_handle_identity()
   Assert.isTrue(fresh:isFinished(), "a freshly resolved handle sees the finished role")
 end
 
-function T.assembly_raises_when_two_placements_own_the_same_door_tile()
+function T.assembly_raises_when_two_semantic_owners_claim_the_same_door_tile()
   local wx, wz = tileCenterWorld(4, 14)
   throwsCode("MAP_PROP_AMBIGUOUS_DOOR", function()
     return MapProps.new({
       placements = {
-        placement(0, "fixture:door", wx, wz, 1),
-        placement(1, "fixture:door2", wx, wz, 1),
+        placement(0, "fixture:door", wx, wz, 1, 1, semanticRoles()),
+        placement(1, "fixture:door2", wx, wz, 1, 2, semanticRoles()),
       },
       instances = {},
       doorTiles = { { x = 4, z = 14 } },
@@ -303,11 +325,12 @@ function T.assembly_raises_when_two_placements_own_the_same_door_tile()
   end)
 end
 
-function T.assembly_raises_when_two_placements_tie_for_a_door_tile()
+function T.assembly_raises_when_two_semantic_owners_tie_for_a_door_tile()
   local wx, wz = tileCenterWorld(4, 14)
   -- Two placements equidistant from the door tile (here: the same pivot)
-  -- are ambiguous regardless of their footprints: a pivot tie is diagnosed
-  -- once at assembly, not at the first lookup.
+  -- that both claim door semantics are genuinely ambiguous regardless of
+  -- their footprints: the tie is diagnosed once at assembly, not at the
+  -- first lookup.
   local slab = {
     minX = -0.3,
     maxX = 0,
@@ -322,6 +345,8 @@ function T.assembly_raises_when_two_placements_tie_for_a_door_tile()
       modelKey = key,
       transform = Matrix4.translate(wx, 0, wz),
       bounds = slab,
+      doorSoundType = 1,
+      doorRoles = semanticRoles(),
     }
   end
   throwsCode("MAP_PROP_AMBIGUOUS_DOOR", function()
@@ -374,17 +399,18 @@ end
 
 -- The ambiguity epsilon: transform translations are float products, not
 -- integers, so two placements whose pivot distances differ by a hair are a
--- genuine tie -- the assembly raises MAP_PROP_AMBIGUOUS_DOOR instead of
--- silently resolving the float near-miss. (The epsilon must stay below the
--- smallest real non-tie gap, 0.01171875 squared tiles.)
-function T.assembly_raises_for_a_near_tie_within_the_ambiguity_epsilon()
+-- genuine tie when both claim door semantics -- the assembly raises
+-- MAP_PROP_AMBIGUOUS_DOOR instead of silently resolving the float
+-- near-miss. (The epsilon must stay below the smallest real non-tie gap,
+-- 0.01171875 squared tiles.)
+function T.assembly_raises_for_a_semantic_near_tie_within_the_ambiguity_epsilon()
   local wx, wz = tileCenterWorld(4, 14)
   local eps = 1e-6
   throwsCode("MAP_PROP_AMBIGUOUS_DOOR", function()
     return MapProps.new({
       placements = {
-        placement(0, "fixture:door", wx + 0.65, wz - 0.26, 1),
-        placement(1, "fixture:door2", wx + 0.65 + eps, wz - 0.26, 1),
+        placement(0, "fixture:door", wx + 0.65, wz - 0.26, 1, 1, semanticRoles()),
+        placement(1, "fixture:door2", wx + 0.65 + eps, wz - 0.26, 1, 2, semanticRoles()),
       },
       instances = {},
       doorTiles = { { x = 4, z = 14 } },
@@ -427,23 +453,177 @@ function T.assembly_resolves_a_near_tie_beyond_the_ambiguity_epsilon()
   Assert.equal(door.placementIndex, 0, "the nearer placement wins outside the ambiguity window")
 end
 
--- The ambiguity window is symmetric: a within-epsilon pair raises even when
--- the NEARER placement is processed second -- a tie is a tie in either
--- order, never resolved to whichever candidate the placement list happened
--- to enumerate first.
-function T.assembly_raises_for_a_near_tie_when_the_nearer_placement_comes_second()
+-- The ambiguity window is symmetric: a within-epsilon pair of semantic
+-- owners raises even when the NEARER placement is processed second -- a tie
+-- is a tie in either order, never resolved to whichever candidate the
+-- placement list happened to enumerate first.
+function T.assembly_raises_for_a_semantic_near_tie_when_the_nearer_placement_comes_second()
   local wx, wz = tileCenterWorld(4, 14)
   local eps = 1e-6
   throwsCode("MAP_PROP_AMBIGUOUS_DOOR", function()
     return MapProps.new({
       placements = {
-        placement(0, "fixture:door", wx + 0.65 + eps, wz - 0.26, 1),
-        placement(1, "fixture:door2", wx + 0.65, wz - 0.26, 1),
+        placement(0, "fixture:door", wx + 0.65 + eps, wz - 0.26, 1, 1, semanticRoles()),
+        placement(1, "fixture:door2", wx + 0.65, wz - 0.26, 1, 2, semanticRoles()),
       },
       instances = {},
       doorTiles = { { x = 4, z = 14 } },
     })
   end)
+end
+
+-- A geometric tie with exactly one semantic owner resolves to that owner in
+-- either placement order: inside the tie window geometry cannot tell the
+-- candidates apart, so the generated door semantics decide. The static
+-- candidate stays exactly on the tile centre here, microscopically nearer
+-- than the offset semantic candidate in the near-tie pass, and must still
+-- lose. The epsilon near-tie takes the same semantic path as the exact tie.
+function T.tied_door_selects_the_only_semantic_owner_in_either_order()
+  local wx, wz = tileCenterWorld(4, 14)
+  for _, offset in ipairs({ 0, 1e-6 }) do
+    for _, semanticFirst in ipairs({ true, false }) do
+      local static = placement(0, "fixture:static", wx, wz, 1)
+      local semantic = placement(1, "fixture:animated-door", wx + offset, wz, 1, 1, semanticRoles())
+      local placements = semanticFirst and { semantic, static } or { static, semantic }
+      local props = MapProps.new({
+        placements = placements,
+        instances = {},
+        doorTiles = { { x = 4, z = 14 } },
+      })
+      local where = "offset " .. offset .. " semanticFirst " .. tostring(semanticFirst)
+      local door = assert(props:doorAt(doorMap(), 4, 14), "the semantic owner resolves (" .. where .. ")")
+      Assert.equal(door.placementIndex, 1, "the semantic placement wins regardless of order (" .. where .. ")")
+      Assert.equal(door.modelKey, "fixture:animated-door", "the semantic model wins (" .. where .. ")")
+      Assert.isNil(door.instance)
+      Assert.equal(door:open(), "SEQ_SE_DP_DOOR_OPEN", "sound comes from the semantic sound type (" .. where .. ")")
+      Assert.isFalse(door:isFinished(), "the semantic open duration is not immediate (" .. where .. ")")
+      props:updateFixed()
+      props:updateFixed()
+      Assert.isFalse(door:isFinished(), "the open role is not done before its frame count (" .. where .. ")")
+      props:updateFixed()
+      Assert.isTrue(door:isFinished(), "the open role finishes at its frame count (" .. where .. ")")
+      Assert.equal(door:close(), "SEQ_SE_DP_DOOR_CLOSE2", "close sound comes from the semantic sound type")
+      Assert.isFalse(door:isFinished(), "the close role restarts its own duration")
+      for _ = 1, 4 do
+        props:updateFixed()
+      end
+      Assert.isFalse(door:isFinished(), "the close role has its own longer duration")
+      props:updateFixed()
+      Assert.isTrue(door:isFinished(), "the close role finishes at its own frame count")
+    end
+  end
+end
+
+-- A geometric tie with no semantic owner is a static door that invents no
+-- placement ownership, while a tie where two placements both claim door
+-- semantics stays a diagnosable ambiguity.
+function T.tied_doors_without_semantics_resolve_statically_while_two_semantic_owners_conflict()
+  local wx, wz = tileCenterWorld(4, 14)
+  -- No semantic owner: the tile resolves to a static handle with no
+  -- placement identity, no sound, and nothing to wait for.
+  local props = MapProps.new({
+    placements = {
+      placement(0, "fixture:static-a", wx, wz, 1),
+      placement(1, "fixture:static-b", wx, wz, 1),
+    },
+    instances = {},
+    doorTiles = { { x = 4, z = 14 } },
+  })
+  local door = assert(props:doorAt(doorMap(), 4, 14), "a tie with no semantic owner still resolves")
+  Assert.isNil(door.placementIndex, "a static tie invents no placement owner")
+  Assert.isNil(door.modelKey, "a static tie invents no model owner")
+  Assert.isNil(door.instance)
+  Assert.isNil(door:open(), "a static tie plays no sound")
+  Assert.isNil(door:close(), "a static tie plays no sound")
+  Assert.isNil(door:isFinished(), "a static tie has nothing to wait for")
+  local fresh = assert(props:doorAt(doorMap(), 4, 14), "a static tie resolves on every lookup")
+  Assert.isNil(fresh.placementIndex)
+  Assert.isNil(fresh:isFinished())
+  -- An epsilon near-tie without semantics takes the same static path.
+  local nearProps = MapProps.new({
+    placements = {
+      placement(0, "fixture:static-a", wx, wz, 1),
+      placement(1, "fixture:static-b", wx + 1e-6, wz, 1),
+    },
+    instances = {},
+    doorTiles = { { x = 4, z = 14 } },
+  })
+  local nearDoor = assert(nearProps:doorAt(doorMap(), 4, 14), "a near-tie with no semantic owner still resolves")
+  Assert.isNil(nearDoor.placementIndex)
+  Assert.isNil(nearDoor.modelKey)
+  Assert.isNil(nearDoor:isFinished())
+  -- Two semantic owners: a genuine ambiguity whose context names every tied
+  -- candidate with placement identity, pivot distance, sound identity, and
+  -- role durations, ordered by placement index regardless of input order.
+  for _, swap in ipairs({ false, true }) do
+    local first = placement(0, "fixture:door-a", wx, wz, 1, 1, semanticRoles())
+    local second = placement(1, "fixture:door-b", wx, wz, 1, 2, semanticRoles())
+    local err = Assert.throws(function()
+      return MapProps.new({
+        placements = swap and { second, first } or { first, second },
+        instances = {},
+        doorTiles = { { x = 4, z = 14 } },
+      })
+    end)
+    local where = "swap " .. tostring(swap)
+    Assert.equal(err.code, "MAP_PROP_AMBIGUOUS_DOOR", "two semantic owners stay ambiguous (" .. where .. ")")
+    Assert.equal(err.context.x, 4, "ambiguity names the tile x (" .. where .. ")")
+    Assert.equal(err.context.z, 14, "ambiguity names the tile z (" .. where .. ")")
+    local candidates = assert(err.context.candidates, "ambiguity names its tied candidates (" .. where .. ")")
+    Assert.equal(#candidates, 2, "ambiguity names both candidates (" .. where .. ")")
+    Assert.equal(candidates[1].placementIndex, 0, "candidates order by placement index (" .. where .. ")")
+    Assert.equal(candidates[2].placementIndex, 1, "candidates order by placement index (" .. where .. ")")
+    Assert.equal(candidates[1].modelKey, "fixture:door-a")
+    Assert.equal(candidates[2].modelKey, "fixture:door-b")
+    Assert.equal(candidates[1].doorSoundType, 1)
+    Assert.equal(candidates[2].doorSoundType, 2)
+    for _, candidate in ipairs(candidates) do
+      Assert.equal(type(candidate.distance), "number", "candidate carries its pivot distance (" .. where .. ")")
+      local roles =
+        assert(candidate.doorRoles or candidate.roles, "candidate carries its door-role summary (" .. where .. ")")
+      Assert.equal(type(roleFrameCount(roles, "open")), "number", "candidate names its open duration")
+      Assert.equal(type(roleFrameCount(roles, "close")), "number", "candidate names its close duration")
+    end
+  end
+end
+
+-- A geometric tie with one semantic owner among several static
+-- candidates still resolves to that owner: the rule counts semantic
+-- candidates, not tie-set size.
+function T.tied_door_with_one_semantic_owner_among_many_static_candidates()
+  local wx, wz = tileCenterWorld(4, 14)
+  local props = MapProps.new({
+    placements = {
+      placement(0, "fixture:static-a", wx, wz, 1),
+      placement(1, "fixture:static-b", wx, wz, 1),
+      placement(2, "fixture:animated-door", wx, wz, 1, 1, semanticRoles()),
+      placement(3, "fixture:static-c", wx, wz, 1),
+    },
+    instances = {},
+    doorTiles = { { x = 4, z = 14 } },
+  })
+  local door = assert(props:doorAt(doorMap(), 4, 14))
+  Assert.equal(door.placementIndex, 2)
+  Assert.equal(door.modelKey, "fixture:animated-door")
+end
+
+-- Two semantic owners stay ambiguous even when they carry identical role
+-- durations and sound identity: the runtime must not assume tied
+-- presentation owners are interchangeable.
+function T.tied_doors_with_identical_semantics_stay_ambiguous()
+  local wx, wz = tileCenterWorld(4, 14)
+  local err = Assert.throws(function()
+    return MapProps.new({
+      placements = {
+        placement(0, "fixture:door-a", wx, wz, 1, 1, semanticRoles()),
+        placement(1, "fixture:door-b", wx, wz, 1, 1, semanticRoles()),
+      },
+      instances = {},
+      doorTiles = { { x = 4, z = 14 } },
+    })
+  end)
+  Assert.equal(err.code, "MAP_PROP_AMBIGUOUS_DOOR")
+  Assert.equal(#assert(err.context.candidates), 2)
 end
 
 -- ---- playback -----------------------------------------------------------

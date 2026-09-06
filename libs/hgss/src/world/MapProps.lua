@@ -15,17 +15,24 @@
 -- the tile centre -- the predicate verified against the real ROM, where
 -- door models are planar slabs whose model-space AABB does not contain the
 -- tile centre (New Bark member 26: x[-0.3,0.0] z[0.0,0.0]) and a containment
--- test resolves the wrong static building. The nearest pivot decides
--- ownership only within MAX_DOOR_PIVOT_DISTANCE_TILES (corpus-backed: a
+-- test resolves the wrong static building. A geometric tie (every placement
+-- within DOOR_TIE_EPSILON_SQ of the global best distance) is resolved by the
+-- generated door semantics already carried on each placement record
+-- (`doorSoundType`, `doorRoles`, see ModelDoorMetadata): one semantic owner
+-- wins, no semantic owner resolves a static door with no placement owner,
+-- and several semantic owners stay a diagnosable ambiguity. The nearest
+-- pivot decides ownership only within MAX_DOOR_PIVOT_DISTANCE_TILES (corpus-backed: a
 -- real-ROM census over every door map found each door tile's nearest pivot
 -- within the bound); a tile beyond it is diagnosed once at assembly as
 -- uncovered, like a tile with no placement at all. doorAt is then an O(1)
 -- index lookup: no placement scan, no matrix inversion, no epsilon on the
 -- hot path. The index is authoritative: a tile it does not cover resolves
 -- nil, and mutating the placement list after assembly changes nothing.
--- Ambiguity (two placements tied for one door tile) and missing coverage (a
+-- Ambiguity (several placements with door semantics tied for one door
+-- tile) and missing coverage (a
 -- door tile with no placement at all, or none within the bound) are data
--- failures diagnosed once at assembly, not per lookup. Only DOOR-kind warp tiles resolve; stairs, directional warps, and
+-- failures diagnosed once at assembly, not per lookup. A geometric tie with
+-- no door-semantic candidate is a valid static door, not a failure. Only DOOR-kind warp tiles resolve; stairs, directional warps, and
 -- generic warps return nil (their choreography is separate policy). A door
 -- whose building is static (no animated instance) resolves but animates
 -- nothing -- HGSS's interior doors without animation records behave the
@@ -102,10 +109,105 @@ local function raiseUnknown(definition, animation)
 end
 
 -- Build the door census once at assembly: ownership (nearest pivot,
--- ambiguity, coverage -- unchanged from the original per-lookup-free
+-- semantic tie classification, coverage -- unchanged from the original
+-- per-lookup-free
 -- assembly) plus each tile's generated sound type and role durations, read
 -- straight off the owning placement record (`doorSoundType`, `doorRoles`)
 -- rather than any live instance.
+local function entryForPlacement(selected)
+  return {
+    placementIndex = selected.placementIndex,
+    modelKey = selected.modelKey,
+    animation = nil,
+    doorSoundType = selected.doorSoundType,
+    roles = selected.doorRoles,
+  }
+end
+
+-- A static tied door has no arbitrary placement owner: choreography needs
+-- no placement-specific animation or sound, so the entry carries no
+-- placement identity at all.
+local function staticDoorEntry()
+  return {
+    placementIndex = nil,
+    modelKey = nil,
+    animation = nil,
+    doorSoundType = nil,
+    roles = nil,
+  }
+end
+
+-- The compact serializable door-role summary of one tied candidate: which
+-- semantic roles exist and their generated frame counts.
+local function roleSummary(roles)
+  if roles == nil then
+    return nil
+  end
+  local summary = {}
+  if roles.open ~= nil then
+    summary.open = { frameCount = roles.open.frameCount }
+  end
+  if roles.close ~= nil then
+    summary.close = { frameCount = roles.close.frameCount }
+  end
+  return summary
+end
+
+local function candidateRecord(candidate)
+  return {
+    placementIndex = candidate.placement.placementIndex,
+    modelKey = candidate.placement.modelKey,
+    distance = candidate.distance,
+    doorSoundType = candidate.placement.doorSoundType,
+    doorRoles = roleSummary(candidate.placement.doorRoles),
+  }
+end
+
+-- Deterministic ambiguity context: tile X/Z plus every tied candidate
+-- ordered by placement index (falling back to the stable tie-set order
+-- when indices cannot be compared), each carrying identity, pivot
+-- distance, sound identity, and role durations.
+local function raiseAmbiguousDoor(tile, tied)
+  local ordered = {}
+  for _, candidate in ipairs(tied) do
+    ordered[#ordered + 1] = candidate
+  end
+  local comparable = true
+  for _, candidate in ipairs(ordered) do
+    if type(candidate.placement.placementIndex) ~= "number" then
+      comparable = false
+      break
+    end
+  end
+  if comparable then
+    table.sort(ordered, function(a, b)
+      return a.placement.placementIndex < b.placement.placementIndex
+    end)
+  end
+  local candidates = {}
+  for _, candidate in ipairs(ordered) do
+    candidates[#candidates + 1] = candidateRecord(candidate)
+  end
+  local indices = {}
+  for _, candidate in ipairs(ordered) do
+    indices[#indices + 1] = candidate.placement.placementIndex
+  end
+  local names = {}
+  for _, candidate in ipairs(ordered) do
+    names[#names + 1] = tostring(candidate.placement.placementIndex)
+  end
+  Errors.raise(
+    FieldErrors.MAP_PROP_AMBIGUOUS_DOOR,
+    "door tile (" .. tile.x .. "," .. tile.z .. ") is tied between placements " .. table.concat(names, ", "),
+    {
+      x = tile.x,
+      z = tile.z,
+      placements = indices,
+      candidates = candidates,
+    }
+  )
+end
+
 local function buildDoorCensus(placements, doorTiles)
   local doorIndex = {}
   for _, tile in ipairs(doorTiles) do
@@ -147,50 +249,49 @@ local function buildDoorCensus(placements, doorTiles)
         { x = tile.x, z = tile.z, nearestDistance = nearestDistance }
       )
     end
-    -- The ambiguity check runs only against the global minimum: any OTHER
-    -- placement within the tie window of the true nearest distance means the
-    -- tile has no single unambiguous owner.
+    -- The tie set is the whole geometric ambiguity: the global best
+    -- plus every other placement within the tie window of the true
+    -- nearest distance. Geometry alone cannot distinguish these
+    -- candidates, so the generated door semantics decide below.
+    local tied = { { placement = best.placement, distance = best.distance } }
     for _, placement in ipairs(placements) do
       if placement ~= best.placement then
         local dx, dz = placement.transform[13] - wx, placement.transform[15] - wz
         local distance = dx * dx + dz * dz
         if math.abs(distance - best.distance) < DOOR_TIE_EPSILON_SQ then
-          Errors.raise(
-            FieldErrors.MAP_PROP_AMBIGUOUS_DOOR,
-            "door tile ("
-              .. tile.x
-              .. ","
-              .. tile.z
-              .. ") is tied between placements "
-              .. best.placement.placementIndex
-              .. " and "
-              .. placement.placementIndex,
-            {
-              x = tile.x,
-              z = tile.z,
-              placements = { best.placement.placementIndex, placement.placementIndex },
-            }
-          )
+          tied[#tied + 1] = { placement = placement, distance = distance }
         end
       end
     end
-    doorIndex[tile.x .. ":" .. tile.z] = {
-      placementIndex = best.placement.placementIndex,
-      modelKey = best.placement.modelKey,
-      animation = nil,
-      doorSoundType = best.placement.doorSoundType,
-      roles = best.placement.doorRoles,
-    }
+    -- After nearest-distance/bound checks, classify the whole geometric tie set.
+    if #tied == 1 then
+      doorIndex[tile.x .. ":" .. tile.z] = entryForPlacement(tied[1].placement)
+    else
+      local semantic = {}
+      for _, candidate in ipairs(tied) do
+        if candidate.placement.doorRoles ~= nil then
+          semantic[#semantic + 1] = candidate
+        end
+      end
+      if #semantic == 1 then
+        doorIndex[tile.x .. ":" .. tile.z] = entryForPlacement(semantic[1].placement)
+      elseif #semantic == 0 then
+        doorIndex[tile.x .. ":" .. tile.z] = staticDoorEntry()
+      else
+        raiseAmbiguousDoor(tile, tied)
+      end
+    end
   end
   return doorIndex
 end
 
 -- `doorTiles` are the DOOR-kind tiles of the scene's permission cell as
 -- local indices -- exactly the list the assembly enumerates and the space
--- doorAt keys its index with. Ambiguity (two placements tied for one tile,
--- within DOOR_TIE_EPSILON_SQ) and missing coverage (a door tile with no
--- placement at all, or none within MAX_DOOR_PIVOT_DISTANCE_TILES) raise
+-- doorAt keys its index with. Several door-semantic placements tied for one
+-- tile (within DOOR_TIE_EPSILON_SQ) and missing coverage (a door tile with
+-- no placement at all, or none within MAX_DOOR_PIVOT_DISTANCE_TILES) raise
 -- here, once, as generated-data failures rather than per-lookup surprises.
+-- A tie with no door-semantic candidate is a valid static door.
 ---@param opts { placements: table<string, unknown>, instances: { [integer]: table<string, unknown>|nil }, doorTiles: { x: integer, z: integer }[] }
 ---@return MapProps
 function MapProps.new(opts)
@@ -243,8 +344,8 @@ end
 ---@field x integer
 ---@field z integer
 ---@field warp table<string, unknown> -- the warp record at the door tile
----@field placementIndex integer
----@field modelKey string
+---@field placementIndex integer|nil -- nil only for a static tied door with no semantic owner
+---@field modelKey string|nil -- nil only for a static tied door with no semantic owner
 ---@field doorSoundType integer|nil
 ---@field instance table<string, unknown>|nil
 ---@field entry table<string, unknown> -- the retained index record ({ animation = handle|nil, roles = ... })
@@ -385,7 +486,7 @@ function MapProps:doorAt(runtimeMap, fieldX, fieldZ)
     warp = warp,
     placementIndex = entry.placementIndex,
     modelKey = entry.modelKey,
-    instance = self.instances[entry.placementIndex],
+    instance = entry.placementIndex ~= nil and self.instances[entry.placementIndex] or nil,
     entry = entry,
     doorSoundType = entry.doorSoundType,
   }, MapDoor)
