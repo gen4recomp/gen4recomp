@@ -165,6 +165,59 @@ local CONFORMANCE = {
   },
 }
 
+-- Reverse census evidence: catalog feature tags are secondary signals only.
+-- The independent inventory remains the authority; these sets merely require
+-- that an established family-tagged catalog entry (or an explicitly
+-- source-identified cry opcode, which carries no family tag) has a matching
+-- inventory row. Generic audio tags never count as family evidence.
+local CATALOG_FAMILY_FEATURES = {
+  mons = true,
+  starter = true,
+  following_mon = true,
+  party_ui = true,
+}
+
+local CRY_CATALOG_OPCODES = {
+  [76] = true,
+  [77] = true,
+  [89] = true,
+  [90] = true,
+  [91] = true,
+  [92] = true,
+}
+
+-- Reverse census auditor: every catalog entry carrying an established
+-- family tag, plus every explicitly source-identified cry opcode, must have
+-- a matching independent inventory row. Returns missing `{ opcode, name }`
+-- records sorted numerically for deterministic diagnostics.
+local function requiresInventoryMembership(opcode, entry)
+  if CRY_CATALOG_OPCODES[opcode] == true then
+    return true
+  end
+  return CATALOG_FAMILY_FEATURES[entry.feature] == true
+end
+
+local function reverseGaps(inventoryByOpcode)
+  local gaps = {}
+  for opcode, entry in pairs(ScriptCommands.byOpcode) do
+    if requiresInventoryMembership(opcode, entry) and inventoryByOpcode[opcode] == nil then
+      gaps[#gaps + 1] = { opcode = opcode, name = CommandCatalog.name(opcode) }
+    end
+  end
+  table.sort(gaps, function(a, b)
+    return a.opcode < b.opcode
+  end)
+  return gaps
+end
+
+local function cloneLookup(lookup)
+  local cloned = {}
+  for opcode, record in pairs(lookup) do
+    cloned[opcode] = record
+  end
+  return cloned
+end
+
 local function familyEntries()
   local entries = {}
   for _, inventory in ipairs(MonScriptCommands.commands) do
@@ -286,6 +339,37 @@ function T.inventory_entries_match_catalog()
     0,
     "every inventoried command joins compatible catalog metadata: " .. table.concat(problems, ", ")
   )
+end
+
+function T.catalog_family_evidence_resolves_to_inventory()
+  local gaps = reverseGaps(MonScriptCommands.byOpcode)
+  local rendered = {}
+  for _, gap in ipairs(gaps) do
+    rendered[#rendered + 1] = gap.opcode .. ":" .. gap.name
+  end
+  Assert.equal(
+    #gaps,
+    0,
+    "every family-tagged or explicit-cry catalog command has an inventory row: " .. table.concat(rendered, ", ")
+  )
+end
+
+function T.removed_family_command_is_reported_as_missing_inventory()
+  local mutated = cloneLookup(MonScriptCommands.byOpcode)
+  mutated[137] = nil
+  local gaps = reverseGaps(mutated)
+  Assert.equal(#gaps, 1, "removing one family opcode reports exactly one gap")
+  Assert.equal(gaps[1].opcode, 137, "the reported gap is the removed opcode")
+  Assert.equal(gaps[1].name, CommandCatalog.name(137), "the gap names the catalog command")
+end
+
+function T.removed_cry_command_is_reported_without_generic_audio()
+  local mutated = cloneLookup(MonScriptCommands.byOpcode)
+  mutated[89] = nil
+  local gaps = reverseGaps(mutated)
+  Assert.equal(#gaps, 1, "removing one cry opcode reports exactly one gap, not every audio command")
+  Assert.equal(gaps[1].opcode, 89, "the reported gap is the removed cry opcode")
+  Assert.equal(gaps[1].name, CommandCatalog.name(89), "the gap names the catalog command")
 end
 
 function T.every_inventory_entry_carries_exactly_one_disposition()
