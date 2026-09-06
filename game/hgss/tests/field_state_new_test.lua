@@ -7,13 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
-local LuaWriter = require("libs.codec.src.LuaWriter")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-local PngWriter = require("libs.assets.src.PngWriter")
-local MonCache = require("libs.assets.src.MonCache")
-local FieldActorFixture = require("tests.support.FieldActorFixture")
-local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
@@ -23,146 +17,14 @@ local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 
 local T = {}
 
--- A cache serving everything the presentation boot reads: the compiled font
--- definition and atlas the dialogue renderer opens, the generated field-UI
--- class (manifest + dialogue frame strip, signpost strip/wayfinding, Start
--- Menu surface, and Trainer Card front) the renderers draw, the actor
--- index the presentation asset provider loads, and the mon icon class the
--- party screen draws.
-local function presentationCache()
-  local cache = FieldUiFixture.cacheWithFontAndFrames()
-  cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
-  cache:writeLua(MonCache.iconManifestPath(), {
-    schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
-    entries = {
-      ["TEST/f0"] = {
-        x = 0,
-        y = 0,
-        width = 32,
-        height = 32,
-        frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
-      },
-    },
-    representative = { "TEST/f0" },
-  })
-  local pixels = {}
-  for _ = 1, 64 * 64 do
-    pixels[#pixels + 1] = string.char(255, 0, 0, 255)
-  end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
-  cache:write(
-    FieldActorCache.indexPath(),
-    LuaWriter.encode({ schema = FieldActorCache.INDEX_SCHEMA, spriteIds = { 0 } })
-  )
-  cache:writeLua(FieldActorCache.visualPath(0), FieldActorFixture.visual(0))
-  cache:write(FieldActorCache.atlasPath(0), FieldDialogueFixture.atlasBytes())
-  return cache
-end
-
--- The terrain-effect bundle the real terrain renderer acquires during the
--- boot: one synthetic triangle mesh per effect kind, written into the same
--- presentation cache the boot reads through.
-local function terrainEffects(cache)
-  cache:write(
-    "test/terrain-grass.mesh",
-    MeshWriter.encode({
-      vertices = {
-        {
-          x = 0,
-          y = 0,
-          z = 0,
-          u = 0,
-          v = 0,
-          nx = 0,
-          ny = 1,
-          nz = 0,
-          r = 255,
-          g = 255,
-          b = 255,
-          a = 255,
-          colorSource = 0,
-        },
-        {
-          x = 1,
-          y = 0,
-          z = 0,
-          u = 1,
-          v = 0,
-          nx = 0,
-          ny = 1,
-          nz = 0,
-          r = 255,
-          g = 255,
-          b = 255,
-          a = 255,
-          colorSource = 0,
-        },
-        {
-          x = 0,
-          y = 0,
-          z = 1,
-          u = 0,
-          v = 1,
-          nx = 0,
-          ny = 1,
-          nz = 0,
-          r = 255,
-          g = 255,
-          b = 255,
-          a = 255,
-          colorSource = 0,
-        },
-      },
-      indices = { 0, 1, 2 },
-    })
-  )
-  local function effect()
-    return {
-      model = {
-        dynamic = {
-          nodes = {
-            { name = "root", translation = { 0, 0, 0 }, rotation = { 0, 0, 0 }, scale = { 1, 1, 1 } },
-          },
-          batches = {
-            {
-              id = "grass",
-              nodeIndex = 0,
-              materialIndex = 0,
-              geometry = "test/terrain-grass.mesh",
-              alphaClass = "cutout",
-              cullMode = "back",
-              polygonAlpha = 31,
-              polygonMode = "modulation",
-              polygonId = 0,
-              translucentDepthWrite = false,
-              depthEqual = false,
-              lightMask = 15,
-              fogEnabled = false,
-            },
-          },
-        },
-        materials = { { id = 0, name = "grass", wrap = { x = "clamp", y = "clamp" } } },
-        animations = {},
-      },
-      placementOffset = { x = 0, y = 0, z = 0 },
-    }
-  end
-  return {
-    tall_grass = effect(),
-    very_tall_grass = effect(),
-    trainer_reveal = effect(),
-  }
-end
-
 -- The stubbed presentation runtime every FieldState boot reads: the cache
 -- and manifest the renderers draw through, the entrance bundle carrying the
 -- compiled surf attachment, and the actor/player edges the draw sync uses.
 local function stubPresentationRuntime(cache)
-  cache = cache or presentationCache()
-  local effects = terrainEffects(cache)
+  cache = cache or FieldStatePresentationFixture.cache()
+  local effects = FieldStatePresentationFixture.terrainEffects(cache)
   return setmetatable({
-    cacheFs = cache,
+    cacheFs = cache or FieldStatePresentationFixture.cache(),
     uiManifest = FieldUiFixture.manifest(),
     fieldEntranceIndicatorAsset = {
       model = { batches = {}, materials = {} },
@@ -335,7 +197,7 @@ end
 -- failure propagates from construction.
 function T.state_construction_fails_typed_when_a_ui_asset_is_missing()
   local options = fieldStateOptions()
-  local cardCache = presentationCache()
+  local cardCache = FieldStatePresentationFixture.cache()
   cardCache:remove(FieldUiFixture.TRAINER_CARD_PATH)
   local cardErr = Assert.throws(function()
     bootWithCapturedRuntimeOptions(options, cardCache)
@@ -345,7 +207,7 @@ function T.state_construction_fails_typed_when_a_ui_asset_is_missing()
     "a missing trainer card front is a typed construction failure: " .. tostring(cardErr)
   )
 
-  local signpostCache = presentationCache()
+  local signpostCache = FieldStatePresentationFixture.cache()
   signpostCache:remove(FieldUiFixture.SIGNPOST_TILES_PATH)
   local signpostErr = Assert.throws(function()
     bootWithCapturedRuntimeOptions(options, signpostCache)
@@ -361,7 +223,7 @@ end
 function T.state_construction_fails_when_the_surf_attachment_is_missing()
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
-    local runtime = stubPresentationRuntime(presentationCache())
+    local runtime = stubPresentationRuntime(FieldStatePresentationFixture.cache())
     runtime.fieldEntranceIndicatorAsset.effects = nil
     return runtime
   end
@@ -390,7 +252,7 @@ end
 function T.state_construction_fails_when_terrain_effect_collaborators_are_missing()
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
-    local runtime = stubPresentationRuntime(presentationCache())
+    local runtime = stubPresentationRuntime(FieldStatePresentationFixture.cache())
     runtime.fieldEffectAssets = nil
     runtime.fieldTerrainEffectController = nil
     return runtime
