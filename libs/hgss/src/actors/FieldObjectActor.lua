@@ -46,6 +46,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field clearFacingOverride fun(self: FieldObjectActor)
 ---@field beginAction fun(self: FieldObjectActor, descriptor: table<string, unknown>, owner: "script"|"autonomous")
 ---@field advanceAction fun(self: FieldObjectActor, progressTicks: integer, durationTicks: integer)
+---@field reprojectActiveAction fun(self: FieldObjectActor, start: FieldObjectActor.ActionEndpoint, destination: FieldObjectActor.ActionEndpoint)
 ---@field commitAction fun(self: FieldObjectActor): table<string, unknown>?
 ---@field cancelAction fun(self: FieldObjectActor)
 ---@field beginScriptedAction fun(self: FieldObjectActor, descriptor: table<string, unknown>)
@@ -69,6 +70,20 @@ FieldObjectActor.__index = FieldObjectActor
 ---@field gesturePose string?
 ---@field gestureTick integer?
 ---@field gestureOffsetY number
+
+-- A resolved action endpoint in the current physical frame: stable logical
+-- field coordinates plus the frame's world/surface projection. Coverage
+-- recentering rebuilds the projection while the logical identity survives.
+---@class FieldObjectActor.ActionEndpoint
+---@field fieldX integer
+---@field fieldZ integer
+---@field worldX number?
+---@field worldY number?
+---@field worldZ number?
+---@field surfaceId integer?
+---@field cellKey string?
+---@field sourceSurfaceId integer?
+---@field resident boolean?
 
 local FACINGS = { north = true, south = true, west = true, east = true }
 
@@ -319,6 +334,72 @@ function FieldObjectActor:beginScriptedAction(descriptor)
   self:beginAction(descriptor, "script")
 end
 
+-- Idempotent physical application of the active action at its stored
+-- progress/duration: current world position plus the progress-derived
+-- render-only offset. Pose, gesture, and idle clocks are presentation time
+-- and stay in advanceAction; a coverage rebase shares only this helper so
+-- reprojection never advances action time.
+local function applyActionWorldPosition(actor, motion)
+  local progressTicks = motion.progressTicks
+  local durationTicks = motion.durationTicks
+  local t = durationTicks > 0 and (progressTicks / durationTicks) or 1
+  if motion.action == "trajectory_segment" then
+    if progressTicks >= durationTicks then
+      actor.worldX = motion.destWorldX
+      actor.worldY = motion.destWorldY
+      actor.worldZ = motion.destWorldZ
+    else
+      local progress = MovementCalibration.trajectoryProgressAt(progressTicks, durationTicks)
+      actor.worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * progress
+      actor.worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * progress
+      local baseY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * progress
+      local arc = MovementCalibration.trajectoryArcAt(progressTicks, durationTicks)
+      actor.worldY = baseY + arc
+    end
+  elseif motion.action == "walk" or motion.action == "jump" then
+    actor.worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * t
+    actor.worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * t
+    if motion.action == "jump" then
+      local offset = MovementCalibration.jumpOffsetAt(motion, progressTicks, durationTicks)
+      local baseY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * t
+      actor.worldY = baseY + offset
+    else
+      actor.worldY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * t
+    end
+  elseif motion.action == "walk_in_place" then
+    -- No translation; keep at start anchor. The visible bob is a render-only
+    -- offset derived deterministically from the fixed action tick, never
+    -- written into worldY: terrain, camera, save, and collision all keep
+    -- reading the unchanged anchor.
+    actor.worldX = motion.startWorldX
+    actor.worldZ = motion.startWorldZ
+    actor.worldY = motion.startWorldY
+    actor.presentationOffset.y = walkInPlaceBobOffset(progressTicks, durationTicks)
+  elseif motion.action == "reveal_trainer" then
+    actor.worldX = motion.startWorldX
+    actor.worldZ = motion.startWorldZ
+    actor.worldY = motion.startWorldY
+    actor.presentationOffset.y = MovementCalibration.revealTrainerOffsetAt(progressTicks)
+  elseif
+    motion.action == "face"
+    or motion.action == "delay"
+    or motion.action == "emote"
+    or motion.action == "gesture"
+  then
+    -- No translation.
+    actor.worldX = motion.startWorldX
+    actor.worldZ = motion.startWorldZ
+    actor.worldY = motion.startWorldY
+  end
+  if progressTicks == durationTicks then
+    if motion.action == "walk" or motion.action == "jump" or motion.action == "trajectory_segment" then
+      actor.worldX = motion.destWorldX
+      actor.worldY = motion.destWorldY
+      actor.worldZ = motion.destWorldZ
+    end
+  end
+end
+
 function FieldObjectActor:advanceAction(progressTicks, durationTicks)
   local m = self._motion
   if not m then
@@ -329,50 +410,7 @@ function FieldObjectActor:advanceAction(progressTicks, durationTicks)
   end
   m.progressTicks = progressTicks
   m.durationTicks = durationTicks
-  local t = durationTicks > 0 and (progressTicks / durationTicks) or 1
-  if m.action == "trajectory_segment" then
-    if progressTicks >= durationTicks then
-      self.worldX = m.destWorldX
-      self.worldY = m.destWorldY
-      self.worldZ = m.destWorldZ
-    else
-      local progress = MovementCalibration.trajectoryProgressAt(progressTicks, durationTicks)
-      self.worldX = m.startWorldX + (m.destWorldX - m.startWorldX) * progress
-      self.worldZ = m.startWorldZ + (m.destWorldZ - m.startWorldZ) * progress
-      local baseY = m.startWorldY + (m.destWorldY - m.startWorldY) * progress
-      local arc = MovementCalibration.trajectoryArcAt(progressTicks, durationTicks)
-      self.worldY = baseY + arc
-    end
-  elseif m.action == "walk" or m.action == "jump" then
-    self.worldX = m.startWorldX + (m.destWorldX - m.startWorldX) * t
-    self.worldZ = m.startWorldZ + (m.destWorldZ - m.startWorldZ) * t
-    if m.action == "jump" then
-      local offset = MovementCalibration.jumpOffsetAt(m, progressTicks, durationTicks)
-      local baseY = m.startWorldY + (m.destWorldY - m.startWorldY) * t
-      self.worldY = baseY + offset
-    else
-      self.worldY = m.startWorldY + (m.destWorldY - m.startWorldY) * t
-    end
-  elseif m.action == "walk_in_place" then
-    -- No translation; keep at start anchor. The visible bob is a render-only
-    -- offset derived deterministically from the fixed action tick, never
-    -- written into worldY: terrain, camera, save, and collision all keep
-    -- reading the unchanged anchor.
-    self.worldX = m.startWorldX
-    self.worldZ = m.startWorldZ
-    self.worldY = m.startWorldY
-    self.presentationOffset.y = walkInPlaceBobOffset(progressTicks, durationTicks)
-  elseif m.action == "reveal_trainer" then
-    self.worldX = m.startWorldX
-    self.worldZ = m.startWorldZ
-    self.worldY = m.startWorldY
-    self.presentationOffset.y = MovementCalibration.revealTrainerOffsetAt(progressTicks)
-  elseif m.action == "face" or m.action == "delay" or m.action == "emote" or m.action == "gesture" then
-    -- No translation.
-    self.worldX = m.startWorldX
-    self.worldZ = m.startWorldZ
-    self.worldY = m.startWorldY
-  end
+  applyActionWorldPosition(self, m)
   if m.action == "gesture" then
     local presentation = MovementCalibration.gesturePresentationAt(m.gestureName, progressTicks, durationTicks)
     self._gesturePose = presentation.pose
@@ -392,13 +430,34 @@ function FieldObjectActor:advanceAction(progressTicks, durationTicks)
   if m.action == "delay" or m.action == "emote" then
     applyIdlePresentation(self, not self.animationPaused)
   end
-  if progressTicks == durationTicks then
-    if m.action == "walk" or m.action == "jump" or m.action == "trajectory_segment" then
-      self.worldX = m.destWorldX
-      self.worldY = m.destWorldY
-      self.worldZ = m.destWorldZ
-    end
-  end
+end
+
+-- Rebase the active action's physical endpoints into the current coverage
+-- frame at unchanged progress. Only projection-dependent endpoint fields
+-- move; owner, kind, progress, duration, and presentation origin state stay
+-- untouched, and no presentation clock advances.
+function FieldObjectActor:reprojectActiveAction(start, destination)
+  local motion = assert(self._motion, "field actor has no active action to reproject")
+  assert(motion.startFieldX == start.fieldX and motion.startFieldZ == start.fieldZ)
+  assert(motion.destFieldX == destination.fieldX and motion.destFieldZ == destination.fieldZ)
+  -- Replace projection-dependent endpoint fields only.
+  motion.startWorldX = start.worldX
+  motion.startWorldY = start.worldY
+  motion.startWorldZ = start.worldZ
+  motion.startSurfaceId = start.surfaceId
+  motion.startCellKey = start.cellKey
+  motion.startSourceSurfaceId = start.sourceSurfaceId
+  motion.startResident = start.resident == true
+  motion.destWorldX = destination.worldX
+  motion.destWorldY = destination.worldY
+  motion.destWorldZ = destination.worldZ
+  motion.destSurfaceId = destination.surfaceId
+  motion.destCellKey = destination.cellKey
+  motion.destSourceSurfaceId = destination.sourceSurfaceId
+  motion.destResident = destination.resident == true
+  -- Recompute the current physical position at motion.progressTicks using the
+  -- same idempotent helper used by advanceAction.
+  applyActionWorldPosition(self, motion)
 end
 
 function FieldObjectActor:advanceScriptedAction(progressTicks, durationTicks)

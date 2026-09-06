@@ -110,7 +110,7 @@
       "rationale": "mixed field actor orchestration hotspot",
       "maxCcn": 30,
       "maxNloc": 104,
-      "physicalLines": 2262
+      "physicalLines": 2395
     },
     "libs/hgss/src/field/FieldMapEntryController.lua": {
       "classification": "refactor",

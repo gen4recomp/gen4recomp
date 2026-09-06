@@ -2375,4 +2375,210 @@ function T.save_restore_compacts_holes_but_preserves_active_lookup_order()
   restoredMgr:dispose()
 end
 
+-- A coverage recenter moves the physical frame without touching logical
+-- tiles: the in-flight autonomous walk keeps its progress, its destination
+-- reservation is carried into the replacement occupancy, its current world
+-- position is rebased at unchanged progress, and the walk commits normally.
+function T.reconciled_active_autonomous_walk_keeps_its_reservation_and_commits()
+  local mgr, _, _, map = manager({ object({ movementType = "wander_around", xRange = -1, yRange = -1 }) })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  forceAutonomy(mgr, "east")
+  mgr:step(1)
+  Assert.isFalse(mgr:isPausable(actorId), "the forced walk must start an autonomous action")
+  mgr:step(2)
+  mgr:step(3)
+  local motion = assert(actor:scriptedMotionState(), "the walk must still be active before the rebase")
+  Assert.equal(motion.progressTicks, 2, "the rebase must observe a nonterminal progress tick")
+
+  map.coordinateOrigin = { x = -8, z = 0 }
+  mgr:reconcilePhysicalWorld()
+
+  Assert.isFalse(mgr:isPausable(actorId), "the rebase must not cancel the in-flight walk")
+  Assert.equal(actor.fieldX, 2, "the rebase must preserve the logical departure tile")
+  Assert.equal(actor.fieldZ, 3, "the rebase must preserve the logical departure tile")
+  local rebased = assert(actor:scriptedMotionState(), "the walk must stay active across the rebase")
+  Assert.equal(rebased.progressTicks, 2, "the rebase must not advance or reset action progress")
+  Assert.equal(
+    mgr:getCollisionAt(61, candidate(3, 3, actor.surfaceId)),
+    actor,
+    "the rebase must carry the destination reservation into the replacement occupancy"
+  )
+  Assert.equal(actor.worldX, -5.25, "the current world position must be rebased at unchanged progress")
+  Assert.equal(actor.worldZ, -12.5, "the current world position must be rebased at unchanged progress")
+
+  for tick = 4, 9 do
+    mgr:step(tick)
+  end
+  Assert.isTrue(mgr:isPausable(actorId), "the rebased walk must complete")
+  Assert.equal(actor.fieldX, 3, "completion must commit the original logical destination")
+  Assert.equal(actor.fieldZ, 3, "completion must commit the original logical destination")
+  Assert.equal(assert(getAt(mgr, 61, 3, 3, actor.surfaceId)), actor)
+  Assert.isNil(getAt(mgr, 61, 2, 3, actor.surfaceId))
+  mgr:dispose()
+end
+
+-- Teardown after a rebase must see the rebuilt reservation: removing a
+-- mid-walk actor through its event flag clears the action, the reservation,
+-- the occupancy, and the visual exactly once.
+function T.reconciled_active_autonomous_walk_tears_down_cleanly_on_flag_removal()
+  local eventState = FieldEventState.new()
+  local mgr, _, assets, map = manager(
+    { object({ eventFlag = 401, movementType = "wander_around", xRange = -1, yRange = -1 }) },
+    { eventState = eventState }
+  )
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  local surfaceId = actor.surfaceId
+  forceAutonomy(mgr, "east")
+  mgr:step(1)
+  mgr:step(2)
+  mgr:step(3)
+  Assert.isFalse(mgr:isPausable(actorId), "the forced walk must still be active before the rebase")
+
+  map.coordinateOrigin = { x = -8, z = 0 }
+  mgr:reconcilePhysicalWorld()
+
+  eventState:setFlag(401)
+  mgr:step(4)
+
+  Assert.isNil(mgr:getById(actorId), "flag removal must destroy the rebased actor")
+  Assert.isTrue(mgr:isPausable(actorId), "teardown must clear the rebased autonomous action")
+  Assert.isNil(
+    mgr:getCollisionAt(61, candidate(3, 3, surfaceId)),
+    "teardown must release the rebuilt destination reservation"
+  )
+  Assert.isNil(getAt(mgr, 61, 2, 3, surfaceId), "teardown must vacate the departure cell")
+  Assert.equal(assets:total(), 0, "teardown must release the visual exactly once")
+  mgr:step(5)
+  mgr:dispose()
+end
+
+-- Repeated rebases at an unchanged projection preserve logical identity,
+-- progress, presentation clocks, and the single destination reservation.
+function T.reconciled_active_walk_is_idempotent_across_repeated_rebases()
+  local mgr, _, _, map = manager({ object({ movementType = "wander_around", xRange = -1, yRange = -1 }) })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  forceAutonomy(mgr, "east")
+  mgr:step(1)
+  mgr:step(2)
+  mgr:step(3)
+  local motion = assert(actor:scriptedMotionState(), "the walk must still be active before the rebase")
+  Assert.equal(motion.progressTicks, 2, "the rebase must observe a nonterminal progress tick")
+  local destFieldX, destFieldZ = motion.destFieldX, motion.destFieldZ
+  local poseBefore, poseTickBefore = actor.pose, actor.poseTick
+  local presentationBefore = actor:presentationState()
+
+  map.coordinateOrigin = { x = -8, z = 0 }
+  mgr:reconcilePhysicalWorld()
+  local worldXAfterFirst, worldZAfterFirst = actor.worldX, actor.worldZ
+  assert(actor:scriptedMotionState(), "the walk must stay active across the first rebase")
+
+  mgr:reconcilePhysicalWorld()
+
+  local rebased = assert(actor:scriptedMotionState(), "a repeated rebase must keep the walk active")
+  Assert.equal(rebased.progressTicks, 2, "a repeated rebase must not advance or reset progress")
+  Assert.equal(rebased.destFieldX, destFieldX, "a repeated rebase must preserve the logical destination")
+  Assert.equal(rebased.destFieldZ, destFieldZ, "a repeated rebase must preserve the logical destination")
+  Assert.equal(actor.worldX, worldXAfterFirst, "a repeated rebase must not drift the world position")
+  Assert.equal(actor.worldZ, worldZAfterFirst, "a repeated rebase must not drift the world position")
+  Assert.equal(actor.pose, poseBefore, "reprojection must not advance the pose clock")
+  Assert.equal(actor.poseTick, poseTickBefore, "reprojection must not advance the pose clock")
+  local presentationAfter = actor:presentationState()
+  Assert.equal(presentationAfter.gesturePose, presentationBefore.gesturePose, "reprojection must not touch gestures")
+  Assert.equal(presentationAfter.gestureTick, presentationBefore.gestureTick, "reprojection must not touch gestures")
+  Assert.equal(
+    presentationAfter.gestureOffsetY,
+    presentationBefore.gestureOffsetY,
+    "reprojection must not touch gestures"
+  )
+  Assert.equal(
+    mgr:getCollisionAt(61, candidate(3, 3, actor.surfaceId)),
+    actor,
+    "repeated rebases must keep the single rebuilt destination reservation"
+  )
+
+  for tick = 4, 9 do
+    mgr:step(tick)
+  end
+  Assert.isTrue(mgr:isPausable(actorId), "the rebased walk must complete")
+  Assert.equal(actor.fieldX, 3, "completion must commit the original logical destination")
+  Assert.equal(actor.fieldZ, 3, "completion must commit the original logical destination")
+  mgr:dispose()
+end
+
+-- A rebase that moves the actor and its destination outside coverage keeps
+-- the logical transaction without committed occupancy, and restoring
+-- coverage brings the same transaction back into the physical frame.
+function T.reconciled_active_walk_survives_losing_and_regaining_coverage()
+  local objects = { object({ movementType = "wander_around", xRange = -1, yRange = -1 }) }
+  local map = runtimeMap(objects)
+  map.coverage = {
+    containsGlobal = function(_, fieldX, fieldZ)
+      return fieldX < 10 and fieldZ < 10
+    end,
+  }
+  local mgr = manager(objects, { map = map })
+  local actorId = "map:61:object:0"
+  local actor = assert(mgr:getById(actorId))
+  local surfaceId = actor.surfaceId
+  forceAutonomy(mgr, "east")
+  mgr:step(1)
+  mgr:step(2)
+  mgr:step(3)
+  local motion = assert(actor:scriptedMotionState(), "the walk must still be active before the rebase")
+  Assert.equal(motion.progressTicks, 2, "the rebase must observe a nonterminal progress tick")
+  local destFieldX, destFieldZ = motion.destFieldX, motion.destFieldZ
+
+  map.coverage = {
+    containsGlobal = function()
+      return false
+    end,
+  }
+  mgr:reconcilePhysicalWorld()
+
+  Assert.isFalse(actor.resident, "the rebase must follow the new resident bit")
+  local rebased = assert(actor:scriptedMotionState(), "the walk must stay active outside coverage")
+  Assert.equal(rebased.progressTicks, 2, "the rebase must not advance or reset progress")
+  Assert.equal(rebased.destFieldX, destFieldX, "the rebase must preserve the logical destination")
+  Assert.equal(rebased.destFieldZ, destFieldZ, "the rebase must preserve the logical destination")
+  Assert.isFalse(rebased.destResident, "the rebase must clear the destination resident bit")
+  Assert.isNil(getAt(mgr, 61, 2, 3, surfaceId), "a nonresident actor must leave no committed occupancy")
+  Assert.equal(
+    mgr:getCollisionAt(61, candidate(3, 3, surfaceId)),
+    actor,
+    "the destination reservation must survive with stable identity"
+  )
+
+  map.coverage = {
+    containsGlobal = function(_, fieldX, fieldZ)
+      return fieldX < 10 and fieldZ < 10
+    end,
+  }
+  mgr:reconcilePhysicalWorld()
+
+  Assert.isTrue(actor.resident, "regained coverage must restore residency")
+  local reresolved = assert(actor:scriptedMotionState(), "the walk must stay active across the second rebase")
+  Assert.equal(reresolved.progressTicks, 2, "the second rebase must not advance or reset progress")
+  Assert.equal(reresolved.destFieldX, destFieldX, "the second rebase must preserve the logical destination")
+  Assert.equal(reresolved.destFieldZ, destFieldZ, "the second rebase must preserve the logical destination")
+  Assert.isTrue(reresolved.destResident, "regained coverage must restore the destination resident bit")
+  Assert.equal(getAt(mgr, 61, 2, 3, surfaceId), actor, "regained coverage must restore committed occupancy")
+  Assert.equal(
+    mgr:getCollisionAt(61, candidate(3, 3, surfaceId)),
+    actor,
+    "the destination reservation must resolve in the restored frame"
+  )
+
+  for tick = 4, 9 do
+    mgr:step(tick)
+  end
+  Assert.isTrue(mgr:isPausable(actorId), "the rebased walk must complete")
+  Assert.equal(actor.fieldX, 3, "completion must commit the original logical destination")
+  Assert.equal(actor.fieldZ, 3, "completion must commit the original logical destination")
+  Assert.equal(assert(getAt(mgr, 61, 3, 3, actor.surfaceId)), actor)
+  mgr:dispose()
+end
+
 return { tests = T }

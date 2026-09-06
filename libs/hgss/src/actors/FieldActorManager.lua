@@ -12,6 +12,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
+local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
 local FieldActorAutonomy = require("libs.hgss.src.actors.FieldActorAutonomy")
 local FieldObjectMovement = require("libs.assets.src.field.FieldObjectMovement")
@@ -204,6 +205,20 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field gestureTick integer?
 ---@field activeEmoteKind string?
 ---@field visible boolean
+
+-- The physical-projection input for one action endpoint: logical field
+-- coordinates plus the surface/height context the terrain path resolves.
+-- Committed actors satisfy this directly; action destinations supply the
+-- same shape from the stored motion transaction.
+---@class FieldActorManager.EndpointPoint
+---@field fieldX integer
+---@field fieldZ integer
+---@field surfaceId integer?
+---@field cellKey string?
+---@field sourceSurfaceId integer?
+---@field worldY number?
+---@field sourceEvent table<string, unknown>
+---@field actorId string
 local FieldActorManager = {}
 ---@cast FieldActorManager FieldActorManager
 FieldActorManager.__index = FieldActorManager
@@ -428,42 +443,72 @@ local function currentSurfaceFor(runtimeMap, cellKey, sourceSurfaceId)
   return nil
 end
 
-local function projectionFor(runtimeMap, actor)
-  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, actor.fieldX, actor.fieldZ)
+-- Projects one action endpoint into the current physical frame. Resident
+-- points reuse the committed terrain/source-surface path; points outside
+-- coverage rebase X/Z from the new origin and keep their known height and
+-- source identity with resident=false.
+---@param runtimeMap RuntimeFieldMap
+---@param point FieldActorManager.Actor|FieldActorManager.EndpointPoint
+---@return FieldObjectActor.ActionEndpoint
+local function projectEndpoint(runtimeMap, point)
+  local fieldX, fieldZ = point.fieldX, point.fieldZ
+  if not isResident(runtimeMap, fieldX, fieldZ) then
+    local origin = assert(runtimeMap.coordinateOrigin, "runtime map coordinate origin required")
+    local worldX, worldZ = FieldGrid.tileCenterToWorld(fieldX - origin.x, fieldZ - origin.z)
+    return {
+      fieldX = fieldX,
+      fieldZ = fieldZ,
+      surfaceId = point.surfaceId,
+      cellKey = point.cellKey,
+      sourceSurfaceId = point.sourceSurfaceId,
+      worldX = worldX,
+      worldY = point.worldY,
+      worldZ = worldZ,
+      resident = false,
+    }
+  end
+  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
   local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
-  local surfaceId = actor.surfaceId
-  if actor.cellKey and actor.sourceSurfaceId and runtimeMap.fieldRegion and runtimeMap.fieldRegion.sourceSurface then
+  local surfaceId = point.surfaceId
+  if point.cellKey and point.sourceSurfaceId and runtimeMap.fieldRegion and runtimeMap.fieldRegion.sourceSurface then
     surfaceId = assert(
-      currentSurfaceFor(runtimeMap, actor.cellKey, actor.sourceSurfaceId),
+      currentSurfaceFor(runtimeMap, point.cellKey, point.sourceSurfaceId),
       "actor source surface is absent from coverage"
     )
   end
   if surfaceId == nil or not runtimeMap.terrain:contains(surfaceId, centerX, centerZ) then
-    local sample = resolveSurfaceAt(runtimeMap, actor.fieldX, actor.fieldZ, actor.sourceEvent.y, actor.actorId)
+    local sample = resolveSurfaceAt(runtimeMap, fieldX, fieldZ, point.sourceEvent.y, point.actorId)
     surfaceId = sample.surfaceId
   end
   local plate = assert(runtimeMap.terrain:plate(surfaceId), "actor projected surface is missing")
   local cellKey
   local sourceSurfaceId
-  if actor.sourceSurfaceId ~= nil then
-    assert(actor.cellKey ~= nil, "actor source surface id requires a cell key")
-    cellKey = actor.cellKey
-    sourceSurfaceId = actor.sourceSurfaceId
+  if point.sourceSurfaceId ~= nil then
+    assert(point.cellKey ~= nil, "actor source surface id requires a cell key")
+    cellKey = point.cellKey
+    sourceSurfaceId = point.sourceSurfaceId
   else
     local plateCellKey, plateSourceSurfaceId = sourceIdentityFromPlate(plate)
-    cellKey = actor.cellKey or plateCellKey
+    cellKey = point.cellKey or plateCellKey
     sourceSurfaceId = plateSourceSurfaceId
   end
   local worldY = runtimeMap.terrain:sampleHeight(surfaceId, centerX, centerZ)
-  local world = FieldCoordinates.fieldToWorld(runtimeMap, actor.fieldX, actor.fieldZ, worldY)
+  local world = FieldCoordinates.fieldToWorld(runtimeMap, fieldX, fieldZ, worldY)
   return {
+    fieldX = fieldX,
+    fieldZ = fieldZ,
     surfaceId = surfaceId,
-    cellKey = cellKey or cellKeyFor(actor.fieldX, actor.fieldZ),
+    cellKey = cellKey or cellKeyFor(fieldX, fieldZ),
     sourceSurfaceId = sourceSurfaceId,
     worldX = world.x,
     worldY = world.y,
     worldZ = world.z,
+    resident = true,
   }
+end
+
+local function projectionFor(runtimeMap, actor)
+  return projectEndpoint(runtimeMap, actor)
 end
 
 -- The runtime sprite of an object event. FieldSystem_ResolveObjectSpriteID
@@ -1314,7 +1359,9 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
   local newKey = entry.occupancy:key(reservation.candidate)
   if actor.solid then
     assert(entry.occupancy:winnerByKey(newKey) == nil, "autonomous destination became occupied")
-    assert(entry.occupancy:containsByKey(oldKey, actor), "autonomous departure occupancy is missing")
+    if actor.resident then
+      assert(entry.occupancy:containsByKey(oldKey, actor), "autonomous departure occupancy is missing")
+    end
   end
   assert(entry.occupancy:key(destination --[[@as FieldOccupancyCandidate]]) == newKey, "autonomous destination changed")
   local resolvedDestination =
@@ -1415,33 +1462,129 @@ function FieldActorManager:step(tick, context)
   end
 end
 
--- Rebuilds only the physical projection of semantic actors. The staging pass
--- resolves every resident actor and detects occupancy conflicts before any
--- actor or index is changed, so a fixed tick observes one complete index.
+-- Stages one in-flight action into the replacement frame: current-frame
+-- start/destination endpoints plus, for autonomous actions, a rebuilt
+-- destination reservation in the staged occupancy. Runs before the staged
+-- occupancy is published, so any projection or reservation failure leaves
+-- the live index untouched.
+local function stageActionReprojection(entry, stagedOccupancy, plan)
+  local runtimeMap = entry.runtimeMap
+  local actor = plan.actor
+  local motion = actor:scriptedMotionState()
+  local autonomousAction = entry.autonomousActions[actor.actorId]
+  if motion == nil then
+    assert(autonomousAction == nil, "autonomous action has no actor motion")
+    return
+  end
+  assert(
+    motion.startFieldX == actor.fieldX and motion.startFieldZ == actor.fieldZ,
+    "action start disagrees with committed position"
+  )
+  plan.start = plan.projection
+    or projectEndpoint(runtimeMap, {
+      fieldX = motion.startFieldX,
+      fieldZ = motion.startFieldZ,
+      surfaceId = motion.startSurfaceId,
+      cellKey = motion.startCellKey,
+      sourceSurfaceId = motion.startSourceSurfaceId,
+      worldY = motion.startWorldY,
+      sourceEvent = actor.sourceEvent,
+      actorId = actor.actorId,
+    })
+  plan.destination = projectEndpoint(runtimeMap, {
+    fieldX = motion.destFieldX,
+    fieldZ = motion.destFieldZ,
+    surfaceId = motion.destSurfaceId,
+    cellKey = motion.destCellKey,
+    sourceSurfaceId = motion.destSourceSurfaceId,
+    worldY = motion.destWorldY,
+    sourceEvent = actor.sourceEvent,
+    actorId = actor.actorId,
+  })
+  if motion.owner ~= "autonomous" then
+    assert(autonomousAction == nil, "scripted motion owns an autonomous action")
+    return
+  end
+  assert(autonomousAction ~= nil, "autonomous motion has no manager action")
+  local recorded = assert(autonomousAction.destination, "autonomous action destination is missing")
+  assert(
+    recorded.fieldX == motion.destFieldX and recorded.fieldZ == motion.destFieldZ,
+    "autonomous destination disagrees with actor motion"
+  )
+  local destination = plan.destination
+  plan.reservationKey = stagedOccupancy:reserve(actor.actorId, {
+    fieldX = destination.fieldX,
+    fieldZ = destination.fieldZ,
+    surfaceId = destination.surfaceId,
+    cellKey = destination.cellKey,
+    sourceSurfaceId = destination.sourceSurfaceId,
+  })
+  plan.progressTicks = autonomousAction.progressTicks
+end
+
+-- Applies one staged plan after the replacement occupancy is published:
+-- committed projection/residency, motion rebase at unchanged progress, and
+-- the rebuilt autonomous reservation key/destination.
+local function applyReprojectionPlan(entry, plan)
+  local actor = plan.actor
+  local projection = plan.projection
+  if projection then
+    actor:setPosition({
+      fieldX = actor.fieldX,
+      fieldZ = actor.fieldZ,
+      cellKey = projection.cellKey,
+      sourceSurfaceId = projection.sourceSurfaceId,
+      surfaceId = projection.surfaceId,
+      worldX = projection.worldX,
+      worldY = projection.worldY,
+      worldZ = projection.worldZ,
+      resident = true,
+    })
+  else
+    actor.resident = false
+  end
+  local start = plan.start
+  if start == nil then
+    return
+  end
+  local destination = assert(plan.destination, "reconcile plan destination is missing")
+  actor:reprojectActiveAction(start, destination)
+  if plan.reservationKey then
+    entry.autonomousActions[actor.actorId] = {
+      reservationKey = plan.reservationKey,
+      progressTicks = plan.progressTicks,
+      destination = destination,
+    }
+  end
+end
+
+-- Rebuilds the physical projection of semantic actors as one complete
+-- replacement: committed occupancy plus every live action and autonomous
+-- reservation. Staging resolves every projection and reservation before any
+-- actor or index changes, so a fixed tick observes one complete index.
+-- Reconciliation order:
+-- 1. stage committed occupant claims in a fresh FieldActorOccupancy
+-- 2. stage/reproject every active action
+-- 3. stage every autonomous reservation into that same fresh occupancy
+-- 4. publish entry.occupancy only after all staging succeeds
+-- 5. apply actor/action projection updates and new reservation keys
 ---@param self FieldActorManager
 function FieldActorManager:reconcilePhysicalWorld()
   for _, entry in pairs(self.maps) do
-    local staged = {}
+    local runtimeMap = entry.runtimeMap
     local function managerSlotForEntry(actor)
       return managerSlot(entry, actor)
     end
     local stagedOccupancy = FieldActorOccupancy.new({
-      runtimeMap = entry.runtimeMap,
+      runtimeMap = runtimeMap,
       managerSlot = managerSlotForEntry,
     })
+    local plans = {}
     for _, actor in ipairs(entry.store:orderedActors()) do
-      if isResident(entry.runtimeMap, actor.fieldX, actor.fieldZ) then
-        local projection = projectionFor(entry.runtimeMap, actor)
-        local key = actor.solid
-            and stagedOccupancy:key({
-              fieldX = actor.fieldX,
-              fieldZ = actor.fieldZ,
-              surfaceId = projection.surfaceId,
-              cellKey = projection.cellKey,
-              sourceSurfaceId = projection.sourceSurfaceId,
-            })
-          or nil
-        if key then
+      local plan = { actor = actor }
+      if isResident(runtimeMap, actor.fieldX, actor.fieldZ) then
+        local projection = projectionFor(runtimeMap, actor)
+        if actor.solid then
           stagedOccupancy:claim(actor, {
             fieldX = actor.fieldX,
             fieldZ = actor.fieldZ,
@@ -1450,27 +1593,17 @@ function FieldActorManager:reconcilePhysicalWorld()
             sourceSurfaceId = projection.sourceSurfaceId,
           })
         end
-        staged[#staged + 1] = { actor = actor, projection = projection }
+        plan.projection = projection
       end
+      plans[#plans + 1] = plan
+    end
+    for _, plan in ipairs(plans) do
+      stageActionReprojection(entry, stagedOccupancy, plan)
     end
 
     entry.occupancy = stagedOccupancy
-    for _, actor in ipairs(entry.store:orderedActors()) do
-      actor.resident = false
-    end
-    for _, item in ipairs(staged) do
-      local actor, projection = item.actor, item.projection
-      actor:setPosition({
-        fieldX = actor.fieldX,
-        fieldZ = actor.fieldZ,
-        cellKey = projection.cellKey,
-        sourceSurfaceId = projection.sourceSurfaceId,
-        surfaceId = projection.surfaceId,
-        worldX = projection.worldX,
-        worldY = projection.worldY,
-        worldZ = projection.worldZ,
-        resident = true,
-      })
+    for _, plan in ipairs(plans) do
+      applyReprojectionPlan(entry, plan)
     end
   end
 end

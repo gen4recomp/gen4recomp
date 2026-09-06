@@ -150,4 +150,67 @@ function T.clear_facing_override_is_unconditional_and_idempotent()
   Assert.equal(a.facing, "south")
 end
 
+-- Rebasing an active action re-anchors its physical endpoints at unchanged
+-- progress: the interpolated world position follows the new frame while
+-- pose, gesture, and render-offset clocks do not advance.
+function T.reproject_active_action_rebases_world_position_without_advancing_presentation()
+  local a = actor()
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = {
+      fieldX = 6,
+      fieldZ = 5,
+      worldX = 10,
+      worldY = 0,
+      worldZ = 20,
+      surfaceId = 0,
+      resident = true,
+    },
+    dest = {
+      fieldX = 7,
+      fieldZ = 5,
+      worldX = 11,
+      worldY = 0,
+      worldZ = 20,
+      surfaceId = 0,
+      resident = true,
+    },
+    durationTicks = 8,
+  }, "autonomous")
+  a:advanceAction(2, 8)
+  Assert.isTrue(a.poseTick > 0, "the test must observe a nonzero presentation clock")
+  local poseBefore, poseTickBefore = a.pose, a.poseTick
+  local presentationBefore = a:presentationState()
+  local offsetYBefore = a.presentationOffset.y
+
+  a:reprojectActiveAction(
+    { fieldX = 6, fieldZ = 5, worldX = 110, worldY = 0, worldZ = 120, surfaceId = 0, resident = true },
+    { fieldX = 7, fieldZ = 5, worldX = 111, worldY = 0, worldZ = 120, surfaceId = 0, resident = true }
+  )
+
+  Assert.equal(a.pose, poseBefore, "reprojection must not advance the pose clock")
+  Assert.equal(a.poseTick, poseTickBefore, "reprojection must not advance the pose clock")
+  local presentationAfter = a:presentationState()
+  Assert.equal(presentationAfter.gesturePose, presentationBefore.gesturePose, "reprojection must not touch gestures")
+  Assert.equal(presentationAfter.gestureTick, presentationBefore.gestureTick, "reprojection must not touch gestures")
+  Assert.equal(
+    presentationAfter.gestureOffsetY,
+    presentationBefore.gestureOffsetY,
+    "reprojection must not touch gestures"
+  )
+  Assert.equal(a.presentationOffset.y, offsetYBefore, "reprojection must not double-apply render offsets")
+  Assert.equal(a.worldX, 110.25, "reprojection recomputes the world position at unchanged progress")
+  Assert.equal(a.worldZ, 120, "reprojection recomputes the world position at unchanged progress")
+  Assert.equal(a.worldY, 0, "reprojection recomputes the world position at unchanged progress")
+  local motion = assert(a:scriptedMotionState(), "reprojection must keep the action active")
+  Assert.equal(motion.progressTicks, 2, "reprojection must not advance action progress")
+
+  Assert.throws(function()
+    a:reprojectActiveAction({ fieldX = 999, fieldZ = 5 }, { fieldX = 7, fieldZ = 5 })
+  end, "reprojection must reject endpoints that disagree with the active action")
+end
+
 return { tests = T }
