@@ -81,6 +81,12 @@ function OakIntroController:_applyProfilePhase(phase)
   end
 end
 
+function OakIntroController:_applyGenderFocus(index)
+  if self._profile:focusGender(index) then
+    self._timeline:resetGenderFocus()
+  end
+end
+
 function OakIntroController:tick(frames)
   assert(type(frames) == "number" and frames % 1 == 0 and frames >= 0, "Oak tick count must be a non-negative integer")
   if self._disposed or not self._started then
@@ -162,14 +168,10 @@ function OakIntroController:press(action)
       self._timeline:beginGenderConfirm(1)
       return true
     elseif action == "left" then
-      if self._profile:focusGender(0) then
-        self._timeline:resetGenderFocus()
-      end
+      self:_applyGenderFocus(0)
       return true
     elseif action == "right" then
-      if self._profile:focusGender(1) then
-        self._timeline:resetGenderFocus()
-      end
+      self:_applyGenderFocus(1)
       return true
     elseif action == "confirm" or action == "yes" then
       local gender = self._profile:gender()
