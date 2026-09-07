@@ -55,7 +55,7 @@ end
 ---@return boolean
 function IntroAssetCacheWriter.write(cacheFs, bundle)
   assert(cacheFs and bundle and bundle.marker and bundle.manifest and bundle.dependencies and bundle.assets)
-  assert(bundle.manifest.schemaVersion == 10, "intro manifest schema mismatch")
+  assert(bundle.manifest.schemaVersion == 11, "intro manifest schema mismatch")
   local tx = ArtifactPublisher.begin(cacheFs, "intro", { IntroAssetCache.assetDir(), IntroAssetCache.dir() })
   local ok, err = pcall(stageBundle, tx, bundle)
   if not ok then

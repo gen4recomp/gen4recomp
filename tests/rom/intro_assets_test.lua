@@ -85,7 +85,7 @@ local function assertBallSource(bundle)
 end
 
 local function assertVariant(bundle, versionId, paletteMember)
-  Assert.equal(bundle.manifest.schemaVersion, 10)
+  Assert.equal(bundle.manifest.schemaVersion, 11)
   Assert.equal(bundle.manifest.variant, versionId)
   Assert.equal(sourceMember(bundle, "background:char"), 0)
   Assert.equal(sourceMember(bundle, "background:screen"), 3)

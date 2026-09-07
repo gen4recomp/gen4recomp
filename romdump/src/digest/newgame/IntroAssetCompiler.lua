@@ -438,7 +438,7 @@ function IntroAssetCompiler.compile(romFs)
     })
   end
   local manifest = {
-    schemaVersion = 10,
+    schemaVersion = 11,
     variant = variant,
     sourceReference = { width = 256, height = 192 },
     genderSelector = {

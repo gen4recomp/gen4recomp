@@ -64,7 +64,7 @@ local function validManifest()
   widgets.gender_male.sourceCenter = { x = 64, y = 104 }
   widgets.gender_female.sourceCenter = { x = 192, y = 104 }
   return {
-    schemaVersion = 10,
+    schemaVersion = 11,
     variant = "heartgold",
     sourceReference = { width = 256, height = 192 },
     background = {
@@ -99,7 +99,8 @@ end
 
 function T.complete_schema_manifest_loads_and_declares_closed_inventory()
   local cache = require("libs.assets.src.newgame.IntroAssetCache")
-  Assert.equal(cache.SCHEMA, "g4-intro-assets-v10")
+  Assert.equal(cache.SCHEMA, "g4-intro-assets-v11")
+  Assert.equal(cache.FORMAT, "intro-cache-v11")
   Assert.equal(cache.FORMAT, DerivedAssetContract.intro.cacheFormat)
   local manifest = validManifest()
   Assert.isTrue(cache.validateManifest(manifest))
@@ -121,6 +122,9 @@ function T.stale_and_malformed_manifests_fail_before_composition()
   reject(cache, function(manifest)
     manifest.schemaVersion = 1
   end, "stale schema")
+  reject(cache, function(manifest)
+    manifest.schemaVersion = 10
+  end, "stale predecessor schema")
   reject(cache, function(manifest)
     manifest.widgets.ball_open = nil
   end, "missing widget")
@@ -209,6 +213,35 @@ function T.reveal_playback_policy_is_required_and_bounded()
   reject(cache, function(manifest)
     manifest.widgets.marill.loopStartFrameIdx = #manifest.widgets.marill.frames
   end, "loop start outside the frame table")
+end
+
+function T.predecessor_marker_and_manifest_are_not_ready()
+  local cache = require("libs.assets.src.newgame.IntroAssetCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  Assert.equal(cache.marker("sha", "hash"), "intro-cache-v11:sha:hash")
+  local predecessor = validManifest()
+  predecessor.schemaVersion = 10
+  local ok, err = cache.validateManifest(predecessor)
+  Assert.isFalse(ok, "the predecessor numeric manifest must be rejected")
+  Assert.equal(assert(err).code, "INTRO_MANIFEST_INVALID", "predecessor rejection has a typed error")
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local current = validManifest()
+  backend:write(cacheFs:resolve(cache.markerPath()), "intro-cache-v10:sha:hash")
+  cacheFs.loadLua = function(_, path)
+    if path == cache.manifestPath() then
+      return current
+    end
+    return { schema = cache.PROVENANCE_SCHEMA, source = {}, dependencies = {} }
+  end
+  cacheFs.exists = function(_, path)
+    return path:find("assets/generated/intro/", 1, true) == 1
+  end
+  Assert.isFalse(
+    cache.isReady(cacheFs, "intro-cache-v11:sha:hash"),
+    "a predecessor completion marker never reads ready under the current marker"
+  )
 end
 
 function T.semantic_records_do_not_add_files_to_cache_readiness()

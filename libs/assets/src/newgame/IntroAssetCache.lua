@@ -301,8 +301,8 @@ local function genderSelector(reference, value)
 end
 
 function M.validateManifest(manifest)
-  if type(manifest) ~= "table" or manifest.schemaVersion ~= 10 then
-    return invalid("manifest schema mismatch", { expected = 10, actual = manifest and manifest.schemaVersion })
+  if type(manifest) ~= "table" or manifest.schemaVersion ~= 11 then
+    return invalid("manifest schema mismatch", { expected = 11, actual = manifest and manifest.schemaVersion })
   end
   local recordOk, recordErr = closedRecord("manifest", manifest, {
     schemaVersion = true,
