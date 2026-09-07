@@ -305,7 +305,7 @@ local function validateActor(actor, key)
   return result
 end
 
----@param record any
+---@param record unknown
 ---@return table<string, unknown>|nil, Errors.Error?
 function FieldObjectSave.validate(record)
   if type(record) ~= "table" then

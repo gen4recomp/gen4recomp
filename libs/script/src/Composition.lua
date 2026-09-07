@@ -13,7 +13,7 @@ local Compiler = require("libs.script.src.Compiler")
 ---@class Composition
 ---@field private _registry Registry
 ---@field private _compile fun(script: table<string, unknown>, opts: table<string, unknown>): table<string, unknown>
----@field private _cache table<string, { version: integer, result: any }>
+---@field private _cache table<string, { version: integer, result: unknown }>
 local Composition = {}
 Composition.__index = Composition
 

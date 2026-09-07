@@ -71,7 +71,7 @@ local function invalid(message, context)
   return Errors.new(ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE, message, context)
 end
 
----@param value any
+---@param value unknown
 ---@return boolean
 local function nonNegativeInteger(value)
   return type(value) == "number" and value % 1 == 0 and value >= 0
@@ -80,7 +80,7 @@ end
 -- Validate one environment record; duplicate ids are rejected and the id is
 -- registered. Cross-record references are checked after every record has
 -- been seen.
----@param record any
+---@param record unknown
 ---@param environmentIds table<string, boolean>
 ---@return Errors.Error|nil
 local function validateEnvironmentRecord(record, environmentIds)
@@ -170,7 +170,7 @@ end
 -- Validate one instance record; duplicate ids are rejected and the id is
 -- registered. Cross-record references are checked after every record has
 -- been seen.
----@param record any
+---@param record unknown
 ---@param instanceIds table<string, boolean>
 ---@return Errors.Error|nil
 local function validateInstanceRecord(record, instanceIds)
@@ -376,7 +376,7 @@ end
 -- used by restore. Task-record shape validation lives here; restore adds
 -- the task-registry resolution and the scheduler adds the graph-revision
 -- checks against current compositions.
----@param bucket any
+---@param bucket unknown
 ---@param opts table<string, unknown>
 ---@return Errors.Error|nil
 function ScriptSave.validate(bucket, opts)

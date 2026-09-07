@@ -32,7 +32,7 @@ local M = {
 -- raw MAPSIGNCOMMAND_* code, or nil when the code is not one of the five
 -- pinned commands. Unknown codes are malformed source at lowering; nothing
 -- ever defaults to nop.
----@param code any
+---@param code unknown
 ---@return string|nil
 function M.semanticName(code)
   local entry = M.byCode[code]

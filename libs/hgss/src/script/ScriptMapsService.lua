@@ -23,7 +23,7 @@ local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 ---@field private _sourceMap table<string, unknown> RuntimeFieldMap
 ---@field private _screen table<string, unknown>|nil screen-fade-cover-shaped: isOpaque(): boolean
 ---@field private pendingWarp table<string, unknown>|nil
----@field private _error any|nil
+---@field private _error unknown|nil
 ---@field private _specialSpawn table<string, unknown>|nil
 local ScriptMapsService = {}
 ScriptMapsService.__index = ScriptMapsService
@@ -65,7 +65,7 @@ end
 -- Resolve a map symbol to its runtime map; nil only for the known
 -- not-found case (FIELD_MAP_UNKNOWN). Any other loader failure is an
 -- internal fault and re-raises with attribution.
----@param ref any
+---@param ref unknown
 ---@return table<string, unknown>|nil
 function ScriptMapsService:resolve(ref)
   if type(ref) ~= "string" then
@@ -163,7 +163,7 @@ end
 -- setter, never a hidden side effect folded into the lowering. Full
 -- LocalFieldData persistence is out of scope; this state is only observable
 -- through `specialSpawn()`.
----@param spawn { map: any, fieldX: integer, fieldZ: integer, warpId: integer, direction: string }
+---@param spawn { map: unknown, fieldX: integer, fieldZ: integer, warpId: integer, direction: string }
 function ScriptMapsService:setSpecialSpawn(spawn)
   self._specialSpawn = spawn
 end
@@ -197,7 +197,7 @@ end
 
 -- The captured failure of the pending warp, or nil on success. The warp task
 -- converts it into a faulted task result.
----@return any|nil
+---@return unknown|nil
 function ScriptMapsService:pendingError()
   return self._error
 end

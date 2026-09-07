@@ -387,7 +387,7 @@ local function compared(operator, run)
     Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "compare state is unset", { scriptId = run.instance.scriptId })
   end
   local fn = assert(COMPARE_OPS[operator], "unknown compare operator " .. tostring(operator))
-  local cmp = compare --[[@as { left: any, right: any }]]
+  local cmp = compare --[[@as { left: unknown, right: unknown }]]
   return fn(cmp.left, cmp.right)
 end
 

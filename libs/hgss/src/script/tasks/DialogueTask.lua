@@ -30,9 +30,9 @@ local PHASES = {
 
 -- Resolve a gendered message descriptor against the player's gender:
 -- male for gender 0, female otherwise.
----@param message any
+---@param message unknown
 ---@param ctx table<string, unknown>
----@return any
+---@return unknown
 local function resolveMessage(message, ctx)
   if type(message) == "table" and message.text == "gendered_message" then
     local gender = ctx.services.player:gender()

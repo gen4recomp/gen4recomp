@@ -7,24 +7,24 @@
 ---@field _itemCount integer
 ---@field _selectedIndex integer
 ---@field _cancellable boolean
----@field _cancelValue any
+---@field _cancelValue unknown
 ---@field _state "active"|"complete"
----@field _result any
+---@field _result unknown
 ---@field _cancelled boolean
 ---@field _pressedPointerItem integer?
 ---@field isActive fun(self: FieldMenuController): boolean
 ---@field focus fun(self: FieldMenuController, itemIndex: integer)
----@field confirm fun(self: FieldMenuController): any
----@field cancel fun(self: FieldMenuController): any
+---@field confirm fun(self: FieldMenuController): unknown
+---@field cancel fun(self: FieldMenuController): unknown
 ---@field hover fun(self: FieldMenuController, itemIndex: integer?)
 ---@field press fun(self: FieldMenuController, itemIndex: integer?)
----@field release fun(self: FieldMenuController, itemIndex: integer?): any
+---@field release fun(self: FieldMenuController, itemIndex: integer?): unknown
 ---@field status fun(self: FieldMenuController): FieldMenuController.Status
 
 local FieldMenuController = {}
 FieldMenuController.__index = FieldMenuController
 
----@param value any
+---@param value unknown
 ---@param name string
 local function assertInteger(value, name)
   assert(
@@ -73,13 +73,13 @@ end
 ---@field items FieldMenuController.Item[]
 ---@field initialCursor integer?
 ---@field cancellable boolean?
----@field cancelValue any
+---@field cancelValue unknown
 
 ---@class FieldMenuController.Item
----@field text any
----@field value any
----@field vanillaMetadata any?
----@field metadata any?
+---@field text unknown
+---@field value unknown
+---@field vanillaMetadata unknown?
+---@field metadata unknown?
 
 ---@param spec FieldMenuController.Spec
 ---@return FieldMenuController
@@ -115,9 +115,9 @@ function FieldMenuController:isActive()
   return self._state == "active"
 end
 
----@param result any
+---@param result unknown
 ---@param cancelled boolean
----@return any
+---@return unknown
 function FieldMenuController:_complete(result, cancelled)
   assert(self._state == "active", "field menu is already complete")
   self._state = "complete"
@@ -138,7 +138,7 @@ function FieldMenuController:focus(itemIndex)
   end
 end
 
----@return any
+---@return unknown
 function FieldMenuController:confirm()
   if not self:isActive() then
     return nil
@@ -146,7 +146,7 @@ function FieldMenuController:confirm()
   return self:_complete(self._items[assert(self._selectedIndex)].value, false)
 end
 
----@return any
+---@return unknown
 function FieldMenuController:cancel()
   if not self:isActive() or not self._cancellable then
     return nil
@@ -176,7 +176,7 @@ end
 -- across rows from selecting its release target.
 
 ---@param itemIndex integer?
----@return any
+---@return unknown
 function FieldMenuController:release(itemIndex)
   assertItemIndex(self, itemIndex)
   if not self:isActive() then
@@ -194,7 +194,7 @@ end
 ---@class FieldMenuController.Status
 ---@field state "active"|"complete"
 ---@field selectedIndex integer
----@field result any
+---@field result unknown
 ---@field cancelled boolean
 
 ---@return FieldMenuController.Status

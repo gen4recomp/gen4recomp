@@ -54,7 +54,7 @@ end
 
 ---@generic T
 ---@param value T?
----@param err any?
+---@param err unknown?
 ---@return T
 local function must(value, err)
   if value == nil then
@@ -410,7 +410,7 @@ end
 
 ---@param romFs RomFs
 ---@param sha1hex fun(bytes: string): string?
----@param hashLua fun(value: any): string?
+---@param hashLua fun(value: unknown): string?
 ---@return FieldFontCompiler.Bundle
 local function _compile(romFs, sha1hex, hashLua)
   assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "compile requires a RomFs-shaped object")
@@ -456,7 +456,7 @@ end
 
 ---@param romFs RomFs
 ---@param sha1hex? fun(bytes: string): string|nil
----@param hashLua? fun(value: any): string|nil
+---@param hashLua? fun(value: unknown): string|nil
 ---@return FieldFontCompiler.Bundle?
 ---@return Errors.Error?
 function FieldFontCompiler.compile(romFs, sha1hex, hashLua)

@@ -10,10 +10,10 @@ local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
 local AudioRuntime = {}
 
 ---@class HgssAudioRuntimeFieldOptions
----@field eventState any
+---@field eventState unknown
 ---@field fieldPosition fun(): integer, integer
 ---@field dayNight fun(): "day"|"night"
----@field fieldDataForMap fun(mapId: integer|string): any
+---@field fieldDataForMap fun(mapId: integer|string): unknown
 
 ---@class HgssAudioRuntimeOptions
 ---@field cacheFs CacheFs

@@ -64,7 +64,7 @@ local function requireSource(source)
   assert(type(source) == "string" and source ~= "", "physical button source identity required")
 end
 
----@param value any
+---@param value unknown
 ---@param name string
 local function requireFiniteNumber(value, name)
   assert(
@@ -78,13 +78,13 @@ local function requireUiDirection(direction)
   assert(UI_DIRECTIONS[direction], "unknown UI direction " .. tostring(direction))
 end
 
----@param value any
+---@param value unknown
 ---@param name string
 local function requirePositiveInteger(value, name)
   assert(type(value) == "number" and value == math.floor(value) and value > 0, name .. " must be a positive integer")
 end
 
----@param value any
+---@param value unknown
 ---@param name string
 local function requireNonNegativeInteger(value, name)
   assert(
@@ -93,7 +93,7 @@ local function requireNonNegativeInteger(value, name)
   )
 end
 
----@param value any
+---@param value unknown
 ---@param name string
 local function requireUnitInterval(value, name)
   requireFiniteNumber(value, name)

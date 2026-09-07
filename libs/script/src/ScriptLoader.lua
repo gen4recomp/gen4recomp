@@ -25,7 +25,7 @@ local ScriptLoader = {}
 -- content may inject their own requireFn, but the default is an allowlist,
 -- not the global require.
 ---@param name string
----@return any
+---@return unknown
 local function defaultRequire(name)
   assert(name == "gen4.script", "script resource chunks may only require gen4.script")
   return require(name)
@@ -69,7 +69,7 @@ end
 -- object on any failure.
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param id string
----@param requireFn fun(name: string): any|nil defaults to the restricted gen4.script-only require
+---@param requireFn fun(name: string): unknown|nil defaults to the restricted gen4.script-only require
 ---@param opts table<string, unknown>|nil { validate: boolean? }
 ---@return table<string, unknown>|nil, Errors.Error?
 function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
@@ -117,7 +117,7 @@ end
 -- path; the eager path validates every loaded resource under the same flag.
 ---@param registry table<string, unknown> Registry
 ---@param cacheFs table<string, unknown> CacheFs-shaped
----@param requireFn? fun(name: string): any
+---@param requireFn? fun(name: string): unknown
 ---@param opts table<string, unknown>|nil { lazy: boolean?, validateGenerated: boolean?, builtins: table<string, unknown>|nil }
 function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
   requireFn = requireFn or defaultRequire
@@ -207,7 +207,7 @@ end
 -- resource chunks. Returns the ids installed, sorted.
 ---@param registry table<string, unknown> Registry
 ---@param fs table<string, unknown> { read(path): string? }
----@param requireFn? fun(name: string): any
+---@param requireFn? fun(name: string): unknown
 ---@return string[]
 function ScriptLoader.installOverrides(registry, fs, requireFn)
   requireFn = requireFn or defaultRequire

@@ -227,7 +227,7 @@ end
 ---@param stageCache CacheFs
 ---@param roots string[]
 ---@param asides table<string, boolean>
----@return any|nil
+---@return unknown|nil
 local function rollbackAsides(cacheFs, stageCache, roots, asides)
   local firstError
   for _, root in ipairs(roots) do
@@ -250,7 +250,7 @@ end
 ---@param movedIn string[]
 ---@param roots string[]
 ---@param asides table<string, boolean>
----@return any|nil
+---@return unknown|nil
 local function rollbackPublished(cacheFs, stageCache, movedIn, roots, asides)
   local firstError
   for index = #movedIn, 1, -1 do

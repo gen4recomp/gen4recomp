@@ -22,7 +22,7 @@ local Sha256 = require("libs.script.src.Sha256")
 ---@field private cacheFs table<string, unknown> CacheFs-shaped
 ---@field private overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
 ---@field private snapshotKey string|nil
----@field private requireFn fun(name: string): any
+---@field private requireFn fun(name: string): unknown
 ---@field private builtinContentHash fun(): string|nil
 ---@field private clock fun(): number
 ---@field private budget number
@@ -34,7 +34,7 @@ local RegistryWarmup = {}
 RegistryWarmup.__index = RegistryWarmup
 RegistryWarmup.DEFAULT_BUDGET_SECONDS = 0.002
 
----@param opts table<string, unknown> { registry: table<string, unknown>, cacheFs: table<string, unknown>, overrideFs: table<string, unknown>, snapshotKey: string|nil, requireFn: fun(name: string): any|nil, builtinContentHash: fun(): string|nil, clock: fun(): number?, budget: number? }
+---@param opts table<string, unknown> { registry: table<string, unknown>, cacheFs: table<string, unknown>, overrideFs: table<string, unknown>, snapshotKey: string|nil, requireFn: fun(name: string): unknown|nil, builtinContentHash: fun(): string|nil, clock: fun(): number?, budget: number? }
 ---@return RegistryWarmup
 function RegistryWarmup.new(opts)
   assert(opts and opts.registry and opts.cacheFs and opts.overrideFs, "warm-up requires the registry and filesystems")

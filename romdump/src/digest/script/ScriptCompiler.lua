@@ -123,7 +123,7 @@ end
 -- aggregated coverage record and the dependency marker.
 ---@param romFs RomFs
 ---@param sha1hex? fun(bytes: string): string
----@param hashLua? fun(value: any): string
+---@param hashLua? fun(value: unknown): string
 ---@return table<string, unknown> bundle
 function ScriptCompiler.compile(romFs, sha1hex, hashLua)
   assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "compile requires a RomFs-shaped object")

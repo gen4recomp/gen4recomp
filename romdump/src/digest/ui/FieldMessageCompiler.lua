@@ -183,7 +183,7 @@ end
 
 ---@param romFs RomFs
 ---@param sha1hex? fun(bytes: string): string|nil
----@param hashLua? fun(value: any): string|nil
+---@param hashLua? fun(value: unknown): string|nil
 ---@return FieldMessageCompiler.Bundle?
 ---@return Errors.Error?
 function FieldMessageCompiler.compile(romFs, sha1hex, hashLua)

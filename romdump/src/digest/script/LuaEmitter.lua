@@ -61,7 +61,7 @@ end
 
 -- Render one serializable value (scalar, reference, condition, value,
 -- message, text descriptor, step, action, or nested list) as canonical Lua.
----@param value any
+---@param value unknown
 ---@param indent string
 ---@return string
 local function literal(value, indent)

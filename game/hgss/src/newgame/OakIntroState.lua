@@ -82,8 +82,8 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field controller OakIntroController
 ---@field manifest table<string, unknown>
 ---@field renderer OakIntroStateRenderer?
----@field graphics any?
----@field imageLoader (fun(path: string): any)?
+---@field graphics unknown?
+---@field imageLoader (fun(path: string): unknown)?
 ---@field textInputHost OakIntroStateTextInputHost?
 ---@field glyphs string[]?
 ---@field width number?
@@ -142,10 +142,10 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field keypressed fun(self: OakIntroState, key: string, scancode: string?, isrepeat: boolean?)
 ---@field press fun(self: OakIntroState, action: string): boolean
 ---@field textinput fun(self: OakIntroState, text: string)
----@field gamepadpressed fun(self: OakIntroState, joystick: any, button: string)
+---@field gamepadpressed fun(self: OakIntroState, joystick: unknown, button: string)
 ---@field _pointer fun(self: OakIntroState, x: number, y: number)
 ---@field mousepressed fun(self: OakIntroState, x: number, y: number, button: integer)
----@field touchpressed fun(self: OakIntroState, id: any, x: number, y: number)
+---@field touchpressed fun(self: OakIntroState, id: unknown, x: number, y: number)
 ---@field dispose fun(self: OakIntroState)
 local OakIntroState = {}
 OakIntroState.__index = OakIntroState

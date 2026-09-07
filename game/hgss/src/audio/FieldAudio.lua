@@ -8,10 +8,10 @@ local FieldAudio = {}
 ---@class FieldAudioComposeOptions
 ---@field cacheFs CacheFs
 ---@field outputRate integer
----@field eventState any
+---@field eventState unknown
 ---@field fieldPosition fun(): integer, integer
 ---@field dayNight fun(): "day"|"night"
----@field fieldDataForMap fun(mapIdOrSymbol: integer|string): any
+---@field fieldDataForMap fun(mapIdOrSymbol: integer|string): unknown
 ---@field outputHost table<string, unknown>|nil
 
 ---@param opts FieldAudioComposeOptions

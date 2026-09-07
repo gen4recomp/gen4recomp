@@ -27,7 +27,7 @@ S.apiVersion = Schema.API_VERSION
 -- Returns true, or nil plus an Errors object with code SCRIPT_* and a
 -- `path`-attributed context. Validation is strict-only: unknown fields are
 -- always rejected.
----@param script any
+---@param script unknown
 ---@return boolean|nil, Errors.Error|nil
 function S.validate(script)
   return Validator.validate(script)

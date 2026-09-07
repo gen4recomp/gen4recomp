@@ -738,7 +738,7 @@ end
 
 ---@param romFs RomFs
 ---@param sha1hex? fun(bytes: string): string|nil
----@param hashLua? fun(value: any): string|nil
+---@param hashLua? fun(value: unknown): string|nil
 ---@return table<string, unknown>|nil bundle
 ---@return Errors.Error?
 function FieldUiCompiler.compile(romFs, sha1hex, hashLua)

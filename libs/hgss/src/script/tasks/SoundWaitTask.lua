@@ -82,7 +82,7 @@ function SoundWaitTask.poll(state, ctx)
   -- name the poll the wait kind uses.
   local done
   if state.kind == "effect" then
-    local service = audio --[[@as { isEffectWaitComplete: fun(self: table, sequence: any): boolean }]]
+    local service = audio --[[@as { isEffectWaitComplete: fun(self: table, sequence: unknown): boolean }]]
     local complete = service:isEffectWaitComplete(state.sequence)
     assert(complete ~= nil, "the audio service must report effect wait completion as a boolean")
     done = complete

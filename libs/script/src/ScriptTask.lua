@@ -22,8 +22,8 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@field lastPolledTick integer|nil
 ---@field completedAtTick integer|nil
 ---@field status string active|completed|cancelled
----@field result any
----@field state any
+---@field result unknown
+---@field state unknown
 local ScriptTask = {}
 ScriptTask.__index = ScriptTask
 
@@ -39,7 +39,7 @@ local STATUSES = { active = true, completed = true, cancelled = true }
 ---@field environmentId string
 ---@field createdAtTick integer
 ---@field pollAtTick integer
----@field state any
+---@field state unknown
 
 -- Build a task record, enforcing the creation invariants of ScriptTask:
 -- a task never polls in its creation tick, polls at most once per tick, and
@@ -78,7 +78,7 @@ end
 -- Mark the task as completing in the given tick. The owner consumes the
 -- result on a later tick; the record is retained until then.
 ---@param tick integer
----@param result any
+---@param result unknown
 function ScriptTask:complete(tick, result)
   assert(self.status == "active", "only active tasks may complete")
   assert(tick >= self.pollAtTick, "a task cannot complete before its poll tick")

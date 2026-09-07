@@ -17,7 +17,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 ---@field private _layout fun(formatted: table<string, unknown>): table<string, unknown>
 ---@field private _fontDef table<string, unknown>
 ---@field private _player table<string, unknown>|nil
----@field private _world table<string, unknown>|nil world state { getVar(id) -> any }
+---@field private _world table<string, unknown>|nil world state { getVar(id) -> unknown }
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
 ---@field private _pendingNode table<string, unknown>|nil
 local ScriptDialogueHost = {}
@@ -89,7 +89,7 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider)
       ---@cast context Errors.Context
       Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "integer text values require the world state", context)
     end
-    local worldState = world --[[@as { getVar: fun(self: table, id: any): any }]]
+    local worldState = world --[[@as { getVar: fun(self: table, id: unknown): unknown }]]
     return FieldMessageProvider.asciiGlyphTokens(tostring(worldState:getVar(value.id)), fontDef)
   end
   Errors.raise(
@@ -133,7 +133,7 @@ function ScriptDialogueHost:isOpen()
 end
 
 -- Resolve a message reference to a controller-ready formatted message.
----@param message any string reference or external descriptor
+---@param message unknown string reference or external descriptor
 ---@param bindings table<string, unknown> slot -> text value
 ---@param textArgs table<string, unknown> slot -> text value
 ---@return FieldMessageProvider.FormattedMessage formatted { tokens, ... }
@@ -212,7 +212,7 @@ function ScriptDialogueHost:openMessage(node)
 end
 
 -- Open the controller as a script-owned request and start revealing.
----@param message any
+---@param message unknown
 ---@param bindings table<string, unknown>|nil
 ---@param textArgs table<string, unknown>|nil
 function ScriptDialogueHost:startPrint(message, bindings, textArgs)

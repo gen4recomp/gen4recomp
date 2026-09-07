@@ -43,7 +43,7 @@ end
 
 -- True when the stored state (nil when missing or malformed) exactly matches
 -- the current identity; any difference in any input invalidates.
----@param stored any
+---@param stored unknown
 ---@param identity table<string, unknown>
 ---@return boolean
 function DerivedCacheState.matches(stored, identity)

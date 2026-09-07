@@ -80,7 +80,7 @@ function RegistrySnapshot.key(cacheFs, overrideFs, builtinContentHash)
   return Sha256.hex(table.concat(parts))
 end
 
----@param value any
+---@param value unknown
 ---@return boolean
 local function isHexDigest(value)
   return type(value) == "string" and #value == 64 and value:match(HEX_DIGEST) ~= nil

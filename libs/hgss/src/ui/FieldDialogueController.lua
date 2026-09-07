@@ -23,7 +23,7 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 ---@field _pageIndex integer
 ---@field _revealed integer
 ---@field _terminal { kind: string, result: FieldDialogueController.Result }?
----@field _pendingClose { kind: string, error: any }?
+---@field _pendingClose { kind: string, error: unknown }?
 ---@field _lineHeight integer
 ---@field _lineSpacing integer
 ---@field _textOriginX integer
@@ -713,7 +713,7 @@ end
 ---@field bankId integer?
 ---@field messageId integer?
 ---@field metadata table<string, unknown>?
----@field error any?
+---@field error unknown?
 
 -- Fixed-tick input snapshot consumed by step(); produced by FieldInput.
 

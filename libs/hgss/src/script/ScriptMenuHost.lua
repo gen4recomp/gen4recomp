@@ -8,11 +8,11 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 
 ---@class ScriptMenuHost
 ---@field _provider FieldMessageProvider
----@field _resolveText fun(message: any): table<string, unknown>|nil
+---@field _resolveText fun(message: unknown): table<string, unknown>|nil
 local ScriptMenuHost = {}
 ScriptMenuHost.__index = ScriptMenuHost
 
----@param value any
+---@param value unknown
 ---@param name string
 local function assertInteger(value, name)
   assert(
@@ -25,7 +25,7 @@ local function assertInteger(value, name)
   )
 end
 
----@param source any
+---@param source unknown
 ---@return integer
 local function messageBank(source)
   if source == "standard" then
@@ -37,7 +37,7 @@ local function messageBank(source)
 end
 
 ---@param self ScriptMenuHost
----@param source any
+---@param source unknown
 ---@param messageId integer
 ---@return table<string, unknown>
 local function resolveMessage(self, source, messageId)
@@ -75,7 +75,7 @@ local function resolveSemanticText(self, message)
         context
       )
     end
-    ---@cast resolveText fun(message: any): table<string, unknown>|nil
+    ---@cast resolveText fun(message: unknown): table<string, unknown>|nil
     local text = resolveText(message)
     if type(text) ~= "table" or type(text.text) ~= "string" then
       local context = { message = message }
@@ -91,7 +91,7 @@ local function resolveSemanticText(self, message)
   return { text = message }
 end
 
----@param opts table<string, unknown> { provider, resolveText?: fun(message: any): table<string, unknown> }
+---@param opts table<string, unknown> { provider, resolveText?: fun(message: unknown): table<string, unknown> }
 ---@return ScriptMenuHost
 function ScriptMenuHost.new(opts)
   assert(type(opts) == "table" and opts.provider, "script menu host requires a message provider")
@@ -109,7 +109,7 @@ end
 -- state. A project may supply its dialogue resolver; bare strings remain
 -- useful as local text in isolated tools and tests.
 ---@param spec table<string, unknown>
----@return any menuController
+---@return unknown menuController
 function ScriptMenuHost:choose(spec)
   assert(type(spec) == "table" and type(spec.items) == "table", "semantic menu specification is invalid")
   local items = {}
@@ -198,7 +198,7 @@ end
 -- released after each lookup; on any failure no controller request is made
 -- and the builder remains available for diagnostic inspection by its caller.
 ---@param builder table<string, unknown>|nil imported HGSS menu builder owned by a ScriptInstance
----@return any menuController
+---@return unknown menuController
 function ScriptMenuHost:execute(builder)
   if builder == nil then
     Errors.raise(ScriptErrors.SCRIPT_MENU_NOT_INITIALIZED, "script menu executed without a menu builder")

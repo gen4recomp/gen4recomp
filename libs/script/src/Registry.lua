@@ -18,12 +18,12 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local Sha256 = require("libs.script.src.Sha256")
 
 ---@class Registry
----@field private _bases table<string, table<string, any>> id -> layer -> script
+---@field private _bases table<string, table<string, unknown>> id -> layer -> script
 ---@field private _version integer
 ---@field private _sealed boolean
 ---@field private _fingerprintCache table<string, unknown>|nil { version: integer, value: string }
 ---@field private _hashCache table<string, unknown>|nil { version: integer, values: table<string, table<string, string>> }
----@field private _loadResource fun(id: string, layer: string): table<string, unknown>|nil, any?|nil
+---@field private _loadResource fun(id: string, layer: string): table<string, unknown>|nil, unknown?|nil
 local Registry = {}
 Registry.__index = Registry
 
@@ -38,7 +38,7 @@ local BASE_LAYERS = { builtin = 1, generated = 2, override = 3 }
 
 local VANILLA_OWNER = { kind = "vanilla", id = "base", api = 1 }
 
----@param opts table<string, unknown>|nil { loadResource: fun(id: string, layer: string): table<string, unknown>|nil, any?|nil }
+---@param opts table<string, unknown>|nil { loadResource: fun(id: string, layer: string): table<string, unknown>|nil, unknown?|nil }
 ---@return Registry
 function Registry.new(opts)
   opts = opts or {}

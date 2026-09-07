@@ -20,23 +20,23 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 ---@class FieldAudioControllerOptions
 ---@field sound GameSound
 ---@field provider AudioAssetProvider
----@field eventState any
+---@field eventState unknown
 ---@field fieldPosition fun(): integer, integer
 ---@field dayNight fun(): "day"|"night"
----@field fieldDataForMap fun(mapId: integer|string): any
+---@field fieldDataForMap fun(mapId: integer|string): unknown
 
 ---@class FieldAudioController
 ---@field private _sound GameSound
 ---@field private _provider AudioAssetProvider
 ---@field private _fieldPosition fun(): integer, integer
 ---@field private _dayNight fun(): "day"|"night"
----@field private _fieldDataForMap fun(mapId: integer|string): any
----@field _currentMap any
+---@field private _fieldDataForMap fun(mapId: integer|string): unknown
+---@field _currentMap unknown
 ---@field _fieldMusic integer|nil
 ---@field _musicOverride integer|nil
 ---@field _environment { sequence: integer }|nil
 ---@field _pendingFieldMusicPolicy FieldAudioControllerPendingMusicPolicy|nil
----@field _eventState any
+---@field _eventState unknown
 ---@field isEffectPlaying fun(self: FieldAudioController, idOrSymbol: integer|string): boolean
 ---@field isEffectWaitComplete fun(self: FieldAudioController, idOrSymbol: integer|string): boolean
 local FieldAudioController = {}
@@ -175,7 +175,7 @@ end
 
 -- Enters a map and optionally plays the effective music
 -- Options: { clearMusicOverride, restoredMusicOverride, play }
----@param runtimeMap any
+---@param runtimeMap unknown
 ---@param options table<string, unknown>|nil
 function FieldAudioController:enterMap(runtimeMap, options)
   options = options or {}

@@ -43,7 +43,7 @@ local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 ---@field _controller table<string, unknown>? the active controller (menu or destination)
 ---@field _rememberedActionId string?
 ---@field _applicationId string?
----@field _failure any? retained factory/composition failure
+---@field _failure unknown? retained factory/composition failure
 ---@field _uiHeld boolean the modal input lifetime is held (beginUi done, clearUi pending)
 ---@field _reopenPending boolean a script reopen request awaits the session
 ---@field _layout StartMenuLayout.Placement? the StartMenuLayout placement record (setMenuPlacement)
@@ -132,7 +132,7 @@ end
 
 -- The retained factory/composition failure, or nil. The runtime surfaces it
 -- as its fatal error text and freezes.
----@return any?
+---@return unknown?
 function FieldApplicationHost:error()
   return self._failure
 end
@@ -215,7 +215,7 @@ end
 -- destination and fade state, and freeze the host. No successful return to
 -- the menu is ever reported; the runtime surfaces the error and stops
 -- stepping. No recovery is attempted.
----@param failure any
+---@param failure unknown
 function FieldApplicationHost:_fail(failure)
   self._failure = failure
   self:_disposeController()

@@ -226,8 +226,8 @@ end
 -- pool, release on failed construction" -- nothing more: it is not a generic
 -- transaction API, and callers must not reuse a pool that already owns
 -- objects (a failed inner construction would release them).
----@param fn fun(): any
----@return any
+---@param fn fun(): unknown?
+---@return unknown
 function GpuAssetPool:build(fn)
   assert(type(fn) == "function", "GpuAssetPool:build requires a function")
   local ok, result = pcall(fn)

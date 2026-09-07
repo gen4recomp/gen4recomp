@@ -760,7 +760,7 @@ function Validator._validate(script)
   return true
 end
 
----@param script any
+---@param script unknown
 ---@return boolean|nil, Errors.Error|nil
 function Validator.validate(script)
   local ok, err = pcall(Validator._validate, script)
@@ -768,7 +768,7 @@ function Validator.validate(script)
     return true
   end
   if Errors.is(err) then
-    local thrown = err --[[@as any]]
+    local thrown = err --[[@as unknown]]
     return nil, thrown
   end
   error(err, 0)

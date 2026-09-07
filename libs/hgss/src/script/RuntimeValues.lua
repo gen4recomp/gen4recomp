@@ -24,8 +24,8 @@ end
 -- Write a value reference: locals and vars are writable; args are read-only
 -- call data (writing one is an invalid reference). Shared by node handlers
 -- and the scheduler's task-result write.
----@param ref any
----@param value any
+---@param ref unknown
+---@param value unknown
 ---@param run table<string, unknown>
 function RuntimeValues.writeRef(ref, value, run)
   if type(ref) ~= "table" or ref.value == nil then
@@ -51,9 +51,9 @@ function RuntimeValues.writeRef(ref, value, run)
 end
 
 -- Evaluate a value reference to a runtime scalar.
----@param v any
+---@param v unknown
 ---@param run table<string, unknown>
----@return any
+---@return unknown
 function RuntimeValues.evaluateValue(v, run)
   if type(v) ~= "table" or v.value == nil then
     return v
@@ -126,6 +126,7 @@ function RuntimeValues.evaluateValue(v, run)
     "unknown value kind " .. tostring(kind),
     { scriptId = run.instance.scriptId }
   )
+  return nil
 end
 
 -- Resolve an id_or_var operand to the world id it names. A variable
@@ -133,9 +134,9 @@ end
 -- var-range operands, e.g. copy_var/set_var, and the source operand IS the
 -- variable id); every other form evaluates as before (a direct string or
 -- numeric id passes through, local/arg references dereference).
----@param v any
+---@param v unknown
 ---@param run table<string, unknown>
----@return any
+---@return unknown
 function RuntimeValues.resolveIdOperand(v, run)
   if type(v) == "table" and v.value == "var" then
     return v.id
@@ -146,9 +147,9 @@ end
 -- Resolve a semantic message descriptor before it crosses into a host. This
 -- keeps dynamic operands and gender selection in the runtime, while the
 -- dialogue/menu hosts retain one concrete-message resolution contract.
----@param message any
+---@param message unknown
 ---@param run table<string, unknown>
----@return any
+---@return unknown
 function RuntimeValues.evaluateMessage(message, run)
   if type(message) ~= "table" then
     return message
@@ -168,10 +169,11 @@ function RuntimeValues.evaluateMessage(message, run)
     return RuntimeValues.evaluateMessage(gender == 0 and message.male or message.female, run)
   end
   Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "unknown message reference form", { message = message })
+  return nil
 end
 
 -- Evaluate a condition to a boolean.
----@param condition any
+---@param condition unknown
 ---@param run table<string, unknown>
 ---@return boolean
 function RuntimeValues.evaluateCondition(condition, run)
@@ -248,7 +250,7 @@ end
 
 -- Resolve an actor reference to a concrete actor id. Special references
 -- resolve through the trigger context and the actor world adapter.
----@param ref any
+---@param ref unknown
 ---@param run table<string, unknown>
 ---@return string
 function RuntimeValues.resolveActor(ref, run)
@@ -304,7 +306,7 @@ function RuntimeValues.resolveActor(ref, run)
 end
 
 -- Resolve and require a live actor; missing actors are attributed errors.
----@param ref any
+---@param ref unknown
 ---@param run table<string, unknown>
 ---@return string actorId
 function RuntimeValues.requireActor(ref, run)
@@ -319,7 +321,7 @@ function RuntimeValues.requireActor(ref, run)
   return actorId
 end
 
----@param ref any
+---@param ref unknown
 ---@param run table<string, unknown>
 ---@return boolean
 function RuntimeValues.actorExists(ref, run)

@@ -199,7 +199,7 @@ function OakIntroComposition.compose(options)
       virtualGlyphs = virtualGlyphs(fontDef.charmap),
     })
     return OakIntroState.new({
-      controller = controller --[[@as any]],
+      controller = controller --[[@as unknown]],
       manifest = introManifest,
       textRenderer = textRenderer,
       choiceText = choiceText,

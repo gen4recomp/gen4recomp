@@ -101,7 +101,7 @@ function ScriptRng:serialize()
   return { state = self._state, calls = self._calls }
 end
 
----@param record any
+---@param record unknown
 ---@return table<string, unknown>|nil, Errors.Error?
 function ScriptRng.validate(record)
   if type(record) ~= "table" then

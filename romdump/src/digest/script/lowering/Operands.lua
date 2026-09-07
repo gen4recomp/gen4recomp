@@ -4,8 +4,8 @@
 local Operands = {}
 
 -- A variable-typed operand: symbols stay symbolic, numbers stay numbers.
----@param value any
----@return any
+---@param value unknown
+---@return unknown
 function Operands.operandValue(value)
   if type(value) == "table" then
     return value.raw
@@ -15,8 +15,8 @@ end
 
 -- Value-or-variable operand (ScriptGetVar semantics). The numeric ranges and
 -- symbolic prefixes are grounded in the pinned vars.h definitions.
----@param value any
----@return any
+---@param value unknown
+---@return unknown
 function Operands.varRef(value)
   local raw = Operands.operandValue(value)
   if type(raw) == "number" then

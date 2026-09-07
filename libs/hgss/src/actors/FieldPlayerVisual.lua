@@ -20,9 +20,9 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class FieldPlayerVisual.Source
 ---@field facing string
 ---@field animationPaused boolean
----@field presentationState fun(self: any): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
----@field clearGesturePresentation fun(self: any)
----@field renderPosition fun(self: any, alpha: number?): { x: number, y: number, z: number }
+---@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@field clearGesturePresentation fun(self: unknown)
+---@field renderPosition fun(self: unknown, alpha: number?): { x: number, y: number, z: number }
 
 ---@class FieldPlayerVisual.SourceInput
 ---@field facing string?

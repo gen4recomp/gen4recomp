@@ -35,7 +35,7 @@ local HEIGHT_TIE_EPSILON = 1e-9
 -- is beyond the reachable step height) rather than corrupted or ambiguous
 -- terrain. The movement and interaction whitelists accept exactly this
 -- TERRAIN_SURFACE_DISCONNECTED variant as a normal rejection.
----@param err any
+---@param err unknown
 ---@return boolean
 function SurfaceResolver.isStepRejection(err)
   return Errors.is(err) and err.code == FieldErrors.TERRAIN_SURFACE_DISCONNECTED and err.context.kind == "step-beyond"

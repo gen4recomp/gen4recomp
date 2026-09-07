@@ -117,8 +117,8 @@ local RETURN_OPS = { [27] = true }
 
 -- Compare an operand raw value with a node field (varRef forms match their
 -- symbolic operands).
----@param raw any
----@param node any
+---@param raw unknown
+---@param node unknown
 ---@return boolean
 local function operandMatches(raw, node)
   if type(node) == "table" and type(raw) == "string" then

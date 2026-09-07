@@ -10,7 +10,7 @@ local Serializable = {}
 
 -- True when the value is serializable; `seen` tracks the current ancestry to
 -- detect cycles.
----@param value any
+---@param value unknown
 ---@param seen table<string, unknown>|nil
 ---@return boolean
 function Serializable.is(value, seen)

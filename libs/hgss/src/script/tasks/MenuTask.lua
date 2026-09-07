@@ -123,7 +123,7 @@ function MenuTask.cancel(state, reason, ctx)
   end
 end
 
----@param state any
+---@param state unknown
 ---@return Errors.Error|nil
 function MenuTask.validate(state)
   -- Restore validates the serialized state before reattaching it. Pointer

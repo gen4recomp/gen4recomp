@@ -14,7 +14,7 @@ local ScriptEnvironment = require("libs.script.src.ScriptEnvironment")
 ---@field graphRevision string
 ---@field nodeId string
 ---@field returnNodeId string|nil
----@field resultRef any|nil
+---@field resultRef unknown|nil
 ---@field chain table<string, unknown>|nil
 ---@field chainScriptId string|nil
 ---@field chainRevision string|nil
@@ -33,12 +33,12 @@ local ScriptEnvironment = require("libs.script.src.ScriptEnvironment")
 ---@field args table<string, unknown>
 ---@field locals table<string, unknown>
 ---@field textArgs table<string, unknown>
----@field compare any|nil
+---@field compare unknown|nil
 ---@field menuBuilder table<string, unknown>|nil imported HGSS menu construction owned by this instance
 ---@field frames ScriptFrame[]
 ---@field waitingTaskId string|nil
----@field taskResult any
----@field pendingResultRef any|nil
+---@field taskResult unknown
+---@field pendingResultRef unknown|nil
 ---@field createdAtTick integer
 ---@field readyAtTick integer
 ---@field lastRunTick integer|nil

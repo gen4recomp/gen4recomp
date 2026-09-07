@@ -768,7 +768,7 @@ function FieldState:wheelmoved(x, y)
   self.runtime.input:pointerScroll("mouse", x, y)
 end
 
----@param id any
+---@param id unknown
 ---@param x number
 ---@param y number
 function FieldState:touchpressed(id, x, y)
@@ -778,7 +778,7 @@ function FieldState:touchpressed(id, x, y)
   self.runtime.input:pointerDown("touch:" .. tostring(id), x, y)
 end
 
----@param id any
+---@param id unknown
 ---@param x number
 ---@param y number
 function FieldState:touchmoved(id, x, y)
@@ -788,7 +788,7 @@ function FieldState:touchmoved(id, x, y)
   self.runtime.input:pointerMove("touch:" .. tostring(id), x, y)
 end
 
----@param id any
+---@param id unknown
 ---@param x number
 ---@param y number
 function FieldState:touchreleased(id, x, y)

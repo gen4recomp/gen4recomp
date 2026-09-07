@@ -65,8 +65,8 @@ for _, special in ipairs(Schema.ACTOR_SPECIALS) do
 end
 
 -- Deep copy of serializable data (the validator guarantees acyclicity).
----@param value any
----@return any
+---@param value unknown
+---@return unknown
 local function deepCopy(value)
   if type(value) ~= "table" then
     return value
@@ -125,7 +125,7 @@ local function normalizeText(v)
 end
 
 -- String actor shorthand becomes an actor reference.
----@param v any
+---@param v unknown
 ---@return table<string, unknown>
 local function normalizeActor(v)
   if type(v) == "string" then
@@ -717,7 +717,7 @@ end
 
 -- Compiles a validated script resource into the internal graph. Returns the
 -- graph, or nil plus an Errors object on validation or structural failure.
----@param script any
+---@param script unknown
 ---@param opts table<string, unknown>|nil
 ---@return table<string, unknown>|nil, Errors.Error|nil
 function Compiler.compile(script, opts)
@@ -726,7 +726,7 @@ function Compiler.compile(script, opts)
     return result
   end
   if Errors.is(result) then
-    local thrown = result --[[@as any]]
+    local thrown = result --[[@as unknown]]
     return nil, thrown
   end
   error(result, 0)

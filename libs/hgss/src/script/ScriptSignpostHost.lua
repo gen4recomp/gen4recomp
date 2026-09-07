@@ -10,7 +10,7 @@
 
 ---@class ScriptSignpostHost
 ---@field private _controller FieldSignpostController
----@field private _resolveMessage fun(message: any, bindings: table<string, unknown>, textArgs: table<string, unknown>): FieldMessageProvider.FormattedMessage
+---@field private _resolveMessage fun(message: unknown, bindings: table<string, unknown>, textArgs: table<string, unknown>): FieldMessageProvider.FormattedMessage
 local ScriptSignpostHost = {}
 ScriptSignpostHost.__index = ScriptSignpostHost
 
@@ -19,7 +19,7 @@ ScriptSignpostHost.__index = ScriptSignpostHost
 -- cleaned up immediately, exactly once, before the original fault
 -- propagates. A successful print leaves normal signpost/task ownership
 -- untouched.
----@param message any
+---@param message unknown
 ---@param bindings table<string, unknown>
 ---@param textArgs table<string, unknown>
 ---@param printStart fun(formatted: FieldMessageProvider.FormattedMessage)
@@ -88,7 +88,7 @@ end
 -- Print the whole message instantly in the signpost window (the immediate
 -- direction-signpost path): resolve and expand, then print. The request is
 -- presentation-neutral; text colors are the style's, never the host's.
----@param message any
+---@param message unknown
 ---@param bindings table<string, unknown>|nil
 ---@param textArgs table<string, unknown>|nil
 function ScriptSignpostHost:printInstant(message, bindings, textArgs)
@@ -101,7 +101,7 @@ end
 -- Print at the player's configured text speed (Trainer Tips path). The
 -- cadence is injected into the controller at construction from the single
 -- PlayerData authority; the host never chooses one.
----@param message any
+---@param message unknown
 ---@param bindings table<string, unknown>|nil
 ---@param textArgs table<string, unknown>|nil
 function ScriptSignpostHost:printTyped(message, bindings, textArgs)

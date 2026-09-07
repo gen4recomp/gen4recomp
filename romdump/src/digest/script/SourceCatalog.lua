@@ -36,7 +36,7 @@ end
 -- symbol). Known names lose the `std_` prefix; unknown operands stay
 -- mechanical (`common.std_<id>`).
 ---@param catalog table<string, unknown>
----@param operand any
+---@param operand unknown
 ---@return string publicId
 function SourceCatalog.commonPublicId(catalog, operand)
   local name

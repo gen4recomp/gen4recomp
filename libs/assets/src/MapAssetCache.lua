@@ -101,7 +101,7 @@ local TERRAIN_SRT_FIELDS = { "transS", "transT", "scaleS", "scaleT" }
 local TERRAIN_SRT_ONES = { "scaleOne", "transOne", "rotOne" }
 
 -- A finite integer (rejects fractional, NaN, and infinite values).
----@param value any
+---@param value unknown
 ---@return boolean
 local function isFiniteInteger(value)
   return type(value) == "number" and value % 1 == 0

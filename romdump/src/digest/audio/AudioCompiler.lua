@@ -417,7 +417,7 @@ end
 
 ---@param romFs table<string, unknown>
 ---@param sha1hex? fun(bytes: string): string
----@param hashLua? fun(value: any): string
+---@param hashLua? fun(value: unknown): string
 ---@return table<string, unknown>?|nil
 ---@return Errors.Error?|nil
 function AudioCompiler.compile(romFs, sha1hex, hashLua)

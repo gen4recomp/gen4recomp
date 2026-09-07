@@ -61,9 +61,9 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field stopSound fun(soundId: string)?
 ---@field onStart fun(sourceMap: table<string, unknown>, trigger: table<string, unknown>, facing: FieldDirection)? -- invoked once per transition start, before ownership changes
 ---@field onProfile fun(profile: integer, phase: "exit"|"enter", family: string)? -- source-specific semantic hook
----@field cameraAdjust fun(...: any)?
+---@field cameraAdjust fun(...: unknown)?
 ---@field escalatorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>?
----@field onPanel fun(...: any)?
+---@field onPanel fun(...: unknown)?
 ---@field player table<string, unknown>|nil -- FieldPlayer, bound by the owner across the swap
 ---@field phase "idle"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"
 ---@field fadeAlpha number
@@ -82,7 +82,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field activeProfileSound string|nil
 ---@field ownsPlayerAnimationPause boolean
 ---@field completed table<string, unknown>?
----@field error any?
+---@field error unknown?
 ---@field warpContext table<string, unknown>?
 ---@field suppression table<string, unknown>?
 ---@field destinationAnchorY number?

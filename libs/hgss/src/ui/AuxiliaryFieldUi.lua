@@ -35,7 +35,7 @@ local function validateRecord(record)
   return { requested = record.requested, state = record.state }
 end
 
----@param record any
+---@param record unknown
 ---@return table<string, unknown>|nil, Errors.Error?
 function AuxiliaryFieldUi.validate(record)
   local ok, result = pcall(validateRecord, record)

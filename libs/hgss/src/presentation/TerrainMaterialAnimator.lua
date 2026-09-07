@@ -51,7 +51,7 @@ TerrainMaterialAnimator.__index = TerrainMaterialAnimator
 -- bound material.texture, the schedule entries only supply alternate frames.
 ---@param bindings { record: table<string, unknown>, runtime: table<string, unknown> }[] scene material record + live runtime material table<string, unknown>
 ---@param clip table<string, unknown>|false the compiled texsrt clip or false for no area animation
----@param resolveImage fun(path: string, wrapX: string, wrapY: string): any the pool-backed image resolver
+---@param resolveImage fun(path: string, wrapX: string, wrapY: string): unknown the pool-backed image resolver
 ---@param checkpoint fun()? optional safe boundary after an image acquisition
 ---@return TerrainMaterialAnimator
 function TerrainMaterialAnimator.new(bindings, clip, resolveImage, checkpoint)

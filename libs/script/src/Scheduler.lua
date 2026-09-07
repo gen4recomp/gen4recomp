@@ -544,7 +544,7 @@ end
 ---@param kind string
 ---@param task ScriptTask
 ---@param ctx table<string, unknown>
----@param err any
+---@param err unknown
 function Scheduler:_deferTaskFault(kind, task, ctx, err)
   local fault
   if Errors.is(err) then
@@ -927,7 +927,7 @@ end
 -- removed -- and returned so the caller can fault the owning instance.
 ---@param task ScriptTask
 ---@param reason string
----@return any|nil
+---@return unknown|nil
 function Scheduler:_cancelTaskState(task, reason)
   if task.status == "cancelled" then
     return nil
@@ -964,7 +964,7 @@ end
 -- Fault the owner of a task whose cancel callback raised, with the same
 -- task/script/instance attribution as the poll boundary.
 ---@param task ScriptTask
----@param err any
+---@param err unknown
 ---@return Errors.Error
 function Scheduler:_cancelFault(task, err)
   if Errors.is(err) then

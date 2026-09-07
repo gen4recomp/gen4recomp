@@ -65,7 +65,7 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field materialState { [integer]: MaterialInstanceState }
 ---@field poseState PoseState|nil
 ---@field renderMeshesById table<string, unknown>|nil -- caller-built render meshes per mesh id
----@field resolveImage fun(key: string, materialId: integer): any|nil
+---@field resolveImage fun(key: string, materialId: integer): unknown|nil
 ---@field timeOfDayPlan table<string, unknown>|nil -- band plan the scene loader attaches (TimeOfDayProps.plan)
 ---@field play fun(self: ModelInstance, nameOrSemantic: string, opts: table<string, unknown>?): table<string, unknown>
 ---@field stop fun(self: ModelInstance, nameOrHandle: string|table<string, unknown>): integer
@@ -74,7 +74,7 @@ ModelInstance.__index = ModelInstance
 
 ---@class ModelInstance.Options
 ---@field transform number[]?
----@field resolveImage? fun(key: string, materialId: integer): any|nil
+---@field resolveImage? fun(key: string, materialId: integer): unknown|nil
 ---@field timeOfDayPlan table<string, unknown>|nil
 
 -- The polygon draw fields the draw path consumes from a nitro backend mesh

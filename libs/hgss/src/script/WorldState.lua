@@ -25,7 +25,7 @@ WorldState.SCHEMA_NAME = "g4-world-state-v1"
 
 local WORLD_FIELDS = { flags = true, variables = true, objects = true, rng = true }
 
----@param record any
+---@param record unknown
 ---@param opts table<string, unknown>|nil { objectsValidate?: fun(value: table<string, unknown>): table<string, unknown>|nil, Errors.Error? }
 ---@return table<string, unknown>|nil, Errors.Error?
 function WorldState.validate(record, opts)
@@ -73,11 +73,11 @@ end
 -- Resolve a flag/var id through the catalog: symbolic names become numeric
 -- ids when the catalog knows them; unknown symbolic names are attributed
 -- reference errors so typos fail loudly.
----@param id any
+---@param id unknown
 ---@param kind string
 ---@param catalogs table<string, unknown>|nil
 ---@param hint string
----@return any resolved id
+---@return unknown resolved id
 local function resolveId(id, kind, catalogs, hint)
   if type(id) ~= "string" then
     return id
