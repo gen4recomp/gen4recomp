@@ -351,9 +351,9 @@ local function buildHandoffOak(timeline, candidate)
     audio = handoffAudio() --[[@as GameSound]],
     messages = HANDOFF_MESSAGES,
     assets = {
-      marill = { frames = { { duration = 1 } } },
-      marill_appear = { frames = { { duration = 1 } } },
-      ball_open = { frames = { { duration = 1 } } },
+      marill = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+      marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+      ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
       male = { frames = { { duration = 1 } } },
       shrink_male = handoffShrinkFrames(9, 4),
     },

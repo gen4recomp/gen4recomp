@@ -210,14 +210,20 @@ end
 ---@param cells table<string, unknown>
 ---@param animation table<string, unknown>
 ---@param animationIndex integer|nil
----@return table<string, unknown>, table[]
+---@return table<string, unknown>, table[], { playMode: string, loopStartFrameIdx: integer }|nil
 function IntroRasterizer.renderAnimations(char, palette, cells, animation, animationIndex)
   local animations = animationIndex ~= nil and { animation.anims[animationIndex + 1] } or animation.anims
   if animationIndex ~= nil and not animations[1] then
     sourceError("intro animation index is outside the source animation table", { animationIndex = animationIndex })
   end
-  local selectedFrames, bounds = {}, nil
+  local selectedFrames, bounds, playback = {}, nil, nil
   for _, selected in ipairs(animations) do
+    if type(selected.playMode) ~= "string" or type(selected.loopStartFrameIdx) ~= "number" then
+      sourceError("intro animation is missing decoded playback policy", { sourceOffset = 0 })
+    end
+    if playback == nil then
+      playback = { playMode = selected.playMode, loopStartFrameIdx = selected.loopStartFrameIdx }
+    end
     for _, sourceFrame in ipairs(selected.frames) do
       if sourceFrame.duration <= 0 then
         sourceError("intro animation frame has no positive source duration", { duration = sourceFrame.duration })
@@ -288,7 +294,8 @@ function IntroRasterizer.renderAnimations(char, palette, cells, animation, anima
     frames = output,
     rgba = output[1].rgba,
   },
-    output
+    output,
+    playback
 end
 
 return IntroRasterizer

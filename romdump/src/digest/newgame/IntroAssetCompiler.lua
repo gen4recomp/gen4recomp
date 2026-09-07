@@ -170,7 +170,7 @@ local function assetPath(id)
   return IntroAssetCache.assetDir() .. "/" .. id:gsub("%.", "-") .. ".png"
 end
 
-local function addAsset(manifest, assets, id, image, frames, sourceBounds, anchor, provenance, sourceCenter)
+local function addAsset(manifest, assets, id, image, frames, sourceBounds, anchor, provenance, sourceCenter, playback)
   sourceBounds = sourceBounds or { x = 0, y = 0, width = image.width, height = image.height }
   anchor = anchor or { x = image.width / 2, y = image.height }
   if
@@ -203,6 +203,10 @@ local function addAsset(manifest, assets, id, image, frames, sourceBounds, ancho
   }
   if sourceCenter then
     widget.sourceCenter = sourceCenter
+  end
+  if playback ~= nil then
+    widget.playMode = assert(playback.playMode)
+    widget.loopStartFrameIdx = assert(playback.loopStartFrameIdx)
   end
   for index, frame in ipairs(frames) do
     widget.frames[index] = {
@@ -288,12 +292,13 @@ local function compileCellAnimation(archive, dependencies, manifest, assets, id,
   addDependency(dependencies, spec.archive, spec.animation, animationBytes, dependencyRole .. ":animation")
   local cells = decode("decodeCell", cellBytes, id .. " cell", spec.cell, spec.archive)
   local animation = decode("decodeAnimation", animationBytes, id .. " animation", spec.animation, spec.archive)
-  local image, frames = IntroRasterizer.renderAnimations(char, paletteColors, cells, animation, spec.animationIndex)
+  local image, frames, playback =
+    IntroRasterizer.renderAnimations(char, paletteColors, cells, animation, spec.animationIndex)
   addAsset(manifest, assets, id, image, frames, image.sourceBounds, image.anchor, {
     resourceSet = spec.resourceSet,
     paletteNumber = spec.paletteNumber,
     rule = "stable-oam-origin",
-  }, spec.sourceCenter)
+  }, spec.sourceCenter, playback)
 end
 
 local function loadCharPaletteImpl(archive, dependencies, spec, role)

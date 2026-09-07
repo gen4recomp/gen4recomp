@@ -70,6 +70,11 @@ local function framesFor(assets, visual)
   return asset and asset.frames or nil
 end
 
+local function animationFor(assets, visual)
+  assets = assets.widgets or assets
+  return assets[visual]
+end
+
 local function focusBlinkDelta(timer)
   local deg = (timer % 36) * 10
   local rad = math.rad(deg)
@@ -150,17 +155,44 @@ function OakIntroTimeline:_advanceVisual()
 end
 
 function OakIntroTimeline:_startReveal(visual)
-  local frames = framesFor(self._assets, visual)
-  assert(frames ~= nil and #frames > 0, "generated Oak animation is missing: " .. visual)
+  local animation = animationFor(self._assets, visual)
+  assert(
+    animation ~= nil and type(animation.frames) == "table" and #animation.frames > 0,
+    "generated Oak animation is missing: " .. visual
+  )
+  local mode = animation.playMode
+  assert(
+    mode == "forward" or mode == "forward_loop" or mode == "reverse" or mode == "reverse_loop",
+    "unsupported intro animation play mode: " .. tostring(mode)
+  )
   self._revealWidget = visual
-  self._revealFrameIndex = 1
-  self._revealFrameTimer = assert(frames[1].duration)
+  if mode == "reverse" or mode == "reverse_loop" then
+    self._revealFrameIndex = #animation.frames
+  else
+    self._revealFrameIndex = 1
+  end
+  self._revealFrameTimer = assert(animation.frames[self._revealFrameIndex].duration)
 end
 
-function OakIntroTimeline:_advanceReveal(loop)
+function OakIntroTimeline:_advanceReveal()
   local visual = assert(self._revealWidget)
-  local frames = framesFor(self._assets, visual)
-  assert(frames ~= nil and #frames > 0, "generated Oak animation is missing: " .. visual)
+  local animation = animationFor(self._assets, visual)
+  assert(
+    animation ~= nil and type(animation.frames) == "table" and #animation.frames > 0,
+    "generated Oak animation is missing: " .. visual
+  )
+  local frames = animation.frames
+  local mode = animation.playMode
+  local loopStart = animation.loopStartFrameIdx
+  assert(
+    type(loopStart) == "number" and loopStart % 1 == 0 and loopStart >= 0 and loopStart < #frames,
+    "generated Oak animation loop start is invalid: " .. visual
+  )
+  local loopFirst = math.floor(loopStart + 1)
+  if mode ~= "forward" and mode ~= "forward_loop" and mode ~= "reverse" and mode ~= "reverse_loop" then
+    error("unsupported intro animation play mode: " .. tostring(mode), 0)
+  end
+
   local units = REVEAL_ANIMATION_UNITS_PER_SOURCE_FRAME
   while units > 0 do
     local frameRemaining = assert(self._revealFrameTimer)
@@ -169,13 +201,28 @@ function OakIntroTimeline:_advanceReveal(loop)
       return false
     end
     units = units - frameRemaining
-    if self._revealFrameIndex == #frames then
-      if not loop then
+    if mode == "forward" then
+      if self._revealFrameIndex == #frames then
         return true
       end
-      self._revealFrameIndex = 1
-    else
       self._revealFrameIndex = self._revealFrameIndex + 1
+    elseif mode == "forward_loop" then
+      if self._revealFrameIndex == #frames then
+        self._revealFrameIndex = loopFirst
+      else
+        self._revealFrameIndex = self._revealFrameIndex + 1
+      end
+    elseif mode == "reverse" then
+      if self._revealFrameIndex == 1 then
+        return true
+      end
+      self._revealFrameIndex = self._revealFrameIndex - 1
+    else -- reverse_loop
+      if self._revealFrameIndex == loopFirst then
+        self._revealFrameIndex = #frames
+      else
+        self._revealFrameIndex = self._revealFrameIndex - 1
+      end
     end
     self._revealFrameTimer = assert(frames[self._revealFrameIndex].duration)
   end
@@ -412,14 +459,14 @@ local function stepPresentation(self)
     return true, false
   end
   if self._phase == "ball_open_wait" then
-    self:_advanceReveal(true)
+    self:_advanceReveal()
   elseif self._phase == "scene_flash" then
     self._sceneBrightness = math.max(0, self._sceneBrightness - 4)
     if self._sceneBrightness == 0 then
       self:_startAppearance()
     end
   elseif self._phase == "marill_appear" then
-    if self:_advanceReveal(false) then
+    if self:_advanceReveal() then
       self._phase = "marill_brightness_fade"
       self._revealBrightness = 16
     end
@@ -430,7 +477,7 @@ local function stepPresentation(self)
       return false, true
     end
   elseif self._revealWidget ~= nil then
-    self:_advanceReveal(true)
+    self:_advanceReveal()
   end
   return false, false
 end

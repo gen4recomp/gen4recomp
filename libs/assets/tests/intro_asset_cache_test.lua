@@ -57,6 +57,10 @@ local function validManifest()
     frame("assets/generated/intro/ball-open-0.png", 32, 32, 1),
     frame("assets/generated/intro/ball-open-1.png", 32, 32, 4),
   }
+  for _, id in ipairs({ "ball_open", "marill_appear", "marill", "gender_male", "gender_female" }) do
+    widgets[id].playMode = id == "marill" and "forward_loop" or "forward"
+    widgets[id].loopStartFrameIdx = 0
+  end
   widgets.gender_male.sourceCenter = { x = 64, y = 104 }
   widgets.gender_female.sourceCenter = { x = 192, y = 104 }
   return {
@@ -191,6 +195,20 @@ function T.stale_and_malformed_manifests_fail_before_composition()
   reject(cache, function(manifest)
     manifest.unexpected = true
   end, "unknown top-level field")
+end
+
+function T.reveal_playback_policy_is_required_and_bounded()
+  local cache = require("libs.assets.src.newgame.IntroAssetCache")
+  Assert.isTrue(cache.validateManifest(validManifest()), "the playback fixture must be accepted first")
+  reject(cache, function(manifest)
+    manifest.widgets.marill.playMode = nil
+  end, "missing playback policy")
+  reject(cache, function(manifest)
+    manifest.widgets.marill.playMode = "loop_forever"
+  end, "unrecognized playback policy")
+  reject(cache, function(manifest)
+    manifest.widgets.marill.loopStartFrameIdx = #manifest.widgets.marill.frames
+  end, "loop start outside the frame table")
 end
 
 function T.semantic_records_do_not_add_files_to_cache_readiness()

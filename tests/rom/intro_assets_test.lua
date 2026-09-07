@@ -197,4 +197,66 @@ function T.compiled_visuals_are_stable_semantic_widgets(romFs)
   Assert.isNil(bundle.manifest.widgets.ball)
 end
 
+local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+
+local function withMarillPlayback(manifest, playMode, loopStartFrameIdx)
+  local widgets = {}
+  for id, widget in pairs(manifest.widgets) do
+    widgets[id] = widget
+  end
+  local marill = {}
+  for key, value in pairs(manifest.widgets.marill) do
+    marill[key] = value
+  end
+  marill.playMode = playMode
+  marill.loopStartFrameIdx = loopStartFrameIdx
+  widgets.marill = marill
+  local copy = {}
+  for key, value in pairs(manifest) do
+    copy[key] = value
+  end
+  copy.widgets = widgets
+  return copy
+end
+
+function T.compiled_reveal_animations_carry_their_source_playback_policy(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local appear = assert(bundle.manifest.widgets.marill_appear)
+  local marill = assert(bundle.manifest.widgets.marill)
+  local ball = assert(bundle.manifest.widgets.ball_open)
+
+  Assert.equal(appear.playMode, "forward")
+  Assert.equal(ball.playMode, "forward")
+  Assert.equal(marill.playMode, "forward_loop")
+  Assert.equal(marill.loopStartFrameIdx, 0)
+  Assert.equal(#marill.frames, 2)
+  Assert.equal(marill.frames[1].duration, 12)
+  Assert.equal(marill.frames[2].duration, 60)
+  for id, widget in pairs({ marill_appear = appear, marill = marill, ball_open = ball }) do
+    Assert.isTrue(
+      type(widget.loopStartFrameIdx) == "number"
+        and widget.loopStartFrameIdx % 1 == 0
+        and widget.loopStartFrameIdx >= 0
+        and widget.loopStartFrameIdx < #widget.frames,
+      id .. " loop start is a zero-based frame index"
+    )
+  end
+
+  local valid, validErr = IntroAssetCache.validateManifest(bundle.manifest)
+  Assert.isTrue(valid, validErr and validErr.message or "the enriched intro manifest is invalid")
+
+  local missing, missingErr = IntroAssetCache.validateManifest(withMarillPlayback(bundle.manifest, nil, 0))
+  Assert.isFalse(missing, "a reveal animation without playback policy must be rejected")
+  Assert.equal(assert(missingErr).code, "INTRO_MANIFEST_INVALID")
+
+  local unknown, unknownErr = IntroAssetCache.validateManifest(withMarillPlayback(bundle.manifest, "loop_forever", 0))
+  Assert.isFalse(unknown, "an unrecognized play mode must be rejected")
+  Assert.equal(assert(unknownErr).code, "INTRO_MANIFEST_INVALID")
+
+  local outOfRange, outOfRangeErr =
+    IntroAssetCache.validateManifest(withMarillPlayback(bundle.manifest, "forward_loop", #marill.frames))
+  Assert.isFalse(outOfRange, "a loop start outside the frame table must be rejected")
+  Assert.equal(assert(outOfRangeErr).code, "INTRO_MANIFEST_INVALID")
+end
+
 return RomSuite.fromFacts(T)

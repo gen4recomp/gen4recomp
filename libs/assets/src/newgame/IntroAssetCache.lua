@@ -182,6 +182,25 @@ local function widget(id, value)
       return invalid("widget " .. id .. " frames are not dense", { widget = id })
     end
   end
+  local playbackSet =
+    { ball_open = true, marill_appear = true, marill = true, gender_male = true, gender_female = true }
+  if playbackSet[id] then
+    if
+      value.playMode ~= "forward"
+      and value.playMode ~= "forward_loop"
+      and value.playMode ~= "reverse"
+      and value.playMode ~= "reverse_loop"
+    then
+      return invalid("widget " .. id .. " playMode is invalid", { widget = id })
+    end
+    if
+      not integer(value.loopStartFrameIdx)
+      or value.loopStartFrameIdx < 0
+      or value.loopStartFrameIdx >= #value.frames
+    then
+      return invalid("widget " .. id .. " loopStartFrameIdx is invalid", { widget = id })
+    end
+  end
   return true
 end
 

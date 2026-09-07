@@ -158,9 +158,9 @@ local function backgroundOnlyController()
       ["profile.gender_question"] = "profile.gender_question",
     },
     assets = {
-      marill = { frames = { { duration = 1 } } },
-      marill_appear = { frames = { { duration = 1 } } },
-      ball_open = { frames = { { duration = 1 } } },
+      marill = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+      marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+      ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
     },
     virtualGlyphs = { "A" },
     playerDataContext = { charmap = { A = 1 }, frameIndexes = { [0] = true } },

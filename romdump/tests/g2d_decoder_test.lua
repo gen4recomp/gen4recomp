@@ -190,9 +190,9 @@ local function animBlock(frames, firstFrame, animationFrameCount)
     .. u32(0x18 + 16)
     .. u32(0x18 + 16 + 8 * #frames)
     .. string.rep("\0", 8)
-  -- The 16-byte animation entry: numFrames, two unknowns, then the u32
-  -- firstFrame at offset 12 (the decoder's reading position).
-  local anim = u32(animationFrameCount or #frames) .. u16(0) .. u16(1) .. u32(0) .. u32(firstFrame or 0)
+  -- The 16-byte animation entry: u16 frame count, u16 loop start, u32
+  -- animation type, u32 play mode, then the u32 first-frame byte offset.
+  local anim = u32(animationFrameCount or #frames) .. u16(0) .. u16(1) .. u32(1) .. u32(firstFrame or 0)
   local frameBlocks = {}
   local frameData = {}
   for i, f in ipairs(frames) do
@@ -200,6 +200,29 @@ local function animBlock(frames, firstFrame, animationFrameCount)
     frameData[#frameData + 1] = u16(f.cell)
   end
   return block("ABNK", anims .. anim .. table.concat(frameBlocks) .. table.concat(frameData))
+end
+
+-- A sequence entry with explicit header semantics: u16 frame count, u16
+-- loop start, u32 animation type, u32 play mode, u32 first-frame byte
+-- offset. A nonzero loop start shares its first word with the frame count
+-- under a naive u32 read, so it distinguishes a correct header parse from
+-- one that conflates the two halfwords.
+local function sequenceBlock(numFrames, loopStart, playMode, frames, firstFrame)
+  local total = #frames
+  local header = u16(1)
+    .. u16(total)
+    .. u32(0x18)
+    .. u32(0x18 + 16)
+    .. u32(0x18 + 16 + 8 * total)
+    .. string.rep("\0", 8)
+  local entry = u16(numFrames) .. u16(loopStart) .. u16(0) .. u16(1) .. u32(playMode) .. u32(firstFrame or 0)
+  local frameBlocks = {}
+  local frameData = {}
+  for i, f in ipairs(frames) do
+    frameBlocks[#frameBlocks + 1] = u32((i - 1) * 2) .. u16(f.duration) .. u16(0)
+    frameData[#frameData + 1] = u16(f.cell)
+  end
+  return block("ABNK", header .. entry .. table.concat(frameBlocks) .. table.concat(frameData))
 end
 
 function T.animation_chunk_reports_frames_with_durations()
@@ -229,6 +252,37 @@ function T.animation_chunk_reports_frames_with_durations()
     scaleY = 1,
     rotation = 0,
   })
+end
+
+-- Loop start and play mode are independent sequence header fields: the frame
+-- count stays exact when loop start is nonzero, and the numeric mode is
+-- normalized to its source-independent meaning. Frame payloads decode exactly
+-- as before. An unknown numeric mode is malformed source, not a silent
+-- default.
+function T.animation_sequence_preserves_loop_start_and_play_mode()
+  local frames = {
+    { duration = 5, cell = 0 },
+    { duration = 7, cell = 1 },
+    { duration = 9, cell = 0 },
+  }
+  local data = container("RNAN", { sequenceBlock(3, 1, 2, frames) })
+  local anim = assert(G2dDecoder.decodeAnimation(data))
+  Assert.equal(#anim.anims, 1)
+  local seq = anim.anims[1]
+  Assert.equal(#seq.frames, 3)
+  Assert.equal(seq.loopStartFrameIdx, 1)
+  Assert.equal(seq.playMode, "forward_loop")
+  Assert.equal(seq.frames[1].duration, 5)
+  Assert.equal(seq.frames[1].cell, 0)
+  Assert.equal(seq.frames[2].duration, 7)
+  Assert.equal(seq.frames[2].cell, 1)
+  Assert.equal(seq.frames[3].duration, 9)
+  Assert.equal(seq.frames[3].cell, 0)
+
+  local bad = container("RNAN", { sequenceBlock(1, 0, 99, { { duration = 4, cell = 0 } }) })
+  local out, err = G2dDecoder.decodeAnimation(bad)
+  Assert.isNil(out)
+  Assert.equal(assert(err).code, G2dDecoder.ERROR.CHUNK_INVALID)
 end
 
 -- firstFrame is a byte offset and numFrames a frame count: the normalized range
@@ -271,7 +325,7 @@ function T.animation_cell_read_is_bounds_checked()
   -- One animation, one frame whose frameData (16) escapes the 2-byte cell
   -- table at dataOffset 0x30.
   local anims = u16(1) .. u16(1) .. u32(0x18) .. u32(0x28) .. u32(0x30) .. string.rep("\0", 8)
-  local anim = u32(1) .. u16(0) .. u16(1) .. u32(0) .. u32(0)
+  local anim = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32(0)
   local frameBlock = u32(16) .. u16(12) .. u16(0)
   local data = container("RNAN", { block("ABNK", anims .. anim .. frameBlock .. u16(0)) })
   local out, err = G2dDecoder.decodeAnimation(data)

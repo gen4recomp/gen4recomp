@@ -196,6 +196,8 @@ local function syntheticCompilerSource(animationFrames, objectPalette, charDepth
   end)
   rawset(decoder, "decodeAnimation", function()
     local selected = {
+      playMode = "forward",
+      loopStartFrameIdx = 0,
       frames = animationFrames or { { cell = 0, duration = 2 }, { cell = 1, duration = 3 } },
     }
     return { anims = { selected, selected, selected, selected } }
@@ -464,6 +466,10 @@ local function fixtureBundle(cache, marker)
       widgets[id].sourceCenter = { x = 64, y = 104 }
     elseif id == "gender_female" then
       widgets[id].sourceCenter = { x = 192, y = 104 }
+    end
+    if id == "ball_open" or id == "marill_appear" or id == "marill" or id == "gender_male" or id == "gender_female" then
+      widgets[id].playMode = id == "marill" and "forward_loop" or "forward"
+      widgets[id].loopStartFrameIdx = 0
     end
     assets[image] = "png"
   end

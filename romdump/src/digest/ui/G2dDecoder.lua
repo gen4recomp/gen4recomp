@@ -147,6 +147,15 @@ local OBJ_DIMENSIONS = {
   { { 8, 16 }, { 8, 32 }, { 16, 32 }, { 32, 64 } },
 }
 
+-- Nitro animation play mode (NNSG2dAnimationPlayMode) normalized to
+-- source-independent playback semantics at the format boundary.
+local PLAY_MODE = {
+  [1] = "forward",
+  [2] = "forward_loop",
+  [3] = "reverse",
+  [4] = "reverse_loop",
+}
+
 local function decodeCharBlock(data, opts)
   local _, blks, reader = blocks(data, { magics = CONTAINER_MAGICS }, opts.label or "g2d-char")
   local blk = mustBlock(blks, "CHAR")
@@ -421,7 +430,7 @@ end
 
 ---@param data string
 ---@param opts? { label?: string }
----@return { anims: { frames: { cell: integer, duration: integer, element: string, translateX: integer, translateY: integer, scaleX: number, scaleY: number, rotation: number }[] }[] }?
+---@return { anims: { frames: { cell: integer, duration: integer, element: string, translateX: integer, translateY: integer, scaleX: number, scaleY: number, rotation: number }[], playMode: string, loopStartFrameIdx: integer }[] }?
 ---@return Errors.Error?
 function G2dDecoder.decodeAnimation(data, opts)
   assert(type(data) == "string", "G2dDecoder.decodeAnimation requires a string")
@@ -454,10 +463,30 @@ function G2dDecoder.decodeAnimation(data, opts)
     local anims = {}
     for a = 0, animCount - 1 do
       local abase = blk.payload + animsOffset + a * 16
-      local numFrames = reader:u32le(abase)
-      local animationType = reader:u16le(abase + 4)
-      local cellType = reader:u16le(abase + 6)
+      -- NNSG2dAnimSequenceData layout (g2d_Anim_data.h): u16 numFrames,
+      -- u16 loopStartFrameIdx, u32 animType, u32 playMode, then the
+      -- first-frame pointer.
+      local numFrames = reader:u16le(abase)
+      local loopStartFrameIdx = reader:u16le(abase + 2)
+      local animType = reader:u32le(abase + 4)
+      local animationType = animType % 65536
+      local cellType = math.floor(animType / 65536) % 65536
+      local playModeRaw = reader:u32le(abase + 8)
       local firstFrame = reader:u32le(abase + 12)
+      local playMode = PLAY_MODE[playModeRaw]
+      if playMode == nil then
+        Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "ANIM playMode is unsupported", {
+          playMode = playModeRaw,
+          animation = a,
+        })
+      end
+      if loopStartFrameIdx >= numFrames then
+        Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "ANIM loop start is outside the animation", {
+          loopStartFrameIdx = loopStartFrameIdx,
+          numFrames = numFrames,
+          animation = a,
+        })
+      end
       -- Animation element type is authoritative NANR metadata. The decoder must
       -- not infer transform size from frame-data length; it must use this type
       -- to decide how many bytes to read for each frame property.
@@ -618,7 +647,13 @@ function G2dDecoder.decodeAnimation(data, opts)
           }
         end
       end
-      anims[a + 1] = { frames = frames, animationType = animationType, cellType = cellType }
+      anims[a + 1] = {
+        frames = frames,
+        animationType = animationType,
+        cellType = cellType,
+        playMode = playMode,
+        loopStartFrameIdx = loopStartFrameIdx,
+      }
     end
     return { anims = anims }
   end

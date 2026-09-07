@@ -136,9 +136,9 @@ local function controller(options)
       ["profile.final"] = "profile.final",
     },
     assets = options.assets or {
-      marill = { frames = { { duration = 1 } } },
-      marill_appear = { frames = { { duration = 1 } } },
-      ball_open = { frames = { { duration = 1 } } },
+      marill = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+      marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+      ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
     },
     virtualGlyphs = { "A", "B", "C", "D", "E", "F", "G", "O", "L", "é" },
     playerDataContext = PLAYER_DATA_CONTEXT,
@@ -150,9 +150,13 @@ end
 
 local function animatedAssets()
   return {
-    marill = { frames = { { duration = 1 }, { duration = 4 }, { duration = 2 } } },
-    marill_appear = { frames = { { duration = 1 } } },
-    ball_open = { frames = { { duration = 1 } } },
+    marill = {
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = { { duration = 1 }, { duration = 4 }, { duration = 2 } },
+    },
+    marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+    ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
     shrink_male = { frames = { { duration = 2 }, { duration = 3 } } },
     shrink_female = { frames = { { duration = 2 }, { duration = 3 } } },
   }
@@ -160,9 +164,9 @@ end
 
 local function finalSequenceAssets()
   return {
-    marill = { frames = { { duration = 1 } } },
-    marill_appear = { frames = { { duration = 1 } } },
-    ball_open = { frames = { { duration = 1 } } },
+    marill = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+    marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
+    ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
     male = { frames = { { duration = 1 } } },
     female = { frames = { { duration = 1 } } },
     shrink_male = {
@@ -782,9 +786,9 @@ function T.reveal_stages_are_sequential_and_cry_waits_for_idle_marill()
   local state = controller({
     audio = sounds,
     assets = {
-      marill = { frames = { { duration = 2 }, { duration = 2 } } },
-      marill_appear = { frames = { { duration = 2 }, { duration = 2 } } },
-      ball_open = { frames = { { duration = 1 }, { duration = 1 } } },
+      marill = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { duration = 2 }, { duration = 2 } } },
+      marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 2 }, { duration = 2 } } },
+      ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 }, { duration = 1 } } },
     },
   })
   state:start()
@@ -907,6 +911,145 @@ function T.looping_marill_consumes_animation_units_with_carry()
     Assert.equal(view.revealFrameIndex, expectedFrame)
     Assert.equal(view.sourceFrames, startSourceFrame + sourceFrame)
   end
+end
+
+local function advanceToBallOpen(options)
+  local state = controller(options)
+  state:start()
+  state:tick(40)
+  completeActiveMessage(state)
+  state:tick(6 + 30)
+  completeActiveMessage(state)
+  state:tick(26)
+  completeActiveMessage(state)
+  Assert.equal(state:view().revealWidget, "ball_open")
+  return state
+end
+
+local function revealAnimation(playMode, loopStartFrameIdx, durations)
+  local frames = {}
+  for _, duration in ipairs(durations) do
+    frames[#frames + 1] = { duration = duration }
+  end
+  return { playMode = playMode, loopStartFrameIdx = loopStartFrameIdx, frames = frames }
+end
+
+function T.reveal_playback_follows_the_generated_animation_policy()
+  -- A forward one-shot completes only after its terminal duration elapses,
+  -- and a forward loop wraps to its configured loop start instead of
+  -- restarting at the first frame.
+  local state = advanceToBallOpen({
+    assets = {
+      ball_open = revealAnimation("forward", 0, { 2 }),
+      marill_appear = revealAnimation("forward", 0, { 2, 2 }),
+      marill = revealAnimation("forward_loop", 1, { 2, 2, 2 }),
+    },
+  })
+  state:tick(30)
+  Assert.equal(state:view().phase, "scene_flash")
+  state:tick(4)
+  Assert.equal(state:view().phase, "marill_appear")
+  Assert.equal(state:view().revealFrameIndex, 1)
+  state:tick(1)
+  Assert.equal(state:view().phase, "marill_appear")
+  Assert.equal(state:view().revealFrameIndex, 2)
+  state:tick(1)
+  Assert.equal(state:view().phase, "marill_brightness_fade")
+  state:tick(16)
+  Assert.equal(state:view().phase, "marill_cry_wait")
+  Assert.equal(state:view().revealWidget, "marill")
+  Assert.equal(state:view().revealFrameIndex, 1)
+  local looped = {}
+  for _ = 1, 6 do
+    state:tick(1)
+    looped[#looped + 1] = state:view().revealFrameIndex
+  end
+  Assert.deepEqual(looped, { 2, 3, 2, 3, 2, 3 })
+
+  -- Reverse modes start at the last frame and traverse backward. A reverse
+  -- loop wraps from its loop start back to the last frame without
+  -- re-entering earlier pre-loop frames.
+  local reverse = advanceToBallOpen({
+    assets = {
+      ball_open = revealAnimation("forward", 0, { 2 }),
+      marill_appear = revealAnimation("reverse", 0, { 2, 2, 2 }),
+      marill = revealAnimation("reverse_loop", 1, { 2, 2, 2 }),
+    },
+  })
+  reverse:tick(30)
+  reverse:tick(4)
+  Assert.equal(reverse:view().phase, "marill_appear")
+  Assert.equal(reverse:view().revealFrameIndex, 3)
+  reverse:tick(1)
+  Assert.equal(reverse:view().revealFrameIndex, 2)
+  reverse:tick(1)
+  Assert.equal(reverse:view().revealFrameIndex, 1)
+  Assert.equal(reverse:view().phase, "marill_appear")
+  reverse:tick(1)
+  Assert.equal(reverse:view().phase, "marill_brightness_fade")
+  reverse:tick(16)
+  Assert.equal(reverse:view().phase, "marill_cry_wait")
+  Assert.equal(reverse:view().revealFrameIndex, 3)
+  local rewound = {}
+  for _ = 1, 6 do
+    reverse:tick(1)
+    rewound[#rewound + 1] = reverse:view().revealFrameIndex
+  end
+  Assert.deepEqual(rewound, { 2, 3, 2, 3, 2, 3 })
+
+  -- The configured Marill cadence repeats its two source durations and wraps
+  -- to its loop start instead of holding at the terminal frame.
+  local marill = advanceToBallOpen({
+    assets = {
+      ball_open = revealAnimation("forward", 0, { 2 }),
+      marill_appear = revealAnimation("forward", 0, { 2 }),
+      marill = revealAnimation("forward_loop", 0, { 12, 60 }),
+    },
+  })
+  advanceToPhase(marill, "marill_cry_wait")
+  Assert.equal(marill:view().revealFrameIndex, 1)
+  marill:tick(6)
+  Assert.equal(marill:view().revealFrameIndex, 2)
+  marill:tick(29)
+  Assert.equal(marill:view().revealFrameIndex, 2)
+  marill:tick(1)
+  Assert.equal(marill:view().revealFrameIndex, 1)
+  marill:tick(6)
+  Assert.equal(marill:view().revealFrameIndex, 2)
+end
+
+function T.visible_marill_keeps_cycling_its_configured_loop()
+  local state = controller({
+    assets = {
+      ball_open = revealAnimation("forward", 0, { 2 }),
+      marill_appear = revealAnimation("forward", 0, { 2 }),
+      marill = revealAnimation("forward_loop", 0, { 12, 60 }),
+    },
+  })
+  state:start()
+  state:tick(40)
+  completeActiveMessage(state)
+  state:tick(6 + 30)
+  completeActiveMessage(state)
+  state:tick(26)
+  completeActiveMessage(state)
+  advanceToPhase(state, "oak_live_alongside")
+  Assert.equal(state:view().revealWidget, "marill")
+  Assert.notNil(state:view().messageKey, "Marill stays visible while its dialogue is active")
+  local wraps = 0
+  local previous = state:view().revealFrameIndex
+  for _ = 1, 72 do
+    state:tick(1)
+    local view = state:view()
+    Assert.equal(view.revealWidget, "marill")
+    local current = view.revealFrameIndex
+    Assert.isTrue(current == 1 or current == 2, "Marill stays inside its two-frame loop")
+    if previous == 2 and current == 1 then
+      wraps = wraps + 1
+    end
+    previous = current
+  end
+  Assert.equal(wraps, 2, "two full two-frame cycles wrap back to the loop start instead of holding")
 end
 
 function T.shrink_frames_remain_drawable_until_their_generated_durations_end()
