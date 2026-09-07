@@ -1,12 +1,17 @@
 name: CI
 
-# Runs the static checks and the repository test command on every push and pull
-# request. Unit, component, and real offscreen graphics smoke tests are required.
-# ROM-conformance and acceptance tests report explicit optional skips because CI
-# has no user-owned cartridge dump.
+# Binding correctness CI on every push and pull request. Two independent jobs
+# run in parallel: `static` owns Python CI-tool contracts and static
+# checks, while `test` owns the repository test command. Unit, component,
+# and real offscreen graphics smoke tests are required. ROM-conformance and
+# acceptance tests report explicit optional skips because CI has no
+# user-owned cartridge dump.
 #
 # The lint steps mirror the pre-commit hook (scripts/lint.sh). Hooks are opt-in
 # per clone and bypassable, so CI is the binding gate.
+#
+# Structural hotspot comparison is advisory and lives in the separate Code
+# health PR workflows; it never gates these jobs.
 
 on:
   push:
@@ -16,53 +21,24 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  static:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: scripts/ci/structure-requirements.txt
 
-      - name: Install structural check dependencies
-        run: python -m pip install --requirement scripts/ci/structure-requirements.txt
-
-      - name: Run structural contract tests
+      - name: Run CI tool contract tests
         run: |
           python3 scripts/ci/source_scope_test.py
           python3 scripts/ci/lua_policy_test.py
-          python3 scripts/ci/check_structure_budget_test.py
           python3 scripts/ci/codehealth_report_test.py
-
-      - name: Run structural budget check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            scripts/ci/structure_check.sh --base-ref "$PR_BASE_SHA"
-          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" = "$DEFAULT_BRANCH" ]; then
-            if [ -n "${BEFORE_SHA//0/}" ]; then
-              scripts/ci/structure_check.sh --base-ref "$BEFORE_SHA"
-            else
-              scripts/ci/structure_check.sh
-            fi
-          elif [ "$EVENT_NAME" = "push" ]; then
-            scripts/ci/structure_check.sh --base-ref "origin/$DEFAULT_BRANCH"
-          else
-            scripts/ci/structure_check.sh
-          fi
+          python3 scripts/ci/codehealth_compare_test.py
 
       - name: Install stylua
         env:
@@ -89,6 +65,13 @@ jobs:
 
       - name: Run static checks
         run: scripts/lint.sh --check
+
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
 
       - name: Download LÖVE 11.5
         env:

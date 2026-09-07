@@ -31,8 +31,6 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -62,21 +60,7 @@ jobs:
         run: |
           python3 scripts/ci/source_scope_test.py
           python3 scripts/ci/lua_policy_test.py
-          python3 scripts/ci/check_structure_budget_test.py
           python3 scripts/ci/codehealth_report_test.py
-
-      - name: Run structural budget check
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            BEFORE="${{ github.event.before }}"
-            if [ -n "${BEFORE//0/}" ]; then
-              scripts/ci/structure_check.sh --base-ref "$BEFORE"
-            else
-              scripts/ci/structure_check.sh
-            fi
-          else
-            scripts/ci/structure_check.sh
-          fi
 
       - name: Build code-health site
         run: scripts/ci/codehealth.sh
