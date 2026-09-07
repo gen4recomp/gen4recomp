@@ -1204,6 +1204,13 @@ function FieldRuntime:update(dt)
     if self.followingMonTransition then
       self.followingMonTransition:updateFixed()
     end
+    -- The script-owned starter modal advances its retail transition clocks
+    -- once per fixed tick while open, after the scheduler poll above has
+    -- applied this tick's UI events: the next poll observes settled
+    -- rotations, confirmations, and lock exits deterministically.
+    if self.starterChoice and self.starterChoice:isActive() then
+      self.starterChoice:update()
+    end
     if self.applicationHost:error() and not self.errorText then
       self.errorText = tostring(self.applicationHost:error())
     end

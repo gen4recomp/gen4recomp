@@ -128,27 +128,19 @@ local function applyPointerEvent(host, event)
   if type(host.hitTest) == "function" and type(event.x) == "number" and type(event.y) == "number" then
     hit = host:hitTest(event.x, event.y)
   end
+  local index = nil
+  if type(hit) == "table" and type(hit.index) == "number" then
+    index = hit.index
+  end
   if event.type == "pointer_move" then
-    if hit ~= nil and hit.kind == "candidate" then
-      host:hover(hit.index)
-    elseif hit ~= nil and hit.kind == "confirm" then
-      host:hover(hit.index)
-    else
-      host:hover(nil)
-    end
+    host:hover(index)
   elseif event.type == "pointer_down" then
-    if hit ~= nil then
-      host:press(hit.index)
-    else
-      host:press(nil)
-    end
+    host:press(index)
   elseif event.type == "pointer_up" then
     if event.dragged then
       host:release(nil)
-    elseif hit ~= nil then
-      host:release(hit.index)
     else
-      host:release(nil)
+      host:release(index)
     end
   end
 end
@@ -169,10 +161,8 @@ local function applyEvents(state, host, ctx)
     if eventType == "navigate" then
       local direction = event.direction
       if direction == "left" or direction == "right" then
-        local status = host:status()
-        if status ~= nil and status.mode == "confirming" then
-          -- The confirmation answers left (no) and right (yes).
-          host:focus(direction == "left" and 1 or 0)
+        if type(host.move) == "function" then
+          host:move(direction)
         else
           if direction == "left" then
             state.cursor = (state.cursor - 1) % 3

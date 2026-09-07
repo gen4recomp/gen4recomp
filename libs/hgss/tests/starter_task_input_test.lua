@@ -1,7 +1,8 @@
 -- Starter task input and fade sequencing: normalized UI events drive the
--- choice host without rerolling candidates, and the source fade legs run
--- around the modal whenever a screen service is composed. Cancelling the
--- task releases the host exactly once.
+-- retail choice host without rerolling candidates, and the source fade legs
+-- run around the modal whenever a screen service is composed. Inspecting
+-- never publishes; the zoom path settles into confirmation before the final
+-- lock; cancelling the task releases the host exactly once.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -49,8 +50,10 @@ local function providerFor(species)
   }
 end
 
--- Fuller fake host: a controller-backed choice surface with the production
--- host's open/close/status/focus/confirm/cancel shape.
+-- Fuller fake host: the retail controller behind the production host's
+-- open/close/status/move/focus/confirm/cancel/update shape. The runtime
+-- advances the host once per fixed tick; tests settle it explicitly between
+-- polls, mirroring production.
 local function controllerHost()
   local StarterChoiceController = assert(require("libs.hgss.src.ui.StarterChoiceController"))
   local host = { opened = 0, closed = 0, controller = nil }
@@ -67,25 +70,29 @@ local function controllerHost()
     self.closed = self.closed + 1
     self.controller = nil
   end
+  function host:update()
+    if self.controller ~= nil then
+      self.controller:update()
+    end
+  end
   function host:status()
     if self.controller == nil then
       return nil
     end
-    local controllerStatus = self.controller:status()
-    if controllerStatus.state == "complete" then
-      return { done = true, index = assert(self.doneIndex, "a completed choice names its candidate") }
+    local snapshot = self.controller:snapshot()
+    if snapshot.done then
+      return { done = true, index = assert(snapshot.result, "a completed choice names its candidate").index }
     end
-    return { done = false, cursor = controllerStatus.candidateIndex, mode = controllerStatus.mode }
+    return { done = false, cursor = snapshot.selection }
   end
   function host:focus(index)
     self.controller:focus(index)
   end
+  function host:move(direction)
+    self.controller:move(direction)
+  end
   function host:confirm()
-    local result = self.controller:confirm()
-    if result ~= nil then
-      self.doneIndex = result.candidate
-    end
-    return result
+    return self.controller:confirm()
   end
   function host:cancel()
     return self.controller:cancel()
@@ -97,11 +104,7 @@ local function controllerHost()
     self.controller:press(index)
   end
   function host:release(index)
-    local result = self.controller:release(index)
-    if result ~= nil then
-      self.doneIndex = result.candidate
-    end
-    return result
+    return self.controller:release(index)
   end
   return host
 end
@@ -142,7 +145,21 @@ local function generate(task, service, host, screen)
   return state
 end
 
-function T.navigation_moves_the_cursor_without_rerolling()
+local function settle(host, bound)
+  for _ = 1, bound or 64 do
+    host:update()
+    local status = host:status()
+    if status ~= nil and status.done then
+      return
+    end
+    local snapshot = host.controller:snapshot()
+    if snapshot.transition == "idle" then
+      return
+    end
+  end
+end
+
+function T.navigation_rotates_one_step_and_settles_without_rerolling()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
@@ -153,16 +170,19 @@ function T.navigation_moves_the_cursor_without_rerolling()
   local ctx = ctxFor(service, host, { { type = "navigate", direction = "right" } }, nil)
   local outcome = task.poll(state, ctx)
   Assert.isFalse(outcome.complete, "navigation never completes the task")
-  Assert.equal(state.cursor, 1, "right moves the candidate cursor")
-  Assert.equal(host.controller:status().candidateIndex, 1, "the host highlights the moved cursor")
+  Assert.equal(host:status().cursor, 0, "rotation waits for its transition instead of jumping")
   Assert.equal(service:capture().rng.calls, calls, "navigation draws nothing")
+
+  settle(host)
+  Assert.equal(host:status().cursor, 1, "a settled right step advances one ball")
 
   local back = ctxFor(service, host, { { type = "navigate", direction = "left" } }, nil)
   task.poll(state, back)
-  Assert.equal(state.cursor, 0, "left wraps the candidate cursor back")
+  settle(host)
+  Assert.equal(host:status().cursor, 0, "a settled left step returns one ball")
 end
 
-function T.confirmation_requires_an_explicit_yes_through_events()
+function T.confirmation_walks_inspect_zoom_lock_through_events()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
@@ -171,23 +191,71 @@ function T.confirmation_requires_an_explicit_yes_through_events()
 
   local opening = ctxFor(service, host, { { type = "confirm" } }, nil)
   local opened = task.poll(state, opening)
-  Assert.isFalse(opened.complete, "the first confirm opens confirmation, not publication")
-  Assert.equal(host.controller:status().mode, "confirming", "the host enters confirmation")
+  Assert.isFalse(opened.complete, "the first confirm inspects instead of publishing")
+  Assert.equal(host.controller:snapshot().selectionState, "inspect", "the host enters inspection")
 
   local declining = ctxFor(service, host, { { type = "cancel" } }, nil)
   local declined = task.poll(state, declining)
   Assert.isFalse(declined.complete, "cancel never completes the story application")
-  Assert.equal(host.controller:status().mode, "selecting", "cancel returns to selection")
   Assert.equal(service:partyCount(), 0, "cancel publishes nothing")
 
-  local confirming = ctxFor(service, host, { { type = "confirm" } }, nil)
-  task.poll(state, confirming)
-  local accepting = ctxFor(service, host, { { type = "confirm" } }, nil)
-  local outcome = task.poll(state, accepting)
-  Assert.isTrue(outcome.complete, "an explicit yes completes the task")
+  local zooming = ctxFor(service, host, { { type = "confirm" } }, nil)
+  task.poll(state, zooming)
+  local locking = ctxFor(service, host, { { type = "confirm" } }, nil)
+  local locked = task.poll(state, locking)
+  Assert.isFalse(locked.complete, "the lock reports only after its exit transition settles")
+  settle(host)
+  Assert.equal(host.controller:snapshot().selectionState, "confirm", "the zoom path settles into confirmation")
+
+  local backingOut = ctxFor(service, host, { { type = "cancel" } }, nil)
+  local backedOut = task.poll(state, backingOut)
+  Assert.isFalse(backedOut.complete, "backing out of confirmation publishes nothing")
+  settle(host)
+  Assert.equal(host.controller:snapshot().selectionState, "inspect", "cancel returns to inspection")
+
+  local rezoning = ctxFor(service, host, { { type = "confirm" } }, nil)
+  task.poll(state, rezoning)
+  settle(host)
+  local final = ctxFor(service, host, { { type = "confirm" } }, nil)
+  local outcome = task.poll(state, final)
+  Assert.isFalse(outcome.complete, "the final activation starts the lock, not the report")
+  settle(host)
+  local published = task.poll(state, ctxFor(service, host, {}, nil))
+  Assert.isTrue(published.complete, "the settled lock completes the task")
   Assert.equal(service:partyCount(), 1, "exactly the highlighted mon enters the party")
   Assert.equal(service:partyMon(0).species, "CHIKORITA", "the party holds the cursor-highlighted choice")
   Assert.equal(host.closed, 1, "the modal closes exactly once on publication")
+end
+
+function T.pointer_taps_rotate_toward_the_tapped_ball()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = controllerHost()
+  function host:hitTest(x, _)
+    if x == 10 then
+      return { kind = "ball", index = 1 }
+    end
+    return nil
+  end
+  local state = generate(task, service, host, nil)
+
+  local tap = ctxFor(service, host, {
+    { type = "pointer_down", x = 10, y = 4 },
+    { type = "pointer_up", x = 10, y = 4 },
+  }, nil)
+  local outcome = task.poll(state, tap)
+  Assert.isFalse(outcome.complete, "tapping another ball never publishes")
+  settle(host)
+  Assert.equal(host:status().cursor, 1, "the settled tap selects the tapped ball")
+
+  local away = ctxFor(service, host, {
+    { type = "pointer_down", x = 900, y = 900 },
+    { type = "pointer_up", x = 900, y = 900 },
+  }, nil)
+  task.poll(state, away)
+  settle(host)
+  Assert.equal(host:status().cursor, 1, "tapping outside keeps the ball")
 end
 
 function T.fade_legs_run_around_the_modal_when_a_screen_is_composed()
@@ -212,8 +280,13 @@ function T.fade_legs_run_around_the_modal_when_a_screen_is_composed()
   screen.done = false
   host:focus(2)
   host:confirm()
-  host:focus(0)
+  Assert.equal(host.controller:snapshot().selectionState, "inspect", "the first activation inspects")
   host:confirm()
+  settle(host)
+  Assert.equal(host.controller:snapshot().selectionState, "confirm", "the zoom path settles into confirmation")
+  host:confirm()
+  settle(host)
+  Assert.isTrue(host:status().done, "the settled lock reports the confirmed candidate")
   local published = task.poll(state, ctx)
   Assert.isFalse(published.complete, "the task waits for the fade-in leg after publication")
   Assert.deepEqual(screen.started, { "out", "in" }, "the field fades back in after insertion")

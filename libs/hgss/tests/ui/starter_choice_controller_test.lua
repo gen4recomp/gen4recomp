@@ -1,181 +1,319 @@
--- Starter choice controller and layout: pure cursor, confirmation, and
--- geometry semantics over the current button primitives. The screen is
--- non-cancellable while selecting, confirmation never rerolls or exits on
--- no, and hit regions stay positive, disjoint, and stable across sizes.
--- Rendering and asset loading stay outside these modules.
+-- Retail starter chooser semantics: the pure controller moves through
+-- unconfirmed inspection, zoomed confirmation with back-out, and a final
+-- lock that reports only after its exit transition settles. Left and right
+-- rotate one step while unconfirmed and are ignored while confirmed or
+-- mid-transition; cancel only backs out of confirmation and never dismisses
+-- the application. There is no yes/no cursor anywhere in this contract.
 
 local Assert = require("tests.support.Assert")
-local Button = require("libs.ui.src.Button")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
 local CONTROLLER_MODULE = "libs.hgss.src.ui.StarterChoiceController"
-local LAYOUT_MODULE = "libs.hgss.src.ui.StarterChoiceLayout"
+
+local NAMES = { "Chikorita", "Cyndaquil", "Totodile" }
 
 local function requireController()
   local ok, controller = pcall(require, CONTROLLER_MODULE)
-  Assert.isTrue(ok, "the starter controller owns cursor and confirmation state")
+  Assert.isTrue(ok, "the starter controller owns the retail chooser state")
   return assert(controller)
 end
 
-local function requireLayout()
-  local ok, layout = pcall(require, LAYOUT_MODULE)
-  Assert.isTrue(ok, "the starter layout owns responsive hit regions")
-  return assert(layout)
-end
-
-local function controller(initialCursor)
+local function openController(cursor)
   local StarterChoiceController = requireController()
-  return StarterChoiceController.new({
-    candidates = { "Chikorita", "Cyndaquil", "Totodile" },
-    initialCursor = initialCursor,
-  })
+  return StarterChoiceController.new({ candidates = NAMES, initialCursor = cursor or 0 })
 end
 
-local function topology(width, height)
-  return ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
-    role = "world",
-    touch = false,
-  })
-end
-
-local function disjoint(a, b)
-  return a.x + a.width <= b.x or b.x + b.width <= a.x or a.y + a.height <= b.y or b.y + b.height <= a.y
-end
-
-local function assertPositiveContained(rect, viewport, label)
-  for _, field in ipairs({ "x", "y", "width", "height" }) do
-    Assert.isTrue(type(rect[field]) == "number" and rect[field] == rect[field], label .. "." .. field .. " is finite")
+local function snapshot(controller)
+  if type(controller.snapshot) == "function" then
+    return controller:snapshot()
   end
-  Assert.isTrue(rect.width > 0 and rect.height > 0, label .. " has positive dimensions")
-  Assert.isTrue(rect.x >= viewport.x, label .. " starts inside the viewport")
-  Assert.isTrue(rect.y >= viewport.y, label .. " starts inside the viewport")
-  Assert.isTrue(rect.x + rect.width <= viewport.x + viewport.width, label .. " ends inside the viewport")
-  Assert.isTrue(rect.y + rect.height <= viewport.y + viewport.height, label .. " ends inside the viewport")
+  return controller:status()
 end
 
-local function chrome(rect)
-  return {
-    rect = rect,
-    borderWidth = 2,
-    rimWidth = 2,
-    innerBorderWidth = 1,
-    cornerRadius = 4,
-    faceSplit = 0.4,
-    contentInsetX = 3,
-    contentInsetY = 2,
-  }
-end
-
-function T.selection_starts_at_the_first_candidate_and_is_not_cancellable()
-  local owned = controller()
-  local status = owned:status()
-  Assert.equal(status.state, "active", "the choice starts active")
-  Assert.equal(status.mode, "selecting", "the choice starts in selection")
-  Assert.equal(status.candidateIndex, 0, "the cursor starts on the first candidate")
-  Assert.isNil(owned:cancel(), "cancel while selecting never closes the story application")
-  Assert.equal(owned:status().state, "active", "the choice stays active after cancel")
-end
-
-function T.confirmation_requires_an_explicit_yes_and_never_exits_on_no()
-  local owned = controller(1)
-  Assert.isNil(owned:confirm(), "confirming a candidate opens confirmation, not publication")
-  Assert.equal(owned:status().mode, "confirming", "the controller enters confirmation")
-  Assert.equal(owned:status().candidateIndex, 1, "confirmation keeps the highlighted candidate")
-
-  owned:focus(1)
-  Assert.isNil(owned:confirm(), "answering no returns without a result")
-  Assert.equal(owned:status().mode, "selecting", "no returns to selection")
-  Assert.equal(owned:status().candidateIndex, 1, "no preserves the candidate cursor")
-  Assert.equal(owned:status().state, "active", "no never exits the application")
-
-  Assert.isNil(owned:cancel(), "cancel while confirming is not an exit")
-  Assert.equal(owned:status().mode, "selecting", "cancel while confirming returns to selection")
-
-  owned:focus(2)
-  owned:confirm()
-  owned:focus(0)
-  local result = owned:confirm()
-  Assert.deepEqual(result, { candidate = 2, accepted = true }, "yes publishes the highlighted candidate once")
-  Assert.equal(owned:status().state, "complete", "yes completes the application")
-  Assert.isNil(owned:confirm(), "the semantic result is one-shot")
-end
-
-function T.pointer_capture_commits_only_on_matching_release()
-  local owned = controller()
-  owned:hover(2)
-  Assert.equal(owned:status().candidateIndex, 2, "hover changes logical focus without activating")
-  Assert.equal(owned:status().state, "active", "hover never completes")
-
-  owned:press(0)
-  Assert.isNil(owned:release(2), "a drag across candidates commits nothing")
-  Assert.equal(owned:status().state, "active", "a mismatched release stays active")
-
-  owned:press(1)
-  Assert.isNil(owned:release(1), "a matching release opens confirmation, not publication")
-  Assert.equal(owned:status().mode, "confirming", "pointer selection enters confirmation")
-  Assert.equal(owned:status().candidateIndex, 1, "pointer selection highlights the pressed candidate")
-end
-
-function T.candidate_regions_are_distinct_positive_and_button_compatible()
-  local layoutModule = requireLayout()
-  local viewport = { x = 0, y = 0, width = 1280, height = 720 }
-  local layout = layoutModule.resolve({ topology = topology(1280, 720), scale = 1 })
-
-  Assert.equal(#layout.candidates, 3, "exactly three candidate controls exist")
-  for index, rect in ipairs(layout.candidates) do
-    assertPositiveContained(rect, viewport, "candidate " .. index)
-    local resolved = Button.resolve(chrome(rect))
-    Assert.notNil(resolved.contentRect, "candidate regions resolve through the button primitive")
-    local centerX = rect.x + rect.width / 2
-    local centerY = rect.y + rect.height / 2
-    Assert.isTrue(Button.contains(resolved, centerX, centerY), "candidate centers hit-test inside")
-    local hit = layoutModule.hitTest(layout, centerX, centerY)
-    Assert.deepEqual(hit, { kind = "candidate", index = index - 1 }, "centers map to zero-based candidates")
+local function selectionIndex(snap)
+  if type(snap.candidateIndex) == "number" then
+    return snap.candidateIndex
   end
-  for left = 1, 3 do
-    for right = left + 1, 3 do
-      Assert.isTrue(disjoint(layout.candidates[left], layout.candidates[right]), "candidate regions never overlap")
+  if type(snap.selection) == "number" then
+    return snap.selection
+  end
+  if type(snap.selectionIndex) == "number" then
+    return snap.selectionIndex
+  end
+  if type(snap.cursor) == "number" then
+    return snap.cursor
+  end
+  if type(snap.index) == "number" and snap.done ~= true then
+    return snap.index
+  end
+  error("chooser snapshot names no selection index", 0)
+end
+
+local function isDone(controller, snap)
+  if snap.done == true then
+    return true
+  end
+  if snap.state == "complete" then
+    return true
+  end
+  local phase = snap.transition or snap.phase
+  if phase == "done" then
+    return true
+  end
+  if type(controller.isActive) == "function" then
+    return not controller:isActive()
+  end
+  return false
+end
+
+local function resultIndex(controller, snap)
+  if type(snap.index) == "number" and snap.done == true then
+    return snap.index
+  end
+  if type(snap.resultIndex) == "number" then
+    return snap.resultIndex
+  end
+  if snap.result ~= nil and type(snap.result.index) == "number" then
+    return snap.result.index
+  end
+  if type(controller.result) == "function" then
+    local result = controller:result()
+    if result ~= nil then
+      if type(result) == "number" then
+        return result
+      end
+      if type(result.index) == "number" then
+        return result.index
+      end
+      if type(result.candidate) == "number" then
+        return result.candidate
+      end
     end
   end
-  Assert.isNil(
-    layoutModule.hitTest(layout, viewport.x + viewport.width - 1, viewport.y + viewport.height - 1),
-    "outside points hit nothing"
+  return nil
+end
+
+local function assertNoLegacyConfirmation(snap, label)
+  Assert.isNil(snap.confirmIndex, label .. " carries no yes/no cursor")
+  Assert.isTrue(
+    snap.mode == nil or (snap.mode ~= "selecting" and snap.mode ~= "confirming"),
+    label .. " never uses the generic selection/confirmation mode"
   )
 end
 
-function T.confirmation_regions_are_separate_and_layout_survives_resize()
-  local layoutModule = requireLayout()
-  local small = layoutModule.resolve({ topology = topology(256, 192), scale = 1 })
-
-  Assert.equal(#small.confirm, 2, "confirmation offers yes and no")
-  for _, rect in ipairs(small.confirm) do
-    assertPositiveContained(rect, { x = 0, y = 0, width = 256, height = 192 }, "confirmation button")
-  end
-  for _, confirmRect in ipairs(small.confirm) do
-    for _, candidateRect in ipairs(small.candidates) do
-      Assert.isTrue(disjoint(confirmRect, candidateRect), "confirmation never covers a candidate")
+-- Runs any deterministic phase-completion hook the controller exposes until
+-- the snapshot stops changing or the bound is reached. Controllers without a
+-- clock hook settle immediately.
+local function settle(controller, bound)
+  bound = bound or 64
+  local tickers = { "update", "tick", "updateFixed", "advance", "step" }
+  for _ = 1, bound do
+    local before = snapshot(controller)
+    local advanced = false
+    for _, name in ipairs(tickers) do
+      if type(controller[name]) == "function" then
+        controller[name](controller)
+        advanced = true
+      end
+    end
+    if not advanced then
+      return
+    end
+    local after = snapshot(controller)
+    if isDone(controller, after) then
+      return
+    end
+    local moved = false
+    for key, value in pairs(after) do
+      if before[key] ~= value then
+        moved = true
+        break
+      end
+    end
+    if not moved then
+      return
     end
   end
+end
 
-  for _, size in ipairs({ { 256, 192 }, { 1280, 720 }, { 390, 844 } }) do
-    local layout = layoutModule.resolve({ topology = topology(size[1], size[2]), scale = 1 })
-    Assert.equal(#layout.candidates, 3, "three candidates survive every supported size")
-    local viewport = { x = 0, y = 0, width = size[1], height = size[2] }
-    for index, rect in ipairs(layout.candidates) do
-      assertPositiveContained(rect, viewport, "resized candidate " .. index)
-    end
+-- Rotates one retail step in the given direction. Prefers a direction-based
+-- controller entry point and falls back to focusing the neighboring index so
+-- the acceptance intent still executes against older method shapes.
+local function rotate(controller, direction)
+  Assert.isTrue(direction == "left" or direction == "right", "rotation names a retail direction")
+  if type(controller.move) == "function" then
+    controller:move(direction)
+    return
   end
+  if type(controller.navigate) == "function" then
+    controller:navigate(direction)
+    return
+  end
+  if type(controller.rotate) == "function" then
+    controller:rotate(direction)
+    return
+  end
+  local current = selectionIndex(snapshot(controller))
+  local delta = direction == "right" and 1 or -1
+  controller:focus((current + delta) % 3)
+end
 
-  local before = controller()
-  before:focus(2)
-  before:confirm()
-  local status = before:status()
-  Assert.equal(status.candidateIndex, 2, "recomputing layout preserves controller cursor")
-  Assert.equal(status.mode, "confirming", "recomputing layout preserves confirmation state")
+function T.first_activation_inspects_and_second_reaches_confirmation_only_after_settling()
+  local controller = openController(0)
+  local initial = snapshot(controller)
+  Assert.isFalse(isDone(controller, initial), "the chooser opens waiting for input")
+  Assert.equal(selectionIndex(initial), 0, "the chooser opens on the first ball")
+  assertNoLegacyConfirmation(initial, "the fresh chooser")
+
+  Assert.isNil(controller:confirm(), "first activation inspects instead of publishing")
+  local inspected = snapshot(controller)
+  Assert.isFalse(isDone(controller, inspected), "inspection still waits for confirmation")
+  Assert.equal(selectionIndex(inspected), 0, "inspection keeps the current ball")
+  assertNoLegacyConfirmation(inspected, "the inspected chooser")
+
+  Assert.isNil(controller:confirm(), "second activation starts the zoom path, not the lock")
+  local zooming = snapshot(controller)
+  Assert.isFalse(isDone(controller, zooming), "the lock must wait for the zoom/wait transition to settle")
+  Assert.isNil(resultIndex(controller, zooming), "no candidate reports before confirmation settles")
+  assertNoLegacyConfirmation(zooming, "the zooming chooser")
+
+  settle(controller)
+  local confirmed = snapshot(controller)
+  Assert.isFalse(isDone(controller, confirmed), "reaching confirmation still waits for the final lock")
+  Assert.equal(selectionIndex(confirmed), 0, "the zoom path preserves the inspected ball")
+  assertNoLegacyConfirmation(confirmed, "the confirmed chooser")
+end
+
+function T.cancel_backs_out_only_from_confirmation_and_never_dismisses()
+  local controller = openController(0)
+  Assert.isNil(controller:cancel(), "cancel outside confirmation is a no-op")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "cancel never dismisses the application")
+  Assert.equal(selectionIndex(snapshot(controller)), 0, "cancel elsewhere keeps the ball")
+
+  controller:confirm()
+  controller:confirm()
+  settle(controller)
+  Assert.isFalse(isDone(controller, snapshot(controller)), "the zoom path must settle into confirmation first")
+
+  Assert.isNil(controller:cancel(), "backing out of confirmation publishes nothing")
+  settle(controller)
+  local backedOut = snapshot(controller)
+  Assert.isFalse(isDone(controller, backedOut), "backing out returns to inspection")
+  Assert.equal(selectionIndex(backedOut), 0, "backing out preserves the inspected ball")
+  assertNoLegacyConfirmation(backedOut, "the backed-out chooser")
+
+  Assert.isNil(controller:cancel(), "cancel from inspection is a no-op")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "inspection survives a second cancel")
+end
+
+function T.rotation_changes_selection_only_when_unconfirmed_and_settled()
+  local controller = openController(0)
+  rotate(controller, "right")
+  Assert.equal(
+    selectionIndex(snapshot(controller)),
+    0,
+    "rotation waits for its transition instead of jumping immediately"
+  )
+  settle(controller)
+  Assert.equal(selectionIndex(snapshot(controller)), 1, "a settled right step advances one ball")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "rotation never publishes")
+
+  rotate(controller, "left")
+  settle(controller)
+  Assert.equal(selectionIndex(snapshot(controller)), 0, "a settled left step returns one ball")
+
+  controller:confirm()
+  controller:confirm()
+  settle(controller)
+  Assert.isFalse(isDone(controller, snapshot(controller)), "the zoom path must settle into confirmation first")
+  rotate(controller, "right")
+  settle(controller)
+  Assert.equal(selectionIndex(snapshot(controller)), 0, "rotation while confirmed stays on the confirmed ball")
+  assertNoLegacyConfirmation(snapshot(controller), "rotation never introduces a yes/no cursor")
+end
+
+function T.transition_inputs_are_ignored_exactly_once_without_double_advance()
+  local controller = openController(0)
+  rotate(controller, "right")
+  rotate(controller, "right")
+  Assert.isNil(controller:confirm(), "activation mid-rotation must not queue a second step")
+  Assert.isNil(controller:cancel(), "cancel mid-rotation must not corrupt the step")
+  settle(controller)
+  Assert.equal(
+    selectionIndex(snapshot(controller)),
+    1,
+    "conflicting inputs during rotation collapse to one settled step"
+  )
+  Assert.isFalse(isDone(controller, snapshot(controller)), "mid-transition input never publishes")
+end
+
+function T.final_activation_locks_only_after_exit_settles_and_reports_current_selection()
+  local controller = openController(0)
+  rotate(controller, "right")
+  settle(controller)
+  Assert.equal(selectionIndex(snapshot(controller)), 1, "setup advances to the second ball")
+
+  controller:confirm()
+  controller:confirm()
+  settle(controller)
+  Assert.isFalse(isDone(controller, snapshot(controller)), "the zoom path must settle into confirmation first")
+
+  Assert.isNil(controller:confirm(), "final activation starts the lock/exit, not the report")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "the report waits for the lock/exit transition to settle")
+  settle(controller)
+  local finished = snapshot(controller)
+  Assert.isTrue(isDone(controller, finished), "the settled lock completes the application")
+  Assert.equal(resultIndex(controller, finished), 1, "the settled lock reports the confirmed ball")
+  Assert.isNil(controller:confirm(), "the semantic result is one-shot")
+end
+
+function T.pointer_capture_advances_inspect_confirm_and_backout()
+  local controller = openController(0)
+  controller:press(2)
+  Assert.isNil(controller:release(0), "a drag across balls commits nothing")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "a mismatched release stays unconfirmed")
+
+  controller:press(1)
+  Assert.isNil(controller:release(1), "tapping another ball rotates toward it, never publishes")
+  settle(controller)
+  Assert.equal(selectionIndex(snapshot(controller)), 1, "the settled tap selects the tapped ball")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "tapping a ball never locks immediately")
+
+  controller:press(1)
+  Assert.isNil(controller:release(1), "tapping the current ball inspects it")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "inspecting never publishes")
+  controller:press(1)
+  Assert.isNil(controller:release(1), "tapping the inspected ball starts confirmation, not the lock")
+  settle(controller)
+  Assert.isFalse(isDone(controller, snapshot(controller)), "confirmation still waits for the final lock tap")
+
+  controller:press(0)
+  Assert.isNil(controller:release(0), "tapping away from the confirmed ball backs out")
+  settle(controller)
+  Assert.isFalse(isDone(controller, snapshot(controller)), "backing out returns without publishing")
+  Assert.equal(selectionIndex(snapshot(controller)), 1, "backing out preserves the inspected ball")
+end
+
+function T.pointer_outside_backs_out_only_from_confirmation()
+  local controller = openController(0)
+  controller:press(nil)
+  Assert.isNil(controller:release(nil), "an outside tap while unconfirmed commits nothing")
+  Assert.isFalse(isDone(controller, snapshot(controller)), "an outside tap never publishes")
+  Assert.equal(selectionIndex(snapshot(controller)), 0, "an outside tap keeps the ball")
+
+  controller:confirm()
+  controller:confirm()
+  settle(controller)
+  Assert.isFalse(isDone(controller, snapshot(controller)), "the zoom path must settle into confirmation first")
+
+  controller:press(nil)
+  Assert.isNil(controller:release(nil), "an outside tap backs out of confirmation")
+  settle(controller)
+  local backedOut = snapshot(controller)
+  Assert.isFalse(isDone(controller, backedOut), "backing out returns without publishing")
+  Assert.equal(selectionIndex(backedOut), 0, "backing out preserves the inspected ball")
+  assertNoLegacyConfirmation(backedOut, "the backed-out chooser")
 end
 
 return { tests = T }
