@@ -184,6 +184,11 @@ DerivedAssetContract.intro = {
   provenanceSchema = "g4-intro-provenance-v1",
 }
 
+DerivedAssetContract.starterChoice = {
+  cacheFormat = "starter-choice-cache-v1",
+  schema = "g4-starter-choice-v1",
+}
+
 -- The mon class carries the complete species/form/move/ability/growth
 -- catalog plus the party-icon and portrait atlases with their selection
 -- manifests. Following-mon drawable definitions stay in the field-actor

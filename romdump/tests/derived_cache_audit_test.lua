@@ -23,6 +23,7 @@ local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MonCache = require("libs.assets.src.MonCache")
+local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
 local T = {}
 
@@ -35,6 +36,7 @@ local function publishedCache()
     FieldMessageCache.markerPath(),
     FieldUiAssetCache.markerPath(),
     IntroAssetCache.markerPath(),
+    StarterChoiceAssetCache.markerPath(),
     FieldWeatherCache.markerPath(),
     FieldEffectAssetCache.markerPath(),
     FieldEmoteAssetCache.markerPath(),

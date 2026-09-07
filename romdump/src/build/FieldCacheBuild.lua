@@ -17,6 +17,8 @@ local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
 local FieldUiCacheWriter = require("romdump.src.digest.ui.FieldUiCacheWriter")
 local IntroAssetCompiler = require("romdump.src.digest.newgame.IntroAssetCompiler")
 local IntroAssetCacheWriter = require("romdump.src.digest.newgame.IntroAssetCacheWriter")
+local StarterChoiceAssetCompiler = require("romdump.src.digest.StarterChoiceAssetCompiler")
+local StarterChoiceAssetCacheWriter = require("romdump.src.digest.StarterChoiceAssetCacheWriter")
 local FieldWeatherCompiler = require("romdump.src.digest.field.FieldWeatherCompiler")
 local FieldWeatherCacheWriter = require("romdump.src.digest.field.FieldWeatherCacheWriter")
 local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEntranceIndicatorCompiler")
@@ -245,6 +247,22 @@ function FieldCacheBuild.build(context)
   writeIfStale(context, intro, IntroAssetCacheWriter, IntroAssetCacheWriter.isReady, "intro assets", function()
     return ""
   end)
+
+  bundle, err = StarterChoiceAssetCompiler.compile(context.romFs)
+  local starterChoice = requireBundle(bundle, err)
+  if not starterChoice then
+    return nil, err
+  end
+  writeIfStale(
+    context,
+    starterChoice,
+    StarterChoiceAssetCacheWriter,
+    StarterChoiceAssetCacheWriter.isReady,
+    "starter choice assets",
+    function()
+      return ""
+    end
+  )
 
   return buildLateFieldAssets(context)
 end

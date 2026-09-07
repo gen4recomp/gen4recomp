@@ -23,6 +23,7 @@ local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local MonCache = require("libs.assets.src.MonCache")
+local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
 local T = {}
 
@@ -96,6 +97,10 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-intro-assets-v10",
       provenanceSchema = "g4-intro-provenance-v1",
     },
+    starterChoice = {
+      cacheFormat = "starter-choice-cache-v1",
+      schema = "g4-starter-choice-v1",
+    },
     mons = {
       cacheFormat = "mon-cache-v1",
       catalogSchema = "g4-mon-catalog-v2",
@@ -160,6 +165,8 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(MonCache.INDEX_SCHEMA, DerivedAssetContract.mons.indexSchema)
   Assert.equal(MonCache.ICON_MANIFEST_SCHEMA, DerivedAssetContract.mons.iconManifestSchema)
   Assert.equal(MonCache.PORTRAIT_MANIFEST_SCHEMA, DerivedAssetContract.mons.portraitManifestSchema)
+  Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
+  Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
 end
 
 return { tests = T }

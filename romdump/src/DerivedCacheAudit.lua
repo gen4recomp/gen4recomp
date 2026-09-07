@@ -13,6 +13,7 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
@@ -31,6 +32,7 @@ local REQUIRED_MARKERS = {
   FieldMessageCache.markerPath(),
   FieldUiAssetCache.markerPath(),
   IntroAssetCache.markerPath(),
+  StarterChoiceAssetCache.markerPath(),
   FieldWeatherCache.markerPath(),
   ScriptCache.markerPath(),
   FieldEffectAssetCache.markerPath(),

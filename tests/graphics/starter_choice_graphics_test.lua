@@ -115,6 +115,10 @@ local function fieldStateWithStarter(starter, width, height)
     worldParts = {},
     spriteItems = {},
     textRenderer = { drawText = function() end },
+    presentationResources = {
+      textRenderer = { drawText = function() end },
+      renderer = { draw = function() end },
+    },
   }, FieldState)
   state._worldParts = function()
     return {}
