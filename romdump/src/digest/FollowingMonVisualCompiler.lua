@@ -2,8 +2,11 @@
 -- visual definitions. Species/form/gender resolve to source follower sprites
 -- through src/follow_mon.c FollowMon_GetSpriteID (model LUT plus form-count
 -- and female-form tables); each sprite compiles through the shared
--- FieldActorCompiler sprite pipeline into a normalized atlas or static-model
--- visual with source-authentic placement, poses, timing, and render state.
+-- FieldActorCompiler sprite pipeline into a directional atlas visual with
+-- source-authentic placement, poses, timing, and render state. A static-model
+-- fallback is never a valid follower representation: the follower runtime
+-- selects cardinal facing and walk locomotion frames from the atlas, which a
+-- static model cannot supply.
 -- Runtime visual IDs live in the documented follower range
 -- (FOLLOWER_VISUAL_ID_BASE + tp_param index) so they cannot collide with map
 -- actor IDs. The enormous source species-to-model LUT never reaches runtime:
@@ -30,6 +33,77 @@ local function must(value, err)
     error(err, 0)
   end
   return value
+end
+
+local CARDINAL_DIRECTIONS = { "north", "south", "west", "east" }
+local LOCOMOTION_POSES = { "idle", "walk" }
+
+---@param visualId integer remapped follower visual id
+---@param spriteId integer source follower sprite id
+---@param kind string render kind under test
+---@param detail string failed capability
+---@return Errors.Error
+local function capabilityFailure(visualId, spriteId, kind, detail)
+  return Errors.new(
+    "MON_FOLLOWER_VISUAL_UNSUPPORTED",
+    "follower visual " .. visualId .. " cannot face and walk: " .. detail,
+    {
+      visualId = visualId,
+      spriteId = spriteId,
+      kind = kind,
+    }
+  )
+end
+
+-- Follower capability beyond structural validity: the visual must be an
+-- atlas, every cardinal direction must carry both idle and walk clips, and
+-- the clips must not all alias one frame. Structural validation already
+-- proves present poses are well-formed with resident frames, so this
+-- predicate checks kind, clip presence, and the degenerate single-frame
+-- fallback. A visual may legitimately share frames across some poses; only
+-- the global single-frame alias is rejected.
+---@param visual table<string, unknown> remapped follower visual
+---@param visualId integer remapped follower visual id
+---@param spriteId integer source follower sprite id
+local function assertFollowerCapability(visual, visualId, spriteId)
+  local render = visual.render
+  if render.kind ~= "atlas" then
+    error(
+      capabilityFailure(
+        visualId,
+        spriteId,
+        render.kind,
+        "render kind " .. tostring(render.kind) .. " carries no locomotion frames"
+      ),
+      0
+    )
+  end
+  local observed = {}
+  for _, direction in ipairs(CARDINAL_DIRECTIONS) do
+    local set = visual.directions[direction]
+    if set == nil then
+      error(capabilityFailure(visualId, spriteId, render.kind, "missing " .. direction .. " direction"), 0)
+    end
+    for _, poseName in ipairs(LOCOMOTION_POSES) do
+      local pose = set[poseName]
+      if pose == nil then
+        error(
+          capabilityFailure(visualId, spriteId, render.kind, "missing " .. direction .. " " .. poseName .. " pose"),
+          0
+        )
+      end
+      for _, segment in ipairs(pose.frames) do
+        observed[segment.frameIndex] = true
+      end
+    end
+  end
+  local distinct = 0
+  for _ in pairs(observed) do
+    distinct = distinct + 1
+  end
+  if distinct <= 1 then
+    error(capabilityFailure(visualId, spriteId, render.kind, "every cardinal idle and walk pose aliases one frame"), 0)
+  end
 end
 
 -- Every tp_param index reachable from native species/forms/gender
@@ -86,6 +160,7 @@ function FollowingMonVisualCompiler.compile(romFs)
           0
         )
       end
+      assertFollowerCapability(visual, visualId, spriteId)
       visuals[visualId] = visual
       atlases[visualId] = atlas
     end
