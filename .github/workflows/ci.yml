@@ -39,6 +39,7 @@ jobs:
           python3 scripts/ci/lua_policy_test.py
           python3 scripts/ci/codehealth_report_test.py
           python3 scripts/ci/codehealth_compare_test.py
+          python3 scripts/ci/codehealth_pr_comment_test.py
 
       - name: Install stylua
         env:
