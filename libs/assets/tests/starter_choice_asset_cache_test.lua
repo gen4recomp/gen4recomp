@@ -91,7 +91,7 @@ end
 local function validManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
-    schema = "g4-starter-choice-v1",
+    schema = "g4-starter-choice-v2",
     reference = { width = 256, height = 192 },
     models = {
       tabletop = staticDescriptor(),
@@ -108,27 +108,42 @@ local function validManifest()
       turntable = "turntable",
     },
     scene = {
-      ballPositions = {
-        { x = -16, y = 0, z = 0 },
-        { x = 0, y = 0, z = 0 },
-        { x = 16, y = 0, z = 0 },
+      ballLayout = {
+        radius = 32,
+        modelY = 14,
+        touchYOffsetY = 13,
+        slotAnglesDegrees = { 0, 120, 240 },
+        inspectArcDegrees = -30.76,
+      },
+      turntable = {
+        selectionStepDegrees = 120,
+        rotationDegreesPerTick = 0.5,
       },
       camera = {
-        out = { angleX = -49.57, perspective = 24.805, target = { x = 0, y = 0, z = 14 }, distance = 100 },
-        inside = { angleX = -30.76, perspective = 22.7, target = { x = 0, y = 0, z = 12 }, distance = 60 },
-        transitionTicks = 8,
+        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
       },
-      ballYRotation = { out = 0, inside = 180 },
-      wobble = { frameCount = 4 },
+      timing = {
+        cameraTicks = 8,
+        ballArcTicks = 8,
+        smallWobbleFrame = 80,
+        infoFadeTicks = 10,
+        machineFadeTicks = 16,
+      },
     },
     messages = {
-      initial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
-      confirm = "Once you've decided, touch a Poké Ball!",
+      topInitial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
+      inspect = { "inspect one", "inspect two", "inspect three" },
+      confirm = { "confirm one", "confirm two", "confirm three" },
+      bottom = {
+        normal = "Once you've decided, touch a Poké Ball!",
+        confirm = "Is this Pokémon good?",
+      },
     },
-    speciesSprites = {
-      chikorita = { image = "assets/generated/starter_choice/chikorita.png", width = 32, height = 32 },
-      cyndaquil = { image = "assets/generated/starter_choice/cyndaquil.png", width = 32, height = 32 },
-      totodile = { image = "assets/generated/starter_choice/totodile.png", width = 32, height = 32 },
+    background = {
+      image = "assets/generated/starter_choice/backdrop.png",
+      width = 512,
+      height = 192,
     },
   }
 end
@@ -151,7 +166,7 @@ end
 
 function T.complete_manifest_is_accepted_under_the_contract_schema()
   local module = cache()
-  Assert.equal(module.SCHEMA, "g4-starter-choice-v1")
+  Assert.equal(module.SCHEMA, "g4-starter-choice-v2")
   Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema)
   Assert.equal(module.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.isTrue(module.validateManifest(validManifest()))
@@ -179,8 +194,8 @@ end
 
 function T.malformed_camera_blocks_are_rejected()
   reject(function(manifest)
-    manifest.scene.camera.transitionTicks = 7
-  end, "wrong transition tick count")
+    manifest.scene.camera.transitionTicks = 8
+  end, "universal transition duration on the camera")
   reject(function(manifest)
     manifest.scene.camera.out.target = { x = 0, y = 0, z = 13 }
   end, "wrong outside target")
@@ -195,17 +210,57 @@ function T.malformed_camera_blocks_are_rejected()
   end, "missing camera block")
 end
 
-function T.wrong_sprite_inventory_is_rejected()
+function T.legacy_schema_fields_are_rejected()
   reject(function(manifest)
-    manifest.speciesSprites.totodile = nil
-  end, "missing species sprite")
-  reject(function(manifest)
-    manifest.speciesSprites.extra = {
-      image = "assets/generated/starter_choice/extra.png",
-      width = 32,
-      height = 32,
+    manifest.speciesSprites = {
+      chikorita = { image = "assets/generated/starter_choice/chikorita.png", width = 32, height = 32 },
     }
-  end, "unknown species sprite")
+  end, "fixed species image catalog")
+  reject(function(manifest)
+    manifest.scene.ballPositions = { { x = 0, y = 0, z = 0 } }
+  end, "linear ball positions")
+  reject(function(manifest)
+    manifest.scene.ballYRotation = { out = 0, inside = 180 }
+  end, "misleading rotation pair")
+  reject(function(manifest)
+    manifest.scene.wobble = { frameCount = 4 }
+  end, "legacy wobble block")
+  reject(function(manifest)
+    manifest.messages.initial = "legacy"
+  end, "legacy single initial field")
+end
+
+function T.incomplete_message_roles_are_rejected()
+  reject(function(manifest)
+    manifest.messages.inspect = { "one", "two" }
+  end, "missing inspect description")
+  reject(function(manifest)
+    manifest.messages.confirm[2] = ""
+  end, "empty confirm description")
+  reject(function(manifest)
+    manifest.messages.bottom = { normal = "prompt" }
+  end, "missing confirm prompt")
+  reject(function(manifest)
+    manifest.messages.topInitial = ""
+  end, "empty initial top message")
+end
+
+function T.incomplete_scene_facts_are_rejected()
+  reject(function(manifest)
+    manifest.scene.ballLayout = nil
+  end, "missing ball layout")
+  reject(function(manifest)
+    manifest.scene.ballLayout.radius = 16
+  end, "wrong ring radius")
+  reject(function(manifest)
+    manifest.scene.timing = nil
+  end, "missing timing")
+  reject(function(manifest)
+    manifest.scene.timing.machineFadeTicks = 8
+  end, "wrong machine fade boundary")
+  reject(function(manifest)
+    manifest.background = nil
+  end, "missing owned backdrop")
 end
 
 function T.missing_animation_bindings_are_rejected()
@@ -225,22 +280,22 @@ end
 
 function T.empty_messages_are_rejected()
   reject(function(manifest)
-    manifest.messages.initial = ""
-  end, "empty initial message")
+    manifest.messages.topInitial = ""
+  end, "empty initial top message")
   reject(function(manifest)
-    manifest.messages.confirm = ""
-  end, "empty confirm message")
+    manifest.messages.bottom.confirm = ""
+  end, "empty confirm prompt")
 end
 
 function T.bad_reference_paths_are_rejected()
   reject(function(manifest)
-    manifest.speciesSprites.chikorita.image = "assets/generated/intro/chikorita.png"
-  end, "sprite outside the starter-choice subtree")
+    manifest.background.image = "assets/generated/intro/backdrop.png"
+  end, "backdrop outside the starter-choice subtree")
 end
 
 function T.source_archive_identities_are_rejected()
   reject(function(manifest)
-    manifest.messages.initial = "see NARC_application_choose for details"
+    manifest.messages.topInitial = "see NARC_application_choose for details"
   end, "source archive symbol in a message")
 end
 
@@ -272,7 +327,7 @@ end
 function T.missing_referenced_files_are_not_ready()
   local module = cache()
   local cacheFs, marker = readyCache()
-  cacheFs:remove("assets/generated/starter_choice/chikorita.png")
+  cacheFs:remove("assets/generated/starter_choice/backdrop.png")
   Assert.isFalse(module.isReady(cacheFs, marker))
 end
 

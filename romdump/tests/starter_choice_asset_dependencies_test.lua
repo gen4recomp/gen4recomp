@@ -26,7 +26,7 @@ local function cache()
   return module
 end
 
-function T.source_hashes_cover_both_chooser_archives_and_the_message_bank(romFs)
+function T.source_hashes_cover_the_main_chooser_archive_and_the_message_bank(romFs)
   local bundle = assert(compiler().compile(romFs))
   local dependencies = assert(bundle.dependencies, "compilation returns source dependencies")
   local stamped = assert(dependencies.dependencies, "dependencies list source hashes")
@@ -40,9 +40,9 @@ function T.source_hashes_cover_both_chooser_archives_and_the_message_bank(romFs)
     archives["NARC_application_choose_starter_choose_starter_main_res"] == true,
     "the main chooser archive is stamped"
   )
-  Assert.isTrue(
-    archives["NARC_application_choose_starter_choose_starter_sub_res"] == true,
-    "the sub chooser archive is stamped"
+  Assert.isNil(
+    archives["NARC_application_choose_starter_choose_starter_sub_res"],
+    "the sub chooser archive supplies no chooser input"
   )
   Assert.isTrue(archives["messages"] == true, "the message archive is stamped")
 end

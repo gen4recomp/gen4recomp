@@ -83,10 +83,11 @@ local function publishedCache(versionId)
   return cacheFs
 end
 
-local function spriteImage(bundle, id)
-  local entry = assert(bundle.manifest.speciesSprites[id], id .. " sprite entry is present")
-  Assert.isTrue(type(entry.image) == "string", id .. " sprite entry carries a generated image path")
-  Assert.notNil(bundle.assets[entry.image], id .. " sprite payload is compiled")
+local function backdropImage(bundle)
+  local background = assert(bundle.manifest.background, "backdrop entry is present")
+  local entry = background.image ~= nil and background or assert(background.horizontal)
+  Assert.isTrue(type(entry.image) == "string", "backdrop entry carries a generated image path")
+  Assert.notNil(bundle.assets[entry.image], "backdrop payload is compiled")
   return entry.image
 end
 
@@ -107,7 +108,7 @@ function T.missing_reference_or_stale_marker_is_not_ready(romFs, versionId)
   Assert.isTrue(writer().write(cacheFs, bundle))
   Assert.isTrue(starter.isReady(cacheFs, bundle.marker), "the complete family reads ready first")
 
-  cacheFs:remove(spriteImage(bundle, "chikorita"))
+  cacheFs:remove(backdropImage(bundle))
   Assert.isFalse(starter.isReady(cacheFs, bundle.marker), "a missing referenced file is not ready")
 
   local fresh = CacheFs.forVersion(versionId, FakeCache.new())
@@ -131,7 +132,7 @@ function T.failed_publication_preserves_the_previous_ready_family(romFs, version
   for path, bytes in pairs(bundle.assets) do
     brokenAssets[path] = bytes
   end
-  brokenAssets[spriteImage(bundle, "totodile")] = nil
+  brokenAssets[backdropImage(bundle)] = nil
   local broken = {
     marker = bundle.marker .. ":replacement",
     manifest = bundle.manifest,

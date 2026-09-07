@@ -129,7 +129,7 @@ end
 local function semanticManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
-    schema = "g4-starter-choice-v1",
+    schema = assert(require(CACHE_MODULE)).SCHEMA,
     reference = { width = 256, height = 192 },
     models = {
       tabletop = staticDescriptor(),
@@ -146,35 +146,50 @@ local function semanticManifest()
       turntable = "turntable",
     },
     scene = {
-      ballPositions = {
-        { x = -16, y = 0, z = 0 },
-        { x = 0, y = 0, z = 0 },
-        { x = 16, y = 0, z = 0 },
+      ballLayout = {
+        radius = 32,
+        modelY = 14,
+        touchYOffsetY = 13,
+        slotAnglesDegrees = { 0, 120, 240 },
+        inspectArcDegrees = -30.76,
+      },
+      turntable = {
+        selectionStepDegrees = 120,
+        rotationDegreesPerTick = 0.5,
       },
       camera = {
-        out = { angleX = -49.57, perspective = 24.805, target = { x = 0, y = 0, z = 14 }, distance = 100 },
-        inside = { angleX = -30.76, perspective = 22.7, target = { x = 0, y = 0, z = 12 }, distance = 60 },
-        transitionTicks = 8,
+        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
       },
-      ballYRotation = { out = 0, inside = 180 },
-      wobble = { frameCount = 4 },
+      timing = {
+        cameraTicks = 8,
+        ballArcTicks = 8,
+        smallWobbleFrame = 80,
+        infoFadeTicks = 10,
+        machineFadeTicks = 16,
+      },
     },
     messages = {
-      initial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
-      confirm = "Once you've decided, touch a Poké Ball!",
+      topInitial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
+      inspect = { "inspect one", "inspect two", "inspect three" },
+      confirm = { "confirm one", "confirm two", "confirm three" },
+      bottom = {
+        normal = "Once you've decided, touch a Poké Ball!",
+        confirm = "Is this Pokémon good?",
+      },
     },
-    speciesSprites = {
-      chikorita = { image = "assets/generated/starter_choice/chikorita.png", width = 32, height = 32 },
-      cyndaquil = { image = "assets/generated/starter_choice/cyndaquil.png", width = 32, height = 32 },
-      totodile = { image = "assets/generated/starter_choice/totodile.png", width = 32, height = 32 },
+    background = {
+      image = "assets/generated/starter_choice/backdrop.png",
+      width = 512,
+      height = 192,
     },
   }
 end
 
 -- A ready semantic cache behind the headless host: the validated manifest,
--- every referenced payload, and the completion marker. The current host
--- ignores it outside draw; the retail host boots from it and fails loudly
--- without it.
+-- every referenced payload, the mon portrait entries for the fixture trio,
+-- and the completion marker. The current host ignores it outside draw; the
+-- retail host boots from it and fails loudly without it.
 local function readyCacheFs()
   local cacheModule = assert(require(CACHE_MODULE))
   local manifest = semanticManifest()
@@ -185,6 +200,27 @@ local function readyCacheFs()
   for _, path in ipairs(cacheModule.referencedPaths(manifest)) do
     cacheFs:write(path, "payload")
   end
+  local MonCache = assert(require("libs.assets.src.MonCache"))
+  local portraitEntries = {}
+  for _, species in ipairs({ "CHIKORITA", "TOTODILE", "EEVEE" }) do
+    for _, gender in ipairs({ "male", "female" }) do
+      for _, shiny in ipairs({ false, true }) do
+        portraitEntries[MonCache.portraitSelector(species, 0, gender, shiny)] = {
+          x = 0,
+          y = 0,
+          width = 80,
+          height = 80,
+          frames = { { x = 0, y = 0, width = 80, height = 80, duration = 1 } },
+        }
+      end
+    end
+  end
+  cacheFs:writeLua(MonCache.portraitManifestPath(), {
+    schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
+    image = MonCache.portraitImagePath(),
+    entries = portraitEntries,
+    representative = { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
+  })
   cacheFs:write(cacheModule.markerPath(), marker)
   return cacheFs
 end
@@ -440,26 +476,26 @@ function T.pointer_follows_projected_balls_through_inspect_confirm_and_backout()
   host:dispose()
 end
 
-function T.transition_timing_comes_from_the_generated_manifest()
+function T.transition_timing_matches_the_source_eight_step_boundary()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
   local cacheFs = readyCacheFs()
   local cacheModule = assert(require(CACHE_MODULE))
   local manifest = assert(cacheFs:loadLua(cacheModule.manifestPath()))
-  local ticks = manifest.scene.camera.transitionTicks
-  Assert.isTrue(type(ticks) == "number" and ticks >= 1, "the manifest carries its transition timing")
+  local ticks = manifest.scene.timing.cameraTicks
+  Assert.equal(ticks, 8, "the manifest carries the eight-step camera boundary")
   local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
-  Assert.equal(host._controller:snapshot().ticks, ticks, "the host boots the controller from manifest timing")
+  Assert.equal(host._controller:snapshot().ticks, ticks, "the host steps on the source eight-step boundary")
 
   moveHost(host, "right")
   local rotated = 0
   while statusSelection(hostStatus(host)) == 0 do
     host:update()
     rotated = rotated + 1
-    Assert.isTrue(rotated <= ticks, "rotation settles within one manifest transition")
+    Assert.isTrue(rotated <= ticks, "rotation settles within one source transition")
   end
-  Assert.equal(rotated, ticks, "rotation lasts exactly the manifest transition")
+  Assert.equal(rotated, ticks, "rotation lasts exactly the source transition")
   Assert.equal(statusSelection(hostStatus(host)), 1, "a settled right step advances one ball")
 
   host:confirm()

@@ -1,7 +1,10 @@
 -- Strict validation for the generated choose-starter application assets: the
 -- source-independent manifest the retail tabletop/turntable/ball scene
--- compiles to, with semantic animation bindings, normalized scene constants,
--- decoded chooser messages, and species-display sprites. Pure domain module.
+-- compiles to, with semantic animation bindings, source-derived scene
+-- geometry/timing facts, the complete semantic message roles, and the
+-- chooser-owned generated backdrop. Candidate pictures are not part of this
+-- family; portraits resolve through the mon presentation pipeline. Pure
+-- domain module.
 
 local Errors = require("libs.errors.src.Errors")
 local Contract = require("libs.assets.src.DerivedAssetContract")
@@ -21,12 +24,6 @@ local MODEL_ROLES = { "tabletop", "turntable", "ballEffect", "ball1", "ball2", "
 local REQUIRED_MODELS = {}
 for _, role in ipairs(MODEL_ROLES) do
   REQUIRED_MODELS[role] = true
-end
-
-local SPRITE_IDS = { "chikorita", "cyndaquil", "totodile" }
-local REQUIRED_SPRITES = {}
-for _, id in ipairs(SPRITE_IDS) do
-  REQUIRED_SPRITES[id] = true
 end
 
 ---@param message string
@@ -168,42 +165,118 @@ local function checkCameraEnd(label, value, target, distance)
   return true
 end
 
+---@param layout table<string, unknown>
 ---@return boolean, Errors.Error?
-local function checkScene(scene)
-  local ok, err = closedRecord("manifest scene", scene, {
-    ballPositions = true,
-    camera = true,
-    ballYRotation = true,
-    wobble = true,
+local function checkBallLayout(layout)
+  local ok, err = closedRecord("manifest scene ballLayout", layout, {
+    radius = true,
+    modelY = true,
+    touchYOffsetY = true,
+    slotAnglesDegrees = true,
+    inspectArcDegrees = true,
   })
   if not ok then
     return false, err
   end
-  if not Validate.isArray(scene.ballPositions) or #scene.ballPositions ~= 3 then
-    return invalid("manifest scene must carry exactly three ball positions", {})
+  if layout.radius ~= 32 then
+    return invalid("ball layout radius must be the source ring radius 32", {})
   end
-  local seen = {}
-  for index, position in ipairs(scene.ballPositions) do
-    local positionOk, positionErr = closedRecord("ball position " .. index, position, { x = true, y = true, z = true })
-    if not positionOk then
-      return false, positionErr
+  if layout.modelY ~= 14 then
+    return invalid("ball layout modelY must be the source model height 14", {})
+  end
+  if layout.touchYOffsetY ~= 13 then
+    return invalid("ball layout touchYOffsetY must be the source touch offset 13", {})
+  end
+  if not Validate.isArray(layout.slotAnglesDegrees) or #layout.slotAnglesDegrees ~= 3 then
+    return invalid("ball layout must carry exactly three slot angles", {})
+  end
+  for index, angle in ipairs(layout.slotAnglesDegrees) do
+    if angle ~= ({ 0, 120, 240 })[index] then
+      return invalid("ball layout slot angle " .. index .. " must match the source ring", {})
     end
-    if not finite(position.x) or not finite(position.y) or not finite(position.z) then
-      return invalid("ball position " .. index .. " coordinates must be finite numbers", {})
-    end
-    local key = position.x .. "," .. position.y .. "," .. position.z
-    if seen[key] then
-      return invalid("ball positions must be distinct", {})
-    end
-    seen[key] = true
+  end
+  if not finite(layout.inspectArcDegrees) or math.abs(layout.inspectArcDegrees - -30.76) > 0.01 then
+    return invalid("ball layout inspectArcDegrees must be the source arc endpoint", {})
+  end
+  return true
+end
+
+---@param turntable table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkTurntable(turntable)
+  local ok, err = closedRecord("manifest scene turntable", turntable, {
+    selectionStepDegrees = true,
+    rotationDegreesPerTick = true,
+  })
+  if not ok then
+    return false, err
+  end
+  if turntable.selectionStepDegrees ~= 120 then
+    return invalid("turntable selection step must span a third of the ring", {})
+  end
+  if not finite(turntable.rotationDegreesPerTick) or math.abs(turntable.rotationDegreesPerTick - 0.5) > 1e-9 then
+    return invalid("turntable rotation rate must match the source rate", {})
+  end
+  return true
+end
+
+---@param timing table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkTiming(timing)
+  local ok, err = closedRecord("manifest scene timing", timing, {
+    cameraTicks = true,
+    ballArcTicks = true,
+    smallWobbleFrame = true,
+    infoFadeTicks = true,
+    machineFadeTicks = true,
+  })
+  if not ok then
+    return false, err
+  end
+  if timing.cameraTicks ~= 8 then
+    return invalid("camera path must last eight source steps", {})
+  end
+  if timing.ballArcTicks ~= 8 then
+    return invalid("inspect arc must last eight source steps", {})
+  end
+  if timing.smallWobbleFrame ~= 80 then
+    return invalid("small-wobble phase must carry the source frame", {})
+  end
+  if timing.infoFadeTicks ~= 10 then
+    return invalid("info fade must carry the source boundary", {})
+  end
+  if timing.machineFadeTicks ~= 16 then
+    return invalid("machine fade must carry the source boundary", {})
+  end
+  return true
+end
+
+---@param scene table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkScene(scene)
+  local ok, err = closedRecord("manifest scene", scene, {
+    ballLayout = true,
+    turntable = true,
+    camera = true,
+    timing = true,
+  })
+  if not ok then
+    return false, err
+  end
+  local layoutOk, layoutErr = checkBallLayout(scene.ballLayout)
+  if not layoutOk then
+    return false, layoutErr
+  end
+  local turntableOk, turntableErr = checkTurntable(scene.turntable)
+  if not turntableOk then
+    return false, turntableErr
   end
   local camera = scene.camera
-  local cameraOk, cameraErr =
-    closedRecord("manifest scene camera", camera, { out = true, inside = true, transitionTicks = true })
+  local cameraOk, cameraErr = closedRecord("manifest scene camera", camera, { out = true, inside = true })
   if not cameraOk then
     return false, cameraErr
   end
-  local outOk, outErr = checkCameraEnd("outside camera", camera.out, { x = 0, y = 0, z = 14 }, 100)
+  local outOk, outErr = checkCameraEnd("outside camera", camera.out, { x = 0, y = 15, z = 14 }, 100)
   if not outOk then
     return false, outErr
   end
@@ -211,22 +284,18 @@ local function checkScene(scene)
   if not insideOk then
     return false, insideErr
   end
-  if camera.transitionTicks ~= 8 then
-    return invalid("camera transition must last eight ticks", {})
+  if not (camera.out.perspective > camera.inside.perspective) then
+    return invalid("outside view must be wider than inside", {})
   end
-  local rotationOk, rotationErr =
-    closedRecord("manifest scene ballYRotation", scene.ballYRotation, { out = true, inside = true })
-  if not rotationOk then
-    return false, rotationErr
-  end
-  if not finite(scene.ballYRotation.out) or not finite(scene.ballYRotation.inside) then
-    return invalid("ball Y rotations must be finite numbers", {})
-  end
-  if type(scene.wobble) ~= "table" then
-    return invalid("manifest scene wobble timing is required", {})
-  end
-  if type(scene.wobble.frameCount) ~= "number" or scene.wobble.frameCount < 1 or scene.wobble.frameCount % 1 ~= 0 then
-    return invalid("manifest scene wobble frameCount must be a positive integer", {})
+  return checkTiming(scene.timing)
+end
+
+---@param value unknown
+---@param what string
+---@return boolean, Errors.Error?
+local function checkMessageString(value, what)
+  if type(value) ~= "string" or value == "" then
+    return invalid("manifest message " .. what .. " must be a decoded non-empty string", {})
   end
   return true
 end
@@ -234,28 +303,52 @@ end
 ---@param messages table<string, unknown>
 ---@return boolean, Errors.Error?
 local function checkMessages(messages)
-  local ok, err = closedRecord("manifest messages", messages, { initial = true, confirm = true })
+  local ok, err = closedRecord("manifest messages", messages, {
+    topInitial = true,
+    inspect = true,
+    confirm = true,
+    bottom = true,
+  })
   if not ok then
     return false, err
   end
-  for _, key in ipairs({ "initial", "confirm" }) do
-    if type(messages[key]) ~= "string" or messages[key] == "" then
-      return invalid("manifest message " .. key .. " must be a decoded non-empty string", {})
+  local initialOk, initialErr = checkMessageString(messages.topInitial, "topInitial")
+  if not initialOk then
+    return false, initialErr
+  end
+  for _, key in ipairs({ "inspect", "confirm" }) do
+    if not Validate.isArray(messages[key]) or #messages[key] ~= 3 then
+      return invalid("manifest messages " .. key .. " must carry one description per slot", {})
+    end
+    for index, text in ipairs(messages[key]) do
+      local textOk, textErr = checkMessageString(text, key .. "[" .. index .. "]")
+      if not textOk then
+        return false, textErr
+      end
     end
   end
-  return true
+  local bottom = messages.bottom
+  local bottomOk, bottomErr = closedRecord("manifest messages bottom", bottom, { normal = true, confirm = true })
+  if not bottomOk then
+    return false, bottomErr
+  end
+  local normalOk, normalErr = checkMessageString(bottom.normal, "bottom.normal")
+  if not normalOk then
+    return false, normalErr
+  end
+  return checkMessageString(bottom.confirm, "bottom.confirm")
 end
 
----@param id string
+---@param label string
 ---@param entry table<string, unknown>
 ---@return boolean, Errors.Error?
-local function checkSprite(id, entry)
-  local ok, err = closedRecord("species sprite " .. id, entry, { image = true, width = true, height = true })
+local function checkBackdropEntry(label, entry)
+  local ok, err = closedRecord(label, entry, { image = true, width = true, height = true })
   if not ok then
     return false, err
   end
   if type(entry.image) ~= "string" or entry.image:find(ASSET_DIR .. "/", 1, true) ~= 1 then
-    return invalid("species sprite " .. id .. " must use a starter-choice generated path", {})
+    return invalid(label .. " must use a starter-choice generated path", {})
   end
   if
     type(entry.width) ~= "number"
@@ -265,30 +358,33 @@ local function checkSprite(id, entry)
     or entry.height < 1
     or entry.height % 1 ~= 0
   then
-    return invalid("species sprite " .. id .. " dimensions must be positive integers", {})
+    return invalid(label .. " dimensions must be positive integers", {})
   end
   return true
 end
 
----@param sprites table<string, unknown>
+---@param background table<string, unknown>
 ---@return boolean, Errors.Error?
-local function checkSprites(sprites)
-  if type(sprites) ~= "table" then
-    return invalid("manifest speciesSprites are required", {})
+local function checkBackground(background)
+  if type(background) ~= "table" then
+    return invalid("manifest background is required", {})
   end
-  for id in pairs(sprites) do
-    if not REQUIRED_SPRITES[id] then
-      return invalid("manifest contains an unknown species sprite " .. tostring(id), {})
-    end
+  if background.image ~= nil then
+    return checkBackdropEntry("manifest background", background)
   end
-  for _, id in ipairs(SPRITE_IDS) do
-    if sprites[id] == nil then
-      return invalid("manifest is missing species sprite " .. id, {})
-    end
-    local ok, err = checkSprite(id, sprites[id])
-    if not ok then
-      return false, err
-    end
+  local ok, err = closedRecord("manifest background", background, { horizontal = true, vertical = true })
+  if not ok then
+    return false, err
+  end
+  if type(background.horizontal) ~= "table" then
+    return invalid("manifest background horizontal entry is required", {})
+  end
+  local horizontalOk, horizontalErr = checkBackdropEntry("manifest background horizontal", background.horizontal)
+  if not horizontalOk then
+    return false, horizontalErr
+  end
+  if background.vertical ~= nil then
+    return checkBackdropEntry("manifest background vertical", background.vertical)
   end
   return true
 end
@@ -334,7 +430,7 @@ function M.validateManifest(manifest)
     animations = true,
     scene = true,
     messages = true,
-    speciesSprites = true,
+    background = true,
   })
   if not ok then
     return false, err
@@ -374,15 +470,15 @@ function M.validateManifest(manifest)
   if not messagesOk then
     return false, messagesErr
   end
-  local spritesOk, spritesErr = checkSprites(manifest.speciesSprites)
-  if not spritesOk then
-    return false, spritesErr
+  local backgroundOk, backgroundErr = checkBackground(manifest.background)
+  if not backgroundOk then
+    return false, backgroundErr
   end
   return checkNoSourceIdentities(manifest, "manifest")
 end
 
 -- Every cache-relative path the manifest references: model geometry and
--- textures plus the species-display sprite images. Raises on a malformed
+-- textures plus the chooser-owned backdrop image(s). Raises on a malformed
 -- manifest, matching ModelAsset.referencedPaths.
 ---@param manifest table<string, unknown>
 ---@return string[]
@@ -394,8 +490,14 @@ function M.referencedPaths(manifest)
       paths[#paths + 1] = path
     end
   end
-  for _, id in ipairs(SPRITE_IDS) do
-    paths[#paths + 1] = manifest.speciesSprites[id].image
+  local background = manifest.background
+  if background.image ~= nil then
+    paths[#paths + 1] = background.image
+  else
+    paths[#paths + 1] = background.horizontal.image
+    if background.vertical ~= nil then
+      paths[#paths + 1] = background.vertical.image
+    end
   end
   return paths
 end

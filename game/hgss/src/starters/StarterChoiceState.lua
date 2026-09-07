@@ -1,7 +1,10 @@
 -- Modal starter-choice host for the blocking starter task. It owns the
 -- pure retail controller, the validated starter-application manifest loaded
--- once per open through the generated-asset cache, and the game-local
--- presentation that realizes that manifest. The three pre-created candidates
+-- once per open through the generated-asset cache, the per-candidate
+-- portrait descriptors resolved through the mon portrait contract, and the
+-- game-local presentation that realizes that manifest across two logical
+-- DS surfaces: the machine surface (world role, the only touch surface)
+-- and the info surface (auxiliary role). The three pre-created candidates
 -- are borrowed read-only for display; the task owns publication authority.
 -- GPU resources realize lazily on first draw only: open, input, status, and
 -- close never touch graphics objects, so headless compositions drive the
@@ -9,6 +12,8 @@
 -- close/dispose while the candidate records stay with the task.
 
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
+local MonCache = require("libs.assets.src.MonCache")
+local Personality = require("libs.mons.src.gen4.Personality")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StarterChoiceController = require("libs.hgss.src.ui.StarterChoiceController")
 local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoicePresentation")
@@ -19,13 +24,21 @@ local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoiceP
 ---@field _controller StarterChoiceController? active choice controller, nil while idle
 ---@field _candidates table[]|nil borrowed task-owned candidate records while open
 ---@field _names string[]|nil candidate display names while open
+---@field _portraits table[]|nil per-candidate portrait descriptors while open
 ---@field _manifest table<string, unknown>? immutable validated application manifest while open
 ---@field _presentation StarterChoicePresentation? game-local scene presentation while open
+---@field _topology ScreenTopology? dual-surface host topology for the current drawable size
+---@field _machine table<string, unknown>? machine surface record for draw/hit mapping
+---@field _info table<string, unknown>? info surface record for draw mapping
 ---@field _doneIndex integer? completed candidate once the lock settles
 ---@field _width number last drawable width
 ---@field _height number last drawable height
 local StarterChoiceState = {}
 StarterChoiceState.__index = StarterChoiceState
+
+-- Host gap between the machine and info surfaces; placement only, never a
+-- semantic coordinate.
+local SURFACE_GAP = 8
 
 ---@param opts { catalog: MonCatalog, cacheFs: table<string, unknown> }
 ---@return StarterChoiceState
@@ -39,8 +52,12 @@ function StarterChoiceState.new(opts)
     _controller = nil,
     _candidates = nil,
     _names = nil,
+    _portraits = nil,
     _manifest = nil,
     _presentation = nil,
+    _topology = nil,
+    _machine = nil,
+    _info = nil,
     _doneIndex = nil,
     _width = 256,
     _height = 192,
@@ -50,6 +67,46 @@ end
 ---@return boolean
 function StarterChoiceState:isActive()
   return self._controller ~= nil
+end
+
+-- Resolves one candidate portrait descriptor from the canonical mon record
+-- through the existing portrait contract: personality-derived gender and
+-- shininess select the front-portrait atlas entry. A source-genderless
+-- species resolves to whichever male/female source variant the portrait
+-- manifest actually carries. A candidate with no portrait entry fails
+-- loudly; no vanilla substitute is ever shown.
+---@param candidate table<string, unknown> canonical mon record
+---@param entries table<string, unknown> portrait manifest entries by selector
+---@param catalog MonCatalog generated mon catalog for gender ratios
+---@return table<string, unknown> { speciesKey: string, form: integer, gender: string, shiny: boolean, selector: string }
+local function portraitDescriptor(candidate, entries, catalog)
+  assert(type(candidate) == "table", "starter candidates carry mon records")
+  local speciesKey = assert(candidate.species, "starter candidate carries its species key")
+  assert(type(candidate.form) == "number", "starter candidate carries its form")
+  assert(type(candidate.personality) == "number", "starter candidate carries its personality")
+  assert(
+    type(candidate.origin) == "table" and type(candidate.origin.trainerId) == "number",
+    "starter candidate carries its origin trainer identity"
+  )
+  local ratio = catalog:species(speciesKey).genderRatio
+  local gender = Personality.gender(ratio, candidate.personality)
+  local shiny = Personality.shiny(candidate.origin.trainerId, candidate.personality)
+  if gender == "genderless" then
+    local maleSelector = MonCache.portraitSelector(speciesKey, candidate.form, "male", shiny)
+    if entries[maleSelector] ~= nil then
+      gender = "male"
+    else
+      local femaleSelector = MonCache.portraitSelector(speciesKey, candidate.form, "female", shiny)
+      assert(
+        entries[femaleSelector] ~= nil,
+        "starter candidate has no reachable portrait variant for " .. tostring(speciesKey)
+      )
+      gender = "female"
+    end
+  end
+  local selector = MonCache.portraitSelector(speciesKey, candidate.form, gender, shiny)
+  assert(entries[selector] ~= nil, "starter candidate has no portrait entry for " .. tostring(speciesKey))
+  return { speciesKey = speciesKey, form = candidate.form, gender = gender, shiny = shiny, selector = selector }
 end
 
 -- Opens the modal on the task cursor with the three pre-created candidates.
@@ -82,19 +139,32 @@ function StarterChoiceState:open(cursor, candidates)
   local manifest =
     assert(cacheFs:loadLua(StarterChoiceAssetCache.manifestPath()), "starter application cache carries no manifest")
   assert(StarterChoiceAssetCache.validateManifest(manifest), "starter application manifest is invalid")
+  local portraits = assert(
+    cacheFs:loadLua(MonCache.portraitManifestPath()),
+    "starter choice requires the generated mon portrait manifest"
+  )
+  local entries = assert(portraits.entries, "the mon portrait manifest carries its entries")
+  local descriptors = {}
+  for index, candidate in ipairs(candidates) do
+    descriptors[index] = portraitDescriptor(candidate, entries, self._catalog)
+  end
   self._candidates = candidates
   self._names = names
+  self._portraits = descriptors
   self._manifest = manifest
   self._doneIndex = nil
   self._controller = StarterChoiceController.new({
     candidates = names,
     initialCursor = cursor,
-    transitionTicks = manifest.scene.camera.transitionTicks,
   })
-  local presentation = StarterChoicePresentation.new({ manifest = manifest, cacheFs = cacheFs })
+  local presentation = StarterChoicePresentation.new({
+    manifest = manifest,
+    cacheFs = cacheFs,
+    portraits = descriptors,
+  })
   presentation:reset()
-  presentation:resize(self._width, self._height)
   self._presentation = presentation
+  self:resize(self._width, self._height)
 end
 
 function StarterChoiceState:close()
@@ -103,7 +173,11 @@ function StarterChoiceState:close()
   self._controller = nil
   self._candidates = nil
   self._names = nil
+  self._portraits = nil
   self._manifest = nil
+  self._topology = nil
+  self._machine = nil
+  self._info = nil
   self._doneIndex = nil
 end
 
@@ -205,8 +279,10 @@ function StarterChoiceState:ballAt(x, y, snapshot)
   return presentation:ballAt(x, y, snapshot)
 end
 
--- Display-space pointer position onto the rendered balls through the strict
--- scene fit: { kind = "ball", index } zero-based, nil outside every region.
+-- Maps a host pointer position through the machine surface only onto its
+-- 256x192 reference frame, then onto the rendered balls: { kind = "ball",
+-- index } zero-based, nil outside every region. Points on the info surface
+-- or the host backdrop never hit a ball.
 ---@param x number
 ---@param y number
 ---@return integer?
@@ -215,7 +291,11 @@ function StarterChoiceState:hitTest(x, y)
   if presentation == nil then
     return nil
   end
-  local referenceX, referenceY = presentation:toReference(x, y)
+  local machine = self._machine
+  if machine == nil then
+    return nil
+  end
+  local referenceX, referenceY = presentation:toMachineReference(x, y)
   if referenceX == nil or referenceY == nil then
     return nil
   end
@@ -226,8 +306,9 @@ function StarterChoiceState:hitTest(x, y)
   return { kind = "ball", index = ball - 1 }
 end
 
--- Recomputes the scene fit without touching controller state so resizes
--- never reroll or reselect; hit projection follows the same fit.
+-- Recomputes the dual-surface host layout without touching controller
+-- state so resizes never reroll or reselect; hit projection follows the
+-- machine surface of the same layout.
 ---@param width number
 ---@param height number
 function StarterChoiceState:resize(width, height)
@@ -235,16 +316,27 @@ function StarterChoiceState:resize(width, height)
   assert(type(height) == "number" and height > 0, "starter resize requires a positive height")
   self._width = width
   self._height = height
-  local topology = ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
+  local scale = math.min(height / 192, (width - SURFACE_GAP) / 512)
+  assert(scale > 0, "starter resize requires a non-degenerate drawable size")
+  local surfaceWidth, surfaceHeight = 256 * scale, 192 * scale
+  local originX = (width - (surfaceWidth * 2 + SURFACE_GAP)) / 2
+  local originY = (height - surfaceHeight) / 2
+  local topology = ScreenTopology.dualDisplay({
+    id = "machine",
+    rect = { x = originX, y = originY, width = surfaceWidth, height = surfaceHeight },
     role = "world",
+    touch = true,
+  }, {
+    id = "info",
+    rect = { x = originX + surfaceWidth + SURFACE_GAP, y = originY, width = surfaceWidth, height = surfaceHeight },
+    role = "auxiliary",
     touch = false,
   })
-  local surface = assert(topology.surfaces[1], "starter presentation requires the main display surface")
-  local frame = surface.safeRect or surface.rect
+  self._topology = topology
+  self._machine = assert(topology.surfaces[1], "starter presentation requires the machine surface")
+  self._info = assert(topology.surfaces[2], "starter presentation requires the info surface")
   if self._presentation ~= nil then
-    self._presentation:resize(frame.width, frame.height)
+    self._presentation:resize(width, height, self._machine.rect, self._info.rect)
   end
 end
 
@@ -259,7 +351,7 @@ end
 -- Draws the modal through the field text provider. Refreshes the scene fit
 -- from the current drawable size, realizes presentation resources on first
 -- presentation, and delegates the frame to the retail presentation.
----@param text table<string, unknown> text provider ({ drawText })
+---@param text table<string, unknown> text provider ({ drawText, windowBackgroundColor })
 ---@param width number
 ---@param height number
 function StarterChoiceState:drawPresentation(text, width, height)
@@ -277,7 +369,11 @@ function StarterChoiceState:dispose()
   self._controller = nil
   self._candidates = nil
   self._names = nil
+  self._portraits = nil
   self._manifest = nil
+  self._topology = nil
+  self._machine = nil
+  self._info = nil
   self._doneIndex = nil
 end
 

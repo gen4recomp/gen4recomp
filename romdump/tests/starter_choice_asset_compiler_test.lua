@@ -86,6 +86,31 @@ local function assertNoSourceIdentities(value, path)
   end
 end
 
+local function assertNonEmptyString(value, what)
+  Assert.isTrue(type(value) == "string" and #value > 0, what .. " is a decoded non-empty string")
+end
+
+local function assertBackdropEntry(entry, assets, what)
+  Assert.notNil(entry, what .. " backdrop entry is present")
+  Assert.isTrue(
+    type(entry.image) == "string" and entry.image:find("assets/generated/starter_choice/", 1, true) == 1,
+    what .. " backdrop uses a chooser generated path"
+  )
+  Assert.isTrue(
+    type(entry.width) == "number"
+      and entry.width >= 1
+      and entry.width % 1 == 0
+      and type(entry.height) == "number"
+      and entry.height >= 1
+      and entry.height % 1 == 0,
+    what .. " backdrop carries positive integer dimensions"
+  )
+  local bytes = assert(assets[entry.image], what .. " backdrop payload is compiled")
+  local width, height = PngReader.rgba(bytes)
+  Assert.equal(width, entry.width, what .. " backdrop payload width matches the manifest")
+  Assert.equal(height, entry.height, what .. " backdrop payload height matches the manifest")
+end
+
 function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   local bundle = assert(compiler().compile(romFs))
   local manifest = assert(bundle.manifest, "compilation returns a manifest")
@@ -116,53 +141,62 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   assertResolves(descs.turntable, animations.turntable, "turntable binding")
 
   local scene = assert(manifest.scene, "manifest carries normalized scene constants")
-  Assert.equal(#scene.ballPositions, 3, "exactly three source ball positions")
-  local seen = {}
-  for index, position in ipairs(scene.ballPositions) do
-    assertFinite(position.x, "ball position " .. index .. " x")
-    assertFinite(position.y, "ball position " .. index .. " y")
-    assertFinite(position.z, "ball position " .. index .. " z")
-    local key = position.x .. "," .. position.y .. "," .. position.z
-    Assert.isTrue(seen[key] == nil, "ball positions are distinct")
-    seen[key] = true
-  end
+  local layout = assert(scene.ballLayout, "scene carries the source ball ring layout")
+  Assert.equal(layout.radius, 32, "the ring radius matches the source model")
+  Assert.equal(layout.modelY, 14, "model origins sit at the source height")
+  Assert.equal(layout.touchYOffsetY, 13, "touch centers sit above the model origins")
+  Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, "slots are one step apart on the ring")
+  Assert.near(layout.inspectArcDegrees, -30.76, 0.01, "the inspect arc matches the source endpoint")
+  local turntable = assert(scene.turntable, "scene carries turntable facts")
+  Assert.equal(turntable.selectionStepDegrees, 120, "one selection step spans a third of the ring")
+  Assert.near(turntable.rotationDegreesPerTick, 0.5, 1e-9, "the turntable rate matches the source rate")
+  local timing = assert(scene.timing, "scene carries observable timing boundaries")
+  Assert.equal(timing.cameraTicks, 8, "the camera path lasts eight source steps")
+  Assert.equal(timing.ballArcTicks, 8, "the inspect arc lasts eight source steps")
+  Assert.equal(timing.smallWobbleFrame, 80, "the small-wobble phase carries the source frame")
+  Assert.equal(timing.infoFadeTicks, 10, "the info fade carries the source boundary")
+  Assert.equal(timing.machineFadeTicks, 16, "the machine fade carries the source boundary")
   local camera = assert(scene.camera, "scene carries source camera parameters")
-  Assert.equal(camera.transitionTicks, 8, "camera transition is eight ticks")
   local out = assert(camera.out, "outside camera parameters")
   local inside = assert(camera.inside, "inside camera parameters")
   assertFinite(out.angleX, "outside camera angle")
   assertFinite(out.perspective, "outside camera perspective")
   assertFinite(inside.angleX, "inside camera angle")
   assertFinite(inside.perspective, "inside camera perspective")
-  Assert.deepEqual(out.target, { x = 0, y = 0, z = 14 }, "outside camera target")
+  Assert.near(out.perspective, 49.61, 1e-9, "outside field carries the doubled source half-angle")
+  Assert.near(inside.perspective, 45.4, 1e-9, "inside field carries the doubled source half-angle")
+  Assert.deepEqual(out.target, { x = 0, y = 15, z = 14 }, "outside camera target")
   Assert.deepEqual(inside.target, { x = 0, y = 0, z = 12 }, "inside camera target")
   Assert.equal(out.distance, 100, "outside camera distance")
   Assert.equal(inside.distance, 60, "inside camera distance")
   Assert.isTrue(out.angleX < inside.angleX, "outside view looks down more steeply than inside")
   Assert.isTrue(out.perspective > inside.perspective, "outside view is wider than inside")
-  local rotation = assert(scene.ballYRotation, "scene carries ball Y rotations")
-  assertFinite(rotation.out, "ball outside Y rotation")
-  assertFinite(rotation.inside, "ball inside Y rotation")
-  Assert.notNil(scene.wobble, "scene carries normalized wobble timing")
+  Assert.isNil(camera.transitionTicks, "no universal transition duration remains on the camera")
 
   local messages = assert(manifest.messages, "manifest carries decoded chooser messages")
-  Assert.keySet(messages, "confirm,initial")
-  Assert.isTrue(type(messages.initial) == "string" and #messages.initial > 0, "initial message is decoded")
-  Assert.isTrue(type(messages.confirm) == "string" and #messages.confirm > 0, "confirm message is decoded")
-
-  local sprites = assert(manifest.speciesSprites, "manifest carries species-display sprites")
-  Assert.keySet(sprites, "chikorita,cyndaquil,totodile")
-  local assets = assert(bundle.assets, "compilation returns referenced asset payloads")
-  for _, id in ipairs({ "chikorita", "cyndaquil", "totodile" }) do
-    local entry = assert(sprites[id], id .. " sprite entry is present")
-    Assert.isTrue(
-      type(entry.image) == "string" and entry.image:find("assets/generated/starter_choice/", 1, true) == 1,
-      id .. " sprite uses a starter-choice generated path"
-    )
-    local bytes = assert(assets[entry.image], id .. " sprite payload is compiled")
-    local width, height = PngReader.rgba(bytes)
-    Assert.isTrue(width > 0 and height > 0, id .. " sprite payload is a real image")
+  Assert.keySet(messages, "bottom,confirm,inspect,topInitial")
+  assertNonEmptyString(messages.topInitial, "the initial top message")
+  Assert.isTrue(type(messages.inspect) == "table" and #messages.inspect == 3, "one inspect description per slot")
+  Assert.isTrue(type(messages.confirm) == "table" and #messages.confirm == 3, "one confirm description per slot")
+  for index = 1, 3 do
+    assertNonEmptyString(messages.inspect[index], "inspect description " .. index)
+    assertNonEmptyString(messages.confirm[index], "confirm description " .. index)
   end
+  assertNonEmptyString(messages.bottom.normal, "the normal bottom prompt")
+  assertNonEmptyString(messages.bottom.confirm, "the confirm bottom prompt")
+
+  local background = assert(manifest.background, "the chooser owns its generated backdrop")
+  local backdropEntry = background.image ~= nil and background or assert(background.horizontal)
+  Assert.isTrue(
+    type(backdropEntry.image) == "string" and backdropEntry.image:find("assets/generated/starter_choice/", 1, true) == 1,
+    "backdrop uses a chooser generated path"
+  )
+  local assets = assert(bundle.assets, "compilation returns referenced asset payloads")
+  local backdropBytes = assert(assets[backdropEntry.image], "backdrop payload is compiled")
+  local backdropWidth, backdropHeight = PngReader.rgba(backdropBytes)
+  Assert.isTrue(backdropWidth > 0 and backdropHeight > 0, "backdrop payload is a real image")
+
+  Assert.isNil(manifest.speciesSprites, "no fixed species image catalog remains")
 
   for _, desc in pairs(descs) do
     for _, path in ipairs(ModelAsset.referencedPaths(desc)) do
@@ -176,6 +210,62 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   local dependencies = assert(bundle.dependencies, "compilation returns source dependencies")
   Assert.isTrue(type(dependencies.dependencies) == "table", "dependencies list source hashes")
   Assert.isTrue(#dependencies.dependencies > 0, "every read source is stamped into dependencies")
+
+  Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
+end
+
+function T.chooser_manifest_carries_semantic_roles_source_geometry_and_owned_backdrop(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local assets = assert(bundle.assets, "compilation returns referenced asset payloads")
+  Assert.deepEqual(manifest.reference, { width = 256, height = 192 }, "one logical surface keeps the 256x192 reference")
+
+  local messages = assert(manifest.messages, "manifest carries decoded chooser messages")
+  assertNonEmptyString(messages.topInitial, "the initial top message")
+  Assert.isTrue(type(messages.inspect) == "table" and #messages.inspect == 3, "one inspect description per slot")
+  Assert.isTrue(type(messages.confirm) == "table" and #messages.confirm == 3, "one confirm description per slot")
+  for index = 1, 3 do
+    assertNonEmptyString(messages.inspect[index], "inspect description " .. index)
+    assertNonEmptyString(messages.confirm[index], "confirm description " .. index)
+  end
+  local bottom = assert(messages.bottom, "manifest carries bottom prompt roles")
+  assertNonEmptyString(bottom.normal, "the normal bottom prompt")
+  assertNonEmptyString(bottom.confirm, "the confirm bottom prompt")
+  Assert.isNil(messages.initial, "the legacy single initial field is gone")
+
+  local scene = assert(manifest.scene, "manifest carries normalized scene constants")
+  local layout = assert(scene.ballLayout, "scene carries the source ball ring layout")
+  Assert.equal(layout.radius, 32, "the ring radius matches the source model")
+  Assert.equal(layout.modelY, 14, "model origins sit at the source height")
+  Assert.equal(layout.touchYOffsetY, 13, "touch centers sit above the model origins")
+  Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, "slots are one step apart on the ring")
+  Assert.near(layout.inspectArcDegrees, -30.76, 0.01, "the inspect arc matches the source endpoint")
+  local turntable = assert(scene.turntable, "scene carries turntable facts")
+  Assert.equal(turntable.selectionStepDegrees, 120, "one selection step spans a third of the ring")
+  Assert.near(turntable.rotationDegreesPerTick, 0.5, 1e-9, "the turntable rate matches the source rate")
+  local timing = assert(scene.timing, "scene carries observable timing boundaries")
+  Assert.equal(timing.cameraTicks, 8, "the camera path lasts eight source steps")
+  Assert.equal(timing.ballArcTicks, 8, "the inspect arc lasts eight source steps")
+  Assert.equal(timing.smallWobbleFrame, 80, "the small-wobble phase carries the source frame")
+  Assert.equal(timing.infoFadeTicks, 10, "the info fade carries the source boundary")
+  Assert.equal(timing.machineFadeTicks, 16, "the machine fade carries the source boundary")
+  Assert.isNil(scene.ballPositions, "invented linear ball positions are gone")
+  Assert.isNil(scene.ballYRotation, "the misleading rotation pair is gone")
+  Assert.isNil(scene.camera.transitionTicks, "no universal transition duration remains on the camera")
+
+  local background = assert(manifest.background, "the chooser owns its generated backdrop")
+  if background.image ~= nil then
+    assertBackdropEntry(background, assets, "single")
+  else
+    assertBackdropEntry(background.horizontal, assets, "horizontal")
+    if background.vertical ~= nil then
+      assertBackdropEntry(background.vertical, assets, "vertical")
+    end
+  end
+
+  Assert.isNil(manifest.speciesSprites, "no fixed species image catalog remains")
+
+  assertNoSourceIdentities(manifest, "manifest")
 
   Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
 end

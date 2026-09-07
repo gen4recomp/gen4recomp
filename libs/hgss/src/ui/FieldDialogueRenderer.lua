@@ -21,6 +21,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class FieldDialogueRenderer
@@ -29,9 +30,8 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 ---@field _text FieldDialogueRenderer.TextRenderer the shared glyph atlas/line drawing collaborator
 ---@field _manifest table<string, unknown> the generated field-UI manifest
 ---@field _focusIndicatorEnabled boolean whether the source focus indicator is composed
----@field _frameImage love.Image?
+---@field _window FieldWindowRenderer? shared user-frame image/quads plus content fill
 ---@field _cursorImage love.Image?
----@field _frameQuadCache table<integer, love.Quad[]>|nil per-frame tile quads, built lazily
 ---@field _cursorQuadCache table<integer, table<integer, love.Quad>>|nil
 local FieldDialogueRenderer = {}
 FieldDialogueRenderer.__index = FieldDialogueRenderer
@@ -78,15 +78,10 @@ function FieldDialogueRenderer.new(opts)
   local manifest = opts.manifest
   assert(type(manifest) == "table", "FieldDialogueRenderer requires the runtime-validated field-UI manifest")
 
-  -- The generated field-UI class is a required renderer asset: the manifest
-  -- names the frame strip and every frame's tile rects. The runtime boot
-  -- already validated the full manifest, so the renderer only resolves what
-  -- it draws.
-  local frameAsset = assert(
-    manifest.assets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES],
-    "the field-UI manifest must carry the dialogue frame strip asset"
-  )
-  local frameImagePath = assert(frameAsset.image, "the dialogue frame strip asset must name an image path")
+  -- The generated field-UI class is a required renderer asset: the window
+  -- primitive resolves the frame strip named by the manifest, and the cursor
+  -- below resolves the continuation atlas. The runtime boot already validated
+  -- the full manifest, so the renderer only resolves what it draws.
 
   local self = setmetatable({
     _theme = theme,
@@ -94,29 +89,17 @@ function FieldDialogueRenderer.new(opts)
     _text = text,
     _manifest = manifest,
     _focusIndicatorEnabled = opts.drawFocusIndicator ~= false,
-    _frameImage = nil,
+    _window = nil,
     _cursorImage = nil,
-    _frameQuadCache = nil,
     _cursorQuadCache = nil,
   }, FieldDialogueRenderer)
 
-  local frameData = cacheFs:read(frameImagePath)
-  if not frameData then
-    self:release()
-    Errors.raise(
-      FieldErrors.FIELD_UI_FRAME_ATLAS_MISSING,
-      "dialogue frame strip missing at " .. frameImagePath,
-      { path = frameImagePath }
-    )
-  end
-  frameData = assert(frameData)
-  local ok, err = pcall(function()
-    self._frameImage = graphics.newImage(love.filesystem.newFileData(frameData, frameImagePath))
-    self._frameImage:setFilter("nearest", "nearest")
+  local windowOk, windowErr = pcall(function()
+    self._window = FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest, graphics = graphics })
   end)
-  if not ok then
+  if not windowOk then
     self:release()
-    error(err)
+    error(windowErr)
   end
   local cursor = assert(manifest.dialogueFrames.continueCursor)
   local cursorAsset = assert(manifest.assets[cursor.asset])
@@ -151,27 +134,22 @@ function FieldDialogueRenderer.new(opts)
   return self
 end
 
--- The 18 tile quads of one frame: each 8x8 tile of the strip row named by
--- the manifest rect. Built lazily per frame index and cached, so a session
--- that only ever shows one frame never materializes the other rows.
----@param frameIndex integer
----@param rect { x: integer, y: integer, width: integer, height: integer }
----@return love.Quad[]
-function FieldDialogueRenderer:_buildFrameQuads(frameIndex, rect)
-  local lg = assert(self._graphics)
-  local image = assert(self._frameImage)
-  local atlasWidth, atlasHeight = image:getWidth(), image:getHeight()
-  local cache = self._frameQuadCache or {}
-  local quads = cache[frameIndex]
-  if quads == nil then
-    quads = {}
-    for tile = 0, rect.width / 8 - 1 do
-      quads[tile] = lg.newQuad(rect.x + tile * 8, rect.y, 8, 8, atlasWidth, atlasHeight)
-    end
-    cache[frameIndex] = quads
-  end
-  self._frameQuadCache = cache
-  return quads
+-- Draws the player's selected HGSS user-frame through the shared window
+-- primitive: the content-background fill plus the strip row named by the
+-- manifest rect for the status frame index, composed by the audited
+-- DrawFrameAndWindow2 tilemap around the content box. A status without a
+-- frame index (a host that carries no player options) draws the fill with no
+-- frame tiles rather than inventing one.
+
+---@param status FieldDialogueController.Status
+---@param layout FieldDialogueRenderer.Layout
+function FieldDialogueRenderer:_drawFrame(status, layout)
+  local background = self._text:windowBackgroundColor()
+  assert(self._window, "dialogue renderer owns no window primitive"):drawWindow(
+    layout.box,
+    status.frameIndex,
+    background
+  )
 end
 
 -- Draws the generated continuation phase while the controller waits at a
@@ -194,39 +172,6 @@ function FieldDialogueRenderer:_drawCursor(status, layout)
   local placement = assert(layout.cursor, "dialogue layout must supply a cursor rectangle")
   lg.setColor(1, 1, 1, 1)
   lg.draw(assert(self._cursorImage), quad, placement.x, placement.y)
-end
-
--- Draws the player's selected HGSS user-frame: the strip row named by the
--- manifest rect for the status frame index, composed by the audited
--- DrawFrameAndWindow2 tilemap around the content box. The content region
--- itself stays uncovered, so the world shows through the window. A status
--- without a frame index (a host that carries no player options) draws no
--- frame at all rather than inventing one.
-
----@param status FieldDialogueController.Status
----@param layout FieldDialogueRenderer.Layout
-function FieldDialogueRenderer:_drawFrame(status, layout)
-  local frameIndex = status.frameIndex
-  if frameIndex == nil then
-    return
-  end
-  local lg = assert(self._graphics)
-  local image = assert(self._frameImage)
-  local frames = assert(self._manifest.dialogueFrames)
-  local rect = frames.frameTiles[frameIndex]
-  assert(rect ~= nil, "dialogue frame index " .. tostring(frameIndex) .. " is outside the generated frame set")
-  local quads = self:_buildFrameQuads(frameIndex, rect)
-  local box = layout.box
-  ---@cast box FieldDialogueTheme.Rect
-  lg.setColor(1, 1, 1, 1)
-  for _, placement in ipairs(self._theme.frameTilePlacements(box)) do
-    local tile = assert(quads[placement.tile])
-    for row = 0, (placement.spanY or 1) - 1 do
-      for col = 0, (placement.spanX or 1) - 1 do
-        lg.draw(image, tile, placement.x + col * 8, placement.y + row * 8)
-      end
-    end
-  end
 end
 
 -- Draws the source screen-focus indicator (the YESNO printer control
@@ -274,7 +219,7 @@ function FieldDialogueRenderer:draw(controller, viewportOrPresentation, fieldSca
   -- Inactive (closed) is a pure no-op and checks no scale precondition; an
   -- inactive draw must not touch graphics state or require presentation
   -- parameters. The scale is only required for the active path.
-  if not controller or not controller:isModal() or not self._frameImage then
+  if not controller or not controller:isModal() or not self._window then
     return
   end
   ---@type FieldDialogueRenderer.Layout
@@ -319,9 +264,6 @@ function FieldDialogueRenderer:draw(controller, viewportOrPresentation, fieldSca
     -- screen-mapped rects, so nothing is scaled twice.
     lg.translate(layout.origin.x, layout.origin.y)
     lg.scale(layout.scale, layout.scale)
-    local background = self._text:windowBackgroundColor()
-    lg.setColor(background[1], background[2], background[3], background[4])
-    lg.rectangle("fill", layout.box.x, layout.box.y, layout.box.width, layout.box.height)
     self:_drawFrame(status, layout)
     local lines = status.scrollLines or status.visibleLines
     local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
@@ -337,15 +279,14 @@ function FieldDialogueRenderer:draw(controller, viewportOrPresentation, fieldSca
 end
 
 function FieldDialogueRenderer:release()
-  if self._frameImage and self._frameImage.release then
-    self._frameImage:release()
+  if self._window ~= nil then
+    self._window:release()
+    self._window = nil
   end
-  self._frameImage = nil
   if self._cursorImage and self._cursorImage.release then
     self._cursorImage:release()
   end
   self._cursorImage = nil
-  self._frameQuadCache = nil
   self._cursorQuadCache = nil
 end
 

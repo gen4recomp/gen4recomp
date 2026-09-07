@@ -1,18 +1,20 @@
 -- Compiles the retail choose-starter application resources into the
--- source-independent starter-choice cache family. The two chooser archives
--- carry four 3D resource groups (tabletop, turntable, ball, ball effect),
--- three joint clips plus one material clip, the species-display sprite
--- groups, and the chooser message bank supplies the normalized prompts. All
--- Nitro/text decoding reuses the existing digest helpers; this module owns
--- only source selection, semantic role assignment, unit normalization, and
--- the dependency record. Source basis: pret/pokeheartgold
--- src/choose_starter_app.c and src/choose_starter.c.
+-- source-independent starter-choice cache family. The main chooser archive
+-- carries four 3D resource groups (tabletop, turntable, ball, ball effect)
+-- with three joint clips plus one material clip; the chooser message bank
+-- supplies the semantic message roles; the scene constants normalize the
+-- source ball ring, turntable, camera, and timing facts; and the chooser owns
+-- one generated presentation backdrop. Candidate pictures are never compiled
+-- here: the mon presentation pipeline owns portrait identity. All Nitro/text
+-- decoding reuses the existing digest helpers; this module owns only source
+-- selection, semantic role assignment, unit normalization, and the dependency
+-- record. Source basis: pret/pokeheartgold src/choose_starter_app.c and
+-- src/choose_starter.c.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
-local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
 local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
@@ -32,40 +34,62 @@ local StarterChoiceAssetCompiler = {}
 StarterChoiceAssetCompiler.ERROR = { SOURCE_INVALID = "STARTER_CHOICE_SOURCE_INVALID" }
 
 -- Producer-only source selection. The main archive holds the four 3D models
--- (members 0-3) and their four animation resources (members 4-7); the sub
--- archive holds the background groups followed by the three species-display
--- sprite groups, each with a dedicated palette member.
+-- (members 0-3) and their four animation resources (members 4-7).
 local MAIN_ARCHIVE = "NARC_application_choose_starter_choose_starter_main_res"
-local SUB_ARCHIVE = "NARC_application_choose_starter_choose_starter_sub_res"
 local MODEL_MEMBERS = { tabletop = 0, turntable = 1, ball = 2, ballEffect = 3 }
 local ANIM_MEMBERS = { effect = 4, open = 5, rock = 6, turntable = 7 }
 local MESSAGE_BANK = 190
-local MESSAGE_INITIAL_INDEX = 0
-local MESSAGE_CONFIRM_INDEX = 7
-local SPRITE_GROUPS = {
-  chikorita = { char = 17, cell = 18, palette = 6 },
-  cyndaquil = { char = 20, cell = 21, palette = 7 },
-  totodile = { char = 23, cell = 24, palette = 8 },
-}
-local SPECIES_ORDER = { "chikorita", "cyndaquil", "totodile" }
+-- Semantic message roles over bank 190: the initial top prompt, one confirm
+-- description and one inspect description per candidate slot, and the normal
+-- and confirm bottom prompts. Producer-only indices; runtime sees strings.
+local MESSAGE_TOP_INITIAL = 0
+local MESSAGE_CONFIRM = { 1, 2, 3 }
+local MESSAGE_INSPECT = { 4, 5, 6 }
+local MESSAGE_BOTTOM_NORMAL = 7
+local MESSAGE_BOTTOM_CONFIRM = 8
 
 -- Normalized application state constants. The camera out/inside values are
--- the pinned retail constants in decimal degrees with the retail look-at
--- targets and distances; the ball placements are the normalized lateral
--- tabletop layout for the three presentation slots.
-local SCENE_CONSTANTS = {
-  ballPositions = {
-    { x = -16, y = 0, z = 0 },
-    { x = 0, y = 0, z = 0 },
-    { x = 16, y = 0, z = 0 },
-  },
-  camera = {
-    out = { angleX = -49.57, perspective = 24.805, target = { x = 0, y = 0, z = 14 }, distance = 100 },
-    inside = { angleX = -30.76, perspective = 22.7, target = { x = 0, y = 0, z = 12 }, distance = 60 },
-    transitionTicks = 8,
-  },
-  ballYRotation = { out = 0, inside = 180 },
+-- the pinned retail constants: decimal-degree X angles, full vertical fields
+-- of view (the source perspective fields are half-angles, doubled here per
+-- the repository camera-table convention), look-at targets, and distances.
+-- The out pose is the resting boot pose from the source camera initializer
+-- (target height 15 with the +14 Z shift); the inside pose is the source
+-- zoom-in endpoint. The ball layout is the source ring model: the base
+-- model position is radius 32 at model Y 14, the three slots sit 120 degrees
+-- apart around Y starting from the selected ball, touch centers sit 13 above
+-- the model origins, and the selected ball arcs over the source -30.76
+-- degree endpoint around its touch point. The turntable advances one
+-- 120-degree selection step at the source rotation rate. Timing carries only
+-- source-observable boundaries: the eight-step camera path, the eight-step
+-- inspect arc, the small-wobble source frame, and the two white fade
+-- boundaries.
+local CAMERA = {
+  out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
+  inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
 }
+local BALL_LAYOUT = {
+  radius = 32,
+  modelY = 14,
+  touchYOffsetY = 13,
+  slotAnglesDegrees = { 0, 120, 240 },
+  inspectArcDegrees = -30.76,
+}
+local TURNTABLE = {
+  selectionStepDegrees = 120,
+  rotationDegreesPerTick = 0.5,
+}
+local TIMING = {
+  cameraTicks = 8,
+  ballArcTicks = 8,
+  smallWobbleFrame = 80,
+  infoFadeTicks = 10,
+  machineFadeTicks = 16,
+}
+
+-- Chooser-owned backdrop dimensions: one widescreen surface the host
+-- composition stretches over the drawable area behind both logical surfaces.
+local BACKDROP_WIDTH = 512
+local BACKDROP_HEIGHT = 192
 
 ---@param message string
 ---@param context Errors.Context|nil
@@ -171,96 +195,6 @@ local function compileClip(bytes, memberId, role, clipId)
   return clip
 end
 
----@param bytes string
----@param kind string
----@param role string
----@param memberId integer
----@return table<string, unknown>
-local function decodeG2d(kind, bytes, role, memberId)
-  local value, err = G2dDecoder[kind](bytes, { label = role })
-  if not value then
-    assert(err)
-    sourceError("starter-choice sprite resource failed " .. kind .. ": " .. err.message, {
-      memberId = memberId,
-      role = role,
-      cause = err.code,
-    })
-  end
-  return value
-end
-
--- Render one object cell of 4bpp tiles into an RGBA surface using the first
--- palette bank. Pixel value 0 is transparent, matching the intro sprite
--- composition.
----@param char table<string, unknown>
----@param palette table<string, unknown>
----@param cell table<string, unknown>
----@param role string
----@return { width: integer, height: integer, rgba: string }
-local function renderCell(char, palette, cell, role)
-  if char.depth ~= 3 then
-    sourceError("starter-choice sprites are 4bpp", { role = role, depth = char.depth })
-  end
-  local tileCount = #char.tiles / 32
-  local colors = palette.colors
-  if type(colors) ~= "table" then
-    sourceError("starter-choice palette carries no colors", { role = role })
-  end
-  local minX, minY, maxX, maxY
-  for _, object in ipairs(cell.objs) do
-    minX = minX == nil and object.x or math.min(minX, object.x)
-    minY = minY == nil and object.y or math.min(minY, object.y)
-    maxX = maxX == nil and object.x + object.width or math.max(maxX, object.x + object.width)
-    maxY = maxY == nil and object.y + object.height or math.max(maxY, object.y + object.height)
-  end
-  if minX == nil then
-    sourceError("starter-choice sprite cell has no objects", { role = role })
-  end
-  local width, height = maxX - minX, maxY - minY
-  local rgba = {}
-  for i = 1, width * height * 4 do
-    rgba[i] = 0
-  end
-  for _, object in ipairs(cell.objs) do
-    local columns, rows = object.width / 8, object.height / 8
-    for row = 0, rows - 1 do
-      for column = 0, columns - 1 do
-        local tileColumn = object.flipH and columns - 1 - column or column
-        local tileRow = object.flipV and rows - 1 - row or row
-        local tile = object.tile + tileRow * columns + tileColumn
-        if tile < 0 or tile >= tileCount then
-          sourceError("starter-choice sprite tile reference exceeds char data", { role = role, tile = tile })
-        end
-        local base = tile * 32
-        for py = 0, 7 do
-          for px = 0, 7 do
-            local byte = string.byte(char.tiles, base + py * 4 + math.floor(px / 2) + 1)
-            local value = px % 2 == 0 and byte % 16 or math.floor(byte / 16)
-            if value ~= 0 then
-              local color = colors[value + 1]
-              if not color then
-                sourceError("starter-choice sprite pixel references a missing palette entry", {
-                  role = role,
-                  value = value,
-                })
-              end
-              local dx = object.x - minX + column * 8 + (object.flipH and 7 - px or px)
-              local dy = object.y - minY + row * 8 + (object.flipV and 7 - py or py)
-              local offset = (dy * width + dx) * 4
-              rgba[offset + 1], rgba[offset + 2], rgba[offset + 3], rgba[offset + 4] = color.r, color.g, color.b, 255
-            end
-          end
-        end
-      end
-    end
-  end
-  local out = {}
-  for i = 1, #rgba, 4096 do
-    out[#out + 1] = string.char(unpack(rgba, i, math.min(i + 4095, #rgba)))
-  end
-  return { width = width, height = height, rgba = table.concat(out) }
-end
-
 ---@param bank { messages: table[] }
 ---@param index integer
 ---@param role string
@@ -285,6 +219,29 @@ local function messageText(bank, index, role)
   return text
 end
 
+-- Deterministic chooser-owned backdrop: a vertical gradient in muted lab
+-- tones with a soft horizontal vignette, carrying no interaction state. The
+-- bytes are a pure function of the fixed palette below so every build for
+-- every ROM emits the identical surface.
+---@return { width: integer, height: integer, rgba: string }
+local function renderBackdrop()
+  local top = { r = 46, g = 62, b = 96 }
+  local bottom = { r = 148, g = 132, b = 102 }
+  local rgba = {}
+  for y = 0, BACKDROP_HEIGHT - 1 do
+    local alpha = y / (BACKDROP_HEIGHT - 1)
+    for x = 0, BACKDROP_WIDTH - 1 do
+      local edge = math.abs(x / (BACKDROP_WIDTH - 1) - 0.5) * 2
+      local shade = 1 - edge * edge * 0.18
+      local r = math.floor((top.r + (bottom.r - top.r) * alpha) * shade + 0.5)
+      local g = math.floor((top.g + (bottom.g - top.g) * alpha) * shade + 0.5)
+      local b = math.floor((top.b + (bottom.b - top.b) * alpha) * shade + 0.5)
+      rgba[#rgba + 1] = string.char(r, g, b, 255)
+    end
+  end
+  return { width = BACKDROP_WIDTH, height = BACKDROP_HEIGHT, rgba = table.concat(rgba) }
+end
+
 ---@param romFs RomFs
 ---@return table<string, unknown>
 local function _compile(romFs)
@@ -307,17 +264,6 @@ local function _compile(romFs)
   local animBytes = {}
   for _, role in ipairs({ "effect", "open", "rock", "turntable" }) do
     animBytes[role] = readMember(main, MAIN_ARCHIVE, ANIM_MEMBERS[role], "animation:" .. role, dependencies)
-  end
-
-  local sub = openArchive(romFs, SUB_ARCHIVE)
-  local spriteBytes = {}
-  for _, id in ipairs(SPECIES_ORDER) do
-    local group = SPRITE_GROUPS[id]
-    spriteBytes[id] = {
-      char = readMember(sub, SUB_ARCHIVE, group.char, "sprite:" .. id .. ":char", dependencies),
-      cell = readMember(sub, SUB_ARCHIVE, group.cell, "sprite:" .. id .. ":cell", dependencies),
-      palette = readMember(sub, SUB_ARCHIVE, group.palette, "sprite:" .. id .. ":palette", dependencies),
-    }
   end
 
   local messageInfo = romFs:resolvedNarc("messages")
@@ -389,6 +335,14 @@ local function _compile(romFs)
   end
 
   local ballDescriptor = dynamicDescriptor(ballModel, { rockClip, openClip }, MODEL_MEMBERS.ball, "ball")
+
+  local inspect, confirm = {}, {}
+  for slot = 1, 3 do
+    inspect[slot] = messageText(bank, MESSAGE_INSPECT[slot], "inspect:" .. slot)
+    confirm[slot] = messageText(bank, MESSAGE_CONFIRM[slot], "confirm:" .. slot)
+  end
+  local backdropImage = renderBackdrop()
+  local backdropPath = StarterChoiceAssetCache.assetDir() .. "/backdrop.png"
   local manifest = {
     schema = StarterChoiceAssetCache.SCHEMA,
     reference = { width = 256, height = 192 },
@@ -412,16 +366,47 @@ local function _compile(romFs)
       turntable = "turntable",
     },
     scene = {
-      ballPositions = SCENE_CONSTANTS.ballPositions,
-      camera = SCENE_CONSTANTS.camera,
-      ballYRotation = SCENE_CONSTANTS.ballYRotation,
-      wobble = { frameCount = rockClip.frameCount },
+      ballLayout = {
+        radius = BALL_LAYOUT.radius,
+        modelY = BALL_LAYOUT.modelY,
+        touchYOffsetY = BALL_LAYOUT.touchYOffsetY,
+        slotAnglesDegrees = {
+          BALL_LAYOUT.slotAnglesDegrees[1],
+          BALL_LAYOUT.slotAnglesDegrees[2],
+          BALL_LAYOUT.slotAnglesDegrees[3],
+        },
+        inspectArcDegrees = BALL_LAYOUT.inspectArcDegrees,
+      },
+      turntable = {
+        selectionStepDegrees = TURNTABLE.selectionStepDegrees,
+        rotationDegreesPerTick = TURNTABLE.rotationDegreesPerTick,
+      },
+      camera = {
+        out = CAMERA.out,
+        inside = CAMERA.inside,
+      },
+      timing = {
+        cameraTicks = TIMING.cameraTicks,
+        ballArcTicks = TIMING.ballArcTicks,
+        smallWobbleFrame = TIMING.smallWobbleFrame,
+        infoFadeTicks = TIMING.infoFadeTicks,
+        machineFadeTicks = TIMING.machineFadeTicks,
+      },
     },
     messages = {
-      initial = messageText(bank, MESSAGE_INITIAL_INDEX, "initial"),
-      confirm = messageText(bank, MESSAGE_CONFIRM_INDEX, "confirm"),
+      topInitial = messageText(bank, MESSAGE_TOP_INITIAL, "topInitial"),
+      inspect = inspect,
+      confirm = confirm,
+      bottom = {
+        normal = messageText(bank, MESSAGE_BOTTOM_NORMAL, "bottom:normal"),
+        confirm = messageText(bank, MESSAGE_BOTTOM_CONFIRM, "bottom:confirm"),
+      },
     },
-    speciesSprites = {},
+    background = {
+      image = backdropPath,
+      width = backdropImage.width,
+      height = backdropImage.height,
+    },
   }
 
   local assets = {}
@@ -431,22 +416,7 @@ local function _compile(romFs)
   for sha1, tex in pairs(textures) do
     assets[MapAssetCache.texturePath(sha1)] = PngWriter.encode(tex.width, tex.height, tex.pixels)
   end
-  for _, id in ipairs(SPECIES_ORDER) do
-    local group = spriteBytes[id]
-    local char = decodeG2d("decodeChar", group.char, "sprite:" .. id, SPRITE_GROUPS[id].char)
-    local cell = decodeG2d("decodeCell", group.cell, "sprite:" .. id, SPRITE_GROUPS[id].cell)
-    local palette = decodeG2d("decodePalette", group.palette, "sprite:" .. id, SPRITE_GROUPS[id].palette)
-    if #cell.cells < 1 then
-      sourceError("starter-choice sprite has no display cell", { role = id })
-    end
-    local image = renderCell(char, palette, cell.cells[1], id)
-    if image.width < 1 or image.height < 1 then
-      sourceError("starter-choice sprite rendered an empty surface", { role = id })
-    end
-    local path = StarterChoiceAssetCache.assetDir() .. "/" .. id .. ".png"
-    assets[path] = PngWriter.encode(image.width, image.height, image.rgba)
-    manifest.speciesSprites[id] = { image = path, width = image.width, height = image.height }
-  end
+  assets[backdropPath] = PngWriter.encode(backdropImage.width, backdropImage.height, backdropImage.rgba)
 
   local dependencyRecord = {
     cacheFormat = StarterChoiceAssetCache.FORMAT,
@@ -454,8 +424,20 @@ local function _compile(romFs)
     modelSchema = ModelAsset.SCHEMA,
     charmapVersion = FieldMessageCompiler.CHARMAP_VERSION,
     versionRomSha1 = metadata.sha1,
-    sceneConstants = SCENE_CONSTANTS,
-    messageSelection = { bank = MESSAGE_BANK, initial = MESSAGE_INITIAL_INDEX, confirm = MESSAGE_CONFIRM_INDEX },
+    sceneConstants = {
+      camera = CAMERA,
+      ballLayout = BALL_LAYOUT,
+      turntable = TURNTABLE,
+      timing = TIMING,
+    },
+    messageSelection = {
+      bank = MESSAGE_BANK,
+      topInitial = MESSAGE_TOP_INITIAL,
+      inspect = MESSAGE_INSPECT,
+      confirm = MESSAGE_CONFIRM,
+      bottomNormal = MESSAGE_BOTTOM_NORMAL,
+      bottomConfirm = MESSAGE_BOTTOM_CONFIRM,
+    },
     unresolvedMaterials = unresolvedMaterials,
     dependencies = dependencies,
   }
