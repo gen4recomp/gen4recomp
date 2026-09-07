@@ -78,45 +78,28 @@ check_terminal_output_file() {
   fi
 }
 
-is_first_party_lua() {
-  local path="$1"
-  if [[ "$path" =~ ^app/.*\.lua$ ]]; then
-    return 0
-  fi
-  if [[ "$path" =~ ^game/.*\.lua$ ]]; then
-    return 0
-  fi
-  if [[ "$path" =~ ^gen4/.*\.lua$ ]]; then
-    return 0
-  fi
-  if [[ "$path" =~ ^libs/.*\.lua$ ]]; then
-    return 0
-  fi
-  if [[ "$path" =~ ^romdump/.*\.lua$ ]]; then
-    return 0
-  fi
-  if [[ "$path" =~ ^scripts/.*\.lua$ ]]; then
-    return 0
-  fi
-  if [[ "$path" =~ ^tests/.*\.lua$ ]]; then
-    return 0
-  fi
-  return 1
-}
-
-# Scope predicates mirror scripts/ci/source_scope.py: any path with a tests
-# segment is test scope. Explicit absolute paths default to production while
-# tracked paths additionally require a production root. Production annotation
-# rules apply only to production scope; diagnostic directives are rejected
-# everywhere except the single narrow test-only form.
+# Scope mirror for scripts/ci/source_scope.py: any path with a tests
+# segment is test scope. Relative production roots stay production;
+# scripts/tools/.github roots are tooling; other data/ sources are
+# reference; generated data and everything else is outside policy.
 policy_scope_for_path() {
   local path="$1"
   if [[ "$path" == *"/tests/"* ]] || [[ "$path" == tests/* ]]; then
     echo "test"
-  elif [[ "$path" == /* ]] && [[ "$path" == *.lua ]]; then
-    echo "production"
+  elif [[ "$path" == /* ]]; then
+    if [[ "$path" == *.lua ]]; then
+      echo "production"
+    else
+      echo "other"
+    fi
   elif [[ "$path" =~ ^(app|game|gen4|libs|romdump)/.*\.lua$ ]]; then
     echo "production"
+  elif [[ "$path" =~ ^(scripts|tools)/.*\.lua$ ]] || [[ "$path" =~ ^\.github/.*\.lua$ ]]; then
+    echo "tooling"
+  elif [[ "$path" == data/generated/* ]]; then
+    echo "other"
+  elif [[ "$path" =~ ^data/.*\.lua$ ]]; then
+    echo "reference"
   else
     echo "other"
   fi
@@ -212,17 +195,23 @@ check_tracked_scope() {
   local line
   local scope
   while IFS= read -r line; do
-    if [[ "$line" =~ \.lua$ ]] && is_first_party_lua "$line"; then
-      [ -r "$line" ] || continue
+    if [[ "$line" =~ \.lua$ ]]; then
       scope="$(policy_scope_for_path "$line")"
-      if [ "$scope" = "test" ]; then
-        check_diagnostic_directive_file "$line" "test"
-      elif [ "$scope" = "production" ]; then
-        check_diagnostic_directive_file "$line" "production"
-        check_production_annotation_policy_file "$line"
-      else
-        check_diagnostic_directive_file "$line" "production"
-      fi
+      case "$scope" in
+        test)
+          [ -r "$line" ] || continue
+          check_diagnostic_directive_file "$line" "test"
+          ;;
+        production)
+          [ -r "$line" ] || continue
+          check_diagnostic_directive_file "$line" "production"
+          check_production_annotation_policy_file "$line"
+          ;;
+        reference|tooling)
+          [ -r "$line" ] || continue
+          check_diagnostic_directive_file "$line" "$scope"
+          ;;
+      esac
     fi
     if [[ "$line" =~ ^game/src/.*\.lua$ ]] || [[ "$line" =~ ^game/hgss/src/.*\.lua$ ]] || [[ "$line" =~ ^libs/[^/]+/src/.*\.lua$ ]] || [[ "$line" =~ ^romdump/src/.*\.lua$ ]]; then
       # A tracked file deleted from the working tree (a pending deletion)
@@ -238,6 +227,96 @@ check_tracked_scope() {
   done <<< "$tracked"
 }
 
+# Cached/index mode: validate stage-0 index blobs, never worktree content.
+# Enumerates staged paths NUL-delimited, materializes required files and
+# applicable staged Lua into a checker-owned snapshot, then reuses the
+# existing check_* functions with logical repository-relative paths.
+run_cached_mode() {
+  local snapshot_root staged_list path scope staged_path required
+  local -a staged_lua
+  staged_lua=()
+  snapshot_root="$(mktemp -d)"
+  staged_list="$(mktemp)"
+  trap "rm -rf \"$snapshot_root\" \"$staged_list\"" EXIT
+  if ! git diff --cached --name-only --diff-filter=ACDMR -z >"$staged_list"; then
+    violation "cannot enumerate staged index paths"
+    exit "$fail"
+  fi
+  for required in ".luarc.json" \
+    "libs/nds/src/nitro/g3d/Nsbmd.lua" \
+    "romdump/src/digest/model/MaterialCompiler.lua" \
+    "romdump/src/digest/model/MeshCompiler.lua" \
+    "libs/nds/src/love/GxRenderer.lua" \
+    "libs/nds/src/love/shaders/map.glsl"; do
+    mkdir -p "$snapshot_root/$(dirname "$required")"
+    if ! git show ":$required" >"$snapshot_root/$required" 2>/dev/null; then
+      violation "staged $required is missing or unreadable in the index"
+      rm -f "$snapshot_root/$required"
+    fi
+  done
+  while IFS= read -r -d '' path || [ -n "$path" ]; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      *.lua) ;;
+      *) continue ;;
+    esac
+    if [ -e "$snapshot_root/$path" ]; then
+      staged_lua+=("$path")
+      continue
+    fi
+    if ! git cat-file -e ":$path" 2>/dev/null; then
+      continue
+    fi
+    mkdir -p "$snapshot_root/$(dirname "$path")"
+    if ! git show ":$path" >"$snapshot_root/$path" 2>/dev/null; then
+      violation "cannot materialize staged file from the index: $path"
+      rm -f "$snapshot_root/$path"
+      continue
+    fi
+    staged_lua+=("$path")
+  done <"$staged_list"
+  rm -f "$staged_list"
+  cd "$snapshot_root"
+  check_luarc_policy
+  check_target_specific
+  if [ "${#staged_lua[@]}" -gt 0 ]; then
+    for staged_path in "${staged_lua[@]}"; do
+      scope="$(policy_scope_for_path "$staged_path")"
+      case "$scope" in
+        test)
+          check_diagnostic_directive_file "$staged_path" "test"
+          ;;
+        production)
+          check_diagnostic_directive_file "$staged_path" "production"
+          check_production_annotation_policy_file "$staged_path"
+          ;;
+        reference|tooling)
+          check_diagnostic_directive_file "$staged_path" "$scope"
+          ;;
+      esac
+      if [[ "$staged_path" =~ ^game/src/.*\.lua$ ]] || [[ "$staged_path" =~ ^game/hgss/src/.*\.lua$ ]] || [[ "$staged_path" =~ ^libs/[^/]+/src/.*\.lua$ ]]; then
+        check_terminal_output_file "$staged_path"
+      fi
+      if [[ "$staged_path" =~ ^game/src/.*\.lua$ ]] || [[ "$staged_path" =~ ^game/hgss/src/.*\.lua$ ]] || [[ "$staged_path" =~ ^libs/[^/]+/src/.*\.lua$ ]] || [[ "$staged_path" =~ ^romdump/src/.*\.lua$ ]]; then
+        if check_assigned_or_returned_anonymous_function_file "$staged_path"; then
+          violation "$staged_path uses an assigned or directly returned anonymous function form; name the function"
+        fi
+      fi
+    done
+  fi
+}
+
+for arg in "$@"; do
+  if [ "$arg" = "--cached" ]; then
+    if [ "$#" -ne 1 ]; then
+      echo "usage: check-invariants.sh --cached" >&2
+      exit 2
+    fi
+    run_cached_mode
+    exit "$fail"
+  fi
+done
+
 check_target_specific
 
 if [ "$#" -gt 0 ]; then
@@ -250,14 +329,18 @@ if [ "$#" -gt 0 ]; then
     fi
     if [[ "$path" =~ \.lua$ ]]; then
       scope="$(policy_scope_for_path "$path")"
-      if [ "$scope" = "test" ]; then
-        check_diagnostic_directive_file "$path" "test"
-      else
-        check_diagnostic_directive_file "$path" "production"
-        if [ "$scope" = "production" ]; then
+      case "$scope" in
+        test)
+          check_diagnostic_directive_file "$path" "test"
+          ;;
+        production)
+          check_diagnostic_directive_file "$path" "production"
           check_production_annotation_policy_file "$path"
-        fi
-      fi
+          ;;
+        reference|tooling)
+          check_diagnostic_directive_file "$path" "$scope"
+          ;;
+      esac
     fi
   done
 else
