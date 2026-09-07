@@ -245,32 +245,27 @@ local function statusSelection(status)
   return nil
 end
 
--- Advances any deterministic transition clock the host or its controller
--- exposes. Hosts without a clock settle immediately.
+-- Advances the host's single deterministic tick: presentation first for the
+-- current snapshot, then the controller once with the resulting observation.
+-- The host owns the full tick, so stepping the controller a second time
+-- would double-advance transitions.
 local function settle(host, bound)
-  bound = bound or 64
+  bound = bound or 1024
   for _ = 1, bound do
-    local advanced = false
-    for _, name in ipairs({ "update", "updateFixed", "tick", "advance", "step" }) do
-      if type(host[name]) == "function" then
-        host[name](host)
-        advanced = true
-      end
-    end
-    local controller = host._controller
-    if controller ~= nil then
-      for _, name in ipairs({ "update", "tick", "updateFixed", "advance", "step" }) do
-        if type(controller[name]) == "function" then
-          controller[name](controller)
-          advanced = true
-        end
-      end
-    end
-    if not advanced then
+    if type(host.update) == "function" then
+      host:update(host)
+    else
       return
     end
     local status = hostStatus(host)
     if status ~= nil and status.done == true then
+      return
+    end
+    local controller = host._controller
+    if controller == nil then
+      return
+    end
+    if controller:snapshot().transition == "idle" then
       return
     end
   end
@@ -476,26 +471,27 @@ function T.pointer_follows_projected_balls_through_inspect_confirm_and_backout()
   host:dispose()
 end
 
-function T.transition_timing_matches_the_source_eight_step_boundary()
+function T.transitions_follow_source_semantic_boundaries()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
   local cacheFs = readyCacheFs()
   local cacheModule = assert(require(CACHE_MODULE))
   local manifest = assert(cacheFs:loadLua(cacheModule.manifestPath()))
-  local ticks = manifest.scene.timing.cameraTicks
-  Assert.equal(ticks, 8, "the manifest carries the eight-step camera boundary")
+  local timing = manifest.scene.timing
+  local turntable = manifest.scene.turntable
+  local expectedRotate = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
+  Assert.equal(expectedRotate, 240, "rotation spans one source slot step at the source rate")
   local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
-  Assert.equal(host._controller:snapshot().ticks, ticks, "the host steps on the source eight-step boundary")
 
   moveHost(host, "right")
   local rotated = 0
   while statusSelection(hostStatus(host)) == 0 do
     host:update()
     rotated = rotated + 1
-    Assert.isTrue(rotated <= ticks, "rotation settles within one source transition")
+    Assert.isTrue(rotated <= expectedRotate, "rotation settles within one source slot step")
   end
-  Assert.equal(rotated, ticks, "rotation lasts exactly the source transition")
+  Assert.equal(rotated, expectedRotate, "rotation lasts exactly the source slot step, not the camera window")
   Assert.equal(statusSelection(hostStatus(host)), 1, "a settled right step advances one ball")
 
   host:confirm()
@@ -504,18 +500,46 @@ function T.transition_timing_matches_the_source_eight_step_boundary()
   while host._controller:snapshot().selectionState ~= "confirm" do
     host:update()
     zoomed = zoomed + 1
-    Assert.isTrue(zoomed <= 2 * ticks, "the zoom path settles within two manifest transitions")
+    Assert.isTrue(
+      zoomed <= timing.smallWobbleFrame + timing.cameraTicks + 1,
+      "the zoom path settles once the camera, arc, and wobble are ready"
+    )
   end
-  Assert.equal(zoomed, 2 * ticks, "zoom and wait last exactly two manifest transitions")
+  Assert.isTrue(zoomed > timing.cameraTicks, "camera and arc completion alone never confirm")
+
+  host:cancel()
+  local backedOut = 0
+  while host._controller:snapshot().selectionState ~= "inspect" do
+    host:update()
+    backedOut = backedOut + 1
+    Assert.isTrue(backedOut <= timing.cameraTicks, "back-out settles within the source return steps")
+  end
+  Assert.equal(backedOut, timing.cameraTicks, "back-out lasts exactly the source return steps")
+  Assert.equal(statusSelection(hostStatus(host)), 1, "backing out preserves the inspected ball")
+
+  host:confirm()
+  local rezoomed = 0
+  while host._controller:snapshot().selectionState ~= "confirm" do
+    host:update()
+    rezoomed = rezoomed + 1
+    Assert.isTrue(rezoomed <= timing.smallWobbleFrame + timing.cameraTicks + 1, "the second zoom path settles")
+  end
 
   host:confirm()
   local locked = 0
   while not hostStatus(host).done do
     host:update()
     locked = locked + 1
-    Assert.isTrue(locked <= ticks, "the lock settles within one manifest transition")
+    Assert.isTrue(
+      locked <= timing.infoFadeTicks + timing.machineFadeTicks,
+      "the lock settles within the sequential fade windows"
+    )
   end
-  Assert.equal(locked, ticks, "the lock lasts exactly the manifest transition")
+  Assert.equal(
+    locked,
+    timing.infoFadeTicks + timing.machineFadeTicks,
+    "the lock lasts exactly the info fade then the machine fade"
+  )
   Assert.deepEqual(hostStatus(host), { done = true, index = 1 }, "the settled lock reports the second candidate")
   host:close()
   host:dispose()
@@ -571,6 +595,61 @@ function T.resize_reprojects_hit_testing_without_reselecting()
     balls = balls + 1
   end
   Assert.equal(balls, 3, "the resized scene exposes all three ball hit regions")
+  host:close()
+  host:dispose()
+end
+
+function T.final_lock_publishes_result_only_after_sequential_fade_ticks()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local cacheFs = readyCacheFs()
+  local timing = assert(cacheFs:loadLua(assert(require(CACHE_MODULE)).manifestPath())).scene.timing
+  local infoTicks = assert(timing.infoFadeTicks, "the manifest carries the info fade boundary")
+  local machineTicks = assert(timing.machineFadeTicks, "the manifest carries the machine fade boundary")
+  local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
+
+  -- The host is the only stepper here: it already advances the controller
+  -- transition clocks once per fixed tick, so stepping the controller again
+  -- would double-advance transitions.
+  local function stepUntil(predicate, bound)
+    for _ = 1, bound do
+      host:update()
+      if predicate() then
+        return true
+      end
+    end
+    return false
+  end
+
+  moveHost(host, "right")
+  Assert.isTrue(
+    stepUntil(function()
+      return statusSelection(hostStatus(host)) == 1
+    end, 512),
+    "rotation settles on the second candidate"
+  )
+  host:confirm()
+  host:confirm()
+  Assert.isTrue(
+    stepUntil(function()
+      return host._controller:snapshot().selectionState == "confirm"
+    end, 512),
+    "the zoom path settles into confirmation"
+  )
+  host:confirm()
+  local exitTicks = 0
+  while not hostStatus(host).done do
+    host:update()
+    exitTicks = exitTicks + 1
+    Assert.isTrue(exitTicks <= infoTicks + machineTicks, "the lock reports within the sequential fade windows")
+  end
+  Assert.equal(
+    exitTicks,
+    infoTicks + machineTicks,
+    "the result publishes only after the info fade and the machine fade complete in sequence"
+  )
+  Assert.deepEqual(hostStatus(host), { done = true, index = 1 }, "the settled lock reports the second candidate")
   host:close()
   host:dispose()
 end

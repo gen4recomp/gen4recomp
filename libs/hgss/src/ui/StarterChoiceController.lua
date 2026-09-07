@@ -1,27 +1,27 @@
 -- Pure retail starter-choice state machine. It owns the three-ball cursor,
--- the unconfirmed/inspected/confirmed selection states, and the timed
+-- the unconfirmed/inspected/confirmed selection states, and the semantic
 -- application transitions between them (turntable rotation, camera zoom and
--- wait, zoom reversal, and the locking exit), while leaving geometry,
--- rendering, and device input mapping to its callers. Activation first
--- inspects the current ball, then starts the zoom path that settles into
--- confirmation, then locks the choice; cancellation only reverses an idle
+-- wobble wait, zoom reversal, and the locking exit), while leaving geometry,
+-- rendering, timing measurement, and device input mapping to its callers.
+-- Activation first inspects the current ball, then starts the zoom path that
+-- settles into confirmation once the selected ball reaches its small-wobble
+-- phase, then locks the choice; cancellation only reverses an idle
 -- confirmation back to inspection and never dismisses the application.
 -- Left/right rotate one step while unconfirmed and idle; any input that
 -- would conflict with an active transition is ignored exactly once, so
 -- repeated edges during a transition can never double-advance or corrupt
--- the clocks. Pointer capture commits only on a matching release: tapping
+-- the choice. Pointer capture commits only on a matching release: tapping
 -- the current ball advances, tapping another ball rotates toward it (or
 -- backs out of confirmation), and tapping outside backs out of confirmation.
--- The transition length comes in through the constructor so generated timing
--- stays with the asset contract; the controller itself stays asset-free.
+-- Transition completion arrives as a semantic observation from the playback
+-- owner: the controller never measures elapsed ticks itself and stays
+-- asset-free.
 
 ---@class StarterChoiceController
 ---@field _selection integer zero-based current ball
 ---@field _selectionState "null"|"inspect"|"confirm"
 ---@field _transition "idle"|"rotate"|"zoomIn"|"waitZoom"|"backOut"|"lockExit"|"done"
 ---@field _direction "left"|"right"|nil pending rotation direction while rotating
----@field _progress integer elapsed ticks in the active transition
----@field _ticks integer ticks per transition, supplied by the caller
 ---@field _done boolean the locking exit has settled
 ---@field _result { index: integer }|nil one-shot semantic result
 ---@field _pressed integer|nil pointer capture
@@ -47,7 +47,14 @@ end
 ---@class StarterChoiceController.Spec
 ---@field candidates string[] exactly three candidate display names
 ---@field initialCursor integer? zero-based starting candidate
----@field transitionTicks integer? ticks per transition, supplied by the caller
+
+---@class StarterChoiceController.Observation
+---@field rotationComplete boolean
+---@field cameraComplete boolean
+---@field ballArcComplete boolean
+---@field smallWobbleReady boolean
+---@field infoFadeComplete boolean
+---@field machineFadeComplete boolean
 
 ---@param spec StarterChoiceController.Spec
 ---@return StarterChoiceController
@@ -59,23 +66,13 @@ function StarterChoiceController.new(spec)
     initialCursor = 0
   end
   assertCandidateIndex(initialCursor)
-  local ticks = spec.transitionTicks
-  if ticks == nil then
-    -- Default for the pure-unit shape; production compositions supply the
-    -- generated manifest value through this same input.
-    ticks = 8
-  end
-  assert(
-    type(ticks) == "number" and ticks == math.floor(ticks) and ticks >= 1,
-    "starter transitions need a positive tick count"
-  )
+  local legacy = (spec --[[@as table]]).transitionTicks
+  assert(legacy == nil, "starter transitions complete on semantic observations, not a tick count")
   return setmetatable({
     _selection = initialCursor,
     _selectionState = "null",
     _transition = "idle",
     _direction = nil,
-    _progress = 0,
-    _ticks = ticks,
     _done = false,
     _result = nil,
     _pressed = nil,
@@ -97,50 +94,67 @@ end
 function StarterChoiceController:_begin(transition, direction)
   self._transition = transition
   self._direction = direction
-  self._progress = 0
   self._pressed = nil
 end
 
 function StarterChoiceController:_settleIdle()
   self._transition = "idle"
   self._direction = nil
-  self._progress = 0
   self._pressed = nil
 end
 
--- One deterministic fixed tick. Each timed transition settles on its own:
--- rotation applies the pending step, the zoom path pauses through its wait
--- before reaching confirmation, reversal returns to inspection, and the
--- locking exit publishes the result exactly once.
-function StarterChoiceController:update()
+---@param observation StarterChoiceController.Observation
+---@param field string
+---@return boolean
+local function requireFlag(observation, field)
+  assert(type(observation) == "table", "starter transitions require their completion observation")
+  assert(type(observation[field]) == "boolean", "starter observation carries " .. field .. " as a boolean")
+  return observation[field]
+end
+
+-- One deterministic fixed tick. Each transition settles only on its own
+-- semantic completion: rotation on the turntable step, the zoom path on the
+-- camera/arc clocks then the small-wobble phase, reversal on the return
+-- clocks, and the locking exit on the final machine fade. Unrelated
+-- observation flags are ignored; an empty observation never completes.
+---@param observation StarterChoiceController.Observation
+function StarterChoiceController:update(observation)
   local transition = self._transition
   if transition == "idle" or transition == "done" then
     return
   end
-  self._progress = self._progress + 1
-  if self._progress < self._ticks then
-    return
-  end
   if transition == "rotate" then
-    local delta = self._direction == "right" and 1 or -1
-    self._selection = (self._selection + delta) % CANDIDATE_COUNT
-    self:_settleIdle()
+    if requireFlag(observation, "rotationComplete") then
+      local delta = self._direction == "right" and 1 or -1
+      self._selection = (self._selection + delta) % CANDIDATE_COUNT
+      self:_settleIdle()
+    end
   elseif transition == "zoomIn" then
-    self._transition = "waitZoom"
-    self._progress = 0
-    self._pressed = nil
+    local cameraReady = requireFlag(observation, "cameraComplete")
+    local arcReady = requireFlag(observation, "ballArcComplete")
+    if cameraReady and arcReady then
+      self._transition = "waitZoom"
+      self._pressed = nil
+    end
   elseif transition == "waitZoom" then
-    self._selectionState = "confirm"
-    self:_settleIdle()
+    if requireFlag(observation, "smallWobbleReady") then
+      self._selectionState = "confirm"
+      self:_settleIdle()
+    end
   elseif transition == "backOut" then
-    self._selectionState = "inspect"
-    self:_settleIdle()
+    local cameraReady = requireFlag(observation, "cameraComplete")
+    local arcReady = requireFlag(observation, "ballArcComplete")
+    if cameraReady and arcReady then
+      self._selectionState = "inspect"
+      self:_settleIdle()
+    end
   elseif transition == "lockExit" then
-    self._transition = "done"
-    self._progress = 0
-    self._pressed = nil
-    self._done = true
-    self._result = { index = self._selection }
+    if requireFlag(observation, "machineFadeComplete") then
+      self._transition = "done"
+      self._pressed = nil
+      self._done = true
+      self._result = { index = self._selection }
+    end
   else
     error("unknown starter transition " .. tostring(transition), 0)
   end
@@ -282,8 +296,6 @@ end
 ---@field selectionState "null"|"inspect"|"confirm"
 ---@field transition "idle"|"rotate"|"zoomIn"|"waitZoom"|"backOut"|"lockExit"|"done"
 ---@field direction "left"|"right"|nil
----@field progress integer elapsed ticks in the active transition
----@field ticks integer ticks per transition
 ---@field done boolean
 ---@field result { index: integer }|nil once the lock settles
 
@@ -298,8 +310,6 @@ function StarterChoiceController:snapshot()
     selectionState = self._selectionState,
     transition = self._transition,
     direction = self._direction,
-    progress = self._progress,
-    ticks = self._ticks,
     done = self._done,
     result = result,
   }

@@ -181,20 +181,30 @@ function StarterChoiceState:close()
   self._doneIndex = nil
 end
 
--- One deterministic application tick: advances the controller transition
--- clocks and the presentation animation/camera clocks from the controller
--- snapshot. The field runtime steps this once per fixed tick while the
--- modal is open; ignored transitions stay settled without input.
+-- One deterministic application tick: the presentation advances one source
+-- tick for the controller's current snapshot and reports its completion
+-- observation, then the controller consumes that observation once. The field
+-- runtime steps this once per fixed tick while the modal is open; ignored
+-- transitions stay settled without input. An all-false observation never
+-- completes a transition, so a missing presentation stalls rather than
+-- settling.
+local EMPTY_OBSERVATION = {
+  rotationComplete = false,
+  cameraComplete = false,
+  ballArcComplete = false,
+  smallWobbleReady = false,
+  infoFadeComplete = false,
+  machineFadeComplete = false,
+}
+
 function StarterChoiceState:update()
   local controller = self._controller
   if controller == nil then
     return
   end
-  controller:update()
-  local presentation = self._presentation
-  if presentation ~= nil then
-    presentation:update(controller:snapshot())
-  end
+  local snapshot = controller:snapshot()
+  local observation = self._presentation and self._presentation:update(snapshot) or EMPTY_OBSERVATION
+  controller:update(observation)
 end
 
 ---@return { done: boolean, cursor: integer?, index: integer? }|nil

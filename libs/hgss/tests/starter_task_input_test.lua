@@ -72,7 +72,17 @@ local function controllerHost()
   end
   function host:update()
     if self.controller ~= nil then
-      self.controller:update()
+      -- The fake owns no playback clocks, so it settles transitions with an
+      -- all-complete observation, mirroring a presentation whose every gate
+      -- has opened. Production hosts supply the real per-tick observation.
+      self.controller:update({
+        rotationComplete = true,
+        cameraComplete = true,
+        ballArcComplete = true,
+        smallWobbleReady = true,
+        infoFadeComplete = true,
+        machineFadeComplete = true,
+      })
     end
   end
   function host:status()

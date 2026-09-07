@@ -102,22 +102,33 @@ local function assertNoLegacyConfirmation(snap, label)
   )
 end
 
--- Runs any deterministic phase-completion hook the controller exposes until
--- the snapshot stops changing or the bound is reached. Controllers without a
--- clock hook settle immediately.
+-- Runs the controller's observation gate until the snapshot stops changing
+-- or the bound is reached. Every observation flag reads complete, so each
+-- transition settles on its own predicate; controllers without an update
+-- hook settle immediately.
 local function settle(controller, bound)
   bound = bound or 64
-  local tickers = { "update", "tick", "updateFixed", "advance", "step" }
+  local complete = {
+    rotationComplete = true,
+    cameraComplete = true,
+    ballArcComplete = true,
+    smallWobbleReady = true,
+    infoFadeComplete = true,
+    machineFadeComplete = true,
+  }
   for _ = 1, bound do
     local before = snapshot(controller)
-    local advanced = false
-    for _, name in ipairs(tickers) do
-      if type(controller[name]) == "function" then
-        controller[name](controller)
-        advanced = true
-      end
-    end
-    if not advanced then
+    if type(controller.update) == "function" then
+      controller:update(complete)
+    elseif type(controller.tick) == "function" then
+      controller:tick()
+    elseif type(controller.updateFixed) == "function" then
+      controller:updateFixed()
+    elseif type(controller.advance) == "function" then
+      controller:advance()
+    elseif type(controller.step) == "function" then
+      controller:step()
+    else
       return
     end
     local after = snapshot(controller)
@@ -314,6 +325,165 @@ function T.pointer_outside_backs_out_only_from_confirmation()
   Assert.isFalse(isDone(controller, backedOut), "backing out returns without publishing")
   Assert.equal(selectionIndex(backedOut), 0, "backing out preserves the inspected ball")
   assertNoLegacyConfirmation(backedOut, "the backed-out chooser")
+end
+
+function T.confirm_requires_small_wobble_readiness_beyond_camera_and_arc()
+  local controller = openController(0)
+  Assert.isNil(controller:confirm(), "first activation inspects instead of publishing")
+  Assert.isNil(controller:confirm(), "second activation starts the zoom path, not the lock")
+
+  -- The camera and ball arc may both report complete while the selected ball
+  -- is still in its large rock: confirmation must wait for the small-wobble
+  -- phase. Unrelated completion flags stay false so the gate cannot be
+  -- satisfied by an aggregate tick count.
+  local waiting = {
+    rotationComplete = false,
+    cameraComplete = true,
+    ballArcComplete = true,
+    smallWobbleReady = false,
+    infoFadeComplete = false,
+    machineFadeComplete = false,
+  }
+  for _ = 1, 8 do
+    controller:update(waiting)
+  end
+  local zooming = snapshot(controller)
+  Assert.isFalse(isDone(controller, zooming), "the zoom path settles only on its own completion")
+  Assert.isTrue(
+    zooming.selectionState ~= "confirm",
+    "camera and arc completion alone must not confirm before the small wobble"
+  )
+  for _ = 1, 8 do
+    controller:update(waiting)
+  end
+  local stillWaiting = snapshot(controller)
+  Assert.isFalse(isDone(controller, stillWaiting), "waiting on the wobble never publishes")
+  Assert.isTrue(
+    stillWaiting.selectionState ~= "confirm",
+    "a second elapsed camera window still must not confirm a large rock"
+  )
+  Assert.equal(selectionIndex(stillWaiting), 0, "waiting preserves the inspected ball")
+
+  local ready = {
+    rotationComplete = false,
+    cameraComplete = true,
+    ballArcComplete = true,
+    smallWobbleReady = true,
+    infoFadeComplete = false,
+    machineFadeComplete = false,
+  }
+  local confirmed = nil
+  for _ = 1, 16 do
+    controller:update(ready)
+    confirmed = snapshot(controller)
+    if confirmed.selectionState == "confirm" then
+      break
+    end
+  end
+  Assert.notNil(confirmed, "the zoom path reports its state")
+  Assert.equal(confirmed.selectionState, "confirm", "the small wobble releases confirmation")
+  Assert.equal(selectionIndex(confirmed), 0, "confirmation preserves the inspected ball")
+end
+
+function T.transitions_ignore_unrelated_observations_and_repeated_false_updates()
+  local controller = openController(0)
+  rotate(controller, "right")
+  local unrelated = {
+    rotationComplete = false,
+    cameraComplete = true,
+    ballArcComplete = true,
+    smallWobbleReady = true,
+    infoFadeComplete = true,
+    machineFadeComplete = true,
+  }
+  for _ = 1, 16 do
+    controller:update(unrelated)
+  end
+  Assert.equal(
+    selectionIndex(snapshot(controller)),
+    0,
+    "rotation waits for its own completion despite every unrelated flag"
+  )
+  local completing = {
+    rotationComplete = true,
+    cameraComplete = false,
+    ballArcComplete = false,
+    smallWobbleReady = false,
+    infoFadeComplete = false,
+    machineFadeComplete = false,
+  }
+  controller:update(completing)
+  Assert.equal(selectionIndex(snapshot(controller)), 1, "rotation settles on its own completion")
+
+  Assert.isNil(controller:confirm(), "first activation inspects instead of publishing")
+  Assert.isNil(controller:confirm(), "second activation starts the zoom path, not the lock")
+  local zoomUnrelated = {
+    rotationComplete = true,
+    cameraComplete = true,
+    ballArcComplete = false,
+    smallWobbleReady = true,
+    infoFadeComplete = true,
+    machineFadeComplete = true,
+  }
+  for _ = 1, 8 do
+    controller:update(zoomUnrelated)
+  end
+  local zooming = snapshot(controller)
+  Assert.equal(zooming.transition, "zoomIn", "the zoom path waits for both the camera and the ball arc")
+  local arcReady = {
+    rotationComplete = true,
+    cameraComplete = true,
+    ballArcComplete = true,
+    smallWobbleReady = false,
+    infoFadeComplete = true,
+    machineFadeComplete = true,
+  }
+  controller:update(arcReady)
+  Assert.equal(snapshot(controller).transition, "waitZoom", "camera and arc together release the zoom step")
+  for _ = 1, 8 do
+    controller:update(arcReady)
+  end
+  Assert.equal(
+    snapshot(controller).selectionState,
+    "inspect",
+    "repeated wobble-false updates never confirm on unrelated flags"
+  )
+  local wobbleOnly = {
+    rotationComplete = false,
+    cameraComplete = false,
+    ballArcComplete = false,
+    smallWobbleReady = true,
+    infoFadeComplete = false,
+    machineFadeComplete = false,
+  }
+  controller:update(wobbleOnly)
+  Assert.equal(snapshot(controller).selectionState, "confirm", "the wobble alone releases confirmation")
+
+  Assert.isNil(controller:confirm(), "final activation starts the lock, not the report")
+  local earlyFade = {
+    rotationComplete = true,
+    cameraComplete = true,
+    ballArcComplete = true,
+    smallWobbleReady = true,
+    infoFadeComplete = true,
+    machineFadeComplete = false,
+  }
+  for _ = 1, 8 do
+    controller:update(earlyFade)
+  end
+  Assert.isFalse(isDone(controller, snapshot(controller)), "the info fade alone never publishes the result")
+  local machineOnly = {
+    rotationComplete = false,
+    cameraComplete = false,
+    ballArcComplete = false,
+    smallWobbleReady = false,
+    infoFadeComplete = false,
+    machineFadeComplete = true,
+  }
+  controller:update(machineOnly)
+  local finished = snapshot(controller)
+  Assert.isTrue(isDone(controller, finished), "the machine fade completes the lock")
+  Assert.equal(resultIndex(controller, finished), 1, "the settled lock reports the confirmed ball")
 end
 
 return { tests = T }

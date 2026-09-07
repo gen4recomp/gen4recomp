@@ -49,15 +49,23 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _portraitQuads table[] portrait atlas quads per candidate slot once realized
 ---@field _clipNames { turntable: string, ballEffect: string, ballRock: string[], ballOpen: string } instance play names resolved from bindings
 ---@field _sceneRuntime table<string, unknown> minimal renderer scene state (edge colors, fog, flat lighting)
----@field _lastKey string? last snapshot key the playback state synced to
----@field _clockKey string? last snapshot key the platform clock synced to
----@field _clockTransition string? transition of the last clock sync
+---@field _entryTransition string? transition of the last semantic clock sync
 ---@field _cameraKey string? last snapshot key the camera matrices were built for
 ---@field _cameraView number[]? cached view matrix for the camera key
 ---@field _cameraProjection number[]? cached projection matrix for the camera key
----@field _turntableYaw number transitional turntable rotation, zero at rest
----@field _rotateFrom number yaw at the active rotation's entry
 ---@field _rotateSign number rotation direction sign while rotating
+---@field _rotationAccum number turntable degrees accumulated in the active rotation
+---@field _cameraStep integer camera interpolation steps taken in the active zoom path
+---@field _arcStep integer selected ball arc steps taken in the active zoom path
+---@field _lockCameraStep integer camera-out steps taken in the active lock exit
+---@field _rockFrame integer selected ball rock frames advanced since inspect entry
+---@field _rockSelection integer? selection the rock frame belongs to, nil while rock is inactive
+---@field _infoFade integer info-surface white fade ticks in the active lock exit
+---@field _machineFade integer machine-surface white fade ticks after the info fade
+---@field _openFrame integer selected ball-open frames advanced in the active lock exit
+---@field _effectFrame integer ball-effect frames advanced in the active lock exit
+---@field _rockPlayingFor integer? selection the realized rock clip plays for, nil when unrealized/inactive
+---@field _exitPlaying boolean the realized open/effect clips play for the active lock exit
 local StarterChoicePresentation = {}
 StarterChoicePresentation.__index = StarterChoicePresentation
 
@@ -176,29 +184,48 @@ function StarterChoicePresentation.new(opts)
     _portraitQuads = {},
     _clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" },
     _sceneRuntime = {},
-    _lastKey = nil,
-    _clockKey = nil,
-    _clockTransition = nil,
+    _entryTransition = nil,
     _cameraKey = nil,
     _cameraView = nil,
     _cameraProjection = nil,
-    _turntableYaw = 0,
-    _rotateFrom = 0,
     _rotateSign = 0,
+    _rotationAccum = 0,
+    _cameraStep = 0,
+    _arcStep = 0,
+    _lockCameraStep = 0,
+    _rockFrame = 0,
+    _rockSelection = nil,
+    _infoFade = 0,
+    _machineFade = 0,
+    _openFrame = 0,
+    _effectFrame = 0,
+    _rockPlayingFor = nil,
+    _exitPlaying = false,
   }, StarterChoicePresentation)
   return self
 end
 
--- Clears transition/playback bookkeeping for a fresh open. Instances are
--- per-presentation, so a reset presentation starts with the camera outside
--- and no clip playing.
+-- Clears every semantic playback clock for a fresh open. Instances are
+-- per-presentation, so a reset presentation starts with the camera outside,
+-- no clip playing, and no fade covering either surface.
 function StarterChoicePresentation:reset()
-  self._lastKey = nil
-  self._clockKey = nil
-  self._clockTransition = nil
-  self._turntableYaw = 0
-  self._rotateFrom = 0
+  self._entryTransition = nil
+  self._cameraKey = nil
+  self._cameraView = nil
+  self._cameraProjection = nil
   self._rotateSign = 0
+  self._rotationAccum = 0
+  self._cameraStep = 0
+  self._arcStep = 0
+  self._lockCameraStep = 0
+  self._rockFrame = 0
+  self._rockSelection = nil
+  self._infoFade = 0
+  self._machineFade = 0
+  self._openFrame = 0
+  self._effectFrame = 0
+  self._rockPlayingFor = nil
+  self._exitPlaying = false
 end
 
 ---@param width number
@@ -239,21 +266,47 @@ function StarterChoicePresentation:toMachineReference(x, y)
   return (x - machine.x) / machine.width * reference.width, (y - machine.y) / machine.height * reference.height
 end
 
--- Interpolated camera pose for a controller snapshot: the zoom/wait path
--- dollies from the outside pose to the inside pose, reversal returns, and
--- the locking exit holds inside.
+-- Interpolated camera pose for the current semantic clocks: the zoom path
+-- dollies from the outside pose to the inside pose over the source camera
+-- steps, reversal returns over the same steps, confirmation holds inside,
+-- and the locking exit dollies back out over its own camera-out steps.
 ---@param snapshot StarterChoiceController.Snapshot
 ---@return number 0..1
-local function cameraProgress(snapshot)
-  local ticks = snapshot.ticks
+function StarterChoicePresentation:_cameraAlpha(snapshot)
+  local cameraTicks = self._manifest.scene.timing.cameraTicks
   if snapshot.transition == "zoomIn" then
-    return math.min(1, snapshot.progress / ticks)
+    return math.min(1, self._cameraStep / cameraTicks)
   end
   if snapshot.transition == "waitZoom" then
     return 1
   end
   if snapshot.transition == "backOut" then
-    return 1 - math.min(1, snapshot.progress / ticks)
+    return 1 - math.min(1, self._cameraStep / cameraTicks)
+  end
+  if snapshot.transition == "lockExit" or snapshot.transition == "done" then
+    return 1 - math.min(1, self._lockCameraStep / cameraTicks)
+  end
+  if snapshot.selectionState == "confirm" then
+    return 1
+  end
+  return 0
+end
+
+-- Selected ball X-arc for the current semantic clocks: in over the source
+-- ball-arc steps with the camera, held inside through confirmation and the
+-- lock exit, and back out with reversal.
+---@param snapshot StarterChoiceController.Snapshot
+---@return number 0..1
+function StarterChoicePresentation:_arcAlpha(snapshot)
+  local ballArcTicks = self._manifest.scene.timing.ballArcTicks
+  if snapshot.transition == "zoomIn" then
+    return math.min(1, self._arcStep / ballArcTicks)
+  end
+  if snapshot.transition == "waitZoom" then
+    return 1
+  end
+  if snapshot.transition == "backOut" then
+    return 1 - math.min(1, self._arcStep / ballArcTicks)
   end
   if snapshot.selectionState == "confirm" then
     return 1
@@ -295,14 +348,14 @@ function StarterChoicePresentation:cameraMatrices(snapshot)
     .. "|"
     .. tostring(snapshot.selection)
     .. "|"
-    .. tostring(snapshot.progress)
+    .. tostring(self._cameraStep)
     .. "|"
-    .. tostring(snapshot.ticks)
+    .. tostring(self._lockCameraStep)
     .. "|"
     .. tostring(snapshot.direction)
   if key ~= self._cameraKey then
     local camera = self._manifest.scene.camera
-    local pose = interpolatePose(camera.out, camera.inside, cameraProgress(snapshot))
+    local pose = interpolatePose(camera.out, camera.inside, self:_cameraAlpha(snapshot))
     local pitch = math.rad(pose.angleX)
     local target = pose.target
     local eye = {
@@ -644,105 +697,233 @@ local function stopBallClips(instance, presentation)
   end
 end
 
--- Map the controller snapshot onto clip playback and the turntable clock.
--- The platform clock syncs from the snapshot alone (so drawing and hit
--- testing agree even before the next update), while clip edges fire only
--- from update/draw paths. Edges trigger once per entry: repeated updates
--- with an unchanged snapshot never replay a clip.
+-- Whether the selected ball rocks under a snapshot: throughout inspection
+-- (idle, rotating, zooming, waiting) and while confirmation idles. Reversal,
+-- the lock exit, and the uninspected chooser park every ball at baseline.
 ---@param snapshot StarterChoiceController.Snapshot
-function StarterChoicePresentation:_syncPlayback(snapshot)
-  self:_syncClock(snapshot)
-  local key = snapshot.transition .. "|" .. snapshot.selectionState .. "|" .. tostring(snapshot.selection)
-  if key ~= self._lastKey then
-    self._lastKey = key
-    if snapshot.transition == "zoomIn" then
-      local ball = self._instances[BALL_ROLES[snapshot.selection + 1]]
-      stopBallClips(ball, self)
-      ball:play(self._clipNames.ballRock[snapshot.selection + 1], { loopMode = "loop" })
-    elseif snapshot.transition == "lockExit" then
-      local ball = self._instances[BALL_ROLES[snapshot.selection + 1]]
-      stopBallClips(ball, self)
-      ball:play(self._clipNames.ballOpen, { loopMode = "once" })
-      local effect = self._instances.ballEffect
-      effect:stop(self._clipNames.ballEffect)
-      effect:play(self._clipNames.ballEffect, { loopMode = "once" })
-    elseif snapshot.transition == "backOut" then
-      for _, role in ipairs(BALL_ROLES) do
-        stopBallClips(self._instances[role], self)
-      end
-    elseif snapshot.transition == "idle" and snapshot.selectionState == "confirm" then
-      for _, role in ipairs(BALL_ROLES) do
-        stopBallClips(self._instances[role], self)
-      end
-    end
+---@return boolean
+local function rockActive(snapshot)
+  if snapshot.selectionState == "inspect" then
+    return snapshot.transition ~= "backOut" and snapshot.transition ~= "lockExit" and snapshot.transition ~= "done"
   end
+  return snapshot.selectionState == "confirm" and snapshot.transition == "idle"
 end
 
--- One turntable step per rotated ball: the manifest selection step spans a
--- third of the ring.
----@return number radians
-function StarterChoicePresentation:turntableStep()
-  return math.rad(self._manifest.scene.turntable.selectionStepDegrees)
-end
-
--- Platform clock: the transitional turntable yaw the snapshot displays.
--- Slots are selection-relative, so the settled yaw is always zero: rotation
--- entries start from zero, exits snap back to zero together with the slot
--- reassignment, and the yaw purely carries the visual travel between
--- assignments. The sign mirrors the source base rotation for the equivalent
--- selection change. Pure in the snapshot sequence, shared by drawing and
--- hit testing.
----@param snapshot StarterChoiceController.Snapshot
-function StarterChoicePresentation:_syncClock(snapshot)
-  local key = snapshot.transition
-    .. "|"
-    .. snapshot.selectionState
-    .. "|"
-    .. tostring(snapshot.selection)
-    .. "|"
-    .. tostring(snapshot.progress)
-    .. "|"
-    .. tostring(snapshot.ticks)
-  if key == self._clockKey then
+---@param attachment table<string, unknown>|nil live clip attachment
+---@param frames integer semantic frames to catch up
+local function fastForward(attachment, frames)
+  local player = attachment ~= nil and attachment.player or nil
+  if player == nil or type(frames) ~= "number" or frames <= 0 then
     return
   end
-  if self._clockTransition == "rotate" and snapshot.transition ~= "rotate" then
-    self._turntableYaw = 0
+  for _ = 1, frames do
+    if player.completed then
+      return
+    end
+    player:updateFixed()
   end
-  if snapshot.transition == "rotate" then
-    self._rotateFrom = 0
-    self._rotateSign = snapshot.direction == "left" and 1 or -1
-  end
-  self._clockKey = key
-  self._clockTransition = snapshot.transition
 end
 
--- Displayed platform yaw for a snapshot: interpolated through the active
--- rotation, settled otherwise. The balls ride the platform, so drawing and
--- hit testing apply this same yaw.
+-- Starts the clips a snapshot needs on the realized instances, exactly once
+-- per entry, without touching any semantic clock. Late realization
+-- fast-forwards each new player to the current semantic frame so headless
+-- progress and realized playback agree without replaying entry effects.
 ---@param snapshot StarterChoiceController.Snapshot
----@return number radians
-function StarterChoicePresentation:yawForSnapshot(snapshot)
-  self:_syncClock(snapshot)
-  if snapshot.transition == "rotate" then
-    return self._rotateFrom + self._rotateSign * (snapshot.progress / snapshot.ticks) * self:turntableStep()
-  end
-  return self._turntableYaw
-end
-
--- Advance every model clock one deterministic tick and sync clip playback to
--- the snapshot. A safe no-op before GPU realization so headless compositions
--- can settle transitions without graphics.
----@param snapshot StarterChoiceController.Snapshot
-function StarterChoicePresentation:update(snapshot)
-  assert(type(snapshot) == "table", "starter presentation update requires the controller snapshot")
+function StarterChoicePresentation:_syncRealized(snapshot)
   if not self._realized then
     return
   end
-  self:_syncPlayback(snapshot)
-  for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
-    self._instances[role]:updateFixed()
+  if self._instances.ball1 == nil then
+    return
   end
+  if rockActive(snapshot) then
+    if self._rockPlayingFor ~= snapshot.selection then
+      local selected = snapshot.selection + 1
+      for index, role in ipairs(BALL_ROLES) do
+        local instance = self._instances[role]
+        if instance ~= nil then
+          stopBallClips(instance, self)
+          if index == selected then
+            fastForward(instance:play(self._clipNames.ballRock[index], { loopMode = "loop" }), self._rockFrame)
+          end
+        end
+      end
+      local effect = self._instances.ballEffect
+      if effect ~= nil then
+        effect:stop(self._clipNames.ballEffect)
+      end
+      self._rockPlayingFor = snapshot.selection
+      self._exitPlaying = false
+    end
+    return
+  end
+  if snapshot.transition == "lockExit" or snapshot.transition == "done" then
+    if not self._exitPlaying then
+      local selected = snapshot.selection + 1
+      for index, role in ipairs(BALL_ROLES) do
+        local instance = self._instances[role]
+        if instance ~= nil then
+          stopBallClips(instance, self)
+          if index == selected then
+            fastForward(instance:play(self._clipNames.ballOpen, { loopMode = "once" }), self._openFrame)
+          end
+        end
+      end
+      local effect = self._instances.ballEffect
+      if effect ~= nil then
+        effect:stop(self._clipNames.ballEffect)
+        fastForward(effect:play(self._clipNames.ballEffect, { loopMode = "once" }), self._effectFrame)
+      end
+      self._exitPlaying = true
+      self._rockPlayingFor = nil
+    end
+    return
+  end
+  if self._rockPlayingFor ~= nil or self._exitPlaying then
+    for _, role in ipairs(BALL_ROLES) do
+      local instance = self._instances[role]
+      if instance ~= nil then
+        stopBallClips(instance, self)
+      end
+    end
+    local effect = self._instances.ballEffect
+    if effect ~= nil then
+      effect:stop(self._clipNames.ballEffect)
+    end
+    self._rockPlayingFor = nil
+    self._exitPlaying = false
+  end
+end
+
+-- Resets the clocks a newly entered transition owns. Selection and
+-- interaction-state changes inside one transition are left to the advance
+-- step, which restarts the rock frame when the inspected ball changes.
+---@param snapshot StarterChoiceController.Snapshot
+function StarterChoicePresentation:_detectEntry(snapshot)
+  if snapshot.transition == self._entryTransition then
+    return
+  end
+  if snapshot.transition == "rotate" then
+    self._rotationAccum = 0
+    self._rotateSign = snapshot.direction == "left" and 1 or -1
+  elseif snapshot.transition == "zoomIn" then
+    self._cameraStep = 0
+    self._arcStep = 0
+  elseif snapshot.transition == "backOut" then
+    self._cameraStep = 0
+    self._arcStep = 0
+  elseif snapshot.transition == "lockExit" then
+    self._lockCameraStep = 0
+    self._infoFade = 0
+    self._machineFade = 0
+    self._openFrame = 0
+    self._effectFrame = 0
+  end
+  if self._entryTransition == "rotate" and snapshot.transition ~= "rotate" then
+    self._rotationAccum = 0
+  end
+  self._entryTransition = snapshot.transition
+  self._cameraKey = nil
+end
+
+-- Advances every semantic clock one deterministic source tick for the
+-- snapshot that opened the tick. Rotation accumulates its source degrees,
+-- the zoom paths step their independent camera/arc clocks, the selected
+-- rock frame runs whenever the ball visibly rocks, and the lock exit steps
+-- ball-open/effect, the camera-out path, and the sequential surface fades.
+---@param snapshot StarterChoiceController.Snapshot
+function StarterChoicePresentation:_advance(snapshot)
+  local timing = self._manifest.scene.timing
+  local turntable = self._manifest.scene.turntable
+  local transition = snapshot.transition
+  if transition == "rotate" then
+    self._rotationAccum =
+      math.min(turntable.selectionStepDegrees, self._rotationAccum + turntable.rotationDegreesPerTick)
+  elseif transition == "zoomIn" then
+    self._cameraStep = math.min(timing.cameraTicks, self._cameraStep + 1)
+    self._arcStep = math.min(timing.ballArcTicks, self._arcStep + 1)
+  elseif transition == "backOut" then
+    self._cameraStep = math.min(timing.cameraTicks, self._cameraStep + 1)
+    self._arcStep = math.min(timing.ballArcTicks, self._arcStep + 1)
+  elseif transition == "lockExit" then
+    self._lockCameraStep = math.min(timing.cameraTicks, self._lockCameraStep + 1)
+    self._openFrame = self._openFrame + 1
+    self._effectFrame = self._effectFrame + 1
+    if self._infoFade < timing.infoFadeTicks then
+      self._infoFade = self._infoFade + 1
+    else
+      self._machineFade = math.min(timing.machineFadeTicks, self._machineFade + 1)
+    end
+  end
+  if rockActive(snapshot) then
+    if self._rockSelection ~= snapshot.selection then
+      self._rockFrame = 0
+      self._rockSelection = snapshot.selection
+    end
+    self._rockFrame = self._rockFrame + 1
+  else
+    self._rockFrame = 0
+    self._rockSelection = nil
+  end
+end
+
+-- Completion observation for the snapshot that opened the tick, from the
+-- clocks the advance step just settled. Fields the controller's current
+-- transition does not read are still populated; an all-false observation
+-- never completes any transition.
+---@param snapshot StarterChoiceController.Snapshot
+---@return { rotationComplete: boolean, cameraComplete: boolean, ballArcComplete: boolean, smallWobbleReady: boolean, infoFadeComplete: boolean, machineFadeComplete: boolean } observation
+function StarterChoicePresentation:_observation(snapshot)
+  local timing = self._manifest.scene.timing
+  local turntable = self._manifest.scene.turntable
+  local inZoomPath = snapshot.transition == "zoomIn" or snapshot.transition == "backOut"
+  return {
+    rotationComplete = snapshot.transition == "rotate" and self._rotationAccum >= turntable.selectionStepDegrees - 1e-9,
+    cameraComplete = inZoomPath and self._cameraStep >= timing.cameraTicks,
+    ballArcComplete = inZoomPath and self._arcStep >= timing.ballArcTicks,
+    smallWobbleReady = self._rockFrame >= timing.smallWobbleFrame,
+    infoFadeComplete = self._infoFade >= timing.infoFadeTicks,
+    machineFadeComplete = self._machineFade >= timing.machineFadeTicks,
+  }
+end
+
+-- Displayed platform yaw: the accumulated source rotation while the
+-- turntable travels, settled to zero otherwise. Slots are
+-- selection-relative, so the settled yaw is always zero: rotation exits snap
+-- back together with the slot reassignment, and the yaw purely carries the
+-- visual travel between assignments. Pure in the semantic clocks, shared by
+-- drawing and hit testing; it never advances a clock.
+---@param snapshot StarterChoiceController.Snapshot
+---@return number radians
+function StarterChoicePresentation:yawForSnapshot(snapshot)
+  if snapshot.transition == "rotate" then
+    return self._rotateSign * math.rad(self._rotationAccum)
+  end
+  return 0
+end
+
+-- Advances every semantic clock one deterministic tick for the snapshot that
+-- opened the tick, synchronizes realized model/fade objects to those clocks,
+-- and returns the completion observation for the controller. A safe,
+-- deterministic progression before GPU realization so headless compositions
+-- settle transitions without graphics; realized clips catch up to the same
+-- clocks without replaying entry effects.
+---@param snapshot StarterChoiceController.Snapshot
+---@return { rotationComplete: boolean, cameraComplete: boolean, ballArcComplete: boolean, smallWobbleReady: boolean, infoFadeComplete: boolean, machineFadeComplete: boolean } observation
+function StarterChoicePresentation:update(snapshot)
+  assert(type(snapshot) == "table", "starter presentation update requires the controller snapshot")
+  self:_detectEntry(snapshot)
+  self:_advance(snapshot)
+  if self._realized then
+    for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
+      local instance = self._instances[role]
+      if instance ~= nil then
+        instance:updateFixed()
+      end
+    end
+  end
+  self:_syncRealized(snapshot)
+  return self:_observation(snapshot)
 end
 
 -- Arcs a turntable-local point around the X axis by the inspect arc about
@@ -783,7 +964,7 @@ function StarterChoicePresentation:_drawItems(snapshot)
     }
   end
   local layout = self._manifest.scene.ballLayout
-  local arc = math.rad(layout.inspectArcDegrees * cameraProgress(snapshot))
+  local arc = math.rad(layout.inspectArcDegrees * self:_arcAlpha(snapshot))
   local selected = snapshot.selection + 1
   -- The balls ride the rotating platform: the platform yaw carries every
   -- slot origin, each ball keeps its slot Y orientation, and the inspected
@@ -858,6 +1039,24 @@ function StarterChoicePresentation:_drawSurfaceWindow(surface, box, message, tex
   graphics.pop()
 end
 
+-- Draws the sequential source white fade over one semantic surface from
+-- its fade clock. The info surface fades first, then the machine surface;
+-- either overlay is absent while its clock has not started. A read-only
+-- cover: it never advances a clock.
+---@param surface table<string, unknown> host rectangle of the logical surface
+---@param alpha number 0..1 white coverage
+function StarterChoicePresentation:_drawSurfaceFade(surface, alpha)
+  if alpha <= 0 then
+    return
+  end
+  if alpha > 1 then
+    alpha = 1
+  end
+  local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
+  graphics.setColor(1, 1, 1, alpha)
+  graphics.rectangle("fill", surface.x, surface.y, surface.width, surface.height)
+end
+
 -- Render one application frame: the chooser-owned host backdrop, the 3D
 -- machine under the interpolated camera on the machine surface with the
 -- bottom prompt beneath it, and the semantic message plus the inspected
@@ -875,7 +1074,7 @@ function StarterChoicePresentation:draw(snapshot, view, text)
     "starter presentation requires the window background color"
   )
   self:_ensureRealized()
-  self:_syncPlayback(snapshot)
+  self:_syncRealized(snapshot)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
   local backdrop = assert(self._backdropImage, "starter presentation owns no backdrop")
@@ -939,6 +1138,9 @@ function StarterChoicePresentation:draw(snapshot, view, text)
     graphics.draw(atlas, quad, PORTRAIT_SLOT.x, PORTRAIT_SLOT.y)
     graphics.pop()
   end
+  local timing = self._manifest.scene.timing
+  self:_drawSurfaceFade(self._info, self._infoFade / timing.infoFadeTicks)
+  self:_drawSurfaceFade(self._machine, self._machineFade / timing.machineFadeTicks)
   graphics.setColor(1, 1, 1, 1)
 end
 

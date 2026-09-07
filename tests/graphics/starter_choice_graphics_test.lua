@@ -112,7 +112,7 @@ local function hostStatus(host)
 end
 
 local function settle(host, bound)
-  bound = bound or 64
+  bound = bound or 512
   for _ = 1, bound do
     -- The production host owns the full tick: it advances the controller
     -- transition clocks and the presentation clocks together. Stepping the
@@ -280,15 +280,19 @@ function T.retail_scene_renders_rotates_and_confirms_through_production_composit
     Assert.isTrue(not isBallHit(hitAt(host, -1, -1)), versionId .. " outside points hit no ball")
 
     moveHost(host, "right")
-    -- The source ring is symmetric under a settled 120-degree step and the
+    -- The source ring is symmetric under a settled slot step and the
     -- balls are small on the machine, so travel is proved two ways through
     -- the real update+draw path: the projected slot centers permute across
     -- the settled step and ride the interpolated yaw mid-rotation, while the
     -- mid-rotation frame still moves pixels through the live render path.
+    -- Rotation lasts one source slot step at the source rate, not the
+    -- camera window.
     local presentation = assert(host._presentation, versionId .. " owns its presentation while open")
+    local turntable = assert(manifest.scene.turntable, versionId .. " scene carries the turntable facts")
+    local expectedRotate = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
     local before = presentation:ballCenters(host._controller:snapshot())
     if type(host.update) == "function" then
-      for _ = 1, 4 do
+      for _ = 1, expectedRotate / 2 do
         host:update(host)
       end
     end
@@ -296,7 +300,7 @@ function T.retail_scene_renders_rotates_and_confirms_through_production_composit
     Assert.equal(midSnapshot.transition, "rotate", versionId .. " rotation is still travelling mid-step")
     Assert.near(
       presentation:yawForSnapshot(midSnapshot),
-      -math.rad(120) / 2,
+      -math.rad(turntable.selectionStepDegrees) / 2,
       1e-9,
       versionId .. " halfway rotation interpolates half the selection step"
     )
@@ -497,10 +501,11 @@ function T.balls_ride_the_source_ring_with_separate_touch_centers(scope, context
     assertThreeDistinctCenters(centersBefore, versionId, "outside pose")
 
     -- Drive the rotation through the real update+draw path so the
-    -- presentation clock observes the turntable episode.
+    -- presentation clock observes the turntable episode. Rotation lasts one
+    -- source slot step at the source rate.
     scope:own(drawFrame(host, WIDE_WIDTH, WIDE_HEIGHT))
     moveHost(host, "right")
-    for _ = 1, 32 do
+    for _ = 1, 512 do
       if type(host.update) == "function" then
         host:update(host)
       end
@@ -688,6 +693,514 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
       versionId .. " portraits follow the actual candidate"
     )
     host:dispose()
+  end
+end
+
+local function stepHostUntil(host, predicate, bound)
+  for _ = 1, bound do
+    host:update()
+    if predicate() then
+      return true
+    end
+  end
+  return false
+end
+
+-- The live playback frame of one named clip on a realized model instance, or
+-- nil when the clip is not attached. Reads the existing player progress, so
+-- it observes real clip advancement rather than elapsed test ticks.
+---@param instance table realized model instance
+---@param clipName string
+---@param AnimationClip table
+---@return table?, number?
+local function liveClipFrame(instance, clipName, AnimationClip)
+  Assert.notNil(instance, "clip sampling requires the realized model instance")
+  local unit = assert(AnimationClip.FRAME_UNIT, "animation clips own the frame unit")
+  for _, category in ipairs({ "joint", "material" }) do
+    local attachments = instance.animationState:attachments(category)
+    for _, attachment in ipairs(attachments) do
+      if attachment.clip.name == clipName or attachment.clip.id == clipName then
+        return attachment, attachment.player.frameFx / unit
+      end
+    end
+  end
+  return nil, nil
+end
+
+local function selectedRockName(host, versionId)
+  local presentation = presentationOf(host, versionId)
+  local selection = snapshotOf(host, versionId).selection
+  return presentation,
+    selection,
+    assert(presentation._clipNames.ballRock[selection + 1], versionId .. " resolves the selected ball rock clip")
+end
+
+-- Mean channel brightness over the interior of a host surface rectangle.
+-- Coarse stride keeps full-frame sampling cheap; the inset avoids backdrop
+-- bleed at the surface edges.
+---@param image table love ImageData under test
+---@param rect { x: number, y: number, width: number, height: number } host surface rectangle
+---@param width number canvas width in host pixels
+---@param height number canvas height in host pixels
+---@return number mean channel brightness in 0..1
+local function regionMean(image, rect, width, height)
+  local x0 = math.max(0, math.floor(rect.x) + 6)
+  local x1 = math.min(width, math.ceil(rect.x + rect.width) - 6)
+  local y0 = math.max(0, math.floor(rect.y) + 6)
+  local y1 = math.min(height, math.ceil(rect.y + rect.height) - 6)
+  Assert.isTrue(x1 > x0 and y1 > y0, "fade sampling needs a non-degenerate surface region")
+  local sum, count = 0, 0
+  for y = y0, y1 - 1, 3 do
+    for x = x0, x1 - 1, 3 do
+      local red, green, blue = image:getPixel(x, y)
+      sum = sum + (red + green + blue) / 3
+      count = count + 1
+    end
+  end
+  Assert.isTrue(count > 0, "fade sampling reads surface pixels")
+  return sum / count
+end
+
+-- One realized frame without retaining the pixels: keeps every-tick
+-- realization cheap while the test samples only selected ticks.
+local function presentFrame(host, width, height)
+  local canvas = love.graphics.newCanvas(width, height)
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 1)
+  host:drawPresentation({
+    drawText = function() end,
+    windowBackgroundColor = function()
+      return { 0, 0, 0, 1 }
+    end,
+  }, width, height)
+  love.graphics.setCanvas()
+  canvas:release()
+end
+
+local function driveToConfirm(host, versionId, scope)
+  moveHost(host, "right")
+  Assert.isTrue(
+    stepHostUntil(host, function()
+      return snapshotOf(host, versionId).transition == "idle"
+    end, 1024),
+    versionId .. " rotation settles before inspection"
+  )
+  Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+  scope:own(drawFrame(host, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+  Assert.isNil(host:confirm(), versionId .. " second activation starts the zoom path, not the lock")
+  Assert.isTrue(
+    stepHostUntil(host, function()
+      return snapshotOf(host, versionId).selectionState == "confirm"
+    end, 1024),
+    versionId .. " the zoom path reaches confirmation"
+  )
+end
+
+function T.confirm_waits_for_small_wobble_frame_through_production_playback(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local timing = assert(manifest.scene.timing, versionId .. " scene carries the source timing boundaries")
+    local wobbleFrame = assert(timing.smallWobbleFrame, versionId .. " timing carries the small-wobble frame")
+    local cameraTicks = assert(timing.cameraTicks, versionId .. " timing carries the camera boundary")
+    local host = openProductionChoice(versionId, cacheFs, manifest)
+    moveHost(host, "right")
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        return snapshotOf(host, versionId).transition == "idle"
+      end, 1024),
+      versionId .. " rotation settles before inspection"
+    )
+    Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+    scope:own(drawFrame(host, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+    Assert.isNil(host:confirm(), versionId .. " second activation starts the zoom path, not the lock")
+
+    local presentation, selection, rockName = selectedRockName(host, versionId)
+    local instance = assert(
+      presentation._instances["ball" .. (selection + 1)],
+      versionId .. " realizes the selected ball before the zoom path"
+    )
+    local maxFrame = -1.0
+    local elapsed, entered = 0, false
+    while elapsed < wobbleFrame + cameraTicks + 32 do
+      local attachment, frame = liveClipFrame(instance, rockName, AnimationClip)
+      if attachment ~= nil then
+        Assert.isTrue(
+          attachment.player.frameCount > wobbleFrame,
+          versionId .. " the selected rock clip spans the small-wobble threshold"
+        )
+        if frame ~= nil and frame > maxFrame then
+          maxFrame = frame
+        end
+      end
+      host:update()
+      elapsed = elapsed + 1
+      if snapshotOf(host, versionId).selectionState == "confirm" then
+        entered = true
+        break
+      end
+    end
+    Assert.isTrue(entered, versionId .. " the zoom path reaches confirmation")
+    Assert.isTrue(maxFrame >= 0, versionId .. " the selected ball visibly rocks through the zoom path")
+    local _, lastFrame = liveClipFrame(instance, rockName, AnimationClip)
+    local entryFrame = lastFrame or maxFrame
+    Assert.isTrue(
+      entryFrame >= wobbleFrame,
+      versionId
+        .. string.format(
+          " confirmation waits for the small-wobble phase (entered at frame %.1f, threshold %d)",
+          entryFrame,
+          wobbleFrame
+        )
+    )
+    host:dispose()
+  end
+end
+
+function T.selected_rock_continues_through_confirm_and_cancel_restores_outside(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local messages = assert(manifest.messages, versionId .. " manifest carries decoded chooser messages")
+    local host = openProductionChoice(versionId, cacheFs, manifest)
+    moveHost(host, "right")
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        return snapshotOf(host, versionId).transition == "idle"
+      end, 1024),
+      versionId .. " rotation settles before inspection"
+    )
+    Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+    scope:own(drawFrame(host, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+    local presentation = presentationOf(host, versionId)
+    local outsideCenters = presentation:ballCenters(snapshotOf(host, versionId))
+    Assert.isNil(host:confirm(), versionId .. " second activation starts the zoom path, not the lock")
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        return snapshotOf(host, versionId).selectionState == "confirm"
+      end, 1024),
+      versionId .. " the zoom path reaches confirmation"
+    )
+
+    local selection = snapshotOf(host, versionId).selection
+    local rockName =
+      assert(presentation._clipNames.ballRock[selection + 1], versionId .. " resolves the selected ball rock clip")
+    local selected =
+      assert(presentation._instances["ball" .. (selection + 1)], versionId .. " realizes the confirmed ball")
+    local _, first = liveClipFrame(selected, rockName, AnimationClip)
+    Assert.equal(
+      snapshotOf(host, versionId).transition,
+      "idle",
+      versionId .. " the rock sample is taken from settled confirmation"
+    )
+    Assert.notNil(first, versionId .. " the selected ball keeps rocking while confirmation idles")
+    host:update()
+    host:update()
+    host:update()
+    local _, later = liveClipFrame(selected, rockName, AnimationClip)
+    Assert.notNil(later, versionId .. " confirmation never parks the selected rock")
+    Assert.isTrue(later > first, versionId .. " selected rock frames keep advancing through confirmation")
+    Assert.equal(
+      snapshotOf(host, versionId).selectionState,
+      "confirm",
+      versionId .. " sampling never leaves confirmation"
+    )
+    for ball = 1, 3 do
+      if ball ~= selection + 1 then
+        local other = assert(presentation._instances["ball" .. ball], versionId .. " realizes ball " .. ball)
+        local rockAttachment = liveClipFrame(other, presentation._clipNames.ballRock[ball], AnimationClip)
+        local openAttachment = liveClipFrame(other, presentation._clipNames.ballOpen, AnimationClip)
+        Assert.isNil(rockAttachment, versionId .. " non-selected ball " .. ball .. " stays at baseline")
+        Assert.isNil(openAttachment, versionId .. " non-selected ball " .. ball .. " never opens")
+      end
+    end
+
+    local inspectSnapshot = snapshotOf(host, versionId)
+    Assert.equal(inspectSnapshot.transition, "idle", versionId .. " sampling starts from settled confirmation")
+    host:cancel()
+    Assert.isTrue(
+      stepHostUntil(host, function()
+        return snapshotOf(host, versionId).transition == "idle"
+      end, 64),
+      versionId .. " backing out settles to the normal chooser"
+    )
+    local backedOut = snapshotOf(host, versionId)
+    Assert.equal(backedOut.selectionState, "inspect", versionId .. " backing out restores inspection")
+    Assert.equal(backedOut.selection, selection, versionId .. " backing out preserves the inspected ball")
+    Assert.isFalse(hostStatus(host).done, versionId .. " backing out never publishes")
+    for ball = 1, 3 do
+      local ballInstance = assert(presentation._instances["ball" .. ball], versionId .. " realizes ball " .. ball)
+      Assert.isNil(
+        (liveClipFrame(ballInstance, presentation._clipNames.ballOpen, AnimationClip)),
+        versionId .. " backing out leaves no stale open playback on ball " .. ball
+      )
+    end
+    local restoredCenters = presentation:ballCenters(backedOut)
+    for index = 1, 3 do
+      Assert.near(
+        restoredCenters[index].x,
+        outsideCenters[index].x,
+        1e-9,
+        versionId .. " backing out restores the outside ball column " .. index
+      )
+      Assert.near(
+        restoredCenters[index].y,
+        outsideCenters[index].y,
+        1e-9,
+        versionId .. " backing out restores the outside ball row " .. index
+      )
+    end
+    local texts, provider = recordingText()
+    scope:own(drawRecorded(host, provider, WIDE_WIDTH, WIDE_HEIGHT))
+    assertRecorded(texts, messages.inspect[selection + 1], versionId .. " backing out restores the inspect description")
+    local confirmText = messages.confirm[selection + 1]
+    for _, line in ipairs(texts) do
+      Assert.isTrue(line ~= confirmText, versionId .. " backing out hides the confirm description")
+    end
+    host:dispose()
+  end
+end
+
+function T.final_lock_runs_open_effect_and_sequential_fades_before_result(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local timing = assert(manifest.scene.timing, versionId .. " scene carries the source timing boundaries")
+    local infoTicks = assert(timing.infoFadeTicks, versionId .. " timing carries the info fade boundary")
+    local machineTicks = assert(timing.machineFadeTicks, versionId .. " timing carries the machine fade boundary")
+    local host = openProductionChoice(versionId, cacheFs, manifest)
+    driveToConfirm(host, versionId, scope)
+
+    local presentation, selection = selectedRockName(host, versionId)
+    local selected =
+      assert(presentation._instances["ball" .. (selection + 1)], versionId .. " realizes the confirmed ball")
+    local openName = assert(presentation._clipNames.ballOpen, versionId .. " resolves the ball-open clip")
+    local effectName = assert(presentation._clipNames.ballEffect, versionId .. " resolves the ball-effect clip")
+    local effect = assert(presentation._instances.ballEffect, versionId .. " realizes the ball effect")
+    local _, baselineProvider = recordingText()
+    local baseline = scope:own(drawRecorded(host, baselineProvider, WIDE_WIDTH, WIDE_HEIGHT))
+    local machineSurface = assert(host._machine, versionId .. " lays out the machine surface before the lock")
+    local machineRect = assert(machineSurface.rect, versionId .. " the machine surface carries its rectangle")
+    local infoSurface = assert(host._info, versionId .. " lays out the info surface before the lock")
+    local infoRect = assert(infoSurface.rect, versionId .. " the info surface carries its rectangle")
+    local baseInfo = regionMean(baseline, infoRect, WIDE_WIDTH, WIDE_HEIGHT)
+    local baseMachine = regionMean(baseline, machineRect, WIDE_WIDTH, WIDE_HEIGHT)
+    Assert.isTrue(
+      baseInfo < 0.6,
+      versionId .. string.format(" the lock starts from the unfaded info surface (mean %.3f)", baseInfo)
+    )
+
+    Assert.isNil(host:confirm(), versionId .. " final activation starts the lock, not the report")
+    Assert.isNil(
+      (liveClipFrame(selected, openName, AnimationClip)),
+      versionId .. " ball-open starts on the first exit tick, never synchronously"
+    )
+    local exitTicks, openHandle, openFrame, infoMeanAtInfoEnd, machineMeanAtInfoEnd = 0, nil, nil, nil, nil
+    local finalImage, finalInfo, finalMachine = nil, nil, nil
+    while exitTicks < infoTicks + machineTicks do
+      host:update()
+      exitTicks = exitTicks + 1
+      local openAttachment, frame = liveClipFrame(selected, openName, AnimationClip)
+      Assert.notNil(openAttachment, versionId .. " the lock opens the selected ball exactly once")
+      if openHandle == nil then
+        openHandle, openFrame = openAttachment, frame
+      else
+        Assert.isTrue(openAttachment == openHandle, versionId .. " repeated exit ticks never replay the ball-open clip")
+        Assert.isTrue(frame >= openFrame, versionId .. " ball-open frames advance monotonically through the exit")
+        openFrame = frame
+      end
+      local effectAttachment = liveClipFrame(effect, effectName, AnimationClip)
+      Assert.notNil(effectAttachment, versionId .. " the lock effect stays active through the exit")
+      if exitTicks < infoTicks + machineTicks then
+        Assert.isFalse(hostStatus(host).done, versionId .. " the result waits for the final fade tick")
+      end
+      if exitTicks == infoTicks then
+        local _, infoEndProvider = recordingText()
+        local infoEnd = scope:own(drawRecorded(host, infoEndProvider, WIDE_WIDTH, WIDE_HEIGHT))
+        infoMeanAtInfoEnd = regionMean(infoEnd, infoRect, WIDE_WIDTH, WIDE_HEIGHT)
+        machineMeanAtInfoEnd = regionMean(infoEnd, machineRect, WIDE_WIDTH, WIDE_HEIGHT)
+      end
+    end
+    Assert.isTrue(
+      infoMeanAtInfoEnd ~= nil and infoMeanAtInfoEnd >= 0.6 and (infoMeanAtInfoEnd - baseInfo) > 0.4,
+      versionId
+        .. string.format(
+          " the info surface fades white over exactly its window (end %.3f, base %.3f)",
+          infoMeanAtInfoEnd or -1,
+          baseInfo
+        )
+    )
+    Assert.isTrue(
+      machineMeanAtInfoEnd ~= nil and math.abs(machineMeanAtInfoEnd - baseMachine) < 0.3,
+      versionId
+        .. string.format(
+          " the machine fade starts only after the info fade completes (machine %.3f, base %.3f)",
+          machineMeanAtInfoEnd or -1,
+          baseMachine
+        )
+    )
+    local _, finalProvider = recordingText()
+    finalImage = drawRecorded(host, finalProvider, WIDE_WIDTH, WIDE_HEIGHT)
+    scope:own(finalImage)
+    finalInfo = regionMean(finalImage, infoRect, WIDE_WIDTH, WIDE_HEIGHT)
+    finalMachine = regionMean(finalImage, machineRect, WIDE_WIDTH, WIDE_HEIGHT)
+    Assert.isTrue(
+      finalMachine >= 0.6 and (finalMachine - baseMachine) > 0.4,
+      versionId
+        .. string.format(
+          " the machine surface fades white over exactly its window (end %.3f, base %.3f)",
+          finalMachine,
+          baseMachine
+        )
+    )
+    Assert.deepEqual(
+      hostStatus(host),
+      { done = true, index = snapshotOf(host, versionId).selection },
+      versionId .. " the settled lock reports only after the final fade"
+    )
+    Assert.isTrue(finalInfo >= 0.6, versionId .. " the info fade holds through the machine fade")
+    host:dispose()
+  end
+end
+
+function T.headless_and_realized_paths_share_completion_boundaries(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local timing = assert(manifest.scene.timing, versionId .. " scene carries the source timing boundaries")
+    local turntable = assert(manifest.scene.turntable, versionId .. " scene carries the turntable facts")
+    local wobbleFrame = assert(timing.smallWobbleFrame, versionId .. " timing carries the small-wobble frame")
+    local expectedRotate = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
+    Assert.equal(expectedRotate, math.floor(expectedRotate), versionId .. " the rotation spans whole ticks")
+    local headless = openProductionChoice(versionId, cacheFs, manifest)
+    local realized = openProductionChoice(versionId, cacheFs, manifest)
+    moveHost(headless, "right")
+    moveHost(realized, "right")
+
+    local rotateTicks = 0
+    local lateChecked = false
+    while rotateTicks < 1024 do
+      if snapshotOf(headless, versionId).transition == "idle" then
+        break
+      end
+      headless:update()
+      presentFrame(realized, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+      realized:update()
+      rotateTicks = rotateTicks + 1
+      if rotateTicks == 2 and not lateChecked then
+        lateChecked = true
+        local before = snapshotOf(headless, versionId)
+        Assert.equal(before.transition, "rotate", versionId .. " rotation is still travelling mid-step")
+        scope:own(drawFrame(headless, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+        local after = snapshotOf(headless, versionId)
+        Assert.equal(after.transition, before.transition, versionId .. " late realization never restarts the step")
+        Assert.equal(after.selection, before.selection, versionId .. " late realization never reselects")
+        Assert.equal(
+          after.selectionState,
+          before.selectionState,
+          versionId .. " late realization never changes the interaction state"
+        )
+      end
+    end
+    Assert.equal(
+      snapshotOf(realized, versionId).transition,
+      "idle",
+      versionId .. " the realized path settles the same rotation"
+    )
+    Assert.equal(
+      snapshotOf(headless, versionId).selection,
+      snapshotOf(realized, versionId).selection,
+      versionId .. " both paths settle on the same ball"
+    )
+    Assert.equal(
+      rotateTicks,
+      expectedRotate,
+      versionId .. string.format(" rotation lasts one source slot step (%d ticks)", expectedRotate)
+    )
+
+    Assert.isNil(headless:confirm(), versionId .. " the headless path inspects instead of publishing")
+    Assert.isNil(realized:confirm(), versionId .. " the realized path inspects instead of publishing")
+    scope:own(drawFrame(realized, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+    Assert.isNil(headless:confirm(), versionId .. " the headless path starts its zoom path, not the lock")
+    Assert.isNil(realized:confirm(), versionId .. " the realized path starts its zoom path, not the lock")
+    local zoomTicks = 0
+    while zoomTicks < wobbleFrame + timing.cameraTicks + 64 do
+      if
+        snapshotOf(headless, versionId).selectionState == "confirm"
+        and snapshotOf(realized, versionId).selectionState == "confirm"
+      then
+        break
+      end
+      headless:update()
+      presentFrame(realized, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+      realized:update()
+      zoomTicks = zoomTicks + 1
+    end
+    Assert.equal(
+      snapshotOf(headless, versionId).selectionState,
+      "confirm",
+      versionId .. " the headless path reaches confirmation without realization"
+    )
+    Assert.equal(
+      snapshotOf(realized, versionId).selectionState,
+      "confirm",
+      versionId .. " the realized path reaches the same confirmation"
+    )
+    local realizedPresentation = presentationOf(realized, versionId)
+    local realizedSelection = snapshotOf(realized, versionId).selection
+    local _, entryFrame = liveClipFrame(
+      assert(realizedPresentation._instances["ball" .. (realizedSelection + 1)], versionId .. " realizes its ball"),
+      realizedPresentation._clipNames.ballRock[realizedSelection + 1],
+      AnimationClip
+    )
+    Assert.isTrue((entryFrame or -1) >= wobbleFrame, versionId .. " both paths confirm only in the small-wobble phase")
+
+    Assert.isNil(headless:confirm(), versionId .. " the headless path starts its lock, not the report")
+    Assert.isNil(realized:confirm(), versionId .. " the realized path starts its lock, not the report")
+    local exitTicks = 0
+    while exitTicks < timing.infoFadeTicks + timing.machineFadeTicks + 32 do
+      if hostStatus(headless).done and hostStatus(realized).done then
+        break
+      end
+      headless:update()
+      presentFrame(realized, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+      realized:update()
+      exitTicks = exitTicks + 1
+    end
+    Assert.isTrue(hostStatus(headless).done, versionId .. " the headless path completes the lock")
+    Assert.isTrue(hostStatus(realized).done, versionId .. " the realized path completes the same lock")
+    Assert.equal(
+      exitTicks,
+      timing.infoFadeTicks + timing.machineFadeTicks,
+      versionId .. " both paths publish only after the sequential fades"
+    )
+    Assert.deepEqual(hostStatus(headless), hostStatus(realized), versionId .. " both paths report the same result")
+    headless:dispose()
+    realized:dispose()
   end
 end
 
