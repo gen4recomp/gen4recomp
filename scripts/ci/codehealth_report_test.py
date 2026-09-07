@@ -49,6 +49,52 @@ def _write_lizard_fixture(path: Path) -> None:
         writer.writerow({"NLOC": "15", "CCN": "4", "file": "game/b.lua", "function": "compute"})
 
 
+def _sized_source(line_count: int) -> str:
+    lines = [f"-- filler {index}" for index in range(line_count - 1)]
+    lines.append("return {}")
+    return "\n".join(lines) + "\n"
+
+
+def _write_hotspot_site(
+    root: Path,
+    sources: dict[str, str],
+    lizard_rows: list[dict[str, str]],
+    nodes: list[dict[str, object]],
+    links: list[dict[str, object]],
+) -> tuple[Path, Path]:
+    site_root = root / "site"
+    reports_root = site_root / "codehealth" / "reports"
+    for report_directory in ("lizard", "jscpd", "graphify"):
+        (reports_root / report_directory).mkdir(parents=True)
+    for relative, content in sources.items():
+        path = site_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "init", "--quiet"], cwd=site_root, check=True)
+    subprocess.run(["git", "add", "."], cwd=site_root, check=True)
+    lizard_csv = reports_root / "lizard" / "functions.csv"
+    with lizard_csv.open("w", newline="", encoding="utf-8") as report_file:
+        writer = csv.DictWriter(report_file, fieldnames=["NLOC", "CCN", "file", "function"])
+        writer.writeheader()
+        for row in lizard_rows:
+            writer.writerow(row)
+    (reports_root / "jscpd" / "jscpd-report.json").write_text(
+        json.dumps(
+            {
+                "statistics": {
+                    "total": {"sources": 1, "clones": 0, "duplicatedLines": 0, "percentage": 0}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (reports_root / "graphify" / "graph.json").write_text(
+        json.dumps({"directed": True, "nodes": nodes, "links": links}),
+        encoding="utf-8",
+    )
+    return site_root, lizard_csv
+
+
 class CodeHealthReportTest(unittest.TestCase):
     """Protect report parsing, scope validation, and summary links."""
 
@@ -228,6 +274,8 @@ class CodeHealthReportTest(unittest.TestCase):
                         "callableVisibility": 1.0,
                         "maxCcn": 3,
                         "maxNloc": 30,
+                        "physicalLines": 1,
+                        "hotspotIgnored": False,
                         "importFanIn": 1,
                         "importFanOut": 1,
                     },
@@ -238,6 +286,8 @@ class CodeHealthReportTest(unittest.TestCase):
                         "callableVisibility": 0.2,
                         "maxCcn": 9,
                         "maxNloc": 15,
+                        "physicalLines": 2,
+                        "hotspotIgnored": False,
                         "importFanIn": 1,
                         "importFanOut": 1,
                     },
@@ -248,6 +298,8 @@ class CodeHealthReportTest(unittest.TestCase):
                         "callableVisibility": 0.0,
                         "maxCcn": 9,
                         "maxNloc": 20,
+                        "physicalLines": 1,
+                        "hotspotIgnored": False,
                         "importFanIn": 0,
                         "importFanOut": 0,
                     },
@@ -258,10 +310,48 @@ class CodeHealthReportTest(unittest.TestCase):
                         "callableVisibility": None,
                         "maxCcn": None,
                         "maxNloc": None,
+                        "physicalLines": 1,
+                        "hotspotIgnored": False,
+                        "importFanIn": 0,
+                        "importFanOut": 0,
+                    },
+                    {
+                        "path": "game/hgss/src/field/FieldRuntime.lua",
+                        "lizardFunctions": 0,
+                        "graphifyCallables": 0,
+                        "callableVisibility": None,
+                        "maxCcn": None,
+                        "maxNloc": None,
+                        "physicalLines": 2,
+                        "hotspotIgnored": False,
+                        "importFanIn": 0,
+                        "importFanOut": 0,
+                    },
+                    {
+                        "path": "libs/hgss/src/field/Map.lua",
+                        "lizardFunctions": 0,
+                        "graphifyCallables": 0,
+                        "callableVisibility": None,
+                        "maxCcn": None,
+                        "maxNloc": None,
+                        "physicalLines": 1,
+                        "hotspotIgnored": False,
                         "importFanIn": 0,
                         "importFanOut": 0,
                     },
                 ],
+            )
+            self.assertEqual(
+                structure["hotspotPolicy"],
+                {
+                    "thresholds": {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200},
+                    "ignoreMarker": "-- codehealth: ignore-hotspot",
+                    "ignoreScanLines": 5,
+                },
+            )
+            self.assertEqual(
+                {metric: [row["path"] for row in rows] for metric, rows in structure["hotspots"].items()},
+                {"maxCcn": [], "maxNloc": [], "physicalLines": []},
             )
             self.assertEqual(
                 [row["path"] for row in structure["outliers"]["lowVisibility"]],
@@ -273,7 +363,14 @@ class CodeHealthReportTest(unittest.TestCase):
             )
             self.assertEqual(
                 [row["path"] for row in structure["outliers"]["fanOut"]],
-                ["game/a.lua", "game/b.lua", "game/c.lua", "game/d.lua"],
+                [
+                    "game/a.lua",
+                    "game/b.lua",
+                    "game/c.lua",
+                    "game/d.lua",
+                    "game/hgss/src/field/FieldRuntime.lua",
+                    "libs/hgss/src/field/Map.lua",
+                ],
             )
 
             json.loads(json.dumps(model))
@@ -552,7 +649,7 @@ class CodeHealthReportTest(unittest.TestCase):
             "source": {"files": [{"path": "game/a.lua", "bytes": 10, "physicalLines": 1}]},
             "directories": {"files": [{"path": "game", "directProductionFiles": 1}]},
             "policy": {"findings": 0},
-            "structure": {"callableVisibility": {"lizardFunctions": 1, "graphifyCallables": 1, "ratio": 1.0}, "files": [], "outliers": {"lowVisibility": [], "complexity": [], "fanOut": []}},
+            "structure": {"callableVisibility": {"lizardFunctions": 1, "graphifyCallables": 1, "ratio": 1.0}, "files": [], "hotspotPolicy": {"thresholds": {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200}, "ignoreMarker": "-- codehealth: ignore-hotspot", "ignoreScanLines": 5}, "hotspots": {"maxCcn": [], "maxNloc": [], "physicalLines": []}, "outliers": {"lowVisibility": [], "complexity": [], "fanOut": []}},
         }
         html = REPORT._render_summary(model)
         self.assertIn('href="reports/lizard/index.html"', html)
@@ -708,6 +805,279 @@ class CodeHealthReportTest(unittest.TestCase):
             model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
             self.assertEqual(model["schemaVersion"], 4)
             self.assertTrue((site_root / "codehealth" / "index.html").exists())
+
+    def build_site_model(self, site_root: Path) -> dict:
+        with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
+            REPORT, "_version", return_value="test"
+        ):
+            return REPORT._build_model(site_root, site_root)
+
+    def test_threshold_hotspot_lists_are_data_driven(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "game/below_all.lua": _sized_source(3),
+                "game/at_ccn_limit.lua": _sized_source(3),
+                "game/above_ccn.lua": _sized_source(3),
+                "game/tie_ccn_a.lua": _sized_source(3),
+                "game/tie_ccn_b.lua": _sized_source(3),
+                "game/at_nloc_limit.lua": _sized_source(3),
+                "game/above_nloc.lua": _sized_source(3),
+                "game/at_line_limit.lua": _sized_source(1200),
+                "game/above_line_count.lua": _sized_source(1201),
+                "game/no_function_long.lua": _sized_source(1250),
+            }
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "5", "file": "game/below_all.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "25", "file": "game/at_ccn_limit.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "26", "file": "game/above_ccn.lua", "function": "run"},
+                {"NLOC": "150", "CCN": "30", "file": "game/tie_ccn_a.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "30", "file": "game/tie_ccn_b.lua", "function": "run"},
+                {"NLOC": "100", "CCN": "5", "file": "game/at_nloc_limit.lua", "function": "run"},
+                {"NLOC": "101", "CCN": "5", "file": "game/above_nloc.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "5", "file": "game/at_line_limit.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "5", "file": "game/above_line_count.lua", "function": "run"},
+            ]
+            ordered = sorted(sources)
+            nodes: list[dict[str, object]] = [
+                {"id": f"node-{index}", "source_file": path}
+                for index, path in enumerate(ordered)
+            ]
+            links: list[dict[str, object]] = [
+                {
+                    "source": "node-0",
+                    "target": "node-1",
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                }
+            ]
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, links)
+            model = self.build_site_model(site_root)
+            structure = model["structure"]
+            self.assertEqual(
+                structure["hotspotPolicy"],
+                {
+                    "thresholds": {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200},
+                    "ignoreMarker": "-- codehealth: ignore-hotspot",
+                    "ignoreScanLines": 5,
+                },
+            )
+            files = {row["path"]: row for row in structure["files"]}
+            self.assertEqual(set(files), set(sources))
+            for path, row in files.items():
+                self.assertEqual(row["physicalLines"], len(sources[path].splitlines()))
+                self.assertFalse(row["hotspotIgnored"])
+            self.assertIsNone(files["game/no_function_long.lua"]["maxCcn"])
+            self.assertIsNone(files["game/no_function_long.lua"]["maxNloc"])
+            hotspots = structure["hotspots"]
+            self.assertEqual(
+                [row["path"] for row in hotspots["maxCcn"]],
+                ["game/tie_ccn_a.lua", "game/tie_ccn_b.lua", "game/above_ccn.lua"],
+            )
+            self.assertEqual(
+                [row["path"] for row in hotspots["maxNloc"]],
+                ["game/tie_ccn_a.lua", "game/above_nloc.lua"],
+            )
+            self.assertEqual(
+                [row["path"] for row in hotspots["physicalLines"]],
+                ["game/no_function_long.lua", "game/above_line_count.lua"],
+            )
+
+    def test_exact_top_of_file_marker_suppresses_target_lists_only(self) -> None:
+        marker = "-- codehealth: ignore-hotspot"
+        body = "local value = {}\nreturn value\n"
+        sources = {
+            "game/hot_ignored_exact.lua": (
+                "-- module role comment\n"
+                "---@class Suppressed\n"
+                "local value = {}\n"
+                "\n"
+                f"{marker}\n"
+                "return value\n"
+            ),
+            "game/hot_ignored_padded.lua": f"   {marker}  \n{body}",
+            "game/hot_visible_sixth.lua": f"-- filler 0\n-- filler 1\n-- filler 2\n-- filler 3\n-- filler 4\n{marker}\n{body}",
+            "game/hot_visible_extra.lua": f"{marker} until refactor\n{body}",
+            "game/hot_visible_quoted.lua": f'local note = "{marker}"\n{body}',
+        }
+        lizard_rows = []
+        for path in sources:
+            for function_index in range(8):
+                lizard_rows.append(
+                    {
+                        "NLOC": "150" if function_index == 0 else "1",
+                        "CCN": "30" if function_index == 0 else "1",
+                        "file": path,
+                        "function": f"step_{function_index}",
+                    }
+                )
+        nodes: list[dict[str, object]] = []
+        links: list[dict[str, object]] = []
+        for path in sorted(sources):
+            stem = Path(path).stem.replace("hot_", "")
+            first = {"id": f"{stem}-0", "source_file": path}
+            second = {"id": f"{stem}-1", "source_file": path}
+            if "ignored" not in path:
+                first["_callable"] = True
+                second["_callable"] = True
+            nodes.extend([first, second])
+        links.extend(
+            [
+                {
+                    "source": "ignored_exact-0",
+                    "target": "visible_sixth-0",
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                },
+                {
+                    "source": "ignored_exact-1",
+                    "target": "visible_extra-0",
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                },
+                {
+                    "source": "visible_sixth-0",
+                    "target": "visible_extra-0",
+                    "relation": "imports",
+                    "confidence": "EXTRACTED",
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            site_root, lizard_csv = _write_hotspot_site(
+                Path(directory), sources, lizard_rows, nodes, links
+            )
+            model = self.build_site_model(site_root)
+            structure = model["structure"]
+            files = {row["path"]: row for row in structure["files"]}
+            self.assertEqual(set(files), set(sources))
+            self.assertTrue(files["game/hot_ignored_exact.lua"]["hotspotIgnored"])
+            self.assertTrue(files["game/hot_ignored_padded.lua"]["hotspotIgnored"])
+            self.assertFalse(files["game/hot_visible_sixth.lua"]["hotspotIgnored"])
+            self.assertFalse(files["game/hot_visible_extra.lua"]["hotspotIgnored"])
+            self.assertFalse(files["game/hot_visible_quoted.lua"]["hotspotIgnored"])
+            hotspots = structure["hotspots"]
+            for metric in ("maxCcn", "maxNloc"):
+                paths = [row["path"] for row in hotspots[metric]]
+                self.assertNotIn("game/hot_ignored_exact.lua", paths)
+                self.assertNotIn("game/hot_ignored_padded.lua", paths)
+                self.assertIn("game/hot_visible_sixth.lua", paths)
+                self.assertIn("game/hot_visible_extra.lua", paths)
+                self.assertIn("game/hot_visible_quoted.lua", paths)
+            self.assertEqual(
+                [row["path"] for row in hotspots["physicalLines"]], []
+            )
+            low_visibility = [row["path"] for row in structure["outliers"]["lowVisibility"]]
+            fan_out = [row["path"] for row in structure["outliers"]["fanOut"]]
+            self.assertNotIn("game/hot_ignored_exact.lua", low_visibility)
+            self.assertNotIn("game/hot_ignored_padded.lua", low_visibility)
+            self.assertIn("game/hot_visible_sixth.lua", low_visibility)
+            self.assertNotIn("game/hot_ignored_exact.lua", fan_out)
+            self.assertNotIn("game/hot_ignored_padded.lua", fan_out)
+            lightweight = REPORT._build_structure_report(lizard_csv, site_root)
+            self.assertEqual(lightweight["schemaVersion"], 4)
+            self.assertEqual(
+                lightweight["structure"]["hotspotPolicy"], structure["hotspotPolicy"]
+            )
+            light_files = {row["path"]: row for row in lightweight["structure"]["files"]}
+            self.assertEqual(set(light_files), set(sources))
+            for path in sources:
+                self.assertEqual(
+                    light_files[path]["hotspotIgnored"], files[path]["hotspotIgnored"]
+                )
+                self.assertEqual(
+                    light_files[path]["physicalLines"], files[path]["physicalLines"]
+                )
+                self.assertEqual(light_files[path]["maxCcn"], files[path]["maxCcn"])
+                self.assertEqual(light_files[path]["maxNloc"], files[path]["maxNloc"])
+
+    def test_summary_presents_threshold_hotspots_and_suppression_state(self) -> None:
+        visible = {
+            "path": "game/hot_visible.lua",
+            "lizardFunctions": 8,
+            "graphifyCallables": 2,
+            "callableVisibility": 0.25,
+            "maxCcn": 30,
+            "maxNloc": 150,
+            "physicalLines": 40,
+            "hotspotIgnored": False,
+            "importFanIn": 0,
+            "importFanOut": 1,
+        }
+        ignored = {
+            "path": "game/hot_ignored.lua",
+            "lizardFunctions": 8,
+            "graphifyCallables": 0,
+            "callableVisibility": 0.0,
+            "maxCcn": 30,
+            "maxNloc": 150,
+            "physicalLines": 40,
+            "hotspotIgnored": True,
+            "importFanIn": 0,
+            "importFanOut": 2,
+        }
+        policy = {
+            "thresholds": {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200},
+            "ignoreMarker": "-- codehealth: ignore-hotspot",
+            "ignoreScanLines": 5,
+        }
+        model = {
+            "schemaVersion": 4,
+            "commit": "a" * 40,
+            "generatedAt": "2026-01-01T00:00:00Z",
+            "tools": {"lizard": "test", "jscpd": "test", "graphify": "test"},
+            "scope": {"structural": "production-lua", "excludedPrefixes": []},
+            "complexity": {
+                "functions": 16,
+                "ccn": {"median": 1, "p90": 30, "p95": 30, "p99": 30, "max": 30},
+                "nloc": {"median": 1, "p95": 150, "max": 150},
+            },
+            "duplication": {"sources": 1, "clones": 0, "duplicatedLines": 0, "percentage": 0},
+            "architecture": {
+                "modules": 2,
+                "nodes": 2,
+                "edges": 1,
+                "communities": 1,
+                "importEdges": 1,
+                "importCycleGroups": 0,
+                "provenance": {"extracted": 1, "inferred": 0, "ambiguous": 0},
+            },
+            "source": {
+                "files": [
+                    {"path": "game/hot_visible.lua", "bytes": 100, "physicalLines": 40},
+                    {"path": "game/hot_ignored.lua", "bytes": 120, "physicalLines": 40},
+                ]
+            },
+            "directories": {"files": [{"path": "game", "directProductionFiles": 2}]},
+            "policy": {"findings": 0, "byKind": {}},
+            "structure": {
+                "callableVisibility": {
+                    "lizardFunctions": 16,
+                    "graphifyCallables": 2,
+                    "ratio": 2 / 16,
+                },
+                "files": [visible, ignored],
+                "outliers": {
+                    "lowVisibility": [visible],
+                    "complexity": [visible],
+                    "fanOut": [visible],
+                },
+                "hotspotPolicy": policy,
+                "hotspots": {
+                    "maxCcn": [visible],
+                    "maxNloc": [visible],
+                    "physicalLines": [],
+                },
+            },
+        }
+        rendered = REPORT._render_summary(model).lower()
+        self.assertRegex(rendered, r"hotspot.{0,80}ccn|ccn.{0,80}hotspot")
+        self.assertRegex(rendered, r"hotspot.{0,80}nloc|nloc.{0,80}hotspot")
+        self.assertRegex(rendered, r"hotspot.{0,80}physical|physical.{0,80}hotspot")
+        self.assertIn("ignor", rendered)
+        self.assertIn("raw", rendered)
+        self.assertIn("game/hot_visible.lua", rendered)
+        self.assertIn("game/hot_ignored.lua", rendered)
 
 
 if __name__ == "__main__":

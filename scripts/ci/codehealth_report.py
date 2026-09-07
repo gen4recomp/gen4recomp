@@ -43,6 +43,28 @@ STRUCTURAL_ROOT_EXCLUSIONS = {
     "vendor",
 }
 
+HOTSPOT_THRESHOLDS = {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200}
+HOTSPOT_IGNORE_MARKER = "-- codehealth: ignore-hotspot"
+HOTSPOT_IGNORE_SCAN_LINES = 5
+
+
+def _hotspot_policy() -> dict[str, Any]:
+    return {
+        "thresholds": dict(HOTSPOT_THRESHOLDS),
+        "ignoreMarker": HOTSPOT_IGNORE_MARKER,
+        "ignoreScanLines": HOTSPOT_IGNORE_SCAN_LINES,
+    }
+
+
+def _hotspot_rows(files: list[dict[str, Any]], metric: str) -> list[dict[str, Any]]:
+    threshold = HOTSPOT_THRESHOLDS[metric]
+    candidates = (
+        row
+        for row in files
+        if not row["hotspotIgnored"] and row[metric] is not None and row[metric] > threshold
+    )
+    return sorted(candidates, key=lambda row: (-row[metric], row["path"]))
+
 
 def _load_json_value(path: Path) -> Any:
     try:
@@ -194,11 +216,17 @@ def _source_census(repository_root: Path) -> tuple[dict[str, Any], dict[str, Any
             raw = source_path.read_bytes()
         except OSError as error:
             raise ValueError(f"cannot read production source {source_file}: {error}") from error
+        text = raw.decode("utf-8")
+        lines = text.splitlines()
         source_files.append(
             {
                 "path": source_file,
                 "bytes": len(raw),
-                "physicalLines": len(raw.decode("utf-8").splitlines()),
+                "physicalLines": len(lines),
+                "hotspotIgnored": any(
+                    line.strip() == HOTSPOT_IGNORE_MARKER
+                    for line in lines[:HOTSPOT_IGNORE_SCAN_LINES]
+                ),
             }
         )
         directory = str(Path(source_file).parent).replace("\\", "/")
@@ -383,15 +411,18 @@ def _lizard_maxima(lizard: dict[str, Any], path: str) -> tuple[Any, Any]:
     return metrics.get("maxCcn"), metrics.get("maxNloc")
 
 
-def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -> dict[str, Any]:
+def _build_structure_metrics(
+    lizard: dict[str, Any], graphify: dict[str, Any], source: dict[str, Any]
+) -> dict[str, Any]:
     lizard_files: dict[str, dict[str, int | float]] = lizard["files"]
     graphify_files: dict[str, int] = graphify["files"]
-    paths = sorted(set(lizard_files) | set(graphify_files))
+    source_by_path = {row["path"]: row for row in source["files"]}
+    paths = sorted(set(lizard_files) | set(graphify_files) | set(source_by_path))
     fan_in = {path: 0 for path in paths}
     fan_out = {path: 0 for path in paths}
-    for source, target in graphify["extractedImportPairs"]:
-        if source in fan_out and target in fan_in:
-            fan_out[source] += 1
+    for source_path, target in graphify["extractedImportPairs"]:
+        if source_path in fan_out and target in fan_in:
+            fan_out[source_path] += 1
             fan_in[target] += 1
 
     files: list[dict[str, Any]] = []
@@ -400,6 +431,7 @@ def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -
         lizard_functions = int(lizard_metrics["functions"]) if lizard_metrics is not None else 0
         graphify_callables = graphify_files.get(path, 0)
         max_ccn, max_nloc = _lizard_maxima(lizard, path)
+        source_row = source_by_path.get(path)
         files.append(
             {
                 "path": path,
@@ -410,13 +442,18 @@ def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -
                 ),
                 "maxCcn": max_ccn,
                 "maxNloc": max_nloc,
+                "physicalLines": source_row["physicalLines"] if source_row is not None else None,
+                "hotspotIgnored": (
+                    source_row["hotspotIgnored"] if source_row is not None else False
+                ),
                 "importFanIn": fan_in[path],
                 "importFanOut": fan_out[path],
             }
         )
 
+    eligible = [row for row in files if not row["hotspotIgnored"]]
     low_visibility = sorted(
-        (row for row in files if row["lizardFunctions"] >= 8),
+        (row for row in eligible if row["lizardFunctions"] >= 8),
         key=lambda row: (
             row["callableVisibility"] is not None,
             row["callableVisibility"] or 0,
@@ -428,7 +465,7 @@ def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -
         (row for row in files if row["lizardFunctions"] > 0),
         key=lambda row: (-row["maxCcn"], -row["maxNloc"], row["path"]),
     )[:20]
-    fan_outliers = sorted(files, key=lambda row: (-row["importFanOut"], row["path"]))[:20]
+    fan_outliers = sorted(eligible, key=lambda row: (-row["importFanOut"], row["path"]))[:20]
     return {
         "callableVisibility": {
             "lizardFunctions": lizard["functions"],
@@ -438,6 +475,12 @@ def _build_structure_metrics(lizard: dict[str, Any], graphify: dict[str, Any]) -
             ),
         },
         "files": files,
+        "hotspotPolicy": _hotspot_policy(),
+        "hotspots": {
+            "maxCcn": _hotspot_rows(files, "maxCcn"),
+            "maxNloc": _hotspot_rows(files, "maxNloc"),
+            "physicalLines": _hotspot_rows(files, "physicalLines"),
+        },
         "outliers": {
             "lowVisibility": low_visibility,
             "complexity": complexity,
@@ -479,6 +522,28 @@ def _render_summary(model: dict[str, Any]) -> str:
 
     def display(item: Any) -> str:
         return "—" if item is None else value(item)
+
+    def render_hotspot_table(title: str, rows: list[dict[str, Any]], metric: str) -> str:
+        row_markup = "\n".join(
+            "            <tr>"
+            f"<td>{value(row['path'])}</td>"
+            f"<td>{display(row[metric])}</td>"
+            f"<td>{display(row['maxCcn'])}</td>"
+            f"<td>{display(row['maxNloc'])}</td>"
+            f"<td>{display(row['physicalLines'])}</td>"
+            "</tr>"
+            for row in rows
+        )
+        heading_id = title.lower().replace(" ", "-") + "-title"
+        return f"""        <section class="panel" aria-labelledby="{html.escape(heading_id)}">
+          <h3 id="{html.escape(heading_id)}">{html.escape(title)}</h3>
+          <div class="table-wrap"><table>
+            <thead><tr><th scope="col">Path</th><th scope="col">Hotspot value</th><th scope="col">Max CCN</th><th scope="col">Max NLOC</th><th scope="col">Physical lines</th></tr></thead>
+            <tbody>
+{row_markup}
+            </tbody>
+          </table></div>
+        </section>"""
 
     def render_outlier_table(title: str, rows: list[dict[str, Any]]) -> str:
         row_markup = "\n".join(
@@ -542,6 +607,20 @@ def _render_summary(model: dict[str, Any]) -> str:
         f'          <li><a href="{html.escape(link, quote=True)}" download>{html.escape(title)}</a></li>'
         for title, link in machine_reports
     )
+    def ignored_state(row: dict[str, Any]) -> str:
+        return "ignored" if row["hotspotIgnored"] else "—"
+
+    hotspots = structure["hotspots"]
+    hotspot_note = (
+        "<p>Structural hotspots list files above the advisory thresholds "
+        f"(max CCN &gt; {HOTSPOT_THRESHOLDS['maxCcn']}, max NLOC &gt; "
+        f"{HOTSPOT_THRESHOLDS['maxNloc']}, physical lines &gt; "
+        f"{HOTSPOT_THRESHOLDS['physicalLines']}). A file carrying "
+        f"<code>{value(HOTSPOT_IGNORE_MARKER)}</code> within the first "
+        f"{HOTSPOT_IGNORE_SCAN_LINES} lines is ignored in hotspot and outlier "
+        "lists; raw measurements for ignored files remain available in the "
+        "per-file table and downloadable reports.</p>"
+    )
     file_rows_markup = "\n".join(
         "            <tr>"
         f"<td>{value(row['path'])}</td>"
@@ -550,8 +629,10 @@ def _render_summary(model: dict[str, Any]) -> str:
         f"<td>{display(row['callableVisibility'])}</td>"
         f"<td>{display(row['maxCcn'])}</td>"
         f"<td>{display(row['maxNloc'])}</td>"
+        f"<td>{display(row['physicalLines'])}</td>"
         f"<td>{value(row['importFanIn'])}</td>"
         f"<td>{value(row['importFanOut'])}</td>"
+        f"<td>{ignored_state(row)}</td>"
         "</tr>"
         for row in structure["files"]
     )
@@ -623,14 +704,20 @@ def _render_summary(model: dict[str, Any]) -> str:
         </table></div>
         <h3>Per-file structural observations</h3>
         <div class="table-wrap"><table>
-          <thead><tr><th scope="col">Path</th><th scope="col">Lizard functions</th><th scope="col">Graphify callables</th><th scope="col">Visibility</th><th scope="col">Max CCN</th><th scope="col">Max NLOC</th><th scope="col">Fan-in</th><th scope="col">Fan-out</th></tr></thead>
+          <thead><tr><th scope="col">Path</th><th scope="col">Lizard functions</th><th scope="col">Graphify callables</th><th scope="col">Visibility</th><th scope="col">Max CCN</th><th scope="col">Max NLOC</th><th scope="col">Physical lines</th><th scope="col">Fan-in</th><th scope="col">Fan-out</th><th scope="col">Hotspot state</th></tr></thead>
           <tbody>
 {file_rows_markup}
           </tbody>
         </table></div>
       </section>
+      <section class="panel" aria-labelledby="hotspots-title">
+        <h2 id="hotspots-title">Structural hotspots</h2>
+{hotspot_note}
+      </section>
+{render_hotspot_table("CCN hotspots", hotspots["maxCcn"], "maxCcn")}
+{render_hotspot_table("NLOC hotspots", hotspots["maxNloc"], "maxNloc")}
+{render_hotspot_table("Physical-line hotspots", hotspots["physicalLines"], "physicalLines")}
 {render_outlier_table("Low visibility outliers", structure["outliers"]["lowVisibility"])}
-{render_outlier_table("Complexity outliers", structure["outliers"]["complexity"])}
 {render_outlier_table("Fan-out outliers", structure["outliers"]["fanOut"])}
       <section class="panel" aria-labelledby="architecture-note-title">
         <h2 id="architecture-note-title">Architecture interpretation</h2>
@@ -676,7 +763,7 @@ def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
         "source": source,
         "directories": directories,
         "policy": _policy_report(site_root, repository_root),
-        "structure": _build_structure_metrics(lizard, graphify),
+        "structure": _build_structure_metrics(lizard, graphify, source),
     }
     return model
 
@@ -688,13 +775,21 @@ def _build_structure_report(lizard_csv: Path, repository_root: Path) -> dict[str
     for row in source["files"]:
         path = row["path"]
         max_ccn, max_nloc = _lizard_maxima(lizard, path)
-        files.append({"path": path, "maxCcn": max_ccn, "maxNloc": max_nloc})
+        files.append(
+            {
+                "path": path,
+                "maxCcn": max_ccn,
+                "maxNloc": max_nloc,
+                "physicalLines": row["physicalLines"],
+                "hotspotIgnored": row["hotspotIgnored"],
+            }
+        )
     files.sort(key=lambda row: row["path"])
     return {
         "schemaVersion": 4,
         "source": source,
         "directories": directories,
-        "structure": {"files": files},
+        "structure": {"files": files, "hotspotPolicy": _hotspot_policy()},
     }
 
 
