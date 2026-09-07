@@ -24,6 +24,7 @@ jobs:
       - name: Check out candidate
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Set up Python
