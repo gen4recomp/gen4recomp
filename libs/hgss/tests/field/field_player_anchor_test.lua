@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 local T = {}
@@ -130,6 +131,64 @@ function T.scripted_commits_carry_their_own_traversal_kind()
   Assert.equal(player:movementRevision(), 1, "a scripted tile commit bumps once")
   Assert.equal(player:committedAnchor().traversalKind, "scripted", "scripted commits are marked")
   Assert.equal(player:committedAnchor().fieldZ, 6, "the anchor follows the scripted commit")
+end
+
+-- A resolved tile translation is observable at movement start, while the
+-- committed anchor still describes the source tile. The snapshot carries
+-- the final source/destination anchors, direction, traversal kind, and the
+-- semantic normal-walk duration; blocked steps and facing-only turns
+-- publish nothing.
+function T.movement_start_snapshot_precedes_commit()
+  local player = playerAt(5, 5, "south")
+  Assert.isTrue(type(player.movementTransaction) == "function", "the player publishes a movement-start transaction")
+  Assert.isNil(player:movementTransaction(), "no transaction exists before any step")
+
+  Assert.isTrue(player:tryStep("south"), "the south step must start")
+  local started = player:movementTransaction()
+  Assert.notNil(started, "starting a step publishes a transaction")
+  assert(started ~= nil, "starting a step publishes a transaction")
+  Assert.equal(started.revision, 1, "the first started step is revision one")
+  Assert.equal(started.mapId, 61, "the transaction carries the map identity")
+  Assert.equal(started.from.fieldX, 5, "the transaction source is the vacated tile")
+  Assert.equal(started.from.fieldZ, 5, "the transaction source is the vacated tile")
+  Assert.equal(started.to.fieldX, 5, "the transaction destination is resolved at start")
+  Assert.equal(started.to.fieldZ, 6, "the transaction destination is resolved at start")
+  Assert.equal(started.direction, "south", "the transaction carries the step direction")
+  Assert.equal(started.traversalKind, "walk", "an ordinary step is an ordinary walk")
+  Assert.equal(started.durationTicks, FieldPlayer.WALK_STEP_TICKS, "the transaction carries the normal walk duration")
+  Assert.equal(
+    started.durationTicks,
+    MovementCalibration.SPEED_TICKS.normal,
+    "the transaction duration matches the actor normal calibration"
+  )
+  Assert.equal(player:movementRevision(), 0, "starting a step commits nothing")
+  Assert.equal(player:committedAnchor().fieldZ, 5, "the committed anchor still describes the source tile")
+
+  Assert.equal(player:movementTransaction().revision, 1, "repeated reads observe the same revision")
+  player:updateFixed({})
+  player:updateFixed({})
+  Assert.equal(player:movementTransaction().revision, 1, "the revision is stable while the step is in flight")
+  Assert.equal(player:movementRevision(), 0, "interpolation ticks commit nothing")
+  settle(player)
+  Assert.equal(player:movementRevision(), 1, "only the commit bumps the commit revision")
+  Assert.equal(player:committedAnchor().fieldZ, 6, "the anchor follows the commit")
+  Assert.equal(
+    player:movementTransaction().revision,
+    1,
+    "the transaction stays readable after commit until the next step"
+  )
+
+  local blocked = playerAt(1, 1, "west")
+  Assert.isFalse(blocked:tryStep("west"), "the wall step must not start")
+  Assert.isNil(blocked:movementTransaction(), "a blocked step publishes no transaction")
+  Assert.equal(blocked:movementRevision(), 0, "a blocked step commits nothing")
+
+  local turner = playerAt(5, 5, "south")
+  turner:updateFixed({ pressedDirection = "north" })
+  settle(turner)
+  Assert.equal(turner.facing, "north", "the turn in place applies")
+  Assert.isNil(turner:movementTransaction(), "a facing-only turn publishes no transaction")
+  Assert.equal(turner:movementRevision(), 0, "a facing-only turn commits nothing")
 end
 
 return { tests = T }

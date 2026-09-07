@@ -441,4 +441,124 @@ function T.failed_replacement_raises_and_keeps_the_old_actor()
   w.mgr:dispose()
 end
 
+-- Ordinary following starts in the same fixed-step epoch as the player
+-- step: once the player begins a normal walk, the follower is already
+-- walking toward the vacated tile before the player commits, instead of
+-- waiting a whole step and replaying the trail afterwards.
+function T.ordinary_follow_starts_before_the_player_commits()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local installed = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  local startWorldZ = installed.worldZ
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
+  Assert.isTrue(w.player.motion ~= "idle", "the player step is in flight")
+  -- The same fixed-step epoch the production runtime uses: the player has
+  -- resolved and begun, and following observes before the player advances.
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the follower starts while the player step is still in flight")
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the step start")
+  Assert.equal(actor.pose, "walk", "the follower walks while the player step is in flight")
+  Assert.equal(actor.facing, "south", "the follower faces the vacated tile")
+
+  -- Mid-step both actors are in flight on the same interval.
+  for _ = 1, 3 do
+    w.player:updateFixed({})
+    w.controller:update()
+  end
+  Assert.isTrue(w.player.motion ~= "idle", "the player is still in flight mid-step")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives mid-step")
+  Assert.equal(actor.pose, "walk", "the follower is still walking mid-step")
+  Assert.isTrue(actor.worldZ > startWorldZ, "the follower has visibly left its original tile")
+
+  -- Both settle on the normal walk boundary with the follower on the tile
+  -- the player vacated, not on the player destination.
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  Assert.equal(w.player.motion, "idle", "the player step completes")
+  Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the player commits one tile south")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the step")
+  Assert.equal(actor.fieldX, vacated.fieldX, "the follower targets the vacated tile")
+  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower targets the vacated tile")
+  Assert.isTrue(w.controller:isMovementSettled(), "the ordinary follow settles")
+  w.mgr:dispose()
+end
+
+-- Consuming a step at movement start must not make the later commit
+-- revision replay the same vacated tile a second time. After one ordinary
+-- follow completes, idle ticks stay settled, and a genuine discontinuity
+-- still restores the follower behind the player.
+function T.observed_step_is_never_replayed_from_the_commit()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the follower starts while the player step is still in flight")
+  -- A second observation of the same started step is idempotent: the
+  -- follower keeps its one in-flight walk instead of starting over.
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "a repeated observation starts no second walk")
+
+  for _ = 1, 12 do
+    if w.player.motion ~= "idle" then
+      w.player:updateFixed({})
+    end
+    w.controller:update()
+  end
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the step")
+  Assert.equal(actor.fieldX, vacated.fieldX, "the follower sits on the vacated tile")
+  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower sits on the vacated tile")
+  Assert.isTrue(w.controller:isMovementSettled(), "the ordinary follow settles")
+
+  -- The later commit revision must not enqueue the already-consumed tile
+  -- again: idle ticks never restart the follower.
+  tick(w, 10)
+  actor = assert(w.mgr:getById(partnerId), "the partner survives idle ticks")
+  Assert.equal(actor.fieldX, vacated.fieldX, "no duplicate walk replays the consumed tile")
+  Assert.equal(actor.fieldZ, vacated.fieldZ, "no duplicate walk replays the consumed tile")
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled while idle")
+
+  -- A genuine discontinuity still repairs through the existing snap path.
+  w.player:setScriptPosition({ fieldX = 20, fieldZ = 20 })
+  tick(w, 3)
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the discontinuity")
+  Assert.equal(actor.fieldX, 20, "the snap lands behind the player")
+  Assert.equal(actor.fieldZ, 19, "the snap lands behind the player")
+  Assert.isTrue(w.controller:isMovementSettled(), "stale anchors never replay after a snap")
+  w.mgr:dispose()
+end
+
+-- A follower attached after history seeds the current revision instead of
+-- replaying the completed step: installing behind the settled player starts
+-- no walk toward the old vacated tile.
+function T.late_attach_ignores_completed_history()
+  local w = world()
+  stepSouth(w)
+  Assert.equal(w.player.fieldZ, 6, "the pre-attach step commits before the follower exists")
+  w.svc:setLead(0, mon())
+  tick(w, 3)
+  local partnerId = assert(w.mgr:partnerId(), "the late attach still installs the partner")
+  local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  Assert.equal(actor.fieldX, 4, "the late attach installs behind the settled player")
+  Assert.equal(actor.fieldZ, 5, "the late attach installs behind the settled player")
+  Assert.isTrue(w.controller:isMovementSettled(), "the completed step replays no walk")
+  tick(w, 10)
+  actor = assert(w.mgr:getById(partnerId), "the partner survives idle ticks")
+  Assert.equal(actor.fieldX, 4, "idle ticks start no replay of the historical step")
+  Assert.equal(actor.fieldZ, 5, "idle ticks start no replay of the historical step")
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled while idle")
+  w.mgr:dispose()
+end
+
 return { tests = T }

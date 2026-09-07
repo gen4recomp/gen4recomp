@@ -49,6 +49,8 @@ local FieldTraversal = require("libs.hgss.src.world.FieldTraversal")
 ---@field private _scriptedMotion table<string, unknown>?
 ---@field private _movementRevision integer committed tile commits observed by followers
 ---@field private _lastTraversalKind string traversal kind of the last committed tile
+---@field private _movementStartRevision integer resolved translation starts observed by followers
+---@field private _movementTransaction FieldPlayer.MovementTransaction? latest resolved translation start
 local FieldPlayer = {}
 FieldPlayer.__index = FieldPlayer
 
@@ -59,6 +61,15 @@ FieldPlayer.TURN_TICKS = 2
 FieldPlayer.LEDGE_JUMP_TICKS = 16
 
 ---@alias FieldDirection "north"|"south"|"west"|"east"
+
+---@class FieldPlayer.MovementTransaction
+---@field revision integer
+---@field mapId integer
+---@field from table<string, unknown>
+---@field to table<string, unknown>
+---@field direction FieldDirection
+---@field traversalKind string
+---@field durationTicks integer
 
 ---@class FieldPlayerOptions
 ---@field currentMap RuntimeFieldMap
@@ -194,6 +205,8 @@ function FieldPlayer.new(options)
     _gestureOffsetY = 0,
     _movementRevision = 0,
     _lastTraversalKind = "idle",
+    _movementStartRevision = 0,
+    _movementTransaction = nil,
   }, FieldPlayer)
 end
 
@@ -313,6 +326,24 @@ function FieldPlayer:_resolveStep(direction, bypassBlocking)
   return result
 end
 
+---@param point table<string, unknown>
+---@return table<string, unknown>
+local function copyAnchor(point)
+  return {
+    fieldX = point.fieldX,
+    fieldZ = point.fieldZ,
+    localX = point.localX,
+    localZ = point.localZ,
+    worldX = point.worldX,
+    worldY = point.worldY,
+    worldZ = point.worldZ,
+    surfaceId = point.surfaceId,
+    cellKey = point.cellKey,
+    sourceCellKey = point.sourceCellKey,
+    sourceSurfaceId = point.sourceSurfaceId,
+  }
+end
+
 -- Shared step start for ordinary and scripted steps: capture the from state,
 -- adopt the resolved destination, and enter the walking motion.
 function FieldPlayer:_beginStep(direction, destination)
@@ -331,6 +362,25 @@ function FieldPlayer:_beginStep(direction, destination)
   self.motion = "walking"
   self.progressTicks = 0
   self.durationTicks = FieldPlayer.WALK_STEP_TICKS
+  self:_publishMovementStart(direction)
+end
+
+-- Publish the resolved translation before the first in-flight tick: source
+-- and destination anchors, direction, traversal kind, and semantic duration
+-- are final for this step. Blocked input and facing-only turns never reach
+-- this path, so they publish nothing.
+---@param direction FieldDirection
+function FieldPlayer:_publishMovementStart(direction)
+  self._movementStartRevision = self._movementStartRevision + 1
+  self._movementTransaction = {
+    revision = self._movementStartRevision,
+    mapId = self.currentMap.mapId,
+    from = copyAnchor(assert(self.from, "movement source required")),
+    to = copyAnchor(assert(self.to, "movement destination required")),
+    direction = direction,
+    traversalKind = "walk",
+    durationTicks = FieldPlayer.WALK_STEP_TICKS,
+  }
 end
 
 function FieldPlayer:_beginTurn(direction)
@@ -753,6 +803,15 @@ end
 ---@return integer
 function FieldPlayer:movementRevision()
   return self._movementRevision
+end
+
+-- The latest resolved translation start: source/destination anchors,
+-- direction, traversal kind, and semantic duration, published when the step
+-- begins and readable until the next step replaces it. Read-only by
+-- convention: callers must not mutate the returned record or its anchors.
+---@return FieldPlayer.MovementTransaction?
+function FieldPlayer:movementTransaction()
+  return self._movementTransaction
 end
 
 -- The last committed player anchor: map identity, tile, height, stable

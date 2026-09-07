@@ -1,6 +1,7 @@
--- A real starter follower trails committed player steps through the production
--- field runtime: after an east step and then a south step, the follower's
--- world position translates mid-action, its facing matches the movement
+-- A real starter follower starts from the player's movement-start transaction
+-- through the production field runtime: after an east step and then a south
+-- step, the follower is already walking toward the vacated tile while the
+-- player step is still in flight, its facing matches the movement
 -- direction, and the production draw path selects walk frames from the real
 -- generated atlas for that facing. Every step goes through semantic input
 -- and the normal update/draw ordering; no synthetic actor definition and no
@@ -116,33 +117,6 @@ local function partnerOf(runtime)
   return assert(runtime.actors:getById(PARTNER_ACTOR_ID), "the starter follower must stay installed")
 end
 
--- One facing-resolved production step; true only when the step commits to a
--- new tile (turns in place and blocked input report false).
-local function tryStep(state, runtime, direction)
-  waitFor(state, "player idle before " .. direction, function()
-    return runtime.player.motion == "idle"
-  end, 120)
-  runtime.player:turn(direction)
-  local before = playerTile(runtime)
-  runtime:press(direction)
-  state:update(FIXED_DT)
-  runtime:release(direction)
-  waitFor(state, "movement resolves", function()
-    return runtime.player.motion == "idle"
-  end, 120)
-  local after = playerTile(runtime)
-  return not sameTile(after, before), before, after
-end
-
--- One committed production step along the fixture path; the room's open
--- floor supplies every step and the path never leaves the fixture map.
-local function stepPlayer(state, runtime, direction)
-  local committed, before, _ = tryStep(state, runtime, direction)
-  Assert.isTrue(committed, "the fixture room must supply a committed " .. direction .. " step")
-  Assert.equal(runtime.runtimeMap.mapSymbol, HOUSE_1F, "the fixture path must not leave the fixture map")
-  return before
-end
-
 local function partnerRecordOf(runtime)
   for _, record in ipairs(runtime.actors:drawRecords()) do
     if record.actorId == PARTNER_ACTOR_ID then
@@ -191,16 +165,26 @@ local function countFrames(set)
   return count
 end
 
--- Drive one player step, then sample every fixed tick until the follower
--- settles back onto the vacated tile. When `followerDirection` is given, the
--- leg is measured: the settled queue holds exactly this step's anchor, so
--- the follower performs a single adjacent action whose direction is read
--- from the observed tiles and must match, with live facing, world
--- translation, and real atlas draw selection asserted along the way.
+-- Drive one player step while sampling every fixed tick from the step's
+-- first update until the follower settles back onto the vacated tile. When
+-- `followerDirection` is given, the leg is measured: the follower performs a
+-- single adjacent action whose direction is read from the observed tiles and
+-- must match, with live facing, world translation, and real atlas draw
+-- selection asserted along the way.
 local function runLeg(state, runtime, visual, drawItemFor, playerDirection, followerDirection)
+  waitFor(state, "player idle before " .. playerDirection, function()
+    return runtime.player.motion == "idle"
+  end, 120)
+  -- Face first so the pressed step translates instead of turning in place.
+  runtime.player:turn(playerDirection)
   local followerStart = { fieldX = partnerOf(runtime).fieldX, fieldZ = partnerOf(runtime).fieldZ }
-  local vacated = stepPlayer(state, runtime, playerDirection)
+  local vacated = playerTile(runtime)
+  runtime:press(playerDirection)
+  state:update(FIXED_DT)
+  state:draw()
+  runtime:release(playerDirection)
   local samples = {}
+  local committed = false
   local settled = false
   for _ = 1, 240 do
     local actor = partnerOf(runtime)
@@ -213,13 +197,18 @@ local function runLeg(state, runtime, visual, drawItemFor, playerDirection, foll
       poseTick = actor.poseTick,
       record = record,
     }
-    if actor.fieldX == vacated.fieldX and actor.fieldZ == vacated.fieldZ and actor.pose == "idle" then
+    if runtime.player.motion == "idle" and not sameTile(playerTile(runtime), vacated) then
+      committed = true
+    end
+    if committed and actor.fieldX == vacated.fieldX and actor.fieldZ == vacated.fieldZ and actor.pose == "idle" then
       settled = true
       break
     end
     state:update(FIXED_DT)
     state:draw()
   end
+  Assert.isTrue(committed, "the fixture room must supply a committed " .. playerDirection .. " step")
+  Assert.equal(runtime.runtimeMap.mapSymbol, HOUSE_1F, "the fixture path must not leave the fixture map")
   Assert.isTrue(settled, "the follower settles onto the vacated tile after the " .. playerDirection .. " player step")
   Assert.isNil(runtime.errorText, "field runtime faulted trailing " .. playerDirection)
   if followerDirection == nil then
@@ -349,6 +338,94 @@ function T.real_starter_follower_trails_east_then_south_with_directional_walk_fr
         frameSetsDiffer(assert(legFrames.east), assert(legFrames.south)),
         "walk frame selection changes with movement direction"
       )
+    end, debug.traceback)
+    state:dispose()
+    if not ok then
+      error(err, 0)
+    end
+  end
+end
+
+-- The follower walks while the player step is still in flight: after a
+-- single fixed update of one ordinary east step, the follower already has
+-- an active walk toward the vacated tile and keeps translating alongside
+-- the player, instead of waiting for the player to settle first.
+function T.follower_moves_while_the_player_step_is_in_flight()
+  local versions = readyVersions()
+  Assert.isTrue(#versions > 0, "a ready imported game version is required")
+  for _, versionId in ipairs(versions) do
+    local state = assert(FieldState.new(giftedGame(versionId), {}))
+    local ok, err = xpcall(function()
+      local runtime = assert(state.runtime, "field state owns its runtime")
+      runtime.scripts.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_PLAYERS_HOUSE_1F, 1)
+      waitFor(state, "field entry", function()
+        return runtime.session.mapEntryStage == nil
+      end, 240)
+      waitFor(state, "field ready for ordinary input", function()
+        return fieldSettled(runtime)
+      end, 480)
+      Assert.isNil(runtime.errorText, "field runtime faulted on entry: " .. tostring(runtime.errorText))
+      waitFor(state, "follower installation", function()
+        return runtime.actors:partnerId() ~= nil
+      end, 240)
+      local following = assert(runtime.followingMon, "the field runtime owns its follower controller")
+      waitFor(state, "player idle before the measured step", function()
+        return runtime.player.motion == "idle"
+      end, 120)
+
+      -- Face east first so the pressed step translates instead of turning
+      -- in place, then drive exactly one fixed update of the step.
+      runtime.player:turn("east")
+      local vacated = playerTile(runtime)
+      local followerStart = { fieldX = partnerOf(runtime).fieldX, fieldZ = partnerOf(runtime).fieldZ }
+      runtime:press("east")
+      state:update(FIXED_DT)
+      runtime:release("east")
+
+      Assert.isTrue(runtime.player.motion ~= "idle", "the player step is still in flight after its first update")
+      local dx = vacated.fieldX - followerStart.fieldX
+      local dz = vacated.fieldZ - followerStart.fieldZ
+      local expected = (dx == 1 and dz == 0) and "east"
+        or (dx == -1 and dz == 0) and "west"
+        or (dx == 0 and dz == 1) and "south"
+        or (dx == 0 and dz == -1) and "north"
+        or nil
+      Assert.notNil(expected, "the follower target is the adjacent vacated tile")
+      Assert.isFalse(following:isMovementSettled(), "the follower starts while the player step is still in flight")
+      local partner = partnerOf(runtime)
+      Assert.equal(partner.pose, "walk", "the follower walks while the player step is still in flight")
+      Assert.equal(partner.facing, expected, "the follower faces the vacated tile while the player is in flight")
+
+      -- A second in-flight tick moves both actors along the same interval.
+      local firstX, firstZ = partner.worldX, partner.worldZ
+      state:update(FIXED_DT)
+      state:draw()
+      Assert.isTrue(runtime.player.motion ~= "idle", "the player is still in flight mid-step")
+      partner = partnerOf(runtime)
+      Assert.equal(partner.pose, "walk", "the follower is still walking mid-step")
+      local axis = (expected == "east" or expected == "west") and "worldX" or "worldZ"
+      local first = axis == "worldX" and firstX or firstZ
+      local second = axis == "worldX" and partner.worldX or partner.worldZ
+      Assert.isTrue(second ~= first, "the follower world position translates while the player is in flight")
+
+      -- Both actors then complete the normal step with the follower on the
+      -- tile the player vacated.
+      waitFor(state, "player commit", function()
+        return runtime.player.motion == "idle"
+      end, 120)
+      Assert.isNil(runtime.errorText, "field runtime faulted trailing the measured step")
+      local settled = false
+      for _ = 1, 240 do
+        local actor = partnerOf(runtime)
+        if actor.fieldX == vacated.fieldX and actor.fieldZ == vacated.fieldZ and actor.pose == "idle" then
+          settled = true
+          break
+        end
+        state:update(FIXED_DT)
+        state:draw()
+      end
+      Assert.isTrue(settled, "the follower settles onto the vacated tile after the measured step")
+      Assert.isNil(runtime.errorText, "field runtime faulted settling the follower")
     end, debug.traceback)
     state:dispose()
     if not ok then

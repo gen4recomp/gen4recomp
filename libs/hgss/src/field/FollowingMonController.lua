@@ -1,7 +1,9 @@
 -- The one field following-mon controller. It derives the active companion
 -- from the live party's first alive non-egg mon and its catalog follower
 -- descriptor, installs exactly one reserved partner actor through the actor
--- manager, replays committed player anchors through a bounded trail queue,
+-- manager, starts ordinary walks from the player's movement-start
+-- transaction in the same fixed-step epoch, replays committed player anchors
+-- through a bounded trail queue only for paused/busy recovery and resync,
 -- and settles script pause/wait/explicit-movement requests. It owns no
 -- actor table, occupancy index, draw record, or visual: those stay with the
 -- manager. Presentation state is never saved; continue reconstructs the
@@ -36,6 +38,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field _mapEntry boolean
 ---@field _lastPlayerRevision integer?
 ---@field _lastAnchor table<string, unknown>?
+---@field _lastMovementTransactionRevision integer?
+---@field _consumedStep table<string, unknown>?
 ---@field _queue table<string, unknown>[]
 ---@field _paused boolean
 ---@field _action { kind: string, progress: integer, duration: integer }?
@@ -68,6 +72,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field _discontinuity fun(self: FollowingMonController, mapId: integer)
 ---@field _handleMapChange fun(self: FollowingMonController, mapId: integer)
 ---@field _observePlayer fun(self: FollowingMonController, mapId: integer)
+---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
+---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: table)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
 ---@field _advanceAction fun(self: FollowingMonController)
 
@@ -168,6 +174,8 @@ function FollowingMonController.new(opts)
     _mapEntry = false,
     _lastPlayerRevision = nil,
     _lastAnchor = nil,
+    _lastMovementTransactionRevision = nil,
+    _consumedStep = nil,
     _queue = {},
     _paused = false,
     _action = nil,
@@ -527,6 +535,112 @@ function FollowingMonController:_handleMapChange(mapId)
   self._pendingHiddenLead = nil
   self._lastPlayerRevision = nil
   self._lastAnchor = nil
+  self._lastMovementTransactionRevision = nil
+  self._consumedStep = nil
+end
+
+-- Observe one movement-start transaction: an ordinary adjacent walk starts
+-- in the same fixed-step epoch instead of waiting for the player commit.
+-- A paused or busy follower keeps the vacated source in the bounded queue;
+-- the later commit never re-enqueues the same tile (see _observePlayer).
+-- Anything non-ordinary (foreign map, non-walk kind) is marked consumed and
+-- left to the existing commit/discontinuity observation.
+---@param self FollowingMonController
+---@param mapId integer
+function FollowingMonController:_observeMovementStart(mapId)
+  local player = self._playerOf()
+  if type(player.movementTransaction) ~= "function" then
+    return
+  end
+  local tx = player:movementTransaction()
+  if tx == nil then
+    if self._lastMovementTransactionRevision == nil then
+      self._lastMovementTransactionRevision = 0
+    end
+    return
+  end
+  if self._lastMovementTransactionRevision == nil then
+    -- A follower attached after history seeds the current revision instead
+    -- of replaying the completed step.
+    self._lastMovementTransactionRevision = tx.revision
+    return
+  end
+  if tx.revision == self._lastMovementTransactionRevision then
+    return
+  end
+  if tx.traversalKind ~= "walk" or tx.mapId ~= mapId then
+    self._lastMovementTransactionRevision = tx.revision
+    return
+  end
+  if self._actors:partnerId() == nil then
+    return
+  end
+  self._lastMovementTransactionRevision = tx.revision
+  self:_beginOrdinaryFollow(mapId, tx)
+end
+
+-- Start the ordinary follow toward the transaction's source anchor: the tile
+-- the player vacated. The movement direction derives from the follower's own
+-- tile, never from the player's step direction. The duration only asserts
+-- against the existing trail calibration; the actor walk keeps its semantic
+-- normal speed.
+---@param self FollowingMonController
+---@param mapId integer
+---@param tx table
+function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
+  assert(
+    tx.durationTicks == MovementCalibration.SPEED_TICKS[FollowingMonController.TRAIL_SPEED],
+    "ordinary follow duration must match the trail calibration"
+  )
+  self._consumedStep = {
+    mapId = tx.mapId,
+    fromX = tx.from.fieldX,
+    fromZ = tx.from.fieldZ,
+    toX = tx.to.fieldX,
+    toZ = tx.to.fieldZ,
+  }
+  local partnerId = assert(self._actors:partnerId(), "ordinary follow requires the partner actor")
+  if self._paused or self._action ~= nil then
+    if #self._queue >= FollowingMonController.MAX_QUEUED_ANCHORS then
+      table.remove(self._queue, 1)
+    end
+    self._queue[#self._queue + 1] = {
+      mapId = tx.mapId,
+      fieldX = tx.from.fieldX,
+      fieldZ = tx.from.fieldZ,
+      facing = tx.direction,
+      worldY = tx.from.worldY,
+    }
+    return
+  end
+  local position = assert(self._actors:getPosition(partnerId), "partner position is required")
+  local target = { fieldX = tx.from.fieldX, fieldZ = tx.from.fieldZ }
+  if not isAdjacent(position, target) then
+    self:_discontinuity(mapId)
+    return
+  end
+  local direction = directionFromTo(position, target)
+  self._actors:setFacing(partnerId, direction)
+  local ok, err = pcall(
+    self._actors.beginScriptedAction,
+    self._actors,
+    partnerId,
+    { action = "walk", direction = direction, speed = FollowingMonController.TRAIL_SPEED }
+  )
+  if not ok then
+    if FieldActorManager.isPlacementRejection(err) then
+      self:_discontinuity(mapId)
+      return
+    end
+    error(err)
+  end
+  assert(err == nil, "scripted begin answers through the actor, not a value")
+  self._action = {
+    kind = "trail",
+    progress = 0,
+    duration = MovementCalibration.SPEED_TICKS[FollowingMonController.TRAIL_SPEED],
+  }
+  self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
 end
 
 -- Observe one committed player step: enqueue the player's previous anchor.
@@ -550,6 +664,22 @@ function FollowingMonController:_observePlayer(mapId)
   self._lastPlayerRevision = revision
   local previous = self._lastAnchor
   self._lastAnchor = anchor
+  local consumed = self._consumedStep
+  self._consumedStep = nil
+  if
+    consumed ~= nil
+    and previous ~= nil
+    and previous.mapId == consumed.mapId
+    and previous.fieldX == consumed.fromX
+    and previous.fieldZ == consumed.fromZ
+    and anchor.mapId == consumed.mapId
+    and anchor.fieldX == consumed.toX
+    and anchor.fieldZ == consumed.toZ
+  then
+    -- The ordinary step already started from its movement-start transaction;
+    -- the commit must not enqueue the same vacated tile a second time.
+    return
+  end
   if previous == nil or previous.mapId ~= mapId or anchor.mapId ~= mapId then
     return
   end
@@ -677,6 +807,7 @@ function FollowingMonController:update()
   if not sameIdentity(self._published, self._lead) then
     self:_publish(mapId)
   end
+  self:_observeMovementStart(mapId)
   self:_observePlayer(mapId)
   self:_driveQueue(mapId)
   self:_advanceAction()
