@@ -262,6 +262,95 @@ local function runLeg(state, runtime, visual, drawItemFor, playerDirection, foll
   return frames
 end
 
+function T.stationary_follower_holds_one_idle_frame_without_player_input(scope)
+  local versions = readyVersions()
+  Assert.isTrue(#versions > 0, "a ready imported game version is required")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+    local descriptor =
+      assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
+    local state = assert(FieldState.new(giftedGame(versionId), {}))
+    local ok, err = xpcall(function()
+      local runtime = assert(state.runtime, "field state owns its runtime")
+      runtime.scripts.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_PLAYERS_HOUSE_1F, 1)
+      waitFor(state, "field entry", function()
+        return runtime.session.mapEntryStage == nil
+      end, 240)
+      waitFor(state, "field ready for ordinary input", function()
+        return fieldSettled(runtime)
+      end, 480)
+      Assert.isNil(runtime.errorText, "field runtime faulted on entry: " .. tostring(runtime.errorText))
+      waitFor(state, "follower installation", function()
+        return runtime.actors:partnerId() ~= nil
+      end, 240)
+      local visual = assert(
+        cacheFs:loadLua(FieldActorCache.visualPath(descriptor.visualId)),
+        "the generated starter visual loads from the derived cache"
+      )
+      local provider = FieldActorAssetProvider.new(cacheFs)
+      scope:own({
+        release = function()
+          provider:dispose()
+        end,
+      })
+      local entry = provider:acquire(descriptor.visualId)
+      local function drawItemFor(record)
+        local items = FieldActorDraw.itemsInto({ record }, function(spriteId)
+          Assert.equal(spriteId, descriptor.visualId, "draw resolves the follower visual")
+          return entry --[[@as FieldActorDraw.Entry]]
+        end, { items = {}, actorSlots = {}, generation = 0 })
+        Assert.equal(#items, 1, "one visible follower record draws exactly one atlas item")
+        return items[1]
+      end
+      waitFor(state, "follower idle", function()
+        return partnerOf(runtime).pose == "idle"
+      end, 240)
+      local leader = playerTile(runtime)
+      local follower = partnerOf(runtime)
+      local facing = follower.facing
+      local baseField = { fieldX = follower.fieldX, fieldZ = follower.fieldZ }
+      local basePoseTick = follower.poseTick
+      local baseOffsetY = follower.presentationOffset.y
+      local baseFrame = FieldActorPose.frameIndex(visual, facing, "idle", basePoseTick)
+      local baseRecord = partnerRecordOf(runtime)
+      local baseItem = drawItemFor(baseRecord)
+      for _ = 1, 24 do
+        state:update(FIXED_DT)
+        state:draw()
+        local actor = partnerOf(runtime)
+        Assert.equal(actor.pose, "idle", "the untouched follower stays in idle")
+        Assert.equal(actor.facing, facing, "idle sampling must not turn the follower")
+        Assert.equal(actor.fieldX, baseField.fieldX, "idle sampling must not translate the follower")
+        Assert.equal(actor.fieldZ, baseField.fieldZ, "idle sampling must not translate the follower")
+        Assert.equal(actor.poseTick, basePoseTick, "idle must not advance its pose clock")
+        Assert.equal(actor.presentationOffset.y, baseOffsetY, "idle must not bob its display offset")
+        Assert.equal(
+          FieldActorPose.frameIndex(visual, actor.facing, "idle", actor.poseTick),
+          baseFrame,
+          "idle must hold one directional frame"
+        )
+      end
+      Assert.equal(baseOffsetY, 0, "stationary idle carries no display offset")
+      local after = partnerRecordOf(runtime)
+      Assert.near(after.world.x, baseRecord.world.x, 1e-9, "the idle follower draw anchor stays fixed")
+      Assert.near(after.world.y, baseRecord.world.y, 1e-9, "the idle follower draw height stays fixed")
+      Assert.near(after.world.z, baseRecord.world.z, 1e-9, "the idle follower draw depth stays fixed")
+      Assert.equal(
+        drawItemFor(after).frameIndex,
+        baseItem.frameIndex,
+        "draw holds the same idle atlas frame while stationary"
+      )
+      Assert.isNil(runtime.errorText, "field runtime faulted while the follower stood idle")
+      Assert.isTrue(sameTile(playerTile(runtime), leader), "idle sampling uses no player movement")
+    end, debug.traceback)
+    state:dispose()
+    if not ok then
+      error(err, 0)
+    end
+  end
+end
+
 function T.real_starter_follower_trails_east_then_south_with_directional_walk_frames(scope)
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")

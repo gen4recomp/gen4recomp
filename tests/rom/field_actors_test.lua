@@ -148,8 +148,8 @@ function T.compiled_visuals_normalize_source_actor_families(romFs)
     [335] = "static", -- family 12
     [425] = "static", -- family 13
     [183] = "static", -- family 15
-    [1043] = "animated", -- family 16
-    [1032] = "animated", -- family 17
+    [1043] = "static", -- family 16
+    [1032] = "static", -- family 17
     [262] = "static", -- family 18
   }
   local follower = bundle.visuals[1032]
@@ -161,9 +161,9 @@ function T.compiled_visuals_normalize_source_actor_families(romFs)
   for spriteId, mode in pairs(familyModes) do
     Assert.equal(bundle.visuals[spriteId].idlePresentation.mode, mode)
   end
-  Assert.equal(follower.idlePresentation.mode, "animated")
-  Assert.equal(follower.idlePresentation.cadence, 1)
-  Assert.equal(follower.directions.south.idle.durationTicks, follower.directions.south.walk.durationTicks)
+  Assert.equal(follower.idlePresentation.mode, "static")
+  Assert.equal(follower.idlePresentation.cadence, 0)
+  Assert.equal(follower.directions.south.idle.durationTicks, 1)
   for _, direction in ipairs(manifest.directionOrder) do
     for _, segment in ipairs(ordinary.directions[direction].idle.frames) do
       Assert.equal(segment.displayOffsetY, 0, "static idle segment offset must be 0")
@@ -174,48 +174,29 @@ function T.compiled_visuals_normalize_source_actor_families(romFs)
   end
 end
 
-function T.marill_south_idle_preserves_retail_offset_phase(romFs)
+function T.field_pokemon_idle_is_a_single_stationary_frame_while_walk_keeps_its_loop(romFs)
   local bundle = assert(FieldActorCompiler.compile(romFs))
-  local southIdle = bundle.visuals[1032].directions.south.idle
-  local southWalk = bundle.visuals[1032].directions.south.walk
-  Assert.equal(southWalk.durationTicks, 20)
-  Assert.deepEqual({ southWalk.frames[1].ticks, southWalk.frames[2].ticks, southWalk.frames[3].ticks }, { 5, 10, 5 })
-  Assert.equal(southWalk.frames[1].frameIndex, southWalk.frames[3].frameIndex, "the loop returns to its first slot")
-  Assert.equal(southIdle.durationTicks, 20)
-  local offsets = {}
-  local frameIndices = {}
-  local tick = 0
-  for _, segment in ipairs(southIdle.frames) do
-    for _ = 1, segment.ticks do
-      offsets[tick] = segment.displayOffsetY
-      frameIndices[tick] = segment.frameIndex
-      tick = tick + 1
+  for _, spriteId in ipairs({ 1032, 1043 }) do
+    local visual = assert(bundle.visuals[spriteId], "field pokemon visual " .. spriteId .. " must be compiled")
+    Assert.equal(visual.idlePresentation.mode, "static", "field pokemon idle must be stationary")
+    Assert.equal(visual.idlePresentation.cadence, 0, "stationary idle carries no frame clock")
+    for _, direction in ipairs(manifest.directionOrder) do
+      local set = assert(visual.directions[direction], direction .. " pose set is required")
+      local idle = assert(set.idle, direction .. " idle pose is required")
+      local walk = assert(set.walk, direction .. " walk pose is required")
+      Assert.equal(idle.durationTicks, 1, direction .. " idle holds one tick")
+      Assert.equal(#idle.frames, 1, direction .. " idle holds one frame")
+      Assert.equal(idle.frames[1].ticks, 1)
+      Assert.equal(idle.frames[1].displayOffsetY, 0, direction .. " idle carries no display offset")
+      Assert.isTrue(idle.loop, direction .. " idle loops its single frame")
+      Assert.isTrue(walk.durationTicks > 1 and #walk.frames > 1, direction .. " walk keeps multi-frame locomotion")
+      Assert.equal(
+        idle.frames[1].frameIndex,
+        walk.frames[1].frameIndex,
+        direction .. " idle holds the neutral walk frame"
+      )
     end
   end
-  Assert.equal(tick, 20, "idle must expand to 20 ticks")
-  for t = 0, 19 do
-    local expected = ((t >= 5 and t <= 9) or (t >= 15 and t <= 19)) and -2 / 16 or 0
-    Assert.equal(offsets[t], expected, "idle offset at phase " .. t)
-  end
-  local seen = {}
-  for t = 0, 19 do
-    local fi = frameIndices[t]
-    local off = offsets[t]
-    seen[fi] = seen[fi] or {}
-    seen[fi][off] = true
-  end
-  local hasReused = false
-  for _, offMap in pairs(seen) do
-    local count = 0
-    for _ in pairs(offMap) do
-      count = count + 1
-    end
-    if count > 1 then
-      hasReused = true
-      break
-    end
-  end
-  Assert.isTrue(hasReused, "a reused atlas frame must appear with two offsets")
 end
 
 -- The render facts every target class must inherit from the shared model member:

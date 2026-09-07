@@ -98,6 +98,39 @@ function T.unknown_source_facing_is_rejected()
   end)
 end
 
+function T.idle_mode_decides_whether_repeated_idle_ticks_advance_presentation()
+  local function actorWith(visual)
+    return FieldObjectActor.new({
+      mapId = 61,
+      sourceEvent = sourceEvent(),
+      fieldX = 6,
+      fieldZ = 5,
+      surfaceId = 0,
+      worldX = 6.5,
+      worldY = 0,
+      worldZ = 5.5,
+      visual = visual,
+      idlePresentation = visual.idlePresentation,
+    })
+  end
+  local still = actorWith(FieldActorFixture.visual(99))
+  local lively = actorWith(FieldActorFixture.visual(99, { idlePresentation = { mode = "animated", cadence = 1 } }))
+  for _ = 1, 3 do
+    still:advancePresentationTick()
+    lively:advancePresentationTick()
+  end
+  Assert.equal(still.pose, "idle")
+  Assert.equal(still.poseTick, 0, "stationary idle must not advance its pose clock")
+  Assert.equal(still.presentationOffset.y, 0, "stationary idle must not bob")
+  Assert.equal(lively.pose, "idle")
+  Assert.equal(lively.poseTick, 3, "animated idle keeps its own frame clock")
+  still:setFacing("north")
+  still:advancePresentationTick()
+  Assert.equal(still.facing, "north")
+  Assert.equal(still.pose, "idle")
+  Assert.equal(still.poseTick, 0, "a facing change in idle selects the next stationary frame without playback")
+end
+
 function T.facing_override_applies_and_restores()
   local a = actor()
   local token = a:pushFacingOverride({ owner = "pre-script-dialogue", facing = "north" })
