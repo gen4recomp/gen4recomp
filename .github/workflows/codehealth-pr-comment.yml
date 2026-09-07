@@ -1,0 +1,240 @@
+name: Code health PR comment
+
+# Privileged publication side of the structural hotspot advisory. Runs on
+# the default-branch workflow definition after the read-only analysis
+# workflow completes, validates the untrusted result artifact as data, and
+# maintains one advisory PR comment. Never checks out or executes pull
+# request code or artifact content.
+
+on:
+  workflow_run:
+    workflows:
+      - Code health PR
+    types:
+      - completed
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Download comparison result
+        uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          name: codehealth-pr-result
+          path: ${{ runner.temp }}/codehealth-pr-result
+
+      - name: Maintain advisory comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const MARKER = '<!-- gen4recomp-codehealth-hotspot-advisory -->';
+            const METRICS = new Set(['maxCcn', 'maxNloc', 'physicalLines']);
+            const SHA_RE = /^[0-9a-f]{40}$/;
+
+            function fail(message) {
+              core.setFailed(`codehealth comment: ${message}`);
+            }
+
+            function isSafePath(value) {
+              if (typeof value !== 'string' || value.length === 0) {
+                return false;
+              }
+              if (value.includes('\\') || value.startsWith('/') || !value.endsWith('.lua')) {
+                return false;
+              }
+              const parts = value.split('/');
+              return parts.every((part) => part.length > 0 && part !== '.' && part !== '..');
+            }
+
+            function isFiniteNumber(value) {
+              return typeof value === 'number' && Number.isFinite(value);
+            }
+
+            let result;
+            try {
+              const raw = fs.readFileSync(
+                path.join(process.env.RUNNER_TEMP, 'codehealth-pr-result', 'result.json'),
+                'utf8',
+              );
+              result = JSON.parse(raw);
+            } catch (error) {
+              fail(`cannot load result artifact as data: ${error.message}`);
+              return;
+            }
+
+            if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+              fail('result artifact must contain a JSON object');
+              return;
+            }
+            if (result.schemaVersion !== 1) {
+              fail('result artifact has an unsupported schema version');
+              return;
+            }
+            if (!Number.isInteger(result.pullRequest) || result.pullRequest <= 0) {
+              fail('result artifact has an invalid pull request number');
+              return;
+            }
+            if (typeof result.baseSha !== 'string' || !SHA_RE.test(result.baseSha)) {
+              fail('result artifact has an invalid base SHA');
+              return;
+            }
+            if (typeof result.headSha !== 'string' || !SHA_RE.test(result.headSha)) {
+              fail('result artifact has an invalid head SHA');
+              return;
+            }
+            if (!Array.isArray(result.regressions)) {
+              fail('result artifact has invalid regressions');
+              return;
+            }
+            for (const row of result.regressions) {
+              if (typeof row !== 'object' || row === null || Array.isArray(row)) {
+                fail('result artifact contains an invalid regression row');
+                return;
+              }
+              if (
+                !isSafePath(row.path) ||
+                !METRICS.has(row.metric) ||
+                !isFiniteNumber(row.threshold) ||
+                !isFiniteNumber(row.head) ||
+                !(row.head > row.threshold)
+              ) {
+                fail('result artifact contains an invalid regression row');
+                return;
+              }
+              if (row.kind === 'new-hotspot') {
+                if (row.base !== null) {
+                  fail('result artifact contains an invalid new-hotspot row');
+                  return;
+                }
+              } else if (row.kind === 'worsened') {
+                if (!isFiniteNumber(row.base) || !(row.head > row.base)) {
+                  fail('result artifact contains an invalid worsened row');
+                  return;
+                }
+              } else {
+                fail('result artifact contains an invalid regression row');
+                return;
+              }
+            }
+
+            const run = context.payload.workflow_run;
+            const associated = Array.isArray(run.pull_requests) ? run.pull_requests : [];
+            if (
+              associated.length > 0 &&
+              !associated.some((entry) => entry && entry.number === result.pullRequest)
+            ) {
+              fail('result artifact is not associated with the triggering run');
+              return;
+            }
+
+            let pull;
+            try {
+              pull = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: result.pullRequest,
+              });
+            } catch (error) {
+              fail(`cannot fetch pull request: ${error.message}`);
+              return;
+            }
+            const current = pull.data;
+            const headSha = current.head && current.head.sha;
+            const mergeSha = current.merge_commit_sha;
+            if (result.headSha !== headSha && result.headSha !== mergeSha) {
+              core.info('codehealth comment: result is stale for the current revision; no mutation');
+              return;
+            }
+            if (current.base && current.base.sha && result.baseSha !== current.base.sha) {
+              core.info('codehealth comment: result base no longer matches; no mutation');
+              return;
+            }
+
+            const issueNumber = result.pullRequest;
+            let owned;
+            try {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+              owned = comments.find(
+                (comment) =>
+                  comment &&
+                  comment.user &&
+                  comment.user.type === 'Bot' &&
+                  typeof comment.body === 'string' &&
+                  comment.body.includes(MARKER),
+              );
+            } catch (error) {
+              fail(`cannot list pull request comments: ${error.message}`);
+              return;
+            }
+
+            if (result.regressions.length === 0) {
+              if (owned) {
+                try {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: owned.id,
+                  });
+                } catch (error) {
+                  fail(`cannot delete resolved advisory comment: ${error.message}`);
+                }
+              }
+              return;
+            }
+
+            const rows = [...result.regressions]
+              .sort((a, b) =>
+                a.path < b.path ? -1 : a.path > b.path ? 1 : a.metric < b.metric ? -1 : 1,
+              )
+              .map(
+                (row) =>
+                  `| \`${row.path}\` | ${row.metric} | ${row.base === null ? '—' : row.base} | ${row.head} | ${row.kind} | ${row.threshold} |`,
+              )
+              .join('\n');
+            const body = [
+              MARKER,
+              '### Structural hotspot advisory',
+              '',
+              'Advisory only, not a merge requirement. These file metrics rose above the hotspot threshold compared with the pull request base.',
+              '',
+              '| File | Metric | Base | PR | Status | Threshold |',
+              '| --- | --- | --- | --- | --- | --- |',
+              rows,
+            ].join('\n');
+
+            try {
+              if (owned) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: owned.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  body,
+                });
+              }
+            } catch (error) {
+              fail(`cannot publish advisory comment: ${error.message}`);
+            }

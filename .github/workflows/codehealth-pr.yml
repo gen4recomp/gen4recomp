@@ -1,0 +1,70 @@
+name: Code health PR
+
+# Read-only structural comparison for pull requests. Compares the exact PR
+# base against the tested candidate checkout with the same candidate
+# measurement tooling, then uploads machine JSON for the privileged
+# comment workflow. Advisory only: regressions never fail this workflow.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codehealth-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/ci/structure-requirements.txt
+
+      - name: Install structural snapshot dependencies
+        run: python -m pip install --requirement scripts/ci/structure-requirements.txt
+
+      - name: Create base worktree
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/codehealth-base" "$BASE_SHA"
+
+      - name: Snapshot base and candidate
+        run: |
+          scripts/ci/structure_snapshot.sh --repository-root "$RUNNER_TEMP/codehealth-base" --output "$RUNNER_TEMP/codehealth-base.json"
+          scripts/ci/structure_snapshot.sh --repository-root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/codehealth-head.json"
+
+      - name: Compare structural hotspots
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/codehealth-pr-result"
+          python3 scripts/ci/codehealth_compare.py \
+            --base-report "$RUNNER_TEMP/codehealth-base.json" \
+            --head-report "$RUNNER_TEMP/codehealth-head.json" \
+            --repository-root "$GITHUB_WORKSPACE" \
+            --base-ref "$BASE_SHA" \
+            --head-ref HEAD \
+            --pull-request "$PR_NUMBER" \
+            --output "$RUNNER_TEMP/codehealth-pr-result/result.json"
+
+      - name: Upload comparison result
+        uses: actions/upload-artifact@v4
+        with:
+          name: codehealth-pr-result
+          path: ${{ runner.temp }}/codehealth-pr-result/result.json
+          retention-days: 2
