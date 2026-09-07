@@ -27,9 +27,12 @@ local LandDataBuilder = require("tests.support.LandDataBuilder")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
+local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapRomFixture = require("tests.support.MapRomFixture")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
 local NB = require("tests.support.NitroBuilder")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
+local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
 
@@ -227,6 +230,42 @@ function T.building_with_no_named_bindings_compiles_as_a_no_op()
   Assert.isNil(model.materials[1].texture)
 end
 
+-- The independent frame oracle for the fixture lab: retail base translations
+-- normalized once through the shared model-unit scale, composed with the
+-- resolved cell corner (world origin minus half a 32-tile matrix cell). Built
+-- from generic map primitives and source facts only -- never from the starter
+-- production transform under test. The half-cell width is inlined (as in
+-- NeighborPlan) so producer-side tests stay free of the field-runtime
+-- dependency.
+local HALF_CELL_TILES = 16
+
+local function expectedStarterPlacements(romFs)
+  local resolved = assert(MapResolver.resolve(romFs, MapRomFixture.MAP_SYMBOL))
+  local origin = {
+    x = resolved.worldOriginX - HALF_CELL_TILES,
+    y = 0,
+    z = resolved.worldOriginZ - HALF_CELL_TILES,
+  }
+  local out = {}
+  for _, position in ipairs(StarterLab.positions) do
+    local x, y, z = MapUnits.toTiles(position.x, position.y, position.z)
+    out[#out + 1] = { x = origin.x + x, y = y, z = origin.z + z, nx = x, ny = y, nz = z }
+  end
+  return out, origin
+end
+
+local function assertStarterPlacements(group, romFs, label)
+  local expected, origin = expectedStarterPlacements(romFs)
+  Assert.equal(#group.placements, #StarterLab.positions, label .. " publishes the complete source set")
+  for index, want in ipairs(expected) do
+    local transform = group.placements[index].transform
+    Assert.equal(transform[13], want.x, label .. " placement " .. index .. " x joins the scene frame")
+    Assert.equal(transform[14], want.y, label .. " placement " .. index .. " y joins the scene frame")
+    Assert.equal(transform[15], want.z, label .. " placement " .. index .. " z joins the scene frame")
+  end
+  return expected, origin
+end
+
 local function laboLandModel(posScale)
   return NsbmdFixture.build({
     modelName = "labo01",
@@ -239,7 +278,7 @@ local function laboLandModel(posScale)
 end
 
 function T.a_map_with_no_placed_buildings_still_compiles_starter_ball_assets()
-  local bundle = assert(compile({ buildings = "", landModel = laboLandModel(64) }))
+  local bundle, _, romFs = assert(compile({ buildings = "", landModel = laboLandModel(64) }))
   local modelCount = 0
   for _ in pairs(bundle.models) do
     modelCount = modelCount + 1
@@ -249,37 +288,92 @@ function T.a_map_with_no_placed_buildings_still_compiles_starter_ball_assets()
   local group = assert(bundle.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
   local descriptor = assert(bundle.models[group.model], "the starter model key resolves to a compiled model")
   Assert.equal(descriptor.memberId, MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID)
-  Assert.equal(#group.placements, 3)
-  local expected = {
-    { x = 8.1875, y = 0, z = 4.0625 },
-    { x = 8.8125, y = 0, z = 4.0625 },
-    { x = 8.5, y = 0, z = 4.5 },
-  }
-  for index, want in ipairs(expected) do
-    local transform = group.placements[index].transform
-    Assert.equal(transform[13], want.x, "starter placement " .. index .. " x")
-    Assert.equal(transform[14], want.y, "starter placement " .. index .. " y")
-    Assert.equal(transform[15], want.z, "starter placement " .. index .. " z")
-  end
+  assertStarterPlacements(group, romFs, "starter")
   Assert.isNil(bundle.scene.source, "source identity lives in the dependency record")
 end
 
 function T.starter_ball_translations_ignore_the_map_model_pos_scale()
-  local expected = {
-    { x = 8.1875, y = 0, z = 4.0625 },
-    { x = 8.8125, y = 0, z = 4.0625 },
-    { x = 8.5, y = 0, z = 4.5 },
-  }
   for _, posScale in ipairs({ 1, 64 }) do
-    local bundle = assert(compile({ buildings = "", landModel = laboLandModel(posScale) }))
+    local bundle, _, romFs = assert(compile({ buildings = "", landModel = laboLandModel(posScale) }))
     local group = assert(bundle.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
-    for index, want in ipairs(expected) do
-      local transform = group.placements[index].transform
-      Assert.equal(transform[13], want.x, "posScale " .. posScale .. " placement " .. index .. " x")
-      Assert.equal(transform[14], want.y, "posScale " .. posScale .. " placement " .. index .. " y")
-      Assert.equal(transform[15], want.z, "posScale " .. posScale .. " placement " .. index .. " z")
+    assertStarterPlacements(group, romFs, "posScale " .. posScale)
+  end
+end
+
+function T.starter_ball_placements_share_one_scene_origin_and_preserve_source_deltas()
+  local bundle, _, romFs = assert(compile({ buildings = "", landModel = laboLandModel(64) }))
+  local group = assert(bundle.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
+  local expected, origin = assertStarterPlacements(group, romFs, "starter")
+  -- Adding the scene origin translates the group without distorting it.
+  for _, component in ipairs({ { transformIndex = 13, axis = "x" }, { transformIndex = 15, axis = "z" } }) do
+    for first = 1, 2 do
+      for second = first + 1, 3 do
+        local pairLabel = "ball pairwise " .. component.axis .. " delta " .. first .. "->" .. second
+        local got = group.placements[second].transform[component.transformIndex]
+          - group.placements[first].transform[component.transformIndex]
+        local sourceDelta = (StarterLab.positions[second][component.axis] - StarterLab.positions[first][component.axis])
+          / MapUnits.MODEL_UNITS_PER_TILE
+        Assert.equal(got, sourceDelta, pairLabel .. " is source-exact")
+      end
     end
   end
+  -- Every placement shares one derived scene-origin component.
+  for index, want in ipairs(expected) do
+    local transform = group.placements[index].transform
+    Assert.equal(transform[13] - want.nx, origin.x, "placement " .. index .. " shares the scene-origin x")
+    Assert.equal(transform[14] - want.ny, origin.y, "placement " .. index .. " shares the scene-origin y")
+    Assert.equal(transform[15] - want.nz, origin.z, "placement " .. index .. " shares the scene-origin z")
+  end
+end
+
+function T.starter_ball_dependencies_stamp_source_positions_and_scene_origin()
+  local bundle, _, romFs = assert(compile({ buildings = "", landModel = laboLandModel(64) }))
+  local _, origin = expectedStarterPlacements(romFs)
+  Assert.deepEqual(bundle.dependencies.runtimeProps.starter_balls, {
+    modelMemberId = StarterLab.modelMemberId,
+    positions = StarterLab.positions,
+    sceneOrigin = origin,
+  })
+end
+
+function T.starter_ball_placements_follow_the_resolved_cell_origin()
+  local base = assert(compile({ buildings = "", landModel = laboLandModel(64) }))
+  -- The same lab chosen through the right-hand cell of a two-cell matrix: the
+  -- resolved world origin moves one 32-tile cell east, and the placements must
+  -- ride it instead of assuming the origin-zero cell.
+  local moved, _, movedRomFs = assert(compile({
+    buildings = "",
+    landModel = laboLandModel(64),
+    extraMembers = {
+      map_matrices = {
+        [MapRomFixture.MATRIX_MEMBER_ID] = MapRomFixture.gridMatrix({
+          width = 2,
+          height = 1,
+          headers = { NEIGHBOR_HEADER, MapRomFixture.MAP_ID },
+          modelIds = { NEIGHBOR_LAND_MEMBER, MapRomFixture.LAND_DATA_MEMBER_ID },
+        }),
+      },
+      area_data = { [NEIGHBOR_AREA_MEMBER] = neighborAreaMember() },
+      land_data = { [NEIGHBOR_LAND_MEMBER] = neighborLandMember() },
+      map_textures = { [NEIGHBOR_PACK_ID] = neighborPack() },
+    },
+  }))
+  local baseGroup = assert(base.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
+  local movedGroup = assert(moved.scene.runtimeProps.starter_balls, "starter runtime props use the owner key")
+  assertStarterPlacements(movedGroup, movedRomFs, "offset cell")
+  for index in ipairs(baseGroup.placements) do
+    Assert.equal(
+      movedGroup.placements[index].transform[13],
+      baseGroup.placements[index].transform[13] + 32,
+      "placement " .. index .. " x follows the cell column"
+    )
+    Assert.equal(
+      movedGroup.placements[index].transform[15],
+      baseGroup.placements[index].transform[15],
+      "placement " .. index .. " z is independent of the cell column"
+    )
+  end
+  Assert.isTrue(base.marker ~= moved.marker, "the completion marker tracks the scene-origin input")
 end
 
 function T.terrain_does_not_see_building_textures()

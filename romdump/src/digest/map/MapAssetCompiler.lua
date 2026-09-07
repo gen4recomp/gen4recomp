@@ -128,6 +128,26 @@ local function compileNeighborAssets(
   return neighbors, terrainAnimationCompiler:compileTextureSrt(), neighborChunkByMember
 end
 
+-- Retail map-prop base translations address their map cell's local tile grid
+-- in model units: MapPropManager_LoadOne copies the handed VecFx32 with unit
+-- scale and no second model posScale. Ordinary compiled geometry (map mesh,
+-- placed buildings) renders in the centred scene frame, where the local grid
+-- corner sits half a 32-tile matrix cell below the resolved world origin, so
+-- each ball is tile-normalized once and shifted by that resolved corner to
+-- join the room and its machine. The cell width is inlined (as in
+-- NeighborPlan) so the producer stays free of the field-runtime dependency.
+local CELL_TILES = 32
+
+---@param sceneOrigin { x: number, y: number, z: number }
+---@param position { x: number, y: number, z: number }
+---@return number[]
+local function mapPropBaseToScene(sceneOrigin, position)
+  local x, y, z = MapUnits.toTiles(position.x, position.y, position.z)
+  local composed =
+    Matrix4.multiply(Matrix4.translate(sceneOrigin.x, sceneOrigin.y, sceneOrigin.z), Matrix4.translate(x, y, z))
+  return Matrix4.toArray(composed)
+end
+
 local function _compile(romFs, idOrSymbol, opts)
   opts = opts or {}
   local resolved = assert(MapResolver.resolve(romFs, idOrSymbol))
@@ -239,13 +259,17 @@ local function _compile(romFs, idOrSymbol, opts)
   local models = buildingCompiled.models
 
   local runtimeProps
+  local starterSceneOrigin
   local starterModelKey = buildingCompiled.modelKeyOf[StarterLab.modelMemberId]
   if resolved.map.symbol == StarterLab.mapSymbol then
     assert(starterModelKey, "Elm's Lab starter-ball model was not compiled")
+    local worldOriginX = assert(resolved.worldOriginX, "the lab scene origin resolves from the map compile")
+    local worldOriginZ = assert(resolved.worldOriginZ, "the lab scene origin resolves from the map compile")
+    local halfCell = CELL_TILES / 2
+    starterSceneOrigin = { x = worldOriginX - halfCell, y = 0, z = worldOriginZ - halfCell }
     local placements = {}
     for _, position in ipairs(StarterLab.positions) do
-      local x, y, z = MapUnits.toTiles(position.x, position.y, position.z)
-      placements[#placements + 1] = { transform = Matrix4.toArray(Matrix4.translate(x, y, z)) }
+      placements[#placements + 1] = { transform = mapPropBaseToScene(starterSceneOrigin, position) }
     end
     runtimeProps = {
       starter_balls = {
@@ -303,6 +327,7 @@ local function _compile(romFs, idOrSymbol, opts)
       starter_balls = {
         modelMemberId = StarterLab.modelMemberId,
         positions = StarterLab.positions,
+        sceneOrigin = assert(starterSceneOrigin, "the starter scene origin is stamped with its placements"),
       },
     }
   end
