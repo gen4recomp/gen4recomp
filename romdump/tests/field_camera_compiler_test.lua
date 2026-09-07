@@ -151,7 +151,6 @@ function T.failed_rebuild_preserves_the_previous_camera_artifact()
   local cache = CacheFs.forVersion("heartgold", backend)
   FieldCameraCacheWriter.write(cache, first)
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("profiles.lua", 1, true) then
       error("injected")

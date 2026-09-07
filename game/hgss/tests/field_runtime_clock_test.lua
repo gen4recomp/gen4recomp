@@ -20,7 +20,6 @@ function T.tests.weather_and_map_music_use_the_injected_local_clock()
   end)
 
   FieldRuntime._load = function() end
-  ---@diagnostic disable-next-line: duplicate-set-field -- replace the production composer with a recording fake
   FieldAudio.compose = function(options)
     composition = options
     return {
@@ -28,7 +27,6 @@ function T.tests.weather_and_map_music_use_the_injected_local_clock()
       sink = nil,
     }
   end
-  ---@diagnostic disable-next-line: duplicate-set-field -- prove the runtime does not read the host clock directly
   os.date = function()
     error("FieldRuntime must not read os.date directly")
   end

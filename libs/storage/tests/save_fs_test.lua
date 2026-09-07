@@ -177,7 +177,6 @@ function T.load_lua_read_failure_is_not_reclassified_as_missing()
   local backend = FakeCache.new()
   local s = save("heartgold", backend)
   s:write(SAVE_PATH, "SAVE-DATA")
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.read = function(_, _)
     return nil, "injected read failure"
   end
@@ -226,7 +225,6 @@ end
 -- a structured save error instead of silently returning true.
 function T.write_reports_backend_failure()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function()
     return false, "injected write failure"
   end
@@ -237,7 +235,6 @@ end
 
 function T.write_reports_parent_directory_failure()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.createDirectory = function()
     return false, "injected mkdir failure"
   end
@@ -250,7 +247,6 @@ function T.remove_reports_backend_failure()
   local backend = FakeCache.new()
   local s = save("heartgold", backend)
   s:write(SAVE_PATH, "x")
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.remove = function()
     return false, "injected remove failure"
   end
@@ -263,7 +259,6 @@ end
 -- first save exists, so absent paths are an explicit no-op.
 function T.remove_absent_path_is_a_noop()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.remove = function()
     error("backend must not be asked to remove an absent path")
   end
@@ -274,7 +269,6 @@ function T.replace_reports_backend_failure()
   local backend = FakeCache.new()
   local s = save("heartgold", backend)
   s:write(SAVE_PATH .. ".tmp", "new")
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function()
     return false, "injected replace failure"
   end

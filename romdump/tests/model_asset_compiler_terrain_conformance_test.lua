@@ -111,7 +111,6 @@ local function compileWithCannedBatches(model, pack, role)
   -- The routing decision is the contract under test, not mesh decoding: the
   -- mesh step is deliberately substituted with canned two-batch fixtures for
   -- the duration of one compile and restored immediately after.
-  ---@diagnostic disable-next-line: duplicate-set-field -- test-only mesh-step substitution, restored below
   MeshCompiler.compile = function()
     return cannedBatches()
   end
@@ -232,7 +231,6 @@ local WIREFRAME_RAW = 0x000000C1
 
 local function compileCustom(model, pack, role, batches)
   local saved = MeshCompiler.compile
-  ---@diagnostic disable-next-line: duplicate-set-field -- test-only mesh-step substitution, restored below
   MeshCompiler.compile = function()
     return batches
   end
@@ -255,7 +253,6 @@ end
 
 local function tryCompileCustom(model, pack, role, batches)
   local saved = MeshCompiler.compile
-  ---@diagnostic disable-next-line: duplicate-set-field -- test-only mesh-step substitution, restored below
   MeshCompiler.compile = function()
     return batches
   end

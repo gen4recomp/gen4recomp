@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Repository content invariants: the compiler/renderer core must stay
-# target-agnostic, and the game and runtime library sources must never write
-# to the terminal. lint.sh is the single static gate. Default scope is
+# target-agnostic, the game and runtime library sources must never write
+# to the terminal, and LuaCATS/diagnostic source policy holds without
+# exception inventories (LuaLS owns diagnostic semantics; this gate owns
+# lexical source form). lint.sh is the single static gate. Default scope is
 # git-tracked Lua sources and the fixed core-module list; explicit path
-# arguments run both rule sets over the given files (self-test hook, so a
+# arguments run the file rules over the given files (self-test hook, so a
 # planted violation is demonstrable without touching tracked files).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -102,29 +104,105 @@ is_first_party_lua() {
   return 1
 }
 
-check_header_diagnostic_disable_file() {
+# Scope predicates mirror scripts/ci/source_scope.py: any path with a tests
+# segment is test scope. Explicit absolute paths default to production while
+# tracked paths additionally require a production root. Production annotation
+# rules apply only to production scope; diagnostic directives are rejected
+# everywhere except the single narrow test-only form.
+policy_scope_for_path() {
+  local path="$1"
+  if [[ "$path" == *"/tests/"* ]] || [[ "$path" == tests/* ]]; then
+    echo "test"
+  elif [[ "$path" == /* ]] && [[ "$path" == *.lua ]]; then
+    echo "production"
+  elif [[ "$path" =~ ^(app|game|gen4|libs|romdump)/.*\.lua$ ]]; then
+    echo "production"
+  else
+    echo "other"
+  fi
+}
+
+# Diagnostic directives: production and other non-test sources allow none;
+# tests allow only the exact next-line param-type-mismatch suppression.
+check_diagnostic_directive_file() {
+  local path="$1"
+  local scope="$2"
+  local line
+  local lineno=0
+  local narrow_re='^[[:space:]]*---@diagnostic[[:space:]]+disable-next-line:[[:space:]]*param-type-mismatch([[:space:]]+--.*)?$'
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    [[ "$line" == *"---@diagnostic"* ]] || continue
+    if [ "$scope" = "test" ] && [[ "$line" =~ $narrow_re ]]; then
+      continue
+    fi
+    violation "$path:$lineno: diagnostic directive not allowed in $scope scope; tests may only use disable-next-line: param-type-mismatch"
+  done < "$path"
+  return 0
+}
+
+# Production annotation policy: reject the standalone token `any` on
+# LuaCATS/inline-assertion lines (deliberately including prose occurrences on
+# those lines), and reject bare `table` at leading type-start and type
+# punctuation positions unless shaped as table<...> or table[...].
+check_production_annotation_policy_file() {
   local path="$1"
   local line
-  local is_first=1
+  local lineno=0
+  local any_re='(^|[^A-Za-z0-9_])any([^A-Za-z0-9_]|$)'
+  local bare_table_re='(^|[^A-Za-z0-9_])table([^A-Za-z0-9_<\[]|$)'
+  local type_start_re='^[[:space:]]*---@((param[[:space:]]+[^[:space:]]+[[:space:]]+)|(return[[:space:]]+)|(type[[:space:]]+)|(field[[:space:]]+(public[[:space:]]+|private[[:space:]]+|protected[[:space:]]+)?(\[[^]]*\][[:space:]]*|[^[:space:]]+[[:space:]]+))|(alias[[:space:]]+[^[:space:]]+[[:space:]]+)|(vararg[[:space:]]+)|(cast[[:space:]]+[^[:space:]]+[[:space:]]+))table([^A-Za-z0-9_<\[]|$)'
+  local continuation_re='^[[:space:]]*---@.*[|&,(:\[][[:space:]]*table([^A-Za-z0-9_<\[]|$)'
+  local alias_continuation_re='^[[:space:]]*---\|'
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$is_first" -eq 1 ] && [[ "$line" =~ ^#! ]]; then
-      is_first=0
-      continue
+    lineno=$((lineno + 1))
+    [[ "$line" == *"---@diagnostic"* ]] && continue
+    [[ "$line" == *"---@"* ]] || [[ "$line" == *"@as"* ]] || continue
+    if [[ "$line" =~ $any_re ]]; then
+      violation "$path:$lineno: production annotation uses explicit any; use a named or shaped contract"
     fi
-    is_first=0
-    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
-      continue
+    if [[ "$line" =~ $type_start_re ]] || [[ "$line" =~ $continuation_re ]]; then
+      violation "$path:$lineno: production annotation uses bare table; use a shaped or named contract"
+    elif [[ "$line" =~ $alias_continuation_re ]] && [[ "$line" =~ $bare_table_re ]]; then
+      violation "$path:$lineno: production annotation uses bare table; use a shaped or named contract"
     fi
-    if [[ "$line" =~ ^[[:space:]]*---@diagnostic[[:space:]]+disable: ]]; then
-      violation "$path uses a header-wide LuaLS diagnostic disable; use source typing or a narrow line directive"
-      return 0
-    fi
-    if [[ "$line" =~ ^[[:space:]]*-- ]]; then
-      continue
-    fi
-    break
   done < "$path"
-  return 1
+  return 0
+}
+
+# .luarc.json owns the single global diagnostic allowance. Any additional
+# diagnostic-off switch is a violation.
+check_luarc_policy() {
+  local luarc=".luarc.json"
+  if [ ! -r "$luarc" ]; then
+    violation ".luarc.json is missing or unreadable"
+    return 0
+  fi
+  local disable_count
+  disable_count="$(grep -o -F '"disable"' "$luarc" | wc -l || true)"
+  disable_count="$(echo "$disable_count" | tr -d '[:space:]')"
+  if [ "$disable_count" != "1" ]; then
+    violation ".luarc.json must define exactly one diagnostics.disable entry"
+  fi
+  if ! grep -Eq '"disable"[[:space:]]*:[[:space:]]*\["duplicate-set-field"\]' "$luarc"; then
+    violation '.luarc.json must disable exactly ["duplicate-set-field"] globally'
+  fi
+  if grep -Fq '"Ignore' "$luarc"; then
+    violation ".luarc.json must not silence diagnostics with Ignore"
+  fi
+  if grep -Fq '"None' "$luarc"; then
+    violation ".luarc.json must not silence diagnostics with None"
+  fi
+  if grep -Eq '"enable"[[:space:]]*:[[:space:]]*false' "$luarc"; then
+    violation ".luarc.json must not disable diagnostics with enable: false"
+  fi
+  if grep -Fq 'disableScheme' "$luarc"; then
+    violation ".luarc.json must not use disableScheme"
+  fi
+  if grep -Fq 'await-in-sync' "$luarc"; then
+    violation ".luarc.json must not opt await-in-sync into file diagnostics"
+  fi
+  return 0
 }
 
 check_tracked_scope() {
@@ -132,10 +210,19 @@ check_tracked_scope() {
   tracked="$(git ls-files 2>/dev/null)" || return 0
   [ -n "$tracked" ] || return 0
   local line
+  local scope
   while IFS= read -r line; do
     if [[ "$line" =~ \.lua$ ]] && is_first_party_lua "$line"; then
       [ -r "$line" ] || continue
-      check_header_diagnostic_disable_file "$line" || true
+      scope="$(policy_scope_for_path "$line")"
+      if [ "$scope" = "test" ]; then
+        check_diagnostic_directive_file "$line" "test"
+      elif [ "$scope" = "production" ]; then
+        check_diagnostic_directive_file "$line" "production"
+        check_production_annotation_policy_file "$line"
+      else
+        check_diagnostic_directive_file "$line" "production"
+      fi
     fi
     if [[ "$line" =~ ^game/src/.*\.lua$ ]] || [[ "$line" =~ ^game/hgss/src/.*\.lua$ ]] || [[ "$line" =~ ^libs/[^/]+/src/.*\.lua$ ]] || [[ "$line" =~ ^romdump/src/.*\.lua$ ]]; then
       # A tracked file deleted from the working tree (a pending deletion)
@@ -162,10 +249,19 @@ if [ "$#" -gt 0 ]; then
       violation "$path uses an assigned or directly returned anonymous function form; name the function"
     fi
     if [[ "$path" =~ \.lua$ ]]; then
-      check_header_diagnostic_disable_file "$path" || true
+      scope="$(policy_scope_for_path "$path")"
+      if [ "$scope" = "test" ]; then
+        check_diagnostic_directive_file "$path" "test"
+      else
+        check_diagnostic_directive_file "$path" "production"
+        if [ "$scope" = "production" ]; then
+          check_production_annotation_policy_file "$path"
+        fi
+      fi
     fi
   done
 else
+  check_luarc_policy
   check_tracked_scope
 fi
 

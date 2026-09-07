@@ -88,7 +88,6 @@ function T.failed_atomic_publication_propagates_and_preserves_previous_state()
   local cache = CacheFs.forVersion("heartgold", backend)
   DerivedCacheState.publish(cache, identity())
 
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function()
     return false, "injected replace failure"
   end

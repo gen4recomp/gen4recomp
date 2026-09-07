@@ -58,10 +58,6 @@ FILE_LIST="$WORK_ROOT/production-lua-files.txt"
 lizard -l lua -t 4 -i -1 -f "$FILE_LIST" -H > "$REPORT_ROOT/lizard/index.html"
 lizard -l lua -t 4 -i -1 -f "$FILE_LIST" -V --csv > "$REPORT_ROOT/lizard/functions.csv"
 
-python3 scripts/ci/lua_policy.py \
-  --scope first-party \
-  --report "$REPORT_ROOT/lua-policy.json"
-
 (
   cd "$STRUCT_ROOT"
   jscpd . \
@@ -97,7 +93,6 @@ for required_file in \
   styles.css \
   codehealth/index.html \
   codehealth/quality-report.json \
-  codehealth/reports/lua-policy.json \
   codehealth/reports/lizard/index.html \
   codehealth/reports/lizard/functions.csv \
   codehealth/reports/jscpd/jscpd-report.html \

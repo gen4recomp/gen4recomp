@@ -109,7 +109,6 @@ function T.rolls_back_the_actor_subtree_on_a_failed_write()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local original = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("0029.png", 1, true) then
       error("injected write failure")
@@ -129,7 +128,6 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   local first = bundle({ 0, 29 })
   FieldActorCacheWriter.write(cache, first)
   local original = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("visuals/0029.lua", 1, true) then
       error("injected write failure")
@@ -160,7 +158,6 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   local first = bundle({ 0 })
   FieldActorCacheWriter.write(cache, first)
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath:find("staging/heartgold/field-actors", 1, true) then
       return false, "injected publish failure"

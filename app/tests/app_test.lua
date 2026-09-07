@@ -76,7 +76,6 @@ local function withAppHarness(opts, ready, fn)
     quitCodes = {},
   }
   local unownedOption = {}
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   App.opts = setmetatable(opts or { dev = false }, {
     __index = function(_, key)
       if key == "dev" then
@@ -85,37 +84,26 @@ local function withAppHarness(opts, ready, fn)
       return unownedOption
     end,
   })
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   RomImporter.isReady = ready
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
     return result.state
   end
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   graphics.print = function()
     result.prints = result.prints + 1
   end
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   graphics.getDimensions = function()
     return 800, 600
   end
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
   local ok, err = pcall(fn, result)
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   App.opts = originalOpts
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   RomImporter.isReady = originalIsReady
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   HgssGame.new = originalNew
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   graphics.print = originalPrint
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   graphics.getDimensions = originalGetDimensions
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   love.event.quit = originalQuit
   if not ok then
     error(err, 0)

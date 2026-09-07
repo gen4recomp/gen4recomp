@@ -409,7 +409,6 @@ function T.queueing_music_replacement_reuses_an_active_music_fade()
   local level = fader.level
   local destinationStarts = 0
   local originalPlay = player.play
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   player.play = function(self, handle, sequence, bankRecord)
     if sequence.id == 6 then
       destinationStarts = destinationStarts + 1

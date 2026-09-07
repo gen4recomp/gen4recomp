@@ -1991,7 +1991,6 @@ function T.releases_expired_channel_before_the_next_physical_slot_runs()
   local mixer = VoiceMixer.new({ sampleRate = SAMPLE_RATE })
   local noteHandles = {}
   local noteOn = mixer.noteOn
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   mixer.noteOn = function(self, noteSpec)
     local handle = noteOn(self, noteSpec)
     if handle ~= nil then

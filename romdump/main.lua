@@ -13,7 +13,6 @@ package.path = ROOT .. "/?.lua;" .. ROOT .. "/?/init.lua;" .. package.path
 local Cli = require("romdump.src.cli.Cli")
 local Runner = require("romdump.src.cli.Runner")
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.load(argv)
   local ok, parsed = pcall(Cli.parse, argv)
   if not ok then
@@ -27,7 +26,6 @@ function love.load(argv)
   Runner.load(parsed)
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.update()
   Runner.update()
 end

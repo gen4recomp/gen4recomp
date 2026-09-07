@@ -367,7 +367,6 @@ function T.writer_failure_invalidates_the_class()
   local bundle = assert(FieldFontCompiler.compile(romFs, sha1, hashLua)) --[[@as table]]
   local backend = FakeCache.new()
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("font-4.png", 1, true) then
       error("injected")
@@ -388,7 +387,6 @@ function T.failed_rebuild_preserves_the_previous_font()
   local cache = CacheFs.forVersion("heartgold", backend)
   FieldFontCacheWriter.write(cache, first)
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("font-4.png", 1, true) then
       error("injected")

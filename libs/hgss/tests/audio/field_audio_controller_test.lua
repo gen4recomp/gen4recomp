@@ -130,31 +130,26 @@ local function recordingSound(provider, player)
   local sound = GameSound.new({ provider = provider, player = player }) --[[@as RecordingSound]]
   local spy = { moves = {}, stops = {}, fades = {}, plays = {}, playWithBankCalls = {} }
   local origPlayMusic = sound.playMusic
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   sound.playMusic = function(self, idOrSymbol)
     spy.plays[#spy.plays + 1] = idOrSymbol
     return origPlayMusic(self, idOrSymbol)
   end
   local origMove = sound.moveSequenceVolume
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   sound.moveSequenceVolume = function(self, ref, target, duration)
     spy.moves[#spy.moves + 1] = { ref = ref, target = target, duration = duration }
     return origMove(self, ref, target, duration)
   end
   local origStop = sound.stopSequenceWithFade
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   sound.stopSequenceWithFade = function(self, ref, duration)
     spy.stops[#spy.stops + 1] = { ref = ref, duration = duration }
     return origStop(self, ref, duration)
   end
   local origFadeOut = sound.fadeMusicOut
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   sound.fadeMusicOut = function(self, spec)
     spy.fades[#spy.fades + 1] = spec
     return origFadeOut(self, spec)
   end
   local orig = sound.playWithBankOverride
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   sound.playWithBankOverride = function(self, seqRef, bankRef)
     spy.playWithBankCalls[#spy.playWithBankCalls + 1] = { seqRef = seqRef, bankRef = bankRef }
     return orig(self, seqRef, bankRef)
@@ -343,7 +338,6 @@ local function seamlessSoundplateScenario()
   local sound, spy = recordingSound(provider, player)
   local starts = {}
   local originalPlay = player.play
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   player.play = function(self, handle, sequence, bankRecord)
     starts[sequence.id] = (starts[sequence.id] or 0) + 1
     return originalPlay(self, handle, sequence, bankRecord)
@@ -787,7 +781,6 @@ function T.ordinary_bank_validation_remains_strict_while_the_explicit_donor_path
   Assert.isTrue(player:isPlayerPlaying(2))
   local spy = { playWithBankCalls = {} }
   local orig = sound.playWithBankOverride
-  ---@diagnostic disable-next-line: duplicate-set-field -- test spy
   sound.playWithBankOverride = function(self, seqRef, bankRef)
     spy.playWithBankCalls[#spy.playWithBankCalls + 1] = { seqRef = seqRef, bankRef = bankRef }
     return orig(self, seqRef, bankRef)

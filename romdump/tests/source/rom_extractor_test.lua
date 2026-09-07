@@ -222,7 +222,6 @@ function T.failed_publish_restores_previous_dump()
   local files, dirs = snapshotLive(backend)
 
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath == "staging/heartgold" then
       error(Errors.new("CACHE_REPLACE_FAILED", "injected publish failure", { sourcePath = sourcePath }))
@@ -251,7 +250,6 @@ function T.failed_publish_keeps_recovery_material_in_staging()
   local oldPersonal = backend.files[HG .. "romfs/a/0/0/2"]
   local newPersonal = require("tests.support.NarcBuilder").build({ "P0", "P1", "P2" })
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath == "staging/heartgold" or sourcePath == "staging/heartgold.old" then
       return false, "injected publish failure"

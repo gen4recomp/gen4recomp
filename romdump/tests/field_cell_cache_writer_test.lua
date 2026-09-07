@@ -104,7 +104,6 @@ function T.failed_rebuild_preserves_the_previous_class()
   FieldCellCacheWriter.write(cache, first)
 
   local original = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("terrain.lua", 1, true) then
       error("injected field-cell write failure")

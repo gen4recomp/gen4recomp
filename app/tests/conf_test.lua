@@ -11,9 +11,7 @@ local function withOrdinaryConf(env, fn)
   local savedArg = arg
   local savedGetenv = os.getenv
   local savedConf = love.conf
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   arg = {}
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   os.getenv = function(name)
     local v = env[name]
     if v ~= nil then
@@ -26,11 +24,8 @@ local function withOrdinaryConf(env, fn)
     love.conf(t)
     fn(t)
   end)
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   arg = savedArg
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   os.getenv = savedGetenv
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   love.conf = savedConf
   if not ok then
     error(err, 0)
@@ -41,9 +36,7 @@ local function assertInvalid(env, expectedVar)
   local savedArg = arg
   local savedGetenv = os.getenv
   local savedConf = love.conf
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   arg = {}
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   os.getenv = function(name)
     local v = env[name]
     if v ~= nil then
@@ -55,11 +48,8 @@ local function assertInvalid(env, expectedVar)
   local ok, err = pcall(function()
     love.conf(t)
   end)
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   arg = savedArg
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   os.getenv = savedGetenv
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   love.conf = savedConf
   Assert.isFalse(ok, "invalid environment must raise")
   Assert.notNil(err, "error must name " .. expectedVar)

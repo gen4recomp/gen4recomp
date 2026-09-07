@@ -16,7 +16,6 @@ local Options = require("app.src.Options")
 
 local App
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.load(argv)
   local opts, message = Options.parse(argv)
   if opts == nil then
@@ -38,133 +37,114 @@ function love.load(argv)
   App.load(opts)
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.update(dt)
   if App then
     App.update(dt)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.draw()
   if App then
     App.draw()
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.resize(width, height)
   if App then
     App.resize(width, height)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.filedropped(file)
   if App then
     App.filedropped(file)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.keypressed(key, scancode, isrepeat)
   if App then
     App.keypressed(key, scancode, isrepeat)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.textinput(text)
   if App then
     App.textinput(text)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.keyreleased(key, scancode)
   if App then
     App.keyreleased(key, scancode)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.gamepadpressed(joystick, button)
   if App then
     App.gamepadpressed(joystick, button)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.gamepadreleased(joystick, button)
   if App then
     App.gamepadreleased(joystick, button)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.gamepadaxis(joystick, axis, value)
   if App then
     App.gamepadaxis(joystick, axis, value)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.mousepressed(x, y, button, istouch, presses)
   if App then
     App.mousepressed(x, y, button, istouch, presses)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.mousemoved(x, y, dx, dy, istouch)
   if App then
     App.mousemoved(x, y, dx, dy, istouch)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.mousereleased(x, y, button, istouch, presses)
   if App then
     App.mousereleased(x, y, button, istouch, presses)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.wheelmoved(x, y)
   if App then
     App.wheelmoved(x, y)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.touchpressed(id, x, y, dx, dy, pressure)
   if App then
     App.touchpressed(id, x, y, dx, dy, pressure)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.touchmoved(id, x, y, dx, dy, pressure)
   if App then
     App.touchmoved(id, x, y, dx, dy, pressure)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.touchreleased(id, x, y, dx, dy, pressure)
   if App then
     App.touchreleased(id, x, y, dx, dy, pressure)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.focus(focused)
   if App then
     App.focus(focused)
   end
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.quit()
   if App then
     App.quit()

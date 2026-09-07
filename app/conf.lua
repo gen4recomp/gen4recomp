@@ -21,7 +21,6 @@ local function isTest()
   return false
 end
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.conf(t)
   t.identity = "g4recomp"
   t.version = "11.5"

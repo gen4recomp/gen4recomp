@@ -361,7 +361,6 @@ function T.field_state_draw_sends_same_scale_to_both_renderers()
   end)
   local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
   local savedProtected = FieldDrawState.protectedDraw
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   FieldDrawState.protectedDraw = function(_, fn)
     fn()
   end

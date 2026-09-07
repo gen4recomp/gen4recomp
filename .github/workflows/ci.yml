@@ -36,7 +36,7 @@ jobs:
       - name: Run CI tool contract tests
         run: |
           python3 scripts/ci/source_scope_test.py
-          python3 scripts/ci/lua_policy_test.py
+          python3 scripts/ci/check_invariants_test.py
           python3 scripts/ci/codehealth_report_test.py
           python3 scripts/ci/codehealth_compare_test.py
           python3 scripts/ci/codehealth_pr_comment_test.py

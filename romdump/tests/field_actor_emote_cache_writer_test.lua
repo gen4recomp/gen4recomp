@@ -50,7 +50,6 @@ end
 
 T.tests["publishes field-emote descriptor and referenced assets under owned roots"] = function()
   local oldEncode = MeshWriter.encode
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   MeshWriter.encode = function()
     return "encoded-mesh"
   end

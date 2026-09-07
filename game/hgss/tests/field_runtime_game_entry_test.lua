@@ -201,7 +201,6 @@ function T.captureGameSave_returns_a_strict_snapshot_without_storage_io()
   }
   local scriptCaptureCalls = 0
   local originalCapture = require("libs.script.src.ScriptSave").capture
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   require("libs.script.src.ScriptSave").capture = function(_, tick, options)
     scriptCaptureCalls = scriptCaptureCalls + 1
     Assert.equal(tick, 42)

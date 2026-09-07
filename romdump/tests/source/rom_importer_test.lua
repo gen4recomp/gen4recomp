@@ -238,7 +238,6 @@ function T.failed_reimport_preserves_previous_dump_and_saves()
   end
 
   local originalWrite = h.backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   h.backend.write = function(self, path, data)
     if path:find("romfs/data/sound", 1, true) then
       error("injected write failure")
@@ -344,7 +343,6 @@ function T.busy_rejection_never_releases_and_terminal_release_is_exactly_once()
   local first = RomSource.fromString(h.data, "first.nds")
   local releases = 0
   local baseRelease = first.release
-  ---@diagnostic disable-next-line: duplicate-set-field -- test wraps the source-owned release callback to count disposal
   first.release = function(self)
     releases = releases + 1
     return baseRelease(self)

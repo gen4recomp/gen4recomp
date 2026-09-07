@@ -852,7 +852,6 @@ function T.failed_rebuild_preserves_the_previous_class()
   local cache = CacheFs.forVersion("heartgold", backend)
   FieldUiCacheWriter.write(cache, first)
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("start-menu.png", 1, true) then
       error("injected")
@@ -899,7 +898,6 @@ function T.first_publish_rename_failure_rolls_back()
   FieldUiCacheWriter.write(cache, first)
   local originalReplace = backend.replace
   local calls = 0
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, source, destination)
     calls = calls + 1
     if calls == 1 then
@@ -927,7 +925,6 @@ function T.second_publish_rename_failure_rolls_back_both_roots()
   FieldUiCacheWriter.write(cache, first)
   local originalReplace = backend.replace
   local calls = 0
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, source, destination)
     calls = calls + 1
     if calls == 2 then

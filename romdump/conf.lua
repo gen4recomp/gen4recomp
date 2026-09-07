@@ -2,7 +2,6 @@
 -- without GPU/audio: every command is headless, prints machine-readable output,
 -- and exits with a status code.
 
----@diagnostic disable-next-line: duplicate-set-field -- LÖVE owns this externally declared callback
 function love.conf(t)
   t.identity = "g4recomp"
   t.version = "11.5"

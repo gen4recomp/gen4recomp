@@ -122,7 +122,6 @@ T["failed rebuild preserves the previous script artifact"] = function()
   local cache = CacheFs.forVersion("heartgold", backend)
   ScriptCacheWriter.write(cache, bundle())
   local original = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("coverage.json", 1, true) then
       error("injected write failure")
@@ -151,7 +150,6 @@ T["publish failure keeps the stage with recovery material"] = function()
   local cache = CacheFs.forVersion("heartgold", backend)
   ScriptCacheWriter.write(cache, bundle())
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath:find("staging/heartgold/scripts", 1, true) then
       return false, "injected publish failure"

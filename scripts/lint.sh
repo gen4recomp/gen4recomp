@@ -29,9 +29,6 @@ stylua "${STYLUA_ARGS[@]}" .
 scripts/lib/check-repository.sh
 scripts/lib/check-invariants.sh
 
-echo "==> Lua contract policy"
-python3 scripts/ci/lua_policy.py --check
-
 echo "==> temporary-spec reference guard"
 # Reject references to the planning spec ("tmp/spec", "spec section N",
 # "Workstream N", "milestone N", "slice N", "WS N"), planning language

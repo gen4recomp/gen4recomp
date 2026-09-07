@@ -336,7 +336,6 @@ function T.writer_failure_rolls_back_only_its_map()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   local backend = FakeCache.new()
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("dependencies.lua", 1, true) then
       error("injected")
@@ -359,7 +358,6 @@ function T.failed_rebuild_preserves_the_previous_record()
   local cache = CacheFs.forVersion("heartgold", backend)
   FieldMapDataCacheWriter.write(cache, first)
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("field.lua", 1, true) then
       error("injected")

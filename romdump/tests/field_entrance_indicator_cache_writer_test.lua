@@ -42,7 +42,6 @@ end
 
 T.tests["publishes model marker and referenced mesh under owned effect roots"] = function()
   local oldEncode = MeshWriter.encode
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   MeshWriter.encode = function()
     return "encoded-mesh"
   end
@@ -94,7 +93,6 @@ end
 
 T.tests["publishes the surf attachment definition and its referenced paths atomically"] = function()
   local oldEncode = MeshWriter.encode
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   MeshWriter.encode = function()
     return "encoded-mesh"
   end

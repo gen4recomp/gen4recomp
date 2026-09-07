@@ -190,7 +190,6 @@ T["failed rebuild preserves the previous audio artifact"] = function()
   local cache = CacheFs.forVersion("heartgold", backend)
   AudioCacheWriter.write(cache, AudioFixture.bundle())
   local original = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find(".pcm16le", 1, true) then
       error("injected write failure")
@@ -222,7 +221,6 @@ T["publish failure keeps the stage with recovery material"] = function()
   local cache = CacheFs.forVersion("heartgold", backend)
   AudioCacheWriter.write(cache, AudioFixture.bundle())
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath:find("staging/heartgold/audio", 1, true) then
       return false, "injected publish failure"

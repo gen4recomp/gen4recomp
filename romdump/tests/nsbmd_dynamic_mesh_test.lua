@@ -195,7 +195,6 @@ function T.billboard_bake_linear_part_is_computed_once_per_segment()
   local m = assert(Nsbmd.decode(NsbmdFixture.buildBillboardQuad())).models[1]
   local originalLinear = Matrix4.linear
   local calls = 0
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   Matrix4.linear = function(bake)
     calls = calls + 1
     return originalLinear(bake)

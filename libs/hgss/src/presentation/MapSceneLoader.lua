@@ -761,7 +761,6 @@ function MapSceneLoader.begin(cacheFs, scene, opts)
   validateScene(scene)
   local pool = GpuAssetPool.new(cacheFs, opts)
   local function checkpoint()
-    ---@diagnostic disable-next-line: await-in-sync -- this callback only runs inside the build coroutine
     coroutine["yield"](1)
   end
   ---@type MapSceneLoader.BuildTask

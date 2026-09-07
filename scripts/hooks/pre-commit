@@ -5,8 +5,8 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-staged_lua_paths="$(git diff --cached --name-only --diff-filter=ACDMR -- '*.lua')"
-if [ -z "$staged_lua_paths" ]; then
+staged_policy_paths="$(git diff --cached --name-only --diff-filter=ACDMR -- '*.lua' '.luarc.json' 'scripts/lint.sh' 'scripts/lib/check-invariants.sh')"
+if [ -z "$staged_policy_paths" ]; then
   exit 0
 fi
 

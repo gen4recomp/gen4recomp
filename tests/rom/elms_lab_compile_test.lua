@@ -177,7 +177,6 @@ end
 function T.injected_failure_leaves_no_marker(romFs, version)
   local backend = FakeCache.new()
   local orig = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test wraps the cache backend write callback to inject failure
   backend.write = function(self, path, data)
     if path:find("scene.lua", 1, true) then
       error("injected write failure")

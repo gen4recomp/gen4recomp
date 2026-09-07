@@ -226,7 +226,7 @@ class CodeHealthReportTest(unittest.TestCase):
             ):
                 model = REPORT._build_model(site_root, site_root)
 
-            self.assertEqual(model["schemaVersion"], 4)
+            self.assertEqual(model["schemaVersion"], 5)
             self.assertTrue(
                 {
                     "schemaVersion",
@@ -236,13 +236,13 @@ class CodeHealthReportTest(unittest.TestCase):
                     "scope",
                     "source",
                     "directories",
-                    "policy",
                     "complexity",
                     "duplication",
                     "architecture",
                     "structure",
                 }.issubset(model)
             )
+            self.assertNotIn("policy", model)
             self.assertEqual(model["tools"], {"lizard": "test", "jscpd": "test", "graphify": "test"})
             self.assertEqual(model["scope"]["structural"], "production-lua")
             self.assertEqual(model["scope"]["excludedPrefixes"], REPORT.EXCLUDED_PREFIXES)
@@ -253,7 +253,7 @@ class CodeHealthReportTest(unittest.TestCase):
             self.assertGreater(source_files["game/hgss/src/field/FieldRuntime.lua"]["bytes"], 0)
             directories = {row["path"]: row for row in model["directories"]["files"]}
             self.assertEqual(directories["libs/hgss/src/field"]["directProductionFiles"], 1)
-            self.assertEqual(model["policy"]["findings"], 0)
+            self.assertNotIn("policy", model)
             structure = model["structure"]
             self.assertEqual(
                 structure["callableVisibility"]["lizardFunctions"],
@@ -357,10 +357,7 @@ class CodeHealthReportTest(unittest.TestCase):
                 [row["path"] for row in structure["outliers"]["lowVisibility"]],
                 ["game/c.lua", "game/b.lua", "game/a.lua"],
             )
-            self.assertEqual(
-                [row["path"] for row in structure["outliers"]["complexity"]],
-                ["game/c.lua", "game/b.lua", "game/a.lua"],
-            )
+            self.assertNotIn("complexity", structure["outliers"])
             self.assertEqual(
                 [row["path"] for row in structure["outliers"]["fanOut"]],
                 [
@@ -377,7 +374,7 @@ class CodeHealthReportTest(unittest.TestCase):
             summary = REPORT._render_summary(model).lower()
             self.assertIn("source census", summary)
             self.assertIn("directory density", summary)
-            self.assertIn("policy findings", summary)
+            self.assertNotIn("policy findings", summary)
             self.assertIn("luals", summary)
             self.assertIn("binding ci", summary)
             self.assertIn("visibility is a proxy", summary)
@@ -638,7 +635,7 @@ class CodeHealthReportTest(unittest.TestCase):
 
     def test_rendered_summary_has_relative_human_and_download_links(self) -> None:
         model = {
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "commit": "a" * 40,
             "generatedAt": "2026-01-01T00:00:00Z",
             "tools": {"lizard": "1.23.0", "jscpd": "5.0.16", "graphify": "0.9.50"},
@@ -648,14 +645,14 @@ class CodeHealthReportTest(unittest.TestCase):
             "architecture": {"modules": 1, "nodes": 1, "edges": 1, "communities": 1, "importEdges": 1, "importCycleGroups": 0, "provenance": {"extracted": 1, "inferred": 0, "ambiguous": 0}},
             "source": {"files": [{"path": "game/a.lua", "bytes": 10, "physicalLines": 1}]},
             "directories": {"files": [{"path": "game", "directProductionFiles": 1}]},
-            "policy": {"findings": 0},
-            "structure": {"callableVisibility": {"lizardFunctions": 1, "graphifyCallables": 1, "ratio": 1.0}, "files": [], "hotspotPolicy": {"thresholds": {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200}, "ignoreMarker": "-- codehealth: ignore-hotspot", "ignoreScanLines": 5}, "hotspots": {"maxCcn": [], "maxNloc": [], "physicalLines": []}, "outliers": {"lowVisibility": [], "complexity": [], "fanOut": []}},
+            "structure": {"callableVisibility": {"lizardFunctions": 1, "graphifyCallables": 1, "ratio": 1.0}, "files": [], "hotspotPolicy": {"thresholds": {"maxCcn": 25, "maxNloc": 100, "physicalLines": 1200}, "ignoreMarker": "-- codehealth: ignore-hotspot", "ignoreScanLines": 5}, "hotspots": {"maxCcn": [], "maxNloc": [], "physicalLines": []}, "outliers": {"lowVisibility": [], "fanOut": []}},
         }
         html = REPORT._render_summary(model)
         self.assertIn('href="reports/lizard/index.html"', html)
         self.assertIn('href="quality-report.json" download', html)
         self.assertIn('href="reports/graphify/graph.json" download', html)
         self.assertNotIn('href="reports/luals/check.json"', html)
+        self.assertNotIn("policy", html.lower())
         self.assertIn("INFERRED", html)
 
     def run_structure_report_mode(
@@ -803,7 +800,8 @@ class CodeHealthReportTest(unittest.TestCase):
             ):
                 self.assertEqual(REPORT.main(["--site-root", str(site_root)]), 0)
             model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
-            self.assertEqual(model["schemaVersion"], 4)
+            self.assertEqual(model["schemaVersion"], 5)
+            self.assertNotIn("policy", model)
             self.assertTrue((site_root / "codehealth" / "index.html").exists())
 
     def build_site_model(self, site_root: Path) -> dict:
@@ -969,6 +967,8 @@ class CodeHealthReportTest(unittest.TestCase):
             )
             low_visibility = [row["path"] for row in structure["outliers"]["lowVisibility"]]
             fan_out = [row["path"] for row in structure["outliers"]["fanOut"]]
+            self.assertNotIn("complexity", structure["outliers"])
+            self.assertEqual(set(structure["outliers"]), {"lowVisibility", "fanOut"})
             self.assertNotIn("game/hot_ignored_exact.lua", low_visibility)
             self.assertNotIn("game/hot_ignored_padded.lua", low_visibility)
             self.assertIn("game/hot_visible_sixth.lua", low_visibility)
@@ -1022,7 +1022,7 @@ class CodeHealthReportTest(unittest.TestCase):
             "ignoreScanLines": 5,
         }
         model = {
-            "schemaVersion": 4,
+            "schemaVersion": 5,
             "commit": "a" * 40,
             "generatedAt": "2026-01-01T00:00:00Z",
             "tools": {"lizard": "test", "jscpd": "test", "graphify": "test"},
@@ -1049,7 +1049,6 @@ class CodeHealthReportTest(unittest.TestCase):
                 ]
             },
             "directories": {"files": [{"path": "game", "directProductionFiles": 2}]},
-            "policy": {"findings": 0, "byKind": {}},
             "structure": {
                 "callableVisibility": {
                     "lizardFunctions": 16,
@@ -1059,7 +1058,6 @@ class CodeHealthReportTest(unittest.TestCase):
                 "files": [visible, ignored],
                 "outliers": {
                     "lowVisibility": [visible],
-                    "complexity": [visible],
                     "fanOut": [visible],
                 },
                 "hotspotPolicy": policy,

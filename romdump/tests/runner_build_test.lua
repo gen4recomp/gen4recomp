@@ -16,7 +16,6 @@ local capturedOutput
 local function captureOutput()
   realPrint = print
   capturedOutput = {}
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   _G.print = function(...)
     local parts = {}
     for index = 1, select("#", ...) do
@@ -36,7 +35,6 @@ function T.build_cache_without_a_ready_dump_exits_with_usage_failure()
   local realIsReady, realQuit = RomImporter.isReady, love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
   local exitCode
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   RomImporter.isReady = function()
     return false
   end
@@ -491,7 +489,6 @@ function T.conflicting_cli_commands_are_rejected_before_dispatch()
       return {}
     end,
   }
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   RomImporter.isReady = function()
     return true
   end
@@ -530,7 +527,6 @@ function T.check_dump_audits_every_ready_version_once()
       return {}
     end,
   }
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   RomImporter.isReady = function()
     return true
   end

@@ -238,37 +238,6 @@ def _source_census(repository_root: Path) -> tuple[dict[str, Any], dict[str, Any
     return {"files": source_files}, {"files": directories}
 
 
-def _policy_report(site_root: Path, repository_root: Path) -> dict[str, Any]:
-    policy_path = site_root / "codehealth" / "reports" / "lua-policy.json"
-    if not policy_path.exists():
-        return {"findings": 0, "byKind": {}}
-    report = _load_json(policy_path)
-    findings = report.get("findings")
-    if not isinstance(findings, list):
-        raise ValueError(f"Lua policy report {policy_path} must contain findings")
-    source_scope = _load_source_scope()
-    tracked = set(source_scope.tracked_paths(repository_root))
-    normalized_findings: list[dict[str, Any]] = []
-    for finding in findings:
-        if not isinstance(finding, dict) or not isinstance(finding.get("path"), str):
-            raise ValueError(f"Lua policy report {policy_path} contains an invalid finding")
-        path = finding["path"].replace("\\", "/")
-        if path.startswith("/") or ".." in path.split("/") or path not in tracked:
-            raise ValueError(f"Lua policy report {policy_path} contains an out-of-scope path {path!r}")
-        normalized_findings.append(finding)
-    if normalized_findings != sorted(
-        normalized_findings, key=lambda finding: (finding["path"], finding.get("line", 0), finding.get("kind", ""))
-    ):
-        raise ValueError(f"Lua policy report {policy_path} findings are not deterministic")
-    by_kind: dict[str, int] = {}
-    for finding in normalized_findings:
-        kind = finding.get("kind")
-        if not isinstance(kind, str) or not kind:
-            raise ValueError(f"Lua policy report {policy_path} contains a finding without kind")
-        by_kind[kind] = by_kind.get(kind, 0) + 1
-    return {"findings": len(normalized_findings), "byKind": dict(sorted(by_kind.items()))}
-
-
 def _import_cycle_groups(adjacency: dict[Any, set[Any]]) -> int:
     nodes = set(adjacency)
     for targets in adjacency.values():
@@ -461,10 +430,6 @@ def _build_structure_metrics(
             row["path"],
         ),
     )[:20]
-    complexity = sorted(
-        (row for row in files if row["lizardFunctions"] > 0),
-        key=lambda row: (-row["maxCcn"], -row["maxNloc"], row["path"]),
-    )[:20]
     fan_outliers = sorted(eligible, key=lambda row: (-row["importFanOut"], row["path"]))[:20]
     return {
         "callableVisibility": {
@@ -483,7 +448,6 @@ def _build_structure_metrics(
         },
         "outliers": {
             "lowVisibility": low_visibility,
-            "complexity": complexity,
             "fanOut": fan_outliers,
         },
     }
@@ -574,7 +538,6 @@ def _render_summary(model: dict[str, Any]) -> str:
     structure = model["structure"]
     source = model["source"]
     directories = model["directories"]
-    policy = model["policy"]
     visibility = structure["callableVisibility"]
     cards = (
         ("Functions", complexity["functions"]),
@@ -666,10 +629,6 @@ def _render_summary(model: dict[str, Any]) -> str:
         <h2 id="directory-density-title">Directory density</h2>
         <p>{value(len(directories["files"]))} directories with direct production Lua files.</p>
       </section>
-      <section class="panel" aria-labelledby="policy-findings-title">
-        <h2 id="policy-findings-title">Policy findings</h2>
-        <p>{value(policy["findings"])} report-mode Lua annotation and diagnostic findings.</p>
-      </section>
       <section class="panel" aria-labelledby="tools-title">
         <h2 id="tools-title">Analyzer versions</h2>
         <div class="table-wrap"><table>
@@ -745,7 +704,7 @@ def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
     }
     source, directories = _source_census(repository_root)
     model = {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "commit": _git_commit(repository_root),
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "tools": {
@@ -762,7 +721,6 @@ def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
         "architecture": architecture,
         "source": source,
         "directories": directories,
-        "policy": _policy_report(site_root, repository_root),
         "structure": _build_structure_metrics(lizard, graphify, source),
     }
     return model

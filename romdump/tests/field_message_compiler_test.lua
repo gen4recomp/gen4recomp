@@ -260,7 +260,6 @@ function T.writer_failure_invalidates_the_class()
   local bundle = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
   local backend = FakeCache.new()
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("banks/0543.lua", 1, true) then
       error("injected")
@@ -281,7 +280,6 @@ function T.failed_rebuild_preserves_the_previous_messages()
   local cache = CacheFs.forVersion("heartgold", backend)
   FieldMessageCacheWriter.write(cache, first)
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("banks/0543.lua", 1, true) then
       error("injected")

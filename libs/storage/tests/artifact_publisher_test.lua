@@ -77,7 +77,6 @@ function T.a_staged_write_failure_preserves_the_previous_artifact()
   local cache = CacheFs.forVersion("heartgold", backend)
   seedOldArtifact(cache)
   local originalWrite = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("index.lua", 1, true) then
       error("injected write failure")
@@ -123,7 +122,6 @@ end
 function T.a_failed_publish_rolls_back_every_moved_root()
   local backend = FakeCache.new()
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     -- Fail only the stage -> live rename of the second root; the rollback
     -- renames (which carry the ".old" suffix) must still succeed.
@@ -147,7 +145,6 @@ end
 function T.publish_restores_the_previous_artifact_when_an_aside_rename_fails()
   local backend = FakeCache.new()
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     -- Fail the aside of the second root, after the first root was already
     -- moved aside; publish must roll the first aside back.
@@ -192,7 +189,6 @@ end
 -- success when a rename failed.
 function T.publish_cannot_report_success_when_a_rename_reports_failure()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     -- Report failure only for the stage -> live rename of the second root;
     -- the rollback renames (which carry the ".old" suffix) must still succeed.
@@ -217,7 +213,6 @@ end
 
 function T.publish_reports_an_aside_failure_instead_of_success()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     -- Fail the aside of the second root, after the first root was already
     -- moved aside; publish must roll the first aside back.
@@ -245,7 +240,6 @@ end
 -- the last-known-good artifact) must stay in the stage as recovery material.
 function T.publish_reports_an_incomplete_rollback_when_a_rollback_rename_fails()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     -- Fail the stage -> live rename of the second root AND the aside restore
     -- of the first root (stage .old -> live), so the rollback cannot restore
@@ -282,7 +276,6 @@ end
 -- unsafe).
 function T.publish_reports_cleanup_failure_after_success()
   local backend = FakeCache.new()
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.remove = function(self, path)
     if path == STAGE_ROOT then
       return false, "injected cleanup failure"

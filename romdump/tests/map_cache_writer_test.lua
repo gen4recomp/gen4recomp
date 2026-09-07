@@ -95,7 +95,6 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   local first = Bundle.minimal()
   MapCacheWriter.write(c, first)
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath:find("staging/heartgold/map-", 1, true) then
       return false, "injected publish failure"
@@ -123,7 +122,6 @@ function T.failed_rebuild_preserves_the_previous_map()
   local first = Bundle.minimal()
   MapCacheWriter.write(c, first)
   local orig = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("scene.lua", 1, true) then
       error("injected write failure")
@@ -207,7 +205,6 @@ function T.failed_rebuild_preserves_the_previous_model_descriptor()
     },
   }
   local orig = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path:find("scene.lua", 1, true) then
       error("injected write failure")

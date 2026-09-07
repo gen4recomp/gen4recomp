@@ -7,9 +7,9 @@
     }
   },
   "diagnostics": {
+    "disable": ["duplicate-set-field"],
     "libraryFiles": "Disable",
     "neededFileStatus": {
-      "await-in-sync": "Any",
       "global-element": "Any",
       "incomplete-signature-doc": "Any",
       "missing-global-doc": "Any",

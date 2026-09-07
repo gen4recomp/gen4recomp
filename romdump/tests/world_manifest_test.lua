@@ -147,7 +147,6 @@ function T.corrupted_staged_write_fails_without_touching_the_live_world()
   local first = WorldManifest.stage(c, sample())
   first:publish()
   local orig = backend.write
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.write = function(self, path, data)
     if path == WORLD_STAGE then
       return orig(self, path, "not a lua manifest")
@@ -172,7 +171,6 @@ function T.publish_failure_keeps_the_last_known_good_world_live()
   local first = WorldManifest.stage(c, sample())
   first:publish()
   local originalReplace = backend.replace
-  ---@diagnostic disable-next-line: duplicate-set-field -- test replaces an externally owned callback
   backend.replace = function(self, sourcePath, destinationPath)
     if sourcePath:find(WORLD_ROOT, 1, true) then
       return false, "injected publish failure"
