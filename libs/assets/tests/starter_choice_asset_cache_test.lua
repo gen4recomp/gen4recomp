@@ -88,6 +88,22 @@ local function staticDescriptor()
   }
 end
 
+local function glyph(code, colorIndex)
+  return { kind = "glyph", code = code, colorIndex = colorIndex or 0 }
+end
+
+local function preparedMessage(lineSpecs)
+  local lines = {}
+  for _, spec in ipairs(lineSpecs) do
+    local line = {}
+    for _, code in ipairs(spec) do
+      line[#line + 1] = glyph(code)
+    end
+    lines[#lines + 1] = line
+  end
+  return { lines = lines }
+end
+
 local function validManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
@@ -132,12 +148,20 @@ local function validManifest()
       },
     },
     messages = {
-      topInitial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
-      inspect = { "inspect one", "inspect two", "inspect three" },
-      confirm = { "confirm one", "confirm two", "confirm three" },
+      topInitial = preparedMessage({ { 0x0123, 0x0124 }, { 0x0125 } }),
+      inspect = {
+        preparedMessage({ { 0x0200, 0x0201 } }),
+        preparedMessage({ { 0x0202, 0x0203 } }),
+        preparedMessage({ { 0x0204, 0x0205 } }),
+      },
+      confirm = {
+        preparedMessage({ { 0x0300, 0x0301 } }),
+        preparedMessage({ { 0x0302, 0x0303 } }),
+        preparedMessage({ { 0x0304, 0x0305 } }),
+      },
       bottom = {
-        normal = "Once you've decided, touch a Poké Ball!",
-        confirm = "Is this Pokémon good?",
+        normal = preparedMessage({ { 0x0400, 0x0401 } }),
+        confirm = preparedMessage({ { 0x0402 }, { 0x0403 } }),
       },
     },
     background = {
@@ -232,16 +256,16 @@ end
 
 function T.incomplete_message_roles_are_rejected()
   reject(function(manifest)
-    manifest.messages.inspect = { "one", "two" }
+    manifest.messages.inspect = { preparedMessage({ { 1 } }), preparedMessage({ { 2 } }) }
   end, "missing inspect description")
   reject(function(manifest)
-    manifest.messages.confirm[2] = ""
+    manifest.messages.confirm[2] = { lines = {} }
   end, "empty confirm description")
   reject(function(manifest)
-    manifest.messages.bottom = { normal = "prompt" }
+    manifest.messages.bottom = { normal = preparedMessage({ { 1 } }) }
   end, "missing confirm prompt")
   reject(function(manifest)
-    manifest.messages.topInitial = ""
+    manifest.messages.topInitial = { lines = {} }
   end, "empty initial top message")
 end
 
@@ -280,10 +304,10 @@ end
 
 function T.empty_messages_are_rejected()
   reject(function(manifest)
-    manifest.messages.topInitial = ""
+    manifest.messages.topInitial = { lines = { {} } }
   end, "empty initial top message")
   reject(function(manifest)
-    manifest.messages.bottom.confirm = ""
+    manifest.messages.bottom.confirm = { lines = { {} } }
   end, "empty confirm prompt")
 end
 
@@ -295,8 +319,93 @@ end
 
 function T.source_archive_identities_are_rejected()
   reject(function(manifest)
-    manifest.messages.topInitial = "see NARC_application_choose for details"
-  end, "source archive symbol in a message")
+    manifest.background.image = "assets/generated/starter_choice/NARC_application_choose.png"
+  end, "source archive symbol in a backdrop path")
+end
+
+function T.malformed_prepared_messages_are_rejected()
+  reject(function(manifest)
+    manifest.messages.topInitial = "Professor Elm: Touch a Ball!"
+  end, "string message leaf")
+  reject(function(manifest)
+    manifest.messages.bottom.normal = "Once you've decided, touch a Ball!"
+  end, "string bottom prompt")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = {} }
+  end, "zero-line record")
+  reject(function(manifest)
+    manifest.messages.topInitial = {
+      lines = { { glyph(1) }, { glyph(2) }, { glyph(3) } },
+    }
+  end, "three-line record")
+  reject(function(manifest)
+    local sparse = { glyph(1) }
+    sparse[3] = glyph(2)
+    manifest.messages.topInitial = { lines = sparse }
+  end, "sparse lines")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { glyph(1) }, {} } }
+  end, "empty second line")
+  reject(function(manifest)
+    local sparse = { glyph(1) }
+    sparse[3] = glyph(2)
+    manifest.messages.topInitial = { lines = { sparse } }
+  end, "sparse line")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { { kind = "text", code = 1, colorIndex = 0 } } } }
+  end, "non-glyph kind")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { glyph(65536) } } }
+  end, "glyph code above the field range")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { { kind = "glyph", code = 1.5, colorIndex = 0 } } } }
+  end, "fractional glyph code")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { glyph(1, 7) } } }
+  end, "color index above the palette range")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { { kind = "glyph", code = 1, colorIndex = "0" } } } }
+  end, "string color index")
+  reject(function(manifest)
+    manifest.messages.topInitial = { lines = { { glyph(1) } }, extra = true }
+  end, "extra message field")
+  reject(function(manifest)
+    local line = { glyph(1) }
+    line.extra = glyph(2)
+    manifest.messages.topInitial = { lines = { line } }
+  end, "extra line field")
+  reject(function(manifest)
+    local record = glyph(1)
+    record.raw = { 1 }
+    manifest.messages.topInitial = { lines = { { record } } }
+  end, "extra glyph field")
+end
+
+function T.flat_backdrop_is_the_only_accepted_shape()
+  local module = cache()
+  local manifest = validManifest()
+  Assert.isTrue(module.validateManifest(manifest), "the flat backdrop validates")
+  local seen = 0
+  for _, path in ipairs(module.referencedPaths(manifest)) do
+    if path == manifest.background.image then
+      seen = seen + 1
+    end
+  end
+  Assert.equal(seen, 1, "the flat backdrop image is referenced exactly once")
+  reject(function(candidate)
+    candidate.background = {
+      horizontal = { image = "assets/generated/starter_choice/backdrop.png", width = 512, height = 192 },
+    }
+  end, "horizontal backdrop variant")
+  reject(function(candidate)
+    candidate.background = {
+      horizontal = { image = "assets/generated/starter_choice/backdrop.png", width = 512, height = 192 },
+      vertical = { image = "assets/generated/starter_choice/backdrop.png", width = 256, height = 192 },
+    }
+  end, "vertical backdrop variant")
+  reject(function(candidate)
+    candidate.background.orientation = "horizontal"
+  end, "extra backdrop field")
 end
 
 local function readyCache()

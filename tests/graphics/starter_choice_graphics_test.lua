@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -47,6 +48,19 @@ local function loadManifest(cacheModule, cacheFs)
   return manifest
 end
 
+local function assertPreparedSceneMessage(message, what)
+  Assert.isTrue(type(message) == "table", "the scene carries " .. what .. " as a prepared record")
+  Assert.keySet(message, "lines", "the scene carries " .. what .. " as prepared lines")
+  local lines = assert(message.lines, "the scene carries " .. what .. " lines")
+  Assert.isTrue(type(lines) == "table" and #lines >= 1 and #lines <= 2, "the scene carries " .. what .. " lines")
+  for _, line in ipairs(lines) do
+    Assert.isTrue(type(line) == "table" and #line >= 1, "the scene carries " .. what .. " glyphs")
+    for _, glyph in ipairs(line) do
+      Assert.equal(glyph.kind, "glyph", "the scene carries " .. what .. " as prepared glyphs")
+    end
+  end
+end
+
 local function assertSceneContract(manifest)
   Assert.equal(manifest.reference.width, REFERENCE_WIDTH, "the scene reference is the DS viewport width")
   Assert.equal(manifest.reference.height, REFERENCE_HEIGHT, "the scene reference is the DS viewport height")
@@ -58,18 +72,15 @@ local function assertSceneContract(manifest)
     manifest.scene.camera.out.distance ~= manifest.scene.camera.inside.distance,
     "the outside and inside camera poses differ"
   )
-  Assert.isTrue(
-    type(manifest.messages.topInitial) == "string" and #manifest.messages.topInitial > 0,
-    "the scene carries the initial top message"
-  )
+  assertPreparedSceneMessage(manifest.messages.topInitial, "the initial top message")
   Assert.isTrue(
     type(manifest.messages.inspect) == "table" and #manifest.messages.inspect == 3,
     "the scene carries one inspect description per slot"
   )
-  Assert.isTrue(
-    type(manifest.messages.bottom.normal) == "string" and #manifest.messages.bottom.normal > 0,
-    "the scene carries the normal bottom prompt"
-  )
+  for index = 1, 3 do
+    assertPreparedSceneMessage(manifest.messages.inspect[index], "inspect description " .. index)
+  end
+  assertPreparedSceneMessage(manifest.messages.bottom.normal, "the normal bottom prompt")
   Assert.isNil(manifest.speciesSprites, "the scene carries no fixed species image catalog")
   local encoded = require("libs.codec.src.LuaWriter").encode(manifest)
   Assert.isNil(encoded:find("NARC_", 1, true), "the normalized manifest carries no source archive symbols")
@@ -176,6 +187,7 @@ local function drawFrame(host, width, height)
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 1)
   host:drawPresentation({
+    drawLine = function() end,
     drawText = function() end,
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
@@ -528,6 +540,7 @@ end
 local function recordingText()
   local texts = {}
   local provider = {
+    drawLine = function() end,
     drawText = function(first, second)
       texts[#texts + 1] = type(first) == "string" and first or second
     end,
@@ -547,20 +560,42 @@ local function drawRecorded(host, provider, width, height)
   return canvas:newImageData()
 end
 
-local function assertRecorded(texts, expected, versionId, what)
-  for _, line in ipairs(texts) do
-    if line == expected then
-      return
-    end
-  end
-  error(versionId .. " " .. what .. " is never drawn", 0)
+local function recordingLines()
+  local lines = {}
+  local markers = {}
+  local provider = {
+    drawLine = function(_, line, x, y)
+      lines[#lines + 1] = { line = line, x = x, y = y }
+    end,
+    drawText = function(_, text, x, y)
+      markers[#markers + 1] = { text = text, x = x, y = y }
+    end,
+    windowBackgroundColor = function()
+      return { 0, 0, 0, 1 }
+    end,
+  }
+  return lines, markers, provider
 end
 
-local function assertNoRecordedName(texts, names, versionId, what)
-  for _, line in ipairs(texts) do
-    for _, name in ipairs(names) do
-      Assert.isTrue(line ~= name, versionId .. " " .. what .. " draws no detached name label")
-    end
+local function assertPreparedLineCall(call, versionId, what)
+  Assert.isTrue(type(call.line) == "table" and #call.line >= 1, versionId .. " " .. what .. " draws a non-empty line")
+  Assert.isTrue(
+    type(call.x) == "number" and type(call.y) == "number",
+    versionId .. " " .. what .. " draws at a position"
+  )
+  for _, glyph in ipairs(call.line) do
+    Assert.equal(glyph.kind, "glyph", versionId .. " " .. what .. " draws prepared glyphs")
+    Assert.isTrue(
+      type(glyph.code) == "number" and glyph.code % 1 == 0 and glyph.code >= 0 and glyph.code <= 65535,
+      versionId .. " " .. what .. " keeps field-font codes"
+    )
+    Assert.isTrue(
+      type(glyph.colorIndex) == "number"
+        and glyph.colorIndex % 1 == 0
+        and glyph.colorIndex >= 0
+        and glyph.colorIndex < FieldMessageText.COLOR_VARIANT_COUNT,
+      versionId .. " " .. what .. " keeps palette color indices"
+    )
   end
 end
 
@@ -587,52 +622,63 @@ function T.initial_and_inspected_states_render_on_separate_framed_surfaces(scope
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = loadManifest(cacheModule, cacheFs)
     local messages = assert(manifest.messages, versionId .. " manifest carries decoded chooser messages")
-    local topInitial = messages.topInitial
-    Assert.isTrue(
-      type(topInitial) == "string" and #topInitial > 0,
-      versionId .. " manifest carries the initial top message"
-    )
+    assertPreparedSceneMessage(messages.topInitial, "the initial top message")
     Assert.isTrue(
       type(messages.inspect) == "table" and #messages.inspect == 3,
       versionId .. " manifest carries one inspect description per slot"
     )
-    local bottom = assert(messages.bottom, versionId .. " manifest carries bottom prompt roles")
-    Assert.isTrue(
-      type(bottom.normal) == "string" and #bottom.normal > 0,
-      versionId .. " manifest carries the normal bottom prompt"
-    )
-
-    local MonCatalog = requireModule(CATALOG_MODULE, "the mon catalog names the retail trio")
-    local catalog =
-      MonCatalog.new(requireModule(MON_CACHE_MODULE, "the mon cache owns the retail catalog").loadCatalog(cacheFs))
-    local names = {}
-    for _, key in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do
-      names[#names + 1] = catalog:species(key).name
+    for index = 1, 3 do
+      assertPreparedSceneMessage(messages.inspect[index], "inspect description " .. index)
     end
+    local bottom = assert(messages.bottom, versionId .. " manifest carries bottom prompt roles")
+    assertPreparedSceneMessage(bottom.normal, "the normal bottom prompt")
 
     local host = openProductionChoice(versionId, cacheFs, manifest)
-    local initialTexts, initialProvider = recordingText()
+    local initialLines, initialMarkers, initialProvider = recordingLines()
     local initial = scope:own(drawRecorded(host, initialProvider, WIDE_WIDTH, WIDE_HEIGHT))
     Assert.isTrue(
       brightInRegion(initial, 0, 64, WIDE_HEIGHT) > 20,
       versionId .. " the owned backdrop fills the host outside the surfaces"
     )
-    assertRecorded(initialTexts, topInitial, versionId, "the initial top message")
-    assertRecorded(initialTexts, bottom.normal, versionId, "the normal bottom prompt")
-    assertNoRecordedName(initialTexts, names, versionId, "the initial state")
+    Assert.equal(#initialMarkers, 0, versionId .. " the initial state draws no marker string")
+    local expectedInitial = {}
+    for _, line in ipairs(bottom.normal.lines) do
+      expectedInitial[#expectedInitial + 1] = line
+    end
+    for _, line in ipairs(messages.topInitial.lines) do
+      expectedInitial[#expectedInitial + 1] = line
+    end
+    Assert.equal(#initialLines, #expectedInitial, versionId .. " the initial state draws every generated line once")
+    for index, line in ipairs(expectedInitial) do
+      Assert.deepEqual(initialLines[index].line, line, versionId .. " initial line " .. index .. " keeps its colors")
+    end
 
     Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
-    local slotTexts = {}
+    local slotKeys = {}
     for slot = 0, 2 do
       host:focus(slot)
-      local texts, provider = recordingText()
+      local drawn, markers, provider = recordingLines()
       scope:own(drawRecorded(host, provider, WIDE_WIDTH, WIDE_HEIGHT))
-      slotTexts[slot] = table.concat(texts, "\n")
-      assertRecorded(texts, messages.inspect[slot + 1], versionId .. " inspected slot description")
-      assertNoRecordedName(texts, names, versionId, "the inspected state")
+      Assert.equal(#markers, 0, versionId .. " the inspected state draws no marker string")
+      local expected = {}
+      for _, line in ipairs(bottom.normal.lines) do
+        expected[#expected + 1] = line
+      end
+      for _, line in ipairs(messages.inspect[slot + 1].lines) do
+        expected[#expected + 1] = line
+      end
+      Assert.equal(#drawn, #expected, versionId .. " inspected slot draws every generated line once")
+      local key = {}
+      for index, line in ipairs(expected) do
+        Assert.deepEqual(drawn[index].line, line, versionId .. " inspected slot line " .. index .. " keeps its colors")
+        for _, glyph in ipairs(line) do
+          key[#key + 1] = tostring(glyph.code) .. ":" .. tostring(glyph.colorIndex)
+        end
+      end
+      slotKeys[slot] = table.concat(key, ",")
     end
     Assert.isTrue(
-      slotTexts[0] ~= slotTexts[1] and slotTexts[1] ~= slotTexts[2],
+      slotKeys[0] ~= slotKeys[1] and slotKeys[1] ~= slotKeys[2],
       versionId .. " neighbor slots describe different candidates"
     )
 
@@ -768,6 +814,7 @@ local function presentFrame(host, width, height)
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 1)
   host:drawPresentation({
+    drawLine = function() end,
     drawText = function() end,
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
@@ -962,12 +1009,37 @@ function T.selected_rock_continues_through_confirm_and_cancel_restores_outside(s
         versionId .. " backing out restores the outside ball row " .. index
       )
     end
-    local texts, provider = recordingText()
+    local drawn, markers, provider = recordingLines()
     scope:own(drawRecorded(host, provider, WIDE_WIDTH, WIDE_HEIGHT))
-    assertRecorded(texts, messages.inspect[selection + 1], versionId .. " backing out restores the inspect description")
-    local confirmText = messages.confirm[selection + 1]
-    for _, line in ipairs(texts) do
-      Assert.isTrue(line ~= confirmText, versionId .. " backing out hides the confirm description")
+    Assert.equal(#markers, 0, versionId .. " backing out draws no marker string")
+    local expected = {}
+    for _, line in ipairs(messages.bottom.normal.lines) do
+      expected[#expected + 1] = line
+    end
+    for _, line in ipairs(messages.inspect[selection + 1].lines) do
+      expected[#expected + 1] = line
+    end
+    Assert.equal(#drawn, #expected, versionId .. " backing out restores every inspect line once")
+    for index, line in ipairs(expected) do
+      Assert.deepEqual(drawn[index].line, line, versionId .. " restored inspect line " .. index .. " keeps its colors")
+    end
+    local confirmKeys = {}
+    for _, line in ipairs(messages.confirm[selection + 1].lines) do
+      confirmKeys[#confirmKeys + 1] = line
+    end
+    for _, call in ipairs(drawn) do
+      for _, confirmLine in ipairs(confirmKeys) do
+        local same = #call.line == #confirmLine
+        if same then
+          for glyphIndex, glyph in ipairs(call.line) do
+            if glyph.code ~= confirmLine[glyphIndex].code or glyph.colorIndex ~= confirmLine[glyphIndex].colorIndex then
+              same = false
+              break
+            end
+          end
+        end
+        Assert.isFalse(same, versionId .. " backing out hides the confirm description")
+      end
     end
     host:dispose()
   end
@@ -1201,6 +1273,62 @@ function T.headless_and_realized_paths_share_completion_boundaries(scope, contex
     Assert.deepEqual(hostStatus(headless), hostStatus(realized), versionId .. " both paths report the same result")
     headless:dispose()
     realized:dispose()
+  end
+end
+
+function T.production_chooser_delegates_prepared_lines_to_the_field_renderer(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  local FieldDialogueTheme =
+    requireModule("libs.hgss.src.ui.FieldDialogueTheme", "the field theme owns the line spacing")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, manifest)
+
+    local lines, markers, provider = recordingLines()
+    scope:own(drawRecorded(host, provider, WIDE_WIDTH, WIDE_HEIGHT))
+    Assert.equal(#markers, 0, versionId .. " draws no marker string")
+    Assert.isTrue(#lines >= 2, versionId .. " the two-line message produces two line operations")
+    for _, call in ipairs(lines) do
+      assertPreparedLineCall(call, versionId, "the initial message")
+    end
+    local spaced = false
+    for index = 2, #lines do
+      if
+        lines[index].x == lines[index - 1].x
+        and math.abs((lines[index].y - lines[index - 1].y) - FieldDialogueTheme.lineHeight) < 1e-9
+      then
+        spaced = true
+      end
+    end
+    Assert.isTrue(spaced, versionId .. " prepared lines advance one theme spacing")
+    if type(manifest.messages.topInitial) == "table" and type(manifest.messages.bottom.normal) == "table" then
+      local expected = {}
+      for _, line in ipairs(manifest.messages.bottom.normal.lines) do
+        expected[#expected + 1] = line
+      end
+      for _, line in ipairs(manifest.messages.topInitial.lines) do
+        expected[#expected + 1] = line
+      end
+      Assert.equal(#lines, #expected, versionId .. " every generated line reaches the renderer once")
+      for index, line in ipairs(expected) do
+        Assert.deepEqual(lines[index].line, line, versionId .. " line " .. index .. " preserves its colors")
+      end
+    end
+
+    Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+    local inspectedLines, inspectedMarkers, inspectedProvider = recordingLines()
+    scope:own(drawRecorded(host, inspectedProvider, WIDE_WIDTH, WIDE_HEIGHT))
+    Assert.equal(#inspectedMarkers, 0, versionId .. " the inspected message draws no marker string")
+    Assert.isTrue(#inspectedLines >= 1, versionId .. " the inspected message reaches the renderer as lines")
+    for _, call in ipairs(inspectedLines) do
+      assertPreparedLineCall(call, versionId, "the inspected message")
+    end
+    host:dispose()
   end
 end
 

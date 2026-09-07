@@ -96,6 +96,22 @@ local function staticDescriptor()
   }
 end
 
+local function glyph(code, colorIndex)
+  return { kind = "glyph", code = code, colorIndex = colorIndex or 0 }
+end
+
+local function preparedMessage(lineSpecs)
+  local lines = {}
+  for _, spec in ipairs(lineSpecs) do
+    local line = {}
+    for _, code in ipairs(spec) do
+      line[#line + 1] = glyph(code)
+    end
+    lines[#lines + 1] = line
+  end
+  return { lines = lines }
+end
+
 local function semanticManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
@@ -140,12 +156,20 @@ local function semanticManifest()
       },
     },
     messages = {
-      topInitial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
-      inspect = { "inspect one", "inspect two", "inspect three" },
-      confirm = { "confirm one", "confirm two", "confirm three" },
+      topInitial = preparedMessage({ { 0x0123, 0x0124 }, { 0x0125 } }),
+      inspect = {
+        preparedMessage({ { 0x0200 } }),
+        preparedMessage({ { 0x0201 } }),
+        preparedMessage({ { 0x0202 } }),
+      },
+      confirm = {
+        preparedMessage({ { 0x0300 } }),
+        preparedMessage({ { 0x0301 } }),
+        preparedMessage({ { 0x0302 } }),
+      },
       bottom = {
-        normal = "Once you've decided, touch a Poké Ball!",
-        confirm = "Is this Pokémon good?",
+        normal = preparedMessage({ { 0x0400 } }),
+        confirm = preparedMessage({ { 0x0401 }, { 0x0402 } }),
       },
     },
     background = {
@@ -340,6 +364,57 @@ function T.reset_clears_all_semantic_progress()
     timing.infoFadeTicks + timing.machineFadeTicks,
     "reopening restarts the full sequential fades"
   )
+end
+
+function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()
+  local presentation = openPresentation()
+  presentation._staticBatches = {
+    {
+      mesh = "mesh",
+      material = {},
+      center = { x = 0, y = 0, z = 0 },
+      alphaClass = "opaque",
+      cullMode = "back",
+      polygonAlpha = 1.0,
+      polygonMode = "modulation",
+      polygonId = 0,
+      translucentDepthWrite = false,
+      depthEqual = false,
+      lightMask = 0,
+      fogEnabled = false,
+    },
+  }
+  local function stubInstance()
+    return {
+      transform = nil,
+      evaluatePose = function() end,
+      drawItems = function()
+        return {}
+      end,
+    }
+  end
+  presentation._instances = {
+    turntable = stubInstance(),
+    ballEffect = stubInstance(),
+    ball1 = stubInstance(),
+    ball2 = stubInstance(),
+    ball3 = stubInstance(),
+  }
+  presentation._renderMeshes = {
+    turntable = {},
+    ballEffect = {},
+    ball1 = {},
+    ball2 = {},
+    ball3 = {},
+  }
+  local items = presentation:_drawItems(snapshot({ transition = "idle", selectionState = "null", selection = 0 }))
+  Assert.isTrue(#items >= 1, "prepared static batches reach the renderer")
+  Assert.equal(
+    items[1].polygonAlpha,
+    presentation._staticBatches[1].polygonAlpha,
+    "the prepared alpha is forwarded unchanged"
+  )
+  Assert.near(items[1].polygonAlpha, 1.0, 1e-9, "source alpha 31 reaches the renderer as 1.0")
 end
 
 return { tests = T }

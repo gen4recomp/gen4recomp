@@ -126,6 +126,22 @@ local function staticDescriptor()
   }
 end
 
+local function glyph(code, colorIndex)
+  return { kind = "glyph", code = code, colorIndex = colorIndex or 0 }
+end
+
+local function preparedMessage(lineSpecs)
+  local lines = {}
+  for _, spec in ipairs(lineSpecs) do
+    local line = {}
+    for _, code in ipairs(spec) do
+      line[#line + 1] = glyph(code)
+    end
+    lines[#lines + 1] = line
+  end
+  return { lines = lines }
+end
+
 local function semanticManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
@@ -170,12 +186,20 @@ local function semanticManifest()
       },
     },
     messages = {
-      topInitial = "Professor Elm: Touch a Poké Ball to see what Pokémon is inside!",
-      inspect = { "inspect one", "inspect two", "inspect three" },
-      confirm = { "confirm one", "confirm two", "confirm three" },
+      topInitial = preparedMessage({ { 0x0123, 0x0124 }, { 0x0125 } }),
+      inspect = {
+        preparedMessage({ { 0x0200 } }),
+        preparedMessage({ { 0x0201 } }),
+        preparedMessage({ { 0x0202 } }),
+      },
+      confirm = {
+        preparedMessage({ { 0x0300 } }),
+        preparedMessage({ { 0x0301 } }),
+        preparedMessage({ { 0x0302 } }),
+      },
       bottom = {
-        normal = "Once you've decided, touch a Poké Ball!",
-        confirm = "Is this Pokémon good?",
+        normal = preparedMessage({ { 0x0400 } }),
+        confirm = preparedMessage({ { 0x0401 }, { 0x0402 } }),
       },
     },
     background = {

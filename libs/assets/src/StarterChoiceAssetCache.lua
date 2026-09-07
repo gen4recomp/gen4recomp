@@ -8,6 +8,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Contract = require("libs.assets.src.DerivedAssetContract")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local Validate = require("libs.assets.src.Validate")
 
@@ -290,12 +291,55 @@ local function checkScene(scene)
   return checkTiming(scene.timing)
 end
 
----@param value unknown
+---@param glyph table<string, unknown>
 ---@param what string
 ---@return boolean, Errors.Error?
-local function checkMessageString(value, what)
-  if type(value) ~= "string" or value == "" then
-    return invalid("manifest message " .. what .. " must be a decoded non-empty string", {})
+local function checkGlyph(glyph, what)
+  local ok, err = closedRecord(what, glyph, { kind = true, code = true, colorIndex = true })
+  if not ok then
+    return false, err
+  end
+  if glyph.kind ~= "glyph" then
+    return invalid(what .. " must be a glyph operation", {})
+  end
+  if type(glyph.code) ~= "number" or glyph.code % 1 ~= 0 or glyph.code < 0 or glyph.code > 65535 then
+    return invalid(what .. " code must be an integer 0..65535", {})
+  end
+  if
+    type(glyph.colorIndex) ~= "number"
+    or glyph.colorIndex % 1 ~= 0
+    or glyph.colorIndex < 0
+    or glyph.colorIndex >= FieldMessageText.COLOR_VARIANT_COUNT
+  then
+    return invalid(
+      what .. " colorIndex must be an integer 0.." .. tostring(FieldMessageText.COLOR_VARIANT_COUNT - 1),
+      {}
+    )
+  end
+  return true
+end
+
+---@param message table<string, unknown>
+---@param what string
+---@return boolean, Errors.Error?
+local function checkMessageRecord(message, what)
+  local ok, err = closedRecord(what, message, { lines = true })
+  if not ok then
+    return false, err
+  end
+  if not Validate.isArray(message.lines) or #message.lines < 1 or #message.lines > 2 then
+    return invalid(what .. " must carry one or two lines", {})
+  end
+  for index, line in ipairs(message.lines) do
+    if type(line) ~= "table" or not Validate.isArray(line) or #line < 1 then
+      return invalid(what .. " line " .. index .. " must be a non-empty glyph array", {})
+    end
+    for glyphIndex, glyph in ipairs(line) do
+      local glyphOk, glyphErr = checkGlyph(glyph, what .. " line " .. index .. " glyph " .. glyphIndex)
+      if not glyphOk then
+        return false, glyphErr
+      end
+    end
   end
   return true
 end
@@ -312,7 +356,7 @@ local function checkMessages(messages)
   if not ok then
     return false, err
   end
-  local initialOk, initialErr = checkMessageString(messages.topInitial, "topInitial")
+  local initialOk, initialErr = checkMessageRecord(messages.topInitial, "manifest message topInitial")
   if not initialOk then
     return false, initialErr
   end
@@ -321,7 +365,7 @@ local function checkMessages(messages)
       return invalid("manifest messages " .. key .. " must carry one description per slot", {})
     end
     for index, text in ipairs(messages[key]) do
-      local textOk, textErr = checkMessageString(text, key .. "[" .. index .. "]")
+      local textOk, textErr = checkMessageRecord(text, "manifest message " .. key .. "[" .. index .. "]")
       if not textOk then
         return false, textErr
       end
@@ -332,11 +376,11 @@ local function checkMessages(messages)
   if not bottomOk then
     return false, bottomErr
   end
-  local normalOk, normalErr = checkMessageString(bottom.normal, "bottom.normal")
+  local normalOk, normalErr = checkMessageRecord(bottom.normal, "manifest message bottom.normal")
   if not normalOk then
     return false, normalErr
   end
-  return checkMessageString(bottom.confirm, "bottom.confirm")
+  return checkMessageRecord(bottom.confirm, "manifest message bottom.confirm")
 end
 
 ---@param label string
@@ -369,24 +413,7 @@ local function checkBackground(background)
   if type(background) ~= "table" then
     return invalid("manifest background is required", {})
   end
-  if background.image ~= nil then
-    return checkBackdropEntry("manifest background", background)
-  end
-  local ok, err = closedRecord("manifest background", background, { horizontal = true, vertical = true })
-  if not ok then
-    return false, err
-  end
-  if type(background.horizontal) ~= "table" then
-    return invalid("manifest background horizontal entry is required", {})
-  end
-  local horizontalOk, horizontalErr = checkBackdropEntry("manifest background horizontal", background.horizontal)
-  if not horizontalOk then
-    return false, horizontalErr
-  end
-  if background.vertical ~= nil then
-    return checkBackdropEntry("manifest background vertical", background.vertical)
-  end
-  return true
+  return checkBackdropEntry("manifest background", background)
 end
 
 ---@param value unknown
@@ -478,7 +505,7 @@ function M.validateManifest(manifest)
 end
 
 -- Every cache-relative path the manifest references: model geometry and
--- textures plus the chooser-owned backdrop image(s). Raises on a malformed
+-- textures plus the chooser-owned backdrop image. Raises on a malformed
 -- manifest, matching ModelAsset.referencedPaths.
 ---@param manifest table<string, unknown>
 ---@return string[]
@@ -491,14 +518,7 @@ function M.referencedPaths(manifest)
     end
   end
   local background = manifest.background
-  if background.image ~= nil then
-    paths[#paths + 1] = background.image
-  else
-    paths[#paths + 1] = background.horizontal.image
-    if background.vertical ~= nil then
-      paths[#paths + 1] = background.vertical.image
-    end
-  end
+  paths[#paths + 1] = background.image
   return paths
 end
 

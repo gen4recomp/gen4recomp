@@ -361,12 +361,12 @@ end
 -- Draws the modal through the field text provider. Refreshes the scene fit
 -- from the current drawable size, realizes presentation resources on first
 -- presentation, and delegates the frame to the retail presentation.
----@param text table<string, unknown> text provider ({ drawText, windowBackgroundColor })
+---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
 ---@param width number
 ---@param height number
 function StarterChoiceState:drawPresentation(text, width, height)
   local controller = activeController(self)
-  assert(text ~= nil and type(text.drawText) == "function", "starter presentation requires the text provider")
+  assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   self:resize(width, height)
   activePresentation(self):draw(controller:snapshot(), {
     candidates = assert(self._candidates, "starter presentation requires its candidates"),

@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
@@ -86,8 +87,46 @@ local function assertNoSourceIdentities(value, path)
   end
 end
 
-local function assertNonEmptyString(value, what)
-  Assert.isTrue(type(value) == "string" and #value > 0, what .. " is a decoded non-empty string")
+local function assertPreparedLine(line, what)
+  Assert.isTrue(type(line) == "table" and #line >= 1, what .. " is a non-empty glyph line")
+  for _, glyph in ipairs(line) do
+    Assert.keySet(glyph, "code,colorIndex,kind", what .. " glyph carries only its render fields")
+    Assert.equal(glyph.kind, "glyph", what .. " glyph is render-ready")
+    Assert.isTrue(
+      type(glyph.code) == "number" and glyph.code % 1 == 0 and glyph.code >= 0 and glyph.code <= 65535,
+      what .. " glyph code is a field-font code"
+    )
+    Assert.isTrue(
+      type(glyph.colorIndex) == "number"
+        and glyph.colorIndex % 1 == 0
+        and glyph.colorIndex >= 0
+        and glyph.colorIndex < FieldMessageText.COLOR_VARIANT_COUNT,
+      what .. " glyph color stays in the field palette range"
+    )
+  end
+end
+
+local function assertPreparedMessage(message, what)
+  Assert.isTrue(type(message) == "table", what .. " is a prepared message record, not a marker string")
+  Assert.keySet(message, "lines", what .. " carries only its prepared lines")
+  local lines = assert(message.lines, what .. " carries prepared lines")
+  Assert.isTrue(type(lines) == "table" and #lines >= 1 and #lines <= 2, what .. " keeps the source line count")
+  for index, line in ipairs(lines) do
+    assertPreparedLine(line, what .. " line " .. index)
+  end
+end
+
+local function assertNoMarkerText(value, path)
+  if type(value) == "string" then
+    Assert.isTrue(value:find("{", 1, true) == nil, path .. " carries no marker text")
+    return
+  end
+  if type(value) ~= "table" then
+    return
+  end
+  for key, item in pairs(value) do
+    assertNoMarkerText(item, path .. "." .. tostring(key))
+  end
 end
 
 local function assertBackdropEntry(entry, assets, what)
@@ -175,18 +214,19 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
 
   local messages = assert(manifest.messages, "manifest carries decoded chooser messages")
   Assert.keySet(messages, "bottom,confirm,inspect,topInitial")
-  assertNonEmptyString(messages.topInitial, "the initial top message")
+  assertPreparedMessage(messages.topInitial, "the initial top message")
   Assert.isTrue(type(messages.inspect) == "table" and #messages.inspect == 3, "one inspect description per slot")
   Assert.isTrue(type(messages.confirm) == "table" and #messages.confirm == 3, "one confirm description per slot")
   for index = 1, 3 do
-    assertNonEmptyString(messages.inspect[index], "inspect description " .. index)
-    assertNonEmptyString(messages.confirm[index], "confirm description " .. index)
+    assertPreparedMessage(messages.inspect[index], "inspect description " .. index)
+    assertPreparedMessage(messages.confirm[index], "confirm description " .. index)
   end
-  assertNonEmptyString(messages.bottom.normal, "the normal bottom prompt")
-  assertNonEmptyString(messages.bottom.confirm, "the confirm bottom prompt")
+  assertPreparedMessage(messages.bottom.normal, "the normal bottom prompt")
+  assertPreparedMessage(messages.bottom.confirm, "the confirm bottom prompt")
 
   local background = assert(manifest.background, "the chooser owns its generated backdrop")
-  local backdropEntry = background.image ~= nil and background or assert(background.horizontal)
+  local backdropEntry = background
+  Assert.keySet(backdropEntry, "height,image,width", "the backdrop is one flat record")
   Assert.isTrue(
     type(backdropEntry.image) == "string" and backdropEntry.image:find("assets/generated/starter_choice/", 1, true) == 1,
     "backdrop uses a chooser generated path"
@@ -221,16 +261,16 @@ function T.chooser_manifest_carries_semantic_roles_source_geometry_and_owned_bac
   Assert.deepEqual(manifest.reference, { width = 256, height = 192 }, "one logical surface keeps the 256x192 reference")
 
   local messages = assert(manifest.messages, "manifest carries decoded chooser messages")
-  assertNonEmptyString(messages.topInitial, "the initial top message")
+  assertPreparedMessage(messages.topInitial, "the initial top message")
   Assert.isTrue(type(messages.inspect) == "table" and #messages.inspect == 3, "one inspect description per slot")
   Assert.isTrue(type(messages.confirm) == "table" and #messages.confirm == 3, "one confirm description per slot")
   for index = 1, 3 do
-    assertNonEmptyString(messages.inspect[index], "inspect description " .. index)
-    assertNonEmptyString(messages.confirm[index], "confirm description " .. index)
+    assertPreparedMessage(messages.inspect[index], "inspect description " .. index)
+    assertPreparedMessage(messages.confirm[index], "confirm description " .. index)
   end
   local bottom = assert(messages.bottom, "manifest carries bottom prompt roles")
-  assertNonEmptyString(bottom.normal, "the normal bottom prompt")
-  assertNonEmptyString(bottom.confirm, "the confirm bottom prompt")
+  assertPreparedMessage(bottom.normal, "the normal bottom prompt")
+  assertPreparedMessage(bottom.confirm, "the confirm bottom prompt")
   Assert.isNil(messages.initial, "the legacy single initial field is gone")
 
   local scene = assert(manifest.scene, "manifest carries normalized scene constants")
@@ -254,18 +294,48 @@ function T.chooser_manifest_carries_semantic_roles_source_geometry_and_owned_bac
   Assert.isNil(scene.camera.transitionTicks, "no universal transition duration remains on the camera")
 
   local background = assert(manifest.background, "the chooser owns its generated backdrop")
-  if background.image ~= nil then
-    assertBackdropEntry(background, assets, "single")
-  else
-    assertBackdropEntry(background.horizontal, assets, "horizontal")
-    if background.vertical ~= nil then
-      assertBackdropEntry(background.vertical, assets, "vertical")
-    end
-  end
+  assertBackdropEntry(background, assets, "single")
 
   Assert.isNil(manifest.speciesSprites, "no fixed species image catalog remains")
 
   assertNoSourceIdentities(manifest, "manifest")
+
+  Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
+end
+
+function T.compiled_messages_preserve_source_lines_and_species_colors(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local messages = assert(manifest.messages, "manifest carries decoded chooser messages")
+
+  assertPreparedMessage(messages.topInitial, "the initial top message")
+  Assert.equal(#messages.topInitial.lines, 2, "the initial top message keeps both source lines")
+  assertPreparedMessage(messages.bottom.confirm, "the confirm bottom prompt")
+  Assert.equal(#messages.bottom.confirm.lines, 2, "the confirm bottom prompt keeps both source lines")
+  assertPreparedMessage(messages.bottom.normal, "the normal bottom prompt")
+
+  Assert.isTrue(type(messages.inspect) == "table" and #messages.inspect == 3, "one inspect description per slot")
+  Assert.isTrue(type(messages.confirm) == "table" and #messages.confirm == 3, "one confirm description per slot")
+  for index = 1, 3 do
+    assertPreparedMessage(messages.inspect[index], "inspect description " .. index)
+    assertPreparedMessage(messages.confirm[index], "confirm description " .. index)
+    for _, message in ipairs({ messages.inspect[index], messages.confirm[index] }) do
+      local seenColored, seenReset = false, false
+      for _, line in ipairs(message.lines) do
+        for _, glyph in ipairs(line) do
+          if glyph.colorIndex ~= 0 then
+            seenColored = true
+          elseif seenColored then
+            seenReset = true
+          end
+        end
+      end
+      Assert.isTrue(seenColored, "species description " .. index .. " keeps its source color span")
+      Assert.isTrue(seenReset, "species description " .. index .. " resets to the base color")
+    end
+  end
+
+  assertNoMarkerText(messages, "messages")
 
   Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
 end

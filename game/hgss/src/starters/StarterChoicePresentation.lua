@@ -17,6 +17,7 @@
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
@@ -629,7 +630,7 @@ function StarterChoicePresentation:_ensureRealized()
         end
       end
       local background = self._manifest.background
-      local backdropPath = background.image or assert(background.horizontal).image
+      local backdropPath = assert(background.image, "starter manifest is missing its backdrop image")
       self._backdropImage = pool:imageFor(backdropPath, "clamp", "clamp")
       self._portraitImage = pool:imageFor(MonCache.portraitImagePath(), "clamp", "clamp")
     end)
@@ -954,7 +955,7 @@ function StarterChoicePresentation:_drawItems(snapshot)
       center = batch.center,
       alphaClass = batch.alphaClass,
       cullMode = batch.cullMode,
-      polygonAlpha = batch.polygonAlpha / FixedPoint.RGB5_MAX,
+      polygonAlpha = batch.polygonAlpha,
       polygonMode = batch.polygonMode,
       polygonId = batch.polygonId,
       translucentDepthWrite = batch.translucentDepthWrite,
@@ -1019,15 +1020,15 @@ function StarterChoicePresentation:_drawItems(snapshot)
   return items
 end
 
--- Draws one framed window with its semantic message inside one logical
--- surface. The message goes out through one text call carrying the full
--- semantic string; the surface transform maps the 256x192 reference frame
+-- Draws one framed window with its prepared message inside one logical
+-- surface. Each prepared line goes out through one drawLine call at the
+-- field line spacing; the surface transform maps the 256x192 reference frame
 -- onto the host rectangle and the shared window primitive owns the frame
 -- artwork.
 ---@param surface table<string, unknown> host rectangle of the logical surface
 ---@param box table<string, unknown> content box in surface-local reference coordinates
----@param message string semantic message for the window
----@param text table<string, unknown> text provider ({ drawText, windowBackgroundColor })
+---@param message table<string, unknown> prepared message record ({ lines })
+---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
 function StarterChoicePresentation:_drawSurfaceWindow(surface, box, message, text)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   local reference = self._manifest.reference
@@ -1035,7 +1036,9 @@ function StarterChoicePresentation:_drawSurfaceWindow(surface, box, message, tex
   graphics.translate(surface.x, surface.y)
   graphics.scale(surface.width / reference.width, surface.height / reference.height)
   assert(self._window, "starter presentation owns no window primitive"):drawWindow(box, 0, text:windowBackgroundColor())
-  text:drawText(message, box.x + 8, box.y + 8)
+  for index, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
+    text:drawLine(line, box.x + 8, box.y + 8 + (index - 1) * FieldDialogueTheme.lineHeight)
+  end
   graphics.pop()
 end
 
@@ -1063,12 +1066,12 @@ end
 -- portrait companion on the info surface.
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot
 ---@param view { candidates: table<string, unknown>[], names: string[] }
----@param text table<string, unknown> text provider ({ drawText, windowBackgroundColor })
+---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
 function StarterChoicePresentation:draw(snapshot, view, text)
   assert(type(snapshot) == "table", "starter presentation draw requires the controller snapshot")
   assert(type(view) == "table" and type(view.candidates) == "table", "starter presentation requires its candidates")
   assert(type(view.names) == "table" and #view.names == 3, "starter presentation requires three candidate names")
-  assert(text ~= nil and type(text.drawText) == "function", "starter presentation requires the text provider")
+  assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   assert(
     text ~= nil and type(text.windowBackgroundColor) == "function",
     "starter presentation requires the window background color"

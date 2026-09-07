@@ -41,7 +41,8 @@ local ANIM_MEMBERS = { effect = 4, open = 5, rock = 6, turntable = 7 }
 local MESSAGE_BANK = 190
 -- Semantic message roles over bank 190: the initial top prompt, one confirm
 -- description and one inspect description per candidate slot, and the normal
--- and confirm bottom prompts. Producer-only indices; runtime sees strings.
+-- and confirm bottom prompts. Producer-only indices; runtime sees prepared
+-- glyph lines.
 local MESSAGE_TOP_INITIAL = 0
 local MESSAGE_CONFIRM = { 1, 2, 3 }
 local MESSAGE_INSPECT = { 4, 5, 6 }
@@ -198,8 +199,8 @@ end
 ---@param bank { messages: table[] }
 ---@param index integer
 ---@param role string
----@return string
-local function messageText(bank, index, role)
+---@return table<string, unknown>
+local function preparedMessage(bank, index, role)
   local message = bank.messages[index + 1]
   if not message then
     sourceError("starter-choice message bank is missing the " .. role .. " entry", { index = index })
@@ -212,11 +213,76 @@ local function messageText(bank, index, role)
     assert(err)
     sourceError("starter-choice message entry does not tokenize: " .. err.message, { index = index, role = role })
   end
-  local ok, text = pcall(FieldMessageText.tokensToText, tokens)
-  if not ok or type(text) ~= "string" or text == "" then
+  assert(tokens, "starter-choice message entry must tokenize before normalization")
+  local currentColor = 0
+  local lines = { {} }
+  local line = lines[1]
+  for position, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      if type(token.code) ~= "number" then
+        sourceError("starter-choice message entry carries a glyph without a code", {
+          index = index,
+          role = role,
+          position = position,
+        })
+      end
+      line[#line + 1] = {
+        kind = "glyph",
+        code = token.code,
+        colorIndex = currentColor,
+      }
+    elseif token.kind == "line_break" then
+      if #lines >= 2 then
+        sourceError("starter-choice message entry carries more than two lines", {
+          index = index,
+          role = role,
+          position = position,
+        })
+      end
+      if #line == 0 then
+        sourceError("starter-choice message entry carries an empty line", {
+          index = index,
+          role = role,
+          position = position,
+        })
+      end
+      line = {}
+      lines[#lines + 1] = line
+    elseif token.kind == "style" and token.control == FieldMessageText.COLOR then
+      local args = token.args or {}
+      local value = args[1]
+      if
+        #args ~= 1
+        or type(value) ~= "number"
+        or value % 1 ~= 0
+        or value < 0
+        or value >= FieldMessageText.COLOR_VARIANT_COUNT
+      then
+        sourceError("starter-choice message entry carries an unsupported color selection", {
+          index = index,
+          role = role,
+          position = position,
+          control = token.control,
+          value = value,
+        })
+      end
+      currentColor = value
+    elseif token.kind == "eos" then
+      break
+    else
+      sourceError("starter-choice message entry carries an unsupported control", {
+        index = index,
+        role = role,
+        position = position,
+        kind = token.kind,
+        control = token.control,
+      })
+    end
+  end
+  if #line == 0 then
     sourceError("starter-choice message entry has no decoded text", { index = index, role = role })
   end
-  return text
+  return { lines = lines }
 end
 
 -- Deterministic chooser-owned backdrop: a vertical gradient in muted lab
@@ -338,8 +404,8 @@ local function _compile(romFs)
 
   local inspect, confirm = {}, {}
   for slot = 1, 3 do
-    inspect[slot] = messageText(bank, MESSAGE_INSPECT[slot], "inspect:" .. slot)
-    confirm[slot] = messageText(bank, MESSAGE_CONFIRM[slot], "confirm:" .. slot)
+    inspect[slot] = preparedMessage(bank, MESSAGE_INSPECT[slot], "inspect:" .. slot)
+    confirm[slot] = preparedMessage(bank, MESSAGE_CONFIRM[slot], "confirm:" .. slot)
   end
   local backdropImage = renderBackdrop()
   local backdropPath = StarterChoiceAssetCache.assetDir() .. "/backdrop.png"
@@ -394,12 +460,12 @@ local function _compile(romFs)
       },
     },
     messages = {
-      topInitial = messageText(bank, MESSAGE_TOP_INITIAL, "topInitial"),
+      topInitial = preparedMessage(bank, MESSAGE_TOP_INITIAL, "topInitial"),
       inspect = inspect,
       confirm = confirm,
       bottom = {
-        normal = messageText(bank, MESSAGE_BOTTOM_NORMAL, "bottom:normal"),
-        confirm = messageText(bank, MESSAGE_BOTTOM_CONFIRM, "bottom:confirm"),
+        normal = preparedMessage(bank, MESSAGE_BOTTOM_NORMAL, "bottom:normal"),
+        confirm = preparedMessage(bank, MESSAGE_BOTTOM_CONFIRM, "bottom:confirm"),
       },
     },
     background = {
