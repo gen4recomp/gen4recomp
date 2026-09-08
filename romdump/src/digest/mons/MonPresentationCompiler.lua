@@ -6,16 +6,25 @@
 -- NANR frame timing. Front portraits follow src/pokemon.c
 -- GetMonSpriteCharAndPlttNarcIdsEx: base species read the pokegra archive,
 -- alternate forms and eggs read the otherpoke archive, and each character
--- member carries two 80x80 frames. Tiles, palettes, cells, and animations
+-- member carries two 80x80 frames. Front-picture character payloads are
+-- stored scanned: src/pokepic.c UnscanPokepic_PtHGSS masks 3200
+-- little-endian words with the 32-bit LCRNG seeded from word 0 before pixels
+-- are used, and the decoded surface is 20x10 tiles whose left and right 10x10
+-- halves are the two authored frames (src/unk_02013FDC.c portrait extraction;
+-- the second frame sits at an 80-pixel horizontal offset).
+-- Tiles, palettes, cells, and animations
 -- decode through the existing G2dDecoder primitives; this module only
 -- rasterizes palette-resolved RGBA and packs deterministic atlases. Returns
 -- raw image buffers and manifest values; MonCacheWriter owns PNG
 -- encoding and publication.
 
 local Errors = require("libs.errors.src.Errors")
+local U32 = require("libs.codec.src.U32")
 local MonSources = require("romdump.src.config.MonSources")
 local MonCache = require("libs.assets.src.MonCache")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+
+local bit = require("bit")
 
 ---@class MonPresentationCompiler
 local MonPresentationCompiler = {}
@@ -25,6 +34,16 @@ local PORTRAIT_CELL = 80
 local ICON_FRAMES = 2
 local PORTRAIT_FRAMES = 2
 local FRONT_FACING = 2
+
+-- Retail front-picture geometry: the scanned payload is exactly the two
+-- authored 80x80 4bpp frames, and the decoded tile surface is 20 tiles wide
+-- by 10 high with one frame per 10-tile half.
+local PORTRAIT_BYTES = 6400
+local PORTRAIT_WORDS = 3200
+local UNSCAN_MULTIPLIER = 1103515245
+local UNSCAN_INCREMENT = 24691
+local PORTRAIT_SOURCE_TILES_WIDE = 20
+local PORTRAIT_FRAME_TILES = 10
 
 ---@generic T
 ---@param value T?
@@ -95,6 +114,63 @@ local function byteExpansions(colors, label)
     expansions[byte] = table.concat(out)
   end
   return expansions
+end
+
+-- Undo the retail HGSS front-picture scan on a private copy of the decoded
+-- payload: the seed starts at the first original little-endian word, every
+-- word is masked with the low 16 seed bits in order, and the seed advances
+-- through the exact 32-bit recurrence (exact U32 arithmetic because Lua
+-- numbers cannot represent every intermediate product). The decoded member
+-- bytes are never mutated. A payload that is not the exact two-frame shape
+-- keeps the existing image-size error.
+local function unscanPortraitBytes(charTiles, label)
+  if #charTiles ~= PORTRAIT_BYTES then
+    return nil,
+      Errors.new(
+        "MON_IMAGE_TILE_COUNT",
+        label .. " carries " .. (#charTiles / 32) .. " tiles, expected " .. (PORTRAIT_BYTES / 32),
+        {
+          tiles = #charTiles / 32,
+          expected = PORTRAIT_BYTES / 32,
+        }
+      )
+  end
+  local seed = string.byte(charTiles, 1) + string.byte(charTiles, 2) * 256
+  local parts = {}
+  for i = 0, PORTRAIT_WORDS - 1 do
+    local word = string.byte(charTiles, i * 2 + 1) + string.byte(charTiles, i * 2 + 2) * 256
+    local plain = bit.bxor(word, seed % 65536)
+    parts[#parts + 1] = string.char(plain % 256, math.floor(plain / 256) % 256)
+    seed = U32.add(U32.mul(seed, UNSCAN_MULTIPLIER), UNSCAN_INCREMENT)
+  end
+  return table.concat(parts)
+end
+
+-- Raster the two authored 80x80 frames from the unscanned 20x10-tile
+-- surface: frame 0 is the left 10 tile columns, frame 1 the right 10.
+-- Palette resolution (including index-0 transparency) still owns the
+-- expansions table built by the caller.
+local function rasterizePortraitFrames(unscanned, expansions, label)
+  assert(#unscanned == PORTRAIT_BYTES, label .. " portrait bytes must be unscanned before rastering")
+  local frames = {}
+  for frame = 0, PORTRAIT_FRAMES - 1 do
+    local rows = {}
+    for y = 0, PORTRAIT_FRAME_TILES * 8 - 1 do
+      local tileRow = math.floor(y / 8)
+      local rowInTile = y % 8
+      local parts = {}
+      for tx = 0, PORTRAIT_FRAME_TILES - 1 do
+        local tile = tileRow * PORTRAIT_SOURCE_TILES_WIDE + frame * PORTRAIT_FRAME_TILES + tx
+        local base = tile * 32 + rowInTile * 4
+        for col = 0, 3 do
+          parts[#parts + 1] = expansions[string.byte(unscanned, base + col + 1)]
+        end
+      end
+      rows[#rows + 1] = table.concat(parts)
+    end
+    frames[#frames + 1] = table.concat(rows)
+  end
+  return frames
 end
 
 -- Rasterize frameCount frames of tilesWide x tilesHigh 8x8 tiles into RGBA
@@ -485,7 +561,8 @@ function MonPresentationCompiler.compilePortraits(romFs, catalog)
         )
       end
       local expansions = must(byteExpansions(pal.colors, label))
-      framesByCombo[index] = must(rasterizeFrames(char.tiles, expansions, 10, 10, PORTRAIT_FRAMES, label))
+      local unscanned = must(unscanPortraitBytes(char.tiles, label))
+      framesByCombo[index] = rasterizePortraitFrames(unscanned, expansions, label)
     end
     local atlasCells = {}
     for index in ipairs(combos) do
