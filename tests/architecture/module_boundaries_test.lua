@@ -421,6 +421,54 @@ function T.app_cross_package_imports_match_exact_semantic_seams()
   Assert.isTrue(#mismatches == 0, violationMessage("app seam policy mismatches:\n", mismatches))
 end
 
+function T.forbidden_edges_are_rejected_while_documented_seams_hold()
+  local removedEngine = "libs.engine.src.Engine"
+  local forbidden = {
+    { source = "assets", dependency = removedEngine },
+    { source = "nds", dependency = removedEngine },
+    { source = "script", dependency = removedEngine },
+    { source = "hgss", dependency = removedEngine },
+    { source = "game", dependency = removedEngine },
+    { source = "game_hgss", dependency = removedEngine },
+    { source = "romdump", dependency = removedEngine },
+    { source = "app", dependency = removedEngine },
+    { source = "game", dependency = "libs.nds.src.gx.DsPolygonAttr" },
+    { source = "game_hgss", dependency = "libs.nds.src.gx.DsPolygonAttr" },
+    { source = "nds", dependency = "libs.assets.src.field.FieldMessageCache" },
+    { source = "nds", dependency = "libs.script.src.Runtime" },
+    { source = "nds", dependency = "libs.hgss.src.field.FieldSession" },
+    { source = "nds", dependency = "game.src.Game" },
+    { source = "nds", dependency = "game.hgss.src.HgssGame" },
+    { source = "nds", dependency = "romdump.src.source.GameVersion" },
+    { source = "script", dependency = "libs.hgss.src.field.FieldSession" },
+    { source = "script", dependency = "game.src.Game" },
+    { source = "script", dependency = "game.hgss.src.HgssGame" },
+    { source = "script", dependency = "romdump.src.source.GameVersion" },
+    { source = "romdump", dependency = "libs.hgss.src.field.FieldSession" },
+    { source = "hgss", dependency = "game.src.Game" },
+    { source = "hgss", dependency = "game.hgss.src.HgssGame" },
+    { source = "hgss", dependency = "romdump.src.source.GameVersion" },
+  }
+  local permitted = {
+    { source = "game_hgss", dependency = "libs.hgss.src.field.FieldSession" },
+    { source = "romdump", dependency = "libs.nds.src.gx.DsPolygonAttr" },
+    { source = "romdump", dependency = "libs.script.src.Runtime" },
+    { source = "romdump", dependency = "libs.assets.src.field.FieldMessageCache" },
+  }
+  local mismatches = {}
+  for _, case in ipairs(forbidden) do
+    if #fixtureViolations(case.source, case.dependency) == 0 then
+      mismatches[#mismatches + 1] = case.source .. " accepted forbidden dependency " .. case.dependency
+    end
+  end
+  for _, case in ipairs(permitted) do
+    if #fixtureViolations(case.source, case.dependency) ~= 0 then
+      mismatches[#mismatches + 1] = case.source .. " rejected documented dependency " .. case.dependency
+    end
+  end
+  Assert.isTrue(#mismatches == 0, violationMessage("package edge fixture mismatches:\n", mismatches))
+end
+
 function T.runnable_roots_are_classified_and_reject_forbidden_dependencies()
   local fixtures = {
     { file = "app/main.lua", packageName = "app", dependency = "libs.hgss.src.field.FieldSession" },
