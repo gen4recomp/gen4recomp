@@ -319,6 +319,10 @@ local function drawOrderState(starterActive)
     worldParts = {},
     spriteItems = {},
     textRenderer = {},
+    presentationResources = {
+      textRenderer = {},
+      renderer = { draw = function() end },
+    },
   }, FieldState)
   state._worldParts = function()
     return {}
