@@ -11,6 +11,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
+local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
@@ -227,7 +228,14 @@ function T.draw_orders_world_then_dialogue_then_hud_when_the_field_is_idle()
   })
   local dialogueCall = sink[2]
   Assert.equal(dialogueCall[2], state.runtime.dialogue, "the dialogue renderer receives the dialogue controller")
-  Assert.equal(dialogueCall[3], state.runtime.viewport, "the dialogue draws into the viewport")
+  local presentation = dialogueCall[3]
+  DialoguePresentationLayout.validate(presentation)
+  Assert.deepEqual(
+    presentation.bounds,
+    state.runtime.viewport.worldViewport,
+    "the dialogue draws from a presentation resolved against the real world viewport"
+  )
+  Assert.isNil(dialogueCall[4], "the dialogue renders from one resolved presentation")
   Assert.equal(#sink, 7, "no signpost, menu, card, or fade draws on an idle field")
 end
 

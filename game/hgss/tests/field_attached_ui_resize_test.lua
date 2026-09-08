@@ -239,10 +239,19 @@ function T.ui_scale_equals_logical_pixel_scale_at_two_heights()
   )
 end
 
-function T.field_state_draw_sends_same_scale_to_both_renderers()
+-- Field dialogue shares one resolved presentation contract with Oak: the host
+-- supplies real bounds plus the field logical pixel scale as a cap, and the
+-- renderer draws exactly the resulting presentation. The signpost keeps its
+-- existing exact-scale contract.
+local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
   local viewport = FieldViewport.new(1280, 600, { mode = "expanded" })
-  local camera = { zoom = 1.25 }
-  local expected = viewport:logicalPixelScale(camera.zoom)
+  local fieldScale = viewport:logicalPixelScale(cameraZoom)
+  viewport.worldViewport = {
+    x = worldViewport.x,
+    y = worldViewport.y,
+    width = worldViewport.width,
+    height = worldViewport.height,
+  }
   local fakeRuntimeMap = {
     mapId = 1,
     mapSymbol = "MAP_FAKE",
@@ -252,7 +261,7 @@ function T.field_state_draw_sends_same_scale_to_both_renderers()
     runtime = {
       viewport = viewport,
       uiManifest = FieldUiFixture.manifest(),
-      camera = camera,
+      camera = { zoom = cameraZoom },
       runtimeMap = fakeRuntimeMap,
       player = { fieldX = 0, fieldZ = 0, worldY = 0, surfaceId = 0, facing = "south", motion = "idle" },
       playerVisual = {
@@ -323,35 +332,20 @@ function T.field_state_draw_sends_same_scale_to_both_renderers()
   state._worldParts = function()
     return {}
   end
-  local gotDialogue, gotSignpost
-  -- Current signature: dialogue:draw(controller, viewport), signpost:draw(controller, viewport, alpha)
-  -- Future should be: dialogue:draw(controller, viewport, fieldScale), signpost:draw(controller, viewport, alpha, fieldScale)
-  -- Capture any numeric that equals expected.
+  local dialogueCalls = {}
   state.presentationResources.dialogueRenderer = {
-    draw = function(_, a, b, c)
-      for _, v in ipairs({ a, b, c }) do
-        if type(v) == "number" and math.abs(v - expected) < 1e-9 then
-          gotDialogue = v
-        end
-      end
-      if gotDialogue == nil and type(c) == "number" then
-        gotDialogue = c
-      end
+    draw = function(_, a, b, c, d)
+      dialogueCalls[#dialogueCalls + 1] = { controller = a, second = b, third = c, fourth = d }
     end,
   } --[[@as any]]
+  local signpostScales = {}
   local presentationResources = state.presentationResources --[[@as any]]
   presentationResources.signpostRenderer = {
-    draw = function(_, a, b, c, d)
-      for _, v in ipairs({ a, b, c, d }) do
-        if type(v) == "number" and math.abs(v - expected) < 1e-9 then
-          gotSignpost = v
-        end
-      end
-      if gotSignpost == nil and type(d) == "number" then
-        gotSignpost = d
-      end
-      if gotSignpost == nil and type(c) == "number" and c ~= 0 then
-        gotSignpost = c
+    draw = function(_, _, _, alphaOrScale, maybeScale)
+      if type(maybeScale) == "number" then
+        signpostScales[#signpostScales + 1] = maybeScale
+      elseif type(alphaOrScale) == "number" and alphaOrScale ~= 0 then
+        signpostScales[#signpostScales + 1] = alphaOrScale
       end
     end,
   }
@@ -370,13 +364,88 @@ function T.field_state_draw_sends_same_scale_to_both_renderers()
   FieldDrawState.protectedDraw = savedProtected
   love.graphics.getDimensions = oldGetDimensions
   Assert.isTrue(ok, "FieldState draw should not throw: " .. tostring(err))
-  Assert.notNil(
-    gotDialogue,
-    "dialogue renderer must receive field scale via viewport:logicalPixelScale(camera.zoom); got nil (layout ignores zoom)"
+  return fieldScale, dialogueCalls, signpostScales
+end
+
+local function assertOuterRectInsideBounds(outerRect, bounds)
+  Assert.isTrue(outerRect.x >= bounds.x - 1e-9, "dialogue stays inside the real host horizontally")
+  Assert.isTrue(
+    outerRect.x + outerRect.width <= bounds.x + bounds.width + 1e-9,
+    "dialogue stays inside the real host horizontally"
   )
-  Assert.near(gotDialogue, expected, 1e-9)
-  Assert.notNil(gotSignpost, "signpost renderer must receive same field scale; got nil")
-  Assert.near(gotSignpost, expected, 1e-9)
+  Assert.isTrue(outerRect.y >= bounds.y - 1e-9, "dialogue stays inside the real host vertically")
+  Assert.isTrue(
+    outerRect.y + outerRect.height <= bounds.y + bounds.height + 1e-9,
+    "dialogue stays inside the real host vertically"
+  )
+end
+
+function T.constrained_dialogue_shrinks_to_fit_the_real_world_viewport()
+  local realBounds = { x = 5, y = 7, width = 200, height = 40 }
+  local fieldScale, dialogueCalls, signpostScales = fieldStateWithCapturedUi(realBounds, 1.25)
+  Assert.equal(#dialogueCalls, 1, "field dialogue draws once per frame")
+  local call = dialogueCalls[1]
+  Assert.isNil(call.third, "dialogue renders from one resolved presentation, not viewport plus scale")
+  Assert.isNil(call.fourth, "dialogue renders from one resolved presentation, not a four-argument call")
+  local presentation = call.second
+  Assert.deepEqual(
+    presentation.bounds,
+    realBounds,
+    "field passes its real bounds unchanged: no inflated stand-in width or height"
+  )
+  local expectedScale = math.min(fieldScale, realBounds.width / 256, realBounds.height / 48)
+  Assert.isTrue(expectedScale < fieldScale, "the fixture host must be too small for the field scale")
+  Assert.near(presentation.scale, expectedScale, 1e-9)
+  Assert.near(presentation.outerRect.width, 256 * expectedScale, 1e-9)
+  Assert.near(presentation.outerRect.height, 48 * expectedScale, 1e-9)
+  assertOuterRectInsideBounds(presentation.outerRect, realBounds)
+  Assert.near(
+    presentation.outerRect.x,
+    realBounds.x + (realBounds.width - 256 * expectedScale) / 2,
+    1e-9,
+    "the shrunken dialogue stays horizontally centered"
+  )
+  Assert.near(
+    presentation.outerRect.y,
+    realBounds.y + realBounds.height - 48 * expectedScale,
+    1e-9,
+    "the shrunken dialogue stays bottom-aligned"
+  )
+  Assert.equal(#signpostScales, 1, "the signpost still draws in the same frame")
+  Assert.near(signpostScales[1], fieldScale, 1e-9, "the signpost keeps the exact field logical pixel scale")
+end
+
+function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()
+  local viewport = FieldViewport.new(1280, 600, { mode = "expanded" })
+  local realBounds = {
+    x = viewport.worldViewport.x,
+    y = viewport.worldViewport.y,
+    width = viewport.worldViewport.width,
+    height = viewport.worldViewport.height,
+  }
+  local fieldScale, dialogueCalls, signpostScales = fieldStateWithCapturedUi(realBounds, 1.25)
+  Assert.equal(#dialogueCalls, 1, "field dialogue draws once per frame")
+  local call = dialogueCalls[1]
+  Assert.isNil(call.third, "dialogue renders from one resolved presentation, not viewport plus scale")
+  Assert.isNil(call.fourth, "dialogue renders from one resolved presentation, not a four-argument call")
+  local presentation = call.second
+  Assert.deepEqual(presentation.bounds, realBounds, "field passes its real bounds unchanged")
+  Assert.near(presentation.scale, fieldScale, 1e-9, "a roomy host keeps the exact field logical pixel scale")
+  assertOuterRectInsideBounds(presentation.outerRect, realBounds)
+  Assert.near(
+    presentation.outerRect.x,
+    realBounds.x + (realBounds.width - 256 * fieldScale) / 2,
+    1e-9,
+    "dialogue stays horizontally centered"
+  )
+  Assert.near(
+    presentation.outerRect.y,
+    realBounds.y + realBounds.height - 48 * fieldScale,
+    1e-9,
+    "dialogue stays bottom-aligned"
+  )
+  Assert.equal(#signpostScales, 1, "the signpost still draws in the same frame")
+  Assert.near(signpostScales[1], fieldScale, 1e-9, "the signpost keeps the exact field logical pixel scale")
 end
 
 return { tests = T }

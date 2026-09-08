@@ -16,7 +16,6 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
-local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -33,6 +32,15 @@ local MANIFEST = FieldUiFixture.manifest()
 -- holds the settable state the renderers must restore exactly; the shared
 -- helper is tests/support/FakeGraphics.lua.
 local fakeGraphics = require("tests.support.FakeGraphics").new
+
+-- A resolved presentation at exactly the field scale: exactly-fitting host
+-- bounds so the cap resolves to the requested scale with origin (0,0).
+local function presentationAtFieldScale(fieldScale)
+  return DialoguePresentationLayout.compute(
+    { x = 0, y = 0, width = 256 * fieldScale, height = 48 * fieldScale },
+    { maxScale = fieldScale, cursorPlacement = MANIFEST.dialogueFrames.continueCursor.placement }
+  )
+end
 
 local function uiCache()
   return FieldUiFixture.cacheWithFontAndFrames()
@@ -179,7 +187,7 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
   local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
   local fieldScale = viewport:logicalPixelScale(1)
   local err = Assert.throws(function()
-    renderer:draw(controller, viewport, fieldScale)
+    renderer:draw(controller, presentationAtFieldScale(fieldScale))
   end)
   Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil, "rethrows the draw failure")
   Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced after a failed draw")
@@ -202,8 +210,8 @@ function T.no_nine_slice_assets_are_built()
   Assert.equal(#lg.images, 5, "the font atlases, frame strip, and continuation cursor are created")
 
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  renderer:draw(controller, presentationAtFieldScale(fieldScale))
   Assert.equal(#lg.images, 5, "drawing creates no slice image")
   renderer:release()
 end
@@ -221,15 +229,15 @@ function T.frame_index_resolves_the_manifest_strip_tiles()
       graphics = lg,
     })
     local controller = FieldDialogueFixture.openDialogue("AB", frameIndex)
-    local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-    renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+    local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+    renderer:draw(controller, presentationAtFieldScale(fieldScale))
     renderer:release()
     return lg.draws
   end
 
   local frame0 = renderedDraws(0)
-  Assert.equal(frame0[1].x, 0, "top-left corner tile at (0,144)")
-  Assert.equal(frame0[1].y, 144)
+  Assert.equal(frame0[1].x, 0, "top-left corner tile at (0,0)")
+  Assert.equal(frame0[1].y, 0)
   Assert.deepEqual(
     { frame0[1].quad.x, frame0[1].quad.y, frame0[1].quad.w, frame0[1].quad.h },
     { 0, 0, 8, 8 },
@@ -244,7 +252,7 @@ function T.frame_index_resolves_the_manifest_strip_tiles()
     if call.quad.x == 16 and call.quad.y == 0 then
       topEdge = topEdge + 1
       Assert.equal(call.x, expectedX, "top edge tile spans x=16..232")
-      Assert.equal(call.y, 144)
+      Assert.equal(call.y, 0)
       expectedX = expectedX + 8
     end
   end
@@ -253,7 +261,7 @@ function T.frame_index_resolves_the_manifest_strip_tiles()
   local frame1 = renderedDraws(1)
   Assert.deepEqual({ frame1[1].quad.x, frame1[1].quad.y }, { 0, 8 }, "frame 1 tiles sample the second strip row")
   Assert.equal(frame1[1].x, 0)
-  Assert.equal(frame1[1].y, 144, "frame change moves artwork, not geometry")
+  Assert.equal(frame1[1].y, 0, "frame change moves artwork, not geometry")
 end
 
 -- A request without a frame index (a host that carries no player options)
@@ -267,8 +275,8 @@ function T.request_without_a_frame_index_draws_no_frame_tiles()
     graphics = lg,
   })
   local controller = FieldDialogueFixture.openDialogue("AB")
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  renderer:draw(controller, presentationAtFieldScale(fieldScale))
   for _, call in ipairs(lg.draws) do
     Assert.equal(call.quad.imgW, 16, "only font-atlas quads are drawn without a frame index")
   end
@@ -297,8 +305,8 @@ function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
   end
   local status = controller:status()
   Assert.isTrue(status.waiting, "the dialogue must be waiting at its continuation boundary")
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  renderer:draw(controller, presentationAtFieldScale(fieldScale))
   local first = lg.draws[#lg.draws]
   Assert.equal(first.image, lg.images[5], "the continuation uses the generated cursor atlas")
   local expected = cursorManifest().dialogueFrames.continueCursor.styles[3].phases[status.cursorPhase]
@@ -308,10 +316,10 @@ function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
     expected.width,
     expected.height,
   })
-  Assert.deepEqual({ first.x, first.y }, { 240, 168 })
+  Assert.deepEqual({ first.x, first.y }, { 240, 24 })
   Assert.isFalse(#lg.primitives > 1 and lg.primitives[#lg.primitives] == "polygon", "cursor is not a triangle")
   local phaseQuad = first.quad
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+  renderer:draw(controller, presentationAtFieldScale(fieldScale))
   Assert.equal(lg.draws[#lg.draws].quad, phaseQuad, "draw does not invent timing")
   renderer:release()
   text:release()
@@ -386,20 +394,16 @@ function T.dialogue_content_uses_the_source_background_palette_slot()
     graphics = lg,
   })
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
-  local layout = FieldDialogueTheme.layout(
-    viewport.referenceFrame,
-    viewport:logicalPixelScale(1),
-    MANIFEST.dialogueFrames.continueCursor.placement
-  )
+  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  local presentation = presentationAtFieldScale(fieldScale)
+  renderer:draw(controller, presentation)
   Assert.equal(#lg.rectangles, 1, "the content rectangle is explicitly filled")
   Assert.equal(lg.rectangles[1].mode, "fill")
   Assert.deepEqual(lg.rectangles[1].color, text.fontDef.palette[16])
-  Assert.equal(lg.rectangles[1].x, layout.box.x)
-  Assert.equal(lg.rectangles[1].y, layout.box.y)
-  Assert.equal(lg.rectangles[1].w, layout.box.width)
-  Assert.equal(lg.rectangles[1].h, layout.box.height)
+  Assert.equal(lg.rectangles[1].x, presentation.box.x)
+  Assert.equal(lg.rectangles[1].y, presentation.box.y)
+  Assert.equal(lg.rectangles[1].w, presentation.box.width)
+  Assert.equal(lg.rectangles[1].h, presentation.box.height)
   renderer:release()
   text:release()
 end
@@ -449,8 +453,8 @@ function T.focus_indicator_not_reached_by_reveal_is_not_drawn()
   local controller = openedWithTokens({ glyphToken(1), glyphToken(2), focusToken(0) }, { printerDelay = 2 })
   controller:step({}) -- opening and two source updates reveal one glyph
   Assert.equal(controller:status().revealedGlyphs, 1, "the reveal cursor has not reached the trailing control")
-  local viewport0 = FieldViewport.new(256, 192, { mode = "expanded" })
-  renderer:draw(controller, viewport0, viewport0:logicalPixelScale(1))
+  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  renderer:draw(controller, presentationAtFieldScale(fieldScale))
   Assert.equal(#focusDraws(lg), 0, "a not-yet-visible indicator is never drawn")
   renderer:release()
 end
@@ -470,6 +474,7 @@ function T.reached_focus_indicator_draws_at_the_content_window_right_edge()
     graphics = lg,
   })
   local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
+  local presentation = presentationAtFieldScale(viewport:logicalPixelScale(1))
   local controller = openedWithTokens({ glyphToken(1), glyphToken(2), focusToken(0) })
   controller:step({ actionPressed = true }) -- full reveal; eos page waits
   for _ = 1, 30 do
@@ -479,16 +484,15 @@ function T.reached_focus_indicator_draws_at_the_content_window_right_edge()
   Assert.equal(status.waiting, true)
   Assert.isTrue(status.cursorPhase ~= nil, "the continuation cursor exposes its generated phase")
 
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+  renderer:draw(controller, presentation)
   local focus = focusDraws(lg)
   Assert.equal(#focus, 1, "exactly one indicator frame is drawn")
-  local layout = FieldDialogueTheme.layout(
-    viewport.referenceFrame,
-    viewport:logicalPixelScale(1),
-    MANIFEST.dialogueFrames.continueCursor.placement
+  Assert.equal(
+    focus[1].x,
+    presentation.box.x + presentation.box.width - 24,
+    "the indicator sits at the content-window right edge"
   )
-  Assert.equal(focus[1].x, layout.box.x + layout.box.width - 24, "the indicator sits at the content-window right edge")
-  Assert.equal(focus[1].y, layout.box.y, "the indicator sits at the content-window top")
+  Assert.equal(focus[1].y, presentation.box.y, "the indicator sits at the content-window top")
   Assert.deepEqual(
     { focus[1].quad.x, focus[1].quad.y, focus[1].quad.w, focus[1].quad.h },
     { 0, 0, 24, 32 },
@@ -510,23 +514,19 @@ function T.the_last_visible_focus_field_wins()
     graphics = lg,
   })
   local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
+  local presentation = presentationAtFieldScale(viewport:logicalPixelScale(1))
   local controller = openedWithTokens({ glyphToken(1), focusToken(0), focusToken(3) })
   controller:step({ actionPressed = true })
-  renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+  renderer:draw(controller, presentation)
   local focus = focusDraws(lg)
-  local layout = FieldDialogueTheme.layout(
-    viewport.referenceFrame,
-    viewport:logicalPixelScale(1),
-    MANIFEST.dialogueFrames.continueCursor.placement
-  )
   Assert.equal(#focus, 1, "multiple visible controls still draw one frame")
   Assert.equal(focus[1].quad.x, 3 * 24, "the last visible field in source order wins")
   Assert.equal(
     focus[1].x,
-    layout.box.x + layout.box.width - 24,
+    presentation.box.x + presentation.box.width - 24,
     "the frame keeps the content-window right-edge placement"
   )
-  Assert.equal(focus[1].y, layout.box.y)
+  Assert.equal(focus[1].y, presentation.box.y)
   renderer:release()
 end
 
@@ -562,8 +562,8 @@ function T.focus_indicator_visibility_follows_renderer_policy()
     })
     local controller = openedWithTokens({ glyphToken(1), focusToken(0) })
     controller:step({ actionPressed = true })
-    local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-    renderer:draw(controller, viewport, viewport:logicalPixelScale(1))
+    local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+    renderer:draw(controller, presentationAtFieldScale(fieldScale))
     renderer:release()
     return focusCalls, lineCalls
   end
@@ -575,6 +575,29 @@ function T.focus_indicator_visibility_follows_renderer_policy()
   local disabledFocus, disabledLines = drawWithPolicy(true)
   Assert.equal(#disabledFocus, 0, "the disabled renderer suppresses focus-indicator drawing")
   Assert.isTrue(#disabledLines > 0, "disabling focus does not suppress dialogue content")
+end
+
+-- A closed controller draws nothing and requires no presentation: the
+-- inactive path returns before touching graphics state or validating.
+function T.closed_controller_ignores_a_missing_presentation()
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local renderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), lg),
+    graphics = lg,
+  })
+  local controller = FieldDialogueController.new({
+    layout = function()
+      return { pages = {}, warnings = {}, lineHeight = 0, lineSpacing = 0 }
+    end,
+    continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
+  })
+  Assert.isFalse(controller:isModal(), "the controller was never opened")
+  renderer:draw(controller, nil)
+  Assert.equal(#lg.draws, 0, "a closed dialogue draws nothing")
+  Assert.equal(lg.pushDepth(), 0, "a closed dialogue touches no transform state")
+  renderer:release()
 end
 
 return { tests = T }

@@ -37,7 +37,7 @@ T["authentic_window_renders_inside_arbitrary_host_bounds"] = function(scope)
     scale = 1.640625,
     outerRect = { x = 359, y = 383, width = 420, height = 78.75 },
     box = { x = 16, y = 8, width = 216, height = 32 },
-    text = { x = 16, y = 8, width = 196, height = 32 },
+    text = { x = 16, y = 8, width = 216, height = 32 },
     cursor = { x = 240, y = 24, width = 16, height = 16 },
     lineHeight = 16,
   }

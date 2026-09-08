@@ -36,7 +36,7 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local FieldDialogueRenderer = {}
 FieldDialogueRenderer.__index = FieldDialogueRenderer
 
----@alias FieldDialogueRenderer.Layout FieldDialogueTheme.Layout|DialoguePresentationLayout.Presentation
+---@alias FieldDialogueRenderer.Layout DialoguePresentationLayout.Presentation
 
 ---@class FieldDialogueRenderer.TextRenderer
 ---@field fontDef FieldFontDef
@@ -216,8 +216,9 @@ function FieldDialogueRenderer:_drawFrame(status, layout)
   local rect = frames.frameTiles[frameIndex]
   assert(rect ~= nil, "dialogue frame index " .. tostring(frameIndex) .. " is outside the generated frame set")
   local quads = self:_buildFrameQuads(frameIndex, rect)
-  local box = layout.box
-  ---@cast box FieldDialogueTheme.Rect
+  -- The frame tilemap consumes the theme content-box shape; the resolved
+  -- presentation box carries the same source-local geometry.
+  local box = { x = layout.box.x, y = layout.box.y, width = layout.box.width, height = layout.box.height }
   lg.setColor(1, 1, 1, 1)
   for _, placement in ipairs(self._theme.frameTilePlacements(box)) do
     local tile = assert(quads[placement.tile])
@@ -257,60 +258,25 @@ function FieldDialogueRenderer:_drawFocusIndicator(status, layout)
   end
 end
 
--- Draws the dialogue from a compact host presentation or into
--- viewport.referenceFrame at the field logical pixel scale
--- (viewport:logicalPixelScale(camera.zoom)). No-op (and no state touched)
--- when the controller is closed or this renderer is disposed.
+-- Draws the dialogue from a resolved host presentation. No-op (and no state
+-- touched) when the controller is closed or this renderer is disposed.
 -- Restores canvas, shader, scissor, blend, depth, wireframe, cull, and color
--- afterwards so the HUD and host overlays draw normally. The fieldScale is
--- presentation state, not controller state; it bottom-centers the 256x192
--- surface and matches the world logical pixel scale.
+-- afterwards so the HUD and host overlays draw normally. The presentation
+-- origin/scale bottom-centers the 256x48 strip inside the host bounds; every
+-- host resolves it through DialoguePresentationLayout.compute and hands it
+-- here, so this renderer owns no host policy or scale derivation.
 
 ---@param controller FieldDialogueController
----@param viewportOrPresentation { referenceFrame: FieldDialogueTheme.Rect }|FieldDialogueTheme.Layout|DialoguePresentationLayout.Presentation|nil
----@param fieldScale number|nil field logical pixel scale (viewport:logicalPixelScale(camera.zoom))
----@param presentation DialoguePresentationLayout.Presentation|nil compact host-owned dialogue placement
-function FieldDialogueRenderer:draw(controller, viewportOrPresentation, fieldScale, presentation)
-  -- Inactive (closed) is a pure no-op and checks no scale precondition; an
-  -- inactive draw must not touch graphics state or require presentation
-  -- parameters. The scale is only required for the active path.
+---@param presentation DialoguePresentationLayout.Presentation?
+function FieldDialogueRenderer:draw(controller, presentation)
+  -- Inactive (closed) is a pure no-op and requires no presentation; an
+  -- inactive draw must not touch graphics state or validate parameters.
+  -- The presentation is only required for the active path.
   if not controller or not controller:isModal() or not self._frameImage then
     return
   end
-  ---@type FieldDialogueRenderer.Layout
-  local layout
-  if presentation ~= nil then
-    DialoguePresentationLayout.validate(presentation)
-    layout = presentation
-  elseif fieldScale == nil and viewportOrPresentation and viewportOrPresentation.bounds ~= nil then
-    ---@cast viewportOrPresentation DialoguePresentationLayout.Presentation
-    DialoguePresentationLayout.validate(viewportOrPresentation)
-    layout = viewportOrPresentation
-  elseif fieldScale == nil then
-    assert(viewportOrPresentation, "FieldDialogueRenderer:draw requires a layout or presentation")
-    -- Compact presentation can arrive as the second arg when fieldScale is
-    -- omitted; detect it by its bounds field. Theme layouts for dialogue must
-    -- already carry the generated cursor placement.
-    if viewportOrPresentation.bounds ~= nil then
-      layout = viewportOrPresentation --[[@as DialoguePresentationLayout.Presentation]]
-      DialoguePresentationLayout.validate(layout)
-    else
-      local themeLayout = viewportOrPresentation --[[@as FieldDialogueTheme.Layout]]
-      layout = themeLayout
-      assert(layout.cursor, "dialogue theme layout must carry generated cursor placement")
-    end
-  else
-    assert(
-      type(fieldScale) == "number"
-        and fieldScale > 0
-        and fieldScale == fieldScale
-        and fieldScale ~= math.huge
-        and fieldScale ~= -math.huge,
-      "FieldDialogueRenderer:draw requires a finite positive field scale"
-    )
-    local cursorPlacement = assert(self._manifest.dialogueFrames.continueCursor).placement
-    layout = self._theme.layout(assert(viewportOrPresentation).referenceFrame, fieldScale, cursorPlacement)
-  end
+  local layout = assert(presentation, "FieldDialogueRenderer:draw requires a resolved dialogue presentation")
+  DialoguePresentationLayout.validate(layout)
   local lg = assert(self._graphics)
   local status = controller:status()
   FieldDrawState.protectedDraw(lg, function()
