@@ -485,7 +485,7 @@ function FieldDialogueController:_enterWait()
 end
 
 -- Called when the current page has fully revealed: prompt/page/eos pages
--- wait for Action; line/overflow pages auto-scroll into the next page.
+-- wait for Action; line/overflow pages scroll one line into the next page.
 
 ---@return nil
 function FieldDialogueController:_atPageEnd()
@@ -494,9 +494,14 @@ function FieldDialogueController:_atPageEnd()
     self:_enterWait()
     return
   end
-  -- Auto-scroll (breakKind "line" or "overflow"); keep revealing on the next
-  -- tick. Zero-glyph auto-scroll pages step through until a wait or a real
+  -- Automatic boundary (breakKind "line" or "overflow"): roll the two-line
+  -- window through the existing scroll state. Zero-glyph automatic pages
+  -- carry no line to retain, so step through them until a wait or a real
   -- reveal, bounded by the page count.
+  if self._pageGlyphs[self._pageIndex] > 0 and #self:status().visibleLines > 0 then
+    self:_beginScroll()
+    return
+  end
   while not waitsForAction(page) do
     if not self:_advancePage() then
       return

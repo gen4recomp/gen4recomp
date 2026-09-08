@@ -345,21 +345,77 @@ function T.status_exposes_the_open_message_identity()
   Assert.equal(status.messageId, 5)
 end
 
-function T.auto_scroll_pages_advance_without_action()
-  local c = controller({
-    page({ line({ glyph("A", 1), glyph("B", 2) }) }, "line"),
-    page({ line({ glyph("C", 3) }) }, "eos"),
-  })
-  c:open(request("t", message()))
-  c:step({})
-  c:step({})
-  c:step({})
-  c:step({})
-  Assert.equal(c:status().pageIndex, 2)
-  Assert.equal(c:status().state, "WAITING_CLOSE")
-  c:step({})
-  c:step({})
-  Assert.equal(c:status().state, "WAITING_CLOSE")
+-- An automatic page boundary rolls the two-line window: after [A, B] the
+-- printer scrolls one line without Action and reveals the next line under
+-- the retained bottom line, so the settled window reads [B, C].
+function T.automatic_boundary_rolls_the_two_line_window()
+  for _, breakKind in ipairs({ "line", "overflow" }) do
+    local played = {}
+    local c = controller({
+      page({ line({ glyph("A", 1) }), line({ glyph("B", 2) }) }, breakKind),
+      page({ line({ glyph("C", 3) }) }, "eos"),
+    }, {
+      audio = {
+        play = function(_, soundRef)
+          played[#played + 1] = soundRef
+        end,
+      },
+    })
+    c:open(request("t-" .. breakKind, message()))
+    c:step({})
+    local guard = 0
+    while c:status().state == "OPENING" or (c:status().state == "REVEALING" and c:status().pageIndex == 1) do
+      c:step({})
+      guard = guard + 1
+      Assert.isTrue(guard < 20, breakKind .. ": first page reveals promptly")
+    end
+    local entered = c:status()
+    Assert.equal(entered.state, "SCROLLING", breakKind .. ": automatic boundary scrolls without Action")
+    Assert.equal(entered.pageIndex, 1, breakKind .. ": page advances only after the scroll finishes")
+    Assert.equal(entered.scrollRemaining, 16, breakKind .. ": automatic scroll travels one line")
+    Assert.equal(#entered.scrollLines, 2, breakKind .. ": the moving window carries both old lines")
+    Assert.equal(entered.revealedGlyphs, 0, breakKind .. ": no next-page glyph reveals while scrolling")
+    Assert.isFalse(entered.waiting, breakKind .. ": automatic scroll does not wait")
+    local scrolled = 0
+    while c:status().state == "SCROLLING" do
+      Assert.equal(c:status().pageIndex, 1, breakKind .. ": page advances only after the scroll finishes")
+      Assert.equal(c:status().revealedGlyphs, 0, breakKind .. ": no next-page glyph reveals while scrolling")
+      c:step({})
+      scrolled = scrolled + 1
+      Assert.isTrue(scrolled <= 4, breakKind .. ": one-line scroll finishes on cadence")
+    end
+    Assert.equal(scrolled, 2, breakKind .. ": one line scrolls in two field ticks")
+    local settled = c:status()
+    Assert.equal(settled.state, "REVEALING", breakKind .. ": scroll completion opens the next page reveal")
+    Assert.equal(settled.pageIndex, 2, breakKind .. ": scroll completion advances the page")
+    Assert.equal(settled.revealedGlyphs, 0, breakKind .. ": next page starts unrevealed")
+    Assert.equal(#settled.visibleLines, 1, breakKind .. ": retained bottom line is the new top line")
+    Assert.equal(
+      (settled.visibleLines[1].tokens or settled.visibleLines[1])[1].text,
+      "B",
+      breakKind .. ": prior bottom line is retained"
+    )
+    guard = 0
+    while c:status().state == "REVEALING" do
+      c:step({})
+      guard = guard + 1
+      Assert.isTrue(guard < 20, breakKind .. ": next line reveals promptly")
+    end
+    local revealed = c:status()
+    Assert.equal(revealed.state, "WAITING_CLOSE", breakKind .. ": rolled page reveals to its close")
+    Assert.equal(#revealed.visibleLines, 2, breakKind .. ": settled window shows two lines")
+    Assert.equal(
+      (revealed.visibleLines[1].tokens or revealed.visibleLines[1])[1].text,
+      "B",
+      breakKind .. ": settled top line is the retained line"
+    )
+    Assert.equal(
+      (revealed.visibleLines[2].tokens or revealed.visibleLines[2])[1].text,
+      "C",
+      breakKind .. ": settled bottom line is the new line"
+    )
+    Assert.equal(#played, 0, breakKind .. ": automatic transition plays no select sound")
+  end
 end
 
 function T.page_break_advances_directly_without_scrolling()
