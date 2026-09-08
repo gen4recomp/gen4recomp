@@ -29,7 +29,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 
 ---@class StarterChoicePresentation
 ---@field _manifest table<string, unknown> immutable validated starter-application manifest
----@field _cacheFs table<string, unknown> generated-asset filesystem the model/texture bytes read through
+---@field _cacheFs CacheFs generated-asset filesystem the model/texture bytes read through
 ---@field _portraits table[] per-candidate portrait descriptors ({ selector }) borrowed from state
 ---@field _machine table<string, unknown> host rectangle of the machine surface
 ---@field _info table<string, unknown> host rectangle of the info surface
@@ -137,7 +137,7 @@ end
 
 ---@class StarterChoicePresentation.Options
 ---@field manifest table<string, unknown> validated starter-application manifest
----@field cacheFs table<string, unknown> generated-asset filesystem
+---@field cacheFs CacheFs generated-asset filesystem
 ---@field portraits table[] per-candidate portrait descriptors ({ selector: string })
 
 ---@param opts StarterChoicePresentation.Options
@@ -873,7 +873,7 @@ end
 -- transition does not read are still populated; an all-false observation
 -- never completes any transition.
 ---@param snapshot StarterChoiceController.Snapshot
----@return { rotationComplete: boolean, cameraComplete: boolean, ballArcComplete: boolean, smallWobbleReady: boolean, infoFadeComplete: boolean, machineFadeComplete: boolean } observation
+---@return StarterChoiceController.Observation observation
 function StarterChoicePresentation:_observation(snapshot)
   local timing = self._manifest.scene.timing
   local turntable = self._manifest.scene.turntable
@@ -910,7 +910,7 @@ end
 -- settle transitions without graphics; realized clips catch up to the same
 -- clocks without replaying entry effects.
 ---@param snapshot StarterChoiceController.Snapshot
----@return { rotationComplete: boolean, cameraComplete: boolean, ballArcComplete: boolean, smallWobbleReady: boolean, infoFadeComplete: boolean, machineFadeComplete: boolean } observation
+---@return StarterChoiceController.Observation observation
 function StarterChoicePresentation:update(snapshot)
   assert(type(snapshot) == "table", "starter presentation update requires the controller snapshot")
   self:_detectEntry(snapshot)

@@ -28,6 +28,7 @@ for _, role in ipairs(MODEL_ROLES) do
 end
 
 ---@param message string
+---@param context Errors.Context?
 ---@return boolean, Errors.Error?
 local function invalid(message, context)
   return false, Errors.new(M.MANIFEST_ERROR, message, context or {})
@@ -40,6 +41,7 @@ local function finite(value)
 end
 
 ---@param label string
+---@param value table<string, unknown>
 ---@param allowed table<string, boolean>
 ---@return boolean, Errors.Error?
 local function closedRecord(label, value, allowed)
@@ -81,6 +83,7 @@ function M.marker(romSha1, dependencyHash)
   return string.format("%s:%s:%s", M.FORMAT, romSha1, dependencyHash)
 end
 
+---@param desc table<string, unknown>
 ---@param binding string|integer
 ---@param what string
 ---@return boolean, Errors.Error?
@@ -109,6 +112,8 @@ local function checkBinding(desc, binding, what)
   return invalid(what .. " binding must name a clip or a descriptor-local index", {})
 end
 
+---@param models table<string, unknown>
+---@param animations table<string, unknown>
 ---@return boolean, Errors.Error?
 local function checkAnimations(models, animations)
   local ok, err = closedRecord("manifest animations", animations, {
@@ -143,6 +148,8 @@ local function checkAnimations(models, animations)
 end
 
 ---@param label string
+---@param value table<string, unknown>
+---@param target table<string, unknown>
 ---@param distance number
 ---@return boolean, Errors.Error?
 local function checkCameraEnd(label, value, target, distance)

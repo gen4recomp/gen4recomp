@@ -154,6 +154,12 @@ local function fakeImage()
     setFilter = function() end,
     setWrap = function() end,
     release = function() end,
+    getWidth = function()
+      return 1
+    end,
+    getHeight = function()
+      return 1
+    end,
   }
 end
 

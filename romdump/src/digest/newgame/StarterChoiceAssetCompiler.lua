@@ -113,6 +113,8 @@ local function readMember(archive, archiveName, memberId, role, dependencies)
       role = role,
     })
   end
+  assert(bytes ~= nil, "unavailable source members fail above")
+  assert(bytes ~= nil, "unavailable source members fail above")
   dependencies[#dependencies + 1] = {
     archive = archiveName,
     memberId = memberId,
@@ -169,7 +171,7 @@ local function compileClip(bytes, memberId, role, clipId)
       role = role,
     })
   end
-  ---@cast decoded { animations: table[] }
+  ---@cast decoded { animations: table[], format: string }
   if #decoded.animations ~= 1 then
     sourceError("starter-choice animation resource carries an unexpected animation count", {
       memberId = memberId,
@@ -322,7 +324,10 @@ local function _compile(romFs)
   )
 
   local dependencies = {}
-  local main = openArchive(romFs, MAIN_ARCHIVE)
+  local main, mainErr = openArchive(romFs, MAIN_ARCHIVE)
+  if main == nil then
+    error(mainErr, 0)
+  end
   local modelBytes = {}
   for _, role in ipairs({ "tabletop", "turntable", "ball", "ballEffect" }) do
     modelBytes[role] = readMember(main, MAIN_ARCHIVE, MODEL_MEMBERS[role], "model:" .. role, dependencies)
@@ -336,13 +341,18 @@ local function _compile(romFs)
   if not messageInfo then
     sourceError("starter-choice message archive is unavailable", { archive = "messages" })
   end
+  assert(messageInfo ~= nil, "unavailable message archive fails above")
   local messageArchiveBytes = romFs:read(messageInfo.fileId)
   if not messageArchiveBytes then
     sourceError("starter-choice message archive bytes are unavailable", { archive = "messages" })
   end
+  assert(messageArchiveBytes ~= nil, "unavailable message bytes fail above")
   dependencies[#dependencies + 1] =
     { archive = "messages", memberId = -1, role = "message-archive", sha1 = Hashing.sha1hex(messageArchiveBytes) }
-  local messageArchive = openArchive(romFs, "messages")
+  local messageArchive, messageArchiveErr = openArchive(romFs, "messages")
+  if messageArchive == nil then
+    error(messageArchiveErr, 0)
+  end
   local bankBytes = readMember(messageArchive, "messages", MESSAGE_BANK, "message-bank", dependencies)
   local bank = FieldMessageBank.decode(bankBytes, { label = "starter-choice-bank", messageId = MESSAGE_BANK })
   if not bank then

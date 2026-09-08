@@ -182,6 +182,12 @@ local function realManager()
   return actors
 end
 
+---@param actors table<string, unknown> actor manager or test seam owning partner identity and visibility
+---@param clipFrames integer? clip frame count override
+---@param made table<string, unknown>? made-instance collector
+---@param failsAfter integer? model factory failure injector
+---@return FollowingMonTransitionController
+---@return table<string, unknown>
 local function controller(actors, clipFrames, made, failsAfter)
   clipFrames = clipFrames or 5
   made = made or {}

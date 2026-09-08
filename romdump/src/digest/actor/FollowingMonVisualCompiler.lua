@@ -133,7 +133,7 @@ end
 -- runtime visual ID. Shiny state needs no separate visual: the source
 -- sprite selection ignores shininess (FollowMon_GetSpriteID takes no shiny
 -- input) and carries it as runtime object state instead.
----@param romFs RomFs
+---@param romFs table<string, unknown>
 ---@return table<string, unknown>|nil, Errors.Error|string|nil
 function FollowingMonVisualCompiler.compile(romFs)
   local paramIndexes = reachableParamIndexes()

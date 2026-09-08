@@ -5,7 +5,7 @@
 -- Instances advance in fixed simulation ticks and never touch save state.
 
 ---@class FollowingMonTransitionController
----@field actors FieldActorManager
+---@field actors table<string, unknown>
 ---@field definition table<string, unknown>
 ---@field initialDescriptor table<string, unknown>
 ---@field animatedDescriptor table<string, unknown>
@@ -69,7 +69,7 @@ local function resolveParts(definition)
 end
 
 ---@class FollowingMonTransitionControllerOptions
----@field actors FieldActorManager the field actor manager owning partner identity and visibility
+---@field actors table<string, unknown> the field actor manager owning partner identity and visibility
 ---@field definition table<string, unknown> the compiled transition definition
 ---@field modelFactory (fun(part: string, descriptor: table<string, unknown>): table<string, unknown>)|nil builds one mutable part instance per start
 ---@param options FollowingMonTransitionControllerOptions

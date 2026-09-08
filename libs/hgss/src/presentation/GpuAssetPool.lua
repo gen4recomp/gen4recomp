@@ -29,6 +29,8 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field setFilter fun(self: GpuAssetPool.Image, min: string, mag: string)
 ---@field setWrap fun(self: GpuAssetPool.Image, wrapX: string, wrapY: string)
 ---@field release fun(self: GpuAssetPool.Image)
+---@field getWidth fun(self: GpuAssetPool.Image): integer
+---@field getHeight fun(self: GpuAssetPool.Image): integer
 ---@class GpuAssetPool.Graphics
 ---@field newImage fun(data: unknown): GpuAssetPool.Image
 ---@alias GpuAssetPool.MeshBuilder fun(decoded: table<string, unknown>): GpuAssetPool.Mesh

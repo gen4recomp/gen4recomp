@@ -25,6 +25,8 @@ local WindowConfig = require("game.src.WindowConfig")
 ---@field fieldEmoteModels table<string, table<string, unknown>>
 ---@field fieldEffectAssets table<string, unknown>
 ---@field fieldTerrainEffectController FieldTerrainEffectController
+---@field followerTransitionDefinition table<string, unknown>?
+---@field followingMonTransition FollowingMonTransitionController?
 
 ---@class FieldPresentationResources
 ---@field renderer FieldRenderer?
@@ -35,7 +37,7 @@ local WindowConfig = require("game.src.WindowConfig")
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
----@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation; the inert stub upholds the draw/dispose surface for definition-less compositions
+---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
 ---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
@@ -89,26 +91,18 @@ function FieldPresentationResources.new(runtime)
     -- pool. Its renderer-backed part instances replace the runtime's
     -- headless factory, so script-started transitions render through the
     -- exact generated resources while keeping controller timing.
-    -- Partially constructed runtimes without the generated definition keep
-    -- the inert stub below.
+    -- Definition-less compositions leave the renderer nil; the draw
+    -- short-circuit below and the nil-guarded dispose keep them inert.
     if runtime.followerTransitionDefinition ~= nil and runtime.followingMonTransition ~= nil then
       local transitionRenderer =
         FollowingMonTransitionRenderer.new({ transition = runtime.followerTransitionDefinition }, entrancePool)
       self.followingMonTransitionRenderer = transitionRenderer
       local function transitionModelFactory(part)
-        local renderer = assert(self.followingMonTransitionRenderer, "follower transition renderer is unavailable")
-        return renderer:newInstance(part)
+        return transitionRenderer:newInstance(part)
       end
       runtime.followingMonTransition:setModelFactory(transitionModelFactory)
     else
-      local function inertTransitionDrawItems()
-        return {}
-      end
-      local function inertTransitionDispose() end
-      self.followingMonTransitionRenderer = {
-        drawItems = inertTransitionDrawItems,
-        dispose = inertTransitionDispose,
-      } --[[@as FollowingMonTransitionRenderer]]
+      self.followingMonTransitionRenderer = nil
     end
     local surfEffects = runtime.fieldEntranceIndicatorAsset.effects
     local surfAttachment =

@@ -20,7 +20,7 @@ local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoiceP
 
 ---@class StarterChoiceState
 ---@field _catalog MonCatalog generated mon catalog for names
----@field _cacheFs table<string, unknown> generated-asset filesystem for the application cache
+---@field _cacheFs CacheFs generated-asset filesystem for the application cache
 ---@field _controller StarterChoiceController? active choice controller, nil while idle
 ---@field _candidates table[]|nil borrowed task-owned candidate records while open
 ---@field _names string[]|nil candidate display names while open
@@ -40,7 +40,7 @@ StarterChoiceState.__index = StarterChoiceState
 -- semantic coordinate.
 local SURFACE_GAP = 8
 
----@param opts { catalog: MonCatalog, cacheFs: table<string, unknown> }
+---@param opts { catalog: MonCatalog, cacheFs: CacheFs }
 ---@return StarterChoiceState
 function StarterChoiceState.new(opts)
   assert(type(opts) == "table", "starter choice requires its composition")
@@ -188,6 +188,7 @@ end
 -- transitions stay settled without input. An all-false observation never
 -- completes a transition, so a missing presentation stalls rather than
 -- settling.
+---@type StarterChoiceController.Observation
 local EMPTY_OBSERVATION = {
   rotationComplete = false,
   cameraComplete = false,
@@ -295,7 +296,7 @@ end
 -- or the host backdrop never hit a ball.
 ---@param x number
 ---@param y number
----@return integer?
+---@return { kind: string, index: integer }|nil
 function StarterChoiceState:hitTest(x, y)
   local presentation = self._presentation
   if presentation == nil then

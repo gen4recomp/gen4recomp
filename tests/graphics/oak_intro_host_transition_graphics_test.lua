@@ -211,7 +211,6 @@ end
 
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
-local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")

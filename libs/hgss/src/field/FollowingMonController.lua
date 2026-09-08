@@ -25,7 +25,7 @@ local FollowingMonController = {}
 FollowingMonController.__index = FollowingMonController
 
 ---@class FollowingMonController
----@field _service HgssMonService live party service { partyRevision, leadAliveSlot, partyMon }
+---@field _service table<string, unknown> live party service { partyRevision, leadAliveSlot, partyMon }
 ---@field _catalog MonCatalog mon catalog { species, followerSelection }
 ---@field _actors FieldActorManager
 ---@field _playerOf fun(): FieldPlayer player anchor source { movementRevision, committedAnchor }
@@ -131,7 +131,7 @@ local FACING_BY_RAW = { [0] = "north", [1] = "south", [2] = "west", [3] = "east"
 local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
 
 ---@class FollowingMonControllerOptions
----@field service HgssMonService live party service { partyRevision, leadAliveSlot, partyMon }
+---@field service table<string, unknown> live party service { partyRevision, leadAliveSlot, partyMon }
 ---@field catalog MonCatalog mon catalog { species, followerSelection }
 ---@field actors FieldActorManager
 ---@field playerOf fun(): FieldPlayer player anchor source { movementRevision, committedAnchor }

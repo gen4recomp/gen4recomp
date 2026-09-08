@@ -12,13 +12,16 @@ local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 
-local FollowingMonTransitionRenderer = {}
-FollowingMonTransitionRenderer.__index = FollowingMonTransitionRenderer
-
 ---@class FollowingMonTransitionRenderer
 ---@field resources table<string, unknown> prepared static/dynamic part resources
 ---@field placementOffset table<string, unknown> source placement offset axes
 ---@field pool table<string, unknown> mesh/image pool backing part instances
+---@field new fun(options: FollowingMonTransitionRendererOptions, pool: table<string, unknown>): FollowingMonTransitionRenderer
+---@field newInstance fun(self: FollowingMonTransitionRenderer, part: string): table<string, unknown>
+---@field drawItems fun(self: FollowingMonTransitionRenderer, status: table<string, unknown>, runtimeMap: table<string, unknown>): table<string, unknown>[]
+---@field dispose fun(self: FollowingMonTransitionRenderer)
+local FollowingMonTransitionRenderer = {}
+FollowingMonTransitionRenderer.__index = FollowingMonTransitionRenderer
 
 local EFFECT_TAG = "follower_transition"
 
