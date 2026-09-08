@@ -418,7 +418,10 @@ function T.automatic_boundary_rolls_the_two_line_window()
   end
 end
 
-function T.page_break_advances_directly_without_scrolling()
+-- A page break scrolls one line after confirmation: [A, B] retains B while
+-- the next source tokens print into the newly exposed bottom line, so the
+-- settled window reads [B, C].
+function T.page_break_scrolls_and_retains_the_prior_bottom_line()
   local c = controller({
     page({ line({ glyph("A", 1) }), line({ glyph("B", 2) }) }, "page"),
     page({ line({ glyph("C", 3) }) }, "eos"),
@@ -427,18 +430,147 @@ function T.page_break_advances_directly_without_scrolling()
   while c:status().state == "REVEALING" or c:status().state == "OPENING" do
     c:step({})
   end
-  Assert.equal(c:status().state, "WAITING_BOUNDARY")
+  local waiting = c:status()
+  Assert.equal(waiting.state, "WAITING_BOUNDARY")
+  Assert.equal(#waiting.visibleLines, 2, "both page lines are visible at the boundary")
+  Assert.equal(waiting.continuationKind, "scroll", "a page break reports a scroll continuation")
 
   c:step({ actionPressed = true })
-  local status = c:status()
-  Assert.equal(status.pageIndex, 2)
-  Assert.equal(status.state, "REVEALING")
-  Assert.equal(status.scrollRemaining, 0)
-  Assert.equal(status.scrollOffsetY, 0)
-  Assert.equal(#status.visibleLines, 0, "direct page advance clears the prior bottom line")
+  local entered = c:status()
+  Assert.equal(entered.state, "SCROLLING", "a confirmed page break enters the scroll state")
+  Assert.equal(entered.pageIndex, 1, "page advances only after the scroll finishes")
+  Assert.equal(entered.scrollRemaining, 16, "a page scroll travels one configured line")
+  Assert.equal(#entered.scrollLines, 2, "the moving window carries both old lines")
+  Assert.equal(entered.revealedGlyphs, 0, "no next-page glyph reveals while scrolling")
 
+  local scrolled = 0
+  while c:status().state == "SCROLLING" do
+    Assert.equal(c:status().pageIndex, 1, "page advances only after the scroll finishes")
+    Assert.equal(c:status().revealedGlyphs, 0, "no next-page glyph reveals while scrolling")
+    c:step({})
+    scrolled = scrolled + 1
+    Assert.isTrue(scrolled <= 4, "one-line scroll finishes on cadence")
+  end
+  Assert.equal(scrolled, 2, "one line scrolls in two field ticks")
+  local settled = c:status()
+  Assert.equal(settled.state, "REVEALING", "scroll completion opens the next page reveal")
+  Assert.equal(settled.pageIndex, 2, "scroll completion advances the page")
+  Assert.equal(settled.revealedGlyphs, 0, "next page starts unrevealed")
+  Assert.equal(#settled.visibleLines, 1, "retained bottom line is the new top line")
+  Assert.equal(
+    (settled.visibleLines[1].tokens or settled.visibleLines[1])[1].text,
+    "B",
+    "prior bottom line is retained"
+  )
+
+  local guard = 0
+  while c:status().state == "REVEALING" do
+    c:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 20, "next line reveals promptly")
+  end
+  local revealed = c:status()
+  Assert.equal(revealed.state, "WAITING_CLOSE", "scrolled page reveals to its close")
+  Assert.equal(#revealed.visibleLines, 2, "settled window shows two lines")
+  Assert.equal(
+    (revealed.visibleLines[1].tokens or revealed.visibleLines[1])[1].text,
+    "B",
+    "settled top line is the retained line"
+  )
+  Assert.equal(
+    (revealed.visibleLines[2].tokens or revealed.visibleLines[2])[1].text,
+    "C",
+    "settled bottom line is the new line"
+  )
+end
+
+-- A boundary on the final page always waits for close: the 3-line window
+-- [A, B] scrolls to [B, C], and [B, C] closes the message instead of
+-- scrolling a blank line into view.
+function T.final_page_break_closes_from_its_revealed_window()
+  local completed = 0
+  local c = controller({
+    page({ line({ glyph("A", 1) }), line({ glyph("B", 2) }) }, "line"),
+    page({ line({ glyph("C", 3) }) }, "page"),
+  })
+  local handle = c:open(request("final-page", message()))
+  handle:onComplete(function()
+    completed = completed + 1
+  end)
+  local guard = 0
+  while not c:status().waiting do
+    c:step({})
+    Assert.isFalse(c:status().state == "WAITING_BOUNDARY", "no boundary precedes the final close wait")
+    guard = guard + 1
+    Assert.isTrue(guard < 40, "both windows reveal promptly")
+  end
+  local waiting = c:status()
+  Assert.equal(waiting.state, "WAITING_CLOSE", "a final boundary waits for close")
+  Assert.equal(waiting.pageIndex, 2)
+  Assert.equal(waiting.scrollRemaining, 0, "no scroll distance is travelled")
+  Assert.equal(waiting.revealedGlyphs, 1, "the revealed window is preserved, not zeroed")
+  Assert.equal(#waiting.visibleLines, 2, "the close wait keeps both settled lines")
+  Assert.equal((waiting.visibleLines[1].tokens or waiting.visibleLines[1])[1].text, "B")
+  Assert.equal((waiting.visibleLines[2].tokens or waiting.visibleLines[2])[1].text, "C")
+
+  c:step({ actionPressed = true })
+  Assert.equal(c:status().state, "CLOSING")
   c:step({})
-  Assert.isFalse(c:status().state == "SCROLLING", "ordinary page advance never enters scrolling")
+  Assert.equal(c:status().state, "CLOSED")
+  Assert.equal(completed, 1, "the message completes exactly once")
+end
+
+-- A trailing prompt break makes the final page a clear boundary, but there
+-- is no next page to clear to: the full window waits for close and a single
+-- confirmation closes the message instead of re-showing the same window.
+function T.final_prompt_boundary_closes_without_repeating_its_window()
+  local completed = 0
+  local c = controller({
+    page({ line({ glyph("A", 1) }), line({ glyph("B", 2) }) }, "prompt"),
+  })
+  local handle = c:open(request("final-prompt", message()))
+  handle:onComplete(function()
+    completed = completed + 1
+  end)
+  local guard = 0
+  while not c:status().waiting do
+    c:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 20, "the final window reveals promptly")
+  end
+  local waiting = c:status()
+  Assert.equal(waiting.state, "WAITING_CLOSE", "a final prompt boundary waits for close")
+  Assert.equal(#waiting.visibleLines, 2, "the close wait keeps the full window")
+  Assert.equal((waiting.visibleLines[1].tokens or waiting.visibleLines[1])[1].text, "A")
+  Assert.equal((waiting.visibleLines[2].tokens or waiting.visibleLines[2])[1].text, "B")
+
+  c:step({ actionPressed = true })
+  Assert.equal(c:status().state, "CLOSING", "one confirmation closes from the full window")
+  c:step({})
+  Assert.equal(c:status().state, "CLOSED")
+  Assert.equal(completed, 1, "the message completes exactly once")
+end
+
+-- A trailing automatic boundary on the final page likewise has nothing to
+-- scroll into: the fully revealed window waits for close directly.
+function T.final_automatic_boundary_closes_without_scrolling()
+  local c = controller({
+    page({ line({ glyph("A", 1) }), line({ glyph("B", 2) }) }, "line"),
+  })
+  c:open(request("final-line", message()))
+  local guard = 0
+  while c:status().state == "OPENING" or c:status().state == "REVEALING" do
+    c:step({})
+    Assert.isFalse(c:status().state == "SCROLLING", "a final automatic boundary must not scroll")
+    guard = guard + 1
+    Assert.isTrue(guard < 20, "the final window reveals promptly")
+  end
+  local waiting = c:status()
+  Assert.equal(waiting.state, "WAITING_CLOSE")
+  Assert.equal(waiting.scrollRemaining, 0)
+  Assert.equal(#waiting.visibleLines, 2, "the close wait keeps both revealed lines")
+  Assert.equal((waiting.visibleLines[1].tokens or waiting.visibleLines[1])[1].text, "A")
+  Assert.equal((waiting.visibleLines[2].tokens or waiting.visibleLines[2])[1].text, "B")
 end
 
 -- A scroll continuation retains the old bottom line while the next source
@@ -662,7 +794,9 @@ function T.cursor_phase_is_source_animated()
     end
     c:step({})
   end
-  Assert.equal(c:status().state, "WAITING_BOUNDARY")
+  -- A single-page prompt message waits for close on its revealed window;
+  -- the cursor contract is identical at either wait.
+  Assert.equal(c:status().state, "WAITING_CLOSE")
   Assert.equal(c:status().cursorPhase, 0, "new wait starts at phase 0")
   local cycle = { 0, 1, 2, 1 }
   for tick = 1, 36 do
