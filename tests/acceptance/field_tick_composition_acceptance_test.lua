@@ -24,6 +24,13 @@ local FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE = FieldScriptSymbols.flagsByName.FLAG_
 local function labHarness()
   return AcceptanceHarness.new({
     gameFactory = function(versionId, map)
+      local mons = nil
+      local monBucketOk, monBucket = pcall(function()
+        return require("tests.support.MonBucket").emptyForVersion(versionId)
+      end)
+      if monBucketOk then
+        mons = monBucket
+      end
       return {
         saveId = "save-00000001",
         versionId = versionId,
@@ -34,6 +41,7 @@ local function labHarness()
         },
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
+        mons = mons,
       }
     end,
   })

@@ -81,6 +81,10 @@ function FieldPresentationResources.new(runtime)
     })
     self.partyScreenRenderer = PartyScreenRenderer.new()
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
+    local entrancePool = GpuAssetPool.new(runtime.cacheFs)
+    self.fieldEntranceIndicatorPool = entrancePool
+    self.fieldEntranceIndicatorRenderer =
+      FieldStaticEffectRenderer.new(runtime.fieldEntranceIndicatorAsset.model, entrancePool)
     -- The transient follower-transition presentation shares the field effect
     -- pool. Its renderer-backed part instances replace the runtime's
     -- headless factory, so script-started transitions render through the
@@ -108,10 +112,6 @@ function FieldPresentationResources.new(runtime)
         dispose = inertTransitionDispose,
       } --[[@as FollowingMonTransitionRenderer]]
     end
-    local entrancePool = GpuAssetPool.new(runtime.cacheFs)
-    self.fieldEntranceIndicatorPool = entrancePool
-    self.fieldEntranceIndicatorRenderer =
-      FieldStaticEffectRenderer.new(runtime.fieldEntranceIndicatorAsset.model, entrancePool)
     local surfEffects = runtime.fieldEntranceIndicatorAsset.effects
     local surfAttachment =
       assert(surfEffects and surfEffects.surf_attachment, "field-effect cache is missing surf_attachment")
