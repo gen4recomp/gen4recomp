@@ -92,10 +92,8 @@ function FieldPresentationResources.new(runtime)
     -- Partially constructed runtimes without the generated definition keep
     -- the inert stub below.
     if runtime.followerTransitionDefinition ~= nil and runtime.followingMonTransition ~= nil then
-      local transitionRenderer = FollowingMonTransitionRenderer.new(
-        { transition = runtime.followerTransitionDefinition },
-        entrancePool
-      )
+      local transitionRenderer =
+        FollowingMonTransitionRenderer.new({ transition = runtime.followerTransitionDefinition }, entrancePool)
       self.followingMonTransitionRenderer = transitionRenderer
       local function transitionModelFactory(part)
         local renderer = assert(self.followingMonTransitionRenderer, "follower transition renderer is unavailable")
