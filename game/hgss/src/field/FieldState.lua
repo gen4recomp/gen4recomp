@@ -308,19 +308,13 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
-  bounds = {
-    x = bounds.x,
-    y = bounds.y,
-    width = math.max(bounds.width, 256 * fieldScale),
-    height = math.max(bounds.height, 48 * fieldScale),
-  }
   if self.runtime.dialogue:isModal() then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
     local presentation = DialoguePresentationLayout.compute(bounds, {
-      scale = fieldScale,
+      maxScale = fieldScale,
       cursorPlacement = manifestPlacement,
     })
-    resources.dialogueRenderer:draw(self.runtime.dialogue, self.runtime.viewport, fieldScale, presentation)
+    resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
   end
   if self.runtime.signpost:isModal() then
     resources.signpostRenderer:draw(self.runtime.signpost, self.runtime.viewport, alpha, fieldScale)

@@ -9,7 +9,7 @@ local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
 local FieldSignpostFixture = require("tests.support.FieldSignpostFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 
 local T = {}
@@ -45,8 +45,14 @@ function T.dialogue_uses_bottom_centered_translate_and_single_scale(_)
   local ref = viewport.referenceFrame
   local expectedScale = fieldScale
   local expectedX = ref.x + (ref.width - 256 * expectedScale) / 2
-  local expectedY = ref.y + ref.height - 192 * expectedScale
-  renderer:draw(controller, FieldDialogueTheme.layout(viewport.referenceFrame, fieldScale, CURSOR_PLACEMENT))
+  local expectedY = ref.y + ref.height - 48 * expectedScale
+  renderer:draw(
+    controller,
+    DialoguePresentationLayout.compute(ref, {
+      maxScale = fieldScale,
+      cursorPlacement = CURSOR_PLACEMENT,
+    })
+  )
   Assert.equal(#lg.transforms, 2, "exactly one translate and one scale")
   Assert.equal(lg.transforms[1][1], "translate")
   Assert.near(lg.transforms[1][2], expectedX, 1e-6)
@@ -73,9 +79,14 @@ function T.dialogue_shrinks_from_bottom_center_at_reduced_zoom(_)
   local fieldScale = viewport:logicalPixelScale(0.5)
   local ref = viewport.referenceFrame
   local expectedX = ref.x + (ref.width - 256 * fieldScale) / 2
-  local expectedY = ref.y + ref.height - 192 * fieldScale
-  renderer:draw(controller, FieldDialogueTheme.layout(viewport.referenceFrame, fieldScale, CURSOR_PLACEMENT))
-  -- Current layout ignores zoom: will be at scale 3, origin 0,0 not expected 1.5 / bottom-centered.
+  local expectedY = ref.y + ref.height - 48 * fieldScale
+  renderer:draw(
+    controller,
+    DialoguePresentationLayout.compute(ref, {
+      maxScale = fieldScale,
+      cursorPlacement = CURSOR_PLACEMENT,
+    })
+  )
   Assert.equal(#lg.transforms, 2, "exactly one translate and one scale")
   Assert.near(lg.transforms[1][2], expectedX, 1e-6, "bottom-centered X at 0.5x")
   Assert.near(lg.transforms[1][3], expectedY, 1e-6, "bottom-anchored Y at 0.5x")

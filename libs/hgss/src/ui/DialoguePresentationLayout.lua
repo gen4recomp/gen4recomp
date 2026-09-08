@@ -1,5 +1,9 @@
 -- Pure host placement for the authentic 256 x 48 dialogue window. Local
 -- geometry remains source-sized; only this record knows the host rectangle.
+-- Source-local box/text/line metrics derive from FieldDialogueTheme, the
+-- canonical HGSS geometry owner; this module only maps them into host bounds.
+
+local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 
 local Layout = {}
 
@@ -19,15 +23,25 @@ local Layout = {}
 ---@field cursor DialoguePresentationLayout.Rect
 ---@field lineHeight number
 
-local WIDTH = 256
+local WIDTH = FieldDialogueTheme.referenceWidth
 local HEIGHT = 48
-local SOURCE_HEIGHT = 192
-local BOX = { x = 16, y = 8, width = 216, height = 32 }
+local SOURCE_HEIGHT = FieldDialogueTheme.referenceHeight
 -- The dialogue window strip is the bottom 48 pixels of the 256x192 source
 -- canvas, so source-relative local Y is converted by subtracting 144.
 local SOURCE_WINDOW_Y = SOURCE_HEIGHT - HEIGHT
-local CURSOR_RESERVED_WIDTH = 20
-local LINE_HEIGHT = 16
+local BOX = {
+  x = FieldDialogueTheme.box.x,
+  y = FieldDialogueTheme.box.y - SOURCE_WINDOW_Y,
+  width = FieldDialogueTheme.box.width,
+  height = FieldDialogueTheme.box.height,
+}
+local TEXT = {
+  x = FieldDialogueTheme.box.x + FieldDialogueTheme.textInsetX,
+  y = FieldDialogueTheme.box.y - SOURCE_WINDOW_Y + FieldDialogueTheme.textInsetY,
+  width = FieldDialogueTheme.textWidth,
+  height = FieldDialogueTheme.textHeight,
+}
+local LINE_HEIGHT = FieldDialogueTheme.lineHeight
 local EPSILON = 1e-9
 
 local function finitePositive(value, name)
@@ -97,10 +111,9 @@ function Layout.compute(bounds, options)
     width = cursorPlacement.width,
     height = cursorPlacement.height,
   }
-  -- Text reserves the cursor area so glyphs never draw underneath.
-  -- The pen origin is the window's own content origin (no added inset); the
-  -- cursor is placed outside the text reservation, not clipped inside it.
-  local text = { x = BOX.x, y = BOX.y, width = BOX.width - CURSOR_RESERVED_WIDTH, height = BOX.height }
+  -- The text pen starts at the window content origin; the continuation
+  -- cursor is placed outside the content window, never clipped inside it.
+  local text = { x = TEXT.x, y = TEXT.y, width = TEXT.width, height = TEXT.height }
   return {
     bounds = { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height },
     origin = origin,
@@ -154,10 +167,9 @@ function Layout.validate(presentation)
     return rect
   end
   requireRect(presentation.box, "box", BOX)
-  -- Text must be the source-derived reserved rect. Cursor geometry is supplied
+  -- Text is the canonical theme content rect. Cursor geometry is supplied
   -- by generated field UI and has already been transformed by compute().
-  local expectedText = { x = BOX.x, y = BOX.y, width = BOX.width - CURSOR_RESERVED_WIDTH, height = BOX.height }
-  requireRect(presentation.text, "text box", expectedText)
+  requireRect(presentation.text, "text box", TEXT)
   local cursor = requireRect(presentation.cursor, "cursor")
   assert(cursor.x >= 0 and cursor.y >= 0, "dialogue cursor must be inside the local strip")
   assert(

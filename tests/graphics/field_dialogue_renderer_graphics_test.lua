@@ -16,6 +16,7 @@ local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 
 local T = {}
@@ -61,10 +62,14 @@ local function canonicalRender(scope, frameIndex)
   settleDialogue(controller)
   local viewport = FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" })
   local fieldScale = viewport:logicalPixelScale(1)
+  local presentation = DialoguePresentationLayout.compute(
+    { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
+    { maxScale = fieldScale, cursorPlacement = CURSOR_PLACEMENT }
+  )
   local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
-  dialogue:draw(controller, FieldDialogueTheme.layout(viewport.referenceFrame, fieldScale, CURSOR_PLACEMENT))
+  dialogue:draw(controller, presentation)
   lg.setCanvas()
   return scope:own(canvas:newImageData())
 end
@@ -79,14 +84,24 @@ end
 local function goldenReference(frameIndex)
   local reference = love.image.newImageData(CANONICAL_WIDTH, CANONICAL_HEIGHT)
   local rgba = FieldUiFixture.framePixels(frameIndex)
-  local presentation = FieldDialogueTheme.layout(
+  local presentation = DialoguePresentationLayout.compute(
     { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
-    FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" }):logicalPixelScale(1),
-    CURSOR_PLACEMENT
+    {
+      maxScale = FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" }):logicalPixelScale(1),
+      cursorPlacement = CURSOR_PLACEMENT,
+    }
   )
-  local placements = FieldDialogueTheme.frameTilePlacements(FieldDialogueTheme.box)
+  local placements = FieldDialogueTheme.frameTilePlacements({
+    x = presentation.box.x,
+    y = presentation.box.y,
+    width = presentation.box.width,
+    height = presentation.box.height,
+  } --[[@as FieldDialogueTheme.Rect]])
   local function paste(x, y, r, g, b, a)
     reference:setPixel(math.floor(x), math.floor(y), r, g, b, a)
+  end
+  local function pasteLocal(lx, ly, r, g, b, a)
+    paste(presentation.origin.x + lx * presentation.scale, presentation.origin.y + ly * presentation.scale, r, g, b, a)
   end
   for _, p in ipairs(placements) do
     for row = 0, (p.spanY or 1) - 1 do
@@ -94,9 +109,9 @@ local function goldenReference(frameIndex)
         for ty = 0, 7 do
           for tx = 0, 7 do
             local index = (ty * 144 + p.tile * 8 + tx) * 4 + 1
-            paste(
-              presentation.origin.x + (p.x + col * 8 + tx) * presentation.scale,
-              presentation.origin.y + (p.y + row * 8 + ty) * presentation.scale,
+            pasteLocal(
+              p.x + col * 8 + tx,
+              p.y + row * 8 + ty,
               rgba:byte(index) / 255,
               rgba:byte(index + 1) / 255,
               rgba:byte(index + 2) / 255,
@@ -108,43 +123,24 @@ local function goldenReference(frameIndex)
     end
   end
   local background = FieldDialogueFixture.fontDef().palette[16]
-  for y = FieldDialogueTheme.box.y, FieldDialogueTheme.box.y + FieldDialogueTheme.box.height - 1 do
-    for x = FieldDialogueTheme.box.x, FieldDialogueTheme.box.x + FieldDialogueTheme.box.width - 1 do
-      paste(x, y, background.r, background.g, background.b, 1)
+  for y = presentation.box.y, presentation.box.y + presentation.box.height - 1 do
+    for x = presentation.box.x, presentation.box.x + presentation.box.width - 1 do
+      pasteLocal(x, y, background.r, background.g, background.b, 1)
     end
   end
   -- Text: glyph A (atlas columns 0..7, red) then glyph B (columns 8..15,
-  -- green), both 8x16 at the layout text origin with advance 6.
-  local layout = FieldDialogueTheme.layout(
-    { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
-    presentation.scale,
-    CURSOR_PLACEMENT
-  )
+  -- green), both 8x16 at the presentation text origin with advance 6.
   local glyphs = {
-    { x = layout.text.x, red = true },
-    { x = layout.text.x + 6, red = false },
+    { x = presentation.text.x, red = true },
+    { x = presentation.text.x + 6, red = false },
   }
   for _, glyph in ipairs(glyphs) do
     for ty = 0, 15 do
       for tx = 0, 7 do
         if glyph.red then
-          paste(
-            presentation.origin.x + (glyph.x + tx) * presentation.scale,
-            presentation.origin.y + (layout.text.y + ty) * presentation.scale,
-            200 / 255,
-            40 / 255,
-            40 / 255,
-            1
-          )
+          pasteLocal(glyph.x + tx, presentation.text.y + ty, 200 / 255, 40 / 255, 40 / 255, 1)
         else
-          paste(
-            presentation.origin.x + (glyph.x + tx) * presentation.scale,
-            presentation.origin.y + (layout.text.y + ty) * presentation.scale,
-            40 / 255,
-            200 / 255,
-            40 / 255,
-            1
-          )
+          pasteLocal(glyph.x + tx, presentation.text.y + ty, 40 / 255, 200 / 255, 40 / 255, 1)
         end
       end
     end
@@ -152,7 +148,7 @@ local function goldenReference(frameIndex)
   local cursorR, cursorG, cursorB = FieldUiFixture.continueCursorColor(frameIndex, 0)
   for y = 0, 15 do
     for x = 0, 15 do
-      paste(240 + x, 168 + y, cursorR / 255, cursorG / 255, cursorB / 255, 1)
+      pasteLocal(presentation.cursor.x + x, presentation.cursor.y + y, cursorR / 255, cursorG / 255, cursorB / 255, 1)
     end
   end
   return reference
@@ -226,7 +222,10 @@ function T.restores_graphics_state_after_draw(scope)
 
   dialogue:draw(
     controller,
-    FieldDialogueTheme.layout(viewport.referenceFrame, viewport:logicalPixelScale(1), CURSOR_PLACEMENT)
+    DialoguePresentationLayout.compute(viewport.referenceFrame, {
+      maxScale = viewport:logicalPixelScale(1),
+      cursorPlacement = CURSOR_PLACEMENT,
+    })
   )
 
   FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
@@ -246,7 +245,10 @@ function T.a_closed_controller_draws_nothing_and_changes_no_state(scope)
   local viewport = FieldViewport.new(960, 720, { mode = "expanded" })
   dialogue:draw(
     controller,
-    FieldDialogueTheme.layout(viewport.referenceFrame, viewport:logicalPixelScale(1), CURSOR_PLACEMENT)
+    DialoguePresentationLayout.compute(viewport.referenceFrame, {
+      maxScale = viewport:logicalPixelScale(1),
+      cursorPlacement = CURSOR_PLACEMENT,
+    })
   )
 
   Assert.near(lg.getColor(), 0.1, 1e-6)
@@ -259,19 +261,21 @@ function T.draws_inside_the_reference_frame_at_every_host_aspect(scope)
   for _, size in ipairs({ { 960, 720 }, { 1280, 720 }, { 1920, 720 }, { 640, 480 } }) do
     local controller = FieldDialogueFixture.openDialogue("AB", 0)
     local viewport = FieldViewport.new(size[1], size[2], { mode = "expanded" })
-    dialogue:draw(
-      controller,
-      FieldDialogueTheme.layout(viewport.referenceFrame, viewport:logicalPixelScale(1), CURSOR_PLACEMENT)
-    )
+    local presentation = DialoguePresentationLayout.compute(viewport.referenceFrame, {
+      maxScale = viewport:logicalPixelScale(1),
+      cursorPlacement = CURSOR_PLACEMENT,
+    })
+    dialogue:draw(controller, presentation)
 
-    -- Layout geometry stays in reference-canvas coordinates (the draw
-    -- applies the single origin+scale transform), so the box must fit the
-    -- reference canvas at every host aspect.
-    local layout = FieldDialogueTheme.layout(viewport.referenceFrame, viewport:logicalPixelScale(1), CURSOR_PLACEMENT)
-    local box = layout.box
-    Assert.isTrue(box.x >= 0, "box in reference space at " .. size[1] .. "x" .. size[2])
-    Assert.isTrue(box.x + box.width <= FieldDialogueTheme.referenceWidth + 1e-9)
-    Assert.isTrue(box.y >= 0 and box.y + box.height <= FieldDialogueTheme.referenceHeight + 1e-9)
+    -- The resolved 256x48 strip must fit the host rectangle that produced
+    -- it at every host aspect.
+    local outer = presentation.outerRect
+    local host = presentation.bounds
+    local label = size[1] .. "x" .. size[2]
+    Assert.isTrue(outer.x >= host.x - 1e-9, "dialogue inside host at " .. label)
+    Assert.isTrue(outer.x + outer.width <= host.x + host.width + 1e-9, "dialogue inside host at " .. label)
+    Assert.isTrue(outer.y >= host.y - 1e-9, "dialogue inside host at " .. label)
+    Assert.isTrue(outer.y + outer.height <= host.y + host.height + 1e-9, "dialogue inside host at " .. label)
   end
 end
 
