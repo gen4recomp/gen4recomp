@@ -265,6 +265,23 @@ local function bootCoveredField(scope)
   local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight })
   local cache = FieldStatePresentationFixture.cache()
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
+  -- The draw path renders through the real field renderer, which needs a
+  -- camera with projection matrices; identity matrices suffice for the
+  -- black-frame entry cover under test.
+  local identityMatrix = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+  local camera = {
+    zoom = 1,
+    far = 1000,
+    view = function()
+      return identityMatrix
+    end,
+    projection = function()
+      return identityMatrix
+    end,
+    billboardProjection = function()
+      return identityMatrix
+    end,
+  }
   local originalNew = FieldRuntime.new
   FieldRuntime.new = function(_, _)
     return setmetatable({

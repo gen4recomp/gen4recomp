@@ -849,7 +849,7 @@ function T.confirm_waits_for_small_wobble_frame_through_production_playback(scop
     context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
   end
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
-  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  local AnimationClip = requireModule("libs.assets.src.model.AnimationClip", "animation clips own the frame unit")
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = loadManifest(cacheModule, cacheFs)
@@ -916,7 +916,7 @@ function T.selected_rock_continues_through_confirm_and_cancel_restores_outside(s
     context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
   end
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
-  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  local AnimationClip = requireModule("libs.assets.src.model.AnimationClip", "animation clips own the frame unit")
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = loadManifest(cacheModule, cacheFs)
@@ -1051,7 +1051,7 @@ function T.final_lock_runs_open_effect_and_sequential_fades_before_result(scope,
     context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
   end
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
-  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  local AnimationClip = requireModule("libs.assets.src.model.AnimationClip", "animation clips own the frame unit")
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = loadManifest(cacheModule, cacheFs)
@@ -1159,7 +1159,7 @@ function T.headless_and_realized_paths_share_completion_boundaries(scope, contex
     context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
   end
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
-  local AnimationClip = requireModule("libs.assets.src.AnimationClip", "animation clips own the frame unit")
+  local AnimationClip = requireModule("libs.assets.src.model.AnimationClip", "animation clips own the frame unit")
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = loadManifest(cacheModule, cacheFs)
