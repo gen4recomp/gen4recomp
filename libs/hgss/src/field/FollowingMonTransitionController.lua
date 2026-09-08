@@ -13,6 +13,7 @@
 ---@field preludeTicks integer
 ---@field modelFactory fun(part: string, descriptor: table<string, unknown>): table<string, unknown>
 ---@field instances table<string, unknown>[]
+---@field _pendingStart boolean accepted request retained until a partner is published
 local FollowingMonTransitionController = {}
 FollowingMonTransitionController.__index = FollowingMonTransitionController
 
@@ -88,6 +89,7 @@ function FollowingMonTransitionController.new(options)
     preludeTicks = preludeTicks,
     modelFactory = options.modelFactory,
     instances = {},
+    _pendingStart = false,
   }, FollowingMonTransitionController)
 end
 
@@ -123,10 +125,13 @@ local function liveTarget(self, instance)
   return current
 end
 
--- Starts one transient instance on the current partner. Returns false without
--- allocating anything when no partner is available.
+-- Binds one transient instance to the current partner without consuming any
+-- prelude update. Returns false without allocating anything when no partner
+-- is available; model allocation failures propagate after releasing partial
+-- state, exactly as the public start observes them.
+---@param self FollowingMonTransitionController
 ---@return boolean
-function FollowingMonTransitionController:start()
+local function tryStartOnCurrentPartner(self)
   local partnerId = self.actors:partnerId()
   if partnerId == nil then
     return false
@@ -174,7 +179,31 @@ function FollowingMonTransitionController:start()
   return true
 end
 
+-- Starts one transient instance on the current partner. When no partner is
+-- published yet the request is retained as one pending start and bound on a
+-- later update; repeated requests while unbound coalesce. Returns true when
+-- the request was bound immediately or retained as pending.
+---@return boolean
+function FollowingMonTransitionController:start()
+  local partnerId = self.actors:partnerId()
+  if partnerId == nil or self.actors:getById(partnerId) == nil then
+    self._pendingStart = true
+    return true
+  end
+  return tryStartOnCurrentPartner(self)
+end
+
 function FollowingMonTransitionController:updateFixed()
+  if self._pendingStart and self.actors:partnerId() ~= nil then
+    local ok, bound = pcall(tryStartOnCurrentPartner, self)
+    if not ok then
+      self._pendingStart = false
+      error(bound, 0)
+    end
+    if bound then
+      self._pendingStart = false
+    end
+  end
   for index = #self.instances, 1, -1 do
     local instance = self.instances[index]
     local current = liveTarget(self, instance)
@@ -230,6 +259,7 @@ function FollowingMonTransitionController:status()
 end
 
 function FollowingMonTransitionController:clear()
+  self._pendingStart = false
   for index = #self.instances, 1, -1 do
     release(self.instances[index])
     self.instances[index] = nil

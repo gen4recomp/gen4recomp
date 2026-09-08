@@ -205,13 +205,99 @@ local function liveInstance(transitions)
   return instances[1]
 end
 
-function T.start_without_a_partner_starts_nothing()
+function T.start_without_a_partner_accepts_one_pending_request()
   local actors = fakeActors()
   local transitions, made = controller(actors)
-  Assert.isFalse(transitions:start(), "no partner means no instance")
-  Assert.equal(#transitions:status().instances, 0, "no partner means no live effect")
-  Assert.equal(#made, 0, "no partner allocates no model state")
-  Assert.equal(#actors._shows, 0, "no partner reveals nothing")
+  Assert.isTrue(transitions:start(), "a pre-publication request is accepted, not dropped")
+  Assert.equal(#transitions:status().instances, 0, "a pending request binds no instance yet")
+  Assert.equal(#made, 0, "a pending request allocates no model state")
+  Assert.equal(#actors._shows, 0, "a pending request reveals nothing")
+  for _ = 1, 3 do
+    transitions:updateFixed()
+  end
+  Assert.equal(#transitions:status().instances, 0, "quiet updates bind nothing without a partner")
+  Assert.equal(#made, 0, "quiet updates allocate no model state without a partner")
+  Assert.equal(#actors._shows, 0, "quiet updates reveal nothing without a partner")
+end
+
+function T.pending_request_binds_the_first_hidden_partner_through_the_reveal_boundary()
+  local actors = fakeActors()
+  local transitions, made = controller(actors)
+  Assert.isTrue(transitions:start(), "the pre-publication request is accepted")
+  Assert.equal(#made, 0, "nothing allocates before publication")
+  actors:install(partnerRecord())
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the published partner starts hidden")
+
+  transitions:updateFixed()
+  local bound = liveInstance(transitions)
+  Assert.equal(bound.phase, "prelude", "binding holds the companion part first")
+  Assert.equal(bound.targetActorId, PARTNER_ID, "binding captures the published partner")
+  Assert.equal(#made, 2, "binding allocates both effect parts exactly once")
+  Assert.equal(#actors._shows, 0, "binding performs no early reveal")
+
+  transitions:updateFixed()
+  local revealed = liveInstance(transitions)
+  Assert.equal(revealed.phase, "animated", "the second update switches parts")
+  Assert.equal(#actors._shows, 1, "the switch reveals the partner exactly once")
+  Assert.equal(actors._shows[1], PARTNER_ID, "the reveal targets the captured partner")
+  Assert.isTrue(actors:isVisible(PARTNER_ID), "the partner stays visible after the reveal")
+end
+
+function T.repeated_pending_starts_coalesce_into_one_future_effect()
+  local actors = fakeActors()
+  local transitions, made = controller(actors)
+  Assert.isTrue(transitions:start(), "the first pre-publication request is accepted")
+  Assert.isTrue(transitions:start(), "a repeated pre-publication request is accepted")
+  Assert.equal(#made, 0, "repeated pending starts allocate nothing")
+  actors:install(partnerRecord())
+  transitions:updateFixed()
+  transitions:updateFixed()
+  Assert.equal(#transitions:status().instances, 1, "coalesced requests bind exactly one instance")
+  Assert.equal(#made, 2, "coalesced requests own exactly one pair of effect parts")
+  Assert.equal(#actors._shows, 1, "coalesced requests reveal exactly once")
+  Assert.isTrue(actors:isVisible(PARTNER_ID), "the partner ends visible")
+end
+
+function T.clear_and_dispose_before_publication_cancel_the_pending_request()
+  local actors = fakeActors()
+  local cleared, clearedMade = controller(actors)
+  Assert.isTrue(cleared:start(), "setup accepts the pending request")
+  cleared:clear()
+  actors:install(partnerRecord())
+  for _ = 1, 4 do
+    cleared:updateFixed()
+  end
+  Assert.equal(#cleared:status().instances, 0, "a cleared request binds nothing after publication")
+  Assert.equal(#clearedMade, 0, "a cleared request allocates nothing after publication")
+  Assert.equal(#actors._shows, 0, "a cleared request reveals nothing")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the later partner keeps its own hidden state")
+
+  local disposedActors = fakeActors()
+  local disposed, disposedMade = controller(disposedActors)
+  Assert.isTrue(disposed:start(), "setup accepts the pending request")
+  disposed:dispose()
+  disposedActors:install(partnerRecord())
+  for _ = 1, 4 do
+    disposed:updateFixed()
+  end
+  Assert.equal(#disposed:status().instances, 0, "a disposed request binds nothing after publication")
+  Assert.equal(#disposedMade, 0, "a disposed request allocates nothing after publication")
+  Assert.equal(#disposedActors._shows, 0, "a disposed request reveals nothing")
+end
+
+function T.bound_pending_reveal_never_shows_a_replacement_partner()
+  local actors = fakeActors()
+  local transitions = controller(actors)
+  Assert.isTrue(transitions:start(), "the pre-publication request is accepted")
+  actors:install(partnerRecord())
+  transitions:updateFixed()
+  liveInstance(transitions)
+  local replacement = partnerRecord({ spriteId = 20154, visible = false })
+  actors:install(replacement)
+  transitions:updateFixed()
+  Assert.equal(#transitions:status().instances, 0, "the stale bound instance drops on replacement")
+  Assert.equal(#actors._shows, 0, "the stale bound instance never reveals the replacement actor")
+  Assert.isFalse(replacement.visible, "the replacement keeps its own hidden visibility")
 end
 
 function T.start_captures_the_partner_without_consuming_prelude()
