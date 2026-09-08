@@ -137,6 +137,58 @@ local function newRgba(width, height)
   return rgba
 end
 
+-- Compose one 16x16 continuation phase the way the source window code
+-- does (pret/pokeheartgold sub_0200EA68 -> sub_0200EA24 ->
+-- BlitBitmapRect4Bit): frame tiles 10 and 11 supply the backing, then the
+-- cursor payload is blitted from source columns 3..15 onto destination
+-- columns 0..12 with palette index 0 transparent. The phase block holds
+-- its 2x2 tiles row-major, so source column 3 starts mid-tile.
+local function blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, phase, palIndex, colors, source)
+  local depth = cursorChar.depth
+  local tileBytes = depth == 3 and 32 or 64
+  local tileCount = math.floor(#cursorChar.tiles / tileBytes)
+  local baseTile = phase * 4
+  if baseTile < 0 or baseTile + 3 >= tileCount then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "cursor phase references tiles beyond the decoded char data",
+      { phase = phase, available = tileCount, source = source }
+    )
+  end
+  local palBase = depth == 3 and palIndex * 16 or palIndex * 256
+  for y = 0, 15 do
+    for dx = 0, 12 do
+      local sx = dx + 3
+      local tile = baseTile + math.floor(y / 8) * 2 + math.floor(sx / 8)
+      local lx, ly = sx % 8, y % 8
+      local base = tile * tileBytes
+      local v
+      if depth == 3 then
+        local byte = string.byte(cursorChar.tiles, base + ly * 4 + math.floor(lx / 2) + 1)
+        if lx % 2 == 0 then
+          v = byte % 16
+        else
+          v = math.floor(byte / 16)
+        end
+      else
+        v = string.byte(cursorChar.tiles, base + ly * 8 + lx + 1)
+      end
+      if v ~= 0 then
+        local c = colors[palBase + v + 1]
+        if not c then
+          Errors.raise(
+            FieldUiCompiler.ERROR.SOURCE_INVALID,
+            "pixel references a palette entry the decoded palette cannot cover",
+            { value = v, palette = palIndex, available = #colors, source = source }
+          )
+        end
+        local px = ((destY + y) * atlasWidth + destX + dx) * 4
+        rgba[px + 1], rgba[px + 2], rgba[px + 3], rgba[px + 4] = c.r, c.g, c.b, 255
+      end
+    end
+  end
+end
+
 -- Compose the 16x16 continuation surface exactly as the source window code
 -- does: the cursor member supplies the phase payload, while frame tiles 10
 -- and 11 provide the backing that surrounds that payload.
@@ -145,21 +197,7 @@ local function composeCursorPhase(rgba, atlasWidth, destX, destY, frameChar, fra
     blitTile(rgba, atlasWidth, destX, destY + row * 8, frameChar, 10, 0, framePalette, false, false, source)
     blitTile(rgba, atlasWidth, destX + 8, destY + row * 8, frameChar, 11, 0, framePalette, false, false, source)
   end
-  for tile = 0, 3 do
-    blitTile(
-      rgba,
-      atlasWidth,
-      destX + (tile % 2) * 8,
-      destY + math.floor(tile / 2) * 8,
-      cursorChar,
-      phase * 4 + tile,
-      0,
-      framePalette,
-      false,
-      false,
-      source
-    )
-  end
+  blitCursorPayload(rgba, atlasWidth, destX, destY, cursorChar, phase, 0, framePalette, source)
 end
 
 -- Render a screen (BG tilemap with flips) into a PNG. Generic decoded-tile
