@@ -7,7 +7,8 @@ name: CI
 # acceptance tests report explicit optional skips because CI has no
 # user-owned cartridge dump.
 #
-# The lint steps mirror the pre-commit hook (scripts/lint.sh). Hooks are opt-in
+# CI runs the full static gate (scripts/lint.sh --check); the pre-commit
+# hook runs both the staged invariant gate and full lint. Hooks are opt-in
 # per clone and bypassable, so CI is the binding gate.
 #
 # Structural hotspot comparison is advisory and lives in the separate Code
