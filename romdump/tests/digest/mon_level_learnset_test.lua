@@ -11,7 +11,7 @@ local Errors = require("libs.errors.src.Errors")
 local T = {}
 
 local function compiler()
-  return require("romdump.src.digest.MonCatalogCompiler")
+  return require("romdump.src.digest.mons.MonCatalogCompiler")
 end
 
 local function entry(level, move)

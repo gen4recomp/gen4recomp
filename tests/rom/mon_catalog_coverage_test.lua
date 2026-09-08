@@ -16,7 +16,7 @@ local T = {}
 -- holds exactly the 496 species identities and every member is reachable as
 -- a species base form or a parented alternate form.
 function T.complete_native_catalog_compiles_and_validates(romFs, versionId)
-  local MonCatalogCompiler = require("romdump.src.digest.MonCatalogCompiler")
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
   local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
   local MonSources = require("romdump.src.config.MonSources")
   local catalog = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
@@ -62,7 +62,7 @@ end
 -- Growth curves cover exact cumulative experience for levels 1 through 100, so
 -- runtime creation never evaluates source growth formulas.
 function T.growth_curves_cover_levels_1_through_100(romFs, versionId)
-  local MonCatalogCompiler = require("romdump.src.digest.MonCatalogCompiler")
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
   local catalog = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
   local curveCount = 0
   for _, curve in pairs(catalog.growthCurves) do

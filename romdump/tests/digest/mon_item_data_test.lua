@@ -12,7 +12,7 @@ local MonSources = require("romdump.src.config.MonSources")
 local T = {}
 
 local function compiler()
-  return require("romdump.src.digest.MonCatalogCompiler")
+  return require("romdump.src.digest.mons.MonCatalogCompiler")
 end
 
 local function memberWithHoldEffect(holdEffect)

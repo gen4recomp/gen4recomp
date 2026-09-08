@@ -11,7 +11,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 local T = {}
 
 local function compiler()
-  local ok, module = pcall(require, "romdump.src.digest.StarterChoiceAssetCompiler")
+  local ok, module = pcall(require, "romdump.src.digest.newgame.StarterChoiceAssetCompiler")
   if not ok then
     error("the ROM-derived starter-choice compiler is missing: " .. tostring(module), 0)
   end

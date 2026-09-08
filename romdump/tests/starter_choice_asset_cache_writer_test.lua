@@ -32,7 +32,7 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local T = {}
 
 local function compiler()
-  local ok, module = pcall(require, "romdump.src.digest.StarterChoiceAssetCompiler")
+  local ok, module = pcall(require, "romdump.src.digest.newgame.StarterChoiceAssetCompiler")
   if not ok then
     error("the ROM-derived starter-choice compiler is missing: " .. tostring(module), 0)
   end
@@ -48,7 +48,7 @@ local function cache()
 end
 
 local function writer()
-  local ok, module = pcall(require, "romdump.src.digest.StarterChoiceAssetCacheWriter")
+  local ok, module = pcall(require, "romdump.src.digest.newgame.StarterChoiceAssetCacheWriter")
   if not ok then
     error("the starter-choice cache has no failure-safe publication path: " .. tostring(module), 0)
   end

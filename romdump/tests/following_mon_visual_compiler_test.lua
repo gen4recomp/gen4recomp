@@ -10,7 +10,7 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorCompiler = require("romdump.src.digest.actor.FieldActorCompiler")
-local FollowingMonVisualCompiler = require("romdump.src.digest.FollowingMonVisualCompiler")
+local FollowingMonVisualCompiler = require("romdump.src.digest.actor.FollowingMonVisualCompiler")
 
 local T = {}
 

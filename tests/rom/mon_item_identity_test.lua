@@ -15,7 +15,7 @@ local compiledByVersion = {}
 
 local function compileCatalog(romFs, versionId)
   if compiledByVersion[versionId] == nil then
-    local MonCatalogCompiler = require("romdump.src.digest.MonCatalogCompiler")
+    local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
     compiledByVersion[versionId] = assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
   end
   return compiledByVersion[versionId]

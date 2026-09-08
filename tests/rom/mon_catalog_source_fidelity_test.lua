@@ -11,7 +11,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 local T = {}
 
 local function compile(romFs, versionId)
-  local MonCatalogCompiler = require("romdump.src.digest.MonCatalogCompiler")
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
   return assert(MonCatalogCompiler.compileCatalog(romFs, { versionId = versionId }))
 end
 

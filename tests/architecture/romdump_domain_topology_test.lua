@@ -61,6 +61,12 @@ local DOMAINS = {
     "FieldActorModel",
     "FieldActorStaticModel",
     "FieldActorTimeline",
+    "FollowingMonVisualCompiler",
+  },
+  mons = {
+    "MonCacheWriter",
+    "MonCatalogCompiler",
+    "MonPresentationCompiler",
   },
   field = {
     "FieldCameraCacheWriter",
@@ -108,6 +114,8 @@ local DOMAINS = {
     "IntroObjPaletteResolver",
     "NewGameInitCacheWriter",
     "NewGameInitCompiler",
+    "StarterChoiceAssetCacheWriter",
+    "StarterChoiceAssetCompiler",
   },
 }
 
@@ -254,6 +262,7 @@ function T.representative_digest_modules_load_from_each_domain_path()
   requireFromNewPath("field", "FieldMapDataCompiler")
   requireFromNewPath("ui", "FieldUiCompiler")
   requireFromNewPath("newgame", "IntroAssetCompiler")
+  requireFromNewPath("mons", "MonCatalogCompiler")
   requireFromNewPath("audio", "AudioCompiler")
   requireFromNewPath("script", "ScriptCompiler")
 end

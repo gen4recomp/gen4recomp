@@ -28,7 +28,7 @@ local charmap = require("romdump.src.reference.hgss.charmap")
 local Hashing = require("romdump.src.digest.Hashing")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
-local MonPresentationCompiler = require("romdump.src.digest.MonPresentationCompiler")
+local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 
 ---@class MonCatalogCompiler
 local MonCatalogCompiler = {}

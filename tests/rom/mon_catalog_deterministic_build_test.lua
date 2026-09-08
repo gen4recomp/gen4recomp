@@ -21,8 +21,8 @@ end
 -- and byte, for both Lua resources and atlas PNGs; the ready/index hash is
 -- stable without reserializing image bytes.
 function T.identical_inputs_produce_byte_identical_class_output(romFs, versionId)
-  local MonCatalogCompiler = require("romdump.src.digest.MonCatalogCompiler")
-  local MonCacheWriter = require("romdump.src.digest.MonCacheWriter")
+  local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
 
   local firstBackend = FakeCache.new()
   local secondBackend = FakeCache.new()

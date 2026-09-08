@@ -13,7 +13,7 @@ local T = {}
 
 local function contracts()
   local MonCache = require("libs.assets.src.MonCache")
-  local MonCacheWriter = require("romdump.src.digest.MonCacheWriter")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
   return MonCache, MonCacheWriter
 end
 

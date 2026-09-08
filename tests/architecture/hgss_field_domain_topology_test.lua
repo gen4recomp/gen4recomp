@@ -76,6 +76,8 @@ local FIELD_COORDINATION = {
   "FieldMapEntryController",
   "FieldSession",
   "FieldWindowStyles",
+  "FollowingMonController",
+  "FollowingMonTransitionController",
   "MapInitScriptController",
   "StartMenuLayout",
 }
@@ -84,6 +86,7 @@ local PRESENTATION = { "BillboardTransform" }
 
 local EXISTING_SIBLINGS = {
   audio = "libs.hgss.src.audio.AudioRuntime",
+  mons = "libs.hgss.src.mons.HgssMonService",
   presentation = "libs.hgss.src.presentation.FieldViewport",
   save = "libs.hgss.src.save.GameSave",
   script = "libs.hgss.src.script.Composition",
