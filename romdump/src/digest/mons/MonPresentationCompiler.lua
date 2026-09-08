@@ -9,9 +9,11 @@
 -- member carries two 80x80 frames. Front-picture character payloads are
 -- stored scanned: src/pokepic.c UnscanPokepic_PtHGSS masks 3200
 -- little-endian words with the 32-bit LCRNG seeded from word 0 before pixels
--- are used, and the decoded surface is 20x10 tiles whose left and right 10x10
--- halves are the two authored frames (src/unk_02013FDC.c portrait extraction;
--- the second frame sits at an 80-pixel horizontal offset).
+-- are used, and the decoded surface is 80 rows of 80 bytes whose left and
+-- right 40-byte halves are the two authored frames
+-- (src/pokepic.c UnscanPokepic_PtHGSS row addressing
+-- pRawCharData[j * 80 + k]; src/unk_02013FDC.c portrait extraction; the
+-- second frame sits at an 80-pixel horizontal offset).
 -- Tiles, palettes, cells, and animations
 -- decode through the existing G2dDecoder primitives; this module only
 -- rasterizes palette-resolved RGBA and packs deterministic atlases. Returns
@@ -36,14 +38,14 @@ local PORTRAIT_FRAMES = 2
 local FRONT_FACING = 2
 
 -- Retail front-picture geometry: the scanned payload is exactly the two
--- authored 80x80 4bpp frames, and the decoded tile surface is 20 tiles wide
--- by 10 high with one frame per 10-tile half.
+-- authored 80x80 4bpp frames, and the decoded surface is 80 rows of 80
+-- bytes with one frame per 40-byte row half.
 local PORTRAIT_BYTES = 6400
 local PORTRAIT_WORDS = 3200
 local UNSCAN_MULTIPLIER = 1103515245
 local UNSCAN_INCREMENT = 24691
-local PORTRAIT_SOURCE_TILES_WIDE = 20
-local PORTRAIT_FRAME_TILES = 10
+local PORTRAIT_ROW_BYTES = 80
+local PORTRAIT_FRAME_ROW_BYTES = 40
 
 ---@generic T
 ---@param value T?
@@ -146,25 +148,22 @@ local function unscanPortraitBytes(charTiles, label)
   return table.concat(parts)
 end
 
--- Raster the two authored 80x80 frames from the unscanned 20x10-tile
--- surface: frame 0 is the left 10 tile columns, frame 1 the right 10.
--- Palette resolution (including index-0 transparency) still owns the
--- expansions table built by the caller.
+-- Raster the two authored 80x80 frames from the unscanned row-major
+-- surface: each of the 80 rows carries 80 bytes, frame 0 reads bytes 0..39
+-- of the row and frame 1 reads bytes 40..79. Each packed byte expands low
+-- nibble then high nibble into two horizontally adjacent pixels. Palette
+-- resolution (including index-0 transparency) still owns the expansions
+-- table built by the caller.
 local function rasterizePortraitFrames(unscanned, expansions, label)
   assert(#unscanned == PORTRAIT_BYTES, label .. " portrait bytes must be unscanned before rastering")
   local frames = {}
   for frame = 0, PORTRAIT_FRAMES - 1 do
     local rows = {}
-    for y = 0, PORTRAIT_FRAME_TILES * 8 - 1 do
-      local tileRow = math.floor(y / 8)
-      local rowInTile = y % 8
+    for y = 0, PORTRAIT_CELL - 1 do
+      local frameBase = y * PORTRAIT_ROW_BYTES + frame * PORTRAIT_FRAME_ROW_BYTES
       local parts = {}
-      for tx = 0, PORTRAIT_FRAME_TILES - 1 do
-        local tile = tileRow * PORTRAIT_SOURCE_TILES_WIDE + frame * PORTRAIT_FRAME_TILES + tx
-        local base = tile * 32 + rowInTile * 4
-        for col = 0, 3 do
-          parts[#parts + 1] = expansions[string.byte(unscanned, base + col + 1)]
-        end
+      for byteX = 0, PORTRAIT_FRAME_ROW_BYTES - 1 do
+        parts[#parts + 1] = expansions[string.byte(unscanned, frameBase + byteX + 1)]
       end
       rows[#rows + 1] = table.concat(parts)
     end

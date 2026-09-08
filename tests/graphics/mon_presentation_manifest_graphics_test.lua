@@ -33,76 +33,50 @@ local function mul32(a, b)
   return (aLo * bLo + ((aLo * bHi + aHi * bLo) % 65536) * 65536) % 4294967296
 end
 
--- Digest over row-major RGBA bytes of one portrait cell. The constants below
--- are the independently derived retail values, not output of the producer.
-local function pixelDigest(data, x, y, size)
-  local bit = require("bit")
-  local hash = 2166136261
-  local function feed(byte)
-    local mixed = bit.bxor(hash, byte)
-    if mixed < 0 then
-      mixed = mixed + 4294967296
-    end
-    hash = mul32(mixed, 16777619)
-  end
-  for row = 0, size - 1 do
-    for col = 0, size - 1 do
-      local r, g, b, a = data:getPixel(x + col, y + row)
-      feed(toByte(r))
-      feed(toByte(g))
-      feed(toByte(b))
-      feed(toByte(a))
-    end
-  end
-  return hash
-end
-
-local function assertSpot(data, x, y, r, g, b, a, what)
-  local pr, pg, pb, pa = data:getPixel(x, y)
-  Assert.deepEqual({ toByte(pr), toByte(pg), toByte(pb), toByte(pa) }, { r, g, b, a }, what)
-end
-
--- Retail starter portraits carry exact decoded pixels: per-starter crop
--- digests plus fixed opaque and transparent spots for the normal male
--- default-form selection. Scanned payload noise cannot satisfy these.
-local STARTER_PORTRAIT_EVIDENCE = {
-  {
-    key = "CHIKORITA",
-    digest = 0x3BCB1C15,
-    transparent = 5515,
-    spots = {
-      { 0, 0, 0, 0, 0, 0 },
-      { 16, 8, 132, 230, 49, 255 },
-      { 64, 27, 107, 181, 41, 255 },
-      { 24, 40, 214, 247, 123, 255 },
-    },
-  },
-  {
-    key = "CYNDAQUIL",
-    digest = 0xAC182097,
-    transparent = 5409,
-    spots = {
-      { 0, 0, 0, 0, 0, 0 },
-      { 58, 16, 222, 0, 0, 255 },
-      { 46, 35, 99, 173, 189, 255 },
-      { 7, 43, 255, 247, 165, 255 },
-    },
-  },
-  {
-    key = "TOTODILE",
-    digest = 0x23026B9F,
-    transparent = 5665,
-    spots = {
-      { 0, 0, 0, 0, 0, 0 },
-      { 24, 24, 41, 90, 132, 255 },
-      { 78, 33, 16, 16, 16, 255 },
-      { 27, 41, 239, 230, 74, 255 },
-    },
-  },
-}
-
-local function starter_portraits_match_source_derived_pixels(_, context)
+-- Starter portraits decoded from the retail source through the row layout:
+-- the unscanned 6400-byte surface is 80 rows of 80 bytes with two 40-byte
+-- frame halves per row, each byte expanding low nibble then high nibble
+-- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981, src/pokepic.c
+-- UnscanPokepic_PtHGSS row addressing pRawCharData[j * 80 + k]). Expected
+-- pixels are recomputed here from the dump's own character and palette
+-- members, never from the portrait compiler output, so a fragmented
+-- tile-major atlas fails these samples.
+local function starter_portraits_follow_source_row_layout(_, context)
   local MonCache = require("libs.assets.src.MonCache")
+  local MonSources = require("romdump.src.config.MonSources")
+  local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+  local RomFs = require("romdump.src.source.RomFs")
+  local bit = require("bit")
+
+  local function unscanSource(scanned, label)
+    Assert.equal(#scanned, 6400, label .. " unscanned surface stays 6400 bytes")
+    local seed = string.byte(scanned, 1) + string.byte(scanned, 2) * 256
+    local parts = {}
+    for i = 0, 3199 do
+      local word = string.byte(scanned, i * 2 + 1) + string.byte(scanned, i * 2 + 2) * 256
+      local plain = bit.bxor(word, seed % 65536)
+      parts[#parts + 1] = string.char(plain % 256, math.floor(plain / 256) % 256)
+      seed = (mul32(seed, 1103515245) + 24691) % 4294967296
+    end
+    return table.concat(parts)
+  end
+
+  local function expectedRgba(unscanned, colors, frame, x, y, label)
+    local offset0 = y * 80 + frame * 40 + math.floor(x / 2)
+    local packed = assert(string.byte(unscanned, offset0 + 1), label .. " sample stays in the surface")
+    local index
+    if x % 2 == 0 then
+      index = packed % 16
+    else
+      index = math.floor(packed / 16) % 16
+    end
+    if index == 0 then
+      return 0, 0, 0, 0
+    end
+    local color = assert(colors[index + 1], label .. " palette index stays in range")
+    return color.r, color.g, color.b, 255
+  end
+
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
       local cache = CacheFs.forVersion(versionId)
@@ -110,48 +84,67 @@ local function starter_portraits_match_source_derived_pixels(_, context)
         assert(cache:loadLua(MonCache.portraitManifestPath()), versionId .. " portrait manifest must load")
       local imageBytes = assert(cache:read(portraits.image), versionId .. " portrait atlas must be present")
       local data = love.image.newImageData(love.filesystem.newFileData(imageBytes, portraits.image))
-      for _, evidence in ipairs(STARTER_PORTRAIT_EVIDENCE) do
-        local selector = MonCache.portraitSelector(evidence.key, 0, "male", false)
+      local romFs = assert(RomFs.open(versionId))
+      for _, key in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do
+        local speciesId = assert(MonSources.speciesId(key), key .. " must be a known species")
+        local ids = MonSources.portraitIds(speciesId, "male", 2, false, 0)
+        local archive = assert(romFs:openNarc(ids.narc), versionId .. " " .. ids.narc .. " must open")
+        local charMember = assert(archive:readMember(ids.charMemberId), versionId .. " char member must read")
+        local palMember = assert(archive:readMember(ids.palMemberId), versionId .. " palette member must read")
+        local char = assert(G2dDecoder.decodeChar(charMember, { label = key .. " portrait" }))
+        local pal = assert(G2dDecoder.decodePalette(palMember, { label = key .. " palette" }))
+        Assert.equal(#pal.colors, 16, versionId .. " " .. key .. " palette stays 16 colors")
+        local unscanned = unscanSource(char.tiles, versionId .. " " .. key)
+        local selector = MonCache.portraitSelector(key, 0, "male", false)
         local rect = assert(portraits.entries[selector], versionId .. " selector must resolve: " .. selector)
         Assert.equal(rect.width, PORTRAIT_CELL, versionId .. " " .. selector .. " stays 80 wide")
         Assert.equal(rect.height, PORTRAIT_CELL, versionId .. " " .. selector .. " stays 80 high")
         Assert.equal(#rect.frames, 2, versionId .. " " .. selector .. " keeps two frames")
-        for _, frame in ipairs(rect.frames) do
-          Assert.equal(frame.width, PORTRAIT_CELL, versionId .. " " .. selector .. " frame stays 80 wide")
-          Assert.equal(frame.height, PORTRAIT_CELL, versionId .. " " .. selector .. " frame stays 80 high")
-          Assert.isTrue(
-            frame.x + frame.width <= data:getWidth(),
-            versionId .. " " .. selector .. " frame stays in the atlas"
-          )
-          Assert.isTrue(
-            frame.y + frame.height <= data:getHeight(),
-            versionId .. " " .. selector .. " frame stays in the atlas"
-          )
+        for frameIndex = 0, 1 do
+          local frameRect = rect
+          if frameIndex == 1 then
+            frameRect = assert(rect.frames[2], versionId .. " " .. selector .. " must carry a second frame")
+          end
+          for y = 0, PORTRAIT_CELL - 1 do
+            for x = 0, PORTRAIT_CELL - 1 do
+              local er, eg, eb, ea = expectedRgba(unscanned, pal.colors, frameIndex, x, y, versionId .. " " .. key)
+              local pr, pg, pb, pa = data:getPixel(frameRect.x + x, frameRect.y + y)
+              if toByte(pr) ~= er or toByte(pg) ~= eg or toByte(pb) ~= eb or toByte(pa) ~= ea then
+                error(
+                  versionId
+                    .. " "
+                    .. selector
+                    .. " frame"
+                    .. frameIndex
+                    .. " pixel "
+                    .. x
+                    .. ","
+                    .. y
+                    .. " expected {"
+                    .. er
+                    .. ","
+                    .. eg
+                    .. ","
+                    .. eb
+                    .. ","
+                    .. ea
+                    .. "} got {"
+                    .. toByte(pr)
+                    .. ","
+                    .. toByte(pg)
+                    .. ","
+                    .. toByte(pb)
+                    .. ","
+                    .. toByte(pa)
+                    .. "}",
+                  0
+                )
+              end
+            end
+          end
         end
-        for _, spot in ipairs(evidence.spots) do
-          assertSpot(
-            data,
-            rect.x + spot[1],
-            rect.y + spot[2],
-            spot[3],
-            spot[4],
-            spot[5],
-            spot[6],
-            versionId .. " " .. selector .. " pixel " .. spot[1] .. "," .. spot[2]
-          )
-        end
-        Assert.equal(
-          pixelDigest(data, rect.x, rect.y, PORTRAIT_CELL),
-          evidence.digest,
-          versionId .. " " .. selector .. " crop must match the decoded retail pixels"
-        )
-        local opaque = opaquePixelCount(data, rect.x, rect.y, rect.width, rect.height)
-        Assert.equal(
-          PORTRAIT_CELL * PORTRAIT_CELL - opaque,
-          evidence.transparent,
-          versionId .. " " .. selector .. " keeps its transparent regions"
-        )
       end
+      romFs:close()
       data:release()
     end
   end
@@ -212,7 +205,7 @@ end
 
 local suite = GraphicsSmoke.suite({
   representative_selections_address_rendered_pixels = representative_selections_address_rendered_pixels,
-  starter_portraits_match_source_derived_pixels = starter_portraits_match_source_derived_pixels,
+  starter_portraits_follow_source_row_layout = starter_portraits_follow_source_row_layout,
 })
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
 return suite

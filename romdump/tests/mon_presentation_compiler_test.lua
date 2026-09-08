@@ -1,10 +1,12 @@
 -- Front-portrait producer contract: HGSS character payloads are stored scanned
 -- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
 -- src/pokepic.c UnscanPokepic_PtHGSS: 3200 little-endian words masked by the
--- 32-bit LCRNG seeded from word 0) and laid out as a 20x10-tile surface whose
--- left and right 10x10 halves are the two authored 80x80 frames
--- (src/unk_02013FDC.c portrait extraction; the second frame sits at an
--- 80-pixel horizontal offset). Fixtures below drive the real production
+-- 32-bit LCRNG seeded from word 0) and laid out as 80 rows of 80 bytes whose
+-- left and right 40-byte halves are the two authored 80x80 frames, each byte
+-- expanding low nibble then high nibble
+-- (src/pokepic.c UnscanPokepic_PtHGSS row addressing
+-- pRawCharData[j * 80 + k]; src/unk_02013FDC.c portrait extraction; the
+-- second frame sits at an 80-pixel horizontal offset). Fixtures below drive the real production
 -- entrypoints with synthetic NCGR/NCLR containers served by a fake archive
 -- pair, so the unscan seam and the frame geometry are proved without a
 -- user-owned dump.
@@ -225,10 +227,9 @@ local TRANSPARENT = { 0, 0, 0, 0 }
 
 -- The scanned fixture below carries five nontrivial words followed by zeros;
 -- the independent recurrence values for its first words are
--- M0=0x0000 M1=0xEE88 M2=0x4480 M3=0xCC89 M4=0xF980 M5=0xEA60. Tile 0
--- (words 0..15) is the first tile under either frame layout, so these
--- assertions isolate the unscan from the frame geometry: row 0 reads M0/M1,
--- row 1 reads M2/M3, row 2 reads M4/M5.
+-- M0=0x0000 M1=0xEE88 M2=0x4480 M3=0xCC89 M4=0xF980 M5=0xEA60. Row 0 holds
+-- words 0..39, so these assertions isolate the unscan from the frame
+-- geometry: row 0 reads M0/M1 at x0..7, M2/M3 at x8..15, M4/M5 at x16..23.
 function T.portrait_bytes_are_unscanned_before_palette_expansion()
   local scanned = { 0xABCD, 0x1234, 0x00FF, 0xF00F, 0x0001 }
   for _ = 1, 3200 - #scanned do
@@ -246,53 +247,51 @@ function T.portrait_bytes_are_unscanned_before_palette_expansion()
   assertPixel(pixels, width, entry.x + 5, entry.y + 0, { 132, 132, 132, 255 }, "M1 low nibbles")
   assertPixel(pixels, width, entry.x + 6, entry.y + 0, { 197, 197, 197, 255 }, "M1 high nibbles")
   assertPixel(pixels, width, entry.x + 7, entry.y + 0, { 197, 197, 197, 255 }, "M1 high nibbles")
-  -- M2=0x4480: row 1 opens with transparent/8 then 4,4.
-  assertPixel(pixels, width, entry.x + 0, entry.y + 1, TRANSPARENT, "M2 low nibble zero")
-  assertPixel(pixels, width, entry.x + 1, entry.y + 1, { 132, 132, 132, 255 }, "M2 low nibble eight")
-  assertPixel(pixels, width, entry.x + 2, entry.y + 1, { 255, 255, 255, 255 }, "M2 high nibbles")
-  assertPixel(pixels, width, entry.x + 3, entry.y + 1, { 255, 255, 255, 255 }, "M2 high nibbles")
-  -- M3=0xCC89: row 1 continues with 9,8 then 12,12.
-  assertPixel(pixels, width, entry.x + 4, entry.y + 1, { 0, 132, 0, 255 }, "M3 low nibbles")
-  assertPixel(pixels, width, entry.x + 5, entry.y + 1, { 132, 132, 132, 255 }, "M3 low nibbles")
-  assertPixel(pixels, width, entry.x + 6, entry.y + 1, { 165, 165, 165, 255 }, "M3 high nibbles")
-  assertPixel(pixels, width, entry.x + 7, entry.y + 1, { 165, 165, 165, 255 }, "M3 high nibbles")
-  -- M4=0xF980 M5=0xEA60: row 2 reads 0,8,9,15 then 0,6,10,14.
-  assertPixel(pixels, width, entry.x + 0, entry.y + 2, TRANSPARENT, "M4 low nibble zero")
-  assertPixel(pixels, width, entry.x + 1, entry.y + 2, { 132, 132, 132, 255 }, "M4 low nibble eight")
-  assertPixel(pixels, width, entry.x + 2, entry.y + 2, { 0, 132, 0, 255 }, "M4 high nibble nine")
-  assertPixel(pixels, width, entry.x + 3, entry.y + 2, { 156, 156, 25, 255 }, "M4 high nibble fifteen")
-  assertPixel(pixels, width, entry.x + 4, entry.y + 2, TRANSPARENT, "M5 low nibble zero")
-  assertPixel(pixels, width, entry.x + 5, entry.y + 2, { 255, 0, 255, 255 }, "M5 low nibble six")
-  assertPixel(pixels, width, entry.x + 6, entry.y + 2, { 0, 0, 132, 255 }, "M5 high nibble ten")
-  assertPixel(pixels, width, entry.x + 7, entry.y + 2, { 197, 197, 197, 255 }, "M5 high nibble fourteen")
+  -- M2=0x4480: row 0 continues at x8 with transparent/8 then 4,4.
+  assertPixel(pixels, width, entry.x + 8, entry.y + 0, TRANSPARENT, "M2 low nibble zero")
+  assertPixel(pixels, width, entry.x + 9, entry.y + 0, { 132, 132, 132, 255 }, "M2 low nibble eight")
+  assertPixel(pixels, width, entry.x + 10, entry.y + 0, { 255, 255, 255, 255 }, "M2 high nibbles")
+  assertPixel(pixels, width, entry.x + 11, entry.y + 0, { 255, 255, 255, 255 }, "M2 high nibbles")
+  -- M3=0xCC89: row 0 continues at x12 with 9,8 then 12,12.
+  assertPixel(pixels, width, entry.x + 12, entry.y + 0, { 0, 132, 0, 255 }, "M3 low nibbles")
+  assertPixel(pixels, width, entry.x + 13, entry.y + 0, { 132, 132, 132, 255 }, "M3 low nibbles")
+  assertPixel(pixels, width, entry.x + 14, entry.y + 0, { 165, 165, 165, 255 }, "M3 high nibbles")
+  assertPixel(pixels, width, entry.x + 15, entry.y + 0, { 165, 165, 165, 255 }, "M3 high nibbles")
+  -- M4=0xF980 M5=0xEA60: row 0 continues at x16 with 0,8,9,15 then 0,6,10,14.
+  assertPixel(pixels, width, entry.x + 16, entry.y + 0, TRANSPARENT, "M4 low nibble zero")
+  assertPixel(pixels, width, entry.x + 17, entry.y + 0, { 132, 132, 132, 255 }, "M4 low nibble eight")
+  assertPixel(pixels, width, entry.x + 18, entry.y + 0, { 0, 132, 0, 255 }, "M4 high nibble nine")
+  assertPixel(pixels, width, entry.x + 19, entry.y + 0, { 156, 156, 25, 255 }, "M4 high nibble fifteen")
+  assertPixel(pixels, width, entry.x + 20, entry.y + 0, TRANSPARENT, "M5 low nibble zero")
+  assertPixel(pixels, width, entry.x + 21, entry.y + 0, { 255, 0, 255, 255 }, "M5 low nibble six")
+  assertPixel(pixels, width, entry.x + 22, entry.y + 0, { 0, 0, 132, 255 }, "M5 high nibble ten")
+  assertPixel(pixels, width, entry.x + 23, entry.y + 0, { 197, 197, 197, 255 }, "M5 high nibble fourteen")
   -- Full-buffer determinism: the same scanned payload always yields the same atlas.
   local again = mustCompile(uniformFs(catalog, charContainer(wordsToBytes(scanned))), catalog)
   Assert.equal(again.image.pixels, portraits.image.pixels, "repeated compilation must be byte-identical")
 end
 
-local function paintTile(bytes, tileX, tileY, value)
-  local tile = tileY * 20 + tileX
-  for row = 0, 7 do
-    for col = 0, 3 do
-      bytes[tile * 32 + row * 4 + col + 1] = value
-    end
-  end
-end
-
--- Desired post-unscan surface with one marker tile per frame corner plus a
--- second-row marker that only lands correctly with a 20-tile stride. Tile
--- (0,0) keeps word 0 at zero because the retail recurrence always clears it.
-function T.portrait_frames_come_from_side_by_side_tile_regions()
+-- The retail unscanned portrait is 80 rows of 80 bytes: each row carries
+-- two 40-byte frame halves, and each byte holds two horizontally adjacent
+-- pixels low nibble first (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
+-- src/pokepic.c UnscanPokepic_PtHGSS row addressing pRawCharData[j * 80 + k]).
+-- The surface below marks row 0, row 1, and row 79 in both halves with bytes
+-- whose nibbles differ, so tile traversal and reversed nibble order both
+-- misplace them. Offsets are zero-based source offsets into the 6400-byte
+-- surface; word 0 stays zero because the retail recurrence always clears it.
+function T.portrait_rows_split_into_forty_byte_frame_halves()
   local surface = {}
   for _ = 1, 6400 do
     surface[#surface + 1] = 0
   end
-  paintTile(surface, 0, 0, 0x55)
-  surface[1], surface[2] = 0, 0
-  paintTile(surface, 10, 0, 0x99)
-  paintTile(surface, 0, 1, 0x33)
-  paintTile(surface, 9, 9, 0x77)
-  paintTile(surface, 19, 9, 0xCC)
+  local function poke(offset0, value)
+    surface[offset0 + 1] = value
+  end
+  poke(4, 0x21)
+  poke(44, 0x43)
+  poke(85, 0x65)
+  poke(6320, 0xA9)
+  poke(6360, 0x87)
   local scanned = charContainer(wordsToBytes(scanWords(bytesToWords(bytesFromTable(surface)), 0x1234)))
   local catalog = catalogWithRepresentatives()
   local portraits = mustCompile(uniformFs(catalog, scanned), catalog)
@@ -301,18 +300,18 @@ function T.portrait_frames_come_from_side_by_side_tile_regions()
     portraits.manifest.entries[MonCache.portraitSelector("CHIKORITA", 0, "male", false)],
     "male plain entry must resolve"
   )
-  -- Frame 0 is the left 10 tile columns: tile (0,0) marker 5, tile (0,1) marker 3.
-  assertPixel(pixels, width, plain.x + 0, plain.y + 0, TRANSPARENT, "frame0 keeps the cleared word")
-  assertPixel(pixels, width, plain.x + 4, plain.y + 0, { 255, 255, 0, 255 }, "frame0 top-left marker")
-  assertPixel(pixels, width, plain.x + 0, plain.y + 8, { 0, 0, 255, 255 }, "frame0 second-row marker")
-  assertPixel(pixels, width, plain.x + 79, plain.y + 79, { 0, 255, 255, 255 }, "frame0 bottom-right marker")
-  -- Frame 1 is the right 10 tile columns, addressed through the second frame rect.
   local second = assert(plain.frames[2], "plain entry must carry a second frame")
-  Assert.equal(second.width, PORTRAIT_CELL, "second frame stays 80 wide")
-  Assert.equal(second.height, PORTRAIT_CELL, "second frame stays 80 high")
-  assertPixel(pixels, width, second.x + 0, second.y + 0, { 0, 132, 0, 255 }, "frame1 top-left marker")
-  assertPixel(pixels, width, second.x + 4, second.y + 0, { 0, 132, 0, 255 }, "frame1 holds no left-frame marker")
-  assertPixel(pixels, width, second.x + 79, second.y + 79, { 165, 165, 165, 255 }, "frame1 bottom-right marker")
+  assertPixel(pixels, width, plain.x + 0, plain.y + 0, TRANSPARENT, "cleared word stays transparent")
+  assertPixel(pixels, width, plain.x + 8, plain.y + 0, { 255, 0, 0, 255 }, "row0 frame0 low nibble")
+  assertPixel(pixels, width, plain.x + 9, plain.y + 0, { 0, 255, 0, 255 }, "row0 frame0 high nibble")
+  assertPixel(pixels, width, plain.x + 10, plain.y + 1, { 255, 255, 0, 255 }, "row1 frame0 low nibble")
+  assertPixel(pixels, width, plain.x + 11, plain.y + 1, { 255, 0, 255, 255 }, "row1 frame0 high nibble")
+  assertPixel(pixels, width, plain.x + 0, plain.y + 79, { 0, 132, 0, 255 }, "row79 frame0 low nibble")
+  assertPixel(pixels, width, plain.x + 1, plain.y + 79, { 0, 0, 132, 255 }, "row79 frame0 high nibble")
+  assertPixel(pixels, width, second.x + 8, second.y + 0, { 0, 0, 255, 255 }, "row0 frame1 low nibble")
+  assertPixel(pixels, width, second.x + 9, second.y + 0, { 255, 255, 255, 255 }, "row0 frame1 high nibble")
+  assertPixel(pixels, width, second.x + 0, second.y + 79, { 0, 255, 255, 255 }, "row79 frame1 low nibble")
+  assertPixel(pixels, width, second.x + 1, second.y + 79, { 132, 132, 132, 255 }, "row79 frame1 high nibble")
 end
 
 function T.short_portrait_payload_fails_with_image_error()
