@@ -73,7 +73,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _handleMapChange fun(self: FollowingMonController, mapId: integer)
 ---@field _observePlayer fun(self: FollowingMonController, mapId: integer)
 ---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
----@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: table)
+---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
 ---@field _advanceAction fun(self: FollowingMonController)
 
@@ -586,7 +586,7 @@ end
 -- normal speed.
 ---@param self FollowingMonController
 ---@param mapId integer
----@param tx table
+---@param tx FieldPlayer.MovementTransaction
 function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
   assert(
     tx.durationTicks == MovementCalibration.SPEED_TICKS[FollowingMonController.TRAIL_SPEED],
