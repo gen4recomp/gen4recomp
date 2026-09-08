@@ -59,21 +59,22 @@ local MESSAGE_BOTTOM_CONFIRM = 8
 -- Normalized application state constants. The camera out/inside values are
 -- the pinned retail constants: decimal-degree X angles, full vertical fields
 -- of view (the source perspective fields are half-angles, doubled here per
--- the repository camera-table convention), look-at targets, and distances.
--- The out pose is the resting boot pose from the source camera initializer
--- (target height 15 with the +14 Z shift); the inside pose is the source
--- zoom-in endpoint. The ball layout is the source ring model: the base
--- model position is radius 32 at model Y 14, the three slots sit 120 degrees
--- apart around Y starting from the selected ball, touch centers sit 13 above
--- the model origins, and the selected ball arcs over the source -30.76
--- degree endpoint around its touch point. The turntable advances one
--- 120-degree selection step at the source rotation rate. Timing carries only
--- source-observable boundaries: the eight-step camera path, the eight-step
--- inspect arc, the small-wobble source frame, and the two white fade
--- boundaries.
+-- the repository camera-table convention), absolute look-at targets, and
+-- distances. The out pose is the resting boot pose from the source camera
+-- initializer (target height 15 with the +14 Z shift); the inside pose is
+-- the source zoom-in endpoint with the same fixed target height applied
+-- (the source relative +12 Z shift). The ball layout is the source ring
+-- model: the base model position is radius 32 at model Y 14, the three
+-- slots sit 120 degrees apart around Y starting from the selected ball,
+-- touch centers sit 13 above the model origins, and the selected ball arcs
+-- over the source -30.76 degree endpoint around the distinct +13.453 pivot.
+-- The turntable advances one 120-degree selection step at the normalized
+-- source rotation rate. Timing carries only source-observable boundaries:
+-- the eight-step camera path, the eight-step inspect arc, the small-wobble
+-- source frame, and the two white fade boundaries.
 local CAMERA = {
   out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
-  inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
+  inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 15, z = 12 }, distance = 60 },
 }
 -- Source perspective clipping planes in the same raw Nitro coordinate domain
 -- as the camera distances above.
@@ -82,12 +83,16 @@ local BALL_LAYOUT = {
   radius = 32,
   modelY = 14,
   touchYOffsetY = 13,
+  inspectPivotYOffsetY = 13.453,
   slotAnglesDegrees = { 0, 120, 240 },
   inspectArcDegrees = -30.76,
 }
 local TURNTABLE = {
   selectionStepDegrees = 120,
-  rotationDegreesPerTick = 0.5,
+  -- Retail stores the turntable speed as a Nitro binary-angle index of raw
+  -- 2048 over a full turn of 65536; normalized once here to degrees per
+  -- fixed update so no fixed-point unit reaches the runtime contract.
+  rotationDegreesPerTick = (2048 / 65536) * 360,
 }
 local TIMING = {
   cameraTicks = 8,
@@ -619,6 +624,7 @@ local function _compile(romFs)
         radius = modelUnits(BALL_LAYOUT.radius),
         modelY = modelUnits(BALL_LAYOUT.modelY),
         touchYOffsetY = modelUnits(BALL_LAYOUT.touchYOffsetY),
+        inspectPivotYOffsetY = modelUnits(BALL_LAYOUT.inspectPivotYOffsetY),
         slotAnglesDegrees = {
           BALL_LAYOUT.slotAnglesDegrees[1],
           BALL_LAYOUT.slotAnglesDegrees[2],

@@ -1,5 +1,5 @@
 -- Strict validation for the generated choose-starter application assets: the
--- source-independent v3 manifest the retail tabletop/turntable/ball scene
+-- source-independent v4 manifest the retail tabletop/turntable/ball scene
 -- compiles to, with semantic animation bindings, normalized scene
 -- geometry/timing facts in the shared runtime model unit, source info-surface
 -- artwork roles, the machine rear-plane clear color, source surface geometry
@@ -181,6 +181,7 @@ local function checkBallLayout(layout)
     radius = true,
     modelY = true,
     touchYOffsetY = true,
+    inspectPivotYOffsetY = true,
     slotAnglesDegrees = true,
     inspectArcDegrees = true,
   })
@@ -195,6 +196,9 @@ local function checkBallLayout(layout)
   end
   if layout.touchYOffsetY ~= 0.8125 then
     return invalid("ball layout touchYOffsetY must be the normalized touch offset 0.8125", {})
+  end
+  if not finite(layout.inspectPivotYOffsetY) or math.abs(layout.inspectPivotYOffsetY - 13.453 / 16) > 1e-9 then
+    return invalid("ball layout inspectPivotYOffsetY must be the normalized inspect pivot 13.453/16", {})
   end
   if not Validate.isArray(layout.slotAnglesDegrees) or #layout.slotAnglesDegrees ~= 3 then
     return invalid("ball layout must carry exactly three slot angles", {})
@@ -223,7 +227,7 @@ local function checkTurntable(turntable)
   if turntable.selectionStepDegrees ~= 120 then
     return invalid("turntable selection step must span a third of the ring", {})
   end
-  if not finite(turntable.rotationDegreesPerTick) or math.abs(turntable.rotationDegreesPerTick - 0.5) > 1e-9 then
+  if not finite(turntable.rotationDegreesPerTick) or math.abs(turntable.rotationDegreesPerTick - 11.25) > 1e-9 then
     return invalid("turntable rotation rate must match the source rate", {})
   end
   return true
@@ -300,7 +304,7 @@ local function checkScene(scene)
   if not outOk then
     return false, outErr
   end
-  local insideOk, insideErr = checkCameraEnd("inside camera", camera.inside, { x = 0, y = 0, z = 0.75 }, 3.75)
+  local insideOk, insideErr = checkCameraEnd("inside camera", camera.inside, { x = 0, y = 0.9375, z = 0.75 }, 3.75)
   if not insideOk then
     return false, insideErr
   end

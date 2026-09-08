@@ -136,18 +136,19 @@ local function semanticManifest()
         radius = 2,
         modelY = 0.875,
         touchYOffsetY = 0.8125,
+        inspectPivotYOffsetY = 13.453 / 16,
         slotAnglesDegrees = { 0, 120, 240 },
         inspectArcDegrees = -30.76,
       },
       turntable = {
         selectionStepDegrees = 120,
-        rotationDegreesPerTick = 0.5,
+        rotationDegreesPerTick = 11.25,
       },
       camera = {
         near = 0.25,
         far = 16,
         out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 0.9375, z = 0.875 }, distance = 6.25 },
-        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 0.75 }, distance = 3.75 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0.9375, z = 0.75 }, distance = 3.75 },
       },
       timing = {
         cameraTicks = 8,
@@ -267,8 +268,11 @@ end
 function T.rotation_completes_from_source_step_and_rate_not_the_camera_window()
   local presentation, manifest = openPresentation()
   local turntable = manifest.scene.turntable
-  local expected = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
-  Assert.equal(expected, 240, "the source slot step spans 240 ticks at the source rate")
+  -- Pinned source derivation, never the manifest under test: one 120-degree
+  -- slot step at 11.25 degrees per fixed update completes on update 11.
+  Assert.equal(turntable.selectionStepDegrees, 120, "one slot step spans a third of the ring")
+  Assert.near(turntable.rotationDegreesPerTick, 11.25, 1e-9, "the turntable rate matches the source rate")
+  local expected = 11
   Assert.isTrue(expected ~= manifest.scene.timing.cameraTicks, "rotation is not the camera window")
 
   local rotating = snapshot({ transition = "rotate", direction = "right" })
@@ -340,8 +344,10 @@ function T.zoom_waits_for_camera_arc_and_wobble_before_lock_fades()
 end
 
 function T.reads_never_advance_semantic_clocks()
-  local presentation, manifest = openPresentation()
-  local expected = manifest.scene.turntable.selectionStepDegrees / manifest.scene.turntable.rotationDegreesPerTick
+  local presentation = openPresentation()
+  -- One 120-degree slot step at the normalized 11.25-degree source rate
+  -- completes on the eleventh fixed update.
+  local expected = 11
   local rotating = snapshot({ transition = "rotate", direction = "right" })
   presentation:update(rotating)
   for _ = 1, 20 do
@@ -376,11 +382,7 @@ function T.reset_clears_all_semantic_progress()
       break
     end
   end
-  Assert.equal(
-    elapsed,
-    manifest.scene.turntable.selectionStepDegrees / manifest.scene.turntable.rotationDegreesPerTick,
-    "reopening restarts the full rotation"
-  )
+  Assert.equal(elapsed, 11, "reopening restarts the full rotation")
 
   local locking = snapshot({ selectionState = "confirm", transition = "lockExit" })
   for _ = 1, timing.infoFadeTicks + 5 do
@@ -496,6 +498,133 @@ function T.camera_uses_normalized_clipping_planes()
     end
   end
   Assert.isTrue(differs, "the camera projection no longer uses the old local clipping range")
+end
+
+function T.focused_camera_uses_absolute_target_and_distinct_inspect_pivot()
+  local presentation, manifest = openPresentation()
+  local camera = assert(manifest.scene.camera, "the scene carries its camera poses")
+  Assert.deepEqual(
+    camera.out.target,
+    { x = 0, y = 0.9375, z = 0.875 },
+    "outside camera target keeps the fixed height at the outer depth"
+  )
+  Assert.deepEqual(
+    camera.inside.target,
+    { x = 0, y = 0.9375, z = 0.75 },
+    "focused camera target keeps the fixed height at the inner depth"
+  )
+  local layout = assert(manifest.scene.ballLayout, "the scene carries its ball ring layout")
+  Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers keep the interaction offset")
+  Assert.notNil(layout.inspectPivotYOffsetY, "the selected-ball arc carries its own pivot offset")
+  Assert.near(layout.inspectPivotYOffsetY, 13.453 / 16, 1e-9, "the inspect pivot keeps the retail arc height")
+  Assert.isTrue(layout.inspectPivotYOffsetY ~= layout.touchYOffsetY, "touch and inspect pivots stay distinct")
+  local touches = presentation:touchOrigins(snapshot({ selection = 0 }))
+  Assert.notNil(touches[1], "the first touch center projects")
+  Assert.near(touches[1].y, layout.modelY + 0.8125, 1e-9, "touch projection uses the interaction offset only")
+
+  local function stubInstance()
+    return {
+      transform = nil,
+      evaluatePose = function() end,
+      drawItems = function()
+        return {}
+      end,
+    }
+  end
+  presentation._instances = {
+    turntable = stubInstance(),
+    ballEffect = stubInstance(),
+    ball1 = stubInstance(),
+    ball2 = stubInstance(),
+    ball3 = stubInstance(),
+  }
+  presentation._renderMeshes = {
+    turntable = {},
+    ballEffect = {},
+    ball1 = {},
+    ball2 = {},
+    ball3 = {},
+  }
+  local settled = snapshot({ selection = 0, selectionState = "inspect", transition = "waitZoom" })
+  presentation:_drawItems(settled)
+  local selectedTransform = assert(presentation._instances.ball1.transform, "the selected ball transform is realized")
+  local arc = math.rad(layout.inspectArcDegrees)
+  local pivotY = layout.modelY + 13.453 / 16
+  local cosine, sine = math.cos(arc), math.sin(arc)
+  local rise, reach = layout.modelY - pivotY, 0
+  Assert.near(
+    selectedTransform[14],
+    rise * cosine - reach * sine + pivotY,
+    1e-9,
+    "the selected ball arcs around the inspect pivot, not the touch center"
+  )
+  Assert.near(
+    selectedTransform[15],
+    rise * sine + reach * cosine + layout.radius,
+    1e-9,
+    "the selected ball arc depth follows the inspect pivot"
+  )
+end
+
+function T.turntable_slot_step_completes_on_the_eleventh_fixed_update()
+  -- The retail turntable speed as normalized degrees per fixed update: the
+  -- source binary-angle index 2048/65536 of a turn, pinned here independent
+  -- of the manifest under test.
+  local stepDegrees = 120
+  local rateDegreesPerTick = 11.25
+  local presentation, manifest = openPresentation()
+  Assert.equal(manifest.scene.turntable.selectionStepDegrees, stepDegrees, "one slot step spans a third of the ring")
+  Assert.near(
+    manifest.scene.turntable.rotationDegreesPerTick,
+    rateDegreesPerTick,
+    1e-9,
+    "the turntable rate matches the normalized source rate"
+  )
+  local forward = snapshot({ selection = 0, selectionState = "inspect", transition = "rotate", direction = "right" })
+  local observation = nil
+  for _ = 1, 10 do
+    observation = presentation:update(forward)
+    assertObservationShape(observation, "rotation")
+  end
+  Assert.notNil(observation, "ten rotation ticks report observations")
+  Assert.isFalse(observation.rotationComplete, "the slot step is still travelling after ten fixed updates")
+  Assert.near(
+    math.abs(presentation:yawForSnapshot(forward)),
+    math.rad(112.5),
+    1e-9,
+    "ten fixed updates reach 112.5 degrees"
+  )
+  observation = presentation:update(forward)
+  Assert.isTrue(observation.rotationComplete, "the slot step completes on the eleventh fixed update")
+  Assert.near(
+    math.abs(presentation:yawForSnapshot(forward)),
+    math.rad(120),
+    1e-9,
+    "completion clamps to exactly 120 degrees"
+  )
+  observation = presentation:update(forward)
+  Assert.isTrue(observation.rotationComplete, "a settled rotation never overshoots its slot")
+  Assert.near(
+    math.abs(presentation:yawForSnapshot(forward)),
+    math.rad(120),
+    1e-9,
+    "repeated ticks hold the clamped slot"
+  )
+
+  presentation:reset()
+  local backward = snapshot({ selection = 0, selectionState = "inspect", transition = "rotate", direction = "left" })
+  for _ = 1, 10 do
+    observation = presentation:update(backward)
+  end
+  Assert.isFalse(observation.rotationComplete, "the reverse slot step is still travelling after ten fixed updates")
+  observation = presentation:update(backward)
+  Assert.isTrue(observation.rotationComplete, "the reverse slot step completes on the eleventh fixed update")
+  Assert.near(
+    math.abs(presentation:yawForSnapshot(backward)),
+    math.rad(120),
+    1e-9,
+    "the reverse step clamps to exactly 120 degrees"
+  )
 end
 
 return { tests = T }

@@ -340,11 +340,13 @@ function T.retail_scene_renders_rotates_and_confirms_through_production_composit
     -- Rotation lasts one source slot step at the source rate, not the
     -- camera window.
     local presentation = assert(host._presentation, versionId .. " owns its presentation while open")
-    local turntable = assert(manifest.scene.turntable, versionId .. " scene carries the turntable facts")
-    local expectedRotate = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
+    -- Pinned source derivation, never the manifest under test: the
+    -- turntable advances 11.25 degrees per fixed update toward the
+    -- neighboring 120-degree slot, so five updates sit mid-travel at 56.25
+    -- degrees with the step still travelling.
     local before = presentation:ballCenters(host._controller:snapshot())
     if type(host.update) == "function" then
-      for _ = 1, expectedRotate / 2 do
+      for _ = 1, 5 do
         host:update(host)
       end
     end
@@ -352,9 +354,9 @@ function T.retail_scene_renders_rotates_and_confirms_through_production_composit
     Assert.equal(midSnapshot.transition, "rotate", versionId .. " rotation is still travelling mid-step")
     Assert.near(
       presentation:yawForSnapshot(midSnapshot),
-      -math.rad(turntable.selectionStepDegrees) / 2,
+      -math.rad(56.25),
       1e-9,
-      versionId .. " halfway rotation interpolates half the selection step"
+      versionId .. " five fixed updates interpolate 56.25 degrees of the selection step"
     )
     local midRotation = scope:own(drawFrame(host, REFERENCE_WIDTH, REFERENCE_HEIGHT))
     Assert.isTrue(
@@ -1206,8 +1208,17 @@ function T.headless_and_realized_paths_share_completion_boundaries(scope, contex
     local timing = assert(manifest.scene.timing, versionId .. " scene carries the source timing boundaries")
     local turntable = assert(manifest.scene.turntable, versionId .. " scene carries the turntable facts")
     local wobbleFrame = assert(timing.smallWobbleFrame, versionId .. " timing carries the small-wobble frame")
-    local expectedRotate = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
-    Assert.equal(expectedRotate, math.floor(expectedRotate), versionId .. " the rotation spans whole ticks")
+    -- Pinned source derivation, never the manifest under test: one
+    -- 120-degree slot step at 11.25 degrees per fixed update completes on
+    -- the eleventh update.
+    Assert.equal(turntable.selectionStepDegrees, 120, versionId .. " one slot step spans a third of the ring")
+    Assert.near(
+      turntable.rotationDegreesPerTick,
+      11.25,
+      1e-9,
+      versionId .. " the turntable rate matches the normalized source rate"
+    )
+    local expectedRotateTicks = 11
     local headless = openProductionChoice(versionId, cacheFs, manifest)
     local realized = openProductionChoice(versionId, cacheFs, manifest)
     moveHost(headless, "right")
@@ -1248,11 +1259,7 @@ function T.headless_and_realized_paths_share_completion_boundaries(scope, contex
       snapshotOf(realized, versionId).selection,
       versionId .. " both paths settle on the same ball"
     )
-    Assert.equal(
-      rotateTicks,
-      expectedRotate,
-      versionId .. string.format(" rotation lasts one source slot step (%d ticks)", expectedRotate)
-    )
+    Assert.equal(rotateTicks, expectedRotateTicks, versionId .. " rotation lasts one source slot step (11 ticks)")
 
     Assert.isNil(headless:confirm(), versionId .. " the headless path inspects instead of publishing")
     Assert.isNil(realized:confirm(), versionId .. " the realized path inspects instead of publishing")
@@ -1689,6 +1696,50 @@ function T.model_extent_matches_the_normalized_source_scene(scope, context)
       versionId .. string.format(" the ring spans a scene-scale width (%.1f pixels)", span)
     )
     host:dispose()
+  end
+end
+
+function T.starter_machine_follows_the_canonical_world_raster_scale(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the starter raster scale needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  local FieldPresentationConfig =
+    requireModule("game.hgss.src.field.FieldPresentationConfig", "the field presentation owns the raster policy")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    assertSceneContract(manifest)
+    local host = openProductionChoice(versionId, cacheFs, manifest)
+    scope:own(drawFrame(host, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+    local presentation = presentationOf(host, versionId)
+    local renderer = assert(presentation._renderer, versionId .. " realizes its field renderer")
+    local backend = assert(renderer.gxRenderer, versionId .. " renderer owns its graphics backend")
+    Assert.equal(
+      backend.worldRasterScale,
+      FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
+      versionId .. " starter 3D follows the canonical world raster scale instead of the unscaled default"
+    )
+    host:dispose()
+
+    local savedScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE
+    FieldPresentationConfig.WORLD_3D_RASTER_SCALE = savedScale == 2 and 3 or 2
+    local configured, failure = pcall(function()
+      local configuredHost = openProductionChoice(versionId, cacheFs, manifest)
+      scope:own(drawFrame(configuredHost, REFERENCE_WIDTH, REFERENCE_HEIGHT))
+      local configuredPresentation = assert(configuredHost._presentation, versionId .. " owns its presentation")
+      local configuredRenderer = assert(configuredPresentation._renderer, versionId .. " realizes its renderer")
+      local configuredBackend = assert(configuredRenderer.gxRenderer, versionId .. " renderer owns its backend")
+      Assert.equal(
+        configuredBackend.worldRasterScale,
+        FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
+        versionId .. " starter 3D construction tracks the configured scale without a local copy"
+      )
+      configuredHost:dispose()
+    end)
+    FieldPresentationConfig.WORLD_3D_RASTER_SCALE = savedScale
+    Assert.isTrue(configured, versionId .. " configured scale propagation holds: " .. tostring(failure))
   end
 end
 

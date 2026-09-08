@@ -184,11 +184,17 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   Assert.equal(layout.radius, 2, "the ring radius is normalized to the compiled model unit")
   Assert.equal(layout.modelY, 0.875, "model origins are normalized to the compiled model unit")
   Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers are normalized to the compiled model unit")
+  Assert.near(
+    layout.inspectPivotYOffsetY,
+    13.453 / 16,
+    1e-9,
+    "the selected-ball arc pivots at the normalized inspect height"
+  )
   Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, "slots are one step apart on the ring")
   Assert.near(layout.inspectArcDegrees, -30.76, 0.01, "the inspect arc matches the source endpoint")
   local turntable = assert(scene.turntable, "scene carries turntable facts")
   Assert.equal(turntable.selectionStepDegrees, 120, "one selection step spans a third of the ring")
-  Assert.near(turntable.rotationDegreesPerTick, 0.5, 1e-9, "the turntable rate matches the source rate")
+  Assert.near(turntable.rotationDegreesPerTick, 11.25, 1e-9, "the turntable rate matches the source rate")
   local timing = assert(scene.timing, "scene carries observable timing boundaries")
   Assert.equal(timing.cameraTicks, 8, "the camera path lasts eight source steps")
   Assert.equal(timing.ballArcTicks, 8, "the inspect arc lasts eight source steps")
@@ -207,7 +213,7 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   Assert.near(out.perspective, 49.61, 1e-9, "outside field carries the doubled source half-angle")
   Assert.near(inside.perspective, 45.4, 1e-9, "inside field carries the doubled source half-angle")
   Assert.deepEqual(out.target, { x = 0, y = 0.9375, z = 0.875 }, "outside camera target is normalized")
-  Assert.deepEqual(inside.target, { x = 0, y = 0, z = 0.75 }, "inside camera target is normalized")
+  Assert.deepEqual(inside.target, { x = 0, y = 0.9375, z = 0.75 }, "inside camera target is normalized")
   Assert.equal(out.distance, 6.25, "outside camera distance is normalized")
   Assert.equal(inside.distance, 3.75, "inside camera distance is normalized")
   Assert.isTrue(out.angleX < inside.angleX, "outside view looks down more steeply than inside")
@@ -282,11 +288,17 @@ function T.chooser_manifest_carries_semantic_roles_source_geometry_and_owned_bac
   Assert.equal(layout.radius, 2, "the ring radius is normalized to the compiled model unit")
   Assert.equal(layout.modelY, 0.875, "model origins are normalized to the compiled model unit")
   Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers are normalized to the compiled model unit")
+  Assert.near(
+    layout.inspectPivotYOffsetY,
+    13.453 / 16,
+    1e-9,
+    "the selected-ball arc pivots at the normalized inspect height"
+  )
   Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, "slots are one step apart on the ring")
   Assert.near(layout.inspectArcDegrees, -30.76, 0.01, "the inspect arc matches the source endpoint")
   local turntable = assert(scene.turntable, "scene carries turntable facts")
   Assert.equal(turntable.selectionStepDegrees, 120, "one selection step spans a third of the ring")
-  Assert.near(turntable.rotationDegreesPerTick, 0.5, 1e-9, "the turntable rate matches the source rate")
+  Assert.near(turntable.rotationDegreesPerTick, 11.25, 1e-9, "the turntable rate matches the source rate")
   local timing = assert(scene.timing, "scene carries observable timing boundaries")
   Assert.equal(timing.cameraTicks, 8, "the camera path lasts eight source steps")
   Assert.equal(timing.ballArcTicks, 8, "the inspect arc lasts eight source steps")
@@ -414,12 +426,18 @@ function T.scene_dimensions_and_clipping_share_the_compiled_model_unit(romFs)
   Assert.equal(layout.radius, 2, "the ring radius is normalized")
   Assert.equal(layout.modelY, 0.875, "model origins are normalized")
   Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers are normalized")
+  Assert.near(
+    layout.inspectPivotYOffsetY,
+    13.453 / 16,
+    1e-9,
+    "the selected-ball arc pivots at the normalized inspect height"
+  )
   local camera = assert(manifest.scene.camera, "scene carries the camera contract")
   Assert.equal(camera.near, 0.25, "the near plane is normalized")
   Assert.equal(camera.far, 16, "the far plane is normalized")
   Assert.deepEqual(camera.out.target, { x = 0, y = 0.9375, z = 0.875 }, "outside camera target is normalized")
   Assert.equal(camera.out.distance, 6.25, "outside camera distance is normalized")
-  Assert.deepEqual(camera.inside.target, { x = 0, y = 0, z = 0.75 }, "inside camera target is normalized")
+  Assert.deepEqual(camera.inside.target, { x = 0, y = 0.9375, z = 0.75 }, "inside camera target is normalized")
   Assert.equal(camera.inside.distance, 3.75, "inside camera distance is normalized")
   Assert.near(camera.out.perspective, 49.61, 1e-9, "outside field keeps the source half-angle doubling")
   Assert.near(camera.inside.perspective, 45.4, 1e-9, "inside field keeps the source half-angle doubling")

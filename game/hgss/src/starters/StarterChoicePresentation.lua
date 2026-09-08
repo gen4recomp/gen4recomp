@@ -18,6 +18,7 @@ local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache
 local MonCache = require("libs.assets.src.MonCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
@@ -697,7 +698,10 @@ function StarterChoicePresentation:_ensureRealized()
     fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable },
   }
   local clear = self._manifest.surfaces.machine.clearColor
-  self._renderer = FieldRenderer.new({ clearColor = { clear.r, clear.g, clear.b, clear.a } })
+  self._renderer = FieldRenderer.new({
+    clearColor = { clear.r, clear.g, clear.b, clear.a },
+    worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
+  })
   local animations = self._manifest.animations
   local models = self._manifest.models
   self._clipNames = {
@@ -954,9 +958,9 @@ function StarterChoicePresentation:update(snapshot)
 end
 
 -- Arcs a turntable-local point around the X axis by the inspect arc about
--- the selected touch point. The source names this path after Y, but the
+-- the selected inspect pivot. The source names this path after Y, but the
 -- implementation arcs the selected translation around X pivoted at the
--- touch height and records the same angle as the ball X rotation.
+-- inspect height and records the same angle as the ball X rotation.
 ---@param point table<string, unknown> { x, y, z }
 ---@param pivot table<string, unknown> { x, y, z }
 ---@param arc number radians
@@ -995,17 +999,23 @@ function StarterChoicePresentation:_drawItems(snapshot)
   local selected = snapshot.selection + 1
   -- The balls ride the rotating platform: the platform yaw carries every
   -- slot origin, each ball keeps its slot Y orientation, and the inspected
-  -- ball adds its own X-axis arc about its touch point on top.
+  -- ball adds its own X-axis arc about the inspect pivot on top. Touch
+  -- centers keep the interaction offset and never participate here.
   local platform = Matrix4.rotateY(self:yawForSnapshot(snapshot))
   local origins = self:modelOrigins(snapshot)
   local touches = self:touchOrigins(snapshot)
+  local pivots = {}
+  for ball = 1, 3 do
+    local touch = touches[ball]
+    pivots[ball] = { x = touch.x, y = layout.modelY + layout.inspectPivotYOffsetY, z = touch.z }
+  end
   local dynamicRoles = { "turntable", "ballEffect", "ball1", "ball2", "ball3" }
   for _, role in ipairs(dynamicRoles) do
     local instance = assert(self._instances[role], "starter presentation is missing " .. role)
     if role == "turntable" then
       instance.transform = platform
     elseif role == "ballEffect" then
-      local position = arcPoint(origins[selected], touches[selected], arc)
+      local position = arcPoint(origins[selected], pivots[selected], arc)
       instance.transform = Matrix4.multiply(platform, Matrix4.translate(position.x, position.y, position.z))
     else
       local ballIndex = (role == "ball1" and 1) or (role == "ball2" and 2) or 3
@@ -1013,7 +1023,7 @@ function StarterChoicePresentation:_drawItems(snapshot)
       local slotYaw = Matrix4.rotateY(math.rad(layout.slotAnglesDegrees[relative + 1]))
       local position = origins[ballIndex]
       if ballIndex == selected then
-        local arced = arcPoint(position, touches[ballIndex], arc)
+        local arced = arcPoint(position, pivots[ballIndex], arc)
         instance.transform = Matrix4.multiply(
           platform,
           Matrix4.multiply(

@@ -166,18 +166,19 @@ local function semanticManifest()
         radius = 2,
         modelY = 0.875,
         touchYOffsetY = 0.8125,
+        inspectPivotYOffsetY = 13.453 / 16,
         slotAnglesDegrees = { 0, 120, 240 },
         inspectArcDegrees = -30.76,
       },
       turntable = {
         selectionStepDegrees = 120,
-        rotationDegreesPerTick = 0.5,
+        rotationDegreesPerTick = 11.25,
       },
       camera = {
         near = 0.25,
         far = 16,
         out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 0.9375, z = 0.875 }, distance = 6.25 },
-        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 0.75 }, distance = 3.75 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0.9375, z = 0.75 }, distance = 3.75 },
       },
       timing = {
         cameraTicks = 8,
@@ -539,8 +540,11 @@ function T.transitions_follow_source_semantic_boundaries()
   local manifest = assert(cacheFs:loadLua(cacheModule.manifestPath()))
   local timing = manifest.scene.timing
   local turntable = manifest.scene.turntable
-  local expectedRotate = turntable.selectionStepDegrees / turntable.rotationDegreesPerTick
-  Assert.equal(expectedRotate, 240, "rotation spans one source slot step at the source rate")
+  -- Pinned source derivation, never the manifest under test: one 120-degree
+  -- slot step at 11.25 degrees per fixed update completes on update 11.
+  Assert.equal(turntable.selectionStepDegrees, 120, "rotation spans one third of the ring")
+  Assert.near(turntable.rotationDegreesPerTick, 11.25, 1e-9, "rotation advances at the normalized source rate")
+  local expectedRotate = 11
   local host = openTrio(StarterChoiceState, catalog, service, cacheFs)
 
   moveHost(host, "right")
