@@ -271,4 +271,72 @@ function T.dialogue_continue_cursor_local_ink_stays_within_its_generated_surface
   )
 end
 
+-- The continuation cursor payload follows the source pixel-rectangle
+-- preparation (pret/pokeheartgold sub_0200EA68 blits cursor source columns
+-- 3..15 onto destination columns 0..12 with palette index 0 transparent),
+-- so the visible arrow occupies surface columns 1..10 with the retail
+-- vertical bounce. Any backing corruption outside that box would extend the
+-- measured box, so the box assertions below also prove the untouched right
+-- region keeps the frame backing.
+function T.continuation_cursor_payload_matches_the_source_preparation(romFs, _)
+  local bundle = assert(FieldUiCompiler.compile(romFs))
+  local frames = assert(bundle.manifest.dialogueFrames)
+  local cursor = assert(frames.continueCursor)
+  Assert.deepEqual(cursor.placement, { x = 240, y = 168, width = 16, height = 16 })
+  Assert.deepEqual(cursor.cycle, { 0, 1, 2, 1 })
+
+  local cfg = manifestConfig.dialogueFrames
+  local frameChar, charErr =
+    G2dDecoder.decodeChar(memberBytes(romFs, cfg.alias, cfg.firstFrameMember), { label = "frame 0 char" })
+  assert(frameChar, charErr and charErr.message)
+  Assert.equal(frameChar.depth, 3, "frame 0 char is 4bpp")
+  local framePal, palErr =
+    G2dDecoder.decodePalette(memberBytes(romFs, cfg.alias, cfg.firstPaletteMember), { label = "frame 0 palette" })
+  assert(framePal, palErr and palErr.message)
+
+  -- Expected frame backing for one 16x16 phase: tiles 10, 11 over 10, 11.
+  local function backingPixel(x, y)
+    local tileId = x < 8 and 10 or 11
+    local lx, ly = x % 8, y % 8
+    local byte = string.byte(frameChar.tiles, tileId * 32 + ly * 4 + math.floor(lx / 2) + 1)
+    local v
+    if lx % 2 == 0 then
+      v = byte % 16
+    else
+      v = math.floor(byte / 16)
+    end
+    if v == 0 then
+      return 0, 0, 0, 0
+    end
+    local c = assert(framePal.colors[v + 1], "frame palette covers the backing pixel")
+    return c.r, c.g, c.b, 255
+  end
+
+  local asset = assert(bundle.manifest.assets[cursor.asset])
+  local imageWidth, _, rgba = PngReader.rgba(assert(bundle.assets[asset.image]))
+  local tops = { 2, 3, 4 }
+  for phase = 0, 2 do
+    local rect = assert(assert(cursor.styles[0]).phases[phase])
+    local minX, maxX, minY, maxY
+    for x = 0, 15 do
+      for y = 0, 15 do
+        local r, g, b, a = PngReader.pixel(rgba, imageWidth, rect.x + x, rect.y + y)
+        local br, bg, bb, ba = backingPixel(x, y)
+        if r ~= br or g ~= bg or b ~= bb or a ~= ba then
+          Assert.equal(a, 255, "phase " .. phase .. " arrow ink is opaque")
+          minX = minX and math.min(minX, x) or x
+          maxX = maxX and math.max(maxX, x) or x
+          minY = minY and math.min(minY, y) or y
+          maxY = maxY and math.max(maxY, y) or y
+        end
+      end
+    end
+    Assert.notNil(minX, "phase " .. phase .. " carries arrow ink over the backing")
+    Assert.equal(minX, 1, "phase " .. phase .. " arrow starts at surface column 1")
+    Assert.equal(maxX, 10, "phase " .. phase .. " arrow ends at surface column 10")
+    Assert.equal(minY, tops[phase + 1], "phase " .. phase .. " keeps its vertical top")
+    Assert.equal(maxY, tops[phase + 1] + 10, "phase " .. phase .. " keeps its vertical bottom")
+  end
+end
+
 return require("tests.rom.support.RomSuite").fromFacts(T)
