@@ -1,10 +1,11 @@
 -- Strict validation for the generated choose-starter application assets: the
--- source-independent manifest the retail tabletop/turntable/ball scene
--- compiles to, with semantic animation bindings, source-derived scene
--- geometry/timing facts, the complete semantic message roles, and the
--- chooser-owned generated backdrop. Candidate pictures are not part of this
--- family; portraits resolve through the mon presentation pipeline. Pure
--- domain module.
+-- source-independent v3 manifest the retail tabletop/turntable/ball scene
+-- compiles to, with semantic animation bindings, normalized scene
+-- geometry/timing facts in the shared runtime model unit, source info-surface
+-- artwork roles, the machine rear-plane clear color, source surface geometry
+-- and frame policy, and the complete semantic message roles. Candidate
+-- pictures are not part of this family; portraits resolve through the mon
+-- presentation pipeline. Pure domain module.
 
 local Errors = require("libs.errors.src.Errors")
 local Contract = require("libs.assets.src.DerivedAssetContract")
@@ -186,14 +187,14 @@ local function checkBallLayout(layout)
   if not ok then
     return false, err
   end
-  if layout.radius ~= 32 then
-    return invalid("ball layout radius must be the source ring radius 32", {})
+  if layout.radius ~= 2 then
+    return invalid("ball layout radius must be the normalized ring radius 2", {})
   end
-  if layout.modelY ~= 14 then
-    return invalid("ball layout modelY must be the source model height 14", {})
+  if layout.modelY ~= 0.875 then
+    return invalid("ball layout modelY must be the normalized model height 0.875", {})
   end
-  if layout.touchYOffsetY ~= 13 then
-    return invalid("ball layout touchYOffsetY must be the source touch offset 13", {})
+  if layout.touchYOffsetY ~= 0.8125 then
+    return invalid("ball layout touchYOffsetY must be the normalized touch offset 0.8125", {})
   end
   if not Validate.isArray(layout.slotAnglesDegrees) or #layout.slotAnglesDegrees ~= 3 then
     return invalid("ball layout must carry exactly three slot angles", {})
@@ -280,15 +281,26 @@ local function checkScene(scene)
     return false, turntableErr
   end
   local camera = scene.camera
-  local cameraOk, cameraErr = closedRecord("manifest scene camera", camera, { out = true, inside = true })
+  local cameraOk, cameraErr = closedRecord("manifest scene camera", camera, {
+    near = true,
+    far = true,
+    out = true,
+    inside = true,
+  })
   if not cameraOk then
     return false, cameraErr
   end
-  local outOk, outErr = checkCameraEnd("outside camera", camera.out, { x = 0, y = 15, z = 14 }, 100)
+  if camera.near ~= 0.25 then
+    return invalid("camera near plane must be the normalized source plane 0.25", {})
+  end
+  if camera.far ~= 16 then
+    return invalid("camera far plane must be the normalized source plane 16", {})
+  end
+  local outOk, outErr = checkCameraEnd("outside camera", camera.out, { x = 0, y = 0.9375, z = 0.875 }, 6.25)
   if not outOk then
     return false, outErr
   end
-  local insideOk, insideErr = checkCameraEnd("inside camera", camera.inside, { x = 0, y = 0, z = 12 }, 60)
+  local insideOk, insideErr = checkCameraEnd("inside camera", camera.inside, { x = 0, y = 0, z = 0.75 }, 3.75)
   if not insideOk then
     return false, insideErr
   end
@@ -414,13 +426,159 @@ local function checkBackdropEntry(label, entry)
   return true
 end
 
----@param background table<string, unknown>
+---@param label string
+---@param entry table<string, unknown>
+---@param width integer
+---@param height integer
 ---@return boolean, Errors.Error?
-local function checkBackground(background)
-  if type(background) ~= "table" then
-    return invalid("manifest background is required", {})
+local function checkSurfaceImage(label, entry, width, height)
+  local ok, err = checkBackdropEntry(label, entry)
+  if not ok then
+    return false, err
   end
-  return checkBackdropEntry("manifest background", background)
+  if entry.width ~= width or entry.height ~= height then
+    return invalid(label .. " must span the 256x192 logical surface", {})
+  end
+  return true
+end
+
+---@param backgrounds table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkBackgrounds(backgrounds)
+  local ok, err = closedRecord("manifest backgrounds", backgrounds, { host = true, info = true })
+  if not ok then
+    return false, err
+  end
+  local hostOk, hostErr = checkBackdropEntry("manifest backgrounds host", backgrounds.host)
+  if not hostOk then
+    return false, hostErr
+  end
+  local infoOk, infoErr = closedRecord("manifest backgrounds info", backgrounds.info, {
+    base = true,
+    overlay = true,
+    overlayAlpha = true,
+  })
+  if not infoOk then
+    return false, infoErr
+  end
+  local baseOk, baseErr = checkSurfaceImage("manifest backgrounds info base", backgrounds.info.base, 256, 192)
+  if not baseOk then
+    return false, baseErr
+  end
+  local overlayOk, overlayErr =
+    checkSurfaceImage("manifest backgrounds info overlay", backgrounds.info.overlay, 256, 192)
+  if not overlayOk then
+    return false, overlayErr
+  end
+  if backgrounds.info.overlayAlpha ~= 5 / 16 then
+    return invalid("manifest backgrounds info overlayAlpha must be the source blend coefficient 5/16", {})
+  end
+  return true
+end
+
+---@param label string
+---@param rect table<string, unknown>
+---@param expected { x: integer, y: integer, width: integer, height: integer }
+---@return boolean, Errors.Error?
+local function checkRect(label, rect, expected)
+  local ok, err = closedRecord(label, rect, { x = true, y = true, width = true, height = true })
+  if not ok then
+    return false, err
+  end
+  if rect.x ~= expected.x or rect.y ~= expected.y or rect.width ~= expected.width or rect.height ~= expected.height then
+    return invalid(label .. " does not match the source surface geometry", {})
+  end
+  return true
+end
+
+---@param label string
+---@param record table<string, unknown>
+---@param box { x: integer, y: integer, width: integer, height: integer }
+---@param origin { x: integer, y: integer }
+---@param framed boolean
+---@return boolean, Errors.Error?
+local function checkSurfaceText(label, record, box, origin, framed)
+  local ok, err = closedRecord(label, record, { box = true, textOrigin = true, framed = true })
+  if not ok then
+    return false, err
+  end
+  local boxOk, boxErr = checkRect(label .. " box", record.box, box)
+  if not boxOk then
+    return false, boxErr
+  end
+  local originOk, originErr = closedRecord(label .. " textOrigin", record.textOrigin, { x = true, y = true })
+  if not originOk then
+    return false, originErr
+  end
+  if record.textOrigin.x ~= origin.x or record.textOrigin.y ~= origin.y then
+    return invalid(label .. " text origin does not match the source surface geometry", {})
+  end
+  if record.framed ~= framed then
+    return invalid(label .. " frame policy does not match the source surface", {})
+  end
+  return true
+end
+
+---@param color table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkClearColor(color)
+  local ok, err = closedRecord("manifest machine clear color", color, { r = true, g = true, b = true, a = true })
+  if not ok then
+    return false, err
+  end
+  if color.r ~= 1 or color.g ~= 1 or color.a ~= 1 or math.abs(color.b - 16 / 31) > 1e-9 then
+    return invalid("manifest machine clear color must be the source rear-plane color", {})
+  end
+  return true
+end
+
+---@param surfaces table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkSurfaces(surfaces)
+  local ok, err = closedRecord("manifest surfaces", surfaces, { machine = true, info = true })
+  if not ok then
+    return false, err
+  end
+  local machineOk, machineErr = closedRecord("manifest surfaces machine", surfaces.machine, {
+    clearColor = true,
+    prompt = true,
+  })
+  if not machineOk then
+    return false, machineErr
+  end
+  local clearOk, clearErr = checkClearColor(surfaces.machine.clearColor)
+  if not clearOk then
+    return false, clearErr
+  end
+  local promptOk, promptErr = checkSurfaceText(
+    "manifest surfaces machine prompt",
+    surfaces.machine.prompt,
+    { x = 8, y = 152, width = 232, height = 32 },
+    { x = 8, y = 152 },
+    false
+  )
+  if not promptOk then
+    return false, promptErr
+  end
+  local infoOk, infoErr = closedRecord("manifest surfaces info", surfaces.info, { message = true, portrait = true })
+  if not infoOk then
+    return false, infoErr
+  end
+  local messageOk, messageErr = checkSurfaceText(
+    "manifest surfaces info message",
+    surfaces.info.message,
+    { x = 16, y = 152, width = 216, height = 32 },
+    { x = 16, y = 152 },
+    true
+  )
+  if not messageOk then
+    return false, messageErr
+  end
+  return checkRect(
+    "manifest surfaces info portrait",
+    surfaces.info.portrait,
+    { x = 88, y = 56, width = 80, height = 80 }
+  )
 end
 
 ---@param value unknown
@@ -464,7 +622,8 @@ function M.validateManifest(manifest)
     animations = true,
     scene = true,
     messages = true,
-    background = true,
+    backgrounds = true,
+    surfaces = true,
   })
   if not ok then
     return false, err
@@ -504,16 +663,20 @@ function M.validateManifest(manifest)
   if not messagesOk then
     return false, messagesErr
   end
-  local backgroundOk, backgroundErr = checkBackground(manifest.background)
-  if not backgroundOk then
-    return false, backgroundErr
+  local backgroundsOk, backgroundsErr = checkBackgrounds(manifest.backgrounds)
+  if not backgroundsOk then
+    return false, backgroundsErr
+  end
+  local surfacesOk, surfacesErr = checkSurfaces(manifest.surfaces)
+  if not surfacesOk then
+    return false, surfacesErr
   end
   return checkNoSourceIdentities(manifest, "manifest")
 end
 
 -- Every cache-relative path the manifest references: model geometry and
--- textures plus the chooser-owned backdrop image. Raises on a malformed
--- manifest, matching ModelAsset.referencedPaths.
+-- textures plus the host decoration and both info-surface images. Raises on
+-- a malformed manifest, matching ModelAsset.referencedPaths.
 ---@param manifest table<string, unknown>
 ---@return string[]
 function M.referencedPaths(manifest)
@@ -524,8 +687,10 @@ function M.referencedPaths(manifest)
       paths[#paths + 1] = path
     end
   end
-  local background = manifest.background
-  paths[#paths + 1] = background.image
+  local backgrounds = manifest.backgrounds
+  paths[#paths + 1] = backgrounds.host.image
+  paths[#paths + 1] = backgrounds.info.base.image
+  paths[#paths + 1] = backgrounds.info.overlay.image
   return paths
 end
 

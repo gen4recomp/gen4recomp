@@ -84,10 +84,11 @@ local function publishedCache(versionId)
 end
 
 local function backdropImage(bundle)
-  local entry = assert(bundle.manifest.background, "backdrop entry is present")
-  Assert.keySet(entry, "height,image,width", "the backdrop is one flat record")
-  Assert.isTrue(type(entry.image) == "string", "backdrop entry carries a generated image path")
-  Assert.notNil(bundle.assets[entry.image], "backdrop payload is compiled")
+  local backgrounds = assert(bundle.manifest.backgrounds, "background roles are present")
+  local entry = assert(backgrounds.host, "host decoration entry is present")
+  Assert.keySet(entry, "height,image,width", "the host decoration is one flat record")
+  Assert.isTrue(type(entry.image) == "string", "host entry carries a generated image path")
+  Assert.notNil(bundle.assets[entry.image], "host payload is compiled")
   return entry.image
 end
 

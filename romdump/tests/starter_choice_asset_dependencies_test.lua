@@ -47,6 +47,33 @@ function T.source_hashes_cover_the_main_chooser_archive_and_the_message_bank(rom
   Assert.isTrue(archives["messages"] == true, "the message archive is stamped")
 end
 
+function T.source_hashes_cover_the_info_background_members(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local stamped = assert(bundle.dependencies.dependencies, "dependencies list source hashes")
+  local roles = {}
+  for _, entry in ipairs(stamped) do
+    if type(entry.role) == "string" then
+      roles[entry.role] = entry.memberId
+    end
+  end
+  for _, role in ipairs({
+    "background:info-base:char",
+    "background:info-base:screen",
+    "background:info-base:palette",
+    "background:info-overlay:char",
+    "background:info-overlay:screen",
+    "background:info-overlay:palette",
+  }) do
+    Assert.notNil(roles[role], "the " .. role .. " source member is stamped into dependencies")
+  end
+  Assert.equal(roles["background:info-base:char"], 10, "the base char member is pinned")
+  Assert.equal(roles["background:info-base:screen"], 11, "the base screen member is pinned")
+  Assert.equal(roles["background:info-base:palette"], 9, "the base palette member is pinned")
+  Assert.equal(roles["background:info-overlay:char"], 16, "the overlay char member is pinned")
+  Assert.equal(roles["background:info-overlay:screen"], 17, "the overlay screen member is pinned")
+  Assert.equal(roles["background:info-overlay:palette"], 15, "the overlay palette member is pinned")
+end
+
 function T.marker_is_the_hash_of_the_dependency_record(romFs)
   local bundle = assert(compiler().compile(romFs))
   local expected = cache().marker(romFs:metadata().sha1, Hashing.hashLua(bundle.dependencies))

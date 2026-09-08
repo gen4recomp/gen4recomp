@@ -172,6 +172,109 @@ local function validManifest()
   }
 end
 
+local function validV3Manifest()
+  local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
+  return {
+    schema = "g4-starter-choice-v3",
+    reference = { width = 256, height = 192 },
+    models = {
+      tabletop = staticDescriptor(),
+      turntable = dynamicDescriptor({ "turntable" }),
+      ballEffect = dynamicDescriptor({ "ball-effect" }),
+      ball1 = ball,
+      ball2 = dynamicDescriptor({ "ball-rock", "ball-open" }),
+      ball3 = dynamicDescriptor({ "ball-rock", "ball-open" }),
+    },
+    animations = {
+      ballRock = { "ball-rock", "ball-rock", "ball-rock" },
+      ballOpen = "ball-open",
+      ballEffect = "ball-effect",
+      turntable = "turntable",
+    },
+    scene = {
+      ballLayout = {
+        radius = 2,
+        modelY = 0.875,
+        touchYOffsetY = 0.8125,
+        slotAnglesDegrees = { 0, 120, 240 },
+        inspectArcDegrees = -30.76,
+      },
+      turntable = {
+        selectionStepDegrees = 120,
+        rotationDegreesPerTick = 0.5,
+      },
+      camera = {
+        near = 0.25,
+        far = 16,
+        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 0.9375, z = 0.875 }, distance = 6.25 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 0.75 }, distance = 3.75 },
+      },
+      timing = {
+        cameraTicks = 8,
+        ballArcTicks = 8,
+        smallWobbleFrame = 80,
+        infoFadeTicks = 10,
+        machineFadeTicks = 16,
+      },
+    },
+    messages = {
+      topInitial = preparedMessage({ { 0x0123, 0x0124 }, { 0x0125 } }),
+      inspect = {
+        preparedMessage({ { 0x0200, 0x0201 } }),
+        preparedMessage({ { 0x0202, 0x0203 } }),
+        preparedMessage({ { 0x0204, 0x0205 } }),
+      },
+      confirm = {
+        preparedMessage({ { 0x0300, 0x0301 } }),
+        preparedMessage({ { 0x0302, 0x0303 } }),
+        preparedMessage({ { 0x0304, 0x0305 } }),
+      },
+      bottom = {
+        normal = preparedMessage({ { 0x0400, 0x0401 } }),
+        confirm = preparedMessage({ { 0x0402 }, { 0x0403 } }),
+      },
+    },
+    backgrounds = {
+      host = {
+        image = "assets/generated/starter_choice/backdrop.png",
+        width = 512,
+        height = 192,
+      },
+      info = {
+        base = {
+          image = "assets/generated/starter_choice/info-base.png",
+          width = 256,
+          height = 192,
+        },
+        overlay = {
+          image = "assets/generated/starter_choice/info-overlay.png",
+          width = 256,
+          height = 192,
+        },
+        overlayAlpha = 5 / 16,
+      },
+    },
+    surfaces = {
+      machine = {
+        clearColor = { r = 1, g = 1, b = 16 / 31, a = 1 },
+        prompt = {
+          box = { x = 8, y = 152, width = 232, height = 32 },
+          textOrigin = { x = 8, y = 152 },
+          framed = false,
+        },
+      },
+      info = {
+        message = {
+          box = { x = 16, y = 152, width = 216, height = 32 },
+          textOrigin = { x = 16, y = 152 },
+          framed = true,
+        },
+        portrait = { x = 88, y = 56, width = 80, height = 80 },
+      },
+    },
+  }
+end
+
 local function cache()
   local ok, module = pcall(require, "libs.assets.src.StarterChoiceAssetCache")
   if not ok then
@@ -181,21 +284,15 @@ local function cache()
 end
 
 local function reject(mutate, label)
-  local manifest = validManifest()
+  local manifest = validV3Manifest()
   mutate(manifest)
   local ok, err = cache().validateManifest(manifest)
   Assert.isFalse(ok, label .. " must be rejected")
   Assert.equal(assert(err).code, "STARTER_CHOICE_MANIFEST_INVALID", label .. " has a typed error")
 end
 
-function T.complete_manifest_is_accepted_under_the_contract_schema()
-  local module = cache()
-  Assert.equal(module.SCHEMA, "g4-starter-choice-v2")
-  Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema)
-  Assert.equal(module.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
-  Assert.isTrue(module.validateManifest(validManifest()))
-end
-
+-- The previous raw-unit manifest shape is kept only as the stale fixture the
+-- strict contract must refuse; all live validation uses the normalized shape.
 function T.missing_model_roles_are_rejected()
   for _, role in ipairs({ "tabletop", "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
     reject(function(manifest)
@@ -283,8 +380,8 @@ function T.incomplete_scene_facts_are_rejected()
     manifest.scene.timing.machineFadeTicks = 8
   end, "wrong machine fade boundary")
   reject(function(manifest)
-    manifest.background = nil
-  end, "missing owned backdrop")
+    manifest.backgrounds = nil
+  end, "missing background records")
 end
 
 function T.missing_animation_bindings_are_rejected()
@@ -313,13 +410,13 @@ end
 
 function T.bad_reference_paths_are_rejected()
   reject(function(manifest)
-    manifest.background.image = "assets/generated/intro/backdrop.png"
+    manifest.backgrounds.host.image = "assets/generated/intro/backdrop.png"
   end, "backdrop outside the starter-choice subtree")
 end
 
 function T.source_archive_identities_are_rejected()
   reject(function(manifest)
-    manifest.background.image = "assets/generated/starter_choice/NARC_application_choose.png"
+    manifest.backgrounds.host.image = "assets/generated/starter_choice/NARC_application_choose.png"
   end, "source archive symbol in a backdrop path")
 end
 
@@ -381,36 +478,9 @@ function T.malformed_prepared_messages_are_rejected()
   end, "extra glyph field")
 end
 
-function T.flat_backdrop_is_the_only_accepted_shape()
-  local module = cache()
-  local manifest = validManifest()
-  Assert.isTrue(module.validateManifest(manifest), "the flat backdrop validates")
-  local seen = 0
-  for _, path in ipairs(module.referencedPaths(manifest)) do
-    if path == manifest.background.image then
-      seen = seen + 1
-    end
-  end
-  Assert.equal(seen, 1, "the flat backdrop image is referenced exactly once")
-  reject(function(candidate)
-    candidate.background = {
-      horizontal = { image = "assets/generated/starter_choice/backdrop.png", width = 512, height = 192 },
-    }
-  end, "horizontal backdrop variant")
-  reject(function(candidate)
-    candidate.background = {
-      horizontal = { image = "assets/generated/starter_choice/backdrop.png", width = 512, height = 192 },
-      vertical = { image = "assets/generated/starter_choice/backdrop.png", width = 256, height = 192 },
-    }
-  end, "vertical backdrop variant")
-  reject(function(candidate)
-    candidate.background.orientation = "horizontal"
-  end, "extra backdrop field")
-end
-
 local function readyCache()
   local module = cache()
-  local manifest = validManifest()
+  local manifest = validV3Manifest()
   local marker = module.marker("deadbeef", "feedface")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   cacheFs:writeLua(module.manifestPath(), manifest)
@@ -445,6 +515,195 @@ function T.missing_manifests_are_not_ready()
   local cacheFs, marker = readyCache()
   cacheFs:remove(module.manifestPath())
   Assert.isFalse(module.isReady(cacheFs, marker))
+end
+
+local function rejectV3(mutate, label)
+  local manifest = validV3Manifest()
+  mutate(manifest)
+  local ok, err = cache().validateManifest(manifest)
+  Assert.isFalse(ok, label .. " must be rejected")
+  Assert.equal(assert(err).code, "STARTER_CHOICE_MANIFEST_INVALID", label .. " has a typed error")
+end
+
+function T.complete_normalized_manifest_is_accepted()
+  local module = cache()
+  Assert.equal(module.SCHEMA, "g4-starter-choice-v3")
+  Assert.equal(module.SCHEMA, DerivedAssetContract.starterChoice.schema)
+  Assert.equal(module.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
+  Assert.isTrue(module.validateManifest(validV3Manifest()))
+end
+
+function T.previous_schema_manifests_are_rejected()
+  rejectV3(function(manifest)
+    manifest.schema = "g4-starter-choice-v2"
+  end, "previous schema identity")
+  rejectV3(function(manifest)
+    manifest.background = {
+      image = "assets/generated/starter_choice/backdrop.png",
+      width = 512,
+      height = 192,
+    }
+  end, "previous singular background alongside the normalized records")
+  local legacy = validManifest()
+  local ok, err = cache().validateManifest(legacy)
+  Assert.isFalse(ok, "the previous raw-unit manifest must be rejected")
+  Assert.equal(assert(err).code, "STARTER_CHOICE_MANIFEST_INVALID", "the previous manifest has a typed error")
+end
+
+function T.raw_model_space_scene_values_are_rejected()
+  rejectV3(function(manifest)
+    manifest.scene.ballLayout.radius = 32
+  end, "raw ring radius")
+  rejectV3(function(manifest)
+    manifest.scene.ballLayout.modelY = 14
+  end, "raw model height")
+  rejectV3(function(manifest)
+    manifest.scene.ballLayout.touchYOffsetY = 13
+  end, "raw touch offset")
+  rejectV3(function(manifest)
+    manifest.scene.camera.out.target = { x = 0, y = 15, z = 14 }
+  end, "raw outside target")
+  rejectV3(function(manifest)
+    manifest.scene.camera.out.distance = 100
+  end, "raw outside distance")
+  rejectV3(function(manifest)
+    manifest.scene.camera.inside.target = { x = 0, y = 0, z = 12 }
+  end, "raw inside target")
+  rejectV3(function(manifest)
+    manifest.scene.camera.inside.distance = 60
+  end, "raw inside distance")
+  rejectV3(function(manifest)
+    manifest.scene.camera.near = nil
+  end, "missing near clipping plane")
+  rejectV3(function(manifest)
+    manifest.scene.camera.far = nil
+  end, "missing far clipping plane")
+  rejectV3(function(manifest)
+    manifest.scene.camera.near = 20
+    manifest.scene.camera.far = 250
+  end, "invented clipping planes")
+end
+
+function T.surface_pixel_geometry_is_never_model_scaled()
+  rejectV3(function(manifest)
+    manifest.surfaces.info.portrait = { x = 5.5, y = 3.5, width = 5, height = 5 }
+  end, "model-scaled portrait rectangle")
+  rejectV3(function(manifest)
+    manifest.surfaces.machine.prompt.box = { x = 0.5, y = 9.5, width = 14.5, height = 2 }
+  end, "model-scaled prompt box")
+  rejectV3(function(manifest)
+    manifest.surfaces.info.message.box = { x = 1, y = 9.5, width = 13.5, height = 2 }
+  end, "model-scaled message box")
+end
+
+function T.surface_rectangles_origins_and_frame_policy_are_exact()
+  rejectV3(function(manifest)
+    manifest.surfaces.machine.prompt.box = { x = 16, y = 152, width = 216, height = 32 }
+  end, "prompt box carrying the message geometry")
+  rejectV3(function(manifest)
+    manifest.surfaces.machine.prompt.framed = true
+  end, "framed machine prompt")
+  rejectV3(function(manifest)
+    manifest.surfaces.machine.prompt.textOrigin = { x = 16, y = 152 }
+  end, "prompt text origin carrying the message origin")
+  rejectV3(function(manifest)
+    manifest.surfaces.info.message.box = { x = 8, y = 152, width = 232, height = 32 }
+  end, "message box carrying the prompt geometry")
+  rejectV3(function(manifest)
+    manifest.surfaces.info.message.framed = false
+  end, "unframed info message")
+  rejectV3(function(manifest)
+    manifest.surfaces.info.portrait = { x = 88, y = 96, width = 80, height = 80 }
+  end, "portrait at the wrong slot")
+  rejectV3(function(manifest)
+    manifest.surfaces = nil
+  end, "missing surface records")
+end
+
+function T.machine_clear_color_is_the_source_rear_plane_color()
+  local manifest = validV3Manifest()
+  Assert.equal(manifest.surfaces.machine.clearColor.r, 1)
+  Assert.equal(manifest.surfaces.machine.clearColor.g, 1)
+  Assert.isTrue(math.abs(manifest.surfaces.machine.clearColor.b - 16 / 31) < 1e-9)
+  Assert.equal(manifest.surfaces.machine.clearColor.a, 1)
+  rejectV3(function(candidate)
+    candidate.surfaces.machine.clearColor = { r = 0, g = 0, b = 0, a = 1 }
+  end, "default black clear color")
+  rejectV3(function(candidate)
+    candidate.surfaces.machine.clearColor = { r = 1, g = 1, b = 1, a = 1 }
+  end, "white clear color")
+end
+
+function T.info_background_roles_and_blend_are_exact()
+  local manifest = validV3Manifest()
+  Assert.equal(manifest.backgrounds.info.overlayAlpha, 5 / 16)
+  rejectV3(function(candidate)
+    candidate.backgrounds.info.overlayAlpha = 11 / 16
+  end, "destination blend coefficient in the overlay role")
+  rejectV3(function(candidate)
+    candidate.backgrounds.info.base = nil
+  end, "missing base layer")
+  rejectV3(function(candidate)
+    candidate.backgrounds.info.overlay = nil
+  end, "missing overlay layer")
+  rejectV3(function(candidate)
+    candidate.backgrounds.info.base.width = 512
+  end, "base layer at host dimensions")
+  rejectV3(function(candidate)
+    candidate.backgrounds.host = nil
+  end, "missing host decoration")
+end
+
+function T.unknown_surface_fields_and_source_identities_are_rejected()
+  rejectV3(function(manifest)
+    manifest.surfaces.machine.extra = true
+  end, "unknown machine surface field")
+  rejectV3(function(manifest)
+    manifest.surfaces.info.message.memberId = 11
+  end, "source member identity in a surface record")
+  rejectV3(function(manifest)
+    manifest.backgrounds.info.base.image = "assets/generated/starter_choice/NARC_application.png"
+  end, "source archive symbol in a background path")
+  rejectV3(function(manifest)
+    manifest.backgrounds = nil
+  end, "missing background records")
+end
+
+function T.normalized_referenced_paths_cover_every_image()
+  local module = cache()
+  local manifest = validV3Manifest()
+  local paths = module.referencedPaths(manifest)
+  local seen = {}
+  for _, path in ipairs(paths) do
+    seen[path] = (seen[path] or 0) + 1
+  end
+  Assert.equal(seen["assets/generated/starter_choice/backdrop.png"], 1, "the host image is referenced exactly once")
+  Assert.equal(seen["assets/generated/starter_choice/info-base.png"], 1, "the base image is referenced exactly once")
+  Assert.equal(
+    seen["assets/generated/starter_choice/info-overlay.png"],
+    1,
+    "the overlay image is referenced exactly once"
+  )
+end
+
+function T.missing_normalized_images_are_not_ready()
+  local module = cache()
+  local manifest = validV3Manifest()
+  local marker = module.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(module.manifestPath(), manifest)
+  for _, path in ipairs(module.referencedPaths(manifest)) do
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:write(module.markerPath(), marker)
+  Assert.isTrue(module.isReady(cacheFs, marker))
+  cacheFs:remove("assets/generated/starter_choice/info-overlay.png")
+  Assert.isFalse(module.isReady(cacheFs, marker), "a missing overlay image is not ready")
+end
+
+function T.unrelated_derived_families_keep_their_identities()
+  Assert.equal(DerivedAssetContract.intro.cacheFormat, "intro-cache-v11")
+  Assert.equal(DerivedAssetContract.mons.portraitManifestSchema, "g4-mon-portrait-manifest-v1")
 end
 
 return { tests = T }

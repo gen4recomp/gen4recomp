@@ -3,25 +3,32 @@
 -- carries four 3D resource groups (tabletop, turntable, ball, ball effect)
 -- with three joint clips plus one material clip; the chooser message bank
 -- supplies the semantic message roles; the scene constants normalize the
--- source ball ring, turntable, camera, and timing facts; and the chooser owns
--- one generated presentation backdrop. Candidate pictures are never compiled
--- here: the mon presentation pipeline owns portrait identity. All Nitro/text
--- decoding reuses the existing digest helpers; this module owns only source
--- selection, semantic role assignment, unit normalization, and the dependency
--- record. Source basis: pret/pokeheartgold src/choose_starter_app.c and
--- src/choose_starter.c.
+-- source ball ring, turntable, camera, and timing facts into the shared
+-- runtime model unit; the visible info-surface artwork compiles from the
+-- retail sub BG1/BG2 tile resources; and the machine surface carries the
+-- retail 3D rear-plane clear color plus source window/portrait geometry. The
+-- host keeps one generated decorative backdrop. Candidate pictures are never
+-- compiled here: the mon presentation pipeline owns portrait identity. All
+-- Nitro/text decoding reuses the existing digest helpers; this module owns
+-- only source selection, semantic role assignment, unit normalization, and
+-- the dependency record. Source basis: pret/pokeheartgold
+-- src/choose_starter_app.c and src/choose_starter.c.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
 local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
 local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
 local PngWriter = require("libs.assets.src.PngWriter")
+local Lz10 = require("romdump.src.digest.Lz10")
+local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
@@ -68,6 +75,9 @@ local CAMERA = {
   out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
   inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
 }
+-- Source perspective clipping planes in the same raw Nitro coordinate domain
+-- as the camera distances above.
+local CAMERA_CLIP = { near = 4, far = 256 }
 local BALL_LAYOUT = {
   radius = 32,
   modelY = 14,
@@ -91,6 +101,45 @@ local TIMING = {
 -- composition stretches over the drawable area behind both logical surfaces.
 local BACKDROP_WIDTH = 512
 local BACKDROP_HEIGHT = 192
+
+-- Visible info-surface artwork: sub BG1 (base) and sub BG2 (overlay)
+-- char/screen/palette members of the main chooser archive. The main BG2
+-- members stay unpublished: the chooser leaves that Engine A plane disabled
+-- and shows the 3D rear-plane clear color instead.
+local INFO_BG_BASE = { char = 10, screen = 11, palette = 9 }
+local INFO_BG_OVERLAY = { char = 16, screen = 17, palette = 15 }
+
+-- Source info-layer blend: the overlay contributes 5/16 over the base, so an
+-- ordinary alpha-over composition leaves 11/16 for the destination.
+local INFO_BLEND = { overlayNumerator = 5, overlayDenominator = 16 }
+
+-- Retail machine 3D rear-plane clear color channels from GX_RGB(31,31,16).
+local MACHINE_CLEAR = { r = 31, g = 31, b = 16 }
+
+-- Source window/portrait geometry in 256x192 surface pixels, never
+-- model-scaled: the machine prompt is the unframed bottom window, the info
+-- message is the framed bottom window, and the portrait is the 80x80 sprite
+-- slot on the info surface.
+local MACHINE_PROMPT = {
+  box = { x = 8, y = 152, width = 232, height = 32 },
+  textOrigin = { x = 8, y = 152 },
+  framed = false,
+}
+local INFO_MESSAGE = {
+  box = { x = 16, y = 152, width = 216, height = 32 },
+  textOrigin = { x = 16, y = 152 },
+  framed = true,
+}
+local INFO_PORTRAIT = { x = 88, y = 56, width = 80, height = 80 }
+
+-- The single model-space normalization boundary: a raw Nitro source length
+-- becomes the shared runtime unit the compiled meshes already use. Pixel
+-- rectangles, angles, fields of view, and timings never cross it.
+---@param raw number
+---@return number
+local function modelUnits(raw)
+  return raw / MapUnits.MODEL_UNITS_PER_TILE
+end
 
 ---@param message string
 ---@param context Errors.Context|nil
@@ -133,6 +182,111 @@ local function openArchive(romFs, symbol)
     sourceError("starter-choice source archive is unavailable: " .. tostring(err), { archive = symbol })
   end
   return archive
+end
+
+---@param bytes string
+---@param role string
+---@return string
+local function maybeDecompress(bytes, role)
+  if string.byte(bytes, 1) == 0x10 then
+    local plain, lzErr = Lz10.decode(bytes)
+    if not plain then
+      assert(lzErr)
+      sourceError("starter-choice source member is not decodable: " .. lzErr.message, { role = role })
+    end
+    assert(plain ~= nil, "undecodable source members fail above")
+    return plain
+  end
+  return bytes
+end
+
+-- Decode one info-surface background layer from its char/screen/palette
+-- members and rasterize it through the shared decoded-G2D mechanics. The
+-- source loader copies the first sixteen NCLR colors into the layer's
+-- hardware palette slot and rewrites the tilemap to that slot in VRAM; the
+-- producer-local record pairs those sixteen colors with bank 0 instead, so
+-- no hardware slot number reaches the manifest. Index-0 pixels stay
+-- transparent so the lower layer shows through where the source hardware
+-- would expose its destination.
+---@param archive Narc
+---@param spec { char: integer, screen: integer, palette: integer }
+---@param role string
+---@param dependencies table<string, unknown>[]
+---@return { width: integer, height: integer, rgba: string }
+local function compileInfoBackground(archive, spec, role, dependencies)
+  local charBytes =
+    maybeDecompress(readMember(archive, MAIN_ARCHIVE, spec.char, role .. ":char", dependencies), role .. ":char")
+  local screenBytes =
+    maybeDecompress(readMember(archive, MAIN_ARCHIVE, spec.screen, role .. ":screen", dependencies), role .. ":screen")
+  local paletteBytes = maybeDecompress(
+    readMember(archive, MAIN_ARCHIVE, spec.palette, role .. ":palette", dependencies),
+    role .. ":palette"
+  )
+  local charData, charErr = G2dDecoder.decodeChar(charBytes, { label = role .. ":char" })
+  if not charData then
+    assert(charErr)
+    sourceError("starter-choice background member does not decode: " .. charErr.message, {
+      role = role,
+      cause = charErr.code,
+    })
+  end
+  assert(charData ~= nil, "undecodable background members fail above")
+  local screenData, screenErr = G2dDecoder.decodeScreen(screenBytes, { label = role .. ":screen" })
+  if not screenData then
+    assert(screenErr)
+    sourceError("starter-choice background member does not decode: " .. screenErr.message, {
+      role = role,
+      cause = screenErr.code,
+    })
+  end
+  assert(screenData ~= nil, "undecodable background members fail above")
+  local paletteData, paletteErr = G2dDecoder.decodePalette(paletteBytes, { label = role .. ":palette" })
+  if not paletteData then
+    assert(paletteErr)
+    sourceError("starter-choice background member does not decode: " .. paletteErr.message, {
+      role = role,
+      cause = paletteErr.code,
+    })
+  end
+  assert(paletteData ~= nil, "undecodable background members fail above")
+  if #paletteData.colors < 16 then
+    sourceError("starter-choice background palette carries fewer than sixteen colors", {
+      role = role,
+      colors = #paletteData.colors,
+    })
+  end
+  local localColors = {}
+  for index = 1, 16 do
+    localColors[index] = paletteData.colors[index]
+  end
+  local entries = {}
+  for index, screenEntry in ipairs(screenData.entries) do
+    entries[index] = { tile = screenEntry.tile, flipH = screenEntry.flipH, flipV = screenEntry.flipV, palette = 0 }
+  end
+  local ok, image = pcall(G2dRasterizer.renderScreen, charData, { colors = localColors }, {
+    width = screenData.width,
+    height = screenData.height,
+    entries = entries,
+  }, { role = role })
+  if not ok then
+    if Errors.is(image) then
+      ---@cast image Errors.Error
+      sourceError("starter-choice background does not rasterize: " .. image.message, {
+        role = role,
+        cause = image.code,
+      })
+    end
+    error(image, 0)
+  end
+  ---@cast image { width: integer, height: integer, pixels: string }
+  if image.width ~= 256 or image.height ~= 192 then
+    sourceError("starter-choice background has unexpected dimensions", {
+      role = role,
+      width = image.width,
+      height = image.height,
+    })
+  end
+  return { width = image.width, height = image.height, rgba = image.pixels }
 end
 
 ---@param bytes string
@@ -372,20 +526,35 @@ local function _compile(romFs)
 
   local meshes, textures = {}, {}
   local unresolvedMaterials = {}
-  local tabletopCompiled = ModelAssetCompiler.compileModel(
-    tabletopModel.models[1],
-    { textureByName = {}, paletteByName = {} },
-    meshes,
-    textures,
-    {
-      role = "tabletop",
-      modelArchive = MAIN_ARCHIVE,
-      modelMemberId = MODEL_MEMBERS.tabletop,
-      modelName = tabletopModel.models[1].name,
-    }
-  )
+  local tabletopPack = tabletopModel.embeddedTextures
+  if tabletopPack == nil then
+    -- Retail binds no texture block for a model that carries none; an empty
+    -- pack is that NULL bind. A model that names textures without carrying
+    -- them is a broken source, not an untextured one.
+    for _, material in ipairs(tabletopModel.models[1].materials) do
+      if material.textureName ~= nil then
+        sourceError("starter-choice tabletop names a texture but carries no embedded texture block", {
+          role = "tabletop",
+          material = material.name,
+          texture = material.textureName,
+        })
+      end
+    end
+    tabletopPack = { textureByName = {}, paletteByName = {} }
+  end
+  local tabletopCompiled = ModelAssetCompiler.compileModel(tabletopModel.models[1], tabletopPack, meshes, textures, {
+    role = "tabletop",
+    modelArchive = MAIN_ARCHIVE,
+    modelMemberId = MODEL_MEMBERS.tabletop,
+    modelName = tabletopModel.models[1].name,
+  })
   for _, entry in ipairs(tabletopCompiled.unresolved) do
-    unresolvedMaterials[#unresolvedMaterials + 1] = entry
+    sourceError("starter-choice tabletop texture binding has no source texture: " .. tostring(entry.name), {
+      role = "tabletop",
+      material = entry.material,
+      kind = entry.kind,
+      name = entry.name,
+    })
   end
 
   ---@param decoded table<string, unknown>
@@ -419,6 +588,10 @@ local function _compile(romFs)
   end
   local backdropImage = renderBackdrop()
   local backdropPath = StarterChoiceAssetCache.assetDir() .. "/backdrop.png"
+  local infoBase = compileInfoBackground(main, INFO_BG_BASE, "background:info-base", dependencies)
+  local infoBasePath = StarterChoiceAssetCache.assetDir() .. "/info-base.png"
+  local infoOverlay = compileInfoBackground(main, INFO_BG_OVERLAY, "background:info-overlay", dependencies)
+  local infoOverlayPath = StarterChoiceAssetCache.assetDir() .. "/info-overlay.png"
   local manifest = {
     schema = StarterChoiceAssetCache.SCHEMA,
     reference = { width = 256, height = 192 },
@@ -443,9 +616,9 @@ local function _compile(romFs)
     },
     scene = {
       ballLayout = {
-        radius = BALL_LAYOUT.radius,
-        modelY = BALL_LAYOUT.modelY,
-        touchYOffsetY = BALL_LAYOUT.touchYOffsetY,
+        radius = modelUnits(BALL_LAYOUT.radius),
+        modelY = modelUnits(BALL_LAYOUT.modelY),
+        touchYOffsetY = modelUnits(BALL_LAYOUT.touchYOffsetY),
         slotAnglesDegrees = {
           BALL_LAYOUT.slotAnglesDegrees[1],
           BALL_LAYOUT.slotAnglesDegrees[2],
@@ -458,8 +631,28 @@ local function _compile(romFs)
         rotationDegreesPerTick = TURNTABLE.rotationDegreesPerTick,
       },
       camera = {
-        out = CAMERA.out,
-        inside = CAMERA.inside,
+        near = modelUnits(CAMERA_CLIP.near),
+        far = modelUnits(CAMERA_CLIP.far),
+        out = {
+          angleX = CAMERA.out.angleX,
+          perspective = CAMERA.out.perspective,
+          target = {
+            x = modelUnits(CAMERA.out.target.x),
+            y = modelUnits(CAMERA.out.target.y),
+            z = modelUnits(CAMERA.out.target.z),
+          },
+          distance = modelUnits(CAMERA.out.distance),
+        },
+        inside = {
+          angleX = CAMERA.inside.angleX,
+          perspective = CAMERA.inside.perspective,
+          target = {
+            x = modelUnits(CAMERA.inside.target.x),
+            y = modelUnits(CAMERA.inside.target.y),
+            z = modelUnits(CAMERA.inside.target.z),
+          },
+          distance = modelUnits(CAMERA.inside.distance),
+        },
       },
       timing = {
         cameraTicks = TIMING.cameraTicks,
@@ -478,10 +671,40 @@ local function _compile(romFs)
         confirm = preparedMessage(bank, MESSAGE_BOTTOM_CONFIRM, "bottom:confirm"),
       },
     },
-    background = {
-      image = backdropPath,
-      width = backdropImage.width,
-      height = backdropImage.height,
+    backgrounds = {
+      host = {
+        image = backdropPath,
+        width = backdropImage.width,
+        height = backdropImage.height,
+      },
+      info = {
+        base = {
+          image = infoBasePath,
+          width = infoBase.width,
+          height = infoBase.height,
+        },
+        overlay = {
+          image = infoOverlayPath,
+          width = infoOverlay.width,
+          height = infoOverlay.height,
+        },
+        overlayAlpha = INFO_BLEND.overlayNumerator / INFO_BLEND.overlayDenominator,
+      },
+    },
+    surfaces = {
+      machine = {
+        clearColor = {
+          r = MACHINE_CLEAR.r / 31,
+          g = MACHINE_CLEAR.g / 31,
+          b = MACHINE_CLEAR.b / 31,
+          a = 1,
+        },
+        prompt = MACHINE_PROMPT,
+      },
+      info = {
+        message = INFO_MESSAGE,
+        portrait = INFO_PORTRAIT,
+      },
     },
   }
 
@@ -493,6 +716,8 @@ local function _compile(romFs)
     assets[MapAssetCache.texturePath(sha1)] = PngWriter.encode(tex.width, tex.height, tex.pixels)
   end
   assets[backdropPath] = PngWriter.encode(backdropImage.width, backdropImage.height, backdropImage.rgba)
+  assets[infoBasePath] = PngWriter.encode(infoBase.width, infoBase.height, infoBase.rgba)
+  assets[infoOverlayPath] = PngWriter.encode(infoOverlay.width, infoOverlay.height, infoOverlay.rgba)
 
   local dependencyRecord = {
     cacheFormat = StarterChoiceAssetCache.FORMAT,
@@ -502,9 +727,18 @@ local function _compile(romFs)
     versionRomSha1 = metadata.sha1,
     sceneConstants = {
       camera = CAMERA,
+      cameraClipping = CAMERA_CLIP,
       ballLayout = BALL_LAYOUT,
       turntable = TURNTABLE,
       timing = TIMING,
+    },
+    presentationConstants = {
+      machineClear = MACHINE_CLEAR,
+      overlayBlend = INFO_BLEND,
+      machinePrompt = MACHINE_PROMPT,
+      infoMessage = INFO_MESSAGE,
+      infoPortrait = INFO_PORTRAIT,
+      infoBackgrounds = { base = INFO_BG_BASE, overlay = INFO_BG_OVERLAY },
     },
     messageSelection = {
       bank = MESSAGE_BANK,

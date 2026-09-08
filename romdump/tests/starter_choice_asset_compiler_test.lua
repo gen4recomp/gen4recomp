@@ -181,9 +181,9 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
 
   local scene = assert(manifest.scene, "manifest carries normalized scene constants")
   local layout = assert(scene.ballLayout, "scene carries the source ball ring layout")
-  Assert.equal(layout.radius, 32, "the ring radius matches the source model")
-  Assert.equal(layout.modelY, 14, "model origins sit at the source height")
-  Assert.equal(layout.touchYOffsetY, 13, "touch centers sit above the model origins")
+  Assert.equal(layout.radius, 2, "the ring radius is normalized to the compiled model unit")
+  Assert.equal(layout.modelY, 0.875, "model origins are normalized to the compiled model unit")
+  Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers are normalized to the compiled model unit")
   Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, "slots are one step apart on the ring")
   Assert.near(layout.inspectArcDegrees, -30.76, 0.01, "the inspect arc matches the source endpoint")
   local turntable = assert(scene.turntable, "scene carries turntable facts")
@@ -196,6 +196,8 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   Assert.equal(timing.infoFadeTicks, 10, "the info fade carries the source boundary")
   Assert.equal(timing.machineFadeTicks, 16, "the machine fade carries the source boundary")
   local camera = assert(scene.camera, "scene carries source camera parameters")
+  Assert.equal(camera.near, 0.25, "the near plane is normalized to the compiled model unit")
+  Assert.equal(camera.far, 16, "the far plane is normalized to the compiled model unit")
   local out = assert(camera.out, "outside camera parameters")
   local inside = assert(camera.inside, "inside camera parameters")
   assertFinite(out.angleX, "outside camera angle")
@@ -204,10 +206,10 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   assertFinite(inside.perspective, "inside camera perspective")
   Assert.near(out.perspective, 49.61, 1e-9, "outside field carries the doubled source half-angle")
   Assert.near(inside.perspective, 45.4, 1e-9, "inside field carries the doubled source half-angle")
-  Assert.deepEqual(out.target, { x = 0, y = 15, z = 14 }, "outside camera target")
-  Assert.deepEqual(inside.target, { x = 0, y = 0, z = 12 }, "inside camera target")
-  Assert.equal(out.distance, 100, "outside camera distance")
-  Assert.equal(inside.distance, 60, "inside camera distance")
+  Assert.deepEqual(out.target, { x = 0, y = 0.9375, z = 0.875 }, "outside camera target is normalized")
+  Assert.deepEqual(inside.target, { x = 0, y = 0, z = 0.75 }, "inside camera target is normalized")
+  Assert.equal(out.distance, 6.25, "outside camera distance is normalized")
+  Assert.equal(inside.distance, 3.75, "inside camera distance is normalized")
   Assert.isTrue(out.angleX < inside.angleX, "outside view looks down more steeply than inside")
   Assert.isTrue(out.perspective > inside.perspective, "outside view is wider than inside")
   Assert.isNil(camera.transitionTicks, "no universal transition duration remains on the camera")
@@ -224,17 +226,19 @@ function T.retail_application_inventory_compiles_from_the_real_dump(romFs)
   assertPreparedMessage(messages.bottom.normal, "the normal bottom prompt")
   assertPreparedMessage(messages.bottom.confirm, "the confirm bottom prompt")
 
-  local background = assert(manifest.background, "the chooser owns its generated backdrop")
-  local backdropEntry = background
-  Assert.keySet(backdropEntry, "height,image,width", "the backdrop is one flat record")
-  Assert.isTrue(
-    type(backdropEntry.image) == "string" and backdropEntry.image:find("assets/generated/starter_choice/", 1, true) == 1,
-    "backdrop uses a chooser generated path"
-  )
   local assets = assert(bundle.assets, "compilation returns referenced asset payloads")
-  local backdropBytes = assert(assets[backdropEntry.image], "backdrop payload is compiled")
-  local backdropWidth, backdropHeight = PngReader.rgba(backdropBytes)
-  Assert.isTrue(backdropWidth > 0 and backdropHeight > 0, "backdrop payload is a real image")
+  local backgrounds = assert(manifest.backgrounds, "the chooser owns its generated background roles")
+  local hostEntry = assert(backgrounds.host, "host decoration is retained")
+  Assert.keySet(hostEntry, "height,image,width", "the host decoration is one flat record")
+  local hostBytes = assert(assets[hostEntry.image], "host payload is compiled")
+  local hostWidth, hostHeight = PngReader.rgba(hostBytes)
+  Assert.equal(hostWidth, hostEntry.width, "host payload width matches the manifest")
+  Assert.equal(hostHeight, hostEntry.height, "host payload height matches the manifest")
+  local info = assert(backgrounds.info, "the info artwork roles are present")
+  Assert.equal(info.overlayAlpha, 5 / 16, "the overlay blend coefficient matches the source alpha pair")
+  for _, role in ipairs({ "base", "overlay" }) do
+    assertBackdropEntry(info[role], assets, role)
+  end
 
   Assert.isNil(manifest.speciesSprites, "no fixed species image catalog remains")
 
@@ -275,9 +279,9 @@ function T.chooser_manifest_carries_semantic_roles_source_geometry_and_owned_bac
 
   local scene = assert(manifest.scene, "manifest carries normalized scene constants")
   local layout = assert(scene.ballLayout, "scene carries the source ball ring layout")
-  Assert.equal(layout.radius, 32, "the ring radius matches the source model")
-  Assert.equal(layout.modelY, 14, "model origins sit at the source height")
-  Assert.equal(layout.touchYOffsetY, 13, "touch centers sit above the model origins")
+  Assert.equal(layout.radius, 2, "the ring radius is normalized to the compiled model unit")
+  Assert.equal(layout.modelY, 0.875, "model origins are normalized to the compiled model unit")
+  Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers are normalized to the compiled model unit")
   Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, "slots are one step apart on the ring")
   Assert.near(layout.inspectArcDegrees, -30.76, 0.01, "the inspect arc matches the source endpoint")
   local turntable = assert(scene.turntable, "scene carries turntable facts")
@@ -293,8 +297,11 @@ function T.chooser_manifest_carries_semantic_roles_source_geometry_and_owned_bac
   Assert.isNil(scene.ballYRotation, "the misleading rotation pair is gone")
   Assert.isNil(scene.camera.transitionTicks, "no universal transition duration remains on the camera")
 
-  local background = assert(manifest.background, "the chooser owns its generated backdrop")
-  assertBackdropEntry(background, assets, "single")
+  local backgrounds = assert(manifest.backgrounds, "the chooser owns its generated background roles")
+  assertBackdropEntry(backgrounds.host, assets, "host")
+  local info = assert(backgrounds.info, "the info artwork roles are present")
+  assertBackdropEntry(info.base, assets, "base")
+  assertBackdropEntry(info.overlay, assets, "overlay")
 
   Assert.isNil(manifest.speciesSprites, "no fixed species image catalog remains")
 
@@ -337,6 +344,209 @@ function T.compiled_messages_preserve_source_lines_and_species_colors(romFs)
 
   assertNoMarkerText(messages, "messages")
 
+  Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
+end
+
+local function ballMeshRadius(romFs, bundle)
+  local stamped = assert(bundle.dependencies.dependencies, "dependencies list source hashes")
+  local memberId = nil
+  for _, entry in ipairs(stamped) do
+    if entry.role == "model:ball" then
+      memberId = entry.memberId
+    end
+  end
+  Assert.notNil(memberId, "the ball source member is stamped into dependencies")
+  local archive = assert(romFs:openNarc("NARC_application_choose_starter_choose_starter_main_res"))
+  local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
+  local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
+  local decoded = assert(Nsbmd.decode(assert(archive:readMember(memberId)), { alias = "test", memberId = memberId }))
+  local radius = 0
+  local ballModel = assert(decoded.models[1], "the ball member carries one model")
+  for _, batch in ipairs(MeshCompiler.compile(ballModel)) do
+    for _, vertex in ipairs(batch.vertices) do
+      local horizontal = math.sqrt(vertex.x * vertex.x + vertex.z * vertex.z)
+      if horizontal > radius then
+        radius = horizontal
+      end
+    end
+  end
+  Assert.isTrue(radius > 0, "the compiled ball mesh has a nonzero extent")
+  return radius
+end
+
+local function projectBall(center, meshRadius, camera)
+  local elevation = math.rad(-camera.angleX)
+  local eye = {
+    x = camera.target.x,
+    y = camera.target.y + camera.distance * math.sin(elevation),
+    z = camera.target.z + camera.distance * math.cos(elevation),
+  }
+  local forward = {
+    x = camera.target.x - eye.x,
+    y = camera.target.y - eye.y,
+    z = camera.target.z - eye.z,
+  }
+  local length = math.sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z)
+  forward = { x = forward.x / length, y = forward.y / length, z = forward.z / length }
+  local right = { x = forward.z, y = 0, z = -forward.x }
+  local rightLength = math.sqrt(right.x * right.x + right.z * right.z)
+  right = { x = right.x / rightLength, y = 0, z = right.z / rightLength }
+  local up = {
+    x = right.y * forward.z - right.z * forward.y,
+    y = right.z * forward.x - right.x * forward.z,
+    z = right.x * forward.y - right.y * forward.x,
+  }
+  local view = { x = center.x - eye.x, y = center.y - eye.y, z = center.z - eye.z }
+  local depth = view.x * forward.x + view.y * forward.y + view.z * forward.z
+  local focal = math.tan(math.rad(camera.perspective) / 2) * depth
+  return {
+    depth = depth,
+    x = (view.x * right.x + view.y * right.y + view.z * right.z) / focal,
+    y = (view.x * up.x + view.y * up.y + view.z * up.z) / focal,
+    extent = meshRadius / focal,
+  }
+end
+
+function T.scene_dimensions_and_clipping_share_the_compiled_model_unit(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local layout = assert(manifest.scene.ballLayout, "scene carries the ball ring layout")
+  Assert.equal(layout.radius, 2, "the ring radius is normalized")
+  Assert.equal(layout.modelY, 0.875, "model origins are normalized")
+  Assert.equal(layout.touchYOffsetY, 0.8125, "touch centers are normalized")
+  local camera = assert(manifest.scene.camera, "scene carries the camera contract")
+  Assert.equal(camera.near, 0.25, "the near plane is normalized")
+  Assert.equal(camera.far, 16, "the far plane is normalized")
+  Assert.deepEqual(camera.out.target, { x = 0, y = 0.9375, z = 0.875 }, "outside camera target is normalized")
+  Assert.equal(camera.out.distance, 6.25, "outside camera distance is normalized")
+  Assert.deepEqual(camera.inside.target, { x = 0, y = 0, z = 0.75 }, "inside camera target is normalized")
+  Assert.equal(camera.inside.distance, 3.75, "inside camera distance is normalized")
+  Assert.near(camera.out.perspective, 49.61, 1e-9, "outside field keeps the source half-angle doubling")
+  Assert.near(camera.inside.perspective, 45.4, 1e-9, "inside field keeps the source half-angle doubling")
+
+  local meshRadius = ballMeshRadius(romFs, bundle)
+  local seen = projectBall({ x = layout.radius, y = layout.modelY, z = 0 }, meshRadius, camera.out)
+  Assert.isTrue(seen.depth > camera.near and seen.depth < camera.far, "the ball sits inside the clipping planes")
+  Assert.isTrue(math.abs(seen.x) < 1 and math.abs(seen.y) < 1, "the ball projects inside the frame")
+  Assert.isTrue(seen.extent > 0.05 and seen.extent < 0.9, "the compiled ball covers a plausible frame extent")
+
+  local raw = projectBall({ x = 32, y = 14, z = 0 }, meshRadius, {
+    target = { x = 0, y = 15, z = 14 },
+    distance = 100,
+    angleX = camera.out.angleX,
+    perspective = camera.out.perspective,
+  })
+  Assert.isTrue(raw.extent < 0.03, "the previous raw-unit mismatch shrinks the compiled ball out of view")
+end
+
+function T.tabletop_uses_its_authored_texture_binding(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local tabletop = assertValidModel(manifest.models, "tabletop")
+  Assert.notNil(tabletop, "the tabletop descriptor is present")
+  local dependencies = assert(bundle.dependencies, "compilation returns source dependencies")
+  for _, entry in ipairs(assert(dependencies.unresolvedMaterials, "unresolved bindings are reported")) do
+    Assert.isTrue(entry.role ~= "tabletop", "no unexplained tabletop binding remains")
+  end
+  assertNoSourceIdentities(manifest, "manifest")
+end
+
+function T.tabletop_without_its_expected_texture_data_is_a_source_error(romFs)
+  local archive = assert(romFs:openNarc("NARC_application_choose_starter_choose_starter_main_res"))
+  local turntableBytes = assert(archive:readMember(1), "the turntable member reads")
+  local start = turntableBytes:find("TEX0", 1, true)
+  Assert.notNil(start, "the turntable member carries an embedded texture section")
+  local patched = turntableBytes:sub(1, start - 1) .. "TEXx" .. turntableBytes:sub(start + 4)
+  local realOpen = romFs.openNarc
+  local wrapped = setmetatable({}, {
+    __index = function(_, key)
+      if key == "readMember" then
+        return function(_, memberId)
+          if memberId == 0 then
+            return patched
+          end
+          return archive:readMember(memberId)
+        end
+      end
+      local value = archive[key]
+      if type(value) == "function" then
+        return function(_, ...)
+          return value(archive, ...)
+        end
+      end
+      return value
+    end,
+  })
+  romFs.openNarc = function(_, symbol)
+    if symbol == "NARC_application_choose_starter_choose_starter_main_res" then
+      return wrapped
+    end
+    return realOpen(romFs, symbol)
+  end
+  local ok, result, err = pcall(compiler().compile, romFs)
+  romFs.openNarc = realOpen
+  Assert.isTrue(ok, "the failure must surface as a typed error rather than a raw throw")
+  Assert.isNil(result, "a tabletop naming textures without embedded texture data must fail")
+  Assert.equal(assert(err).code, "STARTER_CHOICE_SOURCE_INVALID", "the failure uses the starter source family")
+end
+
+local function probePixel(assets, image, x, y)
+  local width, _, rgba = PngReader.rgba(assert(assets[image], "image payload " .. image .. " is compiled"))
+  local base = (y * width + x) * 4
+  local r, g, b, a = string.byte(rgba, base + 1, base + 4)
+  return width, { r, g, b, a }
+end
+
+function T.info_backgrounds_come_from_source_artwork(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local assets = assert(bundle.assets, "compilation returns referenced asset payloads")
+  local backgrounds = assert(manifest.backgrounds, "manifest carries background roles")
+  local host = assert(backgrounds.host, "host decoration is retained")
+  Assert.equal(host.width, 512, "host decoration keeps its dimensions")
+  Assert.equal(host.height, 192, "host decoration keeps its dimensions")
+  local info = assert(backgrounds.info, "manifest carries the info artwork roles")
+  Assert.equal(info.overlayAlpha, 5 / 16, "the overlay blend coefficient matches the source alpha pair")
+  for _, role in ipairs({ "base", "overlay" }) do
+    local entry = assert(info[role], role .. " entry is present")
+    Assert.equal(entry.width, 256, role .. " spans the logical surface")
+    Assert.equal(entry.height, 192, role .. " spans the logical surface")
+    local width = PngReader.rgba(assert(assets[entry.image], role .. " payload is compiled"))
+    Assert.equal(width, 256, role .. " payload width matches the manifest")
+    Assert.isTrue(entry.image ~= host.image, role .. " is not the host gradient")
+  end
+  local _, baseSample = probePixel(assets, info.base.image, 8, 8)
+  Assert.deepEqual(baseSample, { 107, 107, 115, 255 }, "base artwork probe matches the source decode")
+  local _, baseEdge = probePixel(assets, info.base.image, 240, 20)
+  Assert.deepEqual(baseEdge, { 156, 156, 156, 255 }, "base edge probe matches the source decode")
+  local _, overlayLine = probePixel(assets, info.overlay.image, 118, 29)
+  Assert.deepEqual(overlayLine, { 58, 58, 58, 255 }, "overlay artwork probe matches the source decode")
+  local _, overlayHole = probePixel(assets, info.overlay.image, 128, 100)
+  Assert.deepEqual(overlayHole, { 0, 0, 0, 0 }, "overlay transparency exposes the lower layer")
+  assertNoSourceIdentities(manifest, "manifest")
+  Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
+end
+
+function T.surface_records_carry_source_geometry_and_rear_plane_color(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local surfaces = assert(manifest.surfaces, "manifest carries surface records")
+  Assert.deepEqual(surfaces.machine.prompt, {
+    box = { x = 8, y = 152, width = 232, height = 32 },
+    textOrigin = { x = 8, y = 152 },
+    framed = false,
+  }, "machine prompt geometry and frame policy")
+  Assert.deepEqual(surfaces.info.message, {
+    box = { x = 16, y = 152, width = 216, height = 32 },
+    textOrigin = { x = 16, y = 152 },
+    framed = true,
+  }, "info message geometry and frame policy")
+  Assert.deepEqual(surfaces.info.portrait, { x = 88, y = 56, width = 80, height = 80 }, "portrait slot")
+  local clear = assert(surfaces.machine.clearColor, "machine clear color is present")
+  Assert.equal(clear.r, 1, "machine clear red")
+  Assert.equal(clear.g, 1, "machine clear green")
+  Assert.isTrue(math.abs(clear.b - 16 / 31) < 1e-9, "machine clear blue matches the source rear plane")
+  Assert.equal(clear.a, 1, "machine clear alpha")
   Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
 end
 

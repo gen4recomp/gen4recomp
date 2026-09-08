@@ -105,6 +105,7 @@ local DOMAINS = {
     "FieldUiCacheWriter",
     "FieldUiCompiler",
     "G2dDecoder",
+    "G2dRasterizer",
   },
   newgame = {
     "IntroAssetCacheWriter",

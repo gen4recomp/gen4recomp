@@ -13,6 +13,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("libs.assets.src.PngWriter")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local manifestConfig = require("romdump.src.config.FieldUiAssets")
 
@@ -161,30 +162,12 @@ local function composeCursorPhase(rgba, atlasWidth, destX, destY, frameChar, fra
   end
 end
 
--- Render a screen (BG tilemap with flips) into a PNG.
+-- Render a screen (BG tilemap with flips) into a PNG. Generic decoded-tile
+-- raster mechanics live in G2dRasterizer; this wrapper only feeds its pixels
+-- into the existing PNG/publication path unchanged.
 local function renderScreen(charData, palette, screen, source)
-  local width = screen.width
-  local height = screen.height
-  local rgba = newRgba(width, height)
-  for row = 0, screen.height / 8 - 1 do
-    for col = 0, screen.width / 8 - 1 do
-      local entry = screen.entries[row * (screen.width / 8) + col + 1]
-      blitTile(
-        rgba,
-        width,
-        col * 8,
-        row * 8,
-        charData,
-        entry.tile,
-        entry.palette,
-        palette,
-        entry.flipH,
-        entry.flipV,
-        source
-      )
-    end
-  end
-  return PngWriter.encode(width, height, concatChars(rgba))
+  local image = G2dRasterizer.renderScreen(charData, { colors = palette }, screen, source)
+  return PngWriter.encode(image.width, image.height, image.pixels)
 end
 
 local function cellBounds(cell)

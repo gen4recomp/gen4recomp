@@ -185,8 +185,8 @@ DerivedAssetContract.intro = {
 }
 
 DerivedAssetContract.starterChoice = {
-  cacheFormat = "starter-choice-cache-v2",
-  schema = "g4-starter-choice-v2",
+  cacheFormat = "starter-choice-cache-v3",
+  schema = "g4-starter-choice-v3",
 }
 
 -- The mon class carries the complete species/form/move/ability/growth
