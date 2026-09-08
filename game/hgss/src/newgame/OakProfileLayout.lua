@@ -62,47 +62,19 @@ function OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
   return entries
 end
 
-function OakProfileLayout.genderConfirmationEntries(selectorRegion, cardSource, genderWidget, manifest)
-  local cardWidth, cardHeight = cardSource.width, cardSource.height
+-- Fits the Yes/No stack inside an already-resolved host region. The caller
+-- owns which region is offered; this helper never moves other entries.
+function OakProfileLayout.genderConfirmationChoices(region)
+  assert(region.width > 0 and region.height > 0, "Oak confirmation region must be positive")
   local stackWidth = TextButton.REFERENCE_WIDTH
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
-  local groupWidth, groupHeight = cardWidth + 8 + stackWidth, math.max(cardHeight, stackHeight)
-  local sourceScale = math.min(selectorRegion.width / 256, selectorRegion.height / 192)
-  local availableWidth = selectorRegion.width >= 24 and selectorRegion.width - 24 or selectorRegion.width
-  local availableHeight = selectorRegion.height >= 24 and selectorRegion.height - 24 or selectorRegion.height
-  local scale = math.min(sourceScale, math.min(availableWidth / groupWidth, availableHeight / groupHeight))
+  local scale = math.min(region.width / stackWidth, region.height / stackHeight)
   assert(scale > 0, "Oak gender confirmation scale must be positive")
   local origin = {
-    x = selectorRegion.x + (selectorRegion.width - groupWidth * scale) / 2,
-    y = selectorRegion.y + (selectorRegion.height - groupHeight * scale) / 2,
+    x = region.x + (region.width - stackWidth * scale) / 2,
+    y = region.y + (region.height - stackHeight * scale) / 2,
   }
-  local cardLeft = genderWidget == "male" and origin.x or origin.x + (stackWidth + 8) * scale
-  local stackLeft = genderWidget == "male" and origin.x + (cardWidth + 8) * scale or origin.x
-  local cardTop = origin.y + (groupHeight - cardHeight) * scale / 2
-  local stackTop = origin.y + (groupHeight - stackHeight) * scale / 2
-  local portraitWidget =
-    assert(genderWidget == "male" and manifest.widgets.gender_male or manifest.widgets.gender_female)
-  local center = assert(portraitWidget.sourceCenter)
-  local relativeCenter = { x = center.x - cardSource.x, y = center.y - cardSource.y }
-  local portrait = {
-    x = cardLeft + relativeCenter.x * scale - portraitWidget.anchor.x * scale,
-    y = cardTop + relativeCenter.y * scale - portraitWidget.anchor.y * scale,
-    width = portraitWidget.width * scale,
-    height = portraitWidget.height * scale,
-    scale = scale,
-  }
-  local cardRect = rect(cardLeft, cardTop, cardWidth * scale, cardHeight * scale)
-  return {
-    card = {
-      key = genderWidget,
-      rect = cardRect,
-      scale = scale,
-      portraitId = "gender_" .. genderWidget,
-      portraitRect = portrait,
-      button = ImageButton.resolve({ rect = cardRect, scale = scale }),
-    },
-    confirmation = textButtonEntries({ x = stackLeft, y = stackTop }, scale, 8 * scale),
-  }
+  return textButtonEntries(origin, scale, 8 * scale)
 end
 
 function OakProfileLayout.nameConfirmationEntries(nameStage, choiceRegion)

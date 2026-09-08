@@ -157,13 +157,12 @@ local function profileLayout(
     if view.phase == "gender_select" then
       result.genderButtons = genderSlots
     else
-      local sourceGender = view.genderFocus == 0 and "male" or "female"
-      local sourceCard = assert(manifest.genderSelector.buttons[sourceGender]).bounds
-      local group =
-        OakProfileLayout.genderConfirmationEntries(assert(selectorRegion), sourceCard, sourceGender, manifest)
-      result.selectedProfileButton = group.card
+      local focus = view.genderFocus == 0 and 0 or 1
+      local selected = assert(genderSlots[focus])
+      local opposite = assert(genderSlots[1 - focus])
+      result.selectedProfileButton = selected
       if view.confirmationChoice then
-        result.confirmationButtons = group.confirmation
+        result.confirmationButtons = OakProfileLayout.genderConfirmationChoices(opposite.rect)
       end
     end
   end

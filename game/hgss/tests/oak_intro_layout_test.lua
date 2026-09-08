@@ -281,6 +281,54 @@ function T.tests.gender_confirmation_maps_selected_card_and_source_side_choices(
   end
 end
 
+function T.tests.gender_confirmation_keeps_selected_card_geometry_stable()
+  local data = manifest()
+  for _, size in ipairs({ { 800, 600 }, { 1920, 1080 }, { 390, 844 } }) do
+    for focus = 0, 1 do
+      local selected = OakIntroLayout.compute(size[1], size[2], {
+        phase = "gender_select",
+        visual = "oak",
+        primaryWidget = "oak",
+        genderFocus = focus,
+        genderCompositionProgress = 1,
+        oakBgScrollX = 0,
+      }, {}, data)
+      local confirmed = OakIntroLayout.compute(size[1], size[2], {
+        phase = "gender_confirm",
+        visual = "oak",
+        primaryWidget = "oak",
+        genderFocus = focus,
+        genderCompositionProgress = 1,
+        confirmationChoice = { kind = "gender", selected = 0 },
+      }, {}, data)
+      local card = assert(selected.genderButtons[focus])
+      local profile = assert(confirmed.selectedProfileButton)
+      Assert.equal(profile.key, card.key)
+      Assert.deepEqual(profile.rect, card.rect)
+      Assert.deepEqual(profile.portraitRect, card.portraitRect)
+      Assert.equal(profile.scale, card.scale)
+      Assert.deepEqual(profile.button, card.button)
+      local opposite = assert(selected.genderButtons[1 - focus])
+      local choices = assert(confirmed.confirmationButtons)
+      local yes = assert(choices[0])
+      local no = assert(choices[1])
+      Assert.equal(yes.scale, no.scale)
+      Assert.isTrue(inside(yes.rect, opposite.rect))
+      Assert.isTrue(inside(no.rect, opposite.rect))
+      Assert.isTrue(inside(yes.rect, confirmed.selectorRegion))
+      Assert.isTrue(inside(no.rect, confirmed.selectorRegion))
+      Assert.isTrue(disjoint(profile.rect, yes.rect))
+      Assert.isTrue(disjoint(profile.rect, no.rect))
+      if card.key == "male" then
+        Assert.isTrue(profile.rect.x + profile.rect.width <= yes.rect.x)
+      else
+        Assert.isTrue(yes.rect.x + yes.rect.width <= profile.rect.x)
+      end
+      Assert.near((no.rect.y - (yes.rect.y + yes.rect.height)) / yes.scale, 8, 1e-6)
+    end
+  end
+end
+
 function T.tests.profile_controls_emit_final_rectangles_without_generic_button_geometry()
   local data = manifest()
   local layout = OakIntroLayout.compute(800, 600, {
