@@ -82,11 +82,51 @@ local function assertSceneContract(manifest)
   end
   assertPreparedSceneMessage(manifest.messages.bottom.normal, "the normal bottom prompt")
   Assert.isNil(manifest.speciesSprites, "the scene carries no fixed species image catalog")
+  Assert.equal(manifest.scene.camera.near, 0.25, "the camera near plane is the normalized source plane")
+  Assert.equal(manifest.scene.camera.far, 16, "the camera far plane is the normalized source plane")
+  local backgrounds = assert(manifest.backgrounds, "the scene carries its generated backgrounds")
+  Assert.notNil(backgrounds.host.image, "the scene carries the host decoration image")
+  local info = assert(backgrounds.info, "the scene carries the info-surface artwork")
+  Assert.equal(info.base.width, REFERENCE_WIDTH, "the info base spans the logical surface")
+  Assert.equal(info.base.height, REFERENCE_HEIGHT, "the info base spans the logical surface")
+  Assert.equal(info.overlay.width, REFERENCE_WIDTH, "the info overlay spans the logical surface")
+  Assert.equal(info.overlay.height, REFERENCE_HEIGHT, "the info overlay spans the logical surface")
+  Assert.near(info.overlayAlpha, 5 / 16, 1e-9, "the info overlay blends at the source coefficient")
+  local surfaces = assert(manifest.surfaces, "the scene carries its source surface geometry")
+  local clear = assert(surfaces.machine.clearColor, "the machine surface carries its rear-plane clear color")
+  Assert.equal(clear.r, 1, "the machine clear carries the source red channel")
+  Assert.equal(clear.g, 1, "the machine clear carries the source green channel")
+  Assert.near(clear.b, 16 / 31, 1e-9, "the machine clear carries the source blue channel")
+  Assert.equal(clear.a, 1, "the machine clear is opaque")
+  local prompt = assert(surfaces.machine.prompt, "the machine surface carries its prompt region")
+  Assert.deepEqual(prompt.box, { x = 8, y = 152, width = 232, height = 32 }, "the machine prompt uses the source box")
+  Assert.deepEqual(prompt.textOrigin, { x = 8, y = 152 }, "the machine prompt uses the source text origin")
+  Assert.equal(prompt.framed, false, "the machine prompt carries no user frame")
+  local message = assert(surfaces.info.message, "the info surface carries its message region")
+  Assert.deepEqual(message.box, { x = 16, y = 152, width = 216, height = 32 }, "the info message uses the source box")
+  Assert.deepEqual(message.textOrigin, { x = 16, y = 152 }, "the info message uses the source text origin")
+  Assert.equal(message.framed, true, "the info message carries the user frame")
+  Assert.deepEqual(
+    surfaces.info.portrait,
+    { x = 88, y = 56, width = 80, height = 80 },
+    "the info portrait uses the source slot"
+  )
   local encoded = require("libs.codec.src.LuaWriter").encode(manifest)
   Assert.isNil(encoded:find("NARC_", 1, true), "the normalized manifest carries no source archive symbols")
 end
 
-local function openProductionChoice(versionId, cacheFs, manifest, speciesKeys)
+local function nonzeroFrames(cacheFs)
+  local FieldUiAssetCache =
+    requireModule("libs.assets.src.field.FieldUiAssetCache", "the field-UI manifest owns the generated frame set")
+  local uiManifest =
+    assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), "the field-UI manifest loads behind the chooser")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), "the field-UI manifest validates read-only")
+  local count = assert(uiManifest.dialogueFrames.count, "the field-UI manifest carries its frame count")
+  Assert.isTrue(count > 2, "the generated frame set offers distinct nonzero frames")
+  return 1, 2
+end
+
+local function openProductionChoice(versionId, cacheFs, manifest, speciesKeys, frameIndex)
   local StarterChoiceState = requireModule(STATE_MODULE, "the starter state owns the production chooser")
   local MonCache = requireModule(MON_CACHE_MODULE, "the generated mon cache owns the retail catalog")
   local MonCatalog = requireModule(CATALOG_MODULE, "the mon catalog names the retail trio")
@@ -108,7 +148,7 @@ local function openProductionChoice(versionId, cacheFs, manifest, speciesKeys)
     end,
     date = { year = 2000, month = 1, day = 1 },
   })
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = cacheFs })
+  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = cacheFs, frameIndex = frameIndex or 1 })
   speciesKeys = speciesKeys or { "CHIKORITA", "CYNDAQUIL", "TOTODILE" }
   local candidates = {}
   for _, key in ipairs(speciesKeys) do
@@ -499,9 +539,9 @@ function T.balls_ride_the_source_ring_with_separate_touch_centers(scope, context
     local manifest = loadManifest(cacheModule, cacheFs)
     local layout = manifest.scene and manifest.scene.ballLayout
     Assert.notNil(layout, versionId .. " scene carries the source ball ring layout")
-    Assert.equal(layout.radius, 32, versionId .. " ring radius matches the source model")
-    Assert.equal(layout.modelY, 14, versionId .. " model origins sit at the source height")
-    Assert.equal(layout.touchYOffsetY, 13, versionId .. " touch centers sit above the model origins")
+    Assert.equal(layout.radius, 2, versionId .. " ring radius matches the normalized source model")
+    Assert.equal(layout.modelY, 0.875, versionId .. " model origins sit at the normalized source height")
+    Assert.equal(layout.touchYOffsetY, 0.8125, versionId .. " touch centers sit above the model origins")
     Assert.deepEqual(layout.slotAnglesDegrees, { 0, 120, 240 }, versionId .. " slots are one step apart on the ring")
 
     local host = openProductionChoice(versionId, cacheFs, manifest)
@@ -1328,6 +1368,326 @@ function T.production_chooser_delegates_prepared_lines_to_the_field_renderer(sco
     for _, call in ipairs(inspectedLines) do
       assertPreparedLineCall(call, versionId, "the inspected message")
     end
+    host:dispose()
+  end
+end
+
+local function driveToBackOut(host, versionId)
+  Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+  Assert.isNil(host:confirm(), versionId .. " second activation starts the zoom path, not the lock")
+  Assert.isTrue(
+    stepHostUntil(host, function()
+      return snapshotOf(host, versionId).selectionState == "confirm"
+    end, 1024),
+    versionId .. " the zoom path reaches confirmation"
+  )
+  host:cancel()
+  Assert.equal(snapshotOf(host, versionId).transition, "backOut", versionId .. " cancellation starts the return path")
+end
+
+-- A 520x192 host maps both logical surfaces 1:1 onto source pixels: the
+-- layout scale resolves to exactly 1, the machine surface sits at the canvas
+-- origin, and the info surface follows after the 8-pixel host gap.
+local EXACT_WIDTH = 520
+local EXACT_HEIGHT = 192
+
+---@param host table production starter state while open
+---@param versionId string
+---@return table machineRect, table infoRect host rectangles in canvas pixels
+local function exactRects(host, versionId)
+  local machine = assert(host._machine and host._machine.rect, versionId .. " lays out the machine surface")
+  local info = assert(host._info and host._info.rect, versionId .. " lays out the info surface")
+  for _, probe in ipairs({
+    { rect = machine, expected = { x = 0, y = 0, width = 256, height = 192 }, what = "machine" },
+    { rect = info, expected = { x = 264, y = 0, width = 256, height = 192 }, what = "info" },
+  }) do
+    for _, field in ipairs({ "x", "y", "width", "height" }) do
+      Assert.near(
+        probe.rect[field],
+        probe.expected[field],
+        1e-9,
+        versionId .. " the " .. probe.what .. " surface maps 1:1 onto source " .. field
+      )
+    end
+  end
+  return machine, info
+end
+
+local function quietProvider()
+  local _, provider = recordingText()
+  return provider
+end
+
+---@param first table love ImageData under test
+---@param second table love ImageData under test
+---@param x0 integer canvas left edge of the rectangle
+---@param y0 integer canvas top edge of the rectangle
+---@param width integer rectangle width in canvas pixels
+---@param height integer rectangle height in canvas pixels
+---@return integer changed pixels inside the canvas rectangle
+local function regionDistance(first, second, x0, y0, width, height)
+  local changed = 0
+  for y = y0, y0 + height - 1 do
+    for x = x0, x0 + width - 1 do
+      local r1, g1, b1 = first:getPixel(x, y)
+      local r2, g2, b2 = second:getPixel(x, y)
+      if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0.03 then
+        changed = changed + 1
+      end
+    end
+  end
+  return changed
+end
+
+---@param cacheFs table generated-asset filesystem behind the version
+---@param path string cache-relative image path
+---@return table love ImageData of the generated raster
+local function decodedArt(cacheFs, path)
+  local bytes = assert(cacheFs:read(path), "the cache carries " .. path)
+  return love.image.newImageData(love.filesystem.newFileData(bytes, path))
+end
+
+-- An opaque probe where the generated layers disagree decisively, so the
+-- blended draw pixel proves the overlay coefficient instead of the backdrop.
+---@param base table love ImageData of the decoded info base layer
+---@param overlay table love ImageData of the decoded info overlay layer
+---@return integer?, integer?, number[]?, number[]?
+local function blendProbe(base, overlay)
+  for y = 0, REFERENCE_HEIGHT - 1, 4 do
+    for x = 0, REFERENCE_WIDTH - 1, 4 do
+      local br, bg, bb, ba = base:getPixel(x, y)
+      local r2, g2, b2, oa = overlay:getPixel(x, y)
+      if ba > 0.99 and oa > 0.99 then
+        if math.abs(br - r2) + math.abs(bg - g2) + math.abs(bb - b2) > 0.9 then
+          return x, y, { br, bg, bb }, { r2, g2, b2 }
+        end
+      end
+    end
+  end
+  return nil, nil, nil, nil
+end
+
+function T.machine_clear_and_info_artwork_follow_source_visibility(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local frameOne = nonzeroFrames(cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, manifest, nil, frameOne)
+    host:resize(EXACT_WIDTH, EXACT_HEIGHT)
+    exactRects(host, versionId)
+    local clear = manifest.surfaces.machine.clearColor
+
+    local nullImage = scope:own(drawRecorded(host, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    -- The corrected table fills the machine viewport, so no sky pixel remains
+    -- to probe: the source clear is proven where it is configured, on the
+    -- starter-owned renderer after a production draw, instead of the generic
+    -- opaque-black default.
+    local presentation = presentationOf(host, versionId)
+    local rendererClear = assert(
+      presentation._renderer and presentation._renderer.gxRenderer.clearColor,
+      versionId .. " the realized machine renderer carries its clear color"
+    )
+    Assert.deepEqual(
+      { rendererClear[1], rendererClear[2], rendererClear[3], rendererClear[4] },
+      { clear.r, clear.g, clear.b, clear.a },
+      versionId .. " the machine renderer clears to the source rear-plane color instead of black"
+    )
+
+    Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+    local inspectImage = scope:own(drawRecorded(host, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    Assert.isTrue(
+      regionDistance(nullImage, inspectImage, 264, 0, 256, 150) > 1500,
+      versionId .. " inspection presents the source info artwork above the message box"
+    )
+
+    Assert.isNil(host:confirm(), versionId .. " second activation starts the zoom path, not the lock")
+    Assert.equal(snapshotOf(host, versionId).transition, "zoomIn", versionId .. " the zoom path is travelling")
+    local zoomImage = scope:own(drawRecorded(host, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    Assert.isTrue(
+      regionDistance(nullImage, zoomImage, 264, 0, 256, 55) < 300,
+      versionId .. " the zoom path hides the info artwork above the portrait slot"
+    )
+
+    driveToBackOut(host, versionId)
+    local backImage = scope:own(drawRecorded(host, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    Assert.isTrue(
+      regionDistance(nullImage, backImage, 264, 0, 256, 150) < 600,
+      versionId .. " the return path hides both the info artwork and the portrait"
+    )
+    -- The zoom and return states both hide the artwork, so their difference
+    -- isolates the portrait: visible through the zoom, gone on the way back.
+    Assert.isTrue(
+      regionDistance(zoomImage, backImage, 264 + 88, 56, 80, 80) > 800,
+      versionId .. " the selected portrait stays visible through the zoom path"
+    )
+
+    local base = decodedArt(cacheFs, manifest.backgrounds.info.base.image)
+    local overlay = decodedArt(cacheFs, manifest.backgrounds.info.overlay.image)
+    local probeX, probeY, baseRgb, overlayRgb = blendProbe(base, overlay)
+    Assert.notNil(probeX, versionId .. " the generated layers offer an opaque blend probe")
+    local red, green, blue = inspectImage:getPixel(264 + assert(probeX), assert(probeY))
+    local alpha = manifest.backgrounds.info.overlayAlpha
+    local baseChannels = assert(baseRgb, versionId .. " the blend probe carries the base channels")
+    local overlayChannels = assert(overlayRgb, versionId .. " the blend probe carries the overlay channels")
+    local expected = {
+      baseChannels[1] * (1 - alpha) + overlayChannels[1] * alpha,
+      baseChannels[2] * (1 - alpha) + overlayChannels[2] * alpha,
+      baseChannels[3] * (1 - alpha) + overlayChannels[3] * alpha,
+    }
+    Assert.isTrue(
+      math.abs(red - expected[1]) < 0.12
+        and math.abs(green - expected[2]) < 0.12
+        and math.abs(blue - expected[3]) < 0.12,
+      versionId .. " the overlay blends at exactly the source coefficient"
+    )
+    host:dispose()
+  end
+end
+
+function T.prompt_message_portrait_use_source_regions_and_frame_policy(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local frameOne, frameTwo = nonzeroFrames(cacheFs)
+    local first = openProductionChoice(versionId, cacheFs, manifest, nil, frameOne)
+    first:resize(EXACT_WIDTH, EXACT_HEIGHT)
+    exactRects(first, versionId)
+
+    Assert.isNil(first:confirm(), versionId .. " first activation inspects instead of publishing")
+    local lines, markers, provider = recordingLines()
+    scope:own(drawRecorded(first, provider, EXACT_WIDTH, EXACT_HEIGHT))
+    Assert.equal(#markers, 0, versionId .. " the inspected state draws no marker string")
+    local promptCount = #manifest.messages.bottom.normal.lines
+    Assert.isTrue(#lines >= promptCount + 1, versionId .. " both the prompt and the message reach the renderer")
+    local machineFirst = lines[1]
+    local infoFirst = lines[promptCount + 1]
+    Assert.deepEqual(
+      { x = machineFirst.x, y = machineFirst.y },
+      { x = 8, y = 152 },
+      versionId .. " the machine prompt text starts at the source origin without an inset"
+    )
+    Assert.deepEqual(
+      { x = infoFirst.x, y = infoFirst.y },
+      { x = 16, y = 152 },
+      versionId .. " the info message text starts at the source origin without an inset"
+    )
+
+    local second = openProductionChoice(versionId, cacheFs, manifest, nil, frameTwo)
+    second:confirm()
+    local imageOne = scope:own(drawRecorded(first, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    local imageTwo = scope:own(drawRecorded(second, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    Assert.isTrue(
+      regionDistance(imageOne, imageTwo, 8, 152, 232, 32) < 40,
+      versionId .. " the machine prompt carries no user frame, so it never follows the frame choice"
+    )
+    -- The prompt band shows the machine scene instead of an opaque fill: with
+    -- the black test background, any window fill would read black here.
+    local promptSum, promptPixels = 0, 0
+    for y = 152, 183 do
+      for x = 8, 239 do
+        local red, green, blue = imageOne:getPixel(x, y)
+        promptSum = promptSum + (red + green + blue) / 3
+        promptPixels = promptPixels + 1
+      end
+    end
+    Assert.isTrue(
+      promptSum / promptPixels > 0.08,
+      versionId .. " the machine prompt leaves the scene behind its text uncovered"
+    )
+    -- The frame chrome extends one tile beyond the message box on every side,
+    -- so the framed comparison covers the chromed border, not just the fill.
+    Assert.isTrue(
+      regionDistance(imageOne, imageTwo, 264 + 8, 144, 232, 48) > 500,
+      versionId .. " the info message carries the configured frame"
+    )
+
+    Assert.isNil(second:confirm(), versionId .. " second activation starts the zoom path, not the lock")
+    local zoomImage = scope:own(drawRecorded(second, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    Assert.isTrue(
+      stepHostUntil(second, function()
+        return snapshotOf(second, versionId).selectionState == "confirm"
+      end, 1024),
+      versionId .. " the zoom path reaches confirmation"
+    )
+    second:cancel()
+    Assert.equal(
+      snapshotOf(second, versionId).transition,
+      "backOut",
+      versionId .. " cancellation starts the return path"
+    )
+    local backImage = scope:own(drawRecorded(second, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+    -- Neither state draws the artwork, so their difference isolates the
+    -- portrait at its source slot.
+    Assert.isTrue(
+      regionDistance(zoomImage, backImage, 264 + 88, 56, 80, 80) > 800,
+      versionId .. " the portrait occupies the source slot while the zoom hides the artwork"
+    )
+    Assert.isTrue(
+      regionDistance(zoomImage, backImage, 264 + 80, 138, 96, 12) < 200,
+      versionId .. " no stale portrait reaches below the source slot"
+    )
+    first:dispose()
+    second:dispose()
+  end
+end
+
+function T.model_extent_matches_the_normalized_source_scene(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the retail scene needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local frameOne = nonzeroFrames(cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, manifest, nil, frameOne)
+    host:resize(EXACT_WIDTH, EXACT_HEIGHT)
+    exactRects(host, versionId)
+    local clear = manifest.surfaces.machine.clearColor
+    local image = scope:own(drawRecorded(host, quietProvider(), EXACT_WIDTH, EXACT_HEIGHT))
+
+    local covered, total = 0, 0
+    for y = 0, REFERENCE_HEIGHT - 1 do
+      for x = 0, REFERENCE_WIDTH - 1 do
+        local red, green, blue = image:getPixel(x, y)
+        total = total + 1
+        if math.abs(red - clear.r) + math.abs(green - clear.g) + math.abs(blue - clear.b) > 0.06 then
+          covered = covered + 1
+        end
+      end
+    end
+    local fraction = covered / total
+    Assert.isTrue(
+      fraction > 0.5,
+      versionId .. string.format(" the machine geometry covers a scene-scale extent (%.3f)", fraction)
+    )
+
+    local presentation = presentationOf(host, versionId)
+    local centers = presentation:ballCenters(snapshotOf(host, versionId))
+    assertThreeDistinctCenters(centers, versionId, "outside pose")
+    local span = 0
+    for first = 1, 3 do
+      for second = first + 1, 3 do
+        local dx = centers[first].x - centers[second].x
+        local dy = centers[first].y - centers[second].y
+        span = math.max(span, math.sqrt(dx * dx + dy * dy))
+      end
+    end
+    Assert.isTrue(
+      span > 40 and span < 160,
+      versionId .. string.format(" the ring spans a scene-scale width (%.1f pixels)", span)
+    )
     host:dispose()
   end
 end

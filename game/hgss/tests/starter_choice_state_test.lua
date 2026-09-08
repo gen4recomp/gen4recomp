@@ -163,9 +163,9 @@ local function semanticManifest()
     },
     scene = {
       ballLayout = {
-        radius = 32,
-        modelY = 14,
-        touchYOffsetY = 13,
+        radius = 2,
+        modelY = 0.875,
+        touchYOffsetY = 0.8125,
         slotAnglesDegrees = { 0, 120, 240 },
         inspectArcDegrees = -30.76,
       },
@@ -174,8 +174,10 @@ local function semanticManifest()
         rotationDegreesPerTick = 0.5,
       },
       camera = {
-        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
-        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
+        near = 0.25,
+        far = 16,
+        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 0.9375, z = 0.875 }, distance = 6.25 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 0.75 }, distance = 3.75 },
       },
       timing = {
         cameraTicks = 8,
@@ -202,10 +204,43 @@ local function semanticManifest()
         confirm = preparedMessage({ { 0x0401 }, { 0x0402 } }),
       },
     },
-    background = {
-      image = "assets/generated/starter_choice/backdrop.png",
-      width = 512,
-      height = 192,
+    backgrounds = {
+      host = {
+        image = "assets/generated/starter_choice/backdrop.png",
+        width = 512,
+        height = 192,
+      },
+      info = {
+        base = {
+          image = "assets/generated/starter_choice/info-base.png",
+          width = 256,
+          height = 192,
+        },
+        overlay = {
+          image = "assets/generated/starter_choice/info-overlay.png",
+          width = 256,
+          height = 192,
+        },
+        overlayAlpha = 5 / 16,
+      },
+    },
+    surfaces = {
+      machine = {
+        clearColor = { r = 1, g = 1, b = 16 / 31, a = 1 },
+        prompt = {
+          box = { x = 8, y = 152, width = 232, height = 32 },
+          textOrigin = { x = 8, y = 152 },
+          framed = false,
+        },
+      },
+      info = {
+        message = {
+          box = { x = 16, y = 152, width = 216, height = 32 },
+          textOrigin = { x = 16, y = 152 },
+          framed = true,
+        },
+        portrait = { x = 88, y = 56, width = 80, height = 80 },
+      },
     },
   }
 end
@@ -342,7 +377,7 @@ function T.blocking_task_publishes_exactly_the_selected_candidate()
   local task = assert(require(TASK_MODULE))
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs() })
+  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs(), frameIndex = 3 })
   local ctx = taskCtx(service, TRIO, host)
   local state = task.create({ node = { op = "choose_starter" } }, ctx)
 
@@ -390,7 +425,7 @@ function T.open_close_and_resize_follow_the_task_contract_without_gpu()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs() })
+  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs(), frameIndex = 3 })
   Assert.isFalse(host:isActive(), "the host starts idle")
 
   local first = service:buildStarter("CHIKORITA")
@@ -444,7 +479,7 @@ local function ballCenters(host)
 end
 
 local function openTrio(StarterChoiceState, catalog, service, cacheFs)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = cacheFs })
+  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = cacheFs, frameIndex = 3 })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
     service:buildStarter("TOTODILE"),
@@ -676,6 +711,25 @@ function T.final_lock_publishes_result_only_after_sequential_fade_ticks()
   Assert.deepEqual(hostStatus(host), { done = true, index = 1 }, "the settled lock reports the second candidate")
   host:close()
   host:dispose()
+end
+
+function T.player_frame_choice_reaches_presentation_unchanged()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs(), frameIndex = 5 })
+  host:open(0, {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("TOTODILE"),
+    service:buildStarter("EEVEE"),
+  })
+  local presentation = assert(host._presentation, "opening realizes the presentation owner")
+  Assert.equal(presentation._frameIndex, 5, "the state carries the player frame choice into the presentation")
+  host:close()
+  host:dispose()
+
+  local ok = pcall(StarterChoiceState.new, { catalog = catalog, cacheFs = readyCacheFs() })
+  Assert.isFalse(ok, "a missing frame index fails instead of hiding a wiring gap behind frame 0")
 end
 
 return { tests = T }

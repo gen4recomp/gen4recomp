@@ -133,9 +133,9 @@ local function semanticManifest()
     },
     scene = {
       ballLayout = {
-        radius = 32,
-        modelY = 14,
-        touchYOffsetY = 13,
+        radius = 2,
+        modelY = 0.875,
+        touchYOffsetY = 0.8125,
         slotAnglesDegrees = { 0, 120, 240 },
         inspectArcDegrees = -30.76,
       },
@@ -144,8 +144,10 @@ local function semanticManifest()
         rotationDegreesPerTick = 0.5,
       },
       camera = {
-        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 15, z = 14 }, distance = 100 },
-        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 12 }, distance = 60 },
+        near = 0.25,
+        far = 16,
+        out = { angleX = -49.57, perspective = 49.61, target = { x = 0, y = 0.9375, z = 0.875 }, distance = 6.25 },
+        inside = { angleX = -30.76, perspective = 45.4, target = { x = 0, y = 0, z = 0.75 }, distance = 3.75 },
       },
       timing = {
         cameraTicks = 8,
@@ -172,15 +174,48 @@ local function semanticManifest()
         confirm = preparedMessage({ { 0x0401 }, { 0x0402 } }),
       },
     },
-    background = {
-      image = "assets/generated/starter_choice/backdrop.png",
-      width = 512,
-      height = 192,
+    backgrounds = {
+      host = {
+        image = "assets/generated/starter_choice/backdrop.png",
+        width = 512,
+        height = 192,
+      },
+      info = {
+        base = {
+          image = "assets/generated/starter_choice/info-base.png",
+          width = 256,
+          height = 192,
+        },
+        overlay = {
+          image = "assets/generated/starter_choice/info-overlay.png",
+          width = 256,
+          height = 192,
+        },
+        overlayAlpha = 5 / 16,
+      },
+    },
+    surfaces = {
+      machine = {
+        clearColor = { r = 1, g = 1, b = 16 / 31, a = 1 },
+        prompt = {
+          box = { x = 8, y = 152, width = 232, height = 32 },
+          textOrigin = { x = 8, y = 152 },
+          framed = false,
+        },
+      },
+      info = {
+        message = {
+          box = { x = 16, y = 152, width = 216, height = 32 },
+          textOrigin = { x = 16, y = 152 },
+          framed = true,
+        },
+        portrait = { x = 88, y = 56, width = 80, height = 80 },
+      },
     },
   }
 end
 
-local function openPresentation()
+local function openPresentation(frameIndex)
   local Presentation = requirePresentation()
   local manifest = semanticManifest()
   Assert.isTrue(assert(require(CACHE_MODULE)).validateManifest(manifest), "the semantic fixture validates")
@@ -192,6 +227,7 @@ local function openPresentation()
       end,
     },
     portraits = { { selector = "a" }, { selector = "b" }, { selector = "c" } },
+    frameIndex = frameIndex == nil and 3 or frameIndex,
   })
   presentation:reset()
   return presentation, manifest
@@ -415,6 +451,51 @@ function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()
     "the prepared alpha is forwarded unchanged"
   )
   Assert.near(items[1].polygonAlpha, 1.0, 1e-9, "source alpha 31 reaches the renderer as 1.0")
+end
+
+function T.construction_carries_the_player_frame_choice()
+  local presentation = openPresentation(5)
+  Assert.equal(presentation._frameIndex, 5, "the presentation keeps the supplied frame index")
+
+  local Presentation = requirePresentation()
+  local manifest = semanticManifest()
+  local ok = pcall(Presentation.new, {
+    manifest = manifest,
+    cacheFs = {
+      read = function()
+        return nil
+      end,
+    },
+    portraits = { { selector = "a" }, { selector = "b" }, { selector = "c" } },
+  })
+  Assert.isFalse(ok, "a missing frame index fails instead of falling back to frame 0")
+end
+
+function T.camera_uses_normalized_clipping_planes()
+  local presentation, manifest = openPresentation()
+  local Matrix4 = assert(require("libs.math.src.Matrix4"))
+  local _, projection = presentation:cameraMatrices(snapshot({ selection = 0 }))
+  local camera = manifest.scene.camera
+  Assert.equal(camera.near, 0.25, "the fixture carries the normalized near plane")
+  Assert.equal(camera.far, 16, "the fixture carries the normalized far plane")
+  local expected = Matrix4.perspective(math.rad(camera.out.perspective), 256 / 192, camera.near, camera.far)
+  Assert.equal(#projection, #expected, "the camera projection carries every matrix element")
+  for index = 1, #expected do
+    Assert.near(
+      projection[index],
+      expected[index],
+      1e-9,
+      "projection element " .. index .. " uses the normalized planes"
+    )
+  end
+  local stale = Matrix4.perspective(math.rad(camera.out.perspective), 256 / 192, 20, 250)
+  local differs = false
+  for index = 1, #expected do
+    if math.abs(projection[index] - stale[index]) > 1e-9 then
+      differs = true
+    end
+  end
+  Assert.isTrue(differs, "the camera projection no longer uses the old local clipping range")
 end
 
 return { tests = T }

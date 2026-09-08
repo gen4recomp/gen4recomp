@@ -30,6 +30,7 @@ local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoiceP
 ---@field _topology ScreenTopology? dual-surface host topology for the current drawable size
 ---@field _machine table<string, unknown>? machine surface record for draw/hit mapping
 ---@field _info table<string, unknown>? info surface record for draw mapping
+---@field _frameIndex integer player-owned text-frame choice carried into the presentation
 ---@field _doneIndex integer? completed candidate once the lock settles
 ---@field _width number last drawable width
 ---@field _height number last drawable height
@@ -40,15 +41,20 @@ StarterChoiceState.__index = StarterChoiceState
 -- semantic coordinate.
 local SURFACE_GAP = 8
 
----@param opts { catalog: MonCatalog, cacheFs: CacheFs }
+---@param opts { catalog: MonCatalog, cacheFs: CacheFs, frameIndex: integer }
 ---@return StarterChoiceState
 function StarterChoiceState.new(opts)
   assert(type(opts) == "table", "starter choice requires its composition")
   assert(opts.catalog ~= nil, "starter choice requires the mon catalog")
   assert(opts.cacheFs ~= nil, "starter choice requires the generated-asset filesystem")
+  assert(
+    type(opts.frameIndex) == "number" and opts.frameIndex % 1 == 0 and opts.frameIndex >= 0,
+    "starter choice requires the player-owned frame index"
+  )
   return setmetatable({
     _catalog = opts.catalog,
     _cacheFs = opts.cacheFs,
+    _frameIndex = opts.frameIndex,
     _controller = nil,
     _candidates = nil,
     _names = nil,
@@ -161,6 +167,7 @@ function StarterChoiceState:open(cursor, candidates)
     manifest = manifest,
     cacheFs = cacheFs,
     portraits = descriptors,
+    frameIndex = self._frameIndex,
   })
   presentation:reset()
   self._presentation = presentation

@@ -31,6 +31,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _manifest table<string, unknown> immutable validated starter-application manifest
 ---@field _cacheFs CacheFs generated-asset filesystem the model/texture bytes read through
 ---@field _portraits table[] per-candidate portrait descriptors ({ selector }) borrowed from state
+---@field _frameIndex integer player-owned text-frame choice for the framed info message
 ---@field _machine table<string, unknown> host rectangle of the machine surface
 ---@field _info table<string, unknown> host rectangle of the info surface
 ---@field _width number last drawable width
@@ -46,6 +47,8 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _instances table<string, ModelInstance> model instances by scene role
 ---@field _staticBatches table[] prepared tabletop batches
 ---@field _backdropImage GpuAssetPool.Image? chooser backdrop image once realized
+---@field _infoBaseImage GpuAssetPool.Image? info-surface base artwork once realized
+---@field _infoOverlayImage GpuAssetPool.Image? info-surface overlay artwork once realized
 ---@field _portraitImage GpuAssetPool.Image? mon portrait atlas image once realized
 ---@field _portraitQuads table[] portrait atlas quads per candidate slot once realized
 ---@field _clipNames { turntable: string, ballEffect: string, ballRock: string[], ballOpen: string } instance play names resolved from bindings
@@ -76,23 +79,10 @@ local BALL_ROLES = { "ball1", "ball2", "ball3" }
 -- Confirm state widens the inspected ball's hit region; the spacing-derived
 -- base radius still comes from the projected scene.
 local CONFIRM_RADIUS_SCALE = 1.5
--- Clipping planes around the manifest's camera distances: the DS depth
--- resolve quantizes over this range, so it stays tight on the tabletop
--- scene (fragments tens of units out) to keep balls resting just above the
--- table surface resolving against it instead of losing the depth test.
-local CAMERA_NEAR = 20
-local CAMERA_FAR = 250
 -- White emissive register paint: the modal scene carries no field light
 -- profile, so every material emits its texture (or its base color) flat
 -- instead of resolving field lighting it was never given.
 local EMISSIVE_WHITE = 31 + 32 * 31 + 1024 * 31
-
--- Surface-local geometry in each 256x192 logical surface: the bottom prompt
--- window on the machine surface, and the message window plus the portrait
--- companion slot on the info surface.
-local PROMPT_BOX = { x = 16, y = 152, width = 216, height = 32 }
-local INFO_BOX = { x = 16, y = 12, width = 224, height = 56 }
-local PORTRAIT_SLOT = { x = 88, y = 84, width = 80, height = 80 }
 
 -- Host gap between the machine and info surfaces; placement only, never a
 -- semantic coordinate. Matches StarterChoiceState.
@@ -135,10 +125,30 @@ local function layoutSurfaces(width, height)
   }
 end
 
+-- Source plane/sprite visibility over the live controller snapshot. The info
+-- background layers follow the sub-engine BG1/BG2 enables (absent while the
+-- zoom travels, waits, or returns), while the portrait sprite survives the
+-- zoom path and hides only on the way back out.
+---@param snapshot StarterChoiceController.Snapshot
+---@return boolean
+local function infoArtworkVisible(snapshot)
+  if snapshot.selectionState == "null" then
+    return false
+  end
+  return snapshot.transition ~= "zoomIn" and snapshot.transition ~= "waitZoom" and snapshot.transition ~= "backOut"
+end
+
+---@param snapshot StarterChoiceController.Snapshot
+---@return boolean
+local function portraitVisible(snapshot)
+  return snapshot.selectionState ~= "null" and snapshot.transition ~= "backOut"
+end
+
 ---@class StarterChoicePresentation.Options
 ---@field manifest table<string, unknown> validated starter-application manifest
 ---@field cacheFs CacheFs generated-asset filesystem
 ---@field portraits table[] per-candidate portrait descriptors ({ selector: string })
+---@field frameIndex integer player-owned text-frame choice for the framed info message
 
 ---@param opts StarterChoicePresentation.Options
 ---@return StarterChoicePresentation
@@ -160,12 +170,17 @@ function StarterChoicePresentation.new(opts)
       "starter portrait descriptor " .. index .. " carries its atlas selector"
     )
   end
+  assert(
+    type(opts.frameIndex) == "number" and opts.frameIndex % 1 == 0 and opts.frameIndex >= 0,
+    "starter presentation requires the player-owned frame index"
+  )
   local reference = opts.manifest.reference
   local machine, info = layoutSurfaces(reference.width * 2, reference.height)
   local self = setmetatable({
     _manifest = opts.manifest,
     _cacheFs = opts.cacheFs,
     _portraits = opts.portraits,
+    _frameIndex = opts.frameIndex,
     _machine = machine,
     _info = info,
     _width = reference.width * 2,
@@ -181,6 +196,8 @@ function StarterChoicePresentation.new(opts)
     _instances = {},
     _staticBatches = {},
     _backdropImage = nil,
+    _infoBaseImage = nil,
+    _infoOverlayImage = nil,
     _portraitImage = nil,
     _portraitQuads = {},
     _clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" },
@@ -367,7 +384,7 @@ function StarterChoicePresentation:cameraMatrices(snapshot)
     local reference = self._manifest.reference
     self._cameraView = Matrix4.lookAt(eye, { target.x, target.y, target.z }, { 0, 1, 0 })
     self._cameraProjection =
-      Matrix4.perspective(math.rad(pose.perspective), reference.width / reference.height, CAMERA_NEAR, CAMERA_FAR)
+      Matrix4.perspective(math.rad(pose.perspective), reference.width / reference.height, camera.near, camera.far)
     self._cameraKey = key
   end
   return assert(self._cameraView, "starter camera has no view matrix"),
@@ -629,9 +646,17 @@ function StarterChoicePresentation:_ensureRealized()
           error("starter presentation cannot realize " .. role .. ": " .. tostring(roleErr), 0)
         end
       end
-      local background = self._manifest.background
-      local backdropPath = assert(background.image, "starter manifest is missing its backdrop image")
-      self._backdropImage = pool:imageFor(backdropPath, "clamp", "clamp")
+      local backgrounds = self._manifest.backgrounds
+      local hostBackdrop = assert(backgrounds.host, "starter manifest is missing its host backdrop")
+      self._backdropImage =
+        pool:imageFor(assert(hostBackdrop.image, "starter manifest is missing its backdrop image"), "clamp", "clamp")
+      local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
+      local infoBase = assert(infoArtwork.base, "starter manifest is missing its info base layer")
+      local infoOverlay = assert(infoArtwork.overlay, "starter manifest is missing its info overlay layer")
+      self._infoBaseImage =
+        pool:imageFor(assert(infoBase.image, "starter manifest is missing its info base image"), "clamp", "clamp")
+      self._infoOverlayImage =
+        pool:imageFor(assert(infoOverlay.image, "starter manifest is missing its info overlay image"), "clamp", "clamp")
       self._portraitImage = pool:imageFor(MonCache.portraitImagePath(), "clamp", "clamp")
     end)
     local uiManifest = self._cacheFs:loadLua(FieldUiAssetCache.manifestPath())
@@ -671,7 +696,8 @@ function StarterChoicePresentation:_ensureRealized()
     edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
     fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable },
   }
-  self._renderer = FieldRenderer.new()
+  local clear = self._manifest.surfaces.machine.clearColor
+  self._renderer = FieldRenderer.new({ clearColor = { clear.r, clear.g, clear.b, clear.a } })
   local animations = self._manifest.animations
   local models = self._manifest.models
   self._clipNames = {
@@ -1020,25 +1046,51 @@ function StarterChoicePresentation:_drawItems(snapshot)
   return items
 end
 
--- Draws one framed window with its prepared message inside one logical
--- surface. Each prepared line goes out through one drawLine call at the
--- field line spacing; the surface transform maps the 256x192 reference frame
--- onto the host rectangle and the shared window primitive owns the frame
--- artwork.
+-- Draws one source message inside one logical surface. A framed region
+-- fills the window background and the player-owned frame around the source
+-- box; an unframed region draws text only, leaving the scene behind it
+-- untouched. Prepared lines start exactly at the source text origin: the
+-- retail text printer starts at the window-local origin, never with an inset.
 ---@param surface table<string, unknown> host rectangle of the logical surface
----@param box table<string, unknown> content box in surface-local reference coordinates
+---@param region table<string, unknown> source message region ({ box, textOrigin, framed })
 ---@param message table<string, unknown> prepared message record ({ lines })
 ---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
-function StarterChoicePresentation:_drawSurfaceWindow(surface, box, message, text)
+function StarterChoicePresentation:_drawSurfaceMessage(surface, region, message, text)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   local reference = self._manifest.reference
   graphics.push()
   graphics.translate(surface.x, surface.y)
   graphics.scale(surface.width / reference.width, surface.height / reference.height)
-  assert(self._window, "starter presentation owns no window primitive"):drawWindow(box, 0, text:windowBackgroundColor())
-  for index, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
-    text:drawLine(line, box.x + 8, box.y + 8 + (index - 1) * FieldDialogueTheme.lineHeight)
+  if region.framed then
+    assert(self._window, "starter presentation owns no window primitive"):drawWindow(
+      region.box,
+      self._frameIndex,
+      text:windowBackgroundColor()
+    )
   end
+  for index, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
+    text:drawLine(line, region.textOrigin.x, region.textOrigin.y + (index - 1) * FieldDialogueTheme.lineHeight)
+  end
+  graphics.pop()
+end
+
+-- Draws the generated info-surface artwork at the source-local origin: the
+-- base layer opaque, then the overlay layer at exactly the source blend
+-- coefficient. Any color state the overlay changes is restored so the sibling
+-- surface and diagnostics never observe it.
+function StarterChoicePresentation:_drawInfoArtwork()
+  local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
+  local reference = self._manifest.reference
+  local info = self._info
+  graphics.push()
+  graphics.translate(info.x, info.y)
+  graphics.scale(info.width / reference.width, info.height / reference.height)
+  graphics.setColor(1, 1, 1, 1)
+  graphics.draw(assert(self._infoBaseImage, "starter presentation owns no info base layer"), 0, 0)
+  local red, green, blue, alpha = graphics.getColor()
+  graphics.setColor(1, 1, 1, self._manifest.backgrounds.info.overlayAlpha)
+  graphics.draw(assert(self._infoOverlayImage, "starter presentation owns no info overlay layer"), 0, 0)
+  graphics.setColor(red, green, blue, alpha)
   graphics.pop()
 end
 
@@ -1096,7 +1148,7 @@ function StarterChoicePresentation:draw(snapshot, view, text)
     return projection
   end
   local camera = {
-    far = CAMERA_FAR,
+    far = self._manifest.scene.camera.far,
     zoom = 1,
     view = cameraView,
     projection = cameraProjection,
@@ -1124,23 +1176,28 @@ function StarterChoicePresentation:draw(snapshot, view, text)
     infoText = messages.topInitial
     promptText = messages.bottom.normal
   end
-  self:_drawSurfaceWindow(machine, PROMPT_BOX, promptText, text)
-  self:_drawSurfaceWindow(self._info, INFO_BOX, infoText, text)
-  if snapshot.selectionState ~= "null" then
+  local surfaces = self._manifest.surfaces
+  if infoArtworkVisible(snapshot) then
+    self:_drawInfoArtwork()
+  end
+  if portraitVisible(snapshot) then
     local quad = assert(
       self._portraitQuads[snapshot.selection + 1],
       "starter presentation owns no portrait for the inspected candidate"
     )
     local atlas = assert(self._portraitImage, "starter presentation owns no portrait atlas")
     local reference = self._manifest.reference
+    local portrait = surfaces.info.portrait
     local info = self._info
     graphics.push()
     graphics.translate(info.x, info.y)
     graphics.scale(info.width / reference.width, info.height / reference.height)
     graphics.setColor(1, 1, 1, 1)
-    graphics.draw(atlas, quad, PORTRAIT_SLOT.x, PORTRAIT_SLOT.y)
+    graphics.draw(atlas, quad, portrait.x, portrait.y)
     graphics.pop()
   end
+  self:_drawSurfaceMessage(machine, surfaces.machine.prompt, promptText, text)
+  self:_drawSurfaceMessage(self._info, surfaces.info.message, infoText, text)
   local timing = self._manifest.scene.timing
   self:_drawSurfaceFade(self._info, self._infoFade / timing.infoFadeTicks)
   self:_drawSurfaceFade(self._machine, self._machineFade / timing.machineFadeTicks)
@@ -1166,6 +1223,8 @@ function StarterChoicePresentation:_releaseGpu()
   self._instances = {}
   self._staticBatches = {}
   self._backdropImage = nil
+  self._infoBaseImage = nil
+  self._infoOverlayImage = nil
   self._portraitImage = nil
   self._portraitQuads = {}
   self._clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" }

@@ -887,6 +887,7 @@ function FieldRuntime:_load()
     self.starterChoice = require("game.hgss.src.starters.StarterChoiceState").new({
       catalog = self.monCatalog,
       cacheFs = cacheFs,
+      frameIndex = self.playerData.options.textFrame,
     })
     self.actionKeys = actionBindings()
     self.cancelKeys = cancelBindings()
