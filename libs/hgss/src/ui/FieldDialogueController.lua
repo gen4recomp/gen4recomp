@@ -43,7 +43,10 @@ FieldDialogueController.__index = FieldDialogueController
 
 -- Pages whose breakKind asks the reader for Action ("prompt", "page") wait;
 -- "line" and "overflow" auto-scroll into the next page the way the DS scrolls
--- a full box. "eos" waits for the final close.
+-- a full box. "eos" waits for the final close. A boundary on the final page
+-- always waits for close: there is no next page to continue to, so even a
+-- trailing prompt/page/scroll/line break ends the message on its revealed
+-- window instead of continuing into nothing.
 
 ---@param page DialogueLayout.Page
 ---@return boolean
@@ -53,6 +56,18 @@ local function waitsForAction(page)
     or page.breakKind == "clear"
     or page.breakKind == "scroll"
     or page.breakKind == "eos"
+end
+
+---@param page DialogueLayout.Page
+---@return "clear"|"scroll"|nil
+local function continuationKind(page)
+  if page.breakKind == "prompt" or page.breakKind == "clear" then
+    return "clear"
+  elseif page.breakKind == "page" or page.breakKind == "scroll" then
+    return "scroll"
+  else
+    return nil
+  end
 end
 
 ---@param page DialogueLayout.Page
@@ -191,13 +206,9 @@ end
 function FieldDialogueController:status()
   local page = self._pages and self._pages[self._pageIndex]
   local waiting = self._state == "WAITING_BOUNDARY" or self._state == "WAITING_CLOSE"
-  local continuationKind = nil
+  local resolvedContinuation = nil
   if waiting and page then
-    if page.breakKind == "prompt" or page.breakKind == "clear" then
-      continuationKind = "clear"
-    elseif page.breakKind == "page" or page.breakKind == "scroll" then
-      continuationKind = "scroll"
-    end
+    resolvedContinuation = continuationKind(page)
   end
   local lines
   local scrollLines
@@ -225,7 +236,7 @@ function FieldDialogueController:status()
     revealedGlyphs = self._revealed,
     pageGlyphCount = page and self._pageGlyphs[self._pageIndex] or 0,
     waiting = waiting,
-    continuationKind = continuationKind,
+    continuationKind = resolvedContinuation,
     cursorPhase = waiting and self._cursorCycle[self._cursorCycleIndex] or nil,
     warnings = self._warnings or {},
     visibleLines = lines,
@@ -478,14 +489,17 @@ end
 ---@return nil
 function FieldDialogueController:_enterWait()
   local page = self._pages[self._pageIndex]
-  local state = page.breakKind == "eos" and "WAITING_CLOSE" or "WAITING_BOUNDARY"
+  -- EOS pages are always final (tokens after the first EOS are ignored), so
+  -- the page-index rule subsumes the break-kind rule: any boundary on the
+  -- last page waits for close on its revealed window.
+  local state = (page.breakKind == "eos" or self._pageIndex >= #self._pages) and "WAITING_CLOSE" or "WAITING_BOUNDARY"
   self._state = state
   self._cursorCycleIndex = 1
   self._cursorTicksIntoPhase = 0
 end
 
 -- Called when the current page has fully revealed: prompt/page/eos pages
--- wait for Action; line/overflow pages auto-scroll into the next page.
+-- wait for Action; line/overflow pages scroll one line into the next page.
 
 ---@return nil
 function FieldDialogueController:_atPageEnd()
@@ -494,9 +508,18 @@ function FieldDialogueController:_atPageEnd()
     self:_enterWait()
     return
   end
-  -- Auto-scroll (breakKind "line" or "overflow"); keep revealing on the next
-  -- tick. Zero-glyph auto-scroll pages step through until a wait or a real
+  -- Automatic boundary (breakKind "line" or "overflow"): roll the two-line
+  -- window through the existing scroll state. Zero-glyph automatic pages
+  -- carry no line to retain, so step through them until a wait or a real
   -- reveal, bounded by the page count.
+  if self._pageGlyphs[self._pageIndex] > 0 and #self:status().visibleLines > 0 then
+    if self._pageIndex >= #self._pages then
+      self:_enterWait()
+    else
+      self:_beginScroll()
+    end
+    return
+  end
   while not waitsForAction(page) do
     if not self:_advancePage() then
       return
@@ -616,7 +639,9 @@ function FieldDialogueController:step(snapshot)
       end
       if self._state == "WAITING_BOUNDARY" then
         local page = assert(self._pages[self._pageIndex])
-        if page.breakKind == "scroll" then
+        -- WAITING_BOUNDARY implies a non-final page (_enterWait sends every
+        -- final boundary to WAITING_CLOSE), so a next page always exists here.
+        if continuationKind(page) == "scroll" then
           self:_beginScroll()
         else
           self._retainedLines = {}

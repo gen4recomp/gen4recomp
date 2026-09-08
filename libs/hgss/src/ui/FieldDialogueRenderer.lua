@@ -1,8 +1,9 @@
--- Renders the modal dialogue box into the viewport's centered 4:3 reference
--- frame: the authentic HGSS user-frame strip (the player's selected frame
--- index resolved from the generated field-UI manifest and drawn by the
--- DrawFrameAndWindow2 tilemap), the extracted glyph atlas text (ink and
--- shadow baked at import time), and a blinking continue cursor. It owns the
+-- Renders the modal dialogue box from a resolved
+-- DialoguePresentationLayout.Presentation: the host resolves policy and
+-- fitting through DialoguePresentationLayout.compute before draw(), so field
+-- play and compact hosts such as Oak share this renderer. It owns HGSS
+-- frame, glyph text, and continue-cursor drawing, not viewport selection or
+-- host-scale policy. It owns the
 -- frame strip image and builds frame quads lazily per frame index; the
 -- shared FieldTextRenderer (owned by FieldState) draws the glyph text. It
 -- draws after the 3D world pass and restores every graphics state it

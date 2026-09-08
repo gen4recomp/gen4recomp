@@ -100,6 +100,111 @@ function T.target_fixture_messages_lay_out_and_close(_, version)
   end
 end
 
+function T.page_break_retains_the_prior_bottom_line(_, version)
+  -- Bank 542 message 18 carries a real 0x25BD page break on a two-line page;
+  -- the ROM token -> layout -> controller path must scroll one line and
+  -- retain the prior bottom line instead of clearing the page.
+  local def = fontDef(version)
+  local cache = CacheFs.forVersion(version)
+  local provider = assert(FieldMessageProvider.new(cache))
+  assert(provider:acquireBank(542), "message bank cache is cold")
+  local template = assert(provider:get(542, 18))
+  local formatted = provider:format(template, { playerName = "GOLD" }, {
+    [0x0103] = function()
+      return FieldMessageProvider.asciiGlyphTokens("GOLD", def)
+    end,
+  })
+  local metrics = FieldDialogueTheme.fontMetrics(def)
+  local laid = DialogueLayout.layout(
+    formatted.tokens,
+    metrics,
+    { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
+  )
+  Assert.equal(#laid.pages, 2, "the page-break fixture lays out to two pages")
+  Assert.equal(laid.pages[1].breakKind, "page", "the fixture first boundary is a real 0x25BD page break")
+  Assert.equal(#laid.pages[1].lines, 2, "the page-break fixture first page carries two lines")
+
+  local function glyphCodes(line)
+    local tokens = line.tokens or line
+    local codes = {}
+    for _, token in ipairs(tokens) do
+      if token.kind == "glyph" then
+        codes[#codes + 1] = token.code
+      end
+    end
+    return codes
+  end
+
+  local expectedBottom = glyphCodes(laid.pages[1].lines[2])
+  Assert.isTrue(#expectedBottom > 0, "the fixture bottom line carries glyphs")
+
+  local layout = function(message)
+    return DialogueLayout.layout(
+      message.tokens,
+      metrics,
+      { width = FieldDialogueTheme.textWidth, maxLines = FieldDialogueTheme.maxLines }
+    )
+  end
+  local controller = FieldDialogueController.new({
+    layout = layout,
+    continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
+  })
+  controller:open({
+    id = "page-break-retention-542-18",
+    message = formatted,
+    allowCancel = false,
+    metadata = { bankId = 542, messageId = 18 },
+  })
+  local guard = 0
+  while controller:status().state == "OPENING" or controller:status().state == "REVEALING" do
+    controller:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 500, "the page-break fixture reveals promptly")
+  end
+  local waiting = controller:status()
+  Assert.equal(waiting.state, "WAITING_BOUNDARY")
+  Assert.equal(waiting.pageIndex, 1)
+  Assert.equal(waiting.continuationKind, "scroll")
+
+  controller:step({ actionPressed = true })
+  local entered = controller:status()
+  Assert.equal(entered.state, "SCROLLING")
+  Assert.equal(entered.pageIndex, 1, "page advances only after the scroll finishes")
+  Assert.equal(
+    entered.scrollRemaining,
+    entered.lineHeight + entered.lineSpacing,
+    "a confirmed page break scrolls exactly one line"
+  )
+
+  guard = 0
+  while controller:status().state == "SCROLLING" do
+    Assert.equal(controller:status().pageIndex, 1, "page advances only after the scroll finishes")
+    controller:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 10, "one-line scroll finishes on cadence")
+  end
+  local settled = controller:status()
+  Assert.equal(settled.state, "REVEALING")
+  Assert.equal(settled.pageIndex, 2)
+  Assert.equal(settled.revealedGlyphs, 0, "next page starts unrevealed")
+  Assert.equal(#settled.visibleLines, 1, "retained bottom line is the new top line")
+  Assert.deepEqual(glyphCodes(settled.visibleLines[1]), expectedBottom, "the prior bottom line is retained")
+
+  guard = 0
+  while controller:status().state == "REVEALING" do
+    controller:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 500, "next page reveals promptly")
+  end
+  local revealed = controller:status()
+  Assert.isTrue(revealed.waiting, "scrolled page reveals to its wait")
+  Assert.equal(revealed.state, "WAITING_CLOSE", "the trailing prompt boundary closes the message")
+  Assert.equal(revealed.continuationKind, "clear", "the trailing prompt boundary keeps its clear kind")
+  Assert.equal(#revealed.visibleLines, 2, "settled window shows two lines")
+  Assert.deepEqual(glyphCodes(revealed.visibleLines[1]), expectedBottom, "settled top line is the retained line")
+  provider:releaseBank(542)
+end
+
 function T.target_lines_stay_inside_the_reference_text_width(_, version)
   local def = fontDef(version)
   local cache = CacheFs.forVersion(version)
