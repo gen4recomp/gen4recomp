@@ -361,6 +361,7 @@ function FieldState:draw()
     self:_drawScriptScreenFadeIfNeeded()
     return
   end
+  self:_drawBackdrop(width, height)
   local alpha = self.runtime.session:renderAlpha()
   resources.renderer:draw(
     self.runtime.runtimeMap.sceneRuntime,
@@ -513,6 +514,48 @@ function FieldState:_drawScriptScreenFadeIfNeeded()
     lg.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
   end
   lg.setColor(prevR, prevG, prevB, prevA)
+end
+
+-- The field backdrop: host pixels outside worldViewport are painted opaque
+-- black before the world renders, so letterboxed surfaces stay black
+-- instead of showing the application background color. World pixels beyond
+-- map coverage stay black through the field renderer's black clear color.
+-- Only the outside strips are painted, so a full-window worldViewport draws
+-- nothing here.
+---@param width number
+---@param height number
+function FieldState:_drawBackdrop(width, height)
+  local viewport = self.runtime and self.runtime.viewport
+  local world = viewport and viewport.worldViewport
+  if type(world) ~= "table" or type(world.x) ~= "number" or type(world.width) ~= "number" then
+    local lgFallback = love.graphics
+    lgFallback.setColor(0, 0, 0, 1)
+    lgFallback.rectangle("fill", 0, 0, width, height)
+    return
+  end
+  local lg = love.graphics
+  local hasTop = world.y > 0
+  local bottomY = world.y + world.height
+  local hasBottom = bottomY < height
+  local hasLeft = world.x > 0
+  local rightX = world.x + world.width
+  local hasRight = rightX < width
+  if not (hasTop or hasBottom or hasLeft or hasRight) then
+    return
+  end
+  lg.setColor(0, 0, 0, 1)
+  if hasTop then
+    lg.rectangle("fill", 0, 0, width, world.y)
+  end
+  if hasBottom then
+    lg.rectangle("fill", 0, bottomY, width, height - bottomY)
+  end
+  if hasLeft then
+    lg.rectangle("fill", 0, world.y, world.x, world.height)
+  end
+  if hasRight then
+    lg.rectangle("fill", rightX, world.y, width - rightX, world.height)
+  end
 end
 
 -- The one-shot covered-entry overlay: full current presentation surface at

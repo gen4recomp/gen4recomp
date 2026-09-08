@@ -117,11 +117,8 @@ local function drawRoundedShape(graphics, descriptor)
   graphics.rectangle("fill", rectValue.x, rectValue.y, rectValue.width, rectValue.height, radius, radius)
 end
 
-local function drawRoundedFaceTop(graphics, face)
-  local rectValue = face.rect
-  local splitY = face.splitY
-  local radius = face.cornerRadius
-  assert(radius ~= nil, "button face corner radius is required")
+local function drawRoundedTopPortion(graphics, rectValue, radius, splitY)
+  assert(radius ~= nil, "button corner radius is required")
   if radius == 0 then
     graphics.rectangle("fill", rectValue.x, rectValue.y, rectValue.width, splitY - rectValue.y)
     return
@@ -156,12 +153,24 @@ function Button.draw(graphics, button, palette)
   drawRoundedShape(graphics, button.border)
   graphics.setColor(rim[1], rim[2], rim[3], rim[4])
   drawRoundedShape(graphics, button.rim)
-  graphics.setColor(innerBorder[1], innerBorder[2], innerBorder[3], innerBorder[4])
+  -- The inner border stops at the face midway point: its base is the dark
+  -- face color and only the top portion keeps the intermediate color, the
+  -- same split the face itself uses below.
+  local innerBorderShape = assert(button.innerBorder, "resolved button inner border is required")
+  local innerRect = assert(innerBorderShape.rect, "resolved button inner border rectangle is required")
+  local innerRadius = assert(innerBorderShape.cornerRadius, "button inner border corner radius is required")
+  local faceShape = assert(button.face, "resolved button face is required")
+  local splitY = assert(faceShape.splitY, "resolved button face split is required")
+  graphics.setColor(faceBottom[1], faceBottom[2], faceBottom[3], faceBottom[4])
   drawRoundedShape(graphics, button.innerBorder)
+  graphics.setColor(innerBorder[1], innerBorder[2], innerBorder[3], innerBorder[4])
+  drawRoundedTopPortion(graphics, innerRect, innerRadius, splitY)
   graphics.setColor(faceBottom[1], faceBottom[2], faceBottom[3], faceBottom[4])
   drawRoundedShape(graphics, button.face)
   graphics.setColor(faceTop[1], faceTop[2], faceTop[3], faceTop[4])
-  drawRoundedFaceTop(graphics, button.face)
+  local faceRect = assert(faceShape.rect, "resolved button face rectangle is required")
+  local faceRadius = assert(faceShape.cornerRadius, "button face corner radius is required")
+  drawRoundedTopPortion(graphics, faceRect, faceRadius, splitY)
 end
 
 ---@param button table<string, unknown>

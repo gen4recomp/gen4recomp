@@ -137,7 +137,7 @@ function T.preserves_focus_and_supports_one_role_override()
     draw = function() end,
   }
   TextButton.draw(g3, button, { label = "Yes", selected = true, text = text3, colors = { faceTop = { 0, 0, 1, 1 } } })
-  Assert.equal(calls3.setColor[5][3], 1)
+  Assert.equal(calls3.setColor[6][3], 1)
   Assert.equal(calls3.setColor[1][1], 66 / 255)
 end
 
@@ -380,9 +380,10 @@ end
 function T.face_divider_is_source_pixel_chrome()
   local TextButton = textButtonModule()
   local function findDivider(calls, button)
-    local face = assert(button.face)
-    local expectedX, expectedY, expectedW = face.rect.x, face.splitY, face.rect.width
-    local expectedH = button.scale
+    local innerRect = assert(assert(button.innerBorder).rect)
+    local expectedX, expectedW = innerRect.x, innerRect.width
+    local expectedH = 2 * button.scale
+    local expectedY = assert(button.face).splitY - button.scale
     local innerR, innerG, innerB = 25 / 255, 189 / 255, 197 / 255
     for _, r in ipairs(calls.rectangles) do
       if r.mode == "fill" and r.w == expectedW and r.h == expectedH and r.x == expectedX and r.y == expectedY then
@@ -413,10 +414,45 @@ function T.face_divider_is_source_pixel_chrome()
   local divider1 = findDivider(calls1, button1)
   Assert.notNil(divider1, "scale 1 divider must be present at face split with innerBorder color")
   assert(divider1)
-  Assert.equal(divider1.w, button1.face.rect.width)
-  Assert.equal(divider1.h, 1)
-  Assert.equal(divider1.x, button1.face.rect.x)
-  Assert.equal(divider1.y, button1.face.splitY)
+  Assert.equal(divider1.w, button1.innerBorder.rect.width)
+  Assert.equal(divider1.h, 2)
+  Assert.equal(divider1.x, button1.innerBorder.rect.x)
+  Assert.equal(divider1.y, button1.face.splitY - 1)
+  Assert.equal(
+    divider1.y + divider1.h,
+    button1.face.splitY + 1,
+    "divider must straddle the split by one scale each way across the full inner width"
+  )
+  -- The source inner border stops at the midway point: no intermediate-color
+  -- fill may extend past the divider's bottom edge into the dark half. The
+  -- ring's top portion ends exactly at the split; only the divider reaches
+  -- one scale below it.
+  local innerR2, innerG2, innerB2 = 25 / 255, 189 / 255, 197 / 255
+  local function isInner(color)
+    return math.abs(color[1] - innerR2) < 1e-6
+      and math.abs(color[2] - innerG2) < 1e-6
+      and math.abs(color[3] - innerB2) < 1e-6
+  end
+  for _, r in ipairs(calls1.rectangles) do
+    if r.mode == "fill" and isInner(r.color) then
+      Assert.isTrue(r.y + r.h <= button1.face.splitY + 1 + 1e-9, "intermediate must stop at the divider bottom edge")
+    end
+  end
+  -- The intermediate ring portion terminates exactly at the split.
+  local ringTopFound = false
+  for _, r in ipairs(calls1.rectangles) do
+    if
+      r.mode == "fill"
+      and isInner(r.color)
+      and r.x == button1.innerBorder.rect.x
+      and r.y == button1.innerBorder.rect.y
+      and r.w == button1.innerBorder.rect.width
+    then
+      Assert.equal(r.y + r.h, button1.face.splitY, "the intermediate ring must stop at the midway point")
+      ringTopFound = true
+    end
+  end
+  Assert.isTrue(ringTopFound, "the intermediate ring top portion must be present down to the split")
   -- unselected must not emit focus line widths beyond the final restore
   Assert.equal(#calls1.lineWidths, 1, "unselected divider must not add line width changes")
   Assert.equal(calls1.lineWidths[1], 1)
@@ -427,10 +463,10 @@ function T.face_divider_is_source_pixel_chrome()
   local divider2 = findDivider(calls2, button2)
   Assert.notNil(divider2, "scale 2 divider must be present and scaled")
   assert(divider2)
-  Assert.equal(divider2.h, 2)
-  Assert.equal(divider2.w, button2.face.rect.width)
-  Assert.equal(divider2.x, button2.face.rect.x)
-  Assert.equal(divider2.y, button2.face.splitY)
+  Assert.equal(divider2.h, 4)
+  Assert.equal(divider2.w, button2.innerBorder.rect.width)
+  Assert.equal(divider2.x, button2.innerBorder.rect.x)
+  Assert.equal(divider2.y, button2.face.splitY - 2)
   -- selected retains divider plus focus
   local g3, calls3 = recordingGraphics()
   TextButton.draw(g3, button1, { label = "Yes", selected = true, text = textAdapter() })

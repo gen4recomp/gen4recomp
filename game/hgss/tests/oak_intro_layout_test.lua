@@ -229,9 +229,8 @@ function T.tests.gender_selection_maps_source_geometry_and_centers_portraits()
       local canvasOriginX = layout.selectorRegion.x + (layout.selectorRegion.width - 256 * canvasScale) / 2
       local canvasOriginY = layout.selectorRegion.y + (layout.selectorRegion.height - 192 * canvasScale) / 2
       Assert.near((card.x - canvasOriginX) / canvasScale, source.x)
-      Assert.near((card.y - canvasOriginY) / canvasScale, source.y)
       Assert.near(card.width / canvasScale, source.width)
-      Assert.near(card.height / canvasScale, source.height)
+      Assert.near((card.y + card.height - canvasOriginY) / canvasScale, source.y + source.height)
 
       local portrait = item.portraitRect
       local widgetValue = data.widgets[id]
@@ -815,6 +814,124 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
     first.subject.x ~= second.subject.x or first.subject.y ~= second.subject.y,
     "resize must recompute host coordinates"
   )
+end
+
+function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_it()
+  local data = manifest()
+  for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
+    local w, h = size[1], size[2]
+    local selectView = {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }
+    local selectLayout = OakIntroLayout.compute(w, h, selectView, {}, data)
+    Assert.notNil(selectLayout.dialogue, "gender_select must reserve dialogue at " .. w .. "x" .. h)
+    local dialogueRect = assert(selectLayout.dialogue).outerRect
+    Assert.isTrue(inside(dialogueRect, selectLayout.viewport))
+    Assert.isTrue(disjoint(assert(selectLayout.oakRegion), dialogueRect))
+    Assert.isTrue(disjoint(assert(selectLayout.selectorRegion), dialogueRect))
+    for gender = 0, 1 do
+      local card = assert(selectLayout.genderButtons[gender])
+      Assert.isTrue(disjoint(card.rect, dialogueRect))
+      Assert.isTrue(inside(card.rect, selectLayout.viewport))
+    end
+    Assert.isTrue(inside(assert(selectLayout.subject), selectLayout.viewport))
+
+    local confirmView = {
+      phase = "gender_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      confirmationChoice = { kind = "gender", selected = 0 },
+      oakBgScrollX = 0,
+    }
+    local confirmLayout = OakIntroLayout.compute(w, h, confirmView, {}, data)
+    Assert.notNil(confirmLayout.dialogue, "gender_confirm answer state must reserve dialogue")
+    local confirmDialogue = assert(confirmLayout.dialogue).outerRect
+    Assert.deepEqual(
+      confirmDialogue,
+      dialogueRect,
+      "dialogue geometry must be stable between selection and confirmation"
+    )
+    local profile = assert(confirmLayout.selectedProfileButton)
+    local choices = assert(confirmLayout.confirmationButtons)
+    Assert.isTrue(disjoint(profile.rect, confirmDialogue))
+    Assert.isTrue(disjoint(choices[0].rect, confirmDialogue))
+    Assert.isTrue(disjoint(choices[1].rect, confirmDialogue))
+    Assert.isTrue(inside(profile.rect, confirmLayout.viewport))
+    Assert.isTrue(inside(choices[0].rect, confirmLayout.viewport))
+    Assert.isTrue(inside(choices[1].rect, confirmLayout.viewport))
+    Assert.deepEqual(confirmLayout.oakRegion, selectLayout.oakRegion)
+    Assert.deepEqual(confirmLayout.selectorRegion, selectLayout.selectorRegion)
+
+    local transitionLayout = OakIntroLayout.compute(w, h, {
+      phase = "gender_composition_transition",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 0.5,
+      oakBgScrollX = 0,
+    }, {}, data)
+    Assert.notNil(transitionLayout.dialogue, "gender composition must reserve dialogue")
+    Assert.isTrue(disjoint(assert(transitionLayout.oakRegion), assert(transitionLayout.dialogue).outerRect))
+  end
+end
+
+function T.tests.gender_cards_keep_equal_top_and_bottom_padding_around_portraits()
+  local data = manifest()
+  for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
+    local layout = OakIntroLayout.compute(size[1], size[2], {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    for gender = 0, 1 do
+      local entry = assert(layout.genderButtons[gender])
+      local top = entry.portraitRect.y - entry.rect.y
+      local bottom = (entry.rect.y + entry.rect.height) - (entry.portraitRect.y + entry.portraitRect.height)
+      Assert.near(top, bottom, 1e-6)
+    end
+  end
+end
+
+function T.tests.name_launch_wait_keeps_dialogue_reserved_and_oak_region_stable()
+  local data = manifest()
+  for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
+    local w, h = size[1], size[2]
+    local selectLayout = OakIntroLayout.compute(w, h, {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    local launchLayout = OakIntroLayout.compute(w, h, {
+      phase = "name_launch_wait",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      nameCompositionProgress = 0,
+      oakBgScrollX = 0,
+    }, {}, data)
+    Assert.notNil(launchLayout.dialogue, "name_launch_wait must reserve dialogue at " .. w .. "x" .. h)
+    Assert.deepEqual(
+      assert(launchLayout.dialogue).outerRect,
+      assert(selectLayout.dialogue).outerRect,
+      "dialogue geometry must be stable into name launch wait"
+    )
+    Assert.deepEqual(launchLayout.oakRegion, selectLayout.oakRegion)
+    Assert.deepEqual(launchLayout.selectorRegion, selectLayout.selectorRegion)
+  end
 end
 
 return T

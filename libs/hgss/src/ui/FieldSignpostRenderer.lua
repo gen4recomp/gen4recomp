@@ -290,17 +290,16 @@ function FieldSignpostRenderer:_drawFrame(status, graphicRegion, wipe, typeEntry
   end
 end
 
--- Draws the signpost into viewport.referenceFrame at the field logical pixel
--- scale (viewport:logicalPixelScale(camera.zoom)). No-op (and no state
--- touched) when the controller is inactive or this renderer is disposed.
--- Restores canvas, shader, scissor, blend, depth, wireframe, cull, and color
--- afterwards so the HUD and host overlays draw normally. The fieldScale is
--- presentation state, not controller state; it bottom-centers the 256x192
--- surface and matches the world logical pixel scale. The wipe offset stays
--- in logical pixels so it naturally scales with the surface.
+-- Draws the signpost fitted inside the real world viewport, mirroring the
+-- dialogue fit: the field logical pixel scale caps, never forces, the drawn
+-- scale, and the shrunken 256x192 surface stays bottom-centered. No-op (and
+-- no state touched) when the controller is inactive or this renderer is
+-- disposed. Restores canvas, shader, scissor, blend, depth, wireframe, cull,
+-- and color afterwards so the HUD and host overlays draw normally. The wipe
+-- offset stays in logical pixels so it naturally scales with the surface.
 
 ---@param controller FieldSignpostController
----@param viewport { referenceFrame: FieldDialogueTheme.Rect }
+---@param viewport { referenceFrame: FieldDialogueTheme.Rect, worldViewport?: FieldDialogueTheme.Rect }
 ---@param alpha number? session render interpolation factor, clamped into [0, 1]
 ---@param fieldScale number field logical pixel scale (viewport:logicalPixelScale(camera.zoom))
 function FieldSignpostRenderer:draw(controller, viewport, alpha, fieldScale)
@@ -326,12 +325,21 @@ function FieldSignpostRenderer:draw(controller, viewport, alpha, fieldScale)
     -- Everything draws in reference-canvas coordinates under one
     -- translate(origin) + scale transform; the per-type geometry from the
     -- style catalogue is already reference-space, so nothing is scaled twice.
-    local ref = viewport.referenceFrame
+    -- The real world viewport bounds the 256x192 surface: roomy hosts keep
+    -- the exact field scale, small hosts shrink to fit, always
+    -- bottom-centered like the dialogue strip.
+    local bounds = viewport.worldViewport
+    if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
+      bounds = viewport.referenceFrame
+    end
+    bounds = assert(bounds, "FieldSignpostRenderer:draw requires viewport bounds")
+    local scale = math.min(fieldScale, bounds.width / 256, bounds.height / 192)
+    assert(scale > 0, "FieldSignpostRenderer:draw signpost does not fit its bounds")
     local layout = {
-      scale = fieldScale,
+      scale = scale,
       origin = {
-        x = ref.x + (ref.width - 256 * fieldScale) / 2,
-        y = ref.y + ref.height - 192 * fieldScale,
+        x = bounds.x + (bounds.width - 256 * scale) / 2,
+        y = bounds.y + bounds.height - 192 * scale,
       },
     }
     lg.translate(layout.origin.x, layout.origin.y)

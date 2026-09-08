@@ -484,9 +484,9 @@ function T.page_break_scrolls_and_retains_the_prior_bottom_line()
   )
 end
 
--- A boundary on the final page always waits for close: the 3-line window
--- [A, B] scrolls to [B, C], and [B, C] closes the message instead of
--- scrolling a blank line into view.
+-- A final page break still executes its retail scroll: the 3-line window
+-- [A, B] scrolls to [B, C], and confirming [B, C] scrolls once more before
+-- finishing automatically because EOS follows, without a second confirmation.
 function T.final_page_break_closes_from_its_revealed_window()
   local completed = 0
   local c = controller({
@@ -498,31 +498,39 @@ function T.final_page_break_closes_from_its_revealed_window()
     completed = completed + 1
   end)
   local guard = 0
-  while not c:status().waiting do
+  while c:status().state == "OPENING" or c:status().state == "REVEALING" or c:status().state == "SCROLLING" do
     c:step({})
-    Assert.isFalse(c:status().state == "WAITING_BOUNDARY", "no boundary precedes the final close wait")
     guard = guard + 1
     Assert.isTrue(guard < 40, "both windows reveal promptly")
   end
   local waiting = c:status()
-  Assert.equal(waiting.state, "WAITING_CLOSE", "a final boundary waits for close")
+  Assert.equal(waiting.state, "WAITING_BOUNDARY", "a final page boundary waits as a boundary")
   Assert.equal(waiting.pageIndex, 2)
-  Assert.equal(waiting.scrollRemaining, 0, "no scroll distance is travelled")
+  Assert.equal(waiting.continuationKind, "scroll", "a final page break keeps its scroll kind")
+  Assert.equal(waiting.scrollRemaining, 0, "no scroll distance is travelled before confirmation")
   Assert.equal(waiting.revealedGlyphs, 1, "the revealed window is preserved, not zeroed")
-  Assert.equal(#waiting.visibleLines, 2, "the close wait keeps both settled lines")
+  Assert.equal(#waiting.visibleLines, 2, "the boundary wait keeps both settled lines")
   Assert.equal((waiting.visibleLines[1].tokens or waiting.visibleLines[1])[1].text, "B")
   Assert.equal((waiting.visibleLines[2].tokens or waiting.visibleLines[2])[1].text, "C")
 
   c:step({ actionPressed = true })
-  Assert.equal(c:status().state, "CLOSING")
+  Assert.equal(c:status().state, "SCROLLING", "one confirmation executes the final scroll effect")
+  Assert.equal(c:status().pageIndex, 2, "final scroll does not advance to another page")
+  guard = 0
+  while c:status().state == "SCROLLING" do
+    c:step({})
+    guard = guard + 1
+    Assert.isTrue(guard < 10, "final scroll finishes on cadence")
+  end
+  Assert.equal(c:status().state, "CLOSING", "EOS follows the final scroll, so no second confirmation is needed")
   c:step({})
   Assert.equal(c:status().state, "CLOSED")
   Assert.equal(completed, 1, "the message completes exactly once")
 end
 
--- A trailing prompt break makes the final page a clear boundary, but there
--- is no next page to clear to: the full window waits for close and a single
--- confirmation closes the message instead of re-showing the same window.
+-- A trailing prompt break is a clear boundary on the final page: the full
+-- window waits as a boundary and a single confirmation executes the clear
+-- effect before finishing automatically, instead of re-showing the window.
 function T.final_prompt_boundary_closes_without_repeating_its_window()
   local completed = 0
   local c = controller({
@@ -539,13 +547,14 @@ function T.final_prompt_boundary_closes_without_repeating_its_window()
     Assert.isTrue(guard < 20, "the final window reveals promptly")
   end
   local waiting = c:status()
-  Assert.equal(waiting.state, "WAITING_CLOSE", "a final prompt boundary waits for close")
-  Assert.equal(#waiting.visibleLines, 2, "the close wait keeps the full window")
+  Assert.equal(waiting.state, "WAITING_BOUNDARY", "a final prompt boundary waits as a boundary")
+  Assert.equal(waiting.continuationKind, "clear", "a final prompt break keeps its clear kind")
+  Assert.equal(#waiting.visibleLines, 2, "the boundary wait keeps the full window")
   Assert.equal((waiting.visibleLines[1].tokens or waiting.visibleLines[1])[1].text, "A")
   Assert.equal((waiting.visibleLines[2].tokens or waiting.visibleLines[2])[1].text, "B")
 
   c:step({ actionPressed = true })
-  Assert.equal(c:status().state, "CLOSING", "one confirmation closes from the full window")
+  Assert.equal(c:status().state, "CLOSING", "one confirmation executes the clear and finishes")
   c:step({})
   Assert.equal(c:status().state, "CLOSED")
   Assert.equal(completed, 1, "the message completes exactly once")
@@ -794,9 +803,9 @@ function T.cursor_phase_is_source_animated()
     end
     c:step({})
   end
-  -- A single-page prompt message waits for close on its revealed window;
+  -- A single-page prompt message waits as a boundary on its revealed window;
   -- the cursor contract is identical at either wait.
-  Assert.equal(c:status().state, "WAITING_CLOSE")
+  Assert.equal(c:status().state, "WAITING_BOUNDARY")
   Assert.equal(c:status().cursorPhase, 0, "new wait starts at phase 0")
   local cycle = { 0, 1, 2, 1 }
   for tick = 1, 36 do

@@ -236,6 +236,20 @@ local function copyFrozenStatus(status)
   return frozen
 end
 
+-- Presentation-only retention for completed Oak questions: the gender
+-- question stays through composition/selection, and gender/name
+-- confirmations stay while their YES/NO choice is active. Greeting and
+-- exposition dialogue never sticks.
+---@param view table<string, unknown>
+---@return boolean
+local function retainsCompletedQuestion(view)
+  if view.phase == "gender_composition_transition" or view.phase == "gender_select" then
+    return true
+  end
+  local choice = view.confirmationChoice
+  return choice ~= nil and (choice.kind == "gender" or choice.kind == "name")
+end
+
 ---@param options OakIntroStateOptions
 ---@return OakIntroState
 function OakIntroState.new(options)
@@ -339,18 +353,15 @@ function OakIntroState:_stepDialogue(snapshot)
   end
   local candidate
   do
-    local view = self.controller:view()
-    if view.phase == "name_confirm" then
-      local status = dialogue:status()
-      if status.state == "CLOSING" then
-        candidate = copyFrozenStatus(status)
-      end
+    local status = dialogue:status()
+    if status.state == "CLOSING" then
+      candidate = copyFrozenStatus(status)
     end
   end
   local result = dialogue:step(snapshot)
   if candidate and not dialogue:isModal() then
     local view = self.controller:view()
-    if view.confirmationChoice and view.confirmationChoice.kind == "name" then
+    if retainsCompletedQuestion(view) then
       local frozen = candidate
       self._frozenStatus = frozen
       local function frozenIsModal()
@@ -371,10 +382,8 @@ end
 function OakIntroState:_sync()
   local view = self.controller:view()
   ---@cast view OakIntroStateView
-  if self._frozenStatus then
-    if view.phase ~= "name_confirm" or not view.confirmationChoice or view.confirmationChoice.kind ~= "name" then
-      self:_clearFrozen()
-    end
+  if self._frozenStatus and not retainsCompletedQuestion(view) then
+    self:_clearFrozen()
   end
   if
     self._frozenStatus
@@ -478,12 +487,7 @@ function OakIntroState:draw()
   if self.dialogueController and self.dialogueRenderer then
     if self.dialogueController:isModal() then
       self.dialogueRenderer:draw(self.dialogueController, view.dialoguePresentation)
-    elseif
-      view.confirmationChoice
-      and view.confirmationChoice.kind == "name"
-      and self._frozenAdapter
-      and view.dialoguePresentation
-    then
+    elseif self._frozenAdapter and view.dialoguePresentation and retainsCompletedQuestion(view) then
       self.dialogueRenderer:draw(self._frozenAdapter, view.dialoguePresentation)
     end
   end

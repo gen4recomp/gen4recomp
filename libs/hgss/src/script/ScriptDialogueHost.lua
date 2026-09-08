@@ -341,7 +341,8 @@ function ScriptDialogueHost:printProgress()
     return { pageIndex = 0, glyphIndex = 0, done = true }
   end
   local status = self._controller:status()
-  local done = status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED"
+  local finalBoundary = status.state == "WAITING_BOUNDARY" and (status.pageIndex or 0) >= (status.pageCount or 0)
+  local done = status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED" or finalBoundary
   return {
     pageIndex = math.max(0, (status.pageIndex or 1) - 1),
     glyphIndex = status.revealedGlyphs or 0,
@@ -388,8 +389,13 @@ function ScriptDialogueHost:advance(input)
   -- DialogueTask owns the final confirm edge and performs the delayed close.
   -- Passing that edge to the controller would close it early, leaving the
   -- task blocked forever waiting for an edge that has already been consumed.
-  local actionPressed = input.pressedAction == true and status.state ~= "WAITING_CLOSE"
-  local cancelPressed = input.pressedCancel == true and status.state ~= "WAITING_CLOSE"
+  -- A final prompt/page boundary counts as the final wait: it needs the one
+  -- task-owned confirmation before the delayed close, never a controller
+  -- scroll/advance.
+  local finalBoundary = status.state == "WAITING_BOUNDARY" and (status.pageIndex or 0) >= (status.pageCount or 0)
+  local finalWait = status.state == "WAITING_CLOSE" or finalBoundary
+  local actionPressed = input.pressedAction == true and not finalWait
+  local cancelPressed = input.pressedCancel == true and not finalWait
   self._controller:step({
     actionPressed = actionPressed,
     actionDown = input.actionDown == true,

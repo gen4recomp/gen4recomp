@@ -367,7 +367,12 @@ end
 ---@param destinationCoverage FieldCoverage
 ---@return integer[]
 function FieldResidencyCoordinator:_prefetchMapIdsFrom(destinationCoverage)
-  local descriptors = destinationCoverage:prefetchDescriptors()
+  local descriptors
+  if type(destinationCoverage.prefetchDescriptors) == "function" then
+    descriptors = destinationCoverage:prefetchDescriptors()
+  else
+    descriptors = destinationCoverage:committedDescriptors()
+  end
   return self:_desiredIds(descriptors)
 end
 

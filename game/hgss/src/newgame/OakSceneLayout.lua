@@ -112,6 +112,17 @@ function OakSceneLayout.nameStageAndRegions(sceneContent, dialogue, gap)
     rect(nameStage.x + oakWidth + gap, nameStage.y, choiceWidth, nameStage.height)
 end
 
+-- The usable scene above a reserved dialogue box: the full scene width from
+-- the scene top down to a gap above the dialogue. Interactive composition
+-- regions shrink into this host so the dialogue never overlays them.
+function OakSceneLayout.aboveDialogue(scene, dialogue, gap)
+  assert(dialogue ~= nil and dialogue.outerRect ~= nil, "Oak dialogue geometry is required")
+  local bottom = dialogue.outerRect.y - gap
+  local height = bottom - scene.y
+  assert(height > 0, "Oak scene above dialogue must be positive")
+  return rect(scene.x, scene.y, scene.width, height)
+end
+
 function OakSceneLayout.mode(view)
   local phase = view.phase
   return {
@@ -119,8 +130,13 @@ function OakSceneLayout.mode(view)
       or phase == "name_confirm"
       or phase == "name_composition_transition"
       or phase == "name_composition_return"
+      or phase == "name_prompt"
+      or phase == "name_launch_wait"
       or phase == "final_dialogue"
       or (phase == "gender_question" and view.nameCompositionProgress ~= nil and view.nameCompositionProgress > 0)
+      or phase == "gender_composition_transition"
+      or phase == "gender_select"
+      or phase == "gender_confirm"
       or phase == "greeting"
       or phase == "oak_welcome"
       or phase == "oak_world_inhabited"

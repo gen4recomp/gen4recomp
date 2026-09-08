@@ -43,10 +43,10 @@ FieldDialogueController.__index = FieldDialogueController
 
 -- Pages whose breakKind asks the reader for Action ("prompt", "page") wait;
 -- "line" and "overflow" auto-scroll into the next page the way the DS scrolls
--- a full box. "eos" waits for the final close. A boundary on the final page
--- always waits for close: there is no next page to continue to, so even a
--- trailing prompt/page/scroll/line break ends the message on its revealed
--- window instead of continuing into nothing.
+-- a full box. "eos" waits for the final close. A final prompt/page boundary
+-- still waits as a boundary: one confirmation executes its retail
+-- clear/scroll effect, then the message finishes automatically because EOS
+-- follows, without a second confirmation.
 
 ---@param page DialogueLayout.Page
 ---@return boolean
@@ -483,16 +483,22 @@ end
 function FieldDialogueController:_finishScroll()
   self._scrollLines = nil
   self._scrollRemaining = 0
+  if self._pageIndex >= #self._pages then
+    self._state = "CLOSING"
+    return
+  end
   self:_advancePage()
 end
 
 ---@return nil
 function FieldDialogueController:_enterWait()
   local page = self._pages[self._pageIndex]
-  -- EOS pages are always final (tokens after the first EOS are ignored), so
-  -- the page-index rule subsumes the break-kind rule: any boundary on the
-  -- last page waits for close on its revealed window.
-  local state = (page.breakKind == "eos" or self._pageIndex >= #self._pages) and "WAITING_CLOSE" or "WAITING_BOUNDARY"
+  -- Prompt/page (and their clear/scroll continuation aliases) always wait
+  -- as a boundary, even on the final page: confirming a final 0x25BC/0x25BD
+  -- still executes the retail clear/scroll effect and then finishes
+  -- automatically because EOS follows, without a second confirmation.
+  -- EOS and trailing automatic boundaries wait for close directly.
+  local state = continuationKind(page) ~= nil and "WAITING_BOUNDARY" or "WAITING_CLOSE"
   self._state = state
   self._cursorCycleIndex = 1
   self._cursorTicksIntoPhase = 0
@@ -639,10 +645,11 @@ function FieldDialogueController:step(snapshot)
       end
       if self._state == "WAITING_BOUNDARY" then
         local page = assert(self._pages[self._pageIndex])
-        -- WAITING_BOUNDARY implies a non-final page (_enterWait sends every
-        -- final boundary to WAITING_CLOSE), so a next page always exists here.
         if continuationKind(page) == "scroll" then
           self:_beginScroll()
+        elseif self._pageIndex >= #self._pages then
+          self._retainedLines = {}
+          self._state = "CLOSING"
         else
           self._retainedLines = {}
           self:_advancePage()

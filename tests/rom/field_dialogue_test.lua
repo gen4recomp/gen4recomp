@@ -198,10 +198,18 @@ function T.page_break_retains_the_prior_bottom_line(_, version)
   end
   local revealed = controller:status()
   Assert.isTrue(revealed.waiting, "scrolled page reveals to its wait")
-  Assert.equal(revealed.state, "WAITING_CLOSE", "the trailing prompt boundary closes the message")
+  Assert.equal(revealed.state, "WAITING_BOUNDARY", "the trailing prompt boundary waits as a boundary")
   Assert.equal(revealed.continuationKind, "clear", "the trailing prompt boundary keeps its clear kind")
   Assert.equal(#revealed.visibleLines, 2, "settled window shows two lines")
   Assert.deepEqual(glyphCodes(revealed.visibleLines[1]), expectedBottom, "settled top line is the retained line")
+  controller:step({ actionPressed = true })
+  Assert.equal(
+    controller:status().state,
+    "CLOSING",
+    "one confirmation executes the trailing clear and finishes without a second wait"
+  )
+  controller:step({})
+  Assert.equal(controller:status().state, "CLOSED", "trailing clear finishes the message")
   provider:releaseBank(542)
 end
 

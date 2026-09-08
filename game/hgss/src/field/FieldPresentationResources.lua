@@ -15,7 +15,6 @@ local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
-local WindowConfig = require("game.src.WindowConfig")
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
@@ -55,7 +54,7 @@ function FieldPresentationResources.new(runtime)
   local self = setmetatable({}, FieldPresentationResources)
   local ok, err = pcall(function()
     self.renderer = FieldRenderer.new({
-      clearColor = WindowConfig.BACKGROUND_COLOR,
+      clearColor = { 0, 0, 0, 1 },
       worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
     })
     local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs })

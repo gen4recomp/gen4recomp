@@ -349,21 +349,34 @@ function T.the_application_fade_paints_disjoint_surfaces_separately_and_never_th
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "rect" })
+  Assert.deepEqual(labels(sink), { "rect", "rect", "world", "rect", "rect" })
+  -- The field backdrop paints the host letterbox (window minus world
+  -- viewport) opaque black before the world; the fade paints after it.
+  Assert.deepEqual(
+    { sink[1][2], sink[1][3], sink[1][4], sink[1][5], sink[1][6], sink[1][7], sink[1][8], sink[1][9], sink[1][10] },
+    { 0, 0, 0, 1, "fill", 0, 192, 640, 288 },
+    "the backdrop covers the letterbox below the world viewport"
+  )
+  Assert.deepEqual(
+    { sink[2][2], sink[2][3], sink[2][4], sink[2][5], sink[2][6], sink[2][7], sink[2][8], sink[2][9], sink[2][10] },
+    { 0, 0, 0, 1, "fill", 256, 0, 384, 192 },
+    "the backdrop covers the letterbox right of the world viewport"
+  )
   local rects = {}
-  for i = 2, #sink do
+  for i = 4, #sink do
     rects[#rects + 1] = { sink[i][5], sink[i][6], sink[i][7], sink[i][8], sink[i][9], sink[i][10] }
   end
   Assert.deepEqual(rects[1], { 0.5, "fill", 0, 0, 256, 192 }, "the world viewport is painted in full at the fade alpha")
   Assert.deepEqual(rects[2], { 0.5, "fill", 320, 0, 256, 192 }, "the disjoint menu frame is painted separately")
-  -- The gap between the surfaces (256..320) is never covered: every painted
-  -- rectangle stays inside one of the two surfaces.
+  -- The gap between the surfaces (256..320) is never covered by the fade:
+  -- every fade rectangle stays inside one of the two surfaces. (The opaque
+  -- backdrop behind them covers the letterbox, including the gap.)
   for _, rect in ipairs(rects) do
     local x, _, w, _ = rect[3], rect[4], rect[5], rect[6]
     local covered = (x < 256 and x + w <= 256) or (x >= 320)
     Assert.isTrue(covered, "no fade rectangle may span the gap between surfaces")
   end
-  Assert.equal(#sink, 3, "no modal surface is drawn during the fade")
+  Assert.equal(#sink, 5, "backdrop, world, and fade draw; no modal surface is drawn during the fade")
 end
 
 -- A menu frame fully inside (or equal to) the world viewport adds nothing:
@@ -411,18 +424,28 @@ function T.the_application_fade_paints_only_the_non_overlapping_strip_of_a_parti
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "rect" })
+  Assert.deepEqual(labels(sink), { "rect", "rect", "world", "rect", "rect" })
+  Assert.deepEqual(
+    { sink[1][6], sink[1][7], sink[1][8], sink[1][9], sink[1][10] },
+    { "fill", 0, 192, 640, 288 },
+    "the backdrop covers the letterbox below the world viewport"
+  )
   Assert.deepEqual(
     { sink[2][6], sink[2][7], sink[2][8], sink[2][9], sink[2][10] },
+    { "fill", 256, 0, 384, 192 },
+    "the backdrop covers the letterbox right of the world viewport"
+  )
+  Assert.deepEqual(
+    { sink[4][6], sink[4][7], sink[4][8], sink[4][9], sink[4][10] },
     { "fill", 0, 0, 256, 192 },
     "the world viewport is painted in full"
   )
   Assert.deepEqual(
-    { sink[3][6], sink[3][7], sink[3][8], sink[3][9], sink[3][10] },
+    { sink[5][6], sink[5][7], sink[5][8], sink[5][9], sink[5][10] },
     { "fill", 256, 0, 256, 192 },
     "only the non-overlapping right strip of the menu frame is painted"
   )
-  Assert.equal(#sink, 3, "the overlapping band is painted exactly once")
+  Assert.equal(#sink, 5, "backdrop, world, and fade draw; the overlapping band is painted exactly once")
 end
 
 -- The same partial overlap extending past the world top and bottom paints
@@ -444,28 +467,42 @@ function T.the_application_fade_paints_the_strips_around_a_corner_overlap()
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "rect", "rect", "rect" })
+  Assert.deepEqual(labels(sink), { "rect", "rect", "world", "rect", "rect", "rect", "rect" })
+  Assert.deepEqual(
+    { sink[1][6], sink[1][7], sink[1][8], sink[1][9], sink[1][10] },
+    { "fill", 0, 192, 640, 288 },
+    "the backdrop covers the letterbox below the world viewport"
+  )
   Assert.deepEqual(
     { sink[2][6], sink[2][7], sink[2][8], sink[2][9], sink[2][10] },
+    { "fill", 256, 0, 384, 192 },
+    "the backdrop covers the letterbox right of the world viewport"
+  )
+  Assert.deepEqual(
+    { sink[4][6], sink[4][7], sink[4][8], sink[4][9], sink[4][10] },
     { "fill", 0, 0, 256, 192 },
     "the world viewport is painted in full"
   )
   Assert.deepEqual(
-    { sink[3][6], sink[3][7], sink[3][8], sink[3][9], sink[3][10] },
+    { sink[5][6], sink[5][7], sink[5][8], sink[5][9], sink[5][10] },
     { "fill", 256, -64, 256, 320 },
     "the right strip covers the menu frame outside the world width"
   )
   Assert.deepEqual(
-    { sink[4][6], sink[4][7], sink[4][8], sink[4][9], sink[4][10] },
+    { sink[6][6], sink[6][7], sink[6][8], sink[6][9], sink[6][10] },
     { "fill", 128, -64, 128, 64 },
     "the top strip covers the menu frame above the world"
   )
   Assert.deepEqual(
-    { sink[5][6], sink[5][7], sink[5][8], sink[5][9], sink[5][10] },
+    { sink[7][6], sink[7][7], sink[7][8], sink[7][9], sink[7][10] },
     { "fill", 128, 192, 128, 64 },
     "the bottom strip covers the menu frame below the world"
   )
-  Assert.equal(#sink, 5, "the overlap region is painted exactly once (by the world rect)")
+  Assert.equal(
+    #sink,
+    7,
+    "backdrop, world, and fade draw; the overlap region is painted exactly once (by the world rect)"
+  )
 end
 
 return { tests = T }

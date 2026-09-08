@@ -50,6 +50,12 @@ function OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
       height = widget.height * selectorCanvas.scale,
       scale = selectorCanvas.scale,
     }
+    -- The source card is taller above the portrait than below it; keep the
+    -- correct bottom edge fixed and lift the top so both paddings match.
+    local bottomPad = (cardRect.y + cardRect.height) - (portrait.y + portrait.height)
+    assert(bottomPad >= 0, "Oak gender portrait must fit inside its card")
+    local cardTop = portrait.y - bottomPad
+    cardRect = rect(cardRect.x, cardTop, cardRect.width, (cardRect.y + cardRect.height) - cardTop)
     entries[index - 1] = {
       key = sourceGender,
       rect = cardRect,

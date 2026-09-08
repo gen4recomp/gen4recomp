@@ -115,7 +115,8 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
     or isFinalDialogue
     or isGenderQuestion and nameProgress == 1
   if needsNameEndpoint then
-    local genderRegion = OakSceneLayout.selectorRegions(scene, gap)
+    local genderHost = OakSceneLayout.aboveDialogue(scene, assert(dialogue), gap)
+    local genderRegion = OakSceneLayout.selectorRegions(genderHost, gap)
     local genderOakRegion = genderRegion
     local genderOakRect =
       OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), genderOakRegion, 1)
@@ -130,7 +131,11 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
     end
     oakRegion, selectorRegion = nameOakRegion, nameChoiceRegion
   elseif compositionActive then
-    oakRegion, selectorRegion = OakSceneLayout.selectorRegions(scene, gap)
+    local compositionHost = scene
+    if dialogue ~= nil then
+      compositionHost = OakSceneLayout.aboveDialogue(scene, dialogue, gap)
+    end
+    oakRegion, selectorRegion = OakSceneLayout.selectorRegions(compositionHost, gap)
     if subjectId == "oak" and ordinarySubject and subjectWidget then
       selectedSubject =
         OakSceneLayout.composedOakRect(ordinarySubject, subjectWidget, oakRegion, assert(compositionProgress))

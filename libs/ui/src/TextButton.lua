@@ -107,11 +107,13 @@ end
 
 local function drawFaceDivider(graphics, button, colors)
   local scale = assert(button.scale, "text button scale is missing")
+  local innerBorder = assert(button.innerBorder, "text button inner border is missing")
+  local innerRect = assert(innerBorder.rect, "text button inner border rectangle is missing")
   local face = assert(button.face, "text button face is missing")
-  local rect = assert(face.rect, "text button face rectangle is missing")
   local splitY = assert(face.splitY, "text button face split is missing")
   graphics.setColor(colors.innerBorder[1], colors.innerBorder[2], colors.innerBorder[3], colors.innerBorder[4])
-  graphics.rectangle("fill", rect.x, splitY, rect.width, 1 * scale)
+  local dividerHeight = 2 * scale
+  graphics.rectangle("fill", innerRect.x, splitY - scale, innerRect.width, dividerHeight)
 end
 
 local function drawFocusOutline(graphics, button, colors)

@@ -97,7 +97,8 @@ function FieldWorldSwapCoordinator:prepare(resolution, facing)
     playerAvatar = runtime.playerAvatar,
   })
   local physical = (resolution.physical and resolution.physical.coverage) and resolution.physical or nil
-  local residency = assert(runtime.residency):prepareTransition(runtimeMap, physical)
+  local destinationCoverage = physical and physical.coverage or nil
+  local residency = assert(runtime.residency):prepareTransition(runtimeMap, destinationCoverage)
   return { player = player, camera = camera, playerVisual = playerVisual, physical = physical, residency = residency }
 end
 

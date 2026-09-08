@@ -201,29 +201,57 @@ function T.unselected_text_button_face_has_light_separator_dark(scope)
     local button = yes.button
     local face = assert(button.face, "button face missing")
     local scale = assert(button.scale, "button scale missing")
+    Assert.isTrue(scale >= 1, "ring sampling needs at least one host pixel per source pixel")
     local sampleX = math.floor(face.rect.x + 4 * scale)
     -- Ensure sampleX is inside face
     Assert.isTrue(sampleX >= face.rect.x and sampleX < face.rect.x + face.rect.width, "sampleX inside face")
-    local lightY = math.floor(face.splitY - 2 * scale)
-    local dividerY = math.floor(face.splitY + scale * 0.5)
+    local lightY = math.floor(face.splitY - 3 * scale)
+    local dividerTopY = math.floor(face.splitY - 0.5 * scale)
+    local dividerBottomY = math.floor(face.splitY + 0.5 * scale)
     local darkY = math.floor(face.splitY + 2 * scale)
+    -- The side inner ring stops at the midway point: intermediate above the
+    -- divider, dark below it. The bottom ring is dark as well.
+    local innerBorder = assert(button.innerBorder, "button inner border missing")
+    local ringX = math.floor(face.rect.x - 0.5 * scale)
+    Assert.isTrue(ringX >= innerBorder.rect.x and ringX < face.rect.x, "ringX inside the side inner ring")
+    local ringMidY = math.floor(face.splitY - 3 * scale)
+    local ringDarkY = math.floor(face.splitY + 3 * scale)
+    local bottomY = math.floor(face.rect.y + face.rect.height + 0.5 * scale)
     local function rgbAt(x, y)
       local r, g, b = image:getPixel(x, y)
       Assert.notNil(r, "pixel out of bounds " .. x .. "," .. y)
       return math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5)
     end
     local lr, lg, lb = rgbAt(sampleX, lightY)
-    local sr, sg, sb = rgbAt(sampleX, dividerY)
+    local topR, topG, topB = rgbAt(sampleX, dividerTopY)
+    local bottomR, bottomG, bottomB = rgbAt(sampleX, dividerBottomY)
     local dr, dg, db = rgbAt(sampleX, darkY)
+    local ringMr, ringMg, ringMb = rgbAt(ringX, ringMidY)
+    local ringDr, ringDg, ringDb = rgbAt(ringX, ringDarkY)
+    local botR, botG, botB = rgbAt(sampleX, bottomY)
     Assert.equal(lr, 49, entry.versionId .. " light face r must be 49")
     Assert.equal(lg, 222, entry.versionId .. " light face g must be 222")
     Assert.equal(lb, 230, entry.versionId .. " light face b must be 230")
-    Assert.equal(sr, 25, entry.versionId .. " separator r must be 25")
-    Assert.equal(sg, 189, entry.versionId .. " separator g must be 189")
-    Assert.equal(sb, 197, entry.versionId .. " separator b must be 197")
+    for _, channel in ipairs({
+      { topR, topG, topB, "top" },
+      { bottomR, bottomG, bottomB, "bottom" },
+    }) do
+      Assert.equal(channel[1], 25, entry.versionId .. " separator " .. channel[4] .. " r must be 25")
+      Assert.equal(channel[2], 189, entry.versionId .. " separator " .. channel[4] .. " g must be 189")
+      Assert.equal(channel[3], 197, entry.versionId .. " separator " .. channel[4] .. " b must be 197")
+    end
     Assert.equal(dr, 8, entry.versionId .. " dark face r must be 8")
     Assert.equal(dg, 156, entry.versionId .. " dark face g must be 156")
     Assert.equal(db, 165, entry.versionId .. " dark face b must be 165")
+    Assert.equal(ringMr, 25, entry.versionId .. " side ring above divider r must be 25")
+    Assert.equal(ringMg, 189, entry.versionId .. " side ring above divider g must be 189")
+    Assert.equal(ringMb, 197, entry.versionId .. " side ring above divider b must be 197")
+    Assert.equal(ringDr, 8, entry.versionId .. " side ring below divider r must be 8")
+    Assert.equal(ringDg, 156, entry.versionId .. " side ring below divider g must be 156")
+    Assert.equal(ringDb, 165, entry.versionId .. " side ring below divider b must be 165")
+    Assert.equal(botR, 8, entry.versionId .. " bottom ring r must be 8")
+    Assert.equal(botG, 156, entry.versionId .. " bottom ring g must be 156")
+    Assert.equal(botB, 165, entry.versionId .. " bottom ring b must be 165")
   end
 end
 
