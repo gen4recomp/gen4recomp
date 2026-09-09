@@ -944,7 +944,9 @@ function FollowingMonController:_driveQueue(mapId)
     local direction = assert(head.direction, "queued replay direction required")
     local speed = assert(head.speed, "queued replay speed required")
     assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown queued replay speed " .. tostring(speed))
-    self:_beginActorWalk(mapId, direction, speed)
+    if self:_beginActorWalk(mapId, direction, speed) then
+      table.remove(self._queue, 1)
+    end
     return
   end
   local position = assert(self._actors:getPosition(partnerId), "partner position is required")
@@ -955,11 +957,13 @@ function FollowingMonController:_driveQueue(mapId)
   local direction = directionFromTo(position, head)
   local speed = assert(head.speed, "queued trail speed required")
   assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown queued trail speed " .. tostring(speed))
-  self:_beginActorWalk(mapId, direction, speed)
+  if self:_beginActorWalk(mapId, direction, speed) then
+    table.remove(self._queue, 1)
+  end
 end
 
--- Advance the one in-flight trail step; commit the queued anchor only
--- when the actor movement commits successfully.
+-- Advance the one in-flight trail step; commit the actor movement when it
+-- finishes. Pending queue entries transfer only when their own walk starts.
 ---@param self FollowingMonController
 function FollowingMonController:_advanceAction()
   local action = self._action
@@ -976,9 +980,6 @@ function FollowingMonController:_advanceAction()
   self._actors:advanceScriptedAction(partnerId, progress, action.duration)
   if progress >= action.duration then
     self._actors:commitScriptedAction(partnerId)
-    if #self._queue > 0 then
-      table.remove(self._queue, 1)
-    end
     self._action = nil
   end
 end

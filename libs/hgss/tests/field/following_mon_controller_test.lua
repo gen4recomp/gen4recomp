@@ -1452,4 +1452,105 @@ function T.unrelated_actor_failure_propagates_without_remembering()
   w.mgr:dispose()
 end
 
+-- A slower remembered replay must not discard a later queued replay when it
+-- completes: two fast player steps behind a normal remembered walk execute
+-- both follower replays in order, and the final tile reflects both.
+function T.transition_b_second_fast_replay_survives_first_replay_completion()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  driveScriptedWalk(w, "south", "normal")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "setup remembers the normal walk"
+  )
+  w.controller:setMovementType("follow_transition_b")
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local start = assert(w.mgr:getPosition(partnerId), "the follower position is required")
+  local startX, startZ = start.fieldX, start.fieldZ
+
+  w.player:beginScriptedAction({ action = "walk", direction = "east", speed = "fast" })
+  w.controller:update()
+  Assert.notNil(w.controller._action, "the first replay starts immediately")
+  Assert.equal(#w.controller._queue, 0, "an immediate replay queues nothing")
+  for progress = 1, MovementCalibration.SPEED_TICKS.fast do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.fast)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  w.controller:update()
+  Assert.notNil(w.controller._action, "the normal replay is still in flight after the fast player step")
+
+  w.player:beginScriptedAction({ action = "walk", direction = "east", speed = "fast" })
+  w.controller:update()
+  Assert.notNil(w.controller._action, "the first replay is still active when the second step starts")
+  Assert.equal(#w.controller._queue, 1, "the second replay waits while the first is active")
+
+  for progress = 1, MovementCalibration.SPEED_TICKS.fast do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.fast)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  for _ = 1, 40 do
+    w.controller:update()
+  end
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives both replays")
+  Assert.equal(actor.fieldX, startX, "both replays hold the remembered column")
+  Assert.equal(actor.fieldZ, startZ + 2, "both remembered replays execute in order")
+  Assert.equal(#w.controller._queue, 0, "no pending replay remains")
+  Assert.isNil(w.controller._action, "no replay remains in flight")
+  Assert.isTrue(w.controller:isMovementSettled(), "both replays settle")
+  w.mgr:dispose()
+end
+
+-- A queued head leaves the pending queue when its walk starts, not when an
+-- action completes: starting the oldest obligation drains exactly it, the
+-- later obligation keeps its order, and completing the active walk never
+-- drops pending work.
+function T.started_queue_head_leaves_pending_queue_at_start()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:setMovementPaused(true)
+  driveScriptedWalk(w, "south", "fast")
+  driveScriptedWalk(w, "south", "normal")
+  Assert.equal(#w.controller._queue, 2, "both paused steps retain their own obligation")
+  Assert.equal(w.controller._queue[1].speed, "fast", "the first queued step keeps its own speed")
+  Assert.equal(w.controller._queue[2].speed, "normal", "the second queued step keeps its own speed")
+
+  w.controller:setMovementPaused(false)
+  w.controller:update()
+  local action = assert(w.controller._action, "the oldest queued walk starts on release")
+  Assert.equal(
+    action.duration,
+    MovementCalibration.SPEED_TICKS.fast,
+    "the started walk keeps the head step speed, not the latest transaction"
+  )
+  Assert.equal(#w.controller._queue, 1, "the started head is no longer pending")
+  Assert.equal(w.controller._queue[1].speed, "normal", "the later obligation keeps its order")
+  Assert.equal(w.controller._queue[1].fieldZ, 6, "the later obligation keeps its target")
+
+  for _ = 1, 60 do
+    if w.controller._action == nil then
+      break
+    end
+    w.controller:update()
+  end
+  Assert.isNil(w.controller._action, "the first walk completes")
+  Assert.equal(#w.controller._queue, 1, "completing the walk drops no pending obligation")
+  w.controller:update()
+  Assert.notNil(w.controller._action, "the later obligation starts next")
+  Assert.equal(#w.controller._queue, 0, "starting the later walk drains it")
+  for _ = 1, 60 do
+    w.controller:update()
+  end
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the drained queue")
+  Assert.equal(actor.fieldX, 4, "both queued walks hold the remembered column")
+  Assert.equal(actor.fieldZ, 6, "both queued walks replay in order")
+  Assert.isTrue(w.controller:isMovementSettled(), "the drained queue settles")
+  w.mgr:dispose()
+end
+
 return { tests = T }
