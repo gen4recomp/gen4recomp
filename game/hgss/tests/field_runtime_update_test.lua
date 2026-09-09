@@ -294,4 +294,72 @@ function T.tests.zero_delta_does_not_advance_any_clock()
   Assert.equal(runtime.session.accumulator, 0)
 end
 
+-- The fixed-tick composition feeds the follower controller exactly one
+-- presentation fact derived from the owned dialogue controller: stationary
+-- presentation is allowed unless modal dialogue is open. A missing dialogue
+-- controller reads as allowed.
+local function runtimeWithFollowerPresentation(updateOptions, modal)
+  local runtime = setmetatable({
+    session = {
+      accumulator = 0,
+      updateFixed = function() end,
+    },
+    transition = {
+      phase = "idle",
+      error = nil,
+      updateSourceFrame = function() end,
+      consumeCompleted = function() end,
+    },
+    screenFade = {
+      fadeDone = function()
+        return true
+      end,
+      updateSourceFrame = function() end,
+    },
+    scripts = {},
+    applicationHost = {
+      error = function()
+        return nil
+      end,
+    },
+    followingMon = {
+      update = function(_, options)
+        updateOptions[#updateOptions + 1] = options
+      end,
+    },
+    dialogue = modal == nil and nil or {
+      isModal = function()
+        return modal
+      end,
+    },
+  }, FieldRuntime)
+  return runtime
+end
+
+function T.tests.follower_presentation_follows_modal_dialogue_state()
+  local openOptions = {}
+  runtimeWithFollowerPresentation(openOptions, false):update(FieldSession.FIXED_DT)
+  Assert.deepEqual(
+    openOptions,
+    { { idlePresentationAllowed = true } },
+    "an open field lets the follower present its stationary walk"
+  )
+
+  local modalOptions = {}
+  runtimeWithFollowerPresentation(modalOptions, true):update(FieldSession.FIXED_DT)
+  Assert.deepEqual(
+    modalOptions,
+    { { idlePresentationAllowed = false } },
+    "modal dialogue suppresses the stationary presentation for exactly that tick"
+  )
+
+  local missingOptions = {}
+  runtimeWithFollowerPresentation(missingOptions, nil):update(FieldSession.FIXED_DT)
+  Assert.deepEqual(
+    missingOptions,
+    { { idlePresentationAllowed = true } },
+    "a missing dialogue controller reads as allowed"
+  )
+end
+
 return T

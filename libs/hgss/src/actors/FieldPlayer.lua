@@ -379,7 +379,7 @@ function FieldPlayer:_publishMovementStart(direction)
     to = copyAnchor(assert(self.to, "movement destination required")),
     direction = direction,
     traversalKind = "walk",
-    durationTicks = FieldPlayer.WALK_STEP_TICKS,
+    durationTicks = self.durationTicks,
   }
 end
 
@@ -1005,6 +1005,9 @@ function FieldPlayer:beginScriptedAction(action)
   end
   -- Snapshot previousWorld at begin so first render interpolates from source.
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = fromState.worldX, fromState.worldY, fromState.worldZ
+  if kind == "walk" then
+    self:_publishMovementStart(assert(action.direction, "direction required for walk"))
+  end
 end
 
 function FieldPlayer:advanceScriptedAction(progressTicks, durationTicks)

@@ -191,4 +191,82 @@ function T.movement_start_snapshot_precedes_commit()
   Assert.equal(turner:movementRevision(), 0, "a facing-only turn commits nothing")
 end
 
+-- A scripted one-tile walk publishes the same movement-start shape as an
+-- ordinary walk before its first presentation tick: revisioned, carrying
+-- the committed source tile, the resolved adjacent destination, the walk
+-- direction, and the action's own calibrated duration. Each repeated tile
+-- publishes again with a fresh revision.
+function T.scripted_walk_publishes_a_movement_start_per_repeated_tile()
+  local player = playerAt(5, 5, "south")
+  Assert.isNil(player:movementTransaction(), "no transaction exists before any scripted walk")
+
+  player:beginScriptedAction({ action = "walk", direction = "south", speed = "normal" })
+  local first = player:movementTransaction()
+  Assert.notNil(first, "beginning a scripted walk publishes a transaction")
+  assert(first ~= nil, "beginning a scripted walk publishes a transaction")
+  Assert.equal(first.revision, 1, "the first scripted tile is revision one")
+  Assert.equal(first.mapId, 61, "the transaction carries the map identity")
+  Assert.equal(first.from.fieldX, 5, "the transaction source is the committed tile")
+  Assert.equal(first.from.fieldZ, 5, "the transaction source is the committed tile")
+  Assert.equal(first.to.fieldX, 5, "the transaction destination is the resolved adjacent tile")
+  Assert.equal(first.to.fieldZ, 6, "the transaction destination is the resolved adjacent tile")
+  Assert.equal(first.direction, "south", "the transaction carries the scripted walk direction")
+  Assert.equal(first.traversalKind, "walk", "a scripted translational walk is an ordinary walk")
+  Assert.equal(
+    first.durationTicks,
+    MovementCalibration.actionTicks({ action = "walk", direction = "south", speed = "normal" }),
+    "the transaction carries the scripted action's own calibrated duration"
+  )
+  Assert.equal(player:movementRevision(), 0, "beginning a scripted walk commits nothing")
+
+  for progress = 1, 8 do
+    player:advanceScriptedAction(progress, 8)
+  end
+  player:commitScriptedAction()
+  Assert.equal(player:movementRevision(), 1, "the scripted tile commit bumps once")
+
+  player:beginScriptedAction({ action = "walk", direction = "south", speed = "normal" })
+  local second = player:movementTransaction()
+  Assert.notNil(second, "the repeated scripted tile publishes again")
+  assert(second ~= nil, "the repeated scripted tile publishes again")
+  Assert.equal(second.revision, 2, "each repeated tile advances the revision")
+  Assert.equal(second.from.fieldZ, 6, "the repeated tile sources from the committed tile")
+  Assert.equal(second.to.fieldZ, 7, "the repeated tile resolves its own adjacent destination")
+  Assert.equal(second.traversalKind, "walk", "every repeated tile stays an ordinary walk")
+end
+
+-- Presentation-only and non-translational scripted actions never publish a
+-- walk start: staying on the spot, jumping, facing, and waiting carry no
+-- vacated tile for a follower to trail. A walk rejected before motion
+-- begins publishes nothing either.
+function T.scripted_non_walk_actions_publish_no_movement_start()
+  local stepper = playerAt(5, 5, "south")
+  stepper:beginScriptedAction({ action = "walk_in_place", direction = "south", speed = "normal" })
+  Assert.isNil(stepper:movementTransaction(), "an on-spot scripted walk publishes no transaction")
+
+  local jumper = playerAt(5, 5, "south")
+  jumper:beginScriptedAction({ action = "jump", direction = "south", distance = "near", speed = "fast" })
+  Assert.isNil(jumper:movementTransaction(), "a scripted jump publishes no transaction")
+
+  local facer = playerAt(5, 5, "south")
+  facer:beginScriptedAction({ action = "face", direction = "north" })
+  Assert.isNil(facer:movementTransaction(), "an instantaneous scripted face publishes no transaction")
+
+  local waiter = playerAt(5, 5, "south")
+  waiter:beginScriptedAction({ action = "delay", ticks = 4 })
+  Assert.isNil(waiter:movementTransaction(), "a scripted delay publishes no transaction")
+
+  local emoter = playerAt(5, 5, "south")
+  emoter:beginScriptedAction({ action = "emote", name = "exclamation" })
+  Assert.isNil(emoter:movementTransaction(), "a scripted emote publishes no transaction")
+
+  local blocked = playerAt(0, 4, "west")
+  local ok = pcall(function()
+    blocked:beginScriptedAction({ action = "walk", direction = "west", speed = "normal" })
+  end)
+  Assert.isFalse(ok, "a scripted walk without a destination surface must fail")
+  Assert.isNil(blocked:movementTransaction(), "a rejected scripted walk publishes no transaction")
+  Assert.equal(blocked:movementRevision(), 0, "a rejected scripted walk commits nothing")
+end
+
 return { tests = T }

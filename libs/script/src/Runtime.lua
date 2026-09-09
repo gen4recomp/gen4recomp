@@ -970,16 +970,25 @@ end
 
 local function handleLockAll(_, run)
   requireForeground(run, "lock_all")
+  local followingMon = run.services.followingMon
+  if followingMon ~= nil then
+    followingMon:setMovementPaused(true)
+  end
   run.environment:acquireLock(ScriptEnvironment.LOCK_PLAYER, nil, run.instance.instanceId)
   run.environment:acquireLock(ScriptEnvironment.LOCK_AUTONOMOUS, nil, run.instance.instanceId)
   assert(run.services.actors and type(run.services.actors.allPausable) == "function", "actor pause service required")
-  if run.environment:hasOutstandingMovement() or not run.services.actors:allPausable() then
+  local followerSettled = followingMon == nil or followingMon:isMovementSettled()
+  if run.environment:hasOutstandingMovement() or not run.services.actors:allPausable() or not followerSettled then
     return blockOnTask(run, "movement_pause", {})
   end
   return Runtime.OUTCOME_YIELD_TICK
 end
 
 local function handleReleaseAll(_, run)
+  local followingMon = run.services.followingMon
+  if followingMon ~= nil then
+    followingMon:setMovementPaused(false)
+  end
   run.environment:releaseLock(ScriptEnvironment.LOCK_PLAYER, nil, run.instance.instanceId)
   run.environment:releaseLock(ScriptEnvironment.LOCK_AUTONOMOUS, nil, run.instance.instanceId)
   return Runtime.OUTCOME_CONTINUE

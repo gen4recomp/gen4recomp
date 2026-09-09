@@ -51,7 +51,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field isVisible fun(self: FollowingMonController): boolean
 ---@field partnerActorId fun(self: FollowingMonController): string?
 ---@field partnerSourceState fun(self: FollowingMonController): integer
----@field update fun(self: FollowingMonController)
+---@field update fun(self: FollowingMonController, options: { idlePresentationAllowed: boolean }?)
 ---@field handleMapExit fun(self: FollowingMonController)
 ---@field setMovementPaused fun(self: FollowingMonController, paused: boolean)
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
@@ -77,6 +77,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
 ---@field _advanceAction fun(self: FollowingMonController)
+---@field _cancelIdlePresentation fun(self: FollowingMonController)
+---@field _ensureIdlePresentation fun(self: FollowingMonController)
 
 FollowingMonController.PARTNER_NUMERIC_ID = 253
 FollowingMonController.MAX_QUEUED_ANCHORS = 8
@@ -139,6 +141,12 @@ local FOLLOWER_MOVEMENT_TYPES = {
 -- 1/2). Anything else is outside the delivered trigger contract and reads
 -- false rather than faulting the script.
 local KNOWN_TRIGGER_KINDS = { [1] = true, [2] = true }
+
+---@param action { kind: string, progress: integer, duration: integer }?
+---@return boolean
+local function isRealTrail(action)
+  return action ~= nil and action.kind == "trail"
+end
 
 ---@class FollowingMonControllerOptions
 ---@field service table<string, unknown> live party service { partyRevision, leadAliveSlot, partyMon }
@@ -542,6 +550,7 @@ function FollowingMonController:_handleMapChange(mapId)
   self._mapEntry = true
   self._queue = {}
   self._action = nil
+  self._movementType = "follow_player"
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastPlayerRevision = nil
@@ -611,6 +620,9 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
     toZ = tx.to.fieldZ,
   }
   local partnerId = assert(self._actors:partnerId(), "ordinary follow requires the partner actor")
+  if not isRealTrail(self._action) then
+    self:_cancelIdlePresentation()
+  end
   if self._paused or self._action ~= nil then
     if #self._queue >= FollowingMonController.MAX_QUEUED_ANCHORS then
       table.remove(self._queue, 1)
@@ -714,13 +726,14 @@ end
 ---@param self FollowingMonController
 ---@param mapId integer
 function FollowingMonController:_driveQueue(mapId)
-  if self._action ~= nil or self._paused then
+  if isRealTrail(self._action) or self._paused then
     return
   end
   local head = self._queue[1]
   if head == nil then
     return
   end
+  self:_cancelIdlePresentation()
   local partnerId = self._actors:partnerId()
   if partnerId == nil or head.mapId ~= mapId then
     self:_discontinuity(mapId)
@@ -780,10 +793,67 @@ function FollowingMonController:_advanceAction()
   end
 end
 
+-- Cancel the presentation-only on-spot walk, settling the actor pose to
+-- ordinary static idle. A real trail is never touched here.
+---@param self FollowingMonController
+function FollowingMonController:_cancelIdlePresentation()
+  if self._action == nil or self._action.kind ~= "idle" then
+    return
+  end
+  local partnerId = self._actors:partnerId()
+  if partnerId ~= nil then
+    self._actors:cancelScriptedMovement(partnerId)
+  end
+  self._action = nil
+end
+
+-- Start the repeating on-spot walk while the visible follower is free,
+-- unpaused, stationary, and queue-empty. Anything else leaves the partner
+-- static; callers cancel first when eligibility lapses.
+---@param self FollowingMonController
+function FollowingMonController:_ensureIdlePresentation()
+  if self._movementType ~= "follow_player" then
+    return
+  end
+  if self._paused then
+    return
+  end
+  if self._action ~= nil then
+    return
+  end
+  if #self._queue ~= 0 then
+    return
+  end
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil then
+    return
+  end
+  if not self._actors:isVisible(partnerId) then
+    return
+  end
+  local facing = self._actors:getFacing(partnerId)
+  self._actors:beginScriptedAction(partnerId, {
+    action = "walk_in_place",
+    direction = facing,
+    speed = FollowingMonController.TRAIL_SPEED,
+  })
+  self._action = {
+    kind = "idle",
+    progress = 0,
+    duration = MovementCalibration.WALK_IN_PLACE_TICKS[FollowingMonController.TRAIL_SPEED],
+  }
+  self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
+end
+
 -- One fixed-tick reconciliation: map ownership, party identity, placement,
 -- anchor observation, queue driving, and action advancement.
 ---@param self FollowingMonController
-function FollowingMonController:update()
+---@param options { idlePresentationAllowed: boolean }?
+function FollowingMonController:update(options)
+  local idlePresentationAllowed = true
+  if options ~= nil then
+    idlePresentationAllowed = options.idlePresentationAllowed ~= false
+  end
   local mapId = self._actors.currentMapId
   if mapId == nil then
     return
@@ -822,6 +892,11 @@ function FollowingMonController:update()
   self:_observePlayer(mapId)
   self:_driveQueue(mapId)
   self:_advanceAction()
+  if idlePresentationAllowed then
+    self:_ensureIdlePresentation()
+  else
+    self:_cancelIdlePresentation()
+  end
 end
 
 -- Clear the actor before the old map leaves residency. The manager retires
@@ -835,6 +910,7 @@ function FollowingMonController:handleMapExit()
   end
   self._action = nil
   self._queue = {}
+  self._movementType = "follow_player"
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
@@ -845,7 +921,11 @@ end
 ---@param paused boolean
 ---@param self FollowingMonController
 function FollowingMonController:setMovementPaused(paused)
-  self._paused = paused == true
+  paused = paused == true
+  self._paused = paused
+  if paused then
+    self:_cancelIdlePresentation()
+  end
 end
 
 -- Settle means no in-flight presentation and no source-required pending
@@ -854,7 +934,7 @@ end
 ---@return boolean
 ---@param self FollowingMonController
 function FollowingMonController:isMovementSettled()
-  return self._action == nil and (self._paused or #self._queue == 0)
+  return not isRealTrail(self._action) and (self._paused or #self._queue == 0)
 end
 
 -- Settle any in-flight presentation through the manager owner. Waiting tasks
@@ -877,6 +957,9 @@ end
 function FollowingMonController:setMovementType(movementType)
   assert(FOLLOWER_MOVEMENT_TYPES[movementType] == true, "unknown follower movement mode " .. tostring(movementType))
   self._movementType = movementType
+  if movementType ~= "follow_player" then
+    self:_cancelIdlePresentation()
+  end
 end
 
 -- Face the partner toward the player. Absence is a no-op.
@@ -897,7 +980,7 @@ end
 ---@return boolean
 ---@param self FollowingMonController
 function FollowingMonController:isEventTrigger(kind, _)
-  if not self:isVisible() or self._action ~= nil then
+  if not self:isVisible() or isRealTrail(self._action) then
     return false
   end
   if KNOWN_TRIGGER_KINDS[kind] ~= true then

@@ -81,6 +81,12 @@ function MovementPauseTask.poll(state, ctx)
   if not pausable then
     return { complete = false, state = state }
   end
+  if state.actor == nil then
+    local followingMon = ctx.services.followingMon
+    if followingMon ~= nil and not followingMon:isMovementSettled() then
+      return { complete = false, state = state }
+    end
+  end
   return { complete = true, state = state, result = { paused = true } }
 end
 

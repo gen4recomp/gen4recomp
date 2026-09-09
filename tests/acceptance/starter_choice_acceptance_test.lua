@@ -446,4 +446,457 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
   end)
 end
 
+-- Elm's post-choice choreography keeps one stable visible follower through
+-- scripted walking, field release, and free-field standing: every adjacent
+-- scripted player tile is trailed step-for-step in the same epoch it
+-- starts (walking, never jumping, onto the vacated tile), the field
+-- release restores ordinary same-tick following, and the free stationary
+-- follower walks in place with zero logical displacement until modal
+-- dialogue or movement pause makes it static, resuming afterwards. Real
+-- ROM-derived maps, the real generated starter script, and the production
+-- field runtime stay in the path; only host boundaries (audio, saves,
+-- clock) are faked by the harness.
+function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower()
+  local game = harness():boot({
+    versionId = AcceptanceHarness.defaultVersion(),
+    map = MAP,
+    save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
+  })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+
+    local baselineStarts = #recordsNamed(game, "script.started")
+    game:moveTo({ fieldX = 4, fieldZ = 10 })
+    game:advanceUntil("the welcome scene starts", function()
+      return #recordsNamed(game, "script.started") > baselineStarts
+    end, 60)
+    local starts = recordsNamed(game, "script.started")
+    local welcomeScriptId = starts[#starts].payload.scriptId
+    local welcome = pump(game, 1500, function()
+      for _, record in ipairs(recordsNamed(game, "script.ended")) do
+        if record.payload.scriptId == welcomeScriptId then
+          return record.payload.completed == true
+        end
+      end
+      return false
+    end)
+    Assert.isNil(welcome.fault, "the welcome scene must run without a runtime fault")
+    Assert.isTrue(welcome.stopped, "the welcome scene must conclude before starter choice")
+
+    local ELM_SCRIPT = "vanilla.hgss.scr_seq.0843.script_000"
+    local elmActor = nil
+    do
+      local actorIds = {}
+      for actorId in pairs(game:snapshot().actors) do
+        if not actorId:find("player", 1, true) then
+          actorIds[#actorIds + 1] = actorId
+        end
+      end
+      table.sort(actorIds)
+      for _, actorId in ipairs(actorIds) do
+        local reached = pcall(standNextTo, game, actorId)
+        if reached then
+          game:pressAction()
+          local interaction = game:interaction()
+          if interaction.scriptId == ELM_SCRIPT then
+            elmActor = actorId
+            break
+          end
+          local drained = pump(game, 200, function()
+            return not game:snapshot().dialogue.modal
+          end)
+          if drained.fault ~= nil then
+            error("runtime fault while driving " .. actorId .. ": " .. tostring(drained.fault))
+          end
+        end
+      end
+      Assert.notNil(elmActor, "Elm must start his generated dispatcher script")
+    end
+    local elmDone = pump(game, 1500, function()
+      for _, record in ipairs(recordsNamed(game, "script.ended")) do
+        if record.payload.scriptId == ELM_SCRIPT then
+          return record.payload.completed == true
+        end
+      end
+      return false
+    end)
+    Assert.isTrue(elmDone.stopped, "Elm's dispatcher must conclude before the table owns the choice")
+
+    local STARTER_SCRIPT = "vanilla.hgss.scr_seq.0843.script_012"
+    local triggered = false
+    for _, tile in ipairs({
+      { fieldX = 8, fieldZ = 5 },
+      { fieldX = 7, fieldZ = 4 },
+      { fieldX = 9, fieldZ = 4 },
+      { fieldX = 8, fieldZ = 3 },
+    }) do
+      if not triggered then
+        local reached = pcall(function()
+          game:moveTo(tile)
+        end)
+        if reached then
+          for _, facing in ipairs({ "north", "south", "east", "west" }) do
+            if not triggered then
+              game:face(facing)
+              game:pressAction()
+              if game:interaction().scriptId == STARTER_SCRIPT then
+                triggered = true
+              end
+            end
+          end
+        end
+      end
+    end
+    Assert.isTrue(triggered, "the ball table must start the generated starter script")
+
+    local chosen = pump(game, 1200, function()
+      return partyCount(game) == 1
+    end, true)
+    Assert.isTrue(chosen.stopped, "the starter flow must add exactly one mon to the party")
+    Assert.isTrue(VANILLA_TRIO[game.runtime.monService:partyMon(0).species] == true, "the added mon is a lab candidate")
+
+    local partnerId = game.runtime.actors:partnerId()
+    game:advanceUntil("starter follower publication", function()
+      return game.runtime.actors:partnerId() ~= nil
+    end, 120)
+    partnerId = assert(game.runtime.actors:partnerId(), "the starter follower must install")
+    game:advanceUntil("the captured follower reveals", function()
+      return game.runtime.actors:isVisible(partnerId)
+    end, 9000)
+    Assert.isNil(game.runtime.errorText, "field runtime faulted while revealing the follower")
+    Assert.isTrue(
+      game.runtime.actors:isVisible(partnerId),
+      "the captured follower reveals before the scripted return walk"
+    )
+
+    -- The scripted return walk: every player walking episode that displaces
+    -- the player must already have the same stable partner walking toward
+    -- the vacated tile on its first tick, keep it walking without jumping
+    -- for the whole episode, and settle it onto the vacated tile.
+    local function starterEnded()
+      for _, record in ipairs(recordsNamed(game, "script.ended")) do
+        if record.payload.scriptId == STARTER_SCRIPT then
+          return record.payload.completed == true
+        end
+      end
+      return false
+    end
+    local seenMessages = {}
+    local seenMessageOrder = {}
+    local scriptedCommits = 0
+    local trailedCommits = 0
+    local prevMotion = "idle"
+    local prevTile = nil
+    local episode = nil
+    local function noteMessage(snapshot)
+      if snapshot.dialogue.modal and snapshot.dialogue.bankId ~= nil and snapshot.dialogue.messageId ~= nil then
+        local key = snapshot.dialogue.bankId .. ":" .. snapshot.dialogue.messageId
+        if seenMessages[key] == nil then
+          seenMessages[key] = true
+          seenMessageOrder[#seenMessageOrder + 1] = key
+        end
+      end
+    end
+    local function closeEpisode(endTile)
+      local current = episode
+      episode = nil
+      if current == nil then
+        return
+      end
+      if endTile.fieldX == current.startTile.fieldX and endTile.fieldZ == current.startTile.fieldZ then
+        return
+      end
+      scriptedCommits = scriptedCommits + 1
+      Assert.isTrue(
+        current.startedUnsettled,
+        "the stable follower starts its trail on the first tick of scripted step " .. scriptedCommits
+      )
+      Assert.isTrue(
+        current.alwaysUnsettled,
+        "the follower keeps trailing for the whole scripted step " .. scriptedCommits
+      )
+      Assert.isTrue(current.idStable, "the scripted trail keeps the stable actor on step " .. scriptedCommits)
+      Assert.isTrue(
+        current.maxHeightDeviation < 0.15,
+        "the scripted trail holds its height instead of jumping on step " .. scriptedCommits
+      )
+      Assert.equal(
+        current.startAction,
+        "walk",
+        "the scripted trail walks toward the vacated tile on step " .. scriptedCommits
+      )
+      local partner =
+        assert(game.runtime.actors:getById(partnerId), "the partner survives scripted step " .. scriptedCommits)
+      Assert.equal(
+        partner.fieldX,
+        current.startTile.fieldX,
+        "the follower settles onto the vacated tile on step " .. scriptedCommits
+      )
+      Assert.equal(
+        partner.fieldZ,
+        current.startTile.fieldZ,
+        "the follower settles onto the vacated tile on step " .. scriptedCommits
+      )
+      Assert.equal(
+        game.runtime.actors:partnerId(),
+        partnerId,
+        "no clear/reinstall crosses scripted step " .. scriptedCommits
+      )
+      trailedCommits = trailedCommits + 1
+    end
+    local tail = (function()
+      for _ = 1, 9000 do
+        if game.runtime.errorText then
+          return { fault = game.runtime.errorText }
+        end
+        local snapshot = game:snapshot()
+        if
+          game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER)
+          and not snapshot.fieldLocked
+          and not snapshot.dialogue.modal
+          and snapshot.transition.phase == "idle"
+          and starterEnded()
+        then
+          closeEpisode({ fieldX = snapshot.player.fieldX, fieldZ = snapshot.player.fieldZ })
+          return { stopped = true }
+        end
+        noteMessage(snapshot)
+        local motion = snapshot.player.motion
+        local tile = { fieldX = snapshot.player.fieldX, fieldZ = snapshot.player.fieldZ }
+        if not starterEnded() then
+          if prevMotion == "idle" and motion ~= "idle" then
+            local live = game.runtime.actors:getById(partnerId)
+            local startAction = nil
+            local startMotion = live and live:scriptedMotionState() or nil
+            if startMotion ~= nil then
+              startAction = startMotion.action
+            end
+            episode = {
+              startTile = prevTile or tile,
+              startedUnsettled = not game.runtime.followingMon:isMovementSettled(),
+              alwaysUnsettled = not game.runtime.followingMon:isMovementSettled(),
+              idStable = game.runtime.actors:partnerId() == partnerId,
+              startAction = startAction,
+              startHeight = live and live.worldY or 0,
+              maxHeightDeviation = 0,
+            }
+          elseif episode ~= nil and motion ~= "idle" then
+            if game.runtime.followingMon:isMovementSettled() then
+              episode.alwaysUnsettled = false
+            end
+            if game.runtime.actors:partnerId() ~= partnerId then
+              episode.idStable = false
+            end
+            local live = game.runtime.actors:getById(partnerId)
+            if live ~= nil and type(live.worldY) == "number" then
+              local deviation = math.abs(live.worldY - episode.startHeight)
+              if deviation > episode.maxHeightDeviation then
+                episode.maxHeightDeviation = deviation
+              end
+            end
+          elseif episode ~= nil and motion == "idle" then
+            closeEpisode(tile)
+          end
+        end
+        prevMotion = motion
+        prevTile = tile
+        if game:contextChoiceStatus() ~= nil then
+          game.runtime:pressCancel()
+          game:step()
+          game.runtime:releaseCancel()
+        elseif snapshot.dialogue.modal then
+          game.runtime:pressAction()
+          game:step()
+          game.runtime:releaseAction()
+        elseif game.runtime.starterChoice:isActive() then
+          game.runtime:pressAction()
+          game:step()
+          game.runtime:releaseAction()
+        else
+          game:step()
+        end
+      end
+      local snapshot = game:snapshot()
+      if
+        game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER)
+        and not snapshot.fieldLocked
+        and not snapshot.dialogue.modal
+        and snapshot.transition.phase == "idle"
+        and starterEnded()
+      then
+        closeEpisode({ fieldX = snapshot.player.fieldX, fieldZ = snapshot.player.fieldZ })
+        return { stopped = true }
+      end
+      return { stopped = false }
+    end)()
+    Assert.isNil(tail.fault, "the resumed starter script must run without a runtime fault")
+    Assert.isTrue(tail.stopped, "the source script must continue and set its own starter flag")
+    Assert.isTrue(scriptedCommits >= 6, "the scripted return walk must commit its south/west tiles")
+    Assert.equal(
+      trailedCommits,
+      scriptedCommits,
+      "every scripted player tile is trailed step-for-step onto the vacated tile"
+    )
+    Assert.isTrue(
+      game.runtime.scripts.worldState:isFlagSet(FLAG_GOT_STARTER),
+      "the source script sets its own starter flag"
+    )
+    Assert.isFalse(game:snapshot().fieldLocked, "the source script releases the field at its End")
+
+    -- Ordinary following after the release: one normal player step into a
+    -- reachable tile starts the same stable partner in the same epoch and
+    -- settles it onto the pre-step tile.
+    local stepped = false
+    for _, direction in ipairs({ "south", "east", "north", "west" }) do
+      game:face(direction)
+      local before = { fieldX = game:snapshot().player.fieldX, fieldZ = game:snapshot().player.fieldZ }
+      game:move(direction)
+      local mid = game:snapshot()
+      if mid.player.fieldX ~= before.fieldX or mid.player.fieldZ ~= before.fieldZ or mid.player.motion ~= "idle" then
+        Assert.isFalse(
+          game.runtime.followingMon:isMovementSettled(),
+          "the follower starts while the ordinary step is still in flight"
+        )
+        local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the step start")
+        Assert.equal(actor.pose, "walk", "the follower walks while the ordinary step is in flight")
+        Assert.equal(
+          game.runtime.actors:partnerId(),
+          partnerId,
+          "ordinary following after release keeps the stable actor"
+        )
+        game:advanceUntil("ordinary step resolves", function(snapshot)
+          return snapshot.player.motion == "idle"
+        end, 120)
+        game:advanceUntil("ordinary trail settles", function()
+          return game.runtime.followingMon:isMovementSettled()
+        end, 120)
+        local after = game:snapshot()
+        if after.player.fieldX ~= before.fieldX or after.player.fieldZ ~= before.fieldZ then
+          local partner = assert(game.runtime.actors:getById(partnerId), "the partner survives the committed step")
+          Assert.equal(partner.fieldX, before.fieldX, "the follower settles onto the pre-step tile")
+          Assert.equal(partner.fieldZ, before.fieldZ, "the follower settles onto the pre-step tile")
+          stepped = true
+          break
+        end
+      else
+        game:advanceUntil("blocked movement resolves", function(snapshot)
+          return snapshot.player.motion == "idle"
+        end, 120)
+      end
+    end
+    Assert.isTrue(stepped, "the lab must supply one committed ordinary step after release")
+
+    -- Free standing: the visible follower walks in place with zero logical
+    -- displacement, staying settled and interactable with no static gap.
+    local home = game:snapshot()
+    local homePartner = assert(game.runtime.actors:getById(partnerId), "the partner is required")
+    local homeTile = { fieldX = homePartner.fieldX, fieldZ = homePartner.fieldZ }
+    Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "the free follower is settled before idling")
+    for _ = 1, 30 do
+      game:step()
+      local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives stationary ticks")
+      Assert.equal(actor.pose, "walk", "every free stationary tick presents walking, with no static gap")
+      Assert.equal(actor.fieldX, homeTile.fieldX, "stationary presentation never changes the logical tile")
+      Assert.equal(actor.fieldZ, homeTile.fieldZ, "stationary presentation never changes the logical tile")
+      Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "stationary presentation stays settled")
+      Assert.isTrue(
+        game.runtime.followingMon:isEventTrigger(1, 0),
+        "stationary presentation stays available for interaction"
+      )
+    end
+    Assert.isTrue(home.player.fieldX ~= nil, "the home snapshot is well formed")
+
+    -- Movement pause: the presentation cancels at once into a static settled
+    -- follower, and release restarts the walk without any script action.
+    game.runtime.followingMon:setMovementPaused(true)
+    game:step()
+    game:step()
+    do
+      local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the pause")
+      Assert.equal(actor.pose, "idle", "pausing cancels the presentation immediately")
+      Assert.isNil(actor:scriptedMotionState(), "no presentation action survives the pause")
+      Assert.equal(actor.fieldX, homeTile.fieldX, "pausing never displaces the logical tile")
+      Assert.equal(actor.fieldZ, homeTile.fieldZ, "pausing never displaces the logical tile")
+      Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "a paused follower never hangs a wait")
+    end
+    for _ = 1, 10 do
+      game:step()
+      Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "the paused follower stays settled")
+    end
+    game.runtime.followingMon:setMovementPaused(false)
+    for _ = 1, 3 do
+      game:step()
+    end
+    do
+      local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the release")
+      Assert.equal(actor.pose, "walk", "release restarts the presentation without any script action")
+      Assert.equal(actor.fieldX, homeTile.fieldX, "the resumed presentation never displaces the logical tile")
+      Assert.equal(actor.fieldZ, homeTile.fieldZ, "the resumed presentation never displaces the logical tile")
+    end
+
+    -- Modal dialogue: the presentation cancels while the box is open and
+    -- resumes once it closes, through the production dialogue composition.
+    local dialogueRef = nil
+    for _, key in ipairs(seenMessageOrder) do
+      local bankId, messageId = key:match("^(%d+):(%d+)$")
+      bankId, messageId = tonumber(bankId), tonumber(messageId)
+      local provider = game.runtime.messageProvider
+      local bank = provider:acquireBank(bankId)
+      if bank ~= nil then
+        local template = provider:get(bankId, messageId)
+        provider:releaseBank(bankId)
+        if template ~= nil then
+          local hasSubstitution = false
+          for _, token in ipairs(template.tokens) do
+            if token.kind == "substitution" then
+              hasSubstitution = true
+              break
+            end
+          end
+          if not hasSubstitution then
+            dialogueRef = string.format("msg.hgss.%d.%d", bankId, messageId)
+            break
+          end
+        end
+      end
+    end
+    Assert.notNil(dialogueRef, "the journey must surface one substitution-free production message")
+    local host = assert(game.runtime.scripts.dialogueHost, "the production dialogue host is required")
+    host:openMessage({ message = assert(dialogueRef, "a production message reference is required") })
+    host:startPrint(assert(dialogueRef, "a production message reference is required"), {}, {})
+    game:step()
+    Assert.isTrue(game:snapshot().dialogue.modal, "the production message box opens modal")
+    do
+      local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the dialogue")
+      Assert.equal(actor.pose, "idle", "modal dialogue cancels the presentation immediately")
+      Assert.equal(actor.fieldX, homeTile.fieldX, "dialogue suppression never displaces the logical tile")
+      Assert.equal(actor.fieldZ, homeTile.fieldZ, "dialogue suppression never displaces the logical tile")
+      Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "a dialogue-suppressed follower stays settled")
+    end
+    for _ = 1, 10 do
+      game:step()
+      Assert.isTrue(game:snapshot().dialogue.modal, "the box stays open without script input")
+    end
+    host:close(true)
+    game:step()
+    Assert.isFalse(game:snapshot().dialogue.modal, "closing releases the modal box")
+    for _ = 1, 12 do
+      game:step()
+    end
+    do
+      local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the closed dialogue")
+      Assert.equal(actor.pose, "walk", "the presentation resumes after dialogue closes")
+      Assert.equal(actor.fieldX, homeTile.fieldX, "the resumed presentation never displaces the logical tile")
+      Assert.equal(actor.fieldZ, homeTile.fieldZ, "the resumed presentation never displaces the logical tile")
+    end
+
+    Assert.equal(game:renderAttempts(), 0, "follower-trail acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return T
