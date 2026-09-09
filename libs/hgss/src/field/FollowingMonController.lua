@@ -48,6 +48,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
 ---@field isEnabled fun(self: FollowingMonController): boolean
 ---@field isActive fun(self: FollowingMonController): boolean
+---@field isSourceActive fun(self: FollowingMonController): boolean
 ---@field isVisible fun(self: FollowingMonController): boolean
 ---@field partnerActorId fun(self: FollowingMonController): string?
 ---@field partnerSourceState fun(self: FollowingMonController): integer
@@ -62,6 +63,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field isEventTrigger fun(self: FollowingMonController, kind: integer, param: unknown): boolean
 ---@field dispose fun(self: FollowingMonController)
 ---@field _descriptor fun(self: FollowingMonController, snapshot: table<string, unknown>): table<string, unknown>?
+---@field _desiredLead fun(self: FollowingMonController): table<string, unknown>?
 ---@field _reconcileLead fun(self: FollowingMonController)
 ---@field _permitted fun(self: FollowingMonController, mapId: integer): boolean
 ---@field _spec fun(self: FollowingMonController, mapId: integer, fieldX: integer, fieldZ: integer, facing: string, worldY: number?, initiallyVisible: boolean?): FieldActorManager.PartnerSpec
@@ -73,6 +75,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _discontinuity fun(self: FollowingMonController, mapId: integer)
 ---@field _handleMapChange fun(self: FollowingMonController, mapId: integer)
 ---@field _observePlayer fun(self: FollowingMonController, mapId: integer)
+---@field _commitMatchesLiveStart fun(self: FollowingMonController, previous: table<string, unknown>?, anchor: table<string, unknown>, mapId: integer): boolean
 ---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
 ---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
@@ -242,6 +245,21 @@ local function sameIdentity(left, right)
     and left.visualId == right.visualId
 end
 
+-- Map a player transaction speed to the follower pace the map object keeps.
+-- A player run travels as a follower fast walk; every other calibrated walk
+-- speed is kept. Anything uncalibrated is a programming failure, never a
+-- silent normal.
+---@param speed string
+---@return string
+local function followerSpeed(speed)
+  assert(type(speed) == "string", "follower walk speed required")
+  if speed == "run" then
+    return "fast"
+  end
+  assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown follower walk speed " .. tostring(speed))
+  return speed
+end
+
 ---@param self FollowingMonController
 ---@param snapshot table<string, unknown>
 ---@return table<string, unknown>? descriptor
@@ -257,19 +275,18 @@ function FollowingMonController:_descriptor(snapshot)
   return descriptor
 end
 
--- Recompute the desired lead identity on party revisions. Actor work happens
--- in the publish step so a revision that changes nothing observable performs
--- no actor operations at all.
+-- Derive the desired lead identity from live party state without touching
+-- reconciliation, actors, queue, or revisions. Reconciliation retains the
+-- result; script command guards read it synchronously in the same tick the
+-- party mutates, before any fixed update publishes the actor.
 ---@param self FollowingMonController
-function FollowingMonController:_reconcileLead()
-  local previous = self._lead
+---@return table<string, unknown>? lead
+function FollowingMonController:_desiredLead()
   local slot = self._service:leadAliveSlot()
   local snapshot = slot ~= nil and self._service:partyMon(slot) or nil
   local descriptor = snapshot ~= nil and self:_descriptor(snapshot) or nil
   if snapshot == nil or descriptor == nil then
-    self._lead = nil
-    self._pendingHiddenLead = nil
-    return
+    return nil
   end
   local lead = {
     slot = slot,
@@ -288,6 +305,21 @@ function FollowingMonController:_reconcileLead()
       and lead.objectParam <= 0xFFFF,
     "follower object parameter is required"
   )
+  return lead
+end
+
+-- Recompute the desired lead identity on party revisions. Actor work happens
+-- in the publish step so a revision that changes nothing observable performs
+-- no actor operations at all.
+---@param self FollowingMonController
+function FollowingMonController:_reconcileLead()
+  local previous = self._lead
+  local lead = self:_desiredLead()
+  if lead == nil then
+    self._lead = nil
+    self._pendingHiddenLead = nil
+    return
+  end
   if previous == nil then
     if not self._mapEntry and self._actors:partnerId() == nil then
       self._pendingHiddenLead = lead
@@ -349,6 +381,16 @@ end
 ---@param self FollowingMonController
 function FollowingMonController:isActive()
   return self:isEnabled() and self._lead ~= nil
+end
+
+-- Whether the live party holds an eligible lead right now, regardless of
+-- whether fixed-tick reconciliation has installed its actor yet. Read-only:
+-- it never publishes actors, mutates the reconciled lead, or touches the
+-- map, queue, or revisions.
+---@return boolean
+---@param self FollowingMonController
+function FollowingMonController:isSourceActive()
+  return self:isEnabled() and self:_desiredLead() ~= nil
 end
 
 ---@return boolean
@@ -593,17 +635,13 @@ end
 
 -- Start the ordinary follow toward the transaction's source anchor: the tile
 -- the player vacated. The movement direction derives from the follower's own
--- tile, never from the player's step direction. The duration only asserts
--- against the existing trail calibration; the actor walk keeps its semantic
--- normal speed.
+-- tile, never from the player's step direction. The follower keeps the
+-- transaction's semantic speed, with a player run traveling as fast.
 ---@param self FollowingMonController
 ---@param mapId integer
 ---@param tx FieldPlayer.MovementTransaction
 function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
-  assert(
-    tx.durationTicks == MovementCalibration.SPEED_TICKS[FollowingMonController.TRAIL_SPEED],
-    "ordinary follow duration must match the trail calibration"
-  )
+  local speed = followerSpeed(tx.speed)
   self._consumedStep = {
     mapId = tx.mapId,
     fromX = tx.from.fieldX,
@@ -622,6 +660,7 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
       fieldZ = tx.from.fieldZ,
       facing = tx.direction,
       worldY = tx.from.worldY,
+      speed = speed,
     }
     return
   end
@@ -637,7 +676,7 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
     self._actors.beginScriptedAction,
     self._actors,
     partnerId,
-    { action = "walk", direction = direction, speed = FollowingMonController.TRAIL_SPEED }
+    { action = "walk", direction = direction, speed = speed }
   )
   if not ok then
     if FieldActorManager.isPlacementRejection(err) then
@@ -649,9 +688,39 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
   assert(err == nil, "scripted begin answers through the actor, not a value")
   self._action = {
     progress = 0,
-    duration = MovementCalibration.SPEED_TICKS[FollowingMonController.TRAIL_SPEED],
+    duration = MovementCalibration.SPEED_TICKS[speed],
   }
   self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
+end
+
+-- Whether the live movement-start transaction already accounts for the
+-- observed commit: the start was consumed by the ordinary follow or
+-- rebaselined away by an accepted mode set, and its anchors match the
+-- commit exactly. Such commits must not enqueue the vacated tile again.
+---@param self FollowingMonController
+---@param previous table<string, unknown>?
+---@param anchor table<string, unknown>
+---@param mapId integer
+---@return boolean
+function FollowingMonController:_commitMatchesLiveStart(previous, anchor, mapId)
+  local player = self._playerOf()
+  if type(player.movementTransaction) ~= "function" then
+    return false
+  end
+  local tx = player:movementTransaction()
+  if tx == nil or previous == nil then
+    return false
+  end
+  if tx.revision ~= self._lastMovementTransactionRevision then
+    return false
+  end
+  return tx.mapId == mapId
+    and previous.mapId == mapId
+    and anchor.mapId == mapId
+    and tx.from.fieldX == previous.fieldX
+    and tx.from.fieldZ == previous.fieldZ
+    and tx.to.fieldX == anchor.fieldX
+    and tx.to.fieldZ == anchor.fieldZ
 end
 
 -- Observe one committed player step: enqueue the player's previous anchor.
@@ -691,6 +760,12 @@ function FollowingMonController:_observePlayer(mapId)
     -- the commit must not enqueue the same vacated tile a second time.
     return
   end
+  if self:_commitMatchesLiveStart(previous, anchor, mapId) then
+    -- The live start transaction already accounts for this commit: either
+    -- the ordinary follow handled it, or an accepted mode set rebaselined
+    -- past it on purpose. Either way the vacated tile is not re-enqueued.
+    return
+  end
   if previous == nil or previous.mapId ~= mapId or anchor.mapId ~= mapId then
     return
   end
@@ -705,6 +780,10 @@ function FollowingMonController:_observePlayer(mapId)
     -- drop (catch-up) rather than replaying a stale trail without end.
     table.remove(self._queue, 1)
   end
+  -- A commit observed without its movement start carries no transaction
+  -- speed (ordinary walks are consumed at movement start with their own
+  -- speed), so the resync anchor replays at the default trail pace.
+  previous.speed = FollowingMonController.TRAIL_SPEED
   self._queue[#self._queue + 1] = previous
 end
 
@@ -732,12 +811,14 @@ function FollowingMonController:_driveQueue(mapId)
     return
   end
   local direction = directionFromTo(position, head)
+  local speed = assert(head.speed, "queued trail speed required")
+  assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown queued trail speed " .. tostring(speed))
   self._actors:setFacing(partnerId, direction)
   local ok, err = pcall(
     self._actors.beginScriptedAction,
     self._actors,
     partnerId,
-    { action = "walk", direction = direction, speed = FollowingMonController.TRAIL_SPEED }
+    { action = "walk", direction = direction, speed = speed }
   )
   if not ok then
     if FieldActorManager.isPlacementRejection(err) then
@@ -749,7 +830,7 @@ function FollowingMonController:_driveQueue(mapId)
   assert(err == nil, "scripted begin answers through the actor, not a value")
   self._action = {
     progress = 0,
-    duration = MovementCalibration.SPEED_TICKS[FollowingMonController.TRAIL_SPEED],
+    duration = MovementCalibration.SPEED_TICKS[speed],
   }
   self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
 end
@@ -870,13 +951,33 @@ function FollowingMonController:settleMovement()
   self._action = nil
 end
 
--- Select the persistent follower movement mode. Setting a mode starts no
--- actor movement by itself; repeats are idempotent and the latest set
--- wins. Anything outside the semantic trio is a programmer fault.
+-- Select the persistent follower movement mode. An accepted set is a reset
+-- boundary: it cancels in-flight partner movement, drops queued and
+-- consumed-step observations, and rebaselines player movement observation to
+-- the current transaction/commit, so obligations from the previous mode
+-- never execute under the new one. The pause latch survives; setting a mode
+-- still starts no actor movement by itself, repeats stay idempotent, the
+-- latest set wins, and anything outside the semantic trio faults.
 ---@param movementType string
 ---@param self FollowingMonController
 function FollowingMonController:setMovementType(movementType)
   assert(FOLLOWER_MOVEMENT_TYPES[movementType] == true, "unknown follower movement mode " .. tostring(movementType))
+  local partnerId = self._actors:partnerId()
+  if partnerId ~= nil then
+    self._actors:cancelScriptedMovement(partnerId)
+  end
+  self._action = nil
+  self._queue = {}
+  self._consumedStep = nil
+  local player = self._playerOf()
+  if type(player.movementTransaction) == "function" then
+    local tx = player:movementTransaction()
+    if tx ~= nil then
+      self._lastMovementTransactionRevision = tx.revision
+    end
+  end
+  self._lastPlayerRevision = player:movementRevision()
+  self._lastAnchor = player:committedAnchor()
   self._movementType = movementType
 end
 

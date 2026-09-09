@@ -17,12 +17,20 @@ local function follower(overrides)
   local collaborator = {
     _calls = calls,
     _active = overrides._active == true,
+    _sourceActive = overrides._sourceActive,
     _installed = overrides._installed,
     _sourceState = overrides._sourceState,
     _trigger = overrides._trigger == true,
     _settled = overrides._settled ~= false,
     isActive = function(self)
       calls[#calls + 1] = "isActive"
+      return self._active
+    end,
+    isSourceActive = function(self)
+      calls[#calls + 1] = "isSourceActive"
+      if self._sourceActive ~= nil then
+        return self._sourceActive
+      end
       return self._active
     end,
     isVisible = function(self)
@@ -142,15 +150,16 @@ end
 -- mode is state, so dispatch starts no actor action by itself.
 function T.movement_mode_dispatch_sets_the_controller_mode()
   for _, mode in ipairs({ "follow_player", "follow_transition_a", "follow_transition_b" }) do
-    local followingMon = follower()
+    local followingMon = follower({ _active = true })
     local run = runWith(followingMon)
     Assert.equal(
       Runtime.executeNode({ op = "follower_set_movement_type", movementType = mode }, run),
       Runtime.OUTCOME_CONTINUE,
       mode .. " must continue in the same tick"
     )
-    Assert.equal(#followingMon._calls, 1, mode .. " must call the controller exactly once")
-    Assert.deepEqual(followingMon._calls[1], { "setMovementType", mode }, "the semantic mode rides through")
+    Assert.equal(#followingMon._calls, 2, mode .. " must query live state then call the controller once")
+    Assert.equal(followingMon._calls[1], "isSourceActive", "the live party truth gates the command")
+    Assert.deepEqual(followingMon._calls[2], { "setMovementType", mode }, "the semantic mode rides through")
   end
 end
 
@@ -286,6 +295,126 @@ function T.release_all_unpauses_the_follower_and_releases_both_locks()
     0,
     "the release still frees the autonomous lock"
   )
+end
+
+-- Source-inactive movement and transition commands are no-ops: with no
+-- eligible party at command time both nodes continue without touching the
+-- movement owner or the transition effect, and a follower published later
+-- without re-issuing either command keeps its default mode with no pending
+-- effect bound to it. An inactive transition command never requires the
+-- effect service; a missing follower collaborator still faults.
+function T.inactive_source_commands_leave_no_mode_or_pending_effect_for_a_later_follower()
+  local sourceActive = false
+  local calls = {}
+  local followingMon = {
+    isSourceActive = function()
+      calls[#calls + 1] = "isSourceActive"
+      return sourceActive
+    end,
+    setMovementType = function(_, mode)
+      calls[#calls + 1] = { "setMovementType", mode }
+    end,
+  }
+  local transitionStarts = 0
+  local transitionService = {
+    start = function()
+      transitionStarts = transitionStarts + 1
+      return true
+    end,
+  }
+  local stored = {}
+  local world = {
+    getVar = function(_, id)
+      return stored[id]
+    end,
+    setVar = function(_, id, value)
+      stored[id] = value
+    end,
+  }
+  local run = {
+    instance = { scriptId = "test.follower", locals = {}, textArgs = {} },
+    services = { followingMon = followingMon, followerTransition = transitionService, world = world },
+    semantics = RuntimeValues,
+    scheduler = {
+      createTask = function(_, taskType)
+        return "task:" .. taskType
+      end,
+    },
+    tick = 1,
+    input = {},
+  }
+
+  Assert.equal(
+    Runtime.executeNode({ op = "follower_set_movement_type", movementType = "follow_transition_a" }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "an inactive movement command still continues"
+  )
+  Assert.equal(
+    Runtime.executeNode({ op = "follower_transition" }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "an inactive transition command still continues"
+  )
+  local sawSourceQuery = false
+  local sawModeWrite = false
+  for _, entry in ipairs(calls) do
+    if entry == "isSourceActive" then
+      sawSourceQuery = true
+    end
+    if type(entry) == "table" and entry[1] == "setMovementType" then
+      sawModeWrite = true
+    end
+  end
+  Assert.isTrue(sawSourceQuery, "the live party truth gates both commands")
+  Assert.isFalse(sawModeWrite, "an inactive movement command stores no mode")
+  Assert.equal(transitionStarts, 0, "an inactive transition command starts no effect")
+
+  local serviceFree = {
+    instance = { scriptId = "test.follower", locals = {}, textArgs = {} },
+    services = { followingMon = followingMon, world = world },
+    semantics = RuntimeValues,
+    scheduler = {
+      createTask = function(_, taskType)
+        return "task:" .. taskType
+      end,
+    },
+    tick = 1,
+    input = {},
+  }
+  Assert.equal(
+    Runtime.executeNode({ op = "follower_transition" }, serviceFree),
+    Runtime.OUTCOME_CONTINUE,
+    "an inactive transition command no-ops before reaching the effect service"
+  )
+  Assert.equal(transitionStarts, 0, "the service-free inactive command still starts nothing")
+
+  sourceActive = true
+  local modeWrites = 0
+  for _, entry in ipairs(calls) do
+    if type(entry) == "table" and entry[1] == "setMovementType" then
+      modeWrites = modeWrites + 1
+    end
+  end
+  Assert.equal(modeWrites, 0, "a later activation without re-issuing commands stores no mode")
+  Assert.equal(transitionStarts, 0, "a later follower binds no stale pending effect")
+
+  local missingMode = {
+    instance = { scriptId = "test.follower", locals = {}, textArgs = {} },
+    services = { world = world },
+    semantics = RuntimeValues,
+  }
+  local modeErr = Assert.throws(function()
+    Runtime.executeNode({ op = "follower_set_movement_type", movementType = "follow_transition_a" }, missingMode)
+  end)
+  Assert.isTrue(Errors.is(modeErr), "a missing follower collaborator is an attributed fault, never inactive")
+  local missingTransition = {
+    instance = { scriptId = "test.follower", locals = {}, textArgs = {} },
+    services = { world = world },
+    semantics = RuntimeValues,
+  }
+  local transitionErr = Assert.throws(function()
+    Runtime.executeNode({ op = "follower_transition" }, missingTransition)
+  end)
+  Assert.isTrue(Errors.is(transitionErr), "a missing follower collaborator faults the transition too")
 end
 
 return { tests = T }

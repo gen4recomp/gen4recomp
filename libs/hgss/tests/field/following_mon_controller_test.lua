@@ -10,10 +10,12 @@ local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FollowingMonController = require("libs.hgss.src.field.FollowingMonController")
+local Personality = require("libs.mons.src.gen4.Personality")
 
 local T = {}
 
@@ -286,6 +288,44 @@ function T.ineligible_leads_never_install()
   w.mgr:dispose()
 end
 
+-- The live party query answers from current party state without waiting for
+-- reconciliation: empty and ineligible parties read false, eligible leads
+-- of either gender read true, and the query never installs, replaces, or
+-- clears the reconciled lead.
+function T.live_party_query_answers_without_touching_the_reconciled_lead()
+  local w = world()
+  Assert.isFalse(w.controller:isSourceActive(), "an empty party holds no live lead")
+  Assert.isNil(w.controller._lead, "the query installs no reconciled lead")
+  w.svc:setLead(0, mon("EEVEE"))
+  Assert.isFalse(w.controller:isSourceActive(), "a lead without a follower visual holds no live lead")
+  Assert.isNil(w.controller._lead, "an ineligible query still installs nothing")
+  local malePid, femalePid
+  for pid = 0, 600 do
+    local gender = Personality.gender(31, pid)
+    if gender == "male" and malePid == nil then
+      malePid = pid
+    end
+    if gender == "female" and femalePid == nil then
+      femalePid = pid
+    end
+  end
+  assert(malePid ~= nil and femalePid ~= nil, "the fixture ratio must yield both genders")
+  w.svc:setLead(0, mon("CHIKORITA", malePid))
+  Assert.isTrue(w.controller:isSourceActive(), "an eligible male lead is live before reconciliation")
+  Assert.isNil(w.controller._lead, "the query still installs no reconciled lead")
+  w.svc:setLead(0, mon("CHIKORITA", femalePid))
+  Assert.isTrue(w.controller:isSourceActive(), "an eligible female lead is live before reconciliation")
+  Assert.isNil(w.controller._lead, "the query still installs no reconciled lead")
+  tick(w, 2)
+  local installed = assert(w.controller._lead, "reconciliation installs the lead")
+  Assert.equal(installed.species, "CHIKORITA", "reconciliation keeps the live lead")
+  Assert.isTrue(w.controller:isSourceActive(), "the installed lead stays live")
+  w.svc:clearLead()
+  Assert.isFalse(w.controller:isSourceActive(), "clearing the party reads inactive immediately")
+  Assert.equal(w.controller._lead, installed, "the query never clears the reconciled lead")
+  w.mgr:dispose()
+end
+
 function T.partner_replays_committed_anchors_and_settles()
   local w = world()
   w.svc:setLead(0, mon())
@@ -378,6 +418,68 @@ function T.movement_mode_keeps_the_latest_transition_identity()
     "follow_transition_b",
     "the latest set wins even when both modes share transition behavior"
   )
+  w.mgr:dispose()
+end
+
+-- An accepted mode set is a movement reset boundary: it cancels the
+-- in-flight trail through the actor owner, clears the retained queue,
+-- rebaselines player observation to the live transaction and commit, and
+-- keeps the pause latch. Steps committed from a dropped start never replay,
+-- while steps begun after the set trail fresh under the new mode.
+function T.mode_change_clears_stale_trail_and_rebaselines_while_keeping_pause()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local home = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the trail starts while the player step is in flight")
+  w.controller:setMovementType("follow_transition_a")
+  Assert.equal(w.controller._movementType, "follow_transition_a", "the new mode stores")
+  Assert.isNil(w.controller._action, "the accepted set holds no in-flight obligation")
+  Assert.equal(#w.controller._queue, 0, "the accepted set clears the retained queue")
+  Assert.isNil(
+    assert(w.mgr:getById(partnerId), "the partner survives the mode set"):scriptedMotionState(),
+    "the accepted set cancels the trail through the actor owner"
+  )
+  for _ = 1, 10 do
+    w.player:updateFixed({})
+  end
+  Assert.equal(w.player.motion, "idle", "the player step still commits")
+  tick(w, 20)
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the dropped step")
+  Assert.equal(actor.fieldX, home.fieldX, "the dropped start never replays from its commit")
+  Assert.equal(actor.fieldZ, home.fieldZ, "the dropped start never replays from its commit")
+  Assert.isTrue(w.controller:isMovementSettled(), "the dropped step settles without movement")
+
+  w.controller:setMovementPaused(true)
+  Assert.isTrue(w.player:tryStep("south"), "the paused step must start")
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 1, "the paused step retains its obligation")
+  local queuedTx = assert(w.player:movementTransaction(), "the paused step publishes its transaction")
+  w.controller:setMovementType("follow_transition_b")
+  Assert.equal(w.controller._movementType, "follow_transition_b", "the second mode stores")
+  Assert.equal(#w.controller._queue, 0, "the accepted set clears the paused obligation")
+  Assert.isTrue(w.controller._paused, "the accepted set preserves the pause latch")
+  Assert.equal(
+    w.controller._lastMovementTransactionRevision,
+    queuedTx.revision,
+    "the accepted set rebaselines to the live transaction"
+  )
+  for _ = 1, 10 do
+    w.player:updateFixed({})
+  end
+  Assert.equal(w.player.motion, "idle", "the paused player step still commits")
+  tick(w, 5)
+  Assert.equal(#w.controller._queue, 0, "the dropped commit never re-enqueues while paused")
+  w.controller:setMovementPaused(false)
+  tick(w, 5)
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the release")
+  Assert.equal(actor.fieldX, home.fieldX, "release replays no dropped history")
+  Assert.equal(actor.fieldZ, home.fieldZ, "release replays no dropped history")
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled after the release")
   w.mgr:dispose()
 end
 
@@ -898,6 +1000,99 @@ function T.map_exit_clears_movement_and_restores_free_follow()
   Assert.equal(actor.mapId, 62, "the reinstalled actor belongs to the new map")
   Assert.equal(actor.pose, "idle", "the new map resumes native idle with no movement action")
   Assert.isNil(actor:scriptedMotionState(), "the reinstalled partner holds no scripted motion")
+  w.mgr:dispose()
+end
+
+-- A fast scripted player walk trails at its own pace instead of faulting:
+-- the follower starts in the same epoch at the matching calibrated timing,
+-- a run walk normalizes to the same fast follower timing, queued obligations
+-- keep each step's own speed, and every trail settles onto the vacated tile.
+function T.fast_scripted_walk_trails_at_its_own_pace_and_keeps_queued_speeds()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "fast" })
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the follower starts while the fast step is still in flight")
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the fast step start")
+  local motion = assert(actor:scriptedMotionState(), "the fast trail has an active presentation")
+  Assert.equal(motion.action, "walk", "the fast trail walks toward the vacated tile")
+  Assert.equal(motion.speed, "fast", "the follower preserves the fast semantic speed")
+  Assert.equal(
+    assert(w.controller._action, "the fast trail holds a movement obligation").duration,
+    MovementCalibration.SPEED_TICKS.fast,
+    "the fast trail uses its own calibrated duration"
+  )
+  for progress = 1, MovementCalibration.SPEED_TICKS.fast do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.fast)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  for _ = 1, 12 do
+    w.controller:update()
+  end
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the fast step")
+  Assert.equal(actor.fieldX, vacated.fieldX, "the fast trail settles onto the vacated tile")
+  Assert.equal(actor.fieldZ, vacated.fieldZ, "the fast trail settles onto the vacated tile")
+  Assert.isTrue(w.controller:isMovementSettled(), "the fast trail settles")
+
+  local runVacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "run" })
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the follower starts while the run step is still in flight")
+  local runner = assert(w.mgr:getById(partnerId), "the partner survives the run step start")
+  local runMotion = assert(runner:scriptedMotionState(), "the run trail has an active presentation")
+  Assert.equal(runMotion.speed, "fast", "a run player walk normalizes to fast follower timing")
+  Assert.equal(
+    assert(w.controller._action, "the run trail holds a movement obligation").duration,
+    MovementCalibration.SPEED_TICKS.fast,
+    "the normalized run trail uses the fast calibrated duration"
+  )
+  for progress = 1, MovementCalibration.SPEED_TICKS.run do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.run)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  for _ = 1, 12 do
+    w.controller:update()
+  end
+  runner = assert(w.mgr:getById(partnerId), "the partner survives the run step")
+  Assert.equal(runner.fieldX, runVacated.fieldX, "the normalized trail settles onto the vacated tile")
+  Assert.equal(runner.fieldZ, runVacated.fieldZ, "the normalized trail settles onto the vacated tile")
+  Assert.isTrue(w.controller:isMovementSettled(), "the normalized trail settles")
+
+  w.controller:setMovementPaused(true)
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "fast" })
+  w.controller:update()
+  for progress = 1, MovementCalibration.SPEED_TICKS.fast do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.fast)
+  end
+  w.player:commitScriptedAction()
+  tick(w, 1)
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "normal" })
+  w.controller:update()
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+  end
+  w.player:commitScriptedAction()
+  tick(w, 1)
+  Assert.equal(#w.controller._queue, 2, "both paused steps retain their own obligation")
+  Assert.equal(w.controller._queue[1].speed, "fast", "the first queued step keeps its own speed")
+  Assert.equal(w.controller._queue[2].speed, "normal", "the second queued step keeps its own speed")
+  w.controller:setMovementPaused(false)
+  w.controller:update()
+  Assert.equal(
+    assert(w.controller._action, "the replayed head holds a movement obligation").duration,
+    MovementCalibration.SPEED_TICKS.fast,
+    "replay uses the head step speed, not the latest transaction"
+  )
+  for _ = 1, 60 do
+    w.controller:update()
+  end
+  Assert.isTrue(w.controller:isMovementSettled(), "the queued trails settle")
   w.mgr:dispose()
 end
 

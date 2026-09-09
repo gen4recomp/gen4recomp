@@ -929,6 +929,9 @@ local function handleFollowerWait(node, run)
 end
 
 local function handleFollowerSetMovementType(node, run)
+  if not followingMonFor(run):isSourceActive() then
+    return Runtime.OUTCOME_CONTINUE
+  end
   followingMonFor(run):setMovementType(node.movementType)
   return Runtime.OUTCOME_CONTINUE
 end
@@ -948,6 +951,9 @@ local function handleFollowerIsEventTrigger(node, run)
 end
 
 local function handleFollowerTransition(_, run)
+  if not followingMonFor(run):isSourceActive() then
+    return Runtime.OUTCOME_CONTINUE
+  end
   requireService(run, "followerTransition"):start()
   return Runtime.OUTCOME_CONTINUE
 end

@@ -1,19 +1,21 @@
 -- Starter acquisition reveals the follower through the pending transition:
--- party mutation, a pre-publication transition request, hidden partner
--- publication, reveal, then one ordinary player step with synchronized
--- visible following. Real ROM-derived maps, the real field runtime, and
--- the real mon service stay in the path; only host boundaries (audio,
--- saves, clock) are faked by the harness. Party setup calls the production
--- mon service directly, and the transition request calls the production
--- transition owner directly; both intentionally bypass script decoding and
--- runtime dispatch to isolate reconciliation and transition/follow
--- integration. Script decoding and dispatch are exercised elsewhere. The
--- scenario never shows the actor by hand and never installs a pre-visible
--- partner.
+-- party mutation, a pre-publication transition command through production
+-- script dispatch, hidden partner publication, reveal, then one ordinary
+-- player step with synchronized visible following. Real ROM-derived maps,
+-- the real field runtime, and the real mon service stay in the path; only
+-- host boundaries (audio, saves, clock) are faked by the harness. Party
+-- setup calls the production mon service directly and the transition command
+-- runs through the production script runtime handler with the live
+-- following-mon and transition owners; both intentionally bypass script
+-- decoding to isolate reconciliation and transition/follow integration.
+-- Script decoding is exercised elsewhere. The scenario never shows the actor
+-- by hand and never installs a pre-visible partner.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
+local Runtime = require("libs.script.src.Runtime")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local T = {
   metadata = {
@@ -62,11 +64,35 @@ function T.tests.direct_mon_service_gift_reveals_through_the_pending_transition_
     local added = game.runtime.monService:giveMon({ species = "CHIKORITA", level = 5, form = 0 })
     Assert.isTrue(added, "setup gift must enter the party")
 
-    -- The direct transition-owner request runs before follower reconciliation
-    -- has published the new partner actor later in the same update flow.
+    -- The script transition command runs through production dispatch before
+    -- follower reconciliation has published the new partner actor later in
+    -- the same update flow. Live party state already holds the gifted lead,
+    -- so the command must be accepted even though no actor exists yet.
     Assert.isNil(game.runtime.actors:partnerId(), "no partner exists before reconciliation")
-    local accepted = game.runtime.followingMonTransition:start()
-    Assert.isTrue(accepted, "the pre-publication transition command is accepted, not dropped")
+    Assert.isTrue(
+      game.runtime.followingMon:isSourceActive(),
+      "the live party already holds the gifted lead before reconciliation"
+    )
+    local dispatchRun = {
+      instance = { scriptId = "test.starter-follower", locals = {}, textArgs = {} },
+      services = {
+        followingMon = game.runtime.followingMon,
+        followerTransition = game.runtime.followingMonTransition,
+      },
+      semantics = RuntimeValues,
+      scheduler = {
+        createTask = function(_, taskType)
+          return "task:" .. taskType
+        end,
+      },
+      tick = 1,
+      input = {},
+    }
+    Assert.equal(
+      Runtime.executeNode({ op = "follower_transition" }, dispatchRun),
+      Runtime.OUTCOME_CONTINUE,
+      "the pre-publication transition command continues instead of dropping"
+    )
     Assert.equal(
       #game.runtime.followingMonTransition:status().instances,
       0,

@@ -269,4 +269,45 @@ function T.scripted_non_walk_actions_publish_no_movement_start()
   Assert.equal(blocked:movementRevision(), 0, "a rejected scripted walk commits nothing")
 end
 
+function T.movement_transactions_carry_semantic_speed_with_matching_duration()
+  local manual = playerAt(5, 5, "south")
+  Assert.isTrue(manual:tryStep("south"), "the manual step must start")
+  local manualTx = manual:movementTransaction()
+  Assert.notNil(manualTx, "starting a manual step publishes a transaction")
+  assert(manualTx ~= nil, "starting a manual step publishes a transaction")
+  Assert.equal(manualTx.speed, "normal", "a manual walk carries its semantic speed directly")
+  Assert.equal(
+    manualTx.durationTicks,
+    MovementCalibration.SPEED_TICKS.normal,
+    "the manual duration matches its semantic speed"
+  )
+  Assert.equal(manualTx.revision, 1, "the manual transaction is revisioned")
+  Assert.equal(manualTx.from.fieldZ, 5, "the manual transaction sources from the committed tile")
+  Assert.equal(manualTx.to.fieldZ, 6, "the manual transaction resolves its adjacent destination")
+
+  local fastPlayer = playerAt(5, 5, "south")
+  fastPlayer:beginScriptedAction({ action = "walk", direction = "south", speed = "fast" })
+  local fastTx = fastPlayer:movementTransaction()
+  Assert.notNil(fastTx, "beginning a scripted fast walk publishes a transaction")
+  assert(fastTx ~= nil, "beginning a scripted fast walk publishes a transaction")
+  Assert.equal(fastTx.speed, "fast", "a scripted fast walk carries its action speed directly")
+  Assert.equal(
+    fastTx.durationTicks,
+    MovementCalibration.SPEED_TICKS.fast,
+    "the fast duration matches its semantic speed"
+  )
+  Assert.equal(fastTx.revision, 1, "the scripted transaction is revisioned")
+  Assert.equal(fastTx.from.fieldZ, 5, "the scripted transaction sources from the committed tile")
+  Assert.equal(fastTx.to.fieldZ, 6, "the scripted transaction resolves its adjacent destination")
+
+  local runPlayer = playerAt(5, 5, "south")
+  runPlayer:beginScriptedAction({ action = "walk", direction = "south", speed = "run" })
+  local runTx = runPlayer:movementTransaction()
+  Assert.notNil(runTx, "beginning a scripted run walk publishes a transaction")
+  assert(runTx ~= nil, "beginning a scripted run walk publishes a transaction")
+  Assert.equal(runTx.speed, "run", "a scripted run walk keeps its own semantic speed at the player boundary")
+  Assert.equal(runTx.durationTicks, MovementCalibration.SPEED_TICKS.run, "the run duration matches its semantic speed")
+  Assert.equal(runTx.revision, 1, "the run transaction is revisioned")
+end
+
 return { tests = T }

@@ -69,6 +69,7 @@ FieldPlayer.LEDGE_JUMP_TICKS = 16
 ---@field to table<string, unknown>
 ---@field direction FieldDirection
 ---@field traversalKind string
+---@field speed string semantic walk speed; durationTicks is its calibration
 ---@field durationTicks integer
 
 ---@class FieldPlayerOptions
@@ -345,8 +346,13 @@ local function copyAnchor(point)
 end
 
 -- Shared step start for ordinary and scripted steps: capture the from state,
--- adopt the resolved destination, and enter the walking motion.
-function FieldPlayer:_beginStep(direction, destination)
+-- adopt the resolved destination, and enter the walking motion. The semantic
+-- speed is final here: manual steps walk normal, scripted steps carry their
+-- action speed, and the published duration is that speed's calibration.
+function FieldPlayer:_beginStep(direction, destination, speed)
+  assert(type(speed) == "string", "movement speed required")
+  local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+  local durationTicks = assert(MovementCalibration.SPEED_TICKS[speed], "unknown movement speed " .. tostring(speed))
   self.facing = direction
   self.from = {
     fieldX = self.fieldX,
@@ -361,16 +367,23 @@ function FieldPlayer:_beginStep(direction, destination)
   self.to = destination
   self.motion = "walking"
   self.progressTicks = 0
-  self.durationTicks = FieldPlayer.WALK_STEP_TICKS
-  self:_publishMovementStart(direction)
+  self.durationTicks = durationTicks
+  self:_publishMovementStart(direction, speed)
 end
 
 -- Publish the resolved translation before the first in-flight tick: source
--- and destination anchors, direction, traversal kind, and semantic duration
--- are final for this step. Blocked input and facing-only turns never reach
--- this path, so they publish nothing.
+-- and destination anchors, direction, traversal kind, semantic speed, and
+-- duration are final for this step. Blocked input and facing-only turns
+-- never reach this path, so they publish nothing.
 ---@param direction FieldDirection
-function FieldPlayer:_publishMovementStart(direction)
+---@param speed string
+function FieldPlayer:_publishMovementStart(direction, speed)
+  assert(type(speed) == "string", "movement speed required")
+  local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+  assert(
+    self.durationTicks == MovementCalibration.SPEED_TICKS[speed],
+    "movement duration must match the semantic speed calibration"
+  )
   self._movementStartRevision = self._movementStartRevision + 1
   self._movementTransaction = {
     revision = self._movementStartRevision,
@@ -379,6 +392,7 @@ function FieldPlayer:_publishMovementStart(direction)
     to = copyAnchor(assert(self.to, "movement destination required")),
     direction = direction,
     traversalKind = "walk",
+    speed = speed,
     durationTicks = self.durationTicks,
   }
 end
@@ -511,7 +525,7 @@ function FieldPlayer:tryStep(direction)
   if not destination then
     return false
   end
-  self:_beginStep(direction, destination)
+  self:_beginStep(direction, destination, "normal")
   return true
 end
 
@@ -572,7 +586,7 @@ function FieldPlayer:scriptedStep(direction)
   if not destination then
     return false
   end
-  self:_beginStep(direction, destination)
+  self:_beginStep(direction, destination, "normal")
   return true
 end
 
@@ -806,8 +820,8 @@ function FieldPlayer:movementRevision()
 end
 
 -- The latest resolved translation start: source/destination anchors,
--- direction, traversal kind, and semantic duration, published when the step
--- begins and readable until the next step replaces it. Read-only by
+-- direction, traversal kind, semantic speed, and duration, published when
+-- the step begins and readable until the next step replaces it. Read-only by
 -- convention: callers must not mutate the returned record or its anchors.
 ---@return FieldPlayer.MovementTransaction?
 function FieldPlayer:movementTransaction()
@@ -1006,7 +1020,10 @@ function FieldPlayer:beginScriptedAction(action)
   -- Snapshot previousWorld at begin so first render interpolates from source.
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = fromState.worldX, fromState.worldY, fromState.worldZ
   if kind == "walk" then
-    self:_publishMovementStart(assert(action.direction, "direction required for walk"))
+    self:_publishMovementStart(
+      assert(action.direction, "direction required for walk"),
+      assert(action.speed, "speed required for walk")
+    )
   end
 end
 
