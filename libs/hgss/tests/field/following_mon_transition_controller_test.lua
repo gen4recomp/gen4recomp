@@ -504,6 +504,47 @@ function T.failed_second_start_preserves_the_live_instance()
   Assert.isTrue(actors:isVisible(PARTNER_ID), "the failed start preserves the live transition visibility")
 end
 
+function T.delayed_pending_bind_failure_is_consumed_without_retry()
+  local actors = fakeActors()
+  local transitions, made = controller(actors, 5, {}, 1)
+  Assert.isTrue(transitions:start(), "a pre-publication request is accepted, not dropped")
+  Assert.equal(#made, 0, "a pending request allocates no model state before publication")
+  actors:install(partnerRecord())
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the published partner starts hidden")
+
+  local err = Assert.throws(function()
+    transitions:updateFixed()
+  end, "the delayed bind failure propagates instead of being swallowed")
+  Assert.isTrue(
+    string.find(err, "boom-model-animated", 1, true) ~= nil,
+    "the failure comes from the delayed animated bind, not the initial start"
+  )
+  Assert.equal(#transitions:status().instances, 0, "the failed bind leaves no live instance")
+  Assert.equal(#made, 1, "only the companion part allocated before the animated failure")
+  Assert.equal(made[1].part, "initial", "the partial allocation is the companion part")
+  Assert.isTrue(made[1].disposed, "the failed bind releases its partial companion state")
+  Assert.equal(#actors._shows, 0, "the failed bind reveals nothing")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the partner stays hidden after the failed bind")
+
+  local rebound = {}
+  transitions:setModelFactory(fakeFactory(rebound))
+  local quiet = pcall(function()
+    transitions:updateFixed()
+  end)
+  Assert.isTrue(quiet, "the tick after the failure stays quiet without another error")
+  Assert.equal(#rebound, 0, "the consumed request allocates nothing on the later tick")
+  Assert.equal(#transitions:status().instances, 0, "the consumed request binds nothing later")
+  Assert.equal(#actors._shows, 0, "the consumed request reveals nothing later")
+  Assert.isFalse(actors:isVisible(PARTNER_ID), "the partner keeps its own hidden state")
+
+  Assert.isTrue(transitions:start(), "a fresh request is accepted after the failure")
+  transitions:updateFixed()
+  transitions:updateFixed()
+  Assert.equal(#transitions:status().instances, 1, "the fresh request binds after the failure")
+  Assert.equal(#actors._shows, 1, "the fresh request reveals exactly once")
+  Assert.isTrue(actors:isVisible(PARTNER_ID), "the partner ends visible")
+end
+
 function T.clear_and_dispose_release_exactly_once()
   local actors = fakeActors()
   actors:install(partnerRecord())

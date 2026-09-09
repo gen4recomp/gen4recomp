@@ -1,14 +1,15 @@
 -- Starter acquisition reveals the follower through the pending transition:
--- party mutation, a pre-publication transition command, hidden partner
+-- party mutation, a pre-publication transition request, hidden partner
 -- publication, reveal, then one ordinary player step with synchronized
 -- visible following. Real ROM-derived maps, the real field runtime, and
 -- the real mon service stay in the path; only host boundaries (audio,
--- saves, clock) are faked by the harness. Party setup goes through the
--- production script-gift operation, the same insertion the starter and
--- field-script paths use. The transition command is issued through the
--- production runtime owner before follower reconciliation publishes the
--- actor; the scenario never shows the actor by hand and never installs a
--- pre-visible partner.
+-- saves, clock) are faked by the harness. Party setup calls the production
+-- mon service directly, and the transition request calls the production
+-- transition owner directly; both intentionally bypass script decoding and
+-- runtime dispatch to isolate reconciliation and transition/follow
+-- integration. Script decoding and dispatch are exercised elsewhere. The
+-- scenario never shows the actor by hand and never installs a pre-visible
+-- partner.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -35,7 +36,7 @@ local function sameTile(a, b)
   return a.fieldX == b.fieldX and a.fieldZ == b.fieldZ
 end
 
-function T.tests.starter_gift_reveals_through_the_pending_transition_then_follows_in_step()
+function T.tests.direct_mon_service_gift_reveals_through_the_pending_transition_then_follows_in_step()
   local versionId = AcceptanceHarness.defaultVersion()
   local harness = AcceptanceHarness.new()
   local defaultFactory = harness.gameFactory
@@ -61,7 +62,7 @@ function T.tests.starter_gift_reveals_through_the_pending_transition_then_follow
     local added = game.runtime.monService:giveMon({ species = "CHIKORITA", level = 5, form = 0 })
     Assert.isTrue(added, "setup gift must enter the party")
 
-    -- The scripted transition command runs before follower reconciliation
+    -- The direct transition-owner request runs before follower reconciliation
     -- has published the new partner actor later in the same update flow.
     Assert.isNil(game.runtime.actors:partnerId(), "no partner exists before reconciliation")
     local accepted = game.runtime.followingMonTransition:start()
