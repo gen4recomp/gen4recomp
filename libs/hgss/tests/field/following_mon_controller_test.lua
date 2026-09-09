@@ -182,6 +182,25 @@ local function tick(w, count)
   end
 end
 
+-- Drives one scripted player walk through the same fixed-step epoch the
+-- production runtime uses, then settles both actors. Returns the tile the
+-- player vacated.
+local function driveScriptedWalk(w, direction, speed)
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+  local duration = MovementCalibration.SPEED_TICKS[speed]
+  w.player:beginScriptedAction({ action = "walk", direction = direction, speed = speed })
+  w.controller:update()
+  for progress = 1, duration do
+    w.player:advanceScriptedAction(progress, duration)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  for _ = 1, 12 do
+    w.controller:update()
+  end
+  return vacated
+end
+
 -- A stationary follower owns no presentation action: idling never starts a
 -- scripted movement, never leaves an in-flight obligation, and never makes
 -- the controller report busy. The partner actor animates through its own
@@ -777,6 +796,122 @@ function T.transition_mode_scripted_walk_starts_the_trail_before_the_player_comm
   w.mgr:dispose()
 end
 
+-- The previous-tile transition mode steers the follower toward the tile the
+-- player vacated and remembers the executed walk as the follower command:
+-- one cardinal step at the transaction pace, no duplicate obligation, and a
+-- descriptive command record that never holds a wait by itself.
+function T.transition_a_steers_to_the_vacated_tile_and_remembers_the_follower_command()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  w.controller:setMovementType("follow_transition_a")
+  local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
+
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "normal" })
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the transition step starts while the player step is in flight")
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the transition step start")
+  Assert.equal(actor.pose, "walk", "the transition step walks toward the vacated tile")
+  Assert.equal(actor.facing, "south", "the transition step faces the vacated tile")
+  local motion = assert(actor:scriptedMotionState(), "the transition step has an active presentation")
+  Assert.equal(motion.action, "walk", "the transition step walks toward the vacated tile, never jumps")
+  Assert.equal(motion.speed, "normal", "the transition step keeps the transaction speed")
+
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+    w.controller:update()
+  end
+  w.player:commitScriptedAction()
+  for _ = 1, 12 do
+    w.controller:update()
+  end
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the transition step")
+  Assert.equal(actor.fieldX, vacated.fieldX, "the follower settles onto the vacated tile")
+  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower settles onto the vacated tile")
+  Assert.equal(#w.controller._queue, 0, "no duplicate obligation remains queued")
+  Assert.isTrue(w.controller:isMovementSettled(), "the transition step settles")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "the executed transition walk is remembered as the follower command"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the remembered command never holds a wait by itself")
+  w.mgr:dispose()
+end
+
+-- Seeds an east/fast remembered command through two real scripted walks: an
+-- east step whose trail walks south, then a north step whose trail walks
+-- east at fast pace. Returns with the player standing north of the follower.
+local function seedEastFastCommand(w)
+  driveScriptedWalk(w, "east", "fast")
+  driveScriptedWalk(w, "north", "fast")
+end
+
+-- The command-replay transition mode is observably distinct from
+-- previous-tile steering: with an east/fast command remembered and the next
+-- vacated tile lying north of the follower, replay steps east at fast pace
+-- while steering steps north onto the vacated tile at the transaction pace.
+function T.transition_b_replays_the_remembered_command_instead_of_steering()
+  local replay = world()
+  replay.svc:setLead(0, mon())
+  tick(replay, 2)
+  seedEastFastCommand(replay)
+  local partnerId = assert(replay.mgr:partnerId(), "setup installs the partner")
+  replay.controller:setMovementType("follow_transition_b")
+  local followerStart = assert(replay.mgr:getPosition(partnerId), "the follower position is required")
+
+  replay.player:beginScriptedAction({ action = "walk", direction = "north", speed = "normal" })
+  replay.controller:update()
+  Assert.isFalse(replay.controller:isMovementSettled(), "the replay starts while the player step is in flight")
+  local actor = assert(replay.mgr:getById(partnerId), "the partner survives the replay start")
+  local motion = assert(actor:scriptedMotionState(), "the replay has an active presentation")
+  Assert.equal(motion.action, "walk", "the replay walks instead of steering toward the vacated tile")
+  Assert.equal(motion.speed, "fast", "the replay keeps the remembered speed, not the transaction speed")
+  Assert.equal(actor.facing, "east", "the replay faces the remembered direction, not the vacated tile")
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    replay.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+    replay.controller:update()
+  end
+  replay.player:commitScriptedAction()
+  for _ = 1, 12 do
+    replay.controller:update()
+  end
+  actor = assert(replay.mgr:getById(partnerId), "the partner survives the replay")
+  Assert.equal(actor.fieldX, followerStart.fieldX + 1, "the replay steps east instead of onto the vacated tile")
+  Assert.equal(actor.fieldZ, followerStart.fieldZ, "the replay holds its row while stepping east")
+  Assert.isTrue(replay.controller:isMovementSettled(), "the replay settles with no stale obligation")
+  Assert.deepEqual(
+    replay.controller._lastFollowerCommand,
+    { direction = "east", speed = "fast" },
+    "replaying preserves the remembered command"
+  )
+  replay.mgr:dispose()
+
+  local steering = world()
+  steering.svc:setLead(0, mon())
+  tick(steering, 2)
+  seedEastFastCommand(steering)
+  local steeringId = assert(steering.mgr:partnerId(), "setup installs the partner")
+  steering.controller:setMovementType("follow_transition_a")
+  local steeringVacated = { fieldX = steering.player.fieldX, fieldZ = steering.player.fieldZ }
+  steering.player:beginScriptedAction({ action = "walk", direction = "north", speed = "normal" })
+  steering.controller:update()
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    steering.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+    steering.controller:update()
+  end
+  steering.player:commitScriptedAction()
+  for _ = 1, 12 do
+    steering.controller:update()
+  end
+  local steered = assert(steering.mgr:getById(steeringId), "the partner survives the steering step")
+  Assert.equal(steered.fieldX, steeringVacated.fieldX, "steering settles onto the vacated tile")
+  Assert.equal(steered.fieldZ, steeringVacated.fieldZ, "steering settles onto the vacated tile")
+  Assert.isTrue(steering.controller:isMovementSettled(), "the steering step settles")
+  steering.mgr:dispose()
+end
+
 -- An arriving walk start begins the real trail in the same update without
 -- queueing behind anything stationary: the follower holds no presentation
 -- action, so the trail starts at once.
@@ -1093,6 +1228,227 @@ function T.fast_scripted_walk_trails_at_its_own_pace_and_keeps_queued_speeds()
     w.controller:update()
   end
   Assert.isTrue(w.controller:isMovementSettled(), "the queued trails settle")
+  w.mgr:dispose()
+end
+
+-- A repeated set under the same mode is still a reset boundary for stale
+-- work, but the live actor never retired: the queue and in-flight step
+-- drop while the remembered walk survives, and the dropped commit never
+-- replays after release.
+function T.repeated_mode_set_drops_stale_work_but_keeps_the_last_walk()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  driveScriptedWalk(w, "south", "normal")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "setup remembers the executed walk"
+  )
+  w.controller:setMovementPaused(true)
+  w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "fast" })
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 1, "the paused step retains its obligation")
+  w.controller:setMovementType("follow_player")
+  Assert.equal(#w.controller._queue, 0, "a repeated set clears the retained obligation")
+  Assert.isNil(w.controller._action, "a repeated set holds no in-flight obligation")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "a repeated set keeps the remembered walk"
+  )
+  Assert.isTrue(w.controller._paused, "a repeated set preserves the pause latch")
+  for progress = 1, MovementCalibration.SPEED_TICKS.fast do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.fast)
+  end
+  w.player:commitScriptedAction()
+  tick(w, 5)
+  Assert.equal(#w.controller._queue, 0, "the dropped commit never re-enqueues")
+  w.controller:setMovementPaused(false)
+  tick(w, 5)
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "release replays no dropped history and keeps the walk"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled after the release")
+  w.mgr:dispose()
+end
+
+-- Switching modes with queued replay work drops the queued replay but
+-- keeps the remembered walk: queueing alone never publishes, and the new
+-- mode starts clean from the live actor.
+function T.switching_modes_drops_queued_replay_but_keeps_the_last_walk()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  driveScriptedWalk(w, "south", "normal")
+  w.controller:setMovementType("follow_transition_b")
+  w.controller:setMovementPaused(true)
+  w.player:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  w.controller:update()
+  Assert.equal(#w.controller._queue, 1, "the paused replay retains its obligation")
+  Assert.equal(
+    w.controller._queue[1].direction,
+    "south",
+    "the queued replay carries the remembered direction, not the player step"
+  )
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "queueing a replay publishes nothing"
+  )
+  w.controller:setMovementType("follow_transition_a")
+  Assert.equal(w.controller._movementType, "follow_transition_a", "the new mode stores")
+  Assert.equal(#w.controller._queue, 0, "the mode switch clears the queued replay")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "the mode switch keeps the remembered walk"
+  )
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+  end
+  w.player:commitScriptedAction()
+  tick(w, 5)
+  Assert.equal(#w.controller._queue, 0, "the dropped commit never re-enqueues under the new mode")
+  w.controller:setMovementPaused(false)
+  tick(w, 5)
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "release replays no dropped replay"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled after the release")
+  w.mgr:dispose()
+end
+
+-- The remembered walk describes the live partner actor: losing the lead
+-- or changing maps forgets it, and a fresh install remembers nothing
+-- until a new real walk starts.
+function T.retiring_the_partner_forgets_the_last_walk()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  driveScriptedWalk(w, "south", "normal")
+  Assert.notNil(w.controller._lastFollowerCommand, "setup remembers the executed walk")
+  w.svc:clearLead()
+  tick(w, 2)
+  Assert.isNil(w.controller._lastFollowerCommand, "losing the lead forgets the walk")
+  Assert.isTrue(w.controller:isMovementSettled(), "the retired follower stays settled")
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.notNil(w.mgr:partnerId(), "the new lead reinstalls the partner")
+  Assert.isNil(w.controller._lastFollowerCommand, "a fresh install remembers nothing")
+  driveScriptedWalk(w, "south", "normal")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "a new real walk is remembered again"
+  )
+  local nextMap = runtimeMap(62)
+  w.mgr:enterMap(nextMap, FieldEventState.new())
+  w.player.currentMap = nextMap
+  tick(w, 3)
+  Assert.notNil(w.mgr:partnerId(), "the new map reinstalls the partner")
+  Assert.isNil(w.controller._lastFollowerCommand, "a map change forgets the walk")
+  Assert.isTrue(w.controller:isMovementSettled(), "the reinstalled follower stays settled")
+  w.mgr:dispose()
+end
+
+-- Settlement observes real obligations only: a remembered walk with an
+-- empty queue is settled, and pausing a stationary follower changes
+-- nothing.
+function T.remembered_walk_never_holds_a_wait_by_itself()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  driveScriptedWalk(w, "south", "normal")
+  Assert.notNil(w.controller._lastFollowerCommand, "setup remembers the executed walk")
+  Assert.isTrue(w.controller:isMovementSettled(), "the remembered walk alone stays settled")
+  w.controller:setMovementPaused(true)
+  tick(w, 3)
+  Assert.isTrue(w.controller:isMovementSettled(), "a paused stationary follower stays settled")
+  w.controller:setMovementPaused(false)
+  tick(w, 2)
+  Assert.isTrue(w.controller:isMovementSettled(), "release starts no obligation from the memory")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "south", speed = "normal" },
+    "idling never rewrites the remembered walk"
+  )
+  w.mgr:dispose()
+end
+
+-- A controller that never started a real walk seeds its first replay from
+-- the live step and remembers exactly the walk the actor executes.
+function T.first_replay_seeds_from_the_live_step()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  Assert.isNil(w.controller._lastFollowerCommand, "a fresh controller remembers nothing")
+  w.controller:setMovementType("follow_transition_b")
+  local vacated = driveScriptedWalk(w, "east", "normal")
+  local actor = assert(w.mgr:getById(assert(w.mgr:partnerId(), "setup installs the partner")))
+  Assert.equal(actor.fieldX, vacated.fieldX + 1, "the seeded replay steps with the live direction")
+  Assert.equal(actor.fieldZ, vacated.fieldZ - 1, "the seeded replay holds the live row")
+  Assert.deepEqual(
+    w.controller._lastFollowerCommand,
+    { direction = "east", speed = "normal" },
+    "the seeded walk becomes the remembered walk"
+  )
+  Assert.isTrue(w.controller:isMovementSettled(), "the seeded replay settles")
+  w.mgr:dispose()
+end
+
+-- A rejected replay start publishes nothing: the placement rejection
+-- reconciles through the discontinuity path, leaving no obligation and
+-- no remembered walk behind.
+function T.rejected_replay_start_publishes_nothing()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  w.controller:setMovementType("follow_transition_b")
+  Assert.isNil(w.controller._lastFollowerCommand, "a fresh controller remembers nothing")
+  local begin = w.mgr.beginScriptedAction
+  w.mgr.beginScriptedAction = function()
+    Errors.raise(FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE, "test placement rejection", {})
+  end
+  w.player:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  w.controller:update()
+  w.mgr.beginScriptedAction = begin
+  Assert.isNil(w.controller._lastFollowerCommand, "a rejected start remembers nothing")
+  Assert.isNil(w.controller._action, "a rejected start holds no in-flight obligation")
+  Assert.equal(#w.controller._queue, 0, "a rejected start queues nothing")
+  for progress = 1, MovementCalibration.SPEED_TICKS.normal do
+    w.player:advanceScriptedAction(progress, MovementCalibration.SPEED_TICKS.normal)
+  end
+  w.player:commitScriptedAction()
+  tick(w, 5)
+  Assert.isNil(w.controller._lastFollowerCommand, "recovery publishes no walk on its own")
+  w.mgr:dispose()
+end
+
+-- Failures the placement classifier does not recognize propagate to the
+-- caller instead of reconciling, and no walk is remembered as though
+-- movement began.
+function T.unrelated_actor_failure_propagates_without_remembering()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  w.controller:setMovementType("follow_transition_b")
+  local begin = w.mgr.beginScriptedAction
+  w.mgr.beginScriptedAction = function()
+    error("boom-test-failure")
+  end
+  w.player:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  local err = Assert.throws(function()
+    w.controller:update()
+  end)
+  w.mgr.beginScriptedAction = begin
+  Assert.isTrue(tostring(err):find("boom-test-failure", 1, true) ~= nil, "the unrelated failure propagates")
+  Assert.isNil(w.controller._lastFollowerCommand, "a failed start remembers nothing")
+  Assert.isNil(w.controller._action, "a failed start holds no in-flight obligation")
   w.mgr:dispose()
 end
 

@@ -119,6 +119,50 @@ T["follower transition command is supported and same-tick"] = function()
   )
 end
 
+-- Route 24's Rocket cutscene (member 215 script 2) drives
+-- FollowingPokemonMovement 56 around its fast east player step and restores
+-- 48 afterwards: both must lower to semantic movement modes, and the player
+-- step inside the transition must keep its fast semantic pace.
+T["route 24 script carries the mode56 transition context with a fast player step"] = function(romFs)
+  local archive, memberIrs = FieldScripts.decode(romFs)
+  assert(archive:memberCount() > 215, "the script archive must still carry member 215")
+  local ir = assert(memberIrs[215], "member 215 must decode")
+  local script = assert(ir.scripts[2], "member 215 must still carry the Rocket script")
+  local stdCatalog = require("romdump.src.digest.script.SourceCatalog").catalog()
+  local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
+  local lowered = SemanticLowering.lowerScript(script, ir, { stdCatalog = stdCatalog })
+  local modes = {}
+  local playerSteps = {}
+  for _, item in ipairs(lowered.items) do
+    for _, opcode in ipairs((item.provenance or {}).opcodes or {}) do
+      if opcode == 604 then
+        Assert.equal(item.op, "follower_set_movement_type", "604 must lower to the persistent mode setter")
+        Assert.isTrue(FOLLOWER_MODES[item.movementType] == true, "604 must keep a semantic follower mode")
+        modes[#modes + 1] = item.movementType
+      end
+    end
+    if item.op == "apply_movement" and item.actor ~= nil and item.actor.special == "player" then
+      for _, action in ipairs(item.movement or {}) do
+        if action.action == "walk" then
+          playerSteps[#playerSteps + 1] = action.direction .. ":" .. tostring(action.speed)
+        end
+      end
+    end
+  end
+  table.sort(modes)
+  Assert.deepEqual(modes, { "follow_player", "follow_transition_b" }, "Route 24 must set and restore its modes")
+  local hasFastEast = false
+  for _, step in ipairs(playerSteps) do
+    if step == "east:fast" then
+      hasFastEast = true
+    end
+  end
+  Assert.isTrue(
+    hasFastEast,
+    "Route 24 must carry its fast east player step inside the transition, saw " .. table.concat(playerSteps, ", ")
+  )
+end
+
 T["follower family has complete dispositions"] = function(romFs)
   local gaps = {}
   for _, opcode in ipairs(REQUIRED_SUPPORTED) do

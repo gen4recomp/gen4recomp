@@ -43,6 +43,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _queue table<string, unknown>[]
 ---@field _paused boolean
 ---@field _movementType string persistent follower map-object movement mode
+---@field _lastFollowerCommand { direction: string, speed: string }? last real follower walk; descriptive only, never an obligation
 ---@field _action { progress: integer, duration: integer }?
 ---@field _suspended boolean
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
@@ -78,6 +79,11 @@ FollowingMonController.__index = FollowingMonController
 ---@field _commitMatchesLiveStart fun(self: FollowingMonController, previous: table<string, unknown>?, anchor: table<string, unknown>, mapId: integer): boolean
 ---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
 ---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
+---@field _beginVacatedSteer fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
+---@field _beginReplayLastWalk fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
+---@field _beginActorWalk fun(self: FollowingMonController, mapId: integer, direction: string, speed: string): boolean
+---@field _enqueueVacatedTarget fun(self: FollowingMonController, tx: FieldPlayer.MovementTransaction, speed: string)
+---@field _enqueueReplay fun(self: FollowingMonController, mapId: integer, direction: string, speed: string)
 ---@field _driveQueue fun(self: FollowingMonController, mapId: integer)
 ---@field _advanceAction fun(self: FollowingMonController)
 
@@ -192,6 +198,7 @@ function FollowingMonController.new(opts)
     _queue = {},
     _paused = false,
     _movementType = "follow_player",
+    _lastFollowerCommand = nil,
     _action = nil,
     _suspended = false,
   }, FollowingMonController)
@@ -495,6 +502,7 @@ function FollowingMonController:_publish(mapId)
     if id ~= nil then
       self._published = self._lead
       self._queue = {}
+      self._lastFollowerCommand = nil
     end
     return
   end
@@ -521,6 +529,7 @@ function FollowingMonController:_publish(mapId)
   if id ~= nil then
     self._published = self._lead
     self._pendingHiddenLead = nil
+    self._lastFollowerCommand = nil
   end
 end
 
@@ -537,6 +546,7 @@ function FollowingMonController:_suppress()
   self._queue = {}
   self._published = nil
   self._pendingHiddenLead = nil
+  self._lastFollowerCommand = nil
 end
 
 -- Cancel in-flight presentation, drop the queue and the actor, and forget
@@ -562,6 +572,7 @@ function FollowingMonController:_discontinuity(mapId)
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
+  self._lastFollowerCommand = nil
   if self._lead ~= nil and self:_permitted(mapId) then
     local anchor = self._playerOf():committedAnchor()
     if anchor.mapId == mapId then
@@ -585,6 +596,7 @@ function FollowingMonController:_handleMapChange(mapId)
   self._queue = {}
   self._action = nil
   self._movementType = "follow_player"
+  self._lastFollowerCommand = nil
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastPlayerRevision = nil
@@ -630,7 +642,90 @@ function FollowingMonController:_observeMovementStart(mapId)
     return
   end
   self._lastMovementTransactionRevision = tx.revision
-  self:_beginOrdinaryFollow(mapId, tx)
+  if self._movementType == "follow_player" then
+    self:_beginOrdinaryFollow(mapId, tx)
+  elseif self._movementType == "follow_transition_a" then
+    self:_beginVacatedSteer(mapId, tx)
+  elseif self._movementType == "follow_transition_b" then
+    self:_beginReplayLastWalk(mapId, tx)
+  else
+    error("unknown follower movement mode " .. tostring(self._movementType))
+  end
+end
+
+-- Run one follower walk through the actor owner and remember it as the
+-- last real walk. A classified physical placement rejection reconciles
+-- through the discontinuity path (which forgets the remembered walk);
+-- every other failure propagates. Answers whether the actor is now
+-- walking.
+---@param self FollowingMonController
+---@param mapId integer
+---@param direction string
+---@param speed string
+---@return boolean
+function FollowingMonController:_beginActorWalk(mapId, direction, speed)
+  local partnerId = assert(self._actors:partnerId(), "follower walk requires the partner actor")
+  self._actors:setFacing(partnerId, direction)
+  local ok, err = pcall(
+    self._actors.beginScriptedAction,
+    self._actors,
+    partnerId,
+    { action = "walk", direction = direction, speed = speed }
+  )
+  if not ok then
+    if FieldActorManager.isPlacementRejection(err) then
+      self:_discontinuity(mapId)
+      return false
+    end
+    error(err)
+  end
+  assert(err == nil, "scripted begin answers through the actor, not a value")
+  self._action = {
+    progress = 0,
+    duration = MovementCalibration.SPEED_TICKS[speed],
+  }
+  self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
+  self._lastFollowerCommand = { direction = direction, speed = speed }
+  return true
+end
+
+-- Retain one vacated-tile obligation under the bounded queue policy for a
+-- paused or busy follower. Remembering waits until the queued walk
+-- actually starts through the queue driver.
+---@param self FollowingMonController
+---@param tx FieldPlayer.MovementTransaction
+---@param speed string
+function FollowingMonController:_enqueueVacatedTarget(tx, speed)
+  if #self._queue >= FollowingMonController.MAX_QUEUED_ANCHORS then
+    table.remove(self._queue, 1)
+  end
+  self._queue[#self._queue + 1] = {
+    mapId = tx.mapId,
+    fieldX = tx.from.fieldX,
+    fieldZ = tx.from.fieldZ,
+    facing = tx.direction,
+    worldY = tx.from.worldY,
+    speed = speed,
+  }
+end
+
+-- Retain one replay obligation under the bounded queue policy. The record
+-- carries the walk direction itself rather than a target tile so the later
+-- start replays the same walk regardless of where the trail has moved
+-- since. Remembering waits until the queued walk actually starts.
+---@param self FollowingMonController
+---@param mapId integer
+---@param direction string
+---@param speed string
+function FollowingMonController:_enqueueReplay(mapId, direction, speed)
+  if #self._queue >= FollowingMonController.MAX_QUEUED_ANCHORS then
+    table.remove(self._queue, 1)
+  end
+  self._queue[#self._queue + 1] = {
+    mapId = mapId,
+    direction = direction,
+    speed = speed,
+  }
 end
 
 -- Start the ordinary follow toward the transaction's source anchor: the tile
@@ -651,17 +746,7 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
   }
   local partnerId = assert(self._actors:partnerId(), "ordinary follow requires the partner actor")
   if self._paused or self._action ~= nil then
-    if #self._queue >= FollowingMonController.MAX_QUEUED_ANCHORS then
-      table.remove(self._queue, 1)
-    end
-    self._queue[#self._queue + 1] = {
-      mapId = tx.mapId,
-      fieldX = tx.from.fieldX,
-      fieldZ = tx.from.fieldZ,
-      facing = tx.direction,
-      worldY = tx.from.worldY,
-      speed = speed,
-    }
+    self:_enqueueVacatedTarget(tx, speed)
     return
   end
   local position = assert(self._actors:getPosition(partnerId), "partner position is required")
@@ -671,26 +756,76 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
     return
   end
   local direction = directionFromTo(position, target)
-  self._actors:setFacing(partnerId, direction)
-  local ok, err = pcall(
-    self._actors.beginScriptedAction,
-    self._actors,
-    partnerId,
-    { action = "walk", direction = direction, speed = speed }
-  )
-  if not ok then
-    if FieldActorManager.isPlacementRejection(err) then
-      self:_discontinuity(mapId)
-      return
-    end
-    error(err)
-  end
-  assert(err == nil, "scripted begin answers through the actor, not a value")
-  self._action = {
-    progress = 0,
-    duration = MovementCalibration.SPEED_TICKS[speed],
+  self:_beginActorWalk(mapId, direction, speed)
+end
+
+-- Steer toward the transaction's source anchor: the tile the player
+-- vacated. The movement direction derives from the follower's own tile,
+-- never from the player's step direction. A follower already standing on
+-- the vacated tile holds still with no obligation; a nonadjacent target is
+-- a discontinuity, never a pathfind.
+---@param self FollowingMonController
+---@param mapId integer
+---@param tx FieldPlayer.MovementTransaction
+function FollowingMonController:_beginVacatedSteer(mapId, tx)
+  local speed = followerSpeed(tx.speed)
+  self._consumedStep = {
+    mapId = tx.mapId,
+    fromX = tx.from.fieldX,
+    fromZ = tx.from.fieldZ,
+    toX = tx.to.fieldX,
+    toZ = tx.to.fieldZ,
   }
-  self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
+  local partnerId = assert(self._actors:partnerId(), "vacated-tile steering requires the partner actor")
+  local position = assert(self._actors:getPosition(partnerId), "partner position is required")
+  if position.fieldX == tx.from.fieldX and position.fieldZ == tx.from.fieldZ then
+    return
+  end
+  if self._paused or self._action ~= nil then
+    self:_enqueueVacatedTarget(tx, speed)
+    return
+  end
+  local target = { fieldX = tx.from.fieldX, fieldZ = tx.from.fieldZ }
+  if not isAdjacent(position, target) then
+    self:_discontinuity(mapId)
+    return
+  end
+  local direction = directionFromTo(position, target)
+  self:_beginActorWalk(mapId, direction, speed)
+end
+
+-- Replay the last real follower walk without steering toward the vacated
+-- tile. A controller that never started a real walk yet seeds the replay
+-- from the live transaction once; the seed is remembered only when its
+-- walk actually starts, exactly like any other walk.
+---@param self FollowingMonController
+---@param mapId integer
+---@param tx FieldPlayer.MovementTransaction
+function FollowingMonController:_beginReplayLastWalk(mapId, tx)
+  local remembered = self._lastFollowerCommand
+  local direction ---@type string
+  local speed ---@type string
+  if remembered ~= nil then
+    direction = assert(remembered.direction, "remembered follower direction is required")
+    speed = assert(remembered.speed, "remembered follower speed is required")
+    assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown follower walk speed " .. tostring(speed))
+  else
+    direction = tx.direction
+    speed = followerSpeed(tx.speed)
+  end
+  self._consumedStep = {
+    mapId = tx.mapId,
+    fromX = tx.from.fieldX,
+    fromZ = tx.from.fieldZ,
+    toX = tx.to.fieldX,
+    toZ = tx.to.fieldZ,
+  }
+  assert(self._actors:partnerId() ~= nil, "replay requires the partner actor")
+  if self._paused or self._action ~= nil then
+    self:_enqueueReplay(mapId, direction, speed)
+    return
+  end
+  self:_beginActorWalk(mapId, direction, speed)
 end
 
 -- Whether the live movement-start transaction already accounts for the
@@ -805,6 +940,13 @@ function FollowingMonController:_driveQueue(mapId)
     self:_discontinuity(mapId)
     return
   end
+  if head.direction ~= nil then
+    local direction = assert(head.direction, "queued replay direction required")
+    local speed = assert(head.speed, "queued replay speed required")
+    assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown queued replay speed " .. tostring(speed))
+    self:_beginActorWalk(mapId, direction, speed)
+    return
+  end
   local position = assert(self._actors:getPosition(partnerId), "partner position is required")
   if not isAdjacent(position, head) then
     self:_discontinuity(mapId)
@@ -813,26 +955,7 @@ function FollowingMonController:_driveQueue(mapId)
   local direction = directionFromTo(position, head)
   local speed = assert(head.speed, "queued trail speed required")
   assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown queued trail speed " .. tostring(speed))
-  self._actors:setFacing(partnerId, direction)
-  local ok, err = pcall(
-    self._actors.beginScriptedAction,
-    self._actors,
-    partnerId,
-    { action = "walk", direction = direction, speed = speed }
-  )
-  if not ok then
-    if FieldActorManager.isPlacementRejection(err) then
-      self:_discontinuity(mapId)
-      return
-    end
-    error(err)
-  end
-  assert(err == nil, "scripted begin answers through the actor, not a value")
-  self._action = {
-    progress = 0,
-    duration = MovementCalibration.SPEED_TICKS[speed],
-  }
-  self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
+  self:_beginActorWalk(mapId, direction, speed)
 end
 
 -- Advance the one in-flight trail step; commit the queued anchor only
@@ -916,6 +1039,7 @@ function FollowingMonController:handleMapExit()
   self._action = nil
   self._queue = {}
   self._movementType = "follow_player"
+  self._lastFollowerCommand = nil
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
@@ -1063,6 +1187,7 @@ function FollowingMonController:dispose()
   self._queue = {}
   self._actors:clearPartner()
   self._lead = nil
+  self._lastFollowerCommand = nil
   self._published = nil
   self._pendingHiddenLead = nil
   self._lastMapId = nil

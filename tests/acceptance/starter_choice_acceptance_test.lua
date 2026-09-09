@@ -586,6 +586,7 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
     local seenMessageOrder = {}
     local scriptedCommits = 0
     local trailedCommits = 0
+    local sawTransitionMode = false
     local prevMotion = "idle"
     local prevTile = nil
     local episode = nil
@@ -608,6 +609,9 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
         return
       end
       scriptedCommits = scriptedCommits + 1
+      if current.startMode == "follow_transition_a" then
+        sawTransitionMode = true
+      end
       Assert.isTrue(
         current.startedUnsettled,
         "the stable follower starts its trail on the first tick of scripted step " .. scriptedCommits
@@ -678,6 +682,7 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
               alwaysUnsettled = not game.runtime.followingMon:isMovementSettled(),
               idStable = game.runtime.actors:partnerId() == partnerId,
               startAction = startAction,
+              startMode = game.runtime.followingMon._movementType,
               startHeight = live and live.worldY or 0,
               maxHeightDeviation = 0,
             }
@@ -743,6 +748,21 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
       "the source script sets its own starter flag"
     )
     Assert.isFalse(game:snapshot().fieldLocked, "the source script releases the field at its End")
+    Assert.isTrue(
+      sawTransitionMode,
+      "the scripted return walk runs under the transition movement mode before restoration"
+    )
+    Assert.equal(
+      game.runtime.followingMon._movementType,
+      "follow_player",
+      "the script restores ordinary free following after its transition segment"
+    )
+    local remembered = assert(
+      game.runtime.followingMon._lastFollowerCommand,
+      "the scripted transition segment leaves a remembered follower command"
+    )
+    Assert.equal(remembered.direction, "west", "the remembered command keeps the last executed walk direction")
+    Assert.equal(remembered.speed, "normal", "the remembered command keeps the last executed walk speed")
 
     -- Ordinary following after the release: one normal player step into a
     -- reachable tile starts the same stable partner in the same epoch and
