@@ -201,10 +201,20 @@ function T.recognized_step_rejection_stays_a_nonfatal_discontinuity()
   w.svc:setLead(0, mon())
   tick(w, 2)
   Assert.notNil(w.mgr:partnerId(), "setup installs the partner")
-  w.mgr.beginScriptedAction = function()
-    error(structured(FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE))
+  -- The ordinary trail begins through the same classified begin seam the
+  -- removed explicit path used: fail the first begin, then delegate, so
+  -- the rejection reconciles and the republished partner survives.
+  local begin = w.mgr.beginScriptedAction
+  local calls = 0
+  w.mgr.beginScriptedAction = function(self, ...)
+    calls = calls + 1
+    if calls == 1 then
+      error(structured(FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE))
+    end
+    return begin(self, ...)
   end
-  w.controller:startMovement({ action = "walk", direction = "east", speed = "normal" })
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
+  tick(w, 12)
   Assert.notNil(w.mgr:partnerId(), "a rejected step keeps exactly one partner installed")
   w.mgr:dispose()
 end
@@ -218,8 +228,9 @@ function T.unrelated_movement_failures_propagate_unchanged()
   w.mgr.beginScriptedAction = function()
     error(probe)
   end
+  Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
   local err = Assert.throws(function()
-    w.controller:startMovement({ action = "walk", direction = "east", speed = "normal" })
+    tick(w, 2)
   end)
   Assert.isTrue(Errors.is(err), "an unrelated movement failure stays structured")
   Assert.equal(err.code, probe.code, "the failure keeps its exact code")

@@ -41,6 +41,75 @@ T["follower settle command is supported"] = function()
   Assert.equal(disposition(609), "supported", "the settle/update check must run controller semantics")
 end
 
+T["follower movement-mode command is supported and same-tick"] = function()
+  Assert.equal(disposition(604), "supported", "the movement-mode setter must stay supported")
+  Assert.equal(
+    CommandCatalog.classification(604),
+    CommandCatalog.CONTINUE,
+    "the movement-mode setter must continue in the same tick without a wait task"
+  )
+end
+
+local FOLLOWER_MODES = { follow_player = true, follow_transition_a = true, follow_transition_b = true }
+
+-- Elm's starter tail (member 843 script 12) drives FollowingPokemonMovement
+-- 55 before its scripted walk and restores 48 afterwards: both must lower
+-- to semantic movement modes, never to the unrelated movement-script jumps
+-- the old namespace decoded them to.
+T["elm starter script carries semantic movement modes without jumps"] = function(romFs)
+  local archive, memberIrs = FieldScripts.decode(romFs)
+  assert(archive:memberCount() > 843, "the script archive must still carry member 843")
+  local ir = assert(memberIrs[843], "member 843 must decode")
+  local script = assert(ir.scripts[12], "member 843 must still carry the starter script")
+  local stdCatalog = require("romdump.src.digest.script.SourceCatalog").catalog()
+  local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
+  local lowered = SemanticLowering.lowerScript(script, ir, { stdCatalog = stdCatalog })
+  local modes = {}
+  for _, item in ipairs(lowered.items) do
+    Assert.isTrue(item.op ~= "follower_start_movement", "the one-shot movement operation must be gone")
+    for _, opcode in ipairs((item.provenance or {}).opcodes or {}) do
+      if opcode == 604 then
+        Assert.equal(item.op, "follower_set_movement_type", "604 must lower to the persistent mode setter")
+        Assert.isTrue(FOLLOWER_MODES[item.movementType] == true, "604 must keep a semantic follower mode")
+        Assert.isNil(item.movement, "a movement mode carries no decoded movement action")
+        Assert.isNil(item.action, "a movement mode is state, not a movement task")
+        Assert.isNil(item.direction, "a movement mode carries no direction")
+        Assert.isNil(item.distance, "a movement mode carries no jump distance")
+        Assert.isNil(item.speed, "a movement mode carries no speed")
+        modes[#modes + 1] = item.movementType
+      end
+    end
+  end
+  table.sort(modes)
+  Assert.deepEqual(modes, { "follow_player", "follow_transition_a" }, "Elm's tail must set and restore its modes")
+end
+
+-- Corpus-wide gate: no lowered script may still carry the one-shot
+-- operation, and every 604-derived node must be a semantic mode setter.
+T["no generated script carries a one-shot follower movement"] = function(romFs)
+  local archive, memberIrs = FieldScripts.decode(romFs)
+  local violations = {}
+  FieldScripts.eachScript(archive, memberIrs, function(member, index, structured, lowered)
+    for _, item in ipairs(lowered.items) do
+      if item.op == "follower_start_movement" then
+        violations[#violations + 1] = ("member %d script %d: one-shot follower movement"):format(member, index)
+      end
+      for _, opcode in ipairs((item.provenance or {}).opcodes or {}) do
+        if opcode == 604 and item.op ~= "follower_set_movement_type" then
+          violations[#violations + 1] = ("member %d script %d: 604 lowers to %s"):format(member, index, item.op)
+        end
+      end
+    end
+    FieldScripts.eachStep(structured, function(step)
+      if step.op == "follower_start_movement" then
+        violations[#violations + 1] = ("member %d script %d: structured one-shot movement"):format(member, index)
+      end
+    end)
+  end)
+  table.sort(violations)
+  Assert.equal(#violations, 0, "stale follower lowering must not survive: " .. table.concat(violations, ", "))
+end
+
 T["follower transition command is supported and same-tick"] = function()
   Assert.equal(disposition(608), "supported", "the transition must start through the transition owner")
   Assert.equal(

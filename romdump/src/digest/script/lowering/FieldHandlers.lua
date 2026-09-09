@@ -333,6 +333,8 @@ end
 -- Follower lowering. Every operation below routes to the one field
 -- following controller through the injected collaborator; the node op
 -- already names the behavior, so the runtime never switches on opcodes.
+-- Opcode 604 selects one of the three persistent follower map-object
+-- movement modes; raw selectors never reach the generated boundary.
 local function followerPartnerState(ins)
   -- ScrCmd_596 writes the partner-state query into its result variable.
   return { op = "follower_partner_state", result = Operands.varRef(ins.operands[1]) }
@@ -353,23 +355,30 @@ local function followerWait()
   return { op = "follower_wait" }
 end
 
-local function followerStartMovement(ins)
-  -- ScrCmd_FollowingPokemonMovement carries a movement code in the shared
-  -- movement family (corpus: 48 fast zero jump, 55 fast near jump). Decode
-  -- it at lowering so the runtime executes one ordinary scripted action; a
-  -- code outside the supported matrix stays an explicit unsupported node.
-  local code = Operands.operandValue(ins.operands[1])
-  local decoded = MovementDecoder.decode({ movementCode = code, count = 1 })
-  if decoded == nil then
-    return {
-      op = "unsupported",
-      command = 604,
-      arguments = { code },
-      sourceOffset = ins.offset,
-      reason = "ScrCmd_FollowingPokemonMovement movement code outside the supported matrix",
-    }
+local FOLLOWER_MOVEMENT_TYPES = {
+  follow_player = true,
+  follow_transition_a = true,
+  follow_transition_b = true,
+}
+
+local function followerSetMovementType(ins)
+  -- ScrCmd_FollowingPokemonMovement carries a persistent map-object movement
+  -- selector (sub_0205FC94 clears the controller and calls
+  -- MapObject_SetMovement, never a movement-script command). Normalize
+  -- through the shared object-movement table and keep only the three
+  -- follower modes; anything else is attributed unsupported source.
+  local raw = Operands.operandValue(ins.operands[1])
+  local ok, movementType = pcall(HgssObjectMovement.semanticType, raw)
+  if ok and FOLLOWER_MOVEMENT_TYPES[movementType] then
+    return { op = "follower_set_movement_type", movementType = movementType }
   end
-  return { op = "follower_start_movement", movement = decoded[1] }
+  return {
+    op = "unsupported",
+    command = 604,
+    arguments = { raw },
+    sourceOffset = ins.offset,
+    reason = "ScrCmd_FollowingPokemonMovement selector is not a follower movement mode",
+  }
 end
 
 local function followerReposition(ins)
@@ -1265,7 +1274,7 @@ return {
   [601] = followerFacePlayer,
   [602] = followerSetPaused,
   [603] = followerWait,
-  [604] = followerStartMovement,
+  [604] = followerSetMovementType,
   [605] = followerReposition,
   [608] = followerTransition,
   [621] = placeStarterBalls,

@@ -4,7 +4,7 @@
 -- manager, starts ordinary walks from the player's movement-start
 -- transaction in the same fixed-step epoch, replays committed player anchors
 -- through a bounded trail queue only for paused/busy recovery and resync,
--- and settles script pause/wait/explicit-movement requests. It owns no
+-- and settles script pause/wait requests. It owns no
 -- actor table, occupancy index, draw record, or visual: those stay with the
 -- manager. Presentation state is never saved; continue reconstructs the
 -- partner from party state on the first ticks.
@@ -42,6 +42,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _consumedStep table<string, unknown>?
 ---@field _queue table<string, unknown>[]
 ---@field _paused boolean
+---@field _movementType string persistent follower map-object movement mode
 ---@field _action { kind: string, progress: integer, duration: integer }?
 ---@field _suspended boolean
 ---@field new fun(opts: FollowingMonControllerOptions): FollowingMonController
@@ -55,7 +56,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field setMovementPaused fun(self: FollowingMonController, paused: boolean)
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
 ---@field settleMovement fun(self: FollowingMonController)
----@field startMovement fun(self: FollowingMonController, action: table<string, unknown>)
+---@field setMovementType fun(self: FollowingMonController, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
 ---@field facePlayer fun(self: FollowingMonController)
 ---@field isEventTrigger fun(self: FollowingMonController, kind: integer, param: unknown): boolean
@@ -125,6 +126,15 @@ local ZERO_OFFSET = { x = 0, z = 0 }
 -- 1 south, 2 west, 3 east.
 local FACING_BY_RAW = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
 
+-- The persistent follower map-object movement modes: ordinary free
+-- following plus the two scripted-transition modes. The setter stores the
+-- mode only; movement behavior reads it on later ticks.
+local FOLLOWER_MOVEMENT_TYPES = {
+  follow_player = true,
+  follow_transition_a = true,
+  follow_transition_b = true,
+}
+
 -- Trigger kinds the controller answers from live state (corpus-observed
 -- 1/2). Anything else is outside the delivered trigger contract and reads
 -- false rather than faulting the script.
@@ -178,6 +188,7 @@ function FollowingMonController.new(opts)
     _consumedStep = nil,
     _queue = {},
     _paused = false,
+    _movementType = "follow_player",
     _action = nil,
     _suspended = false,
   }, FollowingMonController)
@@ -858,45 +869,14 @@ function FollowingMonController:settleMovement()
   self._action = nil
 end
 
--- Explicit scripted follower movement: the script takes over the one action,
--- so the trail queue clears first and pause never blocks it. Absence is a
--- no-op; malformed selectors are programmer faults. Any decoded movement
--- action the actor manager executes may ride through.
----@param action table<string, unknown> decoded movement action
+-- Select the persistent follower movement mode. Setting a mode starts no
+-- actor movement by itself; repeats are idempotent and the latest set
+-- wins. Anything outside the semantic trio is a programmer fault.
+---@param movementType string
 ---@param self FollowingMonController
-function FollowingMonController:startMovement(action)
-  assert(type(action) == "table" and type(action.action) == "string", "follower movement requires an action record")
-  local partnerId = self._actors:partnerId()
-  if partnerId == nil then
-    return
-  end
-  self._queue = {}
-  self:settleMovement()
-  if action.direction ~= nil then
-    assert(DELTAS[action.direction], "follower movement direction is invalid")
-    self._actors:setFacing(partnerId, action.direction)
-  end
-  local ok, err = pcall(self._actors.beginScriptedAction, self._actors, partnerId, {
-    action = action.action,
-    direction = action.direction,
-    distance = action.distance,
-    speed = action.speed,
-    ticks = action.ticks,
-    name = action.name,
-    deltaX = action.deltaX,
-    deltaZ = action.deltaZ,
-    surfaceBandDelta = action.surfaceBandDelta,
-  })
-  if not ok then
-    if FieldActorManager.isPlacementRejection(err) then
-      self:_discontinuity(assert(self._actors.currentMapId, "follower map is required"))
-      return
-    end
-    error(err)
-  end
-  assert(err == nil, "scripted begin answers through the actor, not a value")
-  self._action = { kind = "explicit", progress = 0, duration = MovementCalibration.actionTicks(action) }
-  self._actors:advanceScriptedAction(partnerId, 0, self._action.duration)
+function FollowingMonController:setMovementType(movementType)
+  assert(FOLLOWER_MOVEMENT_TYPES[movementType] == true, "unknown follower movement mode " .. tostring(movementType))
+  self._movementType = movementType
 end
 
 -- Face the partner toward the player. Absence is a no-op.

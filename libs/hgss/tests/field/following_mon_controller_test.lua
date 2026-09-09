@@ -320,18 +320,59 @@ function T.overlong_paused_queue_reconciles_instead_of_replaying()
   w.mgr:dispose()
 end
 
-function T.explicit_movement_takes_over_the_trail()
+-- The follower movement mode is controller-owned runtime state: a new
+-- controller free-follows, each semantic mode sets without starting actor
+-- movement by itself, repeats are idempotent, the latest set wins, and
+-- anything outside the semantic trio is a programmer fault.
+function T.movement_mode_defaults_to_free_follow()
   local w = world()
-  w.svc:setLead(0, mon())
-  tick(w, 2)
-  stepSouth(w)
-  tick(w, 2)
-  w.controller:startMovement({ action = "jump", direction = "east", distance = "zero", speed = "fast" })
-  tick(w, 12)
-  Assert.isTrue(w.controller:isMovementSettled(), "explicit movement settles through the controller")
-  local actor = assert(w.mgr:getById("field:partner"))
-  Assert.equal(actor.fieldX, 4, "the scripted hop does not inherit the cleared trail")
-  Assert.equal(actor.fieldZ, 4, "the scripted hop does not inherit the cleared trail")
+  Assert.equal(w.controller._movementType, "follow_player", "a new controller free-follows")
+  Assert.isTrue(w.controller:isMovementSettled(), "a new controller has no in-flight movement")
+  w.mgr:dispose()
+end
+
+function T.movement_mode_sets_start_no_actor_movement()
+  for _, mode in ipairs({ "follow_player", "follow_transition_a", "follow_transition_b" }) do
+    local w = world()
+    w.svc:setLead(0, mon())
+    tick(w, 2)
+    local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+    local before = assert(w.mgr:getPosition(partnerId), "the partner position is required")
+    w.controller:setMovementType(mode)
+    w.controller:setMovementType(mode)
+    Assert.equal(w.controller._movementType, mode, "a repeated set keeps the mode without faulting")
+    local after = assert(w.mgr:getPosition(partnerId), "the partner survives the mode sets")
+    Assert.equal(after.fieldX, before.fieldX, mode .. " must not displace the partner")
+    Assert.equal(after.fieldZ, before.fieldZ, mode .. " must not displace the partner")
+    Assert.isTrue(w.controller:isMovementSettled(), mode .. " must start no actor movement by itself")
+    w.mgr:dispose()
+  end
+end
+
+function T.movement_mode_keeps_the_latest_transition_identity()
+  local w = world()
+  w.controller:setMovementType("follow_transition_a")
+  w.controller:setMovementType("follow_transition_b")
+  Assert.equal(
+    w.controller._movementType,
+    "follow_transition_b",
+    "the latest set wins even when both modes share transition behavior"
+  )
+  w.mgr:dispose()
+end
+
+function T.movement_mode_rejects_values_outside_the_semantic_trio()
+  local w = world()
+  for _, bad in ipairs({ "jump", "follow_swimmer", "", "FOLLOW_PLAYER", "stationary" }) do
+    Assert.throws(function()
+      w.controller:setMovementType(bad)
+    end, "an unknown mode must fail, got: " .. tostring(bad))
+  end
+  local raw = 48
+  Assert.throws(function()
+    w.controller:setMovementType(raw --[[@as string]])
+  end, "a raw source selector must never reach the runtime setter")
+  Assert.equal(w.controller._movementType, "follow_player", "a rejected set keeps the previous mode")
   w.mgr:dispose()
 end
 

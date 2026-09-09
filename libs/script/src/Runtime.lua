@@ -928,9 +928,8 @@ local function handleFollowerWait(node, run)
   return blockOnTask(run, "follower_wait", { node = node })
 end
 
-local function handleFollowerStartMovement(node, run)
-  assert(type(node.movement) == "table", "follower movement requires the decoded movement")
-  followingMonFor(run):startMovement(node.movement)
+local function handleFollowerSetMovementType(node, run)
+  followingMonFor(run):setMovementType(node.movementType)
   return Runtime.OUTCOME_CONTINUE
 end
 
@@ -1617,7 +1616,7 @@ HANDLERS.follower_partner_state = handleFollowerPartnerState
 HANDLERS.follower_face_player = handleFollowerFacePlayer
 HANDLERS.follower_set_paused = handleFollowerSetPaused
 HANDLERS.follower_wait = handleFollowerWait
-HANDLERS.follower_start_movement = handleFollowerStartMovement
+HANDLERS.follower_set_movement_type = handleFollowerSetMovementType
 HANDLERS.follower_reposition = handleFollowerReposition
 HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
 HANDLERS.follower_transition = handleFollowerTransition

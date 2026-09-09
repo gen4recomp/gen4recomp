@@ -993,6 +993,36 @@ T["opcode 729 reads live follower state"] = function()
   Assert.equal(#lowered.unsupported, 0)
 end
 
+-- Opcode 604 (FollowingPokemonMovement) lowers through the object-movement
+-- namespace to the semantic follower mode, never through the movement-script
+-- decoder: raw 55 is the Elm transition controller, not a jump.
+T["opcode 604 lowers to the semantic follower movement mode"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 604, args = { { value = 55, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
+  local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
+  Assert.deepEqual(lowered.items[1], {
+    op = "follower_set_movement_type",
+    movementType = "follow_transition_a",
+    provenance = { offsets = { 32 }, opcodes = { 604 } },
+  })
+  Assert.equal(#lowered.unsupported, 0)
+  local _, steps, report = translate(bytes, 5, 0)
+  Assert.equal(steps[1].op, "follower_set_movement_type")
+  Assert.equal(steps[1].movementType, "follow_transition_a")
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "opcode 604 must verify")
+  Assert.isTrue(report.complete)
+end
+
 -- Opcode 144 (GetFriendSprite) always has real semantics: the opposite-gender
 -- friend NPC sprite constant, independent of any follower subsystem.
 T["opcode 144 lowers to the friend sprite value"] = function()

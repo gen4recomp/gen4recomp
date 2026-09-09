@@ -146,7 +146,9 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
-  cacheFormat = "script-cache-v2",
+  -- v3: opcode 604 lowers to the semantic follower movement mode instead
+  -- of a decoded movement action, so earlier scripts must rebuild.
+  cacheFormat = "script-cache-v3",
   indexSchema = "g4-script-index-v1",
   provenanceSchema = "g4-script-provenance-v1",
 }

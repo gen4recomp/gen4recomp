@@ -357,6 +357,62 @@ function T.signpost_command_and_wait_reject_malformed_shapes()
   })
 end
 
+-- The follower movement-mode vocabulary is exactly the three
+-- source-observed persistent controller modes; raw source selectors never
+-- appear past the generated boundary.
+function T.follower_movement_type_enum_is_exactly_the_three_semantic_modes()
+  Assert.deepEqual(
+    require("libs.script.src.Schema").ENUMS.follower_movement_type,
+    { "follow_player", "follow_transition_a", "follow_transition_b" }
+  )
+  for _, mode in ipairs({ "follow_player", "follow_transition_a", "follow_transition_b" }) do
+    valid(S.script({
+      api = 1,
+      id = "x",
+      steps = { { op = "follower_set_movement_type", movementType = mode }, S.stop() },
+    }))
+  end
+end
+
+function T.follower_movement_mode_operation_rejects_malformed_shapes()
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "follower_set_movement_type" } },
+  })
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "follower_set_movement_type", movementType = "jump" } },
+  })
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "follower_set_movement_type", movementType = 55 } },
+  })
+  invalidCode("SCRIPT_SCHEMA_INVALID", {
+    api = 1,
+    id = "x",
+    steps = { { op = "follower_set_movement_type", movementType = "follow_player", movement = {} } },
+  })
+end
+
+-- The one-shot movement operation is gone with the wrong lowering: the
+-- generated cache is invalidated instead of carrying a compatibility alias.
+function T.removed_follower_movement_operation_is_unknown()
+  local err = invalidCode("SCRIPT_UNKNOWN_OPERATION", {
+    api = 1,
+    id = "x",
+    steps = {
+      {
+        op = "follower_start_movement",
+        movement = { action = "jump", direction = "east", distance = "near", speed = "fast" },
+      },
+    },
+  })
+  Assert.equal(err.context.path, "steps/0")
+end
+
 function T.signpost_operations_reject_malformed_shapes()
   invalidCode("SCRIPT_SCHEMA_INVALID", {
     api = 1,

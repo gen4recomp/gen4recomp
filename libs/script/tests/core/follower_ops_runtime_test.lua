@@ -42,8 +42,8 @@ local function follower(overrides)
     setMovementPaused = function(_, paused)
       calls[#calls + 1] = { "setMovementPaused", paused }
     end,
-    startMovement = function(_, action)
-      calls[#calls + 1] = { "startMovement", action }
+    setMovementType = function(_, mode)
+      calls[#calls + 1] = { "setMovementType", mode }
     end,
     isMovementSettled = function(self)
       calls[#calls + 1] = "isMovementSettled"
@@ -136,16 +136,21 @@ function T.movement_wait_blocks_on_controller_settlement()
   Assert.equal(run.blockTaskId, "task:follower_wait", "the wait parks on the follower task")
 end
 
-function T.explicit_movement_starts_through_the_controller()
-  local followingMon = follower()
-  local run = runWith(followingMon)
-  local action = { action = "jump", direction = "east", distance = "near", speed = "fast" }
-  Assert.equal(
-    Runtime.executeNode({ op = "follower_start_movement", movement = action }, run),
-    Runtime.OUTCOME_CONTINUE
-  )
-  Assert.equal(followingMon._calls[1][1], "startMovement", "movement starts through the one owner")
-  Assert.deepEqual(followingMon._calls[1][2], action, "the decoded movement rides through")
+-- The movement-mode setter dispatches each semantic mode to the one
+-- follower owner exactly once and continues in the same tick. Setting a
+-- mode is state, so dispatch starts no actor action by itself.
+function T.movement_mode_dispatch_sets_the_controller_mode()
+  for _, mode in ipairs({ "follow_player", "follow_transition_a", "follow_transition_b" }) do
+    local followingMon = follower()
+    local run = runWith(followingMon)
+    Assert.equal(
+      Runtime.executeNode({ op = "follower_set_movement_type", movementType = mode }, run),
+      Runtime.OUTCOME_CONTINUE,
+      mode .. " must continue in the same tick"
+    )
+    Assert.equal(#followingMon._calls, 1, mode .. " must call the controller exactly once")
+    Assert.deepEqual(followingMon._calls[1], { "setMovementType", mode }, "the semantic mode rides through")
+  end
 end
 
 function T.reposition_operation_places_through_the_controller()

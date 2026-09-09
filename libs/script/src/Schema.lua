@@ -56,6 +56,9 @@ Schema.ENUMS = {
   -- The five MAPSIGNCOMMAND_* values as the semantic command enum; numeric
   -- source codes never appear at runtime (lowering converts them).
   signpost_command = { "nop", "show", "wipe_out", "wipe_in", "hide" },
+  -- The three persistent follower map-object movement modes opcode 604 may
+  -- select; raw source selectors never appear past the generated boundary.
+  follower_movement_type = { "follow_player", "follow_transition_a", "follow_transition_b" },
 }
 
 Schema.ACTOR_SPECIALS = { "player", "self", "last_talked", "partner", "camera_target" }
@@ -962,7 +965,7 @@ Schema.OPERATIONS = {
   },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
-  -- or 0, and the explicit movement carries one decoded movement action.
+  -- or 0, and the movement mode carries one semantic mode string.
   follower_is_active = {
     fields = {
       result = { type = "value", required = true },
@@ -980,9 +983,9 @@ Schema.OPERATIONS = {
     },
   },
   follower_wait = { fields = {} },
-  follower_start_movement = {
+  follower_set_movement_type = {
     fields = {
-      movement = { type = "movement_action", required = true },
+      movementType = { type = "enum:follower_movement_type", required = true },
     },
   },
   follower_reposition = {
