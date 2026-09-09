@@ -98,8 +98,8 @@ function T.contract_pins_the_current_asset_identities()
       provenanceSchema = "g4-intro-provenance-v1",
     },
     starterChoice = {
-      cacheFormat = "starter-choice-cache-v4",
-      schema = "g4-starter-choice-v4",
+      cacheFormat = "starter-choice-cache-v5",
+      schema = "g4-starter-choice-v5",
     },
     mons = {
       cacheFormat = "mon-cache-v1",

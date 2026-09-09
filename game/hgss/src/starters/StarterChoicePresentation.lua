@@ -1057,29 +1057,44 @@ function StarterChoicePresentation:_drawItems(snapshot)
 end
 
 -- Draws one source message inside one logical surface. A framed region
--- fills the window background and the player-owned frame around the source
--- box; an unframed region draws text only, leaving the scene behind it
--- untouched. Prepared lines start exactly at the source text origin: the
--- retail text printer starts at the window-local origin, never with an inset.
+-- fills the window with the generated chooser info background and the
+-- player-owned frame around the source box; an unframed region draws text
+-- only, leaving the scene behind it untouched. Every prepared line draws
+-- through the generated chooser color variants on the surface's own
+-- background (machine or info). Prepared lines start exactly at the source
+-- text origin: the retail text printer starts at the window-local origin,
+-- never with an inset.
 ---@param surface table<string, unknown> host rectangle of the logical surface
 ---@param region table<string, unknown> source message region ({ box, textOrigin, framed })
 ---@param message table<string, unknown> prepared message record ({ lines })
----@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
+---@param text table<string, unknown> text provider ({ drawLineWithColorVariants })
 function StarterChoicePresentation:_drawSurfaceMessage(surface, region, message, text)
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   local reference = self._manifest.reference
+  local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
+  local background = textColors.infoBackground
+  if surface == self._machine then
+    background = textColors.machineBackground
+  end
   graphics.push()
   graphics.translate(surface.x, surface.y)
   graphics.scale(surface.width / reference.width, surface.height / reference.height)
   if region.framed then
+    local info = textColors.infoBackground
     assert(self._window, "starter presentation owns no window primitive"):drawWindow(
       region.box,
       self._frameIndex,
-      text:windowBackgroundColor()
+      { info.r / 255, info.g / 255, info.b / 255, 1 }
     )
   end
   for index, line in ipairs(assert(message.lines, "starter message carries its prepared lines")) do
-    text:drawLine(line, region.textOrigin.x, region.textOrigin.y + (index - 1) * FieldDialogueTheme.lineHeight)
+    text:drawLineWithColorVariants(
+      line,
+      region.textOrigin.x,
+      region.textOrigin.y + (index - 1) * FieldDialogueTheme.lineHeight,
+      textColors.variants,
+      background
+    )
   end
   graphics.pop()
 end
@@ -1128,15 +1143,14 @@ end
 -- portrait companion on the info surface.
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot
 ---@param view { candidates: table<string, unknown>[], names: string[] }
----@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
+---@param text table<string, unknown> text provider ({ drawLineWithColorVariants })
 function StarterChoicePresentation:draw(snapshot, view, text)
   assert(type(snapshot) == "table", "starter presentation draw requires the controller snapshot")
   assert(type(view) == "table" and type(view.candidates) == "table", "starter presentation requires its candidates")
   assert(type(view.names) == "table" and #view.names == 3, "starter presentation requires three candidate names")
-  assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   assert(
-    text ~= nil and type(text.windowBackgroundColor) == "function",
-    "starter presentation requires the window background color"
+    text ~= nil and type(text.drawLineWithColorVariants) == "function",
+    "starter presentation requires the token-color-variant text provider"
   )
   self:_ensureRealized()
   self:_syncRealized(snapshot)

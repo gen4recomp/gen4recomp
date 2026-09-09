@@ -361,4 +361,124 @@ function T.font_four_renderer_uses_the_parameterized_cache_assets()
   text:release()
 end
 
+local function callerVariants()
+  return {
+    { foreground = { r = 11, g = 22, b = 33 }, shadow = { r = 44, g = 55, b = 66 } },
+    { foreground = { r = 70, g = 80, b = 90 }, shadow = { r = 100, g = 110, b = 120 } },
+    { foreground = { r = 130, g = 140, b = 150 }, shadow = { r = 160, g = 170, b = 180 } },
+    { foreground = { r = 190, g = 200, b = 210 }, shadow = { r = 220, g = 230, b = 240 } },
+    { foreground = { r = 1, g = 2, b = 3 }, shadow = { r = 4, g = 5, b = 6 } },
+    { foreground = { r = 7, g = 8, b = 9 }, shadow = { r = 10, g = 11, b = 12 } },
+    { foreground = { r = 13, g = 14, b = 15 }, shadow = { r = 16, g = 17, b = 18 } },
+  }
+end
+
+local function normalized(color)
+  return { color.r / 255, color.g / 255, color.b / 255, 1 }
+end
+
+-- One prepared line switching colors mid-line draws every glyph from the
+-- semantic mask atlas through the caller-supplied variant named by each
+-- glyph's own color index, on one fixed background, with glyph advances
+-- identical to drawLine, leaving no shader bound.
+function T.draw_line_with_color_variants_selects_caller_colors_per_glyph()
+  local lg = fakeGraphics({ imageSizes = imageSizes() })
+  local text = textRenderer(lg)
+  local variants = callerVariants()
+  local background = { r = 21, g = 22, b = 23 }
+  local tokens = { glyphToken(1, 0), glyphToken(2, 3), glyphToken(1, 3), glyphToken(2, 2), glyphToken(1, 0) }
+  text:drawLineWithColorVariants(tokens, 10, 20, variants, background)
+
+  Assert.equal(#lg.draws, 5, "every glyph token draws exactly once")
+  for index, call in ipairs(lg.draws) do
+    Assert.equal(call.image, lg.images[2], "glyph " .. index .. " draws from the mask atlas")
+  end
+
+  local plainGraphics = fakeGraphics({ imageSizes = imageSizes() })
+  local plain = textRenderer(plainGraphics)
+  plain:drawLine(tokens, 10, 20)
+  for index, call in ipairs(lg.draws) do
+    Assert.equal(call.x, plainGraphics.draws[index].x, "glyph " .. index .. " advances exactly like drawLine")
+    Assert.equal(call.y, plainGraphics.draws[index].y, "glyph " .. index .. " keeps the drawLine baseline")
+  end
+  plain:release()
+
+  local foregrounds, shadows, backgrounds = {}, {}, {}
+  for _, send in ipairs(lg.shaders[1].sends) do
+    if send.name == "u_foreground" then
+      foregrounds[#foregrounds + 1] = send.value
+    elseif send.name == "u_shadow" then
+      shadows[#shadows + 1] = send.value
+    elseif send.name == "u_background" then
+      backgrounds[#backgrounds + 1] = send.value
+    end
+  end
+  local function distinct(sequence)
+    local collapsed = {}
+    for _, value in ipairs(sequence) do
+      local last = collapsed[#collapsed]
+      local same = last ~= nil and #last == #value
+      if same then
+        for index = 1, #value do
+          if last[index] ~= value[index] then
+            same = false
+            break
+          end
+        end
+      end
+      if not same then
+        collapsed[#collapsed + 1] = value
+      end
+    end
+    return collapsed
+  end
+  local variantOrder = { 1, 4, 3, 1 }
+  local expectedForegrounds, expectedShadows = {}, {}
+  for _, variantIndex in ipairs(variantOrder) do
+    expectedForegrounds[#expectedForegrounds + 1] = normalized(variants[variantIndex].foreground)
+    expectedShadows[#expectedShadows + 1] = normalized(variants[variantIndex].shadow)
+  end
+  Assert.deepEqual(distinct(foregrounds), expectedForegrounds, "foreground follows each color boundary")
+  Assert.deepEqual(distinct(shadows), expectedShadows, "shadow follows each color boundary")
+  Assert.equal(#backgrounds, 1, "one fixed background covers the whole line")
+  Assert.deepEqual(backgrounds[1], normalized(background), "the background is the caller-supplied color")
+
+  Assert.equal(lg.getShader(), nil, "the palette shader is unbound after the draw")
+  text:release()
+end
+
+-- A line with no glyph tokens draws nothing and still leaves graphics
+-- state clean: no palette shader stays bound.
+function T.draw_line_with_color_variants_leaves_state_clean_without_glyphs()
+  local lg = fakeGraphics({ imageSizes = imageSizes() })
+  local text = textRenderer(lg)
+  local variants = callerVariants()
+  local background = { r = 21, g = 22, b = 23 }
+  text:drawLineWithColorVariants({}, 10, 20, variants, background)
+  local wait = { kind = "wait", control = 514, name = "WAIT", args = {}, raw = {} } --[[@as MessageToken]]
+  text:drawLineWithColorVariants({ wait }, 10, 20, variants, background)
+  Assert.equal(#lg.draws, 0, "no glyph token means no draw")
+  Assert.equal(lg.getShader(), nil, "no palette shader stays bound without glyphs")
+  text:release()
+end
+
+-- A color index outside the variant range fails loudly instead of
+-- clamping to a neighboring caller color.
+function T.draw_line_with_color_variants_rejects_unknown_color_indices()
+  local lg = fakeGraphics({ imageSizes = imageSizes() })
+  local text = textRenderer(lg)
+  local variants = callerVariants()
+  local background = { r = 21, g = 22, b = 23 }
+  for _, bad in ipairs({ -1, 7 }) do
+    local err = Assert.throws(function()
+      text:drawLineWithColorVariants({ glyphToken(1, bad) }, 0, 0, variants, background)
+    end, "color index " .. tostring(bad) .. " must raise")
+    Assert.isTrue(
+      tostring(err):find("nil value", 1, true) == nil,
+      "the failure names the color index, not a missing drawing path"
+    )
+  end
+  text:release()
+end
+
 return { tests = T }

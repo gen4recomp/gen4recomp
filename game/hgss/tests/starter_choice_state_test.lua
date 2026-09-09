@@ -142,6 +142,21 @@ local function preparedMessage(lineSpecs)
   return { lines = lines }
 end
 
+local function chooserTextColors()
+  local variants = {}
+  for index = 1, 7 do
+    variants[index] = {
+      foreground = { r = index * 10 + 1, g = index * 10 + 2, b = index * 10 + 3 },
+      shadow = { r = index * 10 + 4, g = index * 10 + 5, b = index * 10 + 6 },
+    }
+  end
+  return {
+    variants = variants,
+    infoBackground = { r = 16, g = 32, b = 48 },
+    machineBackground = { r = 64, g = 80, b = 96 },
+  }
+end
+
 local function semanticManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
@@ -243,6 +258,7 @@ local function semanticManifest()
         portrait = { x = 88, y = 56, width = 80, height = 80 },
       },
     },
+    textColors = chooserTextColors(),
   }
 end
 

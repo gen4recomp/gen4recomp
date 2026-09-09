@@ -112,6 +112,21 @@ local function preparedMessage(lineSpecs)
   return { lines = lines }
 end
 
+local function chooserTextColors()
+  local variants = {}
+  for index = 1, 7 do
+    variants[index] = {
+      foreground = { r = index * 10 + 1, g = index * 10 + 2, b = index * 10 + 3 },
+      shadow = { r = index * 10 + 4, g = index * 10 + 5, b = index * 10 + 6 },
+    }
+  end
+  return {
+    variants = variants,
+    infoBackground = { r = 16, g = 32, b = 48 },
+    machineBackground = { r = 64, g = 80, b = 96 },
+  }
+end
+
 local function semanticManifest()
   local ball = dynamicDescriptor({ "ball-rock", "ball-open" })
   return {
@@ -213,6 +228,7 @@ local function semanticManifest()
         portrait = { x = 88, y = 56, width = 80, height = 80 },
       },
     },
+    textColors = chooserTextColors(),
   }
 end
 
@@ -625,6 +641,89 @@ function T.turntable_slot_step_completes_on_the_eleventh_fixed_update()
     1e-9,
     "the reverse step clamps to exactly 120 degrees"
   )
+end
+
+-- Starter surfaces draw prepared lines through the generated chooser
+-- colors: every line reaches the token-color-variant path with the manifest
+-- variants, the machine prompt on the machine background, the framed info
+-- message on the info background, and the framed fill uses the generated
+-- info background instead of the generic font background.
+function T.surface_messages_draw_through_the_generated_chooser_colors()
+  local presentation, manifest = openPresentation()
+  manifest.textColors = chooserTextColors()
+  local variantCalls, lineCalls, windowCalls, fontBackgroundCalls = {}, {}, {}, {}
+  local provider = {
+    drawLine = function(_, line, x, y)
+      lineCalls[#lineCalls + 1] = { line = line, x = x, y = y }
+    end,
+    drawLineWithColorVariants = function(_, line, x, y, variants, background)
+      variantCalls[#variantCalls + 1] = { line = line, x = x, y = y, variants = variants, background = background }
+    end,
+    windowBackgroundColor = function()
+      fontBackgroundCalls[#fontBackgroundCalls + 1] = true
+      return { 0.11, 0.22, 0.33, 1 }
+    end,
+  }
+  presentation._window = {
+    drawWindow = function(_, box, frameIndex, fill)
+      windowCalls[#windowCalls + 1] = { box = box, frameIndex = frameIndex, fill = fill }
+    end,
+  }
+  local surfaces = manifest.surfaces
+  presentation:_drawSurfaceMessage(
+    presentation._machine,
+    surfaces.machine.prompt,
+    manifest.messages.bottom.normal,
+    provider
+  )
+  presentation:_drawSurfaceMessage(presentation._info, surfaces.info.message, manifest.messages.topInitial, provider)
+
+  Assert.equal(
+    #lineCalls,
+    0,
+    "starter lines still route through the generic color bands instead of the chooser variants"
+  )
+  local promptLines = #manifest.messages.bottom.normal.lines
+  local messageLines = #manifest.messages.topInitial.lines
+  Assert.equal(#variantCalls, promptLines + messageLines, "every starter line draws through the chooser colors")
+  for index, call in ipairs(variantCalls) do
+    Assert.deepEqual(call.variants, manifest.textColors.variants, "line " .. index .. " carries the generated variants")
+  end
+  for index = 1, promptLines do
+    Assert.deepEqual(
+      variantCalls[index].background,
+      manifest.textColors.machineBackground,
+      "prompt line " .. index .. " uses the machine background"
+    )
+  end
+  for index = promptLines + 1, #variantCalls do
+    Assert.deepEqual(
+      variantCalls[index].background,
+      manifest.textColors.infoBackground,
+      "info line " .. index .. " uses the info background"
+    )
+  end
+  Assert.equal(variantCalls[1].x, surfaces.machine.prompt.textOrigin.x, "the prompt starts at the source origin")
+  Assert.equal(variantCalls[1].y, surfaces.machine.prompt.textOrigin.y, "the prompt starts at the source origin")
+  Assert.equal(
+    variantCalls[promptLines + 1].x,
+    surfaces.info.message.textOrigin.x,
+    "the info message starts at the source origin"
+  )
+  Assert.equal(
+    variantCalls[promptLines + 1].y,
+    surfaces.info.message.textOrigin.y,
+    "the info message starts at the source origin"
+  )
+  Assert.equal(#windowCalls, 1, "only the framed info message draws a window")
+  Assert.deepEqual(windowCalls[1].box, surfaces.info.message.box, "the window covers the source message box")
+  local info = manifest.textColors.infoBackground
+  Assert.deepEqual(
+    windowCalls[1].fill,
+    { info.r / 255, info.g / 255, info.b / 255, 1 },
+    "the framed fill is the generated info background"
+  )
+  Assert.equal(#fontBackgroundCalls, 0, "the generic font background never fills the chooser")
 end
 
 return { tests = T }

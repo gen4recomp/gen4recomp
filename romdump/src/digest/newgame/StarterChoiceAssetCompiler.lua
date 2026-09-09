@@ -7,6 +7,7 @@
 -- runtime model unit; the visible info-surface artwork compiles from the
 -- retail sub BG1/BG2 tile resources; and the machine surface carries the
 -- retail 3D rear-plane clear color plus source window/portrait geometry. The
+-- chooser window text palette compiles to source-independent text colors. The
 -- host keeps one generated decorative backdrop. Candidate pictures are never
 -- compiled here: the mon presentation pipeline owns portrait identity. All
 -- Nitro/text decoding reuses the existing digest helpers; this module owns
@@ -117,6 +118,13 @@ local INFO_BG_OVERLAY = { char = 16, screen = 17, palette = 15 }
 -- Source info-layer blend: the overlay contributes 5/16 over the base, so an
 -- ordinary alpha-over composition leaves 11/16 for the destination.
 local INFO_BLEND = { overlayNumerator = 5, overlayDenominator = 16 }
+
+-- Chooser-owned window text palette: the retail choose-starter application
+-- loads this NCLR member for both chooser engines, and its text printer
+-- addresses foreground/shadow pairs inside it per COLOR field. Source basis:
+-- pret/pokeheartgold src/choose_starter_app.c (makeAndDrawWindows) and
+-- src/render_text.c (COLOR control handling).
+local CHOOSER_WINDOW_PALETTE_MEMBER = 8
 
 -- Retail machine 3D rear-plane clear color channels from GX_RGB(31,31,16).
 local MACHINE_CLEAR = { r = 31, g = 31, b = 16 }
@@ -446,6 +454,68 @@ local function preparedMessage(bank, index, role)
   return { lines = lines }
 end
 
+---@param color table<string, unknown>
+---@param what string
+---@return { r: integer, g: integer, b: integer }
+local function copyRgb(color, what)
+  if
+    type(color) ~= "table"
+    or type(color.r) ~= "number"
+    or color.r % 1 ~= 0
+    or color.r < 0
+    or color.r > 255
+    or type(color.g) ~= "number"
+    or color.g % 1 ~= 0
+    or color.g < 0
+    or color.g > 255
+    or type(color.b) ~= "number"
+    or color.b % 1 ~= 0
+    or color.b < 0
+    or color.b > 255
+  then
+    sourceError("starter-choice chooser palette carries a non-RGB entry for " .. what, {})
+  end
+  ---@cast color { r: integer, g: integer, b: integer }
+  return { r = color.r, g = color.g, b = color.b }
+end
+
+-- Normalizes the chooser window NCLR into source-independent text colors:
+-- COLOR field n addresses the palette pair (2n+1, 2n+2), the framed info
+-- background is slot 15, and the unframed machine background is slot 0.
+-- Only byte RGB records reach the manifest; no source slot numbers survive.
+---@param paletteBytes string
+---@return { variants: { foreground: { r: integer, g: integer, b: integer }, shadow: { r: integer, g: integer, b: integer } }[], infoBackground: { r: integer, g: integer, b: integer }, machineBackground: { r: integer, g: integer, b: integer } }
+local function compileChooserTextColors(paletteBytes)
+  local bytes = maybeDecompress(paletteBytes, "chooser-text-palette")
+  local palette, paletteErr = G2dDecoder.decodePalette(bytes, { label = "chooser-text-palette" })
+  if not palette then
+    assert(paletteErr)
+    sourceError("starter-choice chooser palette does not decode: " .. paletteErr.message, {
+      cause = paletteErr.code,
+    })
+  end
+  assert(palette ~= nil, "undecodable chooser palette fails above")
+  if #palette.colors < 16 then
+    sourceError("starter-choice chooser palette carries fewer than sixteen colors", {
+      colors = #palette.colors,
+    })
+  end
+  local variants = {}
+  for colorIndex = 0, FieldMessageText.COLOR_VARIANT_COUNT - 1 do
+    local foreground = palette.colors[colorIndex * 2 + 2] -- source slot 2n+1, Lua index +1
+    local shadow = palette.colors[colorIndex * 2 + 3] -- source slot 2n+2, Lua index +1
+    variants[colorIndex + 1] = {
+      foreground = copyRgb(foreground, "variant " .. colorIndex .. " foreground"),
+      shadow = copyRgb(shadow, "variant " .. colorIndex .. " shadow"),
+    }
+  end
+  return {
+    variants = variants,
+    infoBackground = copyRgb(palette.colors[16], "info background"),
+    machineBackground = copyRgb(palette.colors[1], "machine background"),
+  }
+end
+
 -- Deterministic chooser-owned backdrop: a vertical gradient in muted lab
 -- tones with a soft horizontal vignette, carrying no interaction state. The
 -- bytes are a pure function of the fixed palette below so every build for
@@ -591,6 +661,9 @@ local function _compile(romFs)
     inspect[slot] = preparedMessage(bank, MESSAGE_INSPECT[slot], "inspect:" .. slot)
     confirm[slot] = preparedMessage(bank, MESSAGE_CONFIRM[slot], "confirm:" .. slot)
   end
+  local paletteBytes =
+    readMember(main, MAIN_ARCHIVE, CHOOSER_WINDOW_PALETTE_MEMBER, "chooser-text-palette", dependencies)
+  local textColors = compileChooserTextColors(paletteBytes)
   local backdropImage = renderBackdrop()
   local backdropPath = StarterChoiceAssetCache.assetDir() .. "/backdrop.png"
   local infoBase = compileInfoBackground(main, INFO_BG_BASE, "background:info-base", dependencies)
@@ -712,6 +785,7 @@ local function _compile(romFs)
         portrait = INFO_PORTRAIT,
       },
     },
+    textColors = textColors,
   }
 
   local assets = {}

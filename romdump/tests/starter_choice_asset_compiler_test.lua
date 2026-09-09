@@ -359,6 +359,125 @@ function T.compiled_messages_preserve_source_lines_and_species_colors(romFs)
   Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
 end
 
+-- The retail choose-starter application loads its own window palette for
+-- text: the compiled manifest must resolve every prepared COLOR index
+-- through that palette member, never the generic field font palette.
+-- Source basis: pret/pokeheartgold src/choose_starter_app.c
+-- (makeAndDrawWindows) and src/render_text.c (COLOR control handling).
+local CHOOSER_WINDOW_PALETTE_MEMBER = 8
+
+local function decodeChooserWindowPalette(romFs)
+  local archive = assert(romFs:openNarc("NARC_application_choose_starter_choose_starter_main_res"))
+  local raw = assert(archive:readMember(CHOOSER_WINDOW_PALETTE_MEMBER), "the chooser window palette reads")
+  local bytes = raw
+  if string.byte(bytes, 1) == 0x10 then
+    local Lz10 = require("romdump.src.digest.Lz10")
+    bytes = assert(Lz10.decode(bytes), "the chooser window palette decompresses")
+  end
+  local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+  local palette = assert(G2dDecoder.decodePalette(bytes, { label = "chooser window palette" }))
+  Assert.isTrue(#palette.colors >= 16, "the chooser window palette carries sixteen colors")
+  return palette
+end
+
+local function firstColoredIndex(message, what)
+  for _, line in ipairs(assert(message.lines, what .. " carries prepared lines")) do
+    for _, glyph in ipairs(line) do
+      if glyph.colorIndex ~= 0 then
+        return glyph.colorIndex
+      end
+    end
+  end
+  error(what .. " carries no highlighted glyph", 0)
+end
+
+local function assertResetsToBaseColor(message, what)
+  local seenColored, seenReset = false, false
+  for _, line in ipairs(assert(message.lines, what .. " carries prepared lines")) do
+    for _, glyph in ipairs(line) do
+      if glyph.colorIndex ~= 0 then
+        seenColored = true
+      elseif seenColored then
+        seenReset = true
+      end
+    end
+  end
+  Assert.isTrue(seenColored, what .. " keeps its highlighted span")
+  Assert.isTrue(seenReset, what .. " returns to the base color after the highlight")
+end
+
+local function assertByteRgb(value, what)
+  Assert.keySet(value, "b,g,r", what .. " is a byte RGB record")
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    Assert.isTrue(
+      type(value[channel]) == "number" and value[channel] % 1 == 0 and value[channel] >= 0 and value[channel] <= 255,
+      what .. " channel " .. channel .. " is a byte"
+    )
+  end
+end
+
+function T.chooser_text_colors_come_from_the_chooser_window_palette(romFs)
+  local bundle = assert(compiler().compile(romFs))
+  local manifest = assert(bundle.manifest, "compilation returns a manifest")
+  local textColors =
+    assert(manifest.textColors, "the manifest carries the chooser text colors independently of the font palette")
+  Assert.keySet(textColors, "infoBackground,machineBackground,variants", "the text colors carry only color records")
+  Assert.equal(#textColors.variants, FieldMessageText.COLOR_VARIANT_COUNT, "every COLOR field has a chooser variant")
+
+  local slotHighlights = { 3, 1, 2 }
+  for slot = 1, 3 do
+    local inspect = assert(manifest.messages.inspect[slot], "inspect description " .. slot .. " is present")
+    local confirm = assert(manifest.messages.confirm[slot], "confirm description " .. slot .. " is present")
+    Assert.equal(
+      firstColoredIndex(inspect, "inspect description " .. slot),
+      slotHighlights[slot],
+      "inspect description " .. slot .. " keeps its source highlight"
+    )
+    Assert.equal(
+      firstColoredIndex(confirm, "confirm description " .. slot),
+      slotHighlights[slot],
+      "confirm description " .. slot .. " keeps its source highlight"
+    )
+    assertResetsToBaseColor(inspect, "inspect description " .. slot)
+    assertResetsToBaseColor(confirm, "confirm description " .. slot)
+  end
+
+  local palette = decodeChooserWindowPalette(romFs)
+  for colorIndex = 0, FieldMessageText.COLOR_VARIANT_COUNT - 1 do
+    local variant = assert(textColors.variants[colorIndex + 1], "chooser variant " .. colorIndex .. " is present")
+    Assert.keySet(variant, "foreground,shadow", "chooser variant " .. colorIndex .. " carries only color pairs")
+    assertByteRgb(variant.foreground, "chooser variant " .. colorIndex .. " foreground")
+    assertByteRgb(variant.shadow, "chooser variant " .. colorIndex .. " shadow")
+    Assert.deepEqual(
+      variant.foreground,
+      palette.colors[colorIndex * 2 + 2],
+      "variant " .. colorIndex .. " foreground matches the chooser palette pair"
+    )
+    Assert.deepEqual(
+      variant.shadow,
+      palette.colors[colorIndex * 2 + 3],
+      "variant " .. colorIndex .. " shadow matches the chooser palette pair"
+    )
+  end
+  assertByteRgb(textColors.infoBackground, "info background")
+  assertByteRgb(textColors.machineBackground, "machine background")
+  Assert.deepEqual(textColors.infoBackground, palette.colors[16], "the info background matches the window palette")
+  Assert.deepEqual(textColors.machineBackground, palette.colors[1], "the machine background matches the window palette")
+
+  local stamped = assert(bundle.dependencies.dependencies, "dependencies list source hashes")
+  local paletteStamped = false
+  for _, entry in ipairs(stamped) do
+    if entry.memberId == CHOOSER_WINDOW_PALETTE_MEMBER then
+      paletteStamped = true
+    end
+  end
+  Assert.isTrue(paletteStamped, "the window palette member is stamped into dependencies")
+
+  assertNoSourceIdentities(manifest, "manifest")
+
+  Assert.isTrue(cache().validateManifest(manifest), "the runtime cache contract accepts the manifest")
+end
+
 local function ballMeshRadius(romFs, bundle)
   local stamped = assert(bundle.dependencies.dependencies, "dependencies list source hashes")
   local memberId = nil

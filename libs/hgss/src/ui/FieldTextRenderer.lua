@@ -4,7 +4,8 @@
 -- quads (built lazily per color band so plain color-0 UI never materializes
 -- variant quads), the mask-atlas quads (built lazily, one cache shared by
 -- every palette-driven caller), the token-line and plain-string drawing
--- operations, the palette-driven drawLineWithPalette operation, and the
+-- operations, the palette-driven drawLineWithPalette operation, the
+-- caller-variant drawLineWithColorVariants operation, and the
 -- drawFocusIndicator operation the dialogue, signpost, and Trainer Card
 -- renderers all share. FieldState owns exactly one instance (a renderer
 -- never acquires an independent atlas) and injects it; the renderer owns
@@ -17,7 +18,9 @@
 -- stream (colorIndex), never mutable renderer state; the palette path is
 -- separate and deliberately ignores colorIndex, since sign printing sources
 -- a fixed foreground/shadow/background triple regardless of any token
--- coloring. Construction is failure-safe: a missing font atlas, mask atlas,
+-- coloring, while the caller-variant path selects a caller-supplied
+-- foreground/shadow pair by each glyph's colorIndex against one constant
+-- background. Construction is failure-safe: a missing font atlas, mask atlas,
 -- or focus-indicator image is a typed error, and any later image/shader/quad
 -- failure releases every resource already created before rethrowing.
 
@@ -288,6 +291,60 @@ function FieldTextRenderer:drawLineWithPalette(tokens, x, y, palette)
   lg.setColor(1, 1, 1, 1)
   for _, token in ipairs(tokens) do
     if token.kind == "glyph" then
+      local quad = self:_maskQuad(token.code)
+      lg.draw(atlas, quad, x, y)
+      local glyph = def.glyphs[token.code] or def.glyphs[0]
+      x = x + glyph.advance + letterSpacing
+    end
+  end
+  lg.setShader()
+end
+
+-- Draws one prepared token line through the caller-supplied color variants:
+-- each glyph selects variants[colorIndex + 1] for its foreground/shadow pair
+-- while the background stays constant for the line. Geometry (mask-atlas
+-- quads, advances, letter spacing, widthless control tokens) matches
+-- drawLine exactly; only the palette authority differs. An unknown color
+-- index is a programmer fault and fails loudly instead of clamping.
+---@param tokens MessageToken[]
+---@param x number
+---@param y number
+---@param variants { foreground: {r:number,g:number,b:number}, shadow: {r:number,g:number,b:number} }[]
+---@param background {r:number,g:number,b:number}
+function FieldTextRenderer:drawLineWithColorVariants(tokens, x, y, variants, background)
+  local lg = assert(self._graphics)
+  local atlas = assert(self._maskAtlas)
+  local shader = assert(self._paletteShader)
+  local def = self.fontDef
+  local letterSpacing = def.letterSpacing or 0
+  assert(type(variants) == "table", "drawLineWithColorVariants requires the caller color variants")
+  assert(type(background) == "table", "drawLineWithColorVariants requires the line background color")
+
+  shader:send("u_background", normalizePaletteColor(background))
+
+  lg.setShader(shader)
+  lg.setColor(1, 1, 1, 1)
+  local active = nil
+  for _, token in ipairs(tokens) do
+    if token.kind == "glyph" then
+      local colorIndex = token.colorIndex or 0
+      if
+        type(colorIndex) ~= "number"
+        or colorIndex % 1 ~= 0
+        or colorIndex < 0
+        or colorIndex >= FieldMessageText.COLOR_VARIANT_COUNT
+      then
+        error("glyph color index " .. tostring(colorIndex) .. " is outside the caller variants", 0)
+      end
+      local variant = variants[colorIndex + 1]
+      if type(variant) ~= "table" then
+        error("glyph color index " .. tostring(colorIndex) .. " names no caller variant", 0)
+      end
+      if variant ~= active then
+        shader:send("u_foreground", normalizePaletteColor(variant.foreground))
+        shader:send("u_shadow", normalizePaletteColor(variant.shadow))
+        active = variant
+      end
       local quad = self:_maskQuad(token.code)
       lg.draw(atlas, quad, x, y)
       local glyph = def.glyphs[token.code] or def.glyphs[0]

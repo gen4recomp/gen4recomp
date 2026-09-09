@@ -1,9 +1,10 @@
 -- Strict validation for the generated choose-starter application assets: the
--- source-independent v4 manifest the retail tabletop/turntable/ball scene
+-- source-independent v5 manifest the retail tabletop/turntable/ball scene
 -- compiles to, with semantic animation bindings, normalized scene
 -- geometry/timing facts in the shared runtime model unit, source info-surface
 -- artwork roles, the machine rear-plane clear color, source surface geometry
--- and frame policy, and the complete semantic message roles. Candidate
+-- and frame policy, the complete semantic message roles, and the chooser
+-- text colors compiled from the chooser window palette. Candidate
 -- pictures are not part of this family; portraits resolve through the mon
 -- presentation pipeline. Pure domain module.
 
@@ -585,6 +586,63 @@ local function checkSurfaces(surfaces)
   )
 end
 
+---@param label string
+---@param color table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkByteRgb(label, color)
+  local ok, err = closedRecord(label, color, { r = true, g = true, b = true })
+  if not ok then
+    return false, err
+  end
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    local value = color[channel]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 255 then
+      return invalid(label .. " channel " .. channel .. " must be a byte 0..255", {})
+    end
+  end
+  return true
+end
+
+---@param textColors table<string, unknown>
+---@return boolean, Errors.Error?
+local function checkTextColors(textColors)
+  local ok, err = closedRecord("manifest textColors", textColors, {
+    variants = true,
+    infoBackground = true,
+    machineBackground = true,
+  })
+  if not ok then
+    return false, err
+  end
+  if not Validate.isArray(textColors.variants) or #textColors.variants ~= FieldMessageText.COLOR_VARIANT_COUNT then
+    return invalid(
+      "manifest textColors variants must carry exactly " .. tostring(FieldMessageText.COLOR_VARIANT_COUNT) .. " entries",
+      {}
+    )
+  end
+  for index, variant in ipairs(textColors.variants) do
+    local variantOk, variantErr =
+      closedRecord("manifest textColors variant " .. index, variant, { foreground = true, shadow = true })
+    if not variantOk then
+      return false, variantErr
+    end
+    local foregroundOk, foregroundErr =
+      checkByteRgb("manifest textColors variant " .. index .. " foreground", variant.foreground)
+    if not foregroundOk then
+      return false, foregroundErr
+    end
+    local shadowOk, shadowErr = checkByteRgb("manifest textColors variant " .. index .. " shadow", variant.shadow)
+    if not shadowOk then
+      return false, shadowErr
+    end
+  end
+  local infoOk, infoErr = checkByteRgb("manifest textColors infoBackground", textColors.infoBackground)
+  if not infoOk then
+    return false, infoErr
+  end
+  return checkByteRgb("manifest textColors machineBackground", textColors.machineBackground)
+end
+
 ---@param value unknown
 ---@param path string
 ---@return boolean, Errors.Error?
@@ -628,6 +686,7 @@ function M.validateManifest(manifest)
     messages = true,
     backgrounds = true,
     surfaces = true,
+    textColors = true,
   })
   if not ok then
     return false, err
@@ -674,6 +733,10 @@ function M.validateManifest(manifest)
   local surfacesOk, surfacesErr = checkSurfaces(manifest.surfaces)
   if not surfacesOk then
     return false, surfacesErr
+  end
+  local textColorsOk, textColorsErr = checkTextColors(manifest.textColors)
+  if not textColorsOk then
+    return false, textColorsErr
   end
   return checkNoSourceIdentities(manifest, "manifest")
 end

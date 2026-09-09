@@ -228,6 +228,7 @@ local function drawFrame(host, width, height)
   love.graphics.clear(0, 0, 0, 1)
   host:drawPresentation({
     drawLine = function() end,
+    drawLineWithColorVariants = function() end,
     drawText = function() end,
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
@@ -583,6 +584,7 @@ local function recordingText()
   local texts = {}
   local provider = {
     drawLine = function() end,
+    drawLineWithColorVariants = function() end,
     drawText = function(first, second)
       texts[#texts + 1] = type(first) == "string" and first or second
     end,
@@ -607,6 +609,9 @@ local function recordingLines()
   local markers = {}
   local provider = {
     drawLine = function(_, line, x, y)
+      lines[#lines + 1] = { line = line, x = x, y = y }
+    end,
+    drawLineWithColorVariants = function(_, line, x, y)
       lines[#lines + 1] = { line = line, x = x, y = y }
     end,
     drawText = function(_, text, x, y)
@@ -857,6 +862,7 @@ local function presentFrame(host, width, height)
   love.graphics.clear(0, 0, 0, 1)
   host:drawPresentation({
     drawLine = function() end,
+    drawLineWithColorVariants = function() end,
     drawText = function() end,
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
@@ -1740,6 +1746,126 @@ function T.starter_machine_follows_the_canonical_world_raster_scale(scope, conte
     end)
     FieldPresentationConfig.WORLD_3D_RASTER_SCALE = savedScale
     Assert.isTrue(configured, versionId .. " configured scale propagation holds: " .. tostring(failure))
+  end
+end
+
+local function recordingVariantLines()
+  local calls = {}
+  local backgroundCalls = {}
+  local provider = {
+    drawLine = function(_, line, x, y)
+      calls[#calls + 1] = { method = "drawLine", line = line, x = x, y = y }
+    end,
+    drawLineWithColorVariants = function(_, line, x, y, variants, background)
+      calls[#calls + 1] =
+        { method = "variants", line = line, x = x, y = y, variants = variants, background = background }
+    end,
+    drawText = function() end,
+    windowBackgroundColor = function()
+      backgroundCalls[#backgroundCalls + 1] = true
+      return { 0, 0, 0, 1 }
+    end,
+  }
+  return calls, backgroundCalls, provider
+end
+
+local function assertByteRgbRecord(value, versionId, what)
+  Assert.keySet(value, "b,g,r", versionId .. " " .. what .. " is a byte RGB record")
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    Assert.isTrue(
+      type(value[channel]) == "number" and value[channel] % 1 == 0 and value[channel] >= 0 and value[channel] <= 255,
+      versionId .. " " .. what .. " channel " .. channel .. " is a byte"
+    )
+  end
+end
+
+function T.chooser_text_uses_the_generated_chooser_palette(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the chooser palette needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = loadManifest(cacheModule, cacheFs)
+    local palette = assert(
+      manifest.textColors,
+      versionId .. " the manifest carries the chooser text colors independently of the font palette"
+    )
+    Assert.keySet(
+      palette,
+      "infoBackground,machineBackground,variants",
+      versionId .. " the text colors carry only color records"
+    )
+    Assert.equal(
+      #palette.variants,
+      FieldMessageText.COLOR_VARIANT_COUNT,
+      versionId .. " every COLOR field has a chooser variant"
+    )
+    for index, variant in ipairs(palette.variants) do
+      Assert.keySet(variant, "foreground,shadow", versionId .. " variant " .. index .. " carries only color pairs")
+      assertByteRgbRecord(variant.foreground, versionId, "variant " .. index .. " foreground")
+      assertByteRgbRecord(variant.shadow, versionId, "variant " .. index .. " shadow")
+    end
+    assertByteRgbRecord(palette.infoBackground, versionId, "info background")
+    assertByteRgbRecord(palette.machineBackground, versionId, "machine background")
+
+    local host = openProductionChoice(versionId, cacheFs, manifest)
+    local calls, backgroundCalls, provider = recordingVariantLines()
+    scope:own(drawRecorded(host, provider, WIDE_WIDTH, WIDE_HEIGHT))
+    local promptLines = #manifest.messages.bottom.normal.lines
+    local initialLines = #manifest.messages.topInitial.lines
+    Assert.equal(
+      #calls,
+      promptLines + initialLines,
+      versionId .. " every generated line reaches the text boundary once"
+    )
+    for _, call in ipairs(calls) do
+      Assert.equal(call.method, "variants", versionId .. " no starter line uses the generic color bands")
+      Assert.deepEqual(call.variants, palette.variants, versionId .. " each line carries the generated variants")
+    end
+    for index = 1, promptLines do
+      Assert.deepEqual(
+        calls[index].background,
+        palette.machineBackground,
+        versionId .. " the prompt uses the machine background"
+      )
+    end
+    for index = promptLines + 1, #calls do
+      Assert.deepEqual(
+        calls[index].background,
+        palette.infoBackground,
+        versionId .. " the info message uses the info background"
+      )
+    end
+    Assert.equal(#backgroundCalls, 0, versionId .. " the framed fill never reads the generic font background")
+
+    Assert.isNil(host:confirm(), versionId .. " first activation inspects instead of publishing")
+    for _, probe in ipairs({ { slot = 0, highlight = 3 }, { slot = 2, highlight = 2 } }) do
+      host:focus(probe.slot)
+      local slotCalls, _, slotProvider = recordingVariantLines()
+      scope:own(drawRecorded(host, slotProvider, WIDE_WIDTH, WIDE_HEIGHT))
+      local seenHighlight, seenReset = false, false
+      for index = promptLines + 1, #slotCalls do
+        local call = slotCalls[index]
+        assertPreparedLineCall(call, versionId, "the inspected message")
+        for _, glyph in ipairs(call.line) do
+          if glyph.colorIndex == probe.highlight then
+            seenHighlight = true
+            Assert.deepEqual(
+              call.variants[glyph.colorIndex + 1],
+              palette.variants[probe.highlight + 1],
+              versionId .. " the highlighted name foreground is the generated source variant"
+            )
+          elseif seenHighlight and glyph.colorIndex == 0 then
+            seenReset = true
+          end
+        end
+      end
+      Assert.isTrue(seenHighlight, versionId .. " slot " .. probe.slot .. " keeps its highlighted name")
+      Assert.isTrue(seenReset, versionId .. " text after the highlight returns to the base variant")
+    end
+    host:dispose()
   end
 end
 

@@ -185,8 +185,11 @@ DerivedAssetContract.intro = {
 }
 
 DerivedAssetContract.starterChoice = {
-  cacheFormat = "starter-choice-cache-v4",
-  schema = "g4-starter-choice-v4",
+  -- v5: the manifest carries the required chooser text-color record (seven
+  -- byte-RGB foreground/shadow variants plus info/machine backgrounds)
+  -- compiled from the chooser window palette.
+  cacheFormat = "starter-choice-cache-v5",
+  schema = "g4-starter-choice-v5",
 }
 
 -- The mon class carries the complete species/form/move/ability/growth
