@@ -205,10 +205,36 @@ local function withStubbedPipeline(visualFor, fn)
   end
 end
 
+-- The compiler reads follower parameters through the host filesystem; the
+-- stub reports every member unflagged so the rewrite stays off.
+local function stubRomFs()
+  local romFs = {}
+  function romFs:resolvedNarc(_)
+    return {
+      symbol = "NARC_fielddata_tsurepoke_tp_param",
+      alias = "follower_params",
+      narcId = 141,
+      fileId = 0,
+      path = "a/1/4/1",
+    }
+  end
+  function romFs:read(_)
+    return "stub"
+  end
+  function romFs:openNarc(_)
+    local archive = {}
+    function archive:readMember(_)
+      return string.char(0, 0, 0, 0)
+    end
+    return archive
+  end
+  return romFs
+end
+
 local function compileWith(visualFor)
   local result, err
   withStubbedPipeline(visualFor, function()
-    result, err = FollowingMonVisualCompiler.compile({})
+    result, err = FollowingMonVisualCompiler.compile(stubRomFs())
   end)
   return result, err
 end

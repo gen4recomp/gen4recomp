@@ -106,6 +106,165 @@ local function assertFollowerCapability(visual, visualId, spriteId)
   end
 end
 
+-- Retail idle-bob selection for the follower object: ov01_022055B0 returns the
+-- low nibble of map-object param 1 for object 253, and src/follow_mon.c packs
+-- that param from follower parameter bytes 1..2 as (data[1] << 8) | data[2],
+-- so the third archive byte carries the observed nibble. Source:
+-- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
+-- asm/overlay_01_022053EC.s, src/follow_mon.c.
+---@param member string validated four-byte follower parameter member
+---@return boolean
+local function usesAlternateIdleBob(member)
+  return string.byte(member, 3) % 16 ~= 0
+end
+
+-- Retail ov01_021F8FC0 bob timing for the alternate branch, on the shared
+-- 20-tick idle clock: south rests mid-loop while north/west/east hold the
+-- first half raised. Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
+-- asm/overlay_01_021F8D80.s.
+---@param direction string cardinal facing
+---@param tick integer zero-based normalized idle tick
+---@return boolean
+local function alternateBobIsRaised(direction, tick)
+  if direction == "south" then
+    return tick <= 4 or tick >= 15
+  end
+  return tick <= 9
+end
+
+---@param visual table<string, unknown>
+---@return string
+local function renderKindOf(visual)
+  local render = visual.render
+  if type(render) == "table" and type(render.kind) == "string" then
+    return render.kind
+  end
+  return "unknown"
+end
+
+-- Move only the vertical presentation of each cardinal idle pose onto the
+-- facing-specific schedule above. Frame indices, segment timing, loop state,
+-- and source ranges are preserved exactly; the raised magnitude is the one
+-- the shared compiler already emitted, never a duplicated constant.
+---@param visual table<string, unknown> remapped follower visual
+---@param visualId integer remapped follower visual id
+---@param spriteId integer source follower sprite id
+local function applyAlternateIdleBob(visual, visualId, spriteId)
+  local kind = renderKindOf(visual)
+  local presentation = visual.idlePresentation
+  if type(presentation) ~= "table" or presentation.mode ~= "animated" then
+    error(capabilityFailure(visualId, spriteId, kind, "facing-specific idle bob requires an animated idle"), 0)
+  end
+  local expanded = {}
+  local magnitudes = {}
+  for _, direction in ipairs(CARDINAL_DIRECTIONS) do
+    local set = visual.directions[direction]
+    local pose = set and set.idle
+    if pose == nil then
+      error(capabilityFailure(visualId, spriteId, kind, "missing " .. direction .. " idle pose"), 0)
+    end
+    local frameIndexes = {}
+    for _, segment in ipairs(pose.frames) do
+      for _ = 1, segment.ticks do
+        frameIndexes[#frameIndexes + 1] = segment.frameIndex
+        if segment.displayOffsetY ~= 0 then
+          magnitudes[segment.displayOffsetY] = true
+        end
+      end
+    end
+    if #frameIndexes ~= 20 then
+      error(
+        Errors.new(
+          "MON_FOLLOWER_IDLE_DURATION_UNEXPECTED",
+          "follower visual "
+            .. visualId
+            .. " "
+            .. direction
+            .. " idle covers "
+            .. #frameIndexes
+            .. " ticks, expected 20",
+          { visualId = visualId, spriteId = spriteId, direction = direction, durationTicks = #frameIndexes }
+        ),
+        0
+      )
+    end
+    expanded[direction] = frameIndexes
+  end
+  local magnitude, distinct = nil, 0
+  for offset in pairs(magnitudes) do
+    magnitude, distinct = offset, distinct + 1
+  end
+  if distinct ~= 1 or magnitude == nil then
+    error(
+      Errors.new(
+        "MON_FOLLOWER_IDLE_OFFSET_AMBIGUOUS",
+        "follower visual " .. visualId .. " carries " .. distinct .. " distinct idle bob magnitudes, expected 1",
+        { visualId = visualId, spriteId = spriteId, distinctMagnitudes = distinct }
+      ),
+      0
+    )
+  end
+  for _, direction in ipairs(CARDINAL_DIRECTIONS) do
+    local pose = visual.directions[direction].idle
+    local frameIndexes = expanded[direction]
+    local encoded = {}
+    for tick = 0, 19 do
+      local sample = {
+        frameIndex = frameIndexes[tick + 1],
+        displayOffsetY = alternateBobIsRaised(direction, tick) and magnitude or 0,
+      }
+      local last = encoded[#encoded]
+      if last and last.frameIndex == sample.frameIndex and last.displayOffsetY == sample.displayOffsetY then
+        last.ticks = last.ticks + 1
+      else
+        encoded[#encoded + 1] = { frameIndex = sample.frameIndex, ticks = 1, displayOffsetY = sample.displayOffsetY }
+      end
+    end
+    pose.frames = encoded
+  end
+end
+
+-- Read one follower parameter member selected by the same index that selects
+-- the follower sprite. The member must be exactly four bytes; a missing or
+-- malformed member fails structurally instead of defaulting the selection.
+---@param archive table<string, unknown> opened follower parameter archive
+---@param paramIndex integer follower parameter member index
+---@return string four-byte member
+local function readFollowerParamMember(archive, paramIndex)
+  local member, err = archive:readMember(paramIndex)
+  if not member then
+    if Errors.is(err) then
+      error(err, 0)
+    end
+    error(
+      Errors.new("MON_FOLLOWER_PARAM_MISSING", "follower_params member " .. paramIndex .. " is absent", {
+        archive = "follower_params",
+        alias = "follower_params",
+        memberId = paramIndex,
+        paramIndex = paramIndex,
+      }),
+      0
+    )
+  end
+  if #member ~= 4 then
+    error(
+      Errors.new(
+        "MON_FOLLOWER_BAD_SIZE",
+        "follower_params member " .. paramIndex .. " is " .. #member .. " bytes, expected 4",
+        {
+          archive = "follower_params",
+          alias = "follower_params",
+          memberId = paramIndex,
+          paramIndex = paramIndex,
+          size = #member,
+        }
+      ),
+      0
+    )
+  end
+  return member
+end
+
 -- Every tp_param index reachable from native species/forms/gender
 -- combinations, in ascending order. Reserved identities (NONE/EGG/BAD_EGG)
 -- have no follower model and contribute nothing.
@@ -142,15 +301,25 @@ function FollowingMonVisualCompiler.compile(romFs)
     spriteIds[#spriteIds + 1] = MonSources.FOLLOWER_SPRITE_BASE + paramIndex
   end
   local ok, result = pcall(function()
+    local followerParamsInfo = romFs:resolvedNarc("follower_params")
+    if not followerParamsInfo then
+      Errors.raise("ROMFS_NARC_UNRESOLVED", "follower_params NARC is unavailable", { name = "follower_params" })
+    end
+    local followerParamsRaw = must(romFs:read(followerParamsInfo.fileId))
+    local followerParamsArchive = must(romFs:openNarc("follower_params"))
     local compiled = must(FieldActorCompiler.compileSprites(romFs, spriteIds))
     local visuals, atlases = {}, {}
     for position, paramIndex in ipairs(paramIndexes) do
       local spriteId = spriteIds[position]
+      local alternate = usesAlternateIdleBob(readFollowerParamMember(followerParamsArchive, paramIndex))
       local visual = must(compiled.visuals[spriteId])
       local atlas = must(compiled.atlases[spriteId])
       local visualId = MonSources.followerVisualId(paramIndex)
       visual.spriteId = visualId
       visual.render.image = FieldActorCache.atlasPath(visualId)
+      if alternate then
+        applyAlternateIdleBob(visual, visualId, spriteId)
+      end
       if not FieldActorCache.isValidVisual(visual, visualId) then
         error(
           Errors.new("MON_FOLLOWER_VISUAL_INVALID", "remapped follower visual " .. visualId .. " is invalid", {
@@ -180,6 +349,14 @@ function FollowingMonVisualCompiler.compile(romFs)
         spriteBase = MonSources.FOLLOWER_SPRITE_BASE,
         paramIndexes = paramIndexes,
         actorInputs = compiled.dependencies,
+        followerParams = {
+          symbol = followerParamsInfo.symbol,
+          alias = followerParamsInfo.alias,
+          narcId = followerParamsInfo.narcId,
+          fileId = followerParamsInfo.fileId,
+          path = followerParamsInfo.path,
+          sha1 = Hashing.sha1hex(followerParamsRaw),
+        },
       },
     }
   end)
