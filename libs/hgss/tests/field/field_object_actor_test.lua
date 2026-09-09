@@ -246,4 +246,151 @@ function T.reproject_active_action_rebases_world_position_without_advancing_pres
   end, "reprojection must reject endpoints that disagree with the active action")
 end
 
+-- A discontinuous placement collapses interpolation: after a direct position
+-- set, every render alpha reads the new anchor instead of tweening from the
+-- previous tile.
+function T.direct_placement_collapses_interpolation_to_the_new_anchor()
+  local a = actor()
+  Assert.isTrue(type(a.renderPosition) == "function", "object actors expose an interpolated render position")
+  Assert.isTrue(type(a.beginFixedStep) == "function", "object actors snapshot a fixed-step baseline")
+  a:beginFixedStep()
+  local startX, startY, startZ = a.worldX, a.worldY, a.worldZ
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = {
+      fieldX = 6,
+      fieldZ = 5,
+      worldX = startX,
+      worldY = startY,
+      worldZ = startZ,
+      surfaceId = 0,
+      resident = true,
+    },
+    dest = {
+      fieldX = 7,
+      fieldZ = 5,
+      worldX = startX + 1,
+      worldY = startY,
+      worldZ = startZ,
+      surfaceId = 0,
+      resident = true,
+    },
+    durationTicks = 8,
+  }, "autonomous")
+  a:advanceAction(4, 8)
+  a:setPosition({
+    fieldX = 10,
+    fieldZ = 12,
+    worldX = 10.5,
+    worldY = 0,
+    worldZ = 12.5,
+    surfaceId = 0,
+    cellKey = "0:0",
+    resident = true,
+  })
+  for _, alpha in ipairs({ 0, 0.5, 1 }) do
+    local position = a:renderPosition(alpha)
+    Assert.equal(position.x, 10.5, "direct placement never tweens at alpha " .. alpha)
+    Assert.equal(position.y, 0, "direct placement never tweens at alpha " .. alpha)
+    Assert.equal(position.z, 12.5, "direct placement never tweens at alpha " .. alpha)
+  end
+  Assert.equal(a.fieldX, 10, "direct placement moves logical fieldX")
+  Assert.equal(a.fieldZ, 12, "direct placement moves logical fieldZ")
+end
+
+function T.cancelled_action_snaps_back_without_tweening()
+  local a = actor()
+  a:beginFixedStep()
+  local startX, startY, startZ = a.worldX, a.worldY, a.worldZ
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = {
+      fieldX = 6,
+      fieldZ = 5,
+      worldX = startX,
+      worldY = startY,
+      worldZ = startZ,
+      surfaceId = 0,
+      resident = true,
+    },
+    dest = {
+      fieldX = 7,
+      fieldZ = 5,
+      worldX = startX + 1,
+      worldY = startY,
+      worldZ = startZ,
+      surfaceId = 0,
+      resident = true,
+    },
+    durationTicks = 8,
+  }, "autonomous")
+  a:advanceAction(4, 8)
+  a:cancelAction()
+  for _, alpha in ipairs({ 0, 0.5, 1 }) do
+    local position = a:renderPosition(alpha)
+    Assert.equal(position.x, startX, "a cancelled action snaps back at alpha " .. alpha)
+    Assert.equal(position.y, startY, "a cancelled action snaps back at alpha " .. alpha)
+    Assert.equal(position.z, startZ, "a cancelled action snaps back at alpha " .. alpha)
+  end
+  Assert.equal(a.fieldX, 6, "a cancelled action keeps its committed fieldX")
+  Assert.equal(a.fieldZ, 5, "a cancelled action keeps its committed fieldZ")
+end
+
+function T.reprojected_action_collapses_to_the_new_frame()
+  local a = actor()
+  a:beginFixedStep()
+  a:beginAction({
+    action = "walk",
+    direction = "east",
+    distance = "near",
+    speed = "normal",
+    start = {
+      fieldX = 6,
+      fieldZ = 5,
+      worldX = 10,
+      worldY = 0,
+      worldZ = 20,
+      surfaceId = 0,
+      resident = true,
+    },
+    dest = {
+      fieldX = 7,
+      fieldZ = 5,
+      worldX = 11,
+      worldY = 0,
+      worldZ = 20,
+      surfaceId = 0,
+      resident = true,
+    },
+    durationTicks = 8,
+  }, "autonomous")
+  a:advanceAction(2, 8)
+  a:reprojectActiveAction(
+    { fieldX = 6, fieldZ = 5, worldX = 110, worldY = 0, worldZ = 120, surfaceId = 0, resident = true },
+    { fieldX = 7, fieldZ = 5, worldX = 111, worldY = 0, worldZ = 120, surfaceId = 0, resident = true }
+  )
+  for _, alpha in ipairs({ 0, 0.5, 1 }) do
+    local position = a:renderPosition(alpha)
+    Assert.equal(position.x, 110.25, "reprojection never tweens across frames at alpha " .. alpha)
+    Assert.equal(position.y, 0, "reprojection never tweens across frames at alpha " .. alpha)
+    Assert.equal(position.z, 120, "reprojection never tweens across frames at alpha " .. alpha)
+  end
+end
+
+function T.missing_world_coordinates_read_as_absent()
+  local a = actor()
+  a.worldX, a.worldY, a.worldZ = nil, nil, nil
+  a:beginFixedStep()
+  local position = a:renderPosition(0.5)
+  Assert.isNil(position.x, "absent coordinates stay absent instead of manufacturing a point")
+  Assert.isNil(position.y, "absent coordinates stay absent instead of manufacturing a point")
+  Assert.isNil(position.z, "absent coordinates stay absent instead of manufacturing a point")
+end
+
 return { tests = T }

@@ -24,6 +24,9 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field worldX number?
 ---@field worldY number?
 ---@field worldZ number?
+---@field previousWorldX number? previous fixed-tick world point for host-frame sampling
+---@field previousWorldY number?
+---@field previousWorldZ number?
 ---@field resident boolean
 ---@field initialFacing FieldDirection
 ---@field facing FieldDirection
@@ -45,6 +48,8 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field releaseFacingOverride fun(self: FieldObjectActor, token: table<string, unknown>)
 ---@field clearFacingOverride fun(self: FieldObjectActor)
 ---@field beginAction fun(self: FieldObjectActor, descriptor: table<string, unknown>, owner: "script"|"autonomous")
+---@field beginFixedStep fun(self: FieldObjectActor) snapshot the current world point for host-frame sampling
+---@field renderPosition fun(self: FieldObjectActor, alpha: number?): { x: number?, y: number?, z: number? }
 ---@field advanceAction fun(self: FieldObjectActor, progressTicks: integer, durationTicks: integer)
 ---@field reprojectActiveAction fun(self: FieldObjectActor, start: FieldObjectActor.ActionEndpoint, destination: FieldObjectActor.ActionEndpoint)
 ---@field commitAction fun(self: FieldObjectActor): table<string, unknown>?
@@ -172,6 +177,9 @@ function FieldObjectActor.new(opts)
     worldX = opts.worldX,
     worldY = opts.worldY,
     worldZ = opts.worldZ,
+    previousWorldX = opts.worldX,
+    previousWorldY = opts.worldY,
+    previousWorldZ = opts.worldZ,
     resident = opts.resident == true,
     initialFacing = facing,
     facing = facing,
@@ -241,6 +249,49 @@ function FieldObjectActor:clearFacingOverride()
   end
   self.facing = token.restoreFacing
   self.interactionFacingOverride = nil
+end
+
+-- --- Host-frame sampling -------------------------------------------
+
+-- Collapse the sampled baseline onto the current world point after a
+-- discontinuous placement, so the next host draw never blends across the gap.
+local function collapseRenderBaseline(actor)
+  actor.previousWorldX = actor.worldX
+  actor.previousWorldY = actor.worldY
+  actor.previousWorldZ = actor.worldZ
+end
+
+-- Snapshot the current world point once per fixed simulation tick, before any
+-- movement in that tick can mutate it. Draws between fixed ticks then sample
+-- the previous/current pair through renderPosition.
+function FieldObjectActor:beginFixedStep()
+  collapseRenderBaseline(self)
+end
+
+-- Linear host-frame sample between the previous and current fixed-tick world
+-- points, matching the player sampling contract. Nil coordinates (a
+-- nonresident actor) read back as absent rather than manufacturing a point.
+---@param alpha number?
+---@return { x: number?, y: number?, z: number? }
+function FieldObjectActor:renderPosition(alpha)
+  alpha = alpha == nil and 1 or math.max(0, math.min(1, alpha))
+  local previousX, previousY, previousZ = self.previousWorldX, self.previousWorldY, self.previousWorldZ
+  local currentX, currentY, currentZ = self.worldX, self.worldY, self.worldZ
+  if
+    previousX == nil
+    or previousY == nil
+    or previousZ == nil
+    or currentX == nil
+    or currentY == nil
+    or currentZ == nil
+  then
+    return { x = currentX, y = currentY, z = currentZ }
+  end
+  return {
+    x = previousX + (currentX - previousX) * alpha,
+    y = previousY + (currentY - previousY) * alpha,
+    z = previousZ + (currentZ - previousZ) * alpha,
+  }
 end
 
 -- --- Scripted motion presentation --------------------------------
@@ -458,6 +509,9 @@ function FieldObjectActor:reprojectActiveAction(start, destination)
   -- Recompute the current physical position at motion.progressTicks using the
   -- same idempotent helper used by advanceAction.
   applyActionWorldPosition(self, motion)
+  -- A coverage rebase is a coordinate-frame discontinuity: the sampled
+  -- baseline must not blend across the old and new frames.
+  collapseRenderBaseline(self)
 end
 
 function FieldObjectActor:advanceScriptedAction(progressTicks, durationTicks)
@@ -510,6 +564,7 @@ function FieldObjectActor:cancelAction()
   self.worldX = m.startWorldX
   self.worldY = m.startWorldY
   self.worldZ = m.startWorldZ
+  collapseRenderBaseline(self)
   if isLocomotionAction(m.action) then
     self.pose = m.startPose
     self.poseTick = m.startPoseTick
@@ -606,6 +661,14 @@ end
 -- the destination surface and the occupancy index key for the new cell.
 ---@param position { fieldX: integer, fieldZ: integer, worldY: number?, worldX: number?, worldZ: number?, surfaceId: integer?, cellKey: string?, sourceSurfaceId: integer?, resident: boolean }
 function FieldObjectActor:setPosition(position)
+  -- A completed action commits through this same path with the world point
+  -- already at its destination, so only a changed base point collapses the
+  -- sampled pair: commits keep their final segment for the following frame
+  -- while teleports never blend from the stale tile.
+  local worldChanged = position.worldX ~= self.worldX
+    or position.worldY ~= self.worldY
+    or position.worldZ ~= self.worldZ
+  local residencyChanged = (position.resident == true) ~= self.resident
   self.fieldX = position.fieldX
   self.fieldZ = position.fieldZ
   self.surfaceId = position.surfaceId
@@ -615,6 +678,9 @@ function FieldObjectActor:setPosition(position)
   self.worldX = position.worldX
   self.worldZ = position.worldZ
   self.resident = position.resident == true
+  if worldChanged or residencyChanged then
+    collapseRenderBaseline(self)
+  end
 end
 
 return FieldObjectActor

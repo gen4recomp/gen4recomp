@@ -1393,4 +1393,125 @@ function T.semantic_farther_jump_commits_three_cells_east()
   Assert.equal(actor.fieldZ, startFieldZ, "the farther jump keeps its lane at commit")
 end
 
+-- Draw records sample the fixed-tick endpoints through the frame alpha: alpha
+-- 0 reads the previous fixed point, alpha 1 reads the current point, and a
+-- fractional alpha reads the linear midpoint on every changed axis. Logical
+-- field coordinates stay at their committed anchor until the action commits,
+-- and omitting alpha keeps the current-position behavior existing callers
+-- rely on.
+function T.object_actor_draw_records_follow_render_alpha_between_fixed_positions()
+  local h = harness()
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:step(100, { autonomousLocked = true })
+  local previousX, previousY, previousZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  local previousFieldX, previousFieldZ = actor.fieldX, actor.fieldZ
+  h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
+  h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)
+  local currentX, currentY, currentZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  Assert.isTrue(currentX ~= previousX, "the test must observe movement between fixed positions")
+
+  local atZero = assert(h.mgr:drawRecords(0)[1])
+  local zeroX, zeroY, zeroZ = atZero.world.x, atZero.world.y, atZero.world.z
+  local atHalf = assert(h.mgr:drawRecords(0.5)[1])
+  local halfX, halfY, halfZ = atHalf.world.x, atHalf.world.y, atHalf.world.z
+  local atOne = assert(h.mgr:drawRecords(1)[1])
+  local oneX, oneY, oneZ = atOne.world.x, atOne.world.y, atOne.world.z
+  Assert.near(zeroX, previousX, 1e-9, "draw at alpha 0 uses the previous fixed position")
+  Assert.near(zeroY, previousY, 1e-9, "draw at alpha 0 uses the previous fixed position")
+  Assert.near(zeroZ, previousZ, 1e-9, "draw at alpha 0 uses the previous fixed position")
+  Assert.near(oneX, currentX, 1e-9, "draw at alpha 1 uses the current fixed position")
+  Assert.near(oneY, currentY, 1e-9, "draw at alpha 1 uses the current fixed position")
+  Assert.near(oneZ, currentZ, 1e-9, "draw at alpha 1 uses the current fixed position")
+  Assert.near(halfX, (previousX + currentX) / 2, 1e-9, "draw at alpha 0.5 reads the linear midpoint")
+  Assert.near(halfY, (previousY + currentY) / 2, 1e-9, "draw at alpha 0.5 reads the linear midpoint")
+  Assert.near(halfZ, (previousZ + currentZ) / 2, 1e-9, "draw at alpha 0.5 reads the linear midpoint")
+  Assert.equal(actor.fieldX, previousFieldX, "render alpha leaves logical fieldX fixed until commit")
+  Assert.equal(actor.fieldZ, previousFieldZ, "render alpha leaves logical fieldZ fixed until commit")
+
+  local defaulted = assert(h.mgr:drawRecords()[1])
+  Assert.near(defaulted.world.x, currentX, 1e-9, "omitted alpha keeps current-position behavior")
+  Assert.near(defaulted.world.y, currentY, 1e-9, "omitted alpha keeps current-position behavior")
+  Assert.near(defaulted.world.z, currentZ, 1e-9, "omitted alpha keeps current-position behavior")
+end
+
+function T.manager_snapshots_each_actor_once_per_fixed_step()
+  local h = harness()
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  Assert.isTrue(type(actor.beginFixedStep) == "function", "actors snapshot a fixed-step baseline")
+  local calls = 0
+  local original = actor.beginFixedStep
+  actor.beginFixedStep = function(self)
+    calls = calls + 1
+    return original(self)
+  end
+  h.mgr:step(200, { autonomousLocked = true })
+  Assert.equal(calls, 1, "one fixed step snapshots each actor exactly once")
+  actor.beginFixedStep = original
+end
+
+function T.completed_walk_keeps_final_draw_segment_until_next_step()
+  local h = harness()
+  assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:step(100, { autonomousLocked = true })
+  h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
+  for progress = 1, 8 do
+    h.mgr:advanceScriptedAction(ACTOR_ID, progress, 8)
+  end
+  h.mgr:commitScriptedAction(ACTOR_ID)
+  local committedZero = assert(h.mgr:drawRecords(0)[1])
+  local committedZeroX = committedZero.world.x
+  local committedOne = assert(h.mgr:drawRecords(1)[1])
+  local committedOneX = committedOne.world.x
+  Assert.isTrue(
+    committedZeroX ~= committedOneX,
+    "a committed walk keeps its final fixed-step segment for the following frame"
+  )
+  h.mgr:step(101, { autonomousLocked = true })
+  local collapsedZero = assert(h.mgr:drawRecords(0)[1])
+  local collapsedZeroX, collapsedZeroY, collapsedZeroZ =
+    collapsedZero.world.x, collapsedZero.world.y, collapsedZero.world.z
+  local collapsedOne = assert(h.mgr:drawRecords(1)[1])
+  local collapsedOneX, collapsedOneY, collapsedOneZ = collapsedOne.world.x, collapsedOne.world.y, collapsedOne.world.z
+  Assert.near(collapsedZeroX, collapsedOneX, 1e-9, "the next fixed step settles an idle actor")
+  Assert.near(collapsedZeroY, collapsedOneY, 1e-9, "the next fixed step settles an idle actor")
+  Assert.near(collapsedZeroZ, collapsedOneZ, 1e-9, "the next fixed step settles an idle actor")
+end
+
+function T.draw_offsets_apply_once_after_interpolation()
+  local h = harness()
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:step(100, { autonomousLocked = true })
+  local previousX, previousY, previousZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
+  h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)
+  local currentX, currentY, currentZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  h.mgr:setPresentationOffset(ACTOR_ID, { x = 0.25, y = 0.5, z = 0 })
+  local record = assert(h.mgr:drawRecords(0.5)[1])
+  Assert.near(record.world.x, (previousX + currentX) / 2 + 0.25, 1e-9, "render offsets add once after interpolation")
+  Assert.near(record.world.y, (previousY + currentY) / 2 + 0.5, 1e-9, "render offsets add once after interpolation")
+  Assert.near(record.world.z, (previousZ + currentZ) / 2, 1e-9, "render offsets add once after interpolation")
+  Assert.equal(actor.worldX, currentX, "render offsets never mutate the logical anchor")
+  Assert.equal(actor.worldY, currentY, "render offsets never mutate the logical anchor")
+  Assert.equal(actor.worldZ, currentZ, "render offsets never mutate the logical anchor")
+end
+
+function T.draw_alpha_leaves_occupancy_unchanged()
+  local h = harness()
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  h.mgr:step(100, { autonomousLocked = true })
+  h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
+  h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)
+  local function occupantAt(fieldX)
+    return h.mgr:getAt(61, { fieldX = fieldX, fieldZ = 3, surfaceId = actor.surfaceId })
+  end
+  local before = occupantAt(2)
+  Assert.notNil(before, "the walking actor still occupies its committed tile")
+  for _, alpha in ipairs({ 0, 0.5, 1 }) do
+    h.mgr:drawRecords(alpha)
+  end
+  Assert.isTrue(occupantAt(2) == before, "draw alpha keeps the committed occupancy")
+  Assert.isNil(occupantAt(3), "draw alpha does not publish the uncommitted destination")
+  Assert.equal(actor.fieldX, 2, "draw alpha leaves logical fieldX fixed until commit")
+end
+
 return { tests = T }

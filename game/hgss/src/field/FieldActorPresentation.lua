@@ -108,7 +108,7 @@ end
 function FieldActorPresentation:drawItems(alpha)
   local records = assert(self._actorRecords, "field actor presentation is disposed")
   records[1] = self.runtime.playerVisual:drawRecord(alpha)
-  local actorRecords = self.runtime.actors:drawRecords()
+  local actorRecords = self.runtime.actors:drawRecords(alpha)
   for index, record in ipairs(actorRecords) do
     records[index + 1] = record
   end

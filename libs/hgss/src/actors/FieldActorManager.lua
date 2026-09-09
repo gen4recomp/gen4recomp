@@ -127,7 +127,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field dispose fun(self: FieldActorManager)
 ---@field visualRevision fun(self: FieldActorManager): integer
 ---@field collectSpriteIds fun(self: FieldActorManager, out: table<integer, boolean>)
----@field drawRecords fun(self: FieldActorManager): FieldActorManager.DrawRecord[]
+---@field drawRecords fun(self: FieldActorManager, alpha: number?): FieldActorManager.DrawRecord[]
 ---@field reconcilePhysicalWorld fun(self: FieldActorManager)
 ---@field onEventStateChanged fun(self: FieldActorManager, change: FieldActorStateChange)
 ---@field syncEventStateChanges fun(self: FieldActorManager)
@@ -1446,6 +1446,7 @@ function FieldActorManager:step(tick, context)
   for _, mapId in ipairs(sortedMapIds(self.maps)) do
     local entry = assert(self.maps[mapId])
     for _, actor in ipairs(entry.store:orderedActors()) do
+      actor:beginFixedStep()
       actor:advancePresentationTick()
       local autonomousAction = entry.autonomousActions[actor.actorId]
       if autonomousAction then
@@ -1662,9 +1663,10 @@ function FieldActorManager:collectSpriteIds(out)
   end
 end
 
+---@param alpha number? host-frame sample between the previous and current fixed points; omitted reads the current point
 ---@return FieldActorManager.DrawRecord[]
 ---@param self FieldActorManager
-function FieldActorManager:drawRecords()
+function FieldActorManager:drawRecords(alpha)
   local records = self._drawRecords
   local count = 0
   for _, entry in pairs(self.maps) do
@@ -1687,17 +1689,19 @@ function FieldActorManager:drawRecords()
         self._drawRecordByActorId[actor.actorId] = record
       end
       -- Render-only presentation offset (e.g. walk-in-place bob) is applied
-      -- here, at the final draw-position boundary; the actor's logical
+      -- here, at the final draw-position boundary, onto the sampled
+      -- previous/current base point; the actor's logical
       -- worldX/worldY/worldZ (read by terrain, collision, and save) never
       -- carry it.
       local offset = actor.presentationOffset
       local presentation = actor:presentationState()
       local gestureOffsetY = presentation.gestureOffsetY
+      local base = actor:renderPosition(alpha)
       record.actorId = actor.actorId
       record.spriteId = actor.spriteId
-      record.world.x = actor.worldX + (offset and offset.x or 0)
-      record.world.y = actor.worldY + (offset and offset.y or 0) + gestureOffsetY
-      record.world.z = actor.worldZ + (offset and offset.z or 0)
+      record.world.x = base.x + (offset and offset.x or 0)
+      record.world.y = base.y + (offset and offset.y or 0) + gestureOffsetY
+      record.world.z = base.z + (offset and offset.z or 0)
       record.facing = actor.facing
       record.pose = actor.pose
       record.poseTick = actor.poseTick
@@ -2617,6 +2621,7 @@ function FieldActorManager:cancelScriptedMovement(actorId)
       actor.worldX = world.x
       actor.worldZ = world.z
       -- worldY stays as committed surface height; actor.worldY already correct.
+      actor:beginFixedStep()
     end
   end
 end

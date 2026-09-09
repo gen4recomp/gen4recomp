@@ -1282,4 +1282,34 @@ function T.surf_draw_items_adapt_active_state_and_bypass_inactive_surf()
   Assert.equal(renderPositionCalls, 1, "an inactive surf must not query the player anchor")
 end
 
+-- The field render alpha reaches object actor records: the presentation seam
+-- forwards its alpha argument unchanged instead of collecting records at the
+-- latest fixed position.
+function T.actor_presentation_forwards_render_alpha_to_actor_records()
+  local calls = 0
+  local forwardedAlpha = nil
+  local actorsStub = {
+    drawRecords = function(_, alpha)
+      calls = calls + 1
+      forwardedAlpha = alpha
+      return {}
+    end,
+  }
+  local assets = presentationAssets({ [99] = presentationEntry(99) })
+  local presentation = FieldActorPresentation.new({
+    playerVisual = {
+      drawRecord = function()
+        return actorRecord("field:player", 99)
+      end,
+    } --[[@as any]],
+    actors = actorsStub --[[@as any]],
+  }, {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+  presentation:drawItems(0.37)
+  Assert.equal(calls, 1, "actor records are collected once per draw")
+  Assert.equal(forwardedAlpha, 0.37, "the field render alpha reaches object actor records")
+  presentation:dispose()
+end
+
 return { tests = T }
