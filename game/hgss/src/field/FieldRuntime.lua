@@ -1200,8 +1200,7 @@ function FieldRuntime:update(dt)
     -- advances once per fixed tick right after, so a same-tick start
     -- observes the committed placement.
     if self.followingMon then
-      local dialogue = self.dialogue
-      self.followingMon:update({ idlePresentationAllowed = dialogue == nil or not dialogue:isModal() })
+      self.followingMon:update()
     end
     if self.followingMonTransition then
       self.followingMonTransition:updateFixed()

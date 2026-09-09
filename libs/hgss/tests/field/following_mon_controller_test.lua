@@ -180,6 +180,26 @@ local function tick(w, count)
   end
 end
 
+-- A stationary follower owns no presentation action: idling never starts a
+-- scripted movement, never leaves an in-flight obligation, and never makes
+-- the controller report busy. The partner actor animates through its own
+-- visual clock instead.
+function T.stationary_follower_owns_no_presentation_action()
+  local w = world()
+  w.svc:setLead(0, mon())
+  tick(w, 3)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  Assert.isNil(w.controller._action, "a stationary follower holds no movement obligation")
+  Assert.isTrue(w.controller:isMovementSettled(), "a stationary follower stays settled")
+  local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
+  Assert.equal(actor.pose, "idle", "a stationary follower presents idle, never locomotion")
+  Assert.isNil(actor:scriptedMotionState(), "no scripted presentation owns the stationary partner")
+  tick(w, 10)
+  Assert.isNil(w.controller._action, "idle ticks start no presentation action")
+  Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled while idle")
+  w.mgr:dispose()
+end
+
 function T.eligible_lead_installs_behind_the_player()
   local w = world()
   Assert.isFalse(w.controller:isActive(), "an empty party is not active")
@@ -655,19 +675,18 @@ function T.transition_mode_scripted_walk_starts_the_trail_before_the_player_comm
   w.mgr:dispose()
 end
 
--- An arriving walk start preempts stationary presentation in the same
--- update: the on-spot walk cancels and the real trail begins at once
--- instead of queueing behind the presentation.
-function T.arriving_walk_start_preempts_stationary_presentation_in_the_same_update()
+-- An arriving walk start begins the real trail in the same update without
+-- queueing behind anything stationary: the follower holds no presentation
+-- action, so the trail starts at once.
+function T.arriving_walk_start_begins_the_real_trail_in_the_same_update()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   local idle = assert(w.mgr:getById(partnerId), "the partner actor is required")
-  Assert.equal(idle.pose, "walk", "the free stationary follower presents its on-spot walk")
-  local idleMotion = assert(idle:scriptedMotionState(), "stationary presentation is active")
-  Assert.equal(idleMotion.action, "walk_in_place", "stationary presentation holds no tile obligation")
-  Assert.isTrue(w.controller:isMovementSettled(), "stationary presentation is logically settled")
+  Assert.equal(idle.pose, "idle", "the free stationary follower presents idle")
+  Assert.isNil(idle:scriptedMotionState(), "no presentation action owns the stationary follower")
+  Assert.isTrue(w.controller:isMovementSettled(), "the stationary follower is logically settled")
 
   local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
   Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
@@ -690,10 +709,10 @@ function T.arriving_walk_start_preempts_stationary_presentation_in_the_same_upda
   w.mgr:dispose()
 end
 
--- A visible free follower walks in place while stationary: every tick
--- presents walking with no static gap between cycles, logical coordinates
--- never move, and the controller stays settled and interactable.
-function T.free_stationary_follower_repeats_its_on_spot_walk_without_moving()
+-- A visible free follower idles while stationary: every tick presents
+-- idle with no scripted action, logical coordinates never move, and the
+-- controller stays settled and interactable.
+function T.free_stationary_follower_idles_without_starting_movement()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
@@ -703,43 +722,44 @@ function T.free_stationary_follower_repeats_its_on_spot_walk_without_moving()
   for _ = 1, 30 do
     w.controller:update()
     local actor = assert(w.mgr:getById(partnerId), "the partner survives stationary ticks")
-    Assert.equal(actor.pose, "walk", "every stationary tick presents walking, with no static gap between cycles")
-    Assert.equal(actor.fieldX, home.fieldX, "stationary presentation never changes the logical tile")
-    Assert.equal(actor.fieldZ, home.fieldZ, "stationary presentation never changes the logical tile")
-    Assert.isTrue(w.controller:isMovementSettled(), "stationary presentation stays logically settled")
+    Assert.equal(actor.pose, "idle", "every stationary tick presents idle, never locomotion")
+    Assert.isNil(actor:scriptedMotionState(), "stationary ticks start no movement action")
+    Assert.equal(actor.fieldX, home.fieldX, "native idle never changes the logical tile")
+    Assert.equal(actor.fieldZ, home.fieldZ, "native idle never changes the logical tile")
+    Assert.isTrue(w.controller:isMovementSettled(), "native idle stays logically settled")
   end
-  local after = assert(w.mgr:getById(partnerId), "the partner survives the presentation cycles")
-  Assert.equal(after.fieldX, home.fieldX, "repeated cycles never displace the logical tile")
-  Assert.equal(after.fieldZ, home.fieldZ, "repeated cycles never displace the logical tile")
+  local after = assert(w.mgr:getById(partnerId), "the partner survives the idle ticks")
+  Assert.equal(after.fieldX, home.fieldX, "repeated idle never displaces the logical tile")
+  Assert.equal(after.fieldZ, home.fieldZ, "repeated idle never displaces the logical tile")
   Assert.near(
     assert(after.worldY, "the partner height is required"),
-    assert(homeWorldY, "the presentation start height is required"),
+    assert(homeWorldY, "the idle start height is required"),
     1e-9,
-    "stationary presentation never changes the height anchor"
+    "native idle never changes the height anchor"
   )
-  Assert.isTrue(w.controller:isEventTrigger(1, 0), "stationary presentation stays available for interaction")
+  Assert.isTrue(w.controller:isEventTrigger(1, 0), "the idling follower stays available for interaction")
   w.mgr:dispose()
 end
 
--- Pausing cancels only the on-spot presentation and keeps a real trail in
--- flight to its normal commit: the presentation settles at once while the
--- trail still walks, and the paused follower holds static afterwards.
-function T.pausing_cancels_only_the_on_spot_walk_and_keeps_the_real_trail()
+-- Pausing keeps a real trail in flight to its normal commit: the trail
+-- still walks while paused, and the paused follower holds afterwards. A
+-- stationary follower pauses with no action either way.
+function T.pausing_keeps_the_real_trail_in_flight()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   Assert.equal(
     assert(w.mgr:getById(partnerId), "the partner actor is required").pose,
-    "walk",
-    "setup presents the on-spot walk"
+    "idle",
+    "setup presents native idle"
   )
   w.controller:setMovementPaused(true)
   w.controller:update()
   local held = assert(w.mgr:getById(partnerId), "the partner survives the pause")
-  Assert.equal(held.pose, "idle", "pausing cancels the presentation immediately")
-  Assert.isNil(held:scriptedMotionState(), "no presentation action survives the pause")
-  Assert.isTrue(w.controller:isMovementSettled(), "a paused presentation never hangs a wait")
+  Assert.equal(held.pose, "idle", "pausing a stationary follower changes nothing visual")
+  Assert.isNil(held:scriptedMotionState(), "no movement action exists while paused")
+  Assert.isTrue(w.controller:isMovementSettled(), "a paused stationary follower never hangs a wait")
 
   w.controller:setMovementPaused(false)
   local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
@@ -763,14 +783,14 @@ function T.pausing_cancels_only_the_on_spot_walk_and_keeps_the_real_trail()
   w.mgr:dispose()
 end
 
--- Settlement distinguishes real trails from presentation: an on-spot walk
--- with an empty queue is settled, a real trail is not, and a paused
--- retained queue with no trail in flight is settled so waits never hang.
-function T.settlement_counts_only_real_trails_not_stationary_presentation()
+-- Settlement tracks real trails only: a stationary follower with an empty
+-- queue is settled, a real trail is not, and a paused retained queue with
+-- no trail in flight is settled so waits never hang.
+function T.settlement_counts_only_real_trails()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
-  Assert.isTrue(w.controller:isMovementSettled(), "stationary presentation with an empty queue is settled")
+  Assert.isTrue(w.controller:isMovementSettled(), "a stationary follower with an empty queue is settled")
   Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
   w.controller:update()
   Assert.isFalse(w.controller:isMovementSettled(), "a real trail is unsettled")
@@ -780,7 +800,7 @@ function T.settlement_counts_only_real_trails_not_stationary_presentation()
     end
     w.controller:update()
   end
-  Assert.isTrue(w.controller:isMovementSettled(), "the drained trail settles back into presentation")
+  Assert.isTrue(w.controller:isMovementSettled(), "the drained trail settles")
   w.controller:setMovementPaused(true)
   Assert.isTrue(w.player:tryStep("south"), "a paused step still starts")
   for _ = 1, 10 do
@@ -793,20 +813,20 @@ function T.settlement_counts_only_real_trails_not_stationary_presentation()
   w.mgr:dispose()
 end
 
--- Stationary presentation stays eligible for event triggers while a real
--- trail stays movement-busy: the looping on-spot walk never makes the
--- visible partner logically moving.
-function T.stationary_presentation_stays_available_for_interaction()
+-- A stationary follower stays eligible for event triggers while a real
+-- trail stays movement-busy: native idle never makes the visible partner
+-- logically moving.
+function T.stationary_follower_stays_available_for_interaction()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   Assert.equal(
     assert(w.mgr:getById(partnerId), "the partner actor is required").pose,
-    "walk",
-    "setup presents the on-spot walk"
+    "idle",
+    "setup presents native idle"
   )
-  Assert.isTrue(w.controller:isEventTrigger(1, 0), "stationary presentation stays stationary for triggers")
+  Assert.isTrue(w.controller:isEventTrigger(1, 0), "the stationary follower stays stationary for triggers")
   Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
   w.controller:update()
   Assert.isFalse(w.controller:isEventTrigger(1, 0), "a real trail stays movement-busy for triggers")
@@ -814,9 +834,10 @@ function T.stationary_presentation_stays_available_for_interaction()
 end
 
 -- Leaving free follow for a transition mode while paused starts no
--- presentation, and returning to free follow while still paused starts
--- none either: only release restarts the on-spot walk.
-function T.mode_change_while_paused_starts_no_presentation_until_release()
+-- movement, and returning to free follow while still paused starts none
+-- either: release restarts nothing, since stationary followers hold no
+-- presentation action.
+function T.mode_change_starts_no_movement_while_paused_or_released()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
@@ -827,7 +848,7 @@ function T.mode_change_while_paused_starts_no_presentation_until_release()
   Assert.equal(
     assert(w.mgr:getById(partnerId), "the partner actor is required").pose,
     "idle",
-    "no presentation starts while paused"
+    "no movement starts while paused"
   )
   w.controller:setMovementType("follow_player")
   tick(w, 3)
@@ -840,24 +861,25 @@ function T.mode_change_while_paused_starts_no_presentation_until_release()
   tick(w, 2)
   Assert.equal(
     assert(w.mgr:getById(partnerId), "the partner actor is required").pose,
-    "walk",
-    "release restarts the presentation"
+    "idle",
+    "release starts no movement action either"
   )
+  Assert.isNil(w.controller._action, "release leaves no movement obligation")
   w.mgr:dispose()
 end
 
--- Map exit clears the presentation and restores free follow for the next
+-- Map exit clears movement state and restores free follow for the next
 -- actor ownership epoch, so a script-only transition mode never leaks
 -- into unrelated free field after reconstruction.
-function T.map_exit_clears_presentation_and_restores_free_follow()
+function T.map_exit_clears_movement_and_restores_free_follow()
   local w = world()
   w.svc:setLead(0, mon())
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   Assert.equal(
     assert(w.mgr:getById(partnerId), "the partner actor is required").pose,
-    "walk",
-    "setup presents the on-spot walk"
+    "idle",
+    "setup presents native idle"
   )
   w.controller:setMovementType("follow_transition_a")
   w.controller:handleMapExit()
@@ -866,7 +888,7 @@ function T.map_exit_clears_presentation_and_restores_free_follow()
     "follow_player",
     "map exit restores free follow for the next ownership epoch"
   )
-  Assert.isTrue(w.controller:isMovementSettled(), "map exit leaves no presentation behind")
+  Assert.isTrue(w.controller:isMovementSettled(), "map exit leaves no movement behind")
   local nextMap = runtimeMap(62)
   w.mgr:enterMap(nextMap, FieldEventState.new())
   w.player.currentMap = nextMap
@@ -874,7 +896,8 @@ function T.map_exit_clears_presentation_and_restores_free_follow()
   local reinstalledId = assert(w.mgr:partnerId(), "the new map reinstalls the partner")
   local actor = assert(w.mgr:getById(reinstalledId), "the reinstalled partner is required")
   Assert.equal(actor.mapId, 62, "the reinstalled actor belongs to the new map")
-  Assert.equal(actor.pose, "walk", "the new map resumes the presentation")
+  Assert.equal(actor.pose, "idle", "the new map resumes native idle with no movement action")
+  Assert.isNil(actor:scriptedMotionState(), "the reinstalled partner holds no scripted motion")
   w.mgr:dispose()
 end
 

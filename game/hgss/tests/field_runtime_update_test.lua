@@ -294,10 +294,10 @@ function T.tests.zero_delta_does_not_advance_any_clock()
   Assert.equal(runtime.session.accumulator, 0)
 end
 
--- The fixed-tick composition feeds the follower controller exactly one
--- presentation fact derived from the owned dialogue controller: stationary
--- presentation is allowed unless modal dialogue is open. A missing dialogue
--- controller reads as allowed.
+-- The fixed-tick composition drives the follower controller with no
+-- presentation policy: stationary animation is owned by the actor visuals,
+-- so the coordinator passes no idle-presentation option at all, regardless
+-- of dialogue state. A missing dialogue controller changes nothing.
 local function runtimeWithFollowerPresentation(updateOptions, modal)
   local runtime = setmetatable({
     session = {
@@ -324,7 +324,9 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
     },
     followingMon = {
       update = function(_, options)
-        updateOptions[#updateOptions + 1] = options
+        updateOptions.calls = updateOptions.calls + 1
+        updateOptions.last = options
+        updateOptions.seenNil = updateOptions.seenNil or options == nil
       end,
     },
     dialogue = modal == nil and nil or {
@@ -336,30 +338,21 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
   return runtime
 end
 
-function T.tests.follower_presentation_follows_modal_dialogue_state()
-  local openOptions = {}
+function T.tests.follower_update_carries_no_presentation_policy()
+  local openOptions = { calls = 0 }
   runtimeWithFollowerPresentation(openOptions, false):update(FieldSession.FIXED_DT)
-  Assert.deepEqual(
-    openOptions,
-    { { idlePresentationAllowed = true } },
-    "an open field lets the follower present its stationary walk"
-  )
+  Assert.equal(openOptions.calls, 1, "an open field still ticks the follower once")
+  Assert.isNil(openOptions.last, "the follower update carries no presentation option on an open field")
 
-  local modalOptions = {}
+  local modalOptions = { calls = 0 }
   runtimeWithFollowerPresentation(modalOptions, true):update(FieldSession.FIXED_DT)
-  Assert.deepEqual(
-    modalOptions,
-    { { idlePresentationAllowed = false } },
-    "modal dialogue suppresses the stationary presentation for exactly that tick"
-  )
+  Assert.equal(modalOptions.calls, 1, "modal dialogue still ticks the follower once")
+  Assert.isNil(modalOptions.last, "modal dialogue adds no presentation option to the follower update")
 
-  local missingOptions = {}
+  local missingOptions = { calls = 0 }
   runtimeWithFollowerPresentation(missingOptions, nil):update(FieldSession.FIXED_DT)
-  Assert.deepEqual(
-    missingOptions,
-    { { idlePresentationAllowed = true } },
-    "a missing dialogue controller reads as allowed"
-  )
+  Assert.equal(missingOptions.calls, 1, "a missing dialogue controller still ticks the follower once")
+  Assert.isNil(missingOptions.last, "a missing dialogue controller adds no presentation option")
 end
 
 return T

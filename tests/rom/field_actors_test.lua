@@ -15,6 +15,8 @@ local MapResolver = require("romdump.src.digest.map.MapResolver")
 local RomRuntimeMap = require("tests.support.RomRuntimeMap")
 local FieldActorGraphics = require("romdump.src.digest.actor.FieldActorGraphics")
 local FieldActorCompiler = require("romdump.src.digest.actor.FieldActorCompiler")
+local FollowingMonVisualCompiler = require("romdump.src.digest.actor.FollowingMonVisualCompiler")
+local MonSources = require("romdump.src.config.MonSources")
 local FieldActorCacheWriter = require("romdump.src.digest.actor.FieldActorCacheWriter")
 local ZoneEvents = require("romdump.src.digest.map.ZoneEvents")
 local manifest = require("romdump.src.config.FieldActors")
@@ -140,63 +142,125 @@ function T.compiled_visuals_cover_the_target_maps(romFs)
   )
 end
 
-function T.compiled_visuals_normalize_source_actor_families(romFs)
-  local bundle = assert(FieldActorCompiler.compile(romFs))
-  local ordinary = bundle.visuals[29]
-  local familyModes = {
-    [84] = "static", -- family 1
-    [335] = "static", -- family 12
-    [425] = "static", -- family 13
-    [183] = "static", -- family 15
-    [1043] = "static", -- family 16
-    [1032] = "static", -- family 17
-    [262] = "static", -- family 18
-  }
-  local follower = bundle.visuals[1032]
-
-  Assert.deepEqual(ordinary.idlePresentation, {
-    mode = "static",
-    cadence = 0,
-  })
-  for spriteId, mode in pairs(familyModes) do
-    Assert.equal(bundle.visuals[spriteId].idlePresentation.mode, mode)
-  end
-  Assert.equal(follower.idlePresentation.mode, "static")
-  Assert.equal(follower.idlePresentation.cadence, 0)
-  Assert.equal(follower.directions.south.idle.durationTicks, 1)
+-- Pokemon field visuals idle from their own source animation: the compiled
+-- directional idle pose runs the same facing animation on the same clock as
+-- the walk pose instead of a one-frame hold, with the source vertical offset
+-- coupled to the animation phase. Ordinary non-Pokemon actors keep a static
+-- one-frame idle.
+local function assertIdleUsesSourceRange(visual, label)
+  Assert.deepEqual(visual.idlePresentation, { mode = "animated", cadence = 1 }, label .. " native idle presentation")
   for _, direction in ipairs(manifest.directionOrder) do
-    for _, segment in ipairs(ordinary.directions[direction].idle.frames) do
-      Assert.equal(segment.displayOffsetY, 0, "static idle segment offset must be 0")
+    local set = assert(visual.directions[direction], label .. " " .. direction .. " pose set is required")
+    local idle = assert(set.idle, label .. " " .. direction .. " idle pose is required")
+    local walk = assert(set.walk, label .. " " .. direction .. " walk pose is required")
+    Assert.equal(idle.durationTicks, walk.durationTicks, label .. " " .. direction .. " idle keeps source duration")
+    Assert.equal(idle.loop, walk.loop, label .. " " .. direction .. " idle keeps source looping")
+    Assert.isTrue(idle.durationTicks > 1 and #idle.frames > 1, label .. " " .. direction .. " idle animates")
+    local idleFrames, walkFrames = {}, {}
+    for _, segment in ipairs(idle.frames) do
+      for _ = 1, segment.ticks do
+        idleFrames[#idleFrames + 1] = segment.frameIndex
+      end
     end
+    for _, segment in ipairs(walk.frames) do
+      for _ = 1, segment.ticks do
+        walkFrames[#walkFrames + 1] = segment.frameIndex
+      end
+    end
+    Assert.deepEqual(idleFrames, walkFrames, label .. " " .. direction .. " idle runs the facing animation")
+    local offsets = {}
+    for _, segment in ipairs(idle.frames) do
+      offsets[segment.displayOffsetY] = true
+      Assert.isTrue(
+        segment.displayOffsetY == 0 or segment.displayOffsetY < 0,
+        label .. " " .. direction .. " idle offset stays grounded"
+      )
+    end
+    Assert.isTrue(offsets[0] == true, label .. " " .. direction .. " idle rests at zero offset")
+    local shifted = false
+    for offset in pairs(offsets) do
+      if offset ~= 0 then
+        shifted = true
+      end
+    end
+    Assert.isTrue(shifted, label .. " " .. direction .. " idle couples a vertical offset to its phase")
   end
+end
+
+local function assertStaticIdle(visual, label)
+  Assert.deepEqual(visual.idlePresentation, { mode = "static", cadence = 0 }, label .. " stationary idle")
+  for _, direction in ipairs(manifest.directionOrder) do
+    local idle = assert(visual.directions[direction].idle, label .. " " .. direction .. " idle pose is required")
+    Assert.equal(idle.durationTicks, 1, label .. " " .. direction .. " idle holds one tick")
+    Assert.equal(#idle.frames, 1, label .. " " .. direction .. " idle holds one frame")
+  end
+end
+
+function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
+  local bundle = assert(FieldActorCompiler.compile(romFs))
+  local marill = assert(bundle.visuals[1032], "static Marill visual 1032 must be compiled")
+  assertIdleUsesSourceRange(marill, "marill")
+  local marillWalkSouth = marill.directions.south.walk
+  Assert.equal(marillWalkSouth.durationTicks, 20, "marill south keeps its uneven source loop")
+  Assert.deepEqual(
+    { marillWalkSouth.frames[1].ticks, marillWalkSouth.frames[2].ticks, marillWalkSouth.frames[3].ticks },
+    { 5, 10, 5 },
+    "marill south keeps its 5/10/5 source timing"
+  )
+  Assert.equal(marill.directions.south.idle.durationTicks, 20, "marill south idle runs on the same 20-tick clock")
+
+  -- A normal follower species reaches the same producer through the follower
+  -- visual pipeline, keyed by its production visual id.
+  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
+  local chikoritaSprite = assert(
+    MonSources.followerSpriteId(152, 0, false),
+    "chikorita resolves a source follower sprite through follow_mon selection"
+  )
+  local chikoritaVisualId =
+    MonSources.followerVisualId(assert(MonSources.followerParamIndex(152, 0, false), "chikorita param index"))
+  local chikorita = assert(
+    follower.visuals[chikoritaVisualId],
+    "chikorita follower visual " .. chikoritaVisualId .. " (source sprite " .. chikoritaSprite .. ") must be compiled"
+  )
+  assertIdleUsesSourceRange(chikorita, "chikorita follower")
+
+  -- A family-16 field Pokemon idles on the same native clock.
+  local kyogre = assert(bundle.visuals[1043], "static Kyogre visual 1043 must be compiled")
+  assertIdleUsesSourceRange(kyogre, "kyogre")
+
+  -- Static-family control: an ordinary actor stays on the one-frame hold.
+  assertStaticIdle(assert(bundle.visuals[29], "aide visual 29 must be compiled"), "aide")
+  -- Family 19 is untouched by this change: its actor states keep the
+  -- one-frame hold.
+  assertStaticIdle(assert(bundle.visuals[423], "apricorn-shake visual 423 must be compiled"), "family-19 hero")
+  assertStaticIdle(assert(bundle.visuals[424], "apricorn-shake visual 424 must be compiled"), "family-19 heroine")
   for _, visual in pairs(bundle.visuals) do
     Assert.isNil(visual.actorFamily, "raw actor family must not cross the generated asset boundary")
   end
 end
 
-function T.field_pokemon_idle_is_a_single_stationary_frame_while_walk_keeps_its_loop(romFs)
-  local bundle = assert(FieldActorCompiler.compile(romFs))
-  for _, spriteId in ipairs({ 1032, 1043 }) do
-    local visual = assert(bundle.visuals[spriteId], "field pokemon visual " .. spriteId .. " must be compiled")
-    Assert.equal(visual.idlePresentation.mode, "static", "field pokemon idle must be stationary")
-    Assert.equal(visual.idlePresentation.cadence, 0, "stationary idle carries no frame clock")
-    for _, direction in ipairs(manifest.directionOrder) do
-      local set = assert(visual.directions[direction], direction .. " pose set is required")
-      local idle = assert(set.idle, direction .. " idle pose is required")
-      local walk = assert(set.walk, direction .. " walk pose is required")
-      Assert.equal(idle.durationTicks, 1, direction .. " idle holds one tick")
-      Assert.equal(#idle.frames, 1, direction .. " idle holds one frame")
-      Assert.equal(idle.frames[1].ticks, 1)
-      Assert.equal(idle.frames[1].displayOffsetY, 0, direction .. " idle carries no display offset")
-      Assert.isTrue(idle.loop, direction .. " idle loops its single frame")
-      Assert.isTrue(walk.durationTicks > 1 and #walk.frames > 1, direction .. " walk keeps multi-frame locomotion")
-      Assert.equal(
-        idle.frames[1].frameIndex,
-        walk.frames[1].frameIndex,
-        direction .. " idle holds the neutral walk frame"
-      )
-    end
-  end
+function T.pokemon_idle_policy_keys_off_the_source_actor_family(romFs)
+  local decoded = decodeTable(romFs)
+  local marill = assert(FieldActorGraphics.resolve(decoded, 1032), "static Marill 1032 must be present")
+  Assert.equal(marill.record.actorFamily, 17, "marill idle policy keys off source actor family 17")
+  local chikoritaSprite = assert(
+    MonSources.followerSpriteId(152, 0, false),
+    "chikorita resolves a source follower sprite through follow_mon selection"
+  )
+  local chikorita = assert(
+    FieldActorGraphics.resolve(decoded, chikoritaSprite),
+    "chikorita follower sprite " .. chikoritaSprite .. " must be present"
+  )
+  Assert.equal(chikorita.record.actorFamily, 17, "follower idle policy keys off source actor family 17")
+  local kyogre = assert(FieldActorGraphics.resolve(decoded, 1043), "static Kyogre 1043 must be present")
+  Assert.equal(kyogre.record.actorFamily, 16, "kyogre idle policy keys off source actor family 16")
+  local shake = assert(FieldActorGraphics.resolve(decoded, 423), "apricorn-shake 423 must be present")
+  Assert.equal(shake.record.actorFamily, 19, "family 19 stays outside the pokemon idle policy")
+  local ordinary = assert(FieldActorGraphics.resolve(decoded, 29), "aide 29 must be present")
+  Assert.isTrue(
+    ordinary.record.actorFamily ~= 16 and ordinary.record.actorFamily ~= 17,
+    "ordinary actors stay outside the pokemon idle policy"
+  )
 end
 
 -- The render facts every target class must inherit from the shared model member:

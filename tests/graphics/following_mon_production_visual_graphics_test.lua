@@ -143,6 +143,15 @@ local function walkFrameSet(visual, direction)
   return frames, pose.durationTicks
 end
 
+local function idleFrameSet(visual, direction)
+  local pose = FieldActorPose.select(visual, direction, "idle")
+  local frames = {}
+  for tick = 0, pose.durationTicks - 1 do
+    frames[FieldActorPose.frameIndexAt(pose, tick)] = true
+  end
+  return frames, pose.durationTicks
+end
+
 local function frameSetsDiffer(first, second)
   for frame in pairs(first) do
     if second[frame] == nil then
@@ -201,8 +210,8 @@ local function runLeg(state, runtime, visual, drawItemFor, playerDirection, foll
       committed = true
     end
     -- Settlement is logical: the follower sits on the vacated tile with no
-    -- movement obligation left. A free stationary follower keeps presenting
-    -- its on-spot walk, so the pose is not part of the settle condition.
+    -- movement obligation left. A settled stationary follower presents
+    -- native idle, so the pose is not part of the settle condition.
     if
       committed
       and actor.fieldX == vacated.fieldX
@@ -270,7 +279,7 @@ local function runLeg(state, runtime, visual, drawItemFor, playerDirection, foll
   return frames
 end
 
-function T.stationary_follower_walks_in_place_without_player_input(scope)
+function T.stationary_follower_idles_without_player_input(scope)
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
@@ -311,11 +320,13 @@ function T.stationary_follower_walks_in_place_without_player_input(scope)
         Assert.equal(#items, 1, "one visible follower record draws exactly one atlas item")
         return items[1]
       end
-      -- A free stationary follower presents its on-spot walk instead of
-      -- standing in idle: every tick walks with no static gap while the
-      -- logical tile stays fixed and the controller stays settled.
-      waitFor(state, "follower on-spot walk", function()
-        return partnerOf(runtime).pose == "walk"
+      -- A stationary follower presents its native idle instead of starting
+      -- a scripted movement action: every tick idles with no translation,
+      -- the controller stays settled, the drawn frames come from the
+      -- generated idle range, and the vertical offset follows the idle
+      -- animation phase rather than an independent clock.
+      waitFor(state, "follower native idle", function()
+        return partnerOf(runtime).pose == "idle"
       end, 240)
       local following = assert(runtime.followingMon, "the field runtime owns its follower controller")
       local leader = playerTile(runtime)
@@ -323,26 +334,45 @@ function T.stationary_follower_walks_in_place_without_player_input(scope)
       local facing = follower.facing
       local baseField = { fieldX = follower.fieldX, fieldZ = follower.fieldZ }
       local baseRecord = partnerRecordOf(runtime)
-      local frames = walkFrameSet(visual, facing)
+      local baseTick = follower.poseTick
+      local frames = idleFrameSet(visual, facing)
+      local idlePose = FieldActorPose.select(visual, facing, "idle")
+      Assert.isNil(follower:scriptedMotionState(), "native idle starts no scripted movement action")
+      Assert.isTrue(following:isMovementSettled(), "native idle stays logically settled")
+      local sawShiftedOffset = false
       for _ = 1, 24 do
         state:update(FIXED_DT)
         state:draw()
         local actor = partnerOf(runtime)
-        Assert.equal(actor.pose, "walk", "every stationary tick presents walking, with no static gap")
-        Assert.equal(actor.facing, facing, "stationary presentation must not turn the follower")
-        Assert.equal(actor.fieldX, baseField.fieldX, "stationary presentation must not translate the follower")
-        Assert.equal(actor.fieldZ, baseField.fieldZ, "stationary presentation must not translate the follower")
-        Assert.isTrue(following:isMovementSettled(), "stationary presentation stays logically settled")
+        Assert.equal(actor.pose, "idle", "every stationary tick presents native idle, never locomotion")
+        Assert.isNil(actor:scriptedMotionState(), "stationary ticks start no movement action")
+        Assert.equal(actor.facing, facing, "native idle must not turn the follower")
+        Assert.equal(actor.fieldX, baseField.fieldX, "native idle must not translate the follower")
+        Assert.equal(actor.fieldZ, baseField.fieldZ, "native idle must not translate the follower")
+        local expectedOffset = FieldActorPose.sampleAt(idlePose, actor.poseTick).displayOffsetY
+        Assert.near(
+          actor.presentationOffset.y,
+          expectedOffset,
+          1e-9,
+          "the idle vertical offset follows the animation phase"
+        )
+        if expectedOffset ~= 0 then
+          sawShiftedOffset = true
+        end
+        Assert.isTrue(following:isMovementSettled(), "native idle stays logically settled")
         local record = partnerRecordOf(runtime)
-        Assert.equal(record.pose, "walk", "the draw record carries the walking presentation")
+        Assert.equal(record.pose, "idle", "the draw record carries the native idle presentation")
         local item = drawItemFor(record)
-        Assert.isTrue(frames[item.frameIndex] == true, "the drawn frame belongs to the walk range")
-        Assert.isFalse(item.poseFellBack, "draw reports no pose fallback for the walking follower")
+        Assert.isTrue(frames[item.frameIndex] == true, "the drawn frame belongs to the idle range")
+        Assert.isFalse(item.poseFellBack, "draw reports no pose fallback for the idling follower")
       end
-      local after = partnerRecordOf(runtime)
-      Assert.near(after.world.x, baseRecord.world.x, 1e-9, "the walking follower draw anchor stays fixed")
-      Assert.near(after.world.z, baseRecord.world.z, 1e-9, "the walking follower draw depth stays fixed")
-      Assert.isNil(runtime.errorText, "field runtime faulted while the follower walked in place")
+      local after = partnerOf(runtime)
+      Assert.isTrue(after.poseTick > baseTick, "native idle advances at its source clock, never holds frame zero")
+      Assert.isTrue(sawShiftedOffset, "the sampled idle loop reaches the phase-coupled offset")
+      local afterRecord = partnerRecordOf(runtime)
+      Assert.near(afterRecord.world.x, baseRecord.world.x, 1e-9, "the idling follower draw anchor stays fixed")
+      Assert.near(afterRecord.world.z, baseRecord.world.z, 1e-9, "the idling follower draw depth stays fixed")
+      Assert.isNil(runtime.errorText, "field runtime faulted while the follower idled natively")
       Assert.isTrue(sameTile(playerTile(runtime), leader), "stationary sampling uses no player movement")
     end, debug.traceback)
     state:dispose()
@@ -508,9 +538,9 @@ function T.follower_moves_while_the_player_step_is_in_flight()
       for _ = 1, 240 do
         local actor = partnerOf(runtime)
         -- Settlement is logical: the follower sits on the vacated tile with
-        -- no movement obligation left. A free stationary follower keeps
-        -- presenting its on-spot walk, so the pose is not part of the
-        -- settle condition.
+        -- no movement obligation left. A settled stationary follower
+        -- presents native idle, so the pose is not part of the settle
+        -- condition.
         if actor.fieldX == vacated.fieldX and actor.fieldZ == vacated.fieldZ and following:isMovementSettled() then
           settled = true
           break

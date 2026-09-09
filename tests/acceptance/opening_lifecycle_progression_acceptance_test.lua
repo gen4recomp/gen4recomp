@@ -249,4 +249,56 @@ function T.tests.new_bark_friend_and_marill_scene_follows_the_house_scene()
   end, { recordingScriptHosts = true })
 end
 
+function T.tests.friend_marill_animates_while_staying_on_its_tile()
+  withGame(TOWN, function(game)
+    -- No post-opening seeding here: with the house scene variable still at
+    -- its fresh value the friend/Marill hide scene never triggers, so the
+    -- Marill event stays visible for the whole scenario.
+    game:waitForFieldEntry()
+    game:advanceUntil("field settles without the hide scene", function(snapshot)
+      return not snapshot.fieldLocked and game.runtime.scripts.scheduler:foregroundEnvironmentId() == nil
+    end, 120)
+    local world = game.runtime.scripts.worldState
+    Assert.equal(world:getVar(VAR_SCENE_PLAYERS_HOUSE_1F), 0, "the hide scene must not have run")
+    Assert.isFalse(world:isFlagSet(FLAG_HIDE_NEW_BARK_MARILL), "marill must still be visible")
+
+    local runtimeMap = game.runtime.runtimeMap
+    local marillEvent
+    for _, event in ipairs(runtimeMap.fieldData.events.objects) do
+      if event.eventFlag == FLAG_HIDE_NEW_BARK_MARILL then
+        marillEvent = event
+      end
+    end
+    Assert.notNil(marillEvent, "New Bark must declare the marill object event")
+    local actorId = "map:" .. runtimeMap.mapId .. ":object:" .. marillEvent.objectEventId
+    local actor = assert(game.runtime.actors:getById(actorId), "the marill actor must be live while visible")
+    Assert.equal(actor.movementType, "stationary", "the friend marill never roams")
+    Assert.equal(actor.pose, "idle", "the stationary marill presents idle, never locomotion")
+    Assert.isNil(actor:scriptedMotionState(), "no scripted or autonomous movement owns the stationary marill")
+    local homeX, homeZ = actor.fieldX, actor.fieldZ
+    local homeWorld = { x = actor.worldX, y = actor.worldY, z = actor.worldZ }
+    local firstTick = actor.poseTick
+
+    -- Enough fixed ticks to cross at least two source idle segments without
+    -- issuing any movement to the marill.
+    for _ = 1, 25 do
+      game:step()
+    end
+
+    actor = assert(game.runtime.actors:getById(actorId), "the marill actor must survive idle sampling")
+    Assert.equal(actor.fieldX, homeX, "idle animation never claims a new logical tile")
+    Assert.equal(actor.fieldZ, homeZ, "idle animation never claims a new logical tile")
+    Assert.near(actor.worldX, homeWorld.x, 1e-9, "idle animation never moves the world anchor")
+    Assert.near(actor.worldY, homeWorld.y, 1e-9, "idle animation never moves the world anchor")
+    Assert.near(actor.worldZ, homeWorld.z, 1e-9, "idle animation never moves the world anchor")
+    Assert.equal(actor.movementType, "stationary", "sampling issues no movement to the marill")
+    Assert.isNil(actor:scriptedMotionState(), "sampling starts no movement task on the marill")
+    Assert.equal(actor.pose, "idle", "the marill stays on its semantic idle pose throughout")
+    Assert.isTrue(
+      actor.poseTick > firstTick,
+      "the stationary marill advances its idle clock instead of holding frame zero"
+    )
+  end, { recordingScriptHosts = true })
+end
+
 return T

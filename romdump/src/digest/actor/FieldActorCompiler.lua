@@ -38,6 +38,7 @@ local MODEL_MAGIC = "BMD0"
 local TEXTURE_MAGIC = "BTX0"
 local FX32_ONE = 4096
 local SOURCE_MODEL_UNITS_PER_TILE = 16
+local FOLLOWER_DISPLAY_OFFSET = -(2 * FX32_ONE) / (SOURCE_MODEL_UNITS_PER_TILE * FX32_ONE)
 
 -- Source HEAL/BANZAI callback: ov01_021F8AB0 applies facing-vector Z of 2<<10
 -- (pret/pokeheartgold@b23531f6 asm/overlay_01_sprite_data.s, asm/overlay_01_021F72DC.s).
@@ -61,11 +62,11 @@ local GESTURE_BINDINGS = {
   },
 }
 
--- Source: pret/pokeheartgold 0985, ov01_02209A38. Families 16 and 17 share one
--- distinct callback struct while every other family, including the player-state
--- families below, uses a callback struct. The generated idle for every family
--- is a stationary directional pose holding the first displayed frame of its
--- facing range; locomotion stays on the explicit walk pose.
+-- Source: pret/pokeheartgold 0985, ov01_02209A38. Families 16 and 17 reach
+-- ov01_021F8D80's taskless path and ov01_021F8FC0 bob; the other families use
+-- callbacks without that follower idle behavior. The callback-struct table
+-- itself shows the split: 16/17 share one distinct struct while every other
+-- family, including the player-state families below, uses a callback struct.
 local IDLE_MODE_BY_ACTOR_FAMILY = {
   [0] = "static",
   [1] = "static",
@@ -81,8 +82,8 @@ local IDLE_MODE_BY_ACTOR_FAMILY = {
   [12] = "static",
   [13] = "static",
   [15] = "static",
-  [16] = "static",
-  [17] = "static",
+  [16] = "animated",
+  [17] = "animated",
   [18] = "static",
   [19] = "static",
 }
@@ -261,6 +262,53 @@ local function idlePresentation(mode)
   }
 end
 
+local function idleDisplayOffset(phase)
+  if (phase >= 5 and phase <= 9) or (phase >= 15 and phase <= 19) then
+    return FOLLOWER_DISPLAY_OFFSET
+  end
+  return 0
+end
+
+local function buildAnimatedIdlePose(sourcePose, context)
+  if sourcePose.durationTicks ~= 20 then
+    Errors.raise(
+      "FIELD_ACTOR_IDLE_DURATION_UNEXPECTED",
+      "animated idle source duration must be 20, got " .. tostring(sourcePose.durationTicks),
+      { durationTicks = sourcePose.durationTicks, context = context }
+    )
+  end
+  local samples = {}
+  local tickIndex = 0
+  for _, segment in ipairs(sourcePose.frames) do
+    for _ = 1, segment.ticks do
+      samples[#samples + 1] = {
+        frameIndex = segment.frameIndex,
+        displayOffsetY = idleDisplayOffset(tickIndex),
+      }
+      tickIndex = tickIndex + 1
+    end
+  end
+  local encoded = {}
+  for _, sample in ipairs(samples) do
+    local last = encoded[#encoded]
+    if last and last.frameIndex == sample.frameIndex and last.displayOffsetY == sample.displayOffsetY then
+      last.ticks = last.ticks + 1
+    else
+      encoded[#encoded + 1] = {
+        frameIndex = sample.frameIndex,
+        ticks = 1,
+        displayOffsetY = sample.displayOffsetY,
+      }
+    end
+  end
+  return {
+    frames = encoded,
+    loop = sourcePose.loop,
+    durationTicks = sourcePose.durationTicks,
+    sourceRange = sourcePose.sourceRange,
+  }
+end
+
 -- Turn per-range displayed frames into the direction-keyed pose sets. Ranges
 -- 1-4 are the base directional set in global_fieldmap.h order; additional
 -- source ranges have actor-family/state-specific selectors
@@ -289,23 +337,33 @@ local function buildPoses(perRange, ranges, idleMode)
   if #ranges < #order then
     local pose = poseFor(1)
     for _, direction in ipairs(order) do
-      local idle = {
-        frames = { { frameIndex = pose.frames[1].frameIndex, ticks = 1, displayOffsetY = 0 } },
-        loop = true,
-        durationTicks = 1,
-      }
+      local idle
+      if idleMode == "animated" then
+        idle = buildAnimatedIdlePose(pose, { direction = direction })
+      else
+        idle = {
+          frames = { { frameIndex = pose.frames[1].frameIndex, ticks = 1, displayOffsetY = 0 } },
+          loop = true,
+          durationTicks = 1,
+        }
+      end
       directions[direction] = { idle = idle, walk = pose }
     end
     return directions, idlePresentation(idleMode)
   end
   for i, direction in ipairs(order) do
     local walk = poseFor(i)
-    -- Idle holds the first displayed frame of its facing range.
-    local idle = {
-      frames = { { frameIndex = walk.frames[1].frameIndex, ticks = 1, displayOffsetY = 0 } },
-      loop = true,
-      durationTicks = 1,
-    }
+    local idle
+    if idleMode == "animated" then
+      idle = buildAnimatedIdlePose(walk, { direction = direction })
+    else
+      -- Ordinary actors hold the first displayed frame of their facing range.
+      idle = {
+        frames = { { frameIndex = walk.frames[1].frameIndex, ticks = 1, displayOffsetY = 0 } },
+        loop = true,
+        durationTicks = 1,
+      }
+    end
     directions[direction] = {
       idle = idle,
       walk = walk,
