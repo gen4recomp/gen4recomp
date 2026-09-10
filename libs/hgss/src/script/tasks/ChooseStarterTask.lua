@@ -124,6 +124,9 @@ end
 ---@param host table<string, unknown>
 ---@param event table<string, unknown>
 local function applyPointerEvent(host, event)
+  if event.type ~= "pointer_down" then
+    return
+  end
   local hit = nil
   if type(host.hitTest) == "function" and type(event.x) == "number" and type(event.y) == "number" then
     hit = host:hitTest(event.x, event.y)
@@ -132,17 +135,7 @@ local function applyPointerEvent(host, event)
   if type(hit) == "table" and type(hit.index) == "number" then
     index = hit.index
   end
-  if event.type == "pointer_move" then
-    host:hover(index)
-  elseif event.type == "pointer_down" then
-    host:press(index)
-  elseif event.type == "pointer_up" then
-    if event.dragged then
-      host:release(nil)
-    else
-      host:release(index)
-    end
-  end
+  host:tap(index)
 end
 
 -- Maps one tick of normalized UI events onto the choice host. The host owns
@@ -178,9 +171,11 @@ local function applyEvents(state, host, ctx)
       host:confirm()
     elseif eventType == "cancel" then
       host:cancel()
-    elseif eventType == "pointer_move" or eventType == "pointer_down" or eventType == "pointer_up" then
+    elseif eventType == "pointer_down" then
       applyPointerEvent(host, event)
-    elseif eventType ~= "pointer_scroll" then
+    elseif eventType == "pointer_move" or eventType == "pointer_up" or eventType == "pointer_scroll" then
+      -- Starter pointer movement, release, and scroll carry no semantics.
+    else
       assert(false, "unknown starter choice UI event " .. eventType)
     end
   end

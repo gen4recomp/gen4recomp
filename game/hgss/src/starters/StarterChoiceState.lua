@@ -267,19 +267,9 @@ function StarterChoiceState:cancel()
 end
 
 ---@param itemIndex integer?
-function StarterChoiceState:hover(itemIndex)
-  activeController(self):hover(itemIndex)
-end
-
----@param itemIndex integer?
-function StarterChoiceState:press(itemIndex)
-  activeController(self):press(itemIndex)
-end
-
----@param itemIndex integer?
 ---@return nil
-function StarterChoiceState:release(itemIndex)
-  return activeController(self):release(itemIndex)
+function StarterChoiceState:tap(itemIndex)
+  return activeController(self):tap(itemIndex)
 end
 
 ---@param x number DS reference-space pointer x

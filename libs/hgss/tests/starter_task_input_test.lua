@@ -107,14 +107,8 @@ local function controllerHost()
   function host:cancel()
     return self.controller:cancel()
   end
-  function host:hover(index)
-    self.controller:hover(index)
-  end
-  function host:press(index)
-    self.controller:press(index)
-  end
-  function host:release(index)
-    return self.controller:release(index)
+  function host:tap(index)
+    return self.controller:tap(index)
   end
   return host
 end
@@ -266,6 +260,129 @@ function T.pointer_taps_rotate_toward_the_tapped_ball()
   task.poll(state, away)
   settle(host)
   Assert.equal(host:status().cursor, 1, "tapping outside keeps the ball")
+end
+
+function T.pointer_down_on_another_ball_rotates_without_release()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = controllerHost()
+  function host:hitTest(x, _)
+    if x == 10 then
+      return { kind = "ball", index = 1 }
+    end
+    return nil
+  end
+  local state = generate(task, service, host, nil)
+
+  local tap = ctxFor(service, host, {
+    { type = "pointer_down", x = 10, y = 4 },
+  }, nil)
+  local outcome = task.poll(state, tap)
+  Assert.isFalse(outcome.complete, "tapping another ball never publishes")
+  local started = host.controller:snapshot()
+  Assert.equal(started.transition, "rotate", "the press edge starts rotation without waiting for release")
+  Assert.equal(started.direction, "right", "the press edge rotates toward the tapped ball")
+  Assert.equal(started.selection, 0, "semantic selection waits for rotation settlement")
+
+  local lift = ctxFor(service, host, {
+    { type = "pointer_up", x = 10, y = 4 },
+  }, nil)
+  task.poll(state, lift)
+  local afterLift = host.controller:snapshot()
+  Assert.equal(afterLift.transition, "rotate", "release after the press edge starts no second transition")
+
+  settle(host)
+  Assert.equal(host:status().cursor, 1, "the settled press-edge tap selects the tapped ball")
+end
+
+function T.pointer_move_and_release_without_press_change_nothing()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = controllerHost()
+  function host:hitTest(x, _)
+    if x == 10 then
+      return { kind = "ball", index = 1 }
+    elseif x == 11 then
+      return { kind = "ball", index = 2 }
+    end
+    return nil
+  end
+  local state = generate(task, service, host, nil)
+  local before = host.controller:snapshot()
+
+  local moves = ctxFor(service, host, {
+    { type = "pointer_move", x = 10, y = 4 },
+    { type = "pointer_move", x = 11, y = 4 },
+  }, nil)
+  task.poll(state, moves)
+  local afterMove = host.controller:snapshot()
+  Assert.equal(afterMove.selection, before.selection, "pointer movement never reselects")
+  Assert.equal(afterMove.selectionState, before.selectionState, "pointer movement never advances the choice flow")
+  Assert.equal(afterMove.transition, "idle", "pointer movement starts no transition")
+
+  local lift = ctxFor(service, host, {
+    { type = "pointer_up", x = 11, y = 4 },
+  }, nil)
+  task.poll(state, lift)
+  local afterLift = host.controller:snapshot()
+  Assert.equal(afterLift.selection, before.selection, "release without a press edge changes nothing")
+  Assert.equal(afterLift.selectionState, before.selectionState, "release without a press edge advances nothing")
+  Assert.equal(afterLift.transition, "idle", "release without a press edge starts no transition")
+  Assert.equal(host:status().cursor, 0, "the cursor stays on the opening ball")
+end
+
+function T.pointer_down_on_current_ball_advances_choice_without_release()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = controllerHost()
+  function host:hitTest(x, _)
+    if x == 11 then
+      return { kind = "ball", index = host.controller:snapshot().selection }
+    end
+    return nil
+  end
+  local state = generate(task, service, host, nil)
+
+  local firstTap = ctxFor(service, host, {
+    { type = "pointer_down", x = 11, y = 4 },
+  }, nil)
+  task.poll(state, firstTap)
+  Assert.equal(
+    host.controller:snapshot().selectionState,
+    "inspect",
+    "the press edge on the current ball inspects without waiting for release"
+  )
+  local firstLift = ctxFor(service, host, {
+    { type = "pointer_up", x = 11, y = 4 },
+  }, nil)
+  task.poll(state, firstLift)
+  Assert.equal(host.controller:snapshot().selectionState, "inspect", "release after inspection changes nothing")
+
+  local secondTap = ctxFor(service, host, {
+    { type = "pointer_down", x = 11, y = 4 },
+  }, nil)
+  task.poll(state, secondTap)
+  Assert.equal(
+    host.controller:snapshot().transition,
+    "zoomIn",
+    "the press edge on the inspected ball starts confirmation without release"
+  )
+  settle(host)
+  Assert.equal(host.controller:snapshot().selectionState, "confirm", "the zoom path settles into confirmation")
+
+  local confirmTap = ctxFor(service, host, {
+    { type = "pointer_down", x = 11, y = 4 },
+  }, nil)
+  local locking = task.poll(state, confirmTap)
+  Assert.isFalse(locking.complete, "the final press edge starts the lock, not the report")
+  Assert.equal(host.controller:snapshot().transition, "lockExit", "confirmation press locks on the press edge")
+  settle(host)
+  local published = task.poll(state, ctxFor(service, host, {}, nil))
+  Assert.isTrue(published.complete, "the settled lock completes the task")
+  Assert.equal(service:partyCount(), 1, "exactly the highlighted mon enters the party")
 end
 
 function T.fade_legs_run_around_the_modal_when_a_screen_is_composed()

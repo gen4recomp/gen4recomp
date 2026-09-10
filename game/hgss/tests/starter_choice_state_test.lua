@@ -521,28 +521,61 @@ function T.pointer_follows_projected_balls_through_inspect_confirm_and_backout()
 
   local current = centers[1]
   Assert.notNil(current, "the first ball projects a hit region")
-  host:press(0)
-  Assert.isNil(host:release(0), "tapping the current ball inspects instead of publishing")
+  Assert.isNil(host:tap(0), "tapping the current ball inspects instead of publishing")
   Assert.isFalse(hostStatus(host).done, "inspection still waits for confirmation")
 
-  host:press(1)
-  Assert.isNil(host:release(1), "tapping another ball rotates toward it, never publishes")
+  Assert.isNil(host:tap(1), "tapping another ball rotates toward it, never publishes")
   Assert.equal(statusSelection(hostStatus(host)), 0, "rotation waits for its transition instead of jumping")
   settle(host)
   Assert.equal(statusSelection(hostStatus(host)), 1, "the settled tap selects the tapped ball")
 
-  host:press(1)
-  Assert.isNil(host:release(1), "tapping the current ball inspects it")
-  host:press(1)
-  Assert.isNil(host:release(1), "tapping the inspected ball starts confirmation, not the lock")
+  Assert.isNil(host:tap(1), "tapping the current ball inspects it")
+  Assert.isNil(host:tap(1), "tapping the inspected ball starts confirmation, not the lock")
   settle(host)
   Assert.isFalse(hostStatus(host).done, "confirmation still waits for the final lock tap")
 
-  host:press(nil)
-  Assert.isNil(host:release(nil), "tapping outside backs out of confirmation")
+  Assert.isNil(host:tap(nil), "tapping outside backs out of confirmation")
   settle(host)
   Assert.isFalse(hostStatus(host).done, "backing out returns without publishing")
   Assert.equal(statusSelection(hostStatus(host)), 1, "backing out preserves the inspected ball")
+  host:close()
+  host:dispose()
+end
+
+function T.hit_mapping_resolves_every_ball_without_reselecting()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local host = openTrio(StarterChoiceState, catalog, service, readyCacheFs())
+
+  local centers = ballCenters(host)
+  local balls = 0
+  for _ in pairs(centers) do
+    balls = balls + 1
+  end
+  Assert.equal(balls, 3, "the unconfirmed scene exposes three projected ball regions")
+  for ball, center in pairs(centers) do
+    Assert.equal(host:ballAt(center.x, center.y), ball, "each projected center resolves to its ball")
+  end
+  Assert.isNil(host:ballAt(-1, -1), "outside points hit no ball")
+  Assert.isNil(host:hitTest(100000, 100000), "far host points hit nothing")
+
+  local seen = {}
+  for y = 0, 191, 8 do
+    for x = 0, 255, 8 do
+      local hit = host:hitTest(x, y)
+      if hit ~= nil then
+        Assert.equal(hit.kind, "ball", "host hit testing resolves to a rendered ball")
+        seen[hit.index] = true
+      end
+    end
+  end
+  local resolved = 0
+  for _ in pairs(seen) do
+    resolved = resolved + 1
+  end
+  Assert.equal(resolved, 3, "the host surface exposes all three ball hit regions")
+  Assert.equal(statusSelection(hostStatus(host)), 0, "hit queries never reselect")
   host:close()
   host:dispose()
 end

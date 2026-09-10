@@ -10,9 +10,9 @@
 -- Left/right rotate one step while unconfirmed and idle; any input that
 -- would conflict with an active transition is ignored exactly once, so
 -- repeated edges during a transition can never double-advance or corrupt
--- the choice. Pointer capture commits only on a matching release: tapping
--- the current ball advances, tapping another ball rotates toward it (or
--- backs out of confirmation), and tapping outside backs out of confirmation.
+-- the choice. A tap on the current ball advances, a tap on another ball
+-- rotates toward it (or backs out of confirmation), and a tap outside
+-- backs out of confirmation.
 -- Transition completion arrives as a semantic observation from the playback
 -- owner: the controller never measures elapsed ticks itself and stays
 -- asset-free.
@@ -24,7 +24,6 @@
 ---@field _direction "left"|"right"|nil pending rotation direction while rotating
 ---@field _done boolean the locking exit has settled
 ---@field _result { index: integer }|nil one-shot semantic result
----@field _pressed integer|nil pointer capture
 local StarterChoiceController = {}
 StarterChoiceController.__index = StarterChoiceController
 
@@ -75,7 +74,6 @@ function StarterChoiceController.new(spec)
     _direction = nil,
     _done = false,
     _result = nil,
-    _pressed = nil,
   }, StarterChoiceController)
 end
 
@@ -94,13 +92,11 @@ end
 function StarterChoiceController:_begin(transition, direction)
   self._transition = transition
   self._direction = direction
-  self._pressed = nil
 end
 
 function StarterChoiceController:_settleIdle()
   self._transition = "idle"
   self._direction = nil
-  self._pressed = nil
 end
 
 ---@param observation StarterChoiceController.Observation
@@ -134,7 +130,6 @@ function StarterChoiceController:update(observation)
     local arcReady = requireFlag(observation, "ballArcComplete")
     if cameraReady and arcReady then
       self._transition = "waitZoom"
-      self._pressed = nil
     end
   elseif transition == "waitZoom" then
     if requireFlag(observation, "smallWobbleReady") then
@@ -151,7 +146,6 @@ function StarterChoiceController:update(observation)
   elseif transition == "lockExit" then
     if requireFlag(observation, "machineFadeComplete") then
       self._transition = "done"
-      self._pressed = nil
       self._done = true
       self._result = { index = self._selection }
     end
@@ -160,8 +154,8 @@ function StarterChoiceController:update(observation)
   end
 end
 
--- Direct selection is an idle, unconfirmed affordance for hover and host
--- cursor sync; it never interrupts a transition or a confirmation.
+-- Direct selection is an idle, unconfirmed affordance for host cursor
+-- sync; it never interrupts a transition or a confirmation.
 ---@param itemIndex integer
 function StarterChoiceController:focus(itemIndex)
   assertCandidateIndex(itemIndex)
@@ -184,7 +178,6 @@ function StarterChoiceController:confirm()
   end
   if self._selectionState == "null" then
     self._selectionState = "inspect"
-    self._pressed = nil
     return nil
   end
   if self._selectionState == "inspect" then
@@ -224,50 +217,23 @@ function StarterChoiceController:move(direction)
   return nil
 end
 
--- Pointer hover changes the idle, unconfirmed selection but never activates.
----@param itemIndex integer?
-function StarterChoiceController:hover(itemIndex)
-  if itemIndex == nil then
-    return
-  end
-  self:focus(itemIndex)
-end
-
----@param itemIndex integer?
-function StarterChoiceController:press(itemIndex)
-  if itemIndex ~= nil then
-    assertCandidateIndex(itemIndex)
-  end
-  if self:isActive() and self:isIdle() then
-    self._pressed = itemIndex
-  else
-    self._pressed = nil
-  end
-end
-
--- A release commits only when it finishes on the originally pressed ball.
--- The current ball advances along the activation path; another ball rotates
--- toward it, or backs out of confirmation; outside backs out of
--- confirmation and is ignored otherwise. Any mismatch discards the capture.
+-- A tap acts immediately on its edge. The current ball advances along
+-- the activation path; another ball rotates toward it, or backs out of
+-- confirmation; outside backs out of confirmation and is ignored
+-- otherwise.
 ---@param itemIndex integer?
 ---@return nil
-function StarterChoiceController:release(itemIndex)
+function StarterChoiceController:tap(itemIndex)
   if itemIndex ~= nil then
     assertCandidateIndex(itemIndex)
   end
   if not self:isActive() or not self:isIdle() then
-    self._pressed = nil
     return nil
   end
-  local pressed = self._pressed
-  self._pressed = nil
   if itemIndex == nil then
     if self._selectionState == "confirm" then
       self:_begin("backOut", nil)
     end
-    return nil
-  end
-  if pressed == nil or pressed ~= itemIndex then
     return nil
   end
   if itemIndex == self._selection then
