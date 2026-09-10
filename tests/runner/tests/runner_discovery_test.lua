@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local FakeCorpus = require("tests.runner.tests.support.FakeCorpus")
 local Discovery = require("tests.runner.Discovery")
+local Selection = require("tests.runner.Selection")
 local TestRunner = require("tests.runner.TestRunner")
 
 local T = {}
@@ -272,6 +273,59 @@ function T.filter_treats_pattern_metacharacters_literally()
 
   local byText = TestRunner.run({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "alpha_test" })
   Assert.equal(byText.passed, 1, "a plain substring still selects")
+end
+
+-- Layer, tag, filter, and slow eligibility compose conjunctively with literal
+-- matching: only tests satisfying every selector run, and filter
+-- metacharacters select literally instead of acting as patterns.
+function T.tag_filter_layer_and_slow_select_conjunctively_with_literal_matching()
+  local corpus = FakeCorpus.new({
+    ["fake/rom/door_test.lua"] = {
+      metadata = { tags = { "door" } },
+      tests = {
+        ["resolves (door)"] = function() end,
+        ["pans camera"] = function() end,
+      },
+    },
+    ["fake/rom/camera_test.lua"] = {
+      metadata = { tags = { "camera" } },
+      tests = { ["resolves (door)"] = function() end },
+    },
+    ["fake/unit/door_test.lua"] = {
+      metadata = { tags = { "door" } },
+      tests = { ["resolves (door)"] = function() end },
+    },
+    ["fake/rom/slow_door_test.lua"] = {
+      metadata = { tags = { "door" }, slow = true },
+      tests = {
+        ["resolves (door) slowly"] = function() end,
+        ["unrelated census"] = function() end,
+      },
+    },
+  })
+
+  local run = TestRunner.run({
+    roots = { corpus:root("fake/rom", "rom"), corpus:root("fake/unit", "unit") },
+    fs = corpus.fs,
+    load = corpus.load,
+    layer = "rom",
+    tag = "door",
+    slow = true,
+    filter = "resolves (door)",
+  })
+
+  Assert.equal(run.failed, 0, "selecting tagged slow suites is not a failure")
+  local selected = {}
+  for _, entry in ipairs(run.results) do
+    if entry.status == "pass" then
+      selected[#selected + 1] = Selection.qualify(entry.module, entry.test)
+    end
+  end
+  table.sort(selected)
+  Assert.deepEqual(selected, {
+    "fake.rom.door_test :: resolves (door)",
+    "fake.rom.slow_door_test :: resolves (door) slowly",
+  })
 end
 
 return { tests = T }

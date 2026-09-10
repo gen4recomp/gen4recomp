@@ -394,4 +394,125 @@ function T.missing_capability_suite_has_zero_hook_timing()
   end)
 end
 
+-- The default run is the fast tier: a suite marked slow is discovered but
+-- excluded without running its hooks, hidden tests are counted so a focused
+-- selection can explain itself, and listing shows only the fast suite.
+function T.default_run_excludes_slow_suites_without_running_their_hooks()
+  local slowHookRan = false
+  local corpus = FakeCorpus.new({
+    ["fake/unit/fast_test.lua"] = { tests = { ["fast case"] = function() end } },
+    ["fake/unit/slow_test.lua"] = {
+      metadata = { slow = true },
+      beforeAll = function()
+        slowHookRan = true
+      end,
+      tests = { ["slow case"] = function() end },
+    },
+  })
+  local options = { roots = { corpus:root("fake/unit", "unit") }, fs = corpus.fs, load = corpus.load }
+
+  local run = TestRunner.run(options)
+
+  Assert.equal(run.passed, 1, "only the fast test executes by default")
+  Assert.equal(run.failed, 0, "excluding a slow suite is not a failure")
+  Assert.isFalse(slowHookRan, "an excluded slow suite must not run its hooks")
+  Assert.equal(run.excludedSlow, 1, "the hidden slow test is counted")
+
+  local listing = TestRunner.list(options)
+
+  Assert.equal(#listing, 1, "default listing shows only the fast suite")
+  Assert.equal(listing[1].module, "fake.unit.fast_test")
+end
+
+-- A suite rejected by its tags never reaches the slow gate, so a tag miss
+-- counts nothing as hidden.
+function T.tag_mismatch_does_not_count_as_hidden_slow()
+  local corpus = FakeCorpus.new({
+    ["fake/unit/slow_test.lua"] = {
+      metadata = { slow = true, tags = { "door" } },
+      tests = { ["slow case"] = function() end },
+    },
+  })
+  local options = { roots = { corpus:root("fake/unit", "unit") }, fs = corpus.fs, load = corpus.load, tag = "camera" }
+
+  local run = TestRunner.run(options)
+
+  Assert.equal(run.passed, 0)
+  Assert.equal(run.failed, 0)
+  Assert.equal(run.excludedSlow, 0, "a suite rejected by tag is not hidden by the slow gate")
+  Assert.equal(#TestRunner.list(options), 0, "a tag miss lists nothing")
+end
+
+-- The selected capability union follows the selection: unselected suites
+-- contribute nothing, and one selected suite contributes every declared
+-- capability exactly once no matter how many of its tests matched.
+function T.selected_capabilities_follow_the_selection_without_duplicates()
+  local corpus = FakeCorpus.new({
+    ["fake/unit/alpha_test.lua"] = {
+      metadata = { capabilities = { "rom_dump", "derived_cache" } },
+      tests = { ["a"] = function() end, ["b"] = function() end },
+    },
+    ["fake/unit/beta_test.lua"] = {
+      metadata = { capabilities = { "rom_dump" } },
+      tests = { ["c"] = function() end },
+    },
+  })
+  local roots = { corpus:root("fake/unit", "unit") }
+  local available = { rom_dump = true, derived_cache = true }
+
+  local full = TestRunner.run({ roots = roots, fs = corpus.fs, load = corpus.load, capabilities = available })
+  Assert.deepEqual(full.selectedCapabilities, { rom_dump = true, derived_cache = true })
+
+  local narrowed = TestRunner.run({
+    roots = roots,
+    fs = corpus.fs,
+    load = corpus.load,
+    capabilities = available,
+    filter = "alpha_test :: a",
+  })
+  Assert.equal(narrowed.passed, 1)
+  Assert.deepEqual(
+    narrowed.selectedCapabilities,
+    { rom_dump = true, derived_cache = true },
+    "one selected suite contributes every declared capability once"
+  )
+
+  local beta = TestRunner.run({
+    roots = roots,
+    fs = corpus.fs,
+    load = corpus.load,
+    capabilities = available,
+    filter = "beta_test",
+  })
+  Assert.deepEqual(beta.selectedCapabilities, { rom_dump = true }, "an unselected suite contributes nothing")
+
+  local none = TestRunner.run({
+    roots = roots,
+    fs = corpus.fs,
+    load = corpus.load,
+    capabilities = available,
+    filter = "no such test",
+  })
+  Assert.deepEqual(none.selectedCapabilities, {}, "an empty selection selects no capabilities")
+end
+
+-- A module that cannot load stays one visible failure and is never mistaken
+-- for a suite hidden by the slow gate.
+function T.load_failures_stay_visible_and_are_not_hidden_slow()
+  local corpus = FakeCorpus.new({
+    ["fake/unit/broken_test.lua"] = FakeCorpus.LOAD_ERROR,
+  })
+  local options = { roots = { corpus:root("fake/unit", "unit") }, fs = corpus.fs, load = corpus.load }
+
+  local run = TestRunner.run(options)
+
+  Assert.equal(run.failed, 1)
+  Assert.equal(run.excludedSlow, 0, "a load failure is not a hidden slow test")
+
+  local listing = TestRunner.list(options)
+
+  Assert.equal(#listing, 1, "a broken module is still listed")
+  Assert.notNil(listing[1].error, "the broken suite carries its load error")
+end
+
 return { tests = T }

@@ -16,8 +16,8 @@ Cli.EXIT_USAGE = 2
 Cli.LAYERS = { "unit", "component", "graphics", "rom", "acceptance" }
 
 -- Layers whose data comes from a user-owned dump: selecting one makes the
--- ROM capabilities mandatory instead of optional, and the derived cache must
--- be prepared for it (and for a whole-run selection, which includes them).
+-- selected ROM capabilities mandatory instead of optional, and cache
+-- preparation follows the selected suites' declared capabilities.
 local ROM_GATED = { rom = true, acceptance = true }
 
 local ROM_CAPABILITIES = { "rom_dump", "derived_cache" }
@@ -30,7 +30,7 @@ local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"
 
 Cli.USAGE = table.concat({
   "usage: scripts/test.sh [--plan] [--list] [--layer <" .. table.concat(Cli.LAYERS, "|") .. ">]",
-  "                      [--filter <substring>] [--rom-source <path-to-nds-or-zip>]",
+  "                      [--filter <substring>] [--tag <tag>] [--slow] [--rom-source <path-to-nds-or-zip>]",
 }, "\n")
 
 local function isLayer(value)
@@ -65,6 +65,8 @@ end
 ---@field list boolean
 ---@field layer string|nil
 ---@field filter string|nil
+---@field tag string|nil
+---@field slow boolean
 ---@field romSource string|nil
 ---@field strict boolean
 ---@field graphicsStrict boolean
@@ -85,6 +87,7 @@ function Cli.parse(argv, context)
   local plan = {
     planMode = false,
     list = false,
+    slow = false,
     strict = env[STRICT_ENV] == "1",
     graphicsStrict = env[GRAPHICS_STRICT_ENV] == "1",
     requiredCapabilities = {},
@@ -118,6 +121,16 @@ function Cli.parse(argv, context)
       end
       plan.filter = filter
       index = index + 2
+    elseif option == "--tag" then
+      local tag = value(argv, index + 1)
+      if tag == nil or tag == "" then
+        return nil, "--tag needs a non-empty tag"
+      end
+      plan.tag = tag
+      index = index + 2
+    elseif option == "--slow" then
+      plan.slow = true
+      index = index + 1
     elseif option == "--rom-source" then
       local path = value(argv, index + 1)
       if path == nil then
@@ -135,11 +148,11 @@ function Cli.parse(argv, context)
     end
   end
 
-  if plan.strict or ROM_GATED[plan.layer or ""] then
-    for _, capability in ipairs(ROM_CAPABILITIES) do
-      plan.requiredCapabilities[#plan.requiredCapabilities + 1] = capability
-    end
-  end
+  -- ROM capability requirements are not fixed here: they follow the suites
+  -- actually selected, so `outcome` intersects the selected capability union
+  -- with the ROM capabilities whenever the selection requires ROM evidence
+  -- (an explicit ROM-gated layer or strict mode). Graphics strictness and an
+  -- explicit source are selection-independent and stay on the plan.
   if plan.graphicsStrict and (plan.layer == nil or plan.layer == "graphics") then
     plan.requiredCapabilities[#plan.requiredCapabilities + 1] = "graphics"
   end
@@ -153,12 +166,15 @@ end
 -- The machine-readable `key=value` response the shell entrypoint consumes in
 -- place of its own option scanning: whether the derived cache must be
 -- prepared before the run (a listing executes nothing, and a selection needs
--- it exactly when it includes a ROM-gated layer; a supplied source is always
--- imported, whatever layer it is paired with) and the source path to import.
+-- it exactly when at least one selected test belongs to a suite declaring
+-- `derived_cache`; a supplied source is always imported, whatever the
+-- selection) and the source path to import.
 ---@param plan TestPlan
+---@param selectedCapabilities table<string, boolean>|nil union of declared capabilities of suites with selected tests
 ---@return string[]
-function Cli.renderPlan(plan)
-  local prepare = not plan.list and (plan.romSource ~= nil or plan.layer == nil or ROM_GATED[plan.layer])
+function Cli.renderPlan(plan, selectedCapabilities)
+  local selected = selectedCapabilities or {}
+  local prepare = not plan.list and (plan.romSource ~= nil or selected.derived_cache == true)
   local lines = { "prepare=" .. (prepare and "1" or "0") }
   if plan.romSource ~= nil then
     lines[#lines + 1] = "rom_source=" .. plan.romSource
@@ -186,11 +202,18 @@ local RULE = string.rep("=", 80)
 -- A human-readable name for the selection a run was asked to execute, used by
 -- the empty-run and empty-graphics-run failures.
 local function selectionLabel(plan)
-  if plan.filter ~= nil then
-    return "filter '" .. plan.filter .. "'"
-  end
+  local parts = {}
   if plan.layer ~= nil then
-    return "layer '" .. plan.layer .. "'"
+    parts[#parts + 1] = "layer '" .. plan.layer .. "'"
+  end
+  if plan.tag ~= nil then
+    parts[#parts + 1] = "tag '" .. plan.tag .. "'"
+  end
+  if plan.filter ~= nil then
+    parts[#parts + 1] = "filter '" .. plan.filter .. "'"
+  end
+  if #parts > 0 then
+    return table.concat(parts, ", ")
   end
   return "the current selection"
 end
@@ -211,6 +234,27 @@ local function warningBanner(run)
   }, "\n")
 end
 
+-- The ROM capabilities a selection makes mandatory. An explicit ROM-gated
+-- layer or strict mode requires ROM evidence, but only for the ROM
+-- capabilities the selection actually uses: a raw-dump-only focus must not
+-- fail for an unselected derived cache.
+---@param plan TestPlan
+---@param run RunnerRun
+---@return string[]
+local function selectedRomRequirements(plan, run)
+  if not (plan.strict or ROM_GATED[plan.layer or ""]) then
+    return {}
+  end
+  local selected = run.selectedCapabilities or {}
+  local required = {}
+  for _, name in ipairs(ROM_CAPABILITIES) do
+    if selected[name] == true then
+      required[#required + 1] = name
+    end
+  end
+  return required
+end
+
 ---@class TestOutcome
 ---@field exitCode integer
 ---@field failure string|nil
@@ -225,6 +269,11 @@ end
 ---@return TestOutcome
 function Cli.outcome(plan, capabilities, run)
   local missing = missingCapabilities(plan, capabilities)
+  for _, name in ipairs(selectedRomRequirements(plan, run)) do
+    if capabilities[name] ~= true then
+      missing[#missing + 1] = name
+    end
+  end
   if #missing > 0 then
     return {
       exitCode = 1,
@@ -261,6 +310,18 @@ function Cli.outcome(plan, capabilities, run)
 
   if run.failed > 0 then
     return { exitCode = 1, warning = warning }
+  end
+
+  -- A focus that only matches excluded slow tests names the gate instead of
+  -- claiming nothing matched: the tests exist and run under `--slow`.
+  if #run.results == 0 and (run.excludedSlow or 0) > 0 then
+    return {
+      exitCode = 1,
+      failure = "no test was executed: "
+        .. selectionLabel(plan)
+        .. " matched only slow tests; run again with --slow to include them",
+      warning = warning,
+    }
   end
 
   if run.passed == 0 then

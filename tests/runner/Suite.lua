@@ -11,7 +11,7 @@
 
 local Suite = {}
 
-local METADATA_KEYS = { capabilities = true, tags = true }
+local METADATA_KEYS = { capabilities = true, tags = true, slow = true }
 local MODULE_KEYS = { metadata = true, beforeAll = true, afterAll = true, tests = true }
 
 local function sortedKeys(t)
@@ -54,6 +54,7 @@ end
 ---@field layer string
 ---@field capabilities string[]
 ---@field tags string[]
+---@field slow boolean
 ---@field tests string[] sorted test names
 ---@field fns table<string, fun(context: table)>
 ---@field beforeAll fun(context: table)|nil
@@ -93,11 +94,16 @@ function Suite.normalize(mod, moduleName, defaultLayer)
   local layer = defaultLayer
   assert(type(layer) == "string", moduleName .. ": discovery root needs a string layer")
 
+  if metadata.slow ~= nil then
+    assert(type(metadata.slow) == "boolean", moduleName .. ": metadata.slow must be a boolean")
+  end
+
   return {
     module = moduleName,
     layer = layer,
     capabilities = stringArray(metadata.capabilities, "capabilities", moduleName),
     tags = stringArray(metadata.tags, "tags", moduleName),
+    slow = metadata.slow == true,
     tests = names,
     fns = fns,
     beforeAll = mod.beforeAll,

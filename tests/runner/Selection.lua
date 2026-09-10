@@ -40,18 +40,42 @@ function Selection.missingCapability(capabilities, available)
   return nil
 end
 
--- The selected test names of one suite, in the suite's (sorted) order.
+-- Exact membership of one tag in the suite's normalized tags.
 ---@param suite RunnerSuite
----@param filter string|nil
----@return string[]
-function Selection.tests(suite, filter)
-  local out = {}
-  for _, name in ipairs(suite.tests) do
-    if Selection.matchesFilter(Selection.qualify(suite.module, name), filter) then
-      out[#out + 1] = name
+---@param tag string
+---@return boolean
+local function hasTag(suite, tag)
+  for _, declared in ipairs(suite.tags) do
+    if declared == tag then
+      return true
     end
   end
-  return out
+  return false
+end
+
+-- The selected test names of one suite, in the suite's (sorted) order, plus
+-- the count hidden solely by the slow gate. Selectors compose conjunctively:
+-- a tag mismatch rejects the suite before filtering, then the literal filter
+-- picks names, then slow eligibility hides the matches unless enabled.
+---@param suite RunnerSuite
+---@param options { filter: string|nil, tag: string|nil, slow: boolean|nil }|nil
+---@return string[] selected, integer excludedSlow
+function Selection.tests(suite, options)
+  options = options or {}
+  assert(type(options) == "table", "Selection.tests needs an options table")
+  if options.tag ~= nil and not hasTag(suite, options.tag) then
+    return {}, 0
+  end
+  local matched = {}
+  for _, name in ipairs(suite.tests) do
+    if Selection.matchesFilter(Selection.qualify(suite.module, name), options.filter) then
+      matched[#matched + 1] = name
+    end
+  end
+  if suite.slow == true and options.slow ~= true then
+    return {}, #matched
+  end
+  return matched, 0
 end
 
 return Selection

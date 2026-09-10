@@ -97,4 +97,6 @@ function T.everywhere_filler_cells_keep_raw_header_zero_with_new_bark_as_logical
   end
 end
 
-return require("tests.rom.support.RomSuite").fromFacts(T)
+local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

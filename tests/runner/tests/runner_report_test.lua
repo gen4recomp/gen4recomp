@@ -25,6 +25,8 @@ local function run(results, overrides)
     duration = 1.5,
     byLayer = {},
     capabilities = {},
+    selectedCapabilities = {},
+    excludedSlow = 0,
   }
   for key, value in pairs(overrides or {}) do
     out[key] = value

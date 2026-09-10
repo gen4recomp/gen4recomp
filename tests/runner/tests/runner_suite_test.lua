@@ -105,4 +105,21 @@ function T.non_function_test_entry_is_rejected()
   Assert.isTrue(tostring(err):find("not callable", 1, true) ~= nil, "names the offending test: " .. tostring(err))
 end
 
+-- The slow tier is one boolean: omitted and false are fast, true is slow.
+function T.slow_defaults_to_fast_and_accepts_true()
+  Assert.isFalse(normalize({ tests = {} }).slow, "omitted slow is fast")
+  Assert.isFalse(normalize({ metadata = { slow = false }, tests = {} }).slow, "explicit false is fast")
+  Assert.isTrue(normalize({ metadata = { slow = true }, tests = {} }).slow, "true is slow")
+end
+
+-- Any non-boolean slow value is a normalization failure, never a truthy slow.
+function T.non_boolean_slow_is_rejected()
+  for _, slow in ipairs({ 1, "true", {}, function() end }) do
+    local err = Assert.throws(function()
+      normalize({ metadata = { slow = slow }, tests = {} })
+    end)
+    Assert.isTrue(tostring(err):find("slow", 1, true) ~= nil, "names slow: " .. tostring(err))
+  end
+end
+
 return { tests = T }

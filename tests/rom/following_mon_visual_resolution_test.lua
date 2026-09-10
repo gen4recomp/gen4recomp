@@ -109,4 +109,6 @@ T["starter follower visuals are directional atlases with cardinal idle and walk 
   end
 end
 
-return RomSuite.fromFacts(T)
+local suite = RomSuite.fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

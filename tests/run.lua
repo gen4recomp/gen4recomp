@@ -19,8 +19,8 @@ local ENV = setmetatable({}, {
   end,
 })
 
--- `options` accepts `layer`, `filter`, and `capabilities`; `main` parses them
--- out of the argv.
+-- `options` accepts `layer`, `filter`, `tag`, `slow`, and `capabilities`;
+-- `main` parses them out of the argv.
 ---@param options table|nil
 ---@return table
 local function runnerOptions(options)
@@ -30,6 +30,8 @@ local function runnerOptions(options)
     capabilities = options.capabilities,
     layer = options.layer,
     filter = options.filter,
+    tag = options.tag,
+    slow = options.slow,
     onResult = options.onResult,
   }
 end
@@ -39,6 +41,23 @@ end
 ---@return table[] listing
 local function list(options)
   return TestRunner.list(runnerOptions(options))
+end
+
+-- The de-duplicated union of capability declarations from listed suites that
+-- have at least one selected test. Load-error rows carry no tests, so they
+-- contribute nothing.
+---@param listing table[]
+---@return table<string, boolean>
+local function unionSelectedCapabilities(listing)
+  local caps = {}
+  for _, suite in ipairs(listing) do
+    if #suite.tests > 0 then
+      for _, name in ipairs(suite.capabilities) do
+        caps[name] = true
+      end
+    end
+  end
+  return caps
 end
 
 -- The whole command: parse, detect capabilities, run or list, report, and
@@ -54,8 +73,10 @@ local function main(argv)
 
   if plan.planMode then
     -- Machine-readable orchestration response for the shell entrypoint; a
-    -- parse failure above already answered with the usage status.
-    print(table.concat(Cli.renderPlan(plan), "\n"))
+    -- parse failure above already answered with the usage status. Planning
+    -- discovers the same selected suites execution would run so cache
+    -- preparation follows the selection, not the layer.
+    print(table.concat(Cli.renderPlan(plan, unionSelectedCapabilities(list(plan))), "\n"))
     return 0
   end
 
@@ -79,6 +100,8 @@ local function main(argv)
     capabilities = capabilities,
     layer = plan.layer,
     filter = plan.filter,
+    tag = plan.tag,
+    slow = plan.slow,
     onResult = function(entry)
       progress:record(entry)
     end,

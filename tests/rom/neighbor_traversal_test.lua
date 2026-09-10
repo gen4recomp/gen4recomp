@@ -110,4 +110,6 @@ function T.new_bark_crosses_into_route_29_and_rejects_route_27_water(romFs, vers
   loader:release()
 end
 
-return require("tests.rom.support.RomSuite").fromFacts(T)
+local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

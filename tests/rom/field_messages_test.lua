@@ -402,4 +402,6 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   Assert.isTrue(foundShadow, "the default band must draw shadow ink from slot 2")
 end
 
-return require("tests.rom.support.RomSuite").fromFacts(T)
+local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

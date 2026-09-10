@@ -1,5 +1,5 @@
 -- Public entry point of the capability-aware test runner: recursive discovery
--- over approved roots, layer/filter selection, and explicit pass/fail/skip
+-- over approved roots, layer/filter/tag/slow selection, and explicit pass/fail/skip
 -- results. There is no module registry — a suite is discovered because it
 -- exists, so removing a line can never hide a test.
 --
@@ -11,6 +11,8 @@
 --   layer        string|nil                   run only this layer
 --   filter       string|nil                   literal substring over
 --                                             "module :: test"
+--   tag          string|nil                   exact suite tag membership
+--   slow         boolean|nil                  include slow suites, default false
 --   onResult       fun(result: table)|nil      called after each result
 
 local Discovery = require("tests.runner.Discovery")
@@ -31,6 +33,8 @@ local function resolve(options)
     capabilities = options.capabilities or {},
     layer = options.layer,
     filter = options.filter,
+    tag = options.tag,
+    slow = options.slow,
     onResult = options.onResult,
   }
 end
@@ -60,7 +64,7 @@ end
 -- returned item carries either a normalized `suite` or the `failure` result of
 -- a module that could not be loaded or normalized.
 ---@return { suite: RunnerSuite|nil, failure: table|nil }[]
----@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, onResult: function|nil }
+---@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, slow: boolean|nil, onResult: function|nil }
 local function collect(config)
   local items = {}
   for _, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
@@ -87,7 +91,7 @@ end
 -- way a run reports it as one failed result — one broken suite must not replace
 -- the whole listing with a traceback.
 ---@param options table
----@return { module: string, layer: string, capabilities: string[], tags: string[], tests: string[], error: string|nil }[]
+---@return { module: string, layer: string, capabilities: string[], tags: string[], slow: boolean, tests: string[], error: string|nil }[]
 function TestRunner.list(options)
   local config = resolve(options)
   local listing = {}
@@ -98,18 +102,20 @@ function TestRunner.list(options)
         layer = item.failure.layer,
         capabilities = {},
         tags = {},
+        slow = false,
         tests = {},
         error = item.failure.message,
       }
     else
       local suite = assert(item.suite, "collected item carries neither a suite nor a failure")
-      local tests = Selection.tests(suite, config.filter)
-      if #tests > 0 or config.filter == nil then
+      local tests = Selection.tests(suite, config)
+      if #tests > 0 then
         listing[#listing + 1] = {
           module = suite.module,
           layer = suite.layer,
           capabilities = suite.capabilities,
           tags = suite.tags,
+          slow = suite.slow,
           tests = tests,
         }
       end
@@ -148,6 +154,8 @@ end
 ---@field duration number seconds
 ---@field byLayer table<string, { passed: integer, failed: integer, skipped: integer, duration: number }>
 ---@field capabilities table<string, boolean>
+---@field selectedCapabilities table<string, boolean> union of declared capabilities of suites with selected tests
+---@field excludedSlow integer tests hidden solely by slow eligibility after the other selectors matched
 ---@field versions string[]|nil ready game versions the run exercised, when known
 ---@field suiteTimings table[]|nil per-suite hook-inclusive timing rows
 
@@ -166,6 +174,8 @@ function TestRunner.run(options)
     duration = 0,
     byLayer = {},
     capabilities = config.capabilities,
+    selectedCapabilities = {},
+    excludedSlow = 0,
     suiteTimings = {},
   }
   local function record(entry)
@@ -180,25 +190,32 @@ function TestRunner.run(options)
       record(item.failure)
     else
       local suite = assert(item.suite, "collected item carries neither a suite nor a failure")
-      local results, timing = Execution.runSuite(suite, config)
-      for _, entry in ipairs(results) do
-        record(assert(entry))
-      end
-      if timing ~= nil and #results > 0 then
-        local layer = run.byLayer[suite.layer]
-        if layer == nil then
-          layer = { passed = 0, failed = 0, skipped = 0, duration = 0 }
-          run.byLayer[suite.layer] = layer
+      local selected, hidden = Selection.tests(suite, config)
+      run.excludedSlow = run.excludedSlow + hidden
+      if #selected > 0 then
+        for _, name in ipairs(suite.capabilities) do
+          run.selectedCapabilities[name] = true
         end
-        layer.duration = layer.duration + timing.total
-        run.suiteTimings[#run.suiteTimings + 1] = {
-          module = suite.module,
-          layer = suite.layer,
-          beforeAll = timing.beforeAll,
-          tests = timing.tests,
-          afterAll = timing.afterAll,
-          total = timing.total,
-        }
+        local results, timing = Execution.runSuite(suite, config, selected)
+        for _, entry in ipairs(results) do
+          record(assert(entry))
+        end
+        if timing ~= nil and #results > 0 then
+          local layer = run.byLayer[suite.layer]
+          if layer == nil then
+            layer = { passed = 0, failed = 0, skipped = 0, duration = 0 }
+            run.byLayer[suite.layer] = layer
+          end
+          layer.duration = layer.duration + timing.total
+          run.suiteTimings[#run.suiteTimings + 1] = {
+            module = suite.module,
+            layer = suite.layer,
+            beforeAll = timing.beforeAll,
+            tests = timing.tests,
+            afterAll = timing.afterAll,
+            total = timing.total,
+          }
+        end
       end
     end
   end

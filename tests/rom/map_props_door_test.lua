@@ -340,4 +340,6 @@ function T.resolved_maps_warp_bearing_doors_resolve(romFs, versionId, context)
   Assert.isTrue(checkedTiles > 0, versionId .. ": the census found warp-bearing door tiles")
 end
 
-return require("tests.rom.support.RomSuite").fromFacts(T)
+local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

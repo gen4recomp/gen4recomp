@@ -316,4 +316,6 @@ function T.leading_glyph_local_ink_matches_between_raw_decode_and_the_generated_
   )
 end
 
-return require("tests.rom.support.RomSuite").fromFacts(T)
+local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

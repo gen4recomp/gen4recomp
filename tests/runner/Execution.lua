@@ -7,6 +7,8 @@
 -- `afterAll` runs on every terminal path once `beforeAll` was entered, so a
 -- setup that acquired resources before failing still releases them.
 
+-- Capability availability stays here with the skip policy; test selection
+-- itself is owned by the caller.
 local Selection = require("tests.runner.Selection")
 
 local Execution = {}
@@ -64,13 +66,16 @@ local function result(suite, testName, status, message, duration)
   }
 end
 
--- Runs `suite`'s selected tests. Returns a results array; an empty array means
--- the filter excluded the whole suite and nothing was executed.
+-- Runs `suite`'s already selected tests, in their given order. Selection is
+-- owned by the caller; an empty list means the suite was not selected and
+-- nothing is executed. Returns a results array and hook-inclusive timing.
 ---@param suite RunnerSuite
----@param options { filter: string|nil, capabilities: table<string, boolean> }
+---@param options { capabilities: table<string, boolean> }
+---@param selectedTests string[]|nil explicit test names; defaults to every test of the suite
 ---@return table[] results, table timing
-function Execution.runSuite(suite, options)
-  local selected = Selection.tests(suite, options.filter)
+function Execution.runSuite(suite, options, selectedTests)
+  local selected = selectedTests or suite.tests
+  assert(type(selected) == "table", "Execution.runSuite needs explicit selected test names")
   if #selected == 0 then
     return {}, { beforeAll = 0, tests = 0, afterAll = 0, total = 0 }
   end

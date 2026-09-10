@@ -97,4 +97,6 @@ function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
   Assert.isTrue(ops.follower_reposition == true, versionId .. " lab script carries the follow-up tail")
 end
 
-return RomSuite.fromFacts(T)
+local suite = RomSuite.fromFacts(T)
+suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+return suite

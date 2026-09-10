@@ -8,9 +8,9 @@ local Suite = require("tests.runner.Suite")
 
 local T = {}
 
-local function runSuite(mod, options)
+local function runSuite(mod, options, selected)
   local suite = Suite.normalize(mod, "fake.rom.alpha_test", "rom")
-  return Execution.runSuite(suite, options or { capabilities = {} })
+  return Execution.runSuite(suite, options or { capabilities = {} }, selected)
 end
 
 local function statuses(results)
@@ -59,8 +59,8 @@ function T.cleanup_failure_is_reported_without_hiding_test_results()
   )
 end
 
--- A filter that excludes every test of a suite must not run its hooks either:
--- setup may acquire expensive resources nothing is going to use.
+-- A suite with no selected tests runs no hooks either: setup may acquire
+-- expensive resources nothing is going to use.
 function T.filtered_out_suite_runs_no_hooks()
   local hooks = 0
   local results = runSuite({
@@ -71,7 +71,7 @@ function T.filtered_out_suite_runs_no_hooks()
       hooks = hooks + 1
     end,
     tests = { ["a"] = function() end },
-  }, { capabilities = {}, filter = "no such test" })
+  }, { capabilities = {} }, {})
 
   Assert.equal(#results, 0)
   Assert.equal(hooks, 0)
