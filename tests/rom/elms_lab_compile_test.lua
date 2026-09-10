@@ -91,6 +91,27 @@ function T.completeness_and_ready(romFs, version)
   for _, b in ipairs(bundle.scene.mapBatches) do
     Assert.isTrue(c:exists(b.geometry), "map mesh on disk: " .. b.geometry)
   end
+
+  -- Representative compiled-animation payload: every animated model
+  -- descriptor the bundle emits must carry a table `compiled` payload on
+  -- each clip, and the representative indoor bundle must reach at least one.
+  local animatedDescriptors = 0
+  local clipCount = 0
+  for modelKey, desc in pairs(bundle.models) do
+    if type(desc.animations) == "table" then
+      animatedDescriptors = animatedDescriptors + 1
+      for _, clip in ipairs(desc.animations) do
+        Assert.equal(
+          type(clip.compiled),
+          "table",
+          "clip " .. tostring(clip.id) .. " of " .. modelKey .. " carries a compiled payload"
+        )
+        clipCount = clipCount + 1
+      end
+    end
+  end
+  Assert.isTrue(animatedDescriptors > 0, "Elm's Lab emits animated model descriptors")
+  Assert.isTrue(clipCount > 0, "Elm's Lab counted emitted clips")
 end
 
 -- The selected field-light profile is source-hashed and its records

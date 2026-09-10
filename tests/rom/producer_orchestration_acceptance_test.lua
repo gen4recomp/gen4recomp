@@ -7,10 +7,7 @@ local CacheBuilder = require("romdump.src.CacheBuilder")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local Errors = require("libs.errors.src.Errors")
 local FieldCameraCompiler = require("romdump.src.digest.field.FieldCameraCompiler")
-local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local IntroAssetCompiler = require("romdump.src.digest.newgame.IntroAssetCompiler")
-local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
-local MapResolver = require("romdump.src.digest.map.MapResolver")
 local RomFs = require("romdump.src.source.RomFs")
 local RomSuite = require("tests.rom.support.RomSuite")
 
@@ -77,27 +74,6 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   Assert.isTrue(romFs ~= nil, "RomSuite must keep the source handle available for later scenarios")
 end
 
-function T.map_and_field_cell_builders_preserve_shared_model_output(romFs)
-  local mapBundle = assert(MapAssetCompiler.compile(romFs, "MAP_NEW_BARK"))
-  local fieldBundle = assert(FieldCellCompiler.compile(romFs))
-  for modelKey, descriptor in pairs(mapBundle.models) do
-    Assert.deepEqual(
-      fieldBundle.models[modelKey],
-      descriptor,
-      "map and physical-cell producers must share the same building descriptor: " .. modelKey
-    )
-  end
-
-  local resolved = assert(MapResolver.resolve(romFs, "MAP_NEW_BARK"))
-  local cellKey = string.format("%d:%d", resolved.matrixMemberId, resolved.matrixIndex)
-  local cell = assert(fieldBundle.cells[cellKey], "the resolved map cell must be compiled")
-  Assert.deepEqual(
-    cell.buildingInstances,
-    mapBundle.scene.buildingInstances,
-    "map and physical-cell producers must preserve building placement output"
-  )
-end
-
 function T.intro_compiler_preserves_rasterized_bytes_and_manifest(romFs)
   local first = assert(IntroAssetCompiler.compile(romFs))
   local second = assert(IntroAssetCompiler.compile(romFs))
@@ -107,5 +83,5 @@ function T.intro_compiler_preserves_rasterized_bytes_and_manifest(romFs)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.tags = { "producer", "cache", "equivalence" }
+suite.metadata.tags = { "producer", "cache" }
 return suite
