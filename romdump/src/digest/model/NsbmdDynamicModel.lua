@@ -106,7 +106,9 @@ function NsbmdDynamicModel.compile(model)
     -- as authored rather than dividing into NaN (the static path guards the
     -- same way).
     if size and size.width and size.height and size.width > 0 and size.height > 0 then
-      for _, v in ipairs(mesh.batch.vertices) do
+      local numeric = mesh.batch.arena.numeric
+      for offset = 0, mesh.batch.vertexCount - 1 do
+        local v = numeric[mesh.batch.vertexOffset + offset]
         v.u = v.u / size.width
         v.v = v.v / size.height
       end

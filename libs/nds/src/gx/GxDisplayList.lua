@@ -44,6 +44,8 @@ local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local FixedPoint = require("libs.math.src.FixedPoint")
 local Matrix4 = require("libs.math.src.Matrix4")
+local ffi = require("ffi")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
 local GxDisplayList = {}
 
@@ -202,8 +204,9 @@ Decoder.__index = Decoder
 -- so that is the mode a list starts in.
 local MTXMODE = { PROJECTION = 0, POSITION = 1, POSITION_VECTOR = 2, TEXTURE = 3 }
 
-local function newDecoder()
+local function newDecoder(arena, runCapacity)
   return setmetatable({
+    arena = arena,
     matrix = identity(),
     -- The vector matrix, which transforms normals. It tracks the position
     -- matrix's linear part except where MTX_MODE selects the position matrix
@@ -212,16 +215,23 @@ local function newDecoder()
     pushStack = {},
     restoreStack = {}, -- MTX_RESTORE slots, default identity
     directionRestoreStack = {},
-    pos = { 0, 0, 0 },
-    normal = { 0, 1, 0 },
-    uv = { 0, 0 },
-    color = { 255, 255, 255 },
+    posX = 0,
+    posY = 0,
+    posZ = 0,
+    normalX = 0,
+    normalY = 1,
+    normalZ = 0,
+    uvU = 0,
+    uvV = 0,
+    colorR = 255,
+    colorG = 255,
+    colorB = 255,
     colorSource = nil, -- resolved by COLOR/NORMAL or seeded from material state
     mtxMode = MTXMODE.POSITION_VECTOR,
-    run = nil, -- current BEGIN..END vertex-index buffer
+    run = ffi.new("uint32_t[?]", math.max(1, runCapacity)),
+    runCount = 0,
+    runOpen = false,
     primType = nil,
-    vertices = {},
-    indices = {},
     opcodeCounts = {},
     polygonAttrs = {}, -- set of distinct POLYGON_ATTR words issued in-list
     -- Dynamic (transform-preserving) mode state: the display-list-local
@@ -235,34 +245,51 @@ local function newDecoder()
     currentSegment = nil,
     runParity = 0, -- triangle-strip winding parity of the open run's first vertex
     runSplit = false, -- the open run was split at a mid-run matrix boundary
-    boundaryCarry = nil, -- straddling-primitive vertices carried into the next segment
+    carry = ffi.new("uint32_t[?]", math.max(1, runCapacity)),
+    carryCount = 0,
     straddlingPrimitives = 0, -- straddling primitives, reported to the caller
   }, Decoder)
 end
 
 -- A fresh segment record; `positionSource` describes how the runtime
 -- resolves the segment's draw matrix.
+---@class GxDynamicGeometrySlice: G4GxGeometrySlice
+---@field positionSource DrawSource
+---@field straddle { leading: integer, source: DrawSource }?
+
+---@param arena GxGeometryBuffer
 ---@param positionSource DrawSource
----@return table<string, unknown>
-local function newSegment(positionSource)
+---@return GxDynamicGeometrySlice
+local function newSegment(arena, positionSource)
   return {
-    vertices = {},
-    indices = {},
+    arena = arena,
+    vertexOffset = arena.vertexCount,
+    vertexCount = 0,
+    indexOffset = arena.indexCount,
+    indexCount = 0,
     positionSource = positionSource,
   }
 end
 
-local function appendTriangle(indices, run, a, b, c)
-  local function vertex(index)
-    return run[index + 1] or error("primitive references a missing vertex")
-  end
-  indices[#indices + 1] = vertex(a)
-  indices[#indices + 1] = vertex(b)
-  indices[#indices + 1] = vertex(c)
+---@param d { arena: GxGeometryBuffer }
+---@param segment { vertexOffset: integer, indexOffset: integer, vertexCount: integer, indexCount: integer }
+local function finishSegment(d, segment)
+  segment.vertexCount = d.arena.vertexCount - segment.vertexOffset
+  segment.indexCount = d.arena.indexCount - segment.indexOffset
 end
 
-local function convertTriangleList(_, run, indices, offset, lenient)
-  local n = #run
+local function appendTriangle(d, run, a, b, c)
+  assert(a < d.runCount and b < d.runCount and c < d.runCount, "primitive references a missing vertex")
+  local indices = d.arena.indices
+  local indexCount = d.arena.indexCount
+  indices[indexCount] = run[a]
+  indices[indexCount + 1] = run[b]
+  indices[indexCount + 2] = run[c]
+  d.arena.indexCount = indexCount + 3
+end
+
+local function convertTriangleList(d, run, offset, lenient)
+  local n = d.runCount
   local complete = n - n % 3
   local tail = 0
   if n % 3 ~= 0 then
@@ -278,13 +305,13 @@ local function convertTriangleList(_, run, indices, offset, lenient)
     tail = n % 3
   end
   for i = 0, complete - 1, 3 do
-    appendTriangle(indices, run, i, i + 1, i + 2)
+    appendTriangle(d, run, i, i + 1, i + 2)
   end
   return tail
 end
 
-local function convertQuadList(_, run, indices, offset, lenient)
-  local n = #run
+local function convertQuadList(d, run, offset, lenient)
+  local n = d.runCount
   local complete = n - n % 4
   local tail = 0
   if n % 4 ~= 0 then
@@ -300,14 +327,14 @@ local function convertQuadList(_, run, indices, offset, lenient)
     tail = n % 4
   end
   for i = 0, complete - 1, 4 do
-    appendTriangle(indices, run, i, i + 1, i + 2)
-    appendTriangle(indices, run, i, i + 2, i + 3)
+    appendTriangle(d, run, i, i + 1, i + 2)
+    appendTriangle(d, run, i, i + 2, i + 3)
   end
   return tail
 end
 
-local function convertTriangleStrip(d, run, indices, offset, lenient)
-  local n = #run
+local function convertTriangleStrip(d, run, offset, lenient)
+  local n = d.runCount
   if n < 3 then
     if not lenient then
       error(Errors.new("GX_INCOMPLETE_PRIMITIVE", "triangle strip has fewer than 3 vertices", { offset = offset }))
@@ -317,17 +344,17 @@ local function convertTriangleStrip(d, run, indices, offset, lenient)
   local parity = d.runParity
   for i = 2, n - 1 do
     if (i + parity) % 2 == 0 then
-      appendTriangle(indices, run, i - 2, i - 1, i)
+      appendTriangle(d, run, i - 2, i - 1, i)
     else
-      appendTriangle(indices, run, i - 1, i - 2, i)
+      appendTriangle(d, run, i - 1, i - 2, i)
     end
   end
   -- The next triangle would cross the boundary into the new segment.
   return lenient and 2 or 0
 end
 
-local function convertQuadStrip(_, run, indices, offset, lenient)
-  local n = #run
+local function convertQuadStrip(d, run, offset, lenient)
+  local n = d.runCount
   if n < 4 then
     if not lenient then
       error(Errors.new("GX_INCOMPLETE_PRIMITIVE", string.format("quad strip has %d vertices", n), { offset = offset }))
@@ -335,8 +362,8 @@ local function convertQuadStrip(_, run, indices, offset, lenient)
     return n
   end
   for i = 0, n - 4, 2 do
-    appendTriangle(indices, run, i, i + 1, i + 3)
-    appendTriangle(indices, run, i, i + 3, i + 2)
+    appendTriangle(d, run, i, i + 1, i + 3)
+    appendTriangle(d, run, i, i + 3, i + 2)
   end
   if n % 2 ~= 0 and not lenient then
     error(Errors.new("GX_INCOMPLETE_PRIMITIVE", string.format("quad strip has %d vertices", n), { offset = offset }))
@@ -359,11 +386,10 @@ local PRIMITIVE_CONVERTERS = {
 -- belong to the primitive straddling the boundary.
 local function convertRun(d, offset, lenient)
   local run, primitiveType = d.run, d.primType
-  if run == nil then
+  if primitiveType == nil then
     error("primitive run is missing")
   end
-  local indices = d.dynamic and d.currentSegment.indices or d.indices
-  return PRIMITIVE_CONVERTERS[primitiveType + 1](d, run, indices, offset, lenient)
+  return PRIMITIVE_CONVERTERS[primitiveType + 1](d, run, offset, lenient)
 end
 
 -- End the current dynamic segment and start the next one under `positionSource`.
@@ -385,36 +411,44 @@ function Decoder:dynamicBoundary(positionSource, offset)
   assert(self.dynamic, "dynamicBoundary outside dynamic mode")
   local previousSource = self.positionSource
   local carried = 0
-  if self.run then
-    local count = #self.run
+  if self.runOpen then
+    local count = self.runCount
     local tail = convertRun(self, offset, true)
     carried = tail
     self.straddlingPrimitives = self.straddlingPrimitives + (tail > 0 and 1 or 0)
-    self.boundaryCarry = {}
-    if tail > 0 then
-      local vertices = self.currentSegment.vertices
-      for i = #vertices - tail + 1, #vertices do
-        self.boundaryCarry[#self.boundaryCarry + 1] = vertices[i]
-      end
+    self.carryCount = tail
+    for i = 0, tail - 1 do
+      self.carry[i] = self.run[count - tail + i]
     end
-    self.run = {}
+    self.runCount = 0
     for i = 1, tail do
-      self.run[i] = i - 1
+      self.run[i - 1] = i - 1
     end
+    self.runCount = tail
     self.runParity = self.runParity + count - tail
     self.runSplit = true
   end
-  if #self.currentSegment.vertices > 0 then
+  local oldSegment = self.currentSegment
+  if self.arena.vertexCount > oldSegment.vertexOffset then
+    finishSegment(self, oldSegment)
     self.segments[#self.segments + 1] = self.currentSegment
   end
   self.baked = identity()
   self.bakedDirection = identity()
   self.positionSource = positionSource
-  self.currentSegment = newSegment(positionSource)
-  for _, v in ipairs(self.boundaryCarry or {}) do
-    self.currentSegment.vertices[#self.currentSegment.vertices + 1] = v
+  self.currentSegment = newSegment(self.arena, positionSource)
+  if carried > 0 then
+    local numeric = self.arena.numeric
+    local attrib = self.arena.attrib
+    for i = 0, self.carryCount - 1 do
+      local source = oldSegment.vertexOffset + self.carry[i]
+      local destination = self.arena.vertexCount
+      ffi.copy(numeric[destination], numeric[source], GxGeometryBuffer.vertexNumericSize)
+      ffi.copy(attrib[destination], attrib[source], GxGeometryBuffer.vertexAttribSize)
+      self.arena.vertexCount = destination + 1
+      self.run[i] = i
+    end
   end
-  self.boundaryCarry = nil
   if carried > 0 then
     self.currentSegment.straddle = { leading = carried, source = previousSource }
   end
@@ -461,11 +495,11 @@ function Decoder:emitVertex()
     -- Transform-preserving mode: only the display-list-local matrix is
     -- baked; the SBC draw matrix (and its linear part for normals) applies
     -- at draw time through the segment's sources.
-    wx, wy, wz = transformPoint(self.baked, self.pos[1], self.pos[2], self.pos[3])
-    nx, ny, nz = transformDirection(self.bakedDirection, self.normal[1], self.normal[2], self.normal[3])
+    wx, wy, wz = transformPoint(self.baked, self.posX, self.posY, self.posZ)
+    nx, ny, nz = transformDirection(self.bakedDirection, self.normalX, self.normalY, self.normalZ)
   else
-    wx, wy, wz = transformPoint(self.matrix, self.pos[1], self.pos[2], self.pos[3])
-    nx, ny, nz = transformDirection(self.directionMatrix, self.normal[1], self.normal[2], self.normal[3])
+    wx, wy, wz = transformPoint(self.matrix, self.posX, self.posY, self.posZ)
+    nx, ny, nz = transformDirection(self.directionMatrix, self.normalX, self.normalY, self.normalZ)
   end
   -- The DS feeds the raw transformed normal to its lighting unit, where a joint
   -- or posScale magnification just saturates the result. This pipeline instead
@@ -475,23 +509,41 @@ function Decoder:emitVertex()
   if length > 0 then
     nx, ny, nz = nx / length, ny / length, nz / length
   end
-  local vertices = self.dynamic and self.currentSegment.vertices or self.vertices
-  vertices[#vertices + 1] = {
-    x = wx,
-    y = wy,
-    z = wz,
-    u = self.uv[1],
-    v = self.uv[2],
-    nx = nx,
-    ny = ny,
-    nz = nz,
-    r = self.color[1],
-    g = self.color[2],
-    b = self.color[3],
-    a = 255,
-    colorSource = self.colorSource,
-  }
-  self.run[#self.run + 1] = #vertices - 1 -- zero-based index
+  assert(self.runOpen, "GX vertex emitted outside a primitive run")
+  assert(self.runCount < 0xFFFFFFFF, "GX primitive run exceeds uint32_t capacity")
+  local arena = self.arena
+  local numeric = arena.numeric
+  local attrib = arena.attrib
+  local vertexIndex = arena.vertexCount
+  local numericVertex = numeric[vertexIndex]
+  numericVertex.x = wx
+  numericVertex.y = wy
+  numericVertex.z = wz
+  numericVertex.u = self.uvU
+  numericVertex.v = self.uvV
+  numericVertex.nx = nx
+  numericVertex.ny = ny
+  numericVertex.nz = nz
+  local attributeVertex = attrib[vertexIndex]
+  attributeVertex.r = self.colorR
+  attributeVertex.g = self.colorG
+  attributeVertex.b = self.colorB
+  attributeVertex.a = 255
+  if self.requireColorSource and self.colorSource == nil then
+    error(
+      Errors.new(
+        "GX_UNRESOLVED_VERTEX_COLOR_SOURCE",
+        "vertex has no resolved color source (no COLOR/NORMAL and no material seed)",
+        {}
+      )
+    )
+  end
+  attributeVertex.colorSource = self.colorSource or COLOR_SOURCE.LITERAL
+  arena.vertexCount = vertexIndex + 1
+  self.run[self.runCount] = (
+    vertexIndex - (self.dynamic and self.currentSegment.vertexOffset or self.slice.vertexOffset)
+  )
+  self.runCount = self.runCount + 1
 end
 
 local function s16(word)
@@ -766,65 +818,67 @@ end
 EXEC[0x1C] = executeMtxTranslate
 
 local function executeColor(d, p) -- COLOR (BGR555) -> literal vertex color
-  d.color = { FixedPoint.rgb555(p[1] % 0x8000) }
+  d.colorR, d.colorG, d.colorB = FixedPoint.rgb555(p[1] % 0x8000)
   d.colorSource = COLOR_SOURCE.LITERAL
 end
 EXEC[0x20] = executeColor
 
 local function executeNormal(d, p) -- NORMAL -> vertex color produced by lighting
   local nx, ny, nz = FixedPoint.normal10(p[1])
-  d.normal = { nx, ny, nz }
+  d.normalX, d.normalY, d.normalZ = nx, ny, nz
   d.colorSource = COLOR_SOURCE.NORMAL_LIT
 end
 EXEC[0x21] = executeNormal
 
 local function executeTexcoord(d, p) -- TEXCOORD (1.11.4 -> texel units)
-  d.uv = { s16(p[1] % 0x10000) / 16, s16(math.floor(p[1] / 0x10000) % 0x10000) / 16 }
+  d.uvU = s16(p[1] % 0x10000) / 16
+  d.uvV = s16(math.floor(p[1] / 0x10000) % 0x10000) / 16
 end
 EXEC[0x22] = executeTexcoord
 
 local function executeVtx16(d, p) -- VTX_16 (fx16 1.3.12)
-  d.pos = {
-    s16(p[1] % 0x10000) / 4096,
-    s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096,
-    s16(p[2] % 0x10000) / 4096,
-  }
+  d.posX = s16(p[1] % 0x10000) / 4096
+  d.posY = s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096
+  d.posZ = s16(p[2] % 0x10000) / 4096
   d:emitVertex()
 end
 EXEC[0x23] = executeVtx16
 
 local function executeVtx10(d, p) -- VTX_10 (10-bit, high bits of 1.3.12 -> /64)
   local w = p[1]
-  d.pos = { s10(w % 1024) / 64, s10(math.floor(w / 1024) % 1024) / 64, s10(math.floor(w / 1048576) % 1024) / 64 }
+  d.posX = s10(w % 1024) / 64
+  d.posY = s10(math.floor(w / 1024) % 1024) / 64
+  d.posZ = s10(math.floor(w / 1048576) % 1024) / 64
   d:emitVertex()
 end
 EXEC[0x24] = executeVtx10
 
 local function executeVtxXy(d, p) -- VTX_XY
-  d.pos = { s16(p[1] % 0x10000) / 4096, s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096, d.pos[3] }
+  d.posX = s16(p[1] % 0x10000) / 4096
+  d.posY = s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096
   d:emitVertex()
 end
 EXEC[0x25] = executeVtxXy
 
 local function executeVtxXz(d, p) -- VTX_XZ
-  d.pos = { s16(p[1] % 0x10000) / 4096, d.pos[2], s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096 }
+  d.posX = s16(p[1] % 0x10000) / 4096
+  d.posZ = s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096
   d:emitVertex()
 end
 EXEC[0x26] = executeVtxXz
 
 local function executeVtxYz(d, p) -- VTX_YZ
-  d.pos = { d.pos[1], s16(p[1] % 0x10000) / 4096, s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096 }
+  d.posY = s16(p[1] % 0x10000) / 4096
+  d.posZ = s16(math.floor(p[1] / 0x10000) % 0x10000) / 4096
   d:emitVertex()
 end
 EXEC[0x27] = executeVtxYz
 
 local function executeVtxDiff(d, p) -- VTX_DIFF (10-bit signed low bits of 1.3.12)
   local w = p[1]
-  d.pos = {
-    d.pos[1] + s10(w % 1024) / 4096,
-    d.pos[2] + s10(math.floor(w / 1024) % 1024) / 4096,
-    d.pos[3] + s10(math.floor(w / 1048576) % 1024) / 4096,
-  }
+  d.posX = d.posX + s10(w % 1024) / 4096
+  d.posY = d.posY + s10(math.floor(w / 1024) % 1024) / 4096
+  d.posZ = d.posZ + s10(math.floor(w / 1048576) % 1024) / 4096
   d:emitVertex()
 end
 EXEC[0x28] = executeVtxDiff
@@ -855,7 +909,8 @@ EXEC[0x34] = ignoreLightingCommand
 
 local function executeBeginVertices(d, p) -- BEGIN_VTXS
   d.primType = p[1] % 4
-  d.run = {}
+  d.runCount = 0
+  d.runOpen = true
   d.runParity = 0
   d.runSplit = false
 end
@@ -885,7 +940,7 @@ local function applyCommand(d, op, params, offset, context, lenientEnd, commandO
     -- dropped too rather than reported as malformed; an unsplit run keeps
     -- rejecting incomplete primitives.
     convertRun(d, commandOffset, lenientEnd)
-    d.run, d.primType, d.runSplit = nil, nil, false
+    d.runCount, d.runOpen, d.primType, d.runSplit = 0, false, nil, false
     return
   end
   d.currentOffset = offset
@@ -898,9 +953,52 @@ end
 
 GxDisplayList.COLOR_SOURCE = COLOR_SOURCE
 
+local function scanCommandStream(r, len, options)
+  local vertexCount = 0
+  local dynamicBoundaryCount = 0
+  local pos = 0
+  while pos + 4 <= len do
+    local cmdWord = r:u32le(pos)
+    local cmdBytes = unpackCommandWord(cmdWord)
+    local cmdOffset = pos
+    pos = pos + 4
+    for i = 1, 4 do
+      local op = cmdBytes[i]
+      local n = PARAM_WORDS[op]
+      if n == nil then
+        error(
+          Errors.new(
+            "GX_UNKNOWN_OPCODE",
+            string.format("unknown geometry opcode 0x%02X at offset 0x%X", op, cmdOffset + i - 1),
+            { opcode = op, offset = cmdOffset + i - 1, source = options.context }
+          )
+        )
+      end
+      if op ~= 0x00 then
+        pos = pos + n * 4
+      end
+      if op >= 0x23 and op <= 0x28 then
+        vertexCount = vertexCount + 1
+      elseif options.dynamic and (op == 0x12 or op == 0x14) then
+        -- A dynamic boundary can carry at most three trailing vertices.
+        dynamicBoundaryCount = dynamicBoundaryCount + 1
+      end
+    end
+  end
+  return vertexCount, dynamicBoundaryCount
+end
+
 local function _decode(bytes, options)
   options = options or {}
-  local d = newDecoder()
+  local r = BinaryReader.new(bytes, "gx-dl")
+  local len = r:length()
+  local vertexCount, dynamicBoundaryCount = scanCommandStream(r, len, options)
+  local reserveVertices = vertexCount + dynamicBoundaryCount * 3
+  local arena = assert(options.arena or GxGeometryBuffer.new())
+  arena:reserve(reserveVertices, reserveVertices * 3)
+  local d = newDecoder(arena, reserveVertices)
+  d.requireColorSource = options.requireColorSource == true
+  d.slice = arena:beginSlice()
   -- The SBC evaluator supplies position matrices only; their direction
   -- counterparts are the linear parts, derived on demand.
   if options.restoreStack then
@@ -915,7 +1013,8 @@ local function _decode(bytes, options)
   if options.dynamic then
     d.dynamic = true
     d.segments = {}
-    d.currentSegment = newSegment(DRAW_SOURCE)
+    d.currentSegment = newSegment(arena, DRAW_SOURCE)
+    d.slice = nil
   end
   -- Seed the persistent color/normal/source state from the SBC draw's material
   -- (the geometry engine keeps this across a display-list call). Positions and
@@ -923,15 +1022,13 @@ local function _decode(bytes, options)
   local seed = options.initialState
   if seed then
     if seed.color then
-      d.color = { seed.color[1], seed.color[2], seed.color[3] }
+      d.colorR, d.colorG, d.colorB = seed.color[1], seed.color[2], seed.color[3]
     end
     if seed.normal then
-      d.normal = { seed.normal[1], seed.normal[2], seed.normal[3] }
+      d.normalX, d.normalY, d.normalZ = seed.normal[1], seed.normal[2], seed.normal[3]
     end
     d.colorSource = seed.colorSource
   end
-  local r = BinaryReader.new(bytes, "gx-dl")
-  local len = #bytes
   local pos = 0
   local commands = {}
 
@@ -962,7 +1059,7 @@ local function _decode(bytes, options)
     end
   end
 
-  if d.run then
+  if d.runOpen then
     error(
       Errors.new(
         "GX_UNTERMINATED_PRIMITIVE",
@@ -975,45 +1072,56 @@ local function _decode(bytes, options)
   -- In the compile path every emitted vertex must carry a resolved color source;
   -- a nil source would otherwise render as an unintended default color.
   if options.requireColorSource then
-    local function check(v)
-      if v.colorSource == nil then
-        error(
-          Errors.new(
-            "GX_UNRESOLVED_VERTEX_COLOR_SOURCE",
-            string.format("vertex has no resolved color source (no COLOR/NORMAL and no material seed)"),
-            { source = options.context }
+    ---@param slice G4GxGeometrySlice
+    local function check(slice)
+      local attrib = arena.attrib
+      for offset = 0, slice.vertexCount - 1 do
+        if attrib[slice.vertexOffset + offset].colorSource == nil then
+          error(
+            Errors.new(
+              "GX_UNRESOLVED_VERTEX_COLOR_SOURCE",
+              string.format("vertex has no resolved color source (no COLOR/NORMAL and no material seed)"),
+              { source = options.context }
+            )
           )
-        )
+        end
       end
     end
     if d.dynamic then
-      local segments = d.segments
-      if #d.currentSegment.vertices > 0 then
-        segments = { unpack(d.segments), d.currentSegment }
+      for _, segment in ipairs(d.segments) do
+        check(segment)
       end
-      for _, segment in ipairs(segments) do
-        for _, v in ipairs(segment.vertices) do
-          check(v)
-        end
+      if arena.vertexCount > d.currentSegment.vertexOffset then
+        finishSegment(d, d.currentSegment)
+        check(d.currentSegment)
       end
     else
-      for _, v in ipairs(d.vertices) do
-        check(v)
-      end
+      local slice = assert(d.slice)
+      finishSegment(d, slice)
+      check(slice)
     end
   end
 
+  if not d.dynamic then
+    local slice = assert(d.slice)
+    finishSegment(d, slice)
+  end
   local bounds
-  for _, v in ipairs(d.vertices) do
-    if not bounds then
-      bounds = { min = { v.x, v.y, v.z }, max = { v.x, v.y, v.z } }
-    else
-      bounds.min[1] = math.min(bounds.min[1], v.x)
-      bounds.max[1] = math.max(bounds.max[1], v.x)
-      bounds.min[2] = math.min(bounds.min[2], v.y)
-      bounds.max[2] = math.max(bounds.max[2], v.y)
-      bounds.min[3] = math.min(bounds.min[3], v.z)
-      bounds.max[3] = math.max(bounds.max[3], v.z)
+  if not d.dynamic then
+    local numeric = arena.numeric
+    local slice = assert(d.slice)
+    for offset = 0, slice.vertexCount - 1 do
+      local v = numeric[slice.vertexOffset + offset]
+      if not bounds then
+        bounds = { min = { v.x, v.y, v.z }, max = { v.x, v.y, v.z } }
+      else
+        bounds.min[1] = math.min(bounds.min[1], v.x)
+        bounds.max[1] = math.max(bounds.max[1], v.x)
+        bounds.min[2] = math.min(bounds.min[2], v.y)
+        bounds.max[2] = math.max(bounds.max[2], v.y)
+        bounds.min[3] = math.min(bounds.min[3], v.z)
+        bounds.max[3] = math.max(bounds.max[3], v.z)
+      end
     end
   end
 
@@ -1025,7 +1133,8 @@ local function _decode(bytes, options)
 
   if d.dynamic then
     -- Finalize the last segment (an empty tail is dropped).
-    if #d.currentSegment.vertices > 0 then
+    if arena.vertexCount > d.currentSegment.vertexOffset then
+      finishSegment(d, d.currentSegment)
       d.segments[#d.segments + 1] = d.currentSegment
     end
     return {
@@ -1035,18 +1144,27 @@ local function _decode(bytes, options)
       opcodeCounts = d.opcodeCounts,
       polygonAttrs = polygonAttrs,
       straddlingPrimitives = d.straddlingPrimitives,
-      finalState = { color = d.color, normal = d.normal, colorSource = d.colorSource },
+      finalState = {
+        color = { d.colorR, d.colorG, d.colorB },
+        normal = { d.normalX, d.normalY, d.normalZ },
+        colorSource = d.colorSource,
+      },
     }
   end
 
+  local slice = assert(d.slice)
+  finishSegment(d, slice)
   return {
-    vertices = d.vertices,
-    indices = d.indices,
+    slice = slice,
     bounds = bounds,
     commands = commands,
     opcodeCounts = d.opcodeCounts,
     polygonAttrs = polygonAttrs,
-    finalState = { color = d.color, normal = d.normal, colorSource = d.colorSource },
+    finalState = {
+      color = { d.colorR, d.colorG, d.colorB },
+      normal = { d.normalX, d.normalY, d.normalZ },
+      colorSource = d.colorSource,
+    },
   }
 end
 

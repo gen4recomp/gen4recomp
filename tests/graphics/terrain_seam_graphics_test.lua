@@ -11,12 +11,14 @@
 -- hole for the broken input.
 
 local Assert = require("tests.support.Assert")
+local ffi = require("ffi")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local Matrix4 = require("libs.math.src.Matrix4")
 local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
+local GeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
 local T = {}
 
@@ -92,24 +94,83 @@ local function seamBatches()
     V(8, 0, 4),
     V(0, 0, 4),
   }, { 0, 1, 2, 0, 2, 3 }, 1)
-  return { left, right }
+  local arena = GeometryBuffer.new()
+  local batches = {}
+  for index, source in ipairs({ left, right }) do
+    arena:reserve(#source.vertices, #source.indices)
+    local vertexOffset, indexOffset = arena.vertexCount, arena.indexCount
+    for vertexIndex, vertex in ipairs(source.vertices) do
+      local numeric = arena.numeric[vertexOffset + vertexIndex - 1]
+      numeric.x, numeric.y, numeric.z = vertex.x, vertex.y, vertex.z
+      numeric.u, numeric.v = vertex.u, vertex.v
+      numeric.nx, numeric.ny, numeric.nz = vertex.nx, vertex.ny, vertex.nz
+      local attrib = arena.attrib[vertexOffset + vertexIndex - 1]
+      attrib.r, attrib.g, attrib.b, attrib.a = vertex.r, vertex.g, vertex.b, vertex.a
+      attrib.colorSource = vertex.colorSource
+    end
+    for indexValue, value in ipairs(source.indices) do
+      arena.indices[indexOffset + indexValue - 1] = value
+    end
+    arena.vertexCount = vertexOffset + #source.vertices
+    arena.indexCount = indexOffset + #source.indices
+    batches[index] = {
+      nodeIndex = source.nodeIndex,
+      materialIndex = source.materialIndex,
+      shapeIndex = source.shapeIndex,
+      polygonAttrRaw = source.polygonAttrRaw,
+      transformMode = source.transformMode,
+      arena = arena,
+      vertexOffset = vertexOffset,
+      vertexCount = #source.vertices,
+      indexOffset = indexOffset,
+      indexCount = #source.indices,
+    }
+  end
+  return batches
 end
 
-local function deepcopy(value)
-  if type(value) ~= "table" then
-    return value
+local function cloneBatches(batches)
+  local arena = GeometryBuffer.new()
+  local clones = {}
+  for index, source in ipairs(batches) do
+    arena:reserve(source.vertexCount, source.indexCount)
+    local vertexOffset, indexOffset = arena.vertexCount, arena.indexCount
+    ffi.copy(
+      arena.numeric[vertexOffset],
+      source.arena.numeric[source.vertexOffset],
+      source.vertexCount * GeometryBuffer.vertexNumericSize
+    )
+    ffi.copy(
+      arena.attrib[vertexOffset],
+      source.arena.attrib[source.vertexOffset],
+      source.vertexCount * GeometryBuffer.vertexAttribSize
+    )
+    for offset = 0, source.indexCount - 1 do
+      arena.indices[indexOffset + offset] = source.arena.indices[source.indexOffset + offset]
+    end
+    arena.vertexCount, arena.indexCount = vertexOffset + source.vertexCount, indexOffset + source.indexCount
+    clones[index] = {
+      nodeIndex = source.nodeIndex,
+      materialIndex = source.materialIndex,
+      shapeIndex = source.shapeIndex,
+      polygonAttrRaw = source.polygonAttrRaw,
+      transformMode = source.transformMode,
+      arena = arena,
+      vertexOffset = vertexOffset,
+      vertexCount = source.vertexCount,
+      indexOffset = indexOffset,
+      indexCount = source.indexCount,
+    }
   end
-  local out = {}
-  for k, v in pairs(value) do
-    out[deepcopy(k)] = deepcopy(v)
-  end
-  return out
+  return clones
 end
 
 local function loveVertices(compiled)
   local flat = {}
-  for _, i in ipairs(compiled.indices) do
-    local v = compiled.vertices[i + 1]
+  for offset = 0, compiled.indexCount - 1 do
+    local i = compiled.arena.indices[compiled.indexOffset + offset]
+    local v = compiled.arena.numeric[compiled.vertexOffset + i]
+    local bytes = compiled.arena.attrib[compiled.vertexOffset + i]
     flat[#flat + 1] = {
       v.x,
       v.y,
@@ -119,11 +180,11 @@ local function loveVertices(compiled)
       v.nx,
       v.ny,
       v.nz,
-      v.r / 255,
-      v.g / 255,
-      v.b / 255,
-      v.a / 255,
-      v.colorSource,
+      bytes.r / 255,
+      bytes.g / 255,
+      bytes.b / 255,
+      bytes.a / 255,
+      bytes.colorSource,
     }
   end
   return flat
@@ -245,7 +306,8 @@ end
 local function countAt(batches, x, y, z)
   local n = 0
   for _, candidate in ipairs(batches) do
-    for _, v in ipairs(candidate.vertices) do
+    for offset = 0, candidate.vertexCount - 1 do
+      local v = candidate.arena.numeric[candidate.vertexOffset + offset]
       if v.x == x and v.y == y and v.z == z then
         n = n + 1
       end
@@ -260,10 +322,11 @@ end
 
 local function totalArea(target)
   local total = 0
-  for i = 1, #target.indices, 3 do
-    local a = target.vertices[target.indices[i] + 1]
-    local b = target.vertices[target.indices[i + 1] + 1]
-    local c = target.vertices[target.indices[i + 2] + 1]
+  for offset = 0, target.indexCount - 1, 3 do
+    local indices = target.arena.indices
+    local a = target.arena.numeric[target.vertexOffset + indices[target.indexOffset + offset]]
+    local b = target.arena.numeric[target.vertexOffset + indices[target.indexOffset + offset + 1]]
+    local c = target.arena.numeric[target.vertexOffset + indices[target.indexOffset + offset + 2]]
     total = total + signedAreaXZ(a, b, c)
   end
   return total
@@ -276,22 +339,32 @@ function T.conformed_seam_leaves_no_holes(scope)
     "the deliberate cross-batch T-junction is diagnosed before repair"
   )
   local beforeAreas = { totalArea(before[1]), totalArea(before[2]) }
-  local repaired = conformer().conform(deepcopy(before), { role = "map", modelName = "seam_fixture" }) or before
+  local repaired = conformer().conform(cloneBatches(before), { role = "map", modelName = "seam_fixture" }) or before
   Assert.equal(#conformer().findTJunctions(repaired), 0, "no unmatched boundary T-junction remains after repair")
   Assert.equal(countAt({ repaired[2] }, 0, 0, 0.5), 1, "the spanning side expresses the shared breakpoint")
   Assert.equal(countAt(repaired, 0, 0, 0.5), 2, "both sides express the shared breakpoint after repair")
   for index, side in ipairs(repaired) do
-    for i = 1, #side.indices, 3 do
-      local a = side.vertices[side.indices[i] + 1]
-      local b = side.vertices[side.indices[i + 1] + 1]
-      local c = side.vertices[side.indices[i + 2] + 1]
+    for offset = 0, side.indexCount - 1, 3 do
+      local indices = side.arena.indices
+      local a = side.arena.numeric[side.vertexOffset + indices[side.indexOffset + offset]]
+      local b = side.arena.numeric[side.vertexOffset + indices[side.indexOffset + offset + 1]]
+      local c = side.arena.numeric[side.vertexOffset + indices[side.indexOffset + offset + 2]]
       local area = signedAreaXZ(a, b, c)
       Assert.isTrue(math.abs(area) > 1e-12, "retriangulation emits no zero-area triangle in batch " .. index)
     end
     Assert.near(totalArea(side), beforeAreas[index], 1e-9, "repair preserves area in batch " .. index)
   end
-  local again = conformer().conform(deepcopy(before), { role = "map", modelName = "seam_fixture" }) or before
-  Assert.deepEqual(again, repaired, "the same seam conforms byte-identically across runs")
+  local again = conformer().conform(cloneBatches(before), { role = "map", modelName = "seam_fixture" }) or before
+  Assert.deepEqual(
+    loveVertices(again[1]),
+    loveVertices(repaired[1]),
+    "the same seam conforms byte-identically across runs"
+  )
+  Assert.deepEqual(
+    loveVertices(again[2]),
+    loveVertices(repaired[2]),
+    "the same seam conforms byte-identically across runs"
+  )
   local holes1 = sweep(scope, repaired, 1)
   local holes3 = sweep(scope, repaired, 3)
   Assert.equal(holes1, 0, "conformed seam leaves no enclosed rear-plane sample at scale 1")

@@ -47,6 +47,128 @@ local function fx32(c)
   return math.floor(c * 4096) % 0x100000000
 end
 
+local function geometryArena()
+  local ok, moduleOrError = pcall(require, "libs.nds.src.gx.GxGeometryBuffer")
+  Assert.isTrue(
+    ok and type(moduleOrError) == "table" and type(moduleOrError.new) == "function",
+    "GX display-list decoding needs the dense geometry arena"
+  )
+  return moduleOrError.new()
+end
+
+local function assertDenseSlice(decoded, arena, expectedIndices, expectedPositions)
+  local slice = decoded.slice or decoded
+  Assert.equal(slice.arena, arena, "decoded geometry borrows the caller-owned arena")
+  Assert.equal(slice.vertexCount, #expectedPositions, "decoded vertex count")
+  Assert.equal(slice.indexCount, #expectedIndices, "decoded index count")
+  Assert.isNil(rawget(slice, "vertices"), "production geometry is not a Lua vertex table")
+  Assert.isNil(rawget(slice, "indices"), "production geometry is not a Lua index table")
+
+  local numeric = arena.numeric
+  local attrib = arena.attrib
+  local indices = arena.indices
+  for index, expected in ipairs(expectedPositions) do
+    local vertex = numeric[slice.vertexOffset + index - 1]
+    Assert.equal(vertex.x, expected[1], "dense x lane")
+    Assert.equal(vertex.y, expected[2], "dense y lane")
+    Assert.equal(vertex.z, expected[3], "dense z lane")
+    Assert.equal(vertex.u, 0, "dense u lane")
+    Assert.equal(vertex.v, 0, "dense v lane")
+    Assert.equal(vertex.nx, 0, "dense nx lane")
+    Assert.equal(vertex.ny, 1, "dense ny lane")
+    Assert.equal(vertex.nz, 0, "dense nz lane")
+    local bytes = attrib[slice.vertexOffset + index - 1]
+    Assert.equal(bytes.r, 255, "dense red lane")
+    Assert.equal(bytes.g, 255, "dense green lane")
+    Assert.equal(bytes.b, 255, "dense blue lane")
+    Assert.equal(bytes.a, 255, "dense alpha lane")
+    Assert.equal(bytes.colorSource, 0, "dense color-source lane")
+  end
+  for index, expected in ipairs(expectedIndices) do
+    Assert.equal(indices[slice.indexOffset + index - 1], expected, "dense local index sequence")
+  end
+end
+
+local function sliceVertex(decoded, index)
+  local slice = decoded.slice
+  local numeric = slice.arena.numeric[slice.vertexOffset + index]
+  local attrib = slice.arena.attrib[slice.vertexOffset + index]
+  return {
+    x = numeric.x,
+    y = numeric.y,
+    z = numeric.z,
+    u = numeric.u,
+    v = numeric.v,
+    nx = numeric.nx,
+    ny = numeric.ny,
+    nz = numeric.nz,
+    r = attrib.r,
+    g = attrib.g,
+    b = attrib.b,
+    a = attrib.a,
+    colorSource = attrib.colorSource,
+  }
+end
+
+local function sliceIndices(decoded)
+  local slice = decoded.slice
+  local out = {}
+  for offset = 0, slice.indexCount - 1 do
+    out[#out + 1] = slice.arena.indices[slice.indexOffset + offset]
+  end
+  return out
+end
+
+function T.supported_primitives_emit_dense_slices()
+  local fixtures = {
+    {
+      primitive = 0,
+      vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } },
+      indices = { 0, 1, 2 },
+    },
+    {
+      primitive = 1,
+      vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 1, 1, 0 }, { 0, 1, 0 } },
+      indices = { 0, 1, 2, 0, 2, 3 },
+    },
+    {
+      primitive = 2,
+      vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 } },
+      indices = { 0, 1, 2, 2, 1, 3 },
+    },
+    {
+      primitive = 3,
+      vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 0, 2, 0 }, { 1, 2, 0 } },
+      indices = { 0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4 },
+    },
+  }
+  for _, fixture in ipairs(fixtures) do
+    local arena = geometryArena()
+    local commands = { { op = 0x40, p = { fixture.primitive } } }
+    for _, vertex in ipairs(fixture.vertices) do
+      commands[#commands + 1] = vtx16(vertex[1], vertex[2], vertex[3])
+    end
+    commands[#commands + 1] = { op = 0x41 }
+    local decoded = assert(Gx.decode(dl(commands), { arena = arena, initialState = { colorSource = 0 } }))
+    assertDenseSlice(decoded, arena, fixture.indices, fixture.vertices)
+  end
+end
+
+function T.large_command_stream_with_few_vertices_reserves_only_emitted_geometry()
+  local arena = geometryArena()
+  local padding = string.rep(string.char(0, 0, 0, 0), 1024 * 1024)
+  local decoded = assert(Gx.decode(padding .. dl({
+    { op = 0x40, p = { 0 } },
+    vtx16(0, 0, 0),
+    vtx16(1, 0, 0),
+    vtx16(0, 1, 0),
+    { op = 0x41 },
+  }), { arena = arena, initialState = { colorSource = 0 } }))
+  Assert.equal(decoded.slice.vertexCount, 3)
+  Assert.equal(arena.vertexCapacity, 256)
+  Assert.equal(arena.indexCapacity, 768)
+end
+
 function T.single_triangle()
   local r = assert(Gx.decode(dl({
     { op = 0x40, p = { 0 } }, -- BEGIN triangles
@@ -55,10 +177,10 @@ function T.single_triangle()
     vtx16(0, 2, 0),
     { op = 0x41 }, -- END
   })))
-  Assert.equal(#r.vertices, 3)
-  Assert.deepEqual(r.indices, { 0, 1, 2 })
-  Assert.equal(r.vertices[2].x, 1)
-  Assert.equal(r.vertices[3].y, 2)
+  Assert.equal(r.slice.vertexCount, 3)
+  Assert.deepEqual(sliceIndices(r), { 0, 1, 2 })
+  Assert.equal(sliceVertex(r, 1).x, 1)
+  Assert.equal(sliceVertex(r, 2).y, 2)
   Assert.deepEqual(r.bounds.min, { 0, 0, 0 })
   Assert.deepEqual(r.bounds.max, { 1, 2, 0 })
 end
@@ -72,8 +194,8 @@ function T.quad_becomes_two_triangles()
     vtx16(0, 1, 0),
     { op = 0x41 },
   })))
-  Assert.equal(#r.vertices, 4)
-  Assert.deepEqual(r.indices, { 0, 1, 2, 0, 2, 3 })
+  Assert.equal(r.slice.vertexCount, 4)
+  Assert.deepEqual(sliceIndices(r), { 0, 1, 2, 0, 2, 3 })
 end
 
 function T.triangle_strip_winding()
@@ -85,7 +207,7 @@ function T.triangle_strip_winding()
     vtx16(1, 1, 0),
     { op = 0x41 },
   })))
-  Assert.deepEqual(r.indices, { 0, 1, 2, 2, 1, 3 })
+  Assert.deepEqual(sliceIndices(r), { 0, 1, 2, 2, 1, 3 })
 end
 
 function T.vtx_diff_accumulates()
@@ -99,7 +221,7 @@ function T.vtx_diff_accumulates()
     vtx16(1, 1, 1),
     { op = 0x41 },
   })))
-  local v = r.vertices[2]
+  local v = sliceVertex(r, 1)
   Assert.equal(v.x, 100 / 4096)
   Assert.equal(v.y, 100 / 4096)
   Assert.equal(v.z, 100 / 4096)
@@ -115,9 +237,9 @@ function T.matrix_translate_applies_to_positions()
     vtx16(0, 1, 0),
     { op = 0x41 },
   })))
-  Assert.equal(r.vertices[1].x, 2)
-  Assert.equal(r.vertices[1].y, -3)
-  Assert.equal(r.vertices[2].x, 3)
+  Assert.equal(sliceVertex(r, 0).x, 2)
+  Assert.equal(sliceVertex(r, 0).y, -3)
+  Assert.equal(sliceVertex(r, 1).x, 3)
 end
 
 function T.opcode_counts_and_names()
@@ -190,9 +312,9 @@ function T.externally_supplied_restore_slot_is_honored()
     }),
     { restoreStack = { [5] = translate } }
   ))
-  Assert.equal(r.vertices[1].x, 2)
-  Assert.equal(r.vertices[1].y, -3)
-  Assert.equal(r.vertices[2].x, 3)
+  Assert.equal(sliceVertex(r, 0).x, 2)
+  Assert.equal(sliceVertex(r, 0).y, -3)
+  Assert.equal(sliceVertex(r, 1).x, 3)
 end
 
 -- ---- direction (vector) matrix ----
@@ -219,7 +341,7 @@ function T.translation_does_not_rotate_normals()
     vtx16(0, 1, 0),
     { op = 0x41 },
   })))
-  local v = r.vertices[1]
+  local v = sliceVertex(r, 0)
   Assert.equal(v.x, 2)
   Assert.equal(v.ny, 1)
   Assert.equal(v.nx, 0)
@@ -258,7 +380,7 @@ function T.node_rotation_reaches_normals()
     }),
     { matrix = rotY90 }
   ))
-  local v = r.vertices[1]
+  local v = sliceVertex(r, 0)
   Assert.equal(v.nx, 0)
   Assert.equal(v.ny, 0)
   Assert.equal(v.nz, -1)
@@ -276,8 +398,8 @@ function T.scaled_matrix_keeps_normals_unit_length()
     vtx16(0, 0, 1),
     { op = 0x41 },
   })))
-  Assert.equal(r.vertices[1].x, 4)
-  Assert.equal(r.vertices[1].ny, 1)
+  Assert.equal(sliceVertex(r, 0).x, 4)
+  Assert.equal(sliceVertex(r, 0).ny, 1)
 end
 
 -- MTX_MODE position-only leaves the vector matrix behind, so the normal keeps
@@ -293,8 +415,8 @@ function T.position_only_matrix_mode_does_not_move_normals()
     vtx16(0, 0, 1),
     { op = 0x41 },
   })))
-  Assert.equal(r.vertices[1].x, 4)
-  Assert.equal(r.vertices[1].nx, 1)
+  Assert.equal(sliceVertex(r, 0).x, 4)
+  Assert.equal(sliceVertex(r, 0).nx, 1)
 end
 
 function T.projection_matrix_mode_is_fatal()

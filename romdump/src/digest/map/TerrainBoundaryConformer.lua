@@ -1,190 +1,581 @@
--- Splits coarse terrain boundary edges at shared breakpoints so separately
--- rendered material batches of one terrain model agree on boundary
--- segmentation.
---
--- Two spans of one terrain model can meet along one geometric line while
--- breaking it at different interior vertices (a T-junction): a coarse batch
--- carries a boundary edge A-B while the same batch or a touching batch owns
--- boundary vertices strictly inside that span. Host triangle point-sampling can then
--- disagree along the two collinear but differently segmented edges and leave
--- an isolated sample owned by neither side. This module collects the union
--- of such breakpoints across every batch of the model and splits the coarse
--- boundary topology before mesh serialization, without merging materials,
--- batches, or render state.
---
--- The input is the CompiledBatch list from MeshCompiler.compile in model
--- tile units; conformance mutates that list in place and returns it. Only
--- the map/neighbor terrain roles route through here (see
--- ModelAssetCompiler); actors, buildings, and indicators bypass repair.
--- Processing order is fully deterministic (stable batch order, canonical
--- edge keys, parametric split order), so identical input serializes
--- byte-identically.
+-- Repairs terrain boundary T-junctions over compiler-owned geometry slices.
 
+local bit = require("bit")
+local ffi = require("ffi")
 local Errors = require("libs.errors.src.Errors")
 
 local TerrainBoundaryConformer = {}
 
--- Maximum perpendicular distance, in tiles, at which a touching batch's
--- boundary vertex still counts as collinear with a boundary edge. Exact
--- shared coordinates stay bit-identical through compilation, so genuine
--- breakpoints evaluate at (or near) zero distance; the margin only absorbs
--- floating-point rounding. Points 1e-3 tiles off the edge are rejected.
-TerrainBoundaryConformer.COLLINEARITY_TOLERANCE_TILES = 1e-9
+ffi.cdef([[
+  typedef union {
+    double number;
+    uint64_t bits;
+    struct { uint32_t lo, hi; } words;
+  } G4TerrainDoubleBits;
 
-local TOLERANCE = TerrainBoundaryConformer.COLLINEARITY_TOLERANCE_TILES
+  typedef struct {
+    uint64_t xBits, yBits, zBits;
+    uint32_t idPlusOne;
+    uint32_t representative;
+  } G4PositionSlot;
 
--- Exact position identity for endpoint deduplication: 17 significant digits
--- distinguish every double, so bit-identical coordinates share a key while
--- merely close coordinates never do.
-local function positionKey(x, y, z)
-  return string.format("%.17g %.17g %.17g", x, y, z)
+  typedef struct {
+    uint32_t a, b;
+    uint32_t count;
+    uint32_t firstTriangle;
+    uint32_t ia, ib;
+    uint32_t used;
+    uint32_t pad;
+  } G4EdgeSlot;
+
+  typedef struct {
+    uint32_t a, b, c;
+    uint32_t used;
+  } G4TriangleSlot;
+
+  typedef struct {
+    uint32_t batchIndex;
+    uint32_t candidateBatch;
+    uint32_t ia, ib;
+    uint32_t pointVertex;
+    uint32_t pad;
+    double t;
+  } G4SplitEvent;
+]])
+
+assert(ffi.sizeof("G4PositionSlot") == 32, "G4PositionSlot must remain 32 bytes")
+assert(ffi.sizeof("G4EdgeSlot") == 32, "G4EdgeSlot must remain 32 bytes")
+assert(ffi.sizeof("G4TriangleSlot") == 16, "G4TriangleSlot must remain 16 bytes")
+assert(ffi.sizeof("G4SplitEvent") == 32, "G4SplitEvent must remain 32 bytes")
+
+---@class TerrainDoubleBits
+---@field number number
+---@field bits integer
+---@field words { lo: integer, hi: integer }
+
+---@class TerrainHashScratch
+---@field doubleBits TerrainDoubleBits
+---@field positionCapacity integer
+---@field positionHashCapacity integer
+---@field positionSlots ffi.cdata*
+---@field positionX ffi.cdata*
+---@field positionY ffi.cdata*
+---@field positionZ ffi.cdata*
+---@field positionCount integer
+---@field edgeHashCapacity integer
+---@field triangleHashCapacity integer
+---@field edgeSlots ffi.cdata*
+---@field triangleSlots ffi.cdata*
+
+---@class G4EdgeSlot
+---@field a integer
+---@field b integer
+---@field count integer
+---@field firstTriangle integer
+---@field ia integer
+---@field ib integer
+---@field used integer
+---@field pad integer
+
+---@class G4TriangleSlot
+---@field a integer
+---@field b integer
+---@field c integer
+---@field used integer
+
+---@class TerrainGeometryArena
+---@field indices ffi.cdata*
+---@field numeric ffi.cdata*
+---@field attrib ffi.cdata*
+
+---@class TerrainGeometrySlice
+---@field arena TerrainGeometryArena
+---@field vertexOffset integer
+---@field vertexCount integer
+---@field indexOffset integer
+---@field indexCount integer
+
+local TOLERANCE = 1e-9
+local UINT32_MAX = 0xFFFFFFFF
+local TRIANGLE_SLOT_SIZE = assert(ffi.sizeof("G4TriangleSlot"))
+
+local function isFinite(value)
+  return value == value and value ~= math.huge and value ~= -math.huge
 end
 
-local function edgeKey(ka, kb)
-  if ka <= kb then
-    return ka .. "|" .. kb
+local function nextPowerOfTwo(value)
+  local capacity = 1
+  while capacity < value do
+    capacity = capacity * 2
   end
-  return kb .. "|" .. ka
+  return capacity
 end
 
----@class TerrainBoundaryEdge
----@field triangle integer 1-based triangle position in the batch index list
----@field ia integer 1-based vertex index of the edge start
----@field ib integer 1-based vertex index of the edge end
----@field key string canonical geometric edge key
-
----@class TerrainBoundaryAnalysis
----@field edges TerrainBoundaryEdge[] boundary edges in canonical-key order
----@field boundaryPoints { x: number, y: number, z: number, key: string }[] unique boundary positions in key order
-
--- Boundary edges are geometric edges occurring exactly once among the
--- batch's distinct geometric triangles; internal tessellation edges occur
--- twice, once per direction. Two kinds of non-covering input collapse out
--- of counting: degenerate triangles with a repeated vertex cover no surface
--- and would otherwise count one span twice, and exact-duplicate triangles
--- (identical geometric vertex triples, as authored in real terrain batches)
--- are redundant rasterization. Neither hides a boundary nor mimics
--- branching once collapsed. Edges used any other number of times are never
--- spanning edges and stay out of repair by contract: overused edges (count
--- greater than two, as in authored stairs, skirts, and layered detail) are
--- tolerated and ignored rather than repaired or reported, because no split
--- of such an edge can be disambiguated and repair never needs to split
--- one — only count-1 spans are ever split, and their breakpoints come from
--- the same batch's or another batch's boundary. Mixed-direction junctions (a wall meeting the
--- ground, a cliff fold, opposing wall sheets) are ordinary authored relief:
--- the edge is a crease rather than a boundary, so repair leaves it alone.
----@param batch table<string, unknown>
----@return TerrainBoundaryAnalysis
-local function analyzeBatch(batch)
+local function validateSlice(batch)
   assert(
-    type(batch) == "table" and type(batch.vertices) == "table" and type(batch.indices) == "table",
-    "conformance requires compiled batches with vertices and indices"
+    type(batch) == "table"
+      and type(batch.arena) == "table"
+      and type(batch.vertexOffset) == "number"
+      and type(batch.vertexCount) == "number"
+      and type(batch.indexOffset) == "number"
+      and type(batch.indexCount) == "number",
+    "conformance requires compiled geometry slices"
   )
-  local triCount = math.floor(#batch.indices / 3)
-  local counts = {}
-  local first = {}
-  local slots = {}
-  local seenTriangles = {}
-  for ti = 1, triCount do
-    local i0 = batch.indices[(ti - 1) * 3 + 1]
-    local i1 = batch.indices[(ti - 1) * 3 + 2]
-    local i2 = batch.indices[(ti - 1) * 3 + 3]
-    local v0 = batch.vertices[i0 + 1]
-    local v1 = batch.vertices[i1 + 1]
-    local v2 = batch.vertices[i2 + 1]
-    assert(v0 ~= nil and v1 ~= nil and v2 ~= nil, "batch indices reference missing vertices")
-    local corners = {
-      positionKey(v0.x, v0.y, v0.z),
-      positionKey(v1.x, v1.y, v1.z),
-      positionKey(v2.x, v2.y, v2.z),
-    }
-    table.sort(corners)
-    local triKey = corners[1] .. "|" .. corners[2] .. "|" .. corners[3]
-    if corners[1] == corners[2] or corners[2] == corners[3] then
-      -- A repeated vertex collapses the triangle to a point or segment: it
-      -- covers no surface, so it takes no part in coverage topology. Without
-      -- this its one span would count twice, mimicking branching.
-      slots[ti] = {}
-    elseif seenTriangles[triKey] then
-      slots[ti] = {}
-    else
-      seenTriangles[triKey] = true
-      local keys = {}
-      local ends = {
-        { v0, i0, v1, i1 },
-        { v1, i1, v2, i2 },
-        { v2, i2, v0, i0 },
-      }
-      for _, pair in ipairs(ends) do
-        local startKey = positionKey(pair[1].x, pair[1].y, pair[1].z)
-        local endKey = positionKey(pair[3].x, pair[3].y, pair[3].z)
-        local key = edgeKey(startKey, endKey)
-        counts[key] = (counts[key] or 0) + 1
-        if first[key] == nil then
-          first[key] = { triangle = ti, ia = pair[2] + 1, ib = pair[4] + 1 }
-        end
-        keys[#keys + 1] = key
-      end
-      slots[ti] = keys
-    end
-  end
-  local edges = {}
-  local seen = {}
-  for ti = 1, triCount do
-    for _, key in ipairs(slots[ti]) do
-      if counts[key] == 1 and not seen[key] then
-        seen[key] = true
-        local rep = first[key]
-        edges[#edges + 1] = { triangle = rep.triangle, ia = rep.ia, ib = rep.ib, key = key }
-      end
-    end
-  end
-  table.sort(edges, function(a, b)
-    return a.key < b.key
-  end)
-  local boundaryPoints = {}
-  local pointSeen = {}
-  for _, edge in ipairs(edges) do
-    for _, vi in ipairs({ edge.ia, edge.ib }) do
-      local v = batch.vertices[vi]
-      local key = positionKey(v.x, v.y, v.z)
-      if not pointSeen[key] then
-        pointSeen[key] = true
-        boundaryPoints[#boundaryPoints + 1] = { x = v.x, y = v.y, z = v.z, key = key }
-      end
-    end
-  end
-  table.sort(boundaryPoints, function(a, b)
-    return a.key < b.key
-  end)
-  return { edges = edges, boundaryPoints = boundaryPoints }
+  assert(batch.vertexCount >= 0 and batch.indexCount >= 0, "geometry slice counts must be non-negative")
+  assert(batch.indexCount % 3 == 0, "geometry slice index count must be a multiple of three")
 end
 
--- Parametric position of P along A-B, or nil when P is not a strictly
--- interior collinear point: endpoints, off-segment projections, points
--- beyond tolerance off the line, and points at/near either endpoint never
--- split.
-local function splitParam(ax, ay, az, bx, by, bz, px, py, pz)
-  if px == ax and py == ay and pz == az then
+---@param batch TerrainGeometrySlice
+---@param offset integer
+---@return integer
+local function indexAt(batch, offset)
+  local value = tonumber(batch.arena.indices[batch.indexOffset + offset])
+  assert(value >= 0 and value < batch.vertexCount, "batch index references missing vertex")
+  ---@cast value integer
+  return value
+end
+
+local function vertexScalars(batch, localIndex)
+  assert(localIndex >= 0 and localIndex < batch.vertexCount, "batch vertex index is out of range")
+  local offset = batch.vertexOffset + localIndex
+  local numeric = batch.arena.numeric[offset]
+  local attrib = batch.arena.attrib[offset]
+  assert(
+    isFinite(numeric.x)
+      and isFinite(numeric.y)
+      and isFinite(numeric.z)
+      and isFinite(numeric.u)
+      and isFinite(numeric.v)
+      and isFinite(numeric.nx)
+      and isFinite(numeric.ny)
+      and isFinite(numeric.nz),
+    "terrain geometry values must be finite"
+  )
+  return numeric, attrib
+end
+
+---@param doubleBits TerrainDoubleBits
+---@param value number
+---@return integer, integer
+local function bitWords(doubleBits, value)
+  if value == 0 then
+    value = 0
+  end
+  doubleBits.number = value
+  local lo = assert(tonumber(doubleBits.words.lo))
+  local hi = assert(tonumber(doubleBits.words.hi))
+  ---@cast lo integer
+  ---@cast hi integer
+  return bit.tobit(lo), bit.tobit(hi)
+end
+
+---@param hash integer
+---@param word integer
+---@return integer
+local function mix(hash, word)
+  return bit.tobit(bit.bxor(hash, word) * 16777619)
+end
+
+---@param a integer
+---@param b integer
+---@param c integer
+---@param d integer
+---@param e integer
+---@param f integer
+---@return integer
+local function hashWords(a, b, c, d, e, f)
+  local hash = -2128831035
+  hash = mix(hash, a)
+  hash = mix(hash, b)
+  hash = mix(hash, c)
+  hash = mix(hash, d)
+  hash = mix(hash, e)
+  return mix(hash, f)
+end
+
+local function zeroArray(array, count, elementSize)
+  ffi.fill(array, count * elementSize, 0)
+end
+
+local function copyEdgeSlot(destination, source)
+  destination.a, destination.b = source.a, source.b
+  destination.count, destination.firstTriangle = source.count, source.firstTriangle
+  destination.ia, destination.ib = source.ia, source.ib
+  destination.used, destination.pad = source.used, source.pad
+end
+
+local function copyEvent(destination, source)
+  destination.batchIndex, destination.candidateBatch = source.batchIndex, source.candidateBatch
+  destination.ia, destination.ib = source.ia, source.ib
+  destination.pointVertex, destination.pad, destination.t = source.pointVertex, source.pad, source.t
+end
+
+local function ensureArray(owner, field, capacityField, ctype, required)
+  local current = owner[capacityField] or 0
+  if current >= required then
+    return
+  end
+  local capacity = nextPowerOfTwo(math.max(1, required))
+  local old = owner[field]
+  local array = ffi.new(ctype .. "[?]", capacity)
+  if old ~= nil then
+    ffi.copy(array, old, current * ffi.sizeof(ctype))
+  end
+  owner[field], owner[capacityField] = array, capacity
+end
+
+local function newScratch()
+  return {
+    doubleBits = ffi.new("G4TerrainDoubleBits"),
+    positionCount = 0,
+    eventCount = 0,
+  }
+end
+
+local function scratchFor(context)
+  if context == nil then
+    return newScratch()
+  end
+  if context.terrainScratch == nil then
+    context.terrainScratch = newScratch()
+  end
+  return context.terrainScratch
+end
+
+local function ensurePositionCapacity(scratch, required)
+  local old = scratch.positionCapacity or 0
+  if old >= required then
+    return
+  end
+  local capacity = nextPowerOfTwo(math.max(1, required))
+  local oldSlots, oldX, oldY, oldZ = scratch.positionSlots, scratch.positionX, scratch.positionY, scratch.positionZ
+  scratch.positionSlots = ffi.new("G4PositionSlot[?]", capacity)
+  scratch.positionX, scratch.positionY, scratch.positionZ =
+    ffi.new("double[?]", capacity), ffi.new("double[?]", capacity), ffi.new("double[?]", capacity)
+  if oldSlots ~= nil then
+    ffi.copy(scratch.positionSlots, oldSlots, old * ffi.sizeof("G4PositionSlot"))
+    ffi.copy(scratch.positionX, oldX, old * ffi.sizeof("double"))
+    ffi.copy(scratch.positionY, oldY, old * ffi.sizeof("double"))
+    ffi.copy(scratch.positionZ, oldZ, old * ffi.sizeof("double"))
+  end
+  scratch.positionCapacity = capacity
+end
+
+local function positionCoordinates(scratch, positionId)
+  local index = positionId - 1
+  return scratch.positionX[index], scratch.positionY[index], scratch.positionZ[index]
+end
+
+local function positionHashIndex(scratch, xLo, xHi, yLo, yHi, zLo, zHi)
+  return bit.band(hashWords(xLo, xHi, yLo, yHi, zLo, zHi), scratch.positionHashCapacity - 1)
+end
+
+---@param scratch TerrainHashScratch
+---@param x number
+---@param y number
+---@param z number
+---@param representative integer
+---@return integer
+local function positionId(scratch, x, y, z, representative)
+  assert(isFinite(x) and isFinite(y) and isFinite(z), "terrain position identity requires finite coordinates")
+  local doubleBits = scratch.doubleBits --[[@as TerrainDoubleBits]]
+  local xLo, xHi = bitWords(doubleBits, x)
+  local yLo, yHi = bitWords(doubleBits, y)
+  local zLo, zHi = bitWords(doubleBits, z)
+  local slotIndex = positionHashIndex(scratch, xLo, xHi, yLo, yHi, zLo, zHi)
+  while true do
+    local slot = scratch.positionSlots[slotIndex]
+    if slot.idPlusOne == 0 then
+      local id = scratch.positionCount + 1
+      assert(id <= UINT32_MAX, "terrain position identity exceeds uint32_t capacity")
+      doubleBits.number = x
+      slot.xBits = doubleBits.bits
+      doubleBits.number = y
+      slot.yBits = doubleBits.bits
+      doubleBits.number = z
+      slot.zBits = doubleBits.bits
+      slot.idPlusOne, slot.representative = id, representative
+      scratch.positionX[id - 1], scratch.positionY[id - 1], scratch.positionZ[id - 1] = x, y, z
+      scratch.positionCount = id
+      ---@cast id integer
+      return id
+    end
+    doubleBits.number = x
+    local matches = slot.xBits == doubleBits.bits
+    doubleBits.number = y
+    matches = matches and slot.yBits == doubleBits.bits
+    doubleBits.number = z
+    matches = matches and slot.zBits == doubleBits.bits
+    if matches then
+      local id = assert(tonumber(slot.idPlusOne))
+      ---@cast id integer
+      return id
+    end
+    slotIndex = (slotIndex + 1) % scratch.positionHashCapacity
+  end
+end
+
+---@param scratch TerrainHashScratch
+---@param a integer
+---@param b integer
+---@return integer
+local function edgeHashIndex(scratch, a, b)
+  return bit.band(hashWords(a, b, 0, 0, 0, 0), scratch.edgeHashCapacity - 1)
+end
+
+---@param scratch TerrainHashScratch
+---@param a integer
+---@param b integer
+---@param c integer
+---@return integer
+local function triangleHashIndex(scratch, a, b, c)
+  return bit.band(hashWords(a, b, c, 0, 0, 0), scratch.triangleHashCapacity - 1)
+end
+
+---@param a integer
+---@param b integer
+---@param c integer
+---@return integer, integer, integer
+local function canonical3(a, b, c)
+  if a > b then
+    a, b = b, a
+  end
+  if b > c then
+    b, c = c, b
+  end
+  if a > b then
+    a, b = b, a
+  end
+  return a, b, c
+end
+
+---@param scratch TerrainHashScratch
+---@param a integer
+---@param b integer
+---@param c integer
+---@return G4TriangleSlot|nil
+local function findTriangle(scratch, a, b, c)
+  local index = triangleHashIndex(scratch, a, b, c)
+  while true do
+    local slot = scratch.triangleSlots[index]
+    ---@cast slot G4TriangleSlot
+    if slot.used == 0 then
+      return slot
+    end
+    if slot.a == a and slot.b == b and slot.c == c then
+      return nil
+    end
+    index = (index + 1) % scratch.triangleHashCapacity
+  end
+end
+
+---@param scratch TerrainHashScratch
+---@param a integer
+---@param b integer
+---@return G4EdgeSlot
+local function findEdge(scratch, a, b)
+  if a > b then
+    a, b = b, a
+  end
+  local index = edgeHashIndex(scratch, a, b)
+  while true do
+    local slot = scratch.edgeSlots[index]
+    ---@cast slot G4EdgeSlot
+    if slot.used == 0 then
+      slot.a, slot.b, slot.count, slot.used = a, b, 0, 1
+      return slot
+    end
+    if slot.a == a and slot.b == b then
+      return slot
+    end
+    index = (index + 1) % scratch.edgeHashCapacity
+  end
+end
+
+---@param scratch TerrainHashScratch
+---@param a integer
+---@param b integer
+---@param triangle integer
+---@param ia integer
+---@param ib integer
+local function countEdge(scratch, a, b, triangle, ia, ib)
+  local edge = findEdge(scratch, a, b)
+  edge.count = edge.count + 1
+  if edge.count == 1 then
+    edge.firstTriangle, edge.ia, edge.ib = triangle, ia, ib
+  end
+end
+
+local function sortEdges(edges, count, scratch)
+  ensureArray(scratch, "edgeSort", "edgeSortCapacity", "G4EdgeSlot", count)
+  local source, target = edges, scratch.edgeSort
+  local width = 1
+  while width < count do
+    local start = 0
+    while start < count do
+      local middle, finish = math.min(start + width, count), math.min(start + width * 2, count)
+      local left, right, output = start, middle, start
+      while output < finish do
+        if
+          right >= finish
+          or (
+            left < middle
+            and (
+              source[left].a < source[right].a
+              or (source[left].a == source[right].a and source[left].b <= source[right].b)
+            )
+          )
+        then
+          copyEdgeSlot(target[output], source[left])
+          left = left + 1
+        else
+          copyEdgeSlot(target[output], source[right])
+          right = right + 1
+        end
+        output = output + 1
+      end
+      start = finish
+    end
+    source, target, width = target, source, width * 2
+  end
+  if source ~= edges then
+    ffi.copy(edges, source, count * ffi.sizeof("G4EdgeSlot"))
+  end
+end
+
+local function sortUint32(values, count, scratch)
+  ensureArray(scratch, "uintSort", "uintSortCapacity", "uint32_t", count)
+  local source, target = values, scratch.uintSort
+  local width = 1
+  while width < count do
+    local start = 0
+    while start < count do
+      local middle, finish = math.min(start + width, count), math.min(start + width * 2, count)
+      local left, right, output = start, middle, start
+      while output < finish do
+        if right >= finish or (left < middle and source[left] <= source[right]) then
+          target[output] = source[left]
+          left = left + 1
+        else
+          target[output] = source[right]
+          right = right + 1
+        end
+        output = output + 1
+      end
+      start = finish
+    end
+    source, target, width = target, source, width * 2
+  end
+  if source ~= values then
+    ffi.copy(values, source, count * ffi.sizeof("uint32_t"))
+  end
+end
+
+local function assignPositions(batches, scratch)
+  local totalVertices = 0
+  for _, batch in ipairs(batches) do
+    validateSlice(batch)
+    totalVertices = totalVertices + batch.vertexCount
+  end
+  ensurePositionCapacity(scratch, totalVertices * 2)
+  scratch.positionHashCapacity = scratch.positionCapacity
+  zeroArray(scratch.positionSlots, scratch.positionHashCapacity, ffi.sizeof("G4PositionSlot"))
+  scratch.positionCount = 0
+  local analyses = {}
+  for batchIndex, batch in ipairs(batches) do
+    local analysis = { batch = batch }
+    local field, capacityField = "positionIds" .. batchIndex, "positionIdCapacity" .. batchIndex
+    ensureArray(scratch, field, capacityField, "uint32_t", batch.vertexCount)
+    analysis.positionIds = scratch[field]
+    for localIndex = 0, batch.vertexCount - 1 do
+      local numeric = vertexScalars(batch, localIndex)
+      analysis.positionIds[localIndex] = positionId(scratch, numeric.x, numeric.y, numeric.z, localIndex)
+    end
+    analyses[batchIndex] = analysis
+  end
+  return analyses, scratch.positionCount
+end
+
+local function analyzeBatch(analysis, scratch)
+  local batch, triangleCount = analysis.batch, analysis.batch.indexCount / 3
+  local edgeCapacity, triangleCapacity =
+    nextPowerOfTwo(math.max(2, triangleCount * 6)), nextPowerOfTwo(math.max(2, triangleCount * 2))
+  ensureArray(scratch, "edgeSlots", "edgeHashCapacity", "G4EdgeSlot", edgeCapacity)
+  ensureArray(scratch, "triangleSlots", "triangleHashCapacity", "G4TriangleSlot", triangleCapacity)
+  scratch.edgeHashCapacity, scratch.triangleHashCapacity = edgeCapacity, triangleCapacity
+  zeroArray(scratch.edgeSlots, edgeCapacity, ffi.sizeof("G4EdgeSlot"))
+  zeroArray(scratch.triangleSlots, triangleCapacity, ffi.sizeof("G4TriangleSlot"))
+  for triangle = 0, triangleCount - 1 do
+    local i0, i1, i2 = indexAt(batch, triangle * 3), indexAt(batch, triangle * 3 + 1), indexAt(batch, triangle * 3 + 2)
+    local p0, p1, p2 =
+      tonumber(analysis.positionIds[i0]), tonumber(analysis.positionIds[i1]), tonumber(analysis.positionIds[i2])
+    if p0 ~= p1 and p1 ~= p2 and p2 ~= p0 then
+      ---@cast p0 integer
+      ---@cast p1 integer
+      ---@cast p2 integer
+      local a, b, c = canonical3(p0, p1, p2)
+      local triangleSlot = findTriangle(scratch, a, b, c)
+      if triangleSlot ~= nil then
+        triangleSlot.a, triangleSlot.b, triangleSlot.c, triangleSlot.used = a, b, c, 1
+        countEdge(scratch, p0, p1, triangle, i0, i1)
+        countEdge(scratch, p1, p2, triangle, i1, i2)
+        countEdge(scratch, p2, p0, triangle, i2, i0)
+      end
+    end
+  end
+  local edgeCount = 0
+  for index = 0, edgeCapacity - 1 do
+    local edge = scratch.edgeSlots[index]
+    if edge.used ~= 0 and edge.count == 1 then
+      edgeCount = edgeCount + 1
+    end
+  end
+  ensureArray(analysis, "edges", "edgeCapacity", "G4EdgeSlot", edgeCount)
+  local output = 0
+  for index = 0, edgeCapacity - 1 do
+    local edge = scratch.edgeSlots[index]
+    if edge.used ~= 0 and edge.count == 1 then
+      copyEdgeSlot(analysis.edges[output], edge)
+      output = output + 1
+    end
+  end
+  sortEdges(analysis.edges, edgeCount, scratch)
+  analysis.edgeCount = edgeCount
+  ensureArray(analysis, "pointIds", "pointCapacity", "uint32_t", math.max(1, edgeCount * 2))
+  for edgeIndex = 0, edgeCount - 1 do
+    analysis.pointIds[edgeIndex * 2], analysis.pointIds[edgeIndex * 2 + 1] =
+      analysis.edges[edgeIndex].a, analysis.edges[edgeIndex].b
+  end
+  local pointCount = edgeCount * 2
+  sortUint32(analysis.pointIds, pointCount, scratch)
+  local unique = 0
+  for index = 0, pointCount - 1 do
+    local point = analysis.pointIds[index]
+    if unique == 0 or point ~= analysis.pointIds[unique - 1] then
+      analysis.pointIds[unique], unique = point, unique + 1
+    end
+  end
+  analysis.pointCount = unique
+end
+
+local function splitParam(scratch, aId, bId, pointId)
+  if pointId == aId or pointId == bId then
     return nil
   end
-  if px == bx and py == by and pz == bz then
+  local ax, ay, az = positionCoordinates(scratch, aId)
+  local bx, by, bz = positionCoordinates(scratch, bId)
+  local px, py, pz = positionCoordinates(scratch, pointId)
+  local abx, aby, abz, apx, apy, apz = bx - ax, by - ay, bz - az, px - ax, py - ay, pz - az
+  local length2 = abx * abx + aby * aby + abz * abz
+  if length2 == 0 then
     return nil
   end
-  local abx, aby, abz = bx - ax, by - ay, bz - az
-  local apx, apy, apz = px - ax, py - ay, pz - az
-  local len2 = abx * abx + aby * aby + abz * abz
-  if len2 == 0 then
-    return nil
-  end
-  local t = (apx * abx + apy * aby + apz * abz) / len2
+  local t = (apx * abx + apy * aby + apz * abz) / length2
   if t <= 0 or t >= 1 then
     return nil
   end
-  local cx = apy * abz - apz * aby
-  local cy = apz * abx - apx * abz
-  local cz = apx * aby - apy * abx
-  if (cx * cx + cy * cy + cz * cz) / len2 > TOLERANCE * TOLERANCE then
+  local cx, cy, cz = apy * abz - apz * aby, apz * abx - apx * abz, apx * aby - apy * abx
+  if (cx * cx + cy * cy + cz * cz) / length2 > TOLERANCE * TOLERANCE then
     return nil
   end
   if apx * apx + apy * apy + apz * apz <= TOLERANCE * TOLERANCE then
@@ -197,549 +588,398 @@ local function splitParam(ax, ay, az, bx, by, bz, px, py, pz)
   return t
 end
 
----@class TerrainBoundaryEvent
----@field batchIndex integer
----@field candidateBatch integer
----@field edge TerrainBoundaryEdge
----@field t number
----@field x number
----@field y number
----@field z number
----@field key string
+local function eventEdgeIds(event, analyses)
+  local ids = analyses[event.batchIndex + 1].positionIds
+  local a, b = tonumber(ids[event.ia]), tonumber(ids[event.ib])
+  if a > b then
+    a, b = b, a
+  end
+  return a, b
+end
 
--- Every (batch, boundary edge, boundary vertex of the same or another
--- batch) triple where the vertex lies strictly inside the edge.
--- Separately rendered material batches share spans with breakpoints the
--- spanning batch does not express, and one batch can turn back on its own
--- span the same way; in both cases host sampling disagrees along the two
--- differently segmented but collinear edges. Interior tessellation vertices
--- are never candidates. Generation order is deterministic: stable batch
--- order, canonical edge order, stable candidate order, keyed point order.
----@param batches table[]
----@param analyses TerrainBoundaryAnalysis[]
----@return TerrainBoundaryEvent[]
-local function collectEvents(batches, analyses)
-  local events = {}
-  for i, batch in ipairs(batches) do
-    local analysis = analyses[i]
-    for _, edge in ipairs(analysis.edges) do
-      local va = batch.vertices[edge.ia]
-      local vb = batch.vertices[edge.ib]
-      for j = 1, #batches do
-        for _, point in ipairs(analyses[j].boundaryPoints) do
-          local t = splitParam(va.x, va.y, va.z, vb.x, vb.y, vb.z, point.x, point.y, point.z)
+local function eventLess(a, b, analyses)
+  if a.batchIndex ~= b.batchIndex then
+    return a.batchIndex < b.batchIndex
+  end
+  local aa, ab, ba, bb = eventEdgeIds(a, analyses)
+  ba, bb = eventEdgeIds(b, analyses)
+  if aa ~= ba then
+    return aa < ba
+  end
+  if ab ~= bb then
+    return ab < bb
+  end
+  if a.candidateBatch ~= b.candidateBatch then
+    return a.candidateBatch < b.candidateBatch
+  end
+  if a.t ~= b.t then
+    return a.t < b.t
+  end
+  return a.pointVertex < b.pointVertex
+end
+
+local function sortEvents(scratch, count, analyses)
+  ensureArray(scratch, "eventSort", "eventSortCapacity", "G4SplitEvent", count)
+  local source, target, width = scratch.events, scratch.eventSort, 1
+  while width < count do
+    local start = 0
+    while start < count do
+      local middle, finish = math.min(start + width, count), math.min(start + width * 2, count)
+      local left, right, output = start, middle, start
+      while output < finish do
+        if right >= finish or (left < middle and eventLess(source[left], source[right], analyses)) then
+          copyEvent(target[output], source[left])
+          left = left + 1
+        else
+          copyEvent(target[output], source[right])
+          right = right + 1
+        end
+        output = output + 1
+      end
+      start = finish
+    end
+    source, target, width = target, source, width * 2
+  end
+  if source ~= scratch.events then
+    ffi.copy(scratch.events, source, count * ffi.sizeof("G4SplitEvent"))
+  end
+end
+
+local function collectEvents(analyses, scratch)
+  scratch.eventCount = 0
+  for batchIndex, analysis in ipairs(analyses) do
+    for edgeIndex = 0, analysis.edgeCount - 1 do
+      local edge = analysis.edges[edgeIndex]
+      for candidateBatch, candidate in ipairs(analyses) do
+        for pointIndex = 0, candidate.pointCount - 1 do
+          local pointId = tonumber(candidate.pointIds[pointIndex])
+          local t = splitParam(scratch, edge.a, edge.b, pointId)
           if t ~= nil then
-            events[#events + 1] = {
-              batchIndex = i,
-              candidateBatch = j,
-              edge = edge,
-              t = t,
-              x = point.x,
-              y = point.y,
-              z = point.z,
-              key = point.key,
-            }
+            local index = scratch.eventCount
+            ensureArray(scratch, "events", "eventCapacity", "G4SplitEvent", index + 1)
+            local event = scratch.events[index]
+            event.batchIndex, event.candidateBatch, event.ia, event.ib, event.pointVertex, event.t =
+              batchIndex - 1, candidateBatch - 1, edge.ia, edge.ib, pointId, t
+            event.pad = 0
+            scratch.eventCount = index + 1
           end
         end
       end
     end
   end
-  return events
+  sortEvents(scratch, scratch.eventCount, analyses)
+  return scratch.eventCount
 end
 
----@class TerrainBoundaryDiagnostic
----@field batchIndex integer
----@field materialIndex integer|nil
----@field edgeStart { x: number, y: number, z: number }
----@field edgeEnd { x: number, y: number, z: number }
----@field candidateBatch integer
----@field candidateMaterial integer|nil
----@field position { x: number, y: number, z: number }
-
--- Pure inspection helper: every unmatched boundary T-junction, sorted by
--- batch, edge, candidate, and position. Empty after conformance.
--- Shares the same boundary analysis as repair, so both agree on what is a
--- boundary; overused edges are excluded from boundary analysis by contract
--- and never surface as spurious junctions here either.
----@param batches table[]
----@return TerrainBoundaryDiagnostic[]
-function TerrainBoundaryConformer.findTJunctions(batches)
-  assert(type(batches) == "table", "findTJunctions requires a compiled batch list")
-  local analyses = {}
-  for i, batch in ipairs(batches) do
-    analyses[i] = analyzeBatch(batch)
+local function eventSameEdge(a, b, analyses)
+  if a.batchIndex ~= b.batchIndex then
+    return false
   end
+  local aa, ab = eventEdgeIds(a, analyses)
+  local ba, bb = eventEdgeIds(b, analyses)
+  return aa == ba and ab == bb
+end
+
+local function collectBreaks(scratch, start, finish)
+  ensureArray(scratch, "breaks", "breakCapacity", "G4SplitEvent", math.max(1, finish - start))
+  local count = 0
+  for index = start, finish - 1 do
+    local event = scratch.events[index]
+    local duplicate = false
+    for existing = 0, count - 1 do
+      if scratch.breaks[existing].pointVertex == event.pointVertex then
+        duplicate = true
+        break
+      end
+    end
+    if not duplicate then
+      copyEvent(scratch.breaks[count], event)
+      count = count + 1
+    end
+  end
+  for index = 1, count - 1 do
+    local value = scratch.breaks[index]
+    local cursor = index - 1
+    while
+      cursor >= 0
+      and (
+        scratch.breaks[cursor].t > value.t
+        or (scratch.breaks[cursor].t == value.t and scratch.breaks[cursor].pointVertex > value.pointVertex)
+      )
+    do
+      copyEvent(scratch.breaks[cursor + 1], scratch.breaks[cursor])
+      cursor = cursor - 1
+    end
+    copyEvent(scratch.breaks[cursor + 1], value)
+  end
+  return count
+end
+
+local function conformErrorContext(context, batchIndex, batch, a, b)
+  local out = { batchIndex = batchIndex }
+  if type(context) == "table" then
+    for _, key in ipairs({ "mapId", "mapSymbol", "role", "modelArchive", "modelMemberId", "modelName" }) do
+      if context[key] ~= nil then
+        out[key] = context[key]
+      end
+    end
+  end
+  out.materialIndex = batch.materialIndex
+  local va, vb = vertexScalars(batch, a), vertexScalars(batch, b)
+  out.edgeStart, out.edgeEnd = { x = va.x, y = va.y, z = va.z }, { x = vb.x, y = vb.y, z = vb.z }
+  out.colorSourceA, out.colorSourceB =
+    batch.arena.attrib[batch.vertexOffset + a].colorSource, batch.arena.attrib[batch.vertexOffset + b].colorSource
+  return out
+end
+
+local function validateEventGroups(batches, analyses, scratch, eventCount, context)
+  local total, index = 0, 0
+  ensureArray(scratch, "plannedCounts", "plannedCountCapacity", "uint32_t", #analyses)
+  ffi.fill(scratch.plannedCounts, #analyses * ffi.sizeof("uint32_t"), 0)
+  while index < eventCount do
+    local first, finish = scratch.events[index], index + 1
+    while finish < eventCount and eventSameEdge(first, scratch.events[finish], analyses) do
+      finish = finish + 1
+    end
+    local count = collectBreaks(scratch, index, finish)
+    local batchIndex, batch = first.batchIndex + 1, batches[first.batchIndex + 1]
+    local attribA, attribB =
+      batch.arena.attrib[batch.vertexOffset + first.ia], batch.arena.attrib[batch.vertexOffset + first.ib]
+    if attribA.colorSource ~= attribB.colorSource then
+      Errors.raise(
+        "MAP_COMPILE_TERRAIN_BOUNDARY_COLOR_SOURCE_CONFLICT",
+        "terrain boundary edge endpoints disagree on colorSource ("
+          .. tostring(attribA.colorSource)
+          .. " ~= "
+          .. tostring(attribB.colorSource)
+          .. "); cannot interpolate the inserted vertex",
+        conformErrorContext(context, batchIndex, batch, first.ia, first.ib)
+      )
+    end
+    total = total + count
+    scratch.plannedCounts[batchIndex - 1] = scratch.plannedCounts[batchIndex - 1] + count
+    index = finish
+  end
+  return total, scratch.plannedCounts
+end
+
+local function lerpByte(a, b, t)
+  return math.max(0, math.min(255, math.floor(a + (b - a) * t + 0.5)))
+end
+
+local function appendInterpolatedVertex(batch, scratch, localIndex, event, pointId, t)
+  local numericA, attribA = vertexScalars(batch, event.ia)
+  local numericB, attribB = vertexScalars(batch, event.ib)
+  local x, y, z = positionCoordinates(scratch, pointId)
+  local destination = batch.arena.numeric[batch.vertexOffset + localIndex]
+  destination.x, destination.y, destination.z = x, y, z
+  destination.u, destination.v = numericA.u + (numericB.u - numericA.u) * t, numericA.v + (numericB.v - numericA.v) * t
+  destination.nx, destination.ny, destination.nz =
+    numericA.nx + (numericB.nx - numericA.nx) * t,
+    numericA.ny + (numericB.ny - numericA.ny) * t,
+    numericA.nz + (numericB.nz - numericA.nz) * t
+  local attrib = batch.arena.attrib[batch.vertexOffset + localIndex]
+  attrib.r, attrib.g, attrib.b, attrib.a =
+    lerpByte(attribA.r, attribB.r, t),
+    lerpByte(attribA.g, attribB.g, t),
+    lerpByte(attribA.b, attribB.b, t),
+    lerpByte(attribA.a, attribB.a, t)
+  attrib.colorSource = attribA.colorSource
+end
+
+local function splitTriangle(triangles, triangleCount, owner, start, finish, point)
+  for index = triangleCount, owner + 1, -1 do
+    ffi.copy(triangles[index], triangles[index - 1], TRIANGLE_SLOT_SIZE)
+  end
+  local tri = triangles[owner]
+  local firstA, firstB, firstC, secondA, secondB, secondC
+  if (tri.a == start or tri.a == finish) and (tri.b == start or tri.b == finish) then
+    firstA, firstB, firstC, secondA, secondB, secondC = tri.a, point, tri.c, point, tri.b, tri.c
+  elseif (tri.b == start or tri.b == finish) and (tri.c == start or tri.c == finish) then
+    firstA, firstB, firstC, secondA, secondB, secondC = tri.b, point, tri.a, point, tri.c, tri.a
+  else
+    firstA, firstB, firstC, secondA, secondB, secondC = tri.c, point, tri.b, point, tri.a, tri.b
+  end
+  tri.a, tri.b, tri.c = firstA, firstB, firstC
+  triangles[owner + 1].a, triangles[owner + 1].b, triangles[owner + 1].c = secondA, secondB, secondC
+  return triangleCount + 1
+end
+
+local function applyBatch(batch, analyses, scratch, eventStart, eventFinish, plannedCount)
+  local oldOffset, oldCount, triangleCount = batch.vertexOffset, batch.vertexCount, batch.indexCount / 3
+  ensureArray(scratch, "triangles", "triangleCapacity", "G4TriangleSlot", triangleCount + plannedCount)
+  for triangle = 0, triangleCount - 1 do
+    local tri = scratch.triangles[triangle]
+    tri.a, tri.b, tri.c, tri.used =
+      indexAt(batch, triangle * 3), indexAt(batch, triangle * 3 + 1), indexAt(batch, triangle * 3 + 2), 1
+  end
+  local arena, destinationOffset = batch.arena, batch.arena.vertexCount
+  arena:reserve(oldCount + plannedCount, triangleCount * 3 + plannedCount * 3)
+  ffi.copy(arena.numeric[destinationOffset], arena.numeric[oldOffset], oldCount * ffi.sizeof("G4GxVertexNumeric"))
+  ffi.copy(arena.attrib[destinationOffset], arena.attrib[oldOffset], oldCount * ffi.sizeof("G4GxVertexAttrib"))
+  arena.vertexCount, batch.vertexOffset = destinationOffset + oldCount, destinationOffset
+  local localVertexCount, index = oldCount, eventStart
+  while index < eventFinish do
+    local first, finish = scratch.events[index], index + 1
+    while finish < eventFinish and eventSameEdge(first, scratch.events[finish], analyses) do
+      finish = finish + 1
+    end
+    local breakCount = collectBreaks(scratch, index, finish)
+    local start, edgeFinish = first.ia, first.ib
+    for breakIndex = 0, breakCount - 1 do
+      local br = scratch.breaks[breakIndex]
+      appendInterpolatedVertex(batch, scratch, localVertexCount, first, br.pointVertex, br.t)
+      local owner
+      for triangle = 0, triangleCount - 1 do
+        local tri = scratch.triangles[triangle]
+        if
+          (tri.a == start or tri.b == start or tri.c == start)
+          and (tri.a == edgeFinish or tri.b == edgeFinish or tri.c == edgeFinish)
+        then
+          owner = triangle
+          break
+        end
+      end
+      assert(owner ~= nil, "terrain boundary repair found no owning triangle for a planned split")
+      triangleCount = splitTriangle(scratch.triangles, triangleCount, owner, start, edgeFinish, localVertexCount)
+      start, localVertexCount, arena.vertexCount =
+        localVertexCount, localVertexCount + 1, batch.vertexOffset + localVertexCount + 1
+    end
+    index = finish
+  end
+  local indexOffset = arena.indexCount
+  arena:reserve(0, triangleCount * 3)
+  for triangle = 0, triangleCount - 1 do
+    local tri = scratch.triangles[triangle]
+    arena.indices[indexOffset + triangle * 3], arena.indices[indexOffset + triangle * 3 + 1], arena.indices[indexOffset + triangle * 3 + 2] =
+      tri.a, tri.b, tri.c
+  end
+  arena.indexCount, batch.vertexCount = indexOffset + triangleCount * 3, localVertexCount
+  batch.indexOffset, batch.indexCount = indexOffset, triangleCount * 3
+end
+
+local function errorContext(context, info)
+  local out = {}
+  if type(context) == "table" then
+    for _, key in ipairs({ "mapId", "mapSymbol", "role", "modelArchive", "modelMemberId", "modelName" }) do
+      if context[key] ~= nil then
+        out[key] = context[key]
+      end
+    end
+  end
+  for key, value in pairs(info) do
+    out[key] = value
+  end
+  return out
+end
+
+local function conformPasses(batches, context, scratch)
+  local initialTris, refinements, pass = nil, 0, 0
+  while true do
+    local analyses, distinctPositions = assignPositions(batches, scratch)
+    local triCount = 0
+    for _, batch in ipairs(batches) do
+      triCount = triCount + batch.indexCount / 3
+    end
+    initialTris = initialTris or triCount
+    for _, analysis in ipairs(analyses) do
+      analyzeBatch(analysis, scratch)
+    end
+    local eventCount = collectEvents(analyses, scratch)
+    if eventCount == 0 then
+      return batches
+    end
+    pass = pass + 1
+    local planned, plannedCounts = validateEventGroups(batches, analyses, scratch, eventCount, context)
+    local maxRefinements = initialTris * distinctPositions
+    if planned == 0 or refinements + planned > maxRefinements then
+      Errors.raise(
+        "MAP_COMPILE_TERRAIN_BOUNDARY_DID_NOT_CONVERGE",
+        "terrain boundary repair exceeded its physical refinement budget",
+        errorContext(context, {
+          batchCount = #batches,
+          passes = pass,
+          refinements = refinements,
+          maxRefinements = maxRefinements,
+          remainingEvents = eventCount,
+        })
+      )
+    end
+    local eventStart = 0
+    for batchIndex, batch in ipairs(batches) do
+      local batchStart = eventStart
+      while eventStart < eventCount and scratch.events[eventStart].batchIndex == batchIndex - 1 do
+        eventStart = eventStart + 1
+      end
+      if eventStart > batchStart then
+        applyBatch(batch, analyses, scratch, batchStart, eventStart, plannedCounts[batchIndex - 1])
+      end
+    end
+    refinements = refinements + planned
+  end
+end
+
+function TerrainBoundaryConformer.findTJunctions(batches)
+  assert(type(batches) == "table" and #batches > 0, "findTJunctions requires compiled geometry slices")
+  for _, batch in ipairs(batches) do
+    validateSlice(batch)
+  end
+  local scratch = scratchFor()
+  local analyses = assignPositions(batches, scratch)
+  for _, analysis in ipairs(analyses) do
+    analyzeBatch(analysis, scratch)
+  end
+  local eventCount = collectEvents(analyses, scratch)
   local diagnostics = {}
-  for _, event in ipairs(collectEvents(batches, analyses)) do
-    local batch = batches[event.batchIndex]
-    local other = batches[event.candidateBatch]
-    local va = batch.vertices[event.edge.ia]
-    local vb = batch.vertices[event.edge.ib]
+  for index = 0, eventCount - 1 do
+    local event = scratch.events[index]
+    local batchIndex, candidateBatch = event.batchIndex + 1, event.candidateBatch + 1
+    local batch, other = batches[batchIndex], batches[candidateBatch]
+    local va, vb = vertexScalars(batch, event.ia), vertexScalars(batch, event.ib)
+    local x, y, z = positionCoordinates(scratch, event.pointVertex)
     diagnostics[#diagnostics + 1] = {
-      batchIndex = event.batchIndex,
+      batchIndex = batchIndex,
       materialIndex = batch.materialIndex,
       edgeStart = { x = va.x, y = va.y, z = va.z },
       edgeEnd = { x = vb.x, y = vb.y, z = vb.z },
-      candidateBatch = event.candidateBatch,
+      candidateBatch = candidateBatch,
       candidateMaterial = other.materialIndex,
-      position = { x = event.x, y = event.y, z = event.z },
+      position = { x = x, y = y, z = z },
     }
   end
   return diagnostics
 end
 
-local function lerp(a, b, t)
-  return a + t * (b - a)
-end
-
-local function lerpByte(a, b, t)
-  local v = math.floor(lerp(a, b, t) + 0.5)
-  if v < 0 then
-    return 0
-  end
-  if v > 255 then
-    return 255
-  end
-  return v
-end
-
--- The inserted vertex belongs to the coarse batch: position is copied
--- exactly from the shared breakpoint, u/v and normals interpolate in the
--- batch's stored domains, and byte colors interpolate with deterministic
--- rounding. colorSource is categorical and resolved by the caller.
-local function interpolateRecord(va, vb, t, px, py, pz)
-  return {
-    x = px,
-    y = py,
-    z = pz,
-    u = lerp(va.u, vb.u, t),
-    v = lerp(va.v, vb.v, t),
-    nx = lerp(va.nx, vb.nx, t),
-    ny = lerp(va.ny, vb.ny, t),
-    nz = lerp(va.nz, vb.nz, t),
-    r = lerpByte(va.r, vb.r, t),
-    g = lerpByte(va.g, vb.g, t),
-    b = lerpByte(va.b, vb.b, t),
-    a = lerpByte(va.a, vb.a, t),
-    colorSource = va.colorSource,
-  }
-end
-
-local function conformErrorContext(context, batchIndex, batch, va, vb)
-  local out = { batchIndex = batchIndex }
-  if type(context) == "table" then
-    for _, key in ipairs({ "mapId", "mapSymbol", "role", "modelArchive", "modelMemberId", "modelName" }) do
-      local value = context[key]
-      if value ~= nil then
-        out[key] = value
-      end
-    end
-  end
-  out.materialIndex = batch.materialIndex
-  out.edgeStart = { x = va.x, y = va.y, z = va.z }
-  out.edgeEnd = { x = vb.x, y = vb.y, z = vb.z }
-  out.colorSourceA = va.colorSource
-  out.colorSourceB = vb.colorSource
-  return out
-end
-
----@class TerrainSplitItem
----@field ia0 integer 0-based index of the original edge start
----@field ib0 integer 0-based index of the original edge end
----@field breaks { t: number, record: table<string, unknown> }[] inserted points in parametric order
-
--- Splits the owning triangle of each boundary subsegment in turn. Every
--- split replaces one triangle with two strict sub-triangles, so winding,
--- area, and the partition property hold by construction; the next
--- subsegment's owner is always the unique triangle holding both endpoints.
----@param batch table<string, unknown>
----@param items TerrainSplitItem[]
----@param makeErrorContext fun(batch: table<string, unknown>): table<string, unknown>|nil error-context factory for the owning batch
-local function applyItems(batch, items, makeErrorContext)
-  if #items == 0 then
-    return
-  end
-  local tris = {}
-  for ti = 1, math.floor(#batch.indices / 3) do
-    tris[ti] = { batch.indices[(ti - 1) * 3 + 1], batch.indices[(ti - 1) * 3 + 2], batch.indices[(ti - 1) * 3 + 3] }
-  end
-  for _, item in ipairs(items) do
-    local start = item.ia0
-    for _, br in ipairs(item.breaks) do
-      batch.vertices[#batch.vertices + 1] = br.record
-      local p = #batch.vertices - 1
-      local owner = nil
-      for oi, tri in ipairs(tris) do
-        local hasStart = tri[1] == start or tri[2] == start or tri[3] == start
-        local hasEnd = tri[1] == item.ib0 or tri[2] == item.ib0 or tri[3] == item.ib0
-        if hasStart and hasEnd then
-          owner = oi
-          break
-        end
-      end
-      if owner == nil then
-        local errorContext = nil
-        if makeErrorContext ~= nil then
-          errorContext = makeErrorContext(batch)
-        end
-        Errors.raise(
-          "MAP_COMPILE_TERRAIN_BOUNDARY_DID_NOT_CONVERGE",
-          "terrain boundary repair found no owning triangle for a planned split",
-          errorContext
-        )
-        assert(owner ~= nil, "unreachable: missing owner already raised")
-      end
-      local tri = tris[owner]
-      local first, second
-      if (tri[1] == start or tri[1] == item.ib0) and (tri[2] == start or tri[2] == item.ib0) then
-        first = { tri[1], p, tri[3] }
-        second = { p, tri[2], tri[3] }
-      elseif (tri[2] == start or tri[2] == item.ib0) and (tri[3] == start or tri[3] == item.ib0) then
-        first = { tri[2], p, tri[1] }
-        second = { p, tri[3], tri[1] }
-      else
-        first = { tri[3], p, tri[2] }
-        second = { p, tri[1], tri[2] }
-      end
-      tris[owner] = first
-      table.insert(tris, owner + 1, second)
-      start = p
-    end
-  end
-  local flat = {}
-  for _, tri in ipairs(tris) do
-    flat[#flat + 1] = tri[1]
-    flat[#flat + 1] = tri[2]
-    flat[#flat + 1] = tri[3]
-  end
-  batch.indices = flat
-end
-
-local function snapshotValue(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  local out = {}
-  for k, v in pairs(value) do
-    out[snapshotValue(k)] = snapshotValue(v)
-  end
-  return out
-end
-
--- Plain-data copies of every batch, taken before the first mutation so a
--- later pass raising (for example a categorical conflict on a span first
--- split after an earlier pass) restores the input untouched.
-local function snapshotBatches(batches)
-  local out = {}
-  for i, batch in ipairs(batches) do
-    out[i] = snapshotValue(batch)
-  end
-  return out
-end
-
-local function restoreBatches(batches, pristine)
-  for i, batch in ipairs(batches) do
-    local saved = pristine[i]
-    if saved ~= nil then
-      for k in pairs(batch) do
-        batch[k] = nil
-      end
-      for k, v in pairs(saved) do
-        batch[k] = v
-      end
-    end
-  end
-end
-
-local function countTopology(batches)
-  local tris = 0
-  local verts = 0
-  for _, batch in ipairs(batches) do
-    tris = tris + math.floor(#batch.indices / 3)
-    verts = verts + #batch.vertices
-  end
-  return tris, verts
-end
-
--- Physical input size for the convergence budget: total physical triangle
--- records across the eligible batches plus the finite set of distinct
--- geometric vertex positions those batches express at entry.
----@param batches table[]
----@return integer triCount
----@return integer distinctPositions
-local function physicalTopology(batches)
-  local triCount = 0
-  local positions = {}
-  for _, batch in ipairs(batches) do
-    triCount = triCount + math.floor(#batch.indices / 3)
-    for _, v in ipairs(batch.vertices) do
-      positions[positionKey(v.x, v.y, v.z)] = true
-    end
-  end
-  local distinct = 0
-  for _ in pairs(positions) do
-    distinct = distinct + 1
-  end
-  return triCount, distinct
-end
-
--- Context for the did-not-converge producer error: stable map/model/role
--- source fields plus the progress accounting and the remaining work.
----@param context table<string, unknown>|nil
----@param info table<string, unknown>
----@return table<string, unknown>
-local function convergenceErrorContext(context, info)
-  local out = {}
-  if type(context) == "table" then
-    for _, key in ipairs({ "mapId", "mapSymbol", "role", "modelArchive", "modelMemberId", "modelName" }) do
-      local value = context[key]
-      if value ~= nil then
-        out[key] = value
-      end
-    end
-  end
-  for k, v in pairs(info) do
-    out[k] = v
-  end
-  return out
-end
-
-local function conformPasses(batches, context)
-  -- Convergence accounting from the physical input topology.
-  --
-  -- Geometric analysis versus physical ownership: analyzeBatch collapses
-  -- exact duplicate geometric triangles (identical position triples) so a
-  -- shared span counts once, while every physical triangle record stays in
-  -- the compiled batch. applyItems refines only the currently matched
-  -- physical owner of an edge: the representative that analysis saw. After
-  -- that owner is split at the breakpoint it no longer spans the point, but
-  -- an unsplit exact duplicate may still span it and become the
-  -- representative on the next pass. One pass therefore refines at most one
-  -- duplicate owner per geometric span, and D duplicate owners of one span
-  -- legitimately need D passes. A bound derived from the batch count cannot
-  -- cover that domain.
-  --
-  -- Progress invariant: a pass with no events has converged. A pass with
-  -- events must perform at least one real topology refinement: each planned
-  -- break inserts one breakpoint vertex (copied exactly from an already
-  -- expressed boundary position) and replaces one spanning triangle with two
-  -- strict sub-triangles, so physical triangle and vertex counts strictly
-  -- grow and no already-expressed breakpoint is ever removed. Events with no
-  -- topology change mean the producer has stalled and fail immediately.
-  --
-  -- Finite budget proof: splits never create a new geometric position; every
-  -- inserted vertex copies an already expressed boundary position, so the
-  -- global distinct-position set of size G measured at entry never grows.
-  -- Fix one initial physical triangle and follow its descendant lineage.
-  -- Each split of that lineage inserts a position from the entry set that
-  -- the lineage did not previously express (an already expressed breakpoint
-  -- cannot lie strictly inside a non-degenerate descendant edge), and no
-  -- split removes an expressed breakpoint. Distinct lineage splits are
-  -- therefore bounded by G, each lineage yields at most G + 1 triangles, and
-  -- over T initial physical triangles the whole model admits at most T * G
-  -- legitimate refinements. Every working pass performs at least one, so the
-  -- pass count is bounded by the same budget plus the final empty pass. The
-  -- guard below enforces exactly that; it is deliberately conservative (real
-  -- terrain converges in a handful of passes) so reaching it means a
-  -- producer bug, not a large but valid model.
-  local initialTris, distinctPositions = physicalTopology(batches)
-  local maxRefinements = initialTris * distinctPositions
-  local batchCount = #batches
-  local refinements = 0
-  local pass = 0
-  while true do
-    local analyses = {}
-    for i, batch in ipairs(batches) do
-      analyses[i] = analyzeBatch(batch)
-    end
-    local events = collectEvents(batches, analyses)
-    if #events == 0 then
-      return batches
-    end
-    pass = pass + 1
-    local beforeTris, beforeVerts = countTopology(batches)
-    -- Group events per (batch, edge), deduplicating identical positions so
-    -- one span with n internal breakpoints becomes n+1 boundary segments.
-    local plans = {}
-    local planned = {}
-    for _, event in ipairs(events) do
-      local group = event.batchIndex .. "|" .. event.edge.key .. "|" .. event.key
-      if planned[group] == nil then
-        planned[group] = true
-        local list = plans[event.batchIndex]
-        if list == nil then
-          list = {}
-          plans[event.batchIndex] = list
-        end
-        local entry = nil
-        for _, candidate in ipairs(list) do
-          if candidate.edge.key == event.edge.key then
-            entry = candidate
-            break
-          end
-        end
-        if entry == nil then
-          entry = { edge = event.edge, breaks = {} }
-          list[#list + 1] = entry
-        end
-        entry.breaks[#entry.breaks + 1] = event
-      end
-    end
-    -- Resolve every inserted record before mutating anything, so a
-    -- categorical conflict fails before partial repair.
-    local itemsByBatch = {}
-    local plannedRefinements = 0
-    for i = 1, #batches do
-      local list = plans[i]
-      if list ~= nil then
-        table.sort(list, function(a, b)
-          return a.edge.key < b.edge.key
-        end)
-        local batch = batches[i]
-        local items = {}
-        for _, entry in ipairs(list) do
-          table.sort(entry.breaks, function(a, b)
-            if a.t ~= b.t then
-              return a.t < b.t
-            end
-            return a.key < b.key
-          end)
-          local va = batch.vertices[entry.edge.ia]
-          local vb = batch.vertices[entry.edge.ib]
-          if va.colorSource ~= vb.colorSource then
-            Errors.raise(
-              "MAP_COMPILE_TERRAIN_BOUNDARY_COLOR_SOURCE_CONFLICT",
-              "terrain boundary edge endpoints disagree on colorSource ("
-                .. tostring(va.colorSource)
-                .. " ~= "
-                .. tostring(vb.colorSource)
-                .. "); cannot interpolate the inserted vertex",
-              conformErrorContext(context, i, batch, va, vb)
-            )
-          end
-          local breaks = {}
-          for _, br in ipairs(entry.breaks) do
-            breaks[#breaks + 1] = { t = br.t, record = interpolateRecord(va, vb, br.t, br.x, br.y, br.z) }
-          end
-          plannedRefinements = plannedRefinements + #breaks
-          items[#items + 1] = { ia0 = entry.edge.ia - 1, ib0 = entry.edge.ib - 1, breaks = breaks }
-        end
-        itemsByBatch[i] = items
-      end
-    end
-    local first = events[1]
-    local firstBatch = first ~= nil and batches[first.batchIndex] or nil
-    local function describeRemaining()
-      local info = {
-        batchCount = batchCount,
-        passes = pass,
-        refinements = refinements,
-        maxRefinements = maxRefinements,
-        remainingEvents = #events,
-      }
-      if first ~= nil then
-        info.batchIndex = first.batchIndex
-        info.candidateBatch = first.candidateBatch
-        if firstBatch ~= nil then
-          info.materialIndex = firstBatch.materialIndex
-        end
-        info.position = { x = first.x, y = first.y, z = first.z }
-      end
-      return convergenceErrorContext(context, info)
-    end
-    if plannedRefinements == 0 then
-      Errors.raise(
-        "MAP_COMPILE_TERRAIN_BOUNDARY_DID_NOT_CONVERGE",
-        "terrain boundary repair stalled: "
-          .. tostring(#events)
-          .. " repair event(s) produced no planned refinement on pass "
-          .. tostring(pass),
-        describeRemaining()
-      )
-    end
-    if refinements + plannedRefinements > maxRefinements then
-      Errors.raise(
-        "MAP_COMPILE_TERRAIN_BOUNDARY_DID_NOT_CONVERGE",
-        "terrain boundary repair exceeded its physical refinement budget ("
-          .. tostring(refinements + plannedRefinements)
-          .. " > "
-          .. tostring(maxRefinements)
-          .. ")",
-        describeRemaining()
-      )
-    end
-    for i = 1, #batches do
-      local items = itemsByBatch[i]
-      if items ~= nil then
-        local batchIndex = i
-        applyItems(batches[i], items, function(batch)
-          local info = {
-            batchCount = batchCount,
-            batchIndex = batchIndex,
-            passes = pass,
-            refinements = refinements,
-            maxRefinements = maxRefinements,
-            remainingEvents = #events,
-          }
-          if batch ~= nil then
-            info.materialIndex = batch.materialIndex
-          end
-          return convergenceErrorContext(context, info)
-        end)
-      end
-    end
-    refinements = refinements + plannedRefinements
-    local afterTris, afterVerts = countTopology(batches)
-    if afterTris <= beforeTris or afterVerts <= beforeVerts then
-      Errors.raise(
-        "MAP_COMPILE_TERRAIN_BOUNDARY_DID_NOT_CONVERGE",
-        "terrain boundary repair produced no topology change on pass " .. tostring(pass),
-        describeRemaining()
-      )
-    end
-    if pass > maxRefinements then
-      Errors.raise(
-        "MAP_COMPILE_TERRAIN_BOUNDARY_DID_NOT_CONVERGE",
-        "terrain boundary repair exceeded its physical pass budget on pass " .. tostring(pass),
-        describeRemaining()
-      )
-    end
-  end
-end
-
--- Repairs every collected T-junction, iterating to closure: each pass
--- re-derives geometric boundary analysis from the current physical
--- topology until no unmatched T-junction remains. Analysis collapses exact
--- duplicate geometric triangles so a shared span counts once, while the
--- batches retain every physical triangle owner; refinement splits only the
--- currently matched physical owner of a span at the breakpoint. The split
--- owner no longer spans that point, but an unsplit duplicate may still do
--- so and become visible on a later pass, so later passes are legitimate and
--- expected. Refinement is monotone at exact shared coordinates -- splits
--- only add breakpoint vertices copied from already expressed positions,
--- never move or remove them -- and each split consumes one unit of the
--- finite T * G physical refinement budget (T initial physical triangles, G
--- entry distinct positions), so every finite repairable topology reaches
--- closure and only a stalled or over-budget producer fails. Later passes
--- cannot fail in ways the first pass did not already rule out for valid
--- topology: splits never raise an edge count (a count-1 span becomes two
--- count-1 subsegments plus one count-2 interior edge) and never invalidate
--- an index, while a categorical check on a subsegment reduces to the check
--- on its original span. The entry snapshot still restores every batch when
--- any pass raises, so a failure never publishes a partially conformed
--- model.
----@param batches table[]
----@param context table<string, unknown>|nil map/model/role source context for producer errors
----@return table[]
 function TerrainBoundaryConformer.conform(batches, context)
-  assert(type(batches) == "table", "conform requires a compiled batch list")
-  local pristine = snapshotBatches(batches)
-  local ok, err = pcall(conformPasses, batches, context)
-  if not ok then
-    restoreBatches(batches, pristine)
-    error(err, 0)
+  assert(type(batches) == "table" and #batches > 0, "conform requires compiled geometry slices")
+  for _, batch in ipairs(batches) do
+    validateSlice(batch)
   end
-  return batches
+  local arena = batches[1].arena
+  for _, batch in ipairs(batches) do
+    assert(batch.arena == arena, "conformance batches must share one geometry arena")
+  end
+  local saved = {}
+  for index, batch in ipairs(batches) do
+    saved[index] = {
+      vertexOffset = batch.vertexOffset,
+      vertexCount = batch.vertexCount,
+      indexOffset = batch.indexOffset,
+      indexCount = batch.indexCount,
+    }
+  end
+  local oldVertexCount, oldIndexCount = arena.vertexCount, arena.indexCount
+  local ok, result = pcall(conformPasses, batches, context, scratchFor(context))
+  if not ok then
+    arena.vertexCount, arena.indexCount = oldVertexCount, oldIndexCount
+    for index, batch in ipairs(batches) do
+      local state = saved[index]
+      batch.vertexOffset, batch.vertexCount, batch.indexOffset, batch.indexCount =
+        state.vertexOffset, state.vertexCount, state.indexOffset, state.indexCount
+    end
+    error(result, 0)
+  end
+  return result
 end
 
 return TerrainBoundaryConformer

@@ -15,6 +15,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
+local GeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
@@ -56,8 +57,8 @@ local function V(x, y, z, u, v)
 end
 
 -- Two batches sharing the span x=0, z in [0,4]: the coarse side is one quad,
--- the fine side breaks the span at P=(0,1,2). UVs are texel units over the
--- 8x8 fixture texture.
+-- the fine side breaks the span at P=(0,1,2). UVs are normalized for the
+-- 8x8 fixture texture, as they are at the MeshCompiler seam.
 local function cannedBatches()
   local coarse = {
     nodeIndex = 0,
@@ -84,7 +85,39 @@ local function cannedBatches()
     },
     indices = { 1, 0, 2, 1, 2, 3, 3, 2, 4, 3, 4, 5 },
   }
-  return { coarse, fine }
+  local arena = GeometryBuffer.new()
+  local batches = {}
+  for index, source in ipairs({ coarse, fine }) do
+    arena:reserve(#source.vertices, #source.indices)
+    local vertexOffset, indexOffset = arena.vertexCount, arena.indexCount
+    for vertexIndex, vertex in ipairs(source.vertices) do
+      local numeric = arena.numeric[vertexOffset + vertexIndex - 1]
+      numeric.x, numeric.y, numeric.z = vertex.x, vertex.y, vertex.z
+      numeric.u, numeric.v = vertex.u / 8, vertex.v / 8
+      numeric.nx, numeric.ny, numeric.nz = vertex.nx, vertex.ny, vertex.nz
+      local attrib = arena.attrib[vertexOffset + vertexIndex - 1]
+      attrib.r, attrib.g, attrib.b, attrib.a = vertex.r, vertex.g, vertex.b, vertex.a
+      attrib.colorSource = vertex.colorSource
+    end
+    for indexValue, value in ipairs(source.indices) do
+      arena.indices[indexOffset + indexValue - 1] = value
+    end
+    arena.vertexCount = vertexOffset + #source.vertices
+    arena.indexCount = indexOffset + #source.indices
+    batches[index] = {
+      nodeIndex = source.nodeIndex,
+      materialIndex = source.materialIndex,
+      shapeIndex = source.shapeIndex,
+      polygonAttrRaw = source.polygonAttrRaw,
+      transformMode = source.transformMode,
+      arena = arena,
+      vertexOffset = vertexOffset,
+      vertexCount = #source.vertices,
+      indexOffset = indexOffset,
+      indexCount = #source.indices,
+    }
+  end
+  return batches
 end
 
 local function fixtures()
@@ -131,6 +164,32 @@ local function compileWithCannedBatches(model, pack, role)
   return meshes
 end
 
+function T.rejects_table_backed_compiler_output()
+  local model, pack = fixtures()
+  local saved = MeshCompiler.compile
+  MeshCompiler.compile = function()
+    return {
+      {
+        nodeIndex = 0,
+        materialIndex = 0,
+        shapeIndex = 0,
+        polygonAttrRaw = 0x001F00C1,
+        transformMode = "static",
+        vertices = { V(0, 0, 0), V(1, 0, 0), V(0, 0, 1) },
+        indices = { 0, 1, 2 },
+      },
+    }
+  end
+  local ok = pcall(ModelAssetCompiler.compileModel, model, pack, {}, {}, {
+    role = "building",
+    modelArchive = "land_data",
+    modelMemberId = 244,
+    modelName = "map0",
+  })
+  MeshCompiler.compile = saved
+  Assert.isFalse(ok, "model asset compilation requires dense geometry slices")
+end
+
 local function storedBatches(meshes)
   local out = {}
   for _, batch in pairs(meshes) do
@@ -140,7 +199,8 @@ local function storedBatches(meshes)
 end
 
 local function hasVertexAt(batch, x, y, z)
-  for _, v in ipairs(batch.vertices) do
+  for offset = 0, batch.vertexCount - 1 do
+    local v = batch.arena.numeric[batch.vertexOffset + offset]
     if v.x == x and v.y == y and v.z == z then
       return true
     end
@@ -159,9 +219,25 @@ local function coarseStored(meshes)
 end
 
 local function vertexAt(batch, x, y, z)
-  for _, v in ipairs(batch.vertices) do
+  for offset = 0, batch.vertexCount - 1 do
+    local v = batch.arena.numeric[batch.vertexOffset + offset]
     if v.x == x and v.y == y and v.z == z then
-      return v
+      local attrib = batch.arena.attrib[batch.vertexOffset + offset]
+      return {
+        x = v.x,
+        y = v.y,
+        z = v.z,
+        u = v.u,
+        v = v.v,
+        nx = v.nx,
+        ny = v.ny,
+        nz = v.nz,
+        r = attrib.r,
+        g = attrib.g,
+        b = attrib.b,
+        a = attrib.a,
+        colorSource = attrib.colorSource,
+      }
     end
   end
   return nil
@@ -187,14 +263,10 @@ end
 function T.non_terrain_roles_bypass_conformance()
   local model, pack = fixtures()
   local meshes = compileWithCannedBatches(model, pack, "building")
-  -- compileModel normalizes UVs by the fixture texture size before hashing,
-  -- so the expected bytes are the normalized raw batches.
+  -- The canned compiler output is already normalized, so the expected bytes
+  -- are the unchanged batches.
   local rawHashes = {}
   for _, raw in ipairs(cannedBatches()) do
-    for _, v in ipairs(raw.vertices) do
-      v.u = v.u / 8
-      v.v = v.v / 8
-    end
     rawHashes[#rawHashes + 1] = Hashing.sha1hex(MeshWriter.encode(raw))
   end
   table.sort(rawHashes)
@@ -278,8 +350,8 @@ function T.culled_candidate_cannot_split_a_visible_neighbor()
   local meshes = compileCustom(model, pack, "map", batches)
   local coarse = coarseStored(meshes)
   Assert.isFalse(hasVertexAt(coarse, 0, 1, 2), "a culled candidate contributes no breakpoint")
-  Assert.equal(#coarse.vertices, 4, "the visible neighbor gains no vertices from a culled batch")
-  Assert.equal(#coarse.indices, 6, "the visible neighbor gains no indices from a culled batch")
+  Assert.equal(coarse.vertexCount, 4, "the visible neighbor gains no vertices from a culled batch")
+  Assert.equal(coarse.indexCount, 6, "the visible neighbor gains no indices from a culled batch")
 end
 
 function T.wireframe_candidate_cannot_split_a_filled_neighbor()
@@ -290,8 +362,8 @@ function T.wireframe_candidate_cannot_split_a_filled_neighbor()
   local meshes = compileCustom(model, pack, "map", batches)
   local coarse = coarseStored(meshes)
   Assert.isFalse(hasVertexAt(coarse, 0, 1, 2), "a wireframe candidate contributes no breakpoint")
-  Assert.equal(#coarse.vertices, 4, "the filled neighbor gains no vertices from a wireframe batch")
-  Assert.equal(#coarse.indices, 6, "the filled neighbor gains no indices from a wireframe batch")
+  Assert.equal(coarse.vertexCount, 4, "the filled neighbor gains no vertices from a wireframe batch")
+  Assert.equal(coarse.indexCount, 6, "the filled neighbor gains no indices from a wireframe batch")
 end
 
 function T.wireframe_side_is_not_retriangulated()
@@ -302,8 +374,8 @@ function T.wireframe_side_is_not_retriangulated()
   local meshes = compileCustom(model, pack, "map", batches)
   local coarse = coarseStored(meshes)
   Assert.isFalse(hasVertexAt(coarse, 0, 1, 2), "an ineligible side receives no breakpoint")
-  Assert.equal(#coarse.vertices, 4, "the wireframe batch keeps its vertices byte-for-byte")
-  Assert.equal(#coarse.indices, 6, "the wireframe batch keeps its indices byte-for-byte")
+  Assert.equal(coarse.vertexCount, 4, "the wireframe batch keeps its vertices byte-for-byte")
+  Assert.equal(coarse.indexCount, 6, "the wireframe batch keeps its indices byte-for-byte")
 end
 
 function T.culled_candidate_does_not_trigger_an_interpolation_conflict()
@@ -311,15 +383,15 @@ function T.culled_candidate_does_not_trigger_an_interpolation_conflict()
   local batches = cannedBatches()
   batches[1].polygonAttrRaw = NORMAL_RAW
   batches[2].polygonAttrRaw = CULL_ALL_RAW
-  batches[1].vertices[2].colorSource = 0
-  batches[1].vertices[3].colorSource = 1
+  batches[1].arena.attrib[batches[1].vertexOffset + 1].colorSource = 0
+  batches[1].arena.attrib[batches[1].vertexOffset + 2].colorSource = 1
   local ok, result, meshes = tryCompileCustom(model, pack, "map", batches)
   Assert.isTrue(ok, "an ineligible breakpoint never reaches conflict analysis: " .. tostring(not ok and result or ""))
   ---@cast meshes table
   local coarse = coarseStored(meshes)
   Assert.isFalse(hasVertexAt(coarse, 0, 1, 2), "the visible neighbor is unchanged")
-  Assert.equal(#coarse.vertices, 4, "no vertex churn from an ineligible candidate")
-  Assert.equal(#coarse.indices, 6, "no index churn from an ineligible candidate")
+  Assert.equal(coarse.vertexCount, 4, "no vertex churn from an ineligible candidate")
+  Assert.equal(coarse.indexCount, 6, "no index churn from an ineligible candidate")
 end
 
 return { tests = T }

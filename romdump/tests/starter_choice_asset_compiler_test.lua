@@ -494,7 +494,8 @@ local function ballMeshRadius(romFs, bundle)
   local radius = 0
   local ballModel = assert(decoded.models[1], "the ball member carries one model")
   for _, batch in ipairs(MeshCompiler.compile(ballModel)) do
-    for _, vertex in ipairs(batch.vertices) do
+    for offset = 0, batch.vertexCount - 1 do
+      local vertex = batch.arena.numeric[batch.vertexOffset + offset]
       local horizontal = math.sqrt(vertex.x * vertex.x + vertex.z * vertex.z)
       if horizontal > radius then
         radius = horizontal

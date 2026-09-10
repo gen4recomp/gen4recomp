@@ -66,6 +66,34 @@ local function resolvePosition(draw, mesh)
   return toTiles(slot or identity())
 end
 
+local function vertex(batch, index)
+  local numeric = batch.arena.numeric[batch.vertexOffset + index]
+  local attrib = batch.arena.attrib[batch.vertexOffset + index]
+  return {
+    x = numeric.x,
+    y = numeric.y,
+    z = numeric.z,
+    u = numeric.u,
+    v = numeric.v,
+    nx = numeric.nx,
+    ny = numeric.ny,
+    nz = numeric.nz,
+    r = attrib.r,
+    g = attrib.g,
+    b = attrib.b,
+    a = attrib.a,
+    colorSource = attrib.colorSource,
+  }
+end
+
+local function vertices(batch)
+  local out = {}
+  for index = 0, batch.vertexCount - 1 do
+    out[#out + 1] = vertex(batch, index)
+  end
+  return out
+end
+
 -- Resolve the descriptor at the bind pose and compare every segment vertex
 -- against the static compile's batch for the same draw.
 local function assertBindPoseEquivalence(model)
@@ -88,9 +116,9 @@ local function assertBindPoseEquivalence(model)
     local position = resolvePosition(draw, mesh)
     local direction = Matrix4.linear(position)
 
-    Assert.equal(#mesh.batch.vertices, #batch.vertices, label .. " vertex count")
-    for i, v in ipairs(mesh.batch.vertices) do
-      local s = batch.vertices[i]
+    Assert.equal(mesh.batch.vertexCount, batch.vertexCount, label .. " vertex count")
+    for i, v in ipairs(vertices(mesh.batch)) do
+      local s = vertex(batch, i - 1)
       local x = position[1] * v.x + position[5] * v.y + position[9] * v.z + position[13]
       local y = position[2] * v.x + position[6] * v.y + position[10] * v.z + position[14]
       local z = position[3] * v.x + position[7] * v.y + position[11] * v.z + position[15]
@@ -144,7 +172,7 @@ local function assertBindPoseEquivalence(model)
         )
       end
     end
-    Assert.equal(#mesh.batch.indices, #batch.indices, label .. " index count")
+    Assert.equal(mesh.batch.indexCount, batch.indexCount, label .. " index count")
   end
 end
 
@@ -176,8 +204,8 @@ function T.billboard_quad_model()
   -- runtime-resolved.
   Assert.isNil(descriptor.meshes[1].positionSource)
   local batch = MeshCompiler.compile(m)[1]
-  for i, v in ipairs(descriptor.meshes[1].batch.vertices) do
-    local s = batch.vertices[i]
+  for i, v in ipairs(vertices(descriptor.meshes[1].batch)) do
+    local s = vertex(batch, i - 1)
     if math.abs(v.x - s.x) > TOL or math.abs(v.y - s.y) > TOL or math.abs(v.z - s.z) > TOL then
       error("billboard vertex " .. (i - 1) .. " differs from the static bake")
     end
@@ -265,7 +293,7 @@ function T.display_list_matrix_restore_segments()
 
   local staticBatches = MeshCompiler.compile(m)
   -- Both static batches (two SBC draws of one shape) now carry 6 vertices.
-  Assert.equal(#staticBatches[1].vertices, 6)
+  Assert.equal(staticBatches[1].vertexCount, 6)
 
   local descriptor = NsbmdDynamicModel.compile(m)
   local draws = NsbmdSbcEvaluator.evaluate(descriptor.program --[[@as NsbmdSbcEvaluator.Program]], bindPose(m)).draws
@@ -277,14 +305,14 @@ function T.display_list_matrix_restore_segments()
   Assert.equal(descriptor.meshes[2].drawIndex, 0)
   Assert.equal(descriptor.meshes[3].drawIndex, 1)
   Assert.equal(descriptor.meshes[4].positionSource.slot, 3)
-  Assert.equal(#descriptor.meshes[1].batch.vertices, 3)
-  Assert.equal(#descriptor.meshes[2].batch.vertices, 3)
+  Assert.equal(descriptor.meshes[1].batch.vertexCount, 3)
+  Assert.equal(descriptor.meshes[2].batch.vertexCount, 3)
 
   -- Draw 0's restoreStack at bind pose has no slot 3 entry (NODEDESC stores
   -- into slot 0 only), so the second segment resolves to identity.
   local draw = draws[1]
   local slot = draw.restoreStack[3] or Matrix4.identity()
-  local v = descriptor.meshes[2].batch.vertices[2]
+  local v = vertex(descriptor.meshes[2].batch, 1)
   local x = slot[1] * v.x + slot[5] * v.y + slot[9] * v.z + slot[13] / 16
   local y = slot[2] * v.x + slot[6] * v.y + slot[10] * v.z + slot[14] / 16
   Assert.isTrue(math.abs(x - 1 / 16) < TOL, "restored slot places the vertex")
@@ -321,19 +349,19 @@ function T.straddling_quad_carries_per_vertex_sources_and_matches_the_static_bak
   -- One SBC draw, one straddle mesh (the leading-only segment is dropped: no
   -- indices to draw).
   Assert.equal(#descriptor.meshes, 1)
-  ---@type { positionSource: table|string, drawIndex: integer, straddle?: { leading: integer, source: table|string }, batch: { vertices: { x: number, y: number, z: number }[] } }
+  ---@type { positionSource: table|string, drawIndex: integer, straddle?: { leading: integer, source: table|string }, batch: G4GxGeometrySlice }
   local mesh = descriptor.meshes[1]
   Assert.equal(mesh.positionSource.slot, 3)
   -- The per-vertex provenance: the first two vertices resolve under the
   -- pre-restore "draw" source, the trailing two under the slot.
   Assert.deepEqual(mesh.straddle, { leading = 2, source = "draw" })
-  Assert.equal(#mesh.batch.vertices, 4)
+  Assert.equal(mesh.batch.vertexCount, 4)
 
   -- Bind-pose oracle: resolve each vertex under the source active at its
   -- submission (leading under "draw", trailing under slot 3) and compare
   -- against the static compile, which baked the same per-vertex transforms.
   local staticBatch = staticBatches[mesh.drawIndex + 1]
-  Assert.equal(#staticBatch.vertices, 4)
+  Assert.equal(staticBatch.vertexCount, 4)
   local function toTilesForStraddle(mat)
     local out = {}
     for i = 1, 12 do
@@ -350,13 +378,13 @@ function T.straddling_quad_carries_per_vertex_sources_and_matches_the_static_bak
     return toTilesForStraddle(draw.restoreStack[src.slot] or Matrix4.identity())
   end
   local draw = draws[mesh.drawIndex + 1]
-  for i, v in ipairs(mesh.batch.vertices) do
+  for i, v in ipairs(vertices(mesh.batch)) do
     local src = i <= mesh.straddle.leading and mesh.straddle.source or mesh.positionSource
     local position = resolveSource(src, draw)
     local x = position[1] * v.x + position[5] * v.y + position[9] * v.z + position[13]
     local y = position[2] * v.x + position[6] * v.y + position[10] * v.z + position[14]
     local z = position[3] * v.x + position[7] * v.y + position[11] * v.z + position[15]
-    local s = staticBatch.vertices[i]
+    local s = vertex(staticBatch, i - 1)
     if math.abs(x - s.x) > TOL or math.abs(y - s.y) > TOL or math.abs(z - s.z) > TOL then
       error(
         string.format(

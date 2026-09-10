@@ -5,10 +5,10 @@
 -- geometry-engine color/normal state seeded from the active material reaches the
 -- vertices. Every vertex carries a resolved color source (literal, normal-lit, or
 -- field diffuse) and has already been transformed to model units, so the only
--- remaining conversion is the fixed tile-size divisor (MapUnits.toTiles). UVs
--- stay in texel units for the caller to normalize. The material's resolved
--- polygon-attr word rides on each batch. Pure domain module; the compiler
--- boundary at which DS geometry stops.
+-- remaining conversion is the fixed tile-size divisor (MapUnits.toTiles). When
+-- supplied, the static compiler also normalizes UVs at this same numeric seam.
+-- The material's resolved polygon-attr word rides on each batch. Pure domain
+-- module; the compiler boundary at which DS geometry stops.
 --
 -- compileDynamic is the animation-capable counterpart: the SBC draw matrix is
 -- left unbaked and each shape decodes into transform segments whose sources
@@ -17,6 +17,7 @@
 local Errors = require("libs.errors.src.Errors")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local HgssFieldMaterial = require("romdump.src.digest.field.HgssFieldMaterial")
 local DsPolygonAttr = require("libs.nds.src.gx.DsPolygonAttr")
 local FixedPoint = require("libs.math.src.FixedPoint")
@@ -95,27 +96,12 @@ end
 -- model: a Nsbmd model (info.posScale/invPosScale, shapes[i].{index,displayListBytes},
 -- materials, sbc.commands, nodes). Returns a list of batches, each:
 -- { nodeIndex, materialIndex, shapeIndex, polygonAttrRaw,
---   transformMode, baseTransform, vertices = { {x,y,z,u,v,nx,ny,nz,r,g,b,a,
---   colorSource}, ... }, indices }. The list order is the SBC submission
+--   transformMode, baseTransform, arena, vertexOffset, vertexCount,
+--   indexOffset, indexCount }. The list order is the SBC submission
 -- order; the render queue derives submission order from that position, so
 -- no batch carries an index of its own. Billboard
 -- batches carry `baseTransform` (tile-space translation, see
 -- MapUnits.matrixToTiles); static ones do not.
----@class CompiledVertex
----@field x number
----@field y number
----@field z number
----@field u number
----@field v number
----@field nx number
----@field ny number
----@field nz number
----@field r number
----@field g number
----@field b number
----@field a number
----@field colorSource integer
-
 -- A compiled static batch (one per SBC draw): the display-list geometry in
 -- tile space, as documented on compile().
 ---@class CompiledBatch
@@ -125,8 +111,11 @@ end
 ---@field polygonAttrRaw integer
 ---@field transformMode TransformMode
 ---@field baseTransform number[]|nil
----@field vertices CompiledVertex[]
----@field indices integer[]
+---@field arena GxGeometryBuffer
+---@field vertexOffset integer
+---@field vertexCount integer
+---@field indexOffset integer
+---@field indexCount integer
 
 -- Decode every draw of `draws` into the per-draw inputs both compile paths
 -- consume: the shape, its decoded geometry, and the resolved material state.
@@ -137,8 +126,9 @@ end
 ---@param model table<string, unknown>
 ---@param draws table[] SBC draw submissions (the NsbmdSbcEvaluator.evaluate shape)
 ---@param dynamic boolean
+---@param arena GxGeometryBuffer
 ---@return { draw: table<string, unknown>, shape: table<string, unknown>, matState: { polygonAttrRaw: integer, seed: table<string, unknown>|nil }, geom: table<string, unknown> }[]
-local function decodeDraws(model, draws, dynamic)
+local function decodeDraws(model, draws, dynamic, arena)
   local shapeByIndex = {}
   for _, shp in ipairs(model.shapes) do
     shapeByIndex[shp.index] = shp
@@ -172,6 +162,7 @@ local function decodeDraws(model, draws, dynamic)
 
     local context = { model = model.name, shape = shp.name, material = draw.materialIndex }
     local options = {
+      arena = arena,
       initialState = initialState,
       requireColorSource = true,
       context = context,
@@ -200,38 +191,31 @@ end
 -- Compile the static batches of a decoded model (shapes, display lists,
 -- materials, sbc.commands, nodes).
 ---@param model table<string, unknown>
+---@param context { geometryArena: GxGeometryBuffer|nil, textureSizes: table<integer, { width: number, height: number }>|nil }?
 ---@return CompiledBatch[]
-function MeshCompiler.compile(model)
+function MeshCompiler.compile(model, context)
+  local arena = context and context.geometryArena or GxGeometryBuffer.new()
+  local textureSizes = context and context.textureSizes
   local batches = {}
-  for _, record in ipairs(decodeDraws(model, NsbmdStaticTransforms.evaluate(model), false)) do
+  for _, record in ipairs(decodeDraws(model, NsbmdStaticTransforms.evaluate(model), false, arena)) do
     local draw = record.draw
     local shp = record.shape
     local matState = record.matState
     local geom = record.geom
 
-    local vertices = {}
-    for _, v in ipairs(geom.vertices) do
-      local x, y, z = MapUnits.toTiles(v.x, v.y, v.z)
-      vertices[#vertices + 1] = {
-        x = x,
-        y = y,
-        z = z,
-        u = v.u,
-        v = v.v,
-        nx = v.nx,
-        ny = v.ny,
-        nz = v.nz,
-        r = v.r,
-        g = v.g,
-        b = v.b,
-        a = v.a or 255,
-        colorSource = v.colorSource,
-      }
-    end
-
-    local indices = {}
-    for i = 1, #geom.indices do
-      indices[i] = geom.indices[i]
+    local slice = geom.slice
+    local numeric = arena.numeric
+    local attrib = arena.attrib
+    local textureSize = textureSizes and textureSizes[draw.materialIndex]
+    for offset = 0, slice.vertexCount - 1 do
+      local v = numeric[slice.vertexOffset + offset]
+      v.x, v.y, v.z = MapUnits.toTiles(v.x, v.y, v.z)
+      if textureSize then
+        v.u = v.u / textureSize.width
+        v.v = v.v / textureSize.height
+      end
+      local bytes = attrib[slice.vertexOffset + offset]
+      assert(bytes.a == 255, "GX geometry alpha must remain opaque before mesh serialization")
     end
 
     local poly = DsPolygonAttr.decode(matState.polygonAttrRaw)
@@ -252,8 +236,11 @@ function MeshCompiler.compile(model)
       polygonAttrRaw = matState.polygonAttrRaw,
       transformMode = draw.transformMode,
       baseTransform = draw.baseTransform and MapUnits.matrixToTiles(draw.baseTransform) or nil,
-      vertices = vertices,
-      indices = indices,
+      arena = arena,
+      vertexOffset = slice.vertexOffset,
+      vertexCount = slice.vertexCount,
+      indexOffset = slice.indexOffset,
+      indexCount = slice.indexCount,
     }
   end
   return batches
@@ -272,7 +259,7 @@ end
 ---@field polygonAttrRaw integer -- the material's polygon-attr word, the same
 --  state the static path rides on each batch: cull mode, polygon mode, id,
 --  depth flags, polygon alpha
----@field batch { vertices: CompiledVertex[], indices: integer[] }
+---@field batch G4GxGeometrySlice
 ---@field straddle { leading: integer, source: DrawSource }|nil -- the segment
 --  received `leading` vertices submitted under `source` (the pre-boundary
 --  matrix) before its own; absent: the whole segment resolves under
@@ -305,16 +292,18 @@ end
 ---@return { shape: string, straddling: integer }[]? straddlingPrimitives
 ---@return table<string, unknown> program
 ---@param model table<string, unknown>
-function MeshCompiler.compileDynamic(model)
+---@param context { geometryArena: GxGeometryBuffer }?
+function MeshCompiler.compileDynamic(model, context)
   -- The draw set (order, visibility, material carries) is pose-independent:
   -- the bind-pose evaluation yields the same draws the static path compiles.
   -- NsbmdStaticTransforms owns the bind-pose replay and returns the program
   -- it compiled, so the descriptor ships that same single compile.
   local draws, program = NsbmdStaticTransforms.evaluate(model)
 
+  local arena = context and context.geometryArena or GxGeometryBuffer.new()
   local meshes = {}
   local straddlingByShape = {}
-  for drawIndex, record in ipairs(decodeDraws(model, draws, true)) do
+  for drawIndex, record in ipairs(decodeDraws(model, draws, true, arena)) do
     local draw = record.draw
     local shp = record.shape
     local matState = record.matState
@@ -322,7 +311,7 @@ function MeshCompiler.compileDynamic(model)
     for segmentIndex, segment in ipairs(geom.segments) do
       -- A segment whose run was split at a matrix boundary can hold a lone
       -- straddling vertex with no indices: nothing to draw.
-      if #segment.indices == 0 then
+      if segment.indexCount == 0 then
         goto continue
       end
       -- A billboard draw's post-BB matrix (POSSCALE folds, nothing else can
@@ -335,8 +324,10 @@ function MeshCompiler.compileDynamic(model)
       -- once per segment, not once per vertex. It is non-nil exactly when the
       -- bake applies (Matrix4.linear is total).
       local bakeLinear = bake and Matrix4.linear(bake) or nil
-      local vertices = {}
-      for _, v in ipairs(segment.vertices) do
+      local numeric = arena.numeric
+      local slice = segment
+      for offset = 0, slice.vertexCount - 1 do
+        local v = numeric[slice.vertexOffset + offset]
         local x, y, z = v.x, v.y, v.z
         local nx, ny, nz = v.nx, v.ny, v.nz
         if bake and bakeLinear then
@@ -350,25 +341,8 @@ function MeshCompiler.compileDynamic(model)
           nz = bakeLinear[3] * onx + bakeLinear[7] * ony + bakeLinear[11] * onz
         end
         x, y, z = MapUnits.toTiles(x, y, z)
-        vertices[#vertices + 1] = {
-          x = x,
-          y = y,
-          z = z,
-          u = v.u,
-          v = v.v,
-          nx = nx,
-          ny = ny,
-          nz = nz,
-          r = v.r,
-          g = v.g,
-          b = v.b,
-          a = v.a,
-          colorSource = v.colorSource,
-        }
-      end
-      local indices = {}
-      for i = 1, #segment.indices do
-        indices[i] = segment.indices[i]
+        v.x, v.y, v.z = x, y, z
+        v.nx, v.ny, v.nz = nx, ny, nz
       end
 
       -- Billboard segments are fully baked; other segments defer their
@@ -388,7 +362,13 @@ function MeshCompiler.compileDynamic(model)
         transformMode = draw.transformMode,
         positionSource = positionSource,
         polygonAttrRaw = matState.polygonAttrRaw,
-        batch = { vertices = vertices, indices = indices },
+        batch = {
+          arena = arena,
+          vertexOffset = slice.vertexOffset,
+          vertexCount = slice.vertexCount,
+          indexOffset = slice.indexOffset,
+          indexCount = slice.indexCount,
+        },
       }
       -- A run split at a mid-run matrix boundary: the first `leading`
       -- vertices of this segment were submitted under the PRE-boundary

@@ -35,6 +35,35 @@ local function bounds(vertices)
   }
 end
 
+local function materializeBatch(batch)
+  local vertices, indices = {}, {}
+  local numeric = batch.arena.numeric
+  local attrib = batch.arena.attrib
+  for offset = 0, batch.vertexCount - 1 do
+    local vertex = numeric[batch.vertexOffset + offset]
+    local bytes = attrib[batch.vertexOffset + offset]
+    vertices[#vertices + 1] = {
+      x = vertex.x,
+      y = vertex.y,
+      z = vertex.z,
+      u = vertex.u,
+      v = vertex.v,
+      nx = vertex.nx,
+      ny = vertex.ny,
+      nz = vertex.nz,
+      r = bytes.r,
+      g = bytes.g,
+      b = bytes.b,
+      a = bytes.a,
+      colorSource = bytes.colorSource,
+    }
+  end
+  for offset = 0, batch.indexCount - 1 do
+    indices[#indices + 1] = batch.arena.indices[batch.indexOffset + offset]
+  end
+  return vertices, indices
+end
+
 local function polygonRecord(raw)
   local polygon = DsPolygonAttr.decode(raw)
   return {
@@ -138,9 +167,10 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
   local parts = {}
   local allVertices = {}
   for _, batch in ipairs(batches) do
+    local vertices, indices = materializeBatch(batch)
     local material = materialById[batch.materialIndex]
     local textureEntry = material.texture and textureByKey[material.texture] or nil
-    for _, vertex in ipairs(batch.vertices) do
+    for _, vertex in ipairs(vertices) do
       if textureEntry then
         vertex.u = (textureEntry.x + vertex.u) / atlas.width
         vertex.v = vertex.v / atlas.height
@@ -156,15 +186,15 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
       material.textureFormat or 0,
       textureEntry and textureEntry.texture.alphaUsage or nil
     )
-    local partBounds = bounds(batch.vertices)
+    local partBounds = bounds(vertices)
     parts[#parts + 1] = {
       textured = textureEntry ~= nil,
       alphaClass = alphaClass,
       polygon = polygon,
       geometry = {
         modelName = model.name,
-        vertices = batch.vertices,
-        indices = batch.indices,
+        vertices = vertices,
+        indices = indices,
         anchorTiles = { x = 0, y = 0, z = 0 },
         bounds = {
           width = partBounds.width,

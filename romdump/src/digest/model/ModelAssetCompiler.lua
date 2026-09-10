@@ -47,14 +47,7 @@ local function conformEligible(compiled, polyByBatch, context)
   if #eligible == 0 then
     return
   end
-  local ok, err = pcall(TerrainBoundaryConformer.conform, eligible, {
-    mapId = context.mapId,
-    mapSymbol = context.mapSymbol,
-    role = context.role,
-    modelArchive = context.modelArchive,
-    modelMemberId = context.modelMemberId,
-    modelName = context.modelName,
-  })
+  local ok, err = pcall(TerrainBoundaryConformer.conform, eligible, context)
   if not ok then
     if Errors.is(err) then
       ---@cast err Errors.Error
@@ -137,6 +130,7 @@ local function compileModel(model, texturePack, meshes, textures, context)
 
   -- Per-material texture info needed for batch classification and UV normalization.
   local matInfoById = {}
+  local textureSizes = {}
   for _, m in ipairs(mat.materials) do
     matInfoById[m.id] = {
       texWidth = m.texWidth,
@@ -144,6 +138,9 @@ local function compileModel(model, texturePack, meshes, textures, context)
       textureFormat = m.textureFormat or 0,
       alphaUsage = m.texture and textures[m.texture] and textures[m.texture].alphaUsage or nil,
     }
+    if m.texWidth then
+      textureSizes[m.id] = { width = m.texWidth, height = m.texHeight }
+    end
   end
 
   -- Terrain scene materials (map and neighbor roles) carry the decoded
@@ -176,7 +173,7 @@ local function compileModel(model, texturePack, meshes, textures, context)
   -- boundary repair. Polygon state is decoded once per batch here and
   -- reused for conformance eligibility, alpha classification, and
   -- serialization below.
-  local compiled = MeshCompiler.compile(model)
+  local compiled = MeshCompiler.compile(model, { geometryArena = context.geometryArena, textureSizes = textureSizes })
   local polyByBatch = {}
   for i, batch in ipairs(compiled) do
     polyByBatch[i] = DsPolygonAttr.decode(batch.polygonAttrRaw)
@@ -187,13 +184,8 @@ local function compileModel(model, texturePack, meshes, textures, context)
 
   local batches = {}
   for index, batch in ipairs(compiled) do
+    assert(batch.arena ~= nil, "model asset compilation requires dense geometry slices")
     local info = matInfoById[batch.materialIndex]
-    if info and info.texWidth then
-      for _, vtx in ipairs(batch.vertices) do
-        vtx.u = vtx.u / info.texWidth
-        vtx.v = vtx.v / info.texHeight
-      end
-    end
 
     local poly = polyByBatch[index]
     if poly.cullMode ~= "all" then

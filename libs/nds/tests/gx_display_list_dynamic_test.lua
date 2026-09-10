@@ -27,6 +27,10 @@ local function triangle(vertices)
 end
 
 local function decode(bytes, opts)
+  opts = opts or {}
+  if opts.requireColorSource and opts.initialState == nil then
+    opts.initialState = { colorSource = 0 }
+  end
   local result, err = GxDisplayList.decode(bytes, opts)
   if not result then
     error(err)
@@ -35,8 +39,7 @@ local function decode(bytes, opts)
 end
 
 local function assertVertex(segment, index, x, y, z)
-  local v = segment.vertices[index + 1]
-  Assert.isTrue(v ~= nil, "segment vertex " .. index .. " exists")
+  local v = segment.arena.numeric[segment.vertexOffset + index]
   if math.abs(v.x - x) > 1e-9 or math.abs(v.y - y) > 1e-9 or math.abs(v.z - z) > 1e-9 then
     error(
       "vertex "
@@ -58,6 +61,14 @@ local function assertVertex(segment, index, x, y, z)
   end
 end
 
+local function indexValues(segment)
+  local out = {}
+  for offset = 0, segment.indexCount - 1 do
+    out[#out + 1] = segment.arena.indices[segment.indexOffset + offset]
+  end
+  return out
+end
+
 -- ---- basic behavior ----
 
 function T.one_segment_with_the_draw_source()
@@ -66,8 +77,8 @@ function T.one_segment_with_the_draw_source()
   Assert.equal(#geom.segments, 1)
   local segment = geom.segments[1]
   Assert.equal(segment.positionSource, "draw")
-  Assert.equal(#segment.vertices, 3)
-  Assert.equal(#segment.indices, 3)
+  Assert.equal(segment.vertexCount, 3)
+  Assert.equal(segment.indexCount, 3)
   -- Vertices stay in pre-draw space: identity local ops bake nothing.
   assertVertex(segment, 0, 0, 0, 0)
   assertVertex(segment, 1, 1, 0, 0)
@@ -113,8 +124,8 @@ function T.matrix_restore_splits_a_segment_with_a_slot_source()
   local first, second = geom.segments[1], geom.segments[2]
   Assert.equal(first.positionSource, "draw")
   Assert.equal(second.positionSource.slot, 3)
-  Assert.equal(#first.vertices, 3)
-  Assert.equal(#second.vertices, 3)
+  Assert.equal(first.vertexCount, 3)
+  Assert.equal(second.vertexCount, 3)
   assertVertex(second, 0, 0, 0, 0)
 end
 
@@ -139,10 +150,10 @@ function T.segment_indices_are_local_to_each_segment()
     .. triangle({ { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } })
   local geom = decode(dl, { dynamic = true })
   local first, second = geom.segments[1], geom.segments[2]
-  Assert.equal(#first.indices, 3)
-  Assert.equal(#second.indices, 3)
+  Assert.equal(first.indexCount, 3)
+  Assert.equal(second.indexCount, 3)
   -- Both segments index their own vertices from zero.
-  for _, i in ipairs(second.indices) do
+  for _, i in ipairs(indexValues(second)) do
     Assert.isTrue(i < 3, "second segment indices are local")
   end
 end
@@ -186,10 +197,10 @@ function T.splits_a_run_at_a_matrix_boundary()
   Assert.equal(geom.segments[2].positionSource.slot, 3)
   -- The old segment keeps the lone leading vertex (no indices); the new
   -- segment carries a copy and attributes it to the pre-boundary source.
-  Assert.equal(#geom.segments[1].vertices, 1)
-  Assert.equal(#geom.segments[1].indices, 0)
-  Assert.equal(#geom.segments[2].vertices, 3)
-  Assert.equal(#geom.segments[2].indices, 3)
+  Assert.equal(geom.segments[1].vertexCount, 1)
+  Assert.equal(geom.segments[1].indexCount, 0)
+  Assert.equal(geom.segments[2].vertexCount, 3)
+  Assert.equal(geom.segments[2].indexCount, 3)
   assertVertex(geom.segments[2], 0, 0, 0, 0)
   Assert.deepEqual(geom.segments[2].straddle, { leading = 1, source = "draw" })
   Assert.equal(geom.straddlingPrimitives, 1)
@@ -208,8 +219,8 @@ function T.boundary_before_any_vertex_keeps_the_run_whole()
   Assert.equal(#geom.segments, 1)
   local segment = geom.segments[1]
   Assert.equal(segment.positionSource.slot, 3)
-  Assert.equal(#segment.vertices, 3)
-  Assert.equal(#segment.indices, 3)
+  Assert.equal(segment.vertexCount, 3)
+  Assert.equal(segment.indexCount, 3)
   Assert.equal(geom.straddlingPrimitives, 0)
   Assert.isNil(segment.straddle, "an empty-run boundary carries no straddle record")
 end
@@ -235,7 +246,7 @@ function T.straddle_source_is_the_prior_source_under_a_pop_boundary()
   -- Segment 2 emitted its complete triangle before the pop; the pop's
   -- straddling triangle keeps the slot as the leading source, and the
   -- segment after the pop resolves under the popped "draw" source.
-  Assert.equal(#geom.segments[2].indices, 3)
+  Assert.equal(geom.segments[2].indexCount, 3)
   Assert.deepEqual(geom.segments[2].straddle, { leading = 1, source = "draw" })
   Assert.equal(geom.segments[3].positionSource, "draw")
   Assert.deepEqual(geom.segments[3].straddle, { leading = 1, source = { slot = 3 } })
@@ -264,7 +275,7 @@ function T.each_boundary_of_a_multi_split_run_carries_its_own_straddle()
   Assert.equal(geom.segments[3].positionSource.slot, 4)
   -- Segment 2 emitted its complete quad (6 indices) before the second
   -- boundary and carries the first straddle's leading pair.
-  Assert.equal(#geom.segments[2].indices, 6)
+  Assert.equal(geom.segments[2].indexCount, 6)
   Assert.deepEqual(geom.segments[2].straddle, { leading = 2, source = "draw" })
   Assert.deepEqual(geom.segments[3].straddle, { leading = 2, source = { slot = 3 } })
   Assert.equal(geom.straddlingPrimitives, 2)
@@ -286,14 +297,14 @@ function T.straddling_quads_are_carried_into_the_new_segment()
   local geom = decode(dl, { dynamic = true })
   Assert.equal(#geom.segments, 2)
   local first, second = geom.segments[1], geom.segments[2]
-  Assert.equal(#first.vertices, 6)
-  Assert.equal(#first.indices, 6)
+  Assert.equal(first.vertexCount, 6)
+  Assert.equal(first.indexCount, 6)
   Assert.equal(second.positionSource.slot, 3)
   -- The carried leading vertices (copies of the old segment's v4/v5) plus
   -- the two trailing vertices form the straddling quad, with the leading
   -- half attributed to the pre-boundary source.
-  Assert.equal(#second.vertices, 4)
-  Assert.equal(#second.indices, 6)
+  Assert.equal(second.vertexCount, 4)
+  Assert.equal(second.indexCount, 6)
   assertVertex(second, 0, 2, 0, 0)
   assertVertex(second, 1, 3, 0, 0)
   Assert.deepEqual(second.straddle, { leading = 2, source = "draw" })
@@ -314,15 +325,15 @@ function T.triangle_strip_winding_continues_across_a_boundary()
   local geom = decode(dl, { dynamic = true })
   Assert.equal(#geom.segments, 2)
   local first, second = geom.segments[1], geom.segments[2]
-  Assert.equal(#first.vertices, 3)
+  Assert.equal(first.vertexCount, 3)
   -- First strip triangle: (0,1,2) with the even winding.
-  Assert.deepEqual(first.indices, { 0, 1, 2 })
+  Assert.deepEqual(indexValues(first), { 0, 1, 2 })
   -- The second segment carries copies of the last two vertices and
   -- continues the strip: local (1,0,2) for the triangle ending at global
   -- vertex 3, matching the DS's alternating winding. The carried pair keeps
   -- the pre-boundary source; the trailing vertices resolve under the slot.
-  Assert.equal(#second.vertices, 5)
-  Assert.deepEqual(second.indices, { 1, 0, 2, 1, 2, 3, 3, 2, 4 })
+  Assert.equal(second.vertexCount, 5)
+  Assert.deepEqual(indexValues(second), { 1, 0, 2, 1, 2, 3, 3, 2, 4 })
   Assert.deepEqual(second.straddle, { leading = 2, source = "draw" })
   Assert.equal(geom.straddlingPrimitives, 1)
 end
@@ -333,7 +344,7 @@ function T.static_mode_still_bakes_the_supplied_matrix()
   local dl = triangle({ { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } })
   local matrix = { 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 10, 0, 0, 1 }
   local geom = decode(dl, { matrix = matrix })
-  Assert.equal(geom.vertices[2].x, 12)
+  Assert.equal(geom.slice.arena.numeric[geom.slice.vertexOffset + 1].x, 12)
   Assert.equal(geom.segments, nil)
 end
 
@@ -341,12 +352,12 @@ function T.static_and_dynamic_decode_agree_on_color_state()
   local dl = pack({ { { 0x20 }, { 0x7C00 } } }) .. triangle({ { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } })
   local static = decode(dl, { requireColorSource = true })
   local dynamic = decode(dl, { dynamic = true, requireColorSource = true })
-  local sv = static.vertices[1]
-  local dv = dynamic.segments[1].vertices[1]
-  Assert.equal(dv.r, sv.r)
-  Assert.equal(dv.g, sv.g)
-  Assert.equal(dv.b, sv.b)
-  Assert.equal(dv.colorSource, sv.colorSource)
+  local sa = static.slice.arena.attrib[static.slice.vertexOffset]
+  local da = dynamic.segments[1].arena.attrib[dynamic.segments[1].vertexOffset]
+  Assert.equal(da.r, sa.r)
+  Assert.equal(da.g, sa.g)
+  Assert.equal(da.b, sa.b)
+  Assert.equal(da.colorSource, sa.colorSource)
 end
 
 return { tests = T }

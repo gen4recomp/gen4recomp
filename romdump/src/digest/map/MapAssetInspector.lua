@@ -248,34 +248,21 @@ local function unionBounds(a, b)
   }
 end
 
-local function vertexBounds(vertices)
-  if not vertices or #vertices == 0 then
-    return nil
+local function sliceBounds(batch)
+  local numeric = batch.arena.numeric
+  local first = numeric[batch.vertexOffset]
+  local minX, minY, minZ = first.x, first.y, first.z
+  local maxX, maxY, maxZ = minX, minY, minZ
+  for offset = 1, batch.vertexCount - 1 do
+    local vertex = numeric[batch.vertexOffset + offset]
+    minX, maxX = math.min(minX, vertex.x), math.max(maxX, vertex.x)
+    minY, maxY = math.min(minY, vertex.y), math.max(maxY, vertex.y)
+    minZ, maxZ = math.min(minZ, vertex.z), math.max(maxZ, vertex.z)
   end
-  local minx, miny, minz = vertices[1].x, vertices[1].y, vertices[1].z
-  local maxx, maxy, maxz = minx, miny, minz
-  for i = 2, #vertices do
-    local v = vertices[i]
-    if v.x < minx then
-      minx = v.x
-    end
-    if v.y < miny then
-      miny = v.y
-    end
-    if v.z < minz then
-      minz = v.z
-    end
-    if v.x > maxx then
-      maxx = v.x
-    end
-    if v.y > maxy then
-      maxy = v.y
-    end
-    if v.z > maxz then
-      maxz = v.z
-    end
-  end
-  return { min = { minx, miny, minz }, max = { maxx, maxy, maxz } }
+  return {
+    min = { minX, minY, minZ },
+    max = { maxX, maxY, maxZ },
+  }
 end
 
 local function rawDisplayListBounds(model)
@@ -324,7 +311,7 @@ local function compileDiagnostics(model)
   local drawBounds = {}
   local aggregate
   for _, batch in ipairs(batches) do
-    local b = vertexBounds(batch.vertices)
+    local b = sliceBounds(batch)
     drawBounds[#drawBounds + 1] = {
       nodeIndex = batch.nodeIndex,
       materialIndex = batch.materialIndex,

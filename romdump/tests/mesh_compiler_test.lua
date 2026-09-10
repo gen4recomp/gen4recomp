@@ -13,6 +13,34 @@ local NB = require("tests.support.NitroBuilder")
 
 local T = {}
 
+local function vertex(batch, index)
+  local numeric = batch.arena.numeric[batch.vertexOffset + index]
+  local attrib = batch.arena.attrib[batch.vertexOffset + index]
+  return {
+    x = numeric.x,
+    y = numeric.y,
+    z = numeric.z,
+    u = numeric.u,
+    v = numeric.v,
+    nx = numeric.nx,
+    ny = numeric.ny,
+    nz = numeric.nz,
+    r = attrib.r,
+    g = attrib.g,
+    b = attrib.b,
+    a = attrib.a,
+    colorSource = attrib.colorSource,
+  }
+end
+
+local function indices(batch)
+  local out = {}
+  for offset = 0, batch.indexCount - 1 do
+    out[#out + 1] = batch.arena.indices[batch.indexOffset + offset]
+  end
+  return out
+end
+
 local function u32(v)
   return NB.u32(v)
 end
@@ -59,6 +87,16 @@ local function triangleDL(lead)
       .. vtx16(0, 0, 0)
       .. string.char(0x41, 0, 0, 0)
   end
+end
+
+local function texturedTriangleDL()
+  return string.char(0x22, 0x40, 0x23, 0x23)
+    .. u32(4 * 16 + 8 * 16 * 0x10000)
+    .. u32(0)
+    .. vtx16(1, 0, 0)
+    .. vtx16(0, 0, 1)
+    .. string.char(0x23, 0x41, 0, 0)
+    .. vtx16(0, 0, 0)
 end
 
 local function buildMaterialBlock(polyAttrRaw)
@@ -222,13 +260,22 @@ function T.folds_posscale_and_carries_attributes()
   Assert.equal(#b, 1)
   Assert.equal(b[1].materialIndex, 0)
   Assert.equal(b[1].nodeIndex, 0)
-  Assert.isTrue(math.abs(b[1].vertices[1].x - (1 * 64 / 16)) < 1e-9, "x scaled by posScale then divided by tile size")
-  Assert.deepEqual(b[1].indices, { 0, 1, 2 })
+  Assert.isTrue(math.abs(vertex(b[1], 0).x - (1 * 64 / 16)) < 1e-9, "x scaled by posScale then divided by tile size")
+  Assert.deepEqual(indices(b[1]), { 0, 1, 2 })
+end
+
+function T.normalizes_uvs_during_mesh_compilation()
+  local m = model("color")
+  m.shapes[1].displayListBytes = texturedTriangleDL()
+  local b = MeshCompiler.compile(m, { textureSizes = { [0] = { width = 8, height = 16 } } })
+  Assert.equal(vertex(b[1], 0).u, 0.5)
+  Assert.equal(vertex(b[1], 0).v, 0.5)
 end
 
 function T.resolves_literal_color_source()
   local b = MeshCompiler.compile(model("color"))
-  for _, v in ipairs(b[1].vertices) do
+  for i = 0, b[1].vertexCount - 1 do
+    local v = vertex(b[1], i)
     Assert.equal(v.colorSource, 0) -- LITERAL
     Assert.equal(v.r, 255) -- COLOR rgb555(31,0,0)
   end
@@ -236,14 +283,16 @@ end
 
 function T.resolves_normal_lit_source()
   local b = MeshCompiler.compile(model("normal"))
-  for _, v in ipairs(b[1].vertices) do
+  for i = 0, b[1].vertexCount - 1 do
+    local v = vertex(b[1], i)
     Assert.equal(v.colorSource, 1) -- NORMAL_LIT
   end
 end
 
 function T.seeds_field_diffuse_when_no_color_or_normal()
   local b = MeshCompiler.compile(model(nil))
-  for _, v in ipairs(b[1].vertices) do
+  for i = 0, b[1].vertexCount - 1 do
+    local v = vertex(b[1], i)
     Assert.equal(v.colorSource, 2) -- FIELD_DIFFUSE from set-vertex-color material
     Assert.equal(v.r, 255) -- material diffuse rgb555(31,0,0)
   end
@@ -328,10 +377,10 @@ function T.full_path_vertex_through_node_posscale_and_tiles()
   Assert.equal(#b, 1)
   -- triangleDL("color") vertices: (1,0,0), (0,0,1), (0,0,0)
   Assert.isTrue(
-    math.abs(b[1].vertices[1].x - expectedX) < 1e-9,
+    math.abs(vertex(b[1], 0).x - expectedX) < 1e-9,
     "vertex transformed by node SRT, POSSCALE, then tile divisor"
   )
-  Assert.isTrue(math.abs(b[1].vertices[1].y - expectedY) < 1e-9, "y unchanged")
+  Assert.isTrue(math.abs(vertex(b[1], 0).y - expectedY) < 1e-9, "y unchanged")
 end
 
 function T.wind_like_large_posscale_compensated_by_node_scale()
@@ -351,11 +400,11 @@ function T.wind_like_large_posscale_compensated_by_node_scale()
   local b = MeshCompiler.compile(m)
   Assert.equal(#b, 1)
   Assert.isTrue(
-    math.abs(b[1].vertices[1].x - 1.0) < 1e-9,
+    math.abs(vertex(b[1], 0).x - 1.0) < 1e-9,
     "large posScale compensated by node scale yields sane tile size"
   )
   Assert.isTrue(
-    math.abs(b[1].vertices[2].z - 1.0) < 1e-9,
+    math.abs(vertex(b[1], 1).z - 1.0) < 1e-9,
     "large posScale compensated by node scale yields sane tile size"
   )
 end
@@ -380,7 +429,7 @@ function T.billboard_batch_keeps_local_geometry_and_a_tile_space_base()
   Assert.equal(#b, 1)
   Assert.equal(b[1].transformMode, "billboard")
   -- Vertices are billboard-local: (1,0,0) only passes through the tile divisor.
-  Assert.isTrue(math.abs(b[1].vertices[1].x - 1 / 16) < 1e-9, "geometry stays billboard-local")
+  Assert.isTrue(math.abs(vertex(b[1], 0).x - 1 / 16) < 1e-9, "geometry stays billboard-local")
   -- Base translation is in tiles (32 model units / 16); the linear part is
   -- untouched, so the runtime reads the x stretch of 2 straight off it.
   local tx, ty, tz = Matrix4.transformPoint(b[1].baseTransform, 0, 0, 0)

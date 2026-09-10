@@ -115,6 +115,35 @@ local function normalizeUvs(vertices, size, context)
   end
 end
 
+local function materializeBatch(batch)
+  local vertices, indices = {}, {}
+  local numeric = batch.arena.numeric
+  local attrib = batch.arena.attrib
+  for offset = 0, batch.vertexCount - 1 do
+    local vertex = numeric[batch.vertexOffset + offset]
+    local bytes = attrib[batch.vertexOffset + offset]
+    vertices[#vertices + 1] = {
+      x = vertex.x,
+      y = vertex.y,
+      z = vertex.z,
+      u = vertex.u,
+      v = vertex.v,
+      nx = vertex.nx,
+      ny = vertex.ny,
+      nz = vertex.nz,
+      r = bytes.r,
+      g = bytes.g,
+      b = bytes.b,
+      a = bytes.a,
+      colorSource = bytes.colorSource,
+    }
+  end
+  for offset = 0, batch.indexCount - 1 do
+    indices[#indices + 1] = batch.arena.indices[batch.indexOffset + offset]
+  end
+  return vertices, indices
+end
+
 -- modelBytes: the shared model member. opts.placement: the manifest placement
 -- invariants. opts.textureFormat / opts.alphaUsage: the compiled atlas's source
 -- texture facts, used for the same alpha classification map batches get.
@@ -142,6 +171,7 @@ function FieldActorModel.compile(modelBytes, opts)
     )
   end
   local batch = batches[1]
+  local vertices, indices = materializeBatch(batch)
 
   if batch.transformMode ~= PoseContract.BILLBOARD or not batch.baseTransform then
     fail(
@@ -152,20 +182,16 @@ function FieldActorModel.compile(modelBytes, opts)
       { context = context, modelName = model.name }
     )
   end
-  if #batch.vertices ~= 4 or #batch.indices ~= 6 then
+  if #vertices ~= 4 or #indices ~= 6 then
     fail(
       "FIELD_ACTOR_MODEL_SHAPE_UNEXPECTED",
-      "shared actor model draws "
-        .. #batch.vertices
-        .. " vertices and "
-        .. #batch.indices
-        .. " indices, expected one 4-vertex quad",
+      "shared actor model draws " .. #vertices .. " vertices and " .. #indices .. " indices, expected one 4-vertex quad",
       { context = context, modelName = model.name }
     )
   end
 
-  local bounds = assertPlacement(batch.vertices, opts.placement, context)
-  normalizeUvs(batch.vertices, opts.placement.sourceSize, context)
+  local bounds = assertPlacement(vertices, opts.placement, context)
+  normalizeUvs(vertices, opts.placement.sourceSize, context)
 
   local polygon = DsPolygonAttr.decode(batch.polygonAttrRaw)
   if polygon.cullMode == "all" then
@@ -185,8 +211,8 @@ function FieldActorModel.compile(modelBytes, opts)
 
   return {
     modelName = model.name,
-    vertices = batch.vertices,
-    indices = batch.indices,
+    vertices = vertices,
+    indices = indices,
     baseTransform = batch.baseTransform,
     anchorTiles = { x = anchorX, y = anchorY, z = anchorZ },
     bounds = bounds,
