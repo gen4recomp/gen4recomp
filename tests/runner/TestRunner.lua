@@ -163,6 +163,7 @@ end
 ---@field excludedSlow integer tests hidden solely by slow eligibility after the other selectors matched
 ---@field versions string[]|nil ready game versions the run exercised, when known
 ---@field suiteTimings table[]|nil per-suite hook-inclusive timing rows
+---@field workerCriticalPath number|nil the longest worker's duration in a merged parallel result; nil for a serial run
 
 ---@return RunnerRun
 ---@param options table

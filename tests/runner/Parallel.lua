@@ -297,6 +297,7 @@ function Parallel.merge(fragments)
     failed = 0,
     skipped = 0,
     duration = 0,
+    workerCriticalPath = 0,
     byLayer = {},
     capabilities = {},
     selectedCapabilities = {},
@@ -325,7 +326,7 @@ function Parallel.merge(fragments)
     merged.skipped = merged.skipped + run.skipped
     merged.excludedSlow = merged.excludedSlow + run.excludedSlow
     merged.duration = math.max(merged.duration, run.duration)
-    union(merged.capabilities, run.capabilities)
+    merged.workerCriticalPath = merged.duration
     union(merged.selectedCapabilities, run.selectedCapabilities)
     for _, entry in ipairs(run.results) do
       entries[#entries + 1] = { entry = entry, worker = index }
@@ -343,12 +344,6 @@ function Parallel.merge(fragments)
     end
     for _, timing in ipairs(run.suiteTimings) do
       merged.suiteTimings[#merged.suiteTimings + 1] = timing
-    end
-    if run.versions ~= nil then
-      merged.versions = merged.versions or {}
-      for _, version in ipairs(run.versions) do
-        merged.versions[#merged.versions + 1] = version
-      end
     end
   end
   assert(#fragments == count, "worker fragments are incomplete")
@@ -370,9 +365,6 @@ function Parallel.merge(fragments)
   end)
   for _, item in ipairs(entries) do
     merged.results[#merged.results + 1] = item.entry
-  end
-  if merged.versions ~= nil then
-    table.sort(merged.versions)
   end
   return merged
 end

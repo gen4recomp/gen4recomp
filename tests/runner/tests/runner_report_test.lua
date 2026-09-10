@@ -174,6 +174,21 @@ function T.slowest_suites_are_ranked_by_total_and_slowest_tests_remain()
   Assert.isTrue(contains(lines, "slowest 1:"), "existing slowest test output remains")
 end
 
+function T.serial_summary_uses_exact_elapsed_wording()
+  local lines = Report.lines(run({}, { duration = 1.5 }))
+  Assert.isTrue(contains(lines, "0 passed, 0 failed, 0 skipped in 1.50s"), "serial summary keeps exact wording")
+  Assert.isFalse(contains(lines, "worker critical path"), "serial summary never claims worker critical path")
+end
+
+function T.parallel_summary_names_worker_critical_path()
+  local lines = Report.lines(run({}, { duration = 4.75, workerCriticalPath = 4.75 }))
+  Assert.isTrue(
+    contains(lines, "0 passed, 0 failed, 0 skipped; worker critical path 4.75s"),
+    "parallel summary names the worker critical path"
+  )
+  Assert.isFalse(contains(lines, "skipped in 4.75s"), "parallel summary must not use serial elapsed wording")
+end
+
 function T.report_tolerates_missing_suite_timings()
   local results = {
     { module = "libs.unit.a_test", test = "a", status = "pass", layer = "unit", duration = 0.01 },

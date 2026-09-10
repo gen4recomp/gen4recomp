@@ -43,7 +43,7 @@ local function result(module, test, status, layer, duration)
 end
 
 ---@param results table[]
----@param overrides { duration: number|nil, byLayer: table<string, table>|nil, selectedCapabilities: table<string, boolean>|nil, excludedSlow: integer|nil, suiteTimings: table[]|nil }|nil
+---@param overrides { duration: number|nil, byLayer: table<string, table>|nil, capabilities: table<string, boolean>|nil, selectedCapabilities: table<string, boolean>|nil, excludedSlow: integer|nil, suiteTimings: table[]|nil, versions: string[]|nil }|nil
 ---@return RunnerRun
 local function runData(results, overrides)
   ---@type RunnerRun
@@ -77,6 +77,9 @@ local function runData(results, overrides)
     if overrides.byLayer ~= nil then
       run.byLayer = overrides.byLayer
     end
+    if overrides.capabilities ~= nil then
+      run.capabilities = overrides.capabilities
+    end
     if overrides.selectedCapabilities ~= nil then
       run.selectedCapabilities = overrides.selectedCapabilities
     end
@@ -85,6 +88,9 @@ local function runData(results, overrides)
     end
     if overrides.suiteTimings ~= nil then
       run.suiteTimings = overrides.suiteTimings
+    end
+    if overrides.versions ~= nil then
+      run.versions = overrides.versions
     end
   end
   return run
@@ -365,16 +371,19 @@ function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path(
     result("fake.unit.alpha_test", "ordinary", "pass", "unit", 0.2),
   }, {
     duration = 2.5,
+    capabilities = { graphics = true },
     selectedCapabilities = { graphics = true },
     excludedSlow = 3,
     byLayer = { unit = { passed = 1, failed = 1, skipped = 0, duration = 0.5 } },
     suiteTimings = { { module = "fake.unit.alpha_test", total = 0.5 } },
+    versions = { "soulsilver" },
   })
   local second = runData({
     result("fake.unit.alpha_test", "<beforeAll>", "pass", "unit", 0.1),
     result("fake.rom.dump_test", "reads", "skip", "rom", 0),
   }, {
     duration = 4.75,
+    capabilities = { rom_dump = true },
     selectedCapabilities = { rom_dump = true },
     excludedSlow = 5,
     byLayer = {
@@ -382,6 +391,7 @@ function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path(
       rom = { passed = 0, failed = 0, skipped = 1, duration = 0 },
     },
     suiteTimings = { { module = "fake.rom.dump_test", total = 0 } },
+    versions = { "heartgold" },
   })
 
   local merged = Parallel.merge({
@@ -393,8 +403,12 @@ function T.fragment_merge_preserves_counts_capabilities_order_and_critical_path(
   Assert.equal(merged.skipped, 1)
   Assert.equal(merged.excludedSlow, 8)
   Assert.equal(merged.duration, 4.75)
-  Assert.isTrue(merged.selectedCapabilities.graphics)
-  Assert.isTrue(merged.selectedCapabilities.rom_dump)
+  Assert.equal(merged.workerCriticalPath, 4.75, "worker critical path is the max worker duration")
+  Assert.isTrue(merged.selectedCapabilities.graphics, "selected capabilities remain unioned")
+  Assert.isTrue(merged.selectedCapabilities.rom_dump, "selected capabilities remain unioned")
+  Assert.isFalse(merged.capabilities.graphics == true, "worker capabilities are not the final merged capability data")
+  Assert.isFalse(merged.capabilities.rom_dump == true, "worker capabilities are not the final merged capability data")
+  Assert.isNil(merged.versions, "worker versions are not concatenated into final merged versions")
   Assert.equal(merged.byLayer.unit.passed, 2)
   Assert.equal(merged.byLayer.unit.failed, 1)
   Assert.equal(merged.byLayer.unit.duration, 0.6)

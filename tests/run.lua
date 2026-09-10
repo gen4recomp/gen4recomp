@@ -107,7 +107,7 @@ local function main(argv)
 
   if context.kind == "worker" then
     local workerOk, workerError = pcall(function()
-      local capabilities, versions = detect()
+      local capabilities = detect()
       local result = TestRunner.run(runnerOptions({
         capabilities = capabilities,
         layer = plan.layer,
@@ -116,7 +116,6 @@ local function main(argv)
         slow = plan.slow,
         shard = { index = context.index, count = context.count },
       }))
-      result.versions = versions
       Parallel.writeFragment(context.runDir, context.index, context.count, result)
     end)
     if not workerOk then

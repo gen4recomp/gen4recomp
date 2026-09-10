@@ -65,9 +65,27 @@ function Report.lines(run)
     add("SKIP " .. Selection.qualify(entry.module, entry.test) .. " (" .. tostring(entry.message) .. ")")
   end
 
-  add(
-    string.format("%d passed, %d failed, %d skipped in %s", run.passed, run.failed, run.skipped, seconds(run.duration))
-  )
+  if run.workerCriticalPath ~= nil then
+    add(
+      string.format(
+        "%d passed, %d failed, %d skipped; worker critical path %s",
+        run.passed,
+        run.failed,
+        run.skipped,
+        seconds(run.workerCriticalPath)
+      )
+    )
+  else
+    add(
+      string.format(
+        "%d passed, %d failed, %d skipped in %s",
+        run.passed,
+        run.failed,
+        run.skipped,
+        seconds(run.duration)
+      )
+    )
+  end
 
   for _, layer in ipairs(sortedKeys(run.byLayer)) do
     local counts = run.byLayer[layer]
