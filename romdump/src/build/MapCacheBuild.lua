@@ -6,6 +6,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local WorldManifest = require("romdump.src.digest.map.WorldManifest")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
+local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local CompilerPool = require("romdump.src.build.CompilerPool")
 
 local MapCacheBuild = {}
@@ -13,18 +14,6 @@ local MapCacheBuild = {}
 ---@param context VersionBuildContext
 ---@return table<string, unknown>|nil, Errors.Error|string|nil
 function MapCacheBuild.build(context)
-  local fieldCellBundle, fieldCellErr = FieldCellCompiler.compile(context.romFs)
-  if not fieldCellBundle then
-    assert(Errors.is(fieldCellErr), "field cell stage failure must be a structured error")
-    return nil, fieldCellErr
-  end
-  if context.forced or not FieldCellCacheWriter.isReady(context.cacheFs, fieldCellBundle.marker) then
-    FieldCellCacheWriter.write(context.cacheFs, fieldCellBundle)
-    context.log(string.format("build-cache: %s physical field cells compiled", context.version))
-  else
-    context.log(string.format("build-cache: %s physical field cells current", context.version))
-  end
-
   local entries, excluded, compileExcluded = {}, {}, {}
   local analyses = MapAnalysis.analyze(context.romFs)
   local pool = CompilerPool.new({
@@ -32,6 +21,78 @@ function MapCacheBuild.build(context)
     mode = "batch",
     developmentRepositoryRoot = context.developmentRepositoryRoot,
   })
+  if type(FieldCellCompiler.compileIndex) == "function" then
+    local indexBundle, indexErr = FieldCellCompiler.compileIndex(context.romFs, context.producerFingerprint)
+    if not indexBundle then
+      pool:shutdown()
+      assert(Errors.is(indexErr), "field cell index failure must be a structured error")
+      return nil, indexErr
+    end
+    local indexMarker = context.cacheFs:read(FieldCellCache.indexMarkerPath())
+    if context.forced or indexMarker ~= indexBundle.indexMarker then
+      FieldCellCacheWriter.writeIndex(context.cacheFs, indexBundle)
+    end
+    for _, matrix in ipairs(indexBundle.index.matrices) do
+      for _, descriptor in ipairs(matrix.cells) do
+        local expected = assert(FieldCellCompiler.planCell(context.romFs, descriptor, context.producerFingerprint))
+        if context.forced or not FieldCellCache.isCellReady(context.cacheFs, descriptor, expected.expectedMarker) then
+          pool:request({
+            kind = "field-cell",
+            key = expected.jobIdentity,
+            priority = 0,
+            payload = {
+              matrixMemberId = descriptor.matrixMemberId,
+              index = descriptor.index,
+              x = descriptor.x,
+              z = descriptor.z,
+              mapHeaderId = descriptor.mapHeaderId,
+              altitude = descriptor.altitude,
+              landDataMemberId = descriptor.landDataMemberId,
+              areaDataMemberId = descriptor.areaDataMemberId,
+              producerFingerprint = context.producerFingerprint,
+            },
+          })
+        end
+      end
+    end
+    pool:drain()
+    for _, matrix in ipairs(indexBundle.index.matrices) do
+      for _, descriptor in ipairs(matrix.cells) do
+        local key = "field-cell:" .. descriptor.matrixMemberId .. ":" .. descriptor.index
+        local state, details = pool:status(key)
+        if state == "failed" then
+          local failure = assert(details and details.error)
+          assert(Errors.is(failure), "field-cell worker failure must be structured")
+          pool:shutdown()
+          return nil, failure
+        end
+        local expected = assert(FieldCellCompiler.planCell(context.romFs, descriptor, context.producerFingerprint))
+        assert(
+          FieldCellCache.isCellReady(context.cacheFs, descriptor, expected.expectedMarker),
+          "field-cell job did not publish a ready cell"
+        )
+      end
+    end
+    local corpusMarker = indexBundle.marker
+    if context.forced or not FieldCellCache.isReady(context.cacheFs, corpusMarker) then
+      FieldCellCacheWriter.writeComplete(context.cacheFs, corpusMarker)
+    end
+    context.log(string.format("build-cache: %s physical field cells current", context.version))
+  else
+    local fieldCellBundle, fieldCellErr = FieldCellCompiler.compile(context.romFs)
+    if not fieldCellBundle then
+      pool:shutdown()
+      assert(Errors.is(fieldCellErr), "field cell stage failure must be a structured error")
+      return nil, fieldCellErr
+    end
+    if context.forced or not FieldCellCacheWriter.isReady(context.cacheFs, fieldCellBundle.marker) then
+      FieldCellCacheWriter.write(context.cacheFs, fieldCellBundle)
+      context.log(string.format("build-cache: %s physical field cells compiled", context.version))
+    else
+      context.log(string.format("build-cache: %s physical field cells current", context.version))
+    end
+  end
+
   local oldReady = {}
   local resolved = {}
   local ok, failure = xpcall(function()
@@ -51,7 +112,7 @@ function MapCacheBuild.build(context)
           kind = "map",
           key = "map:" .. result.id,
           priority = 0,
-          payload = { mapId = result.id },
+          payload = { mapId = result.id, producerFingerprint = context.producerFingerprint },
         })
       end
     end

@@ -251,12 +251,28 @@ end
 
 local function assertJob(job)
   assert(type(job) == "table", "compiler job must be a table")
-  assert(job.kind == "map" or job.kind == "script-member", "unsupported compiler job kind: " .. tostring(job.kind))
+  assert(
+    job.kind == "map" or job.kind == "field-cell" or job.kind == "script-member",
+    "unsupported compiler job kind: " .. tostring(job.kind)
+  )
   assert(type(job.key) == "string" and job.key ~= "", "compiler job key is required")
   assert(type(job.priority) == "number" and job.priority % 1 == 0, "compiler job priority must be an integer")
   assert(type(job.payload) == "table", "compiler job payload is required")
   if job.kind == "map" then
     assert(type(job.payload.mapId) == "number" and job.payload.mapId % 1 == 0, "map job requires an integer mapId")
+  elseif job.kind == "field-cell" then
+    for _, key in ipairs({
+      "matrixMemberId",
+      "index",
+      "x",
+      "z",
+      "mapHeaderId",
+      "altitude",
+      "landDataMemberId",
+      "areaDataMemberId",
+    }) do
+      assert(type(job.payload[key]) == "number" and job.payload[key] % 1 == 0, "field-cell job requires " .. key)
+    end
   else
     assert(
       type(job.payload.memberId) == "number" and job.payload.memberId % 1 == 0,
@@ -352,6 +368,14 @@ function CompilerPool:_dispatch()
       kind = record.kind,
       jobKey = record.key,
       mapId = record.payload.mapId,
+      matrixMemberId = record.payload.matrixMemberId,
+      index = record.payload.index,
+      x = record.payload.x,
+      z = record.payload.z,
+      mapHeaderId = record.payload.mapHeaderId,
+      altitude = record.payload.altitude,
+      landDataMemberId = record.payload.landDataMemberId,
+      areaDataMemberId = record.payload.areaDataMemberId,
       memberId = record.payload.memberId,
       generationKey = record.payload.generationKey,
       producerFingerprint = record.payload.producerFingerprint,

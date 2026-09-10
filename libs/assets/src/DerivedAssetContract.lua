@@ -94,9 +94,11 @@ DerivedAssetContract.map = {
 }
 
 DerivedAssetContract.fieldCells = {
-  cacheFormat = "field-cell-cache-v2",
-  indexSchema = "g4-field-cell-index-v2",
-  cellSchema = "g4-field-cell-v2",
+  -- v3 adds independently published cell roots, dependency attestations, and
+  -- the calibration needed by both physical and logical scene consumers.
+  cacheFormat = "field-cell-cache-v3",
+  indexSchema = "g4-field-cell-index-v3",
+  cellSchema = "g4-field-cell-v3",
 }
 
 DerivedAssetContract.fieldActors = {

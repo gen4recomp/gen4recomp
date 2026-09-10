@@ -34,11 +34,16 @@ local MapCacheWriter = {}
 -- values and are persisted verbatim.
 local function validateBundle(bundle)
   local mapId = bundle.mapId
-  local ok, err = pcall(CollisionGridAsset.encode, bundle.collision)
-  if not ok then
-    Errors.raise("MAP_CACHE_BAD_COLLISION", "collision grid is invalid: " .. tostring(err), { mapId = mapId })
+  if not bundle.canonicalCells then
+    local ok, err = pcall(CollisionGridAsset.encode, bundle.collision)
+    if not ok then
+      Errors.raise("MAP_CACHE_BAD_COLLISION", "collision grid is invalid: " .. tostring(err), { mapId = mapId })
+    end
   end
-  if type(bundle.terrain) ~= "table" or bundle.terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA then
+  if
+    not bundle.canonicalCells
+    and (type(bundle.terrain) ~= "table" or bundle.terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA)
+  then
     Errors.raise(
       AssetErrors.MAP_CACHE_BAD_TERRAIN,
       "terrain artifact is missing or has the wrong schema",
@@ -105,17 +110,19 @@ local function persist(prepared, bundle)
   -- 4. Collision grid, encoded into the project-owned G4CL asset. The
   -- encoder rejects malformed grids (bad dimensions, missing/wrong cells,
   -- non-boolean blocked), so an invalid bundle never reaches the stage.
-  local collisionBytes = CollisionGridAsset.encode(bundle.collision)
-  stage:write(dir .. "/collision.g4collision", collisionBytes)
-  -- 5. Terrain surfaces.
-  if type(bundle.terrain) ~= "table" or bundle.terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA then
-    Errors.raise(
-      AssetErrors.MAP_CACHE_BAD_TERRAIN,
-      "terrain artifact is missing or has the wrong schema",
-      { mapId = mapId }
-    )
+  if not bundle.canonicalCells then
+    local collisionBytes = CollisionGridAsset.encode(bundle.collision)
+    stage:write(dir .. "/collision.g4collision", collisionBytes)
+    -- 5. Terrain surfaces.
+    if type(bundle.terrain) ~= "table" or bundle.terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA then
+      Errors.raise(
+        AssetErrors.MAP_CACHE_BAD_TERRAIN,
+        "terrain artifact is missing or has the wrong schema",
+        { mapId = mapId }
+      )
+    end
+    stage:writeLua(MapAssetCache.terrainPath(mapId), bundle.terrain)
   end
-  stage:writeLua(MapAssetCache.terrainPath(mapId), bundle.terrain)
   -- 6. Neighbor collision and terrain artifacts.
   for landDataMemberId, chunk in pairs(bundle.neighborChunks or {}) do
     local neighborCollisionBytes = CollisionGridAsset.encode(chunk.collision)

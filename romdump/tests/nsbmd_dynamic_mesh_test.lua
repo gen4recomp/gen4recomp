@@ -218,17 +218,18 @@ end
 -- it must be computed once per segment, not once per vertex. Observed through
 -- a counting wrapper on the public Matrix4.linear entry point: the billboard
 -- quad compiles into one segment of four vertices, so a per-segment
--- computation yields exactly one call while a per-vertex one yields four.
+-- computation yields exactly one buffer operation while a per-vertex one
+-- yields four.
 function T.billboard_bake_linear_part_is_computed_once_per_segment()
   local m = assert(Nsbmd.decode(NsbmdFixture.buildBillboardQuad())).models[1]
-  local originalLinear = Matrix4.linear
+  local originalLinearInto = Matrix4.linearInto
   local calls = 0
-  Matrix4.linear = function(bake)
+  Matrix4.linearInto = function(out, bake)
     calls = calls + 1
-    return originalLinear(bake)
+    return originalLinearInto(out, bake)
   end
   local ok, err = pcall(MeshCompiler.compileDynamic, m)
-  Matrix4.linear = originalLinear
+  Matrix4.linearInto = originalLinearInto
   assert(ok, tostring(err))
   Assert.equal(calls, 1, "billboard bake linear part computed once per segment (4 vertices, got " .. calls .. " calls)")
 end

@@ -137,6 +137,22 @@ local function presentationCell()
       },
     },
     terrainAnimations = { textureSrt = false },
+    calibration = { modelExtentTilesX = 32, modelExtentTilesZ = 32, posScale = 1 },
+    dependencies = {
+      marker = "marker",
+      matrixMemberId = 4,
+      index = 1,
+      descriptor = {
+        matrixMemberId = 4,
+        index = 1,
+        x = 0,
+        z = 0,
+        mapHeaderId = 60,
+        altitude = 0,
+        landDataMemberId = 7,
+        areaDataMemberId = 2,
+      },
+    },
   }
 end
 
@@ -176,6 +192,9 @@ local function presentationCache(present)
       if path == FieldCellCache.markerPath() then
         return "marker"
       end
+      if path == FieldCellCache.cellMarkerPath(4, 1) then
+        return "marker"
+      end
       if path == cell.collision.file then
         return collisionBytes()
       end
@@ -187,6 +206,9 @@ local function presentationCache(present)
       end
       if path == cell.file then
         return cell
+      end
+      if path == FieldCellCache.dependenciesPath(4, 1) then
+        return cell.dependencies
       end
       if path == paths.model and present.model then
         return completeModel()
@@ -366,6 +388,76 @@ function T.validates_static_and_dynamic_building_references()
   local cell = assert(cache:loadLua(FieldCellCache.cellPath(4, 1)))
   cell.buildingInstances[1].modelKey = "outdoor:22:dynamic"
   Assert.isTrue(FieldCellCache.isReady(cache, "marker"), "dynamic model reference is valid")
+end
+
+function T.exposes_independent_cell_markers_without_weakening_corpus_readiness()
+  Assert.equal(
+    FieldCellCache.cellMarkerPath(4, 1),
+    "data/generated/field/cells/4/1/complete",
+    "each cell owns its completion marker"
+  )
+  Assert.equal(
+    FieldCellCache.dependenciesPath(4, 1),
+    "data/generated/field/cells/4/1/dependencies.lua",
+    "each cell owns its dependency record"
+  )
+  local cache = presentationCache({ geometry = true, texture = true, model = true })
+  local cell = assert(cache:loadLua(FieldCellCache.cellPath(4, 1)))
+  local descriptor = {
+    matrixMemberId = 4,
+    index = 1,
+    x = 0,
+    z = 0,
+    mapHeaderId = 60,
+    altitude = 0,
+    landDataMemberId = 7,
+    areaDataMemberId = 2,
+    file = FieldCellCache.cellPath(4, 1),
+  }
+  cell.dependencies = {
+    marker = "cell-marker",
+    descriptor = {
+      matrixMemberId = 4,
+      index = 1,
+      x = 0,
+      z = 0,
+      mapHeaderId = 60,
+      altitude = 0,
+      landDataMemberId = 7,
+      areaDataMemberId = 2,
+    },
+  }
+  cell.dependencies.matrixMemberId = 4
+  cell.dependencies.index = 1
+  cache.read = function(_, path)
+    if path == FieldCellCache.markerPath() then
+      return "corpus-marker"
+    end
+    if path == FieldCellCache.cellMarkerPath(4, 1) then
+      return "cell-marker"
+    end
+    return collisionBytes()
+  end
+  cache.loadLua = function(_, path)
+    if path == FieldCellCache.cellPath(4, 1) then
+      return cell
+    end
+    if path == FieldCellCache.dependenciesPath(4, 1) then
+      return cell.dependencies
+    end
+    if path == FieldCellCache.indexPath() then
+      return index()
+    end
+    if path == cell.terrain.file then
+      return { schema = MapAssetCache.TERRAIN_SCHEMA }
+    end
+    if path == MapAssetCache.modelPath("outdoor:21:complete") then
+      return completeModel()
+    end
+    return nil
+  end
+  Assert.isTrue(FieldCellCache.isCellReady(cache, descriptor, "cell-marker"))
+  Assert.isFalse(FieldCellCache.isReady(cache, "cell-marker"), "a cell marker cannot attest the corpus")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

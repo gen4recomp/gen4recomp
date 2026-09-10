@@ -202,4 +202,38 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
   }
 end
 
+function BuildingModelCompiler.compileSelected(romFs, area, land, memberId, opts)
+  assert(type(memberId) == "number" and memberId % 1 == 0, "selected building member must be an integer")
+  local selectedLand = {}
+  for key, value in pairs(land) do
+    selectedLand[key] = value
+  end
+  selectedLand.buildings = {}
+  local compiled = BuildingModelCompiler.compile(romFs, area, selectedLand, {
+    mapId = opts.mapId,
+    mapSymbol = opts.mapSymbol,
+    areaDataMemberId = opts.areaDataMemberId,
+    landDataMemberId = opts.landDataMemberId,
+    resourceCache = opts.resourceCache,
+    meshes = opts.meshes,
+    textures = opts.textures,
+    finalizeMeshes = opts.finalizeMeshes,
+    requiredModelMembers = { memberId },
+  })
+  local modelKey = assert(compiled.modelKeyOf[memberId], "selected building member did not compile")
+  return {
+    modelKey = modelKey,
+    model = assert(compiled.models[modelKey]),
+    meshes = opts.meshes,
+    textures = opts.textures,
+    source = {
+      memberId = memberId,
+      archive = compiled.archiveAlias,
+      textureMemberId = compiled.buildingTextureMemberId,
+      textureMemberSha1 = compiled.buildingTextureMemberSha1,
+    },
+    unresolvedMaterials = compiled.unresolvedMaterials,
+  }
+end
+
 return BuildingModelCompiler

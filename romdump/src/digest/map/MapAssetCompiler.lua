@@ -30,6 +30,8 @@ local NeighborChunkCompiler = require("romdump.src.digest.map.NeighborChunkCompi
 local TerrainAnimationCompiler = require("romdump.src.digest.map.TerrainAnimationCompiler")
 local Errors = require("libs.errors.src.Errors")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
+local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
 
 local MapAssetCompiler = {}
 
@@ -147,6 +149,152 @@ local function mapPropBaseToScene(sceneOrigin, position)
   local positionMatrix = Matrix4.translateInto(Matrix4.newBuffer(), x, y, z)
   local composed = Matrix4.multiplyInto(Matrix4.newBuffer(), origin, positionMatrix)
   return Matrix4.toArrayBuffer(composed)
+end
+
+local function compileCanonical(romFs, idOrSymbol, opts)
+  local cacheFs = assert(opts.cacheFs, "canonical map compilation requires a cache filesystem")
+  local index = assert(opts.fieldCellIndex, "canonical map compilation requires the field-cell index")
+  local plan = assert(MapCompilePlan.plan(romFs, index, idOrSymbol, opts.producerFingerprint))
+  local cellsByKey = {}
+  for _, cellPlan in ipairs(plan.cellPlans) do
+    if not FieldCellCache.isCellReady(cacheFs, cellPlan.descriptor, cellPlan.expectedMarker) then
+      Errors.raise(
+        "MAP_CELL_PREREQUISITE_NOT_READY",
+        "canonical field cell is not ready: " .. cellPlan.jobIdentity,
+        { jobIdentity = cellPlan.jobIdentity }
+      )
+    end
+    local key = cellPlan.descriptor.matrixMemberId .. ":" .. cellPlan.descriptor.index
+    cellsByKey[key] = assert(cacheFs:loadLua(cellPlan.descriptor.file))
+  end
+  local resolved = plan.resolved
+  local mapId = resolved.map.id
+  local areaNarc = assert(romFs:openNarc("area_data"))
+  local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
+  local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
+  local selectedLight = HgssFieldLighting.resolve(area.lightTypeRaw, false)
+  local lightBytes =
+    assert(romFs:readSourcePath(selectedLight.sourcePath), "missing field-light profile: " .. selectedLight.sourcePath)
+  local lightProfile = assert(HgssFieldLightProfile.parse(lightBytes, { sourcePath = selectedLight.sourcePath }))
+  local central = cellsByKey[plan.central.matrixMemberId .. ":" .. plan.central.index]
+  local meshes, textures, models = {}, {}, {}
+  local unresolvedMaterials = {}
+  local runtimeProps
+  local dependencies = {
+    cacheFormat = MapAssetCache.FORMAT,
+    sceneSchemaVersion = MapAssetCache.SCENE_SCHEMA,
+    coordinateConventionVersion = COORDINATE_CONVENTION,
+    vertexFormatVersion = VertexFormat.VERSION,
+    versionRomSha1 = romFs:metadata().sha1,
+    producerFingerprint = opts.producerFingerprint or "",
+    mapCatalogRecord = resolved.map,
+    fieldLightSourcePath = selectedLight.sourcePath,
+    fieldLightSourceSha1 = Hashing.sha1hex(lightBytes),
+    cells = plan.dependencies.cells,
+    areaDataMemberId = resolved.areaDataMemberId,
+    areaDataMemberSha1 = Hashing.sha1hex(areaBytes),
+  }
+  local starterModelKey = central.modelKeyOf and central.modelKeyOf[StarterLab.modelMemberId]
+  if resolved.map.symbol == StarterLab.mapSymbol and starterModelKey == nil then
+    local landNarc = assert(romFs:openNarc("land_data"))
+    local landBytes = readMember(landNarc, "land_data", plan.central.landDataMemberId)
+    local land = assert(
+      LandData.decode(landBytes, { mapId = mapId, alias = "land_data", memberId = plan.central.landDataMemberId })
+    )
+    local extra = BuildingModelCompiler.compileSelected(romFs, area, land, StarterLab.modelMemberId, {
+      mapId = mapId,
+      mapSymbol = resolved.map.symbol,
+      areaDataMemberId = plan.central.areaDataMemberId,
+      landDataMemberId = plan.central.landDataMemberId,
+      meshes = meshes,
+      textures = textures,
+      finalizeMeshes = true,
+    })
+    starterModelKey = extra.modelKey
+    models[starterModelKey] = extra.model
+    appendUnresolved(unresolvedMaterials, { unresolved = extra.unresolvedMaterials })
+    dependencies.starterModel = extra.source
+  end
+  if resolved.map.symbol == StarterLab.mapSymbol then
+    assert(starterModelKey, "Elm's Lab starter-ball model was not compiled")
+    local halfCell = CELL_TILES / 2
+    local starterSceneOrigin =
+      { x = assert(resolved.worldOriginX) - halfCell, y = 0, z = assert(resolved.worldOriginZ) - halfCell }
+    local placements = {}
+    for _, position in ipairs(StarterLab.positions) do
+      placements[#placements + 1] = { transform = mapPropBaseToScene(starterSceneOrigin, position) }
+    end
+    runtimeProps = { starter_balls = { model = starterModelKey, placements = placements } }
+    dependencies.runtimeProps = {
+      starter_balls = {
+        modelMemberId = StarterLab.modelMemberId,
+        positions = StarterLab.positions,
+        sceneOrigin = starterSceneOrigin,
+      },
+    }
+  end
+  local neighbors = {}
+  for neighborIndex, placement in ipairs(plan.neighbors) do
+    if neighborIndex > 1 then
+      local descriptor = placement.cell
+      local cell = cellsByKey[descriptor.matrixMemberId .. ":" .. descriptor.index]
+      neighbors[#neighbors + 1] = {
+        mapHeaderId = placement.mapHeaderId,
+        landDataMemberId = placement.landDataMemberId,
+        offsetTilesX = placement.offsetTilesX,
+        offsetTilesY = placement.offsetTilesY,
+        offsetTilesZ = placement.offsetTilesZ,
+        batches = cell.batches,
+        materials = cell.materials,
+        collision = cell.collision,
+        terrain = cell.terrain,
+      }
+    end
+  end
+  local marker = MapAssetCache.marker(romFs:metadata().sha1, mapId, Hashing.hashLua(dependencies))
+  local scene = {
+    schema = MapAssetCache.SCENE_SCHEMA,
+    versionId = romFs:version(),
+    mapId = mapId,
+    mapSymbol = resolved.map.symbol,
+    type = area.areaType,
+    matrix = {
+      width = resolved.matrix.width,
+      height = resolved.matrix.height,
+      x = resolved.matrixX,
+      z = resolved.matrixZ,
+      worldOriginX = resolved.worldOriginX,
+      worldOriginZ = resolved.worldOriginZ,
+    },
+    cameraType = resolved.map.cameraType,
+    collision = central.collision,
+    terrain = central.terrain,
+    mapBatches = central.batches,
+    materials = central.materials,
+    buildingInstances = central.buildingInstances,
+    neighbors = neighbors,
+    terrainAnimations = central.terrainAnimations,
+    calibration = central.calibration,
+    lighting = { records = lightProfile.records },
+    edgeColors = HgssFieldEdgeColors.tableForAreaLightPattern(area.lightTypeRaw),
+    weatherId = resolved.map.weather,
+    fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(resolved.map.weather)),
+    runtimeProps = runtimeProps,
+  }
+  return {
+    mapId = mapId,
+    marker = marker,
+    scene = scene,
+    dependencies = dependencies,
+    collision = nil,
+    terrain = nil,
+    canonicalCells = true,
+    neighborChunks = {},
+    models = models,
+    meshes = meshes,
+    textures = textures,
+    unresolvedMaterials = unresolvedMaterials,
+  }
 end
 
 local function _compile(romFs, idOrSymbol, opts)
@@ -419,7 +567,12 @@ end
 
 function MapAssetCompiler.compile(romFs, idOrSymbol, opts)
   assert(romFs and romFs.openNarc, "compile requires a RomFs-shaped object")
-  local ok, result = pcall(_compile, romFs, idOrSymbol, opts)
+  local ok, result = pcall(function()
+    if opts and opts.fieldCellIndex then
+      return compileCanonical(romFs, idOrSymbol, opts)
+    end
+    return _compile(romFs, idOrSymbol, opts)
+  end)
   if ok then
     return result
   end

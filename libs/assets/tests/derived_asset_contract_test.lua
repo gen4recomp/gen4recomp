@@ -40,9 +40,9 @@ function T.contract_pins_the_current_asset_identities()
       collisionVersion = 1,
     },
     fieldCells = {
-      cacheFormat = "field-cell-cache-v2",
-      indexSchema = "g4-field-cell-index-v2",
-      cellSchema = "g4-field-cell-v2",
+      cacheFormat = "field-cell-cache-v3",
+      indexSchema = "g4-field-cell-index-v3",
+      cellSchema = "g4-field-cell-v3",
     },
     fieldActors = {
       cacheFormat = "field-actor-cache-v2",

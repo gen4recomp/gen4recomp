@@ -9,6 +9,9 @@ local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local ScriptCompileSession = require("romdump.src.digest.script.ScriptCompileSession")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local ScriptCache = require("libs.assets.src.ScriptCache")
+local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
+local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
 
 local CompilerWorker = {}
 
@@ -35,10 +38,52 @@ end
 ---@return table<string, unknown>
 function CompilerWorker.execute(job, context)
   assert(type(job) == "table", "worker job must be a table")
-  assert(job.kind == "map" or job.kind == "script-member", "unsupported compiler job kind: " .. tostring(job.kind))
+  assert(
+    job.kind == "map" or job.kind == "field-cell" or job.kind == "script-member",
+    "unsupported compiler job kind: " .. tostring(job.kind)
+  )
   assert(type(job.key) == "string" and job.key ~= "", "worker job key is required")
   assert(context and context.romFs and context.cacheFs, "worker context is incomplete")
   assert(type(job.stageName) == "string", "worker job stage name is required")
+
+  if job.kind == "field-cell" then
+    local descriptor = {
+      matrixMemberId = assert(job.matrixMemberId),
+      index = assert(job.index),
+      x = assert(job.x),
+      z = assert(job.z),
+      mapHeaderId = assert(job.mapHeaderId),
+      altitude = assert(job.altitude),
+      landDataMemberId = assert(job.landDataMemberId),
+      areaDataMemberId = assert(job.areaDataMemberId),
+      file = FieldCellCache.cellPath(job.matrixMemberId, job.index),
+    }
+    local artifact = PreparedArtifact.new({
+      cacheFs = context.cacheFs,
+      kind = job.kind,
+      jobKey = job.key,
+      stageName = job.stageName,
+    })
+    local ok, result = xpcall(function()
+      local scratch = context.fieldCellScratch or {}
+      context.fieldCellScratch = scratch
+      local compiled = FieldCellCompiler.compileCell(context.romFs, descriptor, scratch, job.producerFingerprint)
+      FieldCellCacheWriter.stagePrepared(artifact, descriptor, compiled)
+      artifact:finishSuccess({
+        marker = compiled.cell.cellMarker,
+        matrixMemberId = descriptor.matrixMemberId,
+        index = descriptor.index,
+      })
+      return { stageName = job.stageName, result = { marker = compiled.cell.cellMarker } }
+    end, function(failure)
+      return { failure = failure, traceback = debug.traceback("", 2) }
+    end)
+    if not ok then
+      failArtifact(artifact, result.failure, result.traceback)
+      error(result.failure, 0)
+    end
+    return result
+  end
 
   if job.kind == "script-member" then
     assert(type(job.memberId) == "number" and job.memberId % 1 == 0, "script member job requires an integer memberId")
@@ -95,7 +140,11 @@ function CompilerWorker.execute(job, context)
   })
 
   local ok, bundle, compileError = xpcall(function()
-    return MapAssetCompiler.compile(context.romFs, job.mapId)
+    return MapAssetCompiler.compile(context.romFs, job.mapId, {
+      cacheFs = context.cacheFs,
+      fieldCellIndex = FieldCellCache.loadIndex(context.cacheFs),
+      producerFingerprint = job.producerFingerprint,
+    })
   end, function(failure)
     return { failure = failure, traceback = debug.traceback("", 2) }
   end)
@@ -152,6 +201,14 @@ function CompilerWorker.run(workerId, versionId, inputChannel, resultChannel)
       kind = job.kind,
       key = jobKey,
       mapId = job.mapId,
+      matrixMemberId = job.matrixMemberId,
+      index = job.index,
+      x = job.x,
+      z = job.z,
+      mapHeaderId = job.mapHeaderId,
+      altitude = job.altitude,
+      landDataMemberId = job.landDataMemberId,
+      areaDataMemberId = job.areaDataMemberId,
       memberId = job.memberId,
       generationKey = job.generationKey,
       producerFingerprint = job.producerFingerprint,

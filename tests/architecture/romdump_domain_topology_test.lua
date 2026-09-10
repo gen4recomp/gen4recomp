@@ -23,6 +23,7 @@ local DOMAINS = {
     "MapCacheWriter",
     "MapCatalog",
     "MapCellSelector",
+    "MapCompilePlan",
     "MapMatrix",
     "MapResolver",
     "MapUnits",

@@ -14,7 +14,7 @@ local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local T = {}
 
 local function collision(grid)
-  return CollisionGrid.new(grid)
+  return CollisionGrid.new(assert(grid))
 end
 
 local function runtimeMap(romFs)

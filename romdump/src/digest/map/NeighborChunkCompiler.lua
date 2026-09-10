@@ -26,6 +26,7 @@ local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local MapUnits = require("romdump.src.digest.map.MapUnits")
 local Hashing = require("romdump.src.digest.Hashing")
 local Errors = require("libs.errors.src.Errors")
 
@@ -62,6 +63,10 @@ function NeighborChunkCompiler.compile(romFs, landMemberId, areaMemberId, contex
   local mapNsbmd =
     assert(Nsbmd.decode(land.mapModelBytes, { alias = "land_data", memberId = landMemberId, section = "map-model" }))
   local mapModel = mapNsbmd.models[1]
+  local modelExtentTilesX, modelExtentTilesZ = MapUnits.assertMapCalibration(mapModel.bounds, mapModel.info.posScale, {
+    landDataMemberId = landMemberId,
+    areaDataMemberId = areaMemberId,
+  })
 
   local texBytes = readMember(assert(romFs:openNarc("map_textures")), "map_textures", area.mapTexturePackId)
   local texPack = assert(Nsbtx.decode(texBytes, { alias = "map_textures", memberId = area.mapTexturePackId }))
@@ -121,6 +126,11 @@ function NeighborChunkCompiler.compile(romFs, landMemberId, areaMemberId, contex
       plates = decodedTerrain.plates,
       strips = decodedTerrain.strips,
       accessEntries = decodedTerrain.accessEntries,
+    },
+    calibration = {
+      modelExtentTilesX = modelExtentTilesX,
+      modelExtentTilesZ = modelExtentTilesZ,
+      posScale = mapModel.info.posScale,
     },
   }
 end

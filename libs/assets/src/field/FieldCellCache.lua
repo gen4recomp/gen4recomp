@@ -29,6 +29,9 @@ end
 function FieldCellCache.markerPath()
   return ROOT .. "/complete"
 end
+function FieldCellCache.indexMarkerPath()
+  return ROOT .. "/index.complete"
+end
 function FieldCellCache.cellDir(matrixMemberId, index)
   return string.format("%s/%d/%d", ROOT, matrixMemberId, index)
 end
@@ -41,8 +44,20 @@ end
 function FieldCellCache.terrainPath(matrixMemberId, index)
   return FieldCellCache.cellDir(matrixMemberId, index) .. "/terrain.lua"
 end
+function FieldCellCache.dependenciesPath(matrixMemberId, index)
+  return FieldCellCache.cellDir(matrixMemberId, index) .. "/dependencies.lua"
+end
+function FieldCellCache.cellMarkerPath(matrixMemberId, index)
+  return FieldCellCache.cellDir(matrixMemberId, index) .. "/complete"
+end
 function FieldCellCache.marker(romSha1, dependencyHash)
   return string.format("%s:%s:%s", FieldCellCache.FORMAT, romSha1, dependencyHash)
+end
+function FieldCellCache.indexMarker(romSha1, dependencyHash)
+  return string.format("%s:index:%s:%s", FieldCellCache.FORMAT, romSha1, dependencyHash)
+end
+function FieldCellCache.cellMarker(romSha1, matrixMemberId, index, dependencyHash)
+  return string.format("%s:%s:%d:%d:%s", FieldCellCache.FORMAT, romSha1, matrixMemberId, index, dependencyHash)
 end
 
 local function validId(value)
@@ -169,6 +184,16 @@ local function validateCellArtifacts(cell)
     and type(cell.terrainAnimations) == "table"
 end
 
+local function validateCalibration(calibration)
+  return type(calibration) == "table"
+    and finiteNumber(calibration.modelExtentTilesX)
+    and finiteNumber(calibration.modelExtentTilesZ)
+    and calibration.modelExtentTilesX > 0
+    and calibration.modelExtentTilesZ > 0
+    and finiteNumber(calibration.posScale)
+    and calibration.posScale > 0
+end
+
 local function validateBuildingInstances(cell)
   for _, instance in ipairs(cell.buildingInstances) do
     if
@@ -258,6 +283,9 @@ function FieldCellCache.validateCell(cacheFs, cell, expected)
   if not validateCellArtifacts(cell) then
     return false
   end
+  if not validateCalibration(cell.calibration) then
+    return false
+  end
   if not validateBuildingInstances(cell) then
     return false
   end
@@ -265,6 +293,34 @@ function FieldCellCache.validateCell(cacheFs, cell, expected)
     return false
   end
   return validateReferencedPaths(cacheFs, cell)
+end
+
+function FieldCellCache.isCellReady(cacheFs, descriptor, expectedMarker)
+  if type(descriptor) ~= "table" or type(expectedMarker) ~= "string" then
+    return false
+  end
+  if cacheFs:read(FieldCellCache.cellMarkerPath(descriptor.matrixMemberId, descriptor.index)) ~= expectedMarker then
+    return false
+  end
+  local cell = cacheFs:loadLua(descriptor.file)
+  if not FieldCellCache.validateCell(cacheFs, cell, descriptor) then
+    return false
+  end
+  local dependencies = cacheFs:loadLua(FieldCellCache.dependenciesPath(descriptor.matrixMemberId, descriptor.index))
+  local identity = type(dependencies) == "table" and dependencies.descriptor
+  return type(dependencies) == "table"
+    and type(identity) == "table"
+    and dependencies.marker == expectedMarker
+    and dependencies.matrixMemberId == descriptor.matrixMemberId
+    and dependencies.index == descriptor.index
+    and identity.matrixMemberId == descriptor.matrixMemberId
+    and identity.index == descriptor.index
+    and identity.x == descriptor.x
+    and identity.z == descriptor.z
+    and identity.mapHeaderId == descriptor.mapHeaderId
+    and identity.altitude == descriptor.altitude
+    and identity.landDataMemberId == descriptor.landDataMemberId
+    and identity.areaDataMemberId == descriptor.areaDataMemberId
 end
 
 function FieldCellCache.isReady(cacheFs, expectedMarker)
@@ -277,8 +333,8 @@ function FieldCellCache.isReady(cacheFs, expectedMarker)
   end
   for _, matrix in ipairs(index.matrices) do
     for _, entry in ipairs(matrix.cells) do
-      local cell = cacheFs:loadLua(entry.file)
-      if not FieldCellCache.validateCell(cacheFs, cell, entry) then
+      local cellMarker = cacheFs:read(FieldCellCache.cellMarkerPath(entry.matrixMemberId, entry.index))
+      if not FieldCellCache.isCellReady(cacheFs, entry, cellMarker) then
         return false
       end
     end
