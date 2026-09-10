@@ -292,4 +292,7 @@ T["corpus decodes validates and sound partition remains closed"] = function(romF
   end
 end
 
-return require("tests.rom.support.RomSuite").fromFacts(T)
+local suite = require("tests.rom.support.RomSuite").fromFacts(T)
+suite.metadata.slow = true
+suite.metadata.tags = { "script", "corpus" }
+return suite

@@ -695,7 +695,6 @@ function T.generated_cache_consumers_declare_the_derived_cache()
     "field_messages_test",
     "field_dialogue_test",
     "following_mon_visual_resolution_test",
-    "map_props_door_test",
     "mon_version_coverage_test",
     "neighbor_traversal_test",
     "new_bark_filler_zone_identity_test",

@@ -83,8 +83,10 @@ function T.ready_versions_build_valid_starter_capable_catalogs(romFs, versionId)
 
   -- The Elm starter path and its follow-up tail exist in this version's
   -- own script corpus: the choice opcode and the state operation lower
-  -- through the production pipeline, never to silent fallbacks.
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  -- through the production pipeline, never to silent fallbacks. Only the
+  -- Elm starter member is decoded.
+  local archive, memberIrs = FieldScripts.decodeMembers(romFs, { 843 })
+  assert(archive:memberCount() > 843, "the script archive must still carry the Elm starter member")
   local ops = {}
   FieldScripts.eachScript(archive, memberIrs, function(member, index, _, lowered)
     if member == 843 and index == 12 then

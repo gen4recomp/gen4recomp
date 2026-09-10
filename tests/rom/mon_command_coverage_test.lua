@@ -233,39 +233,6 @@ local function familyEntries()
   return entries
 end
 
-local function reachedOpcodes(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
-  local reached = {}
-  FieldScripts.eachScript(archive, memberIrs, function(_, _, structured, lowered)
-    FieldScripts.eachStep(structured, function(step)
-      for _, code in ipairs((step.provenance or {}).opcodes or {}) do
-        reached[code] = true
-      end
-    end)
-    for _, item in ipairs(lowered.items) do
-      for _, code in ipairs((item.provenance or {}).opcodes or {}) do
-        reached[code] = true
-      end
-    end
-  end)
-  return reached
-end
-
-local function loweringKeys()
-  local keys = {}
-  for _, module in ipairs({
-    "romdump.src.digest.script.lowering.ControlHandlers",
-    "romdump.src.digest.script.lowering.FieldHandlers",
-    "romdump.src.digest.script.lowering.AudioHandlers",
-  }) do
-    local registry = require(module)
-    for opcode in pairs(registry) do
-      keys[opcode] = true
-    end
-  end
-  return keys
-end
-
 function T.reviewed_commands_carry_semantic_evidence()
   local problems = {}
   local seen = {}
@@ -386,42 +353,7 @@ function T.every_inventory_entry_carries_exactly_one_disposition()
   Assert.equal(#problems, 0, "every inventory entry carries one disposition: " .. table.concat(problems, ", "))
 end
 
-function T.supported_entries_carry_widths_timing_and_lowering(romFs)
-  local keys = loweringKeys()
-  local reached = reachedOpcodes(romFs)
-  local problems = {}
-  for _, item in ipairs(familyEntries()) do
-    if item.entry ~= nil and item.entry.disposition == "supported" then
-      -- Zero-operand commands carry no width entries; a present table may
-      -- be empty, while a missing table must be compensated by real
-      -- decoded bytes in the corpus (the decoder's unknown-opcode path
-      -- still feeds the lowering registry, which the reachability check
-      -- below proves per opcode).
-      local widths = item.entry.widths
-      if widths ~= nil then
-        local widthCount = 0
-        for _ in pairs(widths) do
-          widthCount = widthCount + 1
-        end
-        if widthCount == 0 and reached[item.opcode] ~= true then
-          problems[#problems + 1] = item.opcode .. ":empty widths without corpus bytes"
-        end
-      elseif reached[item.opcode] ~= true then
-        problems[#problems + 1] = item.opcode .. ":missing decoder widths and corpus bytes"
-      end
-      if type(item.entry.classification) ~= "string" then
-        problems[#problems + 1] = item.opcode .. ":missing timing classification"
-      end
-      if keys[item.opcode] ~= true then
-        problems[#problems + 1] = item.opcode .. ":missing lowering"
-      end
-    end
-  end
-  table.sort(problems)
-  Assert.equal(#problems, 0, "every supported entry is decodable, timed, and lowered: " .. table.concat(problems, ", "))
-end
-
-function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
+function T.deferred_entries_carry_one_category_and_stay_explicit()
   local problems = {}
   for _, item in ipairs(familyEntries()) do
     if item.entry ~= nil and item.entry.disposition == "deferred" then
@@ -435,57 +367,17 @@ function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
   end
   table.sort(problems)
   Assert.equal(#problems, 0, "every deferred entry names one allowed category: " .. table.concat(problems, ", "))
-
-  local archive, memberIrs = FieldScripts.decode(romFs)
-  local reached = {}
-  FieldScripts.eachScript(archive, memberIrs, function(_, _, _, lowered)
-    for _, item in ipairs(lowered.items) do
-      if item.op == "unsupported" and type(item.command) == "number" then
-        if MonScriptCommands.byOpcode[item.command] ~= nil then
-          local tagged = ScriptCommands.byOpcode[item.command]
-          if tagged ~= nil and tagged.disposition ~= "deferred" then
-            reached[#reached + 1] = tostring(item.command) .. ":" .. CommandCatalog.name(item.command)
-          end
-        end
-      end
-    end
-  end)
-  table.sort(reached)
-  Assert.equal(
-    #reached,
-    0,
-    "every reached unsupported family node is an explicitly deferred command: " .. table.concat(reached, ", ")
-  )
-end
-
-function T.lowered_scripts_dispatch_no_source_opcode_number(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
-  local problems = {}
-  local function checkItem(item)
-    if type(item.op) ~= "string" then
-      problems[#problems + 1] = "numeric op " .. tostring(item.op)
-    elseif item.op == "unsupported" then
-      -- Only the explicit halt keeps its source opcode number so the
-      -- runtime fault can attribute the deferred command.
-      if type(item.command) ~= "number" then
-        problems[#problems + 1] = "unsupported node without its source command"
-      end
-    elseif type(item.command) == "number" then
-      problems[#problems + 1] = tostring(item.op) .. " still dispatches source opcode " .. tostring(item.command)
-    end
-  end
-  FieldScripts.eachScript(archive, memberIrs, function(_, _, structured, lowered)
-    FieldScripts.eachStep(structured, checkItem)
-    for _, item in ipairs(lowered.items) do
-      checkItem(item)
-    end
-  end)
-  table.sort(problems)
-  Assert.equal(#problems, 0, "lowered scripts dispatch on semantic names only: " .. table.concat(problems, ", "))
+  -- The reachability proof that every reached unsupported family node is an
+  -- explicitly deferred command walks the whole corpus and lives in the
+  -- slow sibling.
 end
 
 function T.default_lab_scripts_contain_no_undispositioned_command(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  -- Elm Lab containment over the explicitly named lab member only: the
+  -- dispatcher, the entry welcome, and the starter choice. The
+  -- whole-corpus reachability and lowering audits live in the slow sibling.
+  local archive, memberIrs = FieldScripts.decodeMembers(romFs, { LAB_MEMBER })
+  assert(archive:memberCount() > LAB_MEMBER, "the script archive must still carry the lab member")
   local found = {}
   local transitions = {}
   local staleHalts = {}

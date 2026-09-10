@@ -15,8 +15,6 @@ local MapResolver = require("romdump.src.digest.map.MapResolver")
 local RomRuntimeMap = require("tests.support.RomRuntimeMap")
 local FieldActorGraphics = require("romdump.src.digest.actor.FieldActorGraphics")
 local FieldActorCompiler = require("romdump.src.digest.actor.FieldActorCompiler")
-local FollowingMonVisualCompiler = require("romdump.src.digest.actor.FollowingMonVisualCompiler")
-local Hashing = require("romdump.src.digest.Hashing")
 local MonSources = require("romdump.src.config.MonSources")
 local FieldActorCacheWriter = require("romdump.src.digest.actor.FieldActorCacheWriter")
 local ZoneEvents = require("romdump.src.digest.map.ZoneEvents")
@@ -218,8 +216,6 @@ local function tickSet(ticks)
 end
 
 local DEFAULT_SHIFTED_TICKS = tickSet({ 5, 6, 7, 8, 9, 15, 16, 17, 18, 19 })
-local PARTNER_SOUTH_SHIFTED_TICKS = tickSet({ 0, 1, 2, 3, 4, 15, 16, 17, 18, 19 })
-local PARTNER_SIDE_SHIFTED_TICKS = tickSet({ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 })
 
 local function assertIdleShiftWindow(visual, direction, expected, label)
   local pose = assert(visual.directions[direction].idle, label .. " " .. direction .. " idle pose is required")
@@ -258,21 +254,6 @@ function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
   )
   Assert.equal(marill.directions.south.idle.durationTicks, 20, "marill south idle runs on the same 20-tick clock")
 
-  -- A normal follower species reaches the same producer through the follower
-  -- visual pipeline, keyed by its production visual id.
-  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
-  local chikoritaSprite = assert(
-    MonSources.followerSpriteId(152, 0, false),
-    "chikorita resolves a source follower sprite through follow_mon selection"
-  )
-  local chikoritaVisualId =
-    MonSources.followerVisualId(assert(MonSources.followerParamIndex(152, 0, false), "chikorita param index"))
-  local chikorita = assert(
-    follower.visuals[chikoritaVisualId],
-    "chikorita follower visual " .. chikoritaVisualId .. " (source sprite " .. chikoritaSprite .. ") must be compiled"
-  )
-  assertIdleUsesSourceRange(chikorita, "chikorita follower")
-
   -- A family-16 field Pokemon idles on the same native clock.
   local kyogre = assert(bundle.visuals[1043], "static Kyogre visual 1043 must be compiled")
   assertIdleUsesSourceRange(kyogre, "kyogre")
@@ -288,56 +269,18 @@ function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
   end
 end
 
-function T.follower_idle_bob_phase_matches_facing_for_the_flagged_species(romFs)
+-- The map-actor bob control for the idle phase: Marill rests everywhere
+-- except the two shared shift windows. The follower flagged-species
+-- schedules that require the all-follower producer live in the slow
+-- follower-visual corpus sibling.
+function T.marill_idle_bob_phase_uses_the_generic_shift_windows(romFs)
   local bundle = assert(FieldActorCompiler.compile(romFs))
-  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
 
-  -- Generic control: the map-actor bob rests everywhere except the two
-  -- shared shift windows.
   local marill = assert(bundle.visuals[1032], "static Marill visual 1032 must be compiled")
   assertIdleUsesSourceRange(marill, "marill")
   for _, direction in ipairs(manifest.directionOrder) do
     assertIdleShiftWindow(marill, direction, DEFAULT_SHIFTED_TICKS, "marill")
   end
-
-  -- A follower without the source flag keeps the generic windows.
-  local chikoritaParam =
-    assert(MonSources.followerParamIndex(152, 0, false), "chikorita resolves a follower parameter index")
-  local chikorita =
-    assert(follower.visuals[MonSources.followerVisualId(chikoritaParam)], "chikorita follower visual must be compiled")
-  assertIdleUsesSourceRange(chikorita, "chikorita follower")
-  for _, direction in ipairs(manifest.directionOrder) do
-    assertIdleShiftWindow(chikorita, direction, DEFAULT_SHIFTED_TICKS, "chikorita follower")
-  end
-
-  -- A follower carrying the source flag bobs on the facing-specific retail
-  -- schedule while running the same facing animation on the same clock.
-  local butterfreeParam =
-    assert(MonSources.followerParamIndex(12, 0, false), "butterfree resolves a follower parameter index")
-  local butterfreeVisualId = MonSources.followerVisualId(butterfreeParam)
-  local butterfree = assert(
-    follower.visuals[butterfreeVisualId],
-    "butterfree follower visual " .. butterfreeVisualId .. " must be compiled"
-  )
-  assertIdleUsesSourceRange(butterfree, "butterfree follower")
-  assertIdleShiftWindow(butterfree, "south", PARTNER_SOUTH_SHIFTED_TICKS, "butterfree follower")
-  for _, direction in ipairs({ "north", "west", "east" }) do
-    assertIdleShiftWindow(butterfree, direction, PARTNER_SIDE_SHIFTED_TICKS, "butterfree follower")
-  end
-end
-
-function T.follower_visual_dependencies_track_the_follower_parameter_source(romFs)
-  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
-  local resolved = assert(romFs:resolvedNarc("follower_params"), "follower parameter archive must resolve")
-  local raw = assert(romFs:read(resolved.fileId), "follower parameter archive bytes must be readable")
-  local record =
-    assert(follower.dependencies.followerParams, "follower dependencies must name the follower parameter archive")
-  Assert.equal(record.symbol, resolved.symbol, "follower parameter symbol")
-  Assert.equal(record.alias, resolved.alias, "follower parameter alias")
-  Assert.equal(record.narcId, resolved.narcId, "follower parameter narc id")
-  Assert.equal(record.fileId, resolved.fileId, "follower parameter file id")
-  Assert.equal(record.path, resolved.path, "follower parameter path")
-  Assert.equal(record.sha1, Hashing.sha1hex(raw), "follower parameter content hash")
 end
 
 function T.pokemon_idle_policy_keys_off_the_source_actor_family(romFs)

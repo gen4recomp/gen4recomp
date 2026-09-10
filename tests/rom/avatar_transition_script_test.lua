@@ -12,13 +12,18 @@ local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
 
 local T = {}
 
+-- Explicit retail flows: the Pokemon Center heal/restore choreography, the
+-- Rocket-costume switches, and the Pokeathlon switches. Literal member
+-- data, never discovered; only these members are decoded.
+local SAMPLE_MEMBERS = { 3, 94, 167 }
+
 local function provenanceMatches(item, offset, opcode)
   local provenance = item.provenance
   return provenance ~= nil and provenance.offsets[1] == offset and provenance.opcodes[1] == opcode
 end
 
 T["retail supported avatar transition sites remain supported"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = FieldScripts.decodeMembers(romFs, SAMPLE_MEMBERS)
   local queueSites = 0
   local applySites = 0
   local seenTransitions = {}

@@ -90,4 +90,7 @@ T["supported mon-family commands never lower to silent fallbacks"] = function(ro
   Assert.equal(#silent, 0, "supported commands lower to real semantics: " .. table.concat(silent, ", "))
 end
 
-return RomSuite.fromFacts(T)
+local suite = RomSuite.fromFacts(T)
+suite.metadata.slow = true
+suite.metadata.tags = { "party", "script", "corpus" }
+return suite

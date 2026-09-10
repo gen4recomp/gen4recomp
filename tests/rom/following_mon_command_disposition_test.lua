@@ -2,8 +2,9 @@
 -- the follower family (595-609, 698, 729) carries a machine-checked
 -- disposition, and the core active-follower operations the delivered
 -- controller owns are supported rather than deferred. Static catalog
--- assertions pin the contract; the corpus walk proves no reached follower
--- command escapes the catalog.
+-- assertions and the explicit Elm starter and Route 24 retail checks stay
+-- in the default tier; the corpus reachability walks and the global
+-- one-shot invariant live in the slow sibling.
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
@@ -57,7 +58,7 @@ local FOLLOWER_MODES = { follow_player = true, follow_transition_a = true, follo
 -- to semantic movement modes, never to the unrelated movement-script jumps
 -- the old namespace decoded them to.
 T["elm starter script carries semantic movement modes without jumps"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = FieldScripts.decodeMembers(romFs, { 843 })
   assert(archive:memberCount() > 843, "the script archive must still carry member 843")
   local ir = assert(memberIrs[843], "member 843 must decode")
   local script = assert(ir.scripts[12], "member 843 must still carry the starter script")
@@ -84,32 +85,6 @@ T["elm starter script carries semantic movement modes without jumps"] = function
   Assert.deepEqual(modes, { "follow_player", "follow_transition_a" }, "Elm's tail must set and restore its modes")
 end
 
--- Corpus-wide gate: no lowered script may still carry the one-shot
--- operation, and every 604-derived node must be a semantic mode setter.
-T["no generated script carries a one-shot follower movement"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
-  local violations = {}
-  FieldScripts.eachScript(archive, memberIrs, function(member, index, structured, lowered)
-    for _, item in ipairs(lowered.items) do
-      if item.op == "follower_start_movement" then
-        violations[#violations + 1] = ("member %d script %d: one-shot follower movement"):format(member, index)
-      end
-      for _, opcode in ipairs((item.provenance or {}).opcodes or {}) do
-        if opcode == 604 and item.op ~= "follower_set_movement_type" then
-          violations[#violations + 1] = ("member %d script %d: 604 lowers to %s"):format(member, index, item.op)
-        end
-      end
-    end
-    FieldScripts.eachStep(structured, function(step)
-      if step.op == "follower_start_movement" then
-        violations[#violations + 1] = ("member %d script %d: structured one-shot movement"):format(member, index)
-      end
-    end)
-  end)
-  table.sort(violations)
-  Assert.equal(#violations, 0, "stale follower lowering must not survive: " .. table.concat(violations, ", "))
-end
-
 T["follower transition command is supported and same-tick"] = function()
   Assert.equal(disposition(608), "supported", "the transition must start through the transition owner")
   Assert.equal(
@@ -124,7 +99,7 @@ end
 -- 48 afterwards: both must lower to semantic movement modes, and the player
 -- step inside the transition must keep its fast semantic pace.
 T["route 24 script carries the mode56 transition context with a fast player step"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = FieldScripts.decodeMembers(romFs, { 215 })
   assert(archive:memberCount() > 215, "the script archive must still carry member 215")
   local ir = assert(memberIrs[215], "member 215 must decode")
   local script = assert(ir.scripts[2], "member 215 must still carry the Rocket script")
@@ -163,7 +138,11 @@ T["route 24 script carries the mode56 transition context with a fast player step
   )
 end
 
-T["follower family has complete dispositions"] = function(romFs)
+-- Static disposition completeness: every follower-family command is
+-- decided. The reachability proof that no reached follower command
+-- escapes the catalog walks the whole corpus and lives in the slow
+-- sibling.
+T["follower family has complete dispositions"] = function()
   local gaps = {}
   for _, opcode in ipairs(REQUIRED_SUPPORTED) do
     if disposition(opcode) ~= "supported" then
@@ -178,42 +157,8 @@ T["follower family has complete dispositions"] = function(romFs)
   end
   table.sort(gaps)
   Assert.equal(#gaps, 0, "every follower-family command is decided: " .. table.concat(gaps, ", "))
-
-  local reached = {}
-  local archive, memberIrs = FieldScripts.decode(romFs)
-  FieldScripts.eachScript(archive, memberIrs, function(_, _, structured, lowered)
-    for _, item in ipairs(structured) do
-      FieldScripts.eachStep({ item }, function(step)
-        for _, opcode in ipairs((step.provenance or {}).opcodes or {}) do
-          reached[opcode] = true
-        end
-      end)
-    end
-    for _, item in ipairs(lowered.items) do
-      for _, opcode in ipairs((item.provenance or {}).opcodes or {}) do
-        reached[opcode] = true
-      end
-    end
-  end)
-  local escaping = {}
-  local family = {}
-  for _, opcode in ipairs(REQUIRED_SUPPORTED) do
-    family[opcode] = true
-  end
-  for _, opcode in ipairs(EXPLICIT_ONLY) do
-    family[opcode] = true
-  end
-  for opcode in pairs(reached) do
-    if family[opcode] and disposition(opcode) ~= "supported" and disposition(opcode) ~= "deferred" then
-      escaping[#escaping + 1] = opcode .. ":" .. CommandCatalog.name(opcode)
-    end
-  end
-  table.sort(escaping)
-  Assert.equal(
-    #escaping,
-    0,
-    "no reached follower command escapes the machine-checked catalog: " .. table.concat(escaping, ", ")
-  )
 end
 
-return RomSuite.fromFacts(T)
+local suite = RomSuite.fromFacts(T)
+suite.metadata.tags = { "following-mon", "script" }
+return suite

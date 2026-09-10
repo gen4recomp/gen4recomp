@@ -24,6 +24,7 @@ local Errors = require("libs.errors.src.Errors")
 
 local T = {
   metadata = {
+    slow = true,
     capabilities = { "rom_dump", "derived_cache" },
     tags = { "door", "census" },
   },
