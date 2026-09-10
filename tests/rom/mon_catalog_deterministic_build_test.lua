@@ -44,5 +44,7 @@ function T.identical_inputs_produce_byte_identical_class_output(romFs, versionId
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.slow = true
+suite.metadata.capabilities = { "rom_dump" }
+suite.metadata.tags = { "mon", "catalog", "determinism" }
 return suite
