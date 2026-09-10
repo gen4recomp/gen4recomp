@@ -2,12 +2,11 @@
 
 local Errors = require("libs.errors.src.Errors")
 local MapAnalysis = require("romdump.src.digest.map.MapAnalysis")
-local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
-local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local WorldManifest = require("romdump.src.digest.map.WorldManifest")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
+local CompilerPool = require("romdump.src.build.CompilerPool")
 
 local MapCacheBuild = {}
 
@@ -27,73 +26,105 @@ function MapCacheBuild.build(context)
   end
 
   local entries, excluded, compileExcluded = {}, {}, {}
-  for _, result in ipairs(MapAnalysis.analyze(context.romFs)) do
-    if result.status == "excluded" then
-      excluded[#excluded + 1] = {
-        id = result.id,
-        symbol = result.symbol,
-        reason = result.reason,
-        matchCount = result.matchCount,
-      }
-    else
-      local bundle, compileErr = MapAssetCompiler.compile(context.romFs, result.id)
-      if not bundle then
-        assert(Errors.is(compileErr), "compiler failure must be a structured error")
-        compileErr = compileErr --[[@as Errors.Error]]
-        compileExcluded[#compileExcluded + 1] = {
+  local analyses = MapAnalysis.analyze(context.romFs)
+  local pool = CompilerPool.new({
+    versionId = context.version,
+    mode = "batch",
+    developmentRepositoryRoot = context.developmentRepositoryRoot,
+  })
+  local oldReady = {}
+  local resolved = {}
+  local ok, failure = xpcall(function()
+    for _, result in ipairs(analyses) do
+      if result.status == "excluded" then
+        excluded[#excluded + 1] = {
           id = result.id,
           symbol = result.symbol,
-          errorCode = compileErr.code,
-          message = compileErr.message,
-          context = compileErr.context,
+          reason = result.reason,
+          matchCount = result.matchCount,
         }
-        context.log(
-          string.format("build-cache: %s map %d excluded: %s", context.version, result.id, Errors.format(compileErr))
-        )
       else
-        if context.forced or not MapAssetCache.isReady(context.cacheFs, bundle.mapId, bundle.marker) then
-          MapCacheWriter.write(context.cacheFs, bundle)
-          context.log(string.format("build-cache: %s map %d compiled", context.version, bundle.mapId))
-        else
-          context.log(string.format("build-cache: %s map %d current", context.version, bundle.mapId))
-        end
-        for _, entry in ipairs(bundle.unresolvedMaterials) do
-          context.log(
-            string.format(
-              "build-cache: %s map %d unresolved %s %s: material %s of %s %s:%d wants %s from %s",
-              context.version,
-              bundle.mapId,
-              entry.role,
-              entry.kind,
-              entry.material,
-              entry.modelName,
-              entry.modelArchive,
-              entry.modelMemberId,
-              entry.name,
-              entry.source
-            )
-          )
-        end
-        entries[#entries + 1] = {
-          id = bundle.mapId,
-          symbol = bundle.scene.mapSymbol,
-          mapCode = result.mapCode,
-          mapSection = result.mapSection,
-          mapSectionNativeId = result.mapSectionNativeId,
-          followMode = result.followMode,
-          width = bundle.scene.matrix.width,
-          height = bundle.scene.matrix.height,
-          matrix = {
-            memberId = result.matrixMemberId,
-            x = result.matrixX,
-            z = result.matrixZ,
-            index = result.matrixIndex,
-            landDataMemberId = result.landDataMemberId,
-            selection = result.source,
-            matchCount = result.matchCount,
-          },
-        }
+        resolved[#resolved + 1] = result
+        local oldMarker = context.cacheFs:read(MapAssetCache.mapDir(result.id) .. "/complete")
+        oldReady[result.id] = oldMarker ~= nil and MapAssetCache.isReady(context.cacheFs, result.id, oldMarker)
+        pool:request({
+          kind = "map",
+          key = "map:" .. result.id,
+          priority = 0,
+          payload = { mapId = result.id },
+        })
       end
+    end
+    pool:drain()
+  end, debug.traceback)
+  local shutdownOk, shutdownError = pcall(pool.shutdown, pool)
+  if not ok then
+    error(failure, 0)
+  end
+  if not shutdownOk then
+    error(shutdownError, 0)
+  end
+
+  for _, result in ipairs(resolved) do
+    local state, details = pool:status("map:" .. result.id)
+    if state == "failed" then
+      local compileErr = assert(details and details.error, "map worker failure has no error")
+      assert(Errors.is(compileErr), "compiler failure must be a structured error")
+      compileExcluded[#compileExcluded + 1] = {
+        id = result.id,
+        symbol = result.symbol,
+        errorCode = compileErr.code,
+        message = compileErr.message,
+        context = compileErr.context,
+      }
+      context.log(
+        string.format("build-cache: %s map %d excluded: %s", context.version, result.id, Errors.format(compileErr))
+      )
+    else
+      assert(state == "ready" and details and details.result, "map worker did not produce a ready result")
+      local compiled = details.result
+      assert(compiled.mapId == result.id, "map worker returned the wrong map")
+      if context.forced or not oldReady[result.id] then
+        context.log(string.format("build-cache: %s map %d compiled", context.version, result.id))
+      else
+        context.log(string.format("build-cache: %s map %d current", context.version, result.id))
+      end
+      for _, entry in ipairs(compiled.unresolvedMaterials) do
+        context.log(
+          string.format(
+            "build-cache: %s map %d unresolved %s %s: material %s of %s %s:%d wants %s from %s",
+            context.version,
+            result.id,
+            entry.role,
+            entry.kind,
+            entry.material,
+            entry.modelName,
+            entry.modelArchive,
+            entry.modelMemberId,
+            entry.name,
+            entry.source
+          )
+        )
+      end
+      entries[#entries + 1] = {
+        id = result.id,
+        symbol = compiled.mapSymbol,
+        mapCode = result.mapCode,
+        mapSection = result.mapSection,
+        mapSectionNativeId = result.mapSectionNativeId,
+        followMode = result.followMode,
+        width = compiled.width,
+        height = compiled.height,
+        matrix = {
+          memberId = result.matrixMemberId,
+          x = result.matrixX,
+          z = result.matrixZ,
+          index = result.matrixIndex,
+          landDataMemberId = result.landDataMemberId,
+          selection = result.source,
+          matchCount = result.matchCount,
+        },
+      }
     end
   end
   local world = WorldManifest.stage(context.cacheFs, entries, excluded, compileExcluded)

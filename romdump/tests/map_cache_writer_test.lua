@@ -218,7 +218,7 @@ function T.failed_rebuild_preserves_the_previous_model_descriptor()
 
   Assert.isTrue(MapAssetCache.isReady(c, first.mapId, first.marker), "the previous map remains ready")
   Assert.equal(c:read(firstModelPath), firstModelBytes, "the old descriptor keeps its bytes")
-  Assert.isTrue(c:exists(MapAssetCache.modelPath(secondModelKey)), "the new descriptor sits at its own path")
+  Assert.isFalse(c:exists(MapAssetCache.modelPath(secondModelKey)), "the failed private stage leaves no new descriptor")
 end
 
 return { tests = T }

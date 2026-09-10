@@ -25,7 +25,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local AssetErrors = require("libs.assets.src.errors")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 
 local MapCacheWriter = {}
 
@@ -76,12 +76,14 @@ local function validateBundle(bundle)
   return encodedMeshes
 end
 
-local function persist(cacheFs, tx, bundle)
+local function persist(prepared, bundle)
+  local cacheFs = prepared:cacheFs()
   local mapId = bundle.mapId
   local dir = MapAssetCache.mapDir(mapId)
-  local stage = tx.stage
+  local stage = prepared:stageFs()
 
   local encodedMeshes = validateBundle(bundle)
+  prepared:addOwnedRoot(dir)
 
   -- 1. Shared content-addressed geometry (the encoded bytes validated
   -- above). 2. Shared content-addressed textures. 3. Shared model
@@ -90,13 +92,19 @@ local function persist(cacheFs, tx, bundle)
   -- older ready map references (a different descriptor gets a different
   -- path).
   for sha1, bytes in pairs(encodedMeshes) do
-    cacheFs:write(MapAssetCache.geometryPath(sha1), bytes)
+    local path = MapAssetCache.geometryPath(sha1)
+    stage:write(path, bytes)
+    prepared:addSharedFile(path)
   end
   for sha1, tex in pairs(bundle.textures) do
-    cacheFs:write(MapAssetCache.texturePath(sha1), PngWriter.encode(tex.width, tex.height, tex.pixels))
+    local path = MapAssetCache.texturePath(sha1)
+    stage:write(path, PngWriter.encode(tex.width, tex.height, tex.pixels))
+    prepared:addSharedFile(path)
   end
   for modelKey, descriptor in pairs(bundle.models) do
-    cacheFs:writeLua(MapAssetCache.modelPath(modelKey), descriptor)
+    local path = MapAssetCache.modelPath(modelKey)
+    stage:writeLua(path, descriptor)
+    prepared:addSharedFile(path)
   end
   -- 4. Collision grid, encoded into the project-owned G4CL asset. The
   -- encoder rejects malformed grids (bad dimensions, missing/wrong cells,
@@ -138,7 +146,7 @@ local function persist(cacheFs, tx, bundle)
     Errors.raise(AssetErrors.MAP_CACHE_READBACK_FAILED, "scene.lua did not read back as a table", { mapId = mapId })
   end
   for _, path in
-    ipairs(MapAssetCache.referencedPaths(scene --[[@as MapAssetCache.Scene]], cacheFs))
+    ipairs(MapAssetCache.referencedPaths(scene --[[@as MapAssetCache.Scene]], stage))
   do
     if not stage:exists(path) and not cacheFs:exists(path) then
       Errors.raise(
@@ -157,19 +165,33 @@ local function persist(cacheFs, tx, bundle)
   return bundle.marker
 end
 
--- Write the bundle transactionally. Staging/validation failures discard the
--- stage and re-raise; once publish begins the stage is the publisher's
--- recovery material and is never removed here, so any previous ready map
--- stays recoverable.
-function MapCacheWriter.write(cacheFs, bundle)
+function MapCacheWriter.stage(prepared, bundle)
+  assert(prepared and prepared.stageFs, "stage requires a PreparedArtifact")
   assert(type(bundle) == "table" and bundle.mapId and bundle.marker, "invalid bundle")
-  local tx = ArtifactPublisher.begin(cacheFs, "map-" .. bundle.mapId, { MapAssetCache.mapDir(bundle.mapId) })
-  local ok, result = pcall(persist, cacheFs, tx, bundle)
+  local ok, result = pcall(persist, prepared, bundle)
   if not ok then
-    tx:abort()
     error(result, 0)
   end
-  tx:publish()
+  return result
+end
+
+-- Synchronous compatibility for existing producer callers. It uses the same
+-- private-stage and controller publication lifecycle as worker jobs.
+function MapCacheWriter.write(cacheFs, bundle)
+  assert(type(bundle) == "table" and bundle.mapId and bundle.marker, "invalid bundle")
+  local prepared = PreparedArtifact.new({
+    cacheFs = cacheFs,
+    kind = "map",
+    jobKey = "map:" .. bundle.mapId,
+    stageName = "map-" .. bundle.mapId,
+  })
+  local ok, result = pcall(MapCacheWriter.stage, prepared, bundle)
+  if not ok then
+    prepared:abort()
+    error(result, 0)
+  end
+  prepared:finishSuccess({ mapId = bundle.mapId, marker = bundle.marker })
+  prepared:publish()
   return result
 end
 

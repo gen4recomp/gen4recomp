@@ -21,6 +21,7 @@ local CacheBuilder = {}
 ---@field romFs RomFs
 ---@field forced boolean
 ---@field log fun(line: string)
+---@field developmentRepositoryRoot string?
 
 local function versionFailure(err)
   assert(Errors.is(err), "source-data stage failure must be a structured error")
@@ -32,13 +33,21 @@ end
 ---@param romFs RomFs
 ---@param forced boolean
 ---@param log fun(line: string)
+---@param developmentRepositoryRoot string?
 ---@return VersionBuildContext
-local function buildContext(version, cacheFs, romFs, forced, log)
-  return { version = version, cacheFs = cacheFs, romFs = romFs, forced = forced, log = log }
+local function buildContext(version, cacheFs, romFs, forced, log, developmentRepositoryRoot)
+  return {
+    version = version,
+    cacheFs = cacheFs,
+    romFs = romFs,
+    forced = forced,
+    log = log,
+    developmentRepositoryRoot = developmentRepositoryRoot,
+  }
 end
 
 ---@param versionIds string[]
----@param options { allowCompileExclusions?: boolean, log?: fun(line: string) }|nil
+---@param options { allowCompileExclusions?: boolean, log?: fun(line: string), developmentRepositoryRoot?: string }|nil
 ---@return table<string, unknown>|nil report, string|nil err
 function CacheBuilder.buildVersions(versionIds, options)
   options = options or {}
@@ -85,7 +94,7 @@ function CacheBuilder.buildVersions(versionIds, options)
         return versionFailure(openErr)
       end
       romFs = opened
-      local context = buildContext(version, cacheFs, romFs, forced, log)
+      local context = buildContext(version, cacheFs, romFs, forced, log, options.developmentRepositoryRoot)
       local _, stageErr = FieldCacheBuild.build(context)
       if stageErr then
         return versionFailure(stageErr)

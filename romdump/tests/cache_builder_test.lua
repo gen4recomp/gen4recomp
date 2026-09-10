@@ -12,6 +12,7 @@ local FAKE_PATHS = {
   "romdump.src.build.FieldCacheBuild",
   "romdump.src.build.ScriptAudioCacheBuild",
   "romdump.src.build.MapCacheBuild",
+  "romdump.src.build.CompilerPool",
   "romdump.src.source.RomFs",
   "libs.storage.src.CacheFs",
   "romdump.src.digest.map.MapAnalysis",
@@ -236,6 +237,10 @@ local function makeFakes()
         if path == "rom-dump.complete" then
           return "g4-rom-dump-v1:" .. version .. ":deadbeef"
         end
+        local mapId = path:match("^maps/(%d+)/complete$")
+        if mapId then
+          return env.mapBundles[tonumber(mapId)].marker
+        end
         return nil
       end,
       loadLua = function()
@@ -281,11 +286,51 @@ local function makeFakes()
   fakes.MapAnalysis.analyze = function()
     return env.mapResults
   end
+  fakes.MapAssetCache.mapDir = function(mapId)
+    return "maps/" .. mapId
+  end
   fakes.MapAssetCompiler.compile = function(_, mapId)
     if env.compileFailures[mapId] ~= nil then
       return nil, env.compileFailures[mapId]
     end
     return env.mapBundles[mapId]
+  end
+  fakes.CompilerPool.new = function()
+    local jobs, results = {}, {}
+    local pool = {}
+    function pool:request(job)
+      jobs[job.key] = job
+    end
+    function pool:drain()
+      for key, job in pairs(jobs) do
+        local bundle, compileError = fakes.MapAssetCompiler.compile(nil, job.payload.mapId)
+        if bundle then
+          fakes.MapCacheWriter.write(nil, bundle)
+          results[key] = {
+            state = "ready",
+            details = {
+              workerId = 1,
+              result = {
+                mapId = bundle.mapId,
+                marker = bundle.marker,
+                mapSymbol = bundle.scene.mapSymbol,
+                width = bundle.scene.matrix.width,
+                height = bundle.scene.matrix.height,
+                unresolvedMaterials = bundle.unresolvedMaterials,
+              },
+            },
+          }
+        else
+          results[key] = { state = "failed", details = { error = compileError } }
+        end
+      end
+    end
+    function pool:status(key)
+      local result = results[key]
+      return result.state, result.details
+    end
+    function pool:shutdown() end
+    return pool
   end
   fakes.FieldCameraCompiler.compile = function(romFs)
     if env.failCompilers[romFs.version] ~= nil then
