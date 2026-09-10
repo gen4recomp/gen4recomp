@@ -127,70 +127,54 @@ local OPCODE_NAMES = {
   [0x41] = "END_VTXS",
 }
 
--- ---- minimal column-major 4x4 matrix math (DS convention) ----
+-- ---- column-major 4x4 matrix state (DS convention) ----
 
-local function identity()
-  return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
-end
-
-local function multiply(a, b) -- a * b, column-major
-  local m = {}
-  for col = 0, 3 do
-    for row = 0, 3 do
-      local s = 0
-      for k = 0, 3 do
-        s = s + a[k * 4 + row + 1] * b[col * 4 + k + 1]
-      end
-      m[col * 4 + row + 1] = s
-    end
+---@param out Matrix4.Buffer
+---@param src number[]
+local function copyArrayInto(out, src)
+  local m = out.m
+  for i = 0, 15 do
+    m[i] = src[i + 1]
   end
-  return m
 end
 
-local function transformPoint(m, x, y, z)
-  return m[1] * x + m[5] * y + m[9] * z + m[13],
-    m[2] * x + m[6] * y + m[10] * z + m[14],
-    m[3] * x + m[7] * y + m[11] * z + m[15]
-end
-
--- A direction is transformed by the matrix's linear part only, matching the DS
--- vector matrix, which is 3x3 and so never picks up a translation.
-local function transformDirection(m, x, y, z)
-  return m[1] * x + m[5] * y + m[9] * z, m[2] * x + m[6] * y + m[10] * z, m[3] * x + m[7] * y + m[11] * z
-end
-
--- The linear part of a 4x4, as the 4x4 a direction matrix accumulates.
-local linear = Matrix4.linear
-
--- 12 fx32 params (column-major 4x3) -> 4x4 with implicit (0,0,0,1) last row.
-local function mat4x3(p)
+local function fill4x3(out, p)
   local f = FixedPoint.fx32
-  return {
-    f(p[1]),
-    f(p[2]),
-    f(p[3]),
-    0,
-    f(p[4]),
-    f(p[5]),
-    f(p[6]),
-    0,
-    f(p[7]),
-    f(p[8]),
-    f(p[9]),
-    0,
-    f(p[10]),
-    f(p[11]),
-    f(p[12]),
-    1,
-  }
+  local m = out.m
+  m[0], m[1], m[2], m[3] = f(p[1]), f(p[2]), f(p[3]), 0
+  m[4], m[5], m[6], m[7] = f(p[4]), f(p[5]), f(p[6]), 0
+  m[8], m[9], m[10], m[11] = f(p[7]), f(p[8]), f(p[9]), 0
+  m[12], m[13], m[14], m[15] = f(p[10]), f(p[11]), f(p[12]), 1
 end
 
-local function mat4x4(p)
-  local m = {}
-  for i = 1, 16 do
-    m[i] = FixedPoint.fx32(p[i])
+local function fill4x4(out, p)
+  local f = FixedPoint.fx32
+  local m = out.m
+  for i = 0, 15 do
+    m[i] = f(p[i + 1])
   end
-  return m
+end
+
+local function fill3x3(out, p)
+  local f = FixedPoint.fx32
+  local m = out.m
+  m[0], m[1], m[2], m[3] = f(p[1]), f(p[2]), f(p[3]), 0
+  m[4], m[5], m[6], m[7] = f(p[4]), f(p[5]), f(p[6]), 0
+  m[8], m[9], m[10], m[11] = f(p[7]), f(p[8]), f(p[9]), 0
+  m[12], m[13], m[14], m[15] = 0, 0, 0, 1
+end
+
+local function fillScale(out, p)
+  Matrix4.scaleInto(out, FixedPoint.fx32(p[1]), FixedPoint.fx32(p[2]), FixedPoint.fx32(p[3]))
+end
+
+local function fillTranslate(out, p)
+  Matrix4.translateInto(out, FixedPoint.fx32(p[1]), FixedPoint.fx32(p[2]), FixedPoint.fx32(p[3]))
+end
+
+local function transformDirectionBuffer(m, x, y, z)
+  local a = m.m
+  return a[0] * x + a[4] * y + a[8] * z, a[1] * x + a[5] * y + a[9] * z, a[2] * x + a[6] * y + a[10] * z
 end
 
 -- ---- decoder state ----
@@ -205,16 +189,25 @@ Decoder.__index = Decoder
 local MTXMODE = { PROJECTION = 0, POSITION = 1, POSITION_VECTOR = 2, TEXTURE = 3 }
 
 local function newDecoder(arena, runCapacity)
-  return setmetatable({
+  local d = setmetatable({
     arena = arena,
-    matrix = identity(),
+    matrix = Matrix4.newBuffer(),
+    matrixScratch = Matrix4.newBuffer(),
+    matrixOperand = Matrix4.newBuffer(),
     -- The vector matrix, which transforms normals. It tracks the position
     -- matrix's linear part except where MTX_MODE selects the position matrix
     -- alone, which is the only way the two can diverge.
-    directionMatrix = identity(),
-    pushStack = {},
-    restoreStack = {}, -- MTX_RESTORE slots, default identity
-    directionRestoreStack = {},
+    directionMatrix = Matrix4.newBuffer(),
+    directionScratch = Matrix4.newBuffer(),
+    directionOperand = Matrix4.newBuffer(),
+    pushStack = ffi.new("G4Mat4[32]"),
+    directionPushStack = ffi.new("G4Mat4[32]"),
+    pushSources = {},
+    pushDepth = 0,
+    restoreStack = ffi.new("G4Mat4[32]"), -- MTX_RESTORE slots, default identity
+    restoreInitialized = ffi.new("uint8_t[32]"),
+    directionRestoreStack = ffi.new("G4Mat4[32]"),
+    directionRestoreInitialized = ffi.new("uint8_t[32]"),
     posX = 0,
     posY = 0,
     posZ = 0,
@@ -238,8 +231,6 @@ local function newDecoder(arena, runCapacity)
     -- matrix baked into vertices, the transform source of the current
     -- segment, and the segments themselves. Unused in static mode.
     dynamic = false,
-    baked = identity(),
-    bakedDirection = identity(),
     positionSource = DRAW_SOURCE,
     segments = {},
     currentSegment = nil,
@@ -249,6 +240,13 @@ local function newDecoder(arena, runCapacity)
     carryCount = 0,
     straddlingPrimitives = 0, -- straddling primitives, reported to the caller
   }, Decoder)
+  Matrix4.identityInto(d.matrix)
+  Matrix4.identityInto(d.directionMatrix)
+  for i = 0, 31 do
+    Matrix4.identityInto(d.restoreStack[i])
+    Matrix4.identityInto(d.directionRestoreStack[i])
+  end
+  return d
 end
 
 -- A fresh segment record; `positionSource` describes how the runtime
@@ -433,8 +431,8 @@ function Decoder:dynamicBoundary(positionSource, offset)
     finishSegment(self, oldSegment)
     self.segments[#self.segments + 1] = self.currentSegment
   end
-  self.baked = identity()
-  self.bakedDirection = identity()
+  Matrix4.identityInto(self.matrix)
+  Matrix4.identityInto(self.directionMatrix)
   self.positionSource = positionSource
   self.currentSegment = newSegment(self.arena, positionSource)
   if carried > 0 then
@@ -472,14 +470,6 @@ function Decoder:dynamicMatrixGuard(offset)
   end
 end
 
-function Decoder:restoreSlot(idx)
-  return self.restoreStack[idx] or identity()
-end
-
-function Decoder:directionRestoreSlot(idx)
-  return self.directionRestoreStack[idx] or linear(self:restoreSlot(idx))
-end
-
 -- Which matrices the current MTX_MODE selects.
 function Decoder:touchesPosition()
   return self.mtxMode == MTXMODE.POSITION or self.mtxMode == MTXMODE.POSITION_VECTOR
@@ -495,11 +485,11 @@ function Decoder:emitVertex()
     -- Transform-preserving mode: only the display-list-local matrix is
     -- baked; the SBC draw matrix (and its linear part for normals) applies
     -- at draw time through the segment's sources.
-    wx, wy, wz = transformPoint(self.baked, self.posX, self.posY, self.posZ)
-    nx, ny, nz = transformDirection(self.bakedDirection, self.normalX, self.normalY, self.normalZ)
+    wx, wy, wz = Matrix4.transformPointBuffer(self.matrix, self.posX, self.posY, self.posZ)
+    nx, ny, nz = transformDirectionBuffer(self.directionMatrix, self.normalX, self.normalY, self.normalZ)
   else
-    wx, wy, wz = transformPoint(self.matrix, self.posX, self.posY, self.posZ)
-    nx, ny, nz = transformDirection(self.directionMatrix, self.normalX, self.normalY, self.normalZ)
+    wx, wy, wz = Matrix4.transformPointBuffer(self.matrix, self.posX, self.posY, self.posZ)
+    nx, ny, nz = transformDirectionBuffer(self.directionMatrix, self.normalX, self.normalY, self.normalZ)
   end
   -- The DS feeds the raw transformed normal to its lighting unit, where a joint
   -- or posScale magnification just saturates the result. This pipeline instead
@@ -561,19 +551,22 @@ end
 -- vertex bounds; the direction matrix takes only the op's linear part.
 function Decoder:applyMatrix(m)
   if self:touchesPosition() then
-    self.matrix = multiply(self.matrix, m)
+    Matrix4.multiplyInto(self.matrixOperand, self.matrix, m)
+    self.matrix, self.matrixOperand = self.matrixOperand, self.matrix
   end
   if self:touchesDirection() then
-    self.directionMatrix = multiply(self.directionMatrix, linear(m))
+    Matrix4.linearInto(self.directionScratch, m)
+    Matrix4.multiplyInto(self.directionOperand, self.directionMatrix, self.directionScratch)
+    self.directionMatrix, self.directionOperand = self.directionOperand, self.directionMatrix
   end
 end
 
 function Decoder:loadMatrix(m)
   if self:touchesPosition() then
-    self.matrix = m
+    Matrix4.copyInto(self.matrix, m)
   end
   if self:touchesDirection() then
-    self.directionMatrix = linear(m)
+    Matrix4.linearInto(self.directionMatrix, m)
   end
 end
 
@@ -597,34 +590,35 @@ end
 EXEC[0x10] = executeMtxMode
 
 local function executeMtxPush(d)
+  assert(d.pushDepth < 32, "GX matrix push stack overflow")
   if d.dynamic then
     d:dynamicMatrixGuard(d.currentOffset)
-    d.pushStack[#d.pushStack + 1] = { d.baked, d.bakedDirection, d.positionSource }
-  else
-    d.pushStack[#d.pushStack + 1] = { d.matrix, d.directionMatrix }
+    d.pushSources[d.pushDepth] = d.positionSource
   end
+  Matrix4.copyInto(d.pushStack[d.pushDepth], d.matrix)
+  Matrix4.copyInto(d.directionPushStack[d.pushDepth], d.directionMatrix)
+  d.pushDepth = d.pushDepth + 1
 end
 EXEC[0x11] = executeMtxPush
 
 local function executeMtxPop(d)
-  local top = d.pushStack[#d.pushStack]
-  if top then
+  if d.pushDepth > 0 then
+    d.pushDepth = d.pushDepth - 1
     if d.dynamic then
       d:dynamicMatrixGuard(d.currentOffset)
       -- A popped source change is a transform change: split the segment.
-      if top[3] ~= d.positionSource then
-        d:dynamicBoundary(top[3], d.currentOffset)
-      end
-      d.baked, d.bakedDirection = top[1], top[2]
-    else
-      if d:touchesPosition() then
-        d.matrix = top[1]
-      end
-      if d:touchesDirection() then
-        d.directionMatrix = top[2]
+      local source = d.pushSources[d.pushDepth]
+      if source ~= d.positionSource then
+        d:dynamicBoundary(source, d.currentOffset)
       end
     end
-    d.pushStack[#d.pushStack] = nil
+    if d:touchesPosition() or d.dynamic then
+      Matrix4.copyInto(d.matrix, d.pushStack[d.pushDepth])
+    end
+    if d:touchesDirection() or d.dynamic then
+      Matrix4.copyInto(d.directionMatrix, d.directionPushStack[d.pushDepth])
+    end
+    d.pushSources[d.pushDepth] = nil
   end
 end
 EXEC[0x12] = executeMtxPop
@@ -645,10 +639,12 @@ local function executeMtxStore(d, p, offset)
     )
   end
   if d:touchesPosition() then
-    d.restoreStack[slot] = d.matrix
+    Matrix4.copyInto(d.restoreStack[slot], d.matrix)
+    d.restoreInitialized[slot] = 1
   end
   if d:touchesDirection() then
-    d.directionRestoreStack[slot] = d.directionMatrix
+    Matrix4.copyInto(d.directionRestoreStack[slot], d.directionMatrix)
+    d.directionRestoreInitialized[slot] = 1
   end
 end
 EXEC[0x13] = executeMtxStore
@@ -664,12 +660,16 @@ local function executeMtxRestore(d, p, offset)
   end
   -- Read the direction slot before the position one: an SBC-supplied slot has
   -- no stored direction, so it is derived from the position matrix it replaces.
-  local direction = d:directionRestoreSlot(slot)
+  if d.directionRestoreInitialized[slot] == 1 then
+    Matrix4.copyInto(d.directionScratch, d.directionRestoreStack[slot])
+  else
+    Matrix4.linearInto(d.directionScratch, d.restoreStack[slot])
+  end
   if d:touchesPosition() then
-    d.matrix = d:restoreSlot(slot)
+    Matrix4.copyInto(d.matrix, d.restoreStack[slot])
   end
   if d:touchesDirection() then
-    d.directionMatrix = direction
+    Matrix4.copyInto(d.directionMatrix, d.directionScratch)
   end
 end
 EXEC[0x14] = executeMtxRestore
@@ -678,142 +678,64 @@ local function executeMtxIdentity(d, _, offset)
   d:dynamicMatrixGuard(offset)
   if d.dynamic then
     if d:touchesPosition() then
-      d.baked = identity()
+      Matrix4.identityInto(d.matrix)
     end
     if d:touchesDirection() then
-      d.bakedDirection = identity()
+      Matrix4.identityInto(d.directionMatrix)
     end
     return
   end
-  d:loadMatrix(identity())
+  Matrix4.identityInto(d.matrixScratch)
+  d:loadMatrix(d.matrixScratch)
 end
 EXEC[0x15] = executeMtxIdentity
 
 local function executeMtxLoad4x4(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = mat4x4(p)
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = linear(mat4x4(p))
-    end
-    return
-  end
-  d:loadMatrix(mat4x4(p))
+  fill4x4(d.matrixScratch, p)
+  d:loadMatrix(d.matrixScratch)
 end
 EXEC[0x16] = executeMtxLoad4x4
 
 local function executeMtxLoad4x3(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = mat4x3(p)
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = linear(mat4x3(p))
-    end
-    return
-  end
-  d:loadMatrix(mat4x3(p))
+  fill4x3(d.matrixScratch, p)
+  d:loadMatrix(d.matrixScratch)
 end
 EXEC[0x17] = executeMtxLoad4x3
 
 local function executeMtxMult4x4(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = multiply(d.baked, mat4x4(p))
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = multiply(d.bakedDirection, linear(mat4x4(p)))
-    end
-    return
-  end
-  d:applyMatrix(mat4x4(p))
+  fill4x4(d.matrixScratch, p)
+  d:applyMatrix(d.matrixScratch)
 end
 EXEC[0x18] = executeMtxMult4x4
 
 local function executeMtxMult4x3(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = multiply(d.baked, mat4x3(p))
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = multiply(d.bakedDirection, linear(mat4x3(p)))
-    end
-    return
-  end
-  d:applyMatrix(mat4x3(p))
+  fill4x3(d.matrixScratch, p)
+  d:applyMatrix(d.matrixScratch)
 end
 EXEC[0x19] = executeMtxMult4x3
 
 local function executeMtxMult3x3(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  local f = FixedPoint.fx32
-  local m = {
-    f(p[1]),
-    f(p[2]),
-    f(p[3]),
-    0,
-    f(p[4]),
-    f(p[5]),
-    f(p[6]),
-    0,
-    f(p[7]),
-    f(p[8]),
-    f(p[9]),
-    0,
-    0,
-    0,
-    0,
-    1,
-  }
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = multiply(d.baked, m)
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = multiply(d.bakedDirection, linear(m))
-    end
-    return
-  end
-  d:applyMatrix(m)
+  fill3x3(d.matrixScratch, p)
+  d:applyMatrix(d.matrixScratch)
 end
 EXEC[0x1A] = executeMtxMult3x3
 
 local function executeMtxScale(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  local f = FixedPoint.fx32
-  local m = { f(p[1]), 0, 0, 0, 0, f(p[2]), 0, 0, 0, 0, f(p[3]), 0, 0, 0, 0, 1 }
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = multiply(d.baked, m)
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = multiply(d.bakedDirection, linear(m))
-    end
-    return
-  end
-  d:applyMatrix(m)
+  fillScale(d.matrixScratch, p)
+  d:applyMatrix(d.matrixScratch)
 end
 EXEC[0x1B] = executeMtxScale
 
 local function executeMtxTranslate(d, p, offset)
   d:dynamicMatrixGuard(offset)
-  local f = FixedPoint.fx32
-  local m = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, f(p[1]), f(p[2]), f(p[3]), 1 }
-  if d.dynamic then
-    if d:touchesPosition() then
-      d.baked = multiply(d.baked, m)
-    end
-    if d:touchesDirection() then
-      d.bakedDirection = multiply(d.bakedDirection, linear(m))
-    end
-    return
-  end
-  d:applyMatrix(m)
+  fillTranslate(d.matrixScratch, p)
+  d:applyMatrix(d.matrixScratch)
 end
 EXEC[0x1C] = executeMtxTranslate
 
@@ -1002,11 +924,15 @@ local function _decode(bytes, options)
   -- The SBC evaluator supplies position matrices only; their direction
   -- counterparts are the linear parts, derived on demand.
   if options.restoreStack then
-    d.restoreStack = options.restoreStack
+    for slot, matrix in pairs(options.restoreStack) do
+      assert(slot >= 0 and slot < 32, "GX restore slot is outside hardware range")
+      copyArrayInto(d.restoreStack[slot], matrix)
+      d.restoreInitialized[slot] = 1
+    end
   end
   if options.matrix then
-    d.matrix = options.matrix
-    d.directionMatrix = linear(options.matrix)
+    copyArrayInto(d.matrix, options.matrix)
+    Matrix4.linearInto(d.directionMatrix, d.matrix)
   end
   -- Transform-preserving mode: the draw matrix is deferred to the segment
   -- sources; vertices decode in pre-draw space with only local ops baked.

@@ -143,9 +143,10 @@ local CELL_TILES = 32
 ---@return number[]
 local function mapPropBaseToScene(sceneOrigin, position)
   local x, y, z = MapUnits.toTiles(position.x, position.y, position.z)
-  local composed =
-    Matrix4.multiply(Matrix4.translate(sceneOrigin.x, sceneOrigin.y, sceneOrigin.z), Matrix4.translate(x, y, z))
-  return Matrix4.toArray(composed)
+  local origin = Matrix4.translateInto(Matrix4.newBuffer(), sceneOrigin.x, sceneOrigin.y, sceneOrigin.z)
+  local positionMatrix = Matrix4.translateInto(Matrix4.newBuffer(), x, y, z)
+  local composed = Matrix4.multiplyInto(Matrix4.newBuffer(), origin, positionMatrix)
+  return Matrix4.toArrayBuffer(composed)
 end
 
 local function _compile(romFs, idOrSymbol, opts)

@@ -22,12 +22,29 @@ function BuildingTransform.build(placement)
   local s = assert(placement.scale, "placement.scale is required")
   local p, r = placement.position, placement.rotation
 
-  local m = Matrix4.translate(p.x, p.y, p.z)
-  m = Matrix4.multiply(m, Matrix4.rotateZ(r.z))
-  m = Matrix4.multiply(m, Matrix4.rotateY(r.y))
-  m = Matrix4.multiply(m, Matrix4.rotateX(r.x))
-  m = Matrix4.multiply(m, Matrix4.scale(s.width, s.height, s.length))
-  return m
+  local result = Matrix4.translateInto(Matrix4.newBuffer(), p.x, p.y, p.z)
+  local operand = Matrix4.newBuffer()
+  local scratch = Matrix4.newBuffer()
+
+  local function compose(fill)
+    fill(operand)
+    Matrix4.multiplyInto(scratch, result, operand)
+    result, scratch = scratch, result
+  end
+
+  compose(function(out)
+    Matrix4.rotateZInto(out, r.z)
+  end)
+  compose(function(out)
+    Matrix4.rotateYInto(out, r.y)
+  end)
+  compose(function(out)
+    Matrix4.rotateXInto(out, r.x)
+  end)
+  compose(function(out)
+    Matrix4.scaleInto(out, s.width, s.height, s.length)
+  end)
+  return Matrix4.toArrayBuffer(result)
 end
 
 return BuildingTransform

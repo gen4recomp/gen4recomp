@@ -29,6 +29,15 @@ local MeshCompiler = {}
 
 local COLOR_SOURCE = GxDisplayList.COLOR_SOURCE
 
+---@param out Matrix4.Buffer
+---@param src number[]
+local function copyArrayInto(out, src)
+  local m = out.m
+  for i = 0, 15 do
+    m[i] = src[i + 1]
+  end
+end
+
 -- In-display-list opcodes the field compiler does not support (the target
 -- inventory has none; a future model that uses one fails loudly here).
 local UNSUPPORTED_DL_OPCODES = {
@@ -319,26 +328,32 @@ function MeshCompiler.compileDynamic(model, context)
       -- so it bakes into the vertices exactly like the static path; only the
       -- captured baseTransform remains runtime-resolved.
       local bake = draw.transformMode == PoseContract.BILLBOARD and draw.matrix or nil
+      local bakeBuffer = bake and Matrix4.newBuffer() or nil
+      local bakeLinear = bake and Matrix4.newBuffer() or nil
+      if bake and bakeBuffer and bakeLinear then
+        copyArrayInto(bakeBuffer, bake)
+        Matrix4.linearInto(bakeLinear, bakeBuffer)
+      end
       -- The linear part of the bake is a per-segment loop invariant: it feeds
       -- the normal transform of every vertex in the segment, so compute it
-      -- once per segment, not once per vertex. It is non-nil exactly when the
-      -- bake applies (Matrix4.linear is total).
-      local bakeLinear = bake and Matrix4.linear(bake) or nil
+      -- once per segment, not once per vertex.
       local numeric = arena.numeric
       local slice = segment
+      local bakeMatrix = bakeBuffer and bakeBuffer.m or nil
+      local bakeLinearMatrix = bakeLinear and bakeLinear.m or nil
       for offset = 0, slice.vertexCount - 1 do
         local v = numeric[slice.vertexOffset + offset]
         local x, y, z = v.x, v.y, v.z
         local nx, ny, nz = v.nx, v.ny, v.nz
-        if bake and bakeLinear then
+        if bakeMatrix and bakeLinearMatrix then
           local ox, oy, oz = x, y, z
-          x = bake[1] * ox + bake[5] * oy + bake[9] * oz + bake[13]
-          y = bake[2] * ox + bake[6] * oy + bake[10] * oz + bake[14]
-          z = bake[3] * ox + bake[7] * oy + bake[11] * oz + bake[15]
+          x = bakeMatrix[0] * ox + bakeMatrix[4] * oy + bakeMatrix[8] * oz + bakeMatrix[12]
+          y = bakeMatrix[1] * ox + bakeMatrix[5] * oy + bakeMatrix[9] * oz + bakeMatrix[13]
+          z = bakeMatrix[2] * ox + bakeMatrix[6] * oy + bakeMatrix[10] * oz + bakeMatrix[14]
           local onx, ony, onz = nx, ny, nz
-          nx = bakeLinear[1] * onx + bakeLinear[5] * ony + bakeLinear[9] * onz
-          ny = bakeLinear[2] * onx + bakeLinear[6] * ony + bakeLinear[10] * onz
-          nz = bakeLinear[3] * onx + bakeLinear[7] * ony + bakeLinear[11] * onz
+          nx = bakeLinearMatrix[0] * onx + bakeLinearMatrix[4] * ony + bakeLinearMatrix[8] * onz
+          ny = bakeLinearMatrix[1] * onx + bakeLinearMatrix[5] * ony + bakeLinearMatrix[9] * onz
+          nz = bakeLinearMatrix[2] * onx + bakeLinearMatrix[6] * ony + bakeLinearMatrix[10] * onz
         end
         x, y, z = MapUnits.toTiles(x, y, z)
         v.x, v.y, v.z = x, y, z

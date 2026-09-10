@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local Matrix4 = require("libs.math.src.Matrix4")
+local ffi = require("ffi")
 
 local T = {}
 
@@ -48,6 +49,53 @@ function T.toArray_is_16_floats()
   Assert.equal(a[6], 1)
   Assert.equal(a[11], 1)
   Assert.equal(a[16], 1)
+end
+
+function T.buffer_operations_match_table_operations()
+  local expected = Matrix4.multiply(Matrix4.translate(2, -3, 4), Matrix4.scale(2, 3, 4))
+  local translation = Matrix4.newBuffer()
+  local scale = Matrix4.newBuffer()
+  local composed = Matrix4.newBuffer()
+
+  Matrix4.translateInto(translation, 2, -3, 4)
+  Matrix4.scaleInto(scale, 2, 3, 4)
+  Matrix4.multiplyInto(composed, translation, scale)
+
+  local actual = Matrix4.toArrayBuffer(composed)
+  for index = 1, 16 do
+    Assert.equal(actual[index], expected[index], "buffer component " .. index)
+  end
+
+  local expectedX, expectedY, expectedZ = Matrix4.transformPoint(expected, 1, 2, 3)
+  local actualX, actualY, actualZ = Matrix4.transformPointBuffer(composed, 1, 2, 3)
+  Assert.equal(actualX, expectedX, "buffer transformed x")
+  Assert.equal(actualY, expectedY, "buffer transformed y")
+  Assert.equal(actualZ, expectedZ, "buffer transformed z")
+end
+
+function T.buffer_has_the_locked_contiguous_double_layout()
+  Assert.equal(ffi.sizeof("G4Mat4"), 128)
+end
+
+function T.buffer_multiply_rejects_output_aliasing()
+  local a = Matrix4.newBuffer()
+  local b = Matrix4.newBuffer()
+  Matrix4.identityInto(a)
+  Matrix4.identityInto(b)
+  Assert.throws(function()
+    Matrix4.multiplyInto(a, a, b)
+  end)
+  Assert.throws(function()
+    Matrix4.multiplyInto(b, a, b)
+  end)
+end
+
+function T.buffer_array_materialization_is_independent()
+  local matrix = Matrix4.translateInto(Matrix4.newBuffer(), 2, 3, 4)
+  local first = Matrix4.toArrayBuffer(matrix)
+  first[13] = 99
+  local second = Matrix4.toArrayBuffer(matrix)
+  Assert.equal(second[13], 2)
 end
 
 function T.lookAt_puts_target_in_front_along_negative_z()

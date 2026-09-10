@@ -6,7 +6,22 @@
 -- compiler and, later, the renderer.
 
 ---@alias Matrix4.Values number[]
+---@class G4Mat4
+---@field m ffi.cdata*
+---@alias Matrix4.Buffer G4Mat4
 ---@class Matrix4
+---@field newBuffer fun(): Matrix4.Buffer
+---@field identityInto fun(out: Matrix4.Buffer): Matrix4.Buffer
+---@field copyInto fun(out: Matrix4.Buffer, src: Matrix4.Buffer): Matrix4.Buffer
+---@field multiplyInto fun(out: Matrix4.Buffer, a: Matrix4.Buffer, b: Matrix4.Buffer): Matrix4.Buffer
+---@field translateInto fun(out: Matrix4.Buffer, tx: number, ty: number, tz: number): Matrix4.Buffer
+---@field scaleInto fun(out: Matrix4.Buffer, sx: number, sy: number, sz: number): Matrix4.Buffer
+---@field rotateXInto fun(out: Matrix4.Buffer, rad: number): Matrix4.Buffer
+---@field rotateYInto fun(out: Matrix4.Buffer, rad: number): Matrix4.Buffer
+---@field rotateZInto fun(out: Matrix4.Buffer, rad: number): Matrix4.Buffer
+---@field linearInto fun(out: Matrix4.Buffer, src: Matrix4.Buffer): Matrix4.Buffer
+---@field transformPointBuffer fun(m: Matrix4.Buffer, x: number, y: number, z: number): number, number, number
+---@field toArrayBuffer fun(m: Matrix4.Buffer): Matrix4.Values
 ---@field identity fun(): Matrix4.Values
 ---@field multiply fun(a: Matrix4.Values, b: Matrix4.Values): Matrix4.Values
 ---@field transformPoint fun(m: Matrix4.Values, x: number, y: number, z: number): number, number, number
@@ -22,6 +37,160 @@
 ---@field toArray fun(m: Matrix4.Values): Matrix4.Values
 
 local Matrix4 = {}
+
+local ffi = require("ffi")
+
+ffi.cdef([[
+typedef struct {
+  double m[16];
+} G4Mat4;
+]])
+
+---@return Matrix4.Buffer
+function Matrix4.newBuffer()
+  return ffi.new("G4Mat4") --[[@as Matrix4.Buffer]]
+end
+
+---@param out Matrix4.Buffer
+---@return Matrix4.Buffer
+function Matrix4.identityInto(out)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = 1, 0, 0, 0
+  m[4], m[5], m[6], m[7] = 0, 1, 0, 0
+  m[8], m[9], m[10], m[11] = 0, 0, 1, 0
+  m[12], m[13], m[14], m[15] = 0, 0, 0, 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param src Matrix4.Buffer
+---@return Matrix4.Buffer
+function Matrix4.copyInto(out, src)
+  ffi.copy(out.m, src.m, 128)
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param a Matrix4.Buffer
+---@param b Matrix4.Buffer
+---@return Matrix4.Buffer
+function Matrix4.multiplyInto(out, a, b)
+  assert(out ~= a and out ~= b, "multiplyInto output must not alias inputs")
+  local am, bm, om = a.m, b.m, out.m
+  for col = 0, 3 do
+    local b0 = bm[col * 4]
+    local b1 = bm[col * 4 + 1]
+    local b2 = bm[col * 4 + 2]
+    local b3 = bm[col * 4 + 3]
+    om[col * 4] = am[0] * b0 + am[4] * b1 + am[8] * b2 + am[12] * b3
+    om[col * 4 + 1] = am[1] * b0 + am[5] * b1 + am[9] * b2 + am[13] * b3
+    om[col * 4 + 2] = am[2] * b0 + am[6] * b1 + am[10] * b2 + am[14] * b3
+    om[col * 4 + 3] = am[3] * b0 + am[7] * b1 + am[11] * b2 + am[15] * b3
+  end
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param tx number
+---@param ty number
+---@param tz number
+---@return Matrix4.Buffer
+function Matrix4.translateInto(out, tx, ty, tz)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = 1, 0, 0, 0
+  m[4], m[5], m[6], m[7] = 0, 1, 0, 0
+  m[8], m[9], m[10], m[11] = 0, 0, 1, 0
+  m[12], m[13], m[14], m[15] = tx, ty, tz, 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param sx number
+---@param sy number
+---@param sz number
+---@return Matrix4.Buffer
+function Matrix4.scaleInto(out, sx, sy, sz)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = sx, 0, 0, 0
+  m[4], m[5], m[6], m[7] = 0, sy, 0, 0
+  m[8], m[9], m[10], m[11] = 0, 0, sz, 0
+  m[12], m[13], m[14], m[15] = 0, 0, 0, 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param rad number
+---@return Matrix4.Buffer
+function Matrix4.rotateXInto(out, rad)
+  local c, s = math.cos(rad), math.sin(rad)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = 1, 0, 0, 0
+  m[4], m[5], m[6], m[7] = 0, c, s, 0
+  m[8], m[9], m[10], m[11] = 0, -s, c, 0
+  m[12], m[13], m[14], m[15] = 0, 0, 0, 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param rad number
+---@return Matrix4.Buffer
+function Matrix4.rotateYInto(out, rad)
+  local c, s = math.cos(rad), math.sin(rad)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = c, 0, -s, 0
+  m[4], m[5], m[6], m[7] = 0, 1, 0, 0
+  m[8], m[9], m[10], m[11] = s, 0, c, 0
+  m[12], m[13], m[14], m[15] = 0, 0, 0, 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param rad number
+---@return Matrix4.Buffer
+function Matrix4.rotateZInto(out, rad)
+  local c, s = math.cos(rad), math.sin(rad)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = c, s, 0, 0
+  m[4], m[5], m[6], m[7] = -s, c, 0, 0
+  m[8], m[9], m[10], m[11] = 0, 0, 1, 0
+  m[12], m[13], m[14], m[15] = 0, 0, 0, 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param src Matrix4.Buffer
+---@return Matrix4.Buffer
+function Matrix4.linearInto(out, src)
+  local sm, om = src.m, out.m
+  om[0], om[1], om[2], om[3] = sm[0], sm[1], sm[2], 0
+  om[4], om[5], om[6], om[7] = sm[4], sm[5], sm[6], 0
+  om[8], om[9], om[10], om[11] = sm[8], sm[9], sm[10], 0
+  om[12], om[13], om[14], om[15] = 0, 0, 0, 1
+  return out
+end
+
+---@param m Matrix4.Buffer
+---@param x number
+---@param y number
+---@param z number
+---@return number, number, number
+function Matrix4.transformPointBuffer(m, x, y, z)
+  local a = m.m
+  return a[0] * x + a[4] * y + a[8] * z + a[12],
+    a[1] * x + a[5] * y + a[9] * z + a[13],
+    a[2] * x + a[6] * y + a[10] * z + a[14]
+end
+
+---@param m Matrix4.Buffer
+---@return Matrix4.Values
+function Matrix4.toArrayBuffer(m)
+  local a = {} ---@type Matrix4.Values
+  local values = m.m
+  for i = 0, 15 do
+    a[i + 1] = values[i]
+  end
+  return a
+end
 
 ---@return Matrix4.Values
 function Matrix4.identity()

@@ -3,7 +3,6 @@
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local BuildingTransform = require("romdump.src.digest.map.BuildingTransform")
-local Matrix4 = require("libs.math.src.Matrix4")
 local Hashing = require("romdump.src.digest.Hashing")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
 local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
@@ -183,7 +182,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     buildingInstances[#buildingInstances + 1] = {
       placementIndex = placement.index,
       modelKey = modelKeyOf[placement.modelMemberId],
-      transform = Matrix4.toArray(BuildingTransform.build(placement)),
+      transform = BuildingTransform.build(placement),
     }
   end
   local buildingModelShas = {}

@@ -169,6 +169,16 @@ function T.large_command_stream_with_few_vertices_reserves_only_emitted_geometry
   Assert.equal(arena.indexCapacity, 768)
 end
 
+function T.matrix_push_stack_rejects_hardware_overflow()
+  local commands = {}
+  for _ = 1, 33 do
+    commands[#commands + 1] = { op = 0x11 }
+  end
+  Assert.throws(function()
+    assert(Gx.decode(dl(commands), { arena = geometryArena() }))
+  end)
+end
+
 function T.single_triangle()
   local r = assert(Gx.decode(dl({
     { op = 0x40, p = { 0 } }, -- BEGIN triangles
