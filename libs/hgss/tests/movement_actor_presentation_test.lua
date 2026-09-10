@@ -17,6 +17,8 @@ local MovementTask = require("libs.hgss.src.script.tasks.MovementTask")
 ---@cast MovementTask TaskImplementation
 local MovementBarrierTask = require("libs.hgss.src.script.tasks.MovementBarrierTask")
 ---@cast MovementBarrierTask TaskImplementation
+local MovementPauseTask = require("libs.hgss.src.script.tasks.MovementPauseTask")
+---@cast MovementPauseTask TaskImplementation
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local FakeServices = require("tests.support.script.FakeServices")
 local ScriptActorWorld = require("libs.hgss.src.script.ScriptActorWorld")
@@ -36,6 +38,7 @@ local T = {}
 
 local POLICY = { variableSprites = { first = 101, last = 117, variableBase = 0x4020 } }
 local ACTOR_ID = "map:61:object:0"
+local SECOND_ACTOR_ID = "map:61:object:1"
 
 local function terrain()
   return TerrainSurface.new({
@@ -54,7 +57,50 @@ local function terrain()
   })
 end
 
-local function runtimeMap()
+local function runtimeMap(opts)
+  opts = opts or {}
+  local objects = {
+    {
+      index = 0,
+      objectEventId = 0,
+      spriteId = 99,
+      movementType = "stationary",
+      type = 0,
+      eventFlag = 500,
+      scriptId = 1,
+      facingDirection = "south",
+      facingDirectionRaw = 1,
+      param0 = 0,
+      param1 = 0,
+      param2 = 0,
+      xRange = 0,
+      yRange = 0,
+      x = 2,
+      z = 3,
+      y = 0,
+    },
+  }
+  if opts.secondActor then
+    objects[#objects + 1] = {
+      index = 1,
+      objectEventId = 1,
+      spriteId = 99,
+      movementType = "stationary",
+      type = 0,
+      eventFlag = 501,
+      scriptId = 1,
+      facingDirection = "south",
+      facingDirectionRaw = 1,
+      param0 = 0,
+      param1 = 0,
+      param2 = 0,
+      xRange = 0,
+      yRange = 0,
+      x = 5,
+      z = 6,
+      y = 0,
+    }
+  end
   local result = {
     mapId = 61,
     coordinateOrigin = { x = 0, z = 0 },
@@ -66,27 +112,7 @@ local function runtimeMap()
     terrain = terrain(),
     fieldData = {
       events = {
-        objects = {
-          {
-            index = 0,
-            objectEventId = 0,
-            spriteId = 99,
-            movementType = "stationary",
-            type = 0,
-            eventFlag = 500,
-            scriptId = 1,
-            facingDirection = "south",
-            facingDirectionRaw = 1,
-            param0 = 0,
-            param1 = 0,
-            param2 = 0,
-            xRange = 0,
-            yRange = 0,
-            x = 2,
-            z = 3,
-            y = 0,
-          },
-        },
+        objects = objects,
         background = {},
         warps = {},
         coordinates = {},
@@ -120,7 +146,7 @@ end
 local function harness(opts)
   local mgr = FieldActorManager.new({ assets = fakeAssets(opts), policy = POLICY })
   local eventState = FieldEventState.new()
-  mgr:enterMap(runtimeMap(), eventState)
+  mgr:enterMap(runtimeMap(opts), eventState)
   local player = {
     position = function()
       return { fieldX = 0, fieldZ = 0, worldY = 0 }
@@ -148,6 +174,8 @@ local function harness(opts)
   taskRegistry:register("wait_ticks", 1, WaitTicksTask)
   taskRegistry:register("movement", 1, MovementTask)
   taskRegistry:register("movement_barrier", 1, MovementBarrierTask)
+  taskRegistry:register("movement_pause", 1, MovementPauseTask)
+  taskRegistry:register("actor_pause", 1, MovementPauseTask)
   local scheduler = Scheduler.new({
     semantics = require("libs.hgss.src.script.RuntimeValues"),
     services = services,
@@ -198,11 +226,21 @@ end
 
 -- Keep the component scenario in the same order as FieldSession: the script
 -- scheduler owns the first half of a world tick and the actor manager owns the
--- second half. The autonomous lock keeps this stationary fixture focused on
--- scripted presentation rather than its unrelated controller policy.
+-- second half. Lock facts come from the scheduler exactly as production
+-- FieldSession derives them, so ordinary unlocked ticks keep advancing idle
+-- while a script-held lock is visible to the manager on the same tick.
+local function managerContext(h)
+  return {
+    autonomousLocked = h.scheduler:autonomousActorsLocked(),
+    actorLocked = function(actorId)
+      return h.scheduler:autonomousActorLocked(actorId)
+    end,
+  }
+end
+
 local function stepWorld(h, tick)
   h.scheduler:step(tick, nil)
-  h.mgr:step(tick, { autonomousLocked = true })
+  h.mgr:step(tick, managerContext(h))
 end
 
 function T.ordinary_actor_settles_to_static_idle_after_locomotion()
@@ -319,6 +357,204 @@ function T.paused_follower_idle_freezes_phase_and_display_offset()
   Assert.equal(actor.worldX, worldX, "resumed follower idle keeps logical worldX")
   Assert.equal(actor.worldY, worldY, "resumed follower idle keeps logical worldY")
   Assert.equal(actor.worldZ, worldZ, "resumed follower idle keeps logical worldZ")
+
+  -- A script lock neither clears nor takes over explicit animation pause: the
+  -- paused phase survives lock acquisition and release, and only an explicit
+  -- resume restarts the clock.
+  local lockResource = S.script({
+    api = 1,
+    id = "test.explicit_pause_under_lock",
+    steps = {
+      S.lockAll(),
+      S.waitTicks({ ticks = 2 }),
+      S.releaseAll(),
+      S.stop(),
+    },
+  })
+  h.mgr:setAnimationPaused(ACTOR_ID, true)
+  startForeground(h, lockResource, 200)
+  local lockTick = 200
+  stepWorld(h, lockTick)
+  Assert.isTrue(actor.animationPaused, "the script lock does not clear explicit pause")
+  Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script holds the global lock")
+  local lockedPausedPoseTick = actor.poseTick
+  local lockedPausedOffset = actor.presentationOffset.y
+  for _ = 1, 2 do
+    lockTick = lockTick + 1
+    stepWorld(h, lockTick)
+    Assert.isTrue(actor.animationPaused, "explicit pause survives locked ticks")
+    Assert.equal(actor.poseTick, lockedPausedPoseTick, "explicitly paused idle stays frozen under lock")
+    Assert.equal(actor.presentationOffset.y, lockedPausedOffset, "explicitly paused offset stays frozen under lock")
+  end
+  while h.scheduler:autonomousActorsLocked() do
+    lockTick = lockTick + 1
+    Assert.isTrue(lockTick < 220, "the script releases its lock promptly")
+    stepWorld(h, lockTick)
+  end
+  Assert.isTrue(actor.animationPaused, "lock release does not resume explicit pause")
+  Assert.equal(actor.poseTick, lockedPausedPoseTick, "pose stays frozen after release while explicitly paused")
+  h.mgr:setAnimationPaused(ACTOR_ID, false)
+  lockTick = lockTick + 1
+  stepWorld(h, lockTick)
+  Assert.equal(actor.poseTick, lockedPausedPoseTick + 1, "explicit resume restarts the clock by one native tick")
+end
+
+function T.global_lock_freezes_animated_idle_and_resumes_from_held_phase()
+  local h = harness({ visual = followerVisual() })
+  local resource = S.script({
+    api = 1,
+    id = "test.global_lock_idle_freeze",
+    steps = {
+      S.waitTicks({ ticks = 2 }),
+      S.lockAll(),
+      S.waitTicks({ ticks = 6 }),
+      S.releaseAll(),
+      S.stop(),
+    },
+  })
+  startForeground(h, resource, 100)
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  local tick = 100
+  stepWorld(h, tick)
+  tick = tick + 1
+  stepWorld(h, tick)
+  local preLockPoseTick = actor.poseTick
+  Assert.isTrue(preLockPoseTick > 0, "unlocked idle establishes phase before the lock")
+  while not h.scheduler:autonomousActorsLocked() do
+    tick = tick + 1
+    Assert.isTrue(tick < 120, "the global lock is acquired promptly")
+    stepWorld(h, tick)
+  end
+  local heldPoseTick = actor.poseTick
+  local heldOffset = actor.presentationOffset.y
+  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
+  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
+  for _ = 1, 4 do
+    tick = tick + 1
+    stepWorld(h, tick)
+    Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script still holds the global lock")
+    Assert.equal(actor.pose, "idle", "locked actor remains in its visual idle pose")
+    Assert.equal(actor.poseTick, heldPoseTick, "locked idle holds its pose phase")
+    Assert.equal(actor.presentationOffset.y, heldOffset, "locked idle holds its display offset")
+    Assert.equal(actor.fieldX, fieldX, "locked idle keeps logical fieldX")
+    Assert.equal(actor.fieldZ, fieldZ, "locked idle keeps logical fieldZ")
+    Assert.equal(actor.worldX, worldX, "locked idle keeps logical worldX")
+    Assert.equal(actor.worldY, worldY, "locked idle keeps logical worldY")
+    Assert.equal(actor.worldZ, worldZ, "locked idle keeps logical worldZ")
+  end
+  while h.scheduler:autonomousActorsLocked() do
+    tick = tick + 1
+    Assert.isTrue(tick < 140, "the global lock is released promptly")
+    stepWorld(h, tick)
+  end
+  Assert.equal(actor.poseTick, heldPoseTick + 1, "release resumes idle by one native tick from the held phase")
+end
+
+function T.scoped_lock_freezes_only_the_locked_actor()
+  local h = harness({ visual = followerVisual(), secondActor = true })
+  local target = assert(h.mgr:getById(ACTOR_ID))
+  local sibling = assert(h.mgr:getById(SECOND_ACTOR_ID))
+  local resource = S.script({
+    api = 1,
+    id = "test.scoped_lock_idle_freeze",
+    steps = {
+      S.waitTicks({ ticks = 2 }),
+      S.lockActor({ actor = ACTOR_ID }),
+      S.waitTicks({ ticks = 6 }),
+      S.releaseActor({ actor = ACTOR_ID }),
+      S.stop(),
+    },
+  })
+  startForeground(h, resource, 100)
+  local tick = 100
+  stepWorld(h, tick)
+  tick = tick + 1
+  stepWorld(h, tick)
+  Assert.isTrue(target.poseTick > 0, "unlocked target establishes phase before the lock")
+  Assert.isTrue(sibling.poseTick > 0, "unlocked sibling establishes phase before the lock")
+  while not h.scheduler:autonomousActorLocked(ACTOR_ID) do
+    tick = tick + 1
+    Assert.isTrue(tick < 120, "the scoped lock is acquired promptly")
+    stepWorld(h, tick)
+  end
+  Assert.isFalse(h.scheduler:autonomousActorsLocked(), "a scoped lock is not a global lock")
+  local heldPoseTick = target.poseTick
+  local heldOffset = target.presentationOffset.y
+  local siblingPoseTick = sibling.poseTick
+  for _ = 1, 4 do
+    tick = tick + 1
+    stepWorld(h, tick)
+    Assert.isTrue(h.scheduler:autonomousActorLocked(ACTOR_ID), "the script still holds the scoped lock")
+    Assert.equal(target.poseTick, heldPoseTick, "locked target holds its pose phase")
+    Assert.equal(target.presentationOffset.y, heldOffset, "locked target holds its display offset")
+    Assert.isTrue(sibling.poseTick > siblingPoseTick, "unlocked sibling keeps advancing")
+    siblingPoseTick = sibling.poseTick
+  end
+  while h.scheduler:autonomousActorLocked(ACTOR_ID) do
+    tick = tick + 1
+    Assert.isTrue(tick < 140, "the scoped lock is released promptly")
+    stepWorld(h, tick)
+  end
+  Assert.equal(target.poseTick, heldPoseTick + 1, "release resumes the target by one native tick")
+end
+
+function T.lock_acquired_mid_movement_settles_then_holds_idle()
+  local h = harness({ visual = followerVisual() })
+  local resource = S.script({
+    api = 1,
+    id = "test.lock_during_movement_settles",
+    steps = {
+      S.applyMovement({
+        actor = ACTOR_ID,
+        movement = { S.m.walk({ direction = "east", speed = "normal", tiles = 1 }) },
+      }),
+      S.lockAll(),
+      S.waitMovement(),
+      S.waitTicks({ ticks = 6 }),
+      S.releaseAll(),
+      S.stop(),
+    },
+  })
+  startForeground(h, resource, 100)
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  local startFieldX = actor.fieldX
+  local tick = 100
+  local sawAction = false
+  local settled = false
+  local settledPoseTick = 0
+  local settledOffsetY = 0
+  while not settled do
+    Assert.isTrue(tick < 160, "the in-flight walk settles promptly under lock")
+    stepWorld(h, tick)
+    if actor:currentAction() ~= nil then
+      sawAction = true
+    elseif sawAction and h.scheduler:autonomousActorsLocked() then
+      settledPoseTick = actor.poseTick
+      settledOffsetY = actor.presentationOffset.y
+      settled = true
+    end
+    tick = tick + 1
+  end
+  Assert.isTrue(sawAction, "the walk was in flight before it settled")
+  Assert.equal(actor.fieldX, startFieldX + 1, "the in-flight walk reaches its destination under lock")
+  Assert.isNil(actor:currentAction(), "the in-flight walk clears under lock")
+  for _ = 1, 3 do
+    stepWorld(h, tick)
+    Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script still holds the lock after settlement")
+    Assert.equal(actor.poseTick, settledPoseTick, "settled idle holds its pose phase under lock")
+    Assert.equal(actor.presentationOffset.y, settledOffsetY, "settled idle holds its display offset under lock")
+    Assert.equal(actor.fieldX, startFieldX + 1, "settled idle keeps its destination under lock")
+    tick = tick + 1
+  end
+  while h.scheduler:autonomousActorsLocked() do
+    Assert.isTrue(tick < 180, "the lock is released promptly")
+    stepWorld(h, tick)
+    tick = tick + 1
+  end
+  Assert.equal(actor.poseTick, settledPoseTick, "the first idle tick after release holds the settled phase")
+  stepWorld(h, tick)
+  tick = tick + 1
+  Assert.equal(actor.poseTick, settledPoseTick + 1, "the next idle tick resumes from the settled phase")
 end
 
 function T.follower_idle_presentation_advances_during_delay_without_double_advancing()
@@ -330,14 +566,14 @@ function T.follower_idle_presentation_advances_during_delay_without_double_advan
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
   Assert.equal(actor.pose, "idle", "a delay uses the follower's idle pose")
   Assert.equal(actor.poseTick, initialPoseTick + 1, "a delay advances follower idle by one source tick")
-  h.mgr:step(100, { autonomousLocked = true })
+  h.mgr:step(100, managerContext(h))
   Assert.equal(actor.poseTick, initialPoseTick + 1, "the manager does not double-advance a scripted delay tick")
 
   h.mgr:advanceScriptedAction(ACTOR_ID, 2, 32)
   h.mgr:advanceScriptedAction(ACTOR_ID, 3, 32)
   Assert.equal(actor.poseTick, initialPoseTick + 3, "successive delay ticks advance follower idle exactly once")
   Assert.equal(actor.presentationOffset.y, -0.5, "delay idle applies the displayed frame's bob")
-  h.mgr:step(101, { autonomousLocked = true })
+  h.mgr:step(101, managerContext(h))
   Assert.equal(actor.poseTick, initialPoseTick + 3, "the manager does not add a second delay tick")
   Assert.equal(actor.presentationOffset.y, -0.5, "the scripted delay bob remains stable for the published tick")
 
@@ -350,7 +586,7 @@ function T.follower_idle_presentation_advances_during_delay_without_double_advan
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
   Assert.equal(actor.pose, "idle", "an emote uses the follower's idle pose")
   Assert.equal(actor.poseTick, emotePoseTick + 1, "an emote advances follower idle by one source tick")
-  h.mgr:step(102, { autonomousLocked = true })
+  h.mgr:step(102, managerContext(h))
   Assert.equal(actor.poseTick, emotePoseTick + 1, "the manager does not double-advance a scripted emote tick")
 end
 

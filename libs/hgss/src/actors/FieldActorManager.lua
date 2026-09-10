@@ -1447,7 +1447,13 @@ function FieldActorManager:step(tick, context)
     local entry = assert(self.maps[mapId])
     for _, actor in ipairs(entry.store:orderedActors()) do
       actor:beginFixedStep()
-      actor:advancePresentationTick()
+      local movementLocked = context.autonomousLocked == true
+      if not movementLocked and context.actorLocked then
+        movementLocked = context.actorLocked(actor.actorId) == true
+      end
+      if not movementLocked then
+        actor:advancePresentationTick()
+      end
       local autonomousAction = entry.autonomousActions[actor.actorId]
       if autonomousAction then
         self:_advanceAutonomousAction(entry, actor, autonomousAction)
@@ -1457,8 +1463,7 @@ function FieldActorManager:step(tick, context)
           actor.resident
           and not actor:isScriptedMoving()
           and actor.interactionFacingOverride == nil
-          and not context.autonomousLocked
-          and not (context.actorLocked and context.actorLocked(actor.actorId))
+          and not movementLocked
           and self.autonomy:isOrdinary(actor.actorId)
         then
           local function setFacing(_, id, direction)
