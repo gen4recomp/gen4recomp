@@ -793,7 +793,7 @@ local function _compile(romFs)
     assets[MapAssetCache.geometryPath(sha1)] = MeshWriter.encode(batch)
   end
   for sha1, tex in pairs(textures) do
-    assets[MapAssetCache.texturePath(sha1)] = PngWriter.encode(tex.width, tex.height, tex.pixels)
+    assets[MapAssetCache.texturePath(sha1)] = assert(tex.data, "compiled texture is missing finalized PNG Data")
   end
   assets[backdropPath] = PngWriter.encode(backdropImage.width, backdropImage.height, backdropImage.rgba)
   assets[infoBasePath] = PngWriter.encode(infoBase.width, infoBase.height, infoBase.rgba)

@@ -35,7 +35,9 @@ end
 
 function FakeCache:getInfo(path)
   if self.files[path] ~= nil then
-    return { type = "file", size = #self.files[path] }
+    local value = self.files[path]
+    local size = type(value) == "string" and #value or value:getSize()
+    return { type = "file", size = size }
   end
   if self.dirs[path] or hasChildren(self, path) then
     return { type = "directory" }

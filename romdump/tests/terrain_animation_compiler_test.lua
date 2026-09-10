@@ -12,6 +12,7 @@
 local Assert = require("tests.support.Assert")
 local AnimationFixture = require("tests.support.AnimationFixture")
 local FieldTexAnimFixture = require("tests.support.FieldTextureAnimationFixture")
+local ffi = require("ffi")
 local Hashing = require("romdump.src.digest.Hashing")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapRomFixture = require("tests.support.MapRomFixture")
@@ -20,6 +21,7 @@ local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NsbmdDynamicModel = require("romdump.src.digest.model.NsbmdDynamicModel")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
+local PngWriter = require("libs.assets.src.PngWriter")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
 local TerrainAnimationCompiler = require("romdump.src.digest.map.TerrainAnimationCompiler")
@@ -151,6 +153,12 @@ local function solidPixels(r, g, b)
   return string.rep(string.char(r, g, b, 255), 64)
 end
 
+local function texturePng(path, textures)
+  local asset = textureAsset(path, textures)
+  Assert.isNil(asset.pixels, "compiled textures retain only finalized PNG Data")
+  return ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
+end
+
 local function stepDurations(swap)
   local out = {}
   for _, step in ipairs(swap.steps) do
@@ -206,9 +214,15 @@ end
 function T.alters_decode_with_the_base_palette_and_replacement_texels()
   local scene = assert(compileScene(animationSceneOpts()))
   local material = scene.compiled.materials[1]
-  Assert.equal(textureAsset(material.texture, scene.textures).pixels, solidPixels(255, 0, 0))
-  Assert.equal(textureAsset(material.textureSwap.steps[2].texture, scene.textures).pixels, solidPixels(0, 255, 0))
-  Assert.equal(textureAsset(material.textureSwap.steps[4].texture, scene.textures).pixels, solidPixels(0, 0, 0))
+  Assert.equal(texturePng(material.texture, scene.textures), PngWriter.encode(8, 8, solidPixels(255, 0, 0)))
+  Assert.equal(
+    texturePng(material.textureSwap.steps[2].texture, scene.textures),
+    PngWriter.encode(8, 8, solidPixels(0, 255, 0))
+  )
+  Assert.equal(
+    texturePng(material.textureSwap.steps[4].texture, scene.textures),
+    PngWriter.encode(8, 8, solidPixels(0, 0, 0))
+  )
 end
 
 -- The base material's image is the map pack's initially bound texture; the
@@ -229,13 +243,19 @@ function T.a_divergent_replacement_zero_compiles_as_its_own_asset()
     },
   }))
   local material = scene.compiled.materials[1]
-  Assert.equal(textureAsset(material.texture, scene.textures).pixels, solidPixels(255, 0, 0))
+  Assert.equal(texturePng(material.texture, scene.textures), PngWriter.encode(8, 8, solidPixels(255, 0, 0)))
   Assert.equal(#material.textureSwap.steps, 2)
   Assert.equal(material.textureSwap.steps[1].durationTicks, 1)
   Assert.equal(material.textureSwap.steps[2].durationTicks, 1)
   Assert.isTrue(material.textureSwap.steps[1].texture ~= material.texture, "step zero is not the base image")
-  Assert.equal(textureAsset(material.textureSwap.steps[1].texture, scene.textures).pixels, solidPixels(0, 255, 0))
-  Assert.equal(textureAsset(material.textureSwap.steps[2].texture, scene.textures).pixels, solidPixels(0, 0, 255))
+  Assert.equal(
+    texturePng(material.textureSwap.steps[1].texture, scene.textures),
+    PngWriter.encode(8, 8, solidPixels(0, 255, 0))
+  )
+  Assert.equal(
+    texturePng(material.textureSwap.steps[2].texture, scene.textures),
+    PngWriter.encode(8, 8, solidPixels(0, 0, 255))
+  )
 end
 
 -- Compatibility is checked only for the replacement dictionary entries the

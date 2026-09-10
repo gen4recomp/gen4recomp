@@ -8,7 +8,6 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
-local PngWriter = require("libs.assets.src.PngWriter")
 
 local Writer = {}
 
@@ -29,7 +28,7 @@ local function validateBundle(bundle)
     encodedMeshes[sha1] = MeshWriter.encode(mesh)
   end
   for sha1, texture in pairs(bundle.textures or {}) do
-    encodedTextures[sha1] = PngWriter.encode(texture.width, texture.height, texture.pixels)
+    encodedTextures[sha1] = assert(texture.data, "compiled texture is missing finalized PNG Data")
   end
   for _, model in pairs(bundle.models or {}) do
     ModelAsset.validate(model)

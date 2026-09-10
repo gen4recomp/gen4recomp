@@ -2,7 +2,6 @@
 
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local PngWriter = require("libs.assets.src.PngWriter")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
@@ -19,7 +18,7 @@ function Writer.write(cacheFs, bundle)
     for sha1, texture in pairs(bundle.textures) do
       tx.stage:write(
         FieldEmoteAssetCache.texturePath(sha1),
-        PngWriter.encode(texture.width, texture.height, texture.pixels)
+        assert(texture.data, "compiled texture is missing finalized PNG Data")
       )
     end
     tx.stage:writeLua(FieldEmoteAssetCache.exclamationDescriptorPath(), bundle.model)

@@ -1,10 +1,12 @@
--- MaterialCompiler: textured materials get a content hash + decoded asset,
+-- MaterialCompiler: textured materials get a content hash + finalized asset,
 -- untextured materials get none, identical texture references deduplicate, and a
 -- name the bound pack does not define yields an untextured material plus a
 -- reported unresolved binding -- what the DS draws, since no HGSS material stores
 -- a texture format or address of its own for a failed bind to fall back on.
 
 local Assert = require("tests.support.Assert")
+local BinaryView = require("libs.codec.src.BinaryView")
+local Errors = require("libs.errors.src.Errors")
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local TexFixture = require("tests.support.Tex0Fixture")
@@ -39,7 +41,7 @@ function T.textured_untextured_and_dedup()
 
   local asset = out.textures[out.materials[1].texture]
   Assert.equal(asset.width, 8)
-  Assert.equal(#asset.pixels, 8 * 8 * 4)
+  Assert.equal(asset.data:getSize(), 57 + 2 + (8 * (1 + 8 * 4)) + 5 + 4)
   Assert.isTrue(asset.alphaUsage.hasOpaque)
   Assert.isFalse(asset.alphaUsage.hasZero)
   Assert.isFalse(asset.alphaUsage.hasPartial)
@@ -92,7 +94,7 @@ end
 function T.decode_texture_is_the_single_content_addressed_store()
   -- The shared decode/store step: identical texel/palette bytes produce one
   -- key and one asset, different texel bytes a different key, and the stored
-  -- asset carries the decoded pixels and alpha usage. The terrain texture-swap
+  -- asset carries final PNG data and alpha usage. The terrain texture-swap
   -- compile and the base material resolve both call here, so equal bytes must
   -- deduplicate across callers.
   local pack = buildPack()
@@ -117,9 +119,44 @@ function T.decode_texture_is_the_single_content_addressed_store()
 
   local asset = textures[a]
   Assert.equal(asset.width, 8)
-  Assert.equal(#asset.pixels, 8 * 8 * 4)
+  Assert.equal(asset.data:getSize(), 57 + 2 + (8 * (1 + 8 * 4)) + 5 + 4)
   Assert.isTrue(asset.alphaUsage.hasOpaque)
   Assert.isFalse(asset.alphaUsage.hasZero)
+end
+
+function T.texture_identity_accepts_binary_view_inputs_without_changing_the_key()
+  local pack = buildPack()
+  local texture = pack.textureByName["t"]
+  local palette = pack.paletteByName["p"]
+  local stringOpts = Nsbtx.decoderOpts(pack, texture, palette)
+  local viewOpts = {}
+  for key, value in pairs(stringOpts) do
+    viewOpts[key] = value
+  end
+  local texel = stringOpts.texel --[[@as string]]
+  local paletteBytes = stringOpts.palette --[[@as string]]
+  viewOpts.texel = BinaryView.fromString(texel, "texel")
+  viewOpts.palette = BinaryView.fromString(paletteBytes, "palette")
+
+  local stringTextures, viewTextures = {}, {}
+  local stringKey = MaterialCompiler.decodeTexture(texture, stringOpts, stringTextures, "t")
+  local viewKey = MaterialCompiler.decodeTexture(texture, viewOpts, viewTextures, "t")
+  Assert.equal(viewKey, stringKey)
+end
+
+function T.texture_dimensions_are_rejected_before_rgba_allocation()
+  local ok, result = pcall(function()
+    MaterialCompiler.decodeTexture(
+      { formatRaw = 7, width = -1, height = 1, color0Transparent = false },
+      { format = 7, width = -1, height = 1, texel = "", palette = "" },
+      {},
+      "invalid"
+    )
+  end)
+  Assert.isFalse(ok)
+  Assert.isTrue(Errors.is(result), "invalid dimensions remain structured")
+  ---@cast result Errors.Error
+  Assert.equal(result.code, "PNG_BAD_DIMENSIONS")
 end
 
 return { tests = T }

@@ -2,11 +2,14 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
+local PngWriter = require("libs.assets.src.PngWriter")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local Writer = require("romdump.src.digest.field.FieldEntranceIndicatorCacheWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
+
+local TEXTURE_DATA = PngWriter.encode(1, 1, "rgba")
 
 local function model()
   return {
@@ -66,7 +69,7 @@ T.tests["publishes model marker and referenced mesh under owned effect roots"] =
       very_tall_grass = { model = model(), lifetime = 1 },
     },
     meshes = { ["mesh-key"] = {} },
-    textures = { ["texture-key"] = { width = 1, height = 1, pixels = "rgba" } },
+    textures = { ["texture-key"] = { width = 1, height = 1, data = TEXTURE_DATA } },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
   MeshWriter.encode = oldEncode
@@ -138,7 +141,7 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
       surf_attachment = surfDefinition,
     },
     meshes = { ["mesh-key"] = {} },
-    textures = { ["texture-key"] = { width = 1, height = 1, pixels = "rgba" } },
+    textures = { ["texture-key"] = { width = 1, height = 1, data = TEXTURE_DATA } },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
   MeshWriter.encode = oldEncode
@@ -176,7 +179,7 @@ T.tests["publishes multi-model transition definitions and aborts on a missing re
         },
       },
       meshes = { ["mesh-key"] = {} },
-      textures = { ["texture-key"] = { width = 1, height = 1, pixels = "rgba" } },
+      textures = { ["texture-key"] = { width = 1, height = 1, data = TEXTURE_DATA } },
     }
   end
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())

@@ -11,9 +11,11 @@
 -- decoder invalidate through the producer fingerprint, which forces a full
 -- derived rebuild. Pure domain module.
 
+local ffi = require("ffi")
 local Hashing = require("romdump.src.digest.Hashing")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
+local PngWriter = require("libs.assets.src.PngWriter")
 
 local MaterialCompiler = {}
 
@@ -21,13 +23,46 @@ local MaterialCompiler = {}
 -- content-addressed texture key so the model cache invalidates.
 local DECODER_VERSION = "texdec-v1"
 
+local function hashPart(value, label)
+  if type(value) == "string" then
+    return ffi.cast("const uint8_t *", value), #value
+  end
+  assert(type(value) == "table", label .. " must be a string or BinaryView")
+  assert(type(value.pointer) == "function" and type(value.length) == "function", label .. " must be a BinaryView")
+  return value:pointer(), value:length()
+end
+
+local function textureInputHash(definition, decoderOpts)
+  local parts = {
+    DECODER_VERSION,
+    definition,
+    decoderOpts.texel,
+    decoderOpts.palette,
+    decoderOpts.indexData or "",
+  }
+  local pointers, lengths, totalLength = {}, {}, 0
+  for index, part in ipairs(parts) do
+    pointers[index], lengths[index] = hashPart(part, "texture hash input")
+    totalLength = totalLength + lengths[index]
+  end
+
+  local input = love.data.newByteData(totalLength)
+  local inputPointer = ffi.cast("uint8_t *", assert(input:getFFIPointer(), "texture hash input has no FFI pointer"))
+  local offset = 0
+  for index = 1, #parts do
+    ffi.copy(inputPointer + offset, pointers[index], lengths[index])
+    offset = offset + lengths[index]
+  end
+  return Hashing.sha1hex(input)
+end
+
 -- Decode a texture from ready decoder opts into the shared content-addressed
 -- `textures` accumulator and return its sha1 key. The definition string and
 -- hash formula are the single authority for texture identity: the base
 -- material resolve and the terrain texture-swap decode both call here, so
 -- equal texel/palette bytes (base palette included) produce the same key.
 -- `texture` is the decoded NSBTX texture record the opts describe.
-function MaterialCompiler.decodeTexture(texture, decoderOpts, textures, name)
+function MaterialCompiler.decodeTexture(texture, decoderOpts, textures, name, scratch)
   local definition = string.format(
     "%d:%dx%d:%s",
     texture.formatRaw,
@@ -35,17 +70,26 @@ function MaterialCompiler.decodeTexture(texture, decoderOpts, textures, name)
     texture.height,
     texture.color0Transparent and "1" or "0"
   )
-  local key = Hashing.sha1hex(
-    DECODER_VERSION .. definition .. decoderOpts.texel .. decoderOpts.palette .. (decoderOpts.indexData or "")
-  )
+  local key = textureInputHash(definition, decoderOpts)
 
   if not textures[key] then
-    local img = TextureDecoder.decode(decoderOpts, { name = name })
+    scratch = scratch or TextureDecoder.newScratch()
+    local pngSize = PngWriter.encodedSize(texture.width, texture.height)
+    local rgba = love.data.newByteData(texture.width * texture.height * 4)
+    local rgbaPointer = assert(rgba:getFFIPointer(), "texture RGBA Data has no FFI pointer")
+    local rgbaSize = rgba:getSize()
+    ---@cast rgbaSize integer
+    local alphaUsage = TextureDecoder.decodeInto(decoderOpts, rgbaPointer, rgbaSize, scratch, { name = name })
+    local png = love.data.newByteData(pngSize)
+    local pngPointer = assert(png:getFFIPointer(), "texture PNG Data has no FFI pointer")
+    local pngLength = png:getSize()
+    ---@cast pngLength integer
+    PngWriter.encodeInto(texture.width, texture.height, rgbaPointer, rgbaSize, pngPointer, pngLength)
     textures[key] = {
-      pixels = img.pixels,
-      width = img.width,
-      height = img.height,
-      alphaUsage = img.alphaUsage,
+      data = png,
+      width = texture.width,
+      height = texture.height,
+      alphaUsage = alphaUsage,
     }
   end
   return key
@@ -107,7 +151,7 @@ function MaterialCompiler.resolveTexture(mat, pack, textures, unresolved, opts)
 
   if tex then
     local decoderOpts = Nsbtx.decoderOpts(pack, tex, pal)
-    local key = MaterialCompiler.decodeTexture(tex, decoderOpts, textures, mat.textureName)
+    local key = MaterialCompiler.decodeTexture(tex, decoderOpts, textures, mat.textureName, opts.textureScratch)
 
     record.texture = key
     record.textureFormat = tex.formatRaw
@@ -125,6 +169,7 @@ end
 function MaterialCompiler.compile(materials, pack, opts)
   opts = opts or {}
   local records, textures, unresolved = {}, {}, {}
+  local textureScratch = opts.textureScratch or TextureDecoder.newScratch()
 
   for _, mat in ipairs(materials) do
     local record = {
@@ -147,6 +192,7 @@ function MaterialCompiler.compile(materials, pack, opts)
 
     local resolved = MaterialCompiler.resolveTexture(mat, pack, textures, unresolved, {
       context = opts.context,
+      textureScratch = textureScratch,
     })
     record.texture = resolved.texture
     record.textureFormat = resolved.textureFormat

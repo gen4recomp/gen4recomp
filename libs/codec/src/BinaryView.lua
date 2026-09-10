@@ -41,6 +41,7 @@ end
 ---@field private _length integer
 ---@field private _label string
 ---@field assertRange fun(self: BinaryView, offset: integer, length: integer, fieldName: string): boolean
+---@field pointer fun(self: BinaryView): ffi.cdata*
 ---@field length fun(self: BinaryView): integer
 ---@field slice fun(self: BinaryView, offset: integer, length: integer, label: string?): BinaryView
 ---@field u8 fun(self: BinaryView, offset: integer): integer
@@ -113,6 +114,11 @@ end
 
 function BinaryView:length()
   return self._length
+end
+
+---@return ffi.cdata*
+function BinaryView:pointer()
+  return self._ptr
 end
 
 ---@param offset integer

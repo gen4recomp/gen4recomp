@@ -3,8 +3,11 @@
 -- with embedded TEX0 data and do not use the mmodel billboard descriptor table.
 -- The original loader is `ov01_021FD2EC` / NARC 103 in pokeheartgold.
 
+local ffi = require("ffi")
 local Errors = require("libs.errors.src.Errors")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
+local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
+local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
 local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
 local DsPolygonAttr = require("libs.nds.src.gx.DsPolygonAttr")
@@ -49,28 +52,28 @@ local function polygonRecord(raw)
   }
 end
 
-local function packTextures(order)
+local function packTextures(order, scratch)
   local width, height = 0, 0
   for _, entry in ipairs(order) do
     entry.x = width
     width = width + entry.texture.width
     height = math.max(height, entry.texture.height)
   end
-  local rows = {}
-  for y = 0, height - 1 do
-    local row = {}
-    for index, entry in ipairs(order) do
-      local texture = entry.texture
-      if y < texture.height then
-        local stride = texture.width * 4
-        row[index] = texture.pixels:sub(y * stride + 1, (y + 1) * stride)
-      else
-        row[index] = string.rep("\0", texture.width * 4)
-      end
+  local atlasLength = width * height * 4
+  local atlas = ffi.new("uint8_t[?]", atlasLength)
+  for _, entry in ipairs(order) do
+    local texture = entry.texture
+    local textureLength = texture.width * texture.height * 4
+    local decoded = ffi.new("uint8_t[?]", textureLength)
+    TextureDecoder.decodeInto(entry.decoderOpts, decoded, textureLength, scratch, { name = entry.decoderOpts.name })
+    local stride = texture.width * 4
+    for y = 0, texture.height - 1 do
+      local sourceOffset = y * stride
+      local destinationOffset = (y * width + entry.x) * 4
+      ffi.copy(atlas + destinationOffset, decoded + sourceOffset, stride)
     end
-    rows[y + 1] = table.concat(row)
   end
-  return { width = width, height = height, pixels = table.concat(rows) }
+  return { width = width, height = height, pixels = ffi.string(atlas, atlasLength) }
 end
 
 function FieldActorStaticModel.compile(modelBytes, context, texturePack, textureArchive)
@@ -86,8 +89,11 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
   local model = file.models[1]
   local batches = MeshCompiler.compile(model)
 
-  local compiled =
-    MaterialCompiler.compile(model.materials, pack, { context = { textureArchive = textureArchive or "embedded" } })
+  local textureScratch = TextureDecoder.newScratch()
+  local compiled = MaterialCompiler.compile(model.materials, pack, {
+    context = { textureArchive = textureArchive or "embedded" },
+    textureScratch = textureScratch,
+  })
   if #compiled.unresolved > 0 then
     fail(
       "FIELD_ACTOR_STATIC_MODEL_TEXTURE_UNRESOLVED",
@@ -96,6 +102,10 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
     )
   end
   local materialById = {}
+  local sourceMaterialById = {}
+  for _, material in ipairs(model.materials) do
+    sourceMaterialById[material.index] = material
+  end
   for _, material in ipairs(compiled.materials) do
     materialById[material.id] = material
   end
@@ -110,13 +120,21 @@ function FieldActorStaticModel.compile(modelBytes, context, texturePack, texture
       )
     end
     if material.texture and not textureByKey[material.texture] then
-      local entry = { key = material.texture, texture = assert(compiled.textures[material.texture]) }
+      local sourceMaterial = assert(sourceMaterialById[material.id])
+      local sourceTexture = assert(pack.textureByName[sourceMaterial.textureName])
+      local sourcePalette = sourceMaterial.paletteName and pack.paletteByName[sourceMaterial.paletteName] or nil
+      local decoderOpts = Nsbtx.decoderOpts(pack, sourceTexture, sourcePalette)
+      local entry = {
+        key = material.texture,
+        texture = assert(compiled.textures[material.texture]),
+        decoderOpts = decoderOpts,
+      }
       textureByKey[material.texture] = entry
       textureOrder[#textureOrder + 1] = entry
     end
   end
   assert(#textureOrder > 0, "static actor model needs at least one textured draw")
-  local atlas = packTextures(textureOrder)
+  local atlas = packTextures(textureOrder, textureScratch)
   local parts = {}
   local allVertices = {}
   for _, batch in ipairs(batches) do

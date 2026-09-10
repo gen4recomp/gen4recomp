@@ -5,6 +5,7 @@
 -- and a marker.
 
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local PngWriter = require("libs.assets.src.PngWriter")
 
 local BundleFixture = {}
 
@@ -76,7 +77,9 @@ function BundleFixture.minimal(mapId)
       accessEntries = {},
     },
     meshes = { [meshSha] = { vertices = { v(0, 0), v(1, 0), v(0, 1) }, indices = { 0, 1, 2 } } },
-    textures = { [texSha] = { pixels = string.char(10, 20, 30, 255), width = 1, height = 1 } },
+    textures = {
+      [texSha] = { data = PngWriter.encode(1, 1, string.char(10, 20, 30, 255)), width = 1, height = 1 },
+    },
     models = {
       [modelKey] = {
         schema = "g4-model-v5",

@@ -167,8 +167,7 @@ function Narc.open(data, label)
     return result
   end
   if Errors.is(result) then
-    ---@cast result Errors.Error
-    return nil, result
+    return nil, result --[[@as Errors.Error]]
   end
   error(result)
 end

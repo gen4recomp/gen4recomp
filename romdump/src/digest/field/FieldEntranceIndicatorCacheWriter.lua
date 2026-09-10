@@ -2,7 +2,6 @@
 
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local PngWriter = require("libs.assets.src.PngWriter")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
@@ -19,7 +18,7 @@ function Writer.write(cacheFs, bundle)
     for sha1, texture in pairs(bundle.textures) do
       tx.stage:write(
         FieldEffectAssetCache.texturePath(sha1),
-        PngWriter.encode(texture.width, texture.height, texture.pixels)
+        assert(texture.data, "compiled texture is missing finalized PNG Data")
       )
     end
     for kind, definition in pairs(bundle.effects) do

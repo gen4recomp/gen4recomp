@@ -20,7 +20,6 @@
 
 local Errors = require("libs.errors.src.Errors")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local PngWriter = require("libs.assets.src.PngWriter")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local AssetErrors = require("libs.assets.src.errors")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
@@ -98,7 +97,8 @@ local function persist(prepared, bundle)
   end
   for sha1, tex in pairs(bundle.textures) do
     local path = MapAssetCache.texturePath(sha1)
-    stage:write(path, PngWriter.encode(tex.width, tex.height, tex.pixels))
+    assert(tex.data, "compiled texture is missing finalized PNG Data")
+    stage:write(path, tex.data)
     prepared:addSharedFile(path)
   end
   for modelKey, descriptor in pairs(bundle.models) do

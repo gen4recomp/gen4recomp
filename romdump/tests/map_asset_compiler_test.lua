@@ -18,6 +18,7 @@ local Assert = require("tests.support.Assert")
 local AnimationFixture = require("tests.support.AnimationFixture")
 local BdhcBuilder = require("tests.support.BdhcBuilder")
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
 local FieldTexAnimFixture = require("tests.support.FieldTextureAnimationFixture")
 local FieldTextureAnimation = require("romdump.src.digest.field.FieldTextureAnimation")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -32,6 +33,7 @@ local MapRomFixture = require("tests.support.MapRomFixture")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local NB = require("tests.support.NitroBuilder")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
+local PngWriter = require("libs.assets.src.PngWriter")
 local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
@@ -137,6 +139,12 @@ end
 -- Pixels of an 8x8 solid-colour decoded frame (64 texels, RGBA).
 local function solidPixels(r, g, b)
   return string.rep(string.char(r, g, b, 255), 64)
+end
+
+local function texturePng(path, textures)
+  local asset = textureAsset(path, textures)
+  Assert.isNil(asset.pixels, "compiled textures retain only finalized PNG Data")
+  return ffi.string(asset.data:getFFIPointer(), asset.data:getSize())
 end
 
 -- ---- neighbour-ring fixtures ----
@@ -640,7 +648,10 @@ function T.neighbor_terrain_compiles_against_its_own_pack_into_one_dependency_se
   Assert.equal(central.texHeight, 8)
   Assert.equal(central.texMtxMode, 0)
   Assert.equal(central.textureSwap.name, "flower02")
-  Assert.equal(textureAsset(central.textureSwap.steps[2].texture, bundle.textures).pixels, solidPixels(0, 255, 0))
+  Assert.equal(
+    texturePng(central.textureSwap.steps[2].texture, bundle.textures),
+    PngWriter.encode(8, 8, solidPixels(0, 255, 0))
+  )
 
   -- The neighbour chunk binds its own pack: flower01's frames decode under the
   -- neighbour palette (blue at index 2), never the central one.
@@ -656,7 +667,10 @@ function T.neighbor_terrain_compiles_against_its_own_pack_into_one_dependency_se
     durations[#durations + 1] = step.durationTicks
   end
   Assert.deepEqual(durations, FLOWER_STEP_DURATIONS)
-  Assert.equal(textureAsset(neighbor.textureSwap.steps[2].texture, bundle.textures).pixels, solidPixels(0, 0, 255))
+  Assert.equal(
+    texturePng(neighbor.textureSwap.steps[2].texture, bundle.textures),
+    PngWriter.encode(8, 8, solidPixels(0, 0, 255))
+  )
 
   -- The one area clip is owned by the central scene only; no neighbour
   -- descriptor repeats it.
@@ -720,7 +734,7 @@ function T.animation_sources_change_the_completion_marker()
   Assert.isTrue(base.marker ~= changedTable.marker, "the marker must track the fldtanime table bytes")
   local changedMember = compileWith({
     [0] = FieldTexAnimFixture.member({ { name = "flower01", timeline = FLOWER_TIMELINE } }),
-    [1] = replacementMember({ BASE_TEXEL, texels(0x44), texels(0x33) }),
+    [1] = replacementMember({ BASE_TEXEL, texels(0x00), texels(0x33) }),
   })
   Assert.isTrue(base.marker ~= changedMember.marker, "the marker must track the used replacement member bytes")
   Assert.equal(base.marker, compileWith(flowerAnimations()).marker, "identical inputs stay deterministic")

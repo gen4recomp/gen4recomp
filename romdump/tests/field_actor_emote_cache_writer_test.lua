@@ -59,7 +59,7 @@ T.tests["publishes field-emote descriptor and referenced assets under owned root
     marker = "field-emotes-cache-v2:rom:dep",
     model = model(),
     meshes = { ["mesh-key"] = {} },
-    textures = { ["texture-key"] = { width = 1, height = 1, pixels = "rgba" } },
+    textures = { ["texture-key"] = { width = 1, height = 1, data = "png" } },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
   MeshWriter.encode = oldEncode

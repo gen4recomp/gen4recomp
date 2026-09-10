@@ -156,6 +156,13 @@ function T.reader_preserves_binary_semantics_for_string_view_and_data_backing()
   Assert.deepEqual(observations(fixture), observations(data))
 end
 
+function T.binary_view_exposes_its_pointer_through_the_public_contract()
+  local view = BinaryView.fromString("ABC", "pointer")
+  local pointer = view:pointer()
+  Assert.equal(tonumber(pointer[0]), string.byte("A"))
+  Assert.equal(tonumber(pointer[2]), string.byte("C"))
+end
+
 function T.rejects_invalid_view_ranges_with_structured_errors()
   local r = BinaryReader.new("\1\2\3", "truncated")
   local view = r:view(2, 1)
