@@ -1,21 +1,12 @@
--- Bounds-checked, zero-based reader over a binary string. Pure domain module:
+-- Bounds-checked, zero-based reader over an immutable binary view. Pure domain module:
 -- no love dependency. Little-endian integers are assembled arithmetically,
 -- which is exact for 8/16/32-bit values under LuaJIT doubles. Binary
 -- positions (offsets/lengths) must be finite integers.
 
-local Errors = require("libs.errors.src.Errors")
-
-local function finiteInteger(value)
-  return type(value) == "number"
-    and value == value
-    and value ~= math.huge
-    and value ~= -math.huge
-    and value == math.floor(value)
-end
+local BinaryView = require("libs.codec.src.BinaryView")
 
 ---@class BinaryReader
----@field private _data string
----@field private _name string
+---@field private _view BinaryView
 ---@field data string
 ---@field label string?
 ---@field length fun(self: BinaryReader): integer
@@ -26,72 +17,54 @@ end
 ---@field f32le fun(self: BinaryReader, offset: integer): number
 ---@field bytes fun(self: BinaryReader, offset: integer, length: integer): string
 ---@field ascii fun(self: BinaryReader, offset: integer, length: integer, trimNul: boolean?): string
+---@field view fun(self: BinaryReader, offset: integer, length: integer, label: string?): BinaryView
 ---@field slice fun(self: BinaryReader, offset: integer, length: integer, label: string?): BinaryReader
 local BinaryReader = {}
 BinaryReader.__index = BinaryReader
 
 function BinaryReader.new(data, label)
-  assert(type(data) == "string", "BinaryReader requires a string")
-  return setmetatable({ data = data, label = label or "binary" }, BinaryReader)
+  local binaryView
+  if type(data) == "string" then
+    binaryView = BinaryView.fromString(data, label or "binary")
+  elseif type(data) == "table" and getmetatable(data) == BinaryView then
+    binaryView = data
+  else
+    binaryView = BinaryView.fromData(data, label or "binary")
+  end
+  return setmetatable({
+    _view = binaryView,
+    data = type(data) == "string" and data or nil,
+    label = label or "binary",
+  }, BinaryReader)
 end
 
 function BinaryReader:length()
-  return #self.data
+  return self._view:length()
 end
 
 function BinaryReader:assertRange(offset, length, fieldName)
-  local field = fieldName or "read"
-  if not finiteInteger(offset) or not finiteInteger(length) then
-    Errors.raise(
-      "READ_OUT_OF_BOUNDS",
-      string.format(
-        "%s: offset and length must be finite integers, got %s and %s",
-        field,
-        tostring(offset),
-        tostring(length)
-      ),
-      { offset = offset, length = length, available = #self.data, field = fieldName }
-    )
-  end
-  if offset < 0 or length < 0 or offset + length > #self.data then
-    Errors.raise(
-      "READ_OUT_OF_BOUNDS",
-      string.format(
-        "%s: read of %s bytes at offset %s exceeds %d-byte %s",
-        field,
-        tostring(length),
-        tostring(offset),
-        #self.data,
-        self.label
-      ),
-      { offset = offset, length = length, available = #self.data, field = fieldName }
-    )
-  end
-  return true
+  return self._view:assertRange(offset, length, fieldName)
 end
 
 function BinaryReader:u8(offset)
   self:assertRange(offset, 1, "u8")
-  return string.byte(self.data, offset + 1)
+  return self._view:u8(offset)
 end
 
 function BinaryReader:u16le(offset)
   self:assertRange(offset, 2, "u16le")
-  local b0, b1 = string.byte(self.data, offset + 1, offset + 2)
-  return b0 + b1 * 256
+  return self._view:u16le(offset)
 end
 
 function BinaryReader:u32le(offset)
   self:assertRange(offset, 4, "u32le")
-  local b0, b1, b2, b3 = string.byte(self.data, offset + 1, offset + 4)
-  return b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+  return self._view:u32le(offset)
 end
 
 -- IEEE-754 binary32, little-endian (mirror of BinaryWriter:f32).
 function BinaryReader:f32le(offset)
   self:assertRange(offset, 4, "f32le")
-  local b0, b1, b2, b3 = string.byte(self.data, offset + 1, offset + 4)
-  local word = b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+  local word = self._view:u32le(offset)
   local sign = math.floor(word / 2147483648) % 2
   local biased = math.floor(word / 8388608) % 256
   local mantissa = word % 8388608
@@ -111,18 +84,17 @@ end
 
 function BinaryReader:bytes(offset, length)
   self:assertRange(offset, length, "bytes")
-  return string.sub(self.data, offset + 1, offset + length)
+  return self._view:toString(offset, length)
 end
 
 function BinaryReader:ascii(offset, length, trimNul)
-  local s = self:bytes(offset, length)
-  if trimNul then
-    local nul = string.find(s, "\0", 1, true)
-    if nul then
-      s = string.sub(s, 1, nul - 1)
-    end
-  end
-  return s
+  self:assertRange(offset, length, "ascii")
+  return self._view:ascii(offset, length, trimNul)
+end
+
+function BinaryReader:view(offset, length, label)
+  self:assertRange(offset, length, "view")
+  return self._view:slice(offset, length, label or self.label)
 end
 
 function BinaryReader:slice(offset, length, label)
@@ -131,7 +103,7 @@ end
 
 function BinaryReader:remaining(offset)
   self:assertRange(offset, 0, "remaining")
-  return #self.data - offset
+  return self:length() - offset
 end
 
 return BinaryReader

@@ -1,4 +1,4 @@
--- Pure reader over a NARC archive string. The block and member layout follows
+-- Pure reader over an immutable NARC archive backing. The block and member layout follows
 -- pret/pokeheartgold's tools/o2narc/Narc.h and src/filesystem.c. A NARC is a 16-byte header
 -- followed by blockCount blocks; BTAF holds the member allocation table, GMIF
 -- the member data, BTNF optional names (unused by HGSS). Member offsets in BTAF
@@ -9,12 +9,24 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
+local ffi = require("ffi")
 
+---@alias NarcMemberInfo { memberId: integer, startOffset: integer, endOffset: integer, size: integer }
+---@alias NarcBlockInfo { magic: string, offset: integer, size: integer, payloadLength: integer }
 ---@class Narc
+---@field open fun(data: string|BinaryView|BinaryDataLike|userdata, label: string?): Narc|nil, Errors.Error|nil
+---@field memberCount fun(self: Narc): integer
+---@field memberInfo fun(self: Narc, memberId: integer): NarcMemberInfo|nil, Errors.Error|nil
+---@field memberView fun(self: Narc, memberId: integer): BinaryView|nil, Errors.Error|nil
+---@field readMember fun(self: Narc, memberId: integer): string|nil, Errors.Error|nil
+---@field blockInfo fun(self: Narc): NarcBlockInfo[]
+---@field detectCompression fun(data: string): "lz10"|"lz11"|nil
 ---@field private _reader BinaryReader
 ---@field private _blocks table[]
 ---@field private _gmifOffset integer
----@field private _members table[]
+---@field private _memberCount integer
+---@field private _memberStarts ffi.cdata*
+---@field private _memberSizes ffi.cdata*
 local Narc = {}
 Narc.__index = Narc
 
@@ -75,7 +87,8 @@ end
 
 local function parseMembers(reader, btaf, gmif)
   local count = reader:u16le(btaf.payloadOffset)
-  local members = {}
+  local memberStarts = ffi.new("uint32_t[?]", count)
+  local memberSizes = ffi.new("uint32_t[?]", count)
   for memberId = 0, count - 1 do
     local base = btaf.payloadOffset + 4 + memberId * 8
     local startOffset = reader:u32le(base)
@@ -94,14 +107,10 @@ local function parseMembers(reader, btaf, gmif)
         { memberId = memberId, startOffset = startOffset, endOffset = endOffset, gmifSize = gmif.payloadLength }
       )
     end
-    members[memberId + 1] = {
-      memberId = memberId,
-      startOffset = startOffset,
-      endOffset = endOffset,
-      size = endOffset - startOffset,
-    }
+    memberStarts[memberId] = startOffset
+    memberSizes[memberId] = endOffset - startOffset
   end
-  return members
+  return count, memberStarts, memberSizes
 end
 
 local function parse(data, label)
@@ -135,59 +144,111 @@ local function parse(data, label)
     Errors.raise("NARC_MISSING_GMIF", "NARC has no GMIF block")
   end
 
-  local members = parseMembers(reader, byMagic.BTAF, byMagic.GMIF)
-  return setmetatable({
+  local memberCount, memberStarts, memberSizes = parseMembers(reader, byMagic.BTAF, byMagic.GMIF)
+  local narc = setmetatable({
     _reader = reader,
     _blocks = blocks,
     _gmifOffset = byMagic.GMIF.payloadOffset,
-    _members = members,
-  }, Narc)
+    _memberCount = memberCount,
+    _memberStarts = memberStarts,
+    _memberSizes = memberSizes,
+  }, Narc) ---@type Narc
+  return narc
 end
 
+---@param data string|BinaryView|BinaryDataLike|userdata
+---@param label string?
+---@return Narc|nil, Errors.Error|nil
 function Narc.open(data, label)
-  assert(type(data) == "string", "Narc.open requires a string")
+  assert(data ~= nil, "Narc.open requires binary data")
   local ok, result = pcall(parse, data, label)
   if ok then
+    ---@cast result Narc
     return result
   end
   if Errors.is(result) then
+    ---@cast result Errors.Error
     return nil, result
   end
   error(result)
 end
 
+---@param self Narc
+---@return integer
 function Narc:memberCount()
-  return #self._members
+  return self._memberCount
 end
 
+---@param memberCount integer
+---@param memberStarts ffi.cdata*
+---@param memberSizes ffi.cdata*
+---@param memberId integer
+---@return integer?, integer|Errors.Error
+local function memberRange(memberCount, memberStarts, memberSizes, memberId)
+  if type(memberId) ~= "number" or memberId ~= math.floor(memberId) or memberId < 0 or memberId >= memberCount then
+    return nil,
+      Errors.new(
+        "NARC_MEMBER_ID_OUT_OF_RANGE",
+        "no member " .. tostring(memberId) .. " in NARC of " .. memberCount,
+        { memberId = memberId, memberCount = memberCount }
+      )
+  end
+  local startOffset = tonumber(memberStarts[memberId])
+  local size = tonumber(memberSizes[memberId])
+  ---@cast startOffset integer
+  ---@cast size integer
+  return startOffset, size
+end
+
+---@param self Narc
+---@param memberId integer
+---@return NarcMemberInfo|nil, Errors.Error|nil
 function Narc:memberInfo(memberId)
-  local m = self._members[memberId + 1]
-  if not m then
-    return nil,
-      Errors.new(
-        "NARC_MEMBER_ID_OUT_OF_RANGE",
-        "no member " .. tostring(memberId) .. " in NARC of " .. #self._members,
-        { memberId = memberId, memberCount = #self._members }
-      )
+  local startOffset, size = memberRange(self._memberCount, self._memberStarts, self._memberSizes, memberId)
+  if startOffset == nil then
+    ---@cast size Errors.Error
+    return nil, size
   end
-  return { memberId = m.memberId, startOffset = m.startOffset, endOffset = m.endOffset, size = m.size }
+  ---@cast startOffset integer
+  ---@cast size integer
+  return {
+    memberId = memberId,
+    startOffset = startOffset,
+    endOffset = startOffset + size,
+    size = size,
+  }
 end
 
+---@param self Narc
+---@param memberId integer
+---@return BinaryView|nil, Errors.Error|nil
+function Narc:memberView(memberId)
+  local startOffset, size = memberRange(self._memberCount, self._memberStarts, self._memberSizes, memberId)
+  if startOffset == nil then
+    ---@cast size Errors.Error
+    return nil, size
+  end
+  ---@cast startOffset integer
+  ---@cast size integer
+  return self._reader:view(self._gmifOffset + startOffset, size, "NARC member " .. tostring(memberId))
+end
+
+---@param self Narc
+---@param memberId integer
+---@return string|nil, Errors.Error|nil
 function Narc:readMember(memberId)
-  local m = self._members[memberId + 1]
-  if not m then
-    return nil,
-      Errors.new(
-        "NARC_MEMBER_ID_OUT_OF_RANGE",
-        "no member " .. tostring(memberId) .. " in NARC of " .. #self._members,
-        { memberId = memberId, memberCount = #self._members }
-      )
+  local view, err = self:memberView(memberId)
+  if not view then
+    ---@cast err Errors.Error
+    return nil, err
   end
-  return self._reader:bytes(self._gmifOffset + m.startOffset, m.size)
+  return view:toString()
 end
 
+---@param self Narc
+---@return NarcBlockInfo[]
 function Narc:blockInfo()
-  local out = {}
+  local out = {} ---@type NarcBlockInfo[]
   for i, b in ipairs(self._blocks) do
     out[i] = { magic = b.magic, offset = b.offset, size = b.size, payloadLength = b.payloadLength }
   end
@@ -196,6 +257,8 @@ end
 
 -- Non-authoritative peek at a member's leading byte to guess Nintendo LZ
 -- compression. Never mutates and never decompresses.
+---@param data string
+---@return "lz10"|"lz11"|nil
 function Narc.detectCompression(data)
   if type(data) ~= "string" or #data == 0 then
     return nil

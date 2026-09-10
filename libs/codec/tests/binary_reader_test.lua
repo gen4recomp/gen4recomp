@@ -1,8 +1,33 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
+local BinaryView = require("libs.codec.src.BinaryView")
 
 local T = {}
+
+local function errorCode(fn)
+  local err = Assert.throws(fn)
+  Assert.isTrue(Errors.is(err), "expected a structured binary read error")
+  return err.code
+end
+
+local function observations(data)
+  local r = BinaryReader.new(data, "parity")
+  return {
+    length = r:length(),
+    u8 = r:u8(0),
+    u16le = r:u16le(1),
+    u32le = r:u32le(0),
+    f32le = r:f32le(4),
+    bytes = r:bytes(9, 3),
+    ascii = r:ascii(8, 4, false),
+    trimmedAscii = r:ascii(8, 4, true),
+    remaining = r:remaining(10),
+    outOfBounds = errorCode(function()
+      r:u32le(10)
+    end),
+  }
+end
 
 -- bytes: 0x01 0x02 0x03 0x04 0x05
 local function reader()
@@ -120,6 +145,58 @@ function T.rejects_fractional_offsets()
   assertRangeError(function()
     reader():remaining(2.5)
   end)
+end
+
+function T.reader_preserves_binary_semantics_for_string_view_and_data_backing()
+  local fixture = "\255\254\253\252\0\0\128\191A\0BC\0"
+  local stringView = BinaryView.fromString(fixture, "string-view")
+  local data = love.data.newByteData(fixture)
+
+  Assert.deepEqual(observations(fixture), observations(stringView))
+  Assert.deepEqual(observations(fixture), observations(data))
+end
+
+function T.rejects_invalid_view_ranges_with_structured_errors()
+  local r = BinaryReader.new("\1\2\3", "truncated")
+  local view = r:view(2, 1)
+
+  Assert.equal(
+    errorCode(function()
+      view:u16le(0)
+    end),
+    "READ_OUT_OF_BOUNDS"
+  )
+  Assert.equal(
+    errorCode(function()
+      r:view(2, 2)
+    end),
+    "READ_OUT_OF_BOUNDS"
+  )
+end
+
+function T.binary_view_accepts_empty_boundary_slices_only()
+  local view = BinaryView.fromString("abc", "slice-boundaries")
+  Assert.equal(view:slice(0, 0):length(), 0)
+  Assert.equal(view:slice(3, 0):length(), 0)
+
+  assertRangeError(function()
+    view:slice(3, 1)
+  end)
+  assertRangeError(function()
+    view:slice(-1, 0)
+  end)
+  assertRangeError(function()
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid call
+    view:slice(0, 1.5)
+  end)
+end
+
+function T.copied_bytes_survive_data_release()
+  local data = love.data.newByteData("AB\0CD")
+  local bytes = BinaryReader.new(data, "copy"):bytes(0, 5)
+  data:release()
+  collectgarbage("collect")
+  Assert.equal(bytes, "AB\0CD")
 end
 
 function T.rejects_nan_and_fractional_lengths()

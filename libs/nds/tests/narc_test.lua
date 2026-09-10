@@ -5,14 +5,6 @@ local NarcBuilder = require("tests.support.NarcBuilder")
 
 local T = {}
 
--- Narc.open returns its error unannotated, so err arrives typed as the narc
--- itself; cast to the Errors.Error contract the test has already verified.
----@param e any
----@return Errors.Error
-local function asError(e)
-  return e
-end
-
 local function openOrFail(members, opts)
   local narc, err = Narc.open(NarcBuilder.build(members, opts))
   Assert.notNil(narc, "expected open to succeed: " .. tostring(err))
@@ -23,7 +15,7 @@ local function rejects(code, members, opts)
   local narc, err = Narc.open(NarcBuilder.build(members, opts))
   Assert.isNil(narc, "expected open to fail with " .. code)
   Assert.isTrue(Errors.is(err), "expected an Errors object, got " .. tostring(err))
-  Assert.equal(asError(err).code, code)
+  Assert.equal(assert(err).code, code)
 end
 
 function T.reads_all_members_by_zero_based_id()
@@ -37,6 +29,14 @@ end
 function T.empty_archive_has_no_members()
   local narc = openOrFail({})
   Assert.equal(narc:memberCount(), 0)
+end
+
+function T.empty_member_exposes_an_empty_view()
+  local narc = openOrFail({ "" })
+  local view = assert(narc:memberView(0))
+  Assert.equal(view:length(), 0)
+  Assert.equal(view:toString(), "")
+  Assert.equal(narc:readMember(0), "")
 end
 
 -- Non-4-byte member sizes force alignment padding between members; readMember
@@ -59,6 +59,24 @@ function T.member_info_reports_zero_based_id_and_size()
   Assert.equal(info.size, 6)
 end
 
+function T.member_views_share_archive_backing_and_survive_parent_locals()
+  local function viewsFromArchive()
+    local narc = openOrFail({ "\1\0\255\254", "AB\0CD" })
+    local secondView = assert(narc:memberView(1))
+    local firstView = assert(narc:memberView(0))
+    return secondView, firstView, narc:readMember(1)
+  end
+
+  local secondView, firstView, secondBytes = viewsFromArchive()
+  collectgarbage("collect")
+
+  Assert.equal(secondView:length(), 5)
+  Assert.equal(secondView:u16le(0), 0x4241)
+  Assert.equal(secondView:toString(), secondBytes)
+  Assert.equal(firstView:u32le(0), 0xFEFF0001)
+  Assert.equal(firstView:toString(), "\1\0\255\254")
+end
+
 function T.block_info_lists_blocks_in_order()
   local blocks = openOrFail({ "AAAA" }):blockInfo()
   Assert.equal(#blocks, 3)
@@ -71,14 +89,19 @@ function T.rejects_member_id_out_of_range()
   local narc = openOrFail({ "AAAA" })
   local data, err = narc:readMember(1)
   Assert.isNil(data)
-  Assert.equal(err.code, "NARC_MEMBER_ID_OUT_OF_RANGE")
+  Assert.equal(assert(err).code, "NARC_MEMBER_ID_OUT_OF_RANGE")
+
+  ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid member ID
+  local view, viewErr = narc:memberView(0.5)
+  Assert.isNil(view)
+  Assert.equal(assert(viewErr).code, "NARC_MEMBER_ID_OUT_OF_RANGE")
 end
 
 function T.rejects_bad_magic()
   local ok = NarcBuilder.build({ "AAAA" })
   local narc, err = Narc.open("XXXX" .. ok:sub(5))
   Assert.isNil(narc)
-  Assert.equal(asError(err).code, "NARC_BAD_MAGIC")
+  Assert.equal(assert(err).code, "NARC_BAD_MAGIC")
 end
 
 function T.rejects_declared_size_past_supplied_bytes()
