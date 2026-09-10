@@ -19,7 +19,6 @@ local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local Hashing = require("romdump.src.digest.Hashing")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
-local ScriptMembers = require("romdump.src.reference.hgss.script_members")
 
 local ScriptCompiler = {}
 
@@ -118,6 +117,119 @@ local function translateScript(memberIr, scriptIndex, opts)
   return resource, report
 end
 
+function ScriptCompiler.translateMember(memberIr, scriptIndices, opts)
+  local resources = {}
+  local results = {}
+  for _, index in ipairs(scriptIndices) do
+    local script = memberIr.scripts[index]
+    assert(script ~= nil, "planned script is missing from decoded member")
+    local resource, report = translateScript(memberIr, index, opts)
+    results[index] = { script = script, resource = resource, report = report }
+    resources[#resources + 1] = {
+      id = resource.id,
+      member = memberIr.member,
+      scriptIndex = index,
+      resource = resource,
+      report = report,
+      sourceHash = opts.sourceHash,
+    }
+  end
+  return resources, results
+end
+
+local function compilerDependencies(romFs, producerFingerprint, sha1hex)
+  assert(type(producerFingerprint) == "string", "script compiler producer fingerprint is required")
+  local version = romFs:version()
+  local romSha1 = romFs:metadata().sha1
+  local archiveInfo = assert(romFs:resolvedNarc("field_scripts"), "field_scripts NARC is unavailable")
+  local archiveBytes = assert(romFs:read(archiveInfo.fileId))
+  return {
+    cacheFormat = ScriptCache.FORMAT,
+    contract = ScriptCache.INDEX_SCHEMA,
+    producerFingerprint = producerFingerprint,
+    commandCatalog = ScriptCompiler.commandCatalogVersion(),
+    movementCatalog = ScriptCompiler.movementCatalogVersion(),
+    stdCatalog = ScriptCompiler.stdCatalogVersion(),
+    memberBanks = ScriptCompiler.memberBanksVersion(),
+    version = version,
+    versionRomSha1 = romSha1,
+    scrSeqNarc = {
+      symbol = archiveInfo.symbol,
+      alias = archiveInfo.alias,
+      narcId = archiveInfo.narcId,
+      fileId = archiveInfo.fileId,
+      path = archiveInfo.path,
+      sha1 = sha1hex(archiveBytes),
+    },
+  }
+end
+
+function ScriptCompiler.plan(romFs, producerFingerprint, opts)
+  assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "plan requires a RomFs-shaped object")
+  assert(type(producerFingerprint) == "string", "script plan producer fingerprint is required")
+  opts = opts or {}
+  local sha1hex = opts.sha1hex or Hashing.sha1hex
+  local hashLua = opts.hashLua or Hashing.hashLua
+  local dependencies = compilerDependencies(romFs, producerFingerprint, sha1hex)
+  local archive = assert(romFs:openNarc("field_scripts"))
+  local stdCatalog = SourceCatalog.catalog()
+  local sourcePath = "romfs/" .. dependencies.scrSeqNarc.path
+  local members = {}
+  local skippedMembers = {}
+  local resources = {}
+  for memberId = 0, archive:memberCount() - 1 do
+    local view = assert(archive:memberView(memberId))
+    local entries = ScriptBinaryDecoder.scanEntries(view)
+    if #entries == 0 then
+      skippedMembers[#skippedMembers + 1] = memberId
+    else
+      local memberPlan = {
+        memberId = memberId,
+        marker = "pending",
+        scripts = {},
+      }
+      for scriptIndex = 0, #entries - 1 do
+        local id = ScriptCompiler.publicId(memberId, scriptIndex, stdCatalog)
+        memberPlan.scripts[#memberPlan.scripts + 1] = { scriptIndex = scriptIndex, id = id }
+        resources[#resources + 1] = { id = id, member = memberId, scriptIndex = scriptIndex }
+      end
+      members[#members + 1] = memberPlan
+    end
+  end
+  local generationKey = hashLua(dependencies)
+  local marker = ScriptCache.marker(dependencies.versionRomSha1, generationKey)
+  for _, memberPlan in ipairs(members) do
+    memberPlan.marker = generationKey .. ":member:" .. tostring(memberPlan.memberId)
+  end
+  table.sort(resources, function(a, b)
+    return a.id < b.id
+  end)
+  return {
+    generationKey = generationKey,
+    marker = marker,
+    version = dependencies.version,
+    sourcePath = sourcePath,
+    romSha1 = dependencies.versionRomSha1,
+    dependencies = dependencies,
+    memberCount = archive:memberCount(),
+    members = members,
+    skippedMembers = skippedMembers,
+    resources = resources,
+    index = {
+      schema = ScriptCache.INDEX_SCHEMA,
+      version = dependencies.version,
+      generation = generationKey,
+      marker = marker,
+      memberCount = archive:memberCount(),
+      scriptMemberCount = #members,
+      skippedMemberCount = #skippedMembers,
+      scriptCount = #resources,
+      resourceCount = #resources,
+      resources = resources,
+    },
+  }
+end
+
 -- Compile the complete script corpus for one version dump into a cache
 -- bundle: every script member decoded, translated, and verified, plus the
 -- aggregated coverage record and the dependency marker.
@@ -129,128 +241,35 @@ function ScriptCompiler.compile(romFs, sha1hex, hashLua)
   assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "compile requires a RomFs-shaped object")
   sha1hex = sha1hex or Hashing.sha1hex
   hashLua = hashLua or Hashing.hashLua
-  local version = romFs:version()
-  local romSha1 = romFs:metadata().sha1
-  local archiveInfo = assert(romFs:resolvedNarc("field_scripts"), "field_scripts NARC is unavailable")
-  local archiveBytes = assert(romFs:read(archiveInfo.fileId))
-  local source = {
-    archiveInfo = archiveInfo,
-    archiveSha1 = sha1hex(archiveBytes),
-  }
-  local archive = assert(romFs:openNarc("field_scripts"))
-  local stdCatalog = SourceCatalog.catalog()
-  local sourcePath = "romfs/" .. source.archiveInfo.path
-  local catalog = {
-    sounds = require("romdump.src.reference.hgss.sndseq").byId,
-    flags = require("romdump.src.reference.hgss.flags").byId,
-    vars = require("romdump.src.reference.hgss.vars").byId,
-    maps = require("romdump.src.reference.hgss.maps").byId,
-    spawns = require("romdump.src.reference.hgss.spawns").byId,
-  }
-  local memberIrs = ScriptBinaryDecoder.decodeArchive(archive, ScriptMembers.banks, sourcePath, catalog)
-
-  local records = {}
-  local resources = {}
-  local skippedMembers = {}
-  local scriptCount = 0
+  local plan = ScriptCompiler.plan(romFs, "", { sha1hex = sha1hex, hashLua = hashLua })
+  local Session = require("romdump.src.digest.script.ScriptCompileSession")
+  local session = assert(Session.new(romFs, plan, { sha1hex = sha1hex, hashLua = hashLua }))
+  local records, resources, memberCoverage = {}, {}, {}
   local decodeNotes = 0
-  local scriptMemberCount = 0
-  for member = 0, archive:memberCount() - 1 do
-    local memberIr = memberIrs[member]
-    if memberIr == nil then
-      skippedMembers[#skippedMembers + 1] = member
-    else
-      scriptMemberCount = scriptMemberCount + 1
-      local memberBytes = assert(archive:readMember(member))
-      local memberSha1 = sha1hex(memberBytes)
-      local results = {}
-      -- Deterministic iteration: the script map is keyed by zero-based
-      -- script index; the sorted index list fixes the translation order.
-      local scriptIndices = {}
-      for index in pairs(memberIr.scripts) do
-        scriptIndices[#scriptIndices + 1] = index
-      end
-      table.sort(scriptIndices)
-      for _, index in ipairs(scriptIndices) do
-        local script = memberIr.scripts[index]
-        local resource, report = translateScript(memberIr, index, {
-          stdCatalog = stdCatalog,
-          romSha1 = romSha1,
-          repository = "g4recomp",
-          game = version,
-          sourceHash = memberSha1,
-        })
-        results[index] = { script = script, resource = resource, report = report }
-        resources[#resources + 1] = {
-          id = resource.id,
-          member = member,
-          scriptIndex = index,
-          resource = resource,
-          report = report,
-          sourceHash = memberSha1,
-        }
-        scriptCount = scriptCount + 1
-        if script.decodeNote ~= nil then
-          decodeNotes = decodeNotes + 1
-        end
-      end
-      local record = Coverage.record(memberIr, results, {
-        repository = "g4recomp",
-        romSha1 = romSha1,
-      })
-      records[#records + 1] = record
+  for _, memberPlan in ipairs(plan.members) do
+    local member = assert(session:compileMember(memberPlan.memberId))
+    for _, entry in ipairs(member.resources) do
+      resources[#resources + 1] = entry
     end
+    for _, result in pairs(member.results or {}) do
+      if result.script.decodeNote ~= nil then
+        decodeNotes = decodeNotes + 1
+      end
+    end
+    records[#records + 1] = member.coverage
+    memberCoverage[member.memberId] = member.coverage
   end
   local coverageRecord = Coverage.aggregate(records)
   coverageRecord.decodeNotes = decodeNotes
-  coverageRecord.skippedMembers = skippedMembers
-  coverageRecord.source = { repository = "g4recomp", romSha1 = romSha1 }
-
-  local index = {
-    schema = ScriptCache.INDEX_SCHEMA,
-    version = version,
-    memberCount = archive:memberCount(),
-    scriptMemberCount = scriptMemberCount,
-    skippedMemberCount = #skippedMembers,
-    scriptCount = scriptCount,
-    resourceCount = #resources,
-  }
-  local dependencies = {
-    cacheFormat = ScriptCache.FORMAT,
-    commandCatalog = ScriptCompiler.commandCatalogVersion(),
-    movementCatalog = ScriptCompiler.movementCatalogVersion(),
-    stdCatalog = ScriptCompiler.stdCatalogVersion(),
-    memberBanks = ScriptCompiler.memberBanksVersion(),
-    versionRomSha1 = romSha1,
-    scrSeqNarc = {
-      symbol = source.archiveInfo.symbol,
-      alias = source.archiveInfo.alias,
-      narcId = source.archiveInfo.narcId,
-      fileId = source.archiveInfo.fileId,
-      path = source.archiveInfo.path,
-      sha1 = source.archiveSha1,
-    },
-  }
-  local marker = ScriptCache.marker(romSha1, hashLua(dependencies))
-  -- The index mirrors the sorted resources so discovery order never leaks
-  -- into the emitted output.
-  table.sort(resources, function(a, b)
-    return a.id < b.id
-  end)
-  index.resources = {}
-  for _, entry in ipairs(resources) do
-    index.resources[#index.resources + 1] = {
-      id = entry.id,
-      member = entry.member,
-      scriptIndex = entry.scriptIndex,
-    }
-  end
+  coverageRecord.skippedMembers = plan.skippedMembers
+  coverageRecord.source = { repository = "g4recomp", romSha1 = plan.romSha1 }
   return {
-    marker = marker,
-    index = index,
+    marker = plan.marker,
+    index = plan.index,
     resources = resources,
     coverageRecord = coverageRecord,
-    dependencies = dependencies,
+    memberCoverage = memberCoverage,
+    dependencies = plan.dependencies,
   }
 end
 

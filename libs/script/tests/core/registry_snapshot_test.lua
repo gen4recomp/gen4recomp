@@ -15,6 +15,7 @@ local RegistrySnapshot = require("libs.script.src.RegistrySnapshot")
 local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
 
 local T = {}
+local GENERATION = string.rep("a", 40)
 
 local HEX = "^[0-9a-f]+$"
 
@@ -28,13 +29,22 @@ end
 -- A cache whose script class is complete: marker, index, and script files.
 local function scriptCache(marker)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), marker or "script-cache-v2:rom-sha:dep-sha")
-  cache:writeLua(ScriptCache.indexPath(), {
-    schema = "g4-script-index-v1",
-    resources = { { id = "new_bark.lab_sign" } },
+  marker = marker or "script-cache-v4:rom-sha:dep-sha"
+  cache:write(ScriptCache.markerPath(), marker)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), marker)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = marker,
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = marker,
+    resources = { { id = "new_bark.lab_sign", member = 0, scriptIndex = 0 } },
   })
   cache:write(
-    ScriptCache.scriptPath("new_bark.lab_sign"),
+    ScriptCache.scriptPath(GENERATION, 0, "new_bark.lab_sign"),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.stop() } }\n'
   )
   return cache

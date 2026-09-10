@@ -9,15 +9,43 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
+local GENERATION_A = string.rep("a", 40)
+local GENERATION_B = string.rep("b", 40)
+
+local function memberCoverage(memberId, id, scriptIndex)
+  return {
+    source = { repository = "g4recomp", romSha1 = "rom-sha" },
+    totals = {
+      members = 1,
+      scripts = 1,
+      reachableInstructions = 1,
+      supportedInstructions = 1,
+      unsupportedInstructions = 0,
+      malformedInstructions = 0,
+    },
+    opcodes = {},
+    scripts = {
+      {
+        sourceId = string.format("hgss.scr_seq.%04d.%03d", memberId, scriptIndex or 0),
+        publicId = id,
+        status = "complete",
+        unsupported = {},
+      },
+    },
+  }
+end
 
 local function bundle()
   return {
-    marker = "script-cache-v1:rom-sha:dep-sha",
+    marker = "script-cache-v4:rom-sha:dep-sha",
     index = {
       schema = ScriptCache.INDEX_SCHEMA,
+      generation = GENERATION_A,
+      marker = "script-cache-v4:rom-sha:dep-sha",
       version = "heartgold",
-      memberCount = 1,
-      scriptMemberCount = 1,
+      memberCount = 2,
+      scriptMemberCount = 2,
+      skippedMemberCount = 0,
       scriptCount = 2,
       resourceCount = 2,
       resources = {
@@ -67,6 +95,10 @@ local function bundle()
         },
       },
     },
+    memberCoverage = {
+      [3] = memberCoverage(3, "common.signpost"),
+      [843] = memberCoverage(843, "new_bark.lab_sign", 9),
+    },
   }
 end
 
@@ -79,24 +111,27 @@ T["write publishes marker last"] = function()
   Assert.isTrue(ok)
   Assert.notNil(cache:read(ScriptCache.provenancePath()))
   Assert.notNil(cache:read(ScriptCache.coverageJsonPath()))
-  local index = cache:loadLua(ScriptCache.indexPath())
+  local index = cache:loadLua(ScriptCache.generationIndexPath(GENERATION_A))
   index = index --[[@as { schema: string, resourceCount: integer, resources: table[] }]]
   Assert.equal(index.schema, ScriptCache.INDEX_SCHEMA)
   Assert.equal(index.resourceCount, 2)
-  local signpost = cache:loadModule(ScriptCache.scriptPath("common.signpost"))
+  local signpost = cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost"))
   signpost = signpost --[[@as { kind: string, id: string }]]
   Assert.equal(signpost.kind, "field_script")
   Assert.equal(signpost.id, "common.signpost")
-  Assert.equal(cache:read(ScriptCache.markerPath()), "script-cache-v1:rom-sha:dep-sha")
-  Assert.isTrue(ScriptCache.isReady(cache, "script-cache-v1:rom-sha:dep-sha"))
+  Assert.equal(cache:read(ScriptCache.markerPath()), "script-cache-v4:rom-sha:dep-sha")
+  local coverage = assert(cache:read(ScriptCache.generationCoverageMdPath(GENERATION_A)))
+  Assert.isTrue(coverage:find("| Members | 2 |", 1, true) ~= nil)
+  Assert.isTrue(coverage:find("| Scripts | 2 |", 1, true) ~= nil)
+  Assert.isTrue(ScriptCache.isReady(cache, "script-cache-v4:rom-sha:dep-sha"))
 end
 
 -- 2. A missing script file fails readiness.
 T["readiness requires every indexed script"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   ScriptCacheWriter.write(cache, bundle())
-  cache:remove(ScriptCache.scriptPath("new_bark.lab_sign"))
-  Assert.isFalse(ScriptCache.isReady(cache, "script-cache-v1:rom-sha:dep-sha"))
+  cache:remove(ScriptCache.scriptPath(GENERATION_A, 843, "new_bark.lab_sign"))
+  Assert.isFalse(ScriptCache.isReady(cache, "script-cache-v4:rom-sha:dep-sha"))
 end
 
 -- 3. A readback failure rolls the whole class back (no partial cache).
@@ -112,7 +147,7 @@ T["readback failure rolls back"] = function()
   end
   Assert.isTrue(failed)
   Assert.equal(cache:read(ScriptCache.markerPath()), nil)
-  Assert.isNil(cache:read(ScriptCache.indexPath()))
+  Assert.isNil(cache:read(ScriptCache.activeIndexPath()))
 end
 
 -- 4. A failed rebuild leaves the previous ready artifact untouched, the stage
@@ -129,16 +164,18 @@ T["failed rebuild preserves the previous script artifact"] = function()
     return original(self, path, data)
   end
   local second = bundle()
-  second.marker = "script-cache-v1:rom-sha:new-dep-sha"
+  second.marker = "script-cache-v4:rom-sha:new-dep-sha"
+  second.index.generation = GENERATION_B
+  second.index.marker = second.marker
   Assert.throws(function()
     ScriptCacheWriter.write(cache, second)
   end)
-  Assert.isTrue(ScriptCache.isReady(cache, "script-cache-v1:rom-sha:dep-sha"), "the previous artifact remains ready")
-  Assert.equal(cache:read(ScriptCache.markerPath()), "script-cache-v1:rom-sha:dep-sha", "no new marker leaked")
+  Assert.isTrue(ScriptCache.isReady(cache, "script-cache-v4:rom-sha:dep-sha"), "the previous artifact remains ready")
+  Assert.equal(cache:read(ScriptCache.markerPath()), "script-cache-v4:rom-sha:dep-sha", "no new marker leaked")
   Assert.isNil(backend:getInfo("staging/heartgold/scripts"), "the stage is cleaned on failure")
   backend.write = original
   ScriptCacheWriter.write(cache, second)
-  Assert.isTrue(ScriptCache.isReady(cache, "script-cache-v1:rom-sha:new-dep-sha"), "a retry publishes the new artifact")
+  Assert.isTrue(ScriptCache.isReady(cache, "script-cache-v4:rom-sha:new-dep-sha"), "a retry publishes the new artifact")
   Assert.isNil(backend:getInfo("staging/heartgold/scripts"), "the stage is cleaned on success")
 end
 
@@ -157,15 +194,17 @@ T["publish failure keeps the stage with recovery material"] = function()
     return originalReplace(self, sourcePath, destinationPath)
   end
   local second = bundle()
-  second.marker = "script-cache-v1:rom-sha:new-dep-sha"
+  second.marker = "script-cache-v4:rom-sha:new-dep-sha"
+  second.index.generation = GENERATION_B
+  second.index.marker = second.marker
   local err = Assert.throws(function()
     ScriptCacheWriter.write(cache, second)
   end)
   Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
   Assert.notNil(backend:getInfo("staging/heartgold/scripts"), "the stage is not removed once publish has begun")
   Assert.equal(
-    backend.files["staging/heartgold/scripts/" .. ScriptCache.dir() .. ".old/complete"],
-    "script-cache-v1:rom-sha:dep-sha",
+    backend.files["staging/heartgold/scripts/" .. ScriptCache.activeDir() .. ".old/complete"],
+    "script-cache-v4:rom-sha:dep-sha",
     "the last-known-good script class stays in the stage as recovery material"
   )
 end

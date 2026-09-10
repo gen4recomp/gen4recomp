@@ -20,11 +20,18 @@ CommandCatalog.UNSUPPORTED = "unsupported"
 
 CommandCatalog.NAMES = {}
 CommandCatalog.CLASSIFICATION = {}
+CommandCatalog.MAX_OPERANDS = 0
 for opcode, entry in pairs(ScriptCommands.byOpcode) do
   CommandCatalog.NAMES[opcode] = entry.name
   if entry.classification ~= nil then
     CommandCatalog.CLASSIFICATION[opcode] = entry.classification
   end
+  local baseWidthCount = #(entry.widths or {})
+  local widthCount = baseWidthCount
+  for _, variant in ipairs(entry.variants or {}) do
+    widthCount = math.max(widthCount, baseWidthCount + #(variant.extra or {}))
+  end
+  CommandCatalog.MAX_OPERANDS = math.max(CommandCatalog.MAX_OPERANDS, widthCount)
 end
 -- Opcode 582 (the special-spawn setter) has real supported same-tick
 -- semantics without a catalog classification entry, so it keeps its explicit

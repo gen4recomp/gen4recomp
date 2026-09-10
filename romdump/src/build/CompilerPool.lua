@@ -251,11 +251,22 @@ end
 
 local function assertJob(job)
   assert(type(job) == "table", "compiler job must be a table")
-  assert(job.kind == "map", "unsupported compiler job kind: " .. tostring(job.kind))
+  assert(job.kind == "map" or job.kind == "script-member", "unsupported compiler job kind: " .. tostring(job.kind))
   assert(type(job.key) == "string" and job.key ~= "", "compiler job key is required")
   assert(type(job.priority) == "number" and job.priority % 1 == 0, "compiler job priority must be an integer")
   assert(type(job.payload) == "table", "compiler job payload is required")
-  assert(type(job.payload.mapId) == "number" and job.payload.mapId % 1 == 0, "map job requires an integer mapId")
+  if job.kind == "map" then
+    assert(type(job.payload.mapId) == "number" and job.payload.mapId % 1 == 0, "map job requires an integer mapId")
+  else
+    assert(
+      type(job.payload.memberId) == "number" and job.payload.memberId % 1 == 0,
+      "script member job requires an integer memberId"
+    )
+    assert(
+      type(job.payload.generationKey) == "string" and job.payload.generationKey ~= "",
+      "script member generation is required"
+    )
+  end
 end
 
 function CompilerPool:request(job)
@@ -341,6 +352,9 @@ function CompilerPool:_dispatch()
       kind = record.kind,
       jobKey = record.key,
       mapId = record.payload.mapId,
+      memberId = record.payload.memberId,
+      generationKey = record.payload.generationKey,
+      producerFingerprint = record.payload.producerFingerprint,
       stageName = stageName,
     })
     if not ok then

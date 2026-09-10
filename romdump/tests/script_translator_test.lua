@@ -11,9 +11,12 @@ local Structurer = require("romdump.src.digest.script.Structurer")
 local LuaEmitter = require("romdump.src.digest.script.LuaEmitter")
 local Verifier = require("romdump.src.digest.script.Verifier")
 local Coverage = require("romdump.src.digest.script.Coverage")
+local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
+local Narc = require("libs.nds.src.nitro.Narc")
 local S = require("gen4.script")
+local NarcBuilder = require("tests.support.NarcBuilder")
 
 local T = {}
 
@@ -191,6 +194,56 @@ T["emitter determinism and validation"] = function()
   Assert.isTrue(text:find('game = "heartgold"', 1, true) ~= nil)
   local ok, validateErr = S.validate(resource)
   Assert.isTrue(ok, tostring(validateErr))
+end
+
+T["retained compiler uses injected hashing and counts coverage once"] = function()
+  local member = ScriptFixture.member({
+    scripts = {
+      { offset = 0x20, instructions = { { op = 2, args = {} } } },
+    },
+  })
+  local archiveBytes = NarcBuilder.build({ member, member })
+  local archive = assert(Narc.open(archiveBytes, "synthetic scripts"))
+  local romFs = {
+    _version = "heartgold",
+    _metadata = { sha1 = "rom-sha" },
+    version = function()
+      return "heartgold"
+    end,
+    metadata = function()
+      return { sha1 = "rom-sha" }
+    end,
+    resolvedNarc = function()
+      return { symbol = "scr_seq", alias = "field_scripts", narcId = 1, fileId = 7, path = "scr_seq.narc" }
+    end,
+    read = function(_, fileId)
+      Assert.equal(fileId, 7)
+      return "archive-bytes"
+    end,
+    openNarc = function(_, alias)
+      Assert.equal(alias, "field_scripts")
+      return archive
+    end,
+  } --[[@as RomFs]]
+  local viewHashes = 0
+  local bundle = ScriptCompiler.compile(romFs, function(bytes)
+    if type(bytes) == "table" then
+      Assert.isTrue(type(bytes.length) == "function", "member hashing must receive the retained BinaryView")
+      viewHashes = viewHashes + 1
+      return "member-view-hash:" .. tostring(viewHashes)
+    end
+    return "archive-hash"
+  end, function()
+    return "injected-dependency-hash"
+  end)
+
+  Assert.equal(bundle.index.generation, "injected-dependency-hash")
+  Assert.equal(viewHashes, 2)
+  Assert.equal(bundle.coverageRecord.totals.members, 2)
+  Assert.equal(bundle.coverageRecord.totals.scripts, 2)
+  Assert.equal(#bundle.coverageRecord.scripts, 2)
+  Assert.equal(bundle.memberCoverage[0].totals.members, 1)
+  Assert.equal(bundle.memberCoverage[1].totals.members, 1)
 end
 
 -- 3. An unsupported instruction (e.g. SetTrainerFlag) makes the script

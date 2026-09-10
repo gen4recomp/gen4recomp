@@ -136,6 +136,7 @@ local EXISTING_DOMAINS = {
     "RawIr",
     "ScriptBinaryDecoder",
     "ScriptCacheWriter",
+    "ScriptCompileSession",
     "ScriptCompiler",
     "ScriptHeader",
     "SemanticLowering",

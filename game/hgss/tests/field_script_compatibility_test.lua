@@ -13,6 +13,8 @@ local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local HgssScript = require("libs.hgss.src.script.Composition")
 
 local T = {}
+local GENERATION = string.rep("a", 40)
+local MARKER = "script-cache-v4:rom-sha:dep-sha"
 
 ---@class FieldScriptCompatibilityTestSurface : FieldScriptCompatibility
 ---@field validationOptions fun(self: FieldScriptCompatibilityTestSurface): table
@@ -35,12 +37,20 @@ end
 
 local function scriptCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), "script-cache-v1:rom-sha:dep-sha")
-  cache:writeLua(ScriptCache.indexPath(), {
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
-    resources = { { id = SCRIPT_ID } },
+    generation = GENERATION,
+    marker = MARKER,
   })
-  cache:write(ScriptCache.scriptPath(SCRIPT_ID), SCRIPT)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+    resources = { { id = SCRIPT_ID, member = 0, scriptIndex = 0 } },
+  })
+  cache:write(ScriptCache.scriptPath(GENERATION, 0, SCRIPT_ID), SCRIPT)
   return cache
 end
 

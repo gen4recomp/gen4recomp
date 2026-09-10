@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local FieldScripts = require("tests.rom.support.FieldScripts")
 local ScriptFixture = require("tests.support.ScriptFixture")
+local BinaryView = require("libs.codec.src.BinaryView")
 
 local T = {}
 
@@ -39,6 +40,9 @@ local function fakeRomFs(memberBytes, log)
     readMember = function(_, id)
       log[#log + 1] = id
       return assert(memberBytes[id], "fake archive has no member " .. tostring(id))
+    end,
+    memberView = function(_, id)
+      return BinaryView.fromString(assert(memberBytes[id], "fake archive has no member " .. tostring(id)))
     end,
   }
   return {

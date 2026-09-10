@@ -27,7 +27,7 @@ function FieldScriptCompatibility.new(opts)
   local builtins = HgssScript.builtins()
   local snapshot = RegistrySnapshot.load(opts.cacheFs, opts.overrideFs, builtins.contentHash)
   local fast = snapshot ~= nil and snapshot.fingerprint ~= nil
-  local registry = ScriptLoader.buildRegistry(opts.cacheFs, opts.overrideFs, nil, {
+  local registry, activeSelection = ScriptLoader.buildRegistry(opts.cacheFs, opts.overrideFs, nil, {
     lazy = true,
     validateGenerated = not fast,
     builtins = builtins,
@@ -50,6 +50,7 @@ function FieldScriptCompatibility.new(opts)
       overrideFs = opts.overrideFs,
       snapshotKey = snapshot and snapshot.key or nil,
       builtinContentHash = builtins.contentHash,
+      selection = activeSelection,
     })
   end
   return self

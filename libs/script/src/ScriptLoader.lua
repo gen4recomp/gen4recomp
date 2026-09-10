@@ -20,6 +20,7 @@ local Validator = require("libs.script.src.Validator")
 
 local ScriptLoader = {}
 
+---@alias ScriptSelection { generation: string, marker: string, index: table<string, unknown> }
 -- The default restricted require for resource chunks: generated and override
 -- modules may import gen4.script and nothing else. Callers that trust their
 -- content may inject their own requireFn, but the default is an allowlist,
@@ -68,14 +69,17 @@ end
 -- optionally validate the schema. Returns the resource, or nil plus an Errors
 -- object on any failure.
 ---@param cacheFs table<string, unknown> CacheFs-shaped
+---@param generation string
+---@param member integer
 ---@param id string
 ---@param requireFn fun(name: string): unknown|nil defaults to the restricted gen4.script-only require
 ---@param opts table<string, unknown>|nil { validate: boolean? }
 ---@return table<string, unknown>|nil, Errors.Error?
-function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
+---@return table<string, unknown>|nil, Errors.Error?
+local function loadGeneratedAt(cacheFs, generation, member, id, requireFn, opts)
   requireFn = requireFn or defaultRequire
   opts = opts or {}
-  local path = ScriptCache.scriptPath(id)
+  local path = ScriptCache.scriptPath(generation, member, id)
   local content = cacheFs:read(path)
   if content == nil then
     return nil,
@@ -107,6 +111,29 @@ function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
   return resource
 end
 
+function ScriptLoader.loadGenerated(cacheFs, id, requireFn, opts)
+  assert(
+    opts and opts.generation ~= nil and opts.member ~= nil,
+    "generated script loading requires a pinned generation"
+  )
+  return loadGeneratedAt(cacheFs, opts.generation, opts.member, id, requireFn, opts)
+end
+
+function ScriptLoader.loadGeneratedFrom(cacheFs, generation, member, id, requireFn, opts)
+  opts = opts or {}
+  return loadGeneratedAt(cacheFs, generation, member, id, requireFn, opts)
+end
+
+---@param cacheFs table<string, unknown> CacheFs-shaped
+---@return ScriptSelection
+local function loadSelection(cacheFs)
+  local selection, selectionErr = ScriptCache.loadActive(cacheFs)
+  if selection == nil then
+    Errors.raise(ScriptErrors.SCRIPT_LOAD_FAILED, tostring(selectionErr), { path = ScriptCache.activeIndexPath() })
+  end
+  return assert(selection)
+end
+
 -- Load every generated base from the compiled script cache: the index lists
 -- the resources and each file is one `S.script` resource. A missing or
 -- invalid base is a hard load error (the cache readiness check already gates
@@ -122,14 +149,8 @@ end
 function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
   requireFn = requireFn or defaultRequire
   opts = opts or {}
-  local index, indexErr = cacheFs:loadLua(ScriptCache.indexPath())
-  if not index then
-    Errors.raise(
-      ScriptErrors.SCRIPT_LOAD_FAILED,
-      "script cache index is unavailable: " .. tostring(indexErr and indexErr.message or "?"),
-      { path = ScriptCache.indexPath(), cause = indexErr and indexErr.context or nil }
-    )
-  end
+  local selection = (opts.selection or loadSelection(cacheFs)) --[[@as ScriptSelection]]
+  local index = selection.index
   if type(index) ~= "table" or index.schema ~= ScriptCache.INDEX_SCHEMA then
     Errors.raise(
       ScriptErrors.SCRIPT_LOAD_FAILED,
@@ -155,9 +176,15 @@ function ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
     if opts.lazy then
       registry:installBaseDeferred(entry.id, "generated")
     else
-      local resource, err = ScriptLoader.loadGenerated(cacheFs, entry.id, requireFn, {
-        validate = opts.validateGenerated ~= false,
-      })
+      local resource, err
+      resource, err = ScriptLoader.loadGeneratedFrom(
+        cacheFs,
+        selection.generation,
+        assert(entry.member),
+        entry.id,
+        requireFn,
+        { validate = opts.validateGenerated ~= false }
+      )
       if resource == nil then
         local context = { scriptId = entry.id, cause = err and err.context or nil }
         ---@cast context Errors.Context
@@ -249,17 +276,32 @@ end
 ---@param fs table<string, unknown> directory-shaped filesystem for data/scripts/overrides
 ---@param requireFn function|nil defaults to the restricted gen4.script-only require
 ---@param opts table<string, unknown>|nil { lazy: boolean?, validateGenerated: boolean?, builtins: table<string, unknown>|nil }
----@return Registry registry
+---@return Registry registry, ScriptSelection selection
 function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
   opts = opts or {}
   requireFn = requireFn or defaultRequire
   local Registry = require("libs.script.src.Registry")
+  local selection = loadSelection(cacheFs)
   local registry
   if opts.lazy then
     local function loadResource(id, _)
-      local resource, err = ScriptLoader.loadGenerated(cacheFs, id, requireFn, {
-        validate = opts.validateGenerated ~= false,
-      })
+      local entry
+      for _, candidate in ipairs(selection.index.resources) do
+        if candidate.id == id then
+          entry = candidate
+          break
+        end
+      end
+      assert(entry ~= nil, "generated script is not in the pinned index: " .. id)
+      local resource, err
+      resource, err = ScriptLoader.loadGeneratedFrom(
+        cacheFs,
+        selection.generation,
+        assert(entry.member),
+        id,
+        requireFn,
+        { validate = opts.validateGenerated ~= false }
+      )
       if resource == nil then
         local context = { scriptId = id, cause = err and err.context or nil }
         ---@cast context Errors.Context
@@ -283,14 +325,19 @@ function ScriptLoader.buildRegistry(cacheFs, fs, requireFn, opts)
       registry:installBuiltin(id, script)
     end
   end
-  ScriptLoader.installGenerated(registry, cacheFs, requireFn, opts)
+  local installOpts = {}
+  for key, value in pairs(opts) do
+    installOpts[key] = value
+  end
+  installOpts.selection = selection
+  ScriptLoader.installGenerated(registry, cacheFs, requireFn, installOpts)
   ScriptLoader.installOverrides(registry, fs, requireFn)
   -- Load finished: the registry is sealed so cached compositions and the
   -- fingerprint memo can never describe stale data. The post-load machinery
   -- (restoreFingerprint, cacheScriptHash, on-demand decode) is exempt from
   -- the gate.
   registry:seal()
-  return registry
+  return registry, selection
 end
 
 return ScriptLoader

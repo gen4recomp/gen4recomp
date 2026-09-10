@@ -8,10 +8,13 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 
 local T = {}
+local GENERATION = string.rep("a", 40)
+local MARKER = "script-cache-v4:rom-sha:dep-sha"
 
 local function throwsCode(code, fn)
   local ok, err = pcall(fn)
@@ -24,19 +27,32 @@ end
 -- script file shapes match the compiled cache writer).
 local function scriptCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua("data/generated/script/index.lua", {
-    schema = "g4-script-index-v1",
+  local resources = {
+    { id = "vanilla.hgss.scr_seq.0842.script_001", member = 0, scriptIndex = 0 },
+    { id = "new_bark.lab_sign", member = 0, scriptIndex = 1 },
+  }
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
     resources = {
-      { id = "vanilla.hgss.scr_seq.0842.script_001" },
-      { id = "new_bark.lab_sign" },
+      resources[1],
+      resources[2],
     },
   })
   cache:write(
-    "data/generated/script/scripts/vanilla.hgss.scr_seq.0842.script_001.lua",
+    ScriptCache.scriptPath(GENERATION, 0, resources[1].id),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n'
   )
   cache:write(
-    "data/generated/script/scripts/new_bark.lab_sign.lua",
+    ScriptCache.scriptPath(GENERATION, 0, resources[2].id),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "new_bark.lab_sign", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }\n'
   )
   return cache
@@ -194,12 +210,21 @@ end
 -- cache writer can never emit, but a hand-tampered file could).
 local function invalidScriptCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua("data/generated/script/index.lua", {
-    schema = "g4-script-index-v1",
-    resources = { { id = "invalid.script" } },
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+    resources = { { id = "invalid.script", member = 0, scriptIndex = 0 } },
   })
   cache:write(
-    "data/generated/script/scripts/invalid.script.lua",
+    ScriptCache.scriptPath(GENERATION, 0, "invalid.script"),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "invalid.script", steps = { S.setVar { } } }\n'
   )
   return cache
@@ -212,7 +237,7 @@ T["lazy build reads no script files until first use"] = function()
   local originalRead = cache.backend.read
   local scriptReads = 0
   cache.backend.read = function(self, path)
-    if path:find("data/generated/script/scripts/", 1, true) then
+    if path:find("/scripts/", 1, true) then
       scriptReads = scriptReads + 1
     end
     return originalRead(self, path)
@@ -270,7 +295,14 @@ end
 T["index without resources fails before any install"] = function()
   local Registry = require("libs.script.src.Registry")
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua("data/generated/script/index.lua", { schema = "g4-script-index-v1" })
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), { schema = ScriptCache.INDEX_SCHEMA })
   local registry = Registry.new()
   throwsCode("SCRIPT_LOAD_FAILED", function()
     ScriptLoader.installGenerated(registry, cache, requireShim)
@@ -281,7 +313,14 @@ end
 -- 9b. The lazy build path applies the same strict index rule.
 T["lazy build rejects an index without resources"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua("data/generated/script/index.lua", { schema = "g4-script-index-v1" })
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), { schema = ScriptCache.INDEX_SCHEMA })
   throwsCode("SCRIPT_LOAD_FAILED", function()
     ScriptLoader.buildRegistry(cache, overrideFs({}), requireShim, { lazy = true })
   end)
@@ -292,7 +331,19 @@ end
 T["empty resources array installs zero bases"] = function()
   local Registry = require("libs.script.src.Registry")
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua("data/generated/script/index.lua", { schema = "g4-script-index-v1", resources = {} })
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+    resources = {},
+  })
   local registry = Registry.new()
   ScriptLoader.installGenerated(registry, cache, requireShim)
   Assert.deepEqual(registry:ids(), {})

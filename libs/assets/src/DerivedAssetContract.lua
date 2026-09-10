@@ -146,11 +146,11 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
-  -- v3: opcode 604 lowers to the semantic follower movement mode instead
-  -- of a decoded movement action, so earlier scripts must rebuild.
-  cacheFormat = "script-cache-v3",
-  indexSchema = "g4-script-index-v1",
-  provenanceSchema = "g4-script-provenance-v1",
+  -- v4 shards the generated corpus into immutable generations and member
+  -- roots. The active selector is separate from the generation contents.
+  cacheFormat = "script-cache-v4",
+  indexSchema = "g4-script-index-v2",
+  provenanceSchema = "g4-script-provenance-v2",
 }
 
 DerivedAssetContract.fieldWeather = {

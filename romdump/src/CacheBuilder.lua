@@ -22,6 +22,7 @@ local CacheBuilder = {}
 ---@field forced boolean
 ---@field log fun(line: string)
 ---@field developmentRepositoryRoot string?
+---@field producerFingerprint string
 
 local function versionFailure(err)
   assert(Errors.is(err), "source-data stage failure must be a structured error")
@@ -34,8 +35,9 @@ end
 ---@param forced boolean
 ---@param log fun(line: string)
 ---@param developmentRepositoryRoot string?
+---@param producerFingerprint string
 ---@return VersionBuildContext
-local function buildContext(version, cacheFs, romFs, forced, log, developmentRepositoryRoot)
+local function buildContext(version, cacheFs, romFs, forced, log, developmentRepositoryRoot, producerFingerprint)
   return {
     version = version,
     cacheFs = cacheFs,
@@ -43,6 +45,7 @@ local function buildContext(version, cacheFs, romFs, forced, log, developmentRep
     forced = forced,
     log = log,
     developmentRepositoryRoot = developmentRepositoryRoot,
+    producerFingerprint = producerFingerprint,
   }
 end
 
@@ -94,7 +97,8 @@ function CacheBuilder.buildVersions(versionIds, options)
         return versionFailure(openErr)
       end
       romFs = opened
-      local context = buildContext(version, cacheFs, romFs, forced, log, options.developmentRepositoryRoot)
+      local context =
+        buildContext(version, cacheFs, romFs, forced, log, options.developmentRepositoryRoot, producerFingerprint)
       local _, stageErr = FieldCacheBuild.build(context)
       if stageErr then
         return versionFailure(stageErr)

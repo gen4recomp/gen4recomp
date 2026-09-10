@@ -23,6 +23,7 @@ local T = {
   metadata = { tags = { "script", "composition", "vanilla" } },
   tests = {},
 }
+local GENERATION = string.rep("a", 40)
 
 local PRODUCTION_IDS = {
   "demo.signpost",
@@ -56,12 +57,24 @@ local function cacheWithScripts(files)
   table.sort(resources, function(a, b)
     return a.id < b.id
   end)
-  cache:writeLua(ScriptCache.indexPath(), {
+  for index, entry in ipairs(resources) do
+    entry.member = 0
+    entry.scriptIndex = index - 1
+  end
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), "synthetic-script-cache")
+  cache:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = "synthetic-script-cache",
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = "synthetic-script-cache",
     resources = resources,
   })
   for id, content in pairs(files) do
-    cache:write(ScriptCache.scriptPath(id), content)
+    cache:write(ScriptCache.scriptPath(GENERATION, 0, id), content)
   end
   return cache
 end

@@ -141,6 +141,17 @@ function CacheFs:getInfo(relativePath)
   return self.backend:getInfo(self:resolve(relativePath))
 end
 
+-- Lists one directory and raises when the backend cannot answer. Cleanup code
+-- must distinguish an empty directory from a failed listing.
+function CacheFs:getDirectoryItems(relativePath)
+  local full = self:resolve(relativePath)
+  local items, err = self.backend:getDirectoryItems(full)
+  if items == nil then
+    Errors.raise(CACHE_ERRORS.READ_FAILED, err or "could not list directory", { path = full })
+  end
+  return items
+end
+
 function CacheFs:exists(relativePath, expectedType)
   local info = self.backend:getInfo(self:resolve(relativePath))
   if not info then

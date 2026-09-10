@@ -18,6 +18,8 @@ local RegistryWarmup = require("libs.script.src.RegistryWarmup")
 local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
+local GENERATION = string.rep("a", 40)
+local MARKER = "script-cache-v4:rom-sha:dep-sha"
 
 local function throwsCode(code, fn)
   local ok, err = pcall(fn)
@@ -33,7 +35,6 @@ local function scriptCache(files)
       ["vanilla.hgss.scr_seq.0842.script_001"] = 'local S = require("gen4.script")\nreturn S.script { api = 1, id = "vanilla.hgss.scr_seq.0842.script_001", steps = { S.stop() } }\n',
     }
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), "script-cache-v2:rom-sha:dep-sha")
   local resources = {}
   for id in pairs(files) do
     resources[#resources + 1] = { id = id }
@@ -41,9 +42,25 @@ local function scriptCache(files)
   table.sort(resources, function(a, b)
     return a.id < b.id
   end)
-  cache:writeLua(ScriptCache.indexPath(), { schema = "g4-script-index-v1", resources = resources })
+  for index, entry in ipairs(resources) do
+    entry.member = 0
+    entry.scriptIndex = index - 1
+  end
+  cache:write(ScriptCache.markerPath(), MARKER)
+  cache:write(ScriptCache.generationMarkerPath(GENERATION), MARKER)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = GENERATION,
+    marker = MARKER,
+    resources = resources,
+  })
   for id, content in pairs(files) do
-    cache:write(ScriptCache.scriptPath(id), content)
+    cache:write(ScriptCache.scriptPath(GENERATION, 0, id), content)
   end
   return cache
 end
@@ -94,7 +111,8 @@ local function lazyRegistry(cache)
   local registry = Registry.new({
     loadResource = function(id)
       calls[#calls + 1] = id
-      local resource = assert(ScriptLoader.loadGenerated(cache, id, requireShim, { validate = false }))
+      local resource =
+        assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim, { validate = false }))
       return resource
     end,
   })
@@ -179,7 +197,7 @@ T["fingerprint uses stashed hashes without decoding"] = function()
   local cache = scriptCache()
   local registry, calls = lazyRegistry(cache)
   for _, id in ipairs(registry:ids()) do
-    local resource = assert(ScriptLoader.loadGenerated(cache, id, requireShim, { validate = false }))
+    local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim, { validate = false }))
     registry:cacheScriptHash(id, "generated", Sha256.hex(LuaWriter.encode(resource)))
   end
   local fingerprint = registry:fingerprint()
@@ -193,8 +211,9 @@ end
 -- through the loader.
 T["stashed hashes are invalidated on mutation"] = function()
   local registry, calls = lazyRegistry(scriptCache())
-  local resource =
-    assert(ScriptLoader.loadGenerated(scriptCache(), "new_bark.lab_sign", requireShim, { validate = false }))
+  local resource = assert(
+    ScriptLoader.loadGeneratedFrom(scriptCache(), GENERATION, 0, "new_bark.lab_sign", requireShim, { validate = false })
+  )
   registry:cacheScriptHash("new_bark.lab_sign", "generated", Sha256.hex(LuaWriter.encode(resource)))
   registry:installBase("new_bark.lab_sign", { id = "new_bark.lab_sign", override = true }, "override")
   local fingerprint = registry:fingerprint()
@@ -215,12 +234,13 @@ T["warmup completes and writes a loadable snapshot"] = function()
     publicationCount = publicationCount + 1
     return originalWriteLua(self, path, value)
   end
-  local registry = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
+  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
   local warmup = RegistryWarmup.new({
     registry = registry,
     cacheFs = cache,
     overrideFs = fs,
     snapshotKey = key,
+    selection = selection,
   })
   Assert.isFalse(warmup:isComplete())
   local failure = warmup:finish()
@@ -242,12 +262,13 @@ end
 T["warmup slices by time budget and finish completes the remainder"] = function()
   local cache = scriptCache()
   local fs = overrideFs({})
-  local registry = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
+  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
   local warmup = RegistryWarmup.new({
     registry = registry,
     cacheFs = cache,
     overrideFs = fs,
     snapshotKey = assert(RegistrySnapshot.key(cache, fs)),
+    selection = selection,
     budget = 0,
   })
   warmup:update()
@@ -283,6 +304,7 @@ T["warmup uses the two millisecond default budget"] = function()
     cacheFs = cache,
     overrideFs = fs,
     snapshotKey = assert(RegistrySnapshot.key(cache, fs)),
+    selection = ScriptCache.loadActive(cache),
     clock = function()
       clock = clock + 0.001
       return clock
@@ -299,12 +321,13 @@ T["warmup records a failure on unparsable content"] = function()
   local cache = scriptCache({ ["new_bark.lab_sign"] = "return { broken" })
   local fs = overrideFs({})
   local key = assert(RegistrySnapshot.key(cache, fs))
-  local registry = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
+  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
   local warmup = RegistryWarmup.new({
     registry = registry,
     cacheFs = cache,
     overrideFs = fs,
     snapshotKey = key,
+    selection = selection,
   })
   local failure = assert(warmup:finish())
   Assert.equal(failure.code, "SCRIPT_LOAD_FAILED")
@@ -320,12 +343,13 @@ T["warmup raises and remains incomplete when snapshot publication fails"] = func
   cache.backend.write = function()
     return false, "injected write failure"
   end
-  local registry = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
+  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
   local warmup = RegistryWarmup.new({
     registry = registry,
     cacheFs = cache,
     overrideFs = fs,
     snapshotKey = key,
+    selection = selection,
   })
 
   local err = Assert.throws(function()
@@ -341,12 +365,13 @@ end
 T["warmup finish is idempotent"] = function()
   local cache = scriptCache()
   local fs = overrideFs({})
-  local registry = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
+  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
   local warmup = RegistryWarmup.new({
     registry = registry,
     cacheFs = cache,
     overrideFs = fs,
     snapshotKey = assert(RegistrySnapshot.key(cache, fs)),
+    selection = selection,
   })
   Assert.isNil(warmup:finish())
   local fingerprint = registry:fingerprint()
@@ -370,7 +395,8 @@ T["seal exempts the post-load machinery"] = function()
   local cache = scriptCache()
   local registry, calls = lazyRegistry(cache)
   registry:seal()
-  local resource = assert(ScriptLoader.loadGenerated(cache, "new_bark.lab_sign", requireShim, { validate = false }))
+  local resource =
+    assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, "new_bark.lab_sign", requireShim, { validate = false }))
   registry:cacheScriptHash("new_bark.lab_sign", "generated", Sha256.hex(LuaWriter.encode(resource)))
   registry:fingerprint()
   Assert.deepEqual(calls, { "vanilla.hgss.scr_seq.0842.script_001" }, "the stashed hash avoids the loader for its id")

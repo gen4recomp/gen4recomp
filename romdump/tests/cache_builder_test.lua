@@ -303,25 +303,32 @@ local function makeFakes()
     end
     function pool:drain()
       for key, job in pairs(jobs) do
-        local bundle, compileError = fakes.MapAssetCompiler.compile(nil, job.payload.mapId)
-        if bundle then
-          fakes.MapCacheWriter.write(nil, bundle)
+        if job.kind == "script-member" then
           results[key] = {
             state = "ready",
-            details = {
-              workerId = 1,
-              result = {
-                mapId = bundle.mapId,
-                marker = bundle.marker,
-                mapSymbol = bundle.scene.mapSymbol,
-                width = bundle.scene.matrix.width,
-                height = bundle.scene.matrix.height,
-                unresolvedMaterials = bundle.unresolvedMaterials,
-              },
-            },
+            details = { workerId = 1, result = { memberId = job.payload.memberId } },
           }
         else
-          results[key] = { state = "failed", details = { error = compileError } }
+          local bundle, compileError = fakes.MapAssetCompiler.compile(nil, job.payload.mapId)
+          if bundle then
+            fakes.MapCacheWriter.write(nil, bundle)
+            results[key] = {
+              state = "ready",
+              details = {
+                workerId = 1,
+                result = {
+                  mapId = bundle.mapId,
+                  marker = bundle.marker,
+                  mapSymbol = bundle.scene.mapSymbol,
+                  width = bundle.scene.matrix.width,
+                  height = bundle.scene.matrix.height,
+                  unresolvedMaterials = bundle.unresolvedMaterials,
+                },
+              },
+            }
+          else
+            results[key] = { state = "failed", details = { error = compileError } }
+          end
         end
       end
     end
@@ -421,8 +428,50 @@ local function makeFakes()
       env.stale.FieldWeatherCacheWriter = nil
     end,
   }
-  fakes.ScriptCompiler.compile = function()
-    return env.scriptBundle
+  fakes.ScriptCompiler.plan = function()
+    local resources = {
+      { id = "script.one", member = 0, scriptIndex = 0 },
+      { id = "script.two", member = 1, scriptIndex = 0 },
+    }
+    local generationKey = string.rep("a", 40)
+    local marker = env.scriptBundle.marker
+    local members = {}
+    for memberId = 0, env.scriptBundle.index.scriptMemberCount - 1 do
+      members[#members + 1] = { memberId = memberId, marker = generationKey .. ":member:" .. memberId, scripts = {} }
+    end
+    members[1].scripts = { { scriptIndex = 0, id = resources[1].id } }
+    members[2].scripts = { { scriptIndex = 0, id = resources[2].id } }
+    return {
+      generationKey = generationKey,
+      marker = marker,
+      version = "heartgold",
+      sourcePath = "romfs/field_scripts.narc",
+      romSha1 = "rom-sha",
+      dependencies = { scrSeqNarc = { path = "field_scripts.narc" }, versionRomSha1 = "rom-sha" },
+      memberCount = env.scriptBundle.index.scriptMemberCount,
+      members = members,
+      resources = resources,
+      index = {
+        schema = "g4-script-index-v2",
+        generation = generationKey,
+        marker = marker,
+        resources = resources,
+        resourceCount = #resources,
+        scriptMemberCount = #members,
+      },
+    }
+  end
+  fakes.ScriptCacheWriter.isReady = function()
+    return not env.stale.ScriptCacheWriter
+  end
+  fakes.ScriptCacheWriter.finalizeGeneration = function()
+    env.calls[#env.calls + 1] = "ScriptCacheWriter.finalizeGeneration"
+    env.stale.ScriptCacheWriter = nil
+    return true
+  end
+  fakes.ScriptCacheWriter.activateGeneration = function()
+    env.calls[#env.calls + 1] = "ScriptCacheWriter.activateGeneration"
+    return true
   end
   fakes.AudioCompiler.compile = function()
     return env.audioBundle, env.audioError
@@ -573,6 +622,22 @@ function T.unchanged_second_build_rewrites_nothing()
   Assert.deepEqual(report2, { published = true, complete = true, exclusionCount = 0 })
   Assert.isTrue(second.lines[2]:find("field actors current", 1, true) ~= nil, second.lines[2])
   Assert.equal(actorWrites(), 1, "an unchanged second build must not rewrite actor assets")
+end
+
+function T.forced_build_keeps_a_ready_script_generation_current()
+  env = newEnv()
+  env.stateMatches = false
+  local capture = collectLog()
+  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.equal(capture.lines[15], "build-cache: heartgold scripts current")
+  for _, call in ipairs(env.calls) do
+    Assert.isTrue(
+      call ~= "ScriptCacheWriter.finalizeGeneration" and call ~= "ScriptCacheWriter.activateGeneration",
+      "a forced build must not replace a ready planned script generation"
+    )
+  end
 end
 
 -- A stale class is compiled through its writer and logged with its counts;
@@ -842,10 +907,11 @@ function T.matching_identity_with_available_cache_invokes_no_compilers_and_no_ro
   )
 end
 
--- An identity mismatch forces every writer even though the ordinary marker
--- checks would say current; the state is invalidated before any mutation
--- begins; and the strict rebuild publishes the new identity.
-function T.producer_mismatch_forces_every_writer_and_publishes_after_strict_success()
+-- An identity mismatch forces every stale writer even though the ordinary
+-- marker checks would say current; a ready script generation remains current;
+-- the state is invalidated before any mutation begins; and the strict rebuild
+-- publishes the new identity.
+function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_success()
   env = newEnv()
   env.stateMatches = false
   env.stale = {}
@@ -853,9 +919,7 @@ function T.producer_mismatch_forces_every_writer_and_publishes_after_strict_succ
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  for _, line in ipairs(capture.lines) do
-    Assert.isTrue(line:find(" current$") == nil, "a forced rebuild must not log 'current': " .. line)
-  end
+  Assert.equal(capture.lines[15], "build-cache: heartgold scripts current")
   local writes = {}
   for _, call in ipairs(env.calls) do
     if call:find(".write$") ~= nil or call == "WorldManifest.stage" then
@@ -881,10 +945,9 @@ function T.producer_mismatch_forces_every_writer_and_publishes_after_strict_succ
     "MapCacheWriter.write",
     "MonCacheWriter.write",
     "NewGameInitCacheWriter.write",
-    "ScriptCacheWriter.write",
     "StarterChoiceAssetCacheWriter.write",
     "WorldManifest.stage",
-  }, "every class must regenerate despite current-looking markers")
+  }, "every stale class must regenerate despite current-looking markers")
   local invalidateIndex, firstWriteIndex
   for index, call in ipairs(env.calls) do
     if call == "DerivedCacheState.invalidate" then

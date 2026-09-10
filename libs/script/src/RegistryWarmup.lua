@@ -27,6 +27,7 @@ local Sha256 = require("libs.script.src.Sha256")
 ---@field private clock fun(): number
 ---@field private budget number
 ---@field private index table<string, unknown>|nil
+---@field private selection table<string, unknown>|nil
 ---@field private cursor integer
 ---@field private complete boolean
 ---@field private failure Errors.Error|nil
@@ -38,6 +39,10 @@ RegistryWarmup.DEFAULT_BUDGET_SECONDS = 0.002
 ---@return RegistryWarmup
 function RegistryWarmup.new(opts)
   assert(opts and opts.registry and opts.cacheFs and opts.overrideFs, "warm-up requires the registry and filesystems")
+  assert(
+    opts.selection and opts.selection.generation and opts.selection.index,
+    "warm-up requires a pinned script selection"
+  )
   return setmetatable({
     registry = opts.registry,
     cacheFs = opts.cacheFs,
@@ -48,6 +53,7 @@ function RegistryWarmup.new(opts)
     clock = opts.clock or os.clock,
     budget = opts.budget or RegistryWarmup.DEFAULT_BUDGET_SECONDS,
     index = nil,
+    selection = opts.selection,
     cursor = 0,
     complete = false,
     failure = nil,
@@ -72,7 +78,15 @@ function RegistryWarmup:_step()
   end
   local entry = entries[cursor]
   assert(type(entry) == "table" and type(entry.id) == "string", "script cache index entry id required")
-  local resource, err = ScriptLoader.loadGenerated(self.cacheFs, entry.id, self.requireFn, { validate = false })
+  local resource, err
+  resource, err = ScriptLoader.loadGeneratedFrom(
+    self.cacheFs,
+    self.selection.generation,
+    assert(entry.member),
+    entry.id,
+    self.requireFn,
+    { validate = false }
+  )
   if resource == nil then
     self.failure = err
       or Errors.new(ScriptErrors.SCRIPT_LOAD_FAILED, "generated script failed to decode: " .. entry.id, {
@@ -106,11 +120,11 @@ function RegistryWarmup:update()
     return
   end
   if self.index == nil then
-    local index, err = self.cacheFs:loadLua(ScriptCache.indexPath())
+    local index = self.selection.index
     if type(index) ~= "table" or index.schema ~= ScriptCache.INDEX_SCHEMA or type(index.resources) ~= "table" then
       self.failure = Errors.new(
         ScriptErrors.SCRIPT_LOAD_FAILED,
-        "script cache index is unavailable for warm-up: " .. tostring(err and err.message or "?"),
+        "script cache index is unavailable for warm-up",
         { path = ScriptCache.indexPath() }
       )
       return

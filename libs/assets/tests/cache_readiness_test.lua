@@ -14,6 +14,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 
 local T = {}
+local SCRIPT_GENERATION = string.rep("a", 40)
 
 local function cache()
   return CacheFs.forVersion("heartgold", FakeCache.new())
@@ -1243,17 +1244,31 @@ end
 -- Script index and emitted resources
 
 local function writeScriptIndex(c, resources)
-  c:writeLua(ScriptCache.indexPath(), {
+  c:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
-    resources = resources,
+    generation = SCRIPT_GENERATION,
+    marker = "m",
   })
   c:write(ScriptCache.markerPath(), "m")
+  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
+  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = "m",
+    resources = resources,
+  })
 end
 
 function T.script_index_missing_resources_is_not_ready()
   local c = cache()
-  c:writeLua(ScriptCache.indexPath(), { schema = ScriptCache.INDEX_SCHEMA })
+  c:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = "m",
+  })
   c:write(ScriptCache.markerPath(), "m")
+  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
+  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), { schema = ScriptCache.INDEX_SCHEMA })
   Assert.isFalse(ScriptCache.isReady(c, "m"), "resources is required by the current schema")
 end
 
@@ -1266,21 +1281,21 @@ end
 function T.script_resource_with_mismatched_id_is_not_ready()
   local c = cache()
   writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0 } })
-  c:write(ScriptCache.scriptPath("a.b"), 'return { kind = "field_script", id = "c.d" }\n')
+  c:write(ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"), 'return { kind = "field_script", id = "c.d" }\n')
   Assert.isFalse(ScriptCache.isReady(c, "m"), "emitted script identity must match its index entry")
 end
 
 function T.script_resource_with_wrong_kind_is_not_ready()
   local c = cache()
   writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0 } })
-  c:write(ScriptCache.scriptPath("a.b"), 'return { kind = "other", id = "a.b" }\n')
+  c:write(ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"), 'return { kind = "other", id = "a.b" }\n')
   Assert.isFalse(ScriptCache.isReady(c, "m"), "emitted script must be a field_script resource")
 end
 
 function T.script_resource_that_does_not_parse_is_not_ready()
   local c = cache()
   writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0 } })
-  c:write(ScriptCache.scriptPath("a.b"), "not lua at all")
+  c:write(ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"), "not lua at all")
   Assert.isFalse(ScriptCache.isReady(c, "m"), "an unparsable resource cannot be ready")
 end
 
@@ -1288,7 +1303,7 @@ function T.script_valid_artifact_is_ready()
   local c = cache()
   writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0 } })
   c:write(
-    ScriptCache.scriptPath("a.b"),
+    ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "a.b", steps = { S.stop() } }\n'
   )
   Assert.isTrue(ScriptCache.isReady(c, "m"))

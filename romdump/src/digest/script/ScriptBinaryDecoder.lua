@@ -11,6 +11,8 @@
 local RawIr = require("romdump.src.digest.script.RawIr")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local MovementCommands = require("romdump.src.reference.hgss.movement_commands")
+local BinaryView = require("libs.codec.src.BinaryView")
+local ffi = require("ffi")
 
 local ScriptBinaryDecoder = {}
 
@@ -93,27 +95,44 @@ local SPAWN_OPERANDS = {
   [280] = { 1 }, -- SetSpawn
 }
 
+---@param bytes string|BinaryView
+---@return BinaryView
+local function asView(bytes)
+  if type(bytes) == "string" then
+    return BinaryView.fromString(bytes, "script member")
+  end
+  return bytes
+end
+
+---@param view BinaryView
+---@param oneBasedOffset integer
+---@return integer
+local function byte(view, oneBasedOffset)
+  return view:u8(oneBasedOffset - 1)
+end
+
 -- Scan the entry table: `{ pos, entry, label }` per script in index order.
 -- Returns an empty list when the member carries no script table (a header
 -- member, or garbage).
----@param bytes string
+---@param bytes string|BinaryView
 ---@return table[] entries
-local function scanEntries(bytes)
+function ScriptBinaryDecoder.scanEntries(bytes)
+  bytes = asView(bytes)
   local entries = {}
   local pos = 0
-  while pos + 3 < #bytes do
-    local low = bytes:byte(pos + 1) + bytes:byte(pos + 2) * 256
+  while pos + 3 < bytes:length() do
+    local low = byte(bytes, pos + 1) + byte(bytes, pos + 2) * 256
     if low == SCRDEF_END then
       break
     end
-    local entry = bytes:byte(pos + 1)
-      + bytes:byte(pos + 2) * 256
-      + bytes:byte(pos + 3) * 65536
-      + bytes:byte(pos + 4) * 16777216
+    local entry = byte(bytes, pos + 1)
+      + byte(bytes, pos + 2) * 256
+      + byte(bytes, pos + 3) * 65536
+      + byte(bytes, pos + 4) * 16777216
     local label = pos + 4 + entry
     -- A real entry points forward into the script region, never back into
     -- the table itself.
-    if label < pos + 4 or label + 1 > #bytes then
+    if label < pos + 4 or label + 1 > bytes:length() then
       break
     end
     entries[#entries + 1] = { pos = pos, entry = entry, label = label }
@@ -124,15 +143,16 @@ end
 
 -- Decode one movement block at `offset`: u16 code + u16 args per action,
 -- terminated by MOVEMENT_STEP_END (254) plus its zero arg.
----@param bytes string
+---@param bytes BinaryView
 ---@param offset integer
+---@param materialize boolean
 ---@return table<string, unknown>|nil block { offset, actions, terminated, size }
-local function decodeMovement(bytes, offset)
+local function decodeMovement(bytes, offset, materialize)
   local actions = {}
   local cursor = offset
   local terminated = false
-  while cursor + 1 < #bytes do
-    local code = bytes:byte(cursor + 1) + bytes:byte(cursor + 2) * 256
+  while cursor + 1 < bytes:length() do
+    local code = byte(bytes, cursor + 1) + byte(bytes, cursor + 2) * 256
     if code == MOVEMENT_END then
       cursor = cursor + 4
       terminated = true
@@ -146,11 +166,13 @@ local function decodeMovement(bytes, offset)
       break
     end
     local size = 2 + 2 * entry.args
-    local count = bytes:byte(cursor + 3) or 0
-    if entry.args >= 1 and cursor + 4 <= #bytes then
-      count = count + bytes:byte(cursor + 4) * 256
+    local count = cursor + 2 < bytes:length() and byte(bytes, cursor + 3) or 0
+    if entry.args >= 1 and cursor + 4 <= bytes:length() then
+      count = count + byte(bytes, cursor + 4) * 256
     end
-    actions[#actions + 1] = RawIr.movementAction(cursor, code, entry.name, count)
+    if materialize then
+      actions[#actions + 1] = RawIr.movementAction(cursor, code, entry.name, count)
+    end
     cursor = cursor + size
   end
   return {
@@ -159,6 +181,26 @@ local function decodeMovement(bytes, offset)
     terminated = terminated,
     size = cursor - offset,
   }
+end
+
+local function scanMovement(bytes, offset)
+  local cursor = offset
+  local terminated = false
+  while cursor + 1 < bytes:length() do
+    local code = byte(bytes, cursor + 1) + byte(bytes, cursor + 2) * 256
+    if code == MOVEMENT_END then
+      cursor = cursor + 4
+      terminated = true
+      break
+    end
+    local entry = MovementCommands.byCode[code]
+    if entry == nil then
+      cursor = cursor + 2
+      break
+    end
+    cursor = cursor + 2 + 2 * entry.args
+  end
+  return cursor - offset, terminated
 end
 
 -- Resolve a message operand to its bank-qualified symbol; the bank comes
@@ -185,27 +227,47 @@ end
 
 -- Decode state keeps discovery and fixpoint bookkeeping call-local and explicit.
 local function newDecodeState(bytes, member, entries)
-  local scriptStarts = {}
+  bytes = asView(bytes)
+  local length = bytes:length()
+  local scriptStarts = ffi.new("int32_t[?]", length)
+  ffi.fill(scriptStarts, assert(ffi.sizeof(scriptStarts)), 0xff)
   for index, entry in ipairs(entries) do
-    scriptStarts[entry.label] = index - 1
+    if entry.label < length then
+      scriptStarts[entry.label] = index - 1
+    end
   end
   return {
     bytes = bytes,
     member = member,
     entries = entries,
     scriptStarts = scriptStarts,
+    justified = ffi.new("uint8_t[?]", length),
+    movementRegistered = ffi.new("uint8_t[?]", length),
+    movementSpanEnd = ffi.new("uint32_t[?]", length),
+    operandValues = ffi.new("uint32_t[?]", CommandCatalog.MAX_OPERANDS),
+    registeredCount = 0,
+    justifiedCount = 0,
     movements = {},
-    registered = {},
-    justified = {},
+    materialize = false,
+    instrumentation = nil,
   }
 end
 
 local function registerMovement(state, offset)
-  if offset >= 0 and offset + 1 <= #state.bytes and state.registered[offset] == nil then
-    state.registered[offset] = true
+  local length = state.bytes:length()
+  if offset >= 0 and offset + 1 <= length and state.movementRegistered[offset] == 0 then
+    state.movementRegistered[offset] = 1
+    state.registeredCount = state.registeredCount + 1
     return true
   end
   return false
+end
+
+local function registerMovementSpan(state, offset, size)
+  local endOffset = math.min(state.bytes:length(), offset + size)
+  for cursor = offset, endOffset - 1 do
+    state.movementSpanEnd[cursor] = endOffset
+  end
 end
 
 -- Dead movement data is recognized only where the script walk has no other
@@ -214,9 +276,9 @@ local function movementShapeAt(state, cursor)
   for back = 0, 3 do
     local candidate = cursor - back
     if candidate >= 0 then
-      local block = decodeMovement(state.bytes, candidate)
-      if block ~= nil and block.terminated and block.size <= 64 then
-        return candidate, block
+      local size, terminated = scanMovement(state.bytes, candidate)
+      if terminated and size <= 64 then
+        return candidate, size
       end
     end
   end
@@ -224,54 +286,53 @@ local function movementShapeAt(state, cursor)
 end
 
 local function spanningMovementAt(state, cursor)
-  for offset, candidate in pairs(state.movements) do
-    if (cursor >= offset and cursor < offset + candidate.size) or (cursor < offset and cursor + 2 > offset) then
-      return candidate
-    end
+  local endOffset = state.movementSpanEnd[cursor]
+  if endOffset ~= nil and endOffset > cursor then
+    return endOffset
   end
   return nil
 end
 
 local function skipTerminatedRegion(state, cursor)
   for lookahead = 1, 4 do
-    if state.justified[cursor + lookahead] == true then
+    if state.justified[cursor + lookahead] ~= 0 then
       return cursor + lookahead, true
     end
   end
-  local candidate, shapeBlock = movementShapeAt(state, cursor)
+  local candidate, shapeSize = movementShapeAt(state, cursor)
   if candidate == nil then
     return nil, false
   end
-  local shape = shapeBlock --[[@as { offset: integer, actions: table, terminated: boolean, size: integer }]]
-  state.movements[candidate] = shape
-  return candidate + shape.size, false
+  registerMovement(state, candidate)
+  registerMovementSpan(state, candidate, shapeSize)
+  return candidate + shapeSize, false
 end
 
----@param bytes string
+---@param bytes BinaryView
 ---@param operands table[]
 ---@param cursor integer
 ---@param width integer
 ---@return integer nextCursor, integer size, boolean truncated
 local function readOperand(bytes, operands, cursor, width)
-  if cursor + width > #bytes then
+  if cursor + width > bytes:length() then
     return cursor, 0, true
   end
   local value
   if width == 1 then
-    value = bytes:byte(cursor + 1)
+    value = byte(bytes, cursor + 1)
   elseif width == 2 then
-    value = bytes:byte(cursor + 1) + bytes:byte(cursor + 2) * 256
+    value = byte(bytes, cursor + 1) + byte(bytes, cursor + 2) * 256
   else
-    value = bytes:byte(cursor + 1)
-      + bytes:byte(cursor + 2) * 256
-      + bytes:byte(cursor + 3) * 65536
-      + bytes:byte(cursor + 4) * 16777216
+    value = byte(bytes, cursor + 1)
+      + byte(bytes, cursor + 2) * 256
+      + byte(bytes, cursor + 3) * 65536
+      + byte(bytes, cursor + 4) * 16777216
   end
   operands[#operands + 1] = { raw = value, width = width }
   return cursor + width, width, false
 end
 
----@param bytes string
+---@param bytes BinaryView
 ---@param operands table[]
 ---@param cursor integer
 ---@param widths integer[]
@@ -291,7 +352,58 @@ local function readOperandWidths(bytes, operands, cursor, widths)
   return cursor, size, truncated
 end
 
+local function readDiscoveryOperands(state, opcode, cursor, widths)
+  local values = state.operandValues
+  local count = 0
+  local argCursor = cursor + 2
+  local truncated = false
+  for _, width in ipairs(widths) do
+    count = count + 1
+    assert(count <= CommandCatalog.MAX_OPERANDS, "script instruction exceeds the operand scratch capacity")
+    if argCursor + width > state.bytes:length() then
+      truncated = true
+      break
+    end
+    values[count - 1] = width == 1 and byte(state.bytes, argCursor + 1)
+      or width == 2 and (byte(state.bytes, argCursor + 1) + byte(state.bytes, argCursor + 2) * 256)
+      or (
+        byte(state.bytes, argCursor + 1)
+        + byte(state.bytes, argCursor + 2) * 256
+        + byte(state.bytes, argCursor + 3) * 65536
+        + byte(state.bytes, argCursor + 4) * 16777216
+      )
+    argCursor = argCursor + width
+  end
+  local extraWidths = CommandCatalog.variantExtraWidths(opcode, {
+    { raw = values[0] },
+  })
+  if extraWidths ~= nil and not truncated then
+    for _, width in ipairs(extraWidths) do
+      count = count + 1
+      assert(count <= CommandCatalog.MAX_OPERANDS, "script instruction exceeds the operand scratch capacity")
+      if argCursor + width > state.bytes:length() then
+        truncated = true
+        break
+      end
+      values[count - 1] = width == 1 and byte(state.bytes, argCursor + 1)
+        or width == 2 and (byte(state.bytes, argCursor + 1) + byte(state.bytes, argCursor + 2) * 256)
+        or (
+          byte(state.bytes, argCursor + 1)
+          + byte(state.bytes, argCursor + 2) * 256
+          + byte(state.bytes, argCursor + 3) * 65536
+          + byte(state.bytes, argCursor + 4) * 16777216
+        )
+      argCursor = argCursor + width
+    end
+  end
+  return argCursor, argCursor - cursor - 2, truncated, count
+end
+
 local function readInstructionOperands(state, opcode, cursor, widths)
+  if not state.materialize then
+    local nextCursor, operandSize, truncated = readDiscoveryOperands(state, opcode, cursor, widths)
+    return nil, operandSize + 2, truncated, nextCursor
+  end
   local operands = {}
   local size = 2
   local argCursor = cursor + 2
@@ -303,59 +415,84 @@ local function readInstructionOperands(state, opcode, cursor, widths)
     argCursor, operandSize, truncated = readOperandWidths(state.bytes, operands, argCursor, extraWidths)
     size = size + operandSize
   end
-  return operands, size, truncated
+  return operands, size, truncated, argCursor
 end
 
 local function decodeUnknownOpcode(state, script, cursor, opcode)
-  local candidate, shapeBlock = movementShapeAt(state, cursor)
+  local candidate, shapeSize = movementShapeAt(state, cursor)
   if candidate == nil then
-    script.decodeNote = { offset = cursor, opcode = opcode }
+    if state.materialize then
+      script.decodeNote = { offset = cursor, opcode = opcode }
+    end
     return nil
   end
-  local shape = shapeBlock --[[@as { offset: integer, actions: table, terminated: boolean, size: integer }]]
-  state.movements[candidate] = shape
-  return candidate + shape.size, false, true
+  registerMovement(state, candidate)
+  registerMovementSpan(state, candidate, shapeSize)
+  return candidate + shapeSize, false, true
 end
 
 local function decodeKnownInstruction(state, script, cursor, opcode, widths)
-  local operands, size, truncated = readInstructionOperands(state, opcode, cursor, widths)
+  local operands, size, truncated, _ = readInstructionOperands(state, opcode, cursor, widths)
   if truncated then
-    script.decodeNote = { offset = cursor, opcode = opcode }
+    if state.materialize then
+      script.decodeNote = { offset = cursor, opcode = opcode }
+    end
     return nil
   end
 
   if opcode == 94 then
     -- ApplyMovement arg1: relative movement-block offset.
-    local raw = operands[2] and operands[2].raw
+    local raw
+    if state.materialize then
+      local materializedOperands = assert(operands)
+      local operand = materializedOperands[2]
+      raw = operand and operand.raw
+    else
+      raw = state.operandValues[1]
+    end
     if type(raw) == "number" then
       if raw >= 0x80000000 then
         raw = raw - 0x100000000
       end
       local target = cursor + size + raw
       if registerMovement(state, target) then
-        local movementBlock = decodeMovement(state.bytes, target)
-        if movementBlock ~= nil then
-          state.movements[target] = movementBlock
+        local movementSize, movementTerminated = scanMovement(state.bytes, target)
+        if movementTerminated then
+          registerMovementSpan(state, target, movementSize)
         end
       end
     end
   end
 
   local relIndex = RELATIVE_OPERANDS[opcode]
-  if relIndex ~= nil and operands[relIndex] ~= nil and type(operands[relIndex].raw) == "number" then
-    local raw = operands[relIndex].raw
+  local raw
+  if relIndex ~= nil and state.materialize then
+    local materializedOperands = assert(operands)
+    local operand = materializedOperands[relIndex]
+    raw = operand and operand.raw
+  elseif relIndex ~= nil then
+    raw = state.operandValues[relIndex - 1]
+  end
+  if relIndex ~= nil and type(raw) == "number" then
     if raw >= 0x80000000 then
       raw = raw - 0x100000000
     end
-    state.justified[cursor + size + raw] = true
+    local target = cursor + size + raw
+    if target >= 0 and target < state.bytes:length() and state.justified[target] == 0 then
+      state.justified[target] = 1
+      state.justifiedCount = state.justifiedCount + 1
+    end
   end
-  script.instructions[#script.instructions + 1] =
-    RawIr.instruction(cursor, opcode, CommandCatalog.name(opcode), operands, size, nil)
+  if state.materialize then
+    local materializedOperands = assert(operands)
+    script.instructions[#script.instructions + 1] =
+      RawIr.instruction(cursor, opcode, CommandCatalog.name(opcode), materializedOperands, size, nil)
+  end
   return cursor + size, opcode == 2 or opcode == 21 or opcode == 27
 end
 
 local function decodeInstruction(state, script, cursor)
-  local opcode = state.bytes:byte(cursor + 1) + state.bytes:byte(cursor + 2) * 256
+  local opcode = byte(state.bytes, cursor + 1) + byte(state.bytes, cursor + 2) * 256
   local widths = CommandCatalog.widths(opcode)
   if widths == nil then
     return decodeUnknownOpcode(state, script, cursor, opcode)
@@ -368,13 +505,27 @@ local function decodeCursor(state, script, cursor, terminated, tailRun)
   if block ~= nil then
     return cursor + block.size, terminated, false
   end
+  if state.movementRegistered[cursor] ~= 0 then
+    if state.materialize then
+      local movement = decodeMovement(state.bytes, cursor, true)
+      if movement ~= nil then
+        state.movements[cursor] = movement
+        return cursor + movement.size, terminated, false
+      end
+    else
+      local movementEnd = state.movementSpanEnd[cursor]
+      if movementEnd > cursor then
+        return movementEnd, terminated, false
+      end
+    end
+  end
 
   local spanning = spanningMovementAt(state, cursor)
   if spanning ~= nil then
-    return cursor + (spanning.offset + spanning.size - cursor), terminated, false
+    return spanning, terminated, false
   end
 
-  if terminated and not tailRun and state.justified[cursor] ~= true then
+  if terminated and not tailRun and state.justified[cursor] == 0 then
     local nextCursor, nextTailRun = skipTerminatedRegion(state, cursor)
     if nextCursor == nil then
       return nil, false, false
@@ -382,7 +533,7 @@ local function decodeCursor(state, script, cursor, terminated, tailRun)
     return nextCursor, terminated, nextTailRun
   end
 
-  if terminated and not tailRun and state.justified[cursor] == true then
+  if terminated and not tailRun and state.justified[cursor] ~= 0 then
     tailRun = true
   end
   local nextCursor, endsRun, resetsTail = decodeInstruction(state, script, cursor)
@@ -409,9 +560,9 @@ local function decodeScriptPass(state)
     local cursor = entry.label
     local terminated = false
     local tailRun = false
-    while cursor + 1 < #state.bytes do
+    while cursor + 1 < state.bytes:length() do
       local owner = state.scriptStarts[cursor]
-      if owner ~= nil and owner ~= scriptIndex - 1 then
+      if owner ~= nil and owner >= 0 and owner ~= scriptIndex - 1 then
         break
       end
       local nextCursor, nextTerminated, nextTailRun = decodeCursor(state, script, cursor, terminated, tailRun)
@@ -428,30 +579,34 @@ local function decodeScriptPass(state)
 end
 
 local function decodeUntilFixpoint(state)
-  local scripts
-  local changed = true
-  while changed do
-    changed = false
-    local registeredBefore = 0
-    for _ in pairs(state.registered) do
-      registeredBefore = registeredBefore + 1
+  local passes = 0
+  repeat
+    local beforeRegistered = state.registeredCount
+    local beforeJustified = state.justifiedCount
+    state.materialize = false
+    decodeScriptPass(state)
+    passes = passes + 1
+    if state.registeredCount == beforeRegistered and state.justifiedCount == beforeJustified then
+      break
     end
-    local targetsBefore = 0
-    for _ in pairs(state.justified) do
-      targetsBefore = targetsBefore + 1
+  until false
+  return passes
+end
+
+local function materializeMember(state)
+  state.materialize = true
+  state.movements = {}
+  local scripts = decodeScriptPass(state)
+  if state.instrumentation ~= nil then
+    state.instrumentation.materializations = (state.instrumentation.materializations or 0) + 1
+    local instructionCount = 0
+    for _, script in ipairs(scripts) do
+      instructionCount = instructionCount + #script.instructions
     end
-    scripts = decodeScriptPass(state)
-    local registeredAfter = 0
-    for _ in pairs(state.registered) do
-      registeredAfter = registeredAfter + 1
-    end
-    local targetsAfter = 0
-    for _ in pairs(state.justified) do
-      targetsAfter = targetsAfter + 1
-    end
-    if registeredAfter > registeredBefore or targetsAfter > targetsBefore then
-      changed = true
-    end
+    state.instrumentation.finalInstructionRecords = instructionCount
+    -- instrumentation is intentionally limited to the final pass; callers
+    -- use it to assert the materialization boundary, not decoder internals.
+    state.instrumentation.discoveryPasses = state.instrumentation.discoveryPasses or 0
   end
   return scripts
 end
@@ -495,7 +650,7 @@ local function canonicalizeLabels(state, scripts)
             operand.raw = label
           else
             local owner = state.scriptStarts[target]
-            if owner ~= nil then
+            if owner ~= nil and owner >= 0 then
               operand.raw = ("scr_seq_%04d_%03d"):format(state.member, owner)
             end
           end
@@ -638,17 +793,24 @@ end
 ---@param opts table<string, unknown> { msgBank: integer|nil }
 ---@return table<string, unknown>|nil memberIr
 function ScriptBinaryDecoder.parseMember(bytes, member, sourcePath, opts)
-  local entries = scanEntries(bytes)
+  opts = opts or {}
+  local view = asView(bytes)
+  local entries = ScriptBinaryDecoder.scanEntries(view)
   if #entries == 0 then
     return nil
   end
-  local out = RawIr.member(member, sourcePath, nil, opts.msgBank)
-  local state = newDecodeState(bytes, member, entries)
-  local scripts = decodeUntilFixpoint(state)
+  local state = newDecodeState(view, member, entries)
+  state.instrumentation = opts.instrumentation
+  local passes = decodeUntilFixpoint(state)
+  if state.instrumentation ~= nil then
+    state.instrumentation.discoveryPasses = (state.instrumentation.discoveryPasses or 0) + passes
+  end
+  local scripts = materializeMember(state)
   canonicalizeLabels(state, scripts)
   canonicalizeMessageOperands(scripts, opts.msgBank)
   canonicalizeCatalogOperands(scripts, opts.catalog)
   markPreludeScripts(scripts)
+  local out = RawIr.member(member, sourcePath, nil, opts.msgBank)
   for _, script in ipairs(scripts) do
     out.scripts[script.index] = script
   end
@@ -668,7 +830,7 @@ end
 function ScriptBinaryDecoder.decodeArchive(archive, banks, sourcePath, catalog)
   local memberIrs = {}
   for member = 0, archive:memberCount() - 1 do
-    local bytes = archive:readMember(member)
+    local bytes = assert(archive:memberView(member))
     local ok, memberIr =
       pcall(ScriptBinaryDecoder.parseMember, bytes, member, sourcePath, { msgBank = banks[member], catalog = catalog })
     if not ok then

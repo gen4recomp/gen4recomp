@@ -68,9 +68,9 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-field-font-v3",
     },
     scripts = {
-      cacheFormat = "script-cache-v3",
-      indexSchema = "g4-script-index-v1",
-      provenanceSchema = "g4-script-provenance-v1",
+      cacheFormat = "script-cache-v4",
+      indexSchema = "g4-script-index-v2",
+      provenanceSchema = "g4-script-provenance-v2",
     },
     fieldWeather = {
       cacheFormat = "field-weather-cache-v1",

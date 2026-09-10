@@ -16,6 +16,8 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 
 local T = { tests = {} }
+local SCRIPT_GENERATION = string.rep("a", 40)
+local SCRIPT_MARKER = "script-cache-v4:rom-sha:dep-sha"
 
 local VISUAL_STATES = {
   "walking",
@@ -153,8 +155,19 @@ local function build(files, avatarComposition)
     "unknown avatar composition: " .. tostring(avatarComposition)
   )
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:write(ScriptCache.markerPath(), "script-cache-v1:rom-sha:dep-sha")
-  cache:writeLua(ScriptCache.indexPath(), { schema = ScriptCache.INDEX_SCHEMA, resources = {} })
+  cache:write(ScriptCache.markerPath(), SCRIPT_MARKER)
+  cache:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), SCRIPT_MARKER)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = SCRIPT_MARKER,
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = SCRIPT_MARKER,
+    resources = {},
+  })
   local owner = FieldPlayerAvatarState.new({
     capability = capability(),
     surfPresentation = surfPresentation(),

@@ -162,14 +162,15 @@ end
 function Narc.open(data, label)
   assert(data ~= nil, "Narc.open requires binary data")
   local ok, result = pcall(parse, data, label)
+  local value = result --[[@as unknown]]
   if ok then
-    ---@cast result Narc
-    return result
+    ---@cast value Narc
+    return value
   end
   if Errors.is(result) then
     return nil, result --[[@as Errors.Error]]
   end
-  error(result)
+  error(value)
 end
 
 ---@param self Narc
