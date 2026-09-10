@@ -151,11 +151,10 @@ function Cli.parse(argv, context)
   -- ROM capability requirements are not fixed here: they follow the suites
   -- actually selected, so `outcome` intersects the selected capability union
   -- with the ROM capabilities whenever the selection requires ROM evidence
-  -- (an explicit ROM-gated layer or strict mode). Graphics strictness and an
-  -- explicit source are selection-independent and stay on the plan.
-  if plan.graphicsStrict and (plan.layer == nil or plan.layer == "graphics") then
-    plan.requiredCapabilities[#plan.requiredCapabilities + 1] = "graphics"
-  end
+  -- (an explicit ROM-gated layer or strict mode). Strict graphics is likewise
+  -- selection-dependent and enforced in `outcome` from the selected
+  -- capabilities; an explicit source is selection-independent and stays on
+  -- the plan.
   if plan.romSource ~= nil then
     plan.requiredCapabilities[#plan.requiredCapabilities + 1] = "rom_source"
   end
@@ -274,6 +273,15 @@ function Cli.outcome(plan, capabilities, run)
       missing[#missing + 1] = name
     end
   end
+  -- Selection-dependent strictness belongs after TestRunner has selected tests.
+  if
+    plan.graphicsStrict
+    and (plan.layer == nil or plan.layer == "graphics")
+    and (run.selectedCapabilities or {}).graphics == true
+    and capabilities.graphics ~= true
+  then
+    missing[#missing + 1] = "graphics"
+  end
   if #missing > 0 then
     return {
       exitCode = 1,
@@ -287,10 +295,11 @@ function Cli.outcome(plan, capabilities, run)
   -- Strict graphics mode requires the graphics layer to actually have run, not
   -- merely be available: a selection that reaches no graphics suite (suites
   -- dropped, discovery broken) or runs only skips is a regression that must
-  -- fail. A filter is an explicit narrowing and disables the counter; the
-  -- generic empty-run failure below still guards a filter that matched
-  -- nothing at all. Partial-layer selections never reach the counter.
-  if plan.graphicsStrict and (plan.layer == nil or plan.layer == "graphics") and plan.filter == nil then
+  -- fail. A filter or tag focus is an explicit narrowing and disables the
+  -- counter; the generic empty-run failure below still guards a focus that
+  -- matched nothing at all. Partial-layer selections never reach the counter.
+  local focused = plan.filter ~= nil or plan.tag ~= nil
+  if plan.graphicsStrict and (plan.layer == nil or plan.layer == "graphics") and not focused then
     local graphics = run.byLayer.graphics
     if graphics == nil or graphics.passed + graphics.failed == 0 then
       return {

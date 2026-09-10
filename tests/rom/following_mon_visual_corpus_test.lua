@@ -6,13 +6,10 @@
 -- everything here runs only when the slow tier is selected.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorPose = require("libs.hgss.src.presentation.FieldActorPose")
 local FollowingMonVisualCompiler = require("romdump.src.digest.actor.FollowingMonVisualCompiler")
 local Hashing = require("romdump.src.digest.Hashing")
-local MonCache = require("libs.assets.src.MonCache")
-local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonSources = require("romdump.src.config.MonSources")
 local manifest = require("romdump.src.config.FieldActors")
 
@@ -113,16 +110,21 @@ local function assertIdleShiftWindow(visual, direction, expected, label)
   Assert.equal(count, 1, label .. " " .. direction .. " idle reuses one bob magnitude")
 end
 
-T["starter follower visuals are directional atlases with cardinal idle and walk poses"] = function(romFs, versionId)
-  local cacheFs = CacheFs.forVersion(versionId)
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+T["starter follower visuals are directional atlases with cardinal idle and walk poses"] = function(romFs)
   local compiled = assert(FollowingMonVisualCompiler.compile(romFs))
-  for _, species in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do
-    local descriptor =
-      assert(catalog:followerSelection({ species = species, form = 0 }), species .. " carries a follower descriptor")
+  local starters = {
+    { name = "CHIKORITA", speciesId = 152 },
+    { name = "CYNDAQUIL", speciesId = 155 },
+    { name = "TOTODILE", speciesId = 158 },
+  }
+  for _, starter in ipairs(starters) do
+    local species = starter.name
+    local paramIndex =
+      assert(MonSources.followerParamIndex(starter.speciesId, 0, false), species .. " resolves a follower parameter")
+    local visualId = MonSources.followerVisualId(paramIndex)
     local visual = assert(
-      compiled.visuals[descriptor.visualId],
-      species .. " follower visual " .. descriptor.visualId .. " is compiled by the follower producer"
+      compiled.visuals[visualId],
+      species .. " follower visual " .. visualId .. " is compiled by the follower producer"
     )
     Assert.equal(
       visual.render.kind,
@@ -130,7 +132,7 @@ T["starter follower visuals are directional atlases with cardinal idle and walk 
       species .. " follower presents as a directional atlas, never a static model"
     )
     Assert.isTrue(
-      FieldActorCache.isValidVisual(visual, descriptor.visualId),
+      FieldActorCache.isValidVisual(visual, visualId),
       species .. " follower visual stays structurally valid"
     )
     Assert.isTrue(visual.render.frameCount > 1, species .. " follower atlas carries more than one frame")
@@ -234,5 +236,5 @@ end
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 suite.metadata.slow = true
 suite.metadata.tags = { "mon", "following-mon", "visual", "corpus" }
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump" }
 return suite

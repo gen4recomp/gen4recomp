@@ -11,9 +11,6 @@ local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueControlle
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
-local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
-local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
-local PngReader = require("tests.support.PngReader")
 
 local T = {}
 
@@ -252,68 +249,6 @@ function T.target_lines_stay_inside_the_reference_text_width(_, version)
   end
   Assert.isTrue(#widths > 100, "every bank 543 message lays out")
   provider:releaseBank(543)
-end
-
--- Independent check that the compiled glyph atlas places a real leading
--- glyph's ink at exactly the column the raw NARC glyph decodes to: this
--- proves the font compositor adds no horizontal shift of its own, so any
--- observed leading whitespace in a real glyph is source-decoded bearing, not
--- an extraction defect. If this test ever disagrees, the font
--- producer (not the shared dialogue layout/mapping) is the failing owner.
-function T.leading_glyph_local_ink_matches_between_raw_decode_and_the_generated_atlas(romFs, _)
-  local bundle = assert(FieldFontCompiler.compile(romFs))
-  local font = bundle.fonts[0].font
-  local code = assert(font.charmap["A"], "the font charmap must resolve 'A' for this corpus")
-  local glyph = assert(font.glyphs[code])
-
-  -- Decode straight from the source NARC member, bypassing the atlas
-  -- compositor entirely: compileFont's own glyph-to-index mapping is
-  -- glyphIndex = code - 1 for every in-range charcode (font.glyphIndexForCode).
-  local archive = assert(romFs:openNarc(bundle.dependencies.fontNarc.alias))
-  local glyphMember = assert(archive:readMember(bundle.dependencies.glyphMembers[1].memberId))
-  local rawFont = assert(FieldFontDecoder.decodeMember(glyphMember, { label = "field-font-glyphs" }))
-  local rawGlyph = rawFont.glyphPixels(code - 1)
-
-  -- The compiler's own opaque rule (pixelToRgba in FieldFontCompiler): 0 is
-  -- transparent, and so is 3 ("background") -- only 1 (foreground) and 2
-  -- (shadow) reach the atlas as opaque pixels. Local opacity must follow that
-  -- same rule or this diagnostic would disagree with the atlas for reasons
-  -- that have nothing to do with a real extraction defect.
-  local function localOpaqueMinX(values, width, height)
-    for x = 1, width do
-      for y = 1, height do
-        local value = values[y][x]
-        if value == 1 or value == 2 then
-          return x - 1
-        end
-      end
-    end
-    return nil
-  end
-
-  local rawMinX = localOpaqueMinX(rawGlyph.values, rawGlyph.width, rawGlyph.height)
-  Assert.notNil(rawMinX, "'A' must decode at least one non-transparent pixel")
-
-  local atlasWidth, _, atlasRgba = PngReader.rgba(bundle.fonts[0].atlas)
-  local atlasMinX
-  for x = 0, glyph.w - 1 do
-    for y = 0, glyph.h - 1 do
-      local _, _, _, a = PngReader.pixel(atlasRgba, atlasWidth, glyph.x + x, glyph.y + y)
-      if a > 0 then
-        atlasMinX = x
-        break
-      end
-    end
-    if atlasMinX ~= nil then
-      break
-    end
-  end
-
-  Assert.equal(
-    atlasMinX,
-    rawMinX,
-    "the compiled atlas must place 'A' ink at exactly the column the raw NARC glyph decodes to"
-  )
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)

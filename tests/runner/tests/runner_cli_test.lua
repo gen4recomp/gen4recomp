@@ -429,12 +429,12 @@ function T.selected_rom_gated_layer_without_a_dump_fails()
 end
 
 -- Strict graphics mode is environment-driven, mirrors the ROM strictness, and
--- makes the graphics capability mandatory for a selection that includes the
--- graphics layer.
+-- records strict intent on the plan; the graphics capability itself is
+-- enforced in the outcome from the selected tests, not at parse time.
 function T.graphics_strict_mode_comes_from_the_environment()
   local strict = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
   Assert.isTrue(strict.graphicsStrict, "strict graphics mode must be recorded in the plan")
-  Assert.isTrue(hasCapability(strict, "graphics"), "strict graphics mode must require the graphics capability")
+  Assert.isFalse(hasCapability(strict, "graphics"), "parsing records intent; selection enforces the capability")
 
   local relaxed = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "0" } })
   Assert.isFalse(relaxed.graphicsStrict)
@@ -445,7 +445,9 @@ end
 -- failure instead of a green run of skips.
 function T.graphics_strict_mode_without_the_capability_fails()
   local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
-  local run = runOf({ unit = { passed = 1194 }, graphics = { skipped = 45 } })
+  local run = runOf({ unit = { passed = 1194 }, graphics = { skipped = 45 } }, {
+    selectedCapabilities = { graphics = true },
+  })
 
   local outcome = Cli.outcome(plan, NO_DUMP, run)
 
@@ -692,7 +694,7 @@ end
 -- raw-dump-only control.
 function T.generated_cache_consumers_declare_the_derived_cache()
   local targets = {
-    "field_messages_test",
+    "field_message_cache_test",
     "field_dialogue_test",
     "following_mon_visual_resolution_test",
     "mon_version_coverage_test",
@@ -704,6 +706,7 @@ function T.generated_cache_consumers_declare_the_derived_cache()
     files["fake/rom/" .. name .. ".lua"] = require("tests.rom." .. name)
   end
   files["fake/rom/field_warps_test.lua"] = require("tests.rom.field_warps_test")
+  files["fake/rom/field_messages_test.lua"] = require("tests.rom.field_messages_test")
   local corpus = FakeCorpus.new(files)
   local roots = { corpus:root("fake/rom", "rom") }
 
@@ -724,13 +727,140 @@ function T.generated_cache_consumers_declare_the_derived_cache()
   Assert.equal(#missing, 0, "suites missing derived_cache: " .. table.concat(missing, ", "))
   Assert.equal(#unprepared, 0, "suites whose selection skips preparation: " .. table.concat(unprepared, ", "))
 
-  local control = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "field_warps_test" })
+  local control = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = "field_messages_test" })
 
   Assert.equal(#control, 1, "the control filter selects exactly its suite")
   local controlCaps = selectedCapabilities(control)
   Assert.isFalse(controlCaps.derived_cache == true, "a raw-dump-only control omits derived_cache")
-  local controlPlan = parse({ "--filter", "field_warps_test" })
+  local controlPlan = parse({ "--filter", "field_messages_test" })
   Assert.equal(prepareOf(Cli.renderPlan(controlPlan, controlCaps)), "0", "a raw-dump-only control skips preparation")
+end
+
+-- A tag focus is an explicit narrowing like a filter: under strict
+-- graphics it must not trip the whole-run execution counter when the
+-- selection contains no graphics test.
+function T.focused_tag_run_without_graphics_selection_stays_green_under_strict_graphics()
+  local plan = parse({ "--tag", "door" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local run = runOf({ unit = { passed = 1 } }, { selectedCapabilities = {} })
+
+  local outcome = Cli.outcome(plan, { graphics = true }, run)
+
+  Assert.equal(outcome.exitCode, 0, "a tag focus that selects no graphics test must stay green")
+  Assert.isNil(outcome.failure)
+end
+
+-- A tag focus that only matches hidden slow tests reports the slow gate,
+-- not a missing graphics execution, under strict graphics.
+function T.slow_only_tag_focus_reports_the_slow_gate_not_missing_graphics()
+  local plan = parse({ "--tag", "census" }, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local run = runOf({}, { excludedSlow = 3 })
+
+  local outcome = Cli.outcome(plan, { graphics = true }, run)
+
+  Assert.isTrue(outcome.exitCode ~= 0, "a selection hidden by the slow gate must not read as green")
+  Assert.notNil(outcome.failure, "a slow-only focus needs an actionable message")
+  contains(outcome.failure, "--slow", "the failure instructs adding --slow")
+  Assert.isNil(
+    tostring(outcome.failure):find("no graphics test was executed", 1, true),
+    "the failure must not claim no graphics test executed, got: " .. tostring(outcome.failure)
+  )
+end
+
+-- Selection-aware strictness is not a relaxation: when the selected work
+-- declares the graphics capability, the absent capability still fails.
+function T.selected_graphics_capability_is_still_required_under_strict_graphics()
+  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  local run = runOf({ graphics = { passed = 1 } }, { selectedCapabilities = { graphics = true } })
+
+  local outcome = Cli.outcome(plan, NO_DUMP, run)
+
+  Assert.isTrue(outcome.exitCode ~= 0, "selected graphics work without the capability must be nonzero")
+  Assert.notNil(outcome.failure, "selected graphics work without the capability needs an actionable message")
+  contains(outcome.failure, "graphics", "the failure names the missing capability")
+end
+
+-- The independent execution counter survives selection-awareness: an
+-- unfiltered, untagged strict run that executed no graphics test fails even
+-- when the capability is available and nothing selected graphics work.
+function T.unfiltered_strict_run_with_no_executed_graphics_test_still_fails()
+  local plan = parse({}, { env = { G4RECOMP_REQUIRE_GRAPHICS_TESTS = "1" } })
+  Assert.isNil(plan.filter, "the whole-run selection has no filter focus")
+  Assert.isNil(plan.tag, "the whole-run selection has no tag focus")
+  local run = runOf({ unit = { passed = 1 } }, { selectedCapabilities = {} })
+
+  local outcome = Cli.outcome(plan, { graphics = true }, run)
+
+  Assert.isTrue(outcome.exitCode ~= 0, "a whole run that executed no graphics test must fail under strict graphics")
+  Assert.notNil(outcome.failure, "a whole run that executed no graphics test needs an actionable message")
+  contains(outcome.failure, "no graphics test was executed", "the failure names the missing execution")
+end
+
+-- Raw field-message/font facts need no prepared cache, while the
+-- cache-backed message sibling and the dialogue suite still prepare it.
+function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_facts_prepare_it()
+  local files = {
+    ["fake/rom/field_messages_test.lua"] = require("tests.rom.field_messages_test"),
+    ["fake/rom/field_dialogue_test.lua"] = require("tests.rom.field_dialogue_test"),
+  }
+  local corpus = FakeCorpus.new(files)
+  local roots = { corpus:root("fake/rom", "rom") }
+
+  local rawPlan = parse({ "--filter", "field_messages_test" })
+  local rawListing = TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = rawPlan.filter })
+  Assert.equal(#rawListing, 1, "the raw message filter selects exactly its suite")
+  local rawCaps = selectedCapabilities(rawListing)
+  Assert.equal(prepareOf(Cli.renderPlan(rawPlan, rawCaps)), "0", "a raw message focus skips cache preparation")
+
+  local dialoguePlan = parse({ "--filter", "field_dialogue_test" })
+  local dialogueListing =
+    TestRunner.list({ roots = roots, fs = corpus.fs, load = corpus.load, filter = dialoguePlan.filter })
+  Assert.equal(#dialogueListing, 1, "the dialogue filter selects exactly its suite")
+  Assert.equal(
+    prepareOf(Cli.renderPlan(dialoguePlan, selectedCapabilities(dialogueListing))),
+    "1",
+    "a cache-backed dialogue focus prepares the cache"
+  )
+
+  files["fake/rom/field_message_cache_test.lua"] = require("tests.rom.field_message_cache_test")
+  local cacheCorpus = FakeCorpus.new(files)
+  local cacheRoots = { cacheCorpus:root("fake/rom", "rom") }
+  local cachePlan = parse({ "--filter", "field_message_cache_test" })
+  local cacheListing = TestRunner.list({
+    roots = cacheRoots,
+    fs = cacheCorpus.fs,
+    load = cacheCorpus.load,
+    filter = cachePlan.filter,
+  })
+  Assert.equal(#cacheListing, 1, "the cache message filter selects exactly its suite")
+  Assert.equal(
+    prepareOf(Cli.renderPlan(cachePlan, selectedCapabilities(cacheListing))),
+    "1",
+    "a cache-backed message focus prepares the cache"
+  )
+end
+
+-- The slow follower producer corpus needs only the raw dump: its selection
+-- carries rom_dump without derived_cache and skips cache preparation.
+function T.slow_follower_producer_focus_needs_no_derived_cache()
+  local corpus = FakeCorpus.new({
+    ["fake/rom/following_mon_visual_corpus_test.lua"] = require("tests.rom.following_mon_visual_corpus_test"),
+  })
+  local roots = { corpus:root("fake/rom", "rom") }
+
+  local plan = parse({ "--slow", "--filter", "following_mon_visual_corpus_test" })
+  local listing = TestRunner.list({
+    roots = roots,
+    fs = corpus.fs,
+    load = corpus.load,
+    slow = plan.slow,
+    filter = plan.filter,
+  })
+
+  Assert.equal(#listing, 1, "the slow producer filter selects exactly its suite")
+  local caps = selectedCapabilities(listing)
+  Assert.isTrue(caps.rom_dump == true, "the selection keeps rom_dump")
+  Assert.isFalse(caps.derived_cache == true, "a raw producer selection omits derived_cache")
+  Assert.equal(prepareOf(Cli.renderPlan(plan, caps)), "0", "a raw producer selection skips preparation")
 end
 
 return { tests = T }

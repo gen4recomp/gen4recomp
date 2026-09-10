@@ -1,15 +1,12 @@
--- ROM-conformance checks for the message/font derived classes. Preserves
--- provider behavior for supported controls, cache readiness, and map header
--- associations without pinning full-corpus inventories.
+-- ROM-conformance checks for raw message/font facts. Decodes and compiles
+-- directly from the ROM without the prepared generated cache; cache-backed
+-- message facts live in the sibling cache suite.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
-local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
 local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
@@ -61,70 +58,6 @@ function T.known_yesno_and_color_messages_carry_the_expected_controls(romFs)
     Assert.equal(colorArgs[1], 1, "message " .. messageId .. " opens the color span at 1")
     Assert.equal(colorArgs[2], 0, "message " .. messageId .. " closes the color span back to 0")
   end
-end
-
-function T.known_target_messages_format_with_prepared_tokens(_, version)
-  -- The known target messages must pass through the actual provider
-  -- formatting path (compiled bank cache -> template -> substitution
-  -- resolution -> prepared tokens) without an unsupported-control fault:
-  -- glyphs carry their effective colorIndex, and the indicator survives with
-  -- field 0. A layout/controller-only test cannot prove this: the provider is
-  -- the playback boundary that validates and prepares printer controls.
-  local cache = CacheFs.forVersion(version)
-  local def = assert(cache:loadLua("data/generated/field/font/font-0.lua"))
-  local provider = assert(FieldMessageProvider.new(cache))
-  provider:acquireBank(543)
-  local resolvers = {
-    [0x0100] = function()
-      return FieldMessageProvider.asciiGlyphTokens("GOLD", def)
-    end,
-    [0x0101] = function()
-      return FieldMessageProvider.asciiGlyphTokens("GOLD", def)
-    end,
-    [0x0103] = function()
-      return FieldMessageProvider.asciiGlyphTokens("GOLD", def)
-    end,
-  }
-  for _, messageId in ipairs({ 8, 9, 27, 92 }) do
-    local template = assert(provider:get(543, messageId))
-    local formatted = assert(provider:format(template, { playerName = "GOLD" }, resolvers))
-    Assert.isFalse(formatted.hadUnresolvedSubstitutions)
-    local indicator
-    for _, token in ipairs(formatted.tokens) do
-      if token.kind == "glyph" then
-        Assert.equal(token.colorIndex, 0, "bank 543 message " .. messageId .. " glyph stays default color")
-      elseif token.control == FieldMessageText.YESNO then
-        indicator = token
-      end
-    end
-    Assert.notNil(indicator, "message " .. messageId .. " keeps its indicator token")
-    Assert.equal(indicator.kind, "focus_indicator")
-    Assert.equal(indicator.control, FieldMessageText.YESNO)
-    Assert.deepEqual(indicator.args, { 0 })
-  end
-  for _, messageId in ipairs({ 79, 80 }) do
-    local template = assert(provider:get(543, messageId))
-    local formatted = assert(provider:format(template, { playerName = "GOLD" }, resolvers))
-    Assert.isFalse(formatted.hadUnresolvedSubstitutions)
-    local current = 0
-    local highlighted = 0
-    local afterSpan = 0
-    for _, token in ipairs(formatted.tokens) do
-      if token.kind == "style" and token.control == FieldMessageText.COLOR then
-        current = token.args[1]
-      elseif token.kind == "glyph" then
-        Assert.equal(token.colorIndex, current, "message " .. messageId .. " glyph carries the active color")
-        if current == 1 then
-          highlighted = highlighted + 1
-        elseif highlighted > 0 then
-          afterSpan = afterSpan + 1
-        end
-      end
-    end
-    Assert.isTrue(highlighted > 0, "message " .. messageId .. " highlights its color span")
-    Assert.isTrue(afterSpan > 0, "message " .. messageId .. " returns to default color after the span")
-  end
-  provider:releaseBank(543)
 end
 
 function T.target_glyph_set_resolves_in_the_font(romFs)
@@ -206,29 +139,6 @@ function T.opposite_protagonist_name_bank_holds_two_plain_name_messages(romFs)
   Assert.isTrue(texts[1] ~= texts[2], "the two counterpart names must differ")
 end
 
-function T.artifact_text_round_trips_through_marker_parse(romFs, version)
-  -- The published text form is canonical: parsing a bank message's text with
-  -- the compiled font charmap and rendering it back yields the same string.
-  local messages = assert(romFs:openNarc("messages"))
-  local fontDef = {
-    charmap = assert(CacheFs.forVersion(version):loadLua("data/generated/field/font/font-0.lua")).charmap,
-  }
-  local samples = { [542] = { 0, 1, 4, 5 }, [543] = { 0, 5, 14, 18, 93, 97 } }
-  for bankId, messageIds in pairs(samples) do
-    local bank = assert(FieldMessageBank.decode(messages:readMember(bankId), {}))
-    for _, messageId in ipairs(messageIds) do
-      local tokens = assert(FieldMessageTokenizer.tokenize(bank.messages[messageId + 1].raw, charmap, {}))
-      local text = FieldMessageText.tokensToText(tokens)
-      local reparsed = assert(FieldMessageText.parse(text, fontDef))
-      Assert.equal(
-        FieldMessageText.tokensToText(reparsed),
-        text,
-        string.format("bank %d message %d round trip", bankId, messageId)
-      )
-    end
-  end
-end
-
 function T.font_palette_matches_the_rom_member(romFs)
   local palette = assert(FieldFontDecoder.decodePalette(assert(romFs:openNarc("font")):readMember(7)))
   Assert.equal(palette.colorCount, 16)
@@ -252,35 +162,6 @@ function T.standard_menu_bank_holds_the_vanilla_list_menu_ids(romFs)
   for _, id in ipairs({ 321, 322, 323, 324, 475 }) do
     Assert.isTrue(menu.messages[id + 1] ~= nil, "standard menu bank must hold list-menu message " .. tostring(id))
   end
-end
-
-function T.compiled_cache_artifacts_are_ready_and_stable(romFs, version)
-  local cache = CacheFs.forVersion(version)
-  local function archiveSha(alias)
-    local info = assert(romFs:resolvedNarc(alias))
-    return require("romdump.src.digest.Hashing").sha1hex(assert(romFs:read(info.fileId)))
-  end
-  local function memberSha(alias, memberId)
-    return require("romdump.src.digest.Hashing").sha1hex(assert(assert(romFs:openNarc(alias)):readMember(memberId)))
-  end
-  -- Deterministic markers: compilers run with real hashes, so the marker
-  -- depends only on ROM contents and the checked-in compiler versions.
-  local messageBundle = assert(FieldMessageCompiler.compile(romFs))
-  local menuBankSelected = false
-  for _, bankId in ipairs(messageBundle.index.bankIds) do
-    if bankId == MenuProtocol.STANDARD_MESSAGE_BANK then
-      menuBankSelected = true
-    end
-  end
-  Assert.isTrue(menuBankSelected, "the standard menu bank must be selected for the derived cache")
-  Assert.isTrue(FieldMessageCache.isReady(cache, messageBundle.marker))
-  Assert.equal(FieldMessageCache.bankPath(542), "data/generated/field/messages/banks/0542.lua")
-  local fontBundle = assert(FieldFontCompiler.compile(romFs))
-  Assert.isTrue(require("romdump.src.digest.ui.FieldFontCacheWriter").isReady(cache, fontBundle.marker))
-  Assert.isNil(fontBundle.fonts[0].font.source)
-  Assert.equal(fontBundle.dependencies.glyphMembers[1].sha1, memberSha("font", 0))
-  Assert.equal(fontBundle.dependencies.paletteMemberSha1, memberSha("font", 7))
-  Assert.equal(messageBundle.dependencies.messageNarc.sha1, archiveSha("messages"))
 end
 
 function T.font_focus_indicator_member_is_a_four_frame_24x32_4bpp_ncgr(romFs)
@@ -402,6 +283,67 @@ function T.compiled_font_def_matches_the_real_focus_and_color_contract(romFs, _)
   Assert.isTrue(foundShadow, "the default band must draw shadow ink from slot 2")
 end
 
+-- Independent check that the compiled glyph atlas places a real leading
+-- glyph's ink at exactly the column the raw NARC glyph decodes to: this
+-- proves the font compositor adds no horizontal shift of its own, so any
+-- observed leading whitespace in a real glyph is source-decoded bearing, not
+-- an extraction defect. If this test ever disagrees, the font
+-- producer (not the shared dialogue layout/mapping) is the failing owner.
+function T.leading_glyph_local_ink_matches_between_raw_decode_and_the_generated_atlas(romFs, _)
+  local bundle = assert(FieldFontCompiler.compile(romFs))
+  local font = bundle.fonts[0].font
+  local code = assert(font.charmap["A"], "the font charmap must resolve 'A' for this corpus")
+  local glyph = assert(font.glyphs[code])
+
+  -- Decode straight from the source NARC member, bypassing the atlas
+  -- compositor entirely: compileFont's own glyph-to-index mapping is
+  -- glyphIndex = code - 1 for every in-range charcode (font.glyphIndexForCode).
+  local archive = assert(romFs:openNarc(bundle.dependencies.fontNarc.alias))
+  local glyphMember = assert(archive:readMember(bundle.dependencies.glyphMembers[1].memberId))
+  local rawFont = assert(FieldFontDecoder.decodeMember(glyphMember, { label = "field-font-glyphs" }))
+  local rawGlyph = rawFont.glyphPixels(code - 1)
+
+  -- The compiler's own opaque rule (pixelToRgba in FieldFontCompiler): 0 is
+  -- transparent, and so is 3 ("background") -- only 1 (foreground) and 2
+  -- (shadow) reach the atlas as opaque pixels. Local opacity must follow that
+  -- same rule or this diagnostic would disagree with the atlas for reasons
+  -- that have nothing to do with a real extraction defect.
+  local function localOpaqueMinX(values, width, height)
+    for x = 1, width do
+      for y = 1, height do
+        local value = values[y][x]
+        if value == 1 or value == 2 then
+          return x - 1
+        end
+      end
+    end
+    return nil
+  end
+
+  local rawMinX = localOpaqueMinX(rawGlyph.values, rawGlyph.width, rawGlyph.height)
+  Assert.notNil(rawMinX, "'A' must decode at least one non-transparent pixel")
+
+  local atlasWidth, _, atlasRgba = PngReader.rgba(bundle.fonts[0].atlas)
+  local atlasMinX
+  for x = 0, glyph.w - 1 do
+    for y = 0, glyph.h - 1 do
+      local _, _, _, a = PngReader.pixel(atlasRgba, atlasWidth, glyph.x + x, glyph.y + y)
+      if a > 0 then
+        atlasMinX = x
+        break
+      end
+    end
+    if atlasMinX ~= nil then
+      break
+    end
+  end
+
+  Assert.equal(
+    atlasMinX,
+    rawMinX,
+    "the compiled atlas must place 'A' ink at exactly the column the raw NARC glyph decodes to"
+  )
+end
+
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
 return suite
