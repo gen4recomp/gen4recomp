@@ -4,6 +4,7 @@
 #   scripts/test.sh --list
 #   scripts/test.sh --layer unit|component|graphics|rom|acceptance
 #   scripts/test.sh --filter <substring>
+#   scripts/test.sh --jobs <positive-integer>
 #   scripts/test.sh --rom-source <path-to.nds-or-zip>
 #
 # Arguments are parsed by tests/runner/Cli.lua; this script only decides where
@@ -19,6 +20,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/lib/dev.sh
+
+temp_dirs=()
+cleanup() {
+  for directory in "${temp_dirs[@]}"; do
+    rm -rf -- "$directory"
+  done
+}
+trap cleanup EXIT
 
 # Match the development container's supported graphics host. Callers may still
 # override either variable for driver diagnosis, but the default test command
@@ -43,14 +52,20 @@ NO_DUMP_STATUS=2
 plan="$(love app/ --test --plan "$@")"
 prepare=""
 rom_source=""
+jobs=""
 while IFS= read -r line; do
   case "$line" in
     prepare=*) prepare="${line#prepare=}" ;;
     rom_source=*) rom_source="${line#rom_source=}" ;;
+    jobs=*) jobs="${line#jobs=}" ;;
   esac
 done <<<"$plan"
 if [ "$prepare" != 0 ] && [ "$prepare" != 1 ]; then
   echo "test: the runner plan did not answer prepare=0|1 (got '$prepare')" >&2
+  exit 1
+fi
+if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "test: the runner plan did not answer a positive jobs count (got '$jobs')" >&2
   exit 1
 fi
 
@@ -60,14 +75,14 @@ if [ "$prepare" = 1 ]; then
     # An isolated save root: importing and building a supplied source must never
     # touch the user's ordinary cache or saves.
     isolated="$(mktemp -d)"
-    trap 'rm -rf "$isolated"' EXIT
+    temp_dirs+=("$isolated")
     export XDG_DATA_HOME="$isolated"
     echo "== import and build $rom_source into $isolated =="
     love romdump/ --build-cache "$rom_source"
   else
     BUILD_LOG_DIR="$(mktemp -d)"
+    temp_dirs+=("$BUILD_LOG_DIR")
     BUILD_LOG="$BUILD_LOG_DIR/buildcache.log"
-    trap 'rm -rf -- "$BUILD_LOG_DIR"' EXIT
     # The producer fingerprint + build-state check makes --build-cache cheap
     # when nothing relevant changed: an identity match with a fully available
     # cache means no ROM open and no compilation. A producer/contract/dump
@@ -91,5 +106,44 @@ fi
 # which a replaced process would never run.
 status=0
 echo "Running tests..."
-love app/ --test "$@" || status=$?
+if [ "$jobs" -eq 1 ]; then
+  love app/ --test "$@" || status=$?
+else
+  run_dir="$(mktemp -d)"
+  temp_dirs+=("$run_dir")
+  echo "Running tests with $jobs workers..."
+  pids=()
+  for ((worker = 1; worker <= jobs; worker++)); do
+    (
+      unset G4RECOMP_TEST_AGGREGATE G4RECOMP_TEST_WORKER
+      export G4RECOMP_TEST_RUN_DIR="$run_dir"
+      export G4RECOMP_TEST_WORKERS="$jobs"
+      export G4RECOMP_TEST_WORKER="$worker"
+      love app/ --test "$@"
+    ) >"$run_dir/worker-$worker.log" 2>&1 &
+    pids[$worker]=$!
+  done
+  worker_status=0
+  for ((worker = 1; worker <= jobs; worker++)); do
+    if wait "${pids[$worker]}"; then
+      :
+    else
+      child_status=$?
+      echo "test: worker $worker failed with status $child_status" >&2
+      tail -n 40 "$run_dir/worker-$worker.log" >&2 || true
+      worker_status=1
+    fi
+  done
+  if [ "$worker_status" -ne 0 ]; then
+    status="$worker_status"
+  else
+    (
+      unset G4RECOMP_TEST_WORKER
+      export G4RECOMP_TEST_RUN_DIR="$run_dir"
+      export G4RECOMP_TEST_WORKERS="$jobs"
+      export G4RECOMP_TEST_AGGREGATE=1
+      love app/ --test "$@"
+    ) || status=$?
+  fi
+fi
 exit "$status"

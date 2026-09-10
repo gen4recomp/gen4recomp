@@ -7,6 +7,7 @@
 local Capabilities = require("tests.runner.Capabilities")
 local Cli = require("tests.runner.Cli")
 local Progress = require("tests.runner.Progress")
+local Parallel = require("tests.runner.Parallel")
 local RepoFiles = require("tests.runner.RepoFiles")
 local Report = require("tests.runner.Report")
 local TestRunner = require("tests.runner.TestRunner")
@@ -33,6 +34,7 @@ local function runnerOptions(options)
     tag = options.tag,
     slow = options.slow,
     onResult = options.onResult,
+    shard = options.shard,
   }
 end
 
@@ -65,6 +67,11 @@ end
 ---@param argv string[]
 ---@return integer exitCode
 local function main(argv)
+  local ok, context = pcall(Parallel.context, ENV)
+  if not ok then
+    io.stderr:write("test: parallel infrastructure failure: " .. tostring(context) .. "\n")
+    return 1
+  end
   local plan, message = Cli.parse(argv, { env = ENV })
   if plan == nil then
     io.stderr:write("test: " .. tostring(message) .. "\n")
@@ -76,16 +83,74 @@ local function main(argv)
     -- parse failure above already answered with the usage status. Planning
     -- discovers the same selected suites execution would run so cache
     -- preparation follows the selection, not the layer.
-    print(table.concat(Cli.renderPlan(plan, unionSelectedCapabilities(list(plan))), "\n"))
+    if context.kind ~= "normal" then
+      io.stderr:write("test: parallel infrastructure failure: plan mode cannot use a worker context\n")
+      return 1
+    end
+    local listing = list(plan)
+    local processorCount = 1
+    if love.system ~= nil and love.system.getProcessorCount ~= nil then
+      processorCount = math.max(1, love.system.getProcessorCount())
+    end
+    local jobs = Parallel.effectiveJobs(plan, #listing, processorCount)
+    print(table.concat(Cli.renderPlan(plan, unionSelectedCapabilities(listing), jobs), "\n"))
     return 0
   end
 
-  local capabilities, versions = Capabilities.detect({ env = ENV })
-  if plan.romSource ~= nil then
-    -- The shell entrypoint imported and built that source into an isolated save
-    -- root before this run; parsing already proved the path readable.
-    capabilities.rom_source = true
+  local function detect()
+    local capabilities, versions = Capabilities.detect({ env = ENV })
+    if plan.romSource ~= nil then
+      capabilities.rom_source = true
+    end
+    return capabilities, versions
   end
+
+  if context.kind == "worker" then
+    local workerOk, workerError = pcall(function()
+      local capabilities, versions = detect()
+      local result = TestRunner.run(runnerOptions({
+        capabilities = capabilities,
+        layer = plan.layer,
+        filter = plan.filter,
+        tag = plan.tag,
+        slow = plan.slow,
+        shard = { index = context.index, count = context.count },
+      }))
+      result.versions = versions
+      Parallel.writeFragment(context.runDir, context.index, context.count, result)
+    end)
+    if not workerOk then
+      io.stderr:write("test: parallel worker failure: " .. tostring(workerError) .. "\n")
+      return 1
+    end
+    return 0
+  end
+
+  if context.kind == "aggregate" then
+    local aggregateOk, aggregateError = pcall(function()
+      local capabilities, versions = detect()
+      local result = Parallel.merge(Parallel.readFragments(context.runDir, context.count))
+      result.capabilities = capabilities
+      result.versions = versions
+      print(table.concat(Report.lines(result), "\n"))
+      io.stdout:flush()
+      local outcome = Cli.outcome(plan, capabilities, result)
+      if outcome.warning ~= nil then
+        io.stderr:write(outcome.warning .. "\n")
+      end
+      if outcome.failure ~= nil then
+        io.stderr:write("test: " .. outcome.failure .. "\n")
+      end
+      return outcome.exitCode
+    end)
+    if not aggregateOk then
+      io.stderr:write("test: parallel infrastructure failure: " .. tostring(aggregateError) .. "\n")
+      return 1
+    end
+    return aggregateError
+  end
+
+  local capabilities, versions = detect()
 
   if plan.list then
     print(table.concat(Report.listingLines(list(plan)), "\n"))

@@ -30,7 +30,8 @@ local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"
 
 Cli.USAGE = table.concat({
   "usage: scripts/test.sh [--plan] [--list] [--layer <" .. table.concat(Cli.LAYERS, "|") .. ">]",
-  "                      [--filter <substring>] [--tag <tag>] [--slow] [--rom-source <path-to-nds-or-zip>]",
+  "                      [--filter <substring>] [--tag <tag>] [--slow] [--jobs <positive-integer>]",
+  "                      [--rom-source <path-to-nds-or-zip>]",
 }, "\n")
 
 local function isLayer(value)
@@ -67,6 +68,7 @@ end
 ---@field filter string|nil
 ---@field tag string|nil
 ---@field slow boolean
+---@field jobs integer|nil
 ---@field romSource string|nil
 ---@field strict boolean
 ---@field graphicsStrict boolean
@@ -88,6 +90,7 @@ function Cli.parse(argv, context)
     planMode = false,
     list = false,
     slow = false,
+    jobs = nil,
     strict = env[STRICT_ENV] == "1",
     graphicsStrict = env[GRAPHICS_STRICT_ENV] == "1",
     requiredCapabilities = {},
@@ -131,6 +134,13 @@ function Cli.parse(argv, context)
     elseif option == "--slow" then
       plan.slow = true
       index = index + 1
+    elseif option == "--jobs" then
+      local jobs = value(argv, index + 1)
+      if jobs == nil or jobs:match("^[1-9][0-9]*$") == nil then
+        return nil, "--jobs needs a positive integer"
+      end
+      plan.jobs = tonumber(jobs)
+      index = index + 2
     elseif option == "--rom-source" then
       local path = value(argv, index + 1)
       if path == nil then
@@ -170,11 +180,19 @@ end
 -- selection) and the source path to import.
 ---@param plan TestPlan
 ---@param selectedCapabilities table<string, boolean>|nil union of declared capabilities of suites with selected tests
+---@param effectiveJobs integer|nil effective worker count
 ---@return string[]
-function Cli.renderPlan(plan, selectedCapabilities)
+function Cli.renderPlan(plan, selectedCapabilities, effectiveJobs)
+  if effectiveJobs == nil then
+    effectiveJobs = 1
+  end
+  assert(
+    type(effectiveJobs) == "number" and effectiveJobs % 1 == 0 and effectiveJobs > 0,
+    "effective jobs must be positive"
+  )
   local selected = selectedCapabilities or {}
   local prepare = not plan.list and (plan.romSource ~= nil or selected.derived_cache == true)
-  local lines = { "prepare=" .. (prepare and "1" or "0") }
+  local lines = { "prepare=" .. (prepare and "1" or "0"), "jobs=" .. effectiveJobs }
   if plan.romSource ~= nil then
     lines[#lines + 1] = "rom_source=" .. plan.romSource
   end

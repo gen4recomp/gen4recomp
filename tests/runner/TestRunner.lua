@@ -19,6 +19,7 @@ local Discovery = require("tests.runner.Discovery")
 local Execution = require("tests.runner.Execution")
 local Selection = require("tests.runner.Selection")
 local Suite = require("tests.runner.Suite")
+local Parallel = require("tests.runner.Parallel")
 
 local TestRunner = {}
 
@@ -36,6 +37,7 @@ local function resolve(options)
     tag = options.tag,
     slow = options.slow,
     onResult = options.onResult,
+    shard = options.shard,
   }
 end
 
@@ -64,11 +66,14 @@ end
 -- returned item carries either a normalized `suite` or the `failure` result of
 -- a module that could not be loaded or normalized.
 ---@return { suite: RunnerSuite|nil, failure: table|nil }[]
----@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, slow: boolean|nil, onResult: function|nil }
+---@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, slow: boolean|nil, onResult: function|nil, shard: table|nil }
 local function collect(config)
   local items = {}
-  for _, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
-    if mayLoad(entry, config.layer) then
+  for ordinal, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
+    if
+      mayLoad(entry, config.layer)
+      and (config.shard == nil or Parallel.owns(entry, ordinal, config.shard, config.layer))
+    then
       local ok, loaded = pcall(config.load, entry.module)
       if not ok then
         items[#items + 1] = { failure = loadFailure(entry, "module load failed: " .. tostring(loaded)) }
