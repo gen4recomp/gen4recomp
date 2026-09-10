@@ -100,5 +100,7 @@ jobs:
           printf '%s\n' '#!/bin/sh' 'exec "$RUNNER_TEMP/love.AppImage" --appimage-extract-and-run "$@"' > "$RUNNER_TEMP/bin/love"
           chmod +x "$RUNNER_TEMP/bin/love"
           # Keep CI on the same entrypoint and software graphics host as local
-          # development; the command reports ROM-gated skips explicitly.
-          PATH="$RUNNER_TEMP/bin:$PATH" scripts/test.sh
+          # development. Slow suites run here when their capabilities are
+          # available; ROM-gated suites still report explicit skips because CI
+          # has no user-owned cartridge dump.
+          PATH="$RUNNER_TEMP/bin:$PATH" scripts/test.sh --slow

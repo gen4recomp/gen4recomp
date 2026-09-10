@@ -57,13 +57,26 @@ ownership from the plausible bug.
 
 ## Runner and discovery
 
-- `scripts/test.sh` is the test entry point. Use `--filter` and `--layer` for focused local
-  evidence; use the full available suite at integrated/branch gates.
+- `scripts/test.sh` is the test entry point. A plain run executes the fast set
+  used for routine development. `scripts/test.sh --slow` additionally runs
+  suites marked slow whose required capabilities are available. Use `--filter`
+  and `--layer` for focused local evidence; use the full available suite at
+  integrated/branch gates.
+- Target one slow area locally with `scripts/test.sh --slow --filter <substring>`.
+  Target a topic with `scripts/test.sh --tag <tag>`, or
+  `scripts/test.sh --slow --tag <tag>` when the topic includes slow suites.
+  Filtering or tagging alone never pulls slow suites in; `--slow` must be
+  present for them to run.
+- The exhaustive ROM check on a machine with a ready user-owned dump and
+  derived cache is `G4RECOMP_REQUIRE_ROM_TESTS=1 scripts/test.sh --slow`.
 - Test modules are discovered recursively from roots in `tests/run.lua`; do not add a manual
   registry. A suite's layer comes from its discovery root.
 - Suites declare required `capabilities`. Optional unavailable capability uses
   `context:skip(reason)`; a normal return is a pass, never a skip.
 - Unit tests use synthetic data. ROM-dependent facts live in ROM/acceptance/source-E2E layers
   and use user-owned dumps without committing commercial data.
+- Fast ROM coverage uses small hand-picked representative cases local to the
+  behavior they exercise. There is no automatic curator; revisit those case
+  lists when supporting another game or corpus.
 - CI does not provide the user's ROM. A green CI run does not prove a ROM/acceptance contract
   whose required capability was unavailable.
