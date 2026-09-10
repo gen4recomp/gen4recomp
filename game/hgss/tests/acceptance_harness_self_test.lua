@@ -84,6 +84,17 @@ function T.tests.synthetic_boot_keeps_the_global_save_catalog_inside_its_namespa
     priorCatalog,
     "acceptance must not touch the real save root"
   )
+  -- A parallel worker process privately receives a run-unique,
+  -- worker-unique token (only ever present when this suite actually runs as
+  -- a worker of a full parallel `scripts/test.sh` command); the default
+  -- namespace must fold it in without disturbing serial/focused behavior.
+  local workerToken = os.getenv("G4RECOMP_TEST_ACCEPTANCE_NAMESPACE")
+  if workerToken ~= nil then
+    Assert.isTrue(
+      game.saveNamespace:find("/" .. workerToken .. "-", 1, true) ~= nil,
+      "the default namespace must contain the private worker token: " .. game.saveNamespace
+    )
+  end
   game:close()
 end
 

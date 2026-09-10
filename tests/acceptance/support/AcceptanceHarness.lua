@@ -30,6 +30,19 @@ AcceptanceHarness.__index = AcceptanceHarness
 local serial = 0
 local TRACE_LIMIT = 32
 
+-- A parallel `scripts/test.sh` worker exports this as a private, run-unique
+-- and worker-unique token so concurrent workers never choose the same
+-- physical default save namespace. It is read once at module load: the
+-- shell produces only valid tokens, so a malformed value is a programming/
+-- infrastructure error that must fail loudly rather than be sanitized.
+local WORKER_NAMESPACE = os.getenv("G4RECOMP_TEST_ACCEPTANCE_NAMESPACE")
+if WORKER_NAMESPACE ~= nil then
+  assert(
+    WORKER_NAMESPACE:match("^[A-Za-z0-9_.-]+$") ~= nil,
+    "G4RECOMP_TEST_ACCEPTANCE_NAMESPACE must be a single safe path segment: " .. WORKER_NAMESPACE
+  )
+end
+
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
@@ -41,6 +54,9 @@ local function readyVersions()
 end
 
 local function defaultNamespace(versionId, index)
+  if WORKER_NAMESPACE ~= nil then
+    return string.format("acceptance/%s/%s-%d", versionId, WORKER_NAMESPACE, index)
+  end
   return string.format("acceptance/%s/%d", versionId, index)
 end
 

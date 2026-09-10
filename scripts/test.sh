@@ -29,6 +29,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# No inherited worker token may leak into planning, cache preparation, or
+# serial execution; only a worker subshell below exports one.
+unset G4RECOMP_TEST_ACCEPTANCE_NAMESPACE
+
+# Terminate every still-tracked worker before waiting any of them, so one
+# long-running worker cannot delay signal delivery to the others; then wait
+# every tracked PID so cancellation always reaps before returning. Failed
+# kill/wait during cancellation are expected races with a naturally exiting
+# worker, not a replacement for the cancellation status.
+terminate_workers() {
+  for worker in "${!pids[@]}"; do
+    kill -TERM "${pids[$worker]}" 2>/dev/null || true
+  done
+  for worker in "${!pids[@]}"; do
+    wait "${pids[$worker]}" 2>/dev/null || true
+  done
+  pids=()
+}
+
+# Disable INT/TERM traps first so cancellation cannot reenter itself, then
+# terminate/reap owned workers, then exit with the conventional signal
+# status. The EXIT trap runs after this exits, so run_dir cleanup happens
+# only once every tracked worker has been reaped.
+cancel_parallel() {
+  trap - INT TERM
+  terminate_workers
+  exit "$1"
+}
+
 # Match the development container's supported graphics host. Callers may still
 # override either variable for driver diagnosis, but the default test command
 # must create the same offscreen software context on a machine without a
@@ -109,17 +138,21 @@ echo "Running tests..."
 if [ "$jobs" -eq 1 ]; then
   love app/ --test "$@" || status=$?
 else
-  run_dir="$(mktemp -d)"
+  run_dir="$(mktemp -d "${TMPDIR:-/tmp}/g4recomp-tests.XXXXXXXX")"
   temp_dirs+=("$run_dir")
+  run_token="${run_dir##*/}"
   echo "Running tests with $jobs workers..."
   pids=()
+  trap 'cancel_parallel 130' INT
+  trap 'cancel_parallel 143' TERM
   for ((worker = 1; worker <= jobs; worker++)); do
     (
       unset G4RECOMP_TEST_AGGREGATE G4RECOMP_TEST_WORKER
       export G4RECOMP_TEST_RUN_DIR="$run_dir"
       export G4RECOMP_TEST_WORKERS="$jobs"
       export G4RECOMP_TEST_WORKER="$worker"
-      love app/ --test "$@"
+      export G4RECOMP_TEST_ACCEPTANCE_NAMESPACE="${run_token}-w${worker}"
+      exec love app/ --test "$@"
     ) >"$run_dir/worker-$worker.log" 2>&1 &
     pids[$worker]=$!
   done
@@ -133,12 +166,14 @@ else
       tail -n 40 "$run_dir/worker-$worker.log" >&2 || true
       worker_status=1
     fi
+    unset "pids[$worker]"
   done
+  trap - INT TERM
   if [ "$worker_status" -ne 0 ]; then
     status="$worker_status"
   else
     (
-      unset G4RECOMP_TEST_WORKER
+      unset G4RECOMP_TEST_WORKER G4RECOMP_TEST_ACCEPTANCE_NAMESPACE
       export G4RECOMP_TEST_RUN_DIR="$run_dir"
       export G4RECOMP_TEST_WORKERS="$jobs"
       export G4RECOMP_TEST_AGGREGATE=1
