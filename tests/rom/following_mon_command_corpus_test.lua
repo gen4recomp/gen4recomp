@@ -13,6 +13,19 @@ local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 
 local T = {}
 
+local decodedByRomFs = {}
+
+local function decodedFor(romFs)
+  local existing = decodedByRomFs[romFs]
+  if existing ~= nil then
+    return existing.archive, existing.memberIrs
+  end
+  local archive, memberIrs = FieldScripts.decode(romFs)
+  local decoded = { archive = assert(archive), memberIrs = assert(memberIrs) }
+  decodedByRomFs[romFs] = decoded
+  return decoded.archive, decoded.memberIrs
+end
+
 -- The required core: queries, face/pause/wait/movement, the Elm
 -- follow-up state operation, the nonblocking transition, settle, and the
 -- event-trigger check.
@@ -30,7 +43,7 @@ end
 -- Corpus-wide gate: no lowered script may still carry the one-shot
 -- operation, and every 604-derived node must be a semantic mode setter.
 T["no generated script carries a one-shot follower movement"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   local violations = {}
   FieldScripts.eachScript(archive, memberIrs, function(member, index, structured, lowered)
     for _, item in ipairs(lowered.items) do
@@ -70,7 +83,7 @@ T["follower family has complete dispositions"] = function(romFs)
   Assert.equal(#gaps, 0, "every follower-family command is decided: " .. table.concat(gaps, ", "))
 
   local reached = {}
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   FieldScripts.eachScript(archive, memberIrs, function(_, _, structured, lowered)
     for _, item in ipairs(structured) do
       FieldScripts.eachStep({ item }, function(step)

@@ -15,6 +15,18 @@ local manifest = require("romdump.src.config.FieldActors")
 
 local T = {}
 
+local compiledByRomFs = {}
+
+local function compiledFor(romFs)
+  local existing = compiledByRomFs[romFs]
+  if existing ~= nil then
+    return existing
+  end
+  local compiled = assert(FollowingMonVisualCompiler.compile(romFs))
+  compiledByRomFs[romFs] = compiled
+  return compiled
+end
+
 local CARDINAL_DIRECTIONS = { "north", "south", "west", "east" }
 local LOCOMOTION_POSES = { "idle", "walk" }
 
@@ -111,7 +123,7 @@ local function assertIdleShiftWindow(visual, direction, expected, label)
 end
 
 T["starter follower visuals are directional atlases with cardinal idle and walk poses"] = function(romFs)
-  local compiled = assert(FollowingMonVisualCompiler.compile(romFs))
+  local compiled = compiledFor(romFs)
   local starters = {
     { name = "CHIKORITA", speciesId = 152 },
     { name = "CYNDAQUIL", speciesId = 155 },
@@ -173,7 +185,7 @@ end
 -- ordinary Marill/Kyogre/actor assertions over the bounded field-actor
 -- compiler stay in the default tier.)
 function T.follower_species_reaches_the_follower_producer_with_source_idle(romFs)
-  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
+  local follower = compiledFor(romFs)
   local chikoritaSprite = assert(
     MonSources.followerSpriteId(152, 0, false),
     "chikorita resolves a source follower sprite through follow_mon selection"
@@ -191,7 +203,7 @@ end
 -- compile. (The ordinary Marill control over the bounded field-actor
 -- compiler stays in the default tier.)
 function T.follower_idle_bob_phase_matches_facing_for_the_flagged_species(romFs)
-  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
+  local follower = compiledFor(romFs)
 
   -- A follower without the source flag keeps the generic windows.
   local chikoritaParam =
@@ -220,7 +232,7 @@ function T.follower_idle_bob_phase_matches_facing_for_the_flagged_species(romFs)
 end
 
 function T.follower_visual_dependencies_track_the_follower_parameter_source(romFs)
-  local follower = assert(FollowingMonVisualCompiler.compile(romFs))
+  local follower = compiledFor(romFs)
   local resolved = assert(romFs:resolvedNarc("follower_params"), "follower parameter archive must resolve")
   local raw = assert(romFs:read(resolved.fileId), "follower parameter archive bytes must be readable")
   local record =

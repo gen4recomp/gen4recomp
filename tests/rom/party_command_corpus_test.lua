@@ -10,6 +10,19 @@ local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 
 local T = {}
 
+local decodedByRomFs = {}
+
+local function decodedFor(romFs)
+  local existing = decodedByRomFs[romFs]
+  if existing ~= nil then
+    return existing.archive, existing.memberIrs
+  end
+  local archive, memberIrs = FieldScripts.decode(romFs)
+  local decoded = { archive = assert(archive), memberIrs = assert(memberIrs) }
+  decodedByRomFs[romFs] = decoded
+  return decoded.archive, decoded.memberIrs
+end
+
 local KEYWORDS = {
   "Mon",
   "Party",
@@ -42,7 +55,7 @@ local function familyByName(opcode)
 end
 
 T["corpus mon-family commands all carry a catalog disposition"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   local reached = {}
   FieldScripts.eachScript(archive, memberIrs, function(_, _, structured, lowered)
     for _, item in ipairs(structured) do
@@ -74,7 +87,7 @@ T["corpus mon-family commands all carry a catalog disposition"] = function(romFs
 end
 
 T["supported mon-family commands never lower to silent fallbacks"] = function(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   local silent = {}
   FieldScripts.eachScript(archive, memberIrs, function(_, _, _, lowered)
     for _, item in ipairs(lowered.items) do

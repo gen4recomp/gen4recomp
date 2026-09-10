@@ -13,6 +13,19 @@ local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
 
 local T = {}
 
+local decodedByRomFs = {}
+
+local function decodedFor(romFs)
+  local existing = decodedByRomFs[romFs]
+  if existing ~= nil then
+    return existing.archive, existing.memberIrs
+  end
+  local archive, memberIrs = FieldScripts.decode(romFs)
+  local decoded = { archive = assert(archive), memberIrs = assert(memberIrs) }
+  decodedByRomFs[romFs] = decoded
+  return decoded.archive, decoded.memberIrs
+end
+
 -- The only deferral categories the supported command set allows. A new category is
 -- a deliberate design decision, so it must update this list explicitly.
 local ALLOWED_DEFERRALS = {
@@ -44,7 +57,7 @@ local function familyEntries()
 end
 
 local function reachedOpcodes(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   local reached = {}
   FieldScripts.eachScript(archive, memberIrs, function(_, _, structured, lowered)
     FieldScripts.eachStep(structured, function(step)
@@ -126,7 +139,7 @@ function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
   table.sort(problems)
   Assert.equal(#problems, 0, "every deferred entry names one allowed category: " .. table.concat(problems, ", "))
 
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   local reached = {}
   FieldScripts.eachScript(archive, memberIrs, function(_, _, _, lowered)
     for _, item in ipairs(lowered.items) do
@@ -149,7 +162,7 @@ function T.deferred_entries_carry_one_category_and_stay_explicit(romFs)
 end
 
 function T.lowered_scripts_dispatch_no_source_opcode_number(romFs)
-  local archive, memberIrs = FieldScripts.decode(romFs)
+  local archive, memberIrs = decodedFor(romFs)
   local problems = {}
   local function checkItem(item)
     if type(item.op) ~= "string" then
