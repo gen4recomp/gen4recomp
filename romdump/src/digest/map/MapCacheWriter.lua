@@ -19,7 +19,6 @@
 -- leaves no new shared artifacts behind at all.
 
 local Errors = require("libs.errors.src.Errors")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local AssetErrors = require("libs.assets.src.errors")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
@@ -31,10 +30,8 @@ local MapCacheWriter = {}
 -- Cheap structural invariants are validated up front, before anything is
 -- written to any shared root: a bad collision grid, terrain, or descriptor
 -- must not replace a model descriptor or leave new shared meshes behind on
--- the way to failing. The mesh bytes are encoded exactly once here; the
--- returned table (content sha1 -> encoded bytes) is what persist writes, so
--- a batch that cannot round-trip is rejected before publication and the
--- validated bytes are reused verbatim.
+-- the way to failing. Meshes arrive as finalized content-addressed Data
+-- values and are persisted verbatim.
 local function validateBundle(bundle)
   local mapId = bundle.mapId
   local ok, err = pcall(CollisionGridAsset.encode, bundle.collision)
@@ -68,11 +65,10 @@ local function validateBundle(bundle)
   for _, descriptor in pairs(bundle.models) do
     ModelAsset.validate(descriptor)
   end
-  local encodedMeshes = {}
-  for sha1, batch in pairs(bundle.meshes) do
-    encodedMeshes[sha1] = MeshWriter.encode(batch)
+  for sha1, data in pairs(bundle.meshes) do
+    assert(data ~= nil, "compiled mesh is missing finalized G4M2 Data for " .. sha1)
   end
-  return encodedMeshes
+  return bundle.meshes
 end
 
 local function persist(prepared, bundle)
@@ -81,7 +77,7 @@ local function persist(prepared, bundle)
   local dir = MapAssetCache.mapDir(mapId)
   local stage = prepared:stageFs()
 
-  local encodedMeshes = validateBundle(bundle)
+  local finalizedMeshes = validateBundle(bundle)
   prepared:addOwnedRoot(dir)
 
   -- 1. Shared content-addressed geometry (the encoded bytes validated
@@ -90,7 +86,7 @@ local function persist(prepared, bundle)
   -- a re-write is idempotent and a failure can never clobber a descriptor an
   -- older ready map references (a different descriptor gets a different
   -- path).
-  for sha1, bytes in pairs(encodedMeshes) do
+  for sha1, bytes in pairs(finalizedMeshes) do
     local path = MapAssetCache.geometryPath(sha1)
     stage:write(path, bytes)
     prepared:addSharedFile(path)

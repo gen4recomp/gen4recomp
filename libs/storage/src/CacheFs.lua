@@ -42,7 +42,7 @@ local CACHE_ERRORS = {
 ---@field backend ScopedFs.Backend
 ---@field prefix fun(self: CacheFs): string
 ---@field resolve fun(self: CacheFs, relativePath: string): string
----@field write fun(self: CacheFs, relativePath: string, data: string): boolean
+---@field write fun(self: CacheFs, relativePath: string, data: string|love.Data): boolean
 ---@field read fun(self: CacheFs, relativePath: string): string?
 ---@field getInfo fun(self: CacheFs, relativePath: string): table<string, unknown>?
 ---@field exists fun(self: CacheFs, relativePath: string, expectedType?: string): boolean

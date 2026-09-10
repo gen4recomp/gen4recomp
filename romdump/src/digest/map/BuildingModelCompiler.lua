@@ -79,6 +79,7 @@ local function modelContext(opts, area, archiveAlias, memberId, buildingNsbmd, b
     modelName = buildingModel.name,
     embeddedTex0Present = buildingNsbmd.embeddedTextures ~= nil,
     placementIndices = placementIndices,
+    finalizeMeshes = opts.finalizeMeshes,
   }
 end
 
@@ -130,7 +131,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     local modelDescriptor
     local animated = false
     if memberId < animListNarc:memberCount() then
-      local listBytes = animListNarc:readMember(memberId)
+      local listBytes = assert(animListNarc:readMember(memberId))
       animDeps[#animDeps + 1] = { memberId = memberId, sha1 = Hashing.sha1hex(listBytes) }
       local animResult = MapPropAnimCompiler.compile(listBytes, animResNarc, {
         archiveAlias = animListAliasForArea(area),

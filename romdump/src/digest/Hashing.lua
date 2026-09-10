@@ -10,6 +10,8 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local Hashing = {}
 
 -- Lowercase 40-char hex SHA-1 of a byte string or LÖVE Data value.
+---@param bytes string|love.Data
+---@return string
 function Hashing.sha1hex(bytes)
   local kind = type(bytes)
   assert(
@@ -19,6 +21,7 @@ function Hashing.sha1hex(bytes)
   if not (love and love.data) then
     Errors.raise("HASHING_UNAVAILABLE", "love.data is required for SHA-1 hashing", {})
   end
+  ---@cast bytes string|love.Data
   local raw = love.data.hash("sha1", bytes)
   return (raw:gsub(".", function(c)
     return string.format("%02x", string.byte(c))

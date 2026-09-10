@@ -7,7 +7,9 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local Bundle = require("tests.support.BundleFixture")
+local ffi = require("ffi")
 
 local T = {}
 
@@ -31,6 +33,25 @@ function T.writes_marker_last_and_is_ready()
   Assert.isTrue(MapAssetCache.isReady(c, bundle.mapId, marker), "ready after write")
   local terrain = assert(c:loadLua(MapAssetCache.terrainPath(bundle.mapId)))
   Assert.equal(terrain.schema, "g4-terrain-surfaces-v1")
+end
+
+-- A producer-finalized mesh is already content-addressed G4M2 Data. The map
+-- writer owns staging/publication only and must persist that same object
+-- without asking MeshWriter to rebuild it.
+function T.stages_finalized_mesh_data_verbatim()
+  local bundle = Bundle.minimal()
+  local meshSha = assert(next(bundle.meshes))
+  local payload = MeshWriter.encode(bundle.meshes[meshSha])
+  local data = love.data.newByteData(#payload)
+  ffi.copy(data:getFFIPointer(), payload, #payload)
+  local backend = FakeCache.new()
+  local c = CacheFs.forVersion("heartgold", backend)
+  bundle.meshes[meshSha] = data
+
+  Assert.equal(MapCacheWriter.write(c, bundle), bundle.marker)
+  local stored = backend.files["heartgold/" .. MapAssetCache.geometryPath(meshSha)]
+  Assert.isTrue(stored == data, "the finalized Data object is staged without conversion")
+  Assert.equal(ffi.string(stored:getFFIPointer(), stored:getSize()), payload, "staged bytes are unchanged")
 end
 
 function T.writes_neighbor_collision_and_terrain_artifacts()

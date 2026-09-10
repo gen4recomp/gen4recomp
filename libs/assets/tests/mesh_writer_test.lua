@@ -5,8 +5,66 @@ local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local Errors = require("libs.errors.src.Errors")
+local ffi = require("ffi")
+
+ffi.cdef([[
+  typedef struct {
+    double x, y, z;
+    double u, v;
+    double nx, ny, nz;
+  } MeshTestNumeric;
+  typedef struct {
+    uint8_t r, g, b, a;
+    uint8_t colorSource;
+    uint8_t pad[3];
+  } MeshTestAttrib;
+]])
 
 local T = {}
+
+local function c04Slice(vertices, indices)
+  local vertexOffset = 2
+  local indexOffset = 3
+  local numeric = ffi.new("MeshTestNumeric[?]", vertexOffset + #vertices)
+  local attrib = ffi.new("MeshTestAttrib[?]", vertexOffset + #vertices)
+  local arenaIndices = ffi.new("uint32_t[?]", indexOffset + #indices)
+  for index, vertex in ipairs(vertices) do
+    local numericVertex = numeric[vertexOffset + index - 1]
+    numericVertex.x = vertex.x
+    numericVertex.y = vertex.y
+    numericVertex.z = vertex.z
+    numericVertex.u = vertex.u
+    numericVertex.v = vertex.v
+    numericVertex.nx = vertex.nx
+    numericVertex.ny = vertex.ny
+    numericVertex.nz = vertex.nz
+
+    local attribVertex = attrib[vertexOffset + index - 1]
+    attribVertex.r = vertex.r
+    attribVertex.g = vertex.g
+    attribVertex.b = vertex.b
+    attribVertex.a = vertex.a
+    attribVertex.colorSource = vertex.colorSource
+  end
+  for index, value in ipairs(indices) do
+    arenaIndices[indexOffset + index - 1] = value
+  end
+  return {
+    arena = { numeric = numeric, attrib = attrib, indices = arenaIndices },
+    vertexOffset = vertexOffset,
+    vertexCount = #vertices,
+    indexOffset = indexOffset,
+    indexCount = #indices,
+  }
+end
+
+local function legacyBatch(vertices, indices)
+  return { vertices = vertices, indices = indices }
+end
+
+local function byteDataOf(ptr, length)
+  return ffi.string(ptr, length)
+end
 
 local function triangle()
   local function v(x, y, z, source)
@@ -86,6 +144,104 @@ function T.rejects_non_triangle_index_count()
   local b = triangle()
   b.indices = { 0, 1 }
   raisesCode("MESH_BAD_INDEX_COUNT", MeshWriter.encode, b)
+end
+
+-- The dense geometry path consumes the C04 lanes directly. The old wrapper is the byte oracle
+-- for the unchanged G4M2 contract, including float32 edge rounding.
+function T.direct_encoding_matches_the_legacy_bytes()
+  local vertices = {
+    {
+      x = -0.0,
+      y = 1.5,
+      z = 2 ^ -149,
+      u = -3.6234375,
+      v = 0 / 0,
+      nx = math.huge,
+      ny = 0.0,
+      nz = -math.huge,
+      r = 0,
+      g = 128,
+      b = 255,
+      a = 7,
+      colorSource = 0,
+    },
+    {
+      x = -0.25,
+      y = -math.huge,
+      z = 0.0,
+      u = 0.125,
+      v = -0.0,
+      nx = 1.0,
+      ny = 0.5,
+      nz = 0 / 0,
+      r = 255,
+      g = 1,
+      b = 2,
+      a = 3,
+      colorSource = 1,
+    },
+    {
+      x = 4.0,
+      y = 5.0,
+      z = 6.0,
+      u = 7.0,
+      v = 8.0,
+      nx = 0.0,
+      ny = 1.0,
+      nz = 0.0,
+      r = 10,
+      g = 20,
+      b = 30,
+      a = 40,
+      colorSource = 2,
+    },
+  }
+  local indices = { 0, 1, 2 }
+  local slice = c04Slice(vertices, indices)
+  local expected = MeshWriter.encode(legacyBatch(vertices, indices))
+  local size = MeshWriter.encodedSize(slice.vertexCount, slice.indexCount)
+  Assert.equal(size, #expected, "encodedSize matches the legacy byte length")
+
+  local output = ffi.new("uint8_t[?]", size)
+  Assert.equal(MeshWriter.encodeInto(slice, output, size), size)
+  Assert.equal(byteDataOf(output, size), expected, "direct C04 encoding is byte-identical")
+end
+
+function T.direct_encoding_uses_u32_indices_above_the_u16_threshold()
+  local vertexCount = 65536
+  local indexCount = 3
+  local numeric = ffi.new("MeshTestNumeric[?]", vertexCount)
+  local attrib = ffi.new("MeshTestAttrib[?]", vertexCount)
+  local indices = ffi.new("uint32_t[?]", indexCount)
+  indices[0], indices[1], indices[2] = 0, 65535, 2
+  local slice = {
+    arena = { numeric = numeric, attrib = attrib, indices = indices },
+    vertexOffset = 0,
+    vertexCount = vertexCount,
+    indexOffset = 0,
+    indexCount = indexCount,
+  }
+  local size = MeshWriter.encodedSize(vertexCount, indexCount)
+  Assert.equal(size, 24 + vertexCount * 40 + indexCount * 4)
+  local output = ffi.new("uint8_t[?]", size)
+  Assert.equal(MeshWriter.encodeInto(slice, output, size), size)
+  local reader = BinaryReader.new(byteDataOf(output, size), "direct-u32-mesh")
+  Assert.equal(reader:u16le(18), 4, "vertex count selects the u32 index width")
+  Assert.equal(reader:u32le(24 + vertexCount * 40 + 4), 65535)
+end
+
+function T.direct_encoding_requires_the_exact_output_size()
+  local vertices = triangle().vertices
+  local indices = { 0, 1, 2 }
+  local slice = c04Slice(vertices, indices)
+  local size = MeshWriter.encodedSize(slice.vertexCount, slice.indexCount)
+  local output = ffi.new("uint8_t[?]", size)
+  Assert.throws(function()
+    MeshWriter.encodeInto(slice, output, size - 1)
+  end, "direct encoding rejects an undersized output buffer")
+  Assert.throws(function()
+    MeshWriter.encodeInto(slice, output, size + 1)
+  end, "direct encoding rejects an oversized output buffer")
 end
 
 return { tests = T }

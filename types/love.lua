@@ -85,7 +85,7 @@
 ---@field getSaveDirectory fun(): string
 ---@field newFileData fun(data: string, name: string): unknown
 ---@field read fun(path: string): string?, number?
----@field write fun(path: string, data: string): boolean
+---@field write fun(path: string, data: string|love.Data): boolean
 ---@field getInfo fun(path: string): table?
 ---@field exists fun(path: string): boolean
 ---@field createDirectory fun(path: string): boolean
@@ -104,7 +104,13 @@
 ---@field getTime fun(): number
 
 ---@class love.DataModule
----@field hash fun(algorithm: string, data: string): string
+---@field newByteData fun(size: integer): love.Data
+---@field hash fun(algorithm: string, data: string|love.Data): string
+
+---@class love.Data
+---@field getSize fun(self: love.Data): integer
+---@field getString fun(self: love.Data): string
+---@field getFFIPointer fun(self: love.Data): ffi.cdata*
 
 ---@class love
 ---@field graphics love.Graphics

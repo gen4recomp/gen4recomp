@@ -1,7 +1,6 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local Writer = require("romdump.src.digest.actor.FieldActorEmoteCacheWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
@@ -49,20 +48,23 @@ local function model()
 end
 
 T.tests["publishes field-emote descriptor and referenced assets under owned roots"] = function()
-  local oldEncode = MeshWriter.encode
-  MeshWriter.encode = function()
-    return "encoded-mesh"
-  end
+  local data = {
+    getSize = function()
+      return #"encoded-mesh"
+    end,
+    getString = function()
+      return "encoded-mesh"
+    end,
+  }
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local meshPath = FieldEmoteAssetCache.geometryPath("mesh-key")
   local bundle = {
     marker = "field-emotes-cache-v2:rom:dep",
     model = model(),
-    meshes = { ["mesh-key"] = {} },
+    meshes = { ["mesh-key"] = data },
     textures = { ["texture-key"] = { width = 1, height = 1, data = "png" } },
   }
   local ok, err = pcall(Writer.write, cache, bundle)
-  MeshWriter.encode = oldEncode
   Assert.isTrue(ok, tostring(err))
   Assert.isTrue(cache:exists(FieldEmoteAssetCache.exclamationDescriptorPath(), "file"))
   Assert.equal(cache:read(FieldEmoteAssetCache.markerPath()), bundle.marker)

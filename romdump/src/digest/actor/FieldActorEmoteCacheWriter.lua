@@ -1,7 +1,6 @@
 -- Transactional writer for the normalized movement-emote billboard descriptor.
 
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
@@ -12,8 +11,8 @@ function Writer.write(cacheFs, bundle)
     "data/generated/field/emotes",
   })
   local ok, err = pcall(function()
-    for sha1, mesh in pairs(bundle.meshes) do
-      tx.stage:write(FieldEmoteAssetCache.geometryPath(sha1), MeshWriter.encode(mesh))
+    for sha1, data in pairs(bundle.meshes) do
+      tx.stage:write(FieldEmoteAssetCache.geometryPath(sha1), data)
     end
     for sha1, texture in pairs(bundle.textures) do
       tx.stage:write(

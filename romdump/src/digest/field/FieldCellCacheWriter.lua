@@ -6,7 +6,6 @@ local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local Writer = {}
@@ -22,10 +21,9 @@ local function validateBundle(bundle)
     "incomplete field cell bundle"
   )
   assert(FieldCellCache.validateIndex(bundle.index), "field cell index is malformed")
-  local encodedMeshes = {}
   local encodedTextures = {}
-  for sha1, mesh in pairs(bundle.meshes or {}) do
-    encodedMeshes[sha1] = MeshWriter.encode(mesh)
+  for sha1, data in pairs(bundle.meshes or {}) do
+    assert(data ~= nil, "compiled mesh is missing finalized G4M2 Data for " .. sha1)
   end
   for sha1, texture in pairs(bundle.textures or {}) do
     encodedTextures[sha1] = assert(texture.data, "compiled texture is missing finalized PNG Data")
@@ -44,7 +42,7 @@ local function validateBundle(bundle)
       )
     end
   end
-  return { meshes = encodedMeshes, textures = encodedTextures }
+  return { meshes = bundle.meshes, textures = encodedTextures }
 end
 
 ---@param stage CacheFs

@@ -15,7 +15,11 @@ function FakeCache:write(path, data)
 end
 
 function FakeCache:read(path)
-  return self.files[path]
+  local value = self.files[path]
+  if value ~= nil and type(value) ~= "string" and type(value.getString) == "function" then
+    return value:getString()
+  end
+  return value
 end
 
 local function hasChildren(self, path)
@@ -36,7 +40,14 @@ end
 function FakeCache:getInfo(path)
   if self.files[path] ~= nil then
     local value = self.files[path]
-    local size = type(value) == "string" and #value or value:getSize()
+    local size
+    if type(value) == "string" then
+      size = #value
+    elseif type(value.getSize) == "function" then
+      size = value:getSize()
+    else
+      size = 0
+    end
     return { type = "file", size = size }
   end
   if self.dirs[path] or hasChildren(self, path) then

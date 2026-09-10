@@ -8,6 +8,7 @@
 -- descriptor has exactly one authority.
 
 local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
+local ffi = require("ffi")
 local TerrainBoundaryConformer = require("romdump.src.digest.map.TerrainBoundaryConformer")
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
@@ -21,6 +22,18 @@ local PolygonState = require("libs.assets.src.model.PolygonState")
 local TextureMatrixState = require("romdump.src.digest.model.TextureMatrixState")
 
 local ModelAssetCompiler = {}
+
+---@param batch MeshWriter.Batch
+---@return love.Data
+local function finalizeMesh(batch)
+  local vertexCount = assert(batch.vertexCount or (batch.vertices and #batch.vertices))
+  local indexCount = assert(batch.indexCount or (batch.indices and #batch.indices))
+  local size = MeshWriter.encodedSize(vertexCount, indexCount)
+  local data = love.data.newByteData(size)
+  local pointer = ffi.cast("uint8_t *", assert(data:getFFIPointer()))
+  assert(MeshWriter.encodeInto(batch, pointer, size) == size)
+  return data
+end
 
 -- A compiled batch takes part in terrain boundary conformance only when it
 -- is drawn as a filled surface: culled batches render nothing and
@@ -192,8 +205,10 @@ local function compileModel(model, texturePack, meshes, textures, context)
       local fmt = info and info.textureFormat or 0
       local alphaClass =
         AlphaClassifier.classify(poly.polygonAlpha, poly.polygonMode, fmt, info and info.alphaUsage or nil)
-      local sha1 = Hashing.sha1hex(MeshWriter.encode(batch --[[@as MeshWriter.Batch]]))
-      meshes[sha1] = batch
+      local mesh = context.finalizeMeshes and finalizeMesh(batch --[[@as MeshWriter.Batch]]) or batch
+      local sha1 =
+        Hashing.sha1hex(context.finalizeMeshes and mesh or MeshWriter.encode(batch --[[@as MeshWriter.Batch]]))
+      meshes[sha1] = mesh
       local record = {
         geometry = MapAssetCache.geometryPath(sha1),
         material = batch.materialIndex,

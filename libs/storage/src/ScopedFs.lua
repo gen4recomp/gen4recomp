@@ -12,7 +12,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@alias ScopedFs.Info { type: string, size: number, modtime: number }
 
 ---@class ScopedFs.Backend
----@field write fun(self: ScopedFs.Backend, path: string, data: string): boolean, string?
+---@field write fun(self: ScopedFs.Backend, path: string, data: string|love.Data): boolean, string?
 ---@field read fun(self: ScopedFs.Backend, path: string): string?, number|string?
 ---@field getInfo fun(self: ScopedFs.Backend, path: string): ScopedFs.Info?
 ---@field createDirectory fun(self: ScopedFs.Backend, path: string): boolean, string?
@@ -44,7 +44,7 @@ end
 -- stays distinguishable from a missing file at the load boundary.
 ---@param backend ScopedFs.Backend
 ---@param path string
----@param data string
+---@param data string|love.Data
 ---@return boolean, string?
 local function loveWrite(backend, path, data)
   return backend._filesystem.write(path, data)
@@ -163,7 +163,7 @@ end
 -- WRITE_FAILED.
 ---@param backend ScopedFs.Backend
 ---@param fullPath string
----@param data string
+---@param data string|love.Data
 ---@param codes ScopedFs.ErrorCodes
 ---@return true
 function ScopedFs.write(backend, fullPath, data, codes)

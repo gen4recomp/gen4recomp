@@ -622,6 +622,7 @@ local function _compile(romFs)
     modelArchive = MAIN_ARCHIVE,
     modelMemberId = MODEL_MEMBERS.tabletop,
     modelName = tabletopModel.models[1].name,
+    finalizeMeshes = true,
   })
   for _, entry in ipairs(tabletopCompiled.unresolved) do
     sourceError("starter-choice tabletop texture binding has no source texture: " .. tostring(entry.name), {
@@ -646,6 +647,7 @@ local function _compile(romFs)
       modelArchive = MAIN_ARCHIVE,
       modelMemberId = memberId,
       modelName = model.name,
+      finalizeMeshes = true,
     }, memberId, textures, meshes)
     for _, entry in ipairs(unresolved) do
       unresolvedMaterials[#unresolvedMaterials + 1] = entry
@@ -790,7 +792,11 @@ local function _compile(romFs)
 
   local assets = {}
   for sha1, batch in pairs(meshes) do
-    assets[MapAssetCache.geometryPath(sha1)] = MeshWriter.encode(batch)
+    if type(batch) ~= "table" or type(batch.getSize) == "function" then
+      assets[MapAssetCache.geometryPath(sha1)] = batch
+    else
+      assets[MapAssetCache.geometryPath(sha1)] = MeshWriter.encode(batch)
+    end
   end
   for sha1, tex in pairs(textures) do
     assets[MapAssetCache.texturePath(sha1)] = assert(tex.data, "compiled texture is missing finalized PNG Data")

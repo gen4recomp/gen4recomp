@@ -59,6 +59,7 @@ function Compiler.compile(romFs, hashLua)
     modelName = model.name,
     textureArchive = "field_static_models",
     textureMemberId = MEMBER_ID,
+    finalizeMeshes = true,
   })
   if #compiled.unresolved > 0 then
     Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "field-emote member " .. MEMBER_ID .. " has unresolved materials", {

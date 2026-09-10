@@ -6,6 +6,18 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local Writer = {}
+
+---@param mesh MeshWriter.Batch|love.Data
+---@return string|love.Data
+local function meshData(mesh)
+  if type(mesh) ~= "table" or type(mesh.getSize) == "function" then
+    ---@cast mesh love.Data
+    return mesh
+  end
+  ---@cast mesh MeshWriter.Batch
+  return MeshWriter.encode(mesh)
+end
+
 function Writer.write(cacheFs, bundle)
   local tx = ArtifactPublisher.begin(cacheFs, "field-effects", {
     "assets/generated/field/effects",
@@ -13,7 +25,7 @@ function Writer.write(cacheFs, bundle)
   })
   local ok, err = pcall(function()
     for sha1, mesh in pairs(bundle.meshes) do
-      tx.stage:write(FieldEffectAssetCache.geometryPath(sha1), MeshWriter.encode(mesh))
+      tx.stage:write(FieldEffectAssetCache.geometryPath(sha1), meshData(mesh))
     end
     for sha1, texture in pairs(bundle.textures) do
       tx.stage:write(

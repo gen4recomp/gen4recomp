@@ -59,6 +59,7 @@ local function compileModel(narc, memberId, key, section, role)
     modelName = model.name,
     textureArchive = "field_static_models",
     textureMemberId = memberId,
+    finalizeMeshes = true,
   })
   if #compiled.unresolved > 0 then
     Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "field-effect model has unresolved materials", {
@@ -408,6 +409,7 @@ local function compileTransitionEffect(narc, animationNarc, animationArchive, ke
           modelName = model.name,
           textureArchive = "field_static_models",
           textureMemberId = memberId,
+          finalizeMeshes = true,
         },
         memberId,
         textures,

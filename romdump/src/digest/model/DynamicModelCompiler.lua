@@ -1,6 +1,7 @@
 -- Compiles animated model descriptors and their content-addressed geometry.
 
 local MaterialCompiler = require("romdump.src.digest.model.MaterialCompiler")
+local ffi = require("ffi")
 local DsPolygonAttr = require("libs.nds.src.gx.DsPolygonAttr")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -11,6 +12,16 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local PolygonState = require("libs.assets.src.model.PolygonState")
 
 local DynamicModelCompiler = {}
+
+local function finalizeMesh(batch)
+  local vertexCount = assert(batch.vertexCount or (batch.vertices and #batch.vertices))
+  local indexCount = assert(batch.indexCount or (batch.indices and #batch.indices))
+  local size = MeshWriter.encodedSize(vertexCount, indexCount)
+  local data = love.data.newByteData(size)
+  local pointer = ffi.cast("uint8_t *", assert(data:getFFIPointer()))
+  assert(MeshWriter.encodeInto(batch, pointer, size) == size)
+  return data
+end
 
 local function patternVariants(clips)
   local byMaterial = {}
@@ -95,7 +106,7 @@ local function dynamicMaterials(dynamicModel, matCompiled, textures, variantsByN
   return out
 end
 
-local function dynamicBatches(dynamicModel, meshes)
+local function dynamicBatches(dynamicModel, meshes, context)
   local out = {}
   for _, mesh in ipairs(dynamicModel.meshes) do
     local poly = DsPolygonAttr.decode(mesh.polygonAttrRaw)
@@ -107,8 +118,10 @@ local function dynamicBatches(dynamicModel, meshes)
       )
     end
     if poly.cullMode ~= "all" then
-      local sha1 = Hashing.sha1hex(MeshWriter.encode(mesh.batch --[[@as MeshWriter.Batch]]))
-      meshes[sha1] = mesh.batch
+      local batch = mesh.batch --[[@as MeshWriter.Batch]]
+      local data = context.finalizeMeshes and finalizeMesh(batch) or nil
+      local sha1 = Hashing.sha1hex(data or MeshWriter.encode(batch))
+      meshes[sha1] = data or batch
       local record = {
         id = mesh.id,
         drawIndex = mesh.drawIndex,
@@ -192,7 +205,7 @@ function DynamicModelCompiler.compile(
     dynamic = {
       nodes = dynamicModel.program.nodes,
       transformProgram = dynamicModel.program,
-      batches = dynamicBatches(dynamicModel, meshes),
+      batches = dynamicBatches(dynamicModel, meshes, context),
     },
     materials = dynamicMaterials(dynamicModel, base, textures, variantsByName),
     animations = animResult.clips,

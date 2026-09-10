@@ -36,6 +36,7 @@ local function decodeMember(archive, memberId, label, archiveName)
       sourceOffset = 0,
     })
   end
+  assert(type(bytes) == "string", "intro source member must be a byte string")
   if string.byte(bytes, 1) == 0x10 then
     local plain, lzErr = Lz10.decode(bytes)
     if not plain then
@@ -46,7 +47,7 @@ local function decodeMember(archive, memberId, label, archiveName)
         sourceOffset = 0,
       })
     end
-    bytes = plain
+    bytes = assert(plain)
   end
   return bytes
 end
@@ -67,6 +68,7 @@ local function decode(kind, bytes, label, memberId, archiveName)
 end
 
 local function addDependency(dependencies, archiveName, memberId, bytes, role)
+  assert(type(bytes) == "string", "intro dependency must be a byte string")
   dependencies[#dependencies + 1] = {
     archive = archiveName,
     memberId = memberId,
@@ -142,7 +144,7 @@ local function resolveResourceSet(resourceDataArchive, dependencies, spec, id, p
     local records
     if tableSpec.key == "palette" and paletteRecords then
       records = paletteRecords
-      addDependency(dependencies, resolution.archive, tableSpec.memberId, paletteBytes, role)
+      addDependency(dependencies, resolution.archive, tableSpec.memberId, assert(paletteBytes), role)
     else
       records = readResourceTable(resourceDataArchive, dependencies, spec, tableSpec.memberId, role)
     end

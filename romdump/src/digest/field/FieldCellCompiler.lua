@@ -82,6 +82,7 @@ local function compile(romFs)
                   landDataMemberId = source.landDataMemberId,
                   meshes = meshes,
                   textures = textures,
+                  finalizeMeshes = true,
                 })
                 buildingCache[buildingKey] = building
               end

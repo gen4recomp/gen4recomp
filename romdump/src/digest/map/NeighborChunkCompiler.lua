@@ -80,6 +80,7 @@ function NeighborChunkCompiler.compile(romFs, landMemberId, areaMemberId, contex
     modelArchive = "land_data",
     modelMemberId = landMemberId,
     modelName = mapModel.name,
+    finalizeMeshes = true,
   })
 
   -- NeighborRing bakes a fixed world offset into each draw, so it has nowhere to

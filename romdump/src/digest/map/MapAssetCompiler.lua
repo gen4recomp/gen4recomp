@@ -236,6 +236,7 @@ local function _compile(romFs, idOrSymbol, opts)
     modelMemberId = resolved.landDataMemberId,
     modelName = mapModel.name,
     terrainAnimationCompiler = terrainAnimationCompiler,
+    finalizeMeshes = true,
   })
 
   -- Materials whose names the pack they bind to does not define. They draw
@@ -251,6 +252,7 @@ local function _compile(romFs, idOrSymbol, opts)
     resourceCache = opts.resourceCache,
     meshes = meshes,
     textures = textures,
+    finalizeMeshes = true,
     requiredModelMembers = resolved.map.symbol == StarterLab.mapSymbol and { StarterLab.modelMemberId } or nil,
   })
   appendUnresolved(unresolvedMaterials, { unresolved = buildingCompiled.unresolvedMaterials })

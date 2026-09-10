@@ -59,6 +59,29 @@ function T.read_round_trips_written_bytes()
   Assert.equal(c:read("a/0/4/1"), "matrix")
 end
 
+-- CacheFs has one opaque write seam for strings and LÖVE Data. A Data value
+-- must cross that seam unchanged; converting through getString would both add
+-- an avoidable copy and violate the producer's final-allocation ownership.
+function T.write_forwards_data_without_string_conversion()
+  local payload = "G4M2\0\1\0\255"
+  local data = {
+    getSize = function()
+      return #payload
+    end,
+    getFFIPointer = function()
+      error("the storage path must not inspect the Data pointer")
+    end,
+    getString = function()
+      error("the storage path must not convert Data to a string")
+    end,
+  }
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  c:write("geometry/mesh.g4mesh", data)
+  Assert.isTrue(backend.files["heartgold/geometry/mesh.g4mesh"] == data, "Data reaches the backend by identity")
+  Assert.isTrue(c:getInfo("geometry/mesh.g4mesh").size == #payload, "Data size remains available to storage")
+end
+
 function T.read_missing_returns_nil()
   Assert.isNil(cache("heartgold"):read("nope"))
 end
