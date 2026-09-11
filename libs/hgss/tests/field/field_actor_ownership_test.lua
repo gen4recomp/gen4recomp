@@ -20,9 +20,17 @@ local function map()
   return value
 end
 
+-- Test-only actor shape: the occupancy/store seams under test read the
+-- placement fields below, which are not part of the production Actor contract.
+---@class TestOwnerActor : FieldActorManager.Actor
+---@field fieldX integer
+---@field fieldZ integer
+---@field surfaceId integer
+---@field solid boolean
+
 local function actor(actorId, objectEventId)
   local value = { actorId = actorId, objectEventId = objectEventId }
-  ---@cast value FieldActorManager.Actor
+  ---@cast value TestOwnerActor
   return value
 end
 
@@ -102,20 +110,86 @@ function T.direct_occupancy_orders_claims_and_reservations_through_a_slot_callba
   Assert.isNil(occupancy:reservation(candidate))
 end
 
+-- A storage-slot integer is a physical cdata identity distinct from the
+-- semantic manager slot: it must survive both buffer growth and a full
+-- manager-slot reassignment.
+function T.numeric_storage_slots_survive_growth_and_manager_slot_reassignment()
+  local store = FieldActorStore.new()
+  local actors = {}
+  local numericSlots = {}
+  for i = 1, 40 do
+    actors[i] = actor("a" .. i, i)
+    store:addActor(actors[i])
+    numericSlots[i] = store:allocateNumericState()
+    local state = store:numericState(numericSlots[i])
+    state.fieldX = i
+    state.worldX = i * 1.5
+    state.hasWorldPosition = 1
+  end
+
+  for i = 1, 40 do
+    local state = store:numericState(numericSlots[i])
+    Assert.equal(state.fieldX, i, "a storage slot must keep its value across buffer growth")
+    Assert.equal(state.worldX, i * 1.5, "a storage slot must keep its value across buffer growth")
+  end
+
+  for i = 1, 40 do
+    store:assignManagerSlot(actors[i])
+  end
+  store:replaceManagerSlots({ [0] = actors[40], [1] = actors[1] })
+
+  Assert.equal(store:numericState(numericSlots[1]).fieldX, 1, "manager-slot reassignment must not move numeric storage")
+  Assert.equal(
+    store:numericState(numericSlots[40]).fieldX,
+    40,
+    "manager-slot reassignment must not move numeric storage"
+  )
+end
+
+function T.releasing_a_numeric_slot_frees_it_for_reuse_without_touching_other_actors()
+  local store = FieldActorStore.new()
+  local first = actor("first", 4)
+  local second = actor("second", 9)
+  store:addActor(first)
+  store:addActor(second)
+  local firstSlot = store:allocateNumericState()
+  local secondSlot = store:allocateNumericState()
+  store:numericState(secondSlot).fieldX = 55
+
+  store:releaseNumericState(firstSlot)
+  local reused = store:allocateNumericState()
+  Assert.equal(reused, firstSlot, "a released numeric slot must be reused before growing")
+  Assert.equal(
+    store:numericState(secondSlot).fieldX,
+    55,
+    "releasing one actor's numeric slot must not disturb another actor's storage"
+  )
+end
+
 function T.persistence_translates_actor_state_to_the_existing_save_record()
   local persistence = FieldActorPersistence.new()
-  local testActor = {
-    actorId = "map:61:object:4",
+  local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
+  local FieldActorFixture = require("tests.support.FieldActorFixture")
+  local visual = FieldActorFixture.visual(99)
+  local numericStore = FieldActorStore.new()
+  local testActor = FieldObjectActor.new({
     mapId = 61,
-    objectEventId = 4,
-    sourceEvent = { movementType = "wander_around" },
-    movementType = "wander_around",
+    sourceEvent = {
+      objectEventId = 4,
+      movementType = "wander_around",
+      facingDirection = "west",
+      facingDirectionRaw = 2,
+    },
     fieldX = 12,
     fieldZ = 8,
-    facing = "west",
     cellKey = "0:0",
     sourceSurfaceId = 12,
-  }
+    visual = visual,
+    idlePresentation = visual.idlePresentation,
+    numericStore = numericStore,
+    numericSlot = numericStore:allocateNumericState(),
+  })
+  testActor:setFacing("west")
   ---@cast testActor FieldActorManager.Actor
   local record = persistence:captureActor(testActor, 3, { phase = "wait" })
   Assert.deepEqual(record, {

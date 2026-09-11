@@ -601,9 +601,9 @@ function T.nonzero_object_event_y_reaches_runtime_surface_projection(romFs, vers
   manager:enterMap(runtimeMap, FieldEventState.new())
   local actor = assert(manager:getById("map:" .. runtimeMap.mapId .. ":object:" .. selected.event.objectEventId))
   Assert.equal(actor.sourceEvent.y, selected.source.y, "live actor retains the raw source Y")
-  Assert.equal(actor.surfaceId, selected.expected.surfaceId, "runtime selects the retail-height surface")
-  Assert.equal(actor.worldY, selected.expected.worldY, "runtime samples the selected terrain height")
-  Assert.isTrue(actor.worldY ~= actor.sourceEvent.y, "runtime world Y is not a raw source value")
+  Assert.equal(actor:getSurfaceId(), selected.expected.surfaceId, "runtime selects the retail-height surface")
+  Assert.equal(actor:getWorldPosition().y, selected.expected.worldY, "runtime samples the selected terrain height")
+  Assert.isTrue(actor:getWorldPosition().y ~= actor.sourceEvent.y, "runtime world Y is not a raw source value")
   manager:dispose()
   assets:dispose()
 end

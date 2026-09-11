@@ -27,21 +27,22 @@ end
 ---@return table<string, unknown>
 function FieldActorPersistence:captureActor(actor, managerOrder, controller, action)
   local sourceEvent = assert(actor.sourceEvent, "field actor save requires a source event")
+  local fieldPosition = actor:getFieldPosition()
   local record = {
     actorId = actor.actorId,
     mapId = actor.mapId,
     objectEventId = assert(actor.objectEventId),
     sourceMovementType = assert(sourceEvent.movementType),
     movementType = actor.movementType,
-    fieldX = actor.fieldX,
-    fieldZ = actor.fieldZ,
+    fieldX = fieldPosition.fieldX,
+    fieldZ = fieldPosition.fieldZ,
     facing = actor.facing,
     controller = controller,
     managerOrder = managerOrder,
   }
-  if actor.cellKey ~= nil and actor.sourceSurfaceId ~= nil then
+  if actor.cellKey ~= nil and actor:getSourceSurfaceId() ~= nil then
     record.cellKey = actor.cellKey
-    record.sourceSurfaceId = actor.sourceSurfaceId
+    record.sourceSurfaceId = actor:getSourceSurfaceId()
   end
   if action ~= nil then
     record.action = action

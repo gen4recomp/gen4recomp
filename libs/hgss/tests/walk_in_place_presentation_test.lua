@@ -75,8 +75,8 @@ function T.walk_in_place_must_animate_without_translating()
 
   local actorId = "map:61:object:0"
   local actor = assert(mgr:getById(actorId))
-  local committedFieldX, committedFieldZ = actor.fieldX, actor.fieldZ
-  local wx0, wz0 = assert(actor.worldX), assert(actor.worldZ)
+  local committedFieldX, committedFieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local wx0, wz0 = assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().z)
 
   -- Simulate a walk_in_place presentation cycle: pose must advance while world and
   -- committed field stay fixed.
@@ -84,13 +84,13 @@ function T.walk_in_place_must_animate_without_translating()
   Assert.notNil(actor:scriptedMotionState(), "walk_in_place must start scripted motion")
   mgr:advanceScriptedAction(actorId, 1, 8)
   Assert.equal(actor.pose, "walk", "walk_in_place must use walking pose")
-  Assert.equal(actor.poseTick, 1, "pose clock must advance during walk_in_place")
-  Assert.near(assert(actor.worldX), wx0, 1e-9, "walk_in_place must not translate worldX")
-  Assert.near(assert(actor.worldZ), wz0, 1e-9, "walk_in_place must not translate worldZ")
+  Assert.equal(actor:getPoseTick(), 1, "pose clock must advance during walk_in_place")
+  Assert.near(assert(actor:getWorldPosition().x), wx0, 1e-9, "walk_in_place must not translate worldX")
+  Assert.near(assert(actor:getWorldPosition().z), wz0, 1e-9, "walk_in_place must not translate worldZ")
   mgr:commitScriptedAction(actorId)
-  Assert.equal(actor.fieldX, committedFieldX, "walk_in_place must not change committed fieldX")
-  Assert.equal(actor.fieldZ, committedFieldZ, "walk_in_place must not change committed fieldZ")
-  Assert.near(assert(actor.worldX), wx0, 1e-9, "walk_in_place commit keeps worldX at source")
+  Assert.equal(actor:getFieldPosition().fieldX, committedFieldX, "walk_in_place must not change committed fieldX")
+  Assert.equal(actor:getFieldPosition().fieldZ, committedFieldZ, "walk_in_place must not change committed fieldZ")
+  Assert.near(assert(actor:getWorldPosition().x), wx0, 1e-9, "walk_in_place commit keeps worldX at source")
   Assert.isNil(actor:scriptedMotionState(), "walk_in_place commit clears scripted motion")
 end
 
