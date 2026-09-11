@@ -4,6 +4,12 @@
 -- Each fixed update keeps the previous eye/target so `view(alpha)` can
 -- interpolate between simulation states, matching the player's interpolated
 -- render position at lower simulation rates.
+--
+-- Matrix storage is constructor-owned: fixed updates and host-frame view and
+-- projection preparation overwrite stable buffers and upload arrays instead of
+-- allocating fresh vectors or matrices. Returned matrix arrays are live views;
+-- callers must treat them as read-only until the next view calculation or
+-- projection invalidation.
 
 local CameraHistory = require("libs.hgss.src.field.CameraHistory")
 local Matrix4 = require("libs.math.src.Matrix4")
@@ -40,43 +46,52 @@ local FIELD_BILLBOARD_DEPTH_OFFSET_TILES = 0.5
 ---@field projectionAspect number
 ---@field _billboardDepthOffset number
 ---@field _projectionDirty boolean
----@field _projectionCache number[]|nil
----@field _billboardProjectionCache number[]|nil
+---@field _projectionCache number[]
+---@field _billboardProjectionCache number[]
+---@field _viewBuffer Matrix4.Buffer
+---@field _projectionBuffer Matrix4.Buffer
+---@field _billboardProjectionBuffer Matrix4.Buffer
+---@field _viewArray number[]
+---@field _projectionArray number[]
+---@field _billboardProjectionArray number[]
 local FieldCamera = {}
 FieldCamera.__index = FieldCamera
 
 local TAU = 2 * math.pi
 
-local function copyVector(vector)
-  assert(type(vector) == "table", "camera vector must be a table")
+local function assertVectorComponents(vector, what)
+  assert(type(vector) == "table", what .. " must be a table")
   assert(
     type(vector.x) == "number" and type(vector.y) == "number" and type(vector.z) == "number",
-    "camera vector must contain numeric x, y, and z"
+    what .. " must contain numeric x, y, and z"
   )
-  return { x = vector.x, y = vector.y, z = vector.z }
 end
 
-local function lerpVector(a, b, alpha)
-  return {
-    x = a.x + (b.x - a.x) * alpha,
-    y = a.y + (b.y - a.y) * alpha,
-    z = a.z + (b.z - a.z) * alpha,
-  }
+local function copyComponents(dst, src)
+  dst.x, dst.y, dst.z = src.x, src.y, src.z
+end
+
+local function addDelta(vector, deltaX, deltaY, deltaZ)
+  vector.x = vector.x + deltaX
+  vector.y = vector.y + deltaY
+  vector.z = vector.z + deltaZ
 end
 
 local function angleIndexToRadians(raw)
   return raw * TAU / 65536
 end
 
-local function eyeFromTarget(target, profile)
+local function writeEyeFromTarget(target, profile, out)
   local angleX = angleIndexToRadians(profile.angleXRaw)
   local yaw = angleIndexToRadians(profile.angleYRaw)
   local horizontalDistance = profile.distanceTiles * math.cos(angleX)
-  return {
-    x = target.x + math.sin(yaw) * horizontalDistance,
-    y = target.y + math.sin(-angleX) * profile.distanceTiles,
-    z = target.z + math.cos(yaw) * horizontalDistance,
-  }
+  out.x = target.x + math.sin(yaw) * horizontalDistance
+  out.y = target.y + math.sin(-angleX) * profile.distanceTiles
+  out.z = target.z + math.cos(yaw) * horizontalDistance
+end
+
+local function freshUploadArray()
+  return { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 end
 
 local function validateProfile(profile)
@@ -99,7 +114,7 @@ local function validateProfile(profile)
       and profile.farTiles > profile.nearTiles,
     "invalid camera clipping planes"
   )
-  copyVector(profile.targetOffsetTiles)
+  assertVectorComponents(profile.targetOffsetTiles, "camera target offset")
 end
 
 function FieldCamera.new(profile, options)
@@ -107,14 +122,23 @@ function FieldCamera.new(profile, options)
   options = options or {}
   local canonicalAspect = options.canonicalAspect or (4 / 3)
   assert(canonicalAspect > 0, "canonical aspect must be positive")
-  local sourceTarget = copyVector(options.initialTarget or { x = 0, y = 0, z = 0 })
+  local initial = options.initialTarget or { x = 0, y = 0, z = 0 }
+  assertVectorComponents(initial, "camera initial target")
+  local sourceTarget = { x = initial.x, y = initial.y, z = initial.z }
   local offset = profile.targetOffsetTiles
   local target = {
     x = sourceTarget.x + offset.x,
     y = sourceTarget.y + offset.y,
     z = sourceTarget.z + offset.z,
   }
-  local eye = eyeFromTarget(target, profile)
+  local eye = { x = 0, y = 0, z = 0 }
+  writeEyeFromTarget(target, profile, eye)
+  local viewBuffer = Matrix4.newBuffer()
+  local projectionBuffer = Matrix4.newBuffer()
+  local billboardProjectionBuffer = Matrix4.newBuffer()
+  local viewArray = freshUploadArray()
+  local projectionArray = freshUploadArray()
+  local billboardProjectionArray = freshUploadArray()
   return setmetatable({
     profile = profile,
     projectionType = profile.projectionType,
@@ -125,9 +149,9 @@ function FieldCamera.new(profile, options)
     cameraSourceY = sourceTarget.y,
     cameraAppliedY = sourceTarget.y,
     target = target,
-    previousTarget = copyVector(target),
+    previousTarget = { x = target.x, y = target.y, z = target.z },
     eye = eye,
-    previousEye = copyVector(eye),
+    previousEye = { x = eye.x, y = eye.y, z = eye.z },
     up = { x = 0, y = 1, z = 0 },
     history = CameraHistory.new(7, 6),
     historyEnabled = options.historyEnabled ~= false,
@@ -136,28 +160,36 @@ function FieldCamera.new(profile, options)
     zoom = 1,
     _billboardDepthOffset = FIELD_BILLBOARD_DEPTH_OFFSET_TILES * math.cos(angleIndexToRadians(profile.angleXRaw)),
     _projectionDirty = true,
-    _projectionCache = nil,
-    _billboardProjectionCache = nil,
+    _projectionCache = projectionArray,
+    _billboardProjectionCache = billboardProjectionArray,
+    _viewBuffer = viewBuffer,
+    _projectionBuffer = projectionBuffer,
+    _billboardProjectionBuffer = billboardProjectionBuffer,
+    _viewArray = viewArray,
+    _projectionArray = projectionArray,
+    _billboardProjectionArray = billboardProjectionArray,
   }, FieldCamera)
 end
 
 function FieldCamera:updateFixed(playerTarget)
-  self.previousEye = copyVector(self.eye)
-  self.previousTarget = copyVector(self.target)
-  local current = copyVector(playerTarget)
-  local deltaX = current.x - self.sourceTarget.x
-  local deltaY = current.y - self.sourceTarget.y
-  local deltaZ = current.z - self.sourceTarget.z
+  assertVectorComponents(playerTarget, "camera player target")
+  local eye, target = self.eye, self.target
+  local previousEye, previousTarget, sourceTarget = self.previousEye, self.previousTarget, self.sourceTarget
+  previousEye.x, previousEye.y, previousEye.z = eye.x, eye.y, eye.z
+  previousTarget.x, previousTarget.y, previousTarget.z = target.x, target.y, target.z
+  local deltaX = playerTarget.x - sourceTarget.x
+  local deltaY = playerTarget.y - sourceTarget.y
+  local deltaZ = playerTarget.z - sourceTarget.z
   local appliedY = self.historyEnabled and self.history:push(deltaY) or deltaY
-  self.target.x = self.target.x + deltaX
-  self.target.y = self.target.y + appliedY
-  self.target.z = self.target.z + deltaZ
-  self.eye.x = self.eye.x + deltaX
-  self.eye.y = self.eye.y + appliedY
-  self.eye.z = self.eye.z + deltaZ
-  self.sourceTarget = current
-  self.cameraSourceY = current.y
-  self.cameraAppliedY = self.target.y - self.profile.targetOffsetTiles.y
+  target.x = target.x + deltaX
+  target.y = target.y + appliedY
+  target.z = target.z + deltaZ
+  eye.x = eye.x + deltaX
+  eye.y = eye.y + appliedY
+  eye.z = eye.z + deltaZ
+  sourceTarget.x, sourceTarget.y, sourceTarget.z = playerTarget.x, playerTarget.y, playerTarget.z
+  self.cameraSourceY = playerTarget.y
+  self.cameraAppliedY = target.y - self.profile.targetOffsetTiles.y
 end
 
 -- Translate the local coordinate frame after physical coverage changes. This
@@ -168,11 +200,11 @@ function FieldCamera:rebase(deltaX, deltaY, deltaZ)
     type(deltaX) == "number" and type(deltaY) == "number" and type(deltaZ) == "number",
     "camera rebase delta required"
   )
-  for _, vector in ipairs({ self.sourceTarget, self.target, self.previousTarget, self.eye, self.previousEye }) do
-    vector.x = vector.x + deltaX
-    vector.y = vector.y + deltaY
-    vector.z = vector.z + deltaZ
-  end
+  addDelta(self.sourceTarget, deltaX, deltaY, deltaZ)
+  addDelta(self.target, deltaX, deltaY, deltaZ)
+  addDelta(self.previousTarget, deltaX, deltaY, deltaZ)
+  addDelta(self.eye, deltaX, deltaY, deltaZ)
+  addDelta(self.previousEye, deltaX, deltaY, deltaZ)
   self.cameraSourceY = self.cameraSourceY + deltaY
   self.cameraAppliedY = self.cameraAppliedY + deltaY
 end
@@ -201,22 +233,24 @@ end
 function FieldCamera:adjustTransition(profile, adjustment)
   assert(type(profile) == "number", "transition camera profile required")
   assert(type(adjustment) == "string", "transition camera adjustment required")
-  local sourceTarget = self.sourceTarget
+  local anchorX, anchorY, anchorZ = self.sourceTarget.x, self.sourceTarget.y, self.sourceTarget.z
   if self.transitionPlayer then
-    sourceTarget = copyVector(self.transitionPlayer:renderPosition())
+    local renderPosition = self.transitionPlayer:renderPosition()
+    assertVectorComponents(renderPosition, "transition player render position")
+    anchorX, anchorY, anchorZ = renderPosition.x, renderPosition.y, renderPosition.z
   end
-  self.sourceTarget = sourceTarget
+  local sourceTarget = self.sourceTarget
+  sourceTarget.x, sourceTarget.y, sourceTarget.z = anchorX, anchorY, anchorZ
   local offset = self.profile.targetOffsetTiles
-  self.target = {
-    x = sourceTarget.x + offset.x,
-    y = sourceTarget.y + offset.y,
-    z = sourceTarget.z + offset.z,
-  }
-  self.eye = eyeFromTarget(self.target, self.profile)
-  self.previousTarget = copyVector(self.target)
-  self.previousEye = copyVector(self.eye)
-  self.cameraSourceY = sourceTarget.y
-  self.cameraAppliedY = self.target.y - offset.y
+  local target = self.target
+  target.x = anchorX + offset.x
+  target.y = anchorY + offset.y
+  target.z = anchorZ + offset.z
+  writeEyeFromTarget(target, self.profile, self.eye)
+  copyComponents(self.previousTarget, target)
+  copyComponents(self.previousEye, self.eye)
+  self.cameraSourceY = anchorY
+  self.cameraAppliedY = target.y - offset.y
   if adjustment == "cave" then
     self.perspectiveMode = "environment_0x10"
   elseif adjustment == "outdoor" then
@@ -230,33 +264,43 @@ function FieldCamera:setTransitionPlayer(player)
 end
 
 function FieldCamera:collapseRenderInterpolation()
-  self.previousTarget = copyVector(self.target)
-  self.previousEye = copyVector(self.eye)
+  copyComponents(self.previousTarget, self.target)
+  copyComponents(self.previousEye, self.eye)
 end
 
 -- `alpha` is the render interpolation factor of the current fixed step: 0 shows
 -- the state the previous fixed update left behind, 1 the latest one, and values
 -- between are smoothed so the camera cannot jump between simulation ticks.
+-- Returns the camera-owned live view array; its contents are overwritten by
+-- the next `view` call, so callers must copy values they need to keep.
 function FieldCamera:view(alpha)
   alpha = alpha == nil and 1 or math.max(0, math.min(1, alpha))
-  local eye = lerpVector(self.previousEye, self.eye, alpha)
-  local target = lerpVector(self.previousTarget, self.target, alpha)
-  return Matrix4.lookAt({ eye.x, eye.y, eye.z }, { target.x, target.y, target.z }, { self.up.x, self.up.y, self.up.z })
+  local previousEye, eye = self.previousEye, self.eye
+  local previousTarget, target = self.previousTarget, self.target
+  local eyeX = previousEye.x + (eye.x - previousEye.x) * alpha
+  local eyeY = previousEye.y + (eye.y - previousEye.y) * alpha
+  local eyeZ = previousEye.z + (eye.z - previousEye.z) * alpha
+  local targetX = previousTarget.x + (target.x - previousTarget.x) * alpha
+  local targetY = previousTarget.y + (target.y - previousTarget.y) * alpha
+  local targetZ = previousTarget.z + (target.z - previousTarget.z) * alpha
+  local up = self.up
+  Matrix4.lookAtInto(self._viewBuffer, eyeX, eyeY, eyeZ, targetX, targetY, targetZ, up.x, up.y, up.z)
+  Matrix4.toArrayBufferInto(self._viewArray, self._viewBuffer)
+  return self._viewArray
 end
 
-function FieldCamera:_projection(aspect, zoom)
-  zoom = zoom or 1
-  local projection
-  if self.projectionType == "perspective" then
-    projection = Matrix4.perspective(self.profile.fullVerticalFovRadians, aspect, self.near, self.far)
+local function fillProjectionBuffer(out, camera, aspect, zoom)
+  if camera.projectionType == "perspective" then
+    Matrix4.perspectiveInto(out, camera.profile.fullVerticalFovRadians, aspect, camera.near, camera.far)
   else
-    local halfY = math.tan(self.profile.halfFovRadians) * self.distance
+    local halfY = math.tan(camera.profile.halfFovRadians) * camera.distance
     local halfX = halfY * aspect
-    projection = Matrix4.orthographic(-halfX, halfX, -halfY, halfY, self.near, self.far)
+    Matrix4.orthographicInto(out, -halfX, halfX, -halfY, halfY, camera.near, camera.far)
   end
-  projection[1] = projection[1] * zoom
-  projection[6] = projection[6] * zoom
-  return projection
+  local m = out.m
+  m[0] = m[0] * zoom
+  m[5] = m[5] * zoom
+  return out
 end
 
 function FieldCamera:_refreshProjectionCache()
@@ -264,12 +308,15 @@ function FieldCamera:_refreshProjectionCache()
     return
   end
 
-  local projection = self:_projection(self.projectionAspect, self.zoom)
-  local billboardProjection = Matrix4.toArray(projection)
-  billboardProjection[15] = billboardProjection[15] + billboardProjection[11] * self._billboardDepthOffset
+  fillProjectionBuffer(self._projectionBuffer, self, self.projectionAspect, self.zoom)
+  Matrix4.toArrayBufferInto(self._projectionArray, self._projectionBuffer)
+  Matrix4.copyInto(self._billboardProjectionBuffer, self._projectionBuffer)
+  local billboard = self._billboardProjectionBuffer.m
+  billboard[14] = billboard[14] + billboard[10] * self._billboardDepthOffset
+  Matrix4.toArrayBufferInto(self._billboardProjectionArray, self._billboardProjectionBuffer)
 
-  self._projectionCache = projection
-  self._billboardProjectionCache = billboardProjection
+  self._projectionCache = self._projectionArray
+  self._billboardProjectionCache = self._billboardProjectionArray
   self._projectionDirty = false
 end
 
@@ -293,7 +340,9 @@ function FieldCamera:billboardProjection()
 end
 
 function FieldCamera:canonicalProjection()
-  return self:_projection(self.canonicalAspect, 1)
+  local buffer = Matrix4.newBuffer()
+  fillProjectionBuffer(buffer, self, self.canonicalAspect, 1)
+  return Matrix4.toArrayBuffer(buffer)
 end
 
 FieldCamera.FIELD_BILLBOARD_DEPTH_OFFSET_TILES = FIELD_BILLBOARD_DEPTH_OFFSET_TILES
