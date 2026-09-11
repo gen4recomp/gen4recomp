@@ -75,6 +75,20 @@ local function waitUntil(maxAttempts, intervalSeconds, description, predicate)
   error("timed out waiting for " .. description, 2)
 end
 
+-- Best-effort release for a recorded fixture process tree. A missing record
+-- means no process was started; already-dead processes are expected races.
+-- Anything else that is not a positive decimal process id is a broken
+-- fixture, so fail loudly instead of interpolating it into a shell command.
+local function forceKillProcessTree(pid)
+  if pid == nil then
+    return
+  end
+  local text = trim(tostring(pid))
+  assert(text:match("^[1-9][0-9]*$") ~= nil, "recorded pid must be a positive decimal integer: " .. tostring(pid))
+  os.execute("pkill -9 -P " .. text .. " 2>/dev/null")
+  os.execute("kill -9 " .. text .. " 2>/dev/null")
+end
+
 -- Every command below runs a nested `scripts/test.sh`, and this suite may
 -- itself be executing inside an outer parallel worker; inherited run/worker
 -- identity must not leak into the nested command.
@@ -357,20 +371,17 @@ function T.parent_term_cancellation_terminates_and_reaps_workers_before_run_dir_
       Assert.isFalse(fileExists(recordDir .. "/aggregate-ran"), "cancellation must never reach the aggregate process")
     end)
 
+    if not ok then
+      -- Release every recorded worker tree before the nested parent so the
+      -- pipe drain below cannot block on a command that never exits.
+      for worker = 1, 2 do
+        forceKillProcessTree(readFile(recordDir .. "/worker-" .. worker .. ".pid"))
+      end
+      forceKillProcessTree(parentPid)
+    end
+
     local _ = handle:read("*a")
     handle:close()
-
-    -- Emergency cleanup: a pre-implementation run never signals the fake
-    -- workers, so they (and their blocked `sleep` child) may still be alive;
-    -- do not leak them regardless of pass/fail above.
-    for worker = 1, 2 do
-      local pid = readFile(recordDir .. "/worker-" .. worker .. ".pid")
-      if pid then
-        pid = trim(pid)
-        os.execute("pkill -9 -P " .. pid .. " 2>/dev/null")
-        os.execute("kill -9 " .. pid .. " 2>/dev/null")
-      end
-    end
 
     if not ok then
       error(err, 0)
@@ -459,21 +470,15 @@ function T.parent_term_cancellation_terminates_and_reaps_aggregate_before_run_di
       Assert.equal(count, 1, "cancellation must not launch an additional aggregate process")
     end)
 
+    if not ok then
+      -- Release the recorded aggregate tree before the nested parent so the
+      -- pipe drain below cannot block on a command that never exits.
+      forceKillProcessTree(readFile(recordDir .. "/aggregate.pid"))
+      forceKillProcessTree(parentPid)
+    end
+
     local _ = handle:read("*a")
     handle:close()
-
-    -- Emergency cleanup: when the parent does not forward termination to
-    -- the aggregate process, it (and its blocked `sleep` child) may still
-    -- be alive; do not leak them regardless of pass/fail above.
-    local aggregatePid = readFile(recordDir .. "/aggregate.pid")
-    if aggregatePid then
-      aggregatePid = trim(aggregatePid)
-      os.execute("pkill -9 -P " .. aggregatePid .. " 2>/dev/null")
-      os.execute("kill -9 " .. aggregatePid .. " 2>/dev/null")
-    end
-    if not fileExists(statusFile) then
-      os.execute("kill -9 " .. tostring(parentPid) .. " 2>/dev/null")
-    end
 
     if not ok then
       error(err, 0)
