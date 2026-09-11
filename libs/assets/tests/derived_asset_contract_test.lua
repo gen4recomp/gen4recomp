@@ -108,6 +108,16 @@ function T.contract_pins_the_current_asset_identities()
       iconManifestSchema = "g4-mon-icon-manifest-v1",
       portraitManifestSchema = "g4-mon-portrait-manifest-v1",
     },
+    items = {
+      cacheFormat = "item-cache-v1",
+      catalogSchema = "g4-item-catalog-v1",
+      indexSchema = "g4-item-index-v1",
+      iconManifestSchema = "g4-item-icons-v1",
+    },
+    bag = {
+      cacheFormat = "bag-cache-v2",
+      schema = "g4-bag-assets-v3",
+    },
     audio = {
       cacheFormat = "g4-audio-cache-v1",
       -- The sequence vocabulary and initial-volume domain are strict current

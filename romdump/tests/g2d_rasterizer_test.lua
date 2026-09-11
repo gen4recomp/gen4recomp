@@ -67,6 +67,14 @@ local function entry(tile, palette, flipH, flipV)
   return { tile = tile, palette = palette or 0, flipH = flipH or false, flipV = flipV or false }
 end
 
+local function cell(tile)
+  return { objs = { { x = 0, y = 0, tile = tile, palette = 0, width = 8, height = 8 } } }
+end
+
+local function animation(frames)
+  return { frames = frames }
+end
+
 local function pixelAt(pixels, width, x, y)
   local base = (y * width + x) * 4
   return string.byte(pixels, base + 1, base + 4)
@@ -193,6 +201,136 @@ function T.entry_counts_that_contradict_the_dimensions_are_typed_errors()
   Assert.isTrue(Errors.is(err), "expected a structured raster failure")
   local failure = err ---@cast failure Errors.Error
   Assert.equal(failure.code, module.ERROR.SOURCE_INVALID)
+end
+
+function T.animation_frame_selects_its_cell_instead_of_the_sequence_position()
+  local module = rasterizer()
+  local result = module.renderAnimationFrame(
+    charData({ solidTile4(1), solidTile4(2) }),
+    paletteData(16),
+    { cells = { cell(0), cell(1) } },
+    animation({
+      {
+        cell = 1,
+        duration = 4,
+        element = "none",
+        translateX = 0,
+        translateY = 0,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 0,
+      },
+    }),
+    1
+  )
+  local expected = paletteData(16).colors[3]
+  local r, g, b, a = pixelAt(result.pixels, result.width, 2, 2)
+  Assert.equal(r, expected.r)
+  Assert.equal(g, expected.g)
+  Assert.equal(b, expected.b)
+  Assert.equal(a, 255)
+end
+
+function T.animation_frame_without_an_element_preserves_the_cell_origin()
+  local module = rasterizer()
+  local result = module.renderAnimationFrame(
+    charData({ solidTile4(1) }),
+    paletteData(16),
+    { cells = { { objs = { { x = -4, y = -2, tile = 0, palette = 0, width = 8, height = 8 } } } } },
+    animation({
+      {
+        cell = 0,
+        duration = 4,
+        element = "none",
+        translateX = 0,
+        translateY = 0,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 0,
+      },
+    }),
+    1
+  )
+  Assert.deepEqual(result.offset, { x = -4, y = -2 }, "an untransformed frame preserves its cell origin")
+end
+
+function T.animation_frame_palette_override_changes_realized_pixels()
+  local module = rasterizer()
+  local palette = paletteData(32)
+  local result = module.renderAnimationFrame(
+    charData({ solidTile4(1) }),
+    palette,
+    { cells = { cell(0) } },
+    animation({
+      {
+        cell = 0,
+        duration = 4,
+        element = "none",
+        translateX = 0,
+        translateY = 0,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 0,
+      },
+    }),
+    1,
+    nil,
+    1
+  )
+  local expected = palette.colors[18]
+  local r, g, b, a = pixelAt(result.pixels, result.width, 2, 2)
+  Assert.equal(r, expected.r)
+  Assert.equal(g, expected.g)
+  Assert.equal(b, expected.b)
+  Assert.equal(a, 255)
+end
+
+function T.animation_frame_transform_changes_the_realized_extent()
+  local module = rasterizer()
+  local result = module.renderAnimationFrame(
+    charData({ solidTile4(1) }),
+    paletteData(16),
+    { cells = { cell(0) } },
+    animation({
+      {
+        cell = 0,
+        duration = 4,
+        element = "translate",
+        translateX = 3,
+        translateY = 2,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 0,
+      },
+    }),
+    1
+  )
+  Assert.equal(result.width, 8)
+  Assert.equal(result.height, 8)
+  Assert.deepEqual(result.offset, { x = 3, y = 2 }, "the realized visual preserves frame translation")
+end
+
+function T.animation_frame_transform_preserves_the_cell_origin()
+  local module = rasterizer()
+  local result = module.renderAnimationFrame(
+    charData({ solidTile4(1) }),
+    paletteData(16),
+    { cells = { { objs = { { x = -4, y = -2, tile = 0, palette = 0, width = 8, height = 8 } } } } },
+    animation({
+      {
+        cell = 0,
+        duration = 4,
+        element = "translate",
+        translateX = 3,
+        translateY = 2,
+        scaleX = 1,
+        scaleY = 1,
+        rotation = 0,
+      },
+    }),
+    1
+  )
+  Assert.deepEqual(result.offset, { x = -1, y = 0 }, "translation must apply to the source cell origin")
 end
 
 return { tests = T }
