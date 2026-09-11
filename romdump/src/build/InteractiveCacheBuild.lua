@@ -50,6 +50,7 @@ local CompilerPool = require("romdump.src.build.CompilerPool")
 
 ---@class InteractiveCacheBuild.ScriptPlan
 ---@field generationKey string
+---@field marker string
 ---@field members InteractiveCacheBuild.ScriptMemberPlan[]
 
 ---@class InteractiveCacheBuild
