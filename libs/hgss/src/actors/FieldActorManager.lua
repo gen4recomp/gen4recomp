@@ -167,7 +167,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field getCollisionAt fun(self: FieldActorManager, mapId: integer, candidate: FieldOccupancyCandidate): FieldActorManager.Actor?
 ---@field isPausable fun(self: FieldActorManager, actorId: string): boolean
 ---@field allPausable fun(self: FieldActorManager): boolean
----@field _restoreEntry fun(self: FieldActorManager, entry: FieldActorManager.Entry, snapshot: table<string, unknown>?)
+---@field _restoreEntry fun(self: FieldActorManager, entry: FieldActorManager.Entry, eventState: FieldEventState, snapshot: table<string, unknown>?)
 ---@field captureObjects fun(self: FieldActorManager): table<string, unknown>
 ---@field new fun(opts: FieldActorManagerOptions): FieldActorManager
 ---@field isPlacementRejection fun(err: unknown): boolean
@@ -850,7 +850,65 @@ local function savedDestination(entry, actor, point)
   return projection
 end
 
-function FieldActorManager:_restoreEntry(entry, snapshot)
+---@param eventState FieldEventState
+---@param event FieldActorEvent
+---@return boolean
+local function isSourceEventPresent(eventState, event)
+  return not eventState:isFlagSet(event.eventFlag)
+end
+
+-- A save can overtake durable presence: a record may name a source event
+-- whose flag was set after the save, while the event is legitimately
+-- absent from the entered map. The manager owns both the source events and
+-- the bound event state, so it drops those records before staging; records
+-- for events the map no longer declares at all are kept, and the
+-- persistence translator still fails them as corruption.
+---@param entry FieldActorManager.Entry
+---@param eventState FieldEventState
+---@param snapshot table<string, unknown>?
+---@return table<string, unknown>?
+local function restorableSnapshot(self, entry, eventState, snapshot)
+  if snapshot == nil or snapshot.actors == nil then
+    return snapshot
+  end
+  local mapId = entry.runtimeMap.mapId
+  local fieldData = entry.runtimeMap.fieldData --[[@as FieldActorFieldData]]
+  local objects = fieldData.events.objects ---@type FieldActorEvent[]
+  assert(type(objects) == "table", "restore requires the compiled object collection")
+  local byObjectEventId = {}
+  for _, event in ipairs(objects) do
+    byObjectEventId[event.objectEventId] = event
+  end
+  local kept = {}
+  local dropped = false
+  for actorId, record in pairs(snapshot.actors) do
+    local sourceEvent
+    if record.mapId == mapId and record.objectEventId ~= nil then
+      sourceEvent = byObjectEventId[record.objectEventId]
+    end
+    if sourceEvent ~= nil then
+      if not isSourceEventPresent(eventState, sourceEvent) then
+        self.persistence:validateSourceIdentity(actorId, record, sourceEvent)
+        dropped = true
+      else
+        kept[actorId] = record
+      end
+    else
+      kept[actorId] = record
+    end
+  end
+  if not dropped then
+    return snapshot
+  end
+  local filtered = {}
+  for key, value in pairs(snapshot) do
+    filtered[key] = value
+  end
+  filtered.actors = kept
+  return filtered
+end
+
+function FieldActorManager:_restoreEntry(entry, eventState, snapshot)
   local function getActor(actorId)
     return entry.store:getActor(actorId)
   end
@@ -860,8 +918,13 @@ function FieldActorManager:_restoreEntry(entry, snapshot)
   local function projectDestination(actor, point)
     return savedDestination(entry, actor, point)
   end
-  local staged =
-    self.persistence:stageRestore(snapshot, entry.runtimeMap.mapId, getActor, projectActor, projectDestination)
+  local staged = self.persistence:stageRestore(
+    restorableSnapshot(self, entry, eventState, snapshot),
+    entry.runtimeMap.mapId,
+    getActor,
+    projectActor,
+    projectDestination
+  )
   local plans = staged.plans
   local records = staged.records
   if #records == 0 then
@@ -1046,7 +1109,7 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
   end
   local entry = newEntry(runtimeMap)
   populateEntry(self, entry, eventState)
-  local restored, restoreErr = pcall(self._restoreEntry, self, entry, restoredObjects)
+  local restored, restoreErr = pcall(self._restoreEntry, self, entry, eventState, restoredObjects)
   if not restored then
     destroyEntry(self, entry)
     error(restoreErr, 0)

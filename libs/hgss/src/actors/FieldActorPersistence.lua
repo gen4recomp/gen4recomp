@@ -1,6 +1,7 @@
 -- Owns the actor save translation seam while save schema ownership stays in save.
 
 local Errors = require("libs.errors.src.Errors")
+local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
 local FieldObjectSave = require("libs.hgss.src.save.FieldObjectSave")
 local ScriptErrors = require("libs.script.src.errors")
 
@@ -18,6 +19,25 @@ FieldActorPersistence.__index = FieldActorPersistence
 ---@return FieldActorPersistence
 function FieldActorPersistence.new()
   return setmetatable({}, FieldActorPersistence)
+end
+
+---@param actorId string
+---@param record table<string, unknown>
+---@param sourceEvent FieldActorEvent
+function FieldActorPersistence:validateSourceIdentity(actorId, record, sourceEvent)
+  assert(type(sourceEvent) == "table", "field actor source event is required")
+  local mapId = assert(record.mapId)
+  if
+    FieldObjectActor.actorId(mapId, sourceEvent.objectEventId) ~= actorId
+    or sourceEvent.objectEventId ~= record.objectEventId
+    or sourceEvent.movementType ~= record.sourceMovementType
+  then
+    Errors.raise(
+      ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
+      "saved actor source definition changed",
+      { actorId = actorId }
+    )
+  end
 end
 
 ---@param actor FieldActorManager.Actor
@@ -102,13 +122,8 @@ function FieldActorPersistence:stageRestore(snapshot, mapId, getActor, projectAc
       end
       actor = assert(actor)
       local sourceEvent = assert(actor.sourceEvent)
-      if actor.objectEventId ~= record.objectEventId or sourceEvent.movementType ~= record.sourceMovementType then
-        Errors.raise(
-          ScriptErrors.SCRIPT_TASK_UNSERIALIZABLE,
-          "saved actor source definition changed",
-          { actorId = actorId }
-        )
-      end
+      ---@cast sourceEvent FieldActorEvent
+      self:validateSourceIdentity(actorId, record, sourceEvent)
       plans[actorId] = {
         actor = actor,
         record = record,
