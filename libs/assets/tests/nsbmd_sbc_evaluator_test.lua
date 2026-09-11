@@ -1038,4 +1038,199 @@ function T.prjmap_only_selects_texgen_state()
   Assert.equal(result.matrixSlots[1], nil, "PRJMAP writes no matrix-stack slot")
 end
 
+-- ---- in-place evaluation over reusable scratch ----
+
+-- A plain-data copy of one live evaluation, so later in-place evaluations
+-- cannot overwrite the compared values through the shared containers.
+local function snapshotMatrix(m)
+  local out = {}
+  for i = 1, 16 do
+    out[i] = m[i]
+  end
+  return out
+end
+
+local function snapshotStacks(stacks)
+  local out = {}
+  for slot, m in pairs(stacks) do
+    out[slot] = snapshotMatrix(m)
+  end
+  return out
+end
+
+local function snapshotDraw(draw)
+  return {
+    nodeIndex = draw.nodeIndex,
+    materialIndex = draw.materialIndex,
+    shapeIndex = draw.shapeIndex,
+    materialReapplied = draw.materialReapplied,
+    transformMode = draw.transformMode,
+    matrix = snapshotMatrix(draw.matrix),
+    baseTransform = draw.baseTransform and snapshotMatrix(draw.baseTransform) or nil,
+    restoreStack = snapshotStacks(draw.restoreStack),
+  }
+end
+
+local function snapshotEvaluation(result)
+  local draws = {}
+  for i, draw in ipairs(result.draws) do
+    draws[i] = snapshotDraw(draw)
+  end
+  local visibility = {}
+  for nodeIndex, visible in pairs(result.nodeVisibility) do
+    visibility[nodeIndex] = visible
+  end
+  return {
+    draws = draws,
+    nodeMatrices = snapshotStacks(result.nodeMatrices),
+    nodeVisibility = visibility,
+    matrixSlots = snapshotStacks(result.matrixSlots),
+  }
+end
+
+local function assertStacksEqual(actual, expected, label)
+  for slot, m in pairs(expected) do
+    Assert.notNil(actual[slot], label .. ": slot " .. tostring(slot) .. " present")
+    assertMatrixClose(actual[slot], m, label .. ": slot " .. tostring(slot))
+  end
+  for slot in pairs(actual) do
+    Assert.notNil(expected[slot], label .. ": unexpected slot " .. tostring(slot))
+  end
+end
+
+-- Deep semantic parity between two evaluations: every draw field, every
+-- node matrix/visibility entry, and every matrix-stack slot.
+local function assertEvaluationEqual(actual, expected, label)
+  Assert.equal(#actual.draws, #expected.draws, label .. ": draw count")
+  for i, a in ipairs(actual.draws) do
+    local e = expected.draws[i]
+    Assert.equal(a.nodeIndex, e.nodeIndex, label .. ": draw " .. i .. " node")
+    Assert.equal(a.materialIndex, e.materialIndex, label .. ": draw " .. i .. " material")
+    Assert.equal(a.shapeIndex, e.shapeIndex, label .. ": draw " .. i .. " shape")
+    Assert.equal(a.materialReapplied, e.materialReapplied, label .. ": draw " .. i .. " material reapply")
+    Assert.equal(a.transformMode, e.transformMode, label .. ": draw " .. i .. " transform mode")
+    assertMatrixClose(a.matrix, e.matrix, label .. ": draw " .. i .. " matrix")
+    if e.baseTransform == nil then
+      Assert.isNil(a.baseTransform, label .. ": draw " .. i .. " has no billboard base")
+    else
+      assertMatrixClose(a.baseTransform, e.baseTransform, label .. ": draw " .. i .. " billboard base")
+    end
+    assertStacksEqual(a.restoreStack, e.restoreStack, label .. ": draw " .. i .. " restore stack")
+  end
+  assertStacksEqual(actual.nodeMatrices, expected.nodeMatrices, label .. ": node matrices")
+  assertStacksEqual(actual.matrixSlots, expected.matrixSlots, label .. ": matrix slots")
+  for nodeIndex, visible in pairs(expected.nodeVisibility) do
+    Assert.equal(actual.nodeVisibility[nodeIndex], visible, label .. ": node " .. tostring(nodeIndex) .. " visibility")
+  end
+  for nodeIndex in pairs(actual.nodeVisibility) do
+    Assert.notNil(
+      expected.nodeVisibility[nodeIndex],
+      label .. ": unexpected visibility for node " .. tostring(nodeIndex)
+    )
+  end
+end
+
+-- The in-place path replays the authoritative SBC stream into
+-- caller-provided scratch: allocating and in-place evaluations agree on
+-- every semantic output, repeated evaluations reuse the same output
+-- containers, and visibility changes shrink/grow the draw list without
+-- leaving stale records behind.
+function T.in_place_evaluation_reuses_scratch_with_identical_semantics()
+  Assert.equal(
+    type(NsbmdSbcEvaluator.newScratch),
+    "function",
+    "the evaluator owns reusable scratch storage for in-place evaluation"
+  )
+  Assert.equal(
+    type(NsbmdSbcEvaluator.evaluateInto),
+    "function",
+    "the evaluator replays its authoritative SBC stream into caller scratch"
+  )
+  local nodeVisible = cmdNode(1, true)
+  local p = program({
+    nodes = {
+      srt(0, { matrixStackIndex = 0, translation = { x = 10, y = 0, z = 0 } }),
+      srt(1, { matrixStackIndex = 1, translation = { x = 0, y = 20, z = 0 } }),
+    },
+    commands = {
+      cmdNodedesc(0, 0, 0, 3),
+      cmdNode(0, true),
+      cmdMat(0),
+      cmdShp(0),
+      cmdNodedesc(1, 1, 0, nil, 3),
+      cmdBb(0),
+      cmdMat(0),
+      cmdShp(1),
+      {
+        opcode = 0x09,
+        storeSlot = 2,
+        terms = {
+          { matrixSlot = 0, nodeIndex = 0, ratio = 128 },
+          { matrixSlot = 1, nodeIndex = 1, ratio = 128 },
+        },
+      },
+      cmdMtx(2),
+      cmdMat(0),
+      cmdShp(2),
+      nodeVisible,
+      cmdMtx(1),
+      cmdMat(0),
+      cmdShp(3),
+      { opcode = 0x01 },
+    },
+    evpMatrices = { [0] = evpEntry(0, 0, 0), [1] = evpEntry(0, 0, 0) },
+  })
+  local animatedX = 30
+  local prov = provider({
+    nodeSRT = function(nodeIndex)
+      if nodeIndex == 0 then
+        return srt(0, { matrixStackIndex = 0, translation = { x = animatedX, y = 0, z = 0 } })
+      end
+      return nil
+    end,
+  })
+
+  local scratch = NsbmdSbcEvaluator.newScratch(p)
+  local live = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  local snap = snapshotEvaluation(live)
+  assertEvaluationEqual(snap, NsbmdSbcEvaluator.evaluate(p, prov), "in-place versus allocating")
+
+  Assert.equal(snap.draws[1].shapeIndex, 0)
+  Assert.equal(snap.draws[2].shapeIndex, 1)
+  Assert.equal(snap.draws[3].shapeIndex, 2)
+  Assert.equal(snap.draws[4].shapeIndex, 3)
+  assertMatrixAtPoint(snap.draws[1].matrix, 0, 0, 0, 30, 0, 0, "copied slot restores the animated node")
+  Assert.equal(snap.draws[2].transformMode, "billboard")
+  assertMatrixClose(snap.draws[2].matrix, Matrix4.identity(), "billboard geometry stays in billboard-local space")
+  assertMatrixAtPoint(snap.draws[2].baseTransform, 0, 0, 0, 30, 20, 0, "billboard captures the animated joint matrix")
+  assertMatrixAtPoint(snap.draws[3].matrix, 0, 0, 0, 30, 10, 0, "even blend of the two joint slots")
+  assertMatrixAtPoint(snap.draws[4].matrix, 0, 0, 0, 30, 20, 0, "absent channels fall back to the bind SRT")
+
+  local drawsTable = live.draws
+  local firstDraw = live.draws[1]
+  local firstMatrix = firstDraw.matrix
+  local lastDraw = live.draws[4]
+
+  animatedX = 50
+  local reframed = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  Assert.isTrue(reframed == live, "repeated evaluation reuses the same output containers")
+  Assert.isTrue(reframed.draws == drawsTable, "the draw list keeps its identity across frames")
+  Assert.isTrue(reframed.draws[1] == firstDraw, "draw records keep their identity across frames")
+  Assert.isTrue(firstDraw.matrix == firstMatrix, "draw matrices keep their identity across frames")
+  assertMatrixAtPoint(firstDraw.matrix, 0, 0, 0, 50, 0, 0, "reused records carry the current frame")
+
+  nodeVisible.visible = false
+  local hidden = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  Assert.isTrue(hidden == live, "visibility changes reuse the same output containers")
+  Assert.equal(#hidden.draws, 3, "hiding a node shrinks the draw list")
+  Assert.isNil(hidden.draws[4], "surplus entries are cleared when hidden")
+  assertEvaluationEqual(snapshotEvaluation(hidden), NsbmdSbcEvaluator.evaluate(p, prov), "hidden versus allocating")
+
+  nodeVisible.visible = true
+  local reshown = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
+  Assert.equal(#reshown.draws, 4, "reappearing restores the draw list")
+  Assert.isTrue(reshown.draws[4] == lastDraw, "reappearing reuses the established draw record")
+  assertMatrixAtPoint(lastDraw.matrix, 0, 0, 0, 50, 20, 0, "reused records carry the current frame")
+end
+
 return { tests = T }

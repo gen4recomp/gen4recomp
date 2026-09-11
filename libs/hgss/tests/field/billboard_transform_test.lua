@@ -170,4 +170,27 @@ function T.result_is_a_fresh_matrix()
   Assert.isTrue(math.abs(m[16] - 1) < EPS, "w row is affine")
 end
 
+function T.components_into_matches_components()
+  local bases = {
+    Matrix4.translate(4, 2, -6),
+    Matrix4.multiply(Matrix4.translate(4, 2, -6), Matrix4.multiply(Matrix4.rotateZ(0.7), Matrix4.scale(2, 3, 4))),
+    Matrix4.multiply(Matrix4.rotateY(0.7), Matrix4.scale(2, 1, 1)),
+  }
+  for _, base in ipairs(bases) do
+    local centerOut, scaleOut = { 0, 0, 0 }, { 0, 0, 0 }
+    local centerReturned, scaleReturned = BillboardTransform.componentsInto(centerOut, scaleOut, base)
+    Assert.isTrue(centerReturned == centerOut, "componentsInto reuses the center array")
+    Assert.isTrue(scaleReturned == scaleOut, "componentsInto reuses the scale array")
+    local center, scale = BillboardTransform.components(base)
+    Assert.deepEqual(centerOut, center)
+    Assert.deepEqual(scaleOut, scale)
+  end
+end
+
+function T.components_into_rejects_a_zero_billboard_scale()
+  Assert.throws(function()
+    BillboardTransform.componentsInto({ 0, 0, 0 }, { 0, 0, 0 }, Matrix4.scale(0, 1, 1))
+  end)
+end
+
 return { tests = T }

@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local NitroPoseBackend = require("libs.hgss.src.presentation.NitroPoseBackend")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 
 local T = {}
@@ -233,12 +234,14 @@ function T.pose_scrubs_with_the_player()
   instance:play("rot")
   instance:updateFixed() -- frame 1
   instance:evaluatePose()
-  local frame1 = instance.poseState.drawMatrices["draw0.seg0"].position
+  -- The pose is a live view overwritten by each evaluation, so capture the
+  -- number before advancing: retaining the table would observe frame 2.
+  local frame1 = instance.poseState.drawMatrices["draw0.seg0"].position[1]
   instance:updateFixed() -- frame 2
   instance:evaluatePose()
-  local frame2 = instance.poseState.drawMatrices["draw0.seg0"].position
+  local frame2 = instance.poseState.drawMatrices["draw0.seg0"].position[1]
   -- The rotation cells differ between the two frames (A = 15/16 vs 14/16).
-  Assert.isTrue(math.abs(frame1[1] - frame2[1]) > EPS, "different frames resolve different draws")
+  Assert.isTrue(math.abs(frame1 - frame2) > EPS, "different frames resolve different draws")
 end
 
 function T.rotation_clip_changes_the_draw_matrix()
@@ -613,6 +616,51 @@ function T.pose_reports_the_matrix_slot_stack_in_tiles()
   Assert.equal(instance.poseState.matrixSlots[1][14], 2)
   Assert.equal(instance.poseState.matrixSlots[1][13], 0)
   Assert.equal(instance.poseState.matrixSlots[0][13], 1, "slot 0 holds node 0 at (1,0,0) tiles")
+end
+
+local function snapshotNumbers(m)
+  local out = {}
+  for i = 1, #m do
+    out[i] = m[i]
+  end
+  return out
+end
+
+-- The in-place pose path reuses caller-owned storage with identical values:
+-- repeated evaluations keep the same pose/draw containers while their
+-- contents track the current frame, and stopping the clip resets the pose
+-- to the bind state instead of retaining animated values.
+function T.evaluate_into_reuses_pose_storage_with_identical_values()
+  Assert.equal(type(NitroPoseBackend.newScratch), "function", "the backend owns reusable pose storage")
+  Assert.equal(type(NitroPoseBackend.evaluateInto), "function", "the backend evaluates into caller scratch")
+  local def = singleMeshDefinition()
+  local instance = newInstance(def)
+  instance:play("trans")
+  instance:updateFixed()
+  local scratch = NitroPoseBackend.newScratch(def)
+  local live = NitroPoseBackend.evaluateInto(instance, scratch)
+  local draw = assert(live.drawMatrices["draw0.seg0"])
+  Assert.equal(draw.position[13], 10 / 16)
+
+  local reference = NitroPoseBackend.evaluate(instance)
+  local refDraw = assert(reference.drawMatrices["draw0.seg0"])
+  Assert.deepEqual(snapshotNumbers(draw.position), snapshotNumbers(refDraw.position))
+  Assert.deepEqual(snapshotNumbers(draw.direction), snapshotNumbers(refDraw.direction))
+  Assert.deepEqual(snapshotNumbers(live.nodeMatrices[0]), snapshotNumbers(reference.nodeMatrices[0]))
+  Assert.deepEqual(snapshotNumbers(live.matrixSlots[0]), snapshotNumbers(reference.matrixSlots[0]))
+
+  local position = draw.position
+  instance:updateFixed()
+  local again = NitroPoseBackend.evaluateInto(instance, scratch)
+  Assert.isTrue(again == live, "repeated evaluation reuses the same pose containers")
+  Assert.isTrue(again.drawMatrices["draw0.seg0"] == draw, "draw records keep their identity")
+  Assert.isTrue(draw.position == position, "draw matrices keep their identity")
+
+  instance:stop("trans")
+  local reset = NitroPoseBackend.evaluateInto(instance, scratch)
+  Assert.isTrue(reset == live, "the reset reuses the same pose containers")
+  Assert.equal(reset.drawMatrices["draw0.seg0"].position[13], 0, "stopping the clip restores the bind pose")
+  Assert.isNil(reset.nodeVisible[0], "no stale visibility survives the reset")
 end
 
 return { tests = T }

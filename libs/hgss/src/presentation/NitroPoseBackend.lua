@@ -41,19 +41,58 @@ local Matrix4 = require("libs.math.src.Matrix4")
 
 local NitroPoseBackend = {}
 
--- The linear part of a 4x4, as the direction matrix a segment resolves to.
-local linear = Matrix4.linear
+---@class NitroPoseBackend.Scratch
+---@field program table<string, unknown> -- the compiled transform program this scratch is sized from
+---@field tileScale number
+---@field sbc NsbmdSbcEvaluator.Scratch -- evaluator-owned replay storage
+---@field pose PoseState -- the live pose, aliasing only scratch-owned tables
+---@field provider NsbmdSbcEvaluator.PoseProvider -- stable provider reading the current sample table
+---@field _srt table<integer, table<string, unknown>> -- the current sampled node records
+---@field _nodePool table<integer, number[]> -- retained node-matrix tables
+---@field _slotPool table<integer, number[]> -- retained matrix-slot tables
+---@field _bases table<string, number[]> -- retained billboard-base tables by mesh id
+---@field _nodeByMesh table<string, integer> -- mesh id to node index, fixed by the definition
 
--- Convert a draw matrix to engine units: only the translation column
--- divides by the tile size (the uniform model-to-tile scale).
-local function toTiles(m, tileScale)
-  local out = {}
+-- Convert a draw matrix to engine units into an existing 16-number table:
+-- only the translation column divides by the tile size (the uniform model-to-tile scale).
+---@param out number[]
+---@param m number[]
+---@param tileScale number
+---@return number[]
+local function toTilesInto(out, m, tileScale)
   for i = 1, 12 do
     out[i] = m[i]
   end
   out[13], out[14], out[15] = m[13] * tileScale, m[14] * tileScale, m[15] * tileScale
   out[16] = m[16]
   return out
+end
+
+-- The linear part of a 4x4 into an existing 16-number table (translation
+-- zeroed): the matrix a direction vector transforms by.
+---@param out number[]
+---@param m number[]
+---@return number[]
+local function linearInto(out, m)
+  out[1], out[2], out[3], out[4] = m[1], m[2], m[3], 0
+  out[5], out[6], out[7], out[8] = m[5], m[6], m[7], 0
+  out[9], out[10], out[11], out[12] = m[9], m[10], m[11], 0
+  out[13], out[14], out[15], out[16] = 0, 0, 0, 1
+  return out
+end
+
+---@param pool table<integer, number[]>
+---@param live table<integer, number[]>
+---@param key integer
+---@return number[]
+local function reusablePooled(pool, live, key)
+  local m = pool[key]
+  if not m then
+    m = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+    pool[key] = m
+  end
+  live[key] = m
+  return m
 end
 
 -- The effective per-node SRT records from the instance's joint attachments:
@@ -63,8 +102,10 @@ end
 -- through JointAnimBlend with the full default ratio (the multi-attachment
 -- blend was cut with same-kind stacking, so it always takes its
 -- single-contributor shortcut).
-local function nodeSrt(program, attachments)
-  local srt = {}
+local function nodeSrt(program, attachments, out)
+  for key in pairs(out) do
+    out[key] = nil
+  end
   for _, attachment in ipairs(attachments) do
     local clip = attachment.clip
     if not clip.compiled then
@@ -85,14 +126,17 @@ local function nodeSrt(program, attachments)
       if nodeIndex ~= nil and program.nodes[nodeIndex + 1] then
         local result = assert(CompiledNsbcaSampler.sample(clip, track.targetIndex, attachment.player.frameFx))
         local blended = assert(JointAnimBlend.blend({ { ratio = FixedPoint.FX32_SCALE, result = result } }))
-        srt[nodeIndex] = NitroJointState.srtFromBlend(blended, program.nodes[nodeIndex + 1])
+        out[nodeIndex] = NitroJointState.srtFromBlend(blended, program.nodes[nodeIndex + 1])
       end
     end
   end
-  return srt
+  return out
 end
 
--- Resolve one mesh's position matrix against its draw record. A nil source
+-- The identity matrix shared as a read-only conversion source (never mutated).
+local IDENTITY_MATRIX = Matrix4.identity()
+
+-- Resolve one mesh's position matrix against its draw record into `out`. A nil source
 -- (baked billboard segments) resolves to identity; a source naming a
 -- matrix-stack slot the draw's restore-stack snapshot does not hold is a
 -- broken compiled transform program and raises (drawing identity instead
@@ -101,13 +145,14 @@ end
 ---@param source DrawSource|nil
 ---@param tileScale number
 ---@param modelKey string
+---@param out number[]
 ---@return number[] -- 16-element column-major matrix, engine units
-local function resolvePosition(draw, source, tileScale, modelKey)
+local function resolvePositionInto(draw, source, tileScale, modelKey, out)
   if source == PoseContract.DRAW then
-    return toTiles(draw.matrix, tileScale)
+    return toTilesInto(out, draw.matrix, tileScale)
   end
   if source == nil then
-    return toTiles(Matrix4.identity(), tileScale)
+    return toTilesInto(out, IDENTITY_MATRIX, tileScale)
   end
   local slot = draw.restoreStack[source.slot]
   if not slot then
@@ -117,77 +162,220 @@ local function resolvePosition(draw, source, tileScale, modelKey)
       { slot = source.slot, model = modelKey }
     )
   end
-  return toTiles(slot, tileScale)
+  return toTilesInto(out, slot, tileScale)
 end
 
--- Evaluate `instance` into a PoseState (see PoseBackend). Joint attachments
--- drive the program; material attachments do not affect the pose. The
--- definition is nitro by construction (there is no sourceBackend abstraction;
--- this backend IS the direct pose path).
-function NitroPoseBackend.evaluate(instance)
-  local def = instance.definition
-  local backend = def.backend
+-- The definition's program, or raise the missing-program diagnostic.
+---@param definition table<string, unknown>
+---@return table<string, unknown>
+local function requireProgram(definition)
+  local backend = definition.backend
   if not backend or not backend.program then
     Errors.raise(
       FieldErrors.POSE_NITRO_NO_TRANSFORM_PROGRAM,
-      "model " .. def.key .. " has no compiled transform program in its backend payload",
-      { modelKey = def.key }
+      "model " .. definition.key .. " has no compiled transform program in its backend payload",
+      { modelKey = definition.key }
     )
   end
-  local program = backend.program
+  return backend.program
+end
 
-  local srt = nodeSrt(program, instance.animationState:attachments(AnimationClip.CATEGORIES.joint))
+-- Owner-held reusable pose storage for one model definition: the evaluator
+-- scratch plus the live pose tables. Warmed evaluations only overwrite
+-- numbers, so repeated frames reuse every pose container.
+---@param definition table<string, unknown>
+---@return NitroPoseBackend.Scratch
+function NitroPoseBackend.newScratch(definition)
+  assert(
+    type(definition) == "table" and definition.key ~= nil,
+    "NitroPoseBackend.newScratch requires a model definition"
+  )
+  local program = requireProgram(definition)
+  local backend = definition.backend
+  local scratch = {
+    program = program,
+    tileScale = program.tileScale,
+    sbc = NsbmdSbcEvaluator.newScratch(program),
+    pose = {
+      nodeMatrices = {},
+      nodeVisible = {},
+      drawMatrices = {},
+      matrixSlots = {},
+    },
+    provider = {},
+    _srt = {},
+    _nodePool = {},
+    _slotPool = {},
+    _bases = {},
+    _nodeByMesh = {},
+  }
   local function nodeSRT(nodeIndex)
-    return srt[nodeIndex]
+    return scratch._srt[nodeIndex]
   end
-  local provider = {
+  scratch.provider = {
     nodeSRT = nodeSRT,
   }
-  local result = NsbmdSbcEvaluator.evaluate(program, provider)
-
-  local nodeVisible = {}
-  for nodeIndex, visible in pairs(result.nodeVisibility) do
-    if visible == false then
-      nodeVisible[nodeIndex] = false
-    end
+  for _, mesh in ipairs(definition.meshes or {}) do
+    scratch._nodeByMesh[mesh.id] = mesh.nodeIndex
   end
-
-  local drawMatrices = {}
   for meshId, mesh in pairs(backend.meshes or {}) do
-    local draw = result.draws[mesh.drawIndex + 1]
-    if not draw then
-      Errors.raise(
-        FieldErrors.POSE_NITRO_DRAW_MISSING,
-        "dynamic mesh "
-          .. meshId
-          .. " references draw "
-          .. tostring(mesh.drawIndex)
-          .. " which the program does not produce",
-        { meshId = meshId, drawIndex = mesh.drawIndex, model = def.key }
-      )
-    end
-    local position = resolvePosition(draw, mesh.positionSource, program.tileScale, def.key)
-    ---@type PoseDrawMatrix
-    local record = {
-      position = position,
-      direction = linear(position),
+    scratch.pose.drawMatrices[meshId] = {
+      position = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+      direction = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
       transformMode = mesh.transformMode,
       baseTransform = nil,
     }
-    if record.transformMode == PoseContract.BILLBOARD then
-      record.baseTransform =
-        toTiles(assert(draw.baseTransform, "billboard draw carries no captured base transform"), program.tileScale)
+  end
+  return scratch
+end
+
+-- Evaluate `instance` into its scratch-owned live pose. Joint attachments
+-- drive the program; material attachments do not affect the pose. Every
+-- optional field is overwritten or cleared each evaluation, so no previous
+-- frame contribution survives an animation stopping. Returns the same pose
+-- containers on every call while the mesh set is unchanged.
+---@param instance table<string, unknown>
+---@param scratch NitroPoseBackend.Scratch
+---@return PoseState
+function NitroPoseBackend.evaluateInto(instance, scratch)
+  assert(
+    type(instance) == "table" and instance.definition ~= nil,
+    "NitroPoseBackend.evaluateInto requires a model instance"
+  )
+  assert(type(scratch) == "table" and scratch.pose ~= nil, "NitroPoseBackend.evaluateInto requires pose scratch")
+  local def = instance.definition
+  local program = requireProgram(def)
+  local tileScale = program.tileScale
+
+  nodeSrt(program, instance.animationState:attachments(AnimationClip.CATEGORIES.joint), scratch._srt)
+  local result = NsbmdSbcEvaluator.evaluateInto(program, scratch.provider, scratch.sbc)
+
+  local pose = scratch.pose
+  for key in pairs(pose.nodeVisible) do
+    pose.nodeVisible[key] = nil
+  end
+  for nodeIndex, visible in pairs(result.nodeVisibility) do
+    if visible == false then
+      pose.nodeVisible[nodeIndex] = false
     end
-    drawMatrices[meshId] = record
   end
 
-  local matrixSlots = {}
+  for key in pairs(pose.nodeMatrices) do
+    pose.nodeMatrices[key] = nil
+  end
+  for nodeIndex, m in pairs(result.nodeMatrices) do
+    local cell = reusablePooled(scratch._nodePool, pose.nodeMatrices, nodeIndex)
+    for i = 1, 16 do
+      cell[i] = m[i]
+    end
+  end
+
+  local backend = def.backend
+  local nodeByMesh = scratch._nodeByMesh
+  for meshId, mesh in pairs(backend.meshes or {}) do
+    local draw = result.draws[mesh.drawIndex + 1]
+    if not draw then
+      -- A mesh whose node is hidden this frame has no draw in the filtered
+      -- list even though the program produces it: it carries an identity
+      -- placeholder the draw path skips over (hidden meshes are never
+      -- drawn). A missing draw on a visible node is a broken compiled
+      -- program and still raises.
+      if result.nodeVisibility[nodeByMesh[meshId]] ~= false then
+        Errors.raise(
+          FieldErrors.POSE_NITRO_DRAW_MISSING,
+          "dynamic mesh "
+            .. meshId
+            .. " references draw "
+            .. tostring(mesh.drawIndex)
+            .. " which the program does not produce",
+          { meshId = meshId, drawIndex = mesh.drawIndex, model = def.key }
+        )
+      end
+    end
+    local record = pose.drawMatrices[meshId]
+    if not record then
+      record = {
+        position = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+        direction = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+        transformMode = mesh.transformMode,
+        baseTransform = nil,
+      }
+      pose.drawMatrices[meshId] = record
+    end
+    if draw then
+      resolvePositionInto(draw, mesh.positionSource, tileScale, def.key, record.position)
+      linearInto(record.direction, record.position)
+    else
+      toTilesInto(record.position, IDENTITY_MATRIX, tileScale)
+      linearInto(record.direction, record.position)
+    end
+    record.transformMode = mesh.transformMode
+    if record.transformMode == PoseContract.BILLBOARD then
+      if draw then
+        local base = scratch._bases[meshId]
+        if not base then
+          base = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+          scratch._bases[meshId] = base
+        end
+        record.baseTransform =
+          toTilesInto(base, assert(draw.baseTransform, "billboard draw carries no captured base transform"), tileScale)
+      else
+        record.baseTransform = nil
+      end
+    else
+      record.baseTransform = nil
+    end
+  end
+
+  for key in pairs(pose.matrixSlots) do
+    pose.matrixSlots[key] = nil
+  end
   for slot, m in pairs(result.matrixSlots or {}) do
-    matrixSlots[slot] = toTiles(m, program.tileScale)
+    toTilesInto(reusablePooled(scratch._slotPool, pose.matrixSlots, slot), m, tileScale)
   end
 
+  return pose
+end
+
+-- Evaluate `instance` into an independent PoseState snapshot: later
+-- evaluations never mutate it. See evaluateInto for the reused-storage path.
+-- The definition is nitro by construction (there is no sourceBackend abstraction;
+-- this backend IS the direct pose path).
+---@param instance table<string, unknown>
+---@return PoseState
+function NitroPoseBackend.evaluate(instance)
+  local scratch = NitroPoseBackend.newScratch(instance.definition)
+  local live = NitroPoseBackend.evaluateInto(instance, scratch)
+  local function snapshotMatrix(m)
+    local out = {}
+    for i = 1, 16 do
+      out[i] = m[i]
+    end
+    return out
+  end
+  local nodeVisible = {}
+  for nodeIndex, visible in pairs(live.nodeVisible) do
+    nodeVisible[nodeIndex] = visible
+  end
+  local nodeMatrices = {}
+  for nodeIndex, m in pairs(live.nodeMatrices) do
+    nodeMatrices[nodeIndex] = snapshotMatrix(m)
+  end
+  local drawMatrices = {}
+  for meshId, record in pairs(live.drawMatrices) do
+    drawMatrices[meshId] = {
+      position = snapshotMatrix(record.position),
+      direction = snapshotMatrix(record.direction),
+      transformMode = record.transformMode,
+      baseTransform = record.baseTransform and snapshotMatrix(record.baseTransform) or nil,
+    }
+  end
+  local matrixSlots = {}
+  for slot, m in pairs(live.matrixSlots) do
+    matrixSlots[slot] = snapshotMatrix(m)
+  end
   return {
-    nodeMatrices = result.nodeMatrices,
+    nodeMatrices = nodeMatrices,
     nodeVisible = nodeVisible,
     drawMatrices = drawMatrices,
     matrixSlots = matrixSlots,

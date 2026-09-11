@@ -240,14 +240,18 @@ T.tests["dynamic grass instances change pose independently from their semantic a
   effects:emit({ kind = "tall_grass", fieldX = 1, fieldZ = 1, worldY = 0, direction = "east" })
   local first = effects:status().instances[1].modelInstance
   first:evaluatePose()
-  local firstTransform = first:drawItems(first.renderMeshesById)[1].transform
+  -- The draw list is a live view overwritten by each evaluation, so capture
+  -- the numbers before advancing: retaining the table would observe the next
+  -- frame.
+  local firstItem = first:drawItems(first.renderMeshesById)[1]
+  local firstCell1, firstCell3 = firstItem.transform[1], firstItem.transform[3]
   Assert.equal(effects:status().instances[1].frame, 0)
 
   effects:updateFixed({ fieldX = 1, fieldZ = 1, facing = "east" })
   local second = effects:status().instances[1].modelInstance
   second:evaluatePose()
   local secondTransform = second:drawItems(second.renderMeshesById)[1].transform
-  Assert.isFalse(firstTransform[1] == secondTransform[1] and firstTransform[3] == secondTransform[3])
+  Assert.isFalse(firstCell1 == secondTransform[1] and firstCell3 == secondTransform[3])
 end
 
 T.tests["one-shot reveal retires after exactly seven fixed frames"] = function()
