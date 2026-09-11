@@ -160,6 +160,42 @@ echo "fake love: unrecognized invocation" >&2
 exit 1
 ]]
 
+local AGGREGATE_CANCEL_FAKE_LOVE_BODY = [[
+if [ -n "${G4RECOMP_TEST_AGGREGATE:-}" ]; then
+  run_dir="${G4RECOMP_TEST_RUN_DIR:-}"
+  echo "$run_dir" > "$record_dir/aggregate.rundir"
+  echo "$$" > "$record_dir/aggregate.pid"
+  echo x >> "$record_dir/aggregate.invocations"
+  : > "$record_dir/aggregate.live"
+  child=""
+  term_handler() {
+    if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+      echo present > "$record_dir/aggregate.rundir-during-term"
+    else
+      echo absent > "$record_dir/aggregate.rundir-during-term"
+    fi
+    : > "$record_dir/aggregate.terminated"
+    rm -f "$record_dir/aggregate.live"
+    if [ -n "$child" ]; then
+      kill "$child" 2>/dev/null || true
+    fi
+    exit 143
+  }
+  trap term_handler TERM
+  sleep 100000 &
+  child=$!
+  wait "$child"
+  exit 0
+fi
+if [ -n "${G4RECOMP_TEST_WORKER:-}" ]; then
+  worker="$G4RECOMP_TEST_WORKER"
+  : > "$record_dir/worker-$worker.done"
+  exit 0
+fi
+echo "fake love: unrecognized invocation" >&2
+exit 1
+]]
+
 local function withTempDirectory(fn)
   local root = mkdtemp()
   local ok, err = pcall(fn, root)
@@ -334,6 +370,109 @@ function T.parent_term_cancellation_terminates_and_reaps_workers_before_run_dir_
         os.execute("pkill -9 -P " .. pid .. " 2>/dev/null")
         os.execute("kill -9 " .. pid .. " 2>/dev/null")
       end
+    end
+
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- The parent command owns cancellation through the final aggregate
+-- process and orders temporary-directory cleanup after it.
+function T.parent_term_cancellation_terminates_and_reaps_aggregate_before_run_dir_cleanup()
+  withTempDirectory(function(root)
+    local fakeLoveDir = root .. "/bin"
+    mkdir(fakeLoveDir)
+    writeExecutable(fakeLoveDir .. "/love", FAKE_LOVE_PREAMBLE .. AGGREGATE_CANCEL_FAKE_LOVE_BODY)
+    local saveDir = root .. "/save"
+    mkdir(saveDir)
+    local recordDir = root .. "/records"
+    mkdir(recordDir)
+    local statusFile = root .. "/status"
+    local logFile = root .. "/command.log"
+
+    local launchCommand = table.concat({
+      SANITIZE_ENV,
+      "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
+      "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
+      "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
+      "scripts/test.sh --jobs 2 >" .. shellQuote(logFile) .. " 2>&1 &",
+      "parent_pid=$!;",
+      "echo $parent_pid;",
+      "wait $parent_pid;",
+      "echo $? > " .. shellQuote(statusFile) .. ";",
+    }, " ")
+
+    local handle = popen(launchCommand)
+    local parentPid = tonumber(trim(handle:read("*l") or ""))
+    Assert.notNil(parentPid, "expected the launched parent command's pid")
+
+    local ok, err = pcall(function()
+      waitUntil(200, 0.05, "the aggregate process to start", function()
+        return fileExists(recordDir .. "/aggregate.live")
+      end)
+
+      for worker = 1, 2 do
+        Assert.isTrue(
+          fileExists(recordDir .. "/worker-" .. worker .. ".done"),
+          "worker " .. worker .. " must succeed before aggregation"
+        )
+      end
+
+      local runDir = trim(readFile(recordDir .. "/aggregate.rundir") or "")
+      Assert.isTrue(runDir ~= "", "the aggregate process must record the run directory it observed")
+      Assert.isTrue(dirExists(runDir), "the run directory must exist while the aggregate process is live")
+
+      os.execute("kill -TERM " .. tostring(parentPid))
+
+      waitUntil(300, 0.05, "the parent command to exit after cancellation", function()
+        return fileExists(statusFile)
+      end)
+
+      local status = trim(readFile(statusFile) or "")
+      Assert.equal(status, "143", "SIGTERM cancellation must exit 143: " .. tostring(readFile(logFile)))
+
+      Assert.isTrue(fileExists(recordDir .. "/aggregate.terminated"), "the aggregate process must observe termination")
+      Assert.isFalse(
+        fileExists(recordDir .. "/aggregate.live"),
+        "the aggregate process must no longer be live after cancellation"
+      )
+      local duringTerm = trim(readFile(recordDir .. "/aggregate.rundir-during-term") or "")
+      Assert.equal(duringTerm, "present", "the aggregate process must observe the run directory while terminating")
+      local pid = trim(readFile(recordDir .. "/aggregate.pid") or "")
+      Assert.isTrue(pid ~= "", "the aggregate process must have recorded its pid")
+      local liveness = popen("kill -0 " .. pid .. " 2>/dev/null && echo alive || echo dead")
+      local state = trim(liveness:read("*l") or "")
+      liveness:close()
+      Assert.equal(state, "dead", "the aggregate process must be reaped after cancellation")
+
+      Assert.isFalse(
+        dirExists(runDir),
+        "the run directory must be removed only after cancellation reaps the aggregate process"
+      )
+      local invocations = readFile(recordDir .. "/aggregate.invocations") or ""
+      local count = 0
+      for _ in invocations:gmatch("[^\n]+") do
+        count = count + 1
+      end
+      Assert.equal(count, 1, "cancellation must not launch an additional aggregate process")
+    end)
+
+    local _ = handle:read("*a")
+    handle:close()
+
+    -- Emergency cleanup: when the parent does not forward termination to
+    -- the aggregate process, it (and its blocked `sleep` child) may still
+    -- be alive; do not leak them regardless of pass/fail above.
+    local aggregatePid = readFile(recordDir .. "/aggregate.pid")
+    if aggregatePid then
+      aggregatePid = trim(aggregatePid)
+      os.execute("pkill -9 -P " .. aggregatePid .. " 2>/dev/null")
+      os.execute("kill -9 " .. aggregatePid .. " 2>/dev/null")
+    end
+    if not fileExists(statusFile) then
+      os.execute("kill -9 " .. tostring(parentPid) .. " 2>/dev/null")
     end
 
     if not ok then

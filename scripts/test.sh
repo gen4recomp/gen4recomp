@@ -33,28 +33,28 @@ trap cleanup EXIT
 # serial execution; only a worker subshell below exports one.
 unset G4RECOMP_TEST_ACCEPTANCE_NAMESPACE
 
-# Terminate every still-tracked worker before waiting any of them, so one
-# long-running worker cannot delay signal delivery to the others; then wait
+# Terminate every still-tracked child before waiting any of them, so one
+# long-running child cannot delay signal delivery to the others; then wait
 # every tracked PID so cancellation always reaps before returning. Failed
 # kill/wait during cancellation are expected races with a naturally exiting
-# worker, not a replacement for the cancellation status.
-terminate_workers() {
-  for worker in "${!pids[@]}"; do
-    kill -TERM "${pids[$worker]}" 2>/dev/null || true
+# child, not a replacement for the cancellation status.
+terminate_children() {
+  for tracked in "${!pids[@]}"; do
+    kill -TERM "${pids[$tracked]}" 2>/dev/null || true
   done
-  for worker in "${!pids[@]}"; do
-    wait "${pids[$worker]}" 2>/dev/null || true
+  for tracked in "${!pids[@]}"; do
+    wait "${pids[$tracked]}" 2>/dev/null || true
   done
   pids=()
 }
 
 # Disable INT/TERM traps first so cancellation cannot reenter itself, then
-# terminate/reap owned workers, then exit with the conventional signal
+# terminate/reap owned children, then exit with the conventional signal
 # status. The EXIT trap runs after this exits, so run_dir cleanup happens
-# only once every tracked worker has been reaped.
+# only once every tracked child has been reaped.
 cancel_parallel() {
   trap - INT TERM
-  terminate_workers
+  terminate_children
   exit "$1"
 }
 
@@ -168,7 +168,6 @@ else
     fi
     unset "pids[$worker]"
   done
-  trap - INT TERM
   if [ "$worker_status" -ne 0 ]; then
     status="$worker_status"
   else
@@ -177,8 +176,16 @@ else
       export G4RECOMP_TEST_RUN_DIR="$run_dir"
       export G4RECOMP_TEST_WORKERS="$jobs"
       export G4RECOMP_TEST_AGGREGATE=1
-      love app/ --test "$@"
-    ) || status=$?
+      exec love app/ --test "$@"
+    ) &
+    pids[1]=$!
+    if wait "${pids[1]}"; then
+      :
+    else
+      status=$?
+    fi
+    unset "pids[1]"
   fi
+  trap - INT TERM
 fi
 exit "$status"
