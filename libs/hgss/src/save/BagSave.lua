@@ -3,8 +3,8 @@
 -- slots while enforcing the source invariants (eight BagViewPockets and two
 -- registered items per include/bag_types_def.h): every slot carries a known
 -- catalog key in its catalog pocket with a positive stack quantity, canonical
--- pockets stay in native-id order, and registration names owned registerable
--- items only. Malformed records are rejected, never repaired. Pure domain
+-- pockets stay in native-id order, and registration names known registerable
+-- items, even when the bag no longer holds a copy. Malformed records are rejected, never repaired. Pure domain
 -- code: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
@@ -179,9 +179,6 @@ local function validateRecord(value, itemCatalog)
         fail("bag registered slot names an unknown item", { item = key })
       end
       assert(definition ~= nil, "catalog lookup carries the validated definition")
-      if not seen[key] then
-        fail("bag registered item " .. key .. " is not owned", { item = key })
-      end
       if not itemCatalog:isRegisterable(key) then
         fail("bag registered item " .. key .. " is not registerable", { item = key })
       end
