@@ -1051,4 +1051,38 @@ function T.recenter_ensures_all_required_cells_before_acquiring_any_runtime()
   coverage:release()
 end
 
+function T.synchronous_boot_finishes_a_presentation_task_that_starts_pending()
+  local finishes = 0
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      return runtimeFactory({})(descriptor)
+    end,
+    presentationTaskFactory = function(runtime)
+      return {
+        advance = function()
+          return 0
+        end,
+        isReady = function()
+          return false
+        end,
+        takeResult = function()
+          error("result is not ready", 0)
+        end,
+        finish = function()
+          finishes = finishes + 1
+          return { cellKey = runtime.key, release = function() end }
+        end,
+        release = function() end,
+      }
+    end,
+  })
+  Assert.equal(coverage:status().committedCount, 9)
+  Assert.equal(finishes, 9, "synchronous boot must finish every committed presentation task")
+  coverage:release()
+end
+
 return { metadata = { capabilities = {} }, tests = T }

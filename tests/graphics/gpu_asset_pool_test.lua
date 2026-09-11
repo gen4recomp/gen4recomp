@@ -19,6 +19,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local BinaryWriter = require("libs.codec.src.BinaryWriter")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 
 local T = {}
 
@@ -305,6 +306,131 @@ function T.mesh_entries_expose_cached_center_and_aabb()
   Assert.equal(again.center, entry.center, "the cached center is computed once per content-addressed path")
   Assert.equal(again.bounds, entry.bounds, "the cached AABB is computed once per content-addressed path")
   pool:release()
+end
+
+-- Injected graphics namespace for prepared-mesh realization: newMesh is
+-- called by vertex count/layout (never a decoded vertex table), and
+-- setVertices/setVertexMap can be made to fail after the Mesh object exists,
+-- to exercise the transactional rollback the prepared path must share with
+-- the synchronous path.
+local function fakeMeshGraphics(opts)
+  opts = opts or {}
+  local created = {}
+  return {
+    created = created,
+    newImage = fakeGraphics().newImage,
+    newMesh = function(_, _, _)
+      local mesh = { released = false, vertexData = nil, vertexMapData = nil, indexType = nil }
+      mesh.setVertices = function(_, data)
+        if opts.failSetVertices then
+          error("injected setVertices failure")
+        end
+        mesh.vertexData = data
+      end
+      mesh.setVertexMap = function(_, data, datatype)
+        if opts.failSetVertexMap then
+          error("injected setVertexMap failure")
+        end
+        mesh.vertexMapData = data
+        mesh.indexType = datatype
+      end
+      mesh.release = function()
+        mesh.released = true
+      end
+      created[#created + 1] = mesh
+      return mesh
+    end,
+  }
+end
+
+local function preparedMeshPayload()
+  return SceneMesh.prepareUpload(MeshWriter.encode(triangleBatch()))
+end
+
+-- Equivalence: a prepared realization must dedup, geometry-fold, and stat
+-- exactly like the synchronous path for the same content-addressed path.
+function T.meshFromPrepared_matches_meshFor_geometry_for_equivalent_content()
+  local syncPool = GpuAssetPool.new(fakeCacheFs())
+  local syncEntry = syncPool:meshFor(GEOM_PATH)
+
+  local graphics = fakeMeshGraphics()
+  local preparedPool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local preparedEntry = preparedPool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
+
+  Assert.equal(preparedEntry.triangles, syncEntry.triangles)
+  Assert.deepEqual(preparedEntry.center, syncEntry.center)
+  Assert.deepEqual(preparedEntry.bounds, syncEntry.bounds)
+  Assert.notNil(graphics.created[1].vertexMapData, "prepared realization uploads a zero-based vertex map Data")
+  Assert.equal(#preparedPool.meshes, 1)
+
+  syncPool:release()
+  preparedPool:release()
+end
+
+-- Dedup across entry points: a path already realized through one entry
+-- point must not be rebuilt through the other.
+function T.meshFromPrepared_dedups_with_a_prior_synchronous_acquire()
+  local graphics = fakeMeshGraphics()
+  local pool = GpuAssetPool.new(fakeCacheFs(), {
+    graphics = graphics,
+    meshBuilder = function()
+      return { release = function() end }
+    end,
+  })
+  local synchronous = pool:meshFor(GEOM_PATH)
+  local prepared = pool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
+  Assert.equal(prepared, synchronous, "the prepared path returns the already-realized entry, never a duplicate")
+  Assert.equal(#pool.meshes, 1, "no second Mesh object is created for an already-realized path")
+end
+
+-- Transactional realization: a failure between Mesh creation and
+-- publication must release the partial object and leave the pool's cache
+-- tables/counters exactly as before the failed call.
+function T.meshFromPrepared_rolls_back_the_partial_mesh_on_publish_failure()
+  local graphics = fakeMeshGraphics({ failSetVertexMap = true })
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local err = Assert.throws(function()
+    pool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
+  end)
+  Assert.isTrue(tostring(err):find("injected setVertexMap failure", 1, true) ~= nil)
+  Assert.equal(#pool.meshes, 0, "no mesh is published before every upload step succeeds")
+  Assert.equal(pool.triangles, 0, "the triangle stat is not updated for an unpublished mesh")
+  Assert.equal(graphics.created[1].released, true, "the partially-constructed mesh is released")
+
+  local retryGraphics = fakeMeshGraphics()
+  local retryPool = GpuAssetPool.new(fakeCacheFs(), { graphics = retryGraphics })
+  local retried = retryPool:meshFromPrepared(GEOM_PATH, preparedMeshPayload())
+  Assert.notNil(retried, "the prepared path is usable again after a rolled-back failure")
+  retryPool:release()
+end
+
+-- imageFromPrepared shares GpuAssetPool's image identity/dedup/rollback
+-- authority with imageFor: same content-addressed path plus wrap pair
+-- realized through either entry point must resolve to one owned Image.
+function T.imageFromPrepared_dedups_with_imageFor_by_path_and_wrap()
+  local graphics = fakeGraphics()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local prepared = { imageData = { fakeImageData = true } }
+  local fromPrepared = pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
+  local fromSync = pool:imageFor(TEX_PATH, "clamp", "clamp")
+  Assert.equal(fromPrepared, fromSync, "prepared and synchronous realization share one dedup key")
+  Assert.equal(#pool.images, 1)
+end
+
+function T.imageFromPrepared_rolls_back_on_publish_failure_and_stays_usable()
+  local graphics = fakeGraphics({ failSetWrapOn = 1 })
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local prepared = { imageData = { fakeImageData = true } }
+  local err = Assert.throws(function()
+    pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
+  end)
+  Assert.isTrue(tostring(err):find("injected setWrap failure", 1, true) ~= nil)
+  Assert.equal(#pool.images, 0, "no image is published before every configuration step succeeds")
+  Assert.equal(graphics.images[1].released, true, "the failed prepared image is released")
+
+  local retried = pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
+  Assert.notNil(retried, "the pool is usable again after a rolled-back prepared realization")
+  Assert.equal(#pool.images, 1)
 end
 
 return {
