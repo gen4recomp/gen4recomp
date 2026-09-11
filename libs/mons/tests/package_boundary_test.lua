@@ -30,6 +30,7 @@ local FORBIDDEN_MODULES = {
 
 local ALLOWED_PACKAGES = {
   mons = true,
+  items = true,
   assets = true,
   codec = true,
   errors = true,
@@ -38,6 +39,7 @@ local ALLOWED_PACKAGES = {
 
 local PACKAGE_PREFIXES = {
   { prefix = "libs.mons.src.", packageName = "mons" },
+  { prefix = "libs.items.src.", packageName = "items" },
   { prefix = "libs.assets.src.", packageName = "assets" },
   { prefix = "libs.codec.src.", packageName = "codec" },
   { prefix = "libs.errors.src.", packageName = "errors" },

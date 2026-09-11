@@ -11,6 +11,10 @@ local FieldActorCacheWriter = require("romdump.src.digest.actor.FieldActorCacheW
 local FollowingMonVisualCompiler = require("romdump.src.digest.actor.FollowingMonVisualCompiler")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+local ItemCatalogCompiler = require("romdump.src.digest.items.ItemCatalogCompiler")
+local ItemCacheWriter = require("romdump.src.digest.items.ItemCacheWriter")
+local BagAssetCompiler = require("romdump.src.digest.ui.BagAssetCompiler")
+local BagCacheWriter = require("romdump.src.digest.ui.BagCacheWriter")
 local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
 local FieldFontCacheWriter = require("romdump.src.digest.ui.FieldFontCacheWriter")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
@@ -201,6 +205,28 @@ function FieldCacheBuild.build(context)
   end
   writeIfStale(context, mons, MonCacheWriter, MonCacheWriter.isReady, "mons", function()
     return string.format(" (%d species)", monSpecies)
+  end)
+
+  local itemBundle, itemErr = ItemCatalogCompiler.compileAll(context.romFs)
+  local items = requireBundle(itemBundle, itemErr)
+  if not items then
+    return nil, itemErr
+  end
+  local itemCount = 0
+  for _ in pairs(items.catalog.items) do
+    itemCount = itemCount + 1
+  end
+  writeIfStale(context, items, ItemCacheWriter, ItemCacheWriter.isReady, "items", function()
+    return string.format(" (%d items)", itemCount)
+  end)
+
+  local bagBundle, bagErr = BagAssetCompiler.compile(context.romFs)
+  local bag = requireBundle(bagBundle, bagErr)
+  if not bag then
+    return nil, bagErr
+  end
+  writeIfStale(context, bag, BagCacheWriter, BagCacheWriter.isReady, "bag", function()
+    return string.format(" (%d states)", #bag.manifest.hero.animations.states)
   end)
 
   local fieldBundles

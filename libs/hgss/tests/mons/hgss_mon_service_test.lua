@@ -25,7 +25,7 @@ end
 local function newService()
   local root = CatalogFixture.buildAssetRoot()
   root.species.EEVEE.forms[1].types = { "fire", "dark" }
-  local catalog = MonCatalog.new(root)
+  local catalog = MonCatalog.new(root, CatalogFixture.makeItemCatalog())
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0x33333333):capture(), catalog:fingerprint()),

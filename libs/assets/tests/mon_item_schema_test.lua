@@ -1,8 +1,7 @@
--- Mon asset item contract: the generated catalog carries one strict item
--- collection keyed by semantic key, and every malformed shape fails loudly.
--- Rejections name duplicate native identities, extra fields, non-boolean
--- facts, and out-of-range identities; the boolean predicates mirror the
--- raising validators.
+-- Mon catalog item boundary: the generated mon catalog carries no item
+-- collection. Item identity lives in the generated item class, so a mon
+-- root smuggling the former collection fails loudly instead of forking a
+-- second item authority.
 
 local Assert = require("tests.support.Assert")
 
@@ -33,23 +32,9 @@ local function growthCurves()
   return curves
 end
 
-local function itemRecord(nativeId, isBall, friendshipBoost)
-  return { nativeId = nativeId, isBall = isBall, friendshipBoost = friendshipBoost }
-end
-
-local function fullItems()
-  local items = {}
-  for nativeId = 0, 536 do
-    items["ITEM_" .. nativeId] = itemRecord(nativeId, false, false)
-  end
-  items["ITEM_0"] = nil
-  items["NONE"] = itemRecord(0, false, false)
-  return items
-end
-
-local function catalogRoot(items)
+local function catalogRoot()
   return {
-    schema = "g4-mon-catalog-v2",
+    schema = "g4-mon-catalog-v3",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = {
@@ -103,47 +88,26 @@ local function catalogRoot(items)
       OVERGROW = { nativeId = 65, name = "Overgrow", description = "Powers up Grass." },
     },
     growthCurves = growthCurves(),
-    items = items,
   }
 end
 
-function T.catalogs_require_a_complete_item_collection()
+function T.catalogs_without_an_item_collection_pass()
   local MonAssetSchema = schema()
-  Assert.isTrue(MonAssetSchema.assertCatalog(catalogRoot(fullItems())))
-  Assert.isTrue(MonAssetSchema.isValidCatalog(catalogRoot(fullItems())))
-  local missing = catalogRoot(nil)
-  missing.items = nil
-  Assert.isFalse(MonAssetSchema.isValidCatalog(missing))
+  Assert.isTrue(MonAssetSchema.assertCatalog(catalogRoot()))
+  Assert.isTrue(MonAssetSchema.isValidCatalog(catalogRoot()))
+end
+
+function T.catalogs_reject_a_leftover_item_collection()
+  local MonAssetSchema = schema()
+  local smuggled = catalogRoot()
+  smuggled.items = {
+    NONE = { nativeId = 0, isBall = false, friendshipBoost = false },
+    POKE_BALL = { nativeId = 4, isBall = true, friendshipBoost = false },
+  }
+  Assert.isFalse(MonAssetSchema.isValidCatalog(smuggled))
   Assert.throws(function()
-    MonAssetSchema.assertCatalog(missing)
+    MonAssetSchema.assertCatalog(smuggled)
   end)
-end
-
-function T.catalogs_reject_duplicate_item_identities()
-  local MonAssetSchema = schema()
-  local items = fullItems()
-  items["ITEM_4_AGAIN"] = itemRecord(4, true, false)
-  Assert.isFalse(MonAssetSchema.isValidCatalog(catalogRoot(items)))
-end
-
-function T.catalogs_reject_malformed_item_records()
-  local MonAssetSchema = schema()
-  local variants = {
-    extra_field = { nativeId = 4, isBall = true, friendshipBoost = false, price = 200 },
-    text_ball = { nativeId = 4, isBall = "yes", friendshipBoost = false },
-    missing_boost = { nativeId = 4, isBall = true },
-    negative_id = { nativeId = -1, isBall = false, friendshipBoost = false },
-    past_range_id = { nativeId = 537, isBall = false, friendshipBoost = false },
-    fractional_id = { nativeId = 4.5, isBall = true, friendshipBoost = false },
-  }
-  for name, bad in pairs(variants) do
-    local items = fullItems()
-    items["ITEM_4"] = bad
-    Assert.isFalse(
-      MonAssetSchema.isValidCatalog(catalogRoot(items)),
-      "malformed item record must be rejected: " .. name
-    )
-  end
 end
 
 return { tests = T }

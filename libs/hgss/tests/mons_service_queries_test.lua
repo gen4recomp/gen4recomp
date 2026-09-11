@@ -60,7 +60,7 @@ local function formTypeCatalog(types)
   local root = CatalogFixture.buildAssetRoot()
   root.species.EEVEE.forms[1].types = types
   root.species.EEVEE.forms[1].abilities = { "RUN_AWAY", "ADAPTABILITY" }
-  return MonCatalog.new(root)
+  return MonCatalog.new(root, CatalogFixture.makeItemCatalog())
 end
 
 function T.counts_observe_the_live_party()

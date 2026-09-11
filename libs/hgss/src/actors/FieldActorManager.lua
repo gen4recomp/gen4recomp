@@ -754,6 +754,13 @@ local function destroyEntry(self, entry)
   end
 end
 
+---@param eventState FieldEventState
+---@param event FieldActorEvent
+---@return boolean
+local function isSourceEventPresent(eventState, event)
+  return not eventState:isFlagSet(event.eventFlag)
+end
+
 ---@param self FieldActorManager
 ---@param entry FieldActorManager.Entry
 ---@param eventState FieldEventState
@@ -770,7 +777,7 @@ local function populateEntry(self, entry, eventState)
     assert(type(objects) == "table", "enterMap requires the compiled object collection")
     for _, event in ipairs(objects) do
       entry.store:indexEvent(event)
-      if not eventState:isFlagSet(event.eventFlag) then
+      if isSourceEventPresent(eventState, event) then
         self:_instantiate(entry, event, eventState)
       end
     end
@@ -848,13 +855,6 @@ local function savedDestination(entry, actor, point)
     )
   end
   return projection
-end
-
----@param eventState FieldEventState
----@param event FieldActorEvent
----@return boolean
-local function isSourceEventPresent(eventState, event)
-  return not eventState:isFlagSet(event.eventFlag)
 end
 
 -- A save can overtake durable presence: a record may name a source event
@@ -1180,12 +1180,22 @@ function FieldActorManager:captureObjects()
     return self.autonomy:captureRng()
   end
   -- The dynamic partner is derived follower presentation, never persisted
-  -- state: it reconstructs from the party after continue.
+  -- state: it reconstructs from the party after continue. Source-event
+  -- actors are persistable only while their durable event flag says the
+  -- event should exist; the flag is consulted live so an actor whose
+  -- removal was queued but not yet applied is still omitted. Transient
+  -- visibility never affects eligibility.
   local function persistableActors(entry)
+    local eventState = assert(self.eventState, "captureObjects requires a bound event state")
     local ordered = {}
     for _, actor in ipairs(actorsByManagerSlot(entry)) do
       if actor.objectEventId ~= PARTNER_OBJECT_ID then
-        ordered[#ordered + 1] = actor
+        local sourceEvent = actor.sourceEvent
+        if
+          sourceEvent == nil or isSourceEventPresent(eventState, sourceEvent --[[@as FieldActorEvent]])
+        then
+          ordered[#ordered + 1] = actor
+        end
       end
     end
     return ordered

@@ -39,6 +39,8 @@ local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScree
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
+local ItemCache = require("libs.assets.src.ItemCache")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldSignpostController = require("libs.hgss.src.interaction.FieldSignpostController")
@@ -134,8 +136,11 @@ end
 ---@field avatar table<string, unknown> the gender-selected compiled avatar capability
 ---@field playerAvatar FieldPlayerAvatarState? the one avatar transition owner
 ---@field monCatalog MonCatalog the immutable domain mon catalog behind the live party
+---@field itemCatalog ItemCatalog the shared item catalog behind mon and later Bag composition
 ---@field monLanguage string the semantic language key the mon catalog was built for
 ---@field monService HgssMonService the live party/creation/script mon service
+---@field bagService HgssBagService the live bag/inventory service
+---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
 ---@field followingMonTransition FollowingMonTransitionController|nil the one transient follower-transition owner (nil after teardown)
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
@@ -615,10 +620,12 @@ function FieldRuntime:_load()
     self.weatherCatalog = weatherCatalog
     -- The mon catalog behind the live party: loaded once per runtime
     -- through the ready cache path, before save validation and service
-    -- construction. Screens and scripts borrow the service, never the
-    -- catalog directly.
+    -- construction. The shared item catalog loads beside it and is retained
+    -- for later Bag composition. Screens and scripts borrow the service,
+    -- never the catalogs directly.
     local monRoot = MonCache.loadCatalog(cacheFs)
-    self.monCatalog = MonCatalog.new(monRoot)
+    self.itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+    self.monCatalog = MonCatalog.new(monRoot, self.itemCatalog)
     self.monLanguage = monRoot.version.language
     self.fieldEntranceIndicatorAsset, self.fieldEntranceIndicator = FieldEntranceIndicatorRuntime.load(cacheFs)
     self.fieldEmoteModels = FieldActorEmoteRuntime.load(cacheFs)
@@ -996,6 +1003,7 @@ function FieldRuntime:_load()
       mapSection = monMetMapSection,
       date = monMetDate,
     })
+    self:_composeBag(activeGame, loadedGame)
     -- The one following-mon controller: derived follower presentation over
     -- the live party, driven once per fixed tick after the session update.
     -- The player accessor tracks warp rebinds, so the controller never holds
@@ -1035,6 +1043,8 @@ function FieldRuntime:_load()
       audioService = audioService,
       loadedGame = loadedGame,
       mons = self.monService,
+      items = self.bagService,
+      itemCatalog = self.itemCatalog,
       starterProvider = self.starterProvider,
       starterChoice = self.starterChoice,
       followingMon = self.followingMon,
@@ -1362,6 +1372,32 @@ function FieldRuntime:_applicationDescriptors()
       measureViewport = measurePartyViewport,
     })
   end
+  local function bagFactory()
+    local BagScreenState = require("game.hgss.src.field.BagScreenState")
+    local BagCache = require("libs.assets.src.BagCache")
+    local bagService = assert(self.bagService, "the bag application requires the live bag service")
+    local bagCursor = assert(self.bagCursor, "the bag application requires the runtime bag cursor")
+    assert(self.itemCatalog ~= nil, "the bag application requires the shared item catalog")
+    local manifest = BagCache.loadManifest(self.cacheFs)
+    ItemCache.loadIconManifest(self.cacheFs)
+    local avatar = assert(self.avatar, "the bag application requires the player avatar")
+    assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
+    local heroGender = avatar.gender == 0 and "male" or "female"
+    local function measureBagViewport()
+      return self.viewport.width, self.viewport.height
+    end
+    local function measureBagTopology()
+      return { topology = self.screenTopology, referenceFrame = self.viewport.referenceFrame }
+    end
+    return BagScreenState.new({
+      service = bagService,
+      cursor = bagCursor,
+      manifest = manifest,
+      heroGender = heroGender,
+      measureViewport = measureBagViewport,
+      measureTopology = measureBagTopology,
+    })
+  end
   return {
     {
       id = FieldApplicationIds.TRAINER_CARD,
@@ -1370,6 +1406,10 @@ function FieldRuntime:_applicationDescriptors()
     {
       id = FieldApplicationIds.POKEMON,
       factory = partyScreenFactory,
+    },
+    {
+      id = FieldApplicationIds.BAG,
+      factory = bagFactory,
     },
   }
 end
@@ -1413,6 +1453,9 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
     if enabled and source.id == "vanilla.pokemon" then
       enabled = self.monService:partyCount() > 0
     end
+    if enabled and source.id == "vanilla.bag" then
+      enabled = self.bagService ~= nil and self.bagCursor ~= nil and self.itemCatalog ~= nil
+    end
     entries[index] = {
       id = source.id,
       displayPosition = source.displayPosition,
@@ -1449,6 +1492,21 @@ end
 -- fieldDataForMap lookup. The day/night source defaults to the wall-clock
 -- IsNighttime predicate (hours 0-3 and 20-23, the bandForHour nite band);
 -- tests and hosts inject a deterministic one.
+-- Composes the one live Bag service and the runtime-only field cursor
+-- outside the boot closure (which sits close to LuaJIT's per-function
+-- upvalue limit). The bucket is the validated continue record or the
+-- unpublished new-game bucket; a missing bucket fails loudly instead of
+-- synthesizing an empty bag at boot.
+---@param activeGame table<string, unknown>
+---@param loadedGame table<string, unknown>?
+function FieldRuntime:_composeBag(activeGame, loadedGame)
+  local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+  local BagCursor = require("libs.hgss.src.items.BagCursor")
+  local bucket = loadedGame and loadedGame.bag or assert(activeGame.bag, "finalized game bag bucket is required")
+  self.bagService = HgssBagService.new({ catalog = self.itemCatalog, bag = bucket })
+  self.bagCursor = BagCursor.new()
+end
+
 -- Composes the one follower-transition owner outside the boot closure
 -- (which sits close to LuaJIT's per-function upvalue limit). The generated
 -- definition loads through the ready cache path; the controller validates it
@@ -1764,6 +1822,8 @@ function FieldRuntime:_releaseAll()
   self.playerAvatar = nil
   self.windowStyles, self.uiManifest, self.weatherCatalog = nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
+  self.bagService, self.bagCursor = nil, nil
+  self.itemCatalog = nil
   self.starterProvider, self.starterChoice = nil, nil
 end
 

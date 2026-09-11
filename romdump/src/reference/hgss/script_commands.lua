@@ -850,6 +850,9 @@ return {
     },
     [125] = {
       name = "ScrCmd_GiveItem",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -858,6 +861,9 @@ return {
     },
     [126] = {
       name = "ScrCmd_TakeItem",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -866,6 +872,9 @@ return {
     },
     [127] = {
       name = "ScrCmd_HasSpaceForItem",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -874,6 +883,9 @@ return {
     },
     [128] = {
       name = "ScrCmd_HasItem",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -882,6 +894,9 @@ return {
     },
     [129] = {
       name = "ScrCmd_ItemIsTMOrHM",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -889,6 +904,9 @@ return {
     },
     [130] = {
       name = "ScrCmd_GetItemPocket",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -913,6 +931,9 @@ return {
     },
     [133] = {
       name = "ScrCmd_GetSealQuantity",
+      disposition = "deferred",
+      deferredReason = "seal",
+      deferredNote = "seal inventory needs the seal case system",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -920,6 +941,9 @@ return {
     },
     [134] = {
       name = "ScrCmd_GiveOrTakeSeal",
+      disposition = "deferred",
+      deferredReason = "seal",
+      deferredNote = "seal inventory needs the seal case system",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -927,6 +951,9 @@ return {
     },
     [135] = {
       name = "ScrCmd_GiveRandomSeal",
+      disposition = "deferred",
+      deferredReason = "seal",
+      deferredNote = "seal inventory needs the seal case system",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1317,6 +1344,8 @@ return {
     [194] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferItemName",
+      feature = "items",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1325,6 +1354,8 @@ return {
     [195] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferPocketName",
+      feature = "items",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1333,6 +1364,8 @@ return {
     [196] = {
       classification = "continue_same_tick",
       name = "ScrCmd_BufferTMHMMoveName",
+      feature = "items",
+      disposition = "supported",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -1877,24 +1910,36 @@ return {
     },
     [275] = {
       name = "ScrCmd_MartBuy",
+      disposition = "deferred",
+      deferredReason = "shop",
+      deferredNote = "shop buying needs the shop application",
       widths = {
         [1] = 2,
       },
     },
     [276] = {
       name = "ScrCmd_SpecialMartBuy",
+      disposition = "deferred",
+      deferredReason = "shop",
+      deferredNote = "shop buying needs the shop application",
       widths = {
         [1] = 2,
       },
     },
     [277] = {
       name = "ScrCmd_DecorationMart",
+      disposition = "deferred",
+      deferredReason = "shop",
+      deferredNote = "shop buying needs the shop application",
       widths = {
         [1] = 2,
       },
     },
     [278] = {
       name = "ScrCmd_SealMart",
+      disposition = "deferred",
+      deferredReason = "shop",
+      deferredNote = "shop buying needs the shop application",
       widths = {
         [1] = 2,
       },
@@ -2223,6 +2268,9 @@ return {
     },
     [336] = {
       name = "ScrCmd_BufferBerryName",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3010,6 +3058,9 @@ return {
     },
     [429] = {
       name = "ScrCmd_CountFossils",
+      disposition = "deferred",
+      deferredReason = "item_flow",
+      deferredNote = "fossil counting needs the fossil restoration flow",
       widths = {
         [1] = 2,
       },
@@ -3038,6 +3089,9 @@ return {
     },
     [433] = {
       name = "ScrCmd_GetFossilMinimumAmount",
+      disposition = "deferred",
+      deferredReason = "item_flow",
+      deferredNote = "fossil revival needs the fossil restoration flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -3471,6 +3525,9 @@ return {
     },
     [489] = {
       name = "ScrCmd_MysteryGift",
+      disposition = "deferred",
+      deferredReason = "mystery_gift",
+      deferredNote = "Mystery Gift delivery needs its distribution system",
       variants = {
         [1] = {
           extra = {
@@ -4031,6 +4088,9 @@ return {
     },
     [567] = {
       name = "ScrCmd_GetDPPlPrizeItemIDAndCost",
+      disposition = "deferred",
+      deferredReason = "prize",
+      deferredNote = "game-corner prizes need the prize exchange flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4069,6 +4129,9 @@ return {
     },
     [572] = {
       name = "ScrCmd_GetUniqueSealsQuantity",
+      disposition = "deferred",
+      deferredReason = "seal",
+      deferredNote = "seal inventory needs the seal case system",
       widths = {
         [1] = 2,
       },
@@ -4111,6 +4174,9 @@ return {
     },
     [580] = {
       name = "ScrCmd_BufferSealName",
+      disposition = "deferred",
+      deferredReason = "seal",
+      deferredNote = "seal text needs the seal case system",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4348,12 +4414,18 @@ return {
     },
     [613] = {
       name = "ScrCmd_GetPhoneContactRandomGiftBerry",
+      disposition = "deferred",
+      deferredReason = "phone_gift",
+      deferredNote = "phone-contact gifts need the phone gift flow",
       widths = {
         [1] = 2,
       },
     },
     [614] = {
       name = "ScrCmd_GetPhoneContactGiftItem",
+      disposition = "deferred",
+      deferredReason = "phone_gift",
+      deferredNote = "phone-contact gifts need the phone gift flow",
       widths = {
         [1] = 2,
       },
@@ -4408,18 +4480,27 @@ return {
     },
     [623] = {
       name = "ScrCmd_AnimApricornTree",
+      disposition = "deferred",
+      deferredReason = "apricorn",
+      deferredNote = "apricorn trees need the Kurt/apricorn flow",
       widths = {
         [1] = 2,
       },
     },
     [624] = {
       name = "ScrCmd_ApricornTreeGetApricorn",
+      disposition = "deferred",
+      deferredReason = "apricorn",
+      deferredNote = "apricorn trees need the Kurt/apricorn flow",
       widths = {
         [1] = 2,
       },
     },
     [625] = {
       name = "ScrCmd_GiveApricornFromTree",
+      disposition = "deferred",
+      deferredReason = "apricorn",
+      deferredNote = "apricorn trees need the Kurt/apricorn flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4428,6 +4509,9 @@ return {
     },
     [626] = {
       name = "ScrCmd_BufferApricornName",
+      disposition = "deferred",
+      deferredReason = "apricorn",
+      deferredNote = "apricorn text needs the Kurt/apricorn flow",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -4602,6 +4686,9 @@ return {
     },
     [651] = {
       name = "ScrCmd_GetScratchOffPrize",
+      disposition = "deferred",
+      deferredReason = "prize",
+      deferredNote = "scratch-off prizes need the prize flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -4752,6 +4839,9 @@ return {
     },
     [669] = {
       name = "ScrCmd_GetItemQuantity",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5241,6 +5331,9 @@ return {
     },
     [736] = {
       name = "ScrCmd_ClearKurtApricorn",
+      disposition = "deferred",
+      deferredReason = "apricorn",
+      deferredNote = "apricorn counting needs the Kurt/apricorn flow",
       widths = {},
     },
     [737] = {
@@ -5251,6 +5344,9 @@ return {
     },
     [738] = {
       name = "ScrCmd_GetTotalApricornCount",
+      disposition = "deferred",
+      deferredReason = "apricorn",
+      deferredNote = "apricorn counting needs the Kurt/apricorn flow",
       widths = {
         [1] = 2,
       },
@@ -5357,6 +5453,9 @@ return {
     },
     [753] = {
       name = "ScrCmd_RockSmashItemCheck",
+      disposition = "deferred",
+      deferredReason = "field_item_check",
+      deferredNote = "rock-smash item checks need the field rock-smash flow",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5517,6 +5616,9 @@ return {
     },
     [782] = {
       name = "ScrCmd_MartSell",
+      disposition = "deferred",
+      deferredReason = "shop",
+      deferredNote = "shop selling needs the shop application",
       widths = {},
     },
     [783] = {
@@ -5726,6 +5828,9 @@ return {
     },
     [813] = {
       name = "ScrCmd_MomGiftCheck",
+      disposition = "deferred",
+      deferredReason = "phone_gift",
+      deferredNote = "parent gifts need the gift flow",
       widths = {
         [1] = 2,
       },
@@ -5912,6 +6017,9 @@ return {
     },
     [843] = {
       name = "ScrCmd_BufferItemNameIndef",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -5919,6 +6027,9 @@ return {
     },
     [844] = {
       name = "ScrCmd_BufferItemNamePlural",
+      feature = "items",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -5965,6 +6076,9 @@ return {
     },
     [850] = {
       name = "ScrCmd_BufferSealNamePlural",
+      disposition = "deferred",
+      deferredReason = "seal",
+      deferredNote = "seal text needs the seal case system",
       widths = {
         [1] = 1,
         [2] = 2,

@@ -441,10 +441,14 @@ local function advancePreSchedulerBoundary(self)
     end
   elseif self.childResumePending and foregroundEnvironmentId(self.scriptScheduler) == nil then
     self.childResumePending = false
+    -- The resume tick is consumed only when a map on_resume lifecycle
+    -- actually starts: without one there is nothing to sequence, and the
+    -- tick must reach normal arbitration so an edge pressed on the exact
+    -- return-to-field tick (such as reopening the Start Menu) is not lost.
     if self.initController:hasLifecycle("on_resume") then
       assert(self.initController:startLifecycle("on_resume", self.tick + 1))
+      return finishTick(self)
     end
-    return finishTick(self)
   elseif
     self.initController
     and not self.initController.startLifecycle

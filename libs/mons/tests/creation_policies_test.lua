@@ -119,7 +119,7 @@ function T.script_gift_applies_item_form_and_ability_after_creation()
       ability = "OVERGROW",
     })
   end)
-  throwsCode("MON_RECORD_INVALID", function()
+  throwsCode("ITEM_RECORD_INVALID", function()
     factory:createScriptGift({
       species = "EEVEE",
       level = 5,

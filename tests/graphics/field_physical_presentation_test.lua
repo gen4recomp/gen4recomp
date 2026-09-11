@@ -3,6 +3,7 @@
 -- save backend; generated maps and presentation assets remain production data.
 
 local Assert = require("tests.support.Assert")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
@@ -43,6 +44,7 @@ local function freshGame(versionId)
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = require("tests.support.MonBucket").emptyForVersion(versionId),
+    bag = BagSave.empty(),
   }
 end
 

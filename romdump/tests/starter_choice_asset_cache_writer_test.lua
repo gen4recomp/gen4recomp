@@ -7,6 +7,7 @@
 -- Requires a ready user-owned dump (rom_dump capability); skips otherwise.
 
 local Assert = require("tests.support.Assert")
+local BagCache = require("libs.assets.src.BagCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -24,6 +25,7 @@ local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+local ItemCache = require("libs.assets.src.ItemCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
@@ -72,6 +74,8 @@ local function publishedCache(versionId)
     NewGameInitCache.markerPath(),
     FieldCellCache.markerPath(),
     MonCache.markerPath(),
+    ItemCache.markerPath(),
+    BagCache.markerPath(),
     ScriptCache.markerPath(),
     AudioCache.markerPath(),
     MapAssetCache.mapDir(7) .. "/complete",

@@ -145,7 +145,7 @@ end
 local function formCatalog()
   local root = CatalogFixture.buildAssetRoot()
   root.species.EEVEE.forms[1].types = { "fire", "dark" }
-  return MonCatalog.new(root)
+  return MonCatalog.new(root, CatalogFixture.makeItemCatalog())
 end
 
 local function lowerSource(opcode, operands)

@@ -7,11 +7,12 @@ local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MonsSave = require("libs.mons.src.MonsSave")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local SaveFs = require("libs.storage.src.SaveFs")
 
 local T = {}
 
-local GAME_SCHEMA = "g4-game-save-v2"
+local GAME_SCHEMA = "g4-game-save-v3"
 
 local function newStore(backend, opts)
   local loaded, GameSaveStore = pcall(require, "libs.hgss.src.save.GameSaveStore")
@@ -44,6 +45,7 @@ local function record(saveId, versionId, overrides)
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    bag = BagSave.empty(),
   }
   for key, valueOverride in pairs(overrides or {}) do
     value[key] = valueOverride

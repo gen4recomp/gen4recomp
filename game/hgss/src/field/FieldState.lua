@@ -3,7 +3,6 @@
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
-local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
@@ -409,20 +408,12 @@ function FieldState:draw()
   self:_drawFieldAttachedUi(resources, hostStatus, alpha)
   -- The one active application surface: the Start Menu through the runtime's
   -- placement record (the same record the host maps pointer input through),
-  -- the Trainer Card in the viewport, or the party screen with its icon
-  -- atlas; never more than one.
+  -- or the field application owned by the presentation dispatch; never more
+  -- than one.
   if hostStatus.menu then
     resources.startMenuRenderer:draw(hostStatus.menu, assert(self.runtime.startMenuPlacement))
   elseif hostStatus.application then
-    if hostStatus.applicationId == FieldApplicationIds.POKEMON then
-      assert(resources.partyScreenRenderer, "party screen renderer is unavailable"):draw(
-        hostStatus.application,
-        assert(hostStatus.application.layout, "the party application presents its layout"),
-        assert(resources.monIconProvider, "party icon provider is unavailable")
-      )
-    else
-      resources.trainerCardRenderer:draw(hostStatus.application, self.runtime.viewport)
-    end
+    resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
   end
   local presentation = self.runtime.menuHost:presentation()
   if presentation then

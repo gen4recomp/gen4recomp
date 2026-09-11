@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local BagSave = require("libs.hgss.src.save.BagSave")
 
 local T = {}
 
@@ -26,6 +27,7 @@ local function record(overrides)
     auxiliaryUi = {},
     audio = {},
     mons = {},
+    bag = BagSave.empty(),
   }
   for key, replacement in pairs(overrides or {}) do
     rawset(value, key, replacement)
@@ -94,6 +96,9 @@ function T.uses_injected_authoritative_bucket_validators()
     monsValidate = function(value)
       calls.mons = value
     end,
+    bagValidate = function(value)
+      calls.bag = value
+    end,
   }
   local valid = assert(GameSave.validate(record(), opts))
   Assert.deepEqual(valid.playerData, { canonical = true })
@@ -103,6 +108,7 @@ function T.uses_injected_authoritative_bucket_validators()
   Assert.notNil(calls.auxiliaryUi)
   Assert.notNil(calls.audio)
   Assert.notNil(calls.mons)
+  Assert.notNil(calls.bag)
 end
 
 function T.rejects_non_table_and_missing_required_buckets()
@@ -117,6 +123,11 @@ function T.rejects_non_table_and_missing_required_buckets()
       return GameSave.validate(value)
     end)
   end
+  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
+    local value = record()
+    value.bag = nil
+    return GameSave.validate(value)
+  end)
 end
 
 function T.rejects_removed_top_level_session_fields()

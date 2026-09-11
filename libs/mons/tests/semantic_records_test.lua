@@ -220,7 +220,7 @@ function T.unrepresentable_records_fail_with_structured_errors()
       context
     )
   end)
-  throwsCode("MON_RECORD_INVALID", function()
+  throwsCode("ITEM_RECORD_INVALID", function()
     Mon.validate(
       invalid(function(mon)
         mon.heldItem = "BOGUS"
@@ -228,7 +228,7 @@ function T.unrepresentable_records_fail_with_structured_errors()
       context
     )
   end)
-  throwsCode("MON_RECORD_INVALID", function()
+  throwsCode("ITEM_RECORD_INVALID", function()
     Mon.validate(
       invalid(function(mon)
         mon.origin.ball = "BOGUS_BALL"

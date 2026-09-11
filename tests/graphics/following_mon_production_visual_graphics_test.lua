@@ -8,6 +8,7 @@
 -- direct mutation of follower state appear anywhere in the path.
 
 local Assert = require("tests.support.Assert")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
@@ -21,7 +22,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local MonCache = require("libs.assets.src.MonCache")
-local MonCatalog = require("libs.mons.src.MonCatalog")
+local MonBucket = require("tests.support.MonBucket")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -48,7 +49,7 @@ end
 -- runtime installs on map entry is a real starter rather than a fixture.
 local function giftedGame(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  local catalog = MonBucket.openCatalogs(versionId)
   local fontDef = FieldFontLoader.load(cacheFs)
   local service = HgssMonService.new({
     catalog = catalog,
@@ -82,6 +83,7 @@ local function giftedGame(versionId)
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
     mons = service:capture(),
+    bag = BagSave.empty(),
   }
 end
 
@@ -284,7 +286,7 @@ function T.stationary_follower_idles_without_player_input(scope)
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
-    local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+    local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
     local state = assert(FieldState.new(giftedGame(versionId), {}))
@@ -387,7 +389,7 @@ function T.real_starter_follower_trails_east_then_south_with_directional_walk_fr
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
-    local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+    local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
     local state = assert(FieldState.new(giftedGame(versionId), {}))

@@ -5,6 +5,8 @@ local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsSave = require("libs.mons.src.MonsSave")
 
 local T = {}
@@ -19,6 +21,7 @@ local function context()
     frameIndexes = { [0] = true },
     audioSequenceIds = { [7] = true },
     monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemFixture.makeCatalog(),
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -38,7 +41,7 @@ end
 
 local function record(saveId, versionId, playerData)
   return {
-    schema = "g4-game-save-v2",
+    schema = "g4-game-save-v3",
     saveId = saveId,
     versionId = versionId,
     playTimeSeconds = 0,
@@ -66,6 +69,7 @@ local function record(saveId, versionId, playerData)
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = monsBucket(),
+    bag = BagSave.empty(),
   }
 end
 
@@ -257,6 +261,28 @@ function T.complete_validation_rejects_non_durable_and_malformed_avatar_records(
     Assert.isNil(invalid, case.label .. " must not validate")
     Assert.isTrue(Errors.is(err), case.label .. " must raise a structured error")
   end
+end
+
+function T.complete_validation_rejects_records_without_a_valid_bag()
+  local service = GameSaveValidation.new({
+    contextLoader = function()
+      return context()
+    end,
+  })
+  local missing = record("save-00000012", "heartgold", validPlayerData)
+  missing.bag = nil
+  local invalid, err = service:validate(missing)
+  Assert.isNil(invalid, "a v3 record without a bag must not validate")
+  Assert.isTrue(Errors.is(err))
+
+  local malformed = record("save-00000013", "heartgold", validPlayerData)
+  malformed.bag = { schema = "hgss-bag-v1", pockets = {}, registered = {} }
+  invalid, err = service:validate(malformed)
+  Assert.isNil(invalid, "a v3 record with a malformed bag must not validate")
+  Assert.isTrue(Errors.is(err))
+
+  local valid = assert(service:validate(record("save-00000014", "heartgold", validPlayerData)))
+  Assert.equal(valid.bag.schema, "hgss-bag-v1", "a valid bag bucket survives version validation")
 end
 
 return { tests = T }

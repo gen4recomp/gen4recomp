@@ -231,6 +231,33 @@ function T.draw_items_compose_the_instance_transform()
   Assert.deepEqual(items[1].center, { 1, 1, 0 })
 end
 
+-- A zero-scale item transform (hidden geometry) still yields a draw item
+-- with identity normals instead of raising; an invertible non-uniform
+-- scale still yields the computed inverse-transpose normal.
+function T.singular_item_transform_yields_identity_normals()
+  local def = NitroModelFixture.doorDefinition()
+  local instance = ModelInstance.new(def)
+  instance:evaluatePose()
+  local draw = instance.poseState.drawMatrices["draw0.seg0"]
+
+  draw.position = Matrix4.scale(2, 1, 1)
+  local scaled = instance:drawItems(rendersFor(def))
+  Assert.equal(#scaled, 1)
+  Assert.deepEqual(scaled[1].modelNormal, Matrix3.modelNormal(Matrix4.scale(2, 1, 1)))
+  Assert.isFalse(
+    scaled[1].modelNormal[1] == 1
+      and scaled[1].modelNormal[5] == 1
+      and scaled[1].modelNormal[9] == 1
+      and scaled[1].modelNormal[2] == 0,
+    "a non-uniform scale computes a non-identity normal"
+  )
+
+  draw.position = Matrix4.multiply(Matrix4.translate(1, 2, 3), Matrix4.scale(0, 0, 0))
+  local hidden = instance:drawItems(rendersFor(def))
+  Assert.equal(#hidden, 1)
+  Assert.deepEqual(hidden[1].modelNormal, { 1, 0, 0, 0, 1, 0, 0, 0, 1 })
+end
+
 function T.material_contract_maps_to_render_state()
   local instance = newInstance()
   local wall = instance:effectiveMaterial(0)

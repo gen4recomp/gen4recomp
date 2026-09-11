@@ -19,6 +19,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 ---@field private _player table<string, unknown>|nil
 ---@field private _world table<string, unknown>|nil world state { getVar(id) -> unknown }
 ---@field private _mons HgssMonService|nil the live HGSS mon service for party/mon text
+---@field private _items ItemCatalog|nil the shared item catalog for item/pocket/TM/berry text
 ---@field private _frameIndex integer|nil player-selected user-frame index, captured at open
 ---@field private _pendingNode table<string, unknown>|nil
 local ScriptDialogueHost = {}
@@ -146,18 +147,97 @@ local function resolveMonsTextValue(kind, descriptor, mons, world)
   return nil
 end
 
+-- Item/pocket/TM/berry text identities, parallel to mon resolution. Returns
+-- the display string, or nil when the descriptor names a form owned
+-- elsewhere. Native identities resolve through the item catalog; unknown
+-- natives fail through the catalog's structured record validation rather
+-- than rendering a marker. A TM/HM move name coordinates the item catalog
+-- (machine to taught move) with the injected mon catalog (move to display
+-- name); a non-machine item is an attributed fault, never a fabricated
+-- move. A berry name selects the source quantity-dependent form (below two
+-- singular, otherwise plural), never the normal item plural.
+---@param kind string
+---@param descriptor table<string, unknown>
+---@param items ItemCatalog the shared item catalog
+---@param world table<string, unknown>|nil
+---@param mons HgssMonService|nil the live HGSS mon service for move display names
+---@return string|nil
+local function resolveItemsTextValue(kind, descriptor, items, world, mons)
+  if kind == "item_name" or kind == "item_name_indefinite" or kind == "item_name_plural" then
+    local identity = evaluateTextOperand(descriptor.value, world)
+    local record
+    if type(identity) == "number" then
+      record = items:itemByNativeId(identity)
+    else
+      record = items:item(identity --[[@as string]])
+    end
+    if kind == "item_name" then
+      return record.name
+    elseif kind == "item_name_indefinite" then
+      return record.nameIndefinite
+    end
+    return record.namePlural
+  elseif kind == "pocket_name" then
+    local pocket = evaluateTextOperand(descriptor.value, world)
+    if type(pocket) == "number" then
+      return items:pocketName(items:pocketKeyByNativeId(pocket))
+    end
+    return items:pocketName(pocket --[[@as string]])
+  elseif kind == "tmhm_move_name" then
+    local identity = evaluateTextOperand(descriptor.value, world)
+    local record
+    if type(identity) == "number" then
+      record = items:itemByNativeId(identity)
+    else
+      record = items:item(identity --[[@as string]])
+    end
+    local moveNativeId = record.tmhmMoveNativeId
+    if type(moveNativeId) ~= "number" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "item is not a TM or HM", { item = identity })
+    end
+    if mons ~= nil then
+      return mons:catalog():moveByNativeId(moveNativeId --[[@as integer]]).name
+    end
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "TM/HM move text requires the mon catalog", { item = identity })
+  elseif kind == "berry_name" then
+    local itemIdentity = evaluateTextOperand(descriptor.item, world)
+    local quantity = evaluateTextOperand(descriptor.quantity, world)
+    local record
+    if type(itemIdentity) == "number" then
+      record = items:itemByNativeId(itemIdentity)
+    else
+      record = items:item(itemIdentity --[[@as string]])
+    end
+    if record.pocket ~= "berries" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "item is not a berry", { item = itemIdentity })
+    end
+    if type(quantity) ~= "number" then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "berry quantity must be numeric", { quantity = quantity })
+    end
+    local count = quantity --[[@as number]]
+    if count < 2 then
+      return record.berryNameSingular
+    end
+    return record.berryNamePlural
+  end
+  return nil
+end
+
 -- Text-value descriptor resolvers for the implemented forms: player name,
--- integers backed by a variable, and mon/party identities resolved through
--- the injected live mon service and its catalog. Any other form is a fault:
--- the resolver contract never leaves a marker visible in the stream.
+-- integers backed by a variable, mon/party identities resolved through the
+-- injected live mon service and its catalog, and item/pocket/TM/berry
+-- identities resolved through the injected shared item catalog (TM/HM move
+-- names coordinate both catalogs). Any other form is a fault: the resolver
+-- contract never leaves a marker visible in the stream.
 ---@param descriptor table<string, unknown>
 ---@param player table<string, unknown>
 ---@param fontDef table<string, unknown>
 ---@param world table<string, unknown>|nil
 ---@param provider FieldMessageProvider
 ---@param mons HgssMonService|nil the live HGSS mon service
+---@param items ItemCatalog|nil the shared item catalog
 ---@return table<string, unknown>|nil replacementTokens
-local function resolveTextValue(descriptor, player, fontDef, world, provider, mons)
+local function resolveTextValue(descriptor, player, fontDef, world, provider, mons, items)
   if type(descriptor) ~= "table" or descriptor.text == nil then
     return nil
   end
@@ -186,6 +266,12 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
       return FieldMessageProvider.asciiGlyphTokens(resolved, fontDef)
     end
   end
+  if items ~= nil and type(kind) == "string" then
+    local resolved = resolveItemsTextValue(kind, descriptor, items, world, mons)
+    if resolved ~= nil then
+      return FieldMessageProvider.asciiGlyphTokens(resolved, fontDef)
+    end
+  end
   Errors.raise(
     ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE,
     "unsupported buffered text form " .. tostring(kind),
@@ -193,7 +279,7 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   )
 end
 
----@param opts table<string, unknown> { controller, provider, layout, fontDef, player, world, mons?, frameIndex? }
+---@param opts table<string, unknown> { controller, provider, layout, fontDef, player, world, mons?, items?, frameIndex? }
 ---@return ScriptDialogueHost
 function ScriptDialogueHost.new(opts)
   assert(
@@ -219,6 +305,7 @@ function ScriptDialogueHost.new(opts)
     _player = opts.player,
     _world = opts.world,
     _mons = opts.mons,
+    _items = opts.items,
     _frameIndex = frameIndex,
   }, ScriptDialogueHost)
 end
@@ -278,7 +365,15 @@ function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
       local function resolveSubstitution(_, args, _)
         local slot = args and args[1]
         local descriptor = bindings[slot] or textArgs[slot]
-        return resolveTextValue(descriptor, self._player, self._fontDef, self._world, self._provider, self._mons)
+        return resolveTextValue(
+          descriptor,
+          self._player,
+          self._fontDef,
+          self._world,
+          self._provider,
+          self._mons,
+          self._items
+        )
       end
       resolvers[token.control] = resolveSubstitution
     end

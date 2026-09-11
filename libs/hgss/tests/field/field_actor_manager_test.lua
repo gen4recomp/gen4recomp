@@ -1547,6 +1547,63 @@ function T.hidden_actors_report_hidden_snapshots_and_stay_solid()
   Assert.equal(world:snapshot("map:61:object:0").visible, true, "show_object restores snapshot visibility")
 end
 
+function T.script_hidden_actors_stay_in_the_save_snapshot()
+  -- Scripted visibility is transient: the save record carries no visibility
+  -- field, and spawn state recomputes from event flags on load. A hidden
+  -- actor whose durable flag is still clear belongs in the save; only a set
+  -- removal flag omits a source actor.
+  local actorId = "map:61:object:0"
+  local mgr = manager({ object({}) })
+  mgr:hide(actorId)
+  local captured = mgr:captureObjects()
+  local validated, validationErr = FieldObjectSave.validate(captured)
+  Assert.notNil(validated, tostring(validationErr))
+  local record = captured.actors[actorId]
+  Assert.notNil(record, "a script-hidden actor with a clear flag stays in the save snapshot")
+  Assert.isNil(record.visible, "visibility itself never enters the save record")
+  mgr:dispose()
+end
+
+function T.restore_skips_records_whose_source_flag_was_set_after_the_save()
+  -- A map header can retire a taken actor on entry by setting its removal
+  -- flag after a save captured it while still live: the event is then
+  -- legitimately absent, so restore must skip the overtaken record rather
+  -- than demand the actor, while other actors restore normally.
+  local objects = { object({ eventFlag = 401 }), object({ objectEventId = 1, eventFlag = 402, x = 4 }) }
+  local mgr = manager(objects)
+  local captured = mgr:captureObjects()
+  local validated, validationErr = FieldObjectSave.validate(captured)
+  Assert.notNil(validated, tostring(validationErr))
+  mgr:dispose()
+
+  local flagged = FieldEventState.new({ flags = { [401] = true } })
+  local reloaded = manager(objects, { eventState = flagged, restoredObjects = validated })
+  Assert.isNil(reloaded:getById("map:61:object:0"), "the flagged event stays absent")
+  local kept = assert(reloaded:getById("map:61:object:1"), "unflagged actors still restore")
+  Assert.equal(kept.fieldX, 4)
+  reloaded:dispose()
+end
+
+function T.restore_still_demands_records_without_a_source_event()
+  -- A record for an object event the map no longer declares is genuinely
+  -- stale: skipping it would hide corruption, so restore must still fail.
+  local mgr = manager({ object({ eventFlag = 401 }) })
+  local captured = mgr:captureObjects()
+  local validated, validationErr = FieldObjectSave.validate(captured)
+  Assert.notNil(validated, tostring(validationErr))
+  mgr:dispose()
+
+  local actors = assert(assert(validated).actors)
+  local record = assert(actors["map:61:object:0"])
+  actors["map:61:object:0"] = nil
+  record.actorId = "map:61:object:9"
+  record.objectEventId = 9
+  actors["map:61:object:9"] = record
+  throwsCode("SCRIPT_ACTOR_NOT_FOUND", function()
+    manager({ object({ eventFlag = 401 }) }, { restoredObjects = validated })
+  end)
+end
+
 function T.scripted_reposition_autonomous_reservation_and_destroy_keep_stable_cells_transactional()
   local map = runtimeMap({
     object({ objectEventId = 0, eventFlag = 401, movementType = "wander_around", x = 31, xRange = 2, yRange = -1 }),

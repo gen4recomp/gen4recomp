@@ -74,6 +74,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     auxiliaryUi = runtime.auxiliaryFieldUi:capture(),
     audio = FieldAudioSave.capture(runtime.audio),
     mons = runtime.monService:capture(),
+    bag = runtime.bagService:capture(),
   }
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()

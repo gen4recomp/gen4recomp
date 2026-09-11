@@ -7,7 +7,7 @@ local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v2"
+GameSave.SCHEMA = "g4-game-save-v3"
 GameSave.MAX_PLAY_TIME_SECONDS = 999 * 60 * 60 + 59 * 60 + 59
 
 local FACING = { north = true, south = true, west = true, east = true }
@@ -15,6 +15,7 @@ local TOP_LEVEL_FIELDS = {
   avatar = true,
   audio = true,
   auxiliaryUi = true,
+  bag = true,
   facing = true,
   fieldX = true,
   fieldZ = true,
@@ -207,6 +208,7 @@ local function validate(record, opts)
   end
   local canonicalScripts = validateBucket(record, "scripts", opts, "scriptsValidate")
   local canonicalMons = validateBucket(record, "mons", opts, "monsValidate")
+  local canonicalBag = validateBucket(record, "bag", opts, "bagValidate")
   local canonicalAuxiliaryUi = validateBucket(record, "auxiliaryUi", opts, "auxiliaryUiValidate")
   local canonicalAudio = validateBucket(record, "audio", opts, "audioValidate")
   local canonicalAvatar = validateAvatar(record)
@@ -218,6 +220,7 @@ local function validate(record, opts)
   canonical.world = world
   canonical.scripts = canonicalScripts
   canonical.mons = canonicalMons
+  canonical.bag = canonicalBag
   canonical.auxiliaryUi = canonicalAuxiliaryUi
   canonical.audio = canonicalAudio
   canonical.avatar = canonicalAvatar

@@ -1,10 +1,12 @@
 -- Immutable resolved mon definitions. The constructor requires the
--- already-canonical generated asset root, validates it through the owned
--- asset schema, copies it into package-owned state, and indexes semantic and
--- native identities. Lookups never mutate and never reach source formats:
--- native numeric identities stay only because exact native encoding gives
--- them current use. The fingerprint is a deterministic digest of the
--- canonical root; equal roots produce equal fingerprints.
+-- already-canonical generated asset root plus the shared item catalog,
+-- validates the root through the owned asset schema, copies it into
+-- package-owned state, and indexes semantic and native identities. Item
+-- identity is never copied here: item lookups delegate to the injected
+-- catalog, and the fingerprint digests only mon-owned data so item-only
+-- metadata changes never invalidate persisted mon buckets. Lookups never
+-- mutate and never reach source formats: native numeric identities stay only
+-- because exact native encoding gives them current use.
 
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local U32 = require("libs.codec.src.U32")
@@ -13,10 +15,10 @@ local MonsErrors = require("libs.mons.src.errors")
 
 ---@class MonCatalog
 ---@field private _root table<string, unknown>
+---@field private _items table<string, unknown> the shared item catalog behind item lookups
 ---@field private _speciesByNative table<integer, string>
 ---@field private _moveByNative table<integer, string>
 ---@field private _abilityByNative table<integer, string>
----@field private _itemByNative table<integer, string>
 ---@field private _fingerprint string
 local MonCatalog = {}
 MonCatalog.__index = MonCatalog
@@ -64,17 +66,25 @@ local function fingerprintText(text)
 end
 
 ---@param root table<string, unknown>
+---@param items table<string, unknown> shared item catalog; item lookups delegate to it
 ---@return MonCatalog
-function MonCatalog.new(root)
+function MonCatalog.new(root, items)
   assert(type(root) == "table", "MonCatalog requires the generated asset root")
+  assert(
+    type(items) == "table"
+      and type(items.item) == "function"
+      and type(items.itemByNativeId) == "function"
+      and type(items.itemKeyByNativeId) == "function",
+    "MonCatalog requires the shared item catalog"
+  )
   MonAssetSchema.assertCatalog(root)
   local owned = copyValue(root)
   local self = setmetatable({
     _root = owned,
+    _items = items,
     _speciesByNative = {},
     _moveByNative = {},
     _abilityByNative = {},
-    _itemByNative = {},
     _fingerprint = "",
   }, MonCatalog)
   for key, species in pairs(owned.species) do
@@ -106,16 +116,6 @@ function MonCatalog.new(root)
       )
     end
     self._abilityByNative[ability.nativeId] = key
-  end
-  for key, item in pairs(owned.items) do
-    if self._itemByNative[item.nativeId] ~= nil then
-      MonsErrors.raise(
-        MonsErrors.RECORD_INVALID,
-        "duplicate native item identity " .. tostring(item.nativeId),
-        { item = key }
-      )
-    end
-    self._itemByNative[item.nativeId] = key
   end
   self._fingerprint = fingerprintText(LuaWriter.encode(owned))
   return self
@@ -242,37 +242,24 @@ function MonCatalog:abilityByNativeId(nativeId)
   return self._root.abilities[self:abilityKeyByNativeId(nativeId)]
 end
 
+-- Item lookups delegate to the injected shared catalog; this package owns
+-- no second item store.
 ---@param key string
 ---@return table<string, unknown>
 function MonCatalog:item(key)
-  assert(type(key) == "string", "item lookup requires a string key")
-  local definition = self._root.items[key]
-  if definition == nil then
-    MonsErrors.raise(MonsErrors.RECORD_INVALID, "unknown item " .. key, { item = key })
-  end
-  assert(definition ~= nil, "catalog index carries the validated entry")
-  return definition
+  return self._items:item(key)
 end
 
 ---@param nativeId integer
 ---@return string
 function MonCatalog:itemKeyByNativeId(nativeId)
-  local key = self._itemByNative[nativeId]
-  if key == nil then
-    MonsErrors.raise(
-      MonsErrors.RECORD_INVALID,
-      "unknown native item identity " .. tostring(nativeId),
-      { nativeId = nativeId }
-    )
-  end
-  assert(key ~= nil, "catalog index carries the validated entry")
-  return key
+  return self._items:itemKeyByNativeId(nativeId)
 end
 
 ---@param nativeId integer
 ---@return table<string, unknown>
 function MonCatalog:itemByNativeId(nativeId)
-  return self._root.items[self:itemKeyByNativeId(nativeId)]
+  return self._items:itemByNativeId(nativeId)
 end
 
 ---@param key string

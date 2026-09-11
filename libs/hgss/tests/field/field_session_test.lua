@@ -1049,6 +1049,35 @@ function T.distinct_resume_requests_execute_separately()
   Assert.equal(starts, 1)
 end
 
+function T.child_resume_without_lifecycle_still_arbitrates_the_menu_edge()
+  local host = applicationHostFake()
+  local input = idleInput()
+  input.snapshot = function()
+    return { menuPressed = true }
+  end
+  local s = FieldSession.new(baseOptions({
+    initController = {
+      hasLifecycle = function()
+        return false
+      end,
+      startLifecycle = function()
+        return false
+      end,
+    },
+    input = input,
+    applicationHost = host,
+  }))
+  s:onChildApplicationResume()
+  Assert.isTrue(s.childResumePending)
+  s:updateFixed()
+  Assert.isFalse(s.childResumePending, "the resume flag clears on the return-to-field tick")
+  Assert.deepEqual(
+    host.openedTicks,
+    { 1 },
+    "without an on_resume lifecycle the resume tick must reach menu arbitration"
+  )
+end
+
 function T.completed_transition_holds_the_arrival_tile_for_autosave()
   local updates = 0
   local player = {

@@ -7,6 +7,8 @@
 -- become selectable, which stays the controller's decision. Neighbors walk
 -- the column into the cancel node. Pure module: no love, no I/O.
 
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+
 ---@class PartyScreenLayout
 local PartyScreenLayout = {}
 
@@ -22,25 +24,6 @@ local PartyScreenLayout = {}
 ---@field kind "slot"|"action"|"cancel"
 ---@field slot integer?
 ---@field action string?
-
----@param value number
----@param name string
----@return number
-local function finite(value, name)
-  assert(
-    type(value) == "number" and value == value and value > -math.huge and value < math.huge,
-    name .. " must be finite"
-  )
-  return value
-end
-
----@param rect ScreenTopology.Rectangle
----@param x number
----@param y number
----@return boolean
-local function contains(rect, x, y)
-  return x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height
-end
 
 ---@param rect ScreenTopology.Rectangle
 ---@return ScreenTopology.Rectangle
@@ -58,9 +41,11 @@ end
 ---@return PartyScreenLayoutResolved
 function PartyScreenLayout.resolve(spec)
   assert(type(spec) == "table", "party layout requires a specification")
-  local width = finite(spec.width, "party layout width")
-  local height = finite(spec.height, "party layout height")
-  assert(width > 0 and height > 0, "party layout dimensions must be positive")
+  local validated =
+    LayoutGeometry.rect({ x = 0, y = 0, width = spec.width, height = spec.height }, "party layout frame")
+  ---@type ScreenTopology.Rectangle
+  local frame = { x = validated.x, y = validated.y, width = validated.width, height = validated.height }
+  local width, height = frame.width, frame.height
   local uiScale = spec.uiScale or 1
   assert(type(uiScale) == "number" and uiScale > 0, "party layout ui scale must be positive")
   local cancellable = spec.cancellable
@@ -69,7 +54,6 @@ function PartyScreenLayout.resolve(spec)
   end
   assert(type(cancellable) == "boolean", "party layout cancel permission must be a boolean")
 
-  local frame = { x = 0, y = 0, width = width, height = height }
   local margin = 8 * uiScale
   assert(width > margin * 2 and height > margin * 2, "the viewport is too small for the party frame")
   local content = { x = margin, y = margin, width = width - margin * 2, height = height - margin * 2 }
@@ -122,19 +106,19 @@ function PartyScreenLayout.resolve(spec)
   local function hitTest(x, y, actionsActive)
     assert(type(x) == "number" and type(y) == "number", "hit testing needs coordinates")
     if actionsActive == true then
-      if contains(actionRects.switch, x, y) then
+      if LayoutGeometry.containsPoint(actionRects.switch, x, y) then
         return { kind = "action", action = "switch" }
       end
-      if contains(actionRects.cancel, x, y) then
+      if LayoutGeometry.containsPoint(actionRects.cancel, x, y) then
         return { kind = "action", action = "cancel" }
       end
     end
     for slot0 = 0, 5 do
-      if contains(slotRects[slot0 + 1], x, y) then
+      if LayoutGeometry.containsPoint(slotRects[slot0 + 1], x, y) then
         return { kind = "slot", slot = slot0 }
       end
     end
-    if cancelRect ~= nil and contains(cancelRect, x, y) then
+    if cancelRect ~= nil and LayoutGeometry.containsPoint(cancelRect, x, y) then
       return { kind = "cancel" }
     end
     return nil

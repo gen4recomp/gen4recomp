@@ -89,7 +89,7 @@ end
 
 function T.alias_list_is_complete_and_deterministic()
   local list = HgssArchives.aliasList()
-  Assert.equal(#list, 40)
+  Assert.equal(#list, 41)
   -- Sorted ascending by narcId, with deterministic alias ordering for shared roles.
   for i = 2, #list do
     local previous = list[i - 1]
@@ -106,6 +106,13 @@ function T.alias_list_is_complete_and_deterministic()
     Assert.notNil(e.path)
     Assert.notNil(e.narcId)
   end
+end
+
+function T.bag_ui_aliases_the_bag_presentation_archive()
+  local e = HgssArchives.resolve("bag_ui")
+  Assert.equal(e.symbol, "NARC_a_0_1_5")
+  Assert.equal(e.narcId, 15)
+  Assert.equal(e.path, "a/0/1/5")
 end
 
 return { tests = T }

@@ -85,6 +85,10 @@ function FieldActorPersistence:capture(entries, actorsByManagerSlot, captureCont
   for _, mapId in ipairs(mapIds) do
     local entry = assert(entries[mapId])
     for ordinal, actor in ipairs(actorsByManagerSlot(entry)) do
+      -- The manager already restricts this list to source-eligible actors.
+      -- This translator only decides whether an actor has a serializable
+      -- source identity; durable presence stays in the manager's flag state
+      -- and transient visibility never enters the record.
       if actor.sourceEvent and actor.objectEventId ~= nil then
         actors[actor.actorId] =
           self:captureActor(actor, ordinal - 1, captureController(actor.actorId), captureAction(entry, actor))

@@ -23,6 +23,8 @@ local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local MonCache = require("libs.assets.src.MonCache")
+local ItemCache = require("libs.assets.src.ItemCache")
+local BagCache = require("libs.assets.src.BagCache")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 
 local T = {}
@@ -103,7 +105,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     mons = {
       cacheFormat = "mon-cache-v1",
-      catalogSchema = "g4-mon-catalog-v2",
+      catalogSchema = "g4-mon-catalog-v3",
       indexSchema = "g4-mon-index-v1",
       iconManifestSchema = "g4-mon-icon-manifest-v1",
       portraitManifestSchema = "g4-mon-portrait-manifest-v1",
@@ -175,6 +177,12 @@ function T.cache_modules_consume_the_contract_constants()
   Assert.equal(MonCache.INDEX_SCHEMA, DerivedAssetContract.mons.indexSchema)
   Assert.equal(MonCache.ICON_MANIFEST_SCHEMA, DerivedAssetContract.mons.iconManifestSchema)
   Assert.equal(MonCache.PORTRAIT_MANIFEST_SCHEMA, DerivedAssetContract.mons.portraitManifestSchema)
+  Assert.equal(ItemCache.FORMAT, DerivedAssetContract.items.cacheFormat)
+  Assert.equal(ItemCache.CATALOG_SCHEMA, DerivedAssetContract.items.catalogSchema)
+  Assert.equal(ItemCache.INDEX_SCHEMA, DerivedAssetContract.items.indexSchema)
+  Assert.equal(ItemCache.ICON_MANIFEST_SCHEMA, DerivedAssetContract.items.iconManifestSchema)
+  Assert.equal(BagCache.FORMAT, DerivedAssetContract.bag.cacheFormat)
+  Assert.equal(BagCache.SCHEMA, DerivedAssetContract.bag.schema)
   Assert.equal(StarterChoiceAssetCache.FORMAT, DerivedAssetContract.starterChoice.cacheFormat)
   Assert.equal(StarterChoiceAssetCache.SCHEMA, DerivedAssetContract.starterChoice.schema)
 end

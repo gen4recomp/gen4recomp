@@ -86,6 +86,7 @@ local PRESENTATION = { "BillboardTransform" }
 
 local EXISTING_SIBLINGS = {
   audio = "libs.hgss.src.audio.AudioRuntime",
+  items = "libs.hgss.src.items.HgssBagService",
   mons = "libs.hgss.src.mons.HgssMonService",
   presentation = "libs.hgss.src.presentation.FieldViewport",
   save = "libs.hgss.src.save.GameSave",

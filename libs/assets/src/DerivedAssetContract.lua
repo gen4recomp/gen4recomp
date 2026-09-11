@@ -199,13 +199,12 @@ DerivedAssetContract.starterChoice = {
 -- The mon class carries the complete species/form/move/ability/growth
 -- catalog plus the party-icon and portrait atlases with their selection
 -- manifests. Following-mon drawable definitions stay in the field-actor
--- class; the catalog references field-actor visual IDs only.
+-- class; the catalog references field-actor visual IDs only. Item identity
+-- lives in the item class, never here: v3 drops the former generated item
+-- collection so item-only metadata changes never invalidate mon buckets.
 DerivedAssetContract.mons = {
   cacheFormat = "mon-cache-v1",
-  -- v2 adds the generated item collection: one strict
-  -- { nativeId, isBall, friendshipBoost } record per source native item
-  -- identity 0..536, the single runtime source for item numbering.
-  catalogSchema = "g4-mon-catalog-v2",
+  catalogSchema = "g4-mon-catalog-v3",
   indexSchema = "g4-mon-index-v1",
   iconManifestSchema = "g4-mon-icon-manifest-v1",
   portraitManifestSchema = "g4-mon-portrait-manifest-v1",

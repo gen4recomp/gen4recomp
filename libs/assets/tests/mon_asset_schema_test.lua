@@ -55,25 +55,14 @@ function T.forms_reject_unknown_fields_and_bad_values()
   Assert.isTrue(MonAssetSchema.isValidForm(noFollower, {}))
 end
 
-local function fullItems()
-  local items = {}
-  for nativeId = 0, 536 do
-    items["ITEM_" .. nativeId] = { nativeId = nativeId, isBall = false, friendshipBoost = false }
-  end
-  items["ITEM_0"] = nil
-  items["NONE"] = { nativeId = 0, isBall = false, friendshipBoost = false }
-  return items
-end
-
 local function catalogWith(species, moves, abilities, growthCurves)
   return {
-    schema = "g4-mon-catalog-v2",
+    schema = "g4-mon-catalog-v3",
     version = { id = "heartgold", language = "english" },
     species = species,
     moves = moves,
     abilities = abilities,
     growthCurves = growthCurves,
-    items = fullItems(),
   }
 end
 

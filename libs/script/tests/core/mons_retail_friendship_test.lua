@@ -10,7 +10,6 @@ local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
-local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local Runtime = require("libs.script.src.Runtime")
@@ -21,20 +20,16 @@ local T = {}
 local NATIVE_SECTION = 126
 
 local function buildCatalog()
-  local root = CatalogFixture.buildAssetRoot()
-  root.items["LUXURY_BALL"] = { nativeId = 11, isBall = true, friendshipBoost = false }
-  root.items["ITEM_11"] = nil
-  root.items["SOOTHE_BELL"] = { nativeId = 218, isBall = false, friendshipBoost = true }
-  root.items["ITEM_218"] = nil
-  return root
+  return CatalogFixture.makeCatalog()
 end
 
 local function openService()
-  local root = buildCatalog()
-  local catalog = MonCatalog.new(root)
+  local catalog = buildCatalog()
   local items = {}
   local balls = {}
-  for key, definition in pairs(root.items) do
+  for nativeId = 0, 536 do
+    local key = catalog:itemKeyByNativeId(nativeId)
+    local definition = catalog:item(key)
     items[key] = definition.nativeId
     if definition.isBall then
       balls[key] = definition.nativeId

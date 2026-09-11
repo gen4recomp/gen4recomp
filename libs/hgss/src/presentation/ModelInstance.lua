@@ -371,7 +371,12 @@ function ModelInstance:drawItems(renderMeshesById)
       local material = self:effectiveMaterial(mesh.materialIndex)
       local modelNormal = IDENTITY_MODEL_NORMAL
       if not billboardBase and not isTranslationOnly(transform) then
-        modelNormal = Matrix3.modelNormal(transform)
+        -- Zero-scale hidden geometry renders nothing, so its normals are
+        -- moot: keep the identity normal instead of raising on the singular
+        -- transform. Broken programs still raise at their own sites.
+        if Matrix3.inverse(Matrix3.from4x4(transform)) ~= nil then
+          modelNormal = Matrix3.modelNormal(transform)
+        end
       end
       local item = {
         mesh = renderMeshesById[mesh.id],

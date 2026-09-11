@@ -175,7 +175,7 @@ function T.save_bucket_round_trips_under_catalog_fingerprint()
   otherRoot.species.BAYLEEF.nativeId = 153
   otherRoot.species.BAYLEEF.name = "BAYLEEF"
   local OtherCatalog = require("libs.mons.src.MonCatalog")
-  local otherCatalog = OtherCatalog.new(otherRoot)
+  local otherCatalog = OtherCatalog.new(otherRoot, CatalogFixture.makeItemCatalog())
   Assert.isTrue(otherCatalog:fingerprint() ~= fingerprint)
   local otherContext = CatalogFixture.domainContext(otherCatalog)
   throwsCode("MONS_SAVE_FINGERPRINT_MISMATCH", function()

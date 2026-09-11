@@ -123,6 +123,24 @@ local CASES = {
     end,
     { text = "tmhm_move_name", value = { value = "var", id = "tmhm" } },
   },
+  item_name_indefinite = {
+    function()
+      return S.itemNameIndefinite(S.var("item"))
+    end,
+    { text = "item_name_indefinite", value = { value = "var", id = "item" } },
+  },
+  item_name_plural = {
+    function()
+      return S.itemNamePlural(23)
+    end,
+    { text = "item_name_plural", value = 23 },
+  },
+  berry_name = {
+    function()
+      return S.berryName(S.var("item"), S.var("count"))
+    end,
+    { text = "berry_name", item = { value = "var", id = "item" }, quantity = { value = "var", id = "count" } },
+  },
   species_name = {
     function()
       return S.speciesName(S.var("species"))

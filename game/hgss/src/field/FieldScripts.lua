@@ -203,6 +203,8 @@ end
 ---@field playerAvatar table<string, unknown>|nil avatar transition owner wired into the player facade (required together with avatarApplier)
 ---@field avatarApplier (fun(): table<string, unknown>|nil)|nil pending-transition materializer wired into the player facade (required together with playerAvatar)
 ---@field mons table<string, unknown>|nil the live HGSS mon service for mon/party script operations and text (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field items table<string, unknown>|nil the live HGSS Bag service for generic Bag/item script operations (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field itemCatalog table<string, unknown>|nil the shared item catalog for item/pocket/TM/berry text (absent -> SCRIPT_UNSUPPORTED_REACHABLE on use)
 ---@field starterProvider table<string, unknown>|nil the default starter roster for the blocking starter task (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field starterChoice table<string, unknown>|nil the modal starter-choice surface the blocking task opens and closes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -299,6 +301,7 @@ function FieldScripts.new(opts)
     player = player,
     world = worldState,
     mons = opts.mons,
+    items = opts.itemCatalog,
     frameIndex = opts.frameIndex,
   })
   local mapsService = ScriptMapsService.new({
@@ -385,6 +388,7 @@ function FieldScripts.new(opts)
       startMenuReopen = opts.startMenuReopen,
       effects = opts.effects,
       mons = opts.mons,
+      items = opts.items,
       starterProvider = opts.starterProvider,
       starterChoice = opts.starterChoice,
       followingMon = opts.followingMon,
