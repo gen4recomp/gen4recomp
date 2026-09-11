@@ -107,6 +107,14 @@ Schema.TEXT_VALUES = {
     },
   },
   item_name = { fields = { value = { type = "scalar_or_value", required = true } } },
+  item_name_indefinite = { fields = { value = { type = "scalar_or_value", required = true } } },
+  item_name_plural = { fields = { value = { type = "scalar_or_value", required = true } } },
+  berry_name = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      quantity = { type = "scalar_or_value", required = true },
+    },
+  },
   pocket_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   move_name = { fields = { value = { type = "scalar_or_value", required = true } } },
   tmhm_move_name = { fields = { value = { type = "scalar_or_value", required = true } } },
@@ -931,6 +939,58 @@ Schema.OPERATIONS = {
       result = { type = "value", required = true },
     },
   },
+  -- Generic Bag/item operations. Every node names a semantic inventory or
+  -- catalog behavior; no node carries a source opcode. Item and quantity
+  -- operands are value-or-variable references holding native item identities;
+  -- the service resolves them once through the catalog. Boolean results
+  -- write 1 or 0, pocket queries write the native pocket id, and quantity
+  -- queries write the exact owned count.
+  bag_add_item = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      quantity = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  bag_take_item = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      quantity = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  bag_has_space = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      quantity = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  bag_has_item = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      quantity = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  item_is_tmhm = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  item_get_pocket = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  bag_get_quantity = {
+    fields = {
+      item = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
   party_lead = {
     fields = {
       result = { type = "value", required = true },
@@ -1079,6 +1139,13 @@ Schema.CONSTRUCTORS = {
       { signature = "S.friendName()", canonical = "text=friend_name", notes = "" },
       { signature = "S.integerText(value)", canonical = "text=integer", notes = "" },
       { signature = "S.itemName(value)", canonical = "text=item_name", notes = "" },
+      { signature = "S.itemNameIndefinite(value)", canonical = "text=item_name_indefinite", notes = "" },
+      { signature = "S.itemNamePlural(value)", canonical = "text=item_name_plural", notes = "" },
+      {
+        signature = "S.berryName(item, quantity)",
+        canonical = "text=berry_name",
+        notes = "Quantity selects the source singular/plural berry form.",
+      },
       { signature = "S.pocketName(value)", canonical = "text=pocket_name", notes = "" },
       { signature = "S.moveName(value)", canonical = "text=move_name", notes = "" },
       { signature = "S.tmhmMoveName(value)", canonical = "text=tmhm_move_name", notes = "" },
@@ -1700,6 +1767,47 @@ Schema.CONSTRUCTORS = {
         signature = "S.partySelectResult(spec)",
         canonical = "op=party_select_result",
         notes = "spec={result}; copies the slot or 255 on cancel.",
+      },
+    },
+  },
+  {
+    section = "Bag and item constructors",
+    notes = "Semantic Bag/item operations executed through the injected Bag service. Item operands hold native item identities resolved once through the catalog; boolean results write 1 or 0.",
+    rows = {
+      {
+        signature = "S.bagAddItem(spec)",
+        canonical = "op=bag_add_item",
+        notes = "spec={item,quantity,result}.",
+      },
+      {
+        signature = "S.bagTakeItem(spec)",
+        canonical = "op=bag_take_item",
+        notes = "spec={item,quantity,result}.",
+      },
+      {
+        signature = "S.bagHasSpace(spec)",
+        canonical = "op=bag_has_space",
+        notes = "spec={item,quantity,result}.",
+      },
+      {
+        signature = "S.bagHasItem(spec)",
+        canonical = "op=bag_has_item",
+        notes = "spec={item,quantity,result}.",
+      },
+      {
+        signature = "S.itemIsTmhm(spec)",
+        canonical = "op=item_is_tmhm",
+        notes = "spec={item,result}.",
+      },
+      {
+        signature = "S.itemGetPocket(spec)",
+        canonical = "op=item_get_pocket",
+        notes = "spec={item,result}; the result is the native pocket identity.",
+      },
+      {
+        signature = "S.bagGetQuantity(spec)",
+        canonical = "op=bag_get_quantity",
+        notes = "spec={item,result}.",
       },
     },
   },

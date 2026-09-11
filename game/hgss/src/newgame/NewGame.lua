@@ -3,6 +3,7 @@
 -- Oak profile without publishing gameplay to storage.
 
 local GameSave = require("libs.hgss.src.save.GameSave")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -119,6 +120,7 @@ function NewGame.createCandidate(options)
     surfaceId = nil,
     playerData = nil,
     mons = mons,
+    bag = BagSave.empty(),
   }
 end
 

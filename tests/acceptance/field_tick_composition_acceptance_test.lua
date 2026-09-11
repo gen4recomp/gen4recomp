@@ -42,6 +42,7 @@ local function labHarness()
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = mons,
+        bag = require("libs.hgss.src.save.BagSave").empty(),
       }
     end,
   })

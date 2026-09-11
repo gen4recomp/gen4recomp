@@ -12,6 +12,7 @@
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
@@ -171,7 +172,29 @@ local function drawableState(options)
       signpostRenderer = recordingRenderer("signpost", sink),
       startMenuRenderer = recordingRenderer("menu", sink),
       trainerCardRenderer = recordingRenderer("card", sink),
+      partyScreenRenderer = recordingRenderer("party", sink),
+      monIconProvider = { id = "test-icon-provider" },
       menuRenderer = recordingRenderer("script-menu", sink),
+      -- The harness-side dispatch seam mirrors the production presenter map:
+      -- explicit ids only, no fallback surface.
+      drawApplication = function(self, applicationId, presentation, hostRuntime)
+        if applicationId == FieldApplicationIds.POKEMON then
+          assert(self.partyScreenRenderer, "party screen renderer is unavailable"):draw(
+            presentation,
+            assert(presentation.layout, "the party application presents its layout"),
+            assert(self.monIconProvider, "party icon provider is unavailable")
+          )
+          return
+        end
+        if applicationId == FieldApplicationIds.TRAINER_CARD then
+          assert(self.trainerCardRenderer, "trainer card renderer is unavailable"):draw(
+            presentation,
+            hostRuntime.viewport
+          )
+          return
+        end
+        error("no presenter is registered for application " .. tostring(applicationId))
+      end,
       fieldEntranceIndicatorRenderer = {
         drawItems = function()
           return {}
@@ -297,7 +320,12 @@ end
 function T.application_phase_draws_only_the_card_surface_and_keeps_the_world_faded()
   local applicationStatus = { name = "GOLD", trainerId = 0 }
   local state, sink = drawableState({
-    hostStatus = { phase = "application", fadeAlpha = 1, application = applicationStatus },
+    hostStatus = {
+      phase = "application",
+      fadeAlpha = 1,
+      applicationId = FieldApplicationIds.TRAINER_CARD,
+      application = applicationStatus,
+    },
     signpostModal = true,
   })
   local restore = spyGraphics(sink)
@@ -324,6 +352,38 @@ function T.application_phase_draws_only_the_card_surface_and_keeps_the_world_fad
   local cardCall = sink[3]
   Assert.equal(cardCall[2], applicationStatus, "the trainer card renderer receives the host's application presentation")
   Assert.equal(cardCall[3], state.runtime.viewport, "the card draws into the viewport")
+end
+
+-- Application phase: the party application draws through the same dispatch
+-- with its own id and layout; the card surface never draws underneath it.
+function T.application_phase_draws_the_party_surface_through_the_presentation_dispatch()
+  local applicationStatus = { layout = { frame = { x = 0, y = 0, width = 640, height = 480 } } }
+  local state, sink = drawableState({
+    hostStatus = {
+      phase = "application",
+      fadeAlpha = 1,
+      applicationId = FieldApplicationIds.POKEMON,
+      application = applicationStatus,
+    },
+  })
+  local restore = spyGraphics(sink)
+  local ok, err = pcall(function()
+    state:draw()
+  end)
+  restore()
+  if not ok then
+    error(err, 0)
+  end
+
+  Assert.deepEqual(labels(sink), { "world", "rect", "party" })
+  local partyCall = sink[3]
+  Assert.equal(partyCall[2], applicationStatus, "the party renderer receives the host's application presentation")
+  Assert.equal(partyCall[3], applicationStatus.layout, "the party draws through the application layout")
+  Assert.equal(
+    partyCall[4],
+    state.presentationResources.monIconProvider,
+    "the party draws with the shared icon provider"
+  )
 end
 
 -- The application fade covers the actual union of the world viewport and the

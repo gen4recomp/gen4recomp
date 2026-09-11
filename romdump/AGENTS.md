@@ -47,7 +47,7 @@ and compilation into g4recomp assets.
 ## Digest source layout
 
 - Keep digest producers in shallow semantic domains: `map`, `model`, `actor`, `field`, `ui`,
-  `newgame`, and `mons`; audio and script producers belong in their existing `audio` and `script`
+  `newgame`, `mons`, and `items`; audio and script producers belong in their existing `audio` and `script`
   domains. Follower visuals merge into the actor bundle, so their producer lives in `actor`;
   starter-choice producers belong to the game-start flow in `newgame`.
 - Keep only proven cross-domain utilities at the digest root. Current root utilities are

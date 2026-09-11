@@ -858,6 +858,64 @@ local function handleHealParty(_, run)
   monsFor(run):healParty()
   return Runtime.OUTCOME_CONTINUE
 end
+
+-- Bag and item operations. Each handler evaluates its item/quantity
+-- operands through the run semantics, calls exactly one named operation on
+-- the injected Bag service with native identities, and writes the numeric
+-- source result to the declared result variable: 1 or 0 for the boolean
+-- commands, the native pocket id for the pocket query, and the exact owned
+-- count for the quantity query. Every node continues in the same tick and
+-- never mutates world variables other than its result. No handler switches
+-- on a source opcode; the node op already names the behavior. An unknown
+-- native identity fails through the catalog's structured record validation
+-- instead of reading as an absent item.
+local function itemsFor(run)
+  return requireService(run, "items")
+end
+
+local function writeItemsBool(node, run, value)
+  semanticsFor(run).writeRef(node.result, value and 1 or 0, run)
+end
+
+local function handleBagAddItem(node, run)
+  writeItemsBool(node, run, itemsFor(run):addNative(evalField(node, run, "item"), evalField(node, run, "quantity")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleBagTakeItem(node, run)
+  writeItemsBool(node, run, itemsFor(run):takeNative(evalField(node, run, "item"), evalField(node, run, "quantity")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleBagHasSpace(node, run)
+  writeItemsBool(
+    node,
+    run,
+    itemsFor(run):hasSpaceNative(evalField(node, run, "item"), evalField(node, run, "quantity"))
+  )
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleBagHasItem(node, run)
+  writeItemsBool(node, run, itemsFor(run):hasNative(evalField(node, run, "item"), evalField(node, run, "quantity")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleItemIsTmhm(node, run)
+  writeItemsBool(node, run, itemsFor(run):isTMHMNative(evalField(node, run, "item")))
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleItemGetPocket(node, run)
+  semanticsFor(run).writeRef(node.result, itemsFor(run):pocketNativeIdNative(evalField(node, run, "item")), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
+local function handleBagGetQuantity(node, run)
+  semanticsFor(run).writeRef(node.result, itemsFor(run):quantityNative(evalField(node, run, "item")), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handlePartySelect(_, run)
   requireForeground(run, "party_select")
   monsFor(run)
@@ -1622,6 +1680,13 @@ HANDLERS.party_lead_alive = handlePartyLeadAlive
 HANDLERS.party_legal_check = handlePartyLegalCheck
 HANDLERS.check_kyogre_groudon = handleCheckKyogreGroudon
 HANDLERS.heal_party = handleHealParty
+HANDLERS.bag_add_item = handleBagAddItem
+HANDLERS.bag_take_item = handleBagTakeItem
+HANDLERS.bag_has_space = handleBagHasSpace
+HANDLERS.bag_has_item = handleBagHasItem
+HANDLERS.item_is_tmhm = handleItemIsTmhm
+HANDLERS.item_get_pocket = handleItemGetPocket
+HANDLERS.bag_get_quantity = handleBagGetQuantity
 HANDLERS.party_select = handlePartySelect
 HANDLERS.party_select_result = handlePartySelectResult
 HANDLERS.follower_is_active = handleFollowerIsActive

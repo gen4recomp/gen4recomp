@@ -20,12 +20,16 @@ local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MonCache = require("libs.assets.src.MonCache")
+local ItemCache = require("libs.assets.src.ItemCache")
+local BagCache = require("libs.assets.src.BagCache")
 
 local DerivedCacheAudit = {}
 
 local REQUIRED_MARKERS = {
   FieldActorCache.markerPath(),
   MonCache.markerPath(),
+  ItemCache.markerPath(),
+  BagCache.markerPath(),
   AudioCache.markerPath(),
   FieldCameraCache.markerPath(),
   FieldFontCache.markerPath(),

@@ -3,6 +3,7 @@
 -- party-application frame cycle through the production menu.
 
 local Assert = require("tests.support.Assert")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -91,14 +92,14 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
   local FieldEventState = require("libs.hgss.src.field.FieldEventState")
   local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
-  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local MonBucket = require("tests.support.MonBucket")
   local MonsSave = require("libs.mons.src.MonsSave")
   local PlayTime = require("libs.hgss.src.save.PlayTime")
 
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
       local cacheFs = CacheFs.forVersion(versionId)
-      local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+      local catalog = MonBucket.openCatalogs(versionId)
       local fontDef = FieldFontLoader.load(cacheFs)
       local service = HgssMonService.new({
         catalog = catalog,
@@ -130,6 +131,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = service:capture(),
+        bag = BagSave.empty(),
       }
       local state = assert(FieldState.new(game, {}))
       local ok, err = xpcall(function()

@@ -171,6 +171,15 @@ end
 function M.itemName(v)
   return text("item_name", { value = v })
 end
+function M.itemNameIndefinite(v)
+  return text("item_name_indefinite", { value = v })
+end
+function M.itemNamePlural(v)
+  return text("item_name_plural", { value = v })
+end
+function M.berryName(item, quantity)
+  return text("berry_name", { item = item, quantity = quantity })
+end
 function M.pocketName(v)
   return text("pocket_name", { value = v })
 end
@@ -798,6 +807,30 @@ function M.partySelect(spec)
 end
 function M.partySelectResult(spec)
   return op("party_select_result", spec)
+end
+
+-- Bag and item constructors. Each takes the single canonical spec table
+-- named by the schema fields; item operands hold native item identities.
+function M.bagAddItem(spec)
+  return op("bag_add_item", spec)
+end
+function M.bagTakeItem(spec)
+  return op("bag_take_item", spec)
+end
+function M.bagHasSpace(spec)
+  return op("bag_has_space", spec)
+end
+function M.bagHasItem(spec)
+  return op("bag_has_item", spec)
+end
+function M.itemIsTmhm(spec)
+  return op("item_is_tmhm", spec)
+end
+function M.itemGetPocket(spec)
+  return op("item_get_pocket", spec)
+end
+function M.bagGetQuantity(spec)
+  return op("bag_get_quantity", spec)
 end
 function M.unsupported(spec)
   return op("unsupported", spec)

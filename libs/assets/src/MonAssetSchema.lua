@@ -516,51 +516,16 @@ local function collectNativeIds(section, field, context, code, what)
   return ids
 end
 
--- The generated item collection: one record per source native identity
--- 0..536, each carrying only the runtime facts native projection and script
--- policy consume. Any missing, duplicate, extra, or out-of-range identity
--- fails the catalog; there is no partial item table.
-local ITEM_FIELDS = { nativeId = true, isBall = true, friendshipBoost = true }
-
-local function assertItems(items, context)
-  if type(items) ~= "table" then
-    fail("MON_CATALOG_INVALID", "items must be a record", context)
-  end
-  for key, record in pairs(items) do
-    if type(key) ~= "string" or key == "" then
-      fail("MON_CATALOG_INVALID", "item keys must be non-empty strings", context)
-    end
-    if type(record) ~= "table" then
-      fail("MON_CATALOG_INVALID", "item " .. key .. " must be a record", context)
-    end
-    checkKeys(record, ITEM_FIELDS, context, "MON_CATALOG_INVALID")
-    if
-      type(record.nativeId) ~= "number"
-      or record.nativeId % 1 ~= 0
-      or record.nativeId < 0
-      or record.nativeId > 536
-    then
-      fail("MON_CATALOG_INVALID", "item " .. key .. " nativeId must be 0..536", context)
-    end
-    if type(record.isBall) ~= "boolean" then
-      fail("MON_CATALOG_INVALID", "item " .. key .. " isBall must be a boolean", context)
-    end
-    if type(record.friendshipBoost) ~= "boolean" then
-      fail("MON_CATALOG_INVALID", "item " .. key .. " friendshipBoost must be a boolean", context)
-    end
-  end
-  local byNativeId = collectNativeIds(items, "nativeId", context, "MON_CATALOG_INVALID", "item")
-  for nativeId = 0, 536 do
-    if byNativeId[nativeId] == nil then
-      fail("MON_CATALOG_INVALID", "item native identity " .. nativeId .. " is missing", context)
-    end
-  end
-end
+-- The generated item collection left this catalog: item identity and
+-- Bag-relevant metadata live in the generated item class now, so extending
+-- them never invalidates persisted mon buckets. Species held-item
+-- references still carry their semantic item key plus native identity for
+-- codec compatibility, validated as references only.
 
 -- Full catalog validation: shapes plus every species/move/ability cross
--- reference. Growth curves cover levels 1..100 exactly. The item collection
--- covers every source native identity 0..536 exactly once with only the
--- runtime facts each record carries.
+-- reference. Growth curves cover levels 1..100 exactly. Held-item references
+-- resolve their shape only; item identity itself is owned by the generated
+-- item class and never duplicated here.
 function MonAssetSchema.assertCatalog(catalog)
   local context = {}
   if type(catalog) ~= "table" then
@@ -573,10 +538,9 @@ function MonAssetSchema.assertCatalog(catalog)
     moves = true,
     abilities = true,
     growthCurves = true,
-    items = true,
   }, context, "MON_CATALOG_INVALID")
-  if catalog.schema ~= "g4-mon-catalog-v2" then
-    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v2", context)
+  if catalog.schema ~= "g4-mon-catalog-v3" then
+    fail("MON_CATALOG_INVALID", "catalog schema must be g4-mon-catalog-v3", context)
   end
   if type(catalog.version) ~= "table" then
     fail("MON_CATALOG_INVALID", "catalog version must be a record", context)
@@ -590,7 +554,6 @@ function MonAssetSchema.assertCatalog(catalog)
   collectNativeIds(catalog.species, "nativeId", context, "MON_CATALOG_INVALID", "species")
   collectNativeIds(catalog.moves, "nativeId", context, "MON_CATALOG_INVALID", "moves")
   collectNativeIds(catalog.abilities, "nativeId", context, "MON_CATALOG_INVALID", "abilities")
-  assertItems(catalog.items, context)
   for key, species in pairs(catalog.species) do
     assertSpecies(key, species, context)
     for _, form in pairs(species.forms) do

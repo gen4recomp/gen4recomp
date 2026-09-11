@@ -62,7 +62,7 @@ function T.catalog_indexes_definitions_and_selects_presentations()
   end)
 
   -- The fingerprint is deterministic for an unchanged root and moves with
-  -- any content change.
+  -- any mon content change.
   local again = CatalogFixture.makeCatalog()
   Assert.equal(again:fingerprint(), catalog:fingerprint())
   local altered = CatalogFixture.buildAssetRoot()
@@ -70,11 +70,11 @@ function T.catalog_indexes_definitions_and_selects_presentations()
   altered.species.BAYLEEF.nativeId = 153
   altered.species.BAYLEEF.name = "BAYLEEF"
   local OtherCatalog = require("libs.mons.src.MonCatalog")
-  Assert.isTrue(OtherCatalog.new(altered):fingerprint() ~= catalog:fingerprint())
+  Assert.isTrue(OtherCatalog.new(altered, CatalogFixture.makeItemCatalog()):fingerprint() ~= catalog:fingerprint())
 
   -- Later callers cannot replace the indexed maps through the input root.
   local root = CatalogFixture.buildAssetRoot()
-  local frozen = OtherCatalog.new(root)
+  local frozen = OtherCatalog.new(root, CatalogFixture.makeItemCatalog())
   root.species.CHIKORITA = nil
   Assert.equal(frozen:species("CHIKORITA").nativeId, 152)
 
@@ -83,11 +83,11 @@ function T.catalog_indexes_definitions_and_selects_presentations()
   doubled.species.FAKE = copy(doubled.species.CHIKORITA)
   doubled.species.FAKE.name = "FAKE"
   Assert.throws(function()
-    OtherCatalog.new(doubled)
+    OtherCatalog.new(doubled, CatalogFixture.makeItemCatalog())
   end)
 end
 
-function T.catalog_resolves_item_identities_through_the_generated_collection()
+function T.catalog_delegates_item_identities_to_the_shared_catalog()
   local catalog = CatalogFixture.makeCatalog()
 
   Assert.equal(catalog:itemKeyByNativeId(0), "NONE")
@@ -99,18 +99,29 @@ function T.catalog_resolves_item_identities_through_the_generated_collection()
   local plain = catalog:itemByNativeId(158)
   Assert.equal(plain.nativeId, 158)
   Assert.isFalse(plain.isBall)
-  throwsCode("MON_RECORD_INVALID", function()
+  local itemErr = Assert.throws(function()
     catalog:item("BOGUS_ITEM")
   end)
-  throwsCode("MON_RECORD_INVALID", function()
+  Assert.isTrue(Errors.is(itemErr), "unknown items raise structured item-domain errors")
+  Assert.equal(itemErr.code, "ITEM_RECORD_INVALID")
+  local nativeErr = Assert.throws(function()
     catalog:itemKeyByNativeId(9999)
   end)
+  Assert.equal(nativeErr.code, "ITEM_RECORD_INVALID")
+end
 
-  -- The item index survives input-root mutation like every other index.
-  local root = CatalogFixture.buildAssetRoot()
-  local frozen = require("libs.mons.src.MonCatalog").new(root)
-  root.items.POKE_BALL = nil
-  Assert.equal(frozen:item("POKE_BALL").nativeId, 4)
+function T.catalog_fingerprint_excludes_the_external_item_catalog()
+  local catalog = CatalogFixture.makeCatalog()
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local alteredRoot = ItemFixture.buildAssetRoot()
+  alteredRoot.items.POTION.description = "a changed description"
+  alteredRoot.items.POTION.nameIndefinite = "a changed Potion"
+  local ItemCatalog = require("libs.items.src.ItemCatalog")
+  local alteredItems = ItemCatalog.new(alteredRoot)
+  Assert.isTrue(alteredItems:fingerprint() ~= CatalogFixture.makeItemCatalog():fingerprint())
+  local OtherCatalog = require("libs.mons.src.MonCatalog")
+  local relinked = OtherCatalog.new(CatalogFixture.buildAssetRoot(), alteredItems)
+  Assert.equal(relinked:fingerprint(), catalog:fingerprint())
 end
 
 return { tests = T }

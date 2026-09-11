@@ -1,10 +1,11 @@
 -- Synthetic catalog and domain-test helpers for the mon domain package.
 -- The asset root built here satisfies the generated mon catalog contract so
 -- domain tests exercise the locked catalog shape without touching ROM data
--- or the produced cache. Glyph codes below are the real field-font codes for
--- the covered characters. Native game, language, item, and ball identities
--- are the fixed translation tables the domain tests assume at every codec
--- and legality boundary.
+-- or the produced cache. Item identity comes from the shared item fixture:
+-- the mon root carries no item collection. Glyph codes below are the real
+-- field-font codes for the covered characters. Native game, language, item,
+-- and ball identities are the fixed translation tables the domain tests
+-- assume at every codec and legality boundary.
 
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 
@@ -58,25 +59,6 @@ CatalogFixture.BALLS = { POKE_BALL = 4, GREAT_BALL = 3 }
 
 function CatalogFixture.profile()
   return { name = "RED", gender = 0, trainerId = 2271560481 }
-end
-
--- Synthetic item collection satisfying the generated catalog contract: every
--- source native identity 0..536 resolves exactly once. Only the domain-known
--- keys carry meaningful ball facts; the rest are inert placeholders.
-function CatalogFixture.itemTable()
-  local known = { NONE = 0, POKE_BALL = 4, GREAT_BALL = 3, SITRUS_BERRY = 158 }
-  local items = {}
-  local covered = {}
-  for key, nativeId in pairs(known) do
-    items[key] = { nativeId = nativeId, isBall = nativeId == 4 or nativeId == 3, friendshipBoost = false }
-    covered[nativeId] = true
-  end
-  for nativeId = 0, 536 do
-    if not covered[nativeId] then
-      items["ITEM_" .. nativeId] = { nativeId = nativeId, isBall = false, friendshipBoost = false }
-    end
-  end
-  return items
 end
 
 function CatalogFixture.metDate()
@@ -216,7 +198,7 @@ end
 
 function CatalogFixture.buildAssetRoot()
   local root = {
-    schema = "g4-mon-catalog-v2",
+    schema = "g4-mon-catalog-v3",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = speciesEntry({
@@ -345,15 +327,19 @@ function CatalogFixture.buildAssetRoot()
       WONDER_GUARD = abilityEntry(25, "Wonder Guard"),
     },
     growthCurves = growthTables(),
-    items = CatalogFixture.itemTable(),
   }
   assert(MonAssetSchema.assertCatalog(root))
   return root
 end
 
+function CatalogFixture.makeItemCatalog()
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  return ItemFixture.makeCatalog()
+end
+
 function CatalogFixture.makeCatalog()
   local Catalog = require("libs.mons.src.MonCatalog")
-  return Catalog.new(CatalogFixture.buildAssetRoot())
+  return Catalog.new(CatalogFixture.buildAssetRoot(), CatalogFixture.makeItemCatalog())
 end
 
 function CatalogFixture.domainContext(catalog)

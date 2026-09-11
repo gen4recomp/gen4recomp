@@ -15,6 +15,8 @@ local RepoFs = require("game.src.RepoFs")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
+local ItemCache = require("libs.assets.src.ItemCache")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
 
 ---@class HgssGameOptions
 ---@field versionId string
@@ -46,7 +48,7 @@ local function newGameCandidate(saveStore, versionId)
   -- runtime validates against.
   local function loadMonCatalog()
     local cacheFs = CacheFs.forVersion(versionId)
-    return MonCatalog.new(MonCache.loadCatalog(cacheFs))
+    return MonCatalog.new(MonCache.loadCatalog(cacheFs), ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))
   end
   return NewGame.createCandidate({
     saveService = saveStore,

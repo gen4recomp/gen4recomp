@@ -20,6 +20,7 @@
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
 local MonSources = require("romdump.src.config.MonSources")
+local ItemSources = require("romdump.src.config.ItemSources")
 local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
@@ -492,7 +493,7 @@ local function normalizeEvolution(slot, context)
     or methodKey == "item_day"
     or methodKey == "item_night"
   then
-    local itemKey, itemErr = lookupKey(MonSources.itemKeys, param, "item", "MON_EVO_BAD_VALUE", context)
+    local itemKey, itemErr = lookupKey(ItemSources.itemKeys, param, "item", "MON_EVO_BAD_VALUE", context)
     if not itemKey then
       return nil, itemErr
     end
@@ -549,62 +550,6 @@ local function readMember(archive, memberId, alias)
       )
   end
   return member
-end
-
--- Decode one 34-byte item_data member into its held-item facts. Only the
--- hold-effect byte survives: price, pockets, and use behavior stay
--- producer-side with the rest of ItemData (include/item.h).
----@param member string
----@param context Errors.Context|nil
----@return table<string, unknown>|nil, Errors.Error|nil
-function MonCatalogCompiler.decodeItemData(member, context)
-  context = context or {}
-  local ok, sizeErr = checkSize(member, MonSources.ITEM_DATA_SIZE, "MON_ITEM_DATA_BAD_SIZE", context)
-  if not ok then
-    return nil, sizeErr
-  end
-  return { holdEffect = string.byte(member, MonSources.ITEM_DATA_HOLD_EFFECT_OFFSET + 1) }
-end
-
--- Assemble the generated item collection: one record per source native
--- identity 0..536, keyed by the producer semantic key. Ball membership comes
--- from the pinned source ball subset; the friendship fact comes from the
--- decoded hold-effect byte, never from a runtime table.
----@param romFs RomFs
----@return table<string, unknown>|nil, Errors.Error|nil
-function MonCatalogCompiler.compileItems(romFs)
-  local archive, err = openArchive(romFs, "item_data")
-  if not archive then
-    return nil, err
-  end
-  local items = {}
-  for nativeId = 0, 536 do
-    local key = MonSources.itemKeys[nativeId]
-    if key == nil then
-      return nil,
-        Errors.new("MON_ITEM_UNKNOWN_IDENTITY", "source item identity " .. nativeId .. " has no semantic key", {
-          nativeId = nativeId,
-        })
-    end
-    if items[key] ~= nil then
-      return nil, Errors.new("MON_ITEM_DUPLICATE_KEY", "source item key " .. key .. " is defined twice", { key = key })
-    end
-    local memberId = MonSources.itemDataMember(nativeId)
-    local member, memberErr = readMember(archive, memberId, "item_data")
-    if not member then
-      return nil, memberErr
-    end
-    local decoded, decodeErr = MonCatalogCompiler.decodeItemData(member, { archive = "item_data", memberId = memberId })
-    if not decoded then
-      return nil, decodeErr
-    end
-    items[key] = {
-      nativeId = nativeId,
-      isBall = MonSources.ballItemIds[nativeId] == true,
-      friendshipBoost = decoded.holdEffect == MonSources.HOLD_EFFECT_FRIENDSHIP_UP,
-    }
-  end
-  return items
 end
 
 -- Follower parameters for one tp_param member: the height-restriction size
@@ -672,7 +617,7 @@ local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchiv
     eggGroups[#eggGroups + 1] = must(MonSources.eggGroupKeys[eggGroupId])
   end
   local function heldItem(nativeId)
-    local itemKey, itemErr = lookupKey(MonSources.itemKeys, nativeId, "item", "MON_PERSONAL_BAD_VALUE", context)
+    local itemKey, itemErr = lookupKey(ItemSources.itemKeys, nativeId, "item", "MON_PERSONAL_BAD_VALUE", context)
     if not itemKey then
       return nil, itemErr
     end
@@ -688,7 +633,7 @@ local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchiv
   end
   local tmhm = {}
   for _, machine in ipairs(personal.tmhm) do
-    tmhm[#tmhm + 1] = must(MonSources.machineMoves[machine]).move
+    tmhm[#tmhm + 1] = must(ItemSources.machineMoves[machine]).move
   end
   table.sort(tmhm)
   local learnset = must(learnsets[MonSources.resolvePersonalMember(speciesId, form)])
@@ -926,7 +871,7 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
           eggGroups[#eggGroups + 1] = must(MonSources.eggGroupKeys[eggGroupId])
         end
         local function heldItem(nativeId)
-          return { item = must(MonSources.itemKeys[nativeId]), nativeId = nativeId }
+          return { item = must(ItemSources.itemKeys[nativeId]), nativeId = nativeId }
         end
         entry = {
           nativeId = speciesId,
@@ -983,7 +928,6 @@ function MonCatalogCompiler.compileCatalog(romFs, opts)
       moves = moves,
       abilities = abilities,
       growthCurves = growthCurves,
-      items = must(MonCatalogCompiler.compileItems(romFs)),
     }
     must(MonAssetSchema.assertCatalog(catalog))
     return catalog

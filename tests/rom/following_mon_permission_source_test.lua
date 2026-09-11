@@ -9,7 +9,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
-local MonCatalog = require("libs.mons.src.MonCatalog")
+local MonBucket = require("tests.support.MonBucket")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -48,7 +48,7 @@ end
 
 function T.burrower_and_large_followers_carry_usable_size_facts(_, versionId)
   local cacheFs = CacheFs.forVersion(versionId)
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  local catalog = MonBucket.openCatalogs(versionId)
   for _, species in ipairs({ "DIGLETT", "DUGTRIO" }) do
     local descriptor =
       assert(catalog:followerSelection({ species = species, form = 0 }), species .. " must carry a follower descriptor")

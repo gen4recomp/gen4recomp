@@ -30,6 +30,10 @@ local FAKE_PATHS = {
   "romdump.src.digest.actor.FollowingMonVisualCompiler",
   "romdump.src.digest.mons.MonCatalogCompiler",
   "romdump.src.digest.mons.MonCacheWriter",
+  "romdump.src.digest.items.ItemCatalogCompiler",
+  "romdump.src.digest.items.ItemCacheWriter",
+  "romdump.src.digest.ui.BagAssetCompiler",
+  "romdump.src.digest.ui.BagCacheWriter",
   "romdump.src.digest.ui.FieldMessageCompiler",
   "romdump.src.digest.ui.FieldMessageCacheWriter",
   "libs.assets.src.field.FieldMessageCache",
@@ -184,6 +188,25 @@ local function newEnv()
         species = {
           BULBASAUR = { forms = {} },
           CHARMANDER = { forms = {} },
+        },
+      },
+    },
+    itemBundle = {
+      marker = "item-v1",
+      catalog = {
+        items = {
+          POTION = {},
+          POKE_BALL = {},
+        },
+      },
+    },
+    bagBundle = {
+      marker = "bag-v1",
+      manifest = {
+        hero = {
+          animations = {
+            states = { {}, {} },
+          },
         },
       },
     },
@@ -390,6 +413,14 @@ local function makeFakes()
       return env.monBundle
     end,
   }
+  fakes.ItemCatalogCompiler = {
+    compileAll = function()
+      return env.itemBundle
+    end,
+  }
+  fakes.BagAssetCompiler.compile = function()
+    return env.bagBundle
+  end
   fakes.FieldMapDataCompiler.compileAll = function()
     return env.fieldBundles
   end
@@ -582,6 +613,8 @@ function T.current_build_logs_every_class_and_stages_and_publishes_the_world_man
     "build-cache: heartgold field cameras current",
     "build-cache: heartgold field actors current",
     "build-cache: heartgold mons current",
+    "build-cache: heartgold items current",
+    "build-cache: heartgold bag current",
     "build-cache: heartgold map 3 field data current",
     "build-cache: heartgold map 7 field data current",
     "build-cache: heartgold field font current",
@@ -683,6 +716,8 @@ function T.stale_classes_compile_with_counts_in_pipeline_order()
     FieldCameraCacheWriter = true,
     FieldActorCacheWriter = true,
     MonCacheWriter = true,
+    ItemCacheWriter = true,
+    BagCacheWriter = true,
     StarterChoiceAssetCacheWriter = true,
     FieldMapDataCache = true,
     FieldFontCacheWriter = true,
@@ -703,6 +738,8 @@ function T.stale_classes_compile_with_counts_in_pipeline_order()
     "build-cache: heartgold field cameras compiled",
     "build-cache: heartgold field actors compiled (3 sprites)",
     "build-cache: heartgold mons compiled (2 species)",
+    "build-cache: heartgold items compiled (2 items)",
+    "build-cache: heartgold bag compiled (2 states)",
     "build-cache: heartgold map 3 field data compiled",
     "build-cache: heartgold map 7 field data compiled",
     "build-cache: heartgold field font compiled",
@@ -739,12 +776,12 @@ function T.compile_exclusions_fail_the_build_unless_allowed()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.equal(capture.lines[15], "build-cache: heartgold scripts current")
-  Assert.equal(capture.lines[16], "build-cache: heartgold audio current")
-  Assert.equal(capture.lines[17], "build-cache: heartgold physical field cells current")
-  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 current")
+  Assert.equal(capture.lines[17], "build-cache: heartgold scripts current")
+  Assert.equal(capture.lines[18], "build-cache: heartgold audio current")
+  Assert.equal(capture.lines[19], "build-cache: heartgold physical field cells current")
+  Assert.equal(capture.lines[20], "build-cache: heartgold map 2 current")
   Assert.equal(
-    capture.lines[19],
+    capture.lines[21],
     "build-cache: heartgold map 5 excluded: MAP_SCHEMA_INVALID: injected compile rejection"
   )
   Assert.deepEqual(env.worldStage.compileExcluded, {
@@ -757,11 +794,11 @@ function T.compile_exclusions_fail_the_build_unless_allowed()
     },
   })
   Assert.equal(
-    capture.lines[20],
+    capture.lines[22],
     "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
   )
   Assert.equal(
-    capture.lines[21],
+    capture.lines[23],
     "build-cache: compile exclusions remain; " .. "rerun with --allow-compile-exclusions to accept them"
   )
   Assert.equal(env.worldPublishes, 0, "an unaccepted-exclusion build must never publish its staged world")
@@ -775,10 +812,10 @@ function T.compile_exclusions_fail_the_build_unless_allowed()
   Assert.isNil(err2)
   Assert.deepEqual(report2, { published = true, complete = false, exclusionCount = 1 })
   Assert.equal(
-    accepted.lines[20],
+    accepted.lines[22],
     "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
   )
-  Assert.equal(accepted.lines[21], "build-cache: heartgold world.lua published")
+  Assert.equal(accepted.lines[23], "build-cache: heartgold world.lua published")
   Assert.equal(env.worldPublishes, 1, "an accepted-exclusion build publishes its staged world")
   -- A build that accepted compile exclusions is not a strict success and must
   -- never publish the successful-build attestation.
@@ -836,8 +873,8 @@ function T.a_failed_audio_compile_reports_and_skips_the_remaining_stages()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.equal(capture.lines[15], "build-cache: heartgold scripts current")
-  Assert.equal(capture.lines[16], "build-cache: heartgold failed: AUDIO_SOURCE_INVALID: unsupported sample data")
+  Assert.equal(capture.lines[17], "build-cache: heartgold scripts current")
+  Assert.equal(capture.lines[18], "build-cache: heartgold failed: AUDIO_SOURCE_INVALID: unsupported sample data")
   Assert.equal(env.worldPublishes, 0, "a failed audio compile must not publish a world")
   Assert.equal(env.worldAborts, 0, "a failed audio compile stages no world to discard")
 end
@@ -965,6 +1002,7 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
   table.sort(writes)
   Assert.deepEqual(writes, {
     "AudioCacheWriter.write",
+    "BagCacheWriter.write",
     "FieldActorCacheWriter.write",
     "FieldActorEmoteCacheWriter.write",
     "FieldCameraCacheWriter.write",
@@ -977,6 +1015,7 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
     "FieldUiCacheWriter.write",
     "FieldWeatherCacheWriter.write",
     "IntroAssetCacheWriter.write",
+    "ItemCacheWriter.write",
     "MapCacheWriter.write",
     "MapCacheWriter.write",
     "MonCacheWriter.write",

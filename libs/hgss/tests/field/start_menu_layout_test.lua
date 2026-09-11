@@ -43,7 +43,7 @@ local function referenceFor(width, height)
 end
 
 -- The placement record exactly per the layout contract: the chosen surface
--- id, the integer host-space frame, the uniform scale, and the fixed logical
+-- id, the host-space frame (snapped origin, exact scale-derived extent), the uniform scale, and the fixed logical
 -- dimensions. No extra keys, so hit testing and rendering share one record.
 function T.placement_record_has_exactly_the_pinned_shape()
   local record = StartMenuLayout.resolve(oneDisplay(256, 192), referenceFor(256, 192))
@@ -57,7 +57,7 @@ function T.placement_record_has_exactly_the_pinned_shape()
 end
 
 -- The responsive matrix: every topology row pins its exact record plus the
--- uniform-scale/inside-safe/integer-frame invariants. Reference frames
+-- uniform-scale/inside-safe/snapped-origin/exact-extent invariants. Reference frames
 -- mirror the FieldViewport derivation for the same host size.
 function T.responsive_matrix_places_every_topology_as_a_whole_surface()
   local dual = ScreenTopology.dualDisplay(display("world", 256, 192), display("aux", 256, 192, { role = "auxiliary" }))
@@ -102,7 +102,7 @@ function T.responsive_matrix_places_every_topology_as_a_whole_surface()
       name = "844x390 phone landscape",
       topology = oneDisplay(844, 390),
       host = { 844, 390 },
-      expected = { surfaceId = "main", frame = { 682, 134, 162, 121 }, scale = 0.6328125 },
+      expected = { surfaceId = "main", frame = { 682, 134, 162, 121.5 }, scale = 0.6328125 },
     },
     {
       name = "dual 256x192-style surfaces",
@@ -134,11 +134,11 @@ function T.responsive_matrix_places_every_topology_as_a_whole_surface()
         and frame.y + frame.height <= safe.y + safe.height,
       row.name .. " frame must stay inside the safe rectangle"
     )
-    for _, value in ipairs({ frame.x, frame.y, frame.width, frame.height }) do
-      Assert.equal(value, math.floor(value), row.name .. " frame must be integer at the host boundary")
+    for _, value in ipairs({ frame.x, frame.y }) do
+      Assert.equal(value, math.floor(value), row.name .. " origin must be integer at the host boundary")
     end
-    Assert.near(frame.width / 256, record.scale, 1 / 256, row.name .. " horizontal scale")
-    Assert.near(frame.height / 192, record.scale, 1 / 192, row.name .. " vertical scale")
+    Assert.near(frame.width, 256 * record.scale, 1e-9, row.name .. " width is the exact rendered extent")
+    Assert.near(frame.height, 192 * record.scale, 1e-9, row.name .. " height is the exact rendered extent")
     Assert.isTrue(record.scale > 0, row.name .. " scale must be positive")
   end
 end
@@ -224,7 +224,7 @@ end
 -- centered uniform fit so the whole surface is still placed inside bounds.
 function T.portrait_partition_falls_back_when_a_region_is_too_small()
   local record = StartMenuLayout.resolve(oneDisplay(390, 370), referenceFor(390, 370))
-  Assert.deepEqual(record.frame, { x = 0, y = 39, width = 390, height = 292 })
+  Assert.deepEqual(record.frame, { x = 0, y = 38, width = 390, height = 292.5 })
   Assert.equal(record.scale, 1.5234375)
 
   local tiny = StartMenuLayout.resolve(oneDisplay(100, 300), referenceFor(100, 300))
@@ -270,13 +270,14 @@ function T.a_safe_rect_change_recomputes_the_placement_at_the_same_dimensions()
 end
 
 -- Deterministic pixel rounding at the host-space boundary: odd host sizes
--- floor to integer frames, and repeated resolution returns the same record.
+-- snap only the origin to integer pixels, and repeated resolution returns
+-- the same record.
 function T.placement_is_deterministic_and_rounds_at_the_host_boundary()
   local odd = oneDisplay(999, 800)
   local first = StartMenuLayout.resolve(odd, referenceFor(999, 800))
   local second = StartMenuLayout.resolve(odd, referenceFor(999, 800))
   Assert.deepEqual(first, second)
-  Assert.deepEqual(first.frame, { x = 0, y = 25, width = 999, height = 749 })
+  Assert.deepEqual(first.frame, { x = 0, y = 25, width = 999, height = 749.25 })
   Assert.equal(first.scale, 999 / 256)
 end
 
@@ -362,6 +363,38 @@ function T.the_canonical_edge_maps_to_the_rejected_frame_boundary()
   Assert.near(cornerX, record.frame.x + record.frame.width, 1e-9)
   Assert.near(cornerY, record.frame.y + record.frame.height, 1e-9)
   Assert.isNil(StartMenuLayout.hostToLogical(record, cornerX, cornerY), "the frame's far edge is outside the surface")
+end
+
+-- Fractional placements keep the exact render extent: the frame is the
+-- logical surface times the uniform scale with only the origin snapped, so
+-- the renderer's translate(origin) + scale transform lands exactly on the
+-- hit-test frame and the far edge is the half-open rejection boundary.
+function T.fractional_placements_keep_the_exact_render_extent_for_hit_testing()
+  local cases = {
+    { width = 999, height = 800 },
+    { width = 844, height = 390 },
+  }
+  for _, size in ipairs(cases) do
+    local record = StartMenuLayout.resolve(oneDisplay(size.width, size.height), referenceFor(size.width, size.height))
+    local label = size.width .. "x" .. size.height
+    Assert.equal(record.frame.x, math.floor(record.frame.x), label .. " origin x stays snapped")
+    Assert.equal(record.frame.y, math.floor(record.frame.y), label .. " origin y stays snapped")
+    Assert.near(record.frame.width, 256 * record.scale, 1e-9, label .. " width matches the rendered extent")
+    Assert.near(record.frame.height, 192 * record.scale, 1e-9, label .. " height matches the rendered extent")
+    local edgeX = record.frame.x + 256 * record.scale
+    local edgeY = record.frame.y + 192 * record.scale
+    Assert.near(edgeX, record.frame.x + record.frame.width, 1e-9, label .. " horizontal render edge meets the frame")
+    Assert.near(edgeY, record.frame.y + record.frame.height, 1e-9, label .. " vertical render edge meets the frame")
+    Assert.isNil(
+      StartMenuLayout.hostToLogical(record, edgeX, edgeY),
+      label .. " the rendered far edge is outside the half-open frame"
+    )
+    local insideX, insideY = StartMenuLayout.hostToLogical(record, edgeX - 0.5, edgeY - 0.5)
+    assert(insideX ~= nil, label .. " a point just inside the rendered edge must hit-test")
+    assert(insideY ~= nil, label .. " a point just inside the rendered edge must hit-test")
+    Assert.near(insideX, 256 - 0.5 / record.scale, 1e-9, label .. " the inside point maps through the shared scale")
+    Assert.near(insideY, 192 - 0.5 / record.scale, 1e-9, label .. " the inside point maps through the shared scale")
+  end
 end
 
 -- Programming invariants: a malformed topology or placement record is a

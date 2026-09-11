@@ -27,6 +27,7 @@ local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local MonBucket = require("tests.support.MonBucket")
 local MonCache = require("libs.assets.src.MonCache")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
@@ -48,8 +49,22 @@ local STARTER_SCRIPT = "vanilla.hgss.scr_seq.0843.script_012"
 local SEED = 7
 local EXPECTED_DRAWS_PER_CANDIDATE = 4
 -- First roster candidate (seed 7, GOLD/trainer 1, 2000-01-01, section 126).
-local EXPECTED_HEX =
-  "6cccf03b0000d10401cc855a0b30fa9e2c5a104b9a3b7b9374ba3f8fae86510962d9c6692508ce8be4ec2691a6e1bd9ac6d28e5b6ba193986b3e5766c780e5938acb2dec997d1a76b138d069162654d0cef342a7e30cda3a47fa657861403dd1a9aded22409e28a3efeb1e05661054a75c5f025a2467ae0019c984791e858d713049c20a905c7a12"
+-- The fixed vector is pinned per version: heartgold and soulsilver differ
+-- only in the game-of-origin byte (7 vs 8). Both decrypt (checksum-validated)
+-- to identical plaintext records, so the soulsilver vector below is the
+-- heartgold vector with exactly that byte corrected, not a weakened fixture.
+local EXPECTED_HEX = {
+  heartgold = "6cccf03b0000d10401cc855a0b30fa9e2c5a104b9a3b7b9374ba3f8fae86510962d9c6692508ce8be4ec2691a6e1bd9ac6d28e5b6ba193986b3e5766c780e5938acb2dec997d1a76b138d069162654d0cef342a7e30cda3a47fa657861403dd1a9aded22409e28a3efeb1e05661054a75c5f025a2467ae0019c984791e858d713049c20a905c7a12",
+  soulsilver = "6cccf03b0000d1054f926ffdc7ad79a5743b6827ed705a7145bcc1aaad5e813cd1390468338a5000587dadd77aa6a37b151856ce8a97fd30d844eaaf84030440eec0a4561ab72ea488dcd74752c689131bd27a4d3a4ed6642d810e2c94445a3bcef62c9885f2df334c7c0f7075d47273881caaa0ff5d008ab0512f224afab8db7bf959f5e89ae312",
+}
+
+---@param versionId string
+---@return string
+local function expectedHex(versionId)
+  local hex = EXPECTED_HEX[versionId]
+  assert(type(hex) == "string", "the fixed vector needs a pinned version " .. tostring(versionId))
+  return hex
+end
 local POKEMON_ACTION = "vanilla.pokemon"
 local PARTY_APPLICATION = "pokemon"
 
@@ -67,6 +82,7 @@ local function harness()
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId, SEED),
+        bag = require("libs.hgss.src.save.BagSave").empty(),
       }
     end,
   })
@@ -450,7 +466,11 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     Assert.equal(awarded.met.date.year, 2000, "the candidate met on the fixed host date")
     Assert.equal(awarded.met.date.month, 1, "the candidate met on the fixed host date")
     Assert.equal(awarded.met.date.day, 1, "the candidate met on the fixed host date")
-    Assert.equal(boxedHex(game.runtime.monService, versionId, 0), EXPECTED_HEX, "party bytes equal the fixed vector")
+    Assert.equal(
+      boxedHex(game.runtime.monService, versionId, 0),
+      expectedHex(versionId),
+      "party bytes equal the fixed vector"
+    )
 
     -- The script continues past the choice through the 605 placement, the
     -- nonblocking 608 start, the source wait, the declined nickname branch,
@@ -541,7 +561,11 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
         end, 120)
       end
       Assert.equal(game.runtime.monService:partyRevision(), revision, "inspection alone never reorders")
-      Assert.equal(boxedHex(game.runtime.monService, versionId, 0), EXPECTED_HEX, "inspection never recalculates")
+      Assert.equal(
+        boxedHex(game.runtime.monService, versionId, 0),
+        expectedHex(versionId),
+        "inspection never recalculates"
+      )
     end
 
     -- Walk and turn with the follower in the open east pocket: committed
@@ -584,7 +608,7 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     Assert.isTrue(game.runtime.monService:partyLegal(), "the party is legal before save")
     Assert.equal(game.runtime.monService:partyMon(0).met.location, 126, "the saved starter keeps its native section")
     local bytesBefore = boxedHex(game.runtime.monService, versionId, 0)
-    Assert.equal(bytesBefore, EXPECTED_HEX, "the pre-save bytes equal the fixed vector")
+    Assert.equal(bytesBefore, expectedHex(versionId), "the pre-save bytes equal the fixed vector")
     Assert.equal(
       #(game.runtime.followingMonTransition and game.runtime.followingMonTransition:status().instances or {}),
       0,
@@ -601,7 +625,11 @@ function T.tests.elm_starter_to_continue_preserves_the_chosen_mon()
     Assert.equal(partyCount(game), 1, "continue restores exactly the chosen mon")
     Assert.equal(game.runtime.monService:partyMon(0).species, "CHIKORITA", "continue restores the chosen species")
     Assert.equal(game.runtime.monService:partyMon(0).met.location, 126, "continue restores the native map section")
-    Assert.equal(boxedHex(game.runtime.monService, versionId, 0), EXPECTED_HEX, "continue preserves exact bytes")
+    Assert.equal(
+      boxedHex(game.runtime.monService, versionId, 0),
+      expectedHex(versionId),
+      "continue preserves exact bytes"
+    )
     Assert.equal(boxedHex(game.runtime.monService, versionId, 0), bytesBefore, "save/continue changes no byte")
     Assert.equal(game.runtime.scripts.worldState:getVar(VAR_SCENE_ELMS_LAB), 1, "continue preserves the lab scene")
     Assert.equal(
@@ -635,9 +663,8 @@ end
 function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   local versionId = AcceptanceHarness.defaultVersion()
   local cacheFs = CacheFs.forVersion(versionId)
-  local MonCatalog = require("libs.mons.src.MonCatalog")
   local MonsSave = require("libs.mons.src.MonsSave")
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  local catalog = MonBucket.openCatalogs(versionId)
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.empty(catalog:fingerprint(), SEED),
@@ -662,7 +689,7 @@ function T.tests.preselection_trio_reproduces_through_the_public_creation_seam()
   Assert.equal(service:capture().rng.calls, 3 * EXPECTED_DRAWS_PER_CANDIDATE, "generation draws exactly thrice")
   Assert.equal(#hexes, 3, "all three candidates encode")
   Assert.isTrue(hexes[1] ~= hexes[2] and hexes[1] ~= hexes[3] and hexes[2] ~= hexes[3], "candidates are distinct")
-  Assert.equal(hexes[1], EXPECTED_HEX, "the first candidate equals the fixed vector")
+  Assert.equal(hexes[1], expectedHex(versionId), "the first candidate equals the fixed vector")
 end
 
 -- Content identity at the product boundary: a stored bucket written against

@@ -1,5 +1,11 @@
 -- Owns the concrete GPU, UI, and field-effect resources used by FieldState.
 
+local Errors = require("libs.errors.src.Errors")
+local BagCache = require("libs.assets.src.BagCache")
+local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
+local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
+local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldMenuRenderer = require("libs.hgss.src.ui.FieldMenuRenderer")
@@ -14,6 +20,7 @@ local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
 
 ---@class FieldPresentationResourcesRuntime
@@ -36,6 +43,9 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
+---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
+---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
+---@field bagRenderer BagRenderer the one field-bag pane renderer
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field textRenderer FieldTextRenderer?
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
@@ -45,8 +55,46 @@ local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.Follo
 ---@field fieldEmotePool GpuAssetPool?
 ---@field fieldEmoteRenderer FieldActorEmoteRenderer?
 ---@field fieldTerrainEffectRenderer FieldTerrainEffectRenderer?
+---@field presenters table<string, FieldPresentationApplicationPresenter>? the per-instance application presenter map
 local FieldPresentationResources = {}
 FieldPresentationResources.__index = FieldPresentationResources
+
+---@alias FieldPresentationApplicationPresenter fun(presentation: table<string, unknown>?, runtime: FieldRuntime?)
+
+-- The explicit per-instance application presenter map: every presentable
+-- application id resolves to the concrete renderer draw over resources this
+-- owner holds. Presenters borrow those resources; they never acquire or
+-- release them. An id without a presenter is a composition error, never a
+-- fallback to another application surface.
+---@param owner FieldPresentationResources
+---@return table<string, FieldPresentationApplicationPresenter>
+local function buildPresenters(owner)
+  local function drawPokemon(presentation, _)
+    assert(owner.partyScreenRenderer, "party screen renderer is unavailable"):draw(
+      presentation,
+      assert(presentation and presentation.layout, "the party application presents its layout"),
+      assert(owner.monIconProvider, "party icon provider is unavailable")
+    )
+  end
+  local function drawTrainerCard(presentation, runtime)
+    assert(owner.trainerCardRenderer, "trainer card renderer is unavailable"):draw(
+      presentation,
+      assert(runtime and runtime.viewport, "the card application requires the runtime viewport")
+    )
+  end
+  local function drawBag(presentation, _)
+    assert(owner.bagRenderer, "bag renderer is unavailable"):draw(
+      presentation,
+      assert(presentation and presentation.layout, "the bag application presents its layout"),
+      { icons = assert(owner.itemIconProvider, "bag icon provider is unavailable") }
+    )
+  end
+  return {
+    [FieldApplicationIds.POKEMON] = drawPokemon,
+    [FieldApplicationIds.TRAINER_CARD] = drawTrainerCard,
+    [FieldApplicationIds.BAG] = drawBag,
+  }
+end
 
 ---@param runtime FieldPresentationResourcesRuntime
 ---@return FieldPresentationResources
@@ -82,6 +130,21 @@ function FieldPresentationResources.new(runtime)
     })
     self.partyScreenRenderer = PartyScreenRenderer.new()
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs)
+    -- Bag presentation resolves eagerly beside the party icons: field entry
+    -- boots only when the compiled item/bag caches are present, and the
+    -- launch-time capability gate in the FieldRuntime bag factory still
+    -- fails fast on missing service/cursor/catalog/assets when Bag opens.
+    self.itemIconProvider = ItemIconAssetProvider.new(runtime.cacheFs)
+    -- The bag manifest loads once: the 2D pane renderer and the borrowed
+    -- hero model renderer share the same validated table.
+    local bagManifest = BagCache.loadManifest(runtime.cacheFs)
+    self.heroRenderer = BagHeroRenderer.new({ cacheFs = runtime.cacheFs, manifest = bagManifest })
+    self.bagRenderer = BagRenderer.new({
+      cacheFs = runtime.cacheFs,
+      manifest = bagManifest,
+      text = textRenderer,
+      heroRenderer = self.heroRenderer,
+    })
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
@@ -120,6 +183,7 @@ function FieldPresentationResources.new(runtime)
     local fieldTerrainEffectController =
       assert(runtime.fieldTerrainEffectController, "field terrain-effect controller is unavailable")
     fieldTerrainEffectController:setModelFactory(terrainModelFactory)
+    self.presenters = buildPresenters(self)
   end)
   if not ok then
     self:dispose()
@@ -128,7 +192,29 @@ function FieldPresentationResources.new(runtime)
   return self
 end
 
+-- Draws the current application through its registered presenter. The map is
+-- built once per instance alongside the renderers it borrows; a draw never
+-- acquires resources. An application id without a presenter is a composition
+-- error, never a fallback surface.
+---@param applicationId string
+---@param presentation table<string, unknown>?
+---@param runtime FieldRuntime?
+function FieldPresentationResources:drawApplication(applicationId, presentation, runtime)
+  local map = assert(self.presenters, "the application presenter map is unavailable")
+  local presenter = map[applicationId]
+  if presenter == nil then
+    Errors.raise(
+      FieldErrors.FIELD_PRESENTATION_UNKNOWN_APPLICATION,
+      "no presenter is registered for application " .. tostring(applicationId),
+      { applicationId = applicationId }
+    )
+  end
+  local draw = assert(presenter, "the application presenter is unavailable")
+  draw(presentation, runtime)
+end
+
 function FieldPresentationResources:dispose()
+  self.presenters = nil
   if self.dialogueRenderer then
     self.dialogueRenderer:release()
     self.dialogueRenderer = nil
@@ -148,6 +234,18 @@ function FieldPresentationResources:dispose()
   if self.monIconProvider then
     self.monIconProvider:release()
     self.monIconProvider = nil
+  end
+  if self.itemIconProvider then
+    self.itemIconProvider:release()
+    self.itemIconProvider = nil
+  end
+  if self.bagRenderer then
+    self.bagRenderer:release()
+    self.bagRenderer = nil
+  end
+  if self.heroRenderer then
+    self.heroRenderer:release()
+    self.heroRenderer = nil
   end
   self.partyScreenRenderer = nil
   if self.followingMonTransitionRenderer then

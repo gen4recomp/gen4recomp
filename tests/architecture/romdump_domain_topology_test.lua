@@ -69,6 +69,11 @@ local DOMAINS = {
     "MonCatalogCompiler",
     "MonPresentationCompiler",
   },
+  items = {
+    "ItemCacheWriter",
+    "ItemCatalogCompiler",
+    "ItemPresentationCompiler",
+  },
   field = {
     "FieldCameraCacheWriter",
     "FieldCameraCompiler",
@@ -96,6 +101,9 @@ local DOMAINS = {
     "HgssSoundplate",
   },
   ui = {
+    "BagAssetCompiler",
+    "BagCacheWriter",
+    "BagPresentationCompiler",
     "FieldFontCacheWriter",
     "FieldFontCompiler",
     "FieldFontDecoder",
@@ -266,6 +274,7 @@ function T.representative_digest_modules_load_from_each_domain_path()
   requireFromNewPath("ui", "FieldUiCompiler")
   requireFromNewPath("newgame", "IntroAssetCompiler")
   requireFromNewPath("mons", "MonCatalogCompiler")
+  requireFromNewPath("items", "ItemCatalogCompiler")
   requireFromNewPath("audio", "AudioCompiler")
   requireFromNewPath("script", "ScriptCompiler")
 end

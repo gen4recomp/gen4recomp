@@ -13,6 +13,8 @@ local ScriptSave = require("libs.script.src.ScriptSave")
 ---@field audioService table<string, unknown>
 ---@field loadedGame table<string, unknown>?
 ---@field mons table<string, unknown>? live HGSS mon service for mon/party script operations and text
+---@field items table<string, unknown>? live HGSS Bag service for generic Bag/item script operations
+---@field itemCatalog table<string, unknown>? shared item catalog for item/pocket/TM/berry text
 ---@field followingMon table<string, unknown>? the live following-mon controller for follower script operations
 ---@field starterProvider table<string, unknown>? the default starter roster for the blocking starter task
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface the blocking task opens and closes
@@ -65,6 +67,8 @@ function FieldScriptComposition.compose(runtime, options)
     menu = runtime.menuHost,
     startMenuReopen = { request = requestStartMenuReopen },
     mons = options.mons,
+    items = options.items,
+    itemCatalog = options.itemCatalog,
     followingMon = options.followingMon,
     starterProvider = options.starterProvider,
     starterChoice = options.starterChoice,

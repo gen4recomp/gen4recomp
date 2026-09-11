@@ -1,7 +1,8 @@
 -- Architecture guard for the mon asset boundary: the generated mon class is
 -- a registered derived-cache contract, the runtime cache module loads without
 -- source knowledge, the producer inventory stays producer-side, and asset
--- sources never reach into producer or platform packages.
+-- sources never reach into producer or platform packages. The item class
+-- carries the same guarantees after item-identity extraction.
 
 local Assert = require("tests.support.Assert")
 
@@ -37,6 +38,16 @@ function T.derived_contract_registers_the_mons_generated_class()
   Assert.equal(type(Contract.mons.indexSchema), "string")
 end
 
+-- The derived asset contract registers the item generated class beside it.
+function T.derived_contract_registers_the_item_generated_class()
+  local Contract = require("libs.assets.src.DerivedAssetContract")
+  Assert.notNil(Contract.items, "contract must register the item class")
+  Assert.equal(type(Contract.items.cacheFormat), "string")
+  Assert.equal(type(Contract.items.catalogSchema), "string")
+  Assert.equal(type(Contract.items.indexSchema), "string")
+  Assert.equal(type(Contract.items.iconManifestSchema), "string")
+end
+
 -- The runtime cache module loads and exposes canonical paths plus
 -- source-independent validation entrypoints.
 function T.mon_cache_module_loads_without_source_knowledge()
@@ -51,15 +62,34 @@ function T.mon_cache_module_loads_without_source_knowledge()
   Assert.equal(type(Cache.markerPath()), "string")
 end
 
+-- The item cache module loads the same way: canonical paths plus
+-- source-independent validation entrypoints.
+function T.item_cache_module_loads_without_source_knowledge()
+  local ok, ItemCache = pcall(require, "libs.assets.src.ItemCache")
+  Assert.isTrue(ok, "ItemCache must be loadable: " .. tostring(ItemCache))
+  local Cache = assert(ItemCache)
+  Assert.equal(type(Cache.dir()), "string")
+  Assert.equal(type(Cache.indexPath()), "string")
+  Assert.equal(type(Cache.catalogPath()), "string")
+  Assert.equal(type(Cache.iconManifestPath()), "string")
+  Assert.equal(type(Cache.iconImagePath()), "string")
+  Assert.equal(type(Cache.markerPath()), "string")
+end
+
 -- The producer-side source inventory exists exactly once, under romdump, and
 -- is never imported by runtime asset code.
 function T.producer_source_inventory_stays_producer_side()
   local ok, _ = pcall(require, "romdump.src.config.MonSources")
   Assert.isTrue(ok, "MonSources must exist under romdump")
+  local okItems, _ = pcall(require, "romdump.src.config.ItemSources")
+  Assert.isTrue(okItems, "ItemSources must exist under romdump")
   local offenders = {}
   for _, file in ipairs(assetSources()) do
     local content = readFile(file)
     if content:find('require%s*%(%s*"romdump%.src%.config%.MonSources"', 1) ~= nil then
+      offenders[#offenders + 1] = file
+    end
+    if content:find('require%s*%(%s*"romdump%.src%.config%.ItemSources"', 1) ~= nil then
       offenders[#offenders + 1] = file
     end
     if content:find('require%s*%(%s*"libs%.nds', 1) ~= nil then

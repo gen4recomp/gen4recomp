@@ -448,4 +448,175 @@ function T.party_text_without_a_service_stays_unsupported()
   Assert.equal(err.code, "SCRIPT_UNSUPPORTED_REACHABLE")
 end
 
+-- Item and pocket text resolves through the injected item catalog: normal,
+-- indefinite, and plural display forms render the generated strings, and a
+-- native pocket identity renders its generated pocket display name. Scalar
+-- and variable operands both evaluate through the world.
+local ItemFixture = require("libs.items.tests.item_fixture")
+
+local function asciiCharmap()
+  local charmap = {}
+  for byte = 32, 126 do
+    charmap[string.char(byte)] = 0x2000 + byte
+  end
+  return charmap
+end
+
+local function itemTextHost(opts)
+  opts = opts or {}
+  local catalog = CatalogFixture.makeCatalog()
+  local bucket = MonsSave.capture(Party.new():capture(), Lcrng.new(0xDDDDDDDD):capture(), catalog:fingerprint())
+  local service = HgssMonService.new({
+    catalog = catalog,
+    bucket = bucket,
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+  local hostOptions = {
+    controller = opts.controller,
+    provider = opts.provider,
+    layout = function(formatted)
+      return formatted
+    end,
+    fontDef = { charmap = asciiCharmap() },
+    player = {
+      name = function()
+        return "Gold"
+      end,
+      gender = function()
+        return 0
+      end,
+    },
+    world = opts.world,
+  }
+  if opts.mons ~= false then
+    hostOptions.mons = opts.mons == nil and service or opts.mons
+  end
+  if opts.withItems ~= false then
+    hostOptions.items = ItemFixture.makeCatalog()
+  end
+  local controller = {
+    open = function(self, request)
+      self.request = request
+    end,
+    close = function(self)
+      self.request = nil
+    end,
+    isModal = function(self)
+      return self.request ~= nil
+    end,
+    status = function()
+      return { state = "WAITING_CLOSE", pageIndex = 1, revealedGlyphs = 1 }
+    end,
+  }
+  hostOptions.controller = controller
+  hostOptions.provider = assert(FieldMessageProvider.new(cacheWith({ [542] = bankArtifact(542) })))
+  local withItems = ScriptDialogueHost.new(hostOptions)
+  return withItems, catalog
+end
+
+local function textAt(withItems, descriptor)
+  withItems:openMessage({})
+  withItems:startPrint("msg.hgss.0542.00000", { [0] = descriptor })
+  local hostObject = withItems --[[@as { _controller: { request: { message: { text: string } }|nil } }]]
+  return assert(hostObject._controller.request).message.text
+end
+
+function T.item_text_resolves_catalog_display_forms()
+  local withItems = itemTextHost()
+  Assert.equal(textAt(withItems, { text = "item_name", value = 17 }), "Potion")
+  Assert.equal(textAt(withItems, { text = "item_name_indefinite", value = 17 }), "a Potion")
+  Assert.equal(textAt(withItems, { text = "item_name_plural", value = 17 }), "Potions")
+  Assert.equal(textAt(withItems, { text = "pocket_name", value = 1 }), "Medicine")
+end
+
+function T.item_text_evaluates_variable_operands()
+  local world = {
+    getVar = function(_, id)
+      assert(id == "VAR_ITEM" or id == "VAR_POCKET")
+      return id == "VAR_ITEM" and 17 or 1
+    end,
+  }
+  local withItems = itemTextHost({ world = world })
+  Assert.equal(textAt(withItems, { text = "item_name", value = { value = "var", id = "VAR_ITEM" } }), "Potion")
+  Assert.equal(textAt(withItems, { text = "pocket_name", value = { value = "var", id = "VAR_POCKET" } }), "Medicine")
+end
+
+function T.tmhm_text_resolves_the_taught_move_through_the_mon_catalog()
+  local withItems, monCatalog = itemTextHost()
+  local expected = monCatalog:moveByNativeId(15).name
+  Assert.equal(expected, "Cut")
+  Assert.equal(textAt(withItems, { text = "tmhm_move_name", value = 420 }), expected)
+end
+
+function T.tmhm_text_rejects_a_non_machine_item()
+  local withItems = itemTextHost()
+  local err = Assert.throws(function()
+    textAt(withItems, { text = "tmhm_move_name", value = 17 })
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_INVALID_REFERENCE")
+end
+
+function T.tmhm_text_without_the_mon_service_faults()
+  local withItems = itemTextHost({ mons = false })
+  local err = Assert.throws(function()
+    textAt(withItems, { text = "tmhm_move_name", value = 420 })
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_SERVICE_MISSING")
+end
+
+function T.berry_text_selects_the_quantity_dependent_form()
+  local world = {
+    getVar = function(_, id)
+      assert(id == "VAR_BERRY" or id == "VAR_COUNT")
+      return id == "VAR_BERRY" and 149 or 2
+    end,
+  }
+  local withItems = itemTextHost({ world = world })
+  Assert.equal(textAt(withItems, { text = "berry_name", item = 149, quantity = 1 }), "Cheri Berry")
+  Assert.equal(textAt(withItems, { text = "berry_name", item = 149, quantity = 2 }), "Cheri Berries")
+  Assert.equal(
+    textAt(withItems, {
+      text = "berry_name",
+      item = { value = "var", id = "VAR_BERRY" },
+      quantity = { value = "var", id = "VAR_COUNT" },
+    }),
+    "Cheri Berries"
+  )
+end
+
+function T.berry_text_rejects_a_non_berry_item()
+  local withItems = itemTextHost()
+  local err = Assert.throws(function()
+    textAt(withItems, { text = "berry_name", item = 17, quantity = 1 })
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_INVALID_REFERENCE")
+end
+
+function T.item_text_without_a_catalog_stays_unsupported()
+  local withItems = itemTextHost({ withItems = false })
+  local err = Assert.throws(function()
+    textAt(withItems, { text = "item_name", value = 17 })
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_UNSUPPORTED_REACHABLE")
+end
+
+function T.item_text_with_an_unknown_native_identity_faults()
+  local withItems = itemTextHost()
+  local err = Assert.throws(function()
+    textAt(withItems, { text = "item_name", value = 9999 })
+  end)
+  Assert.isTrue(Errors.is(err), "an unknown native identity faults instead of rendering a marker")
+end
+
 return { tests = T }

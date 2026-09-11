@@ -36,7 +36,7 @@ local function candidate(catalog, seed)
 end
 
 function T.new_game_schema_requires_the_mons_bucket()
-  Assert.equal(GameSave.SCHEMA, "g4-game-save-v2", "the global save schema carries the mons bucket")
+  Assert.equal(GameSave.SCHEMA, "g4-game-save-v3", "the global save schema carries the mons bucket")
 end
 
 function T.unpublished_candidate_carries_empty_validated_mons_state()
@@ -59,6 +59,17 @@ function T.unpublished_candidate_carries_empty_validated_mons_state()
     MonsSave.validate(bucket, CatalogFixture.domainContext(catalog)),
     "the unpublished bucket validates before any save"
   )
+end
+
+function T.unpublished_candidate_carries_empty_validated_bag_state()
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local BagSave = require("libs.hgss.src.save.BagSave")
+  local catalog = CatalogFixture.makeCatalog()
+  local fresh = candidate(catalog, 0x12345678)
+  Assert.notNil(fresh.bag, "the unpublished new game carries the required bag bucket")
+  local bucket = assert(fresh.bag)
+  Assert.equal(bucket.schema, "hgss-bag-v1", "the bucket carries the bag save schema")
+  Assert.notNil(BagSave.validate(bucket, ItemFixture.makeCatalog()), "the unpublished bucket validates before any save")
 end
 
 return { tests = T }

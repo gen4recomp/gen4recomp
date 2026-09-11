@@ -7,10 +7,13 @@ LÖVE, source ROM, game, HGSS field, script, or presentation knowledge.
 ## Boundary
 
 - Production modules under `libs/mons/src` may depend only on `libs.mons`
-  itself and the source-independent foundations `libs.assets`, `libs.codec`,
-  `libs.errors`, and `libs.math`.
+  itself, the item domain `libs.items`, and the source-independent
+  foundations `libs.assets`, `libs.codec`, `libs.errors`, and `libs.math`.
 - They must not import `libs.nds`, `libs.script`, `libs.hgss`, `libs.ui`,
   `game`, `app`, `romdump`, or `love`.
+- Item identity is never copied here: `MonCatalog` delegates item lookups to
+  the injected `ItemCatalog`, and the mon fingerprint excludes the external
+  item catalog.
 - Generation-specific algorithms and formats live under `src/gen4`; the
   top-level modules own the semantic record, catalog, party, and save bucket.
 - Semantic keys are primary. Native numeric identities stay only because

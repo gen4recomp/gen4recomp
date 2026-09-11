@@ -49,6 +49,14 @@ local function actorRef(value)
     return { ref = "actor", special = special }
   end
   if type(raw) == "string" then
+    if raw == "VAR_SPECIAL_LAST_TALKED" then
+      -- The engine's last-interacted object variable spells the trigger's
+      -- own actor: object commands read it through ScriptGetVar, so the
+      -- decoded variable lowers to the semantic special instead of a
+      -- literal id no live actor carries. (FieldScriptSymbols pins
+      -- VAR_SPECIAL_LAST_TALKED to 0x800D; the decoder emits the name.)
+      return { ref = "actor", special = "last_talked" }
+    end
     return { ref = "actor", id = raw }
   end
   return { ref = "actor", mapIndex = raw }
@@ -494,6 +502,103 @@ local function bufferTmhmMoveName(ins)
     op = "buffer_text",
     slot = Operands.operandValue(ins.operands[1]),
     value = { text = "tmhm_move_name", value = Operands.varRef(ins.operands[2]) },
+  }
+end
+
+local function bufferBerryName(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = {
+      text = "berry_name",
+      item = Operands.varRef(ins.operands[2]),
+      quantity = Operands.varRef(ins.operands[3]),
+    },
+  }
+end
+
+local function bufferItemNameIndef(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = { text = "item_name_indefinite", value = Operands.varRef(ins.operands[2]) },
+  }
+end
+
+local function bufferItemNamePlural(ins)
+  return {
+    op = "buffer_text",
+    slot = Operands.operandValue(ins.operands[1]),
+    value = { text = "item_name_plural", value = Operands.varRef(ins.operands[2]) },
+  }
+end
+
+-- Bag and item lowering. Every handler converts source operands to semantic
+-- DSL values: item and quantity ride value-or-variable references (the
+-- source reads them through ScriptGetVar), native identities ride through
+-- as scalars for the service to resolve once through the catalog, and the
+-- result pointer rides the trailing output variable reference. Source
+-- timing stays immediate: every node below is a same-tick operation. No
+-- handler lowers a boolean into a branch; the runtime writes the numeric
+-- source result, and no runtime branch switches on the source opcode
+-- afterwards.
+local function giveItem(ins)
+  return {
+    op = "bag_add_item",
+    item = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function takeItem(ins)
+  return {
+    op = "bag_take_item",
+    item = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function hasSpaceForItem(ins)
+  return {
+    op = "bag_has_space",
+    item = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function hasItem(ins)
+  return {
+    op = "bag_has_item",
+    item = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+    result = Operands.varRef(ins.operands[3]),
+  }
+end
+
+local function itemIsTmhm(ins)
+  return {
+    op = "item_is_tmhm",
+    item = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function getItemPocket(ins)
+  return {
+    op = "item_get_pocket",
+    item = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+local function getItemQuantity(ins)
+  return {
+    op = "bag_get_quantity",
+    item = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
   }
 end
 
@@ -1199,6 +1304,9 @@ return {
   [194] = bufferItemName,
   [195] = bufferPocketName,
   [196] = bufferTmhmMoveName,
+  [336] = bufferBerryName,
+  [843] = bufferItemNameIndef,
+  [844] = bufferItemNamePlural,
   [197] = bufferMoveName,
   [198] = bufferInteger,
   [199] = bufferPartyNickname,
@@ -1206,6 +1314,13 @@ return {
   [202] = bufferSpeciesName,
   [203] = bufferStarterSpeciesName,
   [137] = giveMon,
+  [125] = giveItem,
+  [126] = takeItem,
+  [127] = hasSpaceForItem,
+  [128] = hasItem,
+  [129] = itemIsTmhm,
+  [130] = getItemPocket,
+  [669] = getItemQuantity,
   [167] = chooseStarter,
   [131] = setStarterChoice,
   [139] = setMonMove,

@@ -140,7 +140,7 @@ local function catalogWithPermissionSpecies()
   addSpecies("DIGLETT", 50, 20051, 0, 16)
   addSpecies("DUGTRIO", 51, 20052, 0, 16)
   addSpecies("LUGIA", 249, 20282, 1, 273)
-  return MonCatalog.new(root)
+  return MonCatalog.new(root, CatalogFixture.makeItemCatalog())
 end
 
 local function mon(species)

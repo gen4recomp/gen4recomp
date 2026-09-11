@@ -12,11 +12,15 @@ local FieldAudioSave = require("libs.hgss.src.audio.FieldAudioSave")
 local FieldObjectSave = require("libs.hgss.src.save.FieldObjectSave")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local Errors = require("libs.errors.src.Errors")
 local FieldScriptCompatibility = require("game.hgss.src.field.FieldScriptCompatibility")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
+local ItemCache = require("libs.assets.src.ItemCache")
+local ItemCatalog = require("libs.items.src.ItemCatalog")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local MonsErrors = require("libs.mons.src.errors")
 local MonsSave = require("libs.mons.src.MonsSave")
 
@@ -55,9 +59,12 @@ local function contextForCache(cacheFs, overrideFs, versionId)
   end
   -- The mon catalog behind every mons bucket validated in this version:
   -- loaded once per version context through the ready cache path, then
-  -- held as the immutable domain catalog its fingerprint belongs to.
+  -- held as the immutable domain catalog its fingerprint belongs to. The
+  -- shared item catalog loads beside it: mon composition consumes it now,
+  -- and later Bag validation reuses the same version context.
   local monRoot = MonCache.loadCatalog(cacheFs)
-  local monCatalog = MonCatalog.new(monRoot)
+  local itemCatalog = ItemCatalog.new(ItemCache.loadCatalog(cacheFs))
+  local monCatalog = MonCatalog.new(monRoot, itemCatalog)
   local monLanguage = monRoot.version.language
   assert(
     HgssMonService.GAMES[versionId] ~= nil,
@@ -73,6 +80,7 @@ local function contextForCache(cacheFs, overrideFs, versionId)
     audioSequenceIds = audioSequenceIds,
     scriptCompatibility = FieldScriptCompatibility.new({ cacheFs = cacheFs, overrideFs = overrideFs }),
     monCatalog = monCatalog,
+    itemCatalog = itemCatalog,
   }
 end
 
@@ -152,6 +160,19 @@ function GameSaveValidation:validate(record, context)
       })
       return value
     end
+    -- The single application owner of bag validation context: the version
+    -- item catalog the bag bucket validates against. A context without an
+    -- item catalog fails closed: no bucket is ever accepted unvalidated.
+    local function bagValidate(value)
+      local itemCatalog = selected.itemCatalog
+      if itemCatalog == nil then
+        Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "bag validation requires an item catalog", {
+          bucket = "bag",
+        })
+      end
+      assert(itemCatalog ~= nil, "bag validation requires an item catalog")
+      return BagSave.validate(value, itemCatalog)
+    end
     return GameSave.validate(record, {
       playerDataValidate = playerDataValidate,
       scriptsValidate = scriptsValidate,
@@ -159,6 +180,7 @@ function GameSaveValidation:validate(record, context)
       auxiliaryUiValidate = auxiliaryUiValidate,
       audioValidate = audioValidate,
       monsValidate = monsValidate,
+      bagValidate = bagValidate,
     })
   end)
   if ok then

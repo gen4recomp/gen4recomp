@@ -54,8 +54,12 @@ local DOMAINS = {
 }
 
 local SHARED = {
+  "BagAssetSchema",
+  "BagCache",
   "DerivedAssetContract",
   "ErrorCodes",
+  "ItemAssetSchema",
+  "ItemCache",
   "MapAssetCache",
   "MenuProtocol",
   "MonAssetSchema",

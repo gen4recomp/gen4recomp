@@ -2,6 +2,7 @@ local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MonsSave = require("libs.mons.src.MonsSave")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local WorldState = require("libs.hgss.src.script.WorldState")
@@ -257,6 +258,7 @@ function T.lottery_persists_through_world_capture_and_game_save()
     auxiliaryUi = {},
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    bag = BagSave.empty(),
   }
   local validated = assert(GameSave.validate(record))
   Assert.equal(validated.world.variables[vars.VAR_LOTO_NUMBER_LO], 0x5678)

@@ -6,6 +6,8 @@ local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
@@ -17,6 +19,8 @@ local function context()
     charmap = { G = 1, O = 2, L = 3, D = 4 },
     frameIndexes = { [0] = true },
     audioSequenceIds = { [7] = true },
+    monCatalog = CatalogFixture.makeCatalog(),
+    itemCatalog = ItemFixture.makeCatalog(),
     scriptCompatibility = {
       validationOptions = function()
         return {
@@ -36,7 +40,7 @@ end
 
 local function record(mons)
   local value = {
-    schema = "g4-game-save-v2",
+    schema = "g4-game-save-v3",
     saveId = "save-00000001",
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -67,6 +71,7 @@ local function record(mons)
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = mons,
+    bag = BagSave.empty(),
   }
   return value
 end

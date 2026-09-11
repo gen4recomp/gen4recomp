@@ -18,6 +18,7 @@ Keep reviewer-facing mechanisms in these shallow domain subpackages:
 - `presentation` — field scene, camera, queue, and presentation composition.
 - `ui` — reusable HGSS runtime UI mechanisms; game-independent button primitives belong in `libs/ui`.
 - `save` — HGSS save semantics.
+- `items` — HGSS Bag inventory mechanics, field cursor, and the live Bag service.
 - `mons` — the HGSS-facing live mon/party service over the domain package; follower
   field coordination stays in `field`.
 
