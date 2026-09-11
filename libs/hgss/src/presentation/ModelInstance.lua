@@ -58,6 +58,23 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field id integer
 ---@field alphaMode string
 
+---@class ModelInstance.EffectiveMaterial
+---@field image unknown|nil
+---@field texMatrix number[]
+---@field matDiffuse number[]
+---@field matAmbient number[]
+---@field matSpecular number[]
+---@field matEmission number[]
+---@field colorsAnimated boolean
+---@field alphaClass string
+---@field polygonAlpha number
+
+---@class ModelInstance.DrawSlot
+---@field item ModelDrawItem
+---@field transformBuffer Matrix4.Buffer
+---@field _center number[]
+---@field _scale number[]
+
 ---@class ModelInstance
 ---@field definition table<string, unknown>
 ---@field transform number[]
@@ -67,6 +84,12 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field renderMeshesById table<string, unknown>|nil -- caller-built render meshes per mesh id
 ---@field resolveImage fun(key: string, materialId: integer): unknown|nil
 ---@field timeOfDayPlan table<string, unknown>|nil -- band plan the scene loader attaches (TimeOfDayProps.plan)
+---@field _poseScratch table<string, unknown>|nil -- backend-owned reusable pose storage, built on first evaluation
+---@field _drawItems ModelDrawItem[] -- the live draw list, reused across evaluations
+---@field _slots ModelInstance.DrawSlot[] -- one stable record slot per definition mesh
+---@field _materials table<integer, ModelInstance.EffectiveMaterial> -- one stable material record per material index
+---@field _instanceBuffer Matrix4.Buffer -- reusable instance-transform matrix storage
+---@field _poseBuffer Matrix4.Buffer -- reusable pose-matrix matrix storage
 ---@field play fun(self: ModelInstance, nameOrSemantic: string, opts: table<string, unknown>?): table<string, unknown>
 ---@field stop fun(self: ModelInstance, nameOrHandle: string|table<string, unknown>): integer
 local ModelInstance = {}
@@ -104,7 +127,6 @@ local function identityMatrix()
 end
 
 local IDENTITY_TEX_MATRIX = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
-local IDENTITY_MODEL_NORMAL = Matrix3.identity()
 
 local function isTranslationOnly(transform)
   return transform[1] == 1
@@ -116,6 +138,80 @@ local function isTranslationOnly(transform)
     and transform[9] == 0
     and transform[10] == 0
     and transform[11] == 1
+end
+
+-- Load a 16-number Lua matrix into a reusable matrix buffer. Plain element
+-- copies: no allocation, so warmed evaluations convert at the boundary only.
+---@param buf Matrix4.Buffer
+---@param m number[]
+local function loadBuffer(buf, m)
+  local a = buf.m
+  for i = 0, 15 do
+    a[i] = m[i + 1]
+  end
+end
+
+-- Overwrite a 9-number normal array with the identity normal.
+---@param out number[]
+local function identityNormalInto(out)
+  out[1], out[2], out[3] = 1, 0, 0
+  out[4], out[5], out[6] = 0, 1, 0
+  out[7], out[8], out[9] = 0, 0, 1
+end
+
+-- One normalized RGB triple of the effective material into an existing
+-- 3-number array: the evaluated channel when present, else the base color.
+---@param out number[]
+---@param colors MaterialColorComponents?
+---@param name string
+---@param baseColor { r: integer, g: integer, b: integer }
+local function writeColor(out, colors, name, baseColor)
+  local channel = colors and colors[name]
+  if channel then
+    out[1], out[2], out[3] = channel.r / 255, channel.g / 255, channel.b / 255
+  else
+    out[1], out[2], out[3] = baseColor.r / 255, baseColor.g / 255, baseColor.b / 255
+  end
+end
+
+-- One stable draw-record slot: the item keeps its renderer-facing arrays
+-- for the life of the instance, and the slot keeps the billboard component
+-- arrays the item references while billboard.
+---@return ModelInstance.DrawSlot
+local function newDrawSlot()
+  local item = {
+    mesh = nil,
+    material = nil,
+    transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+    modelNormal = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+    billboardBase = nil,
+    billboardCenter = nil,
+    billboardScale = nil,
+    alphaClass = "opaque",
+    polygonAlpha = 1.0,
+    center = nil,
+  }
+  return {
+    item = item,
+    transformBuffer = Matrix4.newBuffer(),
+    _center = { 0, 0, 0 },
+    _scale = { 1, 1, 1 },
+  }
+end
+
+---@return ModelInstance.EffectiveMaterial
+local function newEffectiveMaterial()
+  return {
+    image = nil,
+    texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+    matDiffuse = { 1, 1, 1 },
+    matAmbient = { 1, 1, 1 },
+    matSpecular = { 1, 1, 1 },
+    matEmission = { 1, 1, 1 },
+    colorsAnimated = false,
+    alphaClass = "opaque",
+    polygonAlpha = 1.0,
+  }
 end
 
 -- The base material state with no animation: the definition's texture and
@@ -156,6 +252,19 @@ function ModelInstance.new(definition, opts)
     materialState[material.id] = baseMaterialState(material)
   end
 
+  -- Stable record skeletons sized from the immutable definition: one draw
+  -- slot per mesh and one effective-material record per material index.
+  -- Time-varying values overwrite these records in place; visibility only
+  -- changes the active draw prefix, never the capacity.
+  local slots = {}
+  for _ in ipairs(definition.meshes) do
+    slots[#slots + 1] = newDrawSlot()
+  end
+  local materials = {}
+  for materialIndex in ipairs(definition.materials) do
+    materials[materialIndex - 1] = newEffectiveMaterial()
+  end
+
   return setmetatable({
     definition = definition,
     transform = transform,
@@ -163,6 +272,12 @@ function ModelInstance.new(definition, opts)
     materialState = materialState,
     poseState = nil,
     resolveImage = opts.resolveImage,
+    _poseScratch = nil,
+    _drawItems = {},
+    _slots = slots,
+    _materials = materials,
+    _instanceBuffer = Matrix4.newBuffer(),
+    _poseBuffer = Matrix4.newBuffer(),
   }, ModelInstance)
 end
 
@@ -172,11 +287,16 @@ function ModelInstance:updateFixed()
 end
 
 -- Recompute the pose state from the current animation state through the
--- definition's nitro pose backend. Returns the PoseState. Raises a
--- structured error when the backend cannot evaluate (no silent fallback).
+-- definition's nitro pose backend into instance-owned reusable storage.
+-- Returns the live PoseState: repeated evaluations mutate the same pose
+-- containers. Raises a structured error when the backend cannot evaluate
+-- (no silent fallback).
 ---@return PoseState
 function ModelInstance:evaluatePose()
-  self.poseState = NitroPoseBackend.evaluate(self)
+  if not self._poseScratch then
+    self._poseScratch = NitroPoseBackend.newScratch(self.definition)
+  end
+  self.poseState = NitroPoseBackend.evaluateInto(self, self._poseScratch)
   return self.poseState
 end
 
@@ -258,46 +378,45 @@ end
 
 -- The effective render material record for a material index: definition
 -- properties plus this instance's evaluated state. Never mutates the
--- definition. The texture image is resolved through the instance's
--- resolveImage callback (nil without one); the UV transform matrix is the
--- evaluator's normalized 3x3. The polygon draw state (cull mode, polygon
--- mode/id, depth flags) is per draw segment and lives on the mesh records,
--- not here.
+-- definition. The returned record is a live view owned by the instance:
+-- repeated calls overwrite the same record and its color arrays, so callers
+-- must not retain it as historical state. The texture image is resolved
+-- through the instance's resolveImage callback (nil without one); the UV
+-- transform matrix is the evaluator's normalized 3x3. The polygon draw state
+-- (cull mode, polygon mode/id, depth flags) is per draw segment and lives on
+-- the mesh records, not here.
+---@param materialIndex integer
+---@return ModelInstance.EffectiveMaterial
 function ModelInstance:effectiveMaterial(materialIndex)
   local material = assert(
     self.definition.materials[materialIndex + 1],
     "material index " .. tostring(materialIndex) .. " out of range"
   )
   local state = self.materialState[materialIndex]
+  local record =
+    assert(self._materials[materialIndex], "material index " .. tostring(materialIndex) .. " has no stable record")
   local colors = state and state.colors
-  local function component(name)
-    local c = colors and colors[name]
-    if c then
-      return { c.r / 255, c.g / 255, c.b / 255 }
-    end
-    local base = material.baseColor
-    return { base.r / 255, base.g / 255, base.b / 255 }
-  end
+  writeColor(record.matDiffuse, colors, "diffuse", material.baseColor)
+  writeColor(record.matAmbient, colors, "ambient", material.baseColor)
+  writeColor(record.matSpecular, colors, "specular", material.baseColor)
+  writeColor(record.matEmission, colors, "emission", material.baseColor)
   local image
   if state and state.texture and self.resolveImage then
     image = self.resolveImage(state.texture, materialIndex)
   end
-  local alphaClass = state and state.alphaClass or ALPHA_CLASS[material.alphaMode]
-  return {
-    image = image,
-    texMatrix = state and state.texMatrix or IDENTITY_TEX_MATRIX,
-    matDiffuse = component("diffuse"),
-    matAmbient = component("ambient"),
-    matSpecular = component("specular"),
-    matEmission = component("emission"),
-    -- A playing NSBMA color clip replaces the field profile at the register:
-    -- the renderer uses the material's colors directly when this is set, and
-    -- the field profile otherwise (the HGSS field policy clears all four
-    -- color ownership bits, so the stored colors alone never reach the DS).
-    colorsAnimated = state and state.colorAnimated or false,
-    alphaClass = alphaClass,
-    polygonAlpha = state.polygonAlpha / FixedPoint.RGB5_MAX,
-  }
+  record.image = image
+  local texMatrix = state and state.texMatrix or IDENTITY_TEX_MATRIX
+  for i = 1, 9 do
+    record.texMatrix[i] = texMatrix[i]
+  end
+  -- A playing NSBMA color clip replaces the field profile at the register:
+  -- the renderer uses the material's colors directly when this is set, and
+  -- the field profile otherwise (the HGSS field policy clears all four
+  -- color ownership bits, so the stored colors alone never reach the DS).
+  record.colorsAnimated = state and state.colorAnimated or false
+  record.alphaClass = state and state.alphaClass or ALPHA_CLASS[material.alphaMode]
+  record.polygonAlpha = state.polygonAlpha / FixedPoint.RGB5_MAX
+  return record
 end
 
 -- A draw item in the field renderer item shape (the contract the field renderer
@@ -320,11 +439,17 @@ end
 ---@field billboardCenter number[]|nil
 ---@field billboardScale number[]|nil
 
--- Draw items in the field renderer item shape, one per definition mesh, with
--- the current pose. `renderMeshesById` maps mesh id -> built render mesh
--- (love Mesh in production; any object in pure tests). A mesh whose node is
--- hidden by the current pose is omitted. Before the first pose evaluation
--- meshes render at their bind placement under the instance transform.
+-- Draw items in the field renderer item shape, one per visible definition
+-- mesh, with the current pose. `renderMeshesById` maps mesh id -> built
+-- render mesh (love Mesh in production; any object in pure tests). A mesh
+-- whose node is hidden by the current pose is omitted. Before the first pose
+-- evaluation meshes render at their bind placement under the instance
+-- transform.
+--
+-- The returned array is a live view owned by the instance: repeated calls
+-- overwrite the same outer array and the same per-mesh item records, so
+-- callers must use the items for immediate rendering and never retain them
+-- as historical state.
 --
 -- Nitro-backed definitions carry per-mesh draw records in the pose
 -- (PoseState.drawMatrices): a Nitro draw is not one node matrix, so those
@@ -341,60 +466,81 @@ end
 function ModelInstance:drawItems(renderMeshesById)
   assert(type(renderMeshesById) == "table", "drawItems requires a mesh render table")
   self:evaluateMaterials()
-  local items = {}
+  local items = self._drawItems
+  local activeCount = 0
   local pose = self.poseState
   local backendMeshes = self.definition.backend and self.definition.backend.meshes or {}
-  for _, mesh in ipairs(self.definition.meshes) do
+  loadBuffer(self._instanceBuffer, self.transform)
+  for meshIndex, mesh in ipairs(self.definition.meshes) do
     if not (pose and pose.nodeVisible[mesh.nodeIndex] == false) then
       ---@type PoseDrawMatrix|nil
       local draw = pose and pose.drawMatrices and pose.drawMatrices[mesh.id]
-      local transform, billboardBase, billboardCenter, billboardScale
+      local slot = assert(self._slots[meshIndex], "mesh index " .. tostring(meshIndex) .. " has no stable record slot")
+      local item = slot.item
       if draw then
         if draw.transformMode == PoseContract.BILLBOARD then
-          billboardBase = Matrix4.multiply(self.transform, draw.baseTransform)
-          billboardCenter, billboardScale = BillboardTransform.components(billboardBase)
-          transform = billboardBase
+          loadBuffer(self._poseBuffer, assert(draw.baseTransform, "billboard draw carries no captured base transform"))
+          Matrix4.multiplyInto(slot.transformBuffer, self._instanceBuffer, self._poseBuffer)
+          Matrix4.toArrayBufferInto(item.transform, slot.transformBuffer)
+          item.billboardBase = item.transform
+          BillboardTransform.componentsInto(slot._center, slot._scale, item.transform)
+          item.billboardCenter = slot._center
+          item.billboardScale = slot._scale
+          identityNormalInto(item.modelNormal)
         else
-          transform = Matrix4.multiply(self.transform, draw.position)
+          loadBuffer(self._poseBuffer, draw.position)
+          Matrix4.multiplyInto(slot.transformBuffer, self._instanceBuffer, self._poseBuffer)
+          Matrix4.toArrayBufferInto(item.transform, slot.transformBuffer)
+          item.billboardBase = nil
+          item.billboardCenter = nil
+          item.billboardScale = nil
+          if isTranslationOnly(item.transform) then
+            identityNormalInto(item.modelNormal)
+          else
+            Matrix3.modelNormalInto(item.modelNormal, item.transform)
+          end
         end
       else
-        local nodeMatrix = identityMatrix()
         if pose and pose.nodeMatrices[mesh.nodeIndex] then
-          nodeMatrix = pose.nodeMatrices[mesh.nodeIndex]
+          loadBuffer(self._poseBuffer, pose.nodeMatrices[mesh.nodeIndex])
+        else
+          Matrix4.identityInto(self._poseBuffer)
         end
-        transform = Matrix4.multiply(self.transform, nodeMatrix)
+        Matrix4.multiplyInto(slot.transformBuffer, self._instanceBuffer, self._poseBuffer)
+        Matrix4.toArrayBufferInto(item.transform, slot.transformBuffer)
+        item.billboardBase = nil
+        item.billboardCenter = nil
+        item.billboardScale = nil
+        if isTranslationOnly(item.transform) then
+          identityNormalInto(item.modelNormal)
+        else
+          Matrix3.modelNormalInto(item.modelNormal, item.transform)
+        end
       end
       local meshState = assert(
         backendMeshes[mesh.id],
         "backend mesh record missing for " .. mesh.id .. " (a nitro definition must cover every mesh)"
       )
       local material = self:effectiveMaterial(mesh.materialIndex)
-      local modelNormal = IDENTITY_MODEL_NORMAL
-      if not billboardBase and not isTranslationOnly(transform) then
-        modelNormal = Matrix3.modelNormal(transform)
-      end
-      local item = {
-        mesh = renderMeshesById[mesh.id],
-        material = material,
-        transform = transform,
-        modelNormal = modelNormal,
-        billboardBase = billboardBase,
-        billboardCenter = billboardCenter,
-        billboardScale = billboardScale,
-        alphaClass = material.alphaClass,
-        polygonAlpha = material.polygonAlpha,
-        -- The loader stamps each mesh's model-space center from the decoded
-        -- geometry; a definition mesh without one cannot be sorted.
-        center = assert(mesh.center, "mesh " .. mesh.id .. " has no stamped model-space center"),
-      }
+      item.mesh = renderMeshesById[mesh.id]
+      item.material = material
+      item.alphaClass = material.alphaClass
+      item.polygonAlpha = material.polygonAlpha
+      -- The loader stamps each mesh's model-space center from the decoded
+      -- geometry; a definition mesh without one cannot be sorted.
+      item.center = assert(mesh.center, "mesh " .. mesh.id .. " has no stamped model-space center")
       -- The shared draw-state set rides on the item from the backend record
       -- (complete by contract: the descriptor gate requires every field on
       -- every batch, and fromNitroDescriptor copies the batch records).
       for _, field in ipairs(DRAW_STATE_FIELDS) do
         item[field] = meshState[field]
       end
-      items[#items + 1] = item
+      activeCount = activeCount + 1
+      items[activeCount] = item
     end
+  end
+  for i = activeCount + 1, #items do
+    items[i] = nil
   end
   return items
 end

@@ -124,4 +124,27 @@ function T.model_normal_composes_with_view_for_rotation_and_nonuniform_scale()
   assertModelNormalEquivalent(model, "rotation and nonuniform scale")
 end
 
+function T.model_normal_into_matches_model_normal()
+  local models = {
+    Matrix4.identity(),
+    Matrix4.translate(7, -3, 11),
+    Matrix4.scale(2, 3, 4),
+    Matrix4.rotateY(math.pi / 4),
+    Matrix4.multiply(Matrix4.rotateY(-0.58), Matrix4.scale(2, 3, 4)),
+  }
+  for _, model in ipairs(models) do
+    local out = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+    local returned = Matrix3.modelNormalInto(out, model)
+    Assert.isTrue(returned == out, "modelNormalInto reuses the output array")
+    Assert.deepEqual(out, Matrix3.modelNormal(model))
+  end
+end
+
+function T.model_normal_into_rejects_a_singular_transform()
+  local out = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+  Assert.throws(function()
+    Matrix3.modelNormalInto(out, Matrix4.scale(0, 1, 1))
+  end)
+end
+
 return { tests = T }

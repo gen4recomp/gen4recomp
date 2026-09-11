@@ -99,22 +99,6 @@ local NsbmdSbcEvaluator = {}
 ---@class NsbmdSbcEvaluator.PoseProvider
 ---@field nodeSRT fun(nodeIndex: integer): table<string, unknown>?
 
----@param m number[]
----@return number[]
-local function copyMatrix(m)
-  return Matrix4.toArray(m)
-end
-
----@param stack table<integer, number[]>
----@return table<integer, number[]>
-local function copyRestoreStack(stack)
-  local copy = {} ---@type table<integer, number[]>
-  for slot, matrix in pairs(stack) do
-    copy[slot] = copyMatrix(matrix)
-  end
-  return copy
-end
-
 -- The matrix-stack slot read of MTX, NODEDESC restore, and NODEMIX terms
 -- must name a slot a previous command wrote. A missing slot means the
 -- program restores state that was never set; replaying it as identity would
@@ -137,7 +121,7 @@ local function slotAt(program, slots, slot, cmd)
       { slot = slot, offset = cmd.offset, model = program.name }
     )
   end
-  return copyMatrix(m)
+  return m
 end
 
 -- The 4x3 part of a column-major matrix: the three basis columns plus the
@@ -211,6 +195,8 @@ local SUPPORTED_SCALING_RULES = {
 ---@field restoreStack { [integer]: number[] }
 ---@field transformMode TransformMode
 ---@field baseTransform number[]|nil -- billboard draws only
+---@field _base number[]? -- scratch-owned captured base storage, reused across evaluations
+---@field _slotTables table<integer, number[]>? -- scratch-owned restore-stack cell storage
 
 ---@class SbcEvaluation
 ---@field draws SbcDraw[]
@@ -219,8 +205,156 @@ local SUPPORTED_SCALING_RULES = {
 ---@field matrixSlots { [integer]: number[] } -- the matrix-stack slots as of the
 --  end of the replay, [slot] = column-major matrix (program units)
 
--- Replay the SBC stream of `program` with `poseProvider` and return the
--- ordered draw submissions plus the effective node state.
+---@class NsbmdSbcEvaluator.Scratch
+---@field draws SbcDraw[] -- live draw list, active prefix of drawPool
+---@field drawPool SbcDraw[] -- every draw record, retained across evaluations
+---@field nodeMatrices { [integer]: number[] }
+---@field nodeVisibility { [integer]: boolean }
+---@field matrixSlots { [integer]: number[] }
+---@field result SbcEvaluation -- the live result, aliasing the tables above
+---@field _current number[] -- working position matrix
+---@field _base number[] -- working NODEDESC base matrix
+---@field _billboard number[] -- working captured billboard matrix
+---@field _hasBillboard boolean
+---@field _mayaCache table<integer, number[]|false>
+---@field _slotPool table<integer, number[]> -- every matrix-stack table, retained across evaluations
+---@field _nodePool table<integer, number[]> -- every node-matrix table, retained across evaluations
+
+---@param m number[]
+---@param out number[]
+---@return number[]
+local function copyInto(out, m)
+  for i = 1, 16 do
+    out[i] = m[i]
+  end
+  return out
+end
+
+---@return number[]
+local function freshMatrix()
+  return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+end
+
+-- The pooled matrix at `key`: `pool` retains the table across evaluations
+-- while `live` only references it for the current replay. Clearing `live`
+-- each evaluation is allocation-free; the pool keeps every table.
+---@param pool table<integer, number[]>
+---@param live table<integer, number[]>
+---@param key integer
+---@return number[]
+local function reusablePooled(pool, live, key)
+  local m = pool[key]
+  if not m then
+    m = freshMatrix()
+    pool[key] = m
+  end
+  live[key] = m
+  return m
+end
+
+-- Owner-held reusable storage for one transform program. Draw records,
+-- node/slot matrices, and the result containers are allocated here (or on
+-- the cold first evaluation when a foreign program names more state) and
+-- only overwritten afterwards, so warmed replays reuse every output
+-- container. A scratch is sized from the program passed to newScratch;
+-- evaluating a different program with it only allocates for the growth.
+---@param program NsbmdSbcEvaluator.Program
+---@return NsbmdSbcEvaluator.Scratch
+function NsbmdSbcEvaluator.newScratch(program)
+  assert(
+    type(program) == "table" and program.commands ~= nil,
+    "NsbmdSbcEvaluator.newScratch requires a transform program"
+  )
+  -- The draw capacity is the SHP count: visibility only shrinks the active
+  -- prefix, so prebuilt records cover every warmed evaluation. The slot set
+  -- covers every matrix-stack index the stream can name.
+  local drawCapacity = 0
+  local slots = {}
+  for _, node in ipairs(program.nodes or {}) do
+    if node.matrixStackIndex ~= nil then
+      slots[node.matrixStackIndex] = true
+    end
+  end
+  for _, rawCmd in ipairs(program.commands) do
+    ---@cast rawCmd NsbmdSbcEvaluator.Command
+    local cmd = rawCmd
+    if cmd.opcode == 0x05 then
+      drawCapacity = drawCapacity + 1
+    end
+    if cmd.matrixSlot ~= nil then
+      slots[cmd.matrixSlot] = true
+    end
+    if cmd.storeSlot ~= nil then
+      slots[cmd.storeSlot] = true
+    end
+    if cmd.restoreSlot ~= nil then
+      slots[cmd.restoreSlot] = true
+    end
+    if cmd.terms ~= nil then
+      for _, term in ipairs(cmd.terms) do
+        slots[term.matrixSlot] = true
+      end
+    end
+  end
+  local scratch = {
+    draws = {},
+    drawPool = {},
+    nodeMatrices = {},
+    nodeVisibility = {},
+    matrixSlots = {},
+    result = {},
+    _current = freshMatrix(),
+    _base = freshMatrix(),
+    _billboard = freshMatrix(),
+    _hasBillboard = false,
+    _mayaCache = {},
+    _slotPool = {},
+    _nodePool = {},
+  }
+  for _ = 1, drawCapacity do
+    local slotTables = {}
+    for slot in pairs(slots) do
+      slotTables[slot] = freshMatrix()
+    end
+    scratch.drawPool[#scratch.drawPool + 1] = {
+      nodeIndex = 0,
+      materialIndex = 0,
+      shapeIndex = 0,
+      materialReapplied = false,
+      matrix = freshMatrix(),
+      restoreStack = {},
+      transformMode = PoseContract.STATIC,
+      baseTransform = nil,
+      _base = freshMatrix(),
+      _slotTables = slotTables,
+    }
+  end
+  scratch.result = {
+    draws = scratch.draws,
+    nodeMatrices = scratch.nodeMatrices,
+    nodeVisibility = scratch.nodeVisibility,
+    matrixSlots = scratch.matrixSlots,
+  }
+  return scratch
+end
+
+---@param out number[]
+---@return number[]
+local function identityInto(out)
+  out[1], out[2], out[3], out[4] = 1, 0, 0, 0
+  out[5], out[6], out[7], out[8] = 0, 1, 0, 0
+  out[9], out[10], out[11], out[12] = 0, 0, 1, 0
+  out[13], out[14], out[15], out[16] = 0, 0, 0, 1
+  return out
+end
+
+-- Replay the SBC stream of `program` with `poseProvider` into `scratch` and
+-- return the live result. This is the single opcode implementation: the
+-- allocating evaluate below snapshots this replay, so the two paths cannot
+-- drift. Repeated calls with the same topology reuse the same result, draw
+-- list, draw records, and matrix containers; visibility changes shrink the
+-- active draw prefix (surplus entries are cleared) and reappearance reuses
+-- the retained records.
 --
 -- For a billboard draw, `matrix` holds only what the stream accumulated
 -- after the BB command (normally identity), so the shape's vertices stay in
@@ -228,16 +362,18 @@ local SUPPORTED_SCALING_RULES = {
 -- which the runtime takes the translation and per-axis scale.
 ---@param program NsbmdSbcEvaluator.Program
 ---@param poseProvider NsbmdSbcEvaluator.PoseProvider
+---@param scratch NsbmdSbcEvaluator.Scratch
 ---@return SbcEvaluation
-function NsbmdSbcEvaluator.evaluate(program, poseProvider)
+function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
   assert(
     type(program) == "table" and program.commands ~= nil,
-    "NsbmdSbcEvaluator.evaluate requires a transform program"
+    "NsbmdSbcEvaluator.evaluateInto requires a transform program"
   )
   assert(
     type(poseProvider) == "table" and poseProvider.nodeSRT ~= nil,
-    "NsbmdSbcEvaluator.evaluate requires a pose provider with nodeSRT"
+    "NsbmdSbcEvaluator.evaluateInto requires a pose provider with nodeSRT"
   )
+  assert(type(scratch) == "table" and scratch.draws ~= nil, "NsbmdSbcEvaluator.evaluateInto requires evaluator scratch")
 
   local scalingRule = program.scalingRule
   if not SUPPORTED_SCALING_RULES[scalingRule] then
@@ -248,22 +384,40 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
     )
   end
 
-  local currentMatrix = Matrix4.identity()
-  local matrixSlots = {} ---@type table<integer, number[]>
-  local nodeMatrices = {} ---@type table<integer, number[]>
-  local nodeVisibility = {} ---@type table<integer, boolean>
+  local matrixSlots = scratch.matrixSlots
+  local nodeMatrices = scratch.nodeMatrices
+  local nodeVisibility = scratch.nodeVisibility
+  for key in pairs(nodeVisibility) do
+    nodeVisibility[key] = nil
+  end
+  -- The slot and node tables accumulate writes as the stream walks; each
+  -- replay starts empty exactly like the allocating path. The pooled tables
+  -- stay retained, so clearing and re-referencing them allocates nothing
+  -- once warm.
+  for key in pairs(matrixSlots) do
+    matrixSlots[key] = nil
+  end
+  for key in pairs(nodeMatrices) do
+    nodeMatrices[key] = nil
+  end
+  local currentMatrix = scratch._current
+  local baseWork = scratch._base
+  local billboardWork = scratch._billboard
+  identityInto(currentMatrix)
+  local hasBillboard = false
   local currentNode = 0
   local currentMaterial = 0
   local materialReapplied = true
   -- Written by joints flagged MAYASSC_PARENT and read by their children; the
   -- SDK keeps the equivalent state in NNS_G3dRSOnGlb.scaleCache for one walk.
-  local mayaScaleCache = {} ---@type table<integer, number[]|false>
-  -- The position matrix a BB command captured, or nil while the current matrix is
-  -- an ordinary joint matrix. Any command that loads the position matrix outright
-  -- ends the billboard.
-  local billboardBase = nil ---@type number[]?
+  local mayaScaleCache = scratch._mayaCache
+  for key in pairs(mayaScaleCache) do
+    mayaScaleCache[key] = nil
+  end
 
-  local draws = {} ---@type SbcDraw[]
+  local draws = scratch.draws
+  local drawPool = scratch.drawPool
+  local activeCount = 0
 
   for _, rawCmd in ipairs(program.commands) do
     ---@cast rawCmd NsbmdSbcEvaluator.Command
@@ -276,23 +430,59 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
       currentNode = cmd.nodeIndex
       nodeVisibility[cmd.nodeIndex] = cmd.visible
     elseif op == 0x03 then -- MTX
-      currentMatrix = slotAt(program, matrixSlots, cmd.matrixSlot, cmd)
-      billboardBase = nil
+      copyInto(currentMatrix, slotAt(program, matrixSlots, cmd.matrixSlot, cmd))
+      hasBillboard = false
     elseif op == 0x04 then -- MAT
       currentMaterial = cmd.materialIndex
       materialReapplied = true
     elseif op == 0x05 then -- SHP
       if nodeVisibility[currentNode] ~= false then
-        draws[#draws + 1] = {
-          nodeIndex = currentNode,
-          materialIndex = currentMaterial,
-          shapeIndex = cmd.shapeIndex,
-          materialReapplied = materialReapplied,
-          matrix = copyMatrix(currentMatrix),
-          restoreStack = copyRestoreStack(matrixSlots),
-          transformMode = billboardBase and PoseContract.BILLBOARD or PoseContract.STATIC,
-          baseTransform = billboardBase and copyMatrix(billboardBase) or nil,
-        }
+        activeCount = activeCount + 1
+        local record = drawPool[activeCount]
+        if not record then
+          record = {
+            nodeIndex = 0,
+            materialIndex = 0,
+            shapeIndex = 0,
+            materialReapplied = false,
+            matrix = freshMatrix(),
+            restoreStack = {},
+            transformMode = PoseContract.STATIC,
+            baseTransform = nil,
+            _base = freshMatrix(),
+            _slotTables = {},
+          }
+          drawPool[activeCount] = record
+        end
+        record.nodeIndex = currentNode
+        record.materialIndex = currentMaterial
+        record.shapeIndex = cmd.shapeIndex
+        record.materialReapplied = materialReapplied
+        copyInto(record.matrix, currentMatrix)
+        local restoreStack = record.restoreStack
+        for slot, slotMatrix in pairs(matrixSlots) do
+          local cell = record._slotTables[slot]
+          if not cell then
+            cell = freshMatrix()
+            record._slotTables[slot] = cell
+          end
+          copyInto(cell, slotMatrix)
+          restoreStack[slot] = cell
+        end
+        for slot in pairs(restoreStack) do
+          if matrixSlots[slot] == nil then
+            restoreStack[slot] = nil
+          end
+        end
+        if hasBillboard then
+          copyInto(record._base, billboardWork)
+          record.baseTransform = record._base
+          record.transformMode = PoseContract.BILLBOARD
+        else
+          record.baseTransform = nil
+          record.transformMode = PoseContract.STATIC
+        end
+        draws[activeCount] = record
       end
       materialReapplied = false
     elseif op == 0x06 then -- NODEDESC
@@ -305,12 +495,11 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
         )
       end
 
-      local baseMatrix ---@type number[]
       if cmd.restoreSlot ~= nil then
-        baseMatrix = slotAt(program, matrixSlots, cmd.restoreSlot, cmd)
+        copyInto(baseWork, slotAt(program, matrixSlots, cmd.restoreSlot, cmd))
       elseif cmd.parentIndex == cmd.nodeIndex then
         -- Self-parenting root: no source matrix (the explicit no-source op).
-        baseMatrix = Matrix4.identity()
+        identityInto(baseWork)
       else
         local parent = nodeMatrices[cmd.parentIndex] ---@type number[]?
         if not parent then
@@ -323,19 +512,19 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
           )
         end
         assert(parent ~= nil)
-        baseMatrix = copyMatrix(parent)
+        copyInto(baseWork, parent)
       end
 
       local localMatrix = NsbmdJointTransforms.localMatrix(scalingRule, srt, cmd, mayaScaleCache)
-      local world = Matrix4.multiply(baseMatrix, localMatrix)
-      nodeMatrices[cmd.nodeIndex] = world
-      matrixSlots[srt.matrixStackIndex] = world
+      local world = Matrix4.multiply(baseWork, localMatrix)
+      copyInto(reusablePooled(scratch._nodePool, nodeMatrices, cmd.nodeIndex), world)
+      copyInto(reusablePooled(scratch._slotPool, matrixSlots, srt.matrixStackIndex), world)
       if cmd.storeSlot ~= nil then
-        matrixSlots[cmd.storeSlot] = world
+        copyInto(reusablePooled(scratch._slotPool, matrixSlots, cmd.storeSlot), world)
       end
-      currentMatrix = copyMatrix(world)
+      copyInto(currentMatrix, world)
       currentNode = cmd.nodeIndex
-      billboardBase = nil
+      hasBillboard = false
     elseif op == 0x07 then -- BB
       -- The store/restore option operands would move a billboard matrix through
       -- the matrix stack, which the compiled per-shape contract cannot express.
@@ -347,14 +536,15 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
           { optionBits = cmd.optionBits, offset = cmd.offset, model = program.name }
         )
       end
-      billboardBase = copyMatrix(currentMatrix)
-      currentMatrix = Matrix4.identity()
+      copyInto(billboardWork, currentMatrix)
+      hasBillboard = true
+      identityInto(currentMatrix)
       currentNode = cmd.nodeIndex
     elseif op == 0x09 then -- NODEMIX
       local blended = nodemixMatrix(program, cmd, matrixSlots)
-      matrixSlots[cmd.storeSlot] = blended
-      currentMatrix = copyMatrix(blended)
-      billboardBase = nil
+      copyInto(reusablePooled(scratch._slotPool, matrixSlots, cmd.storeSlot), blended)
+      copyInto(currentMatrix, blended)
+      hasBillboard = false
     elseif op == 0x08 or op == 0x0A then
       -- BBY and CALLDL. CALLDL would submit geometry from a display list this
       -- evaluator never sees, so ignoring it would silently drop draws; no model
@@ -366,7 +556,7 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
       )
     elseif op == 0x0B then -- POSSCALE
       local scale = cmd.inverse and program.invPosScale or program.posScale
-      currentMatrix = Matrix4.multiply(currentMatrix, Matrix4.scale(scale, scale, scale))
+      copyInto(currentMatrix, Matrix4.multiply(currentMatrix, Matrix4.scale(scale, scale, scale)))
     elseif op == 0x0D then -- PRJMAP
       -- PRJMAP selects projection-map texgen state (a matrix-palette entry;
       -- NNSi_G3dFuncSbc_PRJMAP in NitroSystem g3d/sbc.c reads two operands and
@@ -384,11 +574,63 @@ function NsbmdSbcEvaluator.evaluate(program, poseProvider)
     end
   end
 
+  for i = activeCount + 1, #draws do
+    draws[i] = nil
+  end
+  return scratch.result
+end
+
+---@param m number[]
+---@return number[]
+local function snapshotMatrix(m)
+  local out = {}
+  for i = 1, 16 do
+    out[i] = m[i]
+  end
+  return out
+end
+
+---@param stacks table<integer, number[]>
+---@return table<integer, number[]>
+local function snapshotStacks(stacks)
+  local out = {} ---@type table<integer, number[]>
+  for slot, matrix in pairs(stacks) do
+    out[slot] = snapshotMatrix(matrix)
+  end
+  return out
+end
+
+-- Replay the SBC stream of `program` with `poseProvider` and return the
+-- ordered draw submissions plus the effective node state. The returned
+-- evaluation is an independent snapshot: later evaluations never mutate it.
+-- See evaluateInto for the billboard record split.
+---@param program NsbmdSbcEvaluator.Program
+---@param poseProvider NsbmdSbcEvaluator.PoseProvider
+---@return SbcEvaluation
+function NsbmdSbcEvaluator.evaluate(program, poseProvider)
+  local live = NsbmdSbcEvaluator.evaluateInto(program, poseProvider, NsbmdSbcEvaluator.newScratch(program))
+  local draws = {} ---@type SbcDraw[]
+  for i, draw in ipairs(live.draws) do
+    draws[i] = {
+      nodeIndex = draw.nodeIndex,
+      materialIndex = draw.materialIndex,
+      shapeIndex = draw.shapeIndex,
+      materialReapplied = draw.materialReapplied,
+      matrix = snapshotMatrix(draw.matrix),
+      restoreStack = snapshotStacks(draw.restoreStack),
+      transformMode = draw.transformMode,
+      baseTransform = draw.baseTransform and snapshotMatrix(draw.baseTransform) or nil,
+    }
+  end
+  local nodeVisibility = {} ---@type table<integer, boolean>
+  for nodeIndex, visible in pairs(live.nodeVisibility) do
+    nodeVisibility[nodeIndex] = visible
+  end
   return {
     draws = draws,
-    nodeMatrices = nodeMatrices,
+    nodeMatrices = snapshotStacks(live.nodeMatrices),
     nodeVisibility = nodeVisibility,
-    matrixSlots = copyRestoreStack(matrixSlots),
+    matrixSlots = snapshotStacks(live.matrixSlots),
   }
 end
 

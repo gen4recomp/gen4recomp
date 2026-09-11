@@ -573,24 +573,47 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
 
   local runtime = {}
 
+  runtime.animatedBuildingDraws = {}
+  -- Per-refresh scratch holding each instance's evaluated draw list until
+  -- publication. Reused across ticks; cleared after every refresh.
+  local pendingDraws = {}
+
   -- The per-instance refresh pass shared by the tick update and the initial
   -- build: it re-evaluates each pose from the current attachment frames. The
   -- static building list is built once and never touched again -- only the
-  -- animated list is rebuilt here, so a fixed tick's cost scales with the
+  -- animated list is refreshed here, so a fixed tick's cost scales with the
   -- animated instance count, not the whole building set.
+  --
+  -- The aggregation reuses one outer array: ticks overwrite its entries
+  -- with the instances' current live draw records and truncate the surplus,
+  -- so the list keeps its identity. Evaluation runs to completion before
+  -- publication, so a resolver failure raises without publishing a
+  -- partially-updated list: the scene keeps its last good aggregation.
   local function refreshAnimatedItems(constructionCheckpoint)
-    local items = {}
-    for _, instance in ipairs(animatedInstances) do
+    for index, instance in ipairs(animatedInstances) do
       instance:evaluatePose()
-      local drawn = instance:drawItems(instance.renderMeshesById)
-      for _, item in ipairs(drawn) do
-        items[#items + 1] = item
-      end
+      pendingDraws[index] = instance:drawItems(instance.renderMeshesById)
       if constructionCheckpoint ~= nil then
         constructionCheckpoint()
       end
     end
-    runtime.animatedBuildingDraws = items
+    for index = #animatedInstances + 1, #pendingDraws do
+      pendingDraws[index] = nil
+    end
+    local items = runtime.animatedBuildingDraws
+    local count = 0
+    for _, drawn in ipairs(pendingDraws) do
+      for _, item in ipairs(drawn) do
+        count = count + 1
+        items[count] = item
+      end
+    end
+    for i = count + 1, #items do
+      items[i] = nil
+    end
+    for index = 1, #pendingDraws do
+      pendingDraws[index] = nil
+    end
   end
 
   -- Advance every animated instance by one fixed step, then refresh: the one
