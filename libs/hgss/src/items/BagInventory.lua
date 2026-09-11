@@ -4,7 +4,8 @@
 -- One stack exists per item: a stack-overflow add fails even when another
 -- empty slot exists. TM/HM and Berry pockets sort by ascending native item
 -- id after add; other pockets preserve mutable order. Removing an item's
--- final copy unregisters it. The service owns the revision; this mechanism
+-- final copy removes the pocket slot and leaves registration untouched.
+-- The service owns the revision; this mechanism
 -- only reports success. Pure domain code: no love dependency.
 
 local BagSave = require("libs.hgss.src.save.BagSave")
@@ -151,17 +152,6 @@ function BagInventory:add(itemKey, quantity)
 end
 
 ---@param itemKey string
----@return nil
-function BagInventory:_dropRegistration(itemKey)
-  for index, key in ipairs(self._registered) do
-    if key == itemKey then
-      table.remove(self._registered, index)
-      return
-    end
-  end
-end
-
----@param itemKey string
 ---@param quantity integer
 ---@return boolean
 function BagInventory:take(itemKey, quantity)
@@ -179,7 +169,6 @@ function BagInventory:take(itemKey, quantity)
   local remaining = slot.quantity - quantity
   if remaining == 0 then
     table.remove(slots, entry.index)
-    self:_dropRegistration(itemKey)
   else
     slot.quantity = remaining
   end

@@ -177,13 +177,17 @@ function T.unregistering_slot_one_shifts_slot_two()
   Assert.isFalse(bag:unregister("ITEM_5"), "unregistering an unregistered item fails")
 end
 
-function T.removing_the_final_copy_unregisters_the_item()
+function T.taking_the_final_copy_keeps_registration_until_explicit_unregister()
   local bag = inventory()
   Assert.isTrue(bag:add("BICYCLE", 1))
   Assert.equal(bag:tryRegister("BICYCLE"), "slot1")
   Assert.isTrue(bag:take("BICYCLE", 1))
-  Assert.deepEqual(bag:registeredItems(), {}, "the final removal clears registration")
-  Assert.deepEqual(bag:pocketItems("key_items"), {})
+  Assert.equal(bag:quantity("BICYCLE"), 0)
+  Assert.deepEqual(bag:pocketItems("key_items"), {}, "a take to zero removes the slot")
+  Assert.deepEqual(bag:registeredItems(), { "BICYCLE" }, "removing the final copy leaves registration untouched")
+  Assert.isTrue(bag:unregister("BICYCLE"), "only explicit unregister clears registration")
+  Assert.deepEqual(bag:registeredItems(), {})
+  Assert.isFalse(bag:unregister("BICYCLE"), "unregistering an unregistered item fails")
 end
 
 function T.pocket_items_returns_fresh_copies()

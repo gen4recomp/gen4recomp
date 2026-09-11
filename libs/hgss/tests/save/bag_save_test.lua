@@ -183,12 +183,6 @@ function T.validation_rejects_invalid_registration()
     "GAME_SAVE_BUCKET_INVALID",
     "more than two registered items are rejected"
   )
-  local unowned = emptyPockets()
-  Assert.equal(
-    rejectionCode(registeredCandidate({ "BICYCLE" }, unowned), catalog),
-    "GAME_SAVE_BUCKET_INVALID",
-    "a registered item that is not owned is rejected"
-  )
   local owned = emptyPockets()
   owned.key_items = { { item = "BICYCLE", quantity = 1 } }
   Assert.equal(
@@ -211,6 +205,12 @@ function T.validation_rejects_invalid_registration()
   )
 end
 
+function T.unowned_registerable_registration_validates()
+  local catalog = ItemFixture.makeCatalog()
+  local valid = assert(BagSave.validate(record({ pockets = emptyPockets(), registered = { "BICYCLE" } }), catalog))
+  Assert.deepEqual(valid.registered, { "BICYCLE" }, "a known registerable item stays valid without possession")
+end
+
 function T.capture_validate_round_trip_preserves_manual_order_and_quantities()
   local catalog = ItemFixture.makeCatalog()
   local BagInventory = require("libs.hgss.src.items.BagInventory")
@@ -224,6 +224,21 @@ function T.capture_validate_round_trip_preserves_manual_order_and_quantities()
   local valid = assert(BagSave.validate(captured, catalog))
   local rebuilt = BagInventory.new(catalog, valid)
   Assert.deepEqual(rebuilt:capture(), captured, "a validated capture rebuilds the exact manual order")
+end
+
+function T.final_removal_capture_round_trips_with_registration()
+  local catalog = ItemFixture.makeCatalog()
+  local BagInventory = require("libs.hgss.src.items.BagInventory")
+  local inventory = BagInventory.new(catalog)
+  Assert.isTrue(inventory:add("BICYCLE", 1))
+  Assert.notNil(inventory:tryRegister("BICYCLE"))
+  Assert.isTrue(inventory:take("BICYCLE", 1))
+  local captured = BagSave.capture(inventory)
+  local valid = assert(BagSave.validate(captured, catalog))
+  local rebuilt = BagInventory.new(catalog, valid)
+  Assert.equal(rebuilt:quantity("BICYCLE"), 0)
+  Assert.deepEqual(rebuilt:registeredItems(), { "BICYCLE" }, "the rebuilt bag keeps the registration")
+  Assert.deepEqual(rebuilt:capture(), captured, "a validated stale capture rebuilds exactly")
 end
 
 return { tests = T }
