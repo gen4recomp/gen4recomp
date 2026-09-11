@@ -95,69 +95,6 @@ local function disabledFogFixture()
   return { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = table32 }
 end
 
-local DRAW_ITEM_FIELDS = {
-  "mesh",
-  "material",
-  "transform",
-  "modelNormal",
-  "billboardCenter",
-  "billboardScale",
-  "alphaClass",
-  "cullMode",
-  "fogEnabled",
-  "lightMask",
-  "polygonAlpha",
-  "polygonId",
-  "polygonMode",
-}
-
-local function normalizedItem(item, projection)
-  local normalized = { projection = projection } ---@type table<string, unknown>
-  for _, field in ipairs(DRAW_ITEM_FIELDS) do
-    normalized[field] = item[field]
-  end
-  return normalized
-end
-
-local function normalizedQueue(queue, worldProjection, billboardProjection)
-  local normalized = {
-    opaque = {},
-    cutout = {},
-    mixedOpaque = {},
-    wireframe = {},
-    blended = {},
-  }
-  local function projectionFor(item)
-    if item.billboardProjection == true or item.fieldEffect ~= nil then
-      return billboardProjection
-    end
-    return worldProjection
-  end
-  for _, pass in ipairs({ "opaque", "cutout", "mixedOpaque", "wireframe" }) do
-    for _, item in ipairs(queue[pass]) do
-      normalized[pass][#normalized[pass] + 1] = normalizedItem(item, projectionFor(item))
-    end
-  end
-  for _, entry in ipairs(queue.blended) do
-    normalized.blended[#normalized.blended + 1] = {
-      item = normalizedItem(entry.item, projectionFor(entry.item)),
-      fragmentPass = entry.fragmentPass,
-    }
-  end
-  return normalized
-end
-
-local function normalizedSprites(spriteItems, billboardProjection)
-  if spriteItems == nil then
-    return nil
-  end
-  local normalized = {}
-  for _, item in ipairs(spriteItems) do
-    normalized[#normalized + 1] = normalizedItem(item, billboardProjection)
-  end
-  return normalized
-end
-
 -- The raw 5-bit RGB555 decode (each channel normalized /31, no six-bit
 -- expansion): still the correct expected domain for material/light color
 -- registers and the fog color this file's fog-preset tests assert against.
@@ -383,7 +320,7 @@ local function fakeGraphics(opts)
   return graphics
 end
 
-local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, alpha)
+local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, clearColor)
   local viewMatrix = camera:view(alpha)
   local lighting = sceneRuntime.lighting
   if lighting and lighting.records then
@@ -407,9 +344,10 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     cameraZoom = camera.zoom,
     worldProjection = worldProjection,
     billboardProjection = billboardProjection,
-    queue = normalizedQueue(queue, worldProjection, billboardProjection),
-    spriteItems = normalizedSprites(spriteItems, billboardProjection),
+    queue = queue,
+    spriteItems = spriteItems,
     viewport = viewport,
+    clearColor = clearColor,
   })
 end
 
@@ -821,6 +759,32 @@ function T.draw_without_an_injected_color_uses_a_renderer_default()
   local scene = emptySceneCamera()
   render(renderer, scene.runtime, scene.camera, nil, nil, FieldViewport.new(640, 480, { mode = "strict" }), 0)
   Assert.isTrue(lg.calls.clear[2][1] ~= nil, "scene canvas still clears when no color is injected")
+end
+
+-- A caller-supplied frame-level clear color overrides the constructor default
+-- for that draw only; the constructor color is never mutated, so a later draw
+-- without a frame override falls back to it again. This lets multiple
+-- lightweight presentation wrappers share one GX backend safely (each
+-- supplies its own clear color per frame) without backend-global mutable
+-- clear state.
+function T.draw_uses_frame_clear_color_override_when_supplied()
+  local lg = fakeGraphics()
+  local constructorColor = { 0.1, 0.1, 0.1, 1 }
+  local frameColor = { 0.9, 0.2, 0.2, 1 }
+  local renderer = GxRenderer.new({ graphics = lg, clearColor = constructorColor })
+  local scene = emptySceneCamera()
+  local viewport = FieldViewport.new(640, 480, { mode = "strict" })
+
+  render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0, frameColor)
+  Assert.equal(lg.calls.clear[2][1], frameColor, "the frame-level clear color overrides the constructor default")
+
+  render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
+  Assert.equal(
+    lg.calls.clear[4][1],
+    constructorColor,
+    "a later draw without a frame override falls back to the constructor color"
+  )
+  renderer:release()
 end
 
 -- A draw failure must not leak the scene's state either: the wireframe item

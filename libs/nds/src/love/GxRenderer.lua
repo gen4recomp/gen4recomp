@@ -890,14 +890,9 @@ end
 -- neighbour ring, and actors. Its traversal position is the deterministic
 -- tie-breaker already resolved by HGSS presentation. FieldViewport limits the
 -- render-target size and places the result inside the host drawable.
----@param frame table<string, unknown> normalized DS frame
+---@param frame table<string, unknown> DS frame
 function GxRenderer:draw(frame)
   assert(type(frame) == "table", "GxRenderer requires a normalized frame")
-  local sceneRuntime = {
-    lighting = frame.lighting,
-    edgeColors = frame.edgeColors,
-    fog = frame.fog,
-  }
   local spriteItems = frame.spriteItems
   local viewport = frame.viewport
   assert(viewport and viewport.worldViewport, "GxRenderer requires a render viewport")
@@ -916,8 +911,11 @@ function GxRenderer:draw(frame)
 
   -- The HGSS presentation owner computes these projections once per frame.
   -- Both the state and color passes select projection identically per item.
-  local function projectionFor(item)
-    return assert(item.projection, "normalized render item requires a projection")
+  local function projectionFor(item, frameState)
+    if item.billboardProjection == true or item.fieldEffect ~= nil then
+      return frameState.billboardProjection
+    end
+    return frameState.worldProjection
   end
 
   local colorTargets = assert(self._colorTargets)
@@ -961,23 +959,24 @@ function GxRenderer:draw(frame)
     lg.clear(DS_STATE_CLEAR, false, true)
     local colorClearTargets = assert(self._colorClearTargets)
     lg.setCanvas(colorClearTargets)
-    lg.clear(self.clearColor, false, false)
+    local clearColor = frame.clearColor or self.clearColor
+    lg.clear(clearColor, false, false)
     lg.setCanvas(colorTargets)
     lg.setShader(self.worldShader)
     lg.setDepthMode("less", true)
     lg.setBlendMode("replace", "premultiplied")
     self._activeShader = self.worldShader
     self.worldShader:send("u_view", "column", viewMatrix)
-    self:_sendLighting(sceneRuntime, self.worldShader)
+    self:_sendLighting(frame, self.worldShader)
 
     for _, d in ipairs(queue.opaque) do
-      self:_drawItem(d, projectionFor(d), FRAGMENT_PASS_OPAQUE)
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_OPAQUE)
     end
     for _, d in ipairs(queue.cutout) do
-      self:_drawItem(d, projectionFor(d), FRAGMENT_PASS_CUTOUT)
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_CUTOUT)
     end
     for _, d in ipairs(queue.mixedOpaque) do
-      self:_drawItem(d, projectionFor(d), FRAGMENT_PASS_MIXED_OPAQUE)
+      self:_drawItem(d, projectionFor(d, frame), FRAGMENT_PASS_MIXED_OPAQUE)
     end
     self._activeShader = nil
 
@@ -1000,7 +999,7 @@ function GxRenderer:draw(frame)
     local activeColor, activeState = assert(self.sceneColor), assert(self.renderState)
     if self.translucencyMode == GxRenderer.TRANSLUCENCY_APPROXIMATE then
       if #queue.blended > 0 then
-        self:_sendLighting(sceneRuntime, self.shader)
+        self:_sendLighting(frame, self.shader)
         local approximateClearTargets = assert(self._colorClearTargets)
         lg.setCanvas(approximateClearTargets)
         lg.setShader(self.shader)
@@ -1010,11 +1009,11 @@ function GxRenderer:draw(frame)
         for _, entry in ipairs(queue.blended) do
           local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
             or FRAGMENT_PASS_TRANSLUCENT
-          self:_drawItem(entry.item, projectionFor(entry.item), fragmentPass)
+          self:_drawItem(entry.item, projectionFor(entry.item, frame), fragmentPass)
         end
       end
     elseif #queue.blended > 0 then
-      self:_sendLighting(sceneRuntime, self.shader)
+      self:_sendLighting(frame, self.shader)
       local inactiveColor, inactiveState = assert(self._spareColor), assert(self._spareState)
       local function swap()
         activeColor, activeState, inactiveColor, inactiveState = inactiveColor, inactiveState, activeColor, activeState
@@ -1031,7 +1030,7 @@ function GxRenderer:draw(frame)
         -- carries the field. Host `lequal` is retired, not merely unused.
         local fragmentPass = entry.fragmentPass == AlphaClassifier.MIXED and FRAGMENT_PASS_MIXED_TRANSLUCENT
           or FRAGMENT_PASS_TRANSLUCENT
-        self:_drawSourceItem(d, projectionFor(d), fragmentPass, viewMatrix, activeState, colorW, colorH)
+        self:_drawSourceItem(d, projectionFor(d, frame), fragmentPass, viewMatrix, activeState, colorW, colorH)
 
         -- Full-screen composite from the source buffers + active pair into
         -- the inactive pair, with replace semantics (no second host blend).
@@ -1071,15 +1070,15 @@ function GxRenderer:draw(frame)
       lg.setBlendMode("replace", "premultiplied")
       lg.setWireframe(true)
       for _, d in ipairs(queue.wireframe) do
-        self:_drawWireframe(d, projectionFor(d))
+        self:_drawWireframe(d, projectionFor(d, frame))
       end
       self._activeShader = nil
       lg.setWireframe(false)
     end
 
     -- ---- final resolve: edge marking, fog, then the current AA approximation ----
-    self:_sendEdgeColors(sceneRuntime)
-    self:_sendFog(sceneRuntime)
+    self:_sendEdgeColors(frame)
+    self:_sendFog(frame)
     self.edgeShader:send("u_antialiasEnabled", true)
     self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
     lg.setCanvas(presentationCanvas)
@@ -1129,15 +1128,15 @@ function GxRenderer:draw(frame)
       spriteShader:send("u_view", "column", viewMatrix)
       spriteShader:send("u_renderState", activeState)
       spriteShader:send("u_stateSize", { self.stateW, self.stateH })
-      self:_sendSpriteFog(sceneRuntime)
-      self:_sendLighting(sceneRuntime, spriteShader)
+      self:_sendSpriteFog(frame)
+      self:_sendLighting(frame, spriteShader)
       lg.setShader(spriteShader)
       lg.setBlendMode("replace", "premultiplied")
 
       local function drawSprite(item, fragmentPass)
         spriteShader:send("u_spriteFogEnabled", item.fogEnabled == true)
         lg.setDepthMode("less", true)
-        self:_drawItem(item, item.projection, fragmentPass)
+        self:_drawItem(item, frame.billboardProjection, fragmentPass)
       end
       for _, item in ipairs(spriteItems) do
         local fragmentPass
