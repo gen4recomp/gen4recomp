@@ -30,7 +30,7 @@ local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"
 
 Cli.USAGE = table.concat({
   "usage: scripts/test.sh [--plan] [--list] [--layer <" .. table.concat(Cli.LAYERS, "|") .. ">]",
-  "                      [--filter <substring>] [--tag <tag>] [--slow] [--jobs <positive-integer>]",
+  "                      [--filter <substring>] [--tag <tag>] [--slow] [--serial]",
   "                      [--rom-source <path-to-nds-or-zip>]",
 }, "\n")
 
@@ -68,7 +68,7 @@ end
 ---@field filter string|nil
 ---@field tag string|nil
 ---@field slow boolean
----@field jobs integer|nil
+---@field serial boolean
 ---@field romSource string|nil
 ---@field strict boolean
 ---@field graphicsStrict boolean
@@ -90,7 +90,7 @@ function Cli.parse(argv, context)
     planMode = false,
     list = false,
     slow = false,
-    jobs = nil,
+    serial = false,
     strict = env[STRICT_ENV] == "1",
     graphicsStrict = env[GRAPHICS_STRICT_ENV] == "1",
     requiredCapabilities = {},
@@ -134,13 +134,9 @@ function Cli.parse(argv, context)
     elseif option == "--slow" then
       plan.slow = true
       index = index + 1
-    elseif option == "--jobs" then
-      local jobs = value(argv, index + 1)
-      if jobs == nil or jobs:match("^[1-9][0-9]*$") == nil then
-        return nil, "--jobs needs a positive integer"
-      end
-      plan.jobs = tonumber(jobs)
-      index = index + 2
+    elseif option == "--serial" then
+      plan.serial = true
+      index = index + 1
     elseif option == "--rom-source" then
       local path = value(argv, index + 1)
       if path == nil then

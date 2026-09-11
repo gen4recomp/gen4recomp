@@ -239,6 +239,7 @@ function T.default_plan_selects_every_layer_and_requires_nothing()
     Assert.isNil(plan.filter)
     Assert.isNil(plan.romSource)
     Assert.isFalse(plan.list)
+    Assert.isFalse(plan.serial, "concurrency defaults to automatic parallelism")
     Assert.isFalse(plan.strict)
     Assert.deepEqual(plan.requiredCapabilities, {})
   end
@@ -269,6 +270,9 @@ function T.documented_options_parse()
   Assert.isFalse(parse({}).slow, "the default run is the fast tier")
   Assert.equal(parse({ "--tag", "door" }).tag, "door", "--tag selects the tag")
   Assert.isNil(parse({}).tag, "no tag selection by default")
+  Assert.isFalse(parse({}).serial, "concurrency defaults to automatic parallelism")
+  Assert.isTrue(parse({ "--serial" }).serial, "--serial forces one-process execution")
+  Assert.isTrue(parse({ "--serial", "--layer", "unit" }).serial, "redundant serial intent stays valid")
 end
 
 -- Invalid layer/filter/source arguments are rejected before anything
@@ -298,6 +302,7 @@ function T.invalid_arguments_are_rejected_with_exit_two()
   contains(rejects({ "--rom-source" }, exists), "--rom-source", "missing source path")
   contains(rejects({ "--rom-source", "/no/such/rom.nds" }, missing), "/no/such/rom.nds", "unreadable source")
   contains(rejects({ "--layers", "unit" }), "--layers", "unknown option")
+  contains(rejects({ "--jobs", "4" }), "--jobs", "removed worker-count option follows the generic unknown-option path")
   contains(rejects({ "unit" }), "unit", "stray positional argument")
 end
 

@@ -4,7 +4,7 @@
 #   scripts/test.sh --list
 #   scripts/test.sh --layer unit|component|graphics|rom|acceptance
 #   scripts/test.sh --filter <substring>
-#   scripts/test.sh --jobs <positive-integer>
+#   scripts/test.sh --serial
 #   scripts/test.sh --rom-source <path-to.nds-or-zip>
 #
 # Arguments are parsed by tests/runner/Cli.lua; this script only decides where

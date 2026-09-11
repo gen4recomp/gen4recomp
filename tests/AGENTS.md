@@ -81,6 +81,6 @@ ownership from the plausible bug.
 - CI does not provide the user's ROM. A green CI run does not prove a ROM/acceptance contract
   whose required capability was unavailable.
 - A full test command uses up to four process workers automatically; focused layer, filter, and
-  tag commands remain serial unless `--jobs` is explicit. Use `--jobs 1` for serial diagnostics
+  tag commands stay serial. Use `--serial` for serial diagnostics
   and equivalence checks. Graphics, acceptance, and ROM remain single-lane, and suite hooks are
   process-local; workers must not concurrently mutate shared cache state.

@@ -96,27 +96,21 @@ local SANITIZE_ENV =
   "unset G4RECOMP_TEST_RUN_DIR G4RECOMP_TEST_WORKERS G4RECOMP_TEST_WORKER G4RECOMP_TEST_AGGREGATE G4RECOMP_TEST_ACCEPTANCE_NAMESPACE;"
 
 -- Shared preamble for every generated fake `love`: answers `--plan` with the
--- exact `prepare=0`/`jobs=N` records the real plan protocol requires, echoing
--- back whatever `--jobs` value scripts/test.sh forwarded, and otherwise falls
--- through to the scenario-specific worker/aggregate body appended below.
+-- exact `prepare=0`/`jobs=N` records the real plan protocol requires, using a
+-- test-only worker count that never reaches production code, and otherwise
+-- falls through to the scenario-specific worker/aggregate body appended below.
 local FAKE_LOVE_PREAMBLE = [[
 #!/usr/bin/env bash
 set -u
 is_plan=false
-jobs=""
-previous=""
 for arg in "$@"; do
   if [ "$arg" = "--plan" ]; then
     is_plan=true
   fi
-  if [ "$previous" = "--jobs" ]; then
-    jobs="$arg"
-  fi
-  previous="$arg"
 done
 if [ "$is_plan" = true ]; then
   echo "prepare=0"
-  echo "jobs=${jobs:-1}"
+  echo "jobs=${FAKE_LOVE_PLAN_JOBS:-1}"
   exit 0
 fi
 record_dir="$FAKE_LOVE_RECORD_DIR"
@@ -236,7 +230,8 @@ function T.parallel_worker_acceptance_tokens_are_disjoint_across_workers_and_com
         "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
         "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
         "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
-        "scripts/test.sh --jobs 4 >" .. shellQuote(recordDir .. "/command.log") .. " 2>&1;",
+        "export FAKE_LOVE_PLAN_JOBS=4;",
+        "scripts/test.sh >" .. shellQuote(recordDir .. "/command.log") .. " 2>&1;",
         "echo $? > " .. shellQuote(recordDir .. "/status"),
       }, " ")
       local handle = popen(command)
@@ -319,7 +314,8 @@ function T.parent_term_cancellation_terminates_and_reaps_workers_before_run_dir_
       "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
       "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
       "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
-      "scripts/test.sh --jobs 2 >" .. shellQuote(logFile) .. " 2>&1 &",
+      "export FAKE_LOVE_PLAN_JOBS=2;",
+      "scripts/test.sh >" .. shellQuote(logFile) .. " 2>&1 &",
       "parent_pid=$!;",
       "echo $parent_pid;",
       "wait $parent_pid;",
@@ -408,7 +404,8 @@ function T.parent_term_cancellation_terminates_and_reaps_aggregate_before_run_di
       "export PATH=" .. shellQuote(fakeLoveDir) .. ":$PATH;",
       "export G4RECOMP_SAVE_DIR=" .. shellQuote(saveDir) .. ";",
       "export FAKE_LOVE_RECORD_DIR=" .. shellQuote(recordDir) .. ";",
-      "scripts/test.sh --jobs 2 >" .. shellQuote(logFile) .. " 2>&1 &",
+      "export FAKE_LOVE_PLAN_JOBS=2;",
+      "scripts/test.sh >" .. shellQuote(logFile) .. " 2>&1 &",
       "parent_pid=$!;",
       "echo $parent_pid;",
       "wait $parent_pid;",

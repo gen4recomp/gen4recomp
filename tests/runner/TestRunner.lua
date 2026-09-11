@@ -69,11 +69,8 @@ end
 ---@param config { fs: table, roots: string[]|nil, load: function, capabilities: table<string, boolean>, layer: string|nil, filter: string|nil, tag: string|nil, slow: boolean|nil, onResult: function|nil, shard: table|nil }
 local function collect(config)
   local items = {}
-  for ordinal, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
-    if
-      mayLoad(entry, config.layer)
-      and (config.shard == nil or Parallel.owns(entry, ordinal, config.shard, config.layer))
-    then
+  for _, entry in ipairs(Discovery.suites(config.fs, config.roots)) do
+    if mayLoad(entry, config.layer) and (config.shard == nil or Parallel.owns(entry, config.shard)) then
       local ok, loaded = pcall(config.load, entry.module)
       if not ok then
         items[#items + 1] = { failure = loadFailure(entry, "module load failed: " .. tostring(loaded)) }

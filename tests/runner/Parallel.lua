@@ -106,6 +106,12 @@ local function validateRun(run)
   end
 end
 
+local DEFAULT_FULL_RUN_JOBS = 4
+
+local function isFocused(plan)
+  return plan.layer ~= nil or plan.filter ~= nil or plan.tag ~= nil
+end
+
 ---@param plan TestPlan
 ---@param selectedSuiteCount integer
 ---@param processorCount integer
@@ -114,17 +120,11 @@ function Parallel.effectiveJobs(plan, selectedSuiteCount, processorCount)
   assert(type(plan) == "table", "job policy needs a plan")
   nonNegativeInteger(selectedSuiteCount, "selected suite count")
   positiveInteger(processorCount, "processor count")
-  local count = math.max(1, selectedSuiteCount)
-  if plan.list or plan.layer == "graphics" or plan.layer == "acceptance" or plan.layer == "rom" then
+  local suiteBound = math.max(1, selectedSuiteCount)
+  if plan.list or plan.serial or isFocused(plan) then
     return 1
   end
-  if plan.jobs ~= nil then
-    return math.min(positiveInteger(plan.jobs, "jobs"), count)
-  end
-  if plan.layer ~= nil or plan.filter ~= nil or plan.tag ~= nil then
-    return 1
-  end
-  return math.min(4, processorCount, count)
+  return math.min(DEFAULT_FULL_RUN_JOBS, processorCount, suiteBound)
 end
 
 ---@param env table<string, string>
@@ -140,6 +140,7 @@ function Parallel.context(env)
   end
   assert(type(runDir) == "string" and runDir ~= "" and runDir:sub(1, 1) == "/", "parallel run directory is invalid")
   local count = positiveIntegerString(workers, "parallel worker count")
+  assert(count <= DEFAULT_FULL_RUN_JOBS, "parallel worker count is unsupported")
   if aggregate ~= nil then
     assert(aggregate == "1" and worker == nil, "parallel aggregate environment is contradictory")
     return { kind = "aggregate", runDir = runDir, count = count }
@@ -150,23 +151,14 @@ function Parallel.context(env)
 end
 
 ---@param entry { module: string, layer: string, path: string }
----@param ordinal integer
 ---@param shard { index: integer, count: integer }
----@param selectedLayer string|nil
 ---@return integer
-function Parallel.workerFor(entry, ordinal, shard, selectedLayer)
+function Parallel.workerFor(entry, shard)
   assert(type(entry) == "table" and type(entry.layer) == "string", "worker ownership needs a discovery entry")
-  positiveInteger(ordinal, "discovery ordinal")
   assert(type(shard) == "table", "worker ownership needs a shard")
   local count = positiveInteger(shard.count, "worker count")
   assert(shard.index >= 1 and shard.index <= count, "worker index is out of range")
   if count == 1 then
-    return 1
-  end
-  if selectedLayer == "unit" or selectedLayer == "component" then
-    return (ordinal - 1) % count + 1
-  end
-  if selectedLayer == "graphics" or selectedLayer == "acceptance" or selectedLayer == "rom" then
     return 1
   end
   if entry.layer == "graphics" then
@@ -176,16 +168,13 @@ function Parallel.workerFor(entry, ordinal, shard, selectedLayer)
   elseif entry.layer == "rom" then
     return math.min(3, count)
   elseif entry.layer == "unit" or entry.layer == "component" then
-    if count >= 4 then
-      return 4 + (ordinal - 1) % (count - 3)
-    end
     return count
   end
   error("unknown test layer " .. entry.layer, 0)
 end
 
-function Parallel.owns(entry, ordinal, shard, selectedLayer)
-  return Parallel.workerFor(entry, ordinal, shard, selectedLayer) == shard.index
+function Parallel.owns(entry, shard)
+  return Parallel.workerFor(entry, shard) == shard.index
 end
 
 function Parallel.fragmentPath(runDir, index)

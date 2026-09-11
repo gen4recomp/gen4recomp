@@ -160,44 +160,32 @@ local function selectedModules(run)
   return modules
 end
 
-function T.public_jobs_control_is_strict_and_reaches_the_plan_protocol()
-  for _, jobs in ipairs({ "1", "4", "16" }) do
-    local plan = parse({ "--jobs", jobs })
-    Assert.equal(plan.jobs, tonumber(jobs), "positive jobs value is retained")
-  end
+function T.serial_intent_is_the_only_public_concurrency_override()
+  local default = parse({})
+  Assert.isFalse(default.serial, "concurrency defaults to automatic parallelism")
 
-  local plan = parse({ "--plan", "--jobs", "4" })
-  local lines = Cli.renderPlan(plan, {}, 4)
+  local serial = parse({ "--serial" })
+  Assert.isTrue(serial.serial, "--serial forces one-process execution")
+
+  local lines = Cli.renderPlan(serial, {}, 1)
   contains(lines, "prepare=0", "plan")
-  contains(lines, "jobs=4", "plan")
+  contains(lines, "jobs=1", "plan")
 end
 
-function T.invalid_jobs_values_are_usage_errors()
-  for _, value in ipairs({ nil, "0", "-1", "1.5", "abc", "01" }) do
-    local argv = { "--jobs" }
-    if value ~= nil then
-      argv[2] = value
-    end
-    local plan, message = Cli.parse(argv)
-    Assert.isNil(plan, "invalid jobs value must not produce a plan")
-    Assert.isTrue(type(message) == "string" and #message > 0, "invalid jobs needs an actionable message")
-  end
-end
-
-function T.job_policy_bounds_full_runs_and_preserves_focused_serial_defaults()
+function T.automatic_policy_bounds_full_runs_and_keeps_focused_runs_serial()
   local Parallel = parallel()
-  ---@param fields { list: boolean|nil, layer: string|nil, filter: string|nil, tag: string|nil, jobs: integer|nil }|nil
+  ---@param fields { list: boolean|nil, layer: string|nil, filter: string|nil, tag: string|nil, serial: boolean|nil, slow: boolean|nil }|nil
   ---@return TestPlan
   local function plan(fields)
     fields = fields or {}
     return {
       planMode = false,
       list = fields.list == true,
-      slow = false,
+      slow = fields.slow == true,
       layer = fields.layer,
       filter = fields.filter,
       tag = fields.tag,
-      jobs = fields.jobs,
+      serial = fields.serial == true,
       strict = false,
       graphicsStrict = false,
       requiredCapabilities = {},
@@ -208,15 +196,53 @@ function T.job_policy_bounds_full_runs_and_preserves_focused_serial_defaults()
   Assert.equal(Parallel.effectiveJobs(plan(), 20, 2), 2)
   Assert.equal(Parallel.effectiveJobs(plan(), 20, 1), 1)
   Assert.equal(Parallel.effectiveJobs(plan(), 0, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ slow = true }), 20, 16), 4, "slow alone stays an automatic full run")
   Assert.equal(Parallel.effectiveJobs(plan({ filter = "runner" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ tag = "door" }), 20, 16), 1)
   Assert.equal(Parallel.effectiveJobs(plan({ layer = "unit" }), 20, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ layer = "unit", jobs = 6 }), 20, 16), 6)
-  Assert.equal(Parallel.effectiveJobs(plan({ jobs = 16 }), 3, 16), 3)
-  Assert.equal(Parallel.effectiveJobs(plan({ layer = "graphics", jobs = 16 }), 20, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ layer = "acceptance", jobs = 16 }), 20, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ layer = "rom", jobs = 16 }), 20, 16), 1)
-  Assert.equal(Parallel.effectiveJobs(plan({ list = true, jobs = 16 }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ layer = "graphics" }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ layer = "acceptance" }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ layer = "rom" }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ list = true }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ serial = true }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ serial = true, slow = true }), 20, 16), 1)
+  Assert.equal(Parallel.effectiveJobs(plan({ serial = true, layer = "unit" }), 20, 16), 1)
+end
+
+function T.worker_lane_mapping_matches_the_supported_four_lane_topology()
+  local Parallel = parallel()
+  local function shard(index, count)
+    return { index = index, count = count }
+  end
+  local function entry(layer)
+    return { module = "fake." .. layer .. ".probe_test", layer = layer }
+  end
+
+  for _, layer in ipairs({ "graphics", "acceptance", "rom", "unit", "component" }) do
+    Assert.equal(Parallel.workerFor(entry(layer), shard(1, 1)), 1, layer .. " at count 1 stays on worker 1")
+  end
+
+  Assert.equal(Parallel.workerFor(entry("graphics"), shard(1, 2)), 1)
+  for _, layer in ipairs({ "acceptance", "rom", "unit", "component" }) do
+    Assert.equal(Parallel.workerFor(entry(layer), shard(2, 2)), 2, layer .. " at count 2 joins worker 2")
+  end
+
+  Assert.equal(Parallel.workerFor(entry("graphics"), shard(1, 3)), 1)
+  Assert.equal(Parallel.workerFor(entry("acceptance"), shard(2, 3)), 2)
+  for _, layer in ipairs({ "rom", "unit", "component" }) do
+    Assert.equal(Parallel.workerFor(entry(layer), shard(3, 3)), 3, layer .. " at count 3 joins worker 3")
+  end
+
+  Assert.equal(Parallel.workerFor(entry("graphics"), shard(1, 4)), 1)
+  Assert.equal(Parallel.workerFor(entry("acceptance"), shard(2, 4)), 2)
+  Assert.equal(Parallel.workerFor(entry("rom"), shard(3, 4)), 3)
+  for _, layer in ipairs({ "unit", "component" }) do
+    Assert.equal(Parallel.workerFor(entry(layer), shard(4, 4)), 4, layer .. " at count 4 joins worker 4")
+  end
+
+  Assert.throws(function()
+    Parallel.workerFor({ module = "fake.bogus.probe_test", layer = "bogus" }, shard(1, 4))
+  end, "an unknown layer must fail closed")
 end
 
 function T.mixed_suite_ownership_is_complete_and_count_three_uses_worker_three()
@@ -264,7 +290,7 @@ function T.safety_lanes_remain_single_owner_at_every_supported_worker_count()
     ["fake.acceptance.story_test"] = true,
     ["fake.rom.dump_test"] = true,
   }
-  for _, count in ipairs({ 1, 2, 3, 4, 6 }) do
+  for _, count in ipairs({ 1, 2, 3, 4 }) do
     local owners = {}
     for worker = 1, count do
       local run = runWorker(corpus, worker, count, {})
@@ -318,6 +344,8 @@ function T.private_process_context_rejects_partial_or_contradictory_environment(
     { G4RECOMP_TEST_RUN_DIR = "/tmp/run" },
     { G4RECOMP_TEST_WORKERS = "3", G4RECOMP_TEST_WORKER = "1" },
     { G4RECOMP_TEST_RUN_DIR = "/tmp/run", G4RECOMP_TEST_WORKERS = "3", G4RECOMP_TEST_WORKER = "0" },
+    { G4RECOMP_TEST_RUN_DIR = "/tmp/run", G4RECOMP_TEST_WORKERS = "5", G4RECOMP_TEST_WORKER = "1" },
+    { G4RECOMP_TEST_RUN_DIR = "/tmp/run", G4RECOMP_TEST_WORKERS = "5", G4RECOMP_TEST_AGGREGATE = "1" },
     {
       G4RECOMP_TEST_RUN_DIR = "/tmp/run",
       G4RECOMP_TEST_WORKERS = "3",
