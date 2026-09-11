@@ -776,6 +776,25 @@ function T.malformed_publication_metadata_leaves_live_roots_untouched()
   Assert.equal(backend.files["staging/heartgold/recovery-check/" .. roots[1] .. "/stale"], "stale-stage")
 end
 
+function T.empty_publication_manifest_is_structured_and_non_destructive()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "live-original")
+  backend:write(siblingRoot(root, ".__g4old") .. "/value", "old-original")
+  backend:write(PUBLISH_MANIFEST, "return nil\n")
+
+  local ok, err = pcall(function()
+    c:recoverPublication()
+  end)
+
+  Assert.isFalse(ok, "an empty publication manifest must stop recovery")
+  Assert.isTrue(Errors.is(err), "an empty publication manifest must raise a structured error")
+  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
+  Assert.equal(c:read(root .. "/value"), "live-original")
+  Assert.equal(backend.files[siblingRoot(root, ".__g4old") .. "/value"], "old-original")
+end
+
 function T.recovery_is_safe_to_repeat()
   local uncommittedBackend = FakeCache.new()
   local uncommitted = cache("heartgold", uncommittedBackend)

@@ -405,8 +405,10 @@ local function readPublicationManifest(cacheFs)
   end
   local manifest, err = ScopedFs.loadChunk(cacheFs.backend, path, path, CACHE_ERRORS)
   if not manifest then
-    assert(err, "publication manifest load failure must include an error")
-    error(err, 0)
+    if err then
+      error(err, 0)
+    end
+    publicationMetadataError("publication manifest must return a table")
   end
   validateManifest(cacheFs, manifest)
   return manifest
