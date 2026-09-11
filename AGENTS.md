@@ -182,7 +182,7 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
 
 - Be concrete, brief, and deletion-biased. Remove dead code, speculative compatibility,
   forwarding layers, stale comments, debug/trace residue, and unnecessary nesting.
-- LuaLS is intentionally strict: `scripts/typecheck.sh` must be clean through Hint. Fix
+- LuaLS is intentionally strict: `scripts/ci/full-lint.sh` must be clean through Hint. Fix
   findings at their source; do not weaken `.luarc.json`, add broad suppressions/globals, edit
   vendored types/generated overrides, or erase types with `any`.
 - Exact `_` is the intentional unused discard; delete unused named bindings.

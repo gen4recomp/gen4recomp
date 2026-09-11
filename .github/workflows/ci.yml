@@ -8,7 +8,7 @@ name: CI
 # user-owned cartridge dump.
 #
 # CI runs both fast lint (scripts/lint.sh --check) and the whole-workspace Lua
-# typecheck (scripts/typecheck.sh); the pre-commit hook runs only the staged
+# typecheck (scripts/ci/full-lint.sh); the pre-commit hook runs only the staged
 # invariant gate and fast lint. Hooks are opt-in per clone and bypassable, so
 # CI is the binding gate for both. lint.sh also runs a reduced-workspace
 # (tests excluded) LuaLS pass in the background alongside its other checks,
@@ -72,7 +72,7 @@ jobs:
         run: scripts/lint.sh --check
 
       - name: Run Lua typecheck
-        run: scripts/typecheck.sh
+        run: scripts/ci/full-lint.sh
 
   test:
     runs-on: ubuntu-22.04

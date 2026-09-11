@@ -6,7 +6,7 @@
 # The reduced check is generated from the committed .luarc.json plus
 # additional ignoreDir entries; it is deliberately incomplete (tests are
 # unchecked, and only Hint-or-higher findings on the reduced workspace are
-# caught). scripts/typecheck.sh remains the canonical whole-repository LuaLS
+# caught). scripts/ci/full-lint.sh remains the canonical whole-repository LuaLS
 # gate and is what CI binds on.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -90,6 +90,6 @@ wait "$luals_pid" || luals_status=$?
 luals_pid=""
 if [ "$luals_status" -ne 0 ]; then
   cat "$LUALS_OUTPUT" >&2
-  echo "lint: reduced-workspace LuaLS check failed (tests excluded; run scripts/typecheck.sh for the complete check)" >&2
+  echo "lint: reduced-workspace LuaLS check failed (tests excluded; run scripts/ci/full-lint.sh for the complete check)" >&2
   exit 1
 fi

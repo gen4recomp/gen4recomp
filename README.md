@@ -28,7 +28,6 @@ scripts/buildcache.sh [ROM]
 scripts/test.sh [--rom-source ROM]
 scripts/lint.sh          # format Lua, then run fast static/policy checks
 scripts/lint.sh --check  # check without modifying files
-scripts/typecheck.sh     # whole-workspace Lua semantic check (lua-language-server)
 ```
 
 `buildcache.sh` accepts a compatible `.nds` or `.zip` source when a raw dump is
@@ -37,9 +36,8 @@ not already available. `test.sh` runs every available test layer; the optional
 formatting/policy checks alongside a reduced-workspace LuaLS pass (tests
 excluded) in the background, so its wall time tracks the slower of the two
 rather than their sum; that pass is a fast local signal, not full coverage.
-`typecheck.sh` is the canonical whole-workspace semantic check, including
-tests. Pre-commit runs the non-mutating lint check only; CI runs both lint
-and typecheck.
+Pre-commit runs the non-mutating lint check only; CI runs both lint and the
+full workspace typecheck.
 
 See [the architecture principles](docs/architecture.md) for ownership,
 dependency direction, and data-lifecycle guidance.

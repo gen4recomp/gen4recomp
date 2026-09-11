@@ -25,8 +25,7 @@ the behavior.
 7. **For stateful, cached, asynchronous, persistent, or resource-owning code, add at
    least one failure or multi-step sequence test**: an Nth-stage acquisition failure, a
    double dispose, a busy/reentrant start, a last-known-good preservation.
-8. **Run the relevant layer, then `scripts/test.sh`, then `scripts/lint.sh` and
-   `scripts/typecheck.sh`.**
+8. **Run the relevant layer, then `scripts/test.sh`, then `scripts/lint.sh`
 9. **Report** the red signal, the green signal, the tests added or changed, and any case
    deliberately omitted with the reason.
 

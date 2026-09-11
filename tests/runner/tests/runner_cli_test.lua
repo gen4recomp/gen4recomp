@@ -44,7 +44,7 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
   local testScript = handle:read("*a")
   handle:close()
 
-  handle = assert(io.open("scripts/typecheck.sh", "rb"))
+  handle = assert(io.open("scripts/ci/full-lint.sh", "rb"))
   local typecheckScript = handle:read("*a")
   handle:close()
 
