@@ -3,9 +3,10 @@
 -- mirroring the live cache-relative layout), validates the staged result, and
 -- only then publishes it: each owned live root is copied to an adjacent next
 -- sibling, each live root is moved aside, and the candidates are renamed into
--- place. A failure at any point leaves the previous live artifact untouched:
+-- place. A publication failure leaves the previous live artifact untouched:
 -- staging never writes to the live tree, and a failed publish rolls every moved
--- root back before re-raising. The move-aside / move-in / rollback lifecycle
+-- root back before re-raising. Cleanup failure leaves the new artifact live and
+-- its recovery metadata available. The move-aside / move-in / rollback lifecycle
 -- itself is shared with whole-version publication
 -- (`CacheFs.publishFromStage`); this module owns the artifact stage, the owned
 -- root list, and the caller contract (no abort once publish has begun). Paths,
@@ -42,6 +43,7 @@ function ArtifactPublisher.begin(cacheFs, name, liveRoots)
     seen[root] = true
   end
   local stage = CacheFs.forArtifactStage(cacheFs.versionId, name, cacheFs.backend)
+  cacheFs:recoverPublication()
   stage:removeTree("")
   return setmetatable({
     _cacheFs = cacheFs,

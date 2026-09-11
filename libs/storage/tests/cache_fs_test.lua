@@ -1,5 +1,6 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local LuaWriter = require("libs.codec.src.LuaWriter")
 local Errors = require("libs.errors.src.Errors")
 local StorageErrors = require("libs.storage.src.errors")
 local FakeCache = require("tests.support.FakeCache")
@@ -367,6 +368,20 @@ function T.candidate_copy_preserves_nested_files_and_empty_directories()
   Assert.notNil(backend:getInfo("heartgold/" .. root .. "/empty"))
 end
 
+function T.candidate_copy_replaces_a_stale_candidate_tree()
+  local backend = FakeCache.new()
+  local live = cache("heartgold", backend)
+  local root = "data/generated/field/maps"
+  local tx = ArtifactPublisher.begin(live, "field-maps", { root })
+  backend:write("heartgold/" .. root .. ".__g4next/stale.bin", "stale")
+  tx.stage:write(root .. "/current.bin", "current")
+
+  tx:publish()
+
+  Assert.equal(live:read(root .. "/current.bin"), "current")
+  Assert.isNil(live:read(root .. "/stale.bin"))
+end
+
 function T.candidate_copy_failure_cleans_partial_candidates_without_touching_live()
   local backend = FakeCache.new()
   local live = cache("heartgold", backend)
@@ -393,7 +408,7 @@ function T.candidate_copy_failure_cleans_partial_candidates_without_touching_liv
   Assert.isNil(backend:getInfo("heartgold/" .. root .. ".__g4next"))
 end
 
-function T.interrupted_old_siblings_are_restored_before_candidate_preparation()
+function T.interrupted_old_siblings_are_not_guessed_without_metadata()
   local backend = FakeCache.new()
   local live = cache("heartgold", backend)
   local firstRoot = "data/generated/field/maps"
@@ -418,10 +433,9 @@ function T.interrupted_old_siblings_are_restored_before_candidate_preparation()
   end)
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
-  Assert.equal(live:read(firstRoot .. "/previous.bin"), "previous-map")
-  Assert.equal(live:read(secondRoot .. "/previous.bin"), "previous-cell")
-  Assert.isNil(backend:getInfo("heartgold/" .. firstRoot .. ".__g4old"))
-  Assert.isNil(backend:getInfo("heartgold/" .. secondRoot .. ".__g4old"))
+  Assert.equal(live:read(firstRoot .. "/partial.bin"), "partial")
+  Assert.equal(backend.files["heartgold/" .. firstRoot .. ".__g4old/previous.bin"], "previous-map")
+  Assert.equal(backend.files["heartgold/" .. secondRoot .. ".__g4old/previous.bin"], "previous-cell")
 end
 
 function T.publish_from_stage_restores_previous_root_on_failure()
@@ -649,6 +663,378 @@ function T.remove_staged_tree_reports_backend_failure()
   throwsCode(StorageErrors.CACHE_REMOVE_FAILED, function()
     c:removeStagedTree(s)
   end)
+end
+
+local PUBLISH_MANIFEST = "heartgold.__g4publish.lua"
+local PUBLISH_NEXT = "heartgold.__g4publish.__g4next"
+local PUBLISH_COMMIT = "heartgold.__g4published"
+
+local function livePath(root)
+  return "heartgold/" .. root
+end
+
+local function siblingRoot(root, suffix)
+  return livePath(root) .. suffix
+end
+
+local function writePublicationRecord(backend, roots)
+  backend:write(PUBLISH_MANIFEST, LuaWriter.encode({ schema = 1, roots = roots }))
+end
+
+local function assertPublicationResidueAbsent(backend, roots)
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.isNil(backend:getInfo(PUBLISH_NEXT))
+  Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
+  for _, root in ipairs(roots) do
+    Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4old")))
+    Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4next")))
+  end
+end
+
+function T.partial_phase_one_recovery_preserves_untouched_live_root()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local roots = { "data/generated/alpha", "data/generated/beta" }
+  backend:write(livePath(roots[1]) .. "/value", "alpha-original")
+  backend:write(livePath(roots[2]) .. "/value", "beta-original")
+  backend:write(siblingRoot(roots[1], ".__g4old") .. "/value", "alpha-original")
+  backend:write(siblingRoot(roots[1], ".__g4next") .. "/value", "alpha-new")
+  backend:write(siblingRoot(roots[2], ".__g4next") .. "/value", "beta-new")
+  writePublicationRecord(backend, {
+    { path = roots[1], hadLive = true },
+    { path = roots[2], hadLive = true },
+  })
+
+  c:recoverPublication()
+
+  Assert.equal(backend.files[livePath(roots[1]) .. "/value"], "alpha-original")
+  Assert.equal(backend.files[livePath(roots[2]) .. "/value"], "beta-original")
+  assertPublicationResidueAbsent(backend, roots)
+end
+
+function T.uncommitted_recovery_restores_original_root_presence()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local roots = { "data/generated/alpha", "data/generated/beta" }
+  backend:write(siblingRoot(roots[1], ".__g4old") .. "/value", "alpha-original")
+  backend:write(livePath(roots[1]) .. "/value", "alpha-new")
+  backend:write(livePath(roots[2]) .. "/value", "beta-new")
+  backend:write(siblingRoot(roots[1], ".__g4next") .. "/value", "alpha-new")
+  backend:write(siblingRoot(roots[2], ".__g4next") .. "/value", "beta-new")
+  writePublicationRecord(backend, {
+    { path = roots[1], hadLive = true },
+    { path = roots[2], hadLive = false },
+  })
+
+  c:recoverPublication()
+
+  Assert.equal(backend.files[livePath(roots[1]) .. "/value"], "alpha-original")
+  Assert.isNil(backend:getInfo(livePath(roots[2])))
+  assertPublicationResidueAbsent(backend, roots)
+end
+
+function T.committed_recovery_preserves_new_roots_and_cleans_residue()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local roots = { "data/generated/alpha", "data/generated/beta" }
+  backend:write(livePath(roots[1]) .. "/value", "alpha-new")
+  backend:write(livePath(roots[2]) .. "/value", "beta-new")
+  backend:write(siblingRoot(roots[1], ".__g4old") .. "/value", "alpha-original")
+  backend:write(siblingRoot(roots[2], ".__g4old") .. "/value", "beta-original")
+  backend:write(siblingRoot(roots[1], ".__g4next") .. "/value", "alpha-new")
+  writePublicationRecord(backend, {
+    { path = roots[1], hadLive = true },
+    { path = roots[2], hadLive = true },
+  })
+  backend:write(PUBLISH_COMMIT, "g4-cache-publish-v1")
+
+  c:recoverPublication()
+
+  Assert.equal(backend.files[livePath(roots[1]) .. "/value"], "alpha-new")
+  Assert.equal(backend.files[livePath(roots[2]) .. "/value"], "beta-new")
+  assertPublicationResidueAbsent(backend, roots)
+end
+
+function T.malformed_publication_metadata_leaves_live_roots_untouched()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local roots = { "data/generated/alpha", "data/generated/beta" }
+  c:write(roots[1] .. "/value", "alpha-original")
+  c:write(roots[2] .. "/value", "beta-original")
+  backend:write(PUBLISH_MANIFEST, LuaWriter.encode({ schema = 999, roots = {} }))
+  local stage = CacheFs.forArtifactStage("heartgold", "recovery-check", backend)
+  stage:write(roots[1] .. "/stale", "stale-stage")
+
+  local ok, err = pcall(function()
+    ArtifactPublisher.begin(c, "recovery-check", roots)
+  end)
+
+  Assert.isFalse(ok, "malformed publication metadata must stop stage initialization")
+  Assert.isTrue(Errors.is(err), "malformed publication metadata must raise a structured storage error")
+  Assert.equal(c:read(roots[1] .. "/value"), "alpha-original")
+  Assert.equal(c:read(roots[2] .. "/value"), "beta-original")
+  Assert.equal(backend.files["staging/heartgold/recovery-check/" .. roots[1] .. "/stale"], "stale-stage")
+end
+
+function T.recovery_is_safe_to_repeat()
+  local uncommittedBackend = FakeCache.new()
+  local uncommitted = cache("heartgold", uncommittedBackend)
+  local uncommittedRoots = { "data/generated/alpha", "data/generated/beta" }
+  uncommittedBackend:write(siblingRoot(uncommittedRoots[1], ".__g4old") .. "/value", "alpha-original")
+  uncommittedBackend:write(livePath(uncommittedRoots[2]) .. "/value", "beta-original")
+  writePublicationRecord(uncommittedBackend, {
+    { path = uncommittedRoots[1], hadLive = true },
+    { path = uncommittedRoots[2], hadLive = true },
+  })
+
+  uncommitted:recoverPublication()
+  local replaceCalls = 0
+  local removeCalls = 0
+  local writeCalls = 0
+  local originalReplace = uncommittedBackend.replace
+  local originalRemove = uncommittedBackend.remove
+  local originalWrite = uncommittedBackend.write
+  uncommittedBackend.replace = function(self, sourcePath, destinationPath)
+    replaceCalls = replaceCalls + 1
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+  uncommittedBackend.remove = function(self, path)
+    removeCalls = removeCalls + 1
+    return originalRemove(self, path)
+  end
+  uncommittedBackend.write = function(self, path, data)
+    writeCalls = writeCalls + 1
+    return originalWrite(self, path, data)
+  end
+
+  uncommitted:recoverPublication()
+
+  Assert.equal(replaceCalls, 0)
+  Assert.equal(removeCalls, 0)
+  Assert.equal(writeCalls, 0)
+  Assert.equal(uncommittedBackend.files[livePath(uncommittedRoots[1]) .. "/value"], "alpha-original")
+  Assert.equal(uncommittedBackend.files[livePath(uncommittedRoots[2]) .. "/value"], "beta-original")
+
+  local committedBackend = FakeCache.new()
+  local committed = cache("heartgold", committedBackend)
+  local committedRoots = { "data/generated/alpha", "data/generated/beta" }
+  committedBackend:write(livePath(committedRoots[1]) .. "/value", "alpha-new")
+  committedBackend:write(livePath(committedRoots[2]) .. "/value", "beta-new")
+  writePublicationRecord(committedBackend, {
+    { path = committedRoots[1], hadLive = true },
+    { path = committedRoots[2], hadLive = true },
+  })
+  committedBackend:write(PUBLISH_COMMIT, "g4-cache-publish-v1")
+
+  committed:recoverPublication()
+  replaceCalls = 0
+  removeCalls = 0
+  writeCalls = 0
+  originalReplace = committedBackend.replace
+  originalRemove = committedBackend.remove
+  originalWrite = committedBackend.write
+  committedBackend.replace = function(self, sourcePath, destinationPath)
+    replaceCalls = replaceCalls + 1
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+  committedBackend.remove = function(self, path)
+    removeCalls = removeCalls + 1
+    return originalRemove(self, path)
+  end
+  committedBackend.write = function(self, path, data)
+    writeCalls = writeCalls + 1
+    return originalWrite(self, path, data)
+  end
+
+  committed:recoverPublication()
+
+  Assert.equal(replaceCalls, 0)
+  Assert.equal(removeCalls, 0)
+  Assert.equal(writeCalls, 0)
+  Assert.equal(committedBackend.files[livePath(committedRoots[1]) .. "/value"], "alpha-new")
+  Assert.equal(committedBackend.files[livePath(committedRoots[2]) .. "/value"], "beta-new")
+end
+
+function T.manifest_write_failure_does_not_touch_live_roots()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "manifest-write", { root })
+  tx.stage:write(root .. "/value", "new")
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if path == PUBLISH_NEXT then
+      return false, "injected manifest write failure"
+    end
+    return originalWrite(self, path, data)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+
+  Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.equal(c:read(root .. "/value"), "old")
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.isNil(backend:getInfo(PUBLISH_NEXT))
+  Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
+end
+
+function T.manifest_promotion_failure_does_not_touch_live_roots()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "manifest-promotion", { root })
+  tx.stage:write(root .. "/value", "new")
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
+    if sourcePath == PUBLISH_NEXT then
+      return false, "injected manifest promotion failure"
+    end
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+
+  Assert.equal(err.code, StorageErrors.CACHE_REPLACE_FAILED)
+  Assert.equal(c:read(root .. "/value"), "old")
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.isNil(backend:getInfo(PUBLISH_NEXT))
+end
+
+function T.commit_write_failure_rolls_back_the_published_roots()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "commit-write", { root })
+  tx.stage:write(root .. "/value", "new")
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if path == PUBLISH_COMMIT then
+      return false, "injected commit write failure"
+    end
+    return originalWrite(self, path, data)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+
+  Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.equal(c:read(root .. "/value"), "old")
+  Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4old")))
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+end
+
+function T.cleanup_failure_keeps_committed_metadata_recoverable()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "old-cleanup", { root })
+  tx.stage:write(root .. "/value", "new")
+  local originalRemove = backend.remove
+  backend.remove = function(self, path)
+    if path:find(".__g4old/", 1, true) then
+      return false, "injected old cleanup failure"
+    end
+    return originalRemove(self, path)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+
+  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED)
+  Assert.equal(c:read(root .. "/value"), "new")
+  Assert.notNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.notNil(backend:getInfo(PUBLISH_COMMIT))
+  backend.remove = originalRemove
+  c:recoverPublication()
+  Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4old")))
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
+end
+
+function T.manifest_cleanup_failure_leaves_the_commit_boundary_intact()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "manifest-cleanup", { root })
+  tx.stage:write(root .. "/value", "new")
+  local originalRemove = backend.remove
+  backend.remove = function(self, path)
+    if path == PUBLISH_MANIFEST then
+      return false, "injected manifest cleanup failure"
+    end
+    return originalRemove(self, path)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+
+  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED)
+  Assert.equal(c:read(root .. "/value"), "new")
+  Assert.notNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.notNil(backend:getInfo(PUBLISH_COMMIT))
+  backend.remove = originalRemove
+  c:recoverPublication()
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
+end
+
+function T.commit_cleanup_failure_leaves_commit_only_residue_safe()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "commit-cleanup", { root })
+  tx.stage:write(root .. "/value", "new")
+  local originalRemove = backend.remove
+  backend.remove = function(self, path)
+    if path == PUBLISH_COMMIT then
+      return false, "injected commit cleanup failure"
+    end
+    return originalRemove(self, path)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+
+  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED)
+  Assert.equal(c:read(root .. "/value"), "new")
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.notNil(backend:getInfo(PUBLISH_COMMIT))
+  backend.remove = originalRemove
+  c:recoverPublication()
+  Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
+end
+
+function T.contradictory_root_metadata_fails_before_live_mutation()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "live")
+  backend:write(siblingRoot(root, ".__g4old") .. "/value", "old")
+  writePublicationRecord(backend, { { path = root, hadLive = false } })
+
+  local ok, err = pcall(function()
+    c:recoverPublication()
+  end)
+
+  Assert.isFalse(ok)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
+  Assert.equal(c:read(root .. "/value"), "live")
+  Assert.equal(backend.files[siblingRoot(root, ".__g4old") .. "/value"], "old")
 end
 
 return { tests = T }

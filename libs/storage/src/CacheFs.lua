@@ -52,6 +52,7 @@ local CACHE_ERRORS = {
 ---@field replaceAt fun(self: CacheFs, sourcePath: string, destinationPath: string): boolean
 ---@field removeTree fun(self: CacheFs, relativePath: string): boolean
 ---@field removeStagedTree fun(self: CacheFs, stagingCache: CacheFs): boolean
+---@field recoverPublication fun(self: CacheFs): boolean
 ---@field publishStaged fun(self: CacheFs, stageCache: CacheFs, roots: string[], cleanup: fun()): boolean
 ---@field publishFromStage fun(self: CacheFs, stagingCache: CacheFs): boolean
 ---@field writeLua fun(self: CacheFs, relativePath: string, value: table<string, unknown>): boolean
@@ -61,6 +62,11 @@ CacheFs.__index = CacheFs
 
 local NEXT_SUFFIX = ".__g4next"
 local OLD_SUFFIX = ".__g4old"
+local PUBLICATION_MANIFEST_SUFFIX = ".__g4publish.lua"
+local PUBLICATION_MANIFEST_TEMP_SUFFIX = ".__g4publish.__g4next"
+local PUBLICATION_COMMIT_SUFFIX = ".__g4published"
+local PUBLICATION_SCHEMA = 1
+local PUBLICATION_COMMIT_CONTENT = "g4-cache-publish-v1"
 
 local function siblingPath(fullPath, suffix)
   local parent, name = fullPath:match("^(.*)/([^/]+)$")
@@ -223,12 +229,17 @@ function CacheFs:_removeTreeAt(fullPath)
   rec(fullPath)
 end
 
--- Discard every staged output for this version and any orphaned previous root a
--- crash mid-publish left behind. Staging is disposable generated data; a fresh
--- extraction rebuilds it from the validated ROM. The live root is never touched.
+-- Discard staged output after recovering any journaled publication. An
+-- unjournaled old sibling is removed only when the live root exists; otherwise
+-- it may be the only last-known-good copy. The live root is never touched.
 function CacheFs:removeStagedTree(stagingCache)
+  self:recoverPublication()
   self:_removeTreeAt(stagingCache:resolve(""))
-  self:_removeTreeAt(siblingPath(self:resolve(""), OLD_SUFFIX))
+  local liveRoot = self:resolve("")
+  local oldRoot = siblingPath(liveRoot, OLD_SUFFIX)
+  if self.backend:getInfo(liveRoot) then
+    self:_removeTreeAt(oldRoot)
+  end
   return true
 end
 
@@ -296,97 +307,20 @@ end
 
 local function validateRoots(cacheFs, stageCache, roots)
   assert(stageCache.versionId == cacheFs.versionId, "publish caches must use the same version")
+  local normalizedRoots = {}
   for index, root in ipairs(roots) do
     assert(type(root) == "string", "publish roots must be strings")
-    assert(not hasSuffix(root, NEXT_SUFFIX), "publish roots may not use the next suffix")
-    assert(not hasSuffix(root, OLD_SUFFIX), "publish roots may not use the old suffix")
-    cacheFs:resolve(root)
-    stageCache:resolve(root)
+    local normalizedRoot = root:gsub("\\", "/")
+    assert(not hasSuffix(normalizedRoot, NEXT_SUFFIX), "publish roots may not use the next suffix")
+    assert(not hasSuffix(normalizedRoot, OLD_SUFFIX), "publish roots may not use the old suffix")
+    cacheFs:resolve(normalizedRoot)
+    stageCache:resolve(normalizedRoot)
     for previousIndex = 1, index - 1 do
-      assert(not rootsOverlap(root, roots[previousIndex]), "publish roots may not overlap")
+      assert(not rootsOverlap(normalizedRoot, normalizedRoots[previousIndex]), "publish roots may not overlap")
     end
+    normalizedRoots[index] = normalizedRoot
   end
-end
-
-local function recoverTransientRoots(cacheFs, stageCache, roots)
-  local states = {}
-  local allLive = true
-  local anyOld = false
-  for _, root in ipairs(roots) do
-    local livePath = cacheFs:resolve(root)
-    local oldPath = siblingPath(livePath, OLD_SUFFIX)
-    local liveExists = cacheFs.backend:getInfo(livePath) ~= nil
-    local oldExists = cacheFs.backend:getInfo(oldPath) ~= nil
-    states[root] = { livePath = livePath, oldPath = oldPath, liveExists = liveExists, oldExists = oldExists }
-    allLive = allLive and liveExists
-    anyOld = anyOld or oldExists
-  end
-
-  if anyOld then
-    if allLive then
-      for _, root in ipairs(roots) do
-        local state = states[root]
-        if state.oldExists then
-          cacheFs:_removeTreeAt(state.oldPath)
-        end
-      end
-    else
-      for _, root in ipairs(roots) do
-        local state = states[root]
-        if state.liveExists then
-          cacheFs:_removeTreeAt(state.livePath)
-        end
-      end
-      for _, root in ipairs(roots) do
-        local state = states[root]
-        if state.oldExists then
-          renamePath(cacheFs, state.oldPath, state.livePath)
-        end
-      end
-    end
-  end
-
-  for _, root in ipairs(roots) do
-    local state = states[root]
-    local nextPath = siblingPath(state.livePath, NEXT_SUFFIX)
-    if nextPath ~= stageCache:resolve(root) and cacheFs.backend:getInfo(nextPath) then
-      cacheFs:_removeTreeAt(nextPath)
-    end
-  end
-end
-
-local function rollbackAsides(cacheFs, roots, asides)
-  local firstError
-  for index = #roots, 1, -1 do
-    local root = roots[index]
-    if asides[root] then
-      local livePath = cacheFs:resolve(root)
-      local oldPath = siblingPath(livePath, OLD_SUFFIX)
-      local ok, err = pcall(renamePath, cacheFs, oldPath, livePath)
-      if not ok and firstError == nil then
-        firstError = err
-      end
-    end
-  end
-  return firstError
-end
-
-local function rollbackPublished(cacheFs, movedIn, roots, asides)
-  local firstError
-  for index = #movedIn, 1, -1 do
-    local root = movedIn[index]
-    local livePath = cacheFs:resolve(root)
-    local nextPath = siblingPath(livePath, NEXT_SUFFIX)
-    local ok, err = pcall(renamePath, cacheFs, livePath, nextPath)
-    if not ok and firstError == nil then
-      firstError = err
-    end
-  end
-  local asideErr = rollbackAsides(cacheFs, roots, asides)
-  if firstError == nil then
-    firstError = asideErr
-  end
-  return firstError
+  return normalizedRoots
 end
 
 local function rollbackIncomplete(cause, rollback)
@@ -394,6 +328,206 @@ local function rollbackIncomplete(cause, rollback)
     cause = tostring(cause),
     rollback = tostring(rollback),
   })
+end
+
+local function publicationPath(cacheFs, suffix)
+  return cacheFs.versionId .. suffix
+end
+
+local function publicationMetadataError(message, context)
+  Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, message, context)
+end
+
+local function validateManifestRoot(cacheFs, root, index)
+  if type(root) ~= "table" then
+    publicationMetadataError("publication manifest root must be a table", { index = index })
+  end
+  local allowed = { path = true, hadLive = true }
+  for key in pairs(root) do
+    if not allowed[key] then
+      publicationMetadataError("publication manifest root has an unexpected field", { index = index })
+    end
+  end
+  if type(root.path) ~= "string" or root.path:gsub("\\", "/") ~= root.path then
+    publicationMetadataError("publication manifest root path is not normalized", { index = index })
+  end
+  if type(root.hadLive) ~= "boolean" then
+    publicationMetadataError("publication manifest root existence is not boolean", { index = index })
+  end
+  if hasSuffix(root.path, NEXT_SUFFIX) or hasSuffix(root.path, OLD_SUFFIX) then
+    publicationMetadataError("publication manifest root uses a reserved suffix", { index = index })
+  end
+  cacheFs:resolve(root.path)
+end
+
+local function validateManifest(cacheFs, manifest)
+  if type(manifest) ~= "table" then
+    publicationMetadataError("publication manifest must be a table")
+  end
+  local allowed = { schema = true, roots = true }
+  for key in pairs(manifest) do
+    if not allowed[key] then
+      publicationMetadataError("publication manifest has an unexpected field")
+    end
+  end
+  if manifest.schema ~= PUBLICATION_SCHEMA or type(manifest.roots) ~= "table" or #manifest.roots < 1 then
+    publicationMetadataError("publication manifest schema is invalid")
+  end
+  local seen = {}
+  local count = 0
+  for key in pairs(manifest.roots) do
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 then
+      publicationMetadataError("publication manifest roots must be an ordered array")
+    end
+    count = count + 1
+  end
+  if count ~= #manifest.roots then
+    publicationMetadataError("publication manifest roots must be contiguous")
+  end
+  for index, root in ipairs(manifest.roots) do
+    validateManifestRoot(cacheFs, root, index)
+    if seen[root.path] then
+      publicationMetadataError("publication manifest roots must be unique", { path = root.path })
+    end
+    for previousIndex = 1, index - 1 do
+      if rootsOverlap(root.path, manifest.roots[previousIndex].path) then
+        publicationMetadataError("publication manifest roots may not overlap", { path = root.path })
+      end
+    end
+    seen[root.path] = true
+  end
+end
+
+local function readPublicationManifest(cacheFs)
+  local path = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
+  if not cacheFs.backend:getInfo(path) then
+    return nil
+  end
+  local manifest, err = ScopedFs.loadChunk(cacheFs.backend, path, path, CACHE_ERRORS)
+  if not manifest then
+    assert(err, "publication manifest load failure must include an error")
+    error(err, 0)
+  end
+  validateManifest(cacheFs, manifest)
+  return manifest
+end
+
+local function removePublicationTree(cacheFs, suffix)
+  cacheFs:_removeTreeAt(publicationPath(cacheFs, suffix))
+end
+
+local function writePublicationManifest(cacheFs, manifest)
+  validateManifest(cacheFs, manifest)
+  local tempPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+  local manifestPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
+  local data = LuaWriter.encode(manifest)
+  local ok, err = cacheFs.backend:write(tempPath, data)
+  ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not write publication manifest", {
+    path = tempPath,
+  })
+  renamePath(cacheFs, tempPath, manifestPath)
+end
+
+local function writePublicationCommit(cacheFs)
+  local path = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+  local ok, err = cacheFs.backend:write(path, PUBLICATION_COMMIT_CONTENT)
+  return ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not write publication commit marker", {
+    path = path,
+  })
+end
+
+local function removeNextRoots(cacheFs, manifest, preservedNextPath)
+  for _, entry in ipairs(manifest.roots) do
+    local livePath = cacheFs:resolve(entry.path)
+    local nextPath = siblingPath(livePath, NEXT_SUFFIX)
+    if nextPath ~= preservedNextPath then
+      cacheFs:_removeTreeAt(nextPath)
+    end
+  end
+end
+
+local function validateRecoveryState(cacheFs, manifest, committed)
+  for _, entry in ipairs(manifest.roots) do
+    local livePath = cacheFs:resolve(entry.path)
+    local oldPath = siblingPath(livePath, OLD_SUFFIX)
+    local liveExists = cacheFs.backend:getInfo(livePath) ~= nil
+    local oldExists = cacheFs.backend:getInfo(oldPath) ~= nil
+    if oldExists and not entry.hadLive then
+      publicationMetadataError("publication state contradicts the original root set", { path = entry.path })
+    end
+    if committed and not liveExists then
+      publicationMetadataError("committed publication root is missing", { path = entry.path })
+    end
+    if not committed and entry.hadLive and not liveExists and not oldExists then
+      rollbackIncomplete("original live root is missing", "no backup is available for " .. entry.path)
+    end
+  end
+end
+
+local function rollbackPublication(cacheFs, manifest, preservedNextPath)
+  validateRecoveryState(cacheFs, manifest, false)
+  for index = #manifest.roots, 1, -1 do
+    local entry = manifest.roots[index]
+    local livePath = cacheFs:resolve(entry.path)
+    local oldPath = siblingPath(livePath, OLD_SUFFIX)
+    local nextPath = siblingPath(livePath, NEXT_SUFFIX)
+    if entry.hadLive then
+      if cacheFs.backend:getInfo(oldPath) then
+        if cacheFs.backend:getInfo(livePath) then
+          if nextPath == preservedNextPath then
+            renamePath(cacheFs, livePath, nextPath)
+          else
+            cacheFs:_removeTreeAt(livePath)
+          end
+        end
+        renamePath(cacheFs, oldPath, livePath)
+      end
+    elseif cacheFs.backend:getInfo(livePath) then
+      if nextPath == preservedNextPath then
+        renamePath(cacheFs, livePath, nextPath)
+      else
+        cacheFs:_removeTreeAt(livePath)
+      end
+    end
+  end
+  removeNextRoots(cacheFs, manifest, preservedNextPath)
+  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
+  return true
+end
+
+local function finishCommittedPublication(cacheFs, manifest)
+  validateRecoveryState(cacheFs, manifest, true)
+  for _, entry in ipairs(manifest.roots) do
+    local livePath = cacheFs:resolve(entry.path)
+    cacheFs:_removeTreeAt(siblingPath(livePath, OLD_SUFFIX))
+  end
+  removeNextRoots(cacheFs, manifest)
+  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
+  removePublicationTree(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+  return true
+end
+
+local function recoverPublicationState(cacheFs, preservedNextPath)
+  local manifest = readPublicationManifest(cacheFs)
+  local commitPath = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+  local hasCommit = cacheFs.backend:getInfo(commitPath) ~= nil
+  if not manifest then
+    removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+    if hasCommit then
+      removePublicationTree(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+    end
+    return true
+  end
+  if hasCommit then
+    return finishCommittedPublication(cacheFs, manifest)
+  end
+  return rollbackPublication(cacheFs, manifest, preservedNextPath)
+end
+
+function CacheFs:recoverPublication()
+  return recoverPublicationState(self, nil)
 end
 
 -- Prepare adjacent next siblings, then perform same-parent move-aside and
@@ -405,12 +539,12 @@ end
 ---@param cleanup fun()
 ---@return boolean
 local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
-  validateRoots(cacheFs, stageCache, roots)
-  recoverTransientRoots(cacheFs, stageCache, roots)
+  local normalizedRoots = validateRoots(cacheFs, stageCache, roots)
+  cacheFs:recoverPublication()
 
   local candidates = {}
   local candidateOk, candidateErr = pcall(function()
-    for _, root in ipairs(roots) do
+    for _, root in ipairs(normalizedRoots) do
       local livePath = cacheFs:resolve(root)
       local nextPath = siblingPath(livePath, NEXT_SUFFIX)
       local sourcePath = stageCache:resolve(root)
@@ -421,6 +555,7 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
       assert(sourceInfo, "staged root info must be available")
       if sourcePath ~= nextPath then
         candidates[#candidates + 1] = nextPath
+        cacheFs:_removeTreeAt(nextPath)
         copyTree(cacheFs, sourcePath, nextPath)
       end
       local candidateInfo = cacheFs.backend:getInfo(nextPath)
@@ -429,65 +564,80 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
     end
   end)
   if not candidateOk then
-    local cleanupOk, cleanupErr = pcall(removeCandidates, cacheFs, candidates)
+    local cleanupOk, cleanupErr = pcall(function()
+      removeCandidates(cacheFs, candidates)
+      removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+    end)
     if not cleanupOk then
       rollbackIncomplete(candidateErr, cleanupErr)
     end
     error(candidateErr, 0)
   end
 
-  -- Phase 1: move every existing live root aside. A failure rolls back every
-  -- aside already made and re-raises.
-  local asides = {}
+  local manifest = { schema = PUBLICATION_SCHEMA, roots = {} }
+  for _, root in ipairs(normalizedRoots) do
+    manifest.roots[#manifest.roots + 1] = {
+      path = root,
+      hadLive = cacheFs.backend:getInfo(cacheFs:resolve(root)) ~= nil,
+    }
+  end
+
+  local manifestOk, manifestErr = pcall(writePublicationManifest, cacheFs, manifest)
+  if not manifestOk then
+    local cleanupOk, cleanupErr = pcall(function()
+      removeCandidates(cacheFs, candidates)
+      removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+    end)
+    if not cleanupOk then
+      rollbackIncomplete(manifestErr, cleanupErr)
+    end
+    error(manifestErr, 0)
+  end
+
   local phase1Ok, phase1Err = pcall(function()
-    for _, root in ipairs(roots) do
-      local livePath = cacheFs:resolve(root)
-      if cacheFs:exists(root) then
+    for _, entry in ipairs(manifest.roots) do
+      if entry.hadLive then
+        local livePath = cacheFs:resolve(entry.path)
         renamePath(cacheFs, livePath, siblingPath(livePath, OLD_SUFFIX))
-        asides[root] = true
       end
     end
   end)
   if not phase1Ok then
-    local rollbackErr = rollbackAsides(cacheFs, roots, asides)
-    if rollbackErr ~= nil then
+    local rollbackOk, rollbackErr = pcall(recoverPublicationState, cacheFs, stageCache:resolve(""))
+    if not rollbackOk then
       rollbackIncomplete(phase1Err, rollbackErr)
-    end
-    local cleanupOk, cleanupErr = pcall(removeCandidates, cacheFs, candidates)
-    if not cleanupOk then
-      rollbackIncomplete(phase1Err, cleanupErr)
     end
     error(phase1Err, 0)
   end
 
   -- Phase 2: rename the adjacent candidates into place, in the given order.
-  local movedIn = {}
   local phase2Ok, phase2Err = pcall(function()
-    for _, root in ipairs(roots) do
-      local livePath = cacheFs:resolve(root)
+    for _, entry in ipairs(manifest.roots) do
+      local livePath = cacheFs:resolve(entry.path)
       renamePath(cacheFs, siblingPath(livePath, NEXT_SUFFIX), livePath)
-      movedIn[#movedIn + 1] = root
     end
   end)
   if not phase2Ok then
-    local rollbackErr = rollbackPublished(cacheFs, movedIn, roots, asides)
-    if rollbackErr ~= nil then
+    local rollbackOk, rollbackErr = pcall(recoverPublicationState, cacheFs, stageCache:resolve(""))
+    if not rollbackOk then
       rollbackIncomplete(phase2Err, rollbackErr)
-    end
-    local cleanupOk, cleanupErr = pcall(removeCandidates, cacheFs, candidates)
-    if not cleanupOk then
-      rollbackIncomplete(phase2Err, cleanupErr)
     end
     error(phase2Err, 0)
   end
 
-  -- Phase 3: discard recovery material. The new artifact is already live; a
-  -- failing cleanup is a distinct outcome, never a failed publication.
-  local cleanupOk, cleanupErr = pcall(function()
-    for _, root in ipairs(roots) do
-      local livePath = cacheFs:resolve(root)
-      cacheFs:_removeTreeAt(siblingPath(livePath, OLD_SUFFIX))
+  local commitOk, commitErr = pcall(writePublicationCommit, cacheFs)
+  if not commitOk then
+    local rollbackOk, rollbackErr = pcall(recoverPublicationState, cacheFs, stageCache:resolve(""))
+    if not rollbackOk then
+      rollbackIncomplete(commitErr, rollbackErr)
     end
+    error(commitErr, 0)
+  end
+
+  -- The new artifact is already live; cleanup is a distinct outcome, never a
+  -- failed publication. The journal remains until every cleanup step succeeds.
+  local cleanupOk, cleanupErr = pcall(function()
+    cacheFs:recoverPublication()
     cleanup()
   end)
   if not cleanupOk then

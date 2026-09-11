@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local LuaWriter = require("libs.codec.src.LuaWriter")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local ConstrainedCache = require("tests.support.ConstrainedCache")
@@ -355,6 +356,32 @@ function T.publish_reports_cleanup_failure_after_success()
   Assert.equal(cache:read(DATA .. "/complete"), "new-marker", "the new artifact is live despite the cleanup failure")
   Assert.equal(cache:read(DATA .. "/index.lua"), "new-index")
   Assert.equal(cache:read(ASSET .. "/0000.png"), "new-png")
+end
+
+function T.begin_recovers_before_clearing_stage()
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local roots = { DATA, ASSET }
+  backend:write(oldRoot(DATA) .. "/index.lua", "old-index")
+  backend:write(liveRoot(ASSET) .. "/0000.png", "old-png")
+  backend:write(
+    "heartgold.__g4publish.lua",
+    LuaWriter.encode({
+      schema = 1,
+      roots = {
+        { path = DATA, hadLive = true },
+        { path = ASSET, hadLive = true },
+      },
+    })
+  )
+  local stage = CacheFs.forArtifactStage("heartgold", "recovery-check", backend)
+  stage:write(DATA .. "/stale", "stale-stage")
+
+  local tx = ArtifactPublisher.begin(cache, "recovery-check", roots)
+
+  Assert.equal(cache:read(DATA .. "/index.lua"), "old-index")
+  Assert.equal(cache:read(ASSET .. "/0000.png"), "old-png")
+  Assert.isNil(tx.stage:read(DATA .. "/stale"))
 end
 
 return { tests = T }

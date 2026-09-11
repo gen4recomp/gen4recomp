@@ -158,7 +158,10 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   FieldActorCacheWriter.write(cache, first)
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath:find(".__g4next", 1, true) or sourcePath:find(".__g4old", 1, true) then
+    if
+      (sourcePath:find(".__g4next", 1, true) and sourcePath ~= "heartgold.__g4publish.__g4next")
+      or sourcePath:find(".__g4old", 1, true)
+    then
       return false, "injected publish failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
