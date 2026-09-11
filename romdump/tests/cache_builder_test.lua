@@ -87,6 +87,7 @@ local function newEnv()
     failCompilers = {},
     compileFailures = {},
     calls = {},
+    mapRequests = {},
     opens = {},
     closes = {},
     worldStage = nil,
@@ -141,13 +142,23 @@ local function newEnv()
       [2] = {
         mapId = 2,
         marker = "m2",
-        scene = { mapSymbol = "s_town", matrix = { width = 20, height = 20 } },
+        scene = {
+          schema = "test-map-scene-v1",
+          mapId = 2,
+          mapSymbol = "s_town",
+          matrix = { width = 20, height = 20 },
+        },
         unresolvedMaterials = {},
       },
       [5] = {
         mapId = 5,
         marker = "m5",
-        scene = { mapSymbol = "s_route", matrix = { width = 10, height = 10 } },
+        scene = {
+          schema = "test-map-scene-v1",
+          mapId = 5,
+          mapSymbol = "s_route",
+          matrix = { width = 10, height = 10 },
+        },
         unresolvedMaterials = {
           {
             role = "map",
@@ -162,6 +173,8 @@ local function newEnv()
         },
       },
     },
+    mapReadiness = { [2] = true, [5] = true },
+    mapReadinessCalls = {},
     cameraBundle = { marker = "cam-v1" },
     actorBundle = { marker = "act-v1", index = { spriteIds = { 0, 1, 2 } } },
     followerBundle = { marker = "follower-v1" },
@@ -243,7 +256,11 @@ local function makeFakes()
         end
         return nil
       end,
-      loadLua = function()
+      loadLua = function(_, path)
+        local mapId = path:match("^maps/(%d+)/scene.lua$")
+        if mapId then
+          return env.mapBundles[tonumber(mapId)].scene
+        end
         return env.stateStored
       end,
     }
@@ -289,6 +306,11 @@ local function makeFakes()
   fakes.MapAssetCache.mapDir = function(mapId)
     return "maps/" .. mapId
   end
+  fakes.MapAssetCache.SCENE_SCHEMA = "test-map-scene-v1"
+  fakes.MapAssetCache.isReady = function(_, mapId, expectedMarker)
+    env.mapReadinessCalls[#env.mapReadinessCalls + 1] = { mapId = mapId, marker = expectedMarker }
+    return env.mapReadiness[mapId] == true
+  end
   fakes.MapAssetCompiler.compile = function(_, mapId)
     if env.compileFailures[mapId] ~= nil then
       return nil, env.compileFailures[mapId]
@@ -299,6 +321,9 @@ local function makeFakes()
     local jobs, results = {}, {}
     local pool = {}
     function pool:request(job)
+      if job.kind == "map" then
+        env.mapRequests[#env.mapRequests + 1] = job
+      end
       jobs[job.key] = job
     end
     function pool:drain()
@@ -510,6 +535,14 @@ local function collectLog()
   }
 end
 
+local function requestedMapIds()
+  local ids = {}
+  for _, job in ipairs(env.mapRequests) do
+    ids[#ids + 1] = job.payload.mapId
+  end
+  return ids
+end
+
 local module = {
   beforeAll = function()
     for _, path in ipairs(FAKE_PATHS) do
@@ -540,6 +573,7 @@ local module = {
 -- complete build.
 function T.current_build_logs_every_class_and_stages_and_publishes_the_world_manifest()
   env = newEnv()
+  env.mapReadiness = { [2] = false, [5] = false }
   local capture = collectLog()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(err)
@@ -562,8 +596,8 @@ function T.current_build_logs_every_class_and_stages_and_publishes_the_world_man
     "build-cache: heartgold scripts current",
     "build-cache: heartgold audio current",
     "build-cache: heartgold physical field cells current",
-    "build-cache: heartgold map 2 current",
-    "build-cache: heartgold map 5 current",
+    "build-cache: heartgold map 2 compiled",
+    "build-cache: heartgold map 5 compiled",
     "build-cache: heartgold map 5 unresolved map texture: material bike_02_2_lm3 of m_name01_00_00c land_data:280 wants bike_02_2 from map_textures member 42",
     "build-cache: heartgold world.lua staged (2 maps, 0 unresolved cells, 0 compile-excluded)",
     "build-cache: heartgold world.lua published",
@@ -644,6 +678,7 @@ end
 -- writer order follows the class order of the pipeline.
 function T.stale_classes_compile_with_counts_in_pipeline_order()
   env = newEnv()
+  env.mapReadiness = { [2] = false, [5] = false }
   env.stale = {
     FieldCameraCacheWriter = true,
     FieldActorCacheWriter = true,
@@ -698,6 +733,7 @@ end
 -- it but reports an explicit partial status.
 function T.compile_exclusions_fail_the_build_unless_allowed()
   env = newEnv()
+  env.mapReadiness[5] = false
   env.compileFailures[5] = Errors.new("MAP_SCHEMA_INVALID", "injected compile rejection")
   local capture = collectLog()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
@@ -999,6 +1035,75 @@ function T.matching_identity_with_damaged_cache_repairs_incrementally()
   Assert.equal(env.stateInvalidations, 1, "the damaged attestation is invalidated before repair")
   Assert.equal(env.statePublishes, 1, "a strict repair republishes the state")
   Assert.equal(env.worldPublishes, 1, "a strict repair publishes the repaired world")
+end
+
+-- A damaged higher-level cache can rebuild its world from the existing map
+-- artifacts without scheduling work for maps that pass full readiness.
+function T.ready_maps_are_reused_when_rebuilding_the_world()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = false
+  env.mapBundles[2].scene.matrix.width = 21
+  local capture = collectLog()
+  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.deepEqual(requestedMapIds(), {})
+  Assert.deepEqual(env.mapReadinessCalls, {
+    { mapId = 2, marker = "m2" },
+    { mapId = 5, marker = "m5" },
+  })
+  Assert.equal(#env.worldStage.entries, 2)
+  Assert.equal(env.worldStage.entries[1].id, 2)
+  Assert.equal(env.worldStage.entries[1].symbol, "s_town")
+  Assert.equal(env.worldStage.entries[1].width, 21, "cached scene metadata supplies the world width")
+  Assert.equal(env.worldStage.entries[1].height, 20)
+  Assert.equal(env.worldStage.entries[2].id, 5)
+  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 current")
+  Assert.equal(capture.lines[19], "build-cache: heartgold map 5 current")
+end
+
+-- A map with an existing marker but failed readiness is rebuilt while a
+-- neighboring ready map remains untouched and both entries retain analysis order.
+function T.only_unready_maps_are_compiled_and_world_keeps_order()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = false
+  env.mapReadiness[5] = false
+  local capture = collectLog()
+  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.deepEqual(requestedMapIds(), { 5 })
+  Assert.deepEqual(env.mapRequests[1], {
+    kind = "map",
+    key = "map:5",
+    priority = 0,
+    payload = { mapId = 5, producerFingerprint = "producer-fingerprint" },
+  })
+  Assert.equal(#env.worldStage.entries, 2)
+  Assert.equal(env.worldStage.entries[1].id, 2)
+  Assert.equal(env.worldStage.entries[2].id, 5)
+  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 current")
+  Assert.equal(capture.lines[19], "build-cache: heartgold map 5 compiled")
+  Assert.equal(
+    capture.lines[20],
+    "build-cache: heartgold map 5 unresolved map texture: material bike_02_2_lm3 of m_name01_00_00c land_data:280 wants bike_02_2 from map_textures member 42"
+  )
+end
+
+-- A changed global identity keeps the exhaustive map rebuild behavior even
+-- when every old map artifact passes readiness.
+function T.forced_build_compiles_ready_maps()
+  env = newEnv()
+  env.stateMatches = false
+  local capture = collectLog()
+  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.deepEqual(requestedMapIds(), { 2, 5 })
+  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 compiled")
+  Assert.equal(capture.lines[19], "build-cache: heartgold map 5 compiled")
 end
 
 return module

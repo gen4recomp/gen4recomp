@@ -11,6 +11,36 @@ local CompilerPool = require("romdump.src.build.CompilerPool")
 
 local MapCacheBuild = {}
 
+---@class CachedMapMetadata
+---@field mapSymbol string
+---@field width number
+---@field height number
+
+---@param cacheFs CacheFs
+---@param mapId integer
+---@return CachedMapMetadata|nil
+local function readyMapMetadata(cacheFs, mapId)
+  local dir = MapAssetCache.mapDir(mapId)
+  local marker = cacheFs:read(dir .. "/complete")
+  if type(marker) ~= "string" or not MapAssetCache.isReady(cacheFs, mapId, marker) then
+    return nil
+  end
+
+  local scene = assert(cacheFs:loadLua(dir .. "/scene.lua"))
+  assert(type(scene) == "table", "ready map scene must be a table")
+  assert(scene.schema == MapAssetCache.SCENE_SCHEMA, "ready map scene has the wrong schema")
+  assert(scene.mapId == mapId, "ready map scene has the wrong map")
+  assert(type(scene.mapSymbol) == "string", "ready map scene has no symbol")
+  assert(type(scene.matrix) == "table", "ready map scene has no matrix")
+  assert(type(scene.matrix.width) == "number", "ready map scene has no width")
+  assert(type(scene.matrix.height) == "number", "ready map scene has no height")
+  return {
+    mapSymbol = scene.mapSymbol,
+    width = scene.matrix.width,
+    height = scene.matrix.height,
+  }
+end
+
 ---@param context VersionBuildContext
 ---@return table<string, unknown>|nil, Errors.Error|string|nil
 function MapCacheBuild.build(context)
@@ -93,7 +123,7 @@ function MapCacheBuild.build(context)
     end
   end
 
-  local oldReady = {}
+  local cachedMaps = {}
   local resolved = {}
   local ok, failure = xpcall(function()
     for _, result in ipairs(analyses) do
@@ -106,14 +136,17 @@ function MapCacheBuild.build(context)
         }
       else
         resolved[#resolved + 1] = result
-        local oldMarker = context.cacheFs:read(MapAssetCache.mapDir(result.id) .. "/complete")
-        oldReady[result.id] = oldMarker ~= nil and MapAssetCache.isReady(context.cacheFs, result.id, oldMarker)
-        pool:request({
-          kind = "map",
-          key = "map:" .. result.id,
-          priority = 0,
-          payload = { mapId = result.id, producerFingerprint = context.producerFingerprint },
-        })
+        if not context.forced then
+          cachedMaps[result.id] = readyMapMetadata(context.cacheFs, result.id)
+        end
+        if cachedMaps[result.id] == nil then
+          pool:request({
+            kind = "map",
+            key = "map:" .. result.id,
+            priority = 0,
+            payload = { mapId = result.id, producerFingerprint = context.producerFingerprint },
+          })
+        end
       end
     end
     pool:drain()
@@ -127,55 +160,63 @@ function MapCacheBuild.build(context)
   end
 
   for _, result in ipairs(resolved) do
-    local state, details = pool:status("map:" .. result.id)
-    if state == "failed" then
-      local compileErr = assert(details and details.error, "map worker failure has no error")
-      assert(Errors.is(compileErr), "compiler failure must be a structured error")
-      compileExcluded[#compileExcluded + 1] = {
-        id = result.id,
-        symbol = result.symbol,
-        errorCode = compileErr.code,
-        message = compileErr.message,
-        context = compileErr.context,
-      }
-      context.log(
-        string.format("build-cache: %s map %d excluded: %s", context.version, result.id, Errors.format(compileErr))
-      )
+    local mapData = cachedMaps[result.id]
+    if mapData then
+      context.log(string.format("build-cache: %s map %d current", context.version, result.id))
     else
-      assert(state == "ready" and details and details.result, "map worker did not produce a ready result")
-      local compiled = details.result
-      assert(compiled.mapId == result.id, "map worker returned the wrong map")
-      if context.forced or not oldReady[result.id] then
-        context.log(string.format("build-cache: %s map %d compiled", context.version, result.id))
-      else
-        context.log(string.format("build-cache: %s map %d current", context.version, result.id))
-      end
-      for _, entry in ipairs(compiled.unresolvedMaterials) do
+      local state, details = pool:status("map:" .. result.id)
+      if state == "failed" then
+        local compileErr = assert(details and details.error, "map worker failure has no error")
+        assert(Errors.is(compileErr), "compiler failure must be a structured error")
+        compileExcluded[#compileExcluded + 1] = {
+          id = result.id,
+          symbol = result.symbol,
+          errorCode = compileErr.code,
+          message = compileErr.message,
+          context = compileErr.context,
+        }
         context.log(
-          string.format(
-            "build-cache: %s map %d unresolved %s %s: material %s of %s %s:%d wants %s from %s",
-            context.version,
-            result.id,
-            entry.role,
-            entry.kind,
-            entry.material,
-            entry.modelName,
-            entry.modelArchive,
-            entry.modelMemberId,
-            entry.name,
-            entry.source
-          )
+          string.format("build-cache: %s map %d excluded: %s", context.version, result.id, Errors.format(compileErr))
         )
+      else
+        assert(state == "ready" and details and details.result, "map worker did not produce a ready result")
+        local compiled = details.result
+        assert(compiled.mapId == result.id, "map worker returned the wrong map")
+        context.log(string.format("build-cache: %s map %d compiled", context.version, result.id))
+        for _, entry in ipairs(compiled.unresolvedMaterials) do
+          context.log(
+            string.format(
+              "build-cache: %s map %d unresolved %s %s: material %s of %s %s:%d wants %s from %s",
+              context.version,
+              result.id,
+              entry.role,
+              entry.kind,
+              entry.material,
+              entry.modelName,
+              entry.modelArchive,
+              entry.modelMemberId,
+              entry.name,
+              entry.source
+            )
+          )
+        end
+        mapData = {
+          mapSymbol = compiled.mapSymbol,
+          width = compiled.width,
+          height = compiled.height,
+        }
       end
+    end
+    if mapData then
       entries[#entries + 1] = {
         id = result.id,
-        symbol = compiled.mapSymbol,
+        symbol = mapData.mapSymbol,
         mapCode = result.mapCode,
         mapSection = result.mapSection,
         mapSectionNativeId = result.mapSectionNativeId,
         followMode = result.followMode,
-        width = compiled.width,
-        height = compiled.height,
+        width = mapData.width,
+        height = mapData.height,
         matrix = {
           memberId = result.matrixMemberId,
           x = result.matrixX,
