@@ -962,6 +962,25 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
             gestureOffsetY = 0,
           }
         end,
+        presentationStateInto = function(self, out)
+          out.locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+          out.gesturePose = nil
+          out.gestureTick = nil
+          out.gestureOffsetY = 0
+          return out
+        end,
+        collisionCandidatesInto = function(self, out)
+          local current = out[1]
+          if current == nil then
+            current = {}
+            out[1] = current
+          end
+          current.fieldX = self.fieldX
+          current.fieldZ = self.fieldZ
+          current.surfaceId = self.surfaceId
+          out[2] = nil
+          return out
+        end,
       },
       camera = { updateFixed = function() end },
       transition = {

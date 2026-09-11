@@ -852,13 +852,20 @@ function FieldPlayer:_commitTile(kind)
   self._lastTraversalKind = kind
 end
 
-function FieldPlayer:renderPosition(alpha)
+---@param out { x: number, y: number, z: number }
+---@param alpha number?
+---@return { x: number, y: number, z: number }
+function FieldPlayer:renderPositionInto(out, alpha)
+  assert(type(out) == "table", "render position output required")
   alpha = alpha == nil and 1 or math.max(0, math.min(1, alpha))
-  return {
-    x = self.previousWorldX + (self.worldX - self.previousWorldX) * alpha,
-    y = self.previousWorldY + (self.worldY - self.previousWorldY) * alpha,
-    z = self.previousWorldZ + (self.worldZ - self.previousWorldZ) * alpha,
-  }
+  out.x = self.previousWorldX + (self.worldX - self.previousWorldX) * alpha
+  out.y = self.previousWorldY + (self.worldY - self.previousWorldY) * alpha
+  out.z = self.previousWorldZ + (self.worldZ - self.previousWorldZ) * alpha
+  return out
+end
+
+function FieldPlayer:renderPosition(alpha)
+  return self:renderPositionInto({}, alpha)
 end
 
 -- Collapse the render pair after a fixed tick that did not advance movement.
@@ -1118,7 +1125,10 @@ function FieldPlayer:cancelScriptedMovement()
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
 end
 
-function FieldPlayer:presentationState()
+---@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+function FieldPlayer:presentationStateInto(out)
+  assert(type(out) == "table", "presentation state output required")
   local scripted = self._scriptedMotion
   local locomotionActive
   if scripted ~= nil then
@@ -1127,12 +1137,15 @@ function FieldPlayer:presentationState()
   else
     locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
   end
-  return {
-    locomotionActive = locomotionActive,
-    gesturePose = self._gesturePose,
-    gestureTick = self._gestureTick,
-    gestureOffsetY = self._gestureOffsetY,
-  }
+  out.locomotionActive = locomotionActive
+  out.gesturePose = self._gesturePose
+  out.gestureTick = self._gestureTick
+  out.gestureOffsetY = self._gestureOffsetY
+  return out
+end
+
+function FieldPlayer:presentationState()
+  return self:presentationStateInto({})
 end
 
 function FieldPlayer:isScriptedMoving()
@@ -1141,26 +1154,45 @@ end
 
 -- Collision facts expose both sides of the end-of-step movement model without
 -- exposing the player's mutable internals to the actor manager.
+---@param out table[]
+---@return table[]
+function FieldPlayer:collisionCandidatesInto(out)
+  assert(type(out) == "table", "collision candidate output required")
+  local current = out[1]
+  if current == nil then
+    current = {}
+    out[1] = current
+  end
+  current.fieldX = self.fieldX
+  current.fieldZ = self.fieldZ
+  current.surfaceId = self.surfaceId
+  current.cellKey = self.committedSourceCellKey
+  current.sourceSurfaceId = self.committedSourceSurfaceId
+  if self.to ~= nil and (self.motion == "walking" or self.motion == "jumping") then
+    local destination = out[2]
+    if destination == nil then
+      destination = {}
+      out[2] = destination
+    end
+    destination.fieldX = self.to.fieldX
+    destination.fieldZ = self.to.fieldZ
+    destination.surfaceId = self.to.surfaceId
+    destination.cellKey = self.to.sourceCellKey
+    destination.sourceSurfaceId = self.to.sourceSurfaceId
+  else
+    out[2] = nil
+  end
+  local surplus = 3
+  while out[surplus] ~= nil do
+    out[surplus] = nil
+    surplus = surplus + 1
+  end
+  return out
+end
+
 ---@return table[]
 function FieldPlayer:collisionCandidates()
-  local current = {
-    fieldX = self.fieldX,
-    fieldZ = self.fieldZ,
-    surfaceId = self.surfaceId,
-    cellKey = self.committedSourceCellKey,
-    sourceSurfaceId = self.committedSourceSurfaceId,
-  }
-  local candidates = { current }
-  if self.to ~= nil and (self.motion == "walking" or self.motion == "jumping") then
-    candidates[#candidates + 1] = {
-      fieldX = self.to.fieldX,
-      fieldZ = self.to.fieldZ,
-      surfaceId = self.to.surfaceId,
-      cellKey = self.to.sourceCellKey,
-      sourceSurfaceId = self.to.sourceSurfaceId,
-    }
-  end
-  return candidates
+  return self:collisionCandidatesInto({})
 end
 
 -- Rebind the player to a newly committed physical coverage window. Global tile

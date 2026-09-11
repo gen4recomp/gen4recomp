@@ -94,6 +94,8 @@ local FieldMapEntryController = require("libs.hgss.src.field.FieldMapEntryContro
 ---@field accumulator number
 ---@field navigationBoundary table<string, unknown>?
 ---@field _boundaryMovementDirection FieldDirection?
+---@field _actorLocked fun(actorId: string): boolean
+---@field _tickScratch FieldSession.TickScratch
 local FieldSession = {}
 
 ---@param self FieldSession
@@ -123,6 +125,64 @@ local DIRECTION_DELTAS = {
   west = { x = -1, z = 0 },
   east = { x = 1, z = 0 },
 }
+
+---@class FieldSession.TickScratch
+---@field schedulerInput table<string, unknown>
+---@field terrainInput { fieldX: integer, fieldZ: integer, facing: string }
+---@field cameraTarget { x: number, y: number, z: number }
+---@field entranceInput { map: RuntimeFieldMap, player: FieldPlayer, transition: { ownsField: boolean } }
+---@field coordinateProbe { fieldX: integer, fieldZ: integer, facing: string }
+---@field terrainResponseInput table<string, unknown>
+---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number }
+---@field carriedMovementInput table<string, unknown>
+---@field interactionSnapshot table<string, unknown>
+---@field actorContext table<string, unknown>
+---@field playerFacts { fieldX: integer, fieldZ: integer, surfaceId: integer, worldY: number }
+---@field collisionCandidates table[]
+
+-- Fixed-tick orchestration inputs owned by the session for its lifetime.
+-- Each record has exactly one consuming collaborator shape; every use
+-- overwrites all required fields and clears optional ones before the call,
+-- because every consumer reads its input synchronously and never retains it.
+-- The collision slots are preallocated so warmed ticks reuse them.
+---@param actorLocked fun(actorId: string): boolean
+---@return FieldSession.TickScratch
+local function newTickScratch(actorLocked)
+  local collisionCandidates = {
+    { fieldX = 0, fieldZ = 0, surfaceId = 0 },
+    { fieldX = 0, fieldZ = 0, surfaceId = 0 },
+  }
+  local playerFacts = { fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
+  return {
+    schedulerInput = {},
+    terrainInput = { fieldX = 0, fieldZ = 0, facing = "south" },
+    cameraTarget = { x = 0, y = 0, z = 0 },
+    entranceInput = { map = nil, player = nil, transition = { ownsField = false } },
+    coordinateProbe = { fieldX = 0, fieldZ = 0, facing = "south" },
+    terrainResponseInput = {
+      committed = true,
+      destination = {
+        behavior = 0,
+        fieldX = 0,
+        fieldZ = 0,
+        worldY = 0,
+        originY = 0,
+      },
+      direction = "south",
+    },
+    playerPresentation = { locomotionActive = false, gestureOffsetY = 0 },
+    carriedMovementInput = {},
+    interactionSnapshot = {},
+    actorContext = {
+      autonomousLocked = false,
+      actorLocked = actorLocked,
+      player = playerFacts,
+      playerCandidates = collisionCandidates,
+    },
+    playerFacts = playerFacts,
+    collisionCandidates = collisionCandidates,
+  }
+end
 
 local function collapseCameraInterpolation(camera)
   if camera.collapseRenderInterpolation then
@@ -166,6 +226,8 @@ function FieldSession.new(options)
     options.player
       and options.player.updateFixed
       and options.player.presentationState
+      and options.player.presentationStateInto
+      and options.player.collisionCandidatesInto
       and options.camera
       and options.camera.updateFixed,
     "field session player and camera required"
@@ -249,6 +311,13 @@ function FieldSession.new(options)
     accumulator = 0,
     _boundaryMovementDirection = nil,
   }, FieldSession)
+  -- One lock predicate for the session lifetime: it consults the scheduler
+  -- at invocation time and never caches a lock result.
+  local function actorLocked(actorId)
+    return session.scriptScheduler:autonomousActorLocked(actorId)
+  end
+  session._actorLocked = actorLocked
+  session._tickScratch = newTickScratch(session._actorLocked)
   return session
 end
 
@@ -306,11 +375,11 @@ local function canOpenStartMenu(self)
 end
 
 function FieldSession:_advanceTick()
-  self.fieldEntranceIndicator:updateFixed({
-    map = self.currentMap,
-    player = self.player,
-    transition = { ownsField = self.transition.phase == FieldTransition.PHASES.idle },
-  })
+  local entranceInput = self._tickScratch.entranceInput
+  entranceInput.map = self.currentMap
+  entranceInput.player = self.player
+  entranceInput.transition.ownsField = self.transition.phase == FieldTransition.PHASES.idle
+  self.fieldEntranceIndicator:updateFixed(entranceInput)
   self.tick = self.tick + 1
 end
 
@@ -321,19 +390,18 @@ function FieldSession:_emitTerrainResponse()
   local origin = assert(self.currentMap.coordinateOrigin, "terrain response map origin is required")
   local localX, localZ = self.player.fieldX - origin.x, self.player.fieldZ - origin.z
   local cell = self.currentMap.collision:getLocal(localX, localZ)
-  local responses = require("libs.hgss.src.world.FieldTerrainResponse").resolve({
-    committed = true,
-    destination = {
-      behavior = cell.behavior,
-      fieldX = self.player.fieldX,
-      fieldZ = self.player.fieldZ,
-      worldY = self.player.worldY,
-      originY = self.currentMap.physicalOrigin and self.currentMap.physicalOrigin.y or 0,
-      cellKey = self.player.committedSourceCellKey,
-      sourceSurfaceId = self.player.committedSourceSurfaceId,
-    },
-    direction = self.player.facing,
-  })
+  local terrainResponseInput = self._tickScratch.terrainResponseInput
+  terrainResponseInput.committed = true
+  terrainResponseInput.direction = self.player.facing
+  local destination = terrainResponseInput.destination
+  destination.behavior = cell.behavior
+  destination.fieldX = self.player.fieldX
+  destination.fieldZ = self.player.fieldZ
+  destination.worldY = self.player.worldY
+  destination.originY = self.currentMap.physicalOrigin and self.currentMap.physicalOrigin.y or 0
+  destination.cellKey = self.player.committedSourceCellKey
+  destination.sourceSurfaceId = self.player.committedSourceSurfaceId
+  local responses = require("libs.hgss.src.world.FieldTerrainResponse").resolve(terrainResponseInput)
   self.terrainEffects:emitAll(responses)
 end
 
@@ -343,11 +411,11 @@ end
 
 local function resolveCoordinateAhead(self, direction)
   local offset = assert(DIRECTION_DELTAS[direction], "coordinate probe direction required")
-  return self.eventResolver.resolveCoordinate(self.currentMap, {
-    fieldX = self.player.fieldX + offset.x,
-    fieldZ = self.player.fieldZ + offset.z,
-    facing = direction,
-  }, self.eventState)
+  local probe = self._tickScratch.coordinateProbe
+  probe.fieldX = self.player.fieldX + offset.x
+  probe.fieldZ = self.player.fieldZ + offset.z
+  probe.facing = direction
+  return self.eventResolver.resolveCoordinate(self.currentMap, probe, self.eventState)
 end
 
 local function hasCoordinateAhead(self, direction)
@@ -387,6 +455,19 @@ local function resolvePassiveSign(self)
   return self.eventResolver.resolvePassiveSign(self.currentMap, self.player)
 end
 
+-- The camera copies its target synchronously, so all fixed-tick camera
+-- samples share one session record. The allocating actorTarget stays for
+-- callers that retain the result.
+---@param self FieldSession
+---@return { x: number, y: number, z: number }
+local function cameraTargetInto(self)
+  local target = self._tickScratch.cameraTarget
+  target.x = self.player.worldX
+  target.y = self.player.worldY
+  target.z = self.player.worldZ
+  return target
+end
+
 -- An event consumed on the arrival tile owns its tick: the tile settles
 -- instead of interpolating onward.
 ---@param self FieldSession
@@ -395,7 +476,7 @@ local function settleArrivalTile(self)
     self.playerVisual:settle()
   end
   self.player:collapseRenderInterpolation()
-  self.camera:updateFixed(self:actorTarget())
+  self.camera:updateFixed(cameraTargetInto(self))
   collapseCameraInterpolation(self.camera)
 end
 
@@ -483,12 +564,13 @@ end
 ---@return boolean playerInputOwnedAtTickStart
 local function runScriptPhase(self, inputSnapshot)
   local playerInputOwnedAtTickStart = playerInputOwned(self.scriptScheduler)
-  local schedulerInput = {
-    heldDirection = inputSnapshot.heldDirection,
-    pressedDirection = inputSnapshot.pressedDirection,
-    pressedAction = inputSnapshot.actionPressed,
-    pressedCancel = inputSnapshot.cancelPressed,
-  }
+  local schedulerInput = self._tickScratch.schedulerInput
+  schedulerInput.heldDirection = inputSnapshot.heldDirection
+  schedulerInput.pressedDirection = inputSnapshot.pressedDirection
+  schedulerInput.pressedAction = inputSnapshot.actionPressed
+  schedulerInput.pressedCancel = inputSnapshot.cancelPressed
+  schedulerInput.menuEvents = nil
+  schedulerInput.uiEvents = nil
   local menuModal = self.menuHost:isModal()
   local contextChoiceModal = self.contextChoice:isActive()
   -- The script-owned starter modal routes the same normalized UI events to
@@ -538,11 +620,11 @@ function FieldSession:updateFixed(inputSnapshot)
   local carriedBoundaryDirection = self._boundaryMovementDirection
   self._boundaryMovementDirection = nil
   if self.terrainEffects then
-    self.terrainEffects:updateFixed({
-      fieldX = self.player.fieldX,
-      fieldZ = self.player.fieldZ,
-      facing = self.player.facing,
-    })
+    local terrainInput = self._tickScratch.terrainInput
+    terrainInput.fieldX = self.player.fieldX
+    terrainInput.fieldZ = self.player.fieldZ
+    terrainInput.facing = self.player.facing
+    self.terrainEffects:updateFixed(terrainInput)
   end
   -- The door/stair choreography drives the player during the locked
   -- transition: the pose clock hears the locomotion state at tick start, the
@@ -550,7 +632,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- advance under the choreographed locked tick. The camera samples on
   -- every locked tick and on the completion tick -- never coupled to
   -- player motion -- so interpolation pairs collapse instead of replaying.
-  local locomotionAtTickStart = self.player:presentationState().locomotionActive
+  local locomotionAtTickStart = self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
   local playerAdvanced = self.transition:updateFixed()
   if self.transition.locked or self.transition.completed then
     if not playerAdvanced and self.player.motion == "idle" then
@@ -560,7 +642,7 @@ function FieldSession:updateFixed(inputSnapshot)
     if playerAdvanced and self.playerVisual then
       self.playerVisual:updateFixed(locomotionAtTickStart)
     end
-    self.camera:updateFixed(self:actorTarget())
+    self.camera:updateFixed(cameraTargetInto(self))
     if self.transition.completed then
       collapseCameraInterpolation(self.camera)
     end
@@ -664,21 +746,15 @@ function FieldSession:updateFixed(inputSnapshot)
   -- World presentation advances even while a foreground script runs, and
   -- exactly once per world-advancing tick (not once per same-run presence
   -- flush). Input suppression does not freeze it.
-  local playerFacts = {
-    fieldX = self.player.fieldX,
-    fieldZ = self.player.fieldZ,
-    surfaceId = self.player.surfaceId,
-    worldY = self.player.worldY,
-  }
-  local function actorLocked(actorId)
-    return self.scriptScheduler:autonomousActorLocked(actorId)
-  end
-  self.actors:step(self.tick + 1, {
-    autonomousLocked = self.scriptScheduler:autonomousActorsLocked(),
-    actorLocked = actorLocked,
-    player = playerFacts,
-    playerCandidates = self.player:collisionCandidates(),
-  })
+  local playerFacts = self._tickScratch.playerFacts
+  playerFacts.fieldX = self.player.fieldX
+  playerFacts.fieldZ = self.player.fieldZ
+  playerFacts.surfaceId = self.player.surfaceId
+  playerFacts.worldY = self.player.worldY
+  local actorContext = self._tickScratch.actorContext
+  actorContext.autonomousLocked = self.scriptScheduler:autonomousActorsLocked()
+  actorContext.playerCandidates = self.player:collisionCandidatesInto(self._tickScratch.collisionCandidates)
+  self.actors:step(self.tick + 1, actorContext)
 
   if self.childResumePending then
     self:_advanceTick()
@@ -699,10 +775,11 @@ function FieldSession:updateFixed(inputSnapshot)
     end
     collapseCameraInterpolation(self.camera)
     if self.playerVisual then
-      local suppressedLocomotionAtTickStart = self.player:presentationState().locomotionActive
+      local suppressedLocomotionAtTickStart =
+        self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
       self.playerVisual:updateFixed(suppressedLocomotionAtTickStart)
     end
-    self.camera:updateFixed(self:actorTarget())
+    self.camera:updateFixed(cameraTargetInto(self))
     self:_advanceTick()
     return
   end
@@ -771,15 +848,15 @@ function FieldSession:updateFixed(inputSnapshot)
     -- traversal precedence -- they are only eligible when the action button
     -- itself is the initiating input.
     if self.player.motion == "idle" and inputSnapshot.actionPressed then
-      local intent = self.interactions:resolve({
-        runtimeMap = self.currentMap,
-        fieldX = self.player.fieldX,
-        fieldZ = self.player.fieldZ,
-        surfaceId = self.player.surfaceId,
-        worldY = self.player.worldY,
-        facing = self.player.facing,
-        tick = self.tick + 1,
-      })
+      local interactionSnapshot = self._tickScratch.interactionSnapshot
+      interactionSnapshot.runtimeMap = self.currentMap
+      interactionSnapshot.fieldX = self.player.fieldX
+      interactionSnapshot.fieldZ = self.player.fieldZ
+      interactionSnapshot.surfaceId = self.player.surfaceId
+      interactionSnapshot.worldY = self.player.worldY
+      interactionSnapshot.facing = self.player.facing
+      interactionSnapshot.tick = self.tick + 1
+      local intent = self.interactions:resolve(interactionSnapshot)
       if intent then
         -- The script client resolves the binding, starts the composed script,
         -- and runs it during this tick. There is no fallback client: the
@@ -821,17 +898,17 @@ function FieldSession:updateFixed(inputSnapshot)
   -- The pose clock treats a tick as locomoting if the player was locomoting at either
   -- end of it, so the gait phase carries across the tile commit instead of
   -- restarting on every arrival (the ROM's walk range spans two tiles).
-  local ordinaryLocomotionAtTickStart = self.player:presentationState().locomotionActive
+  local ordinaryLocomotionAtTickStart =
+    self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
 
   local movementInput = inputSnapshot
   if carriedBoundaryDirection then
-    movementInput = {
-      -- A carried completion direction is a fresh one-shot command. Keeping
-      -- raw held input here would let FieldPlayer admit its buffered direction
-      -- as a walking continuation and skip the required turn.
-      heldDirection = nil,
-      pressedDirection = carriedBoundaryDirection,
-    }
+    movementInput = self._tickScratch.carriedMovementInput
+    -- A carried completion direction is a fresh one-shot command. Keeping
+    -- raw held input here would let FieldPlayer admit its buffered direction
+    -- as a walking continuation and skip the required turn.
+    movementInput.heldDirection = nil
+    movementInput.pressedDirection = carriedBoundaryDirection
   end
   local motionAtPlayerUpdateStart = self.player.motion
   local stepCompleted = self.player:updateFixed(movementInput) == true
@@ -910,7 +987,7 @@ function FieldSession:updateFixed(inputSnapshot)
   if self.playerVisual then
     self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart)
   end
-  self.camera:updateFixed(self:actorTarget())
+  self.camera:updateFixed(cameraTargetInto(self))
   self:_advanceTick()
 end
 

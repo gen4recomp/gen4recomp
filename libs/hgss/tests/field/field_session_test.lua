@@ -138,6 +138,18 @@ local function defaultPlayer()
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
     end,
+    collisionCandidatesInto = function(self, out)
+      local current = out[1]
+      if current == nil then
+        current = {}
+        out[1] = current
+      end
+      current.fieldX = self.fieldX
+      current.fieldZ = self.fieldZ
+      current.surfaceId = self.surfaceId
+      out[2] = nil
+      return out
+    end,
     clearGesturePresentation = function() end,
   }
   function stub:presentationState()
@@ -148,6 +160,13 @@ local function defaultPlayer()
       gestureTick = nil,
       gestureOffsetY = 0,
     }
+  end
+  function stub:presentationStateInto(out)
+    out.locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+    out.gesturePose = nil
+    out.gestureTick = nil
+    out.gestureOffsetY = 0
+    return out
   end
   return stub
 end
@@ -242,6 +261,19 @@ local function baseOptions(overrides)
     or function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
     end
+  player.collisionCandidatesInto = player.collisionCandidatesInto
+    or function(self, out)
+      local current = out[1]
+      if current == nil then
+        current = {}
+        out[1] = current
+      end
+      current.fieldX = self.fieldX
+      current.fieldZ = self.fieldZ
+      current.surfaceId = self.surfaceId
+      out[2] = nil
+      return out
+    end
   player.clearGesturePresentation = player.clearGesturePresentation or function() end
   player.presentationState = player.presentationState
     or function(self)
@@ -252,6 +284,14 @@ local function baseOptions(overrides)
         gestureTick = nil,
         gestureOffsetY = 0,
       }
+    end
+  player.presentationStateInto = player.presentationStateInto
+    or function(self, out)
+      out.locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+      out.gesturePose = nil
+      out.gestureTick = nil
+      out.gestureOffsetY = 0
+      return out
     end
   return options
 end
@@ -3833,6 +3873,18 @@ function T.supplied_avatar_state_advances_once_per_fixed_tick_in_every_branch()
       collisionCandidates = function(self)
         return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
       end,
+      collisionCandidatesInto = function(self, out)
+        local current = out[1]
+        if current == nil then
+          current = {}
+          out[1] = current
+        end
+        current.fieldX = self.fieldX
+        current.fieldZ = self.fieldZ
+        current.surfaceId = self.surfaceId
+        out[2] = nil
+        return out
+      end,
       clearGesturePresentation = function() end,
       presentationState = function(self)
         local locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
@@ -3842,6 +3894,13 @@ function T.supplied_avatar_state_advances_once_per_fixed_tick_in_every_branch()
           gestureTick = nil,
           gestureOffsetY = 0,
         }
+      end,
+      presentationStateInto = function(self, out)
+        out.locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+        out.gesturePose = nil
+        out.gestureTick = nil
+        out.gestureOffsetY = 0
+        return out
       end,
     },
     transition = {

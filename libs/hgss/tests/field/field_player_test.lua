@@ -731,4 +731,489 @@ function T.physical_probe_occupancy_preserves_stable_source_identity()
   Assert.equal(queriedCandidate.sourceSurfaceId, 0)
 end
 
+function T.render_position_into_matches_the_snapshot_and_overwrites_caller_storage()
+  local p = player(runtimeMap(), 0, 4, 0)
+  tick(p, "east", "east")
+  local snapshot = p:renderPosition(0.5)
+  local out = { x = "stale", y = "stale", z = "stale" }
+  local returned = p:renderPositionInto(out, 0.5)
+  Assert.equal(returned, out, "renderPositionInto must return the caller-owned table")
+  Assert.equal(out.x, snapshot.x)
+  Assert.equal(out.y, snapshot.y)
+  Assert.equal(out.z, snapshot.z)
+
+  -- Advancing the player and reusing the same output table must overwrite it
+  -- with the new interpolation without disturbing the earlier snapshot.
+  local snapshotX, snapshotY, snapshotZ = snapshot.x, snapshot.y, snapshot.z
+  for _ = 2, 8 do
+    tick(p, "east")
+  end
+  p:renderPositionInto(out, 0.25)
+  Assert.isTrue(out.x ~= snapshotX or out.y ~= snapshotY or out.z ~= snapshotZ, "live output must be overwritten")
+  Assert.equal(snapshot.x, snapshotX, "an already-returned snapshot must not mutate on later reuse of live storage")
+  Assert.equal(snapshot.y, snapshotY, "an already-returned snapshot must not mutate on later reuse of live storage")
+  Assert.equal(snapshot.z, snapshotZ, "an already-returned snapshot must not mutate on later reuse of live storage")
+end
+
+-- presentationStateInto must overwrite every field presentationState()
+-- returns, including clearing an optional field a prior tick left populated
+-- on the caller's reused table (the stale-field regression the reuse
+-- contract must not introduce).
+function T.presentation_state_into_matches_the_snapshot_and_clears_stale_optional_fields()
+  local p = player(runtimeMap(), 0, 4, 0)
+  local out = { locomotionActive = true, gesturePose = "stale", gestureTick = 7, gestureOffsetY = 99 }
+  local snapshot = p:presentationState()
+  local returned = p:presentationStateInto(out)
+  Assert.equal(returned, out, "presentationStateInto must return the caller-owned table")
+  Assert.equal(out.locomotionActive, snapshot.locomotionActive)
+  Assert.isNil(out.gesturePose, "a stale gesture pose from a prior tick must not survive reuse")
+  Assert.isNil(out.gestureTick, "a stale gesture tick from a prior tick must not survive reuse")
+  Assert.equal(out.gestureOffsetY, snapshot.gestureOffsetY)
+
+  tick(p, "east", "east")
+  local walkingSnapshot = p:presentationState()
+  p:presentationStateInto(out)
+  Assert.equal(out.locomotionActive, walkingSnapshot.locomotionActive)
+end
+
+-- collisionCandidatesInto must overwrite the caller-owned array/records in
+-- place: candidate identities are distinct within one call, values match the
+-- allocating snapshot, and a shrinking candidate count clears the surplus
+-- index instead of leaving a stale record visible.
+function T.collision_candidates_into_matches_the_snapshot_and_shrinks_surplus_slots()
+  local p = player(runtimeMap(), 0, 4, 0, "east")
+  tick(p, "east", "east")
+  local snapshot = p:collisionCandidates()
+  Assert.equal(#snapshot, 2, "a mid-step player must report both current and destination candidates")
+
+  local out = {}
+  local returned = p:collisionCandidatesInto(out)
+  Assert.equal(returned, out, "collisionCandidatesInto must return the caller-owned array")
+  Assert.equal(#out, 2)
+  Assert.isFalse(out[1] == out[2], "two candidates in one call must not alias the same record")
+  Assert.deepEqual(out[1], snapshot[1])
+  Assert.deepEqual(out[2], snapshot[2])
+
+  local firstSlot = out[1]
+  for _ = 2, 8 do
+    tick(p, "east")
+  end
+  Assert.equal(p.motion, "idle")
+  local idleSnapshot = p:collisionCandidates()
+  Assert.equal(#idleSnapshot, 1)
+  p:collisionCandidatesInto(out)
+  Assert.equal(#out, 1, "an idle player must shrink the candidate array, not leave a stale second entry")
+  Assert.equal(out[1], firstSlot, "the surviving candidate slot identity is reused across calls")
+  Assert.deepEqual(out[1], idleSnapshot[1])
+end
+
+-- Allocating snapshot methods must remain independent: two calls return
+-- distinct tables, and later player mutation never retroactively changes an
+-- already-returned snapshot.
+function T.allocating_snapshot_methods_remain_independent_across_calls()
+  local p = player(runtimeMap(), 0, 4, 0)
+  local firstRender = p:renderPosition(1)
+  local firstPresentation = p:presentationState()
+  local firstCandidates = p:collisionCandidates()
+  tick(p, "east", "east")
+  local secondRender = p:renderPosition(1)
+  local secondPresentation = p:presentationState()
+  local secondCandidates = p:collisionCandidates()
+  Assert.isFalse(firstRender == secondRender, "renderPosition must allocate a fresh table per call")
+  Assert.isFalse(firstPresentation == secondPresentation, "presentationState must allocate a fresh table per call")
+  Assert.isFalse(firstCandidates == secondCandidates, "collisionCandidates must allocate a fresh array per call")
+  Assert.equal(firstRender.x, p.previousWorldX, "an earlier snapshot must not be mutated by later ticks")
+end
+
+-- Occupancy is an injected predicate so FieldPlayer never imports the actor
+-- manager; it only needs truthy/nil answers per destination cell.
+---@param map RuntimeFieldMap
+---@param x integer
+---@param z integer
+---@param surfaceId integer
+---@param occupantCells table<string, string>
+---@return FieldPlayer
+local function occupyingPlayer2(map, x, z, surfaceId, occupantCells)
+  local p = FieldPlayer.new({
+    currentMap = map,
+    fieldX = x,
+    fieldZ = z,
+    surfaceId = surfaceId,
+    facing = "east",
+    occupancy = function(candidate)
+      local key = candidate.fieldX .. ":" .. candidate.fieldZ .. ":" .. candidate.surfaceId
+      return occupantCells[key] or nil
+    end,
+  })
+  return p
+end
+
+function T.actor_on_the_resolved_destination_surface_blocks_the_step()
+  local p = occupyingPlayer2(runtimeMap(), 0, 4, 0, { ["1:4:1"] = "map:61:object:0" })
+  tick(p, "east", "east")
+  Assert.equal(p.facing, "east")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.actor_on_a_different_surface_does_not_block_the_same_cell()
+  -- The east step resolves onto surface 1; an occupant on surface 0 at the
+  -- same cell must not block it.
+  local p = occupyingPlayer2(runtimeMap(), 0, 4, 0, { ["1:4:0"] = "map:61:object:0" })
+  tick(p, "east", "east")
+  Assert.equal(p.motion, "walking")
+  for _ = 2, 8 do
+    tick(p, "east")
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.surfaceId, 1)
+end
+
+function T.terrain_rejection_takes_precedence_over_occupancy()
+  -- A disconnected height jump fails surface resolution before occupancy is
+  -- ever consulted.
+  local map = runtimeMap()
+  map.terrain.plates[2].distance = 5 * ROOT_HALF
+  local p = occupyingPlayer2(map, 0, 4, 0, { ["1:4:1"] = "map:61:object:0" })
+  tick(p, "east", "east")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.motion, "idle")
+end
+
+-- Flat plate at the given height over the given x range; the fixture map
+-- covers z 0..32 and keeps collision over 0..31.
+local function flatPlate2(id, minX, maxX, distance)
+  return {
+    id = id,
+    minX = minX,
+    minZ = 0,
+    maxX = maxX,
+    maxZ = 32,
+    normal = { x = 0, y = 1, z = 0 },
+    distance = distance,
+    slopeClass = "flat",
+  }
+end
+
+function T.malformed_terrain_failure_is_not_a_blocked_step()
+  -- The destination cell is inside permission coverage but no walkable
+  -- surface covers it: malformed terrain must propagate, not silently read
+  -- as a blocked step.
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 0),
+    flatPlate2(1, 2, 32, 0),
+  })
+  local p = player(map, 0, 4, 0)
+  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
+    p:tryStep("east")
+  end)
+end
+
+function T.ambiguous_terrain_failure_is_not_a_blocked_step()
+  -- Two equally-near surfaces cover the destination: ambiguous terrain must
+  -- propagate instead of being swallowed as an ordinary collision.
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 0),
+    flatPlate2(1, 1, 32, 0),
+    flatPlate2(2, 1, 32, 0),
+  })
+  local p = player(map, 0, 4, 0)
+  throwsCode("TERRAIN_SURFACE_AMBIGUOUS", function()
+    p:tryStep("east")
+  end)
+end
+
+function T.current_disconnected_terrain_failure_is_not_a_blocked_step()
+  -- The player's claimed surface does not cover the player's own position:
+  -- an inconsistent current terrain state must propagate.
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 2, 32, 0),
+    flatPlate2(1, 0, 32, 0),
+  })
+  local p = player(map, 0, 4, 0)
+  local err = throwsCode("TERRAIN_SURFACE_DISCONNECTED", function()
+    p:tryStep("east")
+  end)
+  Assert.equal(err.context.kind, "current-inconsistent")
+end
+
+function T.out_of_coverage_step_remains_blocked()
+  -- Stepping past the coverage edge is the intended edge-of-map contract: a
+  -- blocked move, not an error.
+  local p = player(runtimeMap(), 31, 4, 2, "east")
+  tick(p, "east", "east")
+  Assert.equal(p.fieldX, 31)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.occupancy_blocks_only_the_cell_it_names()
+  local p = occupyingPlayer2(runtimeMap(), 0, 4, 0, { ["3:4:2"] = "map:61:object:0" })
+  tick(p, "east", "east")
+  Assert.equal(p.motion, "walking")
+  for _ = 2, 16 do
+    tick(p, "east")
+  end
+  Assert.equal(p.fieldX, 2)
+end
+
+function T.scripted_step_walks_into_a_blocked_permission_cell()
+  local p = player(runtimeMap({ ["0:3"] = true }), 0, 4, 0)
+  Assert.isTrue(p:scriptedStep("north"))
+  Assert.equal(p.facing, "north")
+  Assert.equal(p.motion, "walking")
+  for _ = 1, 7 do
+    tick(p)
+    Assert.equal(p.motion, "walking")
+  end
+  tick(p)
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.fieldZ, 3)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.scripted_step_ignores_dynamic_occupancy()
+  local p = occupyingPlayer2(runtimeMap(), 0, 4, 0, { ["1:4:1"] = "map:61:object:0" })
+  Assert.isTrue(p:scriptedStep("east"))
+  for _ = 1, 8 do
+    tick(p)
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.surfaceId, 1)
+end
+
+function T.scripted_step_fails_without_a_destination_surface()
+  local p = player(runtimeMap(), 0, 4, 0)
+  Assert.isFalse(p:scriptedStep("west"))
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.fieldX, 0)
+end
+
+function T.scripted_step_rejects_an_elevation_jump()
+  local map = runtimeMap()
+  map.terrain.plates[2].distance = 5 * ROOT_HALF
+  local p = player(map, 0, 4, 0)
+  Assert.isFalse(p:scriptedStep("east"))
+  Assert.equal(p.motion, "idle")
+end
+
+function T.scripted_step_requires_an_idle_player()
+  local p = player(runtimeMap(), 0, 4, 0)
+  tick(p, "east", "east")
+  local ok, err = pcall(function()
+    p:scriptedStep("east")
+  end)
+  Assert.isFalse(ok, "a scripted step cannot begin mid-walk")
+  Assert.notNil(err)
+end
+
+-- These fixtures use the normalized HGSS behavior bytes that the production
+-- collision contract already carries. They deliberately keep permission open:
+-- traversal semantics must classify the behavior before ordinary stepping.
+local NAVIGATION_BEHAVIORS2 = {
+  riverWater = 16,
+  whirlpool = 17,
+  waterfall = 19,
+  seaWater = 21,
+  jumpEast = 56,
+  jumpNorth = 57,
+  jumpWest = 58,
+  jumpSouth = 59,
+  rockClimbEastWest = 75,
+  rockClimbNorthSouth = 76,
+}
+
+local function behaviorMap2(behavior, plates)
+  local map = runtimeMap(nil, plates)
+  map.collision.getLocal = function(_, x, z)
+    if x == 1 and z == 4 then
+      return { blocked = false, behavior = behavior }
+    end
+    return { blocked = false, behavior = 0 }
+  end
+  return map
+end
+
+function T.wrong_direction_and_invalid_ledge_landings_do_not_displace()
+  local wrongDirectionMap = behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast)
+  wrongDirectionMap.collision.getLocal = function(_, x, z)
+    return { blocked = false, behavior = x == 0 and z == 3 and NAVIGATION_BEHAVIORS2.jumpEast or 0 }
+  end
+  local wrongDirection = player(wrongDirectionMap, 0, 4, 0, "north")
+  tick(wrongDirection, "north", "north")
+  Assert.equal(wrongDirection.fieldX, 0)
+  Assert.equal(wrongDirection.fieldZ, 4)
+  Assert.equal(wrongDirection.motion, "idle")
+
+  local blockedLandingMap = behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast)
+  blockedLandingMap.collision.isBlockedLocal = function(_, x, z)
+    return x == 2 and z == 4
+  end
+  local blockedLanding = player(blockedLandingMap, 0, 4, 0, "east")
+  tick(blockedLanding, "east", "east")
+  Assert.equal(blockedLanding.fieldX, 0)
+  Assert.equal(blockedLanding.fieldZ, 4)
+  Assert.equal(blockedLanding.motion, "idle")
+
+  local occupiedLanding = player(behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast), 0, 4, 0, "east")
+  occupiedLanding.occupancy = function(candidate)
+    return candidate.fieldX == 2 and candidate.fieldZ == 4 and "map:61:object:0" or nil
+  end
+  tick(occupiedLanding, "east", "east")
+  Assert.equal(occupiedLanding.fieldX, 0)
+  Assert.equal(occupiedLanding.fieldZ, 4)
+  Assert.equal(occupiedLanding.motion, "idle")
+
+  local outOfCoverageMap = runtimeMap()
+  outOfCoverageMap.collision.getLocal = function(_, x, z)
+    return { blocked = false, behavior = x == 31 and z == 4 and NAVIGATION_BEHAVIORS2.jumpEast or 0 }
+  end
+  local outOfCoverage = player(outOfCoverageMap, 30, 4, 2, "east")
+  tick(outOfCoverage, "east", "east")
+  Assert.equal(outOfCoverage.fieldX, 30)
+  Assert.equal(outOfCoverage.fieldZ, 4)
+  Assert.equal(outOfCoverage.motion, "idle")
+
+  local malformedLanding =
+    behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast, { flatPlate2(0, 0, 1, 0), flatPlate2(1, 3, 32, 0) })
+  local malformedPlayer = player(malformedLanding, 0, 4, 0, "east")
+  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
+    malformedPlayer:tryStep("east")
+  end)
+end
+
+function T.field_move_behaviors_do_not_start_ordinary_walking()
+  for _, behavior in pairs({
+    NAVIGATION_BEHAVIORS2.riverWater,
+    NAVIGATION_BEHAVIORS2.seaWater,
+    NAVIGATION_BEHAVIORS2.waterfall,
+    NAVIGATION_BEHAVIORS2.whirlpool,
+    NAVIGATION_BEHAVIORS2.rockClimbEastWest,
+    NAVIGATION_BEHAVIORS2.rockClimbNorthSouth,
+  }) do
+    local p = player(behaviorMap2(behavior), 0, 4, 0, "east")
+    tick(p, "east", "east")
+    Assert.equal(p.fieldX, 0)
+    Assert.equal(p.fieldZ, 4)
+    Assert.equal(p.motion, "idle")
+    Assert.equal(p.facing, "east")
+  end
+end
+
+function T.direction_matching_ledge_commits_a_two_tile_sixteen_tick_jump()
+  local p = player(behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast), 0, 4, 0, "east")
+  local startX, startZ = p.fieldX, p.fieldZ
+  local startWorldX, startWorldY = p.worldX, p.worldY
+
+  tick(p, "east", "east")
+  Assert.equal(p.motion, "jumping")
+  for _ = 1, 14 do
+    tick(p, "east")
+    Assert.equal(p.fieldX, startX)
+    Assert.equal(p.fieldZ, startZ)
+    Assert.equal(p.motion, "jumping")
+    Assert.isTrue(p.worldX > startWorldX and p.worldX < startWorldX + 2)
+    Assert.isTrue(p.worldY > startWorldY)
+  end
+
+  local committed = p:updateFixed({ heldDirection = "east" })
+  Assert.isTrue(committed)
+  Assert.equal(p.fieldX, startX + 2)
+  Assert.equal(p.fieldZ, startZ)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.normal_steps_preserve_source_surface_identity_for_effects()
+  local map = runtimeMap()
+  map.terrain:plate(0).cellKey = "0:0"
+  map.terrain:plate(0).sourceSurfaceId = 0
+  map.terrain:plate(1).cellKey = "0:0"
+  map.terrain:plate(1).sourceSurfaceId = 1
+  local p = player(map, 0, 4, 0, "east")
+
+  Assert.isTrue(p:tryStep("east"))
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+    p:updateFixed({})
+  end
+
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.committedSourceCellKey, "0:0")
+  Assert.equal(p.committedSourceSurfaceId, 1)
+end
+
+function T.direction_tap_during_a_turn_is_not_remembered_by_the_player()
+  local p = player(runtimeMap(), 0, 4, 0, "south")
+  tick(p, "north", "north")
+  Assert.equal(p.motion, "turning")
+  tick(p, nil, "west")
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.facing, "north")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.fieldZ, 4)
+
+  tick(p)
+  Assert.equal(p.motion, "idle")
+  Assert.equal(p.facing, "north")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.fieldZ, 4)
+end
+
+function T.physical_probe_occupancy_preserves_stable_source_identity()
+  local queriedCandidate
+  local map = runtimeMap()
+  map.terrain.plates[1].cellKey = "0:0"
+  map.terrain.plates[1].sourceSurfaceId = 0
+  local coverage = {
+    index = {},
+    matrixMemberId = 1,
+    loadCell = function() end,
+    presentationLoader = nil,
+    cells = {},
+    anchorX = 0,
+    anchorZ = 0,
+    origin = { x = 0, y = 0, z = 0 },
+    region = {},
+    terrainDependencyHash = "test-coverage",
+    released = false,
+  }
+  ---@cast coverage FieldCoverage
+  map.coverage = coverage
+  function coverage:containsGlobal()
+    return false
+  end
+  map.probePhysicalCell = function()
+    return {
+      cellKey = "1:0",
+      sourceSurfaceId = 0,
+      worldY = 0,
+      collision = { blocked = false },
+    }
+  end
+  map.fieldRegion = {
+    sourceSurface = function(_, cellKey, sourceSurfaceId)
+      if cellKey == "1:0" and sourceSurfaceId == 0 then
+        return 7
+      end
+      return nil
+    end,
+  }
+  local p = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 31,
+    fieldZ = 4,
+    surfaceId = 0,
+    facing = "east",
+    occupancy = function(candidate)
+      queriedCandidate = candidate
+      return candidate.cellKey == "1:0" and candidate.sourceSurfaceId == 0 and "solid-destination" or nil
+    end,
+  })
+
+  Assert.isFalse(p:tryStep("east"))
+  Assert.equal(queriedCandidate.fieldX, 32)
+  Assert.equal(queriedCandidate.fieldZ, 4)
+  Assert.isNil(queriedCandidate.surfaceId)
+  Assert.equal(queriedCandidate.cellKey, "1:0")
+  Assert.equal(queriedCandidate.sourceSurfaceId, 0)
+end
+
 return { tests = T }
