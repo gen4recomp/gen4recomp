@@ -770,6 +770,7 @@ function T.malformed_publication_metadata_leaves_live_roots_untouched()
   end)
 
   Assert.isFalse(ok, "malformed publication metadata must stop stage initialization")
+  Assert.notNil(err)
   Assert.isTrue(Errors.is(err), "malformed publication metadata must raise a structured storage error")
   Assert.equal(c:read(roots[1] .. "/value"), "alpha-original")
   Assert.equal(c:read(roots[2] .. "/value"), "beta-original")
@@ -789,8 +790,9 @@ function T.empty_publication_manifest_is_structured_and_non_destructive()
   end)
 
   Assert.isFalse(ok, "an empty publication manifest must stop recovery")
+  Assert.notNil(err)
   Assert.isTrue(Errors.is(err), "an empty publication manifest must raise a structured error")
-  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
+  Assert.equal(assert(err).code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
   Assert.equal(c:read(root .. "/value"), "live-original")
   Assert.equal(backend.files[siblingRoot(root, ".__g4old") .. "/value"], "old-original")
 end
@@ -1051,7 +1053,7 @@ function T.contradictory_root_metadata_fails_before_live_mutation()
 
   Assert.isFalse(ok)
   Assert.isTrue(Errors.is(err))
-  Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
+  Assert.equal(assert(err).code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
   Assert.equal(c:read(root .. "/value"), "live")
   Assert.equal(backend.files[siblingRoot(root, ".__g4old") .. "/value"], "old")
 end
