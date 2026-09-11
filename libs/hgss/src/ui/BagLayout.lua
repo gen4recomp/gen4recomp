@@ -39,7 +39,7 @@ local function checkManifest(manifest)
   local interactive = assert(manifest.interactive, "the bag manifest must carry its interactive pane")
   assert(type(interactive) == "table", "the bag manifest must carry its interactive pane")
   local tabs =
-    assert(interactive.pocketTabs and interactive.pocketTabs.tabs, "the manifest must carry eight tab rectangles")
+    assert(interactive.pocketTabs and interactive.pocketTabs.rects, "the manifest must carry eight tab rectangles")
   assert(#tabs == 8, "the manifest must carry eight tab rectangles")
   local slots =
     assert(interactive.itemSlots and interactive.itemSlots.slots, "the manifest must carry six slot records")
@@ -186,7 +186,7 @@ function BagLayout.resolve(spec)
   local single = world or topology.surfaces[1]
   assert(single ~= nil, "bag layout requires at least one surface")
 
-  local tabs = interactive.pocketTabs.tabs
+  local tabs = interactive.pocketTabs.rects
   local slots = interactive.itemSlots.slots
   local cancelRect = interactive.cancel
   local fallbackFrame = interactive.overlays.descriptionFallback.frame

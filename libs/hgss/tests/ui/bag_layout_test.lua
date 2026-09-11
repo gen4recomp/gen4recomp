@@ -45,9 +45,9 @@ local function manifest()
   end
   return {
     interactive = {
-      pocketTabs = { tabs = tabs },
+      pocketTabs = { rects = tabs },
       itemSlots = { slots = slots },
-      pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 } },
+      pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
       cancel = { x = 192, y = 168, width = 56, height = 16 },
       overlays = {
         descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
@@ -327,6 +327,27 @@ function T.toss_states_hide_the_browsing_targets_underneath()
     local cancel = assert(resolved.interactiveHitTest(x, y, modal), state .. " keeps its cancel target")
     Assert.equal(cancel.kind, "cancel")
   end
+end
+
+function T.fractional_scale_hit_tests_cover_the_cancel_center_and_far_edge()
+  local layoutManifest = manifest()
+  local resolved = BagLayout.resolve({ topology = oneDisplay(960, 540, false), manifest = layoutManifest })
+  Assert.equal(resolved.mode, "horizontal")
+  local interactive = resolved.interactive
+  Assert.isTrue(interactive.scale ~= math.floor(interactive.scale), "the wide composition uses a fractional scale")
+  local cancel = layoutManifest.interactive.cancel
+  local function hostAt(logicalX, logicalY)
+    return interactive.frame.x + logicalX * interactive.scale, interactive.frame.y + logicalY * interactive.scale
+  end
+  local state = browsing()
+  local centerX, centerY = hostAt(cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
+  local center = assert(resolved.interactiveHitTest(centerX, centerY, state), "the cancel center resolves")
+  Assert.equal(center.kind, "cancel")
+  local edgeX, edgeY = hostAt(cancel.x + cancel.width - 0.25, cancel.y + cancel.height - 0.25)
+  local edge = assert(resolved.interactiveHitTest(edgeX, edgeY, state), "the cancel far edge resolves")
+  Assert.equal(edge.kind, "cancel")
+  local outsideX, outsideY = hostAt(cancel.x + cancel.width + 0.5, cancel.y + cancel.height / 2)
+  Assert.isNil(resolved.interactiveHitTest(outsideX, outsideY, state), "points past the cancel edge carry no target")
 end
 
 return { tests = T }
