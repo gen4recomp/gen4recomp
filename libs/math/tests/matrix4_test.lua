@@ -134,4 +134,48 @@ function T.orthographic_maps_bounds_to_ndc()
   Assert.isTrue(approx(right, 1) and approx(top, 1) and approx(far, 1), "maximum bounds")
 end
 
+function T.perspectiveInto_matches_the_legacy_allocating_perspective()
+  local expected = Matrix4.perspective(math.rad(75), 16 / 9, 0.5, 500)
+  local buffer = Matrix4.newBuffer()
+  local result = Matrix4.perspectiveInto(buffer, math.rad(75), 16 / 9, 0.5, 500)
+  Assert.equal(result, buffer, "perspectiveInto returns its output buffer")
+  local actual = Matrix4.toArrayBuffer(buffer)
+  for index = 1, 16 do
+    Assert.near(actual[index], expected[index], 1e-9, "perspective component " .. index)
+  end
+end
+
+function T.orthographicInto_matches_the_legacy_allocating_orthographic()
+  local expected = Matrix4.orthographic(-4, 6, -3, 7, 2, 12)
+  local buffer = Matrix4.newBuffer()
+  local result = Matrix4.orthographicInto(buffer, -4, 6, -3, 7, 2, 12)
+  Assert.equal(result, buffer, "orthographicInto returns its output buffer")
+  local actual = Matrix4.toArrayBuffer(buffer)
+  for index = 1, 16 do
+    Assert.near(actual[index], expected[index], 1e-9, "orthographic component " .. index)
+  end
+end
+
+function T.lookAtInto_matches_the_legacy_allocating_lookAt()
+  local expected = Matrix4.lookAt({ 3, 4, 5 }, { 0, 1, 0 }, { 0, 1, 0 })
+  local buffer = Matrix4.newBuffer()
+  local result = Matrix4.lookAtInto(buffer, 3, 4, 5, 0, 1, 0, 0, 1, 0)
+  Assert.equal(result, buffer, "lookAtInto returns its output buffer")
+  local actual = Matrix4.toArrayBuffer(buffer)
+  for index = 1, 16 do
+    Assert.near(actual[index], expected[index], 1e-9, "lookAt component " .. index)
+  end
+end
+
+function T.toArrayBufferInto_overwrites_an_existing_array_in_place()
+  local buffer = Matrix4.translateInto(Matrix4.newBuffer(), 2, 3, 4)
+  local out = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 }
+  local result = Matrix4.toArrayBufferInto(out, buffer)
+  Assert.equal(result, out, "toArrayBufferInto returns the same table it was given")
+  local expected = Matrix4.toArrayBuffer(buffer)
+  for index = 1, 16 do
+    Assert.equal(out[index], expected[index], "component " .. index)
+  end
+end
+
 return { tests = T }

@@ -31,7 +31,19 @@ local function buildRenders(def)
   return renderMeshesById
 end
 
----@return FieldCamera
+-- Test-only camera shape: the fake supplies the gameplay-visible fields
+-- the renderer reads; the constructor-owned matrix buffers stay absent.
+---@class ModelInstanceRenderTestCamera : FieldCamera
+---@field _projectionCache number[]|nil
+---@field _billboardProjectionCache number[]|nil
+---@field _viewBuffer Matrix4.Buffer|nil
+---@field _projectionBuffer Matrix4.Buffer|nil
+---@field _billboardProjectionBuffer Matrix4.Buffer|nil
+---@field _viewArray number[]|nil
+---@field _projectionArray number[]|nil
+---@field _billboardProjectionArray number[]|nil
+
+---@return ModelInstanceRenderTestCamera
 local function identityCamera()
   local identity = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
   return {
@@ -64,7 +76,7 @@ local function identityCamera()
     billboardProjection = function()
       return identity
     end,
-  } --[[@as FieldCamera]]
+  } --[[@as ModelInstanceRenderTestCamera]]
 end
 
 local function drawInstance(renderer, runtime, instance, alpha)

@@ -2283,6 +2283,14 @@ function T.choreo_hold_ticks_never_replay_camera_or_player_interpolation()
     return math.abs(a.x - b.x) <= 1e-9 and math.abs(a.y - b.y) <= 1e-9 and math.abs(a.z - b.z) <= 1e-9
   end
 
+  local function snapshot(view)
+    local copy = {}
+    for i = 1, 16 do
+      copy[i] = view[i]
+    end
+    return copy
+  end
+
   local function runDoorClose(withVisual)
     local camera = FieldCamera.new(profile, { initialTarget = { x = 0, y = 0, z = 0 } })
     local map = {
@@ -2335,7 +2343,8 @@ function T.choreo_hold_ticks_never_replay_camera_or_player_interpolation()
     }))
     -- Prime the interpolation pair with a real movement.
     camera:updateFixed({ x = 2, y = 0, z = 2 })
-    Assert.isFalse(matrixEquals(camera:view(0), camera:view(1)), "the primed pair differs")
+    local primedPrevious = snapshot(camera:view(0))
+    Assert.isFalse(matrixEquals(primedPrevious, camera:view(1)), "the primed pair differs")
     -- The first stationary door-close tick collapses the player's final step;
     -- the second also collapses the camera pair after its last real target.
     session:updateFixed({})
@@ -2344,11 +2353,13 @@ function T.choreo_hold_ticks_never_replay_camera_or_player_interpolation()
       "the first door-close tick settles player interpolation"
     )
     session:updateFixed({})
-    Assert.isTrue(matrixEquals(camera:view(0), camera:view(1)), "no replayed interpolation while the door closes")
+    local collapsedPrevious = snapshot(camera:view(0))
+    Assert.isTrue(matrixEquals(collapsedPrevious, camera:view(1)), "no replayed interpolation while the door closes")
     -- The completion tick also samples before the session consumes it.
     transition.completed = { destinationMapId = 60 }
     session:updateFixed({})
-    Assert.isTrue(matrixEquals(camera:view(0), camera:view(1)), "the completion tick samples the camera too")
+    local completedPrevious = snapshot(camera:view(0))
+    Assert.isTrue(matrixEquals(completedPrevious, camera:view(1)), "the completion tick samples the camera too")
   end
 
   runDoorClose(true)

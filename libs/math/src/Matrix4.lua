@@ -21,7 +21,11 @@
 ---@field rotateZInto fun(out: Matrix4.Buffer, rad: number): Matrix4.Buffer
 ---@field linearInto fun(out: Matrix4.Buffer, src: Matrix4.Buffer): Matrix4.Buffer
 ---@field transformPointBuffer fun(m: Matrix4.Buffer, x: number, y: number, z: number): number, number, number
+---@field perspectiveInto fun(out: Matrix4.Buffer, fovY: number, aspect: number, near: number, far: number): Matrix4.Buffer
+---@field orthographicInto fun(out: Matrix4.Buffer, left: number, right: number, bottom: number, top: number, near: number, far: number): Matrix4.Buffer
+---@field lookAtInto fun(out: Matrix4.Buffer, eyeX: number, eyeY: number, eyeZ: number, centerX: number, centerY: number, centerZ: number, upX: number, upY: number, upZ: number): Matrix4.Buffer
 ---@field toArrayBuffer fun(m: Matrix4.Buffer): Matrix4.Values
+---@field toArrayBufferInto fun(out: Matrix4.Values, buffer: Matrix4.Buffer): Matrix4.Values
 ---@field identity fun(): Matrix4.Values
 ---@field multiply fun(a: Matrix4.Values, b: Matrix4.Values): Matrix4.Values
 ---@field transformPoint fun(m: Matrix4.Values, x: number, y: number, z: number): number, number, number
@@ -190,6 +194,85 @@ function Matrix4.toArrayBuffer(m)
     a[i + 1] = values[i]
   end
   return a
+end
+
+function Matrix4.toArrayBufferInto(out, buffer)
+  local m = buffer.m
+  for i = 0, 15 do
+    out[i + 1] = m[i]
+  end
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param fovY number
+---@param aspect number
+---@param near number
+---@param far number
+---@return Matrix4.Buffer
+function Matrix4.perspectiveInto(out, fovY, aspect, near, far)
+  local f = 1 / math.tan(fovY / 2)
+  local m = out.m
+  m[0], m[1], m[2], m[3] = f / aspect, 0, 0, 0
+  m[4], m[5], m[6], m[7] = 0, f, 0, 0
+  m[8], m[9], m[10], m[11] = 0, 0, (far + near) / (near - far), -1
+  m[12], m[13], m[14], m[15] = 0, 0, (2 * far * near) / (near - far), 0
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param left number
+---@param right number
+---@param bottom number
+---@param top number
+---@param near number
+---@param far number
+---@return Matrix4.Buffer
+function Matrix4.orthographicInto(out, left, right, bottom, top, near, far)
+  assert(right ~= left, "orthographic width must be non-zero")
+  assert(top ~= bottom, "orthographic height must be non-zero")
+  assert(far ~= near, "orthographic depth must be non-zero")
+  local m = out.m
+  m[0], m[1], m[2], m[3] = 2 / (right - left), 0, 0, 0
+  m[4], m[5], m[6], m[7] = 0, 2 / (top - bottom), 0, 0
+  m[8], m[9], m[10], m[11] = 0, 0, -2 / (far - near), 0
+  m[12], m[13], m[14], m[15] =
+    -(right + left) / (right - left), -(top + bottom) / (top - bottom), -(far + near) / (far - near), 1
+  return out
+end
+
+---@param out Matrix4.Buffer
+---@param eyeX number
+---@param eyeY number
+---@param eyeZ number
+---@param centerX number
+---@param centerY number
+---@param centerZ number
+---@param upX number
+---@param upY number
+---@param upZ number
+---@return Matrix4.Buffer
+function Matrix4.lookAtInto(out, eyeX, eyeY, eyeZ, centerX, centerY, centerZ, upX, upY, upZ)
+  local fx, fy, fz = centerX - eyeX, centerY - eyeY, centerZ - eyeZ
+  local fLen = math.sqrt(fx * fx + fy * fy + fz * fz)
+  assert(fLen > 0, "cannot normalize a zero-length vector")
+  fx, fy, fz = fx / fLen, fy / fLen, fz / fLen
+  local sx = fy * upZ - fz * upY
+  local sy = fz * upX - fx * upZ
+  local sz = fx * upY - fy * upX
+  local sLen = math.sqrt(sx * sx + sy * sy + sz * sz)
+  assert(sLen > 0, "cannot normalize a zero-length vector")
+  sx, sy, sz = sx / sLen, sy / sLen, sz / sLen
+  local ux = sy * fz - sz * fy
+  local uy = sz * fx - sx * fz
+  local uz = sx * fy - sy * fx
+  local m = out.m
+  m[0], m[1], m[2], m[3] = sx, ux, -fx, 0
+  m[4], m[5], m[6], m[7] = sy, uy, -fy, 0
+  m[8], m[9], m[10], m[11] = sz, uz, -fz, 0
+  m[12], m[13], m[14], m[15] =
+    -(sx * eyeX + sy * eyeY + sz * eyeZ), -(ux * eyeX + uy * eyeY + uz * eyeZ), fx * eyeX + fy * eyeY + fz * eyeZ, 1
+  return out
 end
 
 ---@return Matrix4.Values
