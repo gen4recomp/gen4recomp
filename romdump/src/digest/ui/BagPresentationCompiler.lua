@@ -343,4 +343,44 @@ function BagPresentationCompiler.compileWidgets(config)
   }
 end
 
+-- Publish the audited global material registers in manifest-ready
+-- semantic form. The source facts are raw RGB555 words from the setup
+-- immediates; each register normalizes to its 0..31 channel triple here
+-- so no RGB555 packing reaches the runtime manifest.
+---@param config table<string, unknown>
+---@return table<string, unknown>
+function BagPresentationCompiler.compileMaterials(config)
+  assert(type(config) == "table" and type(config.presentation) == "table", "compileMaterials requires a source config")
+  local materials = config.presentation.materials
+  if type(materials) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag presentation carries no material registers", {})
+  end
+  for key in pairs(materials) do
+    if key ~= "diffuse" and key ~= "ambient" and key ~= "specular" and key ~= "emission" then
+      Errors.raise(
+        BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+        "bag material register " .. tostring(key) .. " is not audited",
+        {}
+      )
+    end
+  end
+  local out = {}
+  for _, register in ipairs({ "diffuse", "ambient", "specular", "emission" }) do
+    local word = materials[register]
+    if type(word) ~= "number" or word % 1 ~= 0 or word < 0 or word > 0x7FFF then
+      Errors.raise(
+        BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+        "bag material register " .. register .. " is not an RGB555 word",
+        {}
+      )
+    end
+    out[register] = {
+      r = word % 32,
+      g = math.floor(word / 32) % 32,
+      b = math.floor(word / 1024) % 32,
+    }
+  end
+  return out
+end
+
 return BagPresentationCompiler

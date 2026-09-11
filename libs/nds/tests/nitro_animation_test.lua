@@ -7,7 +7,6 @@ local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local NitroBuilder = require("tests.support.NitroBuilder")
 local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
-local NitroCurve = require("libs.nds.src.nitro.g3d.NitroCurve")
 local Nsbca = require("libs.nds.src.nitro.g3d.Nsbca")
 local Nsbta = require("libs.nds.src.nitro.g3d.Nsbta")
 local Nsbtp = require("libs.nds.src.nitro.g3d.Nsbtp")
@@ -207,17 +206,23 @@ end
 function T.jnt_compressed_rotation()
   local res, r = decodeOne(AnimationFixture.jntCompressed())
   -- Key 0 -> compressed entry {0x2000, 0x2000, 0, 0x1003, 0x1005}.
+  -- getRotDataByIdx_ packs all five low-3-bit remainders as
+  -- (e3&7)|((e2&7)<<3)|((e1&7)<<6)|((e0&7)<<9)|((e4&7)<<12), then keeps
+  -- only the low 13 bits sign-extended (the trailing lsl #19 / asr #19):
+  -- a 13-bit signed rotation element, never packed << 19.
   local s = jnt(res, r, 0, 0)
   Assert.equal(s.rot[1], 0x400) -- 0x2000 >> 3
   Assert.equal(s.rot[2], 0x400)
   Assert.equal(s.rot[3], 0)
   Assert.equal(s.rot[4], 0x200) -- 0x1003 >> 3
   Assert.equal(s.rot[5], 0x200) -- 0x1005 >> 3
-  local packed = 3 + 5 * 512 -- (e3&7) | (e4&7)<<9
-  Assert.equal(s.rot[6], packed * 524288) -- cell 5 = packed << 19
-  -- Row 2 = cross product of rows 0 x 1.
-  Assert.equal(s.rot[7], math.floor(NitroCurve.mul32(s.rot[2], s.rot[6]) / 4096))
-  Assert.equal(s.rot[8], -math.floor(NitroCurve.mul32(s.rot[1], s.rot[6]) / 4096))
+  local packed = 3 + 0 * 8 + 0 * 64 + 0 * 512 + 5 * 4096 -- 0x5003
+  Assert.equal(packed % 8192, 4099)
+  Assert.equal(s.rot[6], 4099 - 8192) -- bit 12 set: sign-extended to -4093
+  -- Row 2 = cross product of rows 0 x 1 (32-bit wrap, asr 12):
+  -- (0x400 * -4093 - 0) >> 12 = -1024, (0 - 0x400 * -4093) >> 12 = 1023.
+  Assert.equal(s.rot[7], -1024)
+  Assert.equal(s.rot[8], 1023)
   Assert.equal(s.rot[9], 0) -- rows share the (x,y) plane
 end
 

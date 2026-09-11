@@ -200,6 +200,12 @@ local function bagManifest()
             { x = 1, y = 0, z = 0 },
           },
         },
+        materials = {
+          diffuse = { r = 15, g = 15, b = 15 },
+          ambient = { r = 10, g = 10, b = 10 },
+          specular = { r = 15, g = 15, b = 15 },
+          emission = { r = 15, g = 15, b = 15 },
+        },
       },
     },
     interactive = {

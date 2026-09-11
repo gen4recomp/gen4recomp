@@ -562,6 +562,12 @@ local function syntheticBundle(marker)
             { x = 1, y = 0, z = 0 },
           },
         },
+        materials = {
+          diffuse = { r = 15, g = 15, b = 15 },
+          ambient = { r = 10, g = 10, b = 10 },
+          specular = { r = 15, g = 15, b = 15 },
+          emission = { r = 15, g = 15, b = 15 },
+        },
       },
     },
     interactive = {
@@ -685,6 +691,12 @@ function T.writer_publishes_the_class_and_reports_ready()
   for _, vector in ipairs(loaded.hero.presentation.lights.vectors) do
     Assert.deepEqual(vector, { x = 1, y = 0, z = 0 }, "published light vectors must round-trip")
   end
+  Assert.deepEqual(loaded.hero.presentation.materials, {
+    diffuse = { r = 15, g = 15, b = 15 },
+    ambient = { r = 10, g = 10, b = 10 },
+    specular = { r = 15, g = 15, b = 15 },
+    emission = { r = 15, g = 15, b = 15 },
+  }, "published material registers must round-trip")
   Assert.deepEqual(
     cacheFs:loadLua(BagCache.provenancePath()),
     bundle.dependencies,
