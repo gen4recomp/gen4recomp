@@ -54,6 +54,21 @@ function T.stages_finalized_mesh_data_verbatim()
   Assert.equal(ffi.string(stored:getFFIPointer(), stored:getSize()), payload, "staged bytes are unchanged")
 end
 
+function T.canonical_scene_can_reuse_a_live_shared_model_descriptor()
+  local backend = FakeCache.new()
+  local c = CacheFs.forVersion("heartgold", backend)
+  local bundle = Bundle.minimal()
+  local modelKey = bundle.scene.buildingInstances[1].modelKey
+  local modelDescriptor = assert(bundle.models[modelKey])
+  bundle.canonicalCells = true
+  bundle.collision = nil
+  bundle.terrain = nil
+  bundle.models = {}
+  c:writeLua(MapAssetCache.modelPath(modelKey), modelDescriptor)
+
+  Assert.equal(MapCacheWriter.write(c, bundle), bundle.marker)
+end
+
 function T.writes_neighbor_collision_and_terrain_artifacts()
   local c = CacheFs.forVersion("heartgold", FakeCache.new())
   local bundle = Bundle.minimal(60)

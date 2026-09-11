@@ -148,8 +148,15 @@ local function persist(prepared, bundle)
   if type(scene) ~= "table" then
     Errors.raise(AssetErrors.MAP_CACHE_READBACK_FAILED, "scene.lua did not read back as a table", { mapId = mapId })
   end
+  local function loadReferenceLua(_, path)
+    if stage:exists(path, "file") then
+      return stage:loadLua(path)
+    end
+    return cacheFs:loadLua(path)
+  end
+  local referenceFs = { loadLua = loadReferenceLua }
   for _, path in
-    ipairs(MapAssetCache.referencedPaths(scene --[[@as MapAssetCache.Scene]], stage))
+    ipairs(MapAssetCache.referencedPaths(scene --[[@as MapAssetCache.Scene]], referenceFs))
   do
     if not stage:exists(path) and not cacheFs:exists(path) then
       Errors.raise(
