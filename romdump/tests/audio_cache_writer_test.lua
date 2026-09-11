@@ -214,15 +214,17 @@ T["failed rebuild preserves the previous audio artifact"] = function()
 end
 
 -- A rename failure after publish begins must not trigger writer-level stage
--- cleanup: the aside root in the stage is the only remaining copy of the
--- last-known-good audio class.
+-- cleanup: the adjacent old root remains recovery material.
 T["publish failure keeps the stage with recovery material"] = function()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   AudioCacheWriter.write(cache, AudioFixture.bundle())
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath:find("staging/heartgold/audio", 1, true) then
+    if
+      sourcePath == "heartgold/" .. AudioCache.dir() .. ".__g4next"
+      or sourcePath == "heartgold/" .. AudioCache.dir() .. ".__g4old"
+    then
       return false, "injected publish failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -235,7 +237,7 @@ T["publish failure keeps the stage with recovery material"] = function()
   Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
   Assert.notNil(backend:getInfo("staging/heartgold/audio"), "the stage is not removed once publish has begun")
   Assert.equal(
-    backend.files["staging/heartgold/audio/" .. AudioCache.dir() .. ".old/complete"],
+    backend.files["heartgold/" .. AudioCache.dir() .. ".__g4old/complete"],
     AudioCache.marker("rom-sha", "dep-sha"),
     "the last-known-good audio class stays in the stage as recovery material"
   )

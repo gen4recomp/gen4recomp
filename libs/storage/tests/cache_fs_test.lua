@@ -3,6 +3,8 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local StorageErrors = require("libs.storage.src.errors")
 local FakeCache = require("tests.support.FakeCache")
+local ConstrainedCache = require("tests.support.ConstrainedCache")
+local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local function cache(versionId, backend)
   return CacheFs.forVersion(versionId, backend or FakeCache.new())
@@ -235,12 +237,26 @@ local function staging(versionId, backend)
   return CacheFs.forStaging(versionId, backend)
 end
 
+local function assertPortableRenames(backend)
+  Assert.isTrue(#backend.renameLog > 0, "publication must use the backend rename seam")
+  for _, entry in ipairs(backend.renameLog) do
+    Assert.isFalse(entry.destinationExisted, "rename destination must be absent: " .. entry.destination)
+    if entry.sourceType == "directory" then
+      Assert.equal(
+        entry.sourceParent,
+        entry.destinationParent,
+        "directory rename must stay within one parent: " .. entry.source .. " -> " .. entry.destination
+      )
+    end
+  end
+end
+
 function T.staging_prefix_is_a_sibling_namespace()
-  Assert.equal(staging("heartgold"):prefix(), "staging/heartgold/")
-  Assert.equal(staging("soulsilver"):prefix(), "staging/soulsilver/")
+  Assert.equal(staging("heartgold"):prefix(), "heartgold.__g4next/")
+  Assert.equal(staging("soulsilver"):prefix(), "soulsilver.__g4next/")
   local backend = FakeCache.new()
   staging("heartgold", backend):write("romfs/a/0/0/2", "STAGE-DATA")
-  Assert.equal(backend.files["staging/heartgold/romfs/a/0/0/2"], "STAGE-DATA")
+  Assert.equal(backend.files["heartgold.__g4next/romfs/a/0/0/2"], "STAGE-DATA")
   Assert.isNil(backend.files["heartgold/romfs/a/0/0/2"], "live root must stay untouched")
 end
 
@@ -250,10 +266,10 @@ function T.remove_staged_tree_clears_staging_and_orphaned_old()
   local s = staging("heartgold", backend)
   c:write("romfs/a/0/0/2", "LIVE")
   s:write("romfs/a/0/0/2", "STAGE")
-  backend.files["staging/heartgold.old/romfs/x"] = "ORPHAN"
+  backend.files["heartgold.__g4old/romfs/x"] = "ORPHAN"
   c:removeStagedTree(s)
-  Assert.isNil(backend.files["staging/heartgold/romfs/a/0/0/2"], "staging must be cleared")
-  Assert.isNil(backend.files["staging/heartgold.old/romfs/x"], "orphaned old root must be cleared")
+  Assert.isNil(backend.files["heartgold.__g4next/romfs/a/0/0/2"], "staging must be cleared")
+  Assert.isNil(backend.files["heartgold.__g4old/romfs/x"], "orphaned old root must be cleared")
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "LIVE", "live root must stay untouched")
 end
 
@@ -270,9 +286,9 @@ function T.publish_from_stage_replaces_live_root()
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "NEW")
   Assert.equal(backend.files["heartgold/rom-dump.complete"], "NEW-MARKER")
   Assert.equal(backend.files["heartgold/data/generated/rom_metadata.lua"], "NEW-META")
-  Assert.isNil(backend.files["staging/heartgold/romfs/a/0/0/2"], "staging root must be gone")
-  Assert.isNil(backend.dirs["staging/heartgold"], "staging root must be gone")
-  Assert.isNil(backend.files["staging/heartgold.old/romfs/a/0/0/2"], "previous root must be gone")
+  Assert.isNil(backend.files["heartgold.__g4next/romfs/a/0/0/2"], "staging root must be gone")
+  Assert.isNil(backend.dirs["heartgold.__g4next"], "staging root must be gone")
+  Assert.isNil(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "previous root must be gone")
 end
 
 function T.publish_from_stage_handles_fresh_import()
@@ -283,7 +299,129 @@ function T.publish_from_stage_handles_fresh_import()
   s:write("rom-dump.complete", "MARKER")
   c:publishFromStage(s)
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "FIRST")
-  Assert.isNil(backend.files["staging/heartgold/romfs/a/0/0/2"])
+  Assert.isNil(backend.files["heartgold.__g4next/romfs/a/0/0/2"])
+end
+
+function T.whole_version_publication_respects_restricted_directory_renames()
+  local backend = ConstrainedCache.new()
+  local live = cache("heartgold", backend)
+  local stage = staging("heartgold", backend)
+  live:write("romfs/old.bin", "old")
+  live:write("rom-dump.complete", "old-marker")
+  stage:write("romfs/new.bin", "new")
+  stage:write("rom-dump.complete", "new-marker")
+
+  local ok, err = pcall(function()
+    live:publishFromStage(stage)
+  end)
+  Assert.isTrue(ok, tostring(err))
+  Assert.equal(live:read("romfs/new.bin"), "new")
+  Assert.equal(live:read("rom-dump.complete"), "new-marker")
+  Assert.isNil(backend:getInfo("heartgold.__g4next"))
+  Assert.isNil(backend:getInfo("heartgold.__g4old"))
+  Assert.isNil(backend:getInfo("staging/heartgold"))
+  assertPortableRenames(backend)
+end
+
+function T.file_root_publication_moves_aside_existing_file_before_replacement()
+  local backend = ConstrainedCache.new()
+  local live = cache("heartgold", backend)
+  local fileRoot = "data/generated/map-index.lua"
+  local first = ArtifactPublisher.begin(live, "map-index", { fileRoot })
+  live:write(fileRoot, "old-index")
+  first.stage:write(fileRoot, "new-index")
+
+  local ok, err = pcall(function()
+    first:publish()
+  end)
+  Assert.isTrue(ok, tostring(err))
+  Assert.equal(live:read(fileRoot), "new-index")
+  Assert.isNil(backend:getInfo("heartgold/" .. fileRoot .. ".__g4next"))
+  Assert.isNil(backend:getInfo("heartgold/" .. fileRoot .. ".__g4old"))
+
+  local second = ArtifactPublisher.begin(live, "map-index", { fileRoot })
+  second.stage:write(fileRoot, "replacement-index")
+  backend:failNextRename("heartgold/" .. fileRoot .. ".__g4next")
+  local publishErr = Assert.throws(function()
+    second:publish()
+  end)
+  Assert.isTrue(Errors.is(publishErr))
+  Assert.equal(publishErr.code, StorageErrors.CACHE_REPLACE_FAILED)
+  Assert.equal(live:read(fileRoot), "new-index", "failed replacement restores the previous file")
+  Assert.isNil(backend:getInfo("heartgold/" .. fileRoot .. ".__g4old"))
+  assertPortableRenames(backend)
+end
+
+function T.candidate_copy_preserves_nested_files_and_empty_directories()
+  local backend = ConstrainedCache.new()
+  local live = cache("heartgold", backend)
+  local root = "data/generated/field/maps"
+  local payload = "persisted\0bytes"
+  local tx = ArtifactPublisher.begin(live, "field-maps", { root })
+  tx.stage:write(root .. "/nested/value.bin", payload)
+  tx.stage:createDirectory(root .. "/empty")
+
+  tx:publish()
+
+  Assert.equal(live:read(root .. "/nested/value.bin"), payload)
+  Assert.notNil(backend:getInfo("heartgold/" .. root .. "/empty"))
+end
+
+function T.candidate_copy_failure_cleans_partial_candidates_without_touching_live()
+  local backend = FakeCache.new()
+  local live = cache("heartgold", backend)
+  local root = "data/generated/field/maps"
+  live:write(root .. "/old.bin", "old")
+  local tx = ArtifactPublisher.begin(live, "field-maps", { root })
+  tx.stage:write(root .. "/first.bin", "first")
+  tx.stage:write(root .. "/second.bin", "second")
+
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if path:find(".__g4next", 1, true) and path:find("second.bin", 1, true) then
+      return false, "injected candidate write failure"
+    end
+    return originalWrite(self, path, data)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.equal(live:read(root .. "/old.bin"), "old")
+  Assert.isNil(backend:getInfo("heartgold/" .. root .. ".__g4next"))
+end
+
+function T.interrupted_old_siblings_are_restored_before_candidate_preparation()
+  local backend = FakeCache.new()
+  local live = cache("heartgold", backend)
+  local firstRoot = "data/generated/field/maps"
+  local secondRoot = "data/generated/field/cells"
+  backend:write("heartgold/" .. firstRoot .. "/partial.bin", "partial")
+  backend:write("heartgold/" .. firstRoot .. ".__g4old/previous.bin", "previous-map")
+  backend:write("heartgold/" .. secondRoot .. ".__g4old/previous.bin", "previous-cell")
+
+  local tx = ArtifactPublisher.begin(live, "field-world", { firstRoot, secondRoot })
+  tx.stage:write(firstRoot .. "/replacement.bin", "replacement")
+  tx.stage:write(secondRoot .. "/replacement.bin", "replacement")
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if path:find(".__g4next", 1, true) then
+      return false, "injected candidate write failure"
+    end
+    return originalWrite(self, path, data)
+  end
+
+  local err = Assert.throws(function()
+    tx:publish()
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.equal(live:read(firstRoot .. "/previous.bin"), "previous-map")
+  Assert.equal(live:read(secondRoot .. "/previous.bin"), "previous-cell")
+  Assert.isNil(backend:getInfo("heartgold/" .. firstRoot .. ".__g4old"))
+  Assert.isNil(backend:getInfo("heartgold/" .. secondRoot .. ".__g4old"))
 end
 
 function T.publish_from_stage_restores_previous_root_on_failure()
@@ -296,7 +434,7 @@ function T.publish_from_stage_restores_previous_root_on_failure()
   s:write("rom-dump.complete", "NEW-MARKER")
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath == "staging/heartgold" then
+    if sourcePath == "heartgold.__g4next" then
       error(Errors.new(StorageErrors.CACHE_REPLACE_FAILED, "injected publish failure", { sourcePath = sourcePath }))
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -308,7 +446,7 @@ function T.publish_from_stage_restores_previous_root_on_failure()
   Assert.equal(err.code, StorageErrors.CACHE_REPLACE_FAILED)
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "OLD", "previous dump must be restored")
   Assert.equal(backend.files["heartgold/rom-dump.complete"], "OLD-MARKER")
-  Assert.isNil(backend.files["staging/heartgold.old/romfs/a/0/0/2"], "no orphaned old root after rollback")
+  Assert.isNil(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "no orphaned old root after rollback")
 end
 
 -- Every mutating operation must translate a backend-reported failure into
@@ -414,7 +552,7 @@ function T.publish_from_stage_reports_aside_failure()
     c:publishFromStage(s)
   end)
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "OLD", "failed aside must leave the live dump in place")
-  Assert.isNil(backend.files["staging/heartgold.old/romfs/a/0/0/2"], "nothing may land in the old root")
+  Assert.isNil(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "nothing may land in the old root")
 end
 
 function T.publish_from_stage_restores_previous_root_when_replace_reports_failure()
@@ -426,7 +564,7 @@ function T.publish_from_stage_restores_previous_root_when_replace_reports_failur
   s:write("romfs/a/0/0/2", "NEW")
   s:write("rom-dump.complete", "NEW-MARKER")
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath == "staging/heartgold" then
+    if sourcePath == "heartgold.__g4next" then
       return false, "injected publish failure"
     end
     return FakeCache.replace(self, sourcePath, destinationPath)
@@ -436,7 +574,7 @@ function T.publish_from_stage_restores_previous_root_when_replace_reports_failur
   end)
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "OLD", "previous dump must be restored")
   Assert.equal(backend.files["heartgold/rom-dump.complete"], "OLD-MARKER")
-  Assert.isNil(backend.files["staging/heartgold.old/romfs/a/0/0/2"], "no orphaned old root after rollback")
+  Assert.isNil(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "no orphaned old root after rollback")
 end
 
 -- When the aside restore fails too, the rollback is incomplete: the previous
@@ -452,10 +590,10 @@ function T.publish_from_stage_reports_incomplete_rollback()
   s:write("rom-dump.complete", "NEW-MARKER")
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath == "staging/heartgold" then
+    if sourcePath == "heartgold.__g4next" then
       return false, "injected publish failure"
     end
-    if sourcePath == "staging/heartgold.old" then
+    if sourcePath == "heartgold.__g4old" then
       return false, "injected rollback failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -470,8 +608,8 @@ function T.publish_from_stage_reports_incomplete_rollback()
     "the original publish error is the cause"
   )
   Assert.isTrue(tostring(err.context.rollback):match("injected rollback failure"), "the rollback error is recorded")
-  Assert.equal(backend.files["staging/heartgold.old/romfs/a/0/0/2"], "OLD", "the aside keeps the last-known-good dump")
-  Assert.equal(backend.files["staging/heartgold/romfs/a/0/0/2"], "NEW", "the staged dump stays in place")
+  Assert.equal(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "OLD", "the aside keeps the last-known-good dump")
+  Assert.equal(backend.files["heartgold.__g4next/romfs/a/0/0/2"], "NEW", "the staged dump stays in place")
 end
 
 -- A backend-reported failure removing the previous root after the swap must
@@ -486,7 +624,7 @@ function T.publish_from_stage_reports_cleanup_failure()
   s:write("romfs/a/0/0/2", "NEW")
   local originalRemove = backend.remove
   backend.remove = function(self, path)
-    if path:find("staging/heartgold.old", 1, true) then
+    if path:find("heartgold.__g4old", 1, true) then
       return false, "injected cleanup failure"
     end
     return originalRemove(self, path)
@@ -497,7 +635,7 @@ function T.publish_from_stage_reports_cleanup_failure()
   Assert.isTrue(Errors.is(err), "a cleanup failure must surface as a structured error")
   Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED)
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "NEW", "the new dump has landed before cleanup")
-  Assert.equal(backend.files["staging/heartgold.old/romfs/a/0/0/2"], "OLD", "the old root is the only staging residue")
+  Assert.equal(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "OLD", "the old root is the only staging residue")
 end
 
 function T.remove_staged_tree_reports_backend_failure()

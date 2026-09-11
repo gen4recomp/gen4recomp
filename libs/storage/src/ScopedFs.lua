@@ -190,9 +190,8 @@ function ScopedFs.remove(backend, fullPath, codes)
   return ScopedFs.ensureBackend(ok, err, codes.REMOVE_FAILED, "could not remove", { path = fullPath })
 end
 
--- Atomically replaces destination with an already-written sibling file. The
--- default backend uses the host rename primitive inside LÖVE's save
--- directory.
+-- Renames an already-written path using the host primitive inside LÖVE's save
+-- directory; publication callers own destination and parent constraints.
 ---@param backend ScopedFs.Backend
 ---@param sourcePath string
 ---@param destinationPath string

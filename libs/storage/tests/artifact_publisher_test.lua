@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
+local ConstrainedCache = require("tests.support.ConstrainedCache")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
 local T = {}
@@ -16,8 +17,20 @@ local DATA = "data/generated/field/actors"
 local ASSET = "assets/generated/field/actors"
 local STAGE_ROOT = "staging/heartgold/field-actors"
 
-local function cacheWith()
-  return CacheFs.forVersion("heartgold", FakeCache.new())
+local function liveRoot(root)
+  return "heartgold/" .. root
+end
+
+local function nextRoot(root)
+  return liveRoot(root) .. ".__g4next"
+end
+
+local function oldRoot(root)
+  return liveRoot(root) .. ".__g4old"
+end
+
+local function cacheWith(backend)
+  return CacheFs.forVersion("heartgold", backend or FakeCache.new())
 end
 
 local function beginActors(cacheFs)
@@ -34,6 +47,20 @@ local function stageNewArtifact(tx)
   tx.stage:write(DATA .. "/complete", "new-marker")
   tx.stage:write(DATA .. "/index.lua", "new-index")
   tx.stage:write(ASSET .. "/0000.png", "new-png")
+end
+
+local function assertPortableRenames(backend)
+  Assert.isTrue(#backend.renameLog > 0, "publication must use the backend rename seam")
+  for _, entry in ipairs(backend.renameLog) do
+    Assert.isFalse(entry.destinationExisted, "rename destination must be absent: " .. entry.destination)
+    if entry.sourceType == "directory" then
+      Assert.equal(
+        entry.sourceParent,
+        entry.destinationParent,
+        "directory rename must stay within one parent: " .. entry.source .. " -> " .. entry.destination
+      )
+    end
+  end
 end
 
 function T.staged_writes_never_touch_the_live_tree()
@@ -70,6 +97,40 @@ function T.publish_works_on_a_first_build_with_no_previous_artifact()
   Assert.equal(cache:read(DATA .. "/complete"), "new-marker")
   Assert.equal(cache:read(ASSET .. "/0000.png"), "new-png")
   Assert.isNil(cache.backend:getInfo(STAGE_ROOT))
+end
+
+function T.directory_publication_preserves_contents_and_rolls_back_under_restricted_renames()
+  local backend = ConstrainedCache.new()
+  local cache = cacheWith(backend)
+  local root = "data/generated/field/maps"
+  cache:write(root .. "/old.bin", "old")
+  cache:createDirectory(root .. "/empty")
+
+  local first = ArtifactPublisher.begin(cache, "field-maps", { root })
+  first.stage:write(root .. "/index.lua", "new-index")
+  first.stage:write(root .. "/nested/value.bin", "new-value")
+  first.stage:createDirectory(root .. "/empty")
+  first:publish()
+
+  Assert.equal(cache:read(root .. "/index.lua"), "new-index")
+  Assert.equal(cache:read(root .. "/nested/value.bin"), "new-value")
+  Assert.notNil(backend:getInfo("heartgold/" .. root .. "/empty"))
+  Assert.isNil(backend:getInfo("staging/heartgold/field-maps"))
+
+  local second = ArtifactPublisher.begin(cache, "field-maps", { root })
+  second.stage:write(root .. "/index.lua", "replacement-index")
+  second.stage:write(root .. "/nested/value.bin", "replacement-value")
+  second.stage:createDirectory(root .. "/empty")
+  backend:failNextRename("heartgold/" .. root .. ".__g4next")
+  local err = Assert.throws(function()
+    second:publish()
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "CACHE_REPLACE_FAILED")
+  Assert.equal(cache:read(root .. "/index.lua"), "new-index", "failed replacement restores the prior file")
+  Assert.equal(cache:read(root .. "/nested/value.bin"), "new-value")
+  Assert.notNil(backend:getInfo("heartgold/" .. root .. "/empty"))
+  assertPortableRenames(backend)
 end
 
 function T.a_staged_write_failure_preserves_the_previous_artifact()
@@ -125,7 +186,7 @@ function T.a_failed_publish_rolls_back_every_moved_root()
   backend.replace = function(self, sourcePath, destinationPath)
     -- Fail only the stage -> live rename of the second root; the rollback
     -- renames (which carry the ".old" suffix) must still succeed.
-    if sourcePath == STAGE_ROOT .. "/" .. ASSET then
+    if sourcePath == nextRoot(ASSET) then
       error("injected replace failure")
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -192,7 +253,7 @@ function T.publish_cannot_report_success_when_a_rename_reports_failure()
   backend.replace = function(self, sourcePath, destinationPath)
     -- Report failure only for the stage -> live rename of the second root;
     -- the rollback renames (which carry the ".old" suffix) must still succeed.
-    if sourcePath == STAGE_ROOT .. "/" .. ASSET then
+    if sourcePath == nextRoot(ASSET) then
       return false, "injected replace failure"
     end
     return FakeCache.replace(self, sourcePath, destinationPath)
@@ -244,10 +305,10 @@ function T.publish_reports_an_incomplete_rollback_when_a_rollback_rename_fails()
     -- Fail the stage -> live rename of the second root AND the aside restore
     -- of the first root (stage .old -> live), so the rollback cannot restore
     -- the first root.
-    if sourcePath == STAGE_ROOT .. "/" .. ASSET then
+    if sourcePath == nextRoot(ASSET) then
       return false, "injected replace failure"
     end
-    if sourcePath == STAGE_ROOT .. "/" .. DATA .. ".old" then
+    if sourcePath == oldRoot(DATA) then
       return false, "injected rollback failure"
     end
     return FakeCache.replace(self, sourcePath, destinationPath)
@@ -264,7 +325,7 @@ function T.publish_reports_an_incomplete_rollback_when_a_rollback_rename_fails()
   Assert.isTrue(tostring(err.context.cause):match("CACHE_REPLACE_FAILED"), "the original publish error is the cause")
   Assert.isTrue(tostring(err.context.rollback):match("injected rollback failure"), "the rollback error is recorded")
   Assert.equal(
-    backend.files[STAGE_ROOT .. "/" .. DATA .. ".old/index.lua"],
+    backend.files[oldRoot(DATA) .. "/index.lua"],
     "old-index",
     "the aside root stays in the stage as recovery material"
   )

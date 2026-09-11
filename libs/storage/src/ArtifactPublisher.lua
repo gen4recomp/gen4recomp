@@ -1,12 +1,12 @@
 -- Shared staging/publication lifecycle for generated cache artifacts. A writer
--- stages every owned file under a disposable staging root (`staging/<version>/
--- <name>/`, mirroring the live cache-relative layout), validates the staged
--- result, and only then publishes it: each owned live root is moved aside, the
--- staged roots are renamed into place, and the stage (with the aside roots
--- inside it) is removed. A failure at any point leaves the previous live artifact
--- untouched: staging never writes to the live tree, and a failed publish rolls
--- every moved root back before re-raising. The move-aside / move-in / rollback
--- lifecycle itself is shared with whole-version publication
+-- stages every owned file under a disposable mirror (`staging/<version>/<name>/`,
+-- mirroring the live cache-relative layout), validates the staged result, and
+-- only then publishes it: each owned live root is copied to an adjacent next
+-- sibling, each live root is moved aside, and the candidates are renamed into
+-- place. A failure at any point leaves the previous live artifact untouched:
+-- staging never writes to the live tree, and a failed publish rolls every moved
+-- root back before re-raising. The move-aside / move-in / rollback lifecycle
+-- itself is shared with whole-version publication
 -- (`CacheFs.publishFromStage`); this module owns the artifact stage, the owned
 -- root list, and the caller contract (no abort once publish has begun). Paths,
 -- validation, and readback stay with the individual cache classes. Love-free;
@@ -50,10 +50,10 @@ function ArtifactPublisher.begin(cacheFs, name, liveRoots)
   }, ArtifactPublisher)
 end
 
--- Publish the staged artifact over the live roots. The live roots are moved
--- aside first, the staged roots are renamed into place (marker root last),
--- and only after every rename lands are the aside roots and the stage
--- removed. The move-aside / move-in / rollback lifecycle is the shared one
+-- Publish the staged artifact over the live roots. CacheFs first materializes
+-- adjacent candidates, then moves live roots aside and renames the candidates
+-- into place (marker root last), removing recovery material only after every
+-- rename lands. The move-aside / move-in / rollback lifecycle is the shared one
 -- used by whole-version publication; its outcomes apply here:
 --  * success: returns true;
 --  * publication failed and rollback succeeded: the original error re-raises;

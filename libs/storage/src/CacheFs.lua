@@ -1,7 +1,7 @@
 -- Version-scoped private cache. Every path is normalized and confined below the
 -- version prefix; absolute paths, drive letters, NUL, and "."/".." components
 -- are rejected so no operation can escape its version subtree. Roots are
--- structural (`<versionId>/`, `staging/<versionId>/`): a version id is any safe
+-- structural (`<versionId>/`, `<versionId>.__g4next/`, and artifact staging): a version id is any safe
 -- path component, and which ids exist is the ROM catalog's business, not this
 -- package's. Confinement, backend handling, parent creation, and Lua loading
 -- share the internal ScopedFs mechanics with SaveFs; the cache root, allowed
@@ -59,13 +59,16 @@ local CACHE_ERRORS = {
 local CacheFs = {}
 CacheFs.__index = CacheFs
 
--- The sibling path a completed live root is moved to before a staged tree is
--- renamed into place; a crash between the two renames leaves the previous dump
--- here for removeStagedTree to discard at the next import. The shared
--- move-aside / move-in / rollback lifecycle (publishStagedRoots) uses the same
--- suffix for whole-version asides (`staging/<versionId>.old`) and for
--- per-artifact asides inside an artifact stage.
-CacheFs.STAGING_OLD_SUFFIX = ".old"
+local NEXT_SUFFIX = ".__g4next"
+local OLD_SUFFIX = ".__g4old"
+
+local function siblingPath(fullPath, suffix)
+  local parent, name = fullPath:match("^(.*)/([^/]+)$")
+  if parent then
+    return parent .. "/" .. name .. suffix
+  end
+  return fullPath .. suffix
+end
 
 ---@param versionId string
 ---@param backend table<string, unknown>|nil
@@ -80,16 +83,15 @@ function CacheFs.forVersion(versionId, backend)
   }, CacheFs)
 end
 
--- A CacheFs rooted at the disposable `staging/<versionId>/` namespace, a
--- sibling of the live version root. A completed staging tree is published over
--- the live root with publishFromStage; stale staging is discarded at the next
--- import.
+-- A CacheFs rooted at the disposable next sibling of the live version root.
+-- Whole-version import writes here so publication can rename the completed tree
+-- without copying it or crossing directory parents.
 ---@param versionId string
 ---@param backend table<string, unknown>|nil
 ---@return CacheFs
 function CacheFs.forStaging(versionId, backend)
   ScopedFs.validateVersionId(versionId)
-  local prefix = "staging/" .. versionId .. "/"
+  local prefix = versionId .. NEXT_SUFFIX .. "/"
   return setmetatable({
     versionId = versionId,
     _prefix = prefix,
@@ -221,30 +223,146 @@ function CacheFs:_removeTreeAt(fullPath)
   rec(fullPath)
 end
 
--- Discard every staged output for this version: the staging root and any
--- orphaned previous root (`staging/<versionId>.old`) a crash mid-publish left
--- behind. Staging is disposable generated data; a fresh extraction rebuilds it
--- from the validated ROM. The live root is never touched.
+-- Discard every staged output for this version and any orphaned previous root a
+-- crash mid-publish left behind. Staging is disposable generated data; a fresh
+-- extraction rebuilds it from the validated ROM. The live root is never touched.
 function CacheFs:removeStagedTree(stagingCache)
   self:_removeTreeAt(stagingCache:resolve(""))
-  self:_removeTreeAt(stagingCache:resolve("") .. CacheFs.STAGING_OLD_SUFFIX)
+  self:_removeTreeAt(siblingPath(self:resolve(""), OLD_SUFFIX))
   return true
 end
 
--- Restore every aside a failed publish left behind, using the checked rename
--- path (a falsy backend result becomes CACHE_REPLACE_FAILED). Returns the
--- first rollback error, or nil when every aside was restored.
----@param cacheFs CacheFs
----@param stageCache CacheFs
----@param roots string[]
----@param asides table<string, boolean>
----@return unknown|nil
-local function rollbackAsides(cacheFs, stageCache, roots, asides)
-  local firstError
+local function renamePath(cacheFs, sourcePath, destinationPath)
+  assert(not cacheFs.backend:getInfo(destinationPath), "rename destination must be absent")
+  return cacheFs:replaceAt(sourcePath, destinationPath)
+end
+
+local function removeCandidates(cacheFs, candidates)
+  for _, path in ipairs(candidates) do
+    cacheFs:_removeTreeAt(path)
+  end
+end
+
+local function copyTree(cacheFs, sourcePath, destinationPath)
+  local backend = cacheFs.backend
+  local info = backend:getInfo(sourcePath)
+  if not info then
+    Errors.raise(CACHE_ERRORS.FILE_MISSING, "staged root is missing", { path = sourcePath })
+  end
+  assert(info, "staged root info must be available")
+  if info.type == "directory" then
+    local ok, err = backend:createDirectory(destinationPath)
+    ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.MKDIR_FAILED, "could not create directory", {
+      path = destinationPath,
+    })
+    local items, listErr = backend:getDirectoryItems(sourcePath)
+    if not items then
+      Errors.raise(CACHE_ERRORS.READ_FAILED, listErr or "could not list directory", { path = sourcePath })
+    end
+    for _, name in ipairs(items) do
+      copyTree(cacheFs, sourcePath .. "/" .. name, destinationPath .. "/" .. name)
+    end
+    return info.type
+  end
+  if info.type ~= "file" then
+    Errors.raise(CACHE_ERRORS.READ_FAILED, "unsupported staged entry type", {
+      path = sourcePath,
+      type = info.type,
+    })
+  end
+  local data, readErr = backend:read(sourcePath)
+  if data == nil then
+    local message = type(readErr) == "string" and readErr or "could not read staged file"
+    Errors.raise(CACHE_ERRORS.READ_FAILED, message, { path = sourcePath })
+  end
+  assert(data, "staged file data must be available")
+  local ok, err = backend:write(destinationPath, data)
+  ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not copy staged file", {
+    path = destinationPath,
+  })
+  return info.type
+end
+
+local function hasSuffix(path, suffix)
+  return path:sub(-#suffix) == suffix
+end
+
+local function rootsOverlap(first, second)
+  if first == "" or second == "" then
+    return true
+  end
+  return first == second or first:sub(1, #second + 1) == second .. "/" or second:sub(1, #first + 1) == first .. "/"
+end
+
+local function validateRoots(cacheFs, stageCache, roots)
+  assert(stageCache.versionId == cacheFs.versionId, "publish caches must use the same version")
+  for index, root in ipairs(roots) do
+    assert(type(root) == "string", "publish roots must be strings")
+    assert(not hasSuffix(root, NEXT_SUFFIX), "publish roots may not use the next suffix")
+    assert(not hasSuffix(root, OLD_SUFFIX), "publish roots may not use the old suffix")
+    cacheFs:resolve(root)
+    stageCache:resolve(root)
+    for previousIndex = 1, index - 1 do
+      assert(not rootsOverlap(root, roots[previousIndex]), "publish roots may not overlap")
+    end
+  end
+end
+
+local function recoverTransientRoots(cacheFs, stageCache, roots)
+  local states = {}
+  local allLive = true
+  local anyOld = false
   for _, root in ipairs(roots) do
+    local livePath = cacheFs:resolve(root)
+    local oldPath = siblingPath(livePath, OLD_SUFFIX)
+    local liveExists = cacheFs.backend:getInfo(livePath) ~= nil
+    local oldExists = cacheFs.backend:getInfo(oldPath) ~= nil
+    states[root] = { livePath = livePath, oldPath = oldPath, liveExists = liveExists, oldExists = oldExists }
+    allLive = allLive and liveExists
+    anyOld = anyOld or oldExists
+  end
+
+  if anyOld then
+    if allLive then
+      for _, root in ipairs(roots) do
+        local state = states[root]
+        if state.oldExists then
+          cacheFs:_removeTreeAt(state.oldPath)
+        end
+      end
+    else
+      for _, root in ipairs(roots) do
+        local state = states[root]
+        if state.liveExists then
+          cacheFs:_removeTreeAt(state.livePath)
+        end
+      end
+      for _, root in ipairs(roots) do
+        local state = states[root]
+        if state.oldExists then
+          renamePath(cacheFs, state.oldPath, state.livePath)
+        end
+      end
+    end
+  end
+
+  for _, root in ipairs(roots) do
+    local state = states[root]
+    local nextPath = siblingPath(state.livePath, NEXT_SUFFIX)
+    if nextPath ~= stageCache:resolve(root) and cacheFs.backend:getInfo(nextPath) then
+      cacheFs:_removeTreeAt(nextPath)
+    end
+  end
+end
+
+local function rollbackAsides(cacheFs, roots, asides)
+  local firstError
+  for index = #roots, 1, -1 do
+    local root = roots[index]
     if asides[root] then
-      local ok, err =
-        pcall(cacheFs.replaceAt, cacheFs, stageCache:resolve(root) .. CacheFs.STAGING_OLD_SUFFIX, cacheFs:resolve(root))
+      local livePath = cacheFs:resolve(root)
+      local oldPath = siblingPath(livePath, OLD_SUFFIX)
+      local ok, err = pcall(renamePath, cacheFs, oldPath, livePath)
       if not ok and firstError == nil then
         firstError = err
       end
@@ -253,92 +371,125 @@ local function rollbackAsides(cacheFs, stageCache, roots, asides)
   return firstError
 end
 
--- Restore the already-published roots back to the stage, then every aside
--- root, with the checked rename path. Returns the first rollback error, or
--- nil when the previous artifact was fully restored.
----@param cacheFs CacheFs
----@param stageCache CacheFs
----@param movedIn string[]
----@param roots string[]
----@param asides table<string, boolean>
----@return unknown|nil
-local function rollbackPublished(cacheFs, stageCache, movedIn, roots, asides)
+local function rollbackPublished(cacheFs, movedIn, roots, asides)
   local firstError
   for index = #movedIn, 1, -1 do
     local root = movedIn[index]
-    local ok, err = pcall(cacheFs.replaceAt, cacheFs, cacheFs:resolve(root), stageCache:resolve(root))
+    local livePath = cacheFs:resolve(root)
+    local nextPath = siblingPath(livePath, NEXT_SUFFIX)
+    local ok, err = pcall(renamePath, cacheFs, livePath, nextPath)
     if not ok and firstError == nil then
       firstError = err
     end
   end
-  local asideErr = rollbackAsides(cacheFs, stageCache, roots, asides)
+  local asideErr = rollbackAsides(cacheFs, roots, asides)
   if firstError == nil then
     firstError = asideErr
   end
   return firstError
 end
 
--- One move-aside / move-in / rollback lifecycle shared by whole-version
--- publication (publishFromStage) and per-artifact publication
--- (ArtifactPublisher). `roots` are the cache-relative roots to swap; every
--- existing live root is first moved aside to its staged-root `.old` sibling,
--- then the staged roots are renamed into place in order (the marker root
--- last), and `cleanup` (which may assume every staged root is live) discards
--- the recovery material. A failed rename restores every root already moved;
--- if the rollback itself fails, all remaining recovery material is preserved
--- and CACHE_PUBLISH_ROLLBACK_INCOMPLETE raises with both failures. `cleanup`
--- failing raises CACHE_PUBLISH_CLEANUP_FAILED: the new artifact is already
--- live and must not be rolled back.
+local function rollbackIncomplete(cause, rollback)
+  Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, "publish failed and the rollback was incomplete", {
+    cause = tostring(cause),
+    rollback = tostring(rollback),
+  })
+end
+
+-- Prepare adjacent next siblings, then perform same-parent move-aside and
+-- move-in transitions. The caller's root order is preserved so completion
+-- markers remain the final publication step.
 ---@param cacheFs CacheFs
 ---@param stageCache CacheFs
 ---@param roots string[]
 ---@param cleanup fun()
 ---@return boolean
 local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
-  -- Phase 1: move every existing live root aside. A failure (backend raise or
-  -- backend-reported failure, which replaceAt translates into
-  -- CACHE_REPLACE_FAILED) rolls back every aside already made and re-raises.
+  validateRoots(cacheFs, stageCache, roots)
+  recoverTransientRoots(cacheFs, stageCache, roots)
+
+  local candidates = {}
+  local candidateOk, candidateErr = pcall(function()
+    for _, root in ipairs(roots) do
+      local livePath = cacheFs:resolve(root)
+      local nextPath = siblingPath(livePath, NEXT_SUFFIX)
+      local sourcePath = stageCache:resolve(root)
+      local sourceInfo = stageCache.backend:getInfo(sourcePath)
+      if not sourceInfo then
+        Errors.raise(CACHE_ERRORS.FILE_MISSING, "staged root is missing", { path = sourcePath })
+      end
+      assert(sourceInfo, "staged root info must be available")
+      if sourcePath ~= nextPath then
+        candidates[#candidates + 1] = nextPath
+        copyTree(cacheFs, sourcePath, nextPath)
+      end
+      local candidateInfo = cacheFs.backend:getInfo(nextPath)
+      assert(candidateInfo, "staged candidate info must be available")
+      assert(candidateInfo.type == sourceInfo.type, "staged candidate type changed")
+    end
+  end)
+  if not candidateOk then
+    local cleanupOk, cleanupErr = pcall(removeCandidates, cacheFs, candidates)
+    if not cleanupOk then
+      rollbackIncomplete(candidateErr, cleanupErr)
+    end
+    error(candidateErr, 0)
+  end
+
+  -- Phase 1: move every existing live root aside. A failure rolls back every
+  -- aside already made and re-raises.
   local asides = {}
   local phase1Ok, phase1Err = pcall(function()
     for _, root in ipairs(roots) do
-      if cacheFs:exists(root, "directory") then
-        cacheFs:replaceAt(cacheFs:resolve(root), stageCache:resolve(root) .. CacheFs.STAGING_OLD_SUFFIX)
+      local livePath = cacheFs:resolve(root)
+      if cacheFs:exists(root) then
+        renamePath(cacheFs, livePath, siblingPath(livePath, OLD_SUFFIX))
         asides[root] = true
       end
     end
   end)
   if not phase1Ok then
-    local rollbackErr = rollbackAsides(cacheFs, stageCache, roots, asides)
+    local rollbackErr = rollbackAsides(cacheFs, roots, asides)
     if rollbackErr ~= nil then
-      Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, "publish failed and the rollback was incomplete", {
-        cause = tostring(phase1Err),
-        rollback = tostring(rollbackErr),
-      })
+      rollbackIncomplete(phase1Err, rollbackErr)
+    end
+    local cleanupOk, cleanupErr = pcall(removeCandidates, cacheFs, candidates)
+    if not cleanupOk then
+      rollbackIncomplete(phase1Err, cleanupErr)
     end
     error(phase1Err, 0)
   end
-  -- Phase 2: rename the staged roots into place, in the given order (the
-  -- marker root last).
+
+  -- Phase 2: rename the adjacent candidates into place, in the given order.
   local movedIn = {}
   local phase2Ok, phase2Err = pcall(function()
     for _, root in ipairs(roots) do
-      cacheFs:replaceAt(stageCache:resolve(root), cacheFs:resolve(root))
+      local livePath = cacheFs:resolve(root)
+      renamePath(cacheFs, siblingPath(livePath, NEXT_SUFFIX), livePath)
       movedIn[#movedIn + 1] = root
     end
   end)
   if not phase2Ok then
-    local rollbackErr = rollbackPublished(cacheFs, stageCache, movedIn, roots, asides)
+    local rollbackErr = rollbackPublished(cacheFs, movedIn, roots, asides)
     if rollbackErr ~= nil then
-      Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, "publish failed and the rollback was incomplete", {
-        cause = tostring(phase2Err),
-        rollback = tostring(rollbackErr),
-      })
+      rollbackIncomplete(phase2Err, rollbackErr)
+    end
+    local cleanupOk, cleanupErr = pcall(removeCandidates, cacheFs, candidates)
+    if not cleanupOk then
+      rollbackIncomplete(phase2Err, cleanupErr)
     end
     error(phase2Err, 0)
   end
-  -- Phase 3: discard the recovery material. The new artifact is already live;
-  -- a failing cleanup is a distinct outcome, never a failed publication.
-  local cleanupOk, cleanupErr = pcall(cleanup)
+
+  -- Phase 3: discard recovery material. The new artifact is already live; a
+  -- failing cleanup is a distinct outcome, never a failed publication.
+  local cleanupOk, cleanupErr = pcall(function()
+    for _, root in ipairs(roots) do
+      local livePath = cacheFs:resolve(root)
+      cacheFs:_removeTreeAt(siblingPath(livePath, OLD_SUFFIX))
+    end
+    cleanup()
+  end)
   if not cleanupOk then
     Errors.raise(
       StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
@@ -364,21 +515,12 @@ function CacheFs:publishStaged(stageCache, roots, cleanup)
   return publishStagedRoots(self, stageCache, roots, cleanup)
 end
 
--- Publish a completed staging tree as the new live version root. The live root
--- is first moved aside to the staging sibling `<stagingRoot>.old`, the staging
--- root is then renamed into place, and only after it lands is the previous root
--- removed. If the staging root cannot land, the previous root is renamed back
--- and the failure re-raised, so a failed publish leaves the prior dump intact;
--- if that rollback also fails, the recovery material stays at `<stagingRoot>
--- .old` and CACHE_PUBLISH_ROLLBACK_INCOMPLETE raises with both failures.
--- Both moves are single backend renames; a process crash between them leaves
--- the previous dump at `<stagingRoot>.old`, which removeStagedTree discards at
--- the next import.
+-- Publish a completed whole-version tree. Its staging root is already the
+-- adjacent next sibling, so publication only moves that sibling into the live
+-- root after moving any previous root to its adjacent old sibling.
 function CacheFs:publishFromStage(stagingCache)
-  local oldRoot = stagingCache:resolve("") .. CacheFs.STAGING_OLD_SUFFIX
-  self:_removeTreeAt(oldRoot)
   return self:publishStaged(stagingCache, { "" }, function()
-    self:_removeTreeAt(oldRoot)
+    stagingCache:_removeTreeAt(stagingCache:resolve(""))
   end)
 end
 

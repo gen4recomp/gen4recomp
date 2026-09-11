@@ -117,7 +117,7 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   MapCacheWriter.write(c, first)
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath:find("staging/heartgold/map-", 1, true) then
+    if sourcePath:find(".__g4next", 1, true) or sourcePath:find(".__g4old", 1, true) then
       return false, "injected publish failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -131,7 +131,7 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   local stageRoot = "staging/heartgold/map-" .. first.mapId
   Assert.notNil(backend:getInfo(stageRoot), "the stage is not removed once publish has begun")
   Assert.equal(
-    backend.files[stageRoot .. "/" .. MapAssetCache.mapDir(first.mapId) .. ".old/complete"],
+    backend.files["heartgold/" .. MapAssetCache.mapDir(first.mapId) .. ".__g4old/complete"],
     first.marker,
     "the last-known-good map stays in the stage as recovery material"
   )
