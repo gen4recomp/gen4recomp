@@ -53,7 +53,9 @@ function RecordingScriptHosts.new(options)
   function audio:resetMusic() end
   function audio:temporaryMusic() end
   function audio:playCry() end
-  function audio:playFanfare() end
+  function audio:playFanfare(fanfare)
+    effects[#effects + 1] = "fanfare:" .. tostring(fanfare)
+  end
   function audio:fadeMusicOut() end
   function audio:fadeMusicIn() end
 

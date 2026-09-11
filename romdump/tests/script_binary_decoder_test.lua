@@ -383,4 +383,34 @@ T["signpost commands decode every operand"] = function()
   Assert.equal(instructions[7].opcode, 2)
 end
 
+-- RestartCurrentScript returns FALSE to the source interpreter loop, so the
+-- common-child script continues into its following End: an End directly
+-- abutting the restart is the script's terminal instruction, not padding in
+-- a terminated region.
+T["restart keeps its abutting end"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: Call (6 bytes) -> 0x2A.
+          { op = 26, args = { { target = 0x2A, width = 4 } } },
+          -- 0x26: RestartCurrentScript (2) -> 0x28.
+          { op = 21, args = {} },
+          -- 0x28: End (2) -> 0x2A.
+          { op = 2, args = {} },
+          -- 0x2A: subroutine tail: Return (2).
+          { op = 27, args = {} },
+        },
+      },
+    },
+  })
+  local member = decode(bytes, 5)
+  local opcodes = {}
+  for _, ins in ipairs(member.scripts[0].instructions) do
+    opcodes[#opcodes + 1] = ins.opcode
+  end
+  Assert.deepEqual(opcodes, { 26, 21, 2, 27 })
+end
+
 return { tests = T }

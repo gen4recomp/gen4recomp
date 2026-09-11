@@ -56,7 +56,7 @@ local function harness(opts)
   taskRegistry:register("wait_ticks", 1, WaitTicksTask)
   taskRegistry:register("wait_input", 1, WaitInputTask)
   taskRegistry:register("wait_input_or_ticks", 1, WaitInputOrTicksTask)
-  taskRegistry:register("dialogue", 1, DialogueTask)
+  taskRegistry:register("dialogue", DialogueTask.version, DialogueTask)
   taskRegistry:register("ask_yes_no", 1, AskYesNoTask)
   local recorder = Diagnostics.newTraceRecorder()
   local scheduler = Scheduler.new({
@@ -364,6 +364,7 @@ T["save during dialogue"] = function()
   local bucket = ScriptSave.capture(h.scheduler, 101, { registryFingerprint = h.registry:fingerprint() })
   local taskRecord = bucket.tasks[1]
   Assert.equal(taskRecord.taskType, "dialogue")
+  Assert.equal(taskRecord.state.mode, "say")
   Assert.equal(taskRecord.state.phase, "typing")
   local recorder = Diagnostics.newTraceRecorder()
   local scheduler2 = Scheduler.new({
@@ -469,6 +470,62 @@ T["open close primitives"] = function()
     names[#names + 1] = call.name
   end
   Assert.deepEqual(names, { "openMessage", "close", "openMessage", "hold" })
+end
+
+-- 14. Blocking print-only message completes on print completion without
+-- consuming input and without closing the box: the unfolded NPCMsg
+-- primitive owns print completion only; the following wait_input owns input
+-- and the parent close_message owns the close.
+T["blocking message completes on print without input or close"] = function()
+  local h = harness({ printTicks = 1 })
+  startForeground(
+    h,
+    script("test.printonly", {
+      S.message({ message = "msg.test", waitForPrint = true }),
+      S.setVar({ variable = "VAR_AFTER", value = 1 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, {})
+  Assert.isTrue(h.host:isOpen(), "the print-only message opens the box")
+  -- Print completes at T+1 with zero input edges throughout: the task must
+  -- complete and the graph must continue while the box stays open.
+  h.scheduler:step(101, {})
+  h.scheduler:step(102, {})
+  Assert.isTrue(h.host:isOpen(), "a print-only message must not close the box")
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 1, "a print-only message must complete without input")
+  for _, call in ipairs(h.host.calls) do
+    Assert.isTrue(call.name ~= "close", "a print-only message must never close the host")
+  end
+end
+
+-- 15. Consecutive print-only messages replace the window content: the
+-- second print reuses the still-open box from the first without faulting,
+-- and the box stays open for the following owners.
+T["consecutive blocking messages replace the open box"] = function()
+  local h = harness({ printTicks = 1 })
+  local instanceId = startForeground(
+    h,
+    script("test.printchain", {
+      S.message({ message = "msg.first", waitForPrint = true }),
+      S.message({ message = "msg.second", waitForPrint = true }),
+      S.setVar({ variable = "VAR_AFTER", value = 1 }),
+      S.stop(),
+    }),
+    100
+  )
+  h.scheduler:step(100, {})
+  h.scheduler:step(101, {})
+  h.scheduler:step(102, {})
+  h.scheduler:step(103, {})
+  h.scheduler:step(104, {})
+  Assert.isTrue(h.host:isOpen(), "chained prints must leave the box open")
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 1, "chained prints must both complete without input")
+  Assert.isNil(h.services.events:eventFor("script.error", instanceId), "reprinting into the open box must not fault")
+  Assert.equal(h.host.calls[2].args[1], "msg.first")
+  Assert.equal(h.host.calls[3].name, "close", "the chained print replaces the open box in the same tick")
+  Assert.equal(h.host.calls[5].args[1], "msg.second")
 end
 
 -- 13. Cancelling an environment invokes the dialogue task's implementation

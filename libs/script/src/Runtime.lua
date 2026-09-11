@@ -493,12 +493,10 @@ local function handleNext(_, run)
   return advanceChain(run, frame)
 end
 
--- The source `ScrCmd_RestartCurrentScript` (opcode 21) toggles the caller
--- signal bit and returns FALSE: the common-child context ENDS at the
--- signal — it never falls through to the instructions after signal_caller
--- (std_signpost's hide branch is reachable only through its goto targets).
--- The stop outcome ends the child; the caller's child_script task observes
--- the signal on its next poll.
+-- The source `ScrCmd_RestartCurrentScript` (opcode 21) clears the caller
+-- signal bit and returns FALSE to its interpreter loop. The common child
+-- therefore continues through its following command; the caller's
+-- child_script task observes the cleared signal on its next poll.
 local function handleSignalCaller(_, run)
   local slot = run.instance.contextSlot
   if slot <= 0 then
@@ -509,7 +507,7 @@ local function handleSignalCaller(_, run)
     )
   end
   run.environment:setCallerSignal(slot - 1, false)
-  return Runtime.OUTCOME_STOP
+  return Runtime.OUTCOME_CONTINUE
 end
 
 local function handleCallCommon(node, run)

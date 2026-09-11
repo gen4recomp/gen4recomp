@@ -505,6 +505,55 @@ function T.wrapper_next_requires_registration()
   Assert.deepEqual(graph.nodes["path:steps/0"], { op = "next" })
 end
 
+function T.signal_caller_chains_to_the_following_node()
+  local graph = compile(S.script({
+    api = 1,
+    id = "generated.common_signal",
+    metadata = { generated = true },
+    steps = {
+      { op = "signal_caller" },
+      S.stop(),
+    },
+  }))
+  local signal = graph.nodes["path:steps/0"]
+  Assert.equal(signal.op, "signal_caller")
+  Assert.equal(signal.next, "path:steps/1")
+end
+
+function T.blocking_message_chains_to_the_following_wait_input()
+  local graph = compile(S.script({
+    api = 1,
+    id = "generated.common_obtain_tail",
+    metadata = { generated = true },
+    steps = {
+      S.message({ message = "msg.x", waitForPrint = true }),
+      S.waitInput(),
+      S.stop(),
+    },
+  }))
+  local message = graph.nodes["path:steps/0"]
+  Assert.equal(message.op, "message")
+  Assert.equal(message.next, "path:steps/1")
+  Assert.equal(graph.nodes["path:steps/1"].op, "wait_input")
+end
+
+function T.call_common_chains_to_the_parent_tail()
+  local graph = compile(S.script({
+    api = 1,
+    id = "generated.parent_tail",
+    metadata = { generated = true },
+    steps = {
+      S.callCommon({ target = "common.greeting" }),
+      S.closeMessage(),
+      S.stop(),
+    },
+  }))
+  local call = graph.nodes["path:steps/0"]
+  Assert.equal(call.op, "call_common")
+  Assert.equal(call.next, "path:steps/1")
+  Assert.equal(graph.nodes["path:steps/1"].op, "close_message")
+end
+
 -- --- Node IDs ---
 
 function T.author_key_overrides_node_id()

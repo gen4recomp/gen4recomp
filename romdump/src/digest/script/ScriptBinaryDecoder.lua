@@ -428,7 +428,7 @@ local function decodeUnknownOpcode(state, script, cursor, opcode)
   end
   registerMovement(state, candidate)
   registerMovementSpan(state, candidate, shapeSize)
-  return candidate + shapeSize, false, true
+  return candidate + shapeSize, nil, true
 end
 
 local function decodeKnownInstruction(state, script, cursor, opcode, widths)
@@ -488,7 +488,10 @@ local function decodeKnownInstruction(state, script, cursor, opcode, widths)
     script.instructions[#script.instructions + 1] =
       RawIr.instruction(cursor, opcode, CommandCatalog.name(opcode), materializedOperands, size, nil)
   end
-  return cursor + size, opcode == 2 or opcode == 21 or opcode == 27
+  if opcode == 2 or opcode == 21 or opcode == 27 then
+    return cursor + size, opcode, nil
+  end
+  return cursor + size, nil, nil
 end
 
 local function decodeInstruction(state, script, cursor)
@@ -500,53 +503,84 @@ local function decodeInstruction(state, script, cursor)
   return decodeKnownInstruction(state, script, cursor, opcode, widths)
 end
 
-local function decodeCursor(state, script, cursor, terminated, tailRun)
+-- An End directly abutting RestartCurrentScript is the script's own terminal:
+-- the source interpreter continues past the restart (a FALSE return) into it.
+-- Anything else in the terminated region keeps the existing skip behavior.
+---@param state table<string, unknown>
+---@param script table<string, unknown>
+---@param cursor integer
+---@return integer|nil endCursor
+local function decodeAbuttingEnd(state, script, cursor)
+  if cursor + 1 >= state.bytes:length() then
+    return nil
+  end
+  if byte(state.bytes, cursor + 1) + byte(state.bytes, cursor + 2) * 256 ~= 2 then
+    return nil
+  end
+  local widths = CommandCatalog.widths(2)
+  if widths == nil or #widths ~= 0 then
+    return nil
+  end
+  if state.materialize then
+    local instructions = script.instructions --[[@as table]]
+    instructions[#instructions + 1] = RawIr.instruction(cursor, 2, CommandCatalog.name(2), {}, 2, nil)
+  end
+  return cursor + 2
+end
+
+local function decodeCursor(state, script, cursor, terminated, tailRun, terminatedBy)
   local block = state.movements[cursor]
   if block ~= nil then
-    return cursor + block.size, terminated, false
+    return cursor + block.size, terminated, false, terminatedBy
   end
   if state.movementRegistered[cursor] ~= 0 then
     if state.materialize then
       local movement = decodeMovement(state.bytes, cursor, true)
       if movement ~= nil then
         state.movements[cursor] = movement
-        return cursor + movement.size, terminated, false
+        return cursor + movement.size, terminated, false, terminatedBy
       end
     else
       local movementEnd = state.movementSpanEnd[cursor]
       if movementEnd > cursor then
-        return movementEnd, terminated, false
+        return movementEnd, terminated, false, terminatedBy
       end
     end
   end
 
   local spanning = spanningMovementAt(state, cursor)
   if spanning ~= nil then
-    return spanning, terminated, false
+    return spanning, terminated, false, terminatedBy
   end
 
   if terminated and not tailRun and state.justified[cursor] == 0 then
+    if terminatedBy == 21 then
+      local endCursor = decodeAbuttingEnd(state, script, cursor)
+      if endCursor ~= nil then
+        return endCursor, true, false, nil
+      end
+    end
     local nextCursor, nextTailRun = skipTerminatedRegion(state, cursor)
     if nextCursor == nil then
-      return nil, false, false
+      return nil, false, false, nil
     end
-    return nextCursor, terminated, nextTailRun
+    return nextCursor, terminated, nextTailRun, terminatedBy
   end
 
   if terminated and not tailRun and state.justified[cursor] ~= 0 then
     tailRun = true
   end
-  local nextCursor, endsRun, resetsTail = decodeInstruction(state, script, cursor)
+  local nextCursor, terminator, resetsTail = decodeInstruction(state, script, cursor)
   if nextCursor == nil then
-    return nil, false, false
+    return nil, false, false, nil
   end
-  if endsRun then
-    return nextCursor, true, false
+  if terminator ~= nil then
+    return nextCursor, true, false, terminator
   end
   if resetsTail then
     tailRun = false
   end
-  return nextCursor, terminated, tailRun
+  return nextCursor, terminated, tailRun, terminatedBy
 end
 
 local function decodeScriptPass(state)
@@ -560,18 +594,21 @@ local function decodeScriptPass(state)
     local cursor = entry.label
     local terminated = false
     local tailRun = false
+    local terminatedBy = nil
     while cursor + 1 < state.bytes:length() do
       local owner = state.scriptStarts[cursor]
       if owner ~= nil and owner >= 0 and owner ~= scriptIndex - 1 then
         break
       end
-      local nextCursor, nextTerminated, nextTailRun = decodeCursor(state, script, cursor, terminated, tailRun)
+      local nextCursor, nextTerminated, nextTailRun, nextTerminatedBy =
+        decodeCursor(state, script, cursor, terminated, tailRun, terminatedBy)
       if nextCursor == nil then
         break
       end
       cursor = nextCursor
       terminated = nextTerminated --[[@as boolean]]
       tailRun = nextTailRun --[[@as boolean]]
+      terminatedBy = nextTerminatedBy
     end
     scripts[scriptIndex] = script
   end

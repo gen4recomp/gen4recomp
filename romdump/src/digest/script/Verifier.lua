@@ -16,10 +16,9 @@
 -- 9. No command disappears except an explicitly documented erasure.
 -- 10. Unsupported instructions prevent a `complete` result.
 --
--- every supported terminal path of a common script must signal its caller
--- (RestartCurrentScript -> signal_caller) before ending, matching the pinned
--- `ScrCmd_RestartCurrentScript` bit protocol. Pure domain module: no love
--- dependency.
+-- the caller signal is cleared before the common script's following command
+-- runs, matching the pinned `ScrCmd_RestartCurrentScript` bit protocol. Pure
+-- domain module: no love dependency.
 
 local Cfg = require("romdump.src.digest.script.Cfg")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
@@ -81,14 +80,11 @@ local YIELD_OPS = {
 }
 
 -- Operations that end the script context (a stop-classified instruction
--- must be covered by one of these): plain completion, the opcode-61
--- context end that requests the Start Menu reopen hook, and the opcode-21
--- caller signal (RestartCurrentScript returns FALSE, ending the child
--- context at the signal).
+-- must be covered by one of these): plain completion and the opcode-61
+-- context end that requests the Start Menu reopen hook.
 local TERMINAL_OPS = {
   stop = true,
   request_start_menu = true,
-  signal_caller = true,
 }
 
 -- The documented multi-instruction folds (they own a timing profile of their

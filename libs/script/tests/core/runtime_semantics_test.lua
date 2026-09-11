@@ -8,6 +8,7 @@ local Registry = require("libs.script.src.Registry")
 local Composition = require("libs.script.src.Composition")
 local TaskRegistry = require("libs.script.src.TaskRegistry")
 local Scheduler = require("libs.script.src.Scheduler")
+local ScriptEnvironment = require("libs.script.src.ScriptEnvironment")
 local FakeServices = require("tests.support.script.FakeServices")
 
 local T = {
@@ -199,6 +200,25 @@ function T.tests.core_runtime_uses_injected_semantics()
   }
   Assert.equal(Runtime.executeNode(branch, run), Runtime.OUTCOME_CONTINUE)
   Assert.equal(frame.nodeId, "matched")
+end
+
+function T.tests.signal_caller_clears_signal_and_continues()
+  local environment = ScriptEnvironment.new({
+    environmentId = "environment-1",
+    mode = "foreground",
+    createdAtTick = 0,
+  })
+  environment:setCallerSignal(0, true)
+
+  local outcome = Runtime.executeNode({ op = "signal_caller" }, {
+    instance = { scriptId = "test.common", contextSlot = 1 },
+    environment = environment,
+    services = {},
+    semantics = {},
+  })
+
+  Assert.equal(outcome, Runtime.OUTCOME_CONTINUE)
+  Assert.isFalse(environment:callerSignal(0))
 end
 
 local function directRun(mode, player)

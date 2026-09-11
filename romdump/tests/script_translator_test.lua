@@ -783,14 +783,10 @@ T["trainer tips and wait signpost lower to canonical nodes"] = function()
   Assert.isTrue(report.complete)
 end
 
--- 18. Opcode 21 (signal_caller) is a terminal context end: a conditional
--- fallthrough chain that reaches the signal must not be peeled into a
--- structured branch (the post-signal code would land inside the branch),
--- and the verifier must accept the stop-classified translation. Post-signal
--- code decodes only when a branch target justifies it (the decoder ends
--- the script walk at the signal), so the conditional target lands inside
--- the post-signal run.
-T["signal_caller ends the fallthrough chain and stays terminal"] = function()
+-- 18. Opcode 21 (signal_caller) clears the caller signal and then falls
+-- through: a conditional chain that reaches the signal must preserve the
+-- following source region in the structured graph.
+T["signal_caller preserves the fallthrough chain"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
@@ -816,11 +812,10 @@ T["signal_caller ends the fallthrough chain and stays terminal"] = function()
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
   local steps = Structurer.structure(lowered, 0)
   local report = Verifier.verifyScript(steps, ir.scripts[0], ir, lowered.omissions)
-  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "signal_caller must verify as terminal")
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "signal_caller must verify")
   Assert.isTrue(report.complete)
-  -- The peel must not run: the goto_if fallback survives, and the post-signal
-  -- Goto sits at the top level directly after the signal — never inside a
-  -- branch that an accidental continuation could re-enter.
+  -- The peel runs across signal_caller: the signal and its following goto
+  -- remain in the branch, and the post-signal set_var remains reachable.
   local flat = {}
   local function walk(list)
     for _, step in ipairs(list) do
@@ -834,7 +829,73 @@ T["signal_caller ends the fallthrough chain and stays terminal"] = function()
     end
   end
   walk(steps)
-  Assert.deepEqual(flat, { "goto_if", "signal_caller", "goto", "set_var", "stop" })
+  Assert.deepEqual(flat, { "if", "signal_caller", "goto", "set_var", "stop" })
+end
+
+-- 19. An NPCMsg followed by WaitButton without CloseMsg never folds into
+-- say: the obtain-item tail keeps its print-only message and its explicit
+-- button wait, with no synthetic close.
+T["unfolded npc message keeps print-only message and explicit wait"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: NPCMsg (3 bytes) -> 0x23
+          { op = 45, args = { { value = 31, width = 1 } } },
+          -- 0x23: WaitButton (2) -> 0x25
+          { op = 50, args = {} },
+          -- 0x25: Return (2) -> 0x27
+          { op = 27, args = {} },
+          -- 0x27: End (2) -> 0x29
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local _, steps, report = translate(bytes, 3, 0)
+  local ops = {}
+  for _, step in ipairs(steps) do
+    ops[#ops + 1] = step.op
+  end
+  -- The binary script body ends at Return; the trailing End is not a
+  -- separate decoded instruction.
+  Assert.deepEqual(ops, { "message", "wait_input", "return" })
+  Assert.equal(steps[1].waitForPrint, true)
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "unfolded message must verify")
+  Assert.isTrue(report.complete)
+end
+
+-- 20. A standard-script header (Call, RestartCurrentScript, End) keeps its
+-- terminal stop: the child ends after the caller handoff instead of falling
+-- through into the subroutine body.
+T["restart header keeps its terminal stop"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          -- 0x20: Call (6 bytes) -> 0x2A.
+          { op = 26, args = { { target = 0x2A, width = 4 } } },
+          -- 0x26: RestartCurrentScript (2) -> 0x28.
+          { op = 21, args = {} },
+          -- 0x28: End (2) -> 0x2A.
+          { op = 2, args = {} },
+          -- 0x2A: subroutine tail (4 bytes): WaitButton, Return.
+          { op = 50, args = {} },
+          { op = 27, args = {} },
+        },
+      },
+    },
+  })
+  local _, steps, report = translate(bytes, 3, 0)
+  local ops = {}
+  for _, step in ipairs(steps) do
+    ops[#ops + 1] = step.op
+  end
+  Assert.deepEqual(ops, { "call", "signal_caller", "stop", "label", "wait_input", "return" })
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "restart header must verify")
+  Assert.isTrue(report.complete)
 end
 
 -- 13. The canonical lowering shapes for opcodes 55 and 56: the raw

@@ -32,8 +32,6 @@ Compiler.MAX_STATIC_NESTING = 64
 
 -- Ops whose linear continuation is not a `next` edge: branch nodes carry
 -- explicit edges, calls carry return frames, and stop/return/next terminate.
--- `signal_caller` (the source `RestartCurrentScript`) returns FALSE and ends
--- the script context, so it terminates the run too.
 local NO_CHAIN_NEXT = {
   ["if"] = true,
   switch = true,
@@ -45,7 +43,6 @@ local NO_CHAIN_NEXT = {
   ["return"] = true,
   stop = true,
   request_start_menu = true,
-  signal_caller = true,
   next = true,
 }
 

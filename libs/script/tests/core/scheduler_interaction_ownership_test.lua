@@ -114,6 +114,7 @@ function T.interaction_claim_survives_child_execution_and_explicit_unlock()
     h,
     script("common.ownership_child", {
       { op = "signal_caller" },
+      S.setVar({ variable = "VAR_CHILD_FALLTHROUGH", value = 1 }),
       S.stop(),
     })
   )
@@ -138,6 +139,11 @@ function T.interaction_claim_survives_child_execution_and_explicit_unlock()
   Assert.isTrue(h.scheduler:explicitPlayerLocked(), "LOCK_PLAYER already ran")
   Assert.isTrue(h.scheduler:interactionOwnsPlayerInput())
   Assert.isTrue(h.scheduler:playerInputOwned())
+  Assert.equal(
+    h.services.world:getVar("VAR_CHILD_FALLTHROUGH"),
+    1,
+    "the child must continue through its real successor before handoff"
+  )
 
   -- Advance until the child has completed and the parent resumed past
   -- RELEASE_PLAYER: the explicit lock must clear while the interaction claim
