@@ -1,7 +1,7 @@
 -- Translation-verifier unit tests: the classification checks that pin the
--- terminal protocol of the common-script context end (opcode 21) and the
--- surrounding stop/continue accounting on synthetic members. No ROM and no
--- decomp checkout required.
+-- caller-signal fallthrough protocol (opcode 21) and the surrounding
+-- stop/continue accounting on synthetic members. No ROM and no decomp
+-- checkout required.
 
 local Assert = require("tests.support.Assert")
 local ScriptFixture = require("tests.support.ScriptFixture")
@@ -29,17 +29,15 @@ local function verify(bytes)
   return steps, report
 end
 
--- The catalog itself owns the terminal classification: reverting opcode 21
--- to continue_same_tick must fail this assertion before any verifier run.
-function T.opcode_21_is_stop_classified_in_the_catalog()
-  Assert.equal(CommandCatalog.classification(21), CommandCatalog.STOP)
+-- The catalog itself owns the same-tick fallthrough classification.
+function T.opcode_21_is_continue_classified_in_the_catalog()
+  Assert.equal(CommandCatalog.classification(21), CommandCatalog.CONTINUE)
   Assert.equal(CommandCatalog.name(21), "ScrCmd_RestartCurrentScript")
 end
 
--- A context that ends at its signal_caller must verify as a complete
--- terminal translation: the stop classification check requires the
--- terminal-op set to recognize the signal node.
-function T.signal_caller_verifies_as_a_terminal_translation()
+-- A signal followed by End remains a complete translation while the signal
+-- itself is classified as ordinary same-tick fallthrough.
+function T.signal_caller_fallthrough_verifies_as_complete_translation()
   local bytes = ScriptFixture.member({
     scripts = {
       {

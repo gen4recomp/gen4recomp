@@ -144,7 +144,7 @@ return {
       },
     },
     [21] = {
-      classification = "stop",
+      classification = "continue_same_tick",
       name = "ScrCmd_RestartCurrentScript",
       widths = {},
     },

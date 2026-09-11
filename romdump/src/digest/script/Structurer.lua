@@ -116,12 +116,6 @@ local function findJoin(items, positions, entry, exit)
       return { join = join, terminal = cursor }
     elseif item.op == "if_cond" or item.op == "stop" or item.op == "request_start_menu" or item.op == "return" then
       return nil
-    elseif item.op == "signal_caller" then
-      -- The caller signal ends the script context (RestartCurrentScript
-      -- returns FALSE): the fallthrough chain never continues past it, so
-      -- the region scan stops here and the peel cannot swallow the
-      -- post-signal code into a branch.
-      return nil
     end
     cursor = cursor + 1
   end
@@ -142,7 +136,13 @@ local structure
 ---@return table[] steps
 local function peelConditional(items, entry, join, terminal, positions, refCounts)
   local item = items[entry]
-  local yes = structure(items, entry + 1, terminal, positions, refCounts)
+  local target = positions[item.target]
+  assert(target ~= nil, "conditional target must have a label")
+  -- A target label immediately before the fallthrough terminal goto names a
+  -- shared source prefix. Keep that prefix after the conditional so the goto
+  -- is represented once while both paths still reach it.
+  local sharedPrefix = target == terminal - 1
+  local yes = structure(items, entry + 1, sharedPrefix and terminal - 1 or terminal, positions, refCounts)
   -- The items between the fallthrough terminal and the conditional target
   -- are skipped by both branch paths, but their labels can be branch
   -- targets from elsewhere; they are appended inside the then-region after
@@ -152,19 +152,26 @@ local function peelConditional(items, entry, join, terminal, positions, refCount
   for _, step in ipairs(skipped) do
     yes[#yes + 1] = step
   end
-  return {
+  local result = {
     {
       op = "if",
       condition = negate(item.condition),
       provenance = item.provenance,
       -- The then-region is the fallthrough chain through its terminal goto
-      -- (the goto is retained so the source instruction stays covered); the
-      -- else-region is the conditional target's chain (the boundary label
-      -- itself is consumed by the structure).
+      -- (the goto is retained so the source instruction stays covered),
+      -- unless that goto is shared by both paths and is emitted after the
+      -- conditional; the else-region is the conditional target's chain.
       yes = yes,
-      no = structure(items, positions[item.target] + 1, join - 1, positions, refCounts),
+      no = sharedPrefix and {} or structure(items, target + 1, join - 1, positions, refCounts),
     },
   }
+  if sharedPrefix then
+    local shared = structure(items, terminal, join - 1, positions, refCounts)
+    for _, step in ipairs(shared) do
+      result[#result + 1] = step
+    end
+  end
+  return result
 end
 
 function structure(items, entry, exit, positions, refCounts)
