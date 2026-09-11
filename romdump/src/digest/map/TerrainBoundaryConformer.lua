@@ -3,6 +3,7 @@
 local bit = require("bit")
 local ffi = require("ffi")
 local Errors = require("libs.errors.src.Errors")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
 local TerrainBoundaryConformer = {}
 
@@ -233,13 +234,30 @@ local function newScratch()
 end
 
 local function scratchFor(context)
+  local scratch
   if context == nil then
-    return newScratch()
+    scratch = newScratch()
+  else
+    scratch = context.terrainScratch
+    if scratch == nil then
+      scratch = newScratch()
+      context.terrainScratch = scratch
+    else
+      scratch.doubleBits = scratch.doubleBits or ffi.new("G4TerrainDoubleBits")
+      scratch.positionCount = scratch.positionCount or 0
+      scratch.eventCount = scratch.eventCount or 0
+    end
   end
-  if context.terrainScratch == nil then
-    context.terrainScratch = newScratch()
+  return scratch
+end
+
+local function ensureRefinementArenas(scratch)
+  if scratch.refinementA == nil then
+    scratch.refinementA = GxGeometryBuffer.new()
   end
-  return context.terrainScratch
+  if scratch.refinementB == nil then
+    scratch.refinementB = GxGeometryBuffer.new()
+  end
 end
 
 local function ensurePositionCapacity(scratch, required)
@@ -767,18 +785,18 @@ local function lerpByte(a, b, t)
   return math.max(0, math.min(255, math.floor(a + (b - a) * t + 0.5)))
 end
 
-local function appendInterpolatedVertex(batch, scratch, localIndex, event, pointId, t)
+local function appendInterpolatedVertex(batch, destination, destinationOffset, scratch, localIndex, event, pointId, t)
   local numericA, attribA = vertexScalars(batch, event.ia)
   local numericB, attribB = vertexScalars(batch, event.ib)
   local x, y, z = positionCoordinates(scratch, pointId)
-  local destination = batch.arena.numeric[batch.vertexOffset + localIndex]
-  destination.x, destination.y, destination.z = x, y, z
-  destination.u, destination.v = numericA.u + (numericB.u - numericA.u) * t, numericA.v + (numericB.v - numericA.v) * t
-  destination.nx, destination.ny, destination.nz =
+  local numeric = destination.numeric[destinationOffset + localIndex]
+  numeric.x, numeric.y, numeric.z = x, y, z
+  numeric.u, numeric.v = numericA.u + (numericB.u - numericA.u) * t, numericA.v + (numericB.v - numericA.v) * t
+  numeric.nx, numeric.ny, numeric.nz =
     numericA.nx + (numericB.nx - numericA.nx) * t,
     numericA.ny + (numericB.ny - numericA.ny) * t,
     numericA.nz + (numericB.nz - numericA.nz) * t
-  local attrib = batch.arena.attrib[batch.vertexOffset + localIndex]
+  local attrib = destination.attrib[destinationOffset + localIndex]
   attrib.r, attrib.g, attrib.b, attrib.a =
     lerpByte(attribA.r, attribB.r, t),
     lerpByte(attribA.g, attribB.g, t),
@@ -805,19 +823,52 @@ local function splitTriangle(triangles, triangleCount, owner, start, finish, poi
   return triangleCount + 1
 end
 
-local function applyBatch(batch, analyses, scratch, eventStart, eventFinish, plannedCount)
+local function copyBatchGeneration(batch, destination)
+  local vertexOffset, indexOffset = destination.vertexCount, destination.indexCount
+  ffi.copy(
+    destination.numeric[vertexOffset],
+    batch.arena.numeric[batch.vertexOffset],
+    batch.vertexCount * ffi.sizeof("G4GxVertexNumeric")
+  )
+  ffi.copy(
+    destination.attrib[vertexOffset],
+    batch.arena.attrib[batch.vertexOffset],
+    batch.vertexCount * ffi.sizeof("G4GxVertexAttrib")
+  )
+  for offset = 0, batch.indexCount - 1 do
+    destination.indices[indexOffset + offset] = batch.arena.indices[batch.indexOffset + offset]
+  end
+  destination.vertexCount = vertexOffset + batch.vertexCount
+  destination.indexCount = indexOffset + batch.indexCount
+  batch.arena, batch.vertexOffset, batch.vertexCount = destination, vertexOffset, batch.vertexCount
+  batch.indexOffset, batch.indexCount = indexOffset, batch.indexCount
+end
+
+local function applyBatch(batch, destination, analyses, scratch, eventStart, eventFinish, plannedCount)
   local oldOffset, oldCount, triangleCount = batch.vertexOffset, batch.vertexCount, batch.indexCount / 3
+  local sourceArena = batch.arena
+  if eventStart == eventFinish then
+    copyBatchGeneration(batch, destination)
+    return
+  end
   ensureArray(scratch, "triangles", "triangleCapacity", "G4TriangleSlot", triangleCount + plannedCount)
   for triangle = 0, triangleCount - 1 do
     local tri = scratch.triangles[triangle]
     tri.a, tri.b, tri.c, tri.used =
       indexAt(batch, triangle * 3), indexAt(batch, triangle * 3 + 1), indexAt(batch, triangle * 3 + 2), 1
   end
-  local arena, destinationOffset = batch.arena, batch.arena.vertexCount
-  arena:reserve(oldCount + plannedCount, triangleCount * 3 + plannedCount * 3)
-  ffi.copy(arena.numeric[destinationOffset], arena.numeric[oldOffset], oldCount * ffi.sizeof("G4GxVertexNumeric"))
-  ffi.copy(arena.attrib[destinationOffset], arena.attrib[oldOffset], oldCount * ffi.sizeof("G4GxVertexAttrib"))
-  arena.vertexCount, batch.vertexOffset = destinationOffset + oldCount, destinationOffset
+  local destinationOffset, indexOffset = destination.vertexCount, destination.indexCount
+  ffi.copy(
+    destination.numeric[destinationOffset],
+    sourceArena.numeric[oldOffset],
+    oldCount * ffi.sizeof("G4GxVertexNumeric")
+  )
+  ffi.copy(
+    destination.attrib[destinationOffset],
+    sourceArena.attrib[oldOffset],
+    oldCount * ffi.sizeof("G4GxVertexAttrib")
+  )
+  destination.vertexCount = destinationOffset + oldCount
   local localVertexCount, index = oldCount, eventStart
   while index < eventFinish do
     local first, finish = scratch.events[index], index + 1
@@ -828,7 +879,16 @@ local function applyBatch(batch, analyses, scratch, eventStart, eventFinish, pla
     local start, edgeFinish = first.ia, first.ib
     for breakIndex = 0, breakCount - 1 do
       local br = scratch.breaks[breakIndex]
-      appendInterpolatedVertex(batch, scratch, localVertexCount, first, br.pointVertex, br.t)
+      appendInterpolatedVertex(
+        batch,
+        destination,
+        destinationOffset,
+        scratch,
+        localVertexCount,
+        first,
+        br.pointVertex,
+        br.t
+      )
       local owner
       for triangle = 0, triangleCount - 1 do
         local tri = scratch.triangles[triangle]
@@ -842,20 +902,25 @@ local function applyBatch(batch, analyses, scratch, eventStart, eventFinish, pla
       end
       assert(owner ~= nil, "terrain boundary repair found no owning triangle for a planned split")
       triangleCount = splitTriangle(scratch.triangles, triangleCount, owner, start, edgeFinish, localVertexCount)
-      start, localVertexCount, arena.vertexCount =
-        localVertexCount, localVertexCount + 1, batch.vertexOffset + localVertexCount + 1
+      start, localVertexCount = localVertexCount, localVertexCount + 1
+      destination.vertexCount = destinationOffset + localVertexCount
     end
     index = finish
   end
-  local indexOffset = arena.indexCount
-  arena:reserve(0, triangleCount * 3)
   for triangle = 0, triangleCount - 1 do
     local tri = scratch.triangles[triangle]
-    arena.indices[indexOffset + triangle * 3], arena.indices[indexOffset + triangle * 3 + 1], arena.indices[indexOffset + triangle * 3 + 2] =
+    destination.indices[indexOffset + triangle * 3], destination.indices[indexOffset + triangle * 3 + 1], destination.indices[indexOffset + triangle * 3 + 2] =
       tri.a, tri.b, tri.c
   end
-  arena.indexCount, batch.vertexCount = indexOffset + triangleCount * 3, localVertexCount
+  destination.indexCount = indexOffset + triangleCount * 3
+  batch.arena, batch.vertexOffset, batch.vertexCount = destination, destinationOffset, localVertexCount
   batch.indexOffset, batch.indexCount = indexOffset, triangleCount * 3
+end
+
+local function nextRefinementArena(scratch, sourceArena)
+  local destination = sourceArena == scratch.refinementA and scratch.refinementB or scratch.refinementA
+  assert(destination ~= sourceArena, "terrain refinement destination must differ from its source")
+  return destination
 end
 
 local function errorContext(context, info)
@@ -874,8 +939,13 @@ local function errorContext(context, info)
 end
 
 local function conformPasses(batches, context, scratch)
+  ensureRefinementArenas(scratch)
   local initialTris, refinements, pass = nil, 0, 0
   while true do
+    local sourceArena = batches[1].arena
+    for _, batch in ipairs(batches) do
+      assert(batch.arena == sourceArena, "terrain refinement batches must share one source arena")
+    end
     local analyses, distinctPositions = assignPositions(batches, scratch)
     local triCount = 0
     for _, batch in ipairs(batches) do
@@ -905,16 +975,26 @@ local function conformPasses(batches, context, scratch)
         })
       )
     end
+    local nextVertexCount, nextIndexCount = 0, 0
+    for batchIndex, batch in ipairs(batches) do
+      local splitCount = tonumber(plannedCounts[batchIndex - 1])
+      nextVertexCount = nextVertexCount + batch.vertexCount + splitCount
+      nextIndexCount = nextIndexCount + batch.indexCount + splitCount * 3
+    end
+    local destination = nextRefinementArena(scratch, sourceArena)
+    destination:reset()
+    destination:reserve(nextVertexCount, nextIndexCount)
     local eventStart = 0
     for batchIndex, batch in ipairs(batches) do
       local batchStart = eventStart
       while eventStart < eventCount and scratch.events[eventStart].batchIndex == batchIndex - 1 do
         eventStart = eventStart + 1
       end
-      if eventStart > batchStart then
-        applyBatch(batch, analyses, scratch, batchStart, eventStart, plannedCounts[batchIndex - 1])
-      end
+      applyBatch(batch, destination, analyses, scratch, batchStart, eventStart, plannedCounts[batchIndex - 1])
     end
+    assert(eventStart == eventCount, "terrain refinement events must cover every eligible batch")
+    assert(destination.vertexCount == nextVertexCount, "terrain refinement vertex generation size mismatch")
+    assert(destination.indexCount == nextIndexCount, "terrain refinement index generation size mismatch")
     refinements = refinements + planned
   end
 end
@@ -955,25 +1035,24 @@ function TerrainBoundaryConformer.conform(batches, context)
   for _, batch in ipairs(batches) do
     validateSlice(batch)
   end
-  local arena = batches[1].arena
   for _, batch in ipairs(batches) do
-    assert(batch.arena == arena, "conformance batches must share one geometry arena")
+    assert(batch.arena == batches[1].arena, "conformance batches must share one geometry arena")
   end
   local saved = {}
   for index, batch in ipairs(batches) do
     saved[index] = {
+      arena = batch.arena,
       vertexOffset = batch.vertexOffset,
       vertexCount = batch.vertexCount,
       indexOffset = batch.indexOffset,
       indexCount = batch.indexCount,
     }
   end
-  local oldVertexCount, oldIndexCount = arena.vertexCount, arena.indexCount
   local ok, result = pcall(conformPasses, batches, context, scratchFor(context))
   if not ok then
-    arena.vertexCount, arena.indexCount = oldVertexCount, oldIndexCount
     for index, batch in ipairs(batches) do
       local state = saved[index]
+      batch.arena = state.arena
       batch.vertexOffset, batch.vertexCount, batch.indexOffset, batch.indexCount =
         state.vertexOffset, state.vertexCount, state.indexOffset, state.indexCount
     end

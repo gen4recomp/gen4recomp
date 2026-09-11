@@ -105,6 +105,7 @@ local function compileCell(romFs, descriptor, scratch, producerFingerprint)
     terrainAnimationCompiler = terrainAnimationCompiler,
     geometryArena = scratch and scratch.geometryArena,
     gxScratch = scratch and scratch.gxScratch,
+    terrainScratch = scratch and scratch.terrainScratch,
   })
   local building = BuildingModelCompiler.compile(romFs, chunk.area, chunk.land, {
     mapId = source.mapHeaderId,

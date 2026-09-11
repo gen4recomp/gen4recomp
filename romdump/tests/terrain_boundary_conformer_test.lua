@@ -333,10 +333,17 @@ end
 
 function T.splits_a_single_t_junction_and_reports_no_remaining_junctions()
   local before = singleSeam()
+  local untouchedSnapshot = denseSnapshot({ before[2] })
   Assert.isTrue(#junctions(before) >= 1, "the deliberate T-seam must be diagnosed before repair")
 
   local after = conform(cloneBatches(before))
   Assert.equal(#junctions(after), 0, "no unmatched boundary T-junction may remain after repair")
+  Assert.equal(after[1].arena, after[2].arena, "all eligible batches move into one destination generation")
+  Assert.deepEqual(
+    denseSnapshot({ after[2] }),
+    untouchedSnapshot,
+    "an unchanged eligible batch is copied byte-for-byte into the destination generation"
+  )
   Assert.equal(countAt({ after[1] }, 0, 1, 2), 1, "the coarse side expresses the shared breakpoint exactly once")
   Assert.equal(after[1].indexCount, 9, "the one split triangle becomes two; its neighbor is untouched")
   Assert.equal(after[2].indexCount, 12, "the fine side keeps its four triangles")
@@ -747,6 +754,21 @@ local function duplicateOwnersFixture()
   return denseBatches({ B(vertices, indices) })
 end
 
+local function laterPassConflictFixture()
+  local vertices = {
+    V(0, 1, 0, { colorSource = 0 }),
+    V(0, 1, 4, { colorSource = 0 }),
+    V(4, 1, 2, { colorSource = 0 }),
+    V(0, 1, 0, { colorSource = 0 }),
+    V(0, 1, 4, { colorSource = 1 }),
+    V(4, 1, 2, { colorSource = 0 }),
+    V(0, 1, 2, { colorSource = 0 }),
+    V(-4, 1, 2, { colorSource = 0 }),
+    V(-4, 1, 6, { colorSource = 0 }),
+  }
+  return denseBatches({ B(vertices, { 0, 1, 2, 3, 4, 5, 6, 7, 8 }) })
+end
+
 local function spansEdge(batch, ax, ay, az, bx, by, bz)
   local count = 0
   for offset = 0, batch.indexCount - 1, 3 do
@@ -813,19 +835,76 @@ function T.converges_every_duplicate_physical_owner_beyond_the_old_batch_bound()
   )
 end
 
+function T.reuses_two_refinement_generations_across_convergence()
+  local input = duplicateOwnersFixture()
+  local compileContext = context()
+
+  local first = conformer().conform(input, compileContext) or input
+  local terrainScratch = assert(compileContext.terrainScratch)
+  Assert.equal(#junctions(first), 0, "multi-pass conformance reaches a clean boundary result")
+  Assert.equal(first[1].vertexCount, 9, "multi-pass conformance preserves the refined vertex result")
+  Assert.equal(first[1].indexCount, 21, "multi-pass conformance preserves the refined index result")
+  Assert.equal(
+    first[1].arena.vertexCount,
+    first[1].vertexCount,
+    "the first reusable arena holds one current generation"
+  )
+  Assert.equal(first[1].arena.indexCount, first[1].indexCount, "the first reusable arena has no obsolete indices")
+  Assert.notNil(terrainScratch.refinementA, "conformance owns its first reusable refinement arena")
+  Assert.notNil(terrainScratch.refinementB, "conformance owns its second reusable refinement arena")
+  Assert.isTrue(
+    terrainScratch.refinementA ~= terrainScratch.refinementB,
+    "the two reusable refinement arenas are distinct"
+  )
+  Assert.isTrue(
+    first[1].arena == terrainScratch.refinementA or first[1].arena == terrainScratch.refinementB,
+    "the final eligible generation lives in a refinement arena"
+  )
+  local firstArena, secondArena = terrainScratch.refinementA, terrainScratch.refinementB
+  local firstHash = Hashing.sha1hex(MeshWriter.encode(first[1]))
+
+  local secondInput = duplicateOwnersFixture()
+  local second = conformer().conform(secondInput, compileContext) or secondInput
+  Assert.equal(terrainScratch.refinementA, firstArena, "the first refinement arena is reused")
+  Assert.equal(terrainScratch.refinementB, secondArena, "the second refinement arena is reused")
+  Assert.equal(
+    Hashing.sha1hex(MeshWriter.encode(second[1])),
+    firstHash,
+    "reusing the scratch preserves deterministic mesh bytes"
+  )
+  Assert.equal(second[1].arena.vertexCount, second[1].vertexCount, "reused logical vertex counts reset before writing")
+  Assert.equal(second[1].arena.indexCount, second[1].indexCount, "reused logical index counts reset before writing")
+end
+
 -- Transactional failure: a categorical conflict on a later pass must leave
 -- the caller's batches exactly as they were. This exercises the same
 -- entry-snapshot restore that every conformance failure path (including the
 -- did-not-converge producer error) shares.
 function T.failed_conformance_restores_pristine_input()
-  local input = attributeFixture(0, 1)
+  local input = laterPassConflictFixture()
+  local original = {
+    arena = input[1].arena,
+    vertexOffset = input[1].vertexOffset,
+    vertexCount = input[1].vertexCount,
+    indexOffset = input[1].indexOffset,
+    indexCount = input[1].indexCount,
+  }
   local snapshot = denseSnapshot(input)
-  local ok, err = pcall(conformer().conform, input, context())
-  Assert.isFalse(ok, "the color-source conflict must fail")
-  Assert.isTrue(Errors.is(err), "the failure is a structured producer error")
+  local compileContext = context()
+  local ok, err = pcall(conformer().conform, input, compileContext)
+  Assert.isFalse(ok, "a later-pass color-source conflict must fail")
+  Assert.isTrue(Errors.is(err), "the later-pass failure is a structured producer error")
   ---@cast err table
   Assert.isTrue(type(err.code) == "string" and #err.code > 0, "the failure carries a stable error code")
   Assert.isTrue(type(err.context) == "table", "the failure carries source context")
+  local terrainScratch = assert(compileContext.terrainScratch)
+  Assert.notNil(terrainScratch.refinementA, "failed conformance still uses reusable refinement storage")
+  Assert.notNil(terrainScratch.refinementB, "failed conformance still owns both refinement arenas")
+  Assert.equal(input[1].arena, original.arena, "failure restores the original arena owner")
+  Assert.equal(input[1].vertexOffset, original.vertexOffset, "failure restores the original vertex offset")
+  Assert.equal(input[1].vertexCount, original.vertexCount, "failure restores the original vertex count")
+  Assert.equal(input[1].indexOffset, original.indexOffset, "failure restores the original index offset")
+  Assert.equal(input[1].indexCount, original.indexCount, "failure restores the original index count")
   Assert.deepEqual(denseSnapshot(input), snapshot, "a failed conformance restores every batch to its pristine state")
 end
 

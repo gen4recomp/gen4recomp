@@ -71,6 +71,7 @@ function CompilerWorker.execute(job, context)
       context.fieldCellScratch = scratch
       scratch.geometryArena = context.geometryArena
       scratch.gxScratch = context.gxScratch
+      scratch.terrainScratch = context.terrainScratch
       local compiled = FieldCellCompiler.compileCell(context.romFs, descriptor, scratch, job.producerFingerprint)
       FieldCellCacheWriter.stagePrepared(artifact, descriptor, compiled)
       artifact:finishSuccess({
@@ -150,6 +151,7 @@ function CompilerWorker.execute(job, context)
       producerFingerprint = job.producerFingerprint,
       geometryArena = context.geometryArena,
       gxScratch = context.gxScratch,
+      terrainScratch = context.terrainScratch,
     })
   end, function(failure)
     return { failure = failure, traceback = debug.traceback("", 2) }
@@ -199,11 +201,13 @@ function CompilerWorker.run(workerId, versionId, inputChannel, resultChannel)
     romFs = romFs,
     cacheFs = cacheFs,
     workerId = workerId,
+    terrainScratch = {},
     fieldCellScratch = {
       geometryArena = GxGeometryBuffer.new(),
       gxScratch = GxDisplayList.newScratch(),
     },
   }
+  context.fieldCellScratch.terrainScratch = context.terrainScratch
   context.geometryArena = context.fieldCellScratch.geometryArena
   context.gxScratch = context.fieldCellScratch.gxScratch
   while true do

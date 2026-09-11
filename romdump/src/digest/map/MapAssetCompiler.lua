@@ -61,6 +61,7 @@ end
 ---@param unresolvedMaterials table[]
 ---@param geometryArena GxGeometryBuffer|nil
 ---@param gxScratch GxDisplayList.Scratch|nil
+---@param terrainScratch table<string, unknown>|nil
 ---@return table<string, unknown> neighbors
 ---@return table<string, unknown> textureSrt
 ---@return table<string, unknown> neighborChunkByMember
@@ -73,7 +74,8 @@ local function compileNeighborAssets(
   textures,
   unresolvedMaterials,
   geometryArena,
-  gxScratch
+  gxScratch,
+  terrainScratch
 )
   -- Plan the eight surrounding matrix cells and compile each unique land chunk
   -- once. Geometry/textures feed the draw ring; permission and BDHC artifacts
@@ -99,6 +101,7 @@ local function compileNeighborAssets(
       terrainAnimationCompiler = terrainAnimationCompiler,
       geometryArena = geometryArena,
       gxScratch = gxScratch,
+      terrainScratch = terrainScratch,
     })
     for sha1, b in pairs(chunk.meshes) do
       meshes[sha1] = b
@@ -215,6 +218,7 @@ local function compileCanonical(romFs, opts, plan)
       finalizeMeshes = true,
       geometryArena = opts.geometryArena,
       gxScratch = opts.gxScratch,
+      terrainScratch = opts.terrainScratch,
     })
     starterModelKey = extra.modelKey
     models[starterModelKey] = extra.model
@@ -396,6 +400,7 @@ local function _compile(romFs, idOrSymbol, opts)
     finalizeMeshes = true,
     geometryArena = opts.geometryArena,
     gxScratch = opts.gxScratch,
+    terrainScratch = opts.terrainScratch,
   })
 
   -- Materials whose names the pack they bind to does not define. They draw
@@ -451,7 +456,8 @@ local function _compile(romFs, idOrSymbol, opts)
     textures,
     unresolvedMaterials,
     opts.geometryArena,
-    opts.gxScratch
+    opts.gxScratch,
+    opts.terrainScratch
   )
 
   -- Dependency record -> hash -> marker.
