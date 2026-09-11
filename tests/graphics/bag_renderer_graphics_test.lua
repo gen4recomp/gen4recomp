@@ -693,6 +693,191 @@ function T.all_pocket_tabs_render_the_source_selected_visual_in_their_rects(scop
   end
 end
 
+local function rectanglesOverlap(first, second)
+  return not rectanglesDoNotOverlap(first, second)
+end
+
+local function assertNoOverlap(rect, others, label)
+  for _, other in ipairs(others) do
+    Assert.isFalse(
+      rectanglesOverlap(rect, other.rect),
+      label .. " must not overlap " .. other.label .. " or the chrome check is confounded"
+    )
+  end
+end
+
+-- The browse lower pane composites source-derived chrome over the generated
+-- browse background: empty item cells preserve the background
+-- pixel-for-pixel, the selected focus visual occupies its source-derived
+-- destination over the selected cell, and the generated Cancel label paints
+-- inside the Cancel rectangle. The hidden source strip's static shape and
+-- browse invisibility are pinned alongside (its footprint sits behind the
+-- tab visuals, so pixel absence there is unobservable at this layer).
+-- Every rectangle and visual comes from the generated manifest; the decoded
+-- background is the anchor. Overlaps between sampled regions and other draws
+-- fail loudly instead of silently weakening the comparison.
+function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local record = presentation(firstIcon, secondIcon, heroStatus)
+    local composed = render(scope, owned, record, layout)
+    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+
+    local browse = assert(interactive.backgrounds.browse, versionId .. " carries its browse background")
+    local backdrop = decodeImage(scope, cacheFs, browse.image, versionId .. " browse background")
+    local backdropOffset = browse.offset or { x = 0, y = 0 }
+    local function backdropPixel(hostX, hostY)
+      local bx = hostX - interactiveFrame.x - backdropOffset.x
+      local by = hostY - interactiveFrame.y - backdropOffset.y
+      if bx < 0 or by < 0 or bx >= backdrop:getWidth() or by >= backdrop:getHeight() then
+        return nil
+      end
+      local red, green, blue, alpha = backdrop:getPixel(bx, by)
+      return { quantize(red), quantize(green), quantize(blue), quantize(alpha) }
+    end
+    local function composedPixel(hostX, hostY)
+      local red, green, blue, alpha = composed:getPixel(hostX, hostY)
+      return { quantize(red), quantize(green), quantize(blue), quantize(alpha) }
+    end
+    local function assertMatchesBackdrop(hostX, hostY, label)
+      local expected = backdropPixel(hostX, hostY)
+      Assert.notNil(expected, label .. " maps inside the generated background at " .. hostX .. "," .. hostY)
+      local actual = composedPixel(hostX, hostY)
+      Assert.deepEqual(actual, assert(expected), label .. " preserves the background at " .. hostX .. "," .. hostY)
+    end
+
+    local tabs = assert(interactive.pocketTabs, versionId .. " carries the pocket tabs")
+    local tabFootprints = {}
+    for index, rect in ipairs(assert(tabs.rects, versionId .. " carries tab rectangles")) do
+      tabFootprints[#tabFootprints + 1] = {
+        rect = visualRect(rect, assert(tabs.normal[index], versionId .. " carries normal tab " .. index)),
+        label = "normal tab " .. index,
+      }
+    end
+    local pocketRecords = pockets()
+    local selectedTabIndex = nil
+    for index, entry in ipairs(pocketRecords) do
+      if entry.pocket == record.pocket then
+        selectedTabIndex = index
+      end
+    end
+    Assert.notNil(selectedTabIndex, versionId .. " resolves the selected tab for " .. tostring(record.pocket))
+    local selectedFootprint = {
+      rect = visualRect(tabs.rects[assert(selectedTabIndex)], tabs.selected),
+      label = "selected tab",
+    }
+    local slots = assert(interactive.itemSlots.slots, versionId .. " carries item slot rectangles")
+    local focusVisual = assert(interactive.itemSlots.focus, versionId .. " carries its focus visual")
+    local focusImage = decodeImage(scope, cacheFs, focusVisual.image, versionId .. " focus visual")
+    local selectedRect = assert(slots[1].rect, versionId .. " carries its first item-cell rectangle")
+    local focusFootprint = { rect = visualRect(selectedRect, focusVisual), label = "selection focus" }
+    Assert.equal(
+      math.floor(focusFootprint.rect.x),
+      focusFootprint.rect.x,
+      versionId .. " samples the focus destination on exact pixels"
+    )
+    Assert.equal(
+      math.floor(focusFootprint.rect.y),
+      focusFootprint.rect.y,
+      versionId .. " samples the focus destination on exact pixels"
+    )
+    local strip = assert(interactive.widgets.sourceStrip, versionId .. " carries its source strip widget")
+    local cancelRect = assert(interactive.cancel, versionId .. " carries its cancel rectangle")
+    local pageRect = assert(interactive.pageIndicator.rect, versionId .. " carries its page rectangle")
+    -- The source strip stays hidden in normal browse: its producer-audited
+    -- footprint sits behind the tab visuals, so pixel absence there is
+    -- unobservable at this layer. Absence is proven one layer down (the
+    -- renderer issues no strip draw while browsing) and at the producer
+    -- boundary (the contract pins states.browsing to false with the audited
+    -- placement); assert the static shape here so a timeline regression
+    -- cannot slip back in.
+    Assert.isTrue(type(strip.image) == "string", versionId .. " strip is a static source visual")
+    Assert.isNil(strip.frames, versionId .. " strip has no runtime frame timeline")
+    Assert.equal(strip.states.browsing, false, versionId .. " strip stays hidden in normal browse")
+    local drawnRegions = { selectedFootprint }
+    for _, footprint in ipairs(tabFootprints) do
+      drawnRegions[#drawnRegions + 1] = footprint
+    end
+    drawnRegions[#drawnRegions + 1] = { rect = focusFootprint.rect, label = "selection focus" }
+    drawnRegions[#drawnRegions + 1] = { rect = cancelRect, label = "cancel" }
+    drawnRegions[#drawnRegions + 1] = { rect = pageRect, label = "page" }
+
+    -- Empty cells preserve the generated background pixel-for-pixel: no
+    -- icon, name, quantity, focus, or chrome paints over them.
+    local emptyChecked = 0
+    for index = 3, 6 do
+      local rect = assert(slots[index].rect, versionId .. " carries cell rectangle " .. index)
+      assertNoOverlap(rect, drawnRegions, versionId .. " empty cell " .. index)
+      for y = rect.y, rect.y + rect.height - 1 do
+        for x = rect.x, rect.x + rect.width - 1 do
+          assertMatchesBackdrop(interactiveFrame.x + x, interactiveFrame.y + y, versionId .. " empty cell " .. index)
+          emptyChecked = emptyChecked + 1
+        end
+      end
+    end
+    Assert.isTrue(emptyChecked > 0, versionId .. " samples empty-cell background pixels")
+
+    -- The selection focus occupies its source-derived destination: where its
+    -- opaque pixels differ from the background, the composed pane carries
+    -- the focus pixels themselves rather than background or icon content.
+    local focusChecked = 0
+    for y = 0, focusImage:getHeight() - 1 do
+      for x = 0, focusImage:getWidth() - 1 do
+        local red, green, blue, alpha = focusImage:getPixel(x, y)
+        if alpha > 0.5 then
+          local canonicalX = focusFootprint.rect.x + x
+          local canonicalY = focusFootprint.rect.y + y
+          local expected = backdropPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
+          if expected ~= nil then
+            local focusPixel = { quantize(red), quantize(green), quantize(blue), quantize(alpha) }
+            if focusPixel[1] ~= expected[1] or focusPixel[2] ~= expected[2] or focusPixel[3] ~= expected[3] then
+              local actual = composedPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
+              Assert.deepEqual(
+                { actual[1], actual[2], actual[3] },
+                { focusPixel[1], focusPixel[2], focusPixel[3] },
+                versionId .. " focus carries its own pixels at " .. x .. "," .. y
+              )
+              focusChecked = focusChecked + 1
+            end
+          end
+        end
+      end
+    end
+    Assert.isTrue(focusChecked > 0, versionId .. " proves focus pixels over the selected cell")
+
+    -- The generated Cancel label paints inside the Cancel rectangle: the
+    -- region differs from the bare background there.
+    local cancelLabel = assert(
+      interactive.text and interactive.text.actions and interactive.text.actions.cancel,
+      versionId .. " carries its generated cancel label"
+    )
+    Assert.isTrue(type(cancelLabel) == "string" and cancelLabel ~= "", versionId .. " labels Cancel from source")
+    local cancelChanged = 0
+    for y = cancelRect.y, cancelRect.y + cancelRect.height - 1 do
+      for x = cancelRect.x, cancelRect.x + cancelRect.width - 1 do
+        local expected = backdropPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+        if expected ~= nil then
+          local actual = composedPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+          if actual[1] ~= expected[1] or actual[2] ~= expected[2] or actual[3] ~= expected[3] then
+            cancelChanged = cancelChanged + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(cancelChanged > 0, versionId .. " paints the generated Cancel label in its rectangle")
+  end
+end
+
 -- Repeated draws at the same hero semantic frame are observationally
 -- identical: render frequency never advances Bag semantic time.
 function T.repeated_draw_at_one_semantic_frame_is_identical(scope, context)
@@ -1003,7 +1188,7 @@ function T.real_hero_rendering_has_a_repeatable_nonempty_digest(scope, context)
   Assert.equal(secondDigest, firstDigest, "the same real-cache hero frame has a stable digest")
 end
 
-function T.graphics_rejects_fake_non_four_light_manifests(scope, context)
+function T.graphics_rejects_fake_non_four_light_manifests(_, context)
   local cacheFs, manifest = soulSilverCache(context)
   for _, count in ipairs({ 3, 5 }) do
     local original = manifest.hero.presentation.lights.count
