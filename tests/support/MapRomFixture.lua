@@ -98,8 +98,8 @@ local function areaMember(opts)
   return NB.u16(opts.buildingTexturePackId)
     .. NB.u16(opts.mapTexturePackId)
     .. NB.u16(opts.dynamicTextureType or 0xFFFF)
-    .. NB.u8(0)
-    .. NB.u8(opts.lightTypeRaw or 0) -- areaType 0 == indoor
+    .. NB.u8(opts.areaTypeRaw or 0)
+    .. NB.u8(opts.lightTypeRaw or 0)
 end
 
 -- opts (all optional):
@@ -114,6 +114,7 @@ end
 --   buildingTexturePackId / mapTexturePackId
 --   dynamicTextureType  the area record's dynamic-texture animation type,
 --                       default 0xFFFF (no area texture-coordinate animation)
+--   areaTypeRaw         the area's indoor/outdoor type, default 0 (indoor)
 --   fieldTextureAnimations / fieldAreaTextureSrt
 --                       member maps for the two terrain-animation archives;
 --                       see the archive notes in build()
@@ -156,6 +157,7 @@ function MapRomFixture.build(opts)
         mapTexturePackId = mapTexturePackId,
         buildingTexturePackId = buildingTexturePackId,
         dynamicTextureType = opts.dynamicTextureType,
+        areaTypeRaw = opts.areaTypeRaw,
         lightTypeRaw = opts.lightTypeRaw,
       }),
     },

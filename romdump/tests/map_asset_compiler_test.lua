@@ -17,9 +17,12 @@
 local Assert = require("tests.support.Assert")
 local AnimationFixture = require("tests.support.AnimationFixture")
 local BdhcBuilder = require("tests.support.BdhcBuilder")
+local CollisionFixture = require("tests.support.CollisionFixture")
 local Errors = require("libs.errors.src.Errors")
 local ffi = require("ffi")
 local FieldTexAnimFixture = require("tests.support.FieldTextureAnimationFixture")
+local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
 local FieldTextureAnimation = require("romdump.src.digest.field.FieldTextureAnimation")
 local Hashing = require("romdump.src.digest.Hashing")
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
@@ -27,6 +30,8 @@ local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local LandDataBuilder = require("tests.support.LandDataBuilder")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
+local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
+local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapRomFixture = require("tests.support.MapRomFixture")
@@ -37,6 +42,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
+local TerrainFixture = require("tests.support.TerrainFixture")
 
 local T = {}
 
@@ -55,6 +61,89 @@ local function onlyModel(bundle)
     end
   end
   return assert(found, "expected one building model")
+end
+
+local function fieldCellIndex(romFs)
+  local resolved = assert(MapResolver.resolve(romFs, MapRomFixture.MAP_SYMBOL))
+  return {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = {
+      {
+        matrixMemberId = resolved.matrixMemberId,
+        width = resolved.matrix.width,
+        height = resolved.matrix.height,
+        cells = {
+          {
+            matrixMemberId = resolved.matrixMemberId,
+            index = resolved.matrixIndex,
+            x = resolved.matrixX,
+            z = resolved.matrixZ,
+            mapHeaderId = MapRomFixture.MAP_ID,
+            altitude = resolved.matrixAltitude,
+            landDataMemberId = resolved.landDataMemberId,
+            areaDataMemberId = resolved.areaDataMemberId,
+            file = FieldCellCache.cellPath(resolved.matrixMemberId, resolved.matrixIndex),
+          },
+        },
+      },
+    },
+  }
+end
+
+local function publishPlannedCells(cacheFs, index, plan)
+  local cells = {}
+  for _, cellPlan in ipairs(plan.cellPlans) do
+    local descriptor = cellPlan.descriptor
+    local marker = cellPlan.expectedMarker
+    local key = descriptor.matrixMemberId .. ":" .. descriptor.index
+    cells[key] = {
+      schema = FieldCellCache.CELL_SCHEMA,
+      matrixMemberId = descriptor.matrixMemberId,
+      index = descriptor.index,
+      x = descriptor.x,
+      z = descriptor.z,
+      mapHeaderId = descriptor.mapHeaderId,
+      origin = { x = descriptor.x * 32, y = descriptor.altitude / 16, z = descriptor.z * 32 },
+      altitude = descriptor.altitude,
+      landDataMemberId = descriptor.landDataMemberId,
+      areaDataMemberId = descriptor.areaDataMemberId,
+      batches = {},
+      materials = {},
+      buildingInstances = {},
+      terrainAnimations = { textureSrt = false },
+      calibration = { modelExtentTilesX = 1, modelExtentTilesZ = 1, posScale = 1 },
+      collision = {
+        width = 32,
+        height = 32,
+        file = FieldCellCache.collisionPath(descriptor.matrixMemberId, descriptor.index),
+      },
+      terrain = {
+        schema = MapAssetCache.TERRAIN_SCHEMA,
+        file = FieldCellCache.terrainPath(descriptor.matrixMemberId, descriptor.index),
+      },
+      collisionData = CollisionFixture.grid32(),
+      terrainData = {
+        schema = MapAssetCache.TERRAIN_SCHEMA,
+        plates = TerrainFixture.build().plates,
+      },
+      cellMarker = marker,
+      dependencies = {
+        marker = marker,
+        matrixMemberId = descriptor.matrixMemberId,
+        index = descriptor.index,
+        descriptor = descriptor,
+      },
+      modelKeyOf = {},
+    }
+  end
+  FieldCellCacheWriter.write(cacheFs, {
+    index = index,
+    cells = cells,
+    meshes = {},
+    textures = {},
+    models = {},
+    marker = "synthetic-field-cell-corpus",
+  })
 end
 
 -- ---- terrain-animation fixtures ----
@@ -809,7 +898,6 @@ end
 function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
-  local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
   local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 
   local bw = require("libs.codec.src.BinaryWriter").new()
@@ -864,6 +952,53 @@ function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   Assert.equal(handle.clip.name, "door_op")
   runtime:updateAnimated()
   Assert.equal(handle.player.frameFx, 4096, "the compiled clip advances")
+end
+
+function T.canonical_map_is_ready_for_its_precomputed_marker()
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  local producerFingerprint = "synthetic-producer"
+  local romFs, members = MapRomFixture.build({ areaTypeRaw = 1, buildings = "" })
+  members.exterior_build_models = {
+    [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = members.interior_build_models[MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID],
+  }
+  members.exterior_build_anim_list = {
+    [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = members.interior_build_anim_list[MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID],
+  }
+
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local index = fieldCellIndex(romFs)
+  local plan = assert(MapCompilePlan.plan(romFs, index, MapRomFixture.MAP_SYMBOL, producerFingerprint))
+  publishPlannedCells(cacheFs, index, plan)
+
+  local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL, {
+    cacheFs = cacheFs,
+    fieldCellIndex = index,
+    producerFingerprint = producerFingerprint,
+  }))
+  MapCacheWriter.write(cacheFs, bundle)
+  Assert.isTrue(
+    MapAssetCache.isReady(cacheFs, MapRomFixture.MAP_ID, plan.expectedMarker),
+    "published map is ready for the marker used to compile it"
+  )
+  Assert.equal(bundle.marker, plan.expectedMarker)
+end
+
+function T.indoor_map_compilation_keeps_its_existing_readiness_path()
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  local romFs = MapRomFixture.build({})
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+
+  local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL, {
+    cacheFs = cacheFs,
+    fieldCellIndex = {},
+    producerFingerprint = "synthetic-producer",
+  }))
+  Assert.equal(bundle.scene.type, "indoor")
+
+  MapCacheWriter.write(cacheFs, bundle)
+  Assert.isTrue(MapAssetCache.isReady(cacheFs, bundle.mapId, bundle.marker))
 end
 
 return { tests = T }

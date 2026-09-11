@@ -3,8 +3,8 @@
 -- and every unique placed-building model into normalized batches and
 -- content-addressed textures, and assemble a serializable bundle -- the scene
 -- descriptor, the raw permission grid, the keyed mesh/texture blobs, the model
--- descriptors, and a dependency record hashed into a completion marker. It
--- writes nothing; MapCacheWriter persists the bundle. Runs under LÖVE (needs an
+-- descriptors, and a completion marker. It writes nothing; MapCacheWriter
+-- persists the bundle. Runs under LÖVE (needs an
 -- open RomFs) but the raw Nitro formats stop here.
 
 local MapResolver = require("romdump.src.digest.map.MapResolver")
@@ -151,10 +151,8 @@ local function mapPropBaseToScene(sceneOrigin, position)
   return Matrix4.toArrayBuffer(composed)
 end
 
-local function compileCanonical(romFs, idOrSymbol, opts)
+local function compileCanonical(romFs, opts, plan)
   local cacheFs = assert(opts.cacheFs, "canonical map compilation requires a cache filesystem")
-  local index = assert(opts.fieldCellIndex, "canonical map compilation requires the field-cell index")
-  local plan = assert(MapCompilePlan.plan(romFs, index, idOrSymbol, opts.producerFingerprint))
   local cellsByKey = {}
   for _, cellPlan in ipairs(plan.cellPlans) do
     if not FieldCellCache.isCellReady(cacheFs, cellPlan.descriptor, cellPlan.expectedMarker) then
@@ -251,7 +249,7 @@ local function compileCanonical(romFs, idOrSymbol, opts)
       }
     end
   end
-  local marker = MapAssetCache.marker(romFs:metadata().sha1, mapId, Hashing.hashLua(dependencies))
+  local marker = plan.expectedMarker
   local scene = {
     schema = MapAssetCache.SCENE_SCHEMA,
     versionId = romFs:version(),
@@ -281,7 +279,7 @@ local function compileCanonical(romFs, idOrSymbol, opts)
     fog = HgssFieldFog.runtimePreset(HgssFieldFog.resolve(resolved.map.weather)),
     runtimeProps = runtimeProps,
   }
-  return {
+  local bundle = {
     mapId = mapId,
     marker = marker,
     scene = scene,
@@ -295,6 +293,8 @@ local function compileCanonical(romFs, idOrSymbol, opts)
     textures = textures,
     unresolvedMaterials = unresolvedMaterials,
   }
+  assert(bundle.marker == plan.expectedMarker, "canonical map marker must equal its plan")
+  return bundle
 end
 
 local function _compile(romFs, idOrSymbol, opts)
@@ -574,7 +574,8 @@ function MapAssetCompiler.compile(romFs, idOrSymbol, opts)
       local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
       local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
       if area.areaType == "outdoor" then
-        return compileCanonical(romFs, idOrSymbol, opts)
+        local plan = assert(MapCompilePlan.plan(romFs, opts.fieldCellIndex, idOrSymbol, opts.producerFingerprint))
+        return compileCanonical(romFs, opts, plan)
       end
     end
     return _compile(romFs, idOrSymbol, opts)
