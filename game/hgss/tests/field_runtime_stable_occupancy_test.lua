@@ -380,13 +380,13 @@ function T.autonomous_reservation_blocks_player_movement_but_not_interaction()
   runtime.player = player
 
   local actor = assert(actors:getById("map:61:object:0"))
-  Assert.equal(actor.fieldX, 2)
-  Assert.equal(actor.fieldZ, 0)
+  Assert.equal(actor:getFieldPosition().fieldX, 2)
+  Assert.equal(actor:getFieldPosition().fieldZ, 0)
 
   actors:step(1, { playerCandidates = player:collisionCandidates() })
 
-  Assert.equal(actor.fieldX, 2, "autonomous actor remains committed at source during reservation")
-  Assert.equal(actor.fieldZ, 0)
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "autonomous actor remains committed at source during reservation")
+  Assert.equal(actor:getFieldPosition().fieldZ, 0)
   local reservedCandidate = { fieldX = 1, fieldZ = 0, surfaceId = 0 }
   Assert.isNil(actors:getAt(61, reservedCandidate))
   Assert.equal(assert(actors:getCollisionAt(61, reservedCandidate)).actorId, actor.actorId)

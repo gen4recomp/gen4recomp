@@ -4,6 +4,12 @@
 -- record and the `MapObject` it constructs. Actors are static:
 -- Semantic movement is resolved by the generated field-data contract. Pure
 -- domain module.
+--
+-- Dense mutable numeric/boolean state (positions, surfaces, clocks, offsets,
+-- residency/visibility/solidity) lives in one store-owned cdata record
+-- addressed by a stable storage slot. The record is the single authority:
+-- no moved value is mirrored on the Lua table. Symbolic state (facing, pose,
+-- cell keys, motion transactions, overrides) stays Lua-side.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
@@ -16,33 +22,17 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field objectEventId integer
 ---@field sourceEvent table<string, unknown>
 ---@field spriteId integer
----@field fieldX integer
----@field fieldZ integer
 ---@field cellKey string?
----@field sourceSurfaceId integer?
----@field surfaceId integer?
----@field worldX number?
----@field worldY number?
----@field worldZ number?
----@field previousWorldX number? previous fixed-tick world point for host-frame sampling
----@field previousWorldY number?
----@field previousWorldZ number?
----@field resident boolean
 ---@field initialFacing FieldDirection
 ---@field facing FieldDirection
 ---@field pose string
----@field poseTick integer
 ---@field private _visual table<string, unknown>
 ---@field private _idlePresentation { mode: "static"|"animated", cadence: integer }
----@field private _scriptedPresentationAdvanced boolean
----@field presentationOffset { x: number, y: number, z: number } render-only action or idle display offset
 ---@field private _gesturePose string?
----@field private _gestureTick integer?
----@field private _gestureOffsetY number
 ---@field activeEmoteKind string? the active semantic emote (e.g. "exclamation") while an emote action is live, else nil
----@field visible boolean
----@field solid boolean
 ---@field movementType string
+---@field private _numericStore FieldActorStore numeric storage owner (the actor's FieldActorStore)
+---@field private _numericSlot integer stable storage slot, independent of manager slots
 ---@field interactionFacingOverride { owner: string, facing: FieldDirection, restoreFacing: FieldDirection }?
 ---@field pushFacingOverride fun(self: FieldObjectActor, request: { owner: string, facing: FieldDirection }): table<string, unknown>
 ---@field releaseFacingOverride fun(self: FieldObjectActor, token: table<string, unknown>)
@@ -67,6 +57,21 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field setFacing fun(self: FieldObjectActor, direction: FieldDirection)
 ---@field setVisible fun(self: FieldObjectActor, visible: boolean)
 ---@field setPosition fun(self: FieldObjectActor, position: { fieldX: integer, fieldZ: integer, worldY: number?, worldX: number?, worldZ: number?, surfaceId: integer?, cellKey: string?, sourceSurfaceId: integer?, resident: boolean })
+---@field numericState fun(self: FieldObjectActor): G4FieldActorNumeric
+---@field numericSlot fun(self: FieldObjectActor): integer
+---@field isResident fun(self: FieldObjectActor): boolean
+---@field isVisible fun(self: FieldObjectActor): boolean
+---@field isSolid fun(self: FieldObjectActor): boolean
+---@field isAnimationPaused fun(self: FieldObjectActor): boolean
+---@field getPoseTick fun(self: FieldObjectActor): integer
+---@field getSurfaceId fun(self: FieldObjectActor): integer?
+---@field getSourceSurfaceId fun(self: FieldObjectActor): integer?
+---@field getFieldPosition fun(self: FieldObjectActor): { fieldX: integer, fieldZ: integer }
+---@field getWorldPosition fun(self: FieldObjectActor): { x: number?, y: number?, z: number? }
+---@field getPresentationOffset fun(self: FieldObjectActor): { x: number, y: number, z: number }
+---@field setAnimationPaused fun(self: FieldObjectActor, paused: boolean)
+---@field setPresentationOffset fun(self: FieldObjectActor, x: number, y: number, z: number)
+---@field renderPositionInto fun(self: FieldObjectActor, out: { x: number?, y: number?, z: number? }, alpha: number?): { x: number?, y: number?, z: number? }
 
 local FieldObjectActor = {}
 FieldObjectActor.__index = FieldObjectActor
@@ -129,15 +134,71 @@ local function requireIdlePresentation(visual, idlePresentation)
   )
 end
 
+-- Writes a world point into the record. The point is all-or-nothing: a fully
+-- absent point clears presence, a fully present point sets it. Mixed points
+-- never occur on current construction/placement/action paths.
+local function setWorld(state, x, y, z)
+  if x == nil and y == nil and z == nil then
+    state.hasWorldPosition = 0
+    state.worldX, state.worldY, state.worldZ = 0, 0, 0
+    return
+  end
+  assert(x ~= nil and y ~= nil and z ~= nil, "field actor world position must be all present or all absent")
+  state.worldX, state.worldY, state.worldZ = x, y, z
+  state.hasWorldPosition = 1
+end
+
+local function setPreviousWorld(state, x, y, z)
+  if x == nil and y == nil and z == nil then
+    state.hasPreviousWorldPosition = 0
+    state.previousWorldX, state.previousWorldY, state.previousWorldZ = 0, 0, 0
+    return
+  end
+  assert(x ~= nil and y ~= nil and z ~= nil, "field actor previous world position must be all present or all absent")
+  state.previousWorldX, state.previousWorldY, state.previousWorldZ = x, y, z
+  state.hasPreviousWorldPosition = 1
+end
+
+local function setSurfaceId(state, surfaceId)
+  if surfaceId == nil then
+    state.hasSurfaceId = 0
+    state.surfaceId = 0
+    return
+  end
+  state.surfaceId = surfaceId
+  state.hasSurfaceId = 1
+end
+
+local function setSourceSurfaceId(state, sourceSurfaceId)
+  if sourceSurfaceId == nil then
+    state.hasSourceSurfaceId = 0
+    state.sourceSurfaceId = 0
+    return
+  end
+  state.sourceSurfaceId = sourceSurfaceId
+  state.hasSourceSurfaceId = 1
+end
+
+local function setGestureTick(state, gestureTick)
+  if gestureTick == nil then
+    state.hasGestureTick = 0
+    state.gestureTick = 0
+    return
+  end
+  state.gestureTick = gestureTick
+  state.hasGestureTick = 1
+end
+
 local function applyIdlePresentation(actor, advance)
+  local state = actor:_numeric()
   local idlePresentation = actor._idlePresentation
-  if advance and idlePresentation.mode == "animated" and not actor.animationPaused then
-    actor.poseTick = actor.poseTick + idlePresentation.cadence
+  if advance and idlePresentation.mode == "animated" and state.animationPaused == 0 then
+    state.poseTick = state.poseTick + idlePresentation.cadence
   end
   actor.pose = "idle"
   local pose = FieldActorPose.select(actor._visual, actor.facing, "idle")
-  local segment = FieldActorPose.sampleAt(pose, actor.poseTick)
-  actor.presentationOffset.y = assert(segment.displayOffsetY, "field actor idle segment has no display offset")
+  local segment = FieldActorPose.sampleAt(pose, state.poseTick)
+  state.presentationOffsetY = assert(segment.displayOffsetY, "field actor idle segment has no display offset")
 end
 
 -- Identity is derived only from map and object-event identity, so it survives
@@ -156,12 +217,17 @@ end
 function FieldObjectActor.new(opts)
   assert(type(opts) == "table" and type(opts.sourceEvent) == "table", "FieldObjectActor requires a source event")
   requireIdlePresentation(opts.visual, opts.idlePresentation)
+  assert(opts.numericStore ~= nil, "FieldObjectActor requires a numeric storage owner")
+  assert(
+    type(opts.numericSlot) == "number" and opts.numericSlot % 1 == 0 and opts.numericSlot >= 0,
+    "FieldObjectActor requires a numeric storage slot"
+  )
   local event = opts.sourceEvent
   local actorId = FieldObjectActor.actorId(opts.mapId, event.objectEventId)
   local facing =
     requireFacing(event.facingDirection, { actorId = actorId, facingDirectionRaw = event.facingDirectionRaw })
 
-  return setmetatable({
+  local actor = setmetatable({
     actorId = actorId,
     mapId = opts.mapId,
     objectEventId = event.objectEventId,
@@ -169,40 +235,149 @@ function FieldObjectActor.new(opts)
     -- The runtime sprite: the zone-event value unless the creator resolved a
     -- variable sprite through the field vars (the source record stays raw).
     spriteId = opts.spriteId or event.spriteId,
-    fieldX = opts.fieldX,
-    fieldZ = opts.fieldZ,
     cellKey = opts.cellKey,
-    sourceSurfaceId = opts.sourceSurfaceId,
-    surfaceId = opts.surfaceId,
-    worldX = opts.worldX,
-    worldY = opts.worldY,
-    worldZ = opts.worldZ,
-    previousWorldX = opts.worldX,
-    previousWorldY = opts.worldY,
-    previousWorldZ = opts.worldZ,
-    resident = opts.resident == true,
     initialFacing = facing,
     facing = facing,
     pose = "idle",
-    poseTick = 0,
     _visual = opts.visual,
     _idlePresentation = opts.idlePresentation,
-    _scriptedPresentationAdvanced = false,
-    -- Render-only locomotion presentation offset (walk-in-place bob); never
-    -- mutates worldX/worldY/worldZ, which stay the logical/committed anchor.
-    presentationOffset = { x = 0, y = 0, z = 0 },
     _gesturePose = nil,
-    _gestureTick = nil,
-    _gestureOffsetY = 0,
     activeEmoteKind = nil,
-    visible = true,
-    -- Solid unless the source/generated event explicitly says otherwise; a
-    -- zero interaction-script id is only "no A-button script" and carries no
-    -- collision meaning of its own.
-    solid = opts.solid ~= false,
     movementType = assert(event.movementType, "field actor movement type is required"),
     interactionFacingOverride = nil,
+    _numericStore = opts.numericStore,
+    _numericSlot = opts.numericSlot,
   }, FieldObjectActor)
+  local state = actor:_numeric()
+  state.fieldX = opts.fieldX
+  state.fieldZ = opts.fieldZ
+  setWorld(state, opts.worldX, opts.worldY, opts.worldZ)
+  if state.hasWorldPosition == 1 then
+    setPreviousWorld(state, opts.worldX, opts.worldY, opts.worldZ)
+  else
+    setPreviousWorld(state, nil, nil, nil)
+  end
+  setSourceSurfaceId(state, opts.sourceSurfaceId)
+  setSurfaceId(state, opts.surfaceId)
+  state.poseTick = 0
+  setGestureTick(state, nil)
+  state.gestureOffsetY = 0
+  -- Render-only locomotion presentation offset (walk-in-place bob); never
+  -- mutates worldX/worldY/worldZ, which stay the logical/committed anchor.
+  state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = 0, 0, 0
+  state.resident = opts.resident == true and 1 or 0
+  state.visible = 1
+  -- Solid unless the source/generated event explicitly says otherwise; a
+  -- zero interaction-script id is only "no A-button script" and carries no
+  -- collision meaning of its own.
+  state.solid = opts.solid ~= false and 1 or 0
+  state.animationPaused = 0
+  state.scriptedPresentationAdvanced = 0
+  return actor
+end
+
+-- Resolves the actor's live numeric record. The result is valid only for
+-- immediate use within the current operation: buffer growth replaces the
+-- backing array, so never retain it across a call that may create or remove
+-- actors.
+function FieldObjectActor:_numeric()
+  return self._numericStore:numericState(self._numericSlot)
+end
+
+-- Immediate non-retained access to the authoritative numeric record for hot
+-- manager internals. Non-hot consumers use the grouped/scalar observations.
+---@return G4FieldActorNumeric
+function FieldObjectActor:numericState()
+  return self:_numeric()
+end
+
+-- The actor's stable storage slot, independent of manager slots.
+---@return integer
+function FieldObjectActor:numericSlot()
+  return self._numericSlot
+end
+
+---@return boolean
+function FieldObjectActor:isResident()
+  return self:_numeric().resident == 1
+end
+
+---@return boolean
+function FieldObjectActor:isVisible()
+  return self:_numeric().visible == 1
+end
+
+---@return boolean
+function FieldObjectActor:isSolid()
+  return self:_numeric().solid == 1
+end
+
+---@return boolean
+function FieldObjectActor:isAnimationPaused()
+  return self:_numeric().animationPaused == 1
+end
+
+---@return integer
+function FieldObjectActor:getPoseTick()
+  return self:_numeric().poseTick
+end
+
+---@return integer?
+function FieldObjectActor:getSurfaceId()
+  local state = self:_numeric()
+  if state.hasSurfaceId == 0 then
+    return nil
+  end
+  return state.surfaceId
+end
+
+---@return integer?
+function FieldObjectActor:getSourceSurfaceId()
+  local state = self:_numeric()
+  if state.hasSourceSurfaceId == 0 then
+    return nil
+  end
+  return state.sourceSurfaceId
+end
+
+---@return { fieldX: integer, fieldZ: integer }
+function FieldObjectActor:getFieldPosition()
+  local state = self:_numeric()
+  return { fieldX = state.fieldX, fieldZ = state.fieldZ }
+end
+
+-- The current logical world point. Nil coordinates (a nonresident actor) read
+-- back as absent rather than manufacturing a point.
+---@return { x: number?, y: number?, z: number? }
+function FieldObjectActor:getWorldPosition()
+  local state = self:_numeric()
+  if state.hasWorldPosition == 0 then
+    return { x = nil, y = nil, z = nil }
+  end
+  return { x = state.worldX, y = state.worldY, z = state.worldZ }
+end
+
+---@return { x: number, y: number, z: number }
+function FieldObjectActor:getPresentationOffset()
+  local state = self:_numeric()
+  return { x = state.presentationOffsetX, y = state.presentationOffsetY, z = state.presentationOffsetZ }
+end
+
+-- Scripted pause_animation/resume_animation state on the actor. The manager's
+-- fixed-tick step honors the flag; use the manager seam for scripted pauses.
+---@param paused boolean
+function FieldObjectActor:setAnimationPaused(paused)
+  self:_numeric().animationPaused = paused == true and 1 or 0
+end
+
+-- Render-only offset set by presentation tooling. See setPresentationOffset on
+-- the manager for the validated scripted path.
+---@param x number
+---@param y number
+---@param z number
+function FieldObjectActor:setPresentationOffset(x, y, z)
+  local state = self:_numeric()
+  state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = x, y, z
 end
 
 -- Temporary facing owned by an interaction client. Only one override may be
@@ -256,9 +431,12 @@ end
 -- Collapse the sampled baseline onto the current world point after a
 -- discontinuous placement, so the next host draw never blends across the gap.
 local function collapseRenderBaseline(actor)
-  actor.previousWorldX = actor.worldX
-  actor.previousWorldY = actor.worldY
-  actor.previousWorldZ = actor.worldZ
+  local state = actor:_numeric()
+  if state.hasWorldPosition == 1 then
+    setPreviousWorld(state, state.worldX, state.worldY, state.worldZ)
+  else
+    setPreviousWorld(state, nil, nil, nil)
+  end
 end
 
 -- Snapshot the current world point once per fixed simulation tick, before any
@@ -274,24 +452,31 @@ end
 ---@param alpha number?
 ---@return { x: number?, y: number?, z: number? }
 function FieldObjectActor:renderPosition(alpha)
+  return self:renderPositionInto({}, alpha)
+end
+
+-- In-place host-frame sample into a caller-owned table. The output table is
+-- reused across calls; never retain it as historical state.
+---@param out { x: number?, y: number?, z: number? }
+---@param alpha number?
+---@return { x: number?, y: number?, z: number? }
+function FieldObjectActor:renderPositionInto(out, alpha)
   alpha = alpha == nil and 1 or math.max(0, math.min(1, alpha))
-  local previousX, previousY, previousZ = self.previousWorldX, self.previousWorldY, self.previousWorldZ
-  local currentX, currentY, currentZ = self.worldX, self.worldY, self.worldZ
-  if
-    previousX == nil
-    or previousY == nil
-    or previousZ == nil
-    or currentX == nil
-    or currentY == nil
-    or currentZ == nil
-  then
-    return { x = currentX, y = currentY, z = currentZ }
+  local state = self:_numeric()
+  if state.hasWorldPosition == 0 or state.hasPreviousWorldPosition == 0 then
+    if state.hasWorldPosition == 0 then
+      out.x, out.y, out.z = nil, nil, nil
+    else
+      out.x, out.y, out.z = state.worldX, state.worldY, state.worldZ
+    end
+    return out
   end
-  return {
-    x = previousX + (currentX - previousX) * alpha,
-    y = previousY + (currentY - previousY) * alpha,
-    z = previousZ + (currentZ - previousZ) * alpha,
-  }
+  local previousX, previousY, previousZ = state.previousWorldX, state.previousWorldY, state.previousWorldZ
+  local currentX, currentY, currentZ = state.worldX, state.worldY, state.worldZ
+  out.x = previousX + (currentX - previousX) * alpha
+  out.y = previousY + (currentY - previousY) * alpha
+  out.z = previousZ + (currentZ - previousZ) * alpha
+  return out
 end
 
 -- --- Scripted motion presentation --------------------------------
@@ -308,6 +493,7 @@ function FieldObjectActor:beginAction(descriptor, owner)
   -- only when action == "emote".
   local start = descriptor.start
   local dest = descriptor.dest
+  local state = self:_numeric()
   self._motion = {
     owner = owner,
     action = descriptor.action,
@@ -335,17 +521,15 @@ function FieldObjectActor:beginAction(descriptor, owner)
     destSourceSurfaceId = dest.sourceSurfaceId,
     destResident = dest.resident == true,
     startPose = self.pose,
-    startPoseTick = self.poseTick,
+    startPoseTick = state.poseTick,
     gestureName = descriptor.name,
     startGesturePose = self._gesturePose,
-    startGestureTick = self._gestureTick,
-    startGestureOffsetY = self._gestureOffsetY,
+    startGestureTick = state.hasGestureTick == 1 and state.gestureTick or nil,
+    startGestureOffsetY = state.gestureOffsetY,
   }
   -- Every action transaction starts from a zero presentation offset; only
   -- walk_in_place's advance re-populates it while it is the active action.
-  self.presentationOffset.x = 0
-  self.presentationOffset.y = 0
-  self.presentationOffset.z = 0
+  state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = 0, 0, 0
   -- The emote indicator is active only for the action instance that carries
   -- it; every other action (including a later emote with a different kind)
   -- starts from a clean slate.
@@ -355,29 +539,29 @@ function FieldObjectActor:beginAction(descriptor, owner)
   -- leave the current idle presentation unchanged.
   if descriptor.action == "gesture" then
     self._gesturePose = nil
-    self._gestureTick = nil
-    self._gestureOffsetY = 0
+    setGestureTick(state, nil)
+    state.gestureOffsetY = 0
     self.pose = "idle"
-    self.poseTick = 0
+    state.poseTick = 0
   elseif descriptor.action == "reveal_trainer" then
     self._gesturePose = nil
-    self._gestureTick = nil
-    self._gestureOffsetY = 0
+    setGestureTick(state, nil)
+    state.gestureOffsetY = 0
     self.pose = "idle"
-    self.poseTick = 0
+    state.poseTick = 0
   elseif isLocomotionAction(descriptor.action) then
     self._gesturePose = nil
-    self._gestureTick = nil
-    self._gestureOffsetY = 0
-    if not self.animationPaused then
+    setGestureTick(state, nil)
+    state.gestureOffsetY = 0
+    if state.animationPaused == 0 then
       self.pose = "walk"
     end
   elseif descriptor.action == "face" then
     self._gesturePose = nil
-    self._gestureTick = nil
-    self._gestureOffsetY = 0
+    setGestureTick(state, nil)
+    state.gestureOffsetY = 0
     self.pose = "idle"
-    self.poseTick = 0
+    state.poseTick = 0
   end
 end
 
@@ -391,46 +575,41 @@ end
 -- and stay in advanceAction; a coverage rebase shares only this helper so
 -- reprojection never advances action time.
 local function applyActionWorldPosition(actor, motion)
+  local state = actor:_numeric()
   local progressTicks = motion.progressTicks
   local durationTicks = motion.durationTicks
   local t = durationTicks > 0 and (progressTicks / durationTicks) or 1
   if motion.action == "trajectory_segment" then
     if progressTicks >= durationTicks then
-      actor.worldX = motion.destWorldX
-      actor.worldY = motion.destWorldY
-      actor.worldZ = motion.destWorldZ
+      setWorld(state, motion.destWorldX, motion.destWorldY, motion.destWorldZ)
     else
       local progress = MovementCalibration.trajectoryProgressAt(progressTicks, durationTicks)
-      actor.worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * progress
-      actor.worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * progress
+      local worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * progress
+      local worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * progress
       local baseY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * progress
       local arc = MovementCalibration.trajectoryArcAt(progressTicks, durationTicks)
-      actor.worldY = baseY + arc
+      setWorld(state, worldX, baseY + arc, worldZ)
     end
   elseif motion.action == "walk" or motion.action == "jump" then
-    actor.worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * t
-    actor.worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * t
+    local worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * t
+    local worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * t
     if motion.action == "jump" then
       local offset = MovementCalibration.jumpOffsetAt(motion, progressTicks, durationTicks)
       local baseY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * t
-      actor.worldY = baseY + offset
+      setWorld(state, worldX, baseY + offset, worldZ)
     else
-      actor.worldY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * t
+      setWorld(state, worldX, motion.startWorldY + (motion.destWorldY - motion.startWorldY) * t, worldZ)
     end
   elseif motion.action == "walk_in_place" then
     -- No translation; keep at start anchor. The visible bob is a render-only
     -- offset derived deterministically from the fixed action tick, never
     -- written into worldY: terrain, camera, save, and collision all keep
     -- reading the unchanged anchor.
-    actor.worldX = motion.startWorldX
-    actor.worldZ = motion.startWorldZ
-    actor.worldY = motion.startWorldY
-    actor.presentationOffset.y = walkInPlaceBobOffset(progressTicks, durationTicks)
+    setWorld(state, motion.startWorldX, motion.startWorldY, motion.startWorldZ)
+    state.presentationOffsetY = walkInPlaceBobOffset(progressTicks, durationTicks)
   elseif motion.action == "reveal_trainer" then
-    actor.worldX = motion.startWorldX
-    actor.worldZ = motion.startWorldZ
-    actor.worldY = motion.startWorldY
-    actor.presentationOffset.y = MovementCalibration.revealTrainerOffsetAt(progressTicks)
+    setWorld(state, motion.startWorldX, motion.startWorldY, motion.startWorldZ)
+    state.presentationOffsetY = MovementCalibration.revealTrainerOffsetAt(progressTicks)
   elseif
     motion.action == "face"
     or motion.action == "delay"
@@ -438,15 +617,11 @@ local function applyActionWorldPosition(actor, motion)
     or motion.action == "gesture"
   then
     -- No translation.
-    actor.worldX = motion.startWorldX
-    actor.worldZ = motion.startWorldZ
-    actor.worldY = motion.startWorldY
+    setWorld(state, motion.startWorldX, motion.startWorldY, motion.startWorldZ)
   end
   if progressTicks == durationTicks then
     if motion.action == "walk" or motion.action == "jump" or motion.action == "trajectory_segment" then
-      actor.worldX = motion.destWorldX
-      actor.worldY = motion.destWorldY
-      actor.worldZ = motion.destWorldZ
+      setWorld(state, motion.destWorldX, motion.destWorldY, motion.destWorldZ)
     end
   end
 end
@@ -456,30 +631,32 @@ function FieldObjectActor:advanceAction(progressTicks, durationTicks)
   if not m then
     return
   end
+  local state = self:_numeric()
   if m.owner == "script" then
-    self._scriptedPresentationAdvanced = true
+    state.scriptedPresentationAdvanced = 1
   end
   m.progressTicks = progressTicks
   m.durationTicks = durationTicks
   applyActionWorldPosition(self, m)
+  state = self:_numeric()
   if m.action == "gesture" then
     local presentation = MovementCalibration.gesturePresentationAt(m.gestureName, progressTicks, durationTicks)
     self._gesturePose = presentation.pose
-    self._gestureTick = presentation.poseTick
-    self._gestureOffsetY = presentation.offsetY
+    setGestureTick(state, presentation.poseTick)
+    state.gestureOffsetY = presentation.offsetY
   end
   -- Advance pose clock once per eligible tick for active locomotion. A delay
   -- or emote owns its tick without inheriting a prior action: its presentation
   -- comes from the visual idle profile instead.
-  if not self.animationPaused then
+  if state.animationPaused == 0 then
     if isLocomotionAction(m.action) then
       local poseProgress = MovementCalibration.poseProgressTicks(m, progressTicks)
       self.pose = "walk"
-      self.poseTick = m.startPoseTick + poseProgress
+      state.poseTick = m.startPoseTick + poseProgress
     end
   end
   if m.action == "delay" or m.action == "emote" then
-    applyIdlePresentation(self, not self.animationPaused)
+    applyIdlePresentation(self, state.animationPaused == 0)
   end
 end
 
@@ -534,17 +711,16 @@ function FieldObjectActor:commitAction()
     worldZ = m.destWorldZ,
     resident = m.destResident,
   }
+  local state = self:_numeric()
   if m.action == "gesture" then
     local held = MovementCalibration.gesturePresentationAfterCommit(m.gestureName, m.durationTicks)
     self._gesturePose = held.pose
-    self._gestureTick = held.poseTick
-    self._gestureOffsetY = held.offsetY
+    setGestureTick(state, held.poseTick)
+    state.gestureOffsetY = held.offsetY
   end
   -- The transaction settles into the visual's idle semantics; action-owned
   -- render-only state never survives the action boundary.
-  self.presentationOffset.x = 0
-  self.presentationOffset.y = 0
-  self.presentationOffset.z = 0
+  state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = 0, 0, 0
   self.activeEmoteKind = nil
   self._motion = nil
   applyIdlePresentation(self, false)
@@ -560,21 +736,19 @@ function FieldObjectActor:cancelAction()
   if not m then
     return
   end
+  local state = self:_numeric()
   -- Snap back to last committed logical anchor's world position.
-  self.worldX = m.startWorldX
-  self.worldY = m.startWorldY
-  self.worldZ = m.startWorldZ
+  setWorld(state, m.startWorldX, m.startWorldY, m.startWorldZ)
   collapseRenderBaseline(self)
+  state = self:_numeric()
   if isLocomotionAction(m.action) then
     self.pose = m.startPose
-    self.poseTick = m.startPoseTick
+    state.poseTick = m.startPoseTick
   end
   self._gesturePose = m.startGesturePose
-  self._gestureTick = m.startGestureTick
-  self._gestureOffsetY = m.startGestureOffsetY or 0
-  self.presentationOffset.x = 0
-  self.presentationOffset.y = 0
-  self.presentationOffset.z = 0
+  setGestureTick(state, m.startGestureTick)
+  state.gestureOffsetY = m.startGestureOffsetY or 0
+  state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = 0, 0, 0
   self.activeEmoteKind = nil
   self._motion = nil
   applyIdlePresentation(self, false)
@@ -589,11 +763,12 @@ function FieldObjectActor:isScriptedMoving()
 end
 
 function FieldObjectActor:advancePresentationTick()
-  if self._scriptedPresentationAdvanced then
-    self._scriptedPresentationAdvanced = false
+  local state = self:_numeric()
+  if state.scriptedPresentationAdvanced == 1 then
+    state.scriptedPresentationAdvanced = 0
     return
   end
-  if self._motion ~= nil or self.animationPaused then
+  if self._motion ~= nil or state.animationPaused == 1 then
     return
   end
   applyIdlePresentation(self, true)
@@ -602,17 +777,16 @@ end
 -- Force a stable idle baseline with no residual action presentation offset.
 function FieldObjectActor:settlePresentation()
   assert(self._motion == nil, "cannot settle presentation while an action is active")
+  local state = self:_numeric()
   self.pose = "idle"
-  self.poseTick = 0
-  self.presentationOffset.x = 0
-  self.presentationOffset.y = 0
-  self.presentationOffset.z = 0
+  state.poseTick = 0
+  state.presentationOffsetX, state.presentationOffsetY, state.presentationOffsetZ = 0, 0, 0
   self._gesturePose = nil
-  self._gestureTick = nil
-  self._gestureOffsetY = 0
+  setGestureTick(state, nil)
+  state.gestureOffsetY = 0
   self.activeEmoteKind = nil
   applyIdlePresentation(self, false)
-  self._scriptedPresentationAdvanced = false
+  self:_numeric().scriptedPresentationAdvanced = 0
 end
 
 -- The active semantic action kind (`walk`, `walk_in_place`, `jump`, `face`,
@@ -632,10 +806,11 @@ end
 -- the actor while exposing the complete draw contract to its consumers.
 ---@return FieldObjectActor.PresentationState
 function FieldObjectActor:presentationState()
+  local state = self:_numeric()
   return {
     gesturePose = self._gesturePose,
-    gestureTick = self._gestureTick,
-    gestureOffsetY = self._gestureOffsetY,
+    gestureTick = state.hasGestureTick == 1 and state.gestureTick or nil,
+    gestureOffsetY = state.gestureOffsetY,
   }
 end
 
@@ -654,7 +829,7 @@ end
 -- scripted states on the live actor.
 ---@param visible boolean
 function FieldObjectActor:setVisible(visible)
-  self.visible = visible ~= false
+  self:_numeric().visible = visible ~= false and 1 or 0
 end
 
 -- Scripted position set: the caller (the actor manager) has already resolved
@@ -665,19 +840,20 @@ function FieldObjectActor:setPosition(position)
   -- already at its destination, so only a changed base point collapses the
   -- sampled pair: commits keep their final segment for the following frame
   -- while teleports never blend from the stale tile.
-  local worldChanged = position.worldX ~= self.worldX
-    or position.worldY ~= self.worldY
-    or position.worldZ ~= self.worldZ
-  local residencyChanged = (position.resident == true) ~= self.resident
-  self.fieldX = position.fieldX
-  self.fieldZ = position.fieldZ
-  self.surfaceId = position.surfaceId
+  local state = self:_numeric()
+  local currentX, currentY, currentZ
+  if state.hasWorldPosition == 1 then
+    currentX, currentY, currentZ = state.worldX, state.worldY, state.worldZ
+  end
+  local worldChanged = position.worldX ~= currentX or position.worldY ~= currentY or position.worldZ ~= currentZ
+  local residencyChanged = (position.resident == true) ~= (state.resident == 1)
+  state.fieldX = position.fieldX
+  state.fieldZ = position.fieldZ
+  setSurfaceId(state, position.surfaceId)
   self.cellKey = position.cellKey
-  self.sourceSurfaceId = position.sourceSurfaceId
-  self.worldY = position.worldY
-  self.worldX = position.worldX
-  self.worldZ = position.worldZ
-  self.resident = position.resident == true
+  setSourceSurfaceId(state, position.sourceSurfaceId)
+  setWorld(state, position.worldX, position.worldY, position.worldZ)
+  state.resident = position.resident == true and 1 or 0
   if worldChanged or residencyChanged then
     collapseRenderBaseline(self)
   end

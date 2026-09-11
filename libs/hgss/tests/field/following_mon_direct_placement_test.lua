@@ -210,8 +210,16 @@ function T.selector_matrix_places_the_partner_on_the_expected_tile()
       place(w, selector, direction)
       local delta = assert(SELECTOR_DELTAS[selector], "selector delta is required")
       local actor = partnerTile(w)
-      Assert.equal(actor.fieldX, PLAYER_TILE.fieldX + delta.x, "selector " .. selector .. " places fieldX")
-      Assert.equal(actor.fieldZ, PLAYER_TILE.fieldZ + delta.z, "selector " .. selector .. " places fieldZ")
+      Assert.equal(
+        actor:getFieldPosition().fieldX,
+        PLAYER_TILE.fieldX + delta.x,
+        "selector " .. selector .. " places fieldX"
+      )
+      Assert.equal(
+        actor:getFieldPosition().fieldZ,
+        PLAYER_TILE.fieldZ + delta.z,
+        "selector " .. selector .. " places fieldZ"
+      )
       Assert.equal(actor.facing, DIRECTIONS[direction], "direction byte " .. direction .. " faces the partner")
     end
   end
@@ -223,13 +231,13 @@ function T.oversized_selector_keeps_the_copied_player_tile()
   install(w)
   place(w, 4, 1)
   local actor = partnerTile(w)
-  Assert.equal(actor.fieldX, PLAYER_TILE.fieldX, "an out-of-range selector keeps the player fieldX")
-  Assert.equal(actor.fieldZ, PLAYER_TILE.fieldZ, "an out-of-range selector keeps the player fieldZ")
+  Assert.equal(actor:getFieldPosition().fieldX, PLAYER_TILE.fieldX, "an out-of-range selector keeps the player fieldX")
+  Assert.equal(actor:getFieldPosition().fieldZ, PLAYER_TILE.fieldZ, "an out-of-range selector keeps the player fieldZ")
   Assert.equal(actor.facing, "south", "the direction byte still faces the partner")
   place(w, 255, 0)
   actor = partnerTile(w)
-  Assert.equal(actor.fieldX, PLAYER_TILE.fieldX, "the largest byte keeps the player fieldX")
-  Assert.equal(actor.fieldZ, PLAYER_TILE.fieldZ, "the largest byte keeps the player fieldZ")
+  Assert.equal(actor:getFieldPosition().fieldX, PLAYER_TILE.fieldX, "the largest byte keeps the player fieldX")
+  Assert.equal(actor:getFieldPosition().fieldZ, PLAYER_TILE.fieldZ, "the largest byte keeps the player fieldZ")
   Assert.equal(actor.facing, "north", "the direction byte still faces the partner")
   w.mgr:dispose()
 end
@@ -239,8 +247,8 @@ function T.vanilla_tail_leaves_the_partner_east_facing_west()
   install(w)
   place(w, 3, 2)
   local actor = partnerTile(w)
-  Assert.equal(actor.fieldX, PLAYER_TILE.fieldX + 1, "the tail places the partner one tile east")
-  Assert.equal(actor.fieldZ, PLAYER_TILE.fieldZ, "the tail keeps the player row")
+  Assert.equal(actor:getFieldPosition().fieldX, PLAYER_TILE.fieldX + 1, "the tail places the partner one tile east")
+  Assert.equal(actor:getFieldPosition().fieldZ, PLAYER_TILE.fieldZ, "the tail keeps the player row")
   Assert.equal(actor.facing, "west", "the tail faces the partner west")
   w.mgr:dispose()
 end
@@ -265,8 +273,12 @@ function T.direct_placement_clears_stale_trail_state()
   Assert.isFalse(w.controller:isMovementSettled(), "the queued anchor keeps the follower busy")
   place(w, 1, 1)
   local actor = partnerTile(w)
-  Assert.equal(actor.fieldX, PLAYER_TILE.fieldX, "the placement recomputes from the player column")
-  Assert.equal(actor.fieldZ, PLAYER_TILE.fieldZ + 2, "the placement lands one tile south of the moved player")
+  Assert.equal(actor:getFieldPosition().fieldX, PLAYER_TILE.fieldX, "the placement recomputes from the player column")
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    PLAYER_TILE.fieldZ + 2,
+    "the placement lands one tile south of the moved player"
+  )
   Assert.equal(actor.facing, "south", "the placement faces the partner per the direction byte")
   Assert.isTrue(w.controller:isMovementSettled(), "the placement drops the stale trail")
   w.mgr:dispose()

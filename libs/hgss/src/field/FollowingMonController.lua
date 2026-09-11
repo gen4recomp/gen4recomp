@@ -498,7 +498,7 @@ function FollowingMonController:_publish(mapId)
   if partnerId ~= nil then
     local position = assert(self._actors:getPosition(partnerId), "partner position is required")
     local actor = assert(self._actors:getById(partnerId), "partner actor is required")
-    local id = self:_tryUpdate(self:_spec(mapId, position.fieldX, position.fieldZ, actor.facing, actor.worldY))
+    local id = self:_tryUpdate(self:_spec(mapId, position.fieldX, position.fieldZ, actor.facing, position.worldY))
     if id ~= nil then
       self._published = self._lead
       self._queue = {}

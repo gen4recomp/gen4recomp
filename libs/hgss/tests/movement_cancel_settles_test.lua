@@ -76,7 +76,11 @@ function T.cancelled_movement_must_settle_to_last_committed_anchor()
 
   local actorId = "map:61:object:0"
   local actor = assert(mgr:getById(actorId))
-  local committed = { fieldX = actor.fieldX, fieldZ = actor.fieldZ, surfaceId = actor.surfaceId }
+  local committed = {
+    fieldX = actor:getFieldPosition().fieldX,
+    fieldZ = actor:getFieldPosition().fieldZ,
+    surfaceId = actor:getSurfaceId(),
+  }
   local expectedWorld = FieldCoordinates.fieldToWorld(map({}), committed.fieldX, committed.fieldZ, 0)
 
   -- Starting a scripted walk advances presentation world; cancelling must
@@ -84,16 +88,16 @@ function T.cancelled_movement_must_settle_to_last_committed_anchor()
   mgr:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
   mgr:advanceScriptedAction(actorId, 4, 8)
   Assert.isTrue(
-    actor.worldX ~= expectedWorld.x or actor.worldZ ~= expectedWorld.z,
+    actor:getWorldPosition().x ~= expectedWorld.x or actor:getWorldPosition().z ~= expectedWorld.z,
     "precondition: mid-walk presentation is offset"
   )
 
   -- Mid-motion cancel must restore committed position.
   mgr:cancelScriptedMovement(actorId)
-  Assert.near(actor.worldX, expectedWorld.x, 1e-9, "cancel must settle worldX to last committed anchor")
-  Assert.near(actor.worldZ, expectedWorld.z, 1e-9, "cancel must settle worldZ to last committed anchor")
-  Assert.equal(actor.fieldX, committed.fieldX, "cancel must keep committed fieldX")
-  Assert.equal(actor.fieldZ, committed.fieldZ, "cancel must keep committed fieldZ")
+  Assert.near(actor:getWorldPosition().x, expectedWorld.x, 1e-9, "cancel must settle worldX to last committed anchor")
+  Assert.near(actor:getWorldPosition().z, expectedWorld.z, 1e-9, "cancel must settle worldZ to last committed anchor")
+  Assert.equal(actor:getFieldPosition().fieldX, committed.fieldX, "cancel must keep committed fieldX")
+  Assert.equal(actor:getFieldPosition().fieldZ, committed.fieldZ, "cancel must keep committed fieldZ")
   Assert.isFalse(actor:isScriptedMoving(), "cancel must clear scripted motion")
   Assert.notNil(
     mgr:getAt(61, { fieldX = committed.fieldX, fieldZ = committed.fieldZ, surfaceId = committed.surfaceId }),
@@ -101,11 +105,11 @@ function T.cancelled_movement_must_settle_to_last_committed_anchor()
   )
 
   -- Idle cancel must also settle any fractional drift.
-  actor.worldX = expectedWorld.x + 0.7
-  actor.worldZ = expectedWorld.z + 0.3
+  actor:numericState().worldX = expectedWorld.x + 0.7
+  actor:numericState().worldZ = expectedWorld.z + 0.3
   mgr:cancelScriptedMovement(actorId)
-  Assert.near(actor.worldX, expectedWorld.x, 1e-9, "idle cancel must settle fractional worldX drift")
-  Assert.near(actor.worldZ, expectedWorld.z, 1e-9, "idle cancel must settle fractional worldZ drift")
+  Assert.near(actor:getWorldPosition().x, expectedWorld.x, 1e-9, "idle cancel must settle fractional worldX drift")
+  Assert.near(actor:getWorldPosition().z, expectedWorld.z, 1e-9, "idle cancel must settle fractional worldZ drift")
 end
 
 return { tests = T }

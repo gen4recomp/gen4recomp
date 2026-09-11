@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
+local FieldActorStore = require("libs.hgss.src.actors.FieldActorStore")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 
 local T = {}
@@ -43,6 +44,7 @@ end
 
 local function actor(overrides, optsOverrides)
   local visual = FieldActorFixture.visual(99)
+  local numericStore = FieldActorStore.new()
   local opts = {
     mapId = 61,
     sourceEvent = sourceEvent(overrides),
@@ -54,6 +56,8 @@ local function actor(overrides, optsOverrides)
     worldZ = 5.5,
     visual = visual,
     idlePresentation = visual.idlePresentation,
+    numericStore = numericStore,
+    numericSlot = numericStore:allocateNumericState(),
   }
   for key, value in pairs(optsOverrides or {}) do
     rawset(opts, key, value)
@@ -72,9 +76,9 @@ function T.runtime_state_starts_from_the_source_record()
   Assert.equal(a.initialFacing, "south")
   Assert.equal(a.facing, "south")
   Assert.equal(a.pose, "idle")
-  Assert.equal(a.poseTick, 0)
-  Assert.isTrue(a.visible)
-  Assert.isTrue(a.solid)
+  Assert.equal(a:getPoseTick(), 0)
+  Assert.isTrue(a:isVisible())
+  Assert.isTrue(a:isSolid())
   Assert.equal(a.movementType, "stationary")
   Assert.isNil(a.interactionFacingOverride)
 end
@@ -84,12 +88,12 @@ end
 -- still follows source collision semantics unless the event explicitly opts
 -- out.
 function T.zero_script_actors_remain_solid_by_default()
-  Assert.isTrue(actor({ scriptId = 0 }).solid)
+  Assert.isTrue(actor({ scriptId = 0 }):isSolid())
 end
 
 function T.explicit_non_solid_semantic_is_honored_regardless_of_script_id()
-  Assert.isFalse(actor({ scriptId = 0 }, { solid = false }).solid)
-  Assert.isFalse(actor({ scriptId = 5 }, { solid = false }).solid)
+  Assert.isFalse(actor({ scriptId = 0 }, { solid = false }):isSolid())
+  Assert.isFalse(actor({ scriptId = 5 }, { solid = false }):isSolid())
 end
 
 function T.unknown_source_facing_is_rejected()
@@ -100,6 +104,7 @@ end
 
 function T.idle_mode_decides_whether_repeated_idle_ticks_advance_presentation()
   local function actorWith(visual)
+    local numericStore = FieldActorStore.new()
     return FieldObjectActor.new({
       mapId = 61,
       sourceEvent = sourceEvent(),
@@ -111,6 +116,8 @@ function T.idle_mode_decides_whether_repeated_idle_ticks_advance_presentation()
       worldZ = 5.5,
       visual = visual,
       idlePresentation = visual.idlePresentation,
+      numericStore = numericStore,
+      numericSlot = numericStore:allocateNumericState(),
     })
   end
   local still = actorWith(FieldActorFixture.visual(99))
@@ -120,15 +127,15 @@ function T.idle_mode_decides_whether_repeated_idle_ticks_advance_presentation()
     lively:advancePresentationTick()
   end
   Assert.equal(still.pose, "idle")
-  Assert.equal(still.poseTick, 0, "stationary idle must not advance its pose clock")
-  Assert.equal(still.presentationOffset.y, 0, "stationary idle must not bob")
+  Assert.equal(still:getPoseTick(), 0, "stationary idle must not advance its pose clock")
+  Assert.equal(still:getPresentationOffset().y, 0, "stationary idle must not bob")
   Assert.equal(lively.pose, "idle")
-  Assert.equal(lively.poseTick, 3, "animated idle keeps its own frame clock")
+  Assert.equal(lively:getPoseTick(), 3, "animated idle keeps its own frame clock")
   still:setFacing("north")
   still:advancePresentationTick()
   Assert.equal(still.facing, "north")
   Assert.equal(still.pose, "idle")
-  Assert.equal(still.poseTick, 0, "a facing change in idle selects the next stationary frame without playback")
+  Assert.equal(still:getPoseTick(), 0, "a facing change in idle selects the next stationary frame without playback")
 end
 
 function T.facing_override_applies_and_restores()
@@ -214,10 +221,10 @@ function T.reproject_active_action_rebases_world_position_without_advancing_pres
     durationTicks = 8,
   }, "autonomous")
   a:advanceAction(2, 8)
-  Assert.isTrue(a.poseTick > 0, "the test must observe a nonzero presentation clock")
-  local poseBefore, poseTickBefore = a.pose, a.poseTick
+  Assert.isTrue(a:getPoseTick() > 0, "the test must observe a nonzero presentation clock")
+  local poseBefore, poseTickBefore = a.pose, a:getPoseTick()
   local presentationBefore = a:presentationState()
-  local offsetYBefore = a.presentationOffset.y
+  local offsetYBefore = a:getPresentationOffset().y
 
   a:reprojectActiveAction(
     { fieldX = 6, fieldZ = 5, worldX = 110, worldY = 0, worldZ = 120, surfaceId = 0, resident = true },
@@ -225,7 +232,7 @@ function T.reproject_active_action_rebases_world_position_without_advancing_pres
   )
 
   Assert.equal(a.pose, poseBefore, "reprojection must not advance the pose clock")
-  Assert.equal(a.poseTick, poseTickBefore, "reprojection must not advance the pose clock")
+  Assert.equal(a:getPoseTick(), poseTickBefore, "reprojection must not advance the pose clock")
   local presentationAfter = a:presentationState()
   Assert.equal(presentationAfter.gesturePose, presentationBefore.gesturePose, "reprojection must not touch gestures")
   Assert.equal(presentationAfter.gestureTick, presentationBefore.gestureTick, "reprojection must not touch gestures")
@@ -234,10 +241,11 @@ function T.reproject_active_action_rebases_world_position_without_advancing_pres
     presentationBefore.gestureOffsetY,
     "reprojection must not touch gestures"
   )
-  Assert.equal(a.presentationOffset.y, offsetYBefore, "reprojection must not double-apply render offsets")
-  Assert.equal(a.worldX, 110.25, "reprojection recomputes the world position at unchanged progress")
-  Assert.equal(a.worldZ, 120, "reprojection recomputes the world position at unchanged progress")
-  Assert.equal(a.worldY, 0, "reprojection recomputes the world position at unchanged progress")
+  Assert.equal(a:getPresentationOffset().y, offsetYBefore, "reprojection must not double-apply render offsets")
+  local worldAfter = a:getWorldPosition()
+  Assert.equal(worldAfter.x, 110.25, "reprojection recomputes the world position at unchanged progress")
+  Assert.equal(worldAfter.z, 120, "reprojection recomputes the world position at unchanged progress")
+  Assert.equal(worldAfter.y, 0, "reprojection recomputes the world position at unchanged progress")
   local motion = assert(a:scriptedMotionState(), "reprojection must keep the action active")
   Assert.equal(motion.progressTicks, 2, "reprojection must not advance action progress")
 
@@ -254,7 +262,8 @@ function T.direct_placement_collapses_interpolation_to_the_new_anchor()
   Assert.isTrue(type(a.renderPosition) == "function", "object actors expose an interpolated render position")
   Assert.isTrue(type(a.beginFixedStep) == "function", "object actors snapshot a fixed-step baseline")
   a:beginFixedStep()
-  local startX, startY, startZ = a.worldX, a.worldY, a.worldZ
+  local start = a:getWorldPosition()
+  local startX, startY, startZ = start.x, start.y, start.z
   a:beginAction({
     action = "walk",
     direction = "east",
@@ -297,14 +306,15 @@ function T.direct_placement_collapses_interpolation_to_the_new_anchor()
     Assert.equal(position.y, 0, "direct placement never tweens at alpha " .. alpha)
     Assert.equal(position.z, 12.5, "direct placement never tweens at alpha " .. alpha)
   end
-  Assert.equal(a.fieldX, 10, "direct placement moves logical fieldX")
-  Assert.equal(a.fieldZ, 12, "direct placement moves logical fieldZ")
+  Assert.equal(a:getFieldPosition().fieldX, 10, "direct placement moves logical fieldX")
+  Assert.equal(a:getFieldPosition().fieldZ, 12, "direct placement moves logical fieldZ")
 end
 
 function T.cancelled_action_snaps_back_without_tweening()
   local a = actor()
   a:beginFixedStep()
-  local startX, startY, startZ = a.worldX, a.worldY, a.worldZ
+  local start = a:getWorldPosition()
+  local startX, startY, startZ = start.x, start.y, start.z
   a:beginAction({
     action = "walk",
     direction = "east",
@@ -338,8 +348,8 @@ function T.cancelled_action_snaps_back_without_tweening()
     Assert.equal(position.y, startY, "a cancelled action snaps back at alpha " .. alpha)
     Assert.equal(position.z, startZ, "a cancelled action snaps back at alpha " .. alpha)
   end
-  Assert.equal(a.fieldX, 6, "a cancelled action keeps its committed fieldX")
-  Assert.equal(a.fieldZ, 5, "a cancelled action keeps its committed fieldZ")
+  Assert.equal(a:getFieldPosition().fieldX, 6, "a cancelled action keeps its committed fieldX")
+  Assert.equal(a:getFieldPosition().fieldZ, 5, "a cancelled action keeps its committed fieldZ")
 end
 
 function T.reprojected_action_collapses_to_the_new_frame()
@@ -385,12 +395,65 @@ end
 
 function T.missing_world_coordinates_read_as_absent()
   local a = actor()
-  a.worldX, a.worldY, a.worldZ = nil, nil, nil
+  a:setPosition({ fieldX = 6, fieldZ = 5, resident = false })
   a:beginFixedStep()
   local position = a:renderPosition(0.5)
   Assert.isNil(position.x, "absent coordinates stay absent instead of manufacturing a point")
   Assert.isNil(position.y, "absent coordinates stay absent instead of manufacturing a point")
   Assert.isNil(position.z, "absent coordinates stay absent instead of manufacturing a point")
+end
+
+-- Storage-slot reuse must never leak a removed actor's numeric/boolean state
+-- into the actor that later takes the freed slot.
+function T.a_reused_numeric_storage_slot_starts_clean_for_its_new_owner()
+  local store = FieldActorStore.new()
+  local firstSlot = store:allocateNumericState()
+  local state = store:numericState(firstSlot)
+  state.fieldX = 999
+  state.worldX = 123.5
+  state.hasWorldPosition = 1
+  state.resident = 1
+  state.visible = 1
+  store:releaseNumericState(firstSlot)
+
+  local secondSlot = store:allocateNumericState()
+  Assert.equal(secondSlot, firstSlot, "the freed slot should be reused")
+  local reused = store:numericState(secondSlot)
+  Assert.equal(reused.fieldX, 0, "a reused numeric slot must not leak the previous occupant's fieldX")
+  Assert.equal(reused.hasWorldPosition, 0, "a reused numeric slot must not leak the previous occupant's presence")
+  Assert.equal(reused.resident, 0, "a reused numeric slot must not leak the previous occupant's residency")
+  Assert.equal(reused.visible, 0, "a reused numeric slot must not leak the previous occupant's visibility")
+end
+
+-- Moved numeric/boolean state has exactly one authority, the actor's cdata
+-- record: it must not remain a mutable Lua table property, and no
+-- __index/__newindex compatibility proxy may reintroduce transparent
+-- property-style access to it.
+function T.moved_numeric_fields_are_not_mutable_actor_table_properties()
+  local a = actor()
+  local mt = getmetatable(a)
+  Assert.isNil(mt.__newindex, "the actor metatable must not add a compatibility property proxy")
+  local movedFields = {
+    "fieldX",
+    "fieldZ",
+    "worldX",
+    "worldY",
+    "worldZ",
+    "previousWorldX",
+    "previousWorldY",
+    "previousWorldZ",
+    "surfaceId",
+    "sourceSurfaceId",
+    "poseTick",
+    "presentationOffset",
+    "resident",
+    "visible",
+    "solid",
+    "animationPaused",
+  }
+  for _, field in ipairs(movedFields) do
+    Assert.isNil(rawget(a, field), field .. " must not live directly on the actor table")
+  end
 end
 
 return { tests = T }

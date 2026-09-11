@@ -154,8 +154,9 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
   local ACTOR_ID = "map:61:object:0"
   local mgr = manager({ object({ objectEventId = 0, x = 2, z = 3 }) })
   local actor = assert(mgr:getById(ACTOR_ID))
-  local baseFieldX, baseFieldZ = actor.fieldX, actor.fieldZ
-  local baseWorldX, baseWorldY, baseWorldZ = actor.worldX, actor.worldY, actor.worldZ
+  local baseFieldX, baseFieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local baseWorldX, baseWorldY, baseWorldZ =
+    actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
 
   Assert.isNil(drawRecordFor(mgr, ACTOR_ID).activeEmoteKind, "no emote is active before the action begins")
 
@@ -173,11 +174,11 @@ function T.emote_presentation_follows_the_action_lifetime_independent_of_draw_co
       local record = drawRecordFor(mgr, ACTOR_ID)
       Assert.equal(record.activeEmoteKind, "exclamation", "exclamation must be active for tick " .. tick)
     end
-    Assert.equal(actor.fieldX, baseFieldX, "an emote must never change logical fieldX")
-    Assert.equal(actor.fieldZ, baseFieldZ, "an emote must never change logical fieldZ")
-    Assert.equal(actor.worldX, baseWorldX, "an emote must never change logical worldX")
-    Assert.equal(actor.worldY, baseWorldY, "an emote must never change logical worldY")
-    Assert.equal(actor.worldZ, baseWorldZ, "an emote must never change logical worldZ")
+    Assert.equal(actor:getFieldPosition().fieldX, baseFieldX, "an emote must never change logical fieldX")
+    Assert.equal(actor:getFieldPosition().fieldZ, baseFieldZ, "an emote must never change logical fieldZ")
+    Assert.equal(actor:getWorldPosition().x, baseWorldX, "an emote must never change logical worldX")
+    Assert.equal(actor:getWorldPosition().y, baseWorldY, "an emote must never change logical worldY")
+    Assert.equal(actor:getWorldPosition().z, baseWorldZ, "an emote must never change logical worldZ")
 
     -- The renderer's actual draw trace: exactly one quad, anchored above the
     -- acting actor's current draw-world position by the generated offset.
@@ -233,16 +234,16 @@ function T.a_billboard_batch_folds_its_captured_base_transform_into_the_final_pl
 
   local items = renderer:drawItems(mgr:drawRecords())
   Assert.equal(#items, 1)
-  Assert.near(items[1].billboardCenter[1], actor.worldX, 1e-9, "billboard center x tracks the actor")
+  Assert.near(items[1].billboardCenter[1], actor:getWorldPosition().x, 1e-9, "billboard center x tracks the actor")
   Assert.near(
     items[1].billboardCenter[2],
-    actor.worldY + 4,
+    actor:getWorldPosition().y + 4,
     1e-9,
     "billboard center y includes anchor and base offsets"
   )
   Assert.near(
     items[1].billboardCenter[3],
-    actor.worldZ + 0.0625,
+    actor:getWorldPosition().z + 0.0625,
     1e-9,
     "billboard center z includes the generated anchor"
   )
