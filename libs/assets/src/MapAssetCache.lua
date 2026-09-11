@@ -530,13 +530,30 @@ function MapAssetCache.isReady(cacheFs, mapId, expectedMarker)
   if not cacheFs:loadLua(dir .. "/dependencies.lua") then
     return false
   end
-  local terrain = cacheFs:loadLua(MapAssetCache.terrainPath(mapId))
-  if type(terrain) ~= "table" or terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA then
-    return false
-  end
-
-  if not validCollision(cacheFs, MapAssetCache.collisionPath(mapId)) then
-    return false
+  if scene.type == "outdoor" then
+    if
+      type(scene.collision) ~= "table"
+      or type(scene.collision.file) ~= "string"
+      or type(scene.terrain) ~= "table"
+      or type(scene.terrain.file) ~= "string"
+    then
+      return false
+    end
+    if not validCollision(cacheFs, scene.collision.file) then
+      return false
+    end
+    local terrain = cacheFs:loadLua(scene.terrain.file)
+    if type(terrain) ~= "table" or terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA then
+      return false
+    end
+  else
+    local terrain = cacheFs:loadLua(MapAssetCache.terrainPath(mapId))
+    if type(terrain) ~= "table" or terrain.schema ~= MapAssetCache.TERRAIN_SCHEMA then
+      return false
+    end
+    if not validCollision(cacheFs, MapAssetCache.collisionPath(mapId)) then
+      return false
+    end
   end
 
   local ok, paths = pcall(MapAssetCache.referencedPaths, scene, cacheFs)

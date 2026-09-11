@@ -5,6 +5,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local CollisionFixture = require("tests.support.CollisionFixture")
+local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
@@ -58,6 +59,37 @@ function T.ready_only_with_exact_marker_and_files()
   writeReadyMap(c, marker)
   Assert.isTrue(MapAssetCache.isReady(c, 61, marker), "ready")
   Assert.isTrue(not MapAssetCache.isReady(c, 61, "different-marker"), "stale marker not ready")
+end
+
+function T.outdoor_canonical_scene_uses_its_physical_cell_artifacts()
+  local c = cache()
+  local mapId = 61
+  local marker = MapAssetCache.marker("romsha", mapId, "dep")
+  local matrixMemberId, cellIndex = 3, 4
+  local collisionPath = FieldCellCache.collisionPath(matrixMemberId, cellIndex)
+  local terrainPath = FieldCellCache.terrainPath(matrixMemberId, cellIndex)
+  local dir = MapAssetCache.mapDir(mapId)
+  c:write(
+    dir .. "/scene.lua",
+    string.format(
+      "return { schema = %q, mapId = %d, type = 'outdoor', collision = { file = %q }, terrain = { file = %q }, mapBatches = {}, materials = {}, buildingInstances = {}, neighbors = {}, terrainAnimations = { textureSrt = false } }\n",
+      MapAssetCache.SCENE_SCHEMA,
+      mapId,
+      collisionPath,
+      terrainPath
+    )
+  )
+  c:write(dir .. "/dependencies.lua", "return {}\n")
+  c:write(collisionPath, CollisionFixture.asset(32, 32))
+  c:write(terrainPath, "return { schema = 'g4-terrain-surfaces-v1' }\n")
+  c:write(dir .. "/complete", marker)
+
+  Assert.isTrue(MapAssetCache.isReady(c, mapId, marker), "canonical outdoor maps use physical cell artifacts")
+  Assert.isFalse(
+    c:exists(MapAssetCache.collisionPath(mapId), "file"),
+    "canonical maps do not need a map collision copy"
+  )
+  Assert.isFalse(c:exists(MapAssetCache.terrainPath(mapId), "file"), "canonical maps do not need a map terrain copy")
 end
 
 function T.not_ready_when_referenced_asset_missing()

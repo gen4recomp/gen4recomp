@@ -569,7 +569,13 @@ function MapAssetCompiler.compile(romFs, idOrSymbol, opts)
   assert(romFs and romFs.openNarc, "compile requires a RomFs-shaped object")
   local ok, result = pcall(function()
     if opts and opts.fieldCellIndex then
-      return compileCanonical(romFs, idOrSymbol, opts)
+      local resolved = assert(MapResolver.resolve(romFs, idOrSymbol))
+      local areaNarc = assert(romFs:openNarc("area_data"))
+      local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
+      local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
+      if area.areaType == "outdoor" then
+        return compileCanonical(romFs, idOrSymbol, opts)
+      end
     end
     return _compile(romFs, idOrSymbol, opts)
   end)
