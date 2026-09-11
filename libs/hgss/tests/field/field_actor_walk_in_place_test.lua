@@ -92,15 +92,16 @@ function T.walk_in_place_keeps_logical_coordinates_and_visibly_bobs_in_presentat
     FieldEventState.new()
   )
   local actor = assert(mgr:getById(ACTOR_ID))
-  local baseFieldX, baseFieldZ, baseWorldY = actor.fieldX, actor.fieldZ, assert(actor.worldY)
+  local baseFieldX, baseFieldZ, baseWorldY =
+    actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ, assert(actor:getWorldPosition().y)
 
   mgr:beginScriptedAction(ACTOR_ID, { action = "walk_in_place", direction = "south", speed = "normal" })
   local duration = 8 -- MovementCalibration.WALK_IN_PLACE_TICKS.normal
   local renderYs = {}
   for tick = 1, duration do
     mgr:advanceScriptedAction(ACTOR_ID, tick, duration)
-    Assert.equal(actor.fieldX, baseFieldX, "walk_in_place must never change logical fieldX")
-    Assert.equal(actor.fieldZ, baseFieldZ, "walk_in_place must never change logical fieldZ")
+    Assert.equal(actor:getFieldPosition().fieldX, baseFieldX, "walk_in_place must never change logical fieldX")
+    Assert.equal(actor:getFieldPosition().fieldZ, baseFieldZ, "walk_in_place must never change logical fieldZ")
     local renderY = drawnY(mgr)
     Assert.equal(drawnY(mgr), renderY, "repeated renders within one fixed tick must be identical")
     renderYs[#renderYs + 1] = renderY
@@ -122,7 +123,11 @@ function T.walk_in_place_keeps_logical_coordinates_and_visibly_bobs_in_presentat
     1e-9,
     "the presentation offset returns to the base position at the action boundary"
   )
-  Assert.equal(actor.worldY, baseWorldY, "the committed/logical world height never changes for walk_in_place")
+  Assert.equal(
+    actor:getWorldPosition().y,
+    baseWorldY,
+    "the committed/logical world height never changes for walk_in_place"
+  )
 end
 
 return { tests = T }

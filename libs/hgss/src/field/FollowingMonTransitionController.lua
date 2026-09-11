@@ -153,14 +153,16 @@ local function tryStartOnCurrentPartner(self)
     error("transition model factory returned no animated instance")
   end
 
+  local committed = partner:getFieldPosition()
+  local anchor = partner:getWorldPosition()
   local instance = {
     targetActor = partner,
     targetActorId = partnerId,
     targetMapId = partner.mapId,
     targetSpriteId = partner.spriteId,
-    fieldX = partner.fieldX,
-    fieldZ = partner.fieldZ,
-    worldY = partner.worldY,
+    fieldX = committed.fieldX,
+    fieldZ = committed.fieldZ,
+    worldY = anchor.y,
     offset = self.definition.placementOffset,
     phase = "prelude",
     preludeAge = 0,
@@ -211,9 +213,10 @@ function FollowingMonTransitionController:updateFixed()
       release(instance)
       table.remove(self.instances, index)
     else
-      instance.fieldX = current.fieldX
-      instance.fieldZ = current.fieldZ
-      instance.worldY = current.worldY
+      local tracked = current:getFieldPosition()
+      instance.fieldX = tracked.fieldX
+      instance.fieldZ = tracked.fieldZ
+      instance.worldY = current:getWorldPosition().y
       if instance.phase == "prelude" then
         instance.preludeAge = instance.preludeAge + 1
         if instance.preludeAge >= self.preludeTicks then

@@ -147,8 +147,8 @@ function T.tests.direct_mon_service_gift_reveals_through_the_pending_transition_
         local after = game:snapshot()
         Assert.isFalse(sameTile(playerTile(after), before), "the probe step must commit to a new tile")
         local partner = assert(game.runtime.actors:getById(id), "the partner survives the committed step")
-        Assert.equal(partner.fieldX, before.fieldX, "the follower settles onto the vacated tile")
-        Assert.equal(partner.fieldZ, before.fieldZ, "the follower settles onto the vacated tile")
+        Assert.equal(partner:getFieldPosition().fieldX, before.fieldX, "the follower settles onto the vacated tile")
+        Assert.equal(partner:getFieldPosition().fieldZ, before.fieldZ, "the follower settles onto the vacated tile")
         Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "the ordinary follow settles after the step")
         Assert.isTrue(game.runtime.actors:isVisible(id), "the follower stays visible after the step")
         stepped = true
@@ -159,8 +159,8 @@ function T.tests.direct_mon_service_gift_reveals_through_the_pending_transition_
       end, 120)
       if not sameTile(playerTile(game:snapshot()), before) then
         local partner = assert(game.runtime.actors:getById(id), "the partner survives the committed step")
-        Assert.equal(partner.fieldX, before.fieldX, "the follower settles onto the vacated tile")
-        Assert.equal(partner.fieldZ, before.fieldZ, "the follower settles onto the vacated tile")
+        Assert.equal(partner:getFieldPosition().fieldX, before.fieldX, "the follower settles onto the vacated tile")
+        Assert.equal(partner:getFieldPosition().fieldZ, before.fieldZ, "the follower settles onto the vacated tile")
         Assert.isTrue(game.runtime.actors:isVisible(id), "the follower stays visible after the step")
         stepped = true
         break

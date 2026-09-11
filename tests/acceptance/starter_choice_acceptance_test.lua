@@ -633,12 +633,12 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
       local partner =
         assert(game.runtime.actors:getById(partnerId), "the partner survives scripted step " .. scriptedCommits)
       Assert.equal(
-        partner.fieldX,
+        partner:getFieldPosition().fieldX,
         current.startTile.fieldX,
         "the follower settles onto the vacated tile on step " .. scriptedCommits
       )
       Assert.equal(
-        partner.fieldZ,
+        partner:getFieldPosition().fieldZ,
         current.startTile.fieldZ,
         "the follower settles onto the vacated tile on step " .. scriptedCommits
       )
@@ -683,7 +683,7 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
               idStable = game.runtime.actors:partnerId() == partnerId,
               startAction = startAction,
               startMode = game.runtime.followingMon._movementType,
-              startHeight = live and live.worldY or 0,
+              startHeight = live and live:getWorldPosition().y or 0,
               maxHeightDeviation = 0,
             }
           elseif episode ~= nil and motion ~= "idle" then
@@ -694,8 +694,8 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
               episode.idStable = false
             end
             local live = game.runtime.actors:getById(partnerId)
-            if live ~= nil and type(live.worldY) == "number" then
-              local deviation = math.abs(live.worldY - episode.startHeight)
+            if live ~= nil and type(live:getWorldPosition().y) == "number" then
+              local deviation = math.abs(live:getWorldPosition().y - episode.startHeight)
               if deviation > episode.maxHeightDeviation then
                 episode.maxHeightDeviation = deviation
               end
@@ -794,8 +794,8 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
         local after = game:snapshot()
         if after.player.fieldX ~= before.fieldX or after.player.fieldZ ~= before.fieldZ then
           local partner = assert(game.runtime.actors:getById(partnerId), "the partner survives the committed step")
-          Assert.equal(partner.fieldX, before.fieldX, "the follower settles onto the pre-step tile")
-          Assert.equal(partner.fieldZ, before.fieldZ, "the follower settles onto the pre-step tile")
+          Assert.equal(partner:getFieldPosition().fieldX, before.fieldX, "the follower settles onto the pre-step tile")
+          Assert.equal(partner:getFieldPosition().fieldZ, before.fieldZ, "the follower settles onto the pre-step tile")
           stepped = true
           break
         end
@@ -811,15 +811,15 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
     -- logical displacement, staying settled and interactable.
     local home = game:snapshot()
     local homePartner = assert(game.runtime.actors:getById(partnerId), "the partner is required")
-    local homeTile = { fieldX = homePartner.fieldX, fieldZ = homePartner.fieldZ }
+    local homeTile = homePartner:getFieldPosition()
     Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "the free follower is settled before idling")
     for _ = 1, 30 do
       game:step()
       local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives stationary ticks")
       Assert.equal(actor.pose, "idle", "every free stationary tick presents native idle, never locomotion")
       Assert.isNil(actor:scriptedMotionState(), "stationary ticks start no movement action")
-      Assert.equal(actor.fieldX, homeTile.fieldX, "native idle never changes the logical tile")
-      Assert.equal(actor.fieldZ, homeTile.fieldZ, "native idle never changes the logical tile")
+      Assert.equal(actor:getFieldPosition().fieldX, homeTile.fieldX, "native idle never changes the logical tile")
+      Assert.equal(actor:getFieldPosition().fieldZ, homeTile.fieldZ, "native idle never changes the logical tile")
       Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "native idle stays settled")
       Assert.isTrue(
         game.runtime.followingMon:isEventTrigger(1, 0),
@@ -837,8 +837,8 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
       local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the pause")
       Assert.equal(actor.pose, "idle", "pausing a stationary follower changes nothing visual")
       Assert.isNil(actor:scriptedMotionState(), "no movement action exists while paused")
-      Assert.equal(actor.fieldX, homeTile.fieldX, "pausing never displaces the logical tile")
-      Assert.equal(actor.fieldZ, homeTile.fieldZ, "pausing never displaces the logical tile")
+      Assert.equal(actor:getFieldPosition().fieldX, homeTile.fieldX, "pausing never displaces the logical tile")
+      Assert.equal(actor:getFieldPosition().fieldZ, homeTile.fieldZ, "pausing never displaces the logical tile")
       Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "a paused follower never hangs a wait")
     end
     for _ = 1, 10 do
@@ -853,8 +853,8 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
       local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the release")
       Assert.equal(actor.pose, "idle", "release starts no movement action")
       Assert.isNil(actor:scriptedMotionState(), "the released follower holds no scripted motion")
-      Assert.equal(actor.fieldX, homeTile.fieldX, "release never displaces the logical tile")
-      Assert.equal(actor.fieldZ, homeTile.fieldZ, "release never displaces the logical tile")
+      Assert.equal(actor:getFieldPosition().fieldX, homeTile.fieldX, "release never displaces the logical tile")
+      Assert.equal(actor:getFieldPosition().fieldZ, homeTile.fieldZ, "release never displaces the logical tile")
     end
 
     -- Modal dialogue: the follower keeps idling natively while the box is
@@ -892,8 +892,16 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
     do
       local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the dialogue")
       Assert.equal(actor.pose, "idle", "modal dialogue leaves native idle alone")
-      Assert.equal(actor.fieldX, homeTile.fieldX, "an open dialogue never displaces the logical tile")
-      Assert.equal(actor.fieldZ, homeTile.fieldZ, "an open dialogue never displaces the logical tile")
+      Assert.equal(
+        actor:getFieldPosition().fieldX,
+        homeTile.fieldX,
+        "an open dialogue never displaces the logical tile"
+      )
+      Assert.equal(
+        actor:getFieldPosition().fieldZ,
+        homeTile.fieldZ,
+        "an open dialogue never displaces the logical tile"
+      )
       Assert.isTrue(game.runtime.followingMon:isMovementSettled(), "a follower stays settled under dialogue")
     end
     for _ = 1, 10 do
@@ -909,8 +917,16 @@ function T.tests.elm_choreography_trails_releases_and_idles_the_stable_follower(
     do
       local actor = assert(game.runtime.actors:getById(partnerId), "the partner survives the closed dialogue")
       Assert.equal(actor.pose, "idle", "the follower idles natively after dialogue closes")
-      Assert.equal(actor.fieldX, homeTile.fieldX, "closing dialogue never displaces the logical tile")
-      Assert.equal(actor.fieldZ, homeTile.fieldZ, "closing dialogue never displaces the logical tile")
+      Assert.equal(
+        actor:getFieldPosition().fieldX,
+        homeTile.fieldX,
+        "closing dialogue never displaces the logical tile"
+      )
+      Assert.equal(
+        actor:getFieldPosition().fieldZ,
+        homeTile.fieldZ,
+        "closing dialogue never displaces the logical tile"
+      )
     end
 
     Assert.equal(game:renderAttempts(), 0, "follower-trail acceptance must stop before GPU rendering")

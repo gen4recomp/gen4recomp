@@ -270,19 +270,19 @@ function T.ordinary_actor_settles_to_static_idle_after_locomotion()
   end
 
   Assert.isNil(actor:currentAction(), "the locomotion action must be exhausted")
-  local settledPoseTick = actor.poseTick
-  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
-  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
+  local settledPoseTick = actor:getPoseTick()
+  local fieldX, fieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local worldX, worldY, worldZ = actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
   for tick = 121, 123 do
     stepWorld(h, tick)
     Assert.isNil(actor:currentAction(), "taskless ticks must not recreate a movement action")
     Assert.equal(actor.pose, "idle", "ordinary actor settles to its visual idle pose")
-    Assert.equal(actor.poseTick, settledPoseTick, "static idle does not advance its pose phase")
-    Assert.equal(actor.fieldX, fieldX, "static idle keeps logical fieldX")
-    Assert.equal(actor.fieldZ, fieldZ, "static idle keeps logical fieldZ")
-    Assert.equal(actor.worldX, worldX, "static idle keeps logical worldX")
-    Assert.equal(actor.worldY, worldY, "static idle keeps logical worldY")
-    Assert.equal(actor.worldZ, worldZ, "static idle keeps logical worldZ")
+    Assert.equal(actor:getPoseTick(), settledPoseTick, "static idle does not advance its pose phase")
+    Assert.equal(actor:getFieldPosition().fieldX, fieldX, "static idle keeps logical fieldX")
+    Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "static idle keeps logical fieldZ")
+    Assert.equal(actor:getWorldPosition().x, worldX, "static idle keeps logical worldX")
+    Assert.equal(actor:getWorldPosition().y, worldY, "static idle keeps logical worldY")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "static idle keeps logical worldZ")
     local record = assert(h.mgr:drawRecords()[1])
     Assert.equal(record.world.x, worldX, "static idle keeps draw worldX at its logical anchor")
     Assert.equal(record.world.y, worldY, "static idle keeps draw worldY at its logical anchor")
@@ -308,14 +308,14 @@ function T.follower_actor_animates_from_idle_before_and_after_locomotion()
   startForeground(h, resource, 100)
   stepWorld(h, 100)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local initialPoseTick = actor.poseTick
+  local initialPoseTick = actor:getPoseTick()
 
   stepWorld(h, 101)
   Assert.equal(actor.pose, "idle", "a follower begins with its visual idle pose")
-  Assert.equal(actor.poseTick, initialPoseTick + 1, "follower idle advances at source 1x cadence")
+  Assert.equal(actor:getPoseTick(), initialPoseTick + 1, "follower idle advances at source 1x cadence")
   stepWorld(h, 102)
   Assert.equal(actor.pose, "idle", "follower remains in its visual idle pose")
-  Assert.equal(actor.poseTick, initialPoseTick + 2, "follower idle continues at source 1x cadence")
+  Assert.equal(actor:getPoseTick(), initialPoseTick + 2, "follower idle continues at source 1x cadence")
 
   for tick = 103, 120 do
     stepWorld(h, tick)
@@ -324,12 +324,12 @@ function T.follower_actor_animates_from_idle_before_and_after_locomotion()
     end
   end
   Assert.isNil(actor:currentAction(), "the follower locomotion action must be exhausted")
-  local settledPoseTick = actor.poseTick
+  local settledPoseTick = actor:getPoseTick()
   stepWorld(h, 121)
   Assert.equal(actor.pose, "idle", "follower returns to visual idle after locomotion")
-  Assert.equal(actor.poseTick, settledPoseTick + 1, "follower idle does not depend on the prior action descriptor")
+  Assert.equal(actor:getPoseTick(), settledPoseTick + 1, "follower idle does not depend on the prior action descriptor")
   stepWorld(h, 122)
-  Assert.equal(actor.poseTick, settledPoseTick + 2, "follower idle keeps advancing without an active action")
+  Assert.equal(actor:getPoseTick(), settledPoseTick + 2, "follower idle keeps advancing without an active action")
 end
 
 function T.paused_follower_idle_freezes_phase_and_display_offset()
@@ -338,25 +338,25 @@ function T.paused_follower_idle_freezes_phase_and_display_offset()
   stepWorld(h, 100)
   stepWorld(h, 101)
   stepWorld(h, 102)
-  local pausedPoseTick = actor.poseTick
-  local pausedOffset = actor.presentationOffset.y
-  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
+  local pausedPoseTick = actor:getPoseTick()
+  local pausedOffset = actor:getPresentationOffset().y
+  local worldX, worldY, worldZ = actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
 
   h.mgr:setAnimationPaused(ACTOR_ID, true)
   stepWorld(h, 103)
   Assert.equal(actor.pose, "idle", "paused follower remains in its visual idle pose")
-  Assert.equal(actor.poseTick, pausedPoseTick, "paused follower idle holds its pose phase")
-  Assert.equal(actor.presentationOffset.y, pausedOffset, "paused follower idle holds its display offset")
-  Assert.equal(actor.worldX, worldX, "paused follower idle keeps logical worldX")
-  Assert.equal(actor.worldY, worldY, "paused follower idle keeps logical worldY")
-  Assert.equal(actor.worldZ, worldZ, "paused follower idle keeps logical worldZ")
+  Assert.equal(actor:getPoseTick(), pausedPoseTick, "paused follower idle holds its pose phase")
+  Assert.equal(actor:getPresentationOffset().y, pausedOffset, "paused follower idle holds its display offset")
+  Assert.equal(actor:getWorldPosition().x, worldX, "paused follower idle keeps logical worldX")
+  Assert.equal(actor:getWorldPosition().y, worldY, "paused follower idle keeps logical worldY")
+  Assert.equal(actor:getWorldPosition().z, worldZ, "paused follower idle keeps logical worldZ")
 
   h.mgr:setAnimationPaused(ACTOR_ID, false)
   stepWorld(h, 104)
-  Assert.equal(actor.poseTick, pausedPoseTick + 1, "resumed follower idle advances by one source tick")
-  Assert.equal(actor.worldX, worldX, "resumed follower idle keeps logical worldX")
-  Assert.equal(actor.worldY, worldY, "resumed follower idle keeps logical worldY")
-  Assert.equal(actor.worldZ, worldZ, "resumed follower idle keeps logical worldZ")
+  Assert.equal(actor:getPoseTick(), pausedPoseTick + 1, "resumed follower idle advances by one source tick")
+  Assert.equal(actor:getWorldPosition().x, worldX, "resumed follower idle keeps logical worldX")
+  Assert.equal(actor:getWorldPosition().y, worldY, "resumed follower idle keeps logical worldY")
+  Assert.equal(actor:getWorldPosition().z, worldZ, "resumed follower idle keeps logical worldZ")
 
   -- A script lock neither clears nor takes over explicit animation pause: the
   -- paused phase survives lock acquisition and release, and only an explicit
@@ -375,28 +375,32 @@ function T.paused_follower_idle_freezes_phase_and_display_offset()
   startForeground(h, lockResource, 200)
   local lockTick = 200
   stepWorld(h, lockTick)
-  Assert.isTrue(actor.animationPaused, "the script lock does not clear explicit pause")
+  Assert.isTrue(actor:isAnimationPaused(), "the script lock does not clear explicit pause")
   Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script holds the global lock")
-  local lockedPausedPoseTick = actor.poseTick
-  local lockedPausedOffset = actor.presentationOffset.y
+  local lockedPausedPoseTick = actor:getPoseTick()
+  local lockedPausedOffset = actor:getPresentationOffset().y
   for _ = 1, 2 do
     lockTick = lockTick + 1
     stepWorld(h, lockTick)
-    Assert.isTrue(actor.animationPaused, "explicit pause survives locked ticks")
-    Assert.equal(actor.poseTick, lockedPausedPoseTick, "explicitly paused idle stays frozen under lock")
-    Assert.equal(actor.presentationOffset.y, lockedPausedOffset, "explicitly paused offset stays frozen under lock")
+    Assert.isTrue(actor:isAnimationPaused(), "explicit pause survives locked ticks")
+    Assert.equal(actor:getPoseTick(), lockedPausedPoseTick, "explicitly paused idle stays frozen under lock")
+    Assert.equal(
+      actor:getPresentationOffset().y,
+      lockedPausedOffset,
+      "explicitly paused offset stays frozen under lock"
+    )
   end
   while h.scheduler:autonomousActorsLocked() do
     lockTick = lockTick + 1
     Assert.isTrue(lockTick < 220, "the script releases its lock promptly")
     stepWorld(h, lockTick)
   end
-  Assert.isTrue(actor.animationPaused, "lock release does not resume explicit pause")
-  Assert.equal(actor.poseTick, lockedPausedPoseTick, "pose stays frozen after release while explicitly paused")
+  Assert.isTrue(actor:isAnimationPaused(), "lock release does not resume explicit pause")
+  Assert.equal(actor:getPoseTick(), lockedPausedPoseTick, "pose stays frozen after release while explicitly paused")
   h.mgr:setAnimationPaused(ACTOR_ID, false)
   lockTick = lockTick + 1
   stepWorld(h, lockTick)
-  Assert.equal(actor.poseTick, lockedPausedPoseTick + 1, "explicit resume restarts the clock by one native tick")
+  Assert.equal(actor:getPoseTick(), lockedPausedPoseTick + 1, "explicit resume restarts the clock by one native tick")
 end
 
 function T.global_lock_freezes_animated_idle_and_resumes_from_held_phase()
@@ -418,36 +422,36 @@ function T.global_lock_freezes_animated_idle_and_resumes_from_held_phase()
   stepWorld(h, tick)
   tick = tick + 1
   stepWorld(h, tick)
-  local preLockPoseTick = actor.poseTick
+  local preLockPoseTick = actor:getPoseTick()
   Assert.isTrue(preLockPoseTick > 0, "unlocked idle establishes phase before the lock")
   while not h.scheduler:autonomousActorsLocked() do
     tick = tick + 1
     Assert.isTrue(tick < 120, "the global lock is acquired promptly")
     stepWorld(h, tick)
   end
-  local heldPoseTick = actor.poseTick
-  local heldOffset = actor.presentationOffset.y
-  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
-  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
+  local heldPoseTick = actor:getPoseTick()
+  local heldOffset = actor:getPresentationOffset().y
+  local fieldX, fieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local worldX, worldY, worldZ = actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
   for _ = 1, 4 do
     tick = tick + 1
     stepWorld(h, tick)
     Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script still holds the global lock")
     Assert.equal(actor.pose, "idle", "locked actor remains in its visual idle pose")
-    Assert.equal(actor.poseTick, heldPoseTick, "locked idle holds its pose phase")
-    Assert.equal(actor.presentationOffset.y, heldOffset, "locked idle holds its display offset")
-    Assert.equal(actor.fieldX, fieldX, "locked idle keeps logical fieldX")
-    Assert.equal(actor.fieldZ, fieldZ, "locked idle keeps logical fieldZ")
-    Assert.equal(actor.worldX, worldX, "locked idle keeps logical worldX")
-    Assert.equal(actor.worldY, worldY, "locked idle keeps logical worldY")
-    Assert.equal(actor.worldZ, worldZ, "locked idle keeps logical worldZ")
+    Assert.equal(actor:getPoseTick(), heldPoseTick, "locked idle holds its pose phase")
+    Assert.equal(actor:getPresentationOffset().y, heldOffset, "locked idle holds its display offset")
+    Assert.equal(actor:getFieldPosition().fieldX, fieldX, "locked idle keeps logical fieldX")
+    Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "locked idle keeps logical fieldZ")
+    Assert.equal(actor:getWorldPosition().x, worldX, "locked idle keeps logical worldX")
+    Assert.equal(actor:getWorldPosition().y, worldY, "locked idle keeps logical worldY")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "locked idle keeps logical worldZ")
   end
   while h.scheduler:autonomousActorsLocked() do
     tick = tick + 1
     Assert.isTrue(tick < 140, "the global lock is released promptly")
     stepWorld(h, tick)
   end
-  Assert.equal(actor.poseTick, heldPoseTick + 1, "release resumes idle by one native tick from the held phase")
+  Assert.equal(actor:getPoseTick(), heldPoseTick + 1, "release resumes idle by one native tick from the held phase")
 end
 
 function T.scoped_lock_freezes_only_the_locked_actor()
@@ -470,32 +474,32 @@ function T.scoped_lock_freezes_only_the_locked_actor()
   stepWorld(h, tick)
   tick = tick + 1
   stepWorld(h, tick)
-  Assert.isTrue(target.poseTick > 0, "unlocked target establishes phase before the lock")
-  Assert.isTrue(sibling.poseTick > 0, "unlocked sibling establishes phase before the lock")
+  Assert.isTrue(target:getPoseTick() > 0, "unlocked target establishes phase before the lock")
+  Assert.isTrue(sibling:getPoseTick() > 0, "unlocked sibling establishes phase before the lock")
   while not h.scheduler:autonomousActorLocked(ACTOR_ID) do
     tick = tick + 1
     Assert.isTrue(tick < 120, "the scoped lock is acquired promptly")
     stepWorld(h, tick)
   end
   Assert.isFalse(h.scheduler:autonomousActorsLocked(), "a scoped lock is not a global lock")
-  local heldPoseTick = target.poseTick
-  local heldOffset = target.presentationOffset.y
-  local siblingPoseTick = sibling.poseTick
+  local heldPoseTick = target:getPoseTick()
+  local heldOffset = target:getPresentationOffset().y
+  local siblingPoseTick = sibling:getPoseTick()
   for _ = 1, 4 do
     tick = tick + 1
     stepWorld(h, tick)
     Assert.isTrue(h.scheduler:autonomousActorLocked(ACTOR_ID), "the script still holds the scoped lock")
-    Assert.equal(target.poseTick, heldPoseTick, "locked target holds its pose phase")
-    Assert.equal(target.presentationOffset.y, heldOffset, "locked target holds its display offset")
-    Assert.isTrue(sibling.poseTick > siblingPoseTick, "unlocked sibling keeps advancing")
-    siblingPoseTick = sibling.poseTick
+    Assert.equal(target:getPoseTick(), heldPoseTick, "locked target holds its pose phase")
+    Assert.equal(target:getPresentationOffset().y, heldOffset, "locked target holds its display offset")
+    Assert.isTrue(sibling:getPoseTick() > siblingPoseTick, "unlocked sibling keeps advancing")
+    siblingPoseTick = sibling:getPoseTick()
   end
   while h.scheduler:autonomousActorLocked(ACTOR_ID) do
     tick = tick + 1
     Assert.isTrue(tick < 140, "the scoped lock is released promptly")
     stepWorld(h, tick)
   end
-  Assert.equal(target.poseTick, heldPoseTick + 1, "release resumes the target by one native tick")
+  Assert.equal(target:getPoseTick(), heldPoseTick + 1, "release resumes the target by one native tick")
 end
 
 function T.lock_acquired_mid_movement_settles_then_holds_idle()
@@ -517,7 +521,7 @@ function T.lock_acquired_mid_movement_settles_then_holds_idle()
   })
   startForeground(h, resource, 100)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local startFieldX = actor.fieldX
+  local startFieldX = actor:getFieldPosition().fieldX
   local tick = 100
   local sawAction = false
   local settled = false
@@ -529,21 +533,25 @@ function T.lock_acquired_mid_movement_settles_then_holds_idle()
     if actor:currentAction() ~= nil then
       sawAction = true
     elseif sawAction and h.scheduler:autonomousActorsLocked() then
-      settledPoseTick = actor.poseTick
-      settledOffsetY = actor.presentationOffset.y
+      settledPoseTick = actor:getPoseTick()
+      settledOffsetY = actor:getPresentationOffset().y
       settled = true
     end
     tick = tick + 1
   end
   Assert.isTrue(sawAction, "the walk was in flight before it settled")
-  Assert.equal(actor.fieldX, startFieldX + 1, "the in-flight walk reaches its destination under lock")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    startFieldX + 1,
+    "the in-flight walk reaches its destination under lock"
+  )
   Assert.isNil(actor:currentAction(), "the in-flight walk clears under lock")
   for _ = 1, 3 do
     stepWorld(h, tick)
     Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script still holds the lock after settlement")
-    Assert.equal(actor.poseTick, settledPoseTick, "settled idle holds its pose phase under lock")
-    Assert.equal(actor.presentationOffset.y, settledOffsetY, "settled idle holds its display offset under lock")
-    Assert.equal(actor.fieldX, startFieldX + 1, "settled idle keeps its destination under lock")
+    Assert.equal(actor:getPoseTick(), settledPoseTick, "settled idle holds its pose phase under lock")
+    Assert.equal(actor:getPresentationOffset().y, settledOffsetY, "settled idle holds its display offset under lock")
+    Assert.equal(actor:getFieldPosition().fieldX, startFieldX + 1, "settled idle keeps its destination under lock")
     tick = tick + 1
   end
   while h.scheduler:autonomousActorsLocked() do
@@ -551,43 +559,43 @@ function T.lock_acquired_mid_movement_settles_then_holds_idle()
     stepWorld(h, tick)
     tick = tick + 1
   end
-  Assert.equal(actor.poseTick, settledPoseTick, "the first idle tick after release holds the settled phase")
+  Assert.equal(actor:getPoseTick(), settledPoseTick, "the first idle tick after release holds the settled phase")
   stepWorld(h, tick)
   tick = tick + 1
-  Assert.equal(actor.poseTick, settledPoseTick + 1, "the next idle tick resumes from the settled phase")
+  Assert.equal(actor:getPoseTick(), settledPoseTick + 1, "the next idle tick resumes from the settled phase")
 end
 
 function T.follower_idle_presentation_advances_during_delay_without_double_advancing()
   local h = harness({ visual = followerVisual() })
   local actor = assert(h.mgr:getById(ACTOR_ID))
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "delay" })
-  local initialPoseTick = actor.poseTick
+  local initialPoseTick = actor:getPoseTick()
 
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
   Assert.equal(actor.pose, "idle", "a delay uses the follower's idle pose")
-  Assert.equal(actor.poseTick, initialPoseTick + 1, "a delay advances follower idle by one source tick")
+  Assert.equal(actor:getPoseTick(), initialPoseTick + 1, "a delay advances follower idle by one source tick")
   h.mgr:step(100, managerContext(h))
-  Assert.equal(actor.poseTick, initialPoseTick + 1, "the manager does not double-advance a scripted delay tick")
+  Assert.equal(actor:getPoseTick(), initialPoseTick + 1, "the manager does not double-advance a scripted delay tick")
 
   h.mgr:advanceScriptedAction(ACTOR_ID, 2, 32)
   h.mgr:advanceScriptedAction(ACTOR_ID, 3, 32)
-  Assert.equal(actor.poseTick, initialPoseTick + 3, "successive delay ticks advance follower idle exactly once")
-  Assert.equal(actor.presentationOffset.y, -0.5, "delay idle applies the displayed frame's bob")
+  Assert.equal(actor:getPoseTick(), initialPoseTick + 3, "successive delay ticks advance follower idle exactly once")
+  Assert.equal(actor:getPresentationOffset().y, -0.5, "delay idle applies the displayed frame's bob")
   h.mgr:step(101, managerContext(h))
-  Assert.equal(actor.poseTick, initialPoseTick + 3, "the manager does not add a second delay tick")
-  Assert.equal(actor.presentationOffset.y, -0.5, "the scripted delay bob remains stable for the published tick")
+  Assert.equal(actor:getPoseTick(), initialPoseTick + 3, "the manager does not add a second delay tick")
+  Assert.equal(actor:getPresentationOffset().y, -0.5, "the scripted delay bob remains stable for the published tick")
 
   h.mgr:commitScriptedAction(ACTOR_ID)
   Assert.isNil(actor:currentAction(), "the delay commits normally")
   Assert.equal(actor.pose, "idle", "a committed delay remains in follower idle")
 
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "emote", name = "exclamation" })
-  local emotePoseTick = actor.poseTick
+  local emotePoseTick = actor:getPoseTick()
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
   Assert.equal(actor.pose, "idle", "an emote uses the follower's idle pose")
-  Assert.equal(actor.poseTick, emotePoseTick + 1, "an emote advances follower idle by one source tick")
+  Assert.equal(actor:getPoseTick(), emotePoseTick + 1, "an emote advances follower idle by one source tick")
   h.mgr:step(102, managerContext(h))
-  Assert.equal(actor.poseTick, emotePoseTick + 1, "the manager does not double-advance a scripted emote tick")
+  Assert.equal(actor:getPoseTick(), emotePoseTick + 1, "the manager does not double-advance a scripted emote tick")
 end
 
 function T.locked_face_returns_to_visual_idle_presentation()
@@ -617,15 +625,15 @@ function T.locked_face_returns_to_visual_idle_presentation()
   end
   Assert.equal(actor.facing, "east", "the locomotion establishes the actor facing")
   Assert.equal(actor.pose, "idle", "the completed locomotion uses visual idle presentation")
-  local poseTickBeforeFace = actor.poseTick
+  local poseTickBeforeFace = actor:getPoseTick()
   stepWorld(h, 105)
   Assert.equal(actor.facing, "east", "a face suppressed by the facing lock keeps the current facing")
   Assert.equal(actor.pose, "idle", "a face suppressed by the facing lock keeps visual idle presentation")
-  Assert.equal(actor.poseTick, poseTickBeforeFace, "a suppressed face does not advance static idle")
+  Assert.equal(actor:getPoseTick(), poseTickBeforeFace, "a suppressed face does not advance static idle")
 
   stepWorld(h, 106)
   Assert.equal(actor.pose, "idle", "the following delay keeps visual idle presentation")
-  Assert.equal(actor.poseTick, poseTickBeforeFace, "the following delay does not inherit locomotion cadence")
+  Assert.equal(actor:getPoseTick(), poseTickBeforeFace, "the following delay does not inherit locomotion cadence")
 end
 
 -- `walk -> walk -> walk_in_place (two repetitions) -> delay` (fast walks use
@@ -663,25 +671,25 @@ function T.contiguous_locomotion_returns_to_visual_idle_between_actions()
     end
     Assert.equal(actor.pose, expectedPose, "the locomotion chain publishes its action boundary at tick " .. tick)
   end
-  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
-  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
-  local poseTickBeforeWalkInPlace = actor.poseTick
+  local fieldX, fieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local worldX, worldY, worldZ = actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
+  local poseTickBeforeWalkInPlace = actor:getPoseTick()
   local sawBob = false
   for tick = 109, 112 do
     h.scheduler:step(tick, nil)
     Assert.equal(actor:currentAction(), "walk_in_place", "the first walk-in-place instance is active")
     Assert.equal(actor.pose, "walk", "walk-in-place uses walking presentation")
     Assert.equal(
-      actor.poseTick,
+      actor:getPoseTick(),
       poseTickBeforeWalkInPlace + 2 * (tick - 108),
       "the first fast walk-in-place continues the accumulated pose phase"
     )
-    Assert.equal(actor.fieldX, fieldX, "walk-in-place keeps logical X fixed")
-    Assert.equal(actor.fieldZ, fieldZ, "walk-in-place keeps logical Z fixed")
-    Assert.equal(actor.worldX, worldX, "walk-in-place keeps world X at its anchor")
-    Assert.equal(actor.worldY, worldY, "walk-in-place keeps world Y at its anchor")
-    Assert.equal(actor.worldZ, worldZ, "walk-in-place keeps world Z at its anchor")
-    sawBob = sawBob or actor.presentationOffset.y ~= 0
+    Assert.equal(actor:getFieldPosition().fieldX, fieldX, "walk-in-place keeps logical X fixed")
+    Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "walk-in-place keeps logical Z fixed")
+    Assert.equal(actor:getWorldPosition().x, worldX, "walk-in-place keeps world X at its anchor")
+    Assert.equal(actor:getWorldPosition().y, worldY, "walk-in-place keeps world Y at its anchor")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "walk-in-place keeps world Z at its anchor")
+    sawBob = sawBob or actor:getPresentationOffset().y ~= 0
   end
   Assert.isTrue(sawBob, "walk-in-place visibly bobs during its action")
   -- The first walk-in-place repetition commits at 113's boundary. Its
@@ -690,58 +698,62 @@ function T.contiguous_locomotion_returns_to_visual_idle_between_actions()
   h.scheduler:step(113, nil)
   Assert.isNil(actor:currentAction(), "a completed walk-in-place yields before its repetition")
   Assert.equal(actor.pose, "idle", "a completed walk-in-place returns to visual idle")
-  Assert.equal(actor.presentationOffset.y, 0, "a committed walk-in-place clears its bob")
+  Assert.equal(actor:getPresentationOffset().y, 0, "a committed walk-in-place clears its bob")
   Assert.equal(
-    actor.poseTick,
+    actor:getPoseTick(),
     poseTickBeforeWalkInPlace + 10,
     "the first fast repetition advances exactly five ticks at 2x"
   )
-  Assert.equal(actor.worldX, worldX, "a completed walk-in-place keeps world X at its anchor")
-  Assert.equal(actor.worldY, worldY, "a completed walk-in-place keeps world Y at its anchor")
-  Assert.equal(actor.worldZ, worldZ, "a completed walk-in-place keeps world Z at its anchor")
+  Assert.equal(actor:getWorldPosition().x, worldX, "a completed walk-in-place keeps world X at its anchor")
+  Assert.equal(actor:getWorldPosition().y, worldY, "a completed walk-in-place keeps world Y at its anchor")
+  Assert.equal(actor:getWorldPosition().z, worldZ, "a completed walk-in-place keeps world Z at its anchor")
   h.scheduler:step(114, nil)
   Assert.equal(actor:currentAction(), "walk_in_place", "the second walk-in-place instance starts next poll")
-  Assert.isTrue(actor.presentationOffset.y ~= 0, "the second instance gets a fresh bob")
+  Assert.isTrue(actor:getPresentationOffset().y ~= 0, "the second instance gets a fresh bob")
   Assert.equal(
-    actor.poseTick,
+    actor:getPoseTick(),
     poseTickBeforeWalkInPlace + 12,
     "the second fast repetition continues without a phase reset"
   )
-  Assert.equal(actor.fieldX, fieldX, "the second walk-in-place keeps logical X fixed")
-  Assert.equal(actor.fieldZ, fieldZ, "the second walk-in-place keeps logical Z fixed")
-  Assert.equal(actor.worldX, worldX, "the second walk-in-place keeps world X at its anchor")
-  Assert.equal(actor.worldY, worldY, "the second walk-in-place keeps world Y at its anchor")
-  Assert.equal(actor.worldZ, worldZ, "the second walk-in-place keeps world Z at its anchor")
+  Assert.equal(actor:getFieldPosition().fieldX, fieldX, "the second walk-in-place keeps logical X fixed")
+  Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "the second walk-in-place keeps logical Z fixed")
+  Assert.equal(actor:getWorldPosition().x, worldX, "the second walk-in-place keeps world X at its anchor")
+  Assert.equal(actor:getWorldPosition().y, worldY, "the second walk-in-place keeps world Y at its anchor")
+  Assert.equal(actor:getWorldPosition().z, worldZ, "the second walk-in-place keeps world Z at its anchor")
   for tick = 115, 117 do
     h.scheduler:step(tick, nil)
     Assert.equal(actor.pose, "walk", "the second walk-in-place remains walking")
     Assert.equal(
-      actor.poseTick,
+      actor:getPoseTick(),
       poseTickBeforeWalkInPlace + 2 * (tick - 108),
       "the second fast walk-in-place keeps the accumulated pose phase"
     )
-    Assert.equal(actor.fieldX, fieldX, "the second walk-in-place keeps logical X fixed")
-    Assert.equal(actor.fieldZ, fieldZ, "the second walk-in-place keeps logical Z fixed")
-    Assert.equal(actor.worldX, worldX, "the second walk-in-place keeps world X at its anchor")
-    Assert.equal(actor.worldY, worldY, "the second walk-in-place keeps world Y at its anchor")
-    Assert.equal(actor.worldZ, worldZ, "the second walk-in-place keeps world Z at its anchor")
+    Assert.equal(actor:getFieldPosition().fieldX, fieldX, "the second walk-in-place keeps logical X fixed")
+    Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "the second walk-in-place keeps logical Z fixed")
+    Assert.equal(actor:getWorldPosition().x, worldX, "the second walk-in-place keeps world X at its anchor")
+    Assert.equal(actor:getWorldPosition().y, worldY, "the second walk-in-place keeps world Y at its anchor")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "the second walk-in-place keeps world Z at its anchor")
   end
   h.scheduler:step(118, nil)
   Assert.isNil(actor:currentAction(), "the second walk-in-place commits independently")
   Assert.equal(actor.pose, "idle", "the second completed walk-in-place returns to visual idle")
-  Assert.equal(actor.presentationOffset.y, 0, "the second commit clears its bob")
-  Assert.equal(actor.poseTick, poseTickBeforeWalkInPlace + 20, "two fast repetitions retain their full source duration")
-  Assert.equal(actor.worldX, worldX, "the second completed walk-in-place keeps world X at its anchor")
-  Assert.equal(actor.worldY, worldY, "the second completed walk-in-place keeps world Y at its anchor")
-  Assert.equal(actor.worldZ, worldZ, "the second completed walk-in-place keeps world Z at its anchor")
+  Assert.equal(actor:getPresentationOffset().y, 0, "the second commit clears its bob")
+  Assert.equal(
+    actor:getPoseTick(),
+    poseTickBeforeWalkInPlace + 20,
+    "two fast repetitions retain their full source duration"
+  )
+  Assert.equal(actor:getWorldPosition().x, worldX, "the second completed walk-in-place keeps world X at its anchor")
+  Assert.equal(actor:getWorldPosition().y, worldY, "the second completed walk-in-place keeps world Y at its anchor")
+  Assert.equal(actor:getWorldPosition().z, worldZ, "the second completed walk-in-place keeps world Z at its anchor")
   -- The trailing delay begins on the following poll without inheriting the
   -- final locomotion cadence while its actor remains at the anchor.
   h.scheduler:step(119, nil)
   Assert.equal(actor.pose, "idle", "the trailing delay uses visual idle presentation")
-  Assert.equal(actor.poseTick, poseTickBeforeWalkInPlace + 20, "the trailing delay does not advance static idle")
+  Assert.equal(actor:getPoseTick(), poseTickBeforeWalkInPlace + 20, "the trailing delay does not advance static idle")
   h.scheduler:step(120, nil)
   Assert.equal(actor.pose, "idle", "task completion keeps visual idle presentation")
-  Assert.equal(actor.poseTick, poseTickBeforeWalkInPlace + 20, "task completion keeps static idle phase")
+  Assert.equal(actor:getPoseTick(), poseTickBeforeWalkInPlace + 20, "task completion keeps static idle phase")
 end
 
 -- `face east, count=5` followed by a trailing delay (so the fifth
@@ -768,19 +780,27 @@ function T.repeated_face_action_stays_static_at_fixed_coordinates()
   startForeground(h, resource, 100)
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
-  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
+  local fieldX, fieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local worldX, worldY, worldZ = actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
 
   for tick = 101, 105 do
     h.scheduler:step(tick, nil)
     Assert.equal(actor.pose, "idle", "a repeated face must remain idle on tick " .. tick)
-    Assert.equal(actor.poseTick, 0, "a repeated face must hold the idle pose phase on tick " .. tick)
-    Assert.equal(actor.fieldX, fieldX, "a repeated face must never move logical fieldX (tick " .. tick .. ")")
-    Assert.equal(actor.fieldZ, fieldZ, "a repeated face must never move logical fieldZ (tick " .. tick .. ")")
-    Assert.equal(actor.worldX, worldX, "a repeated face must never move worldX (tick " .. tick .. ")")
-    Assert.equal(actor.worldY, worldY, "a repeated face must never move worldY (tick " .. tick .. ")")
-    Assert.equal(actor.worldZ, worldZ, "a repeated face must never move worldZ (tick " .. tick .. ")")
-    Assert.equal(actor.presentationOffset.y, 0, "a repeated face gets no bob presentation offset")
+    Assert.equal(actor:getPoseTick(), 0, "a repeated face must hold the idle pose phase on tick " .. tick)
+    Assert.equal(
+      actor:getFieldPosition().fieldX,
+      fieldX,
+      "a repeated face must never move logical fieldX (tick " .. tick .. ")"
+    )
+    Assert.equal(
+      actor:getFieldPosition().fieldZ,
+      fieldZ,
+      "a repeated face must never move logical fieldZ (tick " .. tick .. ")"
+    )
+    Assert.equal(actor:getWorldPosition().x, worldX, "a repeated face must never move worldX (tick " .. tick .. ")")
+    Assert.equal(actor:getWorldPosition().y, worldY, "a repeated face must never move worldY (tick " .. tick .. ")")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "a repeated face must never move worldZ (tick " .. tick .. ")")
+    Assert.equal(actor:getPresentationOffset().y, 0, "a repeated face gets no bob presentation offset")
   end
   Assert.equal(actor.facing, "east", "the fifth repetition still applies the source final facing")
 
@@ -812,11 +832,11 @@ function T.single_face_action_stays_idle_and_does_not_advance_pose()
   startForeground(h, resource, 100)
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local startingPoseTick = actor.poseTick
+  local startingPoseTick = actor:getPoseTick()
 
   h.scheduler:step(101, nil)
   Assert.equal(actor.pose, "idle", "a single face must not enter walking presentation")
-  Assert.equal(actor.poseTick, startingPoseTick, "a single face must not advance the pose clock")
+  Assert.equal(actor:getPoseTick(), startingPoseTick, "a single face must not advance the pose clock")
   Assert.equal(actor.facing, "south", "a single face still applies its facing")
 
   h.scheduler:step(102, nil)
@@ -848,12 +868,12 @@ function T.face_repetitions_and_walk_in_place_preserve_action_boundaries()
   startForeground(h, resource, 100)
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
+  local fieldX, fieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
 
   -- Tick 101: the single face (count defaults to 1) completes in one poll.
   h.scheduler:step(101, nil)
   Assert.equal(actor.pose, "idle", "a single face never enters walking presentation")
-  Assert.equal(actor.presentationOffset.y, 0, "a single face has no bob")
+  Assert.equal(actor:getPresentationOffset().y, 0, "a single face has no bob")
   Assert.equal(actor.facing, "east", "the single face applies its own facing")
 
   -- Ticks 102-104: the repeated face (three one-tick repetitions) stays
@@ -861,10 +881,18 @@ function T.face_repetitions_and_walk_in_place_preserve_action_boundaries()
   for tick = 102, 104 do
     h.scheduler:step(tick, nil)
     Assert.equal(actor.pose, "idle", "a repeated face stays idle (tick " .. tick .. ")")
-    Assert.equal(actor.poseTick, 0, "a repeated face holds the idle pose phase (tick " .. tick .. ")")
-    Assert.equal(actor.presentationOffset.y, 0, "a repeated face never bobs (tick " .. tick .. ")")
-    Assert.equal(actor.fieldX, fieldX, "a repeated face keeps logical fieldX fixed (tick " .. tick .. ")")
-    Assert.equal(actor.fieldZ, fieldZ, "a repeated face keeps logical fieldZ fixed (tick " .. tick .. ")")
+    Assert.equal(actor:getPoseTick(), 0, "a repeated face holds the idle pose phase (tick " .. tick .. ")")
+    Assert.equal(actor:getPresentationOffset().y, 0, "a repeated face never bobs (tick " .. tick .. ")")
+    Assert.equal(
+      actor:getFieldPosition().fieldX,
+      fieldX,
+      "a repeated face keeps logical fieldX fixed (tick " .. tick .. ")"
+    )
+    Assert.equal(
+      actor:getFieldPosition().fieldZ,
+      fieldZ,
+      "a repeated face keeps logical fieldZ fixed (tick " .. tick .. ")"
+    )
   end
   Assert.equal(actor.facing, "south", "the repeated face's final repetition applies its facing")
 
@@ -875,9 +903,17 @@ function T.face_repetitions_and_walk_in_place_preserve_action_boundaries()
     h.scheduler:step(tick, nil)
     Assert.equal(actor:currentAction(), "walk_in_place", "walk_in_place is active (tick " .. tick .. ")")
     Assert.equal(actor.pose, "walk", "walk_in_place presents walking pose (tick " .. tick .. ")")
-    Assert.equal(actor.fieldX, fieldX, "walk_in_place keeps logical fieldX fixed (tick " .. tick .. ")")
-    Assert.equal(actor.fieldZ, fieldZ, "walk_in_place keeps logical fieldZ fixed (tick " .. tick .. ")")
-    sawBob = sawBob or actor.presentationOffset.y ~= 0
+    Assert.equal(
+      actor:getFieldPosition().fieldX,
+      fieldX,
+      "walk_in_place keeps logical fieldX fixed (tick " .. tick .. ")"
+    )
+    Assert.equal(
+      actor:getFieldPosition().fieldZ,
+      fieldZ,
+      "walk_in_place keeps logical fieldZ fixed (tick " .. tick .. ")"
+    )
+    sawBob = sawBob or actor:getPresentationOffset().y ~= 0
   end
   Assert.isTrue(sawBob, "explicit walk_in_place keeps its own deterministic bob")
 
@@ -888,15 +924,15 @@ function T.face_repetitions_and_walk_in_place_preserve_action_boundaries()
   h.scheduler:step(109, nil)
   Assert.isNil(actor:currentAction(), "walk_in_place has committed by its boundary tick")
   Assert.equal(actor.pose, "idle", "the completed walk_in_place settles on its boundary tick")
-  Assert.equal(actor.fieldX, fieldX, "walk_in_place's boundary tick keeps logical fieldX fixed")
-  Assert.equal(actor.fieldZ, fieldZ, "walk_in_place's boundary tick keeps logical fieldZ fixed")
+  Assert.equal(actor:getFieldPosition().fieldX, fieldX, "walk_in_place's boundary tick keeps logical fieldX fixed")
+  Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "walk_in_place's boundary tick keeps logical fieldZ fixed")
 
   -- Tick 109: the trailing delay does not inherit the completed walk-in-place's
   -- cadence while the actor stays at its anchor.
   h.scheduler:step(110, nil)
   Assert.equal(actor.pose, "idle", "the sequence uses visual idle once the delay begins")
-  Assert.equal(actor.poseTick, 10, "the trailing delay does not advance static idle")
-  Assert.equal(actor.presentationOffset.y, 0, "settling clears any residual bob")
+  Assert.equal(actor:getPoseTick(), 10, "the trailing delay does not advance static idle")
+  Assert.equal(actor:getPresentationOffset().y, 0, "settling clears any residual bob")
 end
 
 local function cadenceVisual()
@@ -947,8 +983,8 @@ local function runLocomotion(action, durationTicks)
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
   local visual = cadenceVisual()
-  local startFieldX, startFieldZ = actor.fieldX, actor.fieldZ
-  local startWorldY = actor.worldY
+  local startFieldX, startFieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local startWorldY = actor:getWorldPosition().y
   local poseTicks, frameIndexes = {}, {}
   ---@type number[]
   local worldYs = {}
@@ -961,10 +997,10 @@ local function runLocomotion(action, durationTicks)
     else
       Assert.isNil(actor:currentAction(), "the action commits on its existing final tick")
     end
-    poseTicks[#poseTicks + 1] = actor.poseTick
+    poseTicks[#poseTicks + 1] = actor:getPoseTick()
     frameIndexes[#frameIndexes + 1] =
-      assert(FieldActorPose.frameIndex(visual, actor.facing, actor.pose, actor.poseTick))
-    worldYs[#worldYs + 1] = assert(actor.worldY)
+      assert(FieldActorPose.frameIndex(visual, actor.facing, actor.pose, actor:getPoseTick()))
+    worldYs[#worldYs + 1] = assert(actor:getWorldPosition().y)
   end
   return {
     actor = actor,
@@ -1098,16 +1134,24 @@ function T.source_backed_locomotion_matrix_preserves_timing_and_visible_frames()
       expectedFrames[index] = assert(FieldActorPose.frameIndex(cadenceVisual(), "east", pose, poseTick))
     end
     Assert.deepEqual(observed.frameIndexes, expectedFrames, case.label .. " selects the source frame timeline")
-    Assert.equal(observed.actor.fieldX, case.endFieldX, case.label .. " retains its physical X result")
-    Assert.equal(observed.actor.fieldZ, case.endFieldZ, case.label .. " retains its physical Z result")
+    Assert.equal(
+      observed.actor:getFieldPosition().fieldX,
+      case.endFieldX,
+      case.label .. " retains its physical X result"
+    )
+    Assert.equal(
+      observed.actor:getFieldPosition().fieldZ,
+      case.endFieldZ,
+      case.label .. " retains its physical Z result"
+    )
     if case.action.action == "walk_in_place" then
-      Assert.equal(observed.actor.fieldX, observed.startFieldX, case.label .. " does not translate")
-      Assert.equal(observed.actor.fieldZ, observed.startFieldZ, case.label .. " does not translate")
-      Assert.equal(observed.actor.presentationOffset.y, 0, case.label .. " clears its bob at completion")
+      Assert.equal(observed.actor:getFieldPosition().fieldX, observed.startFieldX, case.label .. " does not translate")
+      Assert.equal(observed.actor:getFieldPosition().fieldZ, observed.startFieldZ, case.label .. " does not translate")
+      Assert.equal(observed.actor:getPresentationOffset().y, 0, case.label .. " clears its bob at completion")
     end
     if case.action.action == "jump" then
       local startWorldY = assert(observed.startWorldY)
-      Assert.equal(observed.actor.worldY, startWorldY, case.label .. " returns to its physical anchor")
+      Assert.equal(observed.actor:getWorldPosition().y, startWorldY, case.label .. " returns to its physical anchor")
       local peak = startWorldY
       for _, worldY in ipairs(observed.worldYs) do
         peak = math.max(peak, assert(worldY))
@@ -1141,7 +1185,7 @@ function T.half_rate_locomotion_keeps_integer_continuous_pose_phase()
   startForeground(h, resource, 100)
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local startingPoseTick = actor.poseTick
+  local startingPoseTick = actor:getPoseTick()
   local sawBob = false
   for progress = 1, 34 do
     h.scheduler:step(100 + progress, nil)
@@ -1151,21 +1195,25 @@ function T.half_rate_locomotion_keeps_integer_continuous_pose_phase()
     end
     Assert.equal(actor.pose, expectedPose, "half-rate actions settle at their completed boundaries")
     local expectedPoseProgress = progress <= 17 and math.floor(progress / 2) or 8 + math.floor((progress - 17) / 2)
-    Assert.equal(actor.poseTick, startingPoseTick + expectedPoseProgress, "half-rate pose phase stays contiguous")
-    Assert.equal(actor.poseTick, math.floor(actor.poseTick), "half-rate pose phase remains an integer")
-    Assert.isTrue(actor.poseTick >= 0, "half-rate pose phase remains non-negative")
-    sawBob = sawBob or actor.presentationOffset.y ~= 0
+    Assert.equal(actor:getPoseTick(), startingPoseTick + expectedPoseProgress, "half-rate pose phase stays contiguous")
+    Assert.equal(actor:getPoseTick(), math.floor(actor:getPoseTick()), "half-rate pose phase remains an integer")
+    Assert.isTrue(actor:getPoseTick() >= 0, "half-rate pose phase remains non-negative")
+    sawBob = sawBob or actor:getPresentationOffset().y ~= 0
     if progress == 17 then
       Assert.isNil(actor:currentAction(), "the first half-rate action keeps its existing duration")
-      Assert.equal(actor.poseTick, startingPoseTick + 8, "the first half-rate action ends at its exact rational delta")
+      Assert.equal(
+        actor:getPoseTick(),
+        startingPoseTick + 8,
+        "the first half-rate action ends at its exact rational delta"
+      )
     elseif progress < 34 then
       Assert.equal(actor:currentAction(), "walk_in_place", "the repeated half-rate action remains active")
     end
   end
   Assert.isNil(actor:currentAction(), "the second half-rate action keeps its existing duration")
-  Assert.equal(actor.poseTick, startingPoseTick + 16, "two half-rate actions have no fractional drift")
+  Assert.equal(actor:getPoseTick(), startingPoseTick + 16, "two half-rate actions have no fractional drift")
   Assert.isTrue(sawBob, "raw action progress still drives walk-in-place bob")
-  Assert.equal(actor.presentationOffset.y, 0, "the second half-rate action clears its bob")
+  Assert.equal(actor:getPresentationOffset().y, 0, "the second half-rate action clears its bob")
 end
 
 function T.supported_locomotion_profiles_have_explicit_pose_cadence()
@@ -1253,8 +1301,8 @@ function T.normal_and_fast_locomotion_keep_independent_pose_cadence()
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
   local visual = cadenceVisual()
-  local fieldX, fieldZ = actor.fieldX, actor.fieldZ
-  local worldX, worldY, worldZ = actor.worldX, actor.worldY, actor.worldZ
+  local fieldX, fieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local worldX, worldY, worldZ = actor:getWorldPosition().x, actor:getWorldPosition().y, actor:getWorldPosition().z
   local normalFrames, fastFrames = {}, {}
   local normalSawBob = false
 
@@ -1265,23 +1313,23 @@ function T.normal_and_fast_locomotion_keep_independent_pose_cadence()
     else
       Assert.isNil(actor:currentAction(), "the normal action commits on its final fixed tick")
     end
-    Assert.equal(actor.poseTick, tick - 100, "normal locomotion advances the pose clock at 1x")
+    Assert.equal(actor:getPoseTick(), tick - 100, "normal locomotion advances the pose clock at 1x")
     normalFrames[#normalFrames + 1] =
-      assert(FieldActorPose.frameIndex(visual, actor.facing, actor.pose, actor.poseTick))
-    Assert.equal(actor.fieldX, fieldX, "normal walk-in-place keeps logical X fixed")
-    Assert.equal(actor.fieldZ, fieldZ, "normal walk-in-place keeps logical Z fixed")
-    Assert.equal(actor.worldX, worldX, "normal walk-in-place keeps world X at its anchor")
-    Assert.equal(actor.worldY, worldY, "normal walk-in-place keeps world Y at its anchor")
-    Assert.equal(actor.worldZ, worldZ, "normal walk-in-place keeps world Z at its anchor")
-    normalSawBob = normalSawBob or actor.presentationOffset.y ~= 0
+      assert(FieldActorPose.frameIndex(visual, actor.facing, actor.pose, actor:getPoseTick()))
+    Assert.equal(actor:getFieldPosition().fieldX, fieldX, "normal walk-in-place keeps logical X fixed")
+    Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "normal walk-in-place keeps logical Z fixed")
+    Assert.equal(actor:getWorldPosition().x, worldX, "normal walk-in-place keeps world X at its anchor")
+    Assert.equal(actor:getWorldPosition().y, worldY, "normal walk-in-place keeps world Y at its anchor")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "normal walk-in-place keeps world Z at its anchor")
+    normalSawBob = normalSawBob or actor:getPresentationOffset().y ~= 0
   end
   Assert.deepEqual(normalFrames, { 4, 4, 4, 4, 5, 5, 5, 5, 4 }, "normal cadence selects the source timeline at 1x")
   Assert.isTrue(normalSawBob, "normal walk-in-place retains its bob during the calibrated action")
-  Assert.equal(actor.presentationOffset.y, 0, "normal walk-in-place bob ends at its calibrated duration")
+  Assert.equal(actor:getPresentationOffset().y, 0, "normal walk-in-place bob ends at its calibrated duration")
 
   h.scheduler:step(110, nil)
   Assert.equal(actor.pose, "idle", "the delay uses the visual idle presentation")
-  Assert.equal(actor.poseTick, 9, "the delay does not advance static idle")
+  Assert.equal(actor:getPoseTick(), 9, "the delay does not advance static idle")
 
   local fastSawBob = false
   for tick = 111, 115 do
@@ -1292,17 +1340,18 @@ function T.normal_and_fast_locomotion_keep_independent_pose_cadence()
       Assert.isNil(actor:currentAction(), "the fast action commits on its final fixed tick")
     end
     Assert.equal(
-      actor.poseTick,
+      actor:getPoseTick(),
       9 + 2 * (tick - 110),
-      "fast locomotion advances the pose clock at 2x (got " .. actor.poseTick .. ")"
+      "fast locomotion advances the pose clock at 2x (got " .. actor:getPoseTick() .. ")"
     )
-    fastFrames[#fastFrames + 1] = assert(FieldActorPose.frameIndex(visual, actor.facing, actor.pose, actor.poseTick))
-    Assert.equal(actor.fieldX, fieldX, "fast walk-in-place keeps logical X fixed")
-    Assert.equal(actor.fieldZ, fieldZ, "fast walk-in-place keeps logical Z fixed")
-    Assert.equal(actor.worldX, worldX, "fast walk-in-place keeps world X at its anchor")
-    Assert.equal(actor.worldY, worldY, "fast walk-in-place keeps world Y at its anchor")
-    Assert.equal(actor.worldZ, worldZ, "fast walk-in-place keeps world Z at its anchor")
-    fastSawBob = fastSawBob or actor.presentationOffset.y ~= 0
+    fastFrames[#fastFrames + 1] =
+      assert(FieldActorPose.frameIndex(visual, actor.facing, actor.pose, actor:getPoseTick()))
+    Assert.equal(actor:getFieldPosition().fieldX, fieldX, "fast walk-in-place keeps logical X fixed")
+    Assert.equal(actor:getFieldPosition().fieldZ, fieldZ, "fast walk-in-place keeps logical Z fixed")
+    Assert.equal(actor:getWorldPosition().x, worldX, "fast walk-in-place keeps world X at its anchor")
+    Assert.equal(actor:getWorldPosition().y, worldY, "fast walk-in-place keeps world Y at its anchor")
+    Assert.equal(actor:getWorldPosition().z, worldZ, "fast walk-in-place keeps world Z at its anchor")
+    fastSawBob = fastSawBob or actor:getPresentationOffset().y ~= 0
   end
   for index, frameIndex in ipairs(fastFrames) do
     local poseTick = 9 + 2 * index
@@ -1314,7 +1363,7 @@ function T.normal_and_fast_locomotion_keep_independent_pose_cadence()
     )
   end
   Assert.isTrue(fastSawBob, "fast walk-in-place retains its bob during the calibrated action")
-  Assert.equal(actor.presentationOffset.y, 0, "fast walk-in-place bob ends at its calibrated duration")
+  Assert.equal(actor:getPresentationOffset().y, 0, "fast walk-in-place bob ends at its calibrated duration")
   h.scheduler:step(116, nil)
   Assert.isNil(actor:currentAction(), "the trailing delay completes at its calibrated boundary")
 end
@@ -1341,11 +1390,11 @@ function T.animation_pause_suppresses_normal_and_fast_pose_cadence()
     h.scheduler:step(100, nil)
     local actor = assert(h.mgr:getById(ACTOR_ID))
     local durationTicks = MovementCalibration.actionTicks({ action = "walk_in_place", speed = speed })
-    local initialPoseTick = actor.poseTick
+    local initialPoseTick = actor:getPoseTick()
     for progress = 1, durationTicks do
       h.scheduler:step(100 + progress, nil)
-      Assert.isTrue(actor.animationPaused, speed .. " walk-in-place remains paused")
-      Assert.equal(actor.poseTick, initialPoseTick, speed .. " paused walk-in-place does not advance pose phase")
+      Assert.isTrue(actor:isAnimationPaused(), speed .. " walk-in-place remains paused")
+      Assert.equal(actor:getPoseTick(), initialPoseTick, speed .. " paused walk-in-place does not advance pose phase")
     end
     Assert.isNil(actor:currentAction(), speed .. " paused walk-in-place still completes at its calibrated duration")
   end
@@ -1408,15 +1457,15 @@ function T.gesture_warp_preserves_logic_and_reproduces_source_render_vector()
   startForeground(h, resource, 100)
   h.scheduler:step(100, nil)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local startFieldX, startFieldZ = actor.fieldX, actor.fieldZ
-  local startWorldY = actor.worldY
+  local startFieldX, startFieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
+  local startWorldY = actor:getWorldPosition().y
   for progress = 1, 20 do
     h.scheduler:step(100 + progress, nil)
     local record = assert(h.mgr:drawRecords()[1])
     Assert.equal(record.world.y, startWorldY + progress, "warp_out update " .. progress .. " renders Y +" .. progress)
-    Assert.equal(actor.fieldX, startFieldX, "warp_out keeps logical fieldX")
-    Assert.equal(actor.fieldZ, startFieldZ, "warp_out keeps logical fieldZ")
-    Assert.equal(actor.worldY, startWorldY, "warp_out keeps logical worldY")
+    Assert.equal(actor:getFieldPosition().fieldX, startFieldX, "warp_out keeps logical fieldX")
+    Assert.equal(actor:getFieldPosition().fieldZ, startFieldZ, "warp_out keeps logical fieldZ")
+    Assert.equal(actor:getWorldPosition().y, startWorldY, "warp_out keeps logical worldY")
     Assert.isNil(record.gesturePose, "warp has no clip")
   end
   Assert.equal(actor:presentationState().gestureOffsetY, 20, "warp_out commit retains +20")
@@ -1432,8 +1481,8 @@ function T.gesture_warp_preserves_logic_and_reproduces_source_render_vector()
     )
   end
   Assert.equal(actor:presentationState().gestureOffsetY, 0, "warp_in ends neutral")
-  Assert.equal(actor.fieldX, startFieldX, "warp sequence keeps logical fieldX")
-  Assert.equal(actor.worldY, startWorldY, "warp sequence keeps logical worldY")
+  Assert.equal(actor:getFieldPosition().fieldX, startFieldX, "warp sequence keeps logical fieldX")
+  Assert.equal(actor:getWorldPosition().y, startWorldY, "warp sequence keeps logical worldY")
 end
 
 function T.gesture_nurse_bow_uses_clip_then_faces_south()
@@ -1535,7 +1584,7 @@ function T.gesture_cancellation_restores_prior_held_state_and_logical_anchor()
   local held = actor:presentationState()
   Assert.equal(held.gesturePose, "give", "give held")
   local heldPose, heldTick, heldOffset = held.gesturePose, held.gestureTick, held.gestureOffsetY
-  local logicalWorldY = actor.worldY
+  local logicalWorldY = actor:getWorldPosition().y
   -- start new gesture and advance once, then cancel
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "gesture", name = "warp_out", durationTicks = 20 })
   h.mgr:advanceScriptedAction(ACTOR_ID, 5, 20)
@@ -1545,7 +1594,7 @@ function T.gesture_cancellation_restores_prior_held_state_and_logical_anchor()
   Assert.equal(restored.gesturePose, heldPose, "cancel restores prior held pose")
   Assert.equal(restored.gestureTick, heldTick, "cancel restores prior held tick")
   Assert.equal(restored.gestureOffsetY, heldOffset, "cancel restores prior held offset")
-  Assert.equal(actor.worldY, logicalWorldY, "cancel restores logical anchor")
+  Assert.equal(actor:getWorldPosition().y, logicalWorldY, "cancel restores logical anchor")
 end
 
 function T.gesture_draw_records_clear_stale_state_after_neutral_commit()
@@ -1618,15 +1667,23 @@ function T.semantic_farther_jump_commits_three_cells_east()
   startForeground(h, resource, 100)
   stepWorld(h, 100)
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  local startFieldX, startFieldZ = actor.fieldX, actor.fieldZ
+  local startFieldX, startFieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
   for tick = 101, 111 do
     stepWorld(h, tick)
-    Assert.equal(actor.fieldX, startFieldX, "the farther jump holds its anchor before the final tick " .. tick)
-    Assert.equal(actor.fieldZ, startFieldZ, "the farther jump holds its lane before the final tick " .. tick)
+    Assert.equal(
+      actor:getFieldPosition().fieldX,
+      startFieldX,
+      "the farther jump holds its anchor before the final tick " .. tick
+    )
+    Assert.equal(
+      actor:getFieldPosition().fieldZ,
+      startFieldZ,
+      "the farther jump holds its lane before the final tick " .. tick
+    )
   end
   stepWorld(h, 112)
-  Assert.equal(actor.fieldX, startFieldX + 3, "the farther jump commits exactly three cells east")
-  Assert.equal(actor.fieldZ, startFieldZ, "the farther jump keeps its lane at commit")
+  Assert.equal(actor:getFieldPosition().fieldX, startFieldX + 3, "the farther jump commits exactly three cells east")
+  Assert.equal(actor:getFieldPosition().fieldZ, startFieldZ, "the farther jump keeps its lane at commit")
 end
 
 -- Draw records sample the fixed-tick endpoints through the frame alpha: alpha
@@ -1639,11 +1696,13 @@ function T.object_actor_draw_records_follow_render_alpha_between_fixed_positions
   local h = harness()
   local actor = assert(h.mgr:getById(ACTOR_ID))
   h.mgr:step(100, { autonomousLocked = true })
-  local previousX, previousY, previousZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
-  local previousFieldX, previousFieldZ = actor.fieldX, actor.fieldZ
+  local previousX, previousY, previousZ =
+    assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().y), assert(actor:getWorldPosition().z)
+  local previousFieldX, previousFieldZ = actor:getFieldPosition().fieldX, actor:getFieldPosition().fieldZ
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
   h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)
-  local currentX, currentY, currentZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  local currentX, currentY, currentZ =
+    assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().y), assert(actor:getWorldPosition().z)
   Assert.isTrue(currentX ~= previousX, "the test must observe movement between fixed positions")
 
   local atZero = assert(h.mgr:drawRecords(0)[1])
@@ -1661,8 +1720,8 @@ function T.object_actor_draw_records_follow_render_alpha_between_fixed_positions
   Assert.near(halfX, (previousX + currentX) / 2, 1e-9, "draw at alpha 0.5 reads the linear midpoint")
   Assert.near(halfY, (previousY + currentY) / 2, 1e-9, "draw at alpha 0.5 reads the linear midpoint")
   Assert.near(halfZ, (previousZ + currentZ) / 2, 1e-9, "draw at alpha 0.5 reads the linear midpoint")
-  Assert.equal(actor.fieldX, previousFieldX, "render alpha leaves logical fieldX fixed until commit")
-  Assert.equal(actor.fieldZ, previousFieldZ, "render alpha leaves logical fieldZ fixed until commit")
+  Assert.equal(actor:getFieldPosition().fieldX, previousFieldX, "render alpha leaves logical fieldX fixed until commit")
+  Assert.equal(actor:getFieldPosition().fieldZ, previousFieldZ, "render alpha leaves logical fieldZ fixed until commit")
 
   local defaulted = assert(h.mgr:drawRecords()[1])
   Assert.near(defaulted.world.x, currentX, 1e-9, "omitted alpha keeps current-position behavior")
@@ -1717,18 +1776,20 @@ function T.draw_offsets_apply_once_after_interpolation()
   local h = harness()
   local actor = assert(h.mgr:getById(ACTOR_ID))
   h.mgr:step(100, { autonomousLocked = true })
-  local previousX, previousY, previousZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  local previousX, previousY, previousZ =
+    assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().y), assert(actor:getWorldPosition().z)
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
   h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)
-  local currentX, currentY, currentZ = assert(actor.worldX), assert(actor.worldY), assert(actor.worldZ)
+  local currentX, currentY, currentZ =
+    assert(actor:getWorldPosition().x), assert(actor:getWorldPosition().y), assert(actor:getWorldPosition().z)
   h.mgr:setPresentationOffset(ACTOR_ID, { x = 0.25, y = 0.5, z = 0 })
   local record = assert(h.mgr:drawRecords(0.5)[1])
   Assert.near(record.world.x, (previousX + currentX) / 2 + 0.25, 1e-9, "render offsets add once after interpolation")
   Assert.near(record.world.y, (previousY + currentY) / 2 + 0.5, 1e-9, "render offsets add once after interpolation")
   Assert.near(record.world.z, (previousZ + currentZ) / 2, 1e-9, "render offsets add once after interpolation")
-  Assert.equal(actor.worldX, currentX, "render offsets never mutate the logical anchor")
-  Assert.equal(actor.worldY, currentY, "render offsets never mutate the logical anchor")
-  Assert.equal(actor.worldZ, currentZ, "render offsets never mutate the logical anchor")
+  Assert.equal(actor:getWorldPosition().x, currentX, "render offsets never mutate the logical anchor")
+  Assert.equal(actor:getWorldPosition().y, currentY, "render offsets never mutate the logical anchor")
+  Assert.equal(actor:getWorldPosition().z, currentZ, "render offsets never mutate the logical anchor")
 end
 
 function T.draw_alpha_leaves_occupancy_unchanged()
@@ -1738,7 +1799,7 @@ function T.draw_alpha_leaves_occupancy_unchanged()
   h.mgr:beginScriptedAction(ACTOR_ID, { action = "walk", direction = "east", speed = "normal" })
   h.mgr:advanceScriptedAction(ACTOR_ID, 4, 8)
   local function occupantAt(fieldX)
-    return h.mgr:getAt(61, { fieldX = fieldX, fieldZ = 3, surfaceId = actor.surfaceId })
+    return h.mgr:getAt(61, { fieldX = fieldX, fieldZ = 3, surfaceId = actor:getSurfaceId() })
   end
   local before = occupantAt(2)
   Assert.notNil(before, "the walking actor still occupies its committed tile")
@@ -1747,7 +1808,7 @@ function T.draw_alpha_leaves_occupancy_unchanged()
   end
   Assert.isTrue(occupantAt(2) == before, "draw alpha keeps the committed occupancy")
   Assert.isNil(occupantAt(3), "draw alpha does not publish the uncommitted destination")
-  Assert.equal(actor.fieldX, 2, "draw alpha leaves logical fieldX fixed until commit")
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "draw alpha leaves logical fieldX fixed until commit")
 end
 
 return { tests = T }

@@ -76,9 +76,9 @@ function T.a_fresh_clear_hide_flag_materializes_and_draws_the_real_elm_actor(rom
   manager:enterMap(runtimeMap, eventState)
 
   local elm = assert(manager:getById(ELM_ACTOR_ID), "Elm must materialize as a live actor from real generated data")
-  Assert.equal(elm.fieldX, 6)
-  Assert.equal(elm.fieldZ, 5)
-  Assert.isTrue(elm.visible)
+  Assert.equal(elm:getFieldPosition().fieldX, 6)
+  Assert.equal(elm:getFieldPosition().fieldZ, 5)
+  Assert.isTrue(elm:isVisible())
 
   local drawn = false
   for _, record in ipairs(manager:drawRecords()) do

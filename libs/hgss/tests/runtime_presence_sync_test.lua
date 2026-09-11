@@ -157,12 +157,12 @@ function T.clearFlag_then_showObject_materializes_in_same_tick_without_advancing
   Assert.isNil(fault, "clearFlag -> showObject must not fault when presence is synchronized")
 
   local actor = assert(mgr:getById("map:61:object:0"), "actor must be live after clearFlag + sync")
-  Assert.equal(actor.poseTick, 0, "zero-time presence sync must not increment poseTick")
+  Assert.equal(actor:getPoseTick(), 0, "zero-time presence sync must not increment poseTick")
 
   -- Taskless actors retain their stable idle presentation; only a retained
   -- cadence advances during the manager's presentation tick.
   mgr:step(101)
-  Assert.equal(actor.poseTick, 0, "normal step must not advance an idle pose clock")
+  Assert.equal(actor:getPoseTick(), 0, "normal step must not advance an idle pose clock")
 end
 
 function T.genuinely_missing_actor_still_faults()
@@ -258,7 +258,7 @@ function T.repeated_sync_with_unchanged_presence_is_idempotent()
   mgr:enterMap(map, state)
   local actor = assert(mgr:getById("map:61:object:0"), "flag clear at map entry must materialize the actor")
   local acquiredAfterEnter = assets.references[99]
-  actor.poseTick = 3
+  actor:numericState().poseTick = 3
 
   -- No flag mutation queued anything: calling the zero-time reconciler
   -- again -- as a script that touches multiple flags in one tick would --
@@ -267,7 +267,7 @@ function T.repeated_sync_with_unchanged_presence_is_idempotent()
   mgr:syncEventStateChanges()
 
   Assert.equal(mgr:getById("map:61:object:0"), actor, "the same actor instance must remain live")
-  Assert.equal(actor.poseTick, 3, "an idempotent reconcile must not advance poseTick")
+  Assert.equal(actor:getPoseTick(), 3, "an idempotent reconcile must not advance poseTick")
   Assert.equal(assets.references[99], acquiredAfterEnter, "an idempotent reconcile must not re-acquire the visual")
 end
 

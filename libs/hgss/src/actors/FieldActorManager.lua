@@ -116,6 +116,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _visualRevision integer
 ---@field _drawRecords FieldActorManager.DrawRecord[]
 ---@field _drawRecordByActorId table<string, FieldActorManager.DrawRecord>
+---@field _renderSample { x: number?, y: number?, z: number? }
 ---@field autonomy FieldActorAutonomy
 ---@field step fun(self: FieldActorManager, tick: integer, context: FieldActorStepContext?)
 ---@field _resolveSpriteId fun(self: FieldActorManager, event: FieldActorEvent, eventState: FieldEventState?): integer
@@ -173,7 +174,6 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field isPlacementRejection fun(err: unknown): boolean
 ---@class FieldActorManager.Actor: FieldObjectActor
 ---@field movementType string
----@field animationPaused boolean?
 
 ---@class FieldActorManager.Entry
 ---@field runtimeMap RuntimeFieldMap
@@ -286,6 +286,7 @@ function FieldActorManager.new(opts)
     _visualRevision = 0,
     _drawRecords = {},
     _drawRecordByActorId = {},
+    _renderSample = { x = 0, y = 0, z = 0 },
     autonomy = FieldActorAutonomy.new({
       rng = opts.autonomyRng or ScriptRng.new(opts.autonomySeed or "field:autonomy"),
       profiles = FieldObjectMovement,
@@ -327,12 +328,13 @@ end
 ---@param actor FieldActorManager.Actor
 ---@return FieldOccupancyCandidate
 local function candidateForActor(actor)
+  local state = actor:numericState()
   local cellKey = actor.cellKey
-  local sourceSurfaceId = actor.sourceSurfaceId
+  local sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil
   return {
-    fieldX = actor.fieldX,
-    fieldZ = actor.fieldZ,
-    surfaceId = actor.surfaceId,
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
     cellKey = cellKey and sourceSurfaceId and cellKey or nil,
     sourceSurfaceId = cellKey and sourceSurfaceId or nil,
   }
@@ -350,12 +352,17 @@ local function releaseManagerSlot(entry, actor)
 end
 
 local function occupancyAdd(entry, actor, candidate)
-  entry.occupancy:claim(actor, candidate or {
-    fieldX = actor.fieldX,
-    fieldZ = actor.fieldZ,
-    surfaceId = actor.surfaceId,
+  if candidate then
+    entry.occupancy:claim(actor, candidate)
+    return
+  end
+  local state = actor:numericState()
+  entry.occupancy:claim(actor, {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
     cellKey = actor.cellKey,
-    sourceSurfaceId = actor.sourceSurfaceId,
+    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
   })
 end
 
@@ -371,12 +378,13 @@ end
 ---@param actor FieldActorManager.Actor
 ---@param position FieldActorResolvedPosition
 local function publishResolvedPosition(entry, actor, position)
+  local state = actor:numericState()
   local oldKey
-  if actor.resident and actor.solid then
+  if state.resident == 1 and state.solid == 1 then
     oldKey = entry.occupancy:key(candidateForActor(actor))
   end
   local newKey
-  if position.resident and actor.solid then
+  if position.resident and state.solid == 1 then
     newKey = entry.occupancy:key(position --[[@as FieldOccupancyCandidate]])
   end
   if oldKey and newKey and oldKey == newKey then
@@ -517,7 +525,17 @@ local function projectEndpoint(runtimeMap, point)
 end
 
 local function projectionFor(runtimeMap, actor)
-  return projectEndpoint(runtimeMap, actor)
+  local state = actor:numericState()
+  return projectEndpoint(runtimeMap, {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
+    cellKey = actor.cellKey,
+    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
+    worldY = state.hasWorldPosition == 1 and state.worldY or nil,
+    sourceEvent = actor.sourceEvent,
+    actorId = actor.actorId,
+  })
 end
 
 -- The runtime sprite of an object event. FieldSystem_ResolveObjectSpriteID
@@ -583,14 +601,18 @@ function FieldActorManager:_instantiate(entry, event, eventState)
   -- Local ownership: the visual is acquired for this construction only, so any
   -- failure between acquisition and completed insertion releases it before the
   -- error propagates. Solid actors (the default; an event may opt out) take the
-  -- occupancy cell, and two solid actors on one cell are a conflict.
+  -- occupancy cell, and two solid actors on one cell are a conflict. The
+  -- numeric storage slot is acquired at the same transaction point and
+  -- released on every failure path.
   local actor ---@type FieldActorManager.Actor
   local visual
   local idlePresentation
   local autonomyAttached = false
+  local numericSlot ---@type integer?
   local ok, err = pcall(function()
     visual = assert(asset.visual, "field actor visual is required")
     idlePresentation = assert(visual.idlePresentation, "field actor idle presentation is required")
+    numericSlot = entry.store:allocateNumericState()
     actor = FieldObjectActor.new({
       mapId = runtimeMap.mapId,
       sourceEvent = event,
@@ -607,13 +629,16 @@ function FieldActorManager:_instantiate(entry, event, eventState)
       resident = resident,
       visual = visual,
       idlePresentation = idlePresentation,
+      numericStore = entry.store,
+      numericSlot = numericSlot,
     }) --[[@as FieldActorManager.Actor]]
 
     assignManagerSlot(entry, actor)
-    if actor.resident then
+    if actor:isResident() then
       local key = entry.occupancy:key(candidateForActor(actor))
       local occupant = entry.occupancy:winnerByKey(key)
-      if actor.solid and occupant then
+      local state = actor:numericState()
+      if state.solid == 1 and occupant then
         Errors.raise(
           FieldErrors.ACTOR_OCCUPANCY_CONFLICT,
           actorId .. " and " .. occupant.actorId .. " occupy the same field cell and surface",
@@ -621,13 +646,13 @@ function FieldActorManager:_instantiate(entry, event, eventState)
             actorId = actorId,
             otherActorId = occupant.actorId,
             mapId = runtimeMap.mapId,
-            fieldX = actor.fieldX,
-            fieldZ = actor.fieldZ,
-            surfaceId = actor.surfaceId,
+            fieldX = state.fieldX,
+            fieldZ = state.fieldZ,
+            surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
           }
         )
       end
-      if actor.solid then
+      if state.solid == 1 then
         occupancyAdd(entry, actor)
       end
     end
@@ -640,7 +665,8 @@ function FieldActorManager:_instantiate(entry, event, eventState)
   end)
   if not ok then
     if actor then
-      if actor.resident and actor.solid then
+      local state = actor:numericState()
+      if state.resident == 1 and state.solid == 1 then
         local key = entry.occupancy:key(candidateForActor(actor))
         occupancyRemove(entry, key, actor)
       end
@@ -650,6 +676,9 @@ function FieldActorManager:_instantiate(entry, event, eventState)
       if entry.store:getActor(actorId) then
         entry.store:removeActor(actor)
       end
+    end
+    if numericSlot ~= nil then
+      entry.store:releaseNumericState(numericSlot)
     end
     if autonomyAttached then
       self.autonomy:detach(actorId)
@@ -678,7 +707,8 @@ function FieldActorManager:_destroy(entry, actor)
   -- Only solid actors ever occupy a cell, and only the exact occupant may
   -- vacate it: a non-solid or stale actor must never erase another actor's
   -- occupancy entry by coordinate.
-  if actor.resident and actor.solid then
+  local state = actor:numericState()
+  if state.resident == 1 and state.solid == 1 then
     local key = entry.occupancy:key(candidateForActor(actor))
     occupancyRemove(entry, key, actor)
   end
@@ -686,6 +716,7 @@ function FieldActorManager:_destroy(entry, actor)
     releaseManagerSlot(entry, actor)
   end
   entry.store:removeActor(actor)
+  entry.store:releaseNumericState(actor:numericSlot())
   self.assets:release(actor.spriteId)
   self._drawRecordByActorId[actor.actorId] = nil
   if self.maps[entry.runtimeMap.mapId] == entry then
@@ -893,23 +924,24 @@ function FieldActorManager:_restoreEntry(entry, snapshot)
   })
   for _, actor in ipairs(entry.store:orderedActors()) do
     local plan = plans[actor.actorId]
+    local state = actor:numericState()
     local projection = plan and plan.projection
       or (
-        isResident(entry.runtimeMap, actor.fieldX, actor.fieldZ) and projectionFor(entry.runtimeMap, actor)
+        isResident(entry.runtimeMap, state.fieldX, state.fieldZ) and projectionFor(entry.runtimeMap, actor)
         or {
-          fieldX = actor.fieldX,
-          fieldZ = actor.fieldZ,
+          fieldX = state.fieldX,
+          fieldZ = state.fieldZ,
           resident = false,
         }
       )
     local candidate = {
-      fieldX = projection.fieldX or actor.fieldX,
-      fieldZ = projection.fieldZ or actor.fieldZ,
+      fieldX = projection.fieldX or state.fieldX,
+      fieldZ = projection.fieldZ or state.fieldZ,
       surfaceId = projection.surfaceId,
       cellKey = projection.cellKey,
       sourceSurfaceId = projection.sourceSurfaceId,
     }
-    if actor.solid and projection.resident ~= false then
+    if state.solid == 1 and projection.resident ~= false then
       occupancy:claim(actor, candidate)
     end
   end
@@ -1079,9 +1111,10 @@ local function captureAutonomousAction(entry, actor)
   if action == nil then
     return nil
   end
-  assert(actor.resident, "active autonomous action actor must be resident")
+  local state = actor:numericState()
+  assert(state.resident == 1, "active autonomous action actor must be resident")
   assert(
-    actor.cellKey ~= nil and actor.sourceSurfaceId ~= nil,
+    actor.cellKey ~= nil and state.hasSourceSurfaceId == 1,
     "active autonomous action actor needs a physical identity"
   )
   local motion = assert(actor:scriptedMotionState())
@@ -1093,7 +1126,7 @@ local function captureAutonomousAction(entry, actor)
       fieldX = motion.startFieldX,
       fieldZ = motion.startFieldZ,
       cellKey = assert(actor.cellKey),
-      sourceSurfaceId = assert(actor.sourceSurfaceId),
+      sourceSurfaceId = assert(state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil),
     },
     destination = {
       fieldX = action.destination.fieldX,
@@ -1242,7 +1275,12 @@ end
 ---@return table<string, unknown>|nil
 local function resolveAutonomousDestination(self, entry, actor, direction, context)
   local delta = assert(AUTONOMOUS_DELTAS[direction], "unknown autonomous direction " .. tostring(direction))
-  local fieldX, fieldZ = actor.fieldX + delta.x, actor.fieldZ + delta.z
+  local state = actor:numericState()
+  local actorFieldX, actorFieldZ = state.fieldX, state.fieldZ
+  local actorWorldY = state.hasWorldPosition == 1 and state.worldY or nil
+  local actorSurfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil
+  local actorSourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil
+  local fieldX, fieldZ = actorFieldX + delta.x, actorFieldZ + delta.z
   local event = actor.sourceEvent
   local xRange = assert(event.xRange, "actor source X range is required")
   local zRange = assert(event.yRange, "actor source Z range is required")
@@ -1260,10 +1298,10 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
     if runtimeMap.probePhysicalCell then
       local probe = runtimeMap:probePhysicalCell(fieldX, fieldZ, {
         currentCellKey = actor.cellKey,
-        currentSourceSurfaceId = actor.sourceSurfaceId,
-        currentY = actor.worldY,
-        fromFieldX = actor.fieldX,
-        fromFieldZ = actor.fieldZ,
+        currentSourceSurfaceId = actorSourceSurfaceId --[[@as integer]],
+        currentY = actorWorldY --[[@as number]],
+        fromFieldX = actorFieldX,
+        fromFieldZ = actorFieldZ,
       })
       if not probe or probe.collision.blocked then
         return nil
@@ -1281,11 +1319,11 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
       sample = SurfaceResolver.new(runtimeMap.terrain):resolve({
         localX = centerX,
         localZ = centerZ,
-        currentY = actor.worldY,
-        currentSurfaceId = actor.surfaceId,
+        currentY = actorWorldY,
+        currentSurfaceId = actorSurfaceId,
         crossing = {
-          fromX = (actor.fieldX - runtimeMap.coordinateOrigin.x) + FieldCoordinates.TILE_CENTER_OFFSET,
-          fromZ = (actor.fieldZ - runtimeMap.coordinateOrigin.z) + FieldCoordinates.TILE_CENTER_OFFSET,
+          fromX = (actorFieldX - runtimeMap.coordinateOrigin.x) + FieldCoordinates.TILE_CENTER_OFFSET,
+          fromZ = (actorFieldZ - runtimeMap.coordinateOrigin.z) + FieldCoordinates.TILE_CENTER_OFFSET,
           toX = centerX,
           toZ = centerZ,
         },
@@ -1349,21 +1387,22 @@ function FieldActorManager:_beginAutonomousAction(entry, actor, direction, conte
   entry.autonomousActions[actor.actorId] =
     { reservationKey = reservationKey, progressTicks = 0, destination = destination }
   local ok, err = pcall(function()
+    local state = actor:numericState()
     actor:beginAction({
       action = "walk",
       direction = direction,
       distance = "near",
       speed = "normal",
       start = {
-        fieldX = actor.fieldX,
-        fieldZ = actor.fieldZ,
-        worldX = actor.worldX,
-        worldY = actor.worldY,
-        worldZ = actor.worldZ,
-        surfaceId = actor.surfaceId,
+        fieldX = state.fieldX,
+        fieldZ = state.fieldZ,
+        worldX = state.hasWorldPosition == 1 and state.worldX or nil,
+        worldY = state.hasWorldPosition == 1 and state.worldY or nil,
+        worldZ = state.hasWorldPosition == 1 and state.worldZ or nil,
+        surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
         cellKey = actor.cellKey,
-        sourceSurfaceId = actor.sourceSurfaceId,
-        resident = actor.resident,
+        sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
+        resident = state.resident == 1,
       },
       dest = destination,
       durationTicks = AUTONOMOUS_STEP_TICKS,
@@ -1389,9 +1428,10 @@ function FieldActorManager:_advanceAutonomousAction(entry, actor, action)
   assert(reservation and reservation.actorId == actor.actorId, "autonomous reservation is missing at commit")
   local oldKey = entry.occupancy:key(candidateForActor(actor))
   local newKey = entry.occupancy:key(reservation.candidate)
-  if actor.solid then
+  local commitState = actor:numericState()
+  if commitState.solid == 1 then
     assert(entry.occupancy:winnerByKey(newKey) == nil, "autonomous destination became occupied")
-    if actor.resident then
+    if commitState.resident == 1 then
       assert(entry.occupancy:containsByKey(oldKey, actor), "autonomous departure occupancy is missing")
     end
   end
@@ -1459,8 +1499,10 @@ function FieldActorManager:step(tick, context)
         self:_advanceAutonomousAction(entry, actor, autonomousAction)
       else
         local hasAutonomousPresentationCarry = entry.autonomousPresentationCarry[actor.actorId] == true
+        local stepState = actor:numericState()
+        local stepWorldY = stepState.hasWorldPosition == 1 and stepState.worldY or nil
         if
-          actor.resident
+          stepState.resident == 1
           and not actor:isScriptedMoving()
           and actor.interactionFacingOverride == nil
           and not movementLocked
@@ -1477,11 +1519,11 @@ function FieldActorManager:step(tick, context)
             return self:_beginAutonomousAction(entry, target, direction, context)
           end
           local capability = {
-            fieldX = actor.fieldX,
-            fieldZ = actor.fieldZ,
-            surfaceId = actor.surfaceId,
-            worldY = actor.worldY,
-            positionYBand = actor.worldY ~= nil and sourcePositionYBand(actor.worldY) or nil,
+            fieldX = stepState.fieldX,
+            fieldZ = stepState.fieldZ,
+            surfaceId = stepState.hasSurfaceId == 1 and stepState.surfaceId or nil,
+            worldY = stepWorldY,
+            positionYBand = stepWorldY ~= nil and sourcePositionYBand(stepWorldY) or nil,
             facingOverride = actor.interactionFacingOverride ~= nil,
             player = playerFacts,
             setFacing = setFacing,
@@ -1515,7 +1557,7 @@ local function stageActionReprojection(entry, stagedOccupancy, plan)
     return
   end
   assert(
-    motion.startFieldX == actor.fieldX and motion.startFieldZ == actor.fieldZ,
+    motion.startFieldX == actor:numericState().fieldX and motion.startFieldZ == actor:numericState().fieldZ,
     "action start disagrees with committed position"
   )
   plan.start = plan.projection
@@ -1567,9 +1609,10 @@ local function applyReprojectionPlan(entry, plan)
   local actor = plan.actor
   local projection = plan.projection
   if projection then
+    local committed = actor:numericState()
     actor:setPosition({
-      fieldX = actor.fieldX,
-      fieldZ = actor.fieldZ,
+      fieldX = committed.fieldX,
+      fieldZ = committed.fieldZ,
       cellKey = projection.cellKey,
       sourceSurfaceId = projection.sourceSurfaceId,
       surfaceId = projection.surfaceId,
@@ -1579,7 +1622,7 @@ local function applyReprojectionPlan(entry, plan)
       resident = true,
     })
   else
-    actor.resident = false
+    actor:numericState().resident = 0
   end
   local start = plan.start
   if start == nil then
@@ -1620,12 +1663,13 @@ function FieldActorManager:reconcilePhysicalWorld()
     local plans = {}
     for _, actor in ipairs(entry.store:orderedActors()) do
       local plan = { actor = actor }
-      if isResident(runtimeMap, actor.fieldX, actor.fieldZ) then
+      local reconcileState = actor:numericState()
+      if isResident(runtimeMap, reconcileState.fieldX, reconcileState.fieldZ) then
         local projection = projectionFor(runtimeMap, actor)
-        if actor.solid then
+        if reconcileState.solid == 1 then
           stagedOccupancy:claim(actor, {
-            fieldX = actor.fieldX,
-            fieldZ = actor.fieldZ,
+            fieldX = reconcileState.fieldX,
+            fieldZ = reconcileState.fieldZ,
             surfaceId = projection.surfaceId,
             cellKey = projection.cellKey,
             sourceSurfaceId = projection.sourceSurfaceId,
@@ -1676,7 +1720,8 @@ function FieldActorManager:drawRecords(alpha)
   local count = 0
   for _, entry in pairs(self.maps) do
     for _, actor in ipairs(entry.store:orderedActors()) do
-      if not actor.resident then
+      local state = actor:numericState()
+      if state.resident == 0 then
         goto continue
       end
       count = count + 1
@@ -1685,11 +1730,11 @@ function FieldActorManager:drawRecords(alpha)
         record = {
           actorId = actor.actorId,
           spriteId = actor.spriteId,
-          world = { x = actor.worldX, y = actor.worldY, z = actor.worldZ },
+          world = { x = state.worldX, y = state.worldY, z = state.worldZ },
           facing = actor.facing,
           pose = actor.pose,
-          poseTick = actor.poseTick,
-          visible = actor.visible,
+          poseTick = state.poseTick,
+          visible = state.visible == 1,
         }
         self._drawRecordByActorId[actor.actorId] = record
       end
@@ -1698,22 +1743,21 @@ function FieldActorManager:drawRecords(alpha)
       -- previous/current base point; the actor's logical
       -- worldX/worldY/worldZ (read by terrain, collision, and save) never
       -- carry it.
-      local offset = actor.presentationOffset
       local presentation = actor:presentationState()
       local gestureOffsetY = presentation.gestureOffsetY
-      local base = actor:renderPosition(alpha)
+      local base = actor:renderPositionInto(self._renderSample, alpha)
       record.actorId = actor.actorId
       record.spriteId = actor.spriteId
-      record.world.x = base.x + (offset and offset.x or 0)
-      record.world.y = base.y + (offset and offset.y or 0) + gestureOffsetY
-      record.world.z = base.z + (offset and offset.z or 0)
+      record.world.x = base.x + state.presentationOffsetX
+      record.world.y = base.y + state.presentationOffsetY + gestureOffsetY
+      record.world.z = base.z + state.presentationOffsetZ
       record.facing = actor.facing
       record.pose = actor.pose
-      record.poseTick = actor.poseTick
+      record.poseTick = state.poseTick
       record.gesturePose = presentation.gesturePose
       record.gestureTick = presentation.gestureTick
       record.activeEmoteKind = actor.activeEmoteKind
-      record.visible = actor.visible
+      record.visible = state.visible == 1
       records[count] = record
       ::continue::
     end
@@ -1754,12 +1798,24 @@ function FieldActorManager:getAt(mapId, candidate)
   -- explicit coordinate match to stay discoverable by facing interaction and
   -- script partner lookups without ever blocking movement.
   local partner = entry.store:getActor(PARTNER_ACTOR_ID)
-  if partner ~= nil and partner.fieldX == candidate.fieldX and partner.fieldZ == candidate.fieldZ then
+  if partner == nil then
+    return nil
+  end
+  local partnerState = partner:numericState()
+  if partnerState.fieldX == candidate.fieldX and partnerState.fieldZ == candidate.fieldZ then
     if candidate.cellKey ~= nil and candidate.sourceSurfaceId ~= nil then
-      if partner.cellKey == candidate.cellKey and partner.sourceSurfaceId == candidate.sourceSurfaceId then
+      if
+        partner.cellKey == candidate.cellKey
+        and partnerState.hasSourceSurfaceId == 1
+        and partnerState.sourceSurfaceId == candidate.sourceSurfaceId
+      then
         return partner
       end
-    elseif candidate.surfaceId ~= nil and partner.surfaceId == candidate.surfaceId then
+    elseif
+      candidate.surfaceId ~= nil
+      and partnerState.hasSurfaceId == 1
+      and partnerState.surfaceId == candidate.surfaceId
+    then
       return partner
     end
   end
@@ -1982,6 +2038,7 @@ end
 local function constructPartner(self, entry, spec, surface, initiallyVisible)
   local asset = self:_acquireVisual(spec.visualId, PARTNER_ACTOR_ID)
   local actor = nil ---@type FieldActorManager.Actor?
+  local numericSlot = entry.store:allocateNumericState()
   local ok, err = pcall(function()
     local runtimeMap = entry.runtimeMap
     local world = FieldCoordinates.fieldToWorld(runtimeMap, spec.fieldX, spec.fieldZ, surface.worldY)
@@ -2005,11 +2062,14 @@ local function constructPartner(self, entry, spec, surface, initiallyVisible)
       resident = true,
       visual = visual,
       idlePresentation = idlePresentation,
+      numericStore = entry.store,
+      numericSlot = numericSlot,
     }) --[[@as FieldActorManager.Actor]]
     actor.actorId = PARTNER_ACTOR_ID
     actor:setVisible(initiallyVisible ~= false)
   end)
   if not ok then
+    entry.store:releaseNumericState(numericSlot)
     self.assets:release(spec.visualId)
     error(err)
   end
@@ -2078,7 +2138,7 @@ function FieldActorManager:updatePartner(spec)
   if surface == nil then
     return nil
   end
-  local actor = constructPartner(self, entry, spec, surface, old.visible)
+  local actor = constructPartner(self, entry, spec, surface, old:isVisible())
   self:_destroy(entry, old)
   publishPartner(self, entry, actor)
   return PARTNER_ACTOR_ID
@@ -2124,7 +2184,12 @@ function FieldActorManager:getPosition(actorId)
   if actor == nil then
     return nil
   end
-  return { fieldX = actor.fieldX, fieldZ = actor.fieldZ, worldY = actor.worldY }
+  local state = actor:numericState()
+  return {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    worldY = state.hasWorldPosition == 1 and state.worldY or nil,
+  }
 end
 
 ---@param actorId string
@@ -2170,22 +2235,26 @@ end
 function FieldActorManager:setPosition(actorId, position, options)
   local actor = requireActor(self, actorId)
   local entry = assert(self.maps[actor.mapId], "actor map entry missing")
+  local state = actor:numericState()
+  local actorWorldY = state.hasWorldPosition == 1 and state.worldY or nil
+  local actorSurfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil
+  local actorSourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil
   local resident = isResident(entry.runtimeMap, position.fieldX, position.fieldZ)
   local cellKey = cellKeyFor(position.fieldX, position.fieldZ)
   local sample
   local plate
   local plateCellKey
   local world
-  local sourceSurfaceId = resident and actor.sourceSurfaceId or nil
+  local sourceSurfaceId = resident and actorSourceSurfaceId or nil
   if resident then
     local localX, localZ = FieldCoordinates.fieldToLocal(entry.runtimeMap, position.fieldX, position.fieldZ)
     local surfaceOpts = {
       localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
       localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
-      currentY = position.worldY or actor.worldY,
+      currentY = position.worldY or actorWorldY,
     } ---@type FieldActorSurfaceOptions
     if position.worldY == nil then
-      surfaceOpts.currentSurfaceId = actor.surfaceId
+      surfaceOpts.currentSurfaceId = actorSurfaceId
     end
     sample = SurfaceResolver.new(entry.runtimeMap.terrain):resolve(surfaceOpts)
     world = FieldCoordinates.fieldToWorld(entry.runtimeMap, position.fieldX, position.fieldZ, sample.worldY)
@@ -2207,11 +2276,11 @@ function FieldActorManager:setPosition(actorId, position, options)
   end
   local newKey = newCandidate and entry.occupancy:key(newCandidate) or nil
   local oldKey
-  if actor.resident and actor.solid then
+  if state.resident == 1 and state.solid == 1 then
     oldKey = entry.occupancy:key(candidateForActor(actor))
   end
   local scripted = options ~= nil and options.scripted == true
-  if resident and actor.solid and newKey and oldKey ~= newKey then
+  if resident and state.solid == 1 and newKey and oldKey ~= newKey then
     local occupant = entry.occupancy:winnerByKey(newKey)
     if occupant ~= nil and not scripted then
       Errors.raise(
@@ -2299,7 +2368,7 @@ function FieldActorManager:isVisible(actorId)
     Errors.raise(ScriptErrors.SCRIPT_ACTOR_NOT_FOUND, "no live actor " .. tostring(actorId), { actor = actorId })
   end
   assert(actor ~= nil)
-  return actor.visible ~= false
+  return actor:numericState().visible == 1
 end
 
 -- Scripted pause_animation/resume_animation: the actor's pose clock stops
@@ -2309,7 +2378,7 @@ end
 ---@param self FieldActorManager
 function FieldActorManager:setAnimationPaused(actorId, paused)
   local actor = requireActor(self, actorId)
-  actor.animationPaused = paused == true
+  actor:setAnimationPaused(paused == true)
 end
 
 ---@param actorId string
@@ -2334,9 +2403,7 @@ function FieldActorManager:setPresentationOffset(actorId, offset)
   then
     Errors.raise(FieldErrors.ACTOR_FACING_INVALID, "presentation offset must be finite", { actorId = actorId })
   end
-  actor.presentationOffset.x = offset.x
-  actor.presentationOffset.y = offset.y
-  actor.presentationOffset.z = offset.z
+  actor:setPresentationOffset(offset.x, offset.y, offset.z)
 end
 
 ---@param actorId string
@@ -2349,6 +2416,27 @@ end
 
 -- Resolve destination for a scripted action without mutating actor or
 -- occupancy. Returns start/dest world anchors.
+-- Snapshots the actor's committed anchor as a plain endpoint table. The
+-- snapshot is immediate: callers must not retain it across actor
+-- creation/removal, only feed it into the current resolution/transaction.
+---@param actor FieldActorManager.Actor
+---@return table<string, unknown>
+local function committedEndpoint(actor)
+  local state = actor:numericState()
+  local hasWorld = state.hasWorldPosition == 1
+  return {
+    fieldX = state.fieldX,
+    fieldZ = state.fieldZ,
+    worldX = hasWorld and state.worldX or nil,
+    worldY = hasWorld and state.worldY or nil,
+    worldZ = hasWorld and state.worldZ or nil,
+    surfaceId = state.hasSurfaceId == 1 and state.surfaceId or nil,
+    cellKey = actor.cellKey,
+    sourceSurfaceId = state.hasSourceSurfaceId == 1 and state.sourceSurfaceId or nil,
+    resident = state.resident == 1,
+  }
+end
+
 ---@param actor FieldActorManager.Actor
 ---@param direction FieldDirection?
 ---@param distance string?
@@ -2362,14 +2450,15 @@ function FieldActorManager:_resolveScriptedDestination(actor, direction, distanc
     west = { fieldX = -1, fieldZ = 0 },
     east = { fieldX = 1, fieldZ = 0 },
   }
-  local startFieldX, startFieldZ = actor.fieldX, actor.fieldZ
-  local startWorldX, startWorldY, startWorldZ = actor.worldX, actor.worldY, actor.worldZ
+  local start = committedEndpoint(actor)
+  local startFieldX, startFieldZ = start.fieldX, start.fieldZ
+  local startWorldX, startWorldY, startWorldZ = start.worldX, start.worldY, start.worldZ
   local destFieldX, destFieldZ = startFieldX, startFieldZ
   local destWorldX, destWorldY, destWorldZ = startWorldX, startWorldY, startWorldZ
-  local destSurfaceId = actor.surfaceId
-  local destCellKey = actor.cellKey
-  local destSourceSurfaceId = actor.sourceSurfaceId
-  local destResident = actor.resident
+  local destSurfaceId = start.surfaceId
+  local destCellKey = start.cellKey
+  local destSourceSurfaceId = start.sourceSurfaceId
+  local destResident = start.resident
   if direction ~= nil and distance ~= "zero" then
     local delta = assert(deltaMap[direction], "unknown direction " .. tostring(direction))
     local step = 1
@@ -2383,8 +2472,8 @@ function FieldActorManager:_resolveScriptedDestination(actor, direction, distanc
     local sample = SurfaceResolver.new(entry.runtimeMap.terrain):resolve({
       localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
       localZ = localZ + FieldCoordinates.TILE_CENTER_OFFSET,
-      currentY = actor.worldY,
-      currentSurfaceId = actor.surfaceId,
+      currentY = startWorldY,
+      currentSurfaceId = start.surfaceId,
     })
     local world = FieldCoordinates.fieldToWorld(entry.runtimeMap, destFieldX, destFieldZ, sample.worldY)
     destWorldX, destWorldY, destWorldZ = world.x, world.y, world.z
@@ -2397,20 +2486,10 @@ function FieldActorManager:_resolveScriptedDestination(actor, direction, distanc
     -- zero jump stays on same tile; no surface change.
     destFieldX, destFieldZ = startFieldX, startFieldZ
     destWorldX, destWorldY, destWorldZ = startWorldX, startWorldY, startWorldZ
-    destSurfaceId = actor.surfaceId
+    destSurfaceId = start.surfaceId
   end
   return {
-    start = {
-      fieldX = startFieldX,
-      fieldZ = startFieldZ,
-      worldX = startWorldX,
-      worldY = startWorldY,
-      worldZ = startWorldZ,
-      surfaceId = actor.surfaceId,
-      cellKey = actor.cellKey,
-      sourceSurfaceId = actor.sourceSurfaceId,
-      resident = actor.resident,
-    },
+    start = start,
     dest = {
       fieldX = destFieldX,
       fieldZ = destFieldZ,
@@ -2439,8 +2518,9 @@ function FieldActorManager:_resolveTrajectoryDestination(actor, deltaX, deltaZ, 
     "trajectory surfaceBandDelta must be an integer"
   )
   local entry = assert(self.maps[actor.mapId], "actor map entry missing")
-  local startFieldX, startFieldZ = actor.fieldX, actor.fieldZ
-  local startWorldX, startWorldY, startWorldZ = actor.worldX, actor.worldY, actor.worldZ
+  local start = committedEndpoint(actor)
+  local startFieldX, startFieldZ = start.fieldX, start.fieldZ
+  local startWorldY = start.worldY
   local destFieldX = startFieldX + deltaX
   local destFieldZ = startFieldZ + deltaZ
   local destResident = isResident(entry.runtimeMap, destFieldX, destFieldZ)
@@ -2456,17 +2536,7 @@ function FieldActorManager:_resolveTrajectoryDestination(actor, deltaX, deltaZ, 
   local destCellKey, destSourceSurfaceId = sourceIdentityFromPlate(plate)
   destCellKey = destCellKey or cellKeyFor(destFieldX, destFieldZ)
   return {
-    start = {
-      fieldX = startFieldX,
-      fieldZ = startFieldZ,
-      worldX = startWorldX,
-      worldY = startWorldY,
-      worldZ = startWorldZ,
-      surfaceId = actor.surfaceId,
-      cellKey = actor.cellKey,
-      sourceSurfaceId = actor.sourceSurfaceId,
-      resident = actor.resident,
-    },
+    start = start,
     dest = {
       fieldX = destFieldX,
       fieldZ = destFieldZ,
@@ -2544,28 +2614,8 @@ function FieldActorManager:beginScriptedAction(actorId, action)
     or kind == "reveal_trainer"
   then
     destInfo = {
-      start = {
-        fieldX = actor.fieldX,
-        fieldZ = actor.fieldZ,
-        worldX = actor.worldX,
-        worldY = actor.worldY,
-        worldZ = actor.worldZ,
-        surfaceId = actor.surfaceId,
-        cellKey = actor.cellKey,
-        sourceSurfaceId = actor.sourceSurfaceId,
-        resident = actor.resident,
-      },
-      dest = {
-        fieldX = actor.fieldX,
-        fieldZ = actor.fieldZ,
-        worldX = actor.worldX,
-        worldY = actor.worldY,
-        worldZ = actor.worldZ,
-        surfaceId = actor.surfaceId,
-        cellKey = actor.cellKey,
-        sourceSurfaceId = actor.sourceSurfaceId,
-        resident = actor.resident,
-      },
+      start = committedEndpoint(actor),
+      dest = committedEndpoint(actor),
     }
   end
   actor:beginScriptedAction({
@@ -2622,10 +2672,16 @@ function FieldActorManager:cancelScriptedMovement(actorId)
     -- Also settle any fractional world drift: recompute world from committed tile.
     local entry = self.maps[actor.mapId]
     if entry then
-      local world = FieldCoordinates.fieldToWorld(entry.runtimeMap, actor.fieldX, actor.fieldZ, actor.worldY)
-      actor.worldX = world.x
-      actor.worldZ = world.z
-      -- worldY stays as committed surface height; actor.worldY already correct.
+      local state = actor:numericState()
+      local world = FieldCoordinates.fieldToWorld(
+        entry.runtimeMap,
+        state.fieldX,
+        state.fieldZ,
+        state.hasWorldPosition == 1 and state.worldY or nil
+      )
+      state.worldX = world.x
+      state.worldZ = world.z
+      -- worldY stays as committed surface height; the record already holds it.
       actor:beginFixedStep()
     end
   end

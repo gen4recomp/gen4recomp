@@ -1,6 +1,10 @@
 -- Owns one map entry's actor identity, ordering, lookup indexes, and slots.
 -- One store is created for each manager map entry; the manager alone owns map
--- publication and current-map identity.
+-- publication and current-map identity. The store also owns the contiguous
+-- numeric state buffer: storage slots are physical cdata identities and never
+-- alias the reassignable semantic manager slots.
+
+local FieldActorStateBuffer = require("libs.hgss.src.actors.FieldActorStateBuffer")
 
 ---@class FieldActorStore
 ---@field _actors table<string, FieldActorManager.Actor>
@@ -9,6 +13,7 @@
 ---@field _byIndex table<integer, string>
 ---@field _managerSlots table<integer, FieldActorManager.Actor>
 ---@field _managerSlotByActorId table<string, integer>
+---@field _numericState FieldActorStateBuffer
 local FieldActorStore = {}
 FieldActorStore.__index = FieldActorStore
 
@@ -21,6 +26,7 @@ function FieldActorStore.new()
     _byIndex = {},
     _managerSlots = {},
     _managerSlotByActorId = {},
+    _numericState = FieldActorStateBuffer.new(),
   }, FieldActorStore)
 end
 
@@ -156,6 +162,26 @@ function FieldActorStore:replaceManagerSlots(assignments)
   for slot, actor in pairs(assignments) do
     self:assignManagerSlot(actor, slot)
   end
+end
+
+-- Acquires one stable numeric storage slot for an actor entering the store.
+-- Slots carry no actor identity of their own.
+---@return integer stable zero-based storage slot
+function FieldActorStore:allocateNumericState()
+  return self._numericState:allocate()
+end
+
+---@param slot integer
+function FieldActorStore:releaseNumericState(slot)
+  self._numericState:release(slot)
+end
+
+-- Resolves the live numeric record for a storage slot. The result is valid
+-- only for immediate use: buffer growth replaces the backing array.
+---@param slot integer
+---@return G4FieldActorNumeric
+function FieldActorStore:numericState(slot)
+  return self._numericState:at(slot)
 end
 
 return FieldActorStore

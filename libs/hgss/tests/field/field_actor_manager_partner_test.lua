@@ -115,13 +115,13 @@ function T.installs_the_reserved_partner_as_a_real_non_solid_actor()
   Assert.equal(mgr:partnerId(), "field:partner", "the script lookup reflects the dynamic partner")
   Assert.equal(mgr:numericId("field:partner"), 253, "the partner keeps the source numeric id")
   local actor = assert(mgr:getById("field:partner"), "the partner is a live actor")
-  Assert.isFalse(actor.solid, "the partner never blocks tiles")
+  Assert.isFalse(actor:isSolid(), "the partner never blocks tiles")
   Assert.isNil(
-    mgr:getCollisionAt(61, { fieldX = 4, fieldZ = 5, surfaceId = actor.surfaceId }),
+    mgr:getCollisionAt(61, { fieldX = 4, fieldZ = 5, surfaceId = actor:getSurfaceId() }),
     "collision ignores the non-solid partner"
   )
   Assert.equal(
-    mgr:getAt(61, { fieldX = 4, fieldZ = 5, surfaceId = actor.surfaceId }).actorId,
+    mgr:getAt(61, { fieldX = 4, fieldZ = 5, surfaceId = actor:getSurfaceId() }).actorId,
     "field:partner",
     "interaction discovery still finds the partner by tile"
   )

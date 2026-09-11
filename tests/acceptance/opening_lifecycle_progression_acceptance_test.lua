@@ -275,9 +275,10 @@ function T.tests.friend_marill_animates_while_staying_on_its_tile()
     Assert.equal(actor.movementType, "stationary", "the friend marill never roams")
     Assert.equal(actor.pose, "idle", "the stationary marill presents idle, never locomotion")
     Assert.isNil(actor:scriptedMotionState(), "no scripted or autonomous movement owns the stationary marill")
-    local homeX, homeZ = actor.fieldX, actor.fieldZ
-    local homeWorld = { x = actor.worldX, y = actor.worldY, z = actor.worldZ }
-    local firstTick = actor.poseTick
+    local home = actor:getFieldPosition()
+    local homeX, homeZ = home.fieldX, home.fieldZ
+    local homeWorld = actor:getWorldPosition()
+    local firstTick = actor:getPoseTick()
 
     -- Enough fixed ticks to cross at least two source idle segments without
     -- issuing any movement to the marill.
@@ -286,16 +287,16 @@ function T.tests.friend_marill_animates_while_staying_on_its_tile()
     end
 
     actor = assert(game.runtime.actors:getById(actorId), "the marill actor must survive idle sampling")
-    Assert.equal(actor.fieldX, homeX, "idle animation never claims a new logical tile")
-    Assert.equal(actor.fieldZ, homeZ, "idle animation never claims a new logical tile")
-    Assert.near(actor.worldX, homeWorld.x, 1e-9, "idle animation never moves the world anchor")
-    Assert.near(actor.worldY, homeWorld.y, 1e-9, "idle animation never moves the world anchor")
-    Assert.near(actor.worldZ, homeWorld.z, 1e-9, "idle animation never moves the world anchor")
+    Assert.equal(actor:getFieldPosition().fieldX, homeX, "idle animation never claims a new logical tile")
+    Assert.equal(actor:getFieldPosition().fieldZ, homeZ, "idle animation never claims a new logical tile")
+    Assert.near(actor:getWorldPosition().x, homeWorld.x, 1e-9, "idle animation never moves the world anchor")
+    Assert.near(actor:getWorldPosition().y, homeWorld.y, 1e-9, "idle animation never moves the world anchor")
+    Assert.near(actor:getWorldPosition().z, homeWorld.z, 1e-9, "idle animation never moves the world anchor")
     Assert.equal(actor.movementType, "stationary", "sampling issues no movement to the marill")
     Assert.isNil(actor:scriptedMotionState(), "sampling starts no movement task on the marill")
     Assert.equal(actor.pose, "idle", "the marill stays on its semantic idle pose throughout")
     Assert.isTrue(
-      actor.poseTick > firstTick,
+      actor:getPoseTick() > firstTick,
       "the stationary marill advances its idle clock instead of holding frame zero"
     )
   end, { recordingScriptHosts = true })

@@ -269,8 +269,8 @@ end
 function T.legacy_empty_object_bucket_keeps_source_actor_initialization()
   local mgr = manager({ object({}) }, { restoredObjects = {} })
   local actor = assert(mgr:getById("map:61:object:0"))
-  Assert.equal(actor.fieldX, 2)
-  Assert.equal(actor.fieldZ, 3)
+  Assert.equal(actor:getFieldPosition().fieldX, 2)
+  Assert.equal(actor:getFieldPosition().fieldZ, 3)
   Assert.equal(actor.movementType, "stationary")
   mgr:dispose()
 end
@@ -348,11 +348,11 @@ function T.nonresident_restore_is_explicit_and_not_replayed_on_reentry()
 
   mgr:enterMap(map, eventState, snapshot)
   local actor = assert(mgr:getById(actorId))
-  Assert.equal(actor.fieldX, 34)
+  Assert.equal(actor:getFieldPosition().fieldX, 34)
   Assert.equal(actor.facing, "north")
   Assert.equal(actor.movementType, "wander_north_south")
-  Assert.isFalse(actor.resident)
-  Assert.isNil(actor.surfaceId)
+  Assert.isFalse(actor:isResident())
+  Assert.isNil(actor:getSurfaceId())
   local initialRngCalls = mgr.autonomy:captureRng().calls
   local stepped, stepError = pcall(function()
     mgr:step(1)
@@ -361,8 +361,8 @@ function T.nonresident_restore_is_explicit_and_not_replayed_on_reentry()
   Assert.isTrue(stepped, tostring(stepError))
   Assert.equal(mgr.autonomy:captureRng().calls, initialRngCalls, "a nonresident actor must not advance autonomy")
   Assert.isTrue(mgr:isPausable(actorId), "a nonresident actor must not start an autonomous action")
-  Assert.isFalse(actor.resident)
-  Assert.isNil(actor.surfaceId)
+  Assert.isFalse(actor:isResident())
+  Assert.isNil(actor:getSurfaceId())
   Assert.equal(#mgr:drawRecords(), 0, "a nonresident actor must remain outside the physical projection")
   local captured = mgr:captureObjects()
   local validated, validationErr = FieldObjectSave.validate(captured)
@@ -373,7 +373,7 @@ function T.nonresident_restore_is_explicit_and_not_replayed_on_reentry()
   mgr:leaveMap(map.mapId)
   mgr:enterMap(map, eventState)
   actor = assert(mgr:getById(actorId))
-  Assert.equal(actor.fieldX, 2)
+  Assert.equal(actor:getFieldPosition().fieldX, 2)
   Assert.equal(actor.movementType, "stationary")
   Assert.equal(mgr.autonomy:captureRng().calls, 1)
   mgr:dispose()
@@ -443,8 +443,8 @@ function T.fixed_facing_movement_type_is_applied_on_the_field_tick()
   mgr:step(1)
 
   Assert.equal(actor.facing, "north")
-  Assert.equal(actor.fieldX, 2)
-  Assert.equal(actor.fieldZ, 3)
+  Assert.equal(actor:getFieldPosition().fieldX, 2)
+  Assert.equal(actor:getFieldPosition().fieldZ, 3)
   mgr:dispose()
 end
 
@@ -489,7 +489,7 @@ function T.logical_actors_survive_and_reconcile_physical_residency()
   local nearActor = assert(mgr:getById(nearId))
   local farActor = assert(mgr:getById(farId), "logical actors must not be culled by 3x3 residency")
   nearActor:setFacing("west")
-  Assert.notNil(getAt(mgr, 61, 2, 3, nearActor.surfaceId))
+  Assert.notNil(getAt(mgr, 61, 2, 3, nearActor:getSurfaceId()))
   Assert.isNil(getAt(mgr, 61, 34, 3, 0))
   Assert.equal(#mgr:drawRecords(), 1, "only resident actors enter the draw projection")
 
@@ -500,8 +500,8 @@ function T.logical_actors_survive_and_reconcile_physical_residency()
   Assert.equal(mgr:getById(nearId), nearActor, "departing residency must preserve actor identity")
   Assert.equal(mgr:getById(farId), farActor, "entering residency must preserve actor identity")
   Assert.equal(nearActor.facing, "west", "departing residency must preserve mutable actor state")
-  Assert.isNil(getAt(mgr, 61, 2, 3, nearActor.surfaceId))
-  Assert.equal(getAt(mgr, 61, 34, 3, farActor.surfaceId), farActor)
+  Assert.isNil(getAt(mgr, 61, 2, 3, nearActor:getSurfaceId()))
+  Assert.equal(getAt(mgr, 61, 34, 3, farActor:getSurfaceId()), farActor)
   Assert.equal(#mgr:drawRecords(), 1, "only the newly resident actor enters the draw projection")
   Assert.equal(mgr:visualRevision(), initialRevision)
   mgr:dispose()
@@ -511,20 +511,20 @@ function T.physical_projection_keeps_centered_world_coordinates()
   local mgr = manager({ object({ x = 2, z = 3 }) })
   local actor = assert(mgr:getById("map:61:object:0"))
   local before = {
-    worldX = actor.worldX,
-    worldY = actor.worldY,
-    worldZ = actor.worldZ,
+    worldX = actor:getWorldPosition().x,
+    worldY = actor:getWorldPosition().y,
+    worldZ = actor:getWorldPosition().z,
   }
 
   mgr:reconcilePhysicalWorld()
 
-  Assert.equal(actor.worldX, before.worldX)
-  Assert.equal(actor.worldY, before.worldY)
-  Assert.equal(actor.worldZ, before.worldZ)
-  Assert.equal(actor.worldX, -13.5)
-  Assert.equal(actor.worldY, 0)
-  Assert.equal(actor.worldZ, -12.5)
-  Assert.equal(assert(getAt(mgr, 61, 2, 3, actor.surfaceId)), actor)
+  Assert.equal(actor:getWorldPosition().x, before.worldX)
+  Assert.equal(actor:getWorldPosition().y, before.worldY)
+  Assert.equal(actor:getWorldPosition().z, before.worldZ)
+  Assert.equal(actor:getWorldPosition().x, -13.5)
+  Assert.equal(actor:getWorldPosition().y, 0)
+  Assert.equal(actor:getWorldPosition().z, -12.5)
+  Assert.equal(assert(getAt(mgr, 61, 2, 3, actor:getSurfaceId())), actor)
   local record = mgr:drawRecords()[1]
   Assert.equal(record.world.x, -13.5)
   Assert.equal(record.world.y, 0)
@@ -535,20 +535,20 @@ end
 function T.actor_resolves_position_surface_and_world_anchor()
   local mgr = manager({ object({ x = 9, z = 3 }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  Assert.equal(actor.fieldX, 9)
-  Assert.equal(actor.fieldZ, 3)
+  Assert.equal(actor:getFieldPosition().fieldX, 9)
+  Assert.equal(actor:getFieldPosition().fieldZ, 3)
   -- Both plates cover x=9; the raw event Y hint selects the lower one.
-  Assert.equal(actor.surfaceId, 0)
-  Assert.equal(actor.worldY, 0)
+  Assert.equal(actor:getSurfaceId(), 0)
+  Assert.equal(actor:getWorldPosition().y, 0)
 end
 
 function T.raw_event_y_hint_selects_the_stacked_surface()
   local mgr = manager({ object({ x = 9, z = 3, y = rawObjectEventY(4) }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  Assert.equal(actor.surfaceId, 1)
-  Assert.equal(actor.worldY, 4)
+  Assert.equal(actor:getSurfaceId(), 1)
+  Assert.equal(actor:getWorldPosition().y, 4)
   Assert.equal(actor.sourceEvent.y, rawObjectEventY(4))
-  Assert.isTrue(actor.worldY ~= actor.sourceEvent.y)
+  Assert.isTrue(actor:getWorldPosition().y ~= actor.sourceEvent.y)
   mgr:dispose()
 
   local halfHeightMap = runtimeMap({ object({ x = 9, z = 3, y = 32768 }) })
@@ -588,8 +588,8 @@ function T.raw_event_y_hint_selects_the_stacked_surface()
   })
   local halfHeightMgr = manager(halfHeightMap.fieldData.events.objects, { map = halfHeightMap })
   local halfHeightActor = assert(halfHeightMgr:getById("map:61:object:0"))
-  Assert.equal(halfHeightActor.surfaceId, 1)
-  Assert.equal(halfHeightActor.worldY, 0.5)
+  Assert.equal(halfHeightActor:getSurfaceId(), 1)
+  Assert.equal(halfHeightActor:getWorldPosition().y, 0.5)
   halfHeightMgr:dispose()
 end
 
@@ -599,13 +599,13 @@ function T.saved_actor_round_trip_uses_the_captured_source_surface()
   local mgr = manager(objects, { map = sourceMap })
   local actor = assert(mgr:getById("map:61:object:0"))
 
-  Assert.equal(actor.surfaceId, 0)
+  Assert.equal(actor:getSurfaceId(), 0)
   Assert.equal(actor.cellKey, "0:0")
-  Assert.equal(actor.sourceSurfaceId, 0)
+  Assert.equal(actor:getSourceSurfaceId(), 0)
   mgr:setPosition(actor.actorId, { fieldX = 9, fieldZ = 3, worldY = 4 })
-  Assert.equal(actor.surfaceId, 1)
-  Assert.equal(actor.sourceSurfaceId, 1)
-  Assert.equal(actor.worldY, 4)
+  Assert.equal(actor:getSurfaceId(), 1)
+  Assert.equal(actor:getSourceSurfaceId(), 1)
+  Assert.equal(actor:getWorldPosition().y, 4)
 
   local captured = mgr:captureObjects()
   local validated, validationErr = FieldObjectSave.validate(captured)
@@ -621,9 +621,9 @@ function T.saved_actor_round_trip_uses_the_captured_source_surface()
   local restored = assert(restoredMgr:getById(actor.actorId))
 
   Assert.equal(restored.cellKey, "0:0")
-  Assert.equal(restored.sourceSurfaceId, 1)
-  Assert.equal(restored.surfaceId, 11, "restore must reconstruct the current composite surface id")
-  Assert.equal(restored.worldY, 4)
+  Assert.equal(restored:getSourceSurfaceId(), 1)
+  Assert.equal(restored:getSurfaceId(), 11, "restore must reconstruct the current composite surface id")
+  Assert.equal(restored:getWorldPosition().y, 4)
   Assert.equal(restored.sourceEvent.y, object({}).y)
   Assert.equal(restoredMgr:getAt(61, stableCandidate(9, 3, 11, "0:0", 1)), restored)
   Assert.isNil(restoredMgr:getAt(61, stableCandidate(9, 3, 10, "0:0", 0)))
@@ -695,8 +695,8 @@ function T.identity_less_saved_actor_restore_keeps_the_source_y_selector()
   local map = runtimeMap(objects)
   local mgr = manager(objects, { map = map })
   local actor = assert(mgr:getById("map:61:object:0"))
-  Assert.equal(actor.surfaceId, 1)
-  Assert.equal(actor.worldY, 4)
+  Assert.equal(actor:getSurfaceId(), 1)
+  Assert.equal(actor:getWorldPosition().y, 4)
 
   local captured = mgr:captureObjects()
   local validated, validationErr = FieldObjectSave.validate(captured)
@@ -711,9 +711,9 @@ function T.identity_less_saved_actor_restore_keeps_the_source_y_selector()
   })
   local restored = assert(restoredMgr:getById(actor.actorId))
   Assert.isNil(restored.cellKey)
-  Assert.isNil(restored.sourceSurfaceId)
-  Assert.equal(restored.surfaceId, 1)
-  Assert.equal(restored.worldY, 4)
+  Assert.isNil(restored:getSourceSurfaceId())
+  Assert.equal(restored:getSurfaceId(), 1)
+  Assert.equal(restored:getWorldPosition().y, 4)
   Assert.equal(restored.sourceEvent.y, rawObjectEventY(4))
   restoredMgr:dispose()
 end
@@ -721,12 +721,12 @@ end
 function T.reprojection_uses_the_raw_event_y_hint_when_the_surface_is_stale()
   local mgr = manager({ object({ x = 9, z = 3, y = rawObjectEventY(4) }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  actor.surfaceId = 99
+  actor:numericState().surfaceId = 99
 
   mgr:reconcilePhysicalWorld()
 
-  Assert.equal(actor.surfaceId, 1)
-  Assert.equal(actor.worldY, 4)
+  Assert.equal(actor:getSurfaceId(), 1)
+  Assert.equal(actor:getWorldPosition().y, 4)
   mgr:dispose()
 end
 
@@ -799,8 +799,8 @@ function T.failed_public_move_preserves_the_existing_occupant()
   throwsCode("ACTOR_OCCUPANCY_CONFLICT", function()
     mgr:setPosition("map:61:object:0", { fieldX = 8, fieldZ = 3 })
   end)
-  Assert.equal(mgr:getAt(61, candidate(8, 3, occupant.surfaceId)), occupant)
-  Assert.equal(mgr:getCollisionAt(61, candidate(8, 3, occupant.surfaceId)), occupant)
+  Assert.equal(mgr:getAt(61, candidate(8, 3, occupant:getSurfaceId())), occupant)
+  Assert.equal(mgr:getCollisionAt(61, candidate(8, 3, occupant:getSurfaceId())), occupant)
   mgr:dispose()
 end
 
@@ -808,6 +808,70 @@ function T.uncompiled_sprite_is_fatal()
   throwsCode("ACTOR_VISUAL_MISSING", function()
     manager({ object({ spriteId = 148 }) })
   end)
+end
+
+-- Each live actor owns one stable numeric storage slot on its map's store,
+-- and hot manager reads must resolve that authoritative cdata record rather
+-- than a mirrored Lua field that could drift out of sync.
+function T.hot_actor_reads_resolve_the_authoritative_numeric_record_not_a_mirrored_lua_field()
+  local mgr = manager({ object({}) })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  assert(actor:numericSlot(), "an actor must own a stable numeric storage slot")
+  actor:numericState().fieldX = 77
+  local position = assert(mgr:getPosition("map:61:object:0"))
+  Assert.equal(position.fieldX, 77, "manager reads must resolve the authoritative cdata record, not a stale mirror")
+  mgr:dispose()
+end
+
+-- A construction failure after numeric-slot allocation must release the slot
+-- exactly once, leaving unrelated live actors' storage untouched and the
+-- freed slot available for reuse -- mirroring the existing visual rollback.
+function T.failed_reconstruction_releases_its_numeric_slot_without_disturbing_the_rest_of_the_map()
+  local eventState = FieldEventState.new({ flags = { [402] = true } })
+  local mgr, _, assets = manager({
+    object({ objectEventId = 0, eventFlag = 401 }),
+    object({ objectEventId = 1, eventFlag = 402, facingDirection = "northwest" }),
+  }, { eventState = eventState })
+  local survivor = assert(mgr:getById("map:61:object:0"))
+  local survivorSlot = assert(survivor:numericSlot(), "a live actor must own a stable numeric storage slot")
+
+  eventState:clearFlag(402)
+  throwsCode("ACTOR_FACING_INVALID", function()
+    mgr:step(1)
+  end)
+
+  Assert.isNil(mgr:getById("map:61:object:1"), "the failed construction must not publish an actor")
+  Assert.equal(survivor:numericSlot(), survivorSlot, "an unrelated actor's numeric slot must be untouched")
+  Assert.notNil(getAt(mgr, 61, 2, 3, 0), "the surviving actor's occupancy must be untouched")
+  Assert.equal(assets:total(), 1, "the failed construction must return its visual like the enter-map path does")
+  mgr:dispose()
+end
+
+-- Removing an actor releases its numeric slot, and the actor created later on
+-- the same map entry must observe freshly initialized state rather than the
+-- previous occupant's visibility, position, or presence values.
+function T.a_recreated_actor_observes_clean_state_after_slot_release()
+  local eventState = FieldEventState.new()
+  local mgr = manager({ object({ eventFlag = 401 }) }, { eventState = eventState })
+  local first = assert(mgr:getById("map:61:object:0"))
+  assert(first:numericSlot(), "a live actor must own a stable numeric storage slot")
+  mgr:hide("map:61:object:0")
+  mgr:setPosition("map:61:object:0", { fieldX = 9, fieldZ = 3 })
+
+  eventState:setFlag(401)
+  mgr:step(1)
+  Assert.isNil(mgr:getById("map:61:object:0"), "setting the flag must destroy the actor and release its slot")
+
+  eventState:clearFlag(401)
+  mgr:step(2)
+  local second = assert(mgr:getById("map:61:object:0"))
+  assert(second:numericSlot(), "a recreated actor must own a stable numeric storage slot")
+  Assert.isTrue(mgr:isVisible("map:61:object:0"), "a reacquired slot must not leak the previous visibility")
+  local position = assert(mgr:getPosition("map:61:object:0"))
+  Assert.equal(position.fieldX, 2, "a reacquired slot must not leak the previous field position")
+  Assert.equal(position.fieldZ, 3, "a reacquired slot must not leak the previous field position")
+  Assert.notNil(getAt(mgr, 61, 2, 3, 0), "the recreated actor must reclaim its source occupancy")
+  mgr:dispose()
 end
 
 function T.failed_actor_construction_releases_the_acquired_visual()
@@ -1414,7 +1478,7 @@ function T.script_set_position_conversion_failure_keeps_occupancy()
   throwsCode("FIELD_COORDINATES_OUT_OF_COVERAGE", function()
     mgr:setPosition("map:61:object:0", { fieldX = 100, fieldZ = 3 })
   end)
-  Assert.equal(actor.fieldX, 2, "the actor keeps its old position")
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "the actor keeps its old position")
   Assert.equal(assert(getAt(mgr, 61, 2, 3, 0), "the mover kept its old cell").actorId, "map:61:object:0")
 end
 
@@ -1426,7 +1490,7 @@ function T.script_set_position_surface_failure_keeps_occupancy()
   throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
     mgr:setPosition("map:61:object:0", { fieldX = 35, fieldZ = 3 })
   end)
-  Assert.equal(actor.fieldX, 2, "the actor keeps its old position")
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "the actor keeps its old position")
   Assert.equal(assert(getAt(mgr, 61, 2, 3, 0), "the mover kept its old cell").actorId, "map:61:object:0")
 end
 
@@ -1436,10 +1500,10 @@ end
 function T.script_set_position_across_surfaces_rekeys_occupancy()
   local mgr = manager({ object({ objectEventId = 0, x = 2, z = 3 }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  Assert.equal(actor.surfaceId, 0)
+  Assert.equal(actor:getSurfaceId(), 0)
   mgr:setPosition("map:61:object:0", { fieldX = 9, fieldZ = 3, worldY = 4 })
-  Assert.equal(actor.surfaceId, 1, "the destination surface follows the resolved plate")
-  Assert.equal(actor.worldY, 4)
+  Assert.equal(actor:getSurfaceId(), 1, "the destination surface follows the resolved plate")
+  Assert.equal(actor:getWorldPosition().y, 4)
   Assert.equal(assert(getAt(mgr, 61, 9, 3, 1), "occupancy rekeys on the new surface").actorId, "map:61:object:0")
   Assert.isNil(getAt(mgr, 61, 9, 3, 0), "no occupancy on the old surface at the destination")
   Assert.isNil(getAt(mgr, 61, 2, 3, 0), "the old cell is vacated")
@@ -1451,8 +1515,8 @@ function T.script_set_position_without_world_y_stays_on_the_current_surface()
   local mgr = manager({ object({ objectEventId = 0, x = 2, z = 3 }) })
   local actor = assert(mgr:getById("map:61:object:0"))
   mgr:setPosition("map:61:object:0", { fieldX = 9, fieldZ = 3 })
-  Assert.equal(actor.surfaceId, 0, "the current surface covers the destination and is preserved")
-  Assert.equal(actor.worldY, 0)
+  Assert.equal(actor:getSurfaceId(), 0, "the current surface covers the destination and is preserved")
+  Assert.equal(actor:getWorldPosition().y, 0)
   Assert.equal(assert(getAt(mgr, 61, 9, 3, 0)).actorId, "map:61:object:0")
 end
 
@@ -1491,7 +1555,7 @@ function T.script_set_position_preserves_logical_identity_until_destination_resi
   local mgr = manager(map.fieldData.events.objects, { map = map })
   local actor = assert(mgr:getById("map:61:object:0"))
   Assert.equal(actor.cellKey, "0:0")
-  Assert.equal(actor.sourceSurfaceId, 0)
+  Assert.equal(actor:getSourceSurfaceId(), 0)
 
   local candidatesAt = map.terrain.candidatesAt
   map.terrain.candidatesAt = function()
@@ -1500,20 +1564,20 @@ function T.script_set_position_preserves_logical_identity_until_destination_resi
   mgr:setPosition(actor.actorId, { fieldX = 34, fieldZ = 3 })
   map.terrain.candidatesAt = candidatesAt
 
-  Assert.equal(actor.fieldX, 34)
-  Assert.equal(actor.fieldZ, 3)
+  Assert.equal(actor:getFieldPosition().fieldX, 34)
+  Assert.equal(actor:getFieldPosition().fieldZ, 3)
   Assert.equal(actor.cellKey, "1:0", "scripted movement updates the logical cell identity")
-  Assert.isNil(actor.sourceSurfaceId, "a nonresident actor must not retain an old cell's surface slot")
-  Assert.isFalse(actor.resident)
+  Assert.isNil(actor:getSourceSurfaceId(), "a nonresident actor must not retain an old cell's surface slot")
+  Assert.isFalse(actor:isResident())
   Assert.isNil(mgr:getAt(61, stableCandidate(34, 3, 0, "1:0", 0)), "a nonresident actor never enters guessed occupancy")
   Assert.equal(#mgr:drawRecords(), 0, "a nonresident actor is absent from the physical draw projection")
 
   resident = true
   mgr:reconcilePhysicalWorld()
 
-  Assert.isTrue(actor.resident)
+  Assert.isTrue(actor:isResident())
   Assert.equal(actor.cellKey, "1:0")
-  Assert.equal(actor.sourceSurfaceId, 0)
+  Assert.equal(actor:getSourceSurfaceId(), 0)
   Assert.equal(assert(mgr:getAt(61, stableCandidate(34, 3, 0, "1:0", 0))), actor)
   Assert.equal(#mgr:drawRecords(), 1)
   mgr:dispose()
@@ -1540,7 +1604,7 @@ function T.hidden_actors_report_hidden_snapshots_and_stay_solid()
   }
   local world = ScriptActorWorld.new(mgr --[[@as ScriptActorManager]], player)
   mgr:hide("map:61:object:0")
-  Assert.isFalse(mgr:getById("map:61:object:0").visible)
+  Assert.isFalse(mgr:getById("map:61:object:0"):isVisible())
   Assert.notNil(getAt(mgr, 61, 2, 3, 0), "hidden actors remain solid for collision")
   Assert.equal(world:snapshot("map:61:object:0").visible, false, "hide_object reflects in snapshots")
   world:show("map:61:object:0")
@@ -1594,24 +1658,28 @@ function T.scripted_reposition_autonomous_reservation_and_destroy_keep_stable_ce
   local actorId = "map:61:object:0"
   local actor = assert(mgr:getById(actorId))
 
-  Assert.equal(actor.fieldX, 31)
+  Assert.equal(actor:getFieldPosition().fieldX, 31)
   Assert.equal(actor.cellKey, "0:0")
-  Assert.equal(actor.sourceSurfaceId, 12)
+  Assert.equal(actor:getSourceSurfaceId(), 12)
   Assert.equal(assert(mgr:getAt(61, stableCandidate(31, 3, 0, "0:0", 12))), actor)
 
   mgr:beginScriptedAction(actorId, { action = "walk", direction = "east", speed = "normal" })
   mgr:advanceScriptedAction(actorId, 8, 8)
   mgr:commitScriptedAction(actorId)
 
-  Assert.equal(actor.fieldX, 32)
+  Assert.equal(actor:getFieldPosition().fieldX, 32)
   Assert.equal(actor.cellKey, "1:0", "scripted commit must publish the destination source cell")
-  Assert.equal(actor.sourceSurfaceId, 13)
+  Assert.equal(actor:getSourceSurfaceId(), 13)
   Assert.isNil(mgr:getAt(61, stableCandidate(31, 3, 0, "0:0", 12)))
   Assert.equal(assert(mgr:getAt(61, stableCandidate(32, 3, 1, "1:0", 13))), actor)
 
   forceAutonomy(mgr, "east")
   mgr:step(1)
-  Assert.equal(actor.fieldX, 32, "an autonomous step keeps the scripted committed cell until completion")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    32,
+    "an autonomous step keeps the scripted committed cell until completion"
+  )
   Assert.isFalse(mgr:isPausable(actorId))
   Assert.equal(
     mgr:getCollisionAt(61, stableCandidate(33, 3, 1, "1:0", 13)),
@@ -1623,9 +1691,9 @@ function T.scripted_reposition_autonomous_reservation_and_destroy_keep_stable_ce
     mgr:step(tick)
   end
 
-  Assert.equal(actor.fieldX, 33)
+  Assert.equal(actor:getFieldPosition().fieldX, 33)
   Assert.equal(actor.cellKey, "1:0")
-  Assert.equal(actor.sourceSurfaceId, 13)
+  Assert.equal(actor:getSourceSurfaceId(), 13)
   Assert.isNil(mgr:getAt(61, stableCandidate(32, 3, 1, "1:0", 13)))
   Assert.equal(assert(mgr:getAt(61, stableCandidate(33, 3, 1, "1:0", 13))), actor)
 
@@ -1670,11 +1738,11 @@ function T.autonomous_wander_settles_before_its_wait()
   end
 
   mgr:step(9)
-  Assert.equal(actor.fieldX, 3)
-  Assert.equal(actor.fieldZ, 3)
+  Assert.equal(actor:getFieldPosition().fieldX, 3)
+  Assert.equal(actor:getFieldPosition().fieldZ, 3)
   Assert.isTrue(mgr:isPausable(actorId))
   Assert.equal(actor.pose, "idle", "a completed wandering step settles before its wait")
-  Assert.equal(actor.poseTick, 0, "settling restores the idle pose-clock baseline")
+  Assert.equal(actor:getPoseTick(), 0, "settling restores the idle pose-clock baseline")
 
   mgr:step(10)
   mgr:step(11)
@@ -1699,15 +1767,15 @@ function T.autonomous_pattern_continues_without_an_idle_boundary()
     mgr:step(tick)
   end
   mgr:step(9)
-  Assert.equal(actor.fieldX, 2)
-  Assert.equal(actor.fieldZ, 2)
+  Assert.equal(actor:getFieldPosition().fieldX, 2)
+  Assert.equal(actor:getFieldPosition().fieldZ, 2)
   Assert.equal(actor.pose, "idle", "a continuous step settles to the visual idle presentation at commit")
   Assert.isTrue(mgr:isPausable(actorId))
 
   mgr:step(10)
   Assert.equal(actor.pose, "walk", "a successful successor starts a new active presentation")
   Assert.isFalse(mgr:isPausable(actorId))
-  Assert.equal(mgr:getCollisionAt(61, candidate(3, 2, actor.surfaceId)), actor)
+  Assert.equal(mgr:getCollisionAt(61, candidate(3, 2, actor:getSurfaceId())), actor)
   mgr:dispose()
 end
 
@@ -1730,18 +1798,21 @@ function T.autonomous_pattern_settles_when_continuation_is_blocked()
     mgr:step(tick)
   end
   mgr:step(9)
-  Assert.equal(actor.fieldX, 2)
-  Assert.equal(actor.fieldZ, 2)
+  Assert.equal(actor:getFieldPosition().fieldX, 2)
+  Assert.equal(actor:getFieldPosition().fieldZ, 2)
   Assert.equal(actor.pose, "idle")
   Assert.isTrue(mgr:isPausable(actorId))
 
   mgr:step(10)
-  Assert.equal(actor.fieldX, 2, "a blocked successor leaves the actor on its committed tile")
-  Assert.equal(actor.fieldZ, 2, "a blocked successor leaves the actor on its committed tile")
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "a blocked successor leaves the actor on its committed tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, 2, "a blocked successor leaves the actor on its committed tile")
   Assert.isTrue(mgr:isPausable(actorId))
-  Assert.notNil(mgr:getAt(61, candidate(3, 2, actor.surfaceId)), "the blocking actor remains the committed occupant")
+  Assert.notNil(
+    mgr:getAt(61, candidate(3, 2, actor:getSurfaceId())),
+    "the blocking actor remains the committed occupant"
+  )
   Assert.equal(actor.pose, "idle", "a failed continuous successor settles the actor")
-  Assert.equal(actor.poseTick, 0, "settling clears the static idle phase")
+  Assert.equal(actor:getPoseTick(), 0, "settling clears the static idle phase")
   mgr:dispose()
 end
 
@@ -1831,13 +1902,13 @@ function T.idle_pose_clock_stays_stable_for_visible_actors()
   local mgr, eventState = manager({ object({ eventFlag = 401 }) })
   mgr:step(1)
   mgr:step(2)
-  Assert.equal(mgr:getById("map:61:object:0").poseTick, 0)
+  Assert.equal(mgr:getById("map:61:object:0"):getPoseTick(), 0)
   eventState:setFlag(401)
   mgr:step(3)
   eventState:clearFlag(401)
   -- A rematerialized actor starts a fresh stable idle presentation.
   mgr:step(4)
-  Assert.equal(mgr:getById("map:61:object:0").poseTick, 0)
+  Assert.equal(mgr:getById("map:61:object:0"):getPoseTick(), 0)
 end
 
 function T.autonomous_range_uses_signed_source_origin_bounds()
@@ -1886,7 +1957,7 @@ end
 function T.autonomy_capability_uses_truncated_source_y_bands()
   local mgr = manager({ object({ movementType = "look_north" }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  actor.worldY = 1.25
+  actor:numericState().worldY = 1.25
   local player = { fieldX = 4, fieldZ = 4, worldY = -0.75, surfaceId = 999 }
   local observed
   forceAutonomy(mgr, "north", function(capability)
@@ -1929,13 +2000,17 @@ function T.draw_records_reuse_live_slots_and_clear_stale_tail()
   Assert.isTrue(fewer[1] == first, "a live actor keeps its record slot")
   Assert.isNil(fewer[2], "removed actors do not remain in the reused tail")
   Assert.equal(fewer[1].actorId, "map:61:object:0")
-  Assert.equal(fewer[1].world.x, mgr:getById("map:61:object:0").worldX)
+  Assert.equal(fewer[1].world.x, mgr:getById("map:61:object:0"):getWorldPosition().x)
   Assert.isTrue(second ~= fewer[1], "distinct actors do not share a record")
 
   mgr:setPosition("map:61:object:0", { fieldX = 4, fieldZ = 3 })
   local moved = mgr:drawRecords()
   Assert.isTrue(moved[1] == first)
-  Assert.equal(moved[1].world.x, mgr:getById("map:61:object:0").worldX, "reused records receive current actor values")
+  Assert.equal(
+    moved[1].world.x,
+    mgr:getById("map:61:object:0"):getWorldPosition().x,
+    "reused records receive current actor values"
+  )
 end
 
 function T.dispose_unsubscribes_from_the_event_state()
@@ -1964,10 +2039,10 @@ function T.scripted_overlap_vacate_reveals_prior_occupant()
   })
   local actorA = assert(mgr:getById("map:61:object:0"))
   local actorB = assert(mgr:getById("map:61:object:1"))
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB:getSurfaceId() }
   if actorB.cellKey then
     keyB.cellKey = actorB.cellKey
-    keyB.sourceSurfaceId = actorB.sourceSurfaceId
+    keyB.sourceSurfaceId = actorB:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, keyB), actorB)
   Assert.equal(mgr:getCollisionAt(61, keyB), actorB)
@@ -1976,20 +2051,20 @@ function T.scripted_overlap_vacate_reveals_prior_occupant()
   Assert.equal(mgr:getAt(61, keyB), actorA, "scripted overlap makes the mover the visible occupant")
   Assert.equal(mgr:getCollisionAt(61, keyB), actorA)
   Assert.notNil(mgr:getAt(61, keyB))
-  Assert.equal(actorA.fieldX, 8)
-  Assert.equal(actorB.fieldX, 8)
+  Assert.equal(actorA:getFieldPosition().fieldX, 8)
+  Assert.equal(actorB:getFieldPosition().fieldX, 8)
 
   mgr:setPosition("map:61:object:0", { fieldX = 2, fieldZ = 3 }, { scripted = true })
   local revealed = mgr:getAt(61, keyB)
   Assert.equal(revealed, actorB, "vacating the top must reveal the displaced solid actor")
   Assert.equal(mgr:getCollisionAt(61, keyB), actorB)
-  Assert.isTrue(actorB.resident)
-  Assert.isTrue(actorB.solid)
-  Assert.equal(actorB.fieldX, 8)
-  Assert.equal(actorB.fieldZ, 3)
-  Assert.equal(actorA.fieldX, 2)
-  Assert.isNil(mgr:getAt(61, candidate(2, 3, actorA.surfaceId)) == actorB and actorB or nil)
-  Assert.equal(mgr:getAt(61, candidate(2, 3, actorA.surfaceId)), actorA)
+  Assert.isTrue(actorB:isResident())
+  Assert.isTrue(actorB:isSolid())
+  Assert.equal(actorB:getFieldPosition().fieldX, 8)
+  Assert.equal(actorB:getFieldPosition().fieldZ, 3)
+  Assert.equal(actorA:getFieldPosition().fieldX, 2)
+  Assert.isNil(mgr:getAt(61, candidate(2, 3, actorA:getSurfaceId())) == actorB and actorB or nil)
+  Assert.equal(mgr:getAt(61, candidate(2, 3, actorA:getSurfaceId())), actorA)
   mgr:dispose()
 end
 
@@ -2002,10 +2077,10 @@ function T.revealed_occupant_blocks_autonomous_reservation()
   local actorA = assert(mgr:getById("map:61:object:0"))
   local actorB = assert(mgr:getById("map:61:object:1"))
   local actorC = assert(mgr:getById("map:61:object:2"))
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB:getSurfaceId() }
   if actorB.cellKey then
     keyB.cellKey = actorB.cellKey
-    keyB.sourceSurfaceId = actorB.sourceSurfaceId
+    keyB.sourceSurfaceId = actorB:getSourceSurfaceId()
   end
 
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
@@ -2035,10 +2110,10 @@ function T.destroy_buried_keeps_top()
   }, { eventState = eventState })
   local actorA = assert(mgr:getById("map:61:object:0"))
   local actorB = assert(mgr:getById("map:61:object:1"))
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB:getSurfaceId() }
   if actorB.cellKey then
     keyB.cellKey = actorB.cellKey
-    keyB.sourceSurfaceId = actorB.sourceSurfaceId
+    keyB.sourceSurfaceId = actorB:getSourceSurfaceId()
   end
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
   Assert.equal(mgr:getAt(61, keyB), actorA)
@@ -2058,10 +2133,10 @@ function T.destroy_top_reveals_next()
   }, { eventState = eventState })
   local actorA = assert(mgr:getById("map:61:object:0"))
   local actorB = assert(mgr:getById("map:61:object:1"))
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorB:getSurfaceId() }
   if actorB.cellKey then
     keyB.cellKey = actorB.cellKey
-    keyB.sourceSurfaceId = actorB.sourceSurfaceId
+    keyB.sourceSurfaceId = actorB:getSourceSurfaceId()
   end
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
   Assert.equal(mgr:getAt(61, keyB), actorA)
@@ -2076,20 +2151,20 @@ end
 function T.same_key_publication_is_idempotent()
   local mgr = manager({ object({ objectEventId = 0, x = 2, z = 3 }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  local key = { fieldX = 2, fieldZ = 3, surfaceId = actor.surfaceId }
+  local key = { fieldX = 2, fieldZ = 3, surfaceId = actor:getSurfaceId() }
   if actor.cellKey then
     key.cellKey = actor.cellKey
-    key.sourceSurfaceId = actor.sourceSurfaceId
+    key.sourceSurfaceId = actor:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, key), actor)
   mgr:setPosition(actor.actorId, { fieldX = 2, fieldZ = 3 }, { scripted = true })
   Assert.equal(mgr:getAt(61, key), actor, "publishing to the same key must not duplicate the actor")
   mgr:setPosition(actor.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
   mgr:setPosition(actor.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
-  local key2 = { fieldX = 8, fieldZ = 3, surfaceId = actor.surfaceId }
+  local key2 = { fieldX = 8, fieldZ = 3, surfaceId = actor:getSurfaceId() }
   if actor.cellKey then
     key2.cellKey = actor.cellKey
-    key2.sourceSurfaceId = actor.sourceSurfaceId
+    key2.sourceSurfaceId = actor:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, key2), actor)
   Assert.isNil(mgr:getAt(61, key))
@@ -2105,17 +2180,17 @@ function T.overlapping_winner_is_first_in_creation_order_regardless_of_publicati
   local actorA1 = assert(mgr1:getById("map:61:object:0"))
   local actorB1 = assert(mgr1:getById("map:61:object:1"))
   mgr1:setPosition(actorA1.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
-  local keyB1 = { fieldX = 8, fieldZ = 3, surfaceId = actorA1.surfaceId }
+  local keyB1 = { fieldX = 8, fieldZ = 3, surfaceId = actorA1:getSurfaceId() }
   if actorA1.cellKey then
     keyB1.cellKey = actorA1.cellKey
-    keyB1.sourceSurfaceId = actorA1.sourceSurfaceId
+    keyB1.sourceSurfaceId = actorA1:getSourceSurfaceId()
   end
   Assert.equal(mgr1:getAt(61, keyB1), actorA1, "first publication order must still select earliest actor")
   Assert.equal(mgr1:getCollisionAt(61, keyB1), actorA1)
   Assert.notNil(mgr1:getById(actorA1.actorId))
   Assert.notNil(mgr1:getById(actorB1.actorId))
-  Assert.equal(actorA1.fieldX, 8)
-  Assert.equal(actorB1.fieldX, 8)
+  Assert.equal(actorA1:getFieldPosition().fieldX, 8)
+  Assert.equal(actorB1:getFieldPosition().fieldX, 8)
   mgr1:dispose()
 
   -- Second direction: later-ordered B moves onto A's cell — earliest actor still wins.
@@ -2126,17 +2201,17 @@ function T.overlapping_winner_is_first_in_creation_order_regardless_of_publicati
   local actorA2 = assert(mgr2:getById("map:61:object:0"))
   local actorB2 = assert(mgr2:getById("map:61:object:1"))
   mgr2:setPosition(actorB2.actorId, { fieldX = 2, fieldZ = 3 }, { scripted = true })
-  local keyA2 = { fieldX = 2, fieldZ = 3, surfaceId = actorA2.surfaceId }
+  local keyA2 = { fieldX = 2, fieldZ = 3, surfaceId = actorA2:getSurfaceId() }
   if actorA2.cellKey then
     keyA2.cellKey = actorA2.cellKey
-    keyA2.sourceSurfaceId = actorA2.sourceSurfaceId
+    keyA2.sourceSurfaceId = actorA2:getSourceSurfaceId()
   end
   Assert.equal(mgr2:getAt(61, keyA2), actorA2, "reverse publication order must still select earliest actor")
   Assert.equal(mgr2:getCollisionAt(61, keyA2), actorA2)
   Assert.notNil(mgr2:getById(actorA2.actorId))
   Assert.notNil(mgr2:getById(actorB2.actorId))
-  Assert.equal(actorA2.fieldX, 2)
-  Assert.equal(actorB2.fieldX, 2)
+  Assert.equal(actorA2:getFieldPosition().fieldX, 2)
+  Assert.equal(actorB2:getFieldPosition().fieldX, 2)
   mgr2:dispose()
 end
 
@@ -2148,10 +2223,10 @@ function T.reconcile_preserves_stable_overlap_winner()
   local actorA = assert(mgr:getById("map:61:object:0"))
   local actorB = assert(mgr:getById("map:61:object:1"))
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA:getSurfaceId() }
   if actorA.cellKey then
     keyB.cellKey = actorA.cellKey
-    keyB.sourceSurfaceId = actorA.sourceSurfaceId
+    keyB.sourceSurfaceId = actorA:getSourceSurfaceId()
   end
   local winnerBefore = assert(mgr:getAt(61, keyB))
   Assert.equal(winnerBefore.actorId, actorA.actorId, "live winner is earliest actor before rebuild")
@@ -2161,7 +2236,7 @@ function T.reconcile_preserves_stable_overlap_winner()
   assert(reconciledTop ~= nil)
   Assert.notNil(mgr:getById(actorA.actorId))
   Assert.notNil(mgr:getById(actorB.actorId))
-  Assert.notNil(getAt(mgr, 61, 8, 3, actorA.surfaceId))
+  Assert.notNil(getAt(mgr, 61, 8, 3, actorA:getSurfaceId()))
   Assert.equal(reconciledTop.actorId, actorA.actorId, "reconcile must preserve stable earliest-actor winner")
   local collisionTop = mgr:getCollisionAt(61, keyB)
   assert(collisionTop ~= nil)
@@ -2182,10 +2257,10 @@ function T.restore_preserves_stable_overlap_winner()
   local actorA = assert(mgr:getById("map:61:object:0"))
   assert(mgr:getById("map:61:object:1"))
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA:getSurfaceId() }
   if actorA.cellKey then
     keyB.cellKey = actorA.cellKey
-    keyB.sourceSurfaceId = actorA.sourceSurfaceId
+    keyB.sourceSurfaceId = actorA:getSourceSurfaceId()
   end
   local winnerBefore = assert(mgr:getAt(61, keyB))
   Assert.equal(winnerBefore.actorId, actorA.actorId)
@@ -2202,10 +2277,10 @@ function T.restore_preserves_stable_overlap_winner()
   restoredMgr:enterMap(restoredMap, FieldEventState.new(), validated)
   local restoredA = assert(restoredMgr:getById("map:61:object:0"))
   local restoredB = assert(restoredMgr:getById("map:61:object:1"))
-  local restoredKey = { fieldX = 8, fieldZ = 3, surfaceId = restoredA.surfaceId }
+  local restoredKey = { fieldX = 8, fieldZ = 3, surfaceId = restoredA:getSurfaceId() }
   if restoredA.cellKey then
     restoredKey.cellKey = restoredA.cellKey
-    restoredKey.sourceSurfaceId = restoredA.sourceSurfaceId
+    restoredKey.sourceSurfaceId = restoredA:getSourceSurfaceId()
   end
   Assert.notNil(restoredMgr:getById(restoredA.actorId))
   Assert.notNil(restoredMgr:getById(restoredB.actorId))
@@ -2238,10 +2313,10 @@ function T.flag_recreation_follows_first_free_slot_priority()
   Assert.equal(actors[1].actorId, actorB.actorId)
   Assert.equal(actors[2].actorId, actorA.actorId)
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA:getSurfaceId() }
   if actorA.cellKey then
     keyB.cellKey = actorA.cellKey
-    keyB.sourceSurfaceId = actorA.sourceSurfaceId
+    keyB.sourceSurfaceId = actorA:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, keyB).actorId, actorA.actorId, "recreated A must win despite dense order placing B first")
   Assert.equal(mgr:getCollisionAt(61, keyB).actorId, actorA.actorId)
@@ -2256,10 +2331,10 @@ function T.flag_recreation_follows_first_free_slot_priority()
   mgr:step(5)
   actorA = assert(mgr:getById("map:61:object:0"))
   mgr:setPosition(actorA.actorId, { fieldX = 10, fieldZ = 3 }, { scripted = true })
-  local keyC = { fieldX = 10, fieldZ = 3, surfaceId = actorA.surfaceId }
+  local keyC = { fieldX = 10, fieldZ = 3, surfaceId = actorA:getSurfaceId() }
   if actorA.cellKey then
     keyC.cellKey = actorA.cellKey
-    keyC.sourceSurfaceId = actorA.sourceSurfaceId
+    keyC.sourceSurfaceId = actorA:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, keyC).actorId, actorC.actorId, "C must win after claiming the freed low slot before A")
   Assert.equal(mgr:getCollisionAt(61, keyC).actorId, actorC.actorId)
@@ -2283,10 +2358,10 @@ function T.reconcile_preserves_manager_slot_winner_after_flag_recreation()
   local actorA = assert(mgr:getById("map:61:object:0"))
   local actorB = assert(mgr:getById("map:61:object:1"))
   mgr:setPosition(actorA.actorId, { fieldX = 8, fieldZ = 3 }, { scripted = true })
-  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA.surfaceId }
+  local keyB = { fieldX = 8, fieldZ = 3, surfaceId = actorA:getSurfaceId() }
   if actorA.cellKey then
     keyB.cellKey = actorA.cellKey
-    keyB.sourceSurfaceId = actorA.sourceSurfaceId
+    keyB.sourceSurfaceId = actorA:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, keyB).actorId, actorA.actorId)
   local actors = mgr:actorsOf(61)
@@ -2308,10 +2383,10 @@ function T.reconcile_preserves_manager_slot_winner_after_flag_recreation()
   mgr:step(5)
   actorA = assert(mgr:getById("map:61:object:0"))
   mgr:setPosition(actorA.actorId, { fieldX = 10, fieldZ = 3 }, { scripted = true })
-  local keyC = { fieldX = 10, fieldZ = 3, surfaceId = actorA.surfaceId }
+  local keyC = { fieldX = 10, fieldZ = 3, surfaceId = actorA:getSurfaceId() }
   if actorA.cellKey then
     keyC.cellKey = actorA.cellKey
-    keyC.sourceSurfaceId = actorA.sourceSurfaceId
+    keyC.sourceSurfaceId = actorA:getSourceSurfaceId()
   end
   Assert.equal(mgr:getAt(61, keyC).actorId, actorC.actorId)
   mgr:reconcilePhysicalWorld()
@@ -2362,10 +2437,10 @@ function T.save_restore_compacts_holes_but_preserves_active_lookup_order()
   local actorB = assert(restoredMgr:getById("map:61:object:1"))
   local actorC = assert(restoredMgr:getById("map:61:object:2"))
   restoredMgr:setPosition(actorB.actorId, { fieldX = 10, fieldZ = 3 }, { scripted = true })
-  local keyC = { fieldX = 10, fieldZ = 3, surfaceId = actorB.surfaceId }
+  local keyC = { fieldX = 10, fieldZ = 3, surfaceId = actorB:getSurfaceId() }
   if actorB.cellKey then
     keyC.cellKey = actorB.cellKey
-    keyC.sourceSurfaceId = actorB.sourceSurfaceId
+    keyC.sourceSurfaceId = actorB:getSourceSurfaceId()
   end
   Assert.equal(
     restoredMgr:getAt(61, keyC).actorId,
@@ -2397,26 +2472,26 @@ function T.reconciled_active_autonomous_walk_keeps_its_reservation_and_commits()
   mgr:reconcilePhysicalWorld()
 
   Assert.isFalse(mgr:isPausable(actorId), "the rebase must not cancel the in-flight walk")
-  Assert.equal(actor.fieldX, 2, "the rebase must preserve the logical departure tile")
-  Assert.equal(actor.fieldZ, 3, "the rebase must preserve the logical departure tile")
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "the rebase must preserve the logical departure tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, 3, "the rebase must preserve the logical departure tile")
   local rebased = assert(actor:scriptedMotionState(), "the walk must stay active across the rebase")
   Assert.equal(rebased.progressTicks, 2, "the rebase must not advance or reset action progress")
   Assert.equal(
-    mgr:getCollisionAt(61, candidate(3, 3, actor.surfaceId)),
+    mgr:getCollisionAt(61, candidate(3, 3, actor:getSurfaceId())),
     actor,
     "the rebase must carry the destination reservation into the replacement occupancy"
   )
-  Assert.equal(actor.worldX, -5.25, "the current world position must be rebased at unchanged progress")
-  Assert.equal(actor.worldZ, -12.5, "the current world position must be rebased at unchanged progress")
+  Assert.equal(actor:getWorldPosition().x, -5.25, "the current world position must be rebased at unchanged progress")
+  Assert.equal(actor:getWorldPosition().z, -12.5, "the current world position must be rebased at unchanged progress")
 
   for tick = 4, 9 do
     mgr:step(tick)
   end
   Assert.isTrue(mgr:isPausable(actorId), "the rebased walk must complete")
-  Assert.equal(actor.fieldX, 3, "completion must commit the original logical destination")
-  Assert.equal(actor.fieldZ, 3, "completion must commit the original logical destination")
-  Assert.equal(assert(getAt(mgr, 61, 3, 3, actor.surfaceId)), actor)
-  Assert.isNil(getAt(mgr, 61, 2, 3, actor.surfaceId))
+  Assert.equal(actor:getFieldPosition().fieldX, 3, "completion must commit the original logical destination")
+  Assert.equal(actor:getFieldPosition().fieldZ, 3, "completion must commit the original logical destination")
+  Assert.equal(assert(getAt(mgr, 61, 3, 3, actor:getSurfaceId())), actor)
+  Assert.isNil(getAt(mgr, 61, 2, 3, actor:getSurfaceId()))
   mgr:dispose()
 end
 
@@ -2431,7 +2506,7 @@ function T.reconciled_active_autonomous_walk_tears_down_cleanly_on_flag_removal(
   )
   local actorId = "map:61:object:0"
   local actor = assert(mgr:getById(actorId))
-  local surfaceId = actor.surfaceId
+  local surfaceId = actor:getSurfaceId()
   forceAutonomy(mgr, "east")
   mgr:step(1)
   mgr:step(2)
@@ -2469,12 +2544,12 @@ function T.reconciled_active_walk_is_idempotent_across_repeated_rebases()
   local motion = assert(actor:scriptedMotionState(), "the walk must still be active before the rebase")
   Assert.equal(motion.progressTicks, 2, "the rebase must observe a nonterminal progress tick")
   local destFieldX, destFieldZ = motion.destFieldX, motion.destFieldZ
-  local poseBefore, poseTickBefore = actor.pose, actor.poseTick
+  local poseBefore, poseTickBefore = actor.pose, actor:getPoseTick()
   local presentationBefore = actor:presentationState()
 
   map.coordinateOrigin = { x = -8, z = 0 }
   mgr:reconcilePhysicalWorld()
-  local worldXAfterFirst, worldZAfterFirst = actor.worldX, actor.worldZ
+  local worldXAfterFirst, worldZAfterFirst = actor:getWorldPosition().x, actor:getWorldPosition().z
   assert(actor:scriptedMotionState(), "the walk must stay active across the first rebase")
 
   mgr:reconcilePhysicalWorld()
@@ -2483,10 +2558,10 @@ function T.reconciled_active_walk_is_idempotent_across_repeated_rebases()
   Assert.equal(rebased.progressTicks, 2, "a repeated rebase must not advance or reset progress")
   Assert.equal(rebased.destFieldX, destFieldX, "a repeated rebase must preserve the logical destination")
   Assert.equal(rebased.destFieldZ, destFieldZ, "a repeated rebase must preserve the logical destination")
-  Assert.equal(actor.worldX, worldXAfterFirst, "a repeated rebase must not drift the world position")
-  Assert.equal(actor.worldZ, worldZAfterFirst, "a repeated rebase must not drift the world position")
+  Assert.equal(actor:getWorldPosition().x, worldXAfterFirst, "a repeated rebase must not drift the world position")
+  Assert.equal(actor:getWorldPosition().z, worldZAfterFirst, "a repeated rebase must not drift the world position")
   Assert.equal(actor.pose, poseBefore, "reprojection must not advance the pose clock")
-  Assert.equal(actor.poseTick, poseTickBefore, "reprojection must not advance the pose clock")
+  Assert.equal(actor:getPoseTick(), poseTickBefore, "reprojection must not advance the pose clock")
   local presentationAfter = actor:presentationState()
   Assert.equal(presentationAfter.gesturePose, presentationBefore.gesturePose, "reprojection must not touch gestures")
   Assert.equal(presentationAfter.gestureTick, presentationBefore.gestureTick, "reprojection must not touch gestures")
@@ -2496,7 +2571,7 @@ function T.reconciled_active_walk_is_idempotent_across_repeated_rebases()
     "reprojection must not touch gestures"
   )
   Assert.equal(
-    mgr:getCollisionAt(61, candidate(3, 3, actor.surfaceId)),
+    mgr:getCollisionAt(61, candidate(3, 3, actor:getSurfaceId())),
     actor,
     "repeated rebases must keep the single rebuilt destination reservation"
   )
@@ -2505,8 +2580,8 @@ function T.reconciled_active_walk_is_idempotent_across_repeated_rebases()
     mgr:step(tick)
   end
   Assert.isTrue(mgr:isPausable(actorId), "the rebased walk must complete")
-  Assert.equal(actor.fieldX, 3, "completion must commit the original logical destination")
-  Assert.equal(actor.fieldZ, 3, "completion must commit the original logical destination")
+  Assert.equal(actor:getFieldPosition().fieldX, 3, "completion must commit the original logical destination")
+  Assert.equal(actor:getFieldPosition().fieldZ, 3, "completion must commit the original logical destination")
   mgr:dispose()
 end
 
@@ -2524,7 +2599,7 @@ function T.reconciled_active_walk_survives_losing_and_regaining_coverage()
   local mgr = manager(objects, { map = map })
   local actorId = "map:61:object:0"
   local actor = assert(mgr:getById(actorId))
-  local surfaceId = actor.surfaceId
+  local surfaceId = actor:getSurfaceId()
   forceAutonomy(mgr, "east")
   mgr:step(1)
   mgr:step(2)
@@ -2540,7 +2615,7 @@ function T.reconciled_active_walk_survives_losing_and_regaining_coverage()
   }
   mgr:reconcilePhysicalWorld()
 
-  Assert.isFalse(actor.resident, "the rebase must follow the new resident bit")
+  Assert.isFalse(actor:isResident(), "the rebase must follow the new resident bit")
   local rebased = assert(actor:scriptedMotionState(), "the walk must stay active outside coverage")
   Assert.equal(rebased.progressTicks, 2, "the rebase must not advance or reset progress")
   Assert.equal(rebased.destFieldX, destFieldX, "the rebase must preserve the logical destination")
@@ -2560,7 +2635,7 @@ function T.reconciled_active_walk_survives_losing_and_regaining_coverage()
   }
   mgr:reconcilePhysicalWorld()
 
-  Assert.isTrue(actor.resident, "regained coverage must restore residency")
+  Assert.isTrue(actor:isResident(), "regained coverage must restore residency")
   local reresolved = assert(actor:scriptedMotionState(), "the walk must stay active across the second rebase")
   Assert.equal(reresolved.progressTicks, 2, "the second rebase must not advance or reset progress")
   Assert.equal(reresolved.destFieldX, destFieldX, "the second rebase must preserve the logical destination")
@@ -2577,9 +2652,9 @@ function T.reconciled_active_walk_survives_losing_and_regaining_coverage()
     mgr:step(tick)
   end
   Assert.isTrue(mgr:isPausable(actorId), "the rebased walk must complete")
-  Assert.equal(actor.fieldX, 3, "completion must commit the original logical destination")
-  Assert.equal(actor.fieldZ, 3, "completion must commit the original logical destination")
-  Assert.equal(assert(getAt(mgr, 61, 3, 3, actor.surfaceId)), actor)
+  Assert.equal(actor:getFieldPosition().fieldX, 3, "completion must commit the original logical destination")
+  Assert.equal(actor:getFieldPosition().fieldZ, 3, "completion must commit the original logical destination")
+  Assert.equal(assert(getAt(mgr, 61, 3, 3, actor:getSurfaceId())), actor)
   mgr:dispose()
 end
 

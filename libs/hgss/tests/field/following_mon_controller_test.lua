@@ -234,8 +234,8 @@ function T.eligible_lead_installs_behind_the_player()
   Assert.equal(w.controller:partnerActorId(), "field:partner", "the query reflects the actor")
   local actor = assert(w.mgr:getById("field:partner"))
   Assert.equal(actor.spriteId, 20153, "the Chikorita descriptor selects its visual")
-  Assert.equal(actor.fieldX, 4, "initial placement is the tile behind the player")
-  Assert.equal(actor.fieldZ, 4, "initial placement is the tile behind the player")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "initial placement is the tile behind the player")
+  Assert.equal(actor:getFieldPosition().fieldZ, 4, "initial placement is the tile behind the player")
   Assert.equal(actor.facing, "south", "installation keeps the player facing")
   w.mgr:dispose()
 end
@@ -245,7 +245,7 @@ function T.mid_map_lead_birth_installs_hidden_but_map_entry_stays_visible()
   mapEntry.svc:setLead(0, mon())
   tick(mapEntry, 2)
   local visible = assert(mapEntry.mgr:getById("field:partner"), "a map-entry lead installs a partner")
-  Assert.isTrue(visible.visible, "normal map-entry reconstruction remains visible")
+  Assert.isTrue(visible:isVisible(), "normal map-entry reconstruction remains visible")
   mapEntry.mgr:dispose()
 
   local midMap = world()
@@ -253,7 +253,7 @@ function T.mid_map_lead_birth_installs_hidden_but_map_entry_stays_visible()
   midMap.svc:setLead(0, mon())
   tick(midMap, 2)
   local hidden = assert(midMap.mgr:getById("field:partner"), "the mid-map lead birth installs a partner")
-  Assert.isFalse(hidden.visible, "a newly published mid-map lead starts hidden")
+  Assert.isFalse(hidden:isVisible(), "a newly published mid-map lead starts hidden")
   midMap.mgr:dispose()
 end
 
@@ -267,7 +267,7 @@ function T.hidden_birth_retries_after_placement_rejection()
   w.player.facing = "south"
   tick(w, 1)
   local actor = assert(w.mgr:getById("field:partner"), "the hidden birth retries on a later tick")
-  Assert.isFalse(actor.visible, "the retry keeps the hidden publication intent")
+  Assert.isFalse(actor:isVisible(), "the retry keeps the hidden publication intent")
   w.mgr:dispose()
 end
 
@@ -282,7 +282,7 @@ function T.invalidated_hidden_birth_does_not_apply_to_a_replacement_lead()
   w.svc:setLead(0, mon("TOTODILE"))
   tick(w, 1)
   local actor = assert(w.mgr:getById("field:partner"), "the replacement lead publishes")
-  Assert.isTrue(actor.visible, "a replacement lead does not inherit stale hidden intent")
+  Assert.isTrue(actor:isVisible(), "a replacement lead does not inherit stale hidden intent")
   w.mgr:dispose()
 end
 
@@ -354,8 +354,8 @@ function T.partner_replays_committed_anchors_and_settles()
   Assert.isFalse(w.controller:isMovementSettled(), "a queued anchor keeps the follower busy")
   tick(w, 30)
   local actor = assert(w.mgr:getById("field:partner"), "the partner survives the trail")
-  Assert.equal(actor.fieldX, 4, "the partner replays the vacated tile")
-  Assert.equal(actor.fieldZ, 5, "the partner replays the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "the partner replays the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, 5, "the partner replays the vacated tile")
   Assert.isTrue(w.controller:isMovementSettled(), "the drained queue settles")
   w.mgr:dispose()
 end
@@ -369,14 +369,14 @@ function T.pause_retains_the_queue_and_resume_drains_it()
   stepSouth(w)
   tick(w, 20)
   local actor = assert(w.mgr:getById("field:partner"))
-  Assert.equal(actor.fieldZ, 4, "a paused follower holds its tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, 4, "a paused follower holds its tile")
   -- A paused queue is retained, not drained, so a wait issued while paused
   -- settles instead of hanging: settlement never means "queue empty" alone.
   Assert.isTrue(w.controller:isMovementSettled(), "a paused follower never hangs a wait")
   w.controller:setMovementPaused(false)
   tick(w, 30)
   actor = assert(w.mgr:getById("field:partner"))
-  Assert.equal(actor.fieldZ, 5, "resume replays the retained anchor")
+  Assert.equal(actor:getFieldPosition().fieldZ, 5, "resume replays the retained anchor")
   Assert.isTrue(w.controller:isMovementSettled(), "the drained queue settles after resume")
   w.mgr:dispose()
 end
@@ -394,7 +394,11 @@ function T.overlong_paused_queue_reconciles_instead_of_replaying()
   w.controller:setMovementPaused(false)
   tick(w, 40)
   local actor = assert(w.mgr:getById("field:partner"))
-  Assert.equal(actor.fieldZ, 14, "the overlong queue snaps behind the player instead of replaying stale anchors")
+  Assert.equal(
+    actor:getFieldPosition().fieldZ,
+    14,
+    "the overlong queue snaps behind the player instead of replaying stale anchors"
+  )
   Assert.isTrue(w.controller:isMovementSettled(), "the reconciled queue settles")
   w.mgr:dispose()
 end
@@ -469,8 +473,8 @@ function T.mode_change_clears_stale_trail_and_rebaselines_while_keeping_pause()
   Assert.equal(w.player.motion, "idle", "the player step still commits")
   tick(w, 20)
   local actor = assert(w.mgr:getById(partnerId), "the partner survives the dropped step")
-  Assert.equal(actor.fieldX, home.fieldX, "the dropped start never replays from its commit")
-  Assert.equal(actor.fieldZ, home.fieldZ, "the dropped start never replays from its commit")
+  Assert.equal(actor:getFieldPosition().fieldX, home.fieldX, "the dropped start never replays from its commit")
+  Assert.equal(actor:getFieldPosition().fieldZ, home.fieldZ, "the dropped start never replays from its commit")
   Assert.isTrue(w.controller:isMovementSettled(), "the dropped step settles without movement")
 
   w.controller:setMovementPaused(true)
@@ -496,8 +500,8 @@ function T.mode_change_clears_stale_trail_and_rebaselines_while_keeping_pause()
   w.controller:setMovementPaused(false)
   tick(w, 5)
   actor = assert(w.mgr:getById(partnerId), "the partner survives the release")
-  Assert.equal(actor.fieldX, home.fieldX, "release replays no dropped history")
-  Assert.equal(actor.fieldZ, home.fieldZ, "release replays no dropped history")
+  Assert.equal(actor:getFieldPosition().fieldX, home.fieldX, "release replays no dropped history")
+  Assert.equal(actor:getFieldPosition().fieldZ, home.fieldZ, "release replays no dropped history")
   Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled after the release")
   w.mgr:dispose()
 end
@@ -526,8 +530,8 @@ function T.teleport_snaps_the_partner_and_drops_stale_anchors()
   w.player:setScriptPosition({ fieldX = 20, fieldZ = 20 })
   tick(w, 3)
   local actor = assert(w.mgr:getById("field:partner"), "the partner survives the discontinuity")
-  Assert.equal(actor.fieldX, 20, "the snap lands behind the player")
-  Assert.equal(actor.fieldZ, 19, "the snap lands behind the player")
+  Assert.equal(actor:getFieldPosition().fieldX, 20, "the snap lands behind the player")
+  Assert.equal(actor:getFieldPosition().fieldZ, 19, "the snap lands behind the player")
   Assert.isTrue(w.controller:isMovementSettled(), "stale anchors never replay after a snap")
   w.mgr:dispose()
 end
@@ -633,7 +637,7 @@ function T.ordinary_follow_starts_before_the_player_commits()
   tick(w, 2)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   local installed = assert(w.mgr:getById(partnerId), "the partner actor is required")
-  local startWorldZ = installed.worldZ
+  local startWorldZ = installed:getWorldPosition().z
   local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
 
   Assert.isTrue(w.player:tryStep("south"), "the fixture step must start")
@@ -654,7 +658,7 @@ function T.ordinary_follow_starts_before_the_player_commits()
   Assert.isTrue(w.player.motion ~= "idle", "the player is still in flight mid-step")
   actor = assert(w.mgr:getById(partnerId), "the partner survives mid-step")
   Assert.equal(actor.pose, "walk", "the follower is still walking mid-step")
-  Assert.isTrue(actor.worldZ > startWorldZ, "the follower has visibly left its original tile")
+  Assert.isTrue(actor:getWorldPosition().z > startWorldZ, "the follower has visibly left its original tile")
 
   -- Both settle on the normal walk boundary with the follower on the tile
   -- the player vacated, not on the player destination.
@@ -667,8 +671,8 @@ function T.ordinary_follow_starts_before_the_player_commits()
   Assert.equal(w.player.motion, "idle", "the player step completes")
   Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the player commits one tile south")
   actor = assert(w.mgr:getById(partnerId), "the partner survives the step")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the follower targets the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower targets the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower targets the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower targets the vacated tile")
   Assert.isTrue(w.controller:isMovementSettled(), "the ordinary follow settles")
   w.mgr:dispose()
 end
@@ -699,24 +703,24 @@ function T.observed_step_is_never_replayed_from_the_commit()
     w.controller:update()
   end
   local actor = assert(w.mgr:getById(partnerId), "the partner survives the step")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the follower sits on the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower sits on the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower sits on the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower sits on the vacated tile")
   Assert.isTrue(w.controller:isMovementSettled(), "the ordinary follow settles")
 
   -- The later commit revision must not enqueue the already-consumed tile
   -- again: idle ticks never restart the follower.
   tick(w, 10)
   actor = assert(w.mgr:getById(partnerId), "the partner survives idle ticks")
-  Assert.equal(actor.fieldX, vacated.fieldX, "no duplicate walk replays the consumed tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "no duplicate walk replays the consumed tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "no duplicate walk replays the consumed tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "no duplicate walk replays the consumed tile")
   Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled while idle")
 
   -- A genuine discontinuity still repairs through the existing snap path.
   w.player:setScriptPosition({ fieldX = 20, fieldZ = 20 })
   tick(w, 3)
   actor = assert(w.mgr:getById(partnerId), "the partner survives the discontinuity")
-  Assert.equal(actor.fieldX, 20, "the snap lands behind the player")
-  Assert.equal(actor.fieldZ, 19, "the snap lands behind the player")
+  Assert.equal(actor:getFieldPosition().fieldX, 20, "the snap lands behind the player")
+  Assert.equal(actor:getFieldPosition().fieldZ, 19, "the snap lands behind the player")
   Assert.isTrue(w.controller:isMovementSettled(), "stale anchors never replay after a snap")
   w.mgr:dispose()
 end
@@ -732,13 +736,13 @@ function T.late_attach_ignores_completed_history()
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "the late attach still installs the partner")
   local actor = assert(w.mgr:getById(partnerId), "the partner actor is required")
-  Assert.equal(actor.fieldX, 4, "the late attach installs behind the settled player")
-  Assert.equal(actor.fieldZ, 5, "the late attach installs behind the settled player")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "the late attach installs behind the settled player")
+  Assert.equal(actor:getFieldPosition().fieldZ, 5, "the late attach installs behind the settled player")
   Assert.isTrue(w.controller:isMovementSettled(), "the completed step replays no walk")
   tick(w, 10)
   actor = assert(w.mgr:getById(partnerId), "the partner survives idle ticks")
-  Assert.equal(actor.fieldX, 4, "idle ticks start no replay of the historical step")
-  Assert.equal(actor.fieldZ, 5, "idle ticks start no replay of the historical step")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "idle ticks start no replay of the historical step")
+  Assert.equal(actor:getFieldPosition().fieldZ, 5, "idle ticks start no replay of the historical step")
   Assert.isTrue(w.controller:isMovementSettled(), "the follower stays settled while idle")
   w.mgr:dispose()
 end
@@ -755,7 +759,7 @@ function T.transition_mode_scripted_walk_starts_the_trail_before_the_player_comm
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   w.controller:setMovementType("follow_transition_a")
   local vacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
-  local startWorldY = assert(w.mgr:getById(partnerId), "the partner actor is required").worldY
+  local startWorldY = assert(w.mgr:getById(partnerId), "the partner actor is required"):getWorldPosition().y
 
   w.player:beginScriptedAction({ action = "walk", direction = "south", speed = "normal" })
   Assert.isTrue(w.player:isScriptedMoving(), "the scripted walk is in flight")
@@ -774,7 +778,7 @@ function T.transition_mode_scripted_walk_starts_the_trail_before_the_player_comm
   end
   actor = assert(w.mgr:getById(partnerId), "the partner survives mid-step")
   Assert.near(
-    assert(actor.worldY, "the partner height is required"),
+    assert(actor:getWorldPosition().y, "the partner height is required"),
     assert(startWorldY, "the trail start height is required"),
     1e-9,
     "the trail holds its height mid-step instead of jumping"
@@ -789,8 +793,8 @@ function T.transition_mode_scripted_walk_starts_the_trail_before_the_player_comm
   end
   Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the scripted step commits one tile south")
   actor = assert(w.mgr:getById(partnerId), "the partner survives the scripted step")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the follower settles onto the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower settles onto the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower settles onto the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower settles onto the vacated tile")
   Assert.equal(w.mgr:partnerId(), partnerId, "an adjacent scripted trail keeps the stable actor")
   Assert.isTrue(w.controller:isMovementSettled(), "the scripted follow settles")
   w.mgr:dispose()
@@ -827,8 +831,8 @@ function T.transition_a_steers_to_the_vacated_tile_and_remembers_the_follower_co
     w.controller:update()
   end
   actor = assert(w.mgr:getById(partnerId), "the partner survives the transition step")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the follower settles onto the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower settles onto the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower settles onto the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower settles onto the vacated tile")
   Assert.equal(#w.controller._queue, 0, "no duplicate obligation remains queued")
   Assert.isTrue(w.controller:isMovementSettled(), "the transition step settles")
   Assert.deepEqual(
@@ -878,8 +882,12 @@ function T.transition_b_replays_the_remembered_command_instead_of_steering()
     replay.controller:update()
   end
   actor = assert(replay.mgr:getById(partnerId), "the partner survives the replay")
-  Assert.equal(actor.fieldX, followerStart.fieldX + 1, "the replay steps east instead of onto the vacated tile")
-  Assert.equal(actor.fieldZ, followerStart.fieldZ, "the replay holds its row while stepping east")
+  Assert.equal(
+    actor:getFieldPosition().fieldX,
+    followerStart.fieldX + 1,
+    "the replay steps east instead of onto the vacated tile"
+  )
+  Assert.equal(actor:getFieldPosition().fieldZ, followerStart.fieldZ, "the replay holds its row while stepping east")
   Assert.isTrue(replay.controller:isMovementSettled(), "the replay settles with no stale obligation")
   Assert.deepEqual(
     replay.controller._lastFollowerCommand,
@@ -906,8 +914,8 @@ function T.transition_b_replays_the_remembered_command_instead_of_steering()
     steering.controller:update()
   end
   local steered = assert(steering.mgr:getById(steeringId), "the partner survives the steering step")
-  Assert.equal(steered.fieldX, steeringVacated.fieldX, "steering settles onto the vacated tile")
-  Assert.equal(steered.fieldZ, steeringVacated.fieldZ, "steering settles onto the vacated tile")
+  Assert.equal(steered:getFieldPosition().fieldX, steeringVacated.fieldX, "steering settles onto the vacated tile")
+  Assert.equal(steered:getFieldPosition().fieldZ, steeringVacated.fieldZ, "steering settles onto the vacated tile")
   Assert.isTrue(steering.controller:isMovementSettled(), "the steering step settles")
   steering.mgr:dispose()
 end
@@ -941,8 +949,8 @@ function T.arriving_walk_start_begins_the_real_trail_in_the_same_update()
   end
   Assert.equal(w.player.fieldZ, vacated.fieldZ + 1, "the player commits one tile south")
   actor = assert(w.mgr:getById(partnerId), "the partner survives the step")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the follower targets the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the follower targets the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the follower targets the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the follower targets the vacated tile")
   w.mgr:dispose()
 end
 
@@ -955,21 +963,21 @@ function T.free_stationary_follower_idles_without_starting_movement()
   tick(w, 3)
   local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
   local home = assert(w.mgr:getPosition(partnerId), "the partner position is required")
-  local homeWorldY = assert(w.mgr:getById(partnerId), "the partner actor is required").worldY
+  local homeWorldY = assert(w.mgr:getById(partnerId), "the partner actor is required"):getWorldPosition().y
   for _ = 1, 30 do
     w.controller:update()
     local actor = assert(w.mgr:getById(partnerId), "the partner survives stationary ticks")
     Assert.equal(actor.pose, "idle", "every stationary tick presents idle, never locomotion")
     Assert.isNil(actor:scriptedMotionState(), "stationary ticks start no movement action")
-    Assert.equal(actor.fieldX, home.fieldX, "native idle never changes the logical tile")
-    Assert.equal(actor.fieldZ, home.fieldZ, "native idle never changes the logical tile")
+    Assert.equal(actor:getFieldPosition().fieldX, home.fieldX, "native idle never changes the logical tile")
+    Assert.equal(actor:getFieldPosition().fieldZ, home.fieldZ, "native idle never changes the logical tile")
     Assert.isTrue(w.controller:isMovementSettled(), "native idle stays logically settled")
   end
   local after = assert(w.mgr:getById(partnerId), "the partner survives the idle ticks")
-  Assert.equal(after.fieldX, home.fieldX, "repeated idle never displaces the logical tile")
-  Assert.equal(after.fieldZ, home.fieldZ, "repeated idle never displaces the logical tile")
+  Assert.equal(after:getFieldPosition().fieldX, home.fieldX, "repeated idle never displaces the logical tile")
+  Assert.equal(after:getFieldPosition().fieldZ, home.fieldZ, "repeated idle never displaces the logical tile")
   Assert.near(
-    assert(after.worldY, "the partner height is required"),
+    assert(after:getWorldPosition().y, "the partner height is required"),
     assert(homeWorldY, "the idle start height is required"),
     1e-9,
     "native idle never changes the height anchor"
@@ -1013,8 +1021,8 @@ function T.pausing_keeps_the_real_trail_in_flight()
   end
   Assert.equal(w.player.motion, "idle", "the player step completes")
   local actor = assert(w.mgr:getById(partnerId), "the partner survives the paused trail")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the in-flight trail reaches the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the in-flight trail reaches the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the in-flight trail reaches the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the in-flight trail reaches the vacated tile")
   Assert.isTrue(w.controller:isMovementSettled(), "the committed trail settles even while paused")
   w.controller:setMovementPaused(false)
   w.mgr:dispose()
@@ -1170,8 +1178,8 @@ function T.fast_scripted_walk_trails_at_its_own_pace_and_keeps_queued_speeds()
     w.controller:update()
   end
   actor = assert(w.mgr:getById(partnerId), "the partner survives the fast step")
-  Assert.equal(actor.fieldX, vacated.fieldX, "the fast trail settles onto the vacated tile")
-  Assert.equal(actor.fieldZ, vacated.fieldZ, "the fast trail settles onto the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX, "the fast trail settles onto the vacated tile")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ, "the fast trail settles onto the vacated tile")
   Assert.isTrue(w.controller:isMovementSettled(), "the fast trail settles")
 
   local runVacated = { fieldX = w.player.fieldX, fieldZ = w.player.fieldZ }
@@ -1195,8 +1203,16 @@ function T.fast_scripted_walk_trails_at_its_own_pace_and_keeps_queued_speeds()
     w.controller:update()
   end
   runner = assert(w.mgr:getById(partnerId), "the partner survives the run step")
-  Assert.equal(runner.fieldX, runVacated.fieldX, "the normalized trail settles onto the vacated tile")
-  Assert.equal(runner.fieldZ, runVacated.fieldZ, "the normalized trail settles onto the vacated tile")
+  Assert.equal(
+    runner:getFieldPosition().fieldX,
+    runVacated.fieldX,
+    "the normalized trail settles onto the vacated tile"
+  )
+  Assert.equal(
+    runner:getFieldPosition().fieldZ,
+    runVacated.fieldZ,
+    "the normalized trail settles onto the vacated tile"
+  )
   Assert.isTrue(w.controller:isMovementSettled(), "the normalized trail settles")
 
   w.controller:setMovementPaused(true)
@@ -1390,8 +1406,8 @@ function T.first_replay_seeds_from_the_live_step()
   w.controller:setMovementType("follow_transition_b")
   local vacated = driveScriptedWalk(w, "east", "normal")
   local actor = assert(w.mgr:getById(assert(w.mgr:partnerId(), "setup installs the partner")))
-  Assert.equal(actor.fieldX, vacated.fieldX + 1, "the seeded replay steps with the live direction")
-  Assert.equal(actor.fieldZ, vacated.fieldZ - 1, "the seeded replay holds the live row")
+  Assert.equal(actor:getFieldPosition().fieldX, vacated.fieldX + 1, "the seeded replay steps with the live direction")
+  Assert.equal(actor:getFieldPosition().fieldZ, vacated.fieldZ - 1, "the seeded replay holds the live row")
   Assert.deepEqual(
     w.controller._lastFollowerCommand,
     { direction = "east", speed = "normal" },
@@ -1496,8 +1512,8 @@ function T.transition_b_second_fast_replay_survives_first_replay_completion()
     w.controller:update()
   end
   local actor = assert(w.mgr:getById(partnerId), "the partner survives both replays")
-  Assert.equal(actor.fieldX, startX, "both replays hold the remembered column")
-  Assert.equal(actor.fieldZ, startZ + 2, "both remembered replays execute in order")
+  Assert.equal(actor:getFieldPosition().fieldX, startX, "both replays hold the remembered column")
+  Assert.equal(actor:getFieldPosition().fieldZ, startZ + 2, "both remembered replays execute in order")
   Assert.equal(#w.controller._queue, 0, "no pending replay remains")
   Assert.isNil(w.controller._action, "no replay remains in flight")
   Assert.isTrue(w.controller:isMovementSettled(), "both replays settle")
@@ -1547,8 +1563,8 @@ function T.started_queue_head_leaves_pending_queue_at_start()
     w.controller:update()
   end
   local actor = assert(w.mgr:getById(partnerId), "the partner survives the drained queue")
-  Assert.equal(actor.fieldX, 4, "both queued walks hold the remembered column")
-  Assert.equal(actor.fieldZ, 6, "both queued walks replay in order")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "both queued walks hold the remembered column")
+  Assert.equal(actor:getFieldPosition().fieldZ, 6, "both queued walks replay in order")
   Assert.isTrue(w.controller:isMovementSettled(), "the drained queue settles")
   w.mgr:dispose()
 end

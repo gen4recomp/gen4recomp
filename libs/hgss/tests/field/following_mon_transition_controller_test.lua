@@ -43,6 +43,12 @@ local function partnerRecord(overrides)
     worldY = 2,
     visible = false,
   }
+  function record:getFieldPosition()
+    return { fieldX = self.fieldX, fieldZ = self.fieldZ }
+  end
+  function record:getWorldPosition()
+    return { x = nil, y = self.worldY, z = nil }
+  end
   for key, value in pairs(overrides or {}) do
     record[key] = value
   end

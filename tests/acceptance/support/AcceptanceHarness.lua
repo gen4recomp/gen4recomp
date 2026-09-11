@@ -344,14 +344,15 @@ function Game:snapshot()
   local actors, occupancy = {}, {}
   if runtime.actors and runtime.runtimeMap then
     for _, actor in ipairs(runtime.actors:actorsOf(runtime.runtimeMap.mapId)) do
+      local committed = actor:getFieldPosition()
       actors[actor.actorId] = {
-        fieldX = actor.fieldX,
-        fieldZ = actor.fieldZ,
-        surfaceId = actor.surfaceId,
+        fieldX = committed.fieldX,
+        fieldZ = committed.fieldZ,
+        surfaceId = actor:getSurfaceId(),
         facing = actor.facing,
       }
-      if actor.solid then
-        occupancy[actor.fieldX .. ":" .. actor.fieldZ] = actor.actorId
+      if actor:isSolid() then
+        occupancy[committed.fieldX .. ":" .. committed.fieldZ] = actor.actorId
       end
     end
   end
