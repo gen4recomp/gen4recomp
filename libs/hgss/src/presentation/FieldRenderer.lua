@@ -38,13 +38,7 @@ function FieldRenderer.new(opts)
     stats = gxRenderer.stats,
     _ownsRenderer = ownsRenderer,
     clearColor = opts.clearColor,
-    _queueScratch = {
-      opaque = {},
-      cutout = {},
-      mixedOpaque = {},
-      wireframe = {},
-      blended = {},
-    },
+    _queueScratch = RenderQueue.newScratch(),
   }, FieldRenderer)
 end
 
