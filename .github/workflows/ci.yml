@@ -83,7 +83,12 @@ jobs:
             --output "$RUNNER_TEMP/love.AppImage" \
             "https://github.com/love2d/love/releases/download/${LOVE_VERSION}/love-${LOVE_VERSION}-x86_64.AppImage"
           chmod +x "$RUNNER_TEMP/love.AppImage"
-          "$RUNNER_TEMP/love.AppImage" --appimage-extract-and-run --version
+          mkdir -p "$RUNNER_TEMP/love-extracted"
+          (
+            cd "$RUNNER_TEMP/love-extracted"
+            "$RUNNER_TEMP/love.AppImage" --appimage-extract >/dev/null
+          )
+          "$RUNNER_TEMP/love-extracted/squashfs-root/AppRun" --version
 
       - name: Install offscreen graphics dependencies
         run: |
@@ -97,7 +102,7 @@ jobs:
           G4RECOMP_REQUIRE_GRAPHICS_TESTS: "1"
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
-          printf '%s\n' '#!/bin/sh' 'exec "$RUNNER_TEMP/love.AppImage" --appimage-extract-and-run "$@"' > "$RUNNER_TEMP/bin/love"
+          printf '%s\n' '#!/bin/sh' 'exec "$RUNNER_TEMP/love-extracted/squashfs-root/AppRun" "$@"' > "$RUNNER_TEMP/bin/love"
           chmod +x "$RUNNER_TEMP/bin/love"
           # Keep CI on the same entrypoint and software graphics host as local
           # development. Slow suites run here when their capabilities are
