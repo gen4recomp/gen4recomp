@@ -3,6 +3,7 @@
 local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
+local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local HgssGame = require("game.hgss.src.HgssGame")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local ImportState = require("app.src.launcher.ImportState")
@@ -31,6 +32,26 @@ local function readyVersions()
   return out
 end
 
+local function provisionerOptions(versionId)
+  if App.opts.dev == true then
+    local repositoryRoot = love.filesystem.getSourceBaseDirectory()
+    local backend = ProducerFingerprint.checkoutBackend(repositoryRoot)
+    return {
+      versionId = versionId,
+      producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src"),
+      developmentRepositoryRoot = repositoryRoot,
+    }
+  end
+
+  local backend = ProducerFingerprint.appBackend()
+  local info = assert(backend.getInfo, "producer VFS backend must expose getInfo")("romdump/src")
+  assert(info and info.type == "directory", "packaged producer tree romdump/src is missing or is not a directory")
+  return {
+    versionId = versionId,
+    producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src"),
+  }
+end
+
 local function launchHgss(versionId)
   local function onExit(result)
     if result and result.kind == "quit" then
@@ -39,10 +60,7 @@ local function launchHgss(versionId)
   end
   local provisioner
   local ok, result = pcall(function()
-    provisioner = DerivedAssetProvisioner.new({
-      versionId = versionId,
-      developmentRepositoryRoot = love.filesystem.getSourceBaseDirectory(),
-    })
+    provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
     return HgssGame.new({
       versionId = versionId,
       onExit = onExit,

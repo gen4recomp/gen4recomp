@@ -247,7 +247,10 @@ function T.startup_activates_a_complete_inactive_generation_without_rewriting_me
   end
   cache:writeLua(MapAssetCache.worldPath(), { byId = {}, maps = {} })
 
-  local ok, buildOrError = pcall(InteractiveCacheBuild.new, { versionId = "heartgold" })
+  local ok, buildOrError = pcall(InteractiveCacheBuild.new, {
+    versionId = "heartgold",
+    producerFingerprint = "producer-fingerprint",
+  })
 
   CacheFs.forVersion = originalCacheForVersion
   RomFs.open = originalRomFsOpen
@@ -269,6 +272,37 @@ function T.startup_activates_a_complete_inactive_generation_without_rewriting_me
   Assert.equal(active.generation, GENERATION)
   Assert.equal(cache:read(ScriptCache.scriptPath(GENERATION, 0, "script.one")), originalMember)
   build.romFs:close()
+end
+
+function T.missing_or_empty_producer_fingerprint_fails_before_opening_dependencies()
+  local originalCacheForVersion = CacheFs.forVersion
+  local originalRomFsOpen = RomFs.open
+  local originalPoolNew = CompilerPool.new
+  local function unexpectedCall()
+    error("producer fingerprint validation must precede dependency construction")
+  end
+
+  CacheFs.forVersion = unexpectedCall
+  RomFs.open = unexpectedCall
+  CompilerPool.new = unexpectedCall
+  local ok, err = pcall(function()
+    local function assertInvalid(producerFingerprint)
+      local success, failure = pcall(InteractiveCacheBuild.new, {
+        versionId = "heartgold",
+        producerFingerprint = producerFingerprint,
+      })
+      Assert.isFalse(success)
+      Assert.isTrue(tostring(failure):find("producer fingerprint is required", 1, true) ~= nil)
+    end
+    assertInvalid(nil)
+    assertInvalid("")
+  end)
+  CacheFs.forVersion = originalCacheForVersion
+  RomFs.open = originalRomFsOpen
+  CompilerPool.new = originalPoolNew
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.incomplete_target_remains_inert_after_shutdown()

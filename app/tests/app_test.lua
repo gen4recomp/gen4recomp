@@ -10,6 +10,9 @@ local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+local defaultAppBackend = ProducerFingerprint.appBackend
+local defaultCheckoutBackend = ProducerFingerprint.checkoutBackend
 
 local App
 local ImportState
@@ -38,6 +41,23 @@ local function countingState()
   return state
 end
 
+local function minimalSourceBackend()
+  return {
+    list = function()
+      return {}
+    end,
+    read = function()
+      error("the empty source fixture has no files")
+    end,
+    getInfo = function(path)
+      if path == "romdump/src" then
+        return { type = "directory" }
+      end
+      return nil
+    end,
+  }
+end
+
 -- Clear module state so tests are independent of each other and of the boot
 -- flow tests.
 local function fresh()
@@ -57,6 +77,7 @@ end
 ---@field prints integer
 ---@field state table
 ---@field launches table[]
+---@field provisionerOptions table[]
 ---@field quitCodes integer[]
 ---@field provisionerDisposals integer
 ---@param opts table|nil
@@ -73,10 +94,21 @@ local function withAppHarness(opts, ready, fn)
   local originalGetDimensions = graphics.getDimensions
   local originalQuit = love.event.quit
   local originalBuildNew = InteractiveCacheBuild.new
+  local harnessAppBackend = ProducerFingerprint.appBackend
+  local harnessCheckoutBackend = ProducerFingerprint.checkoutBackend
+  if harnessAppBackend == defaultAppBackend then
+    ProducerFingerprint.appBackend = minimalSourceBackend
+  end
+  if harnessCheckoutBackend == defaultCheckoutBackend then
+    ProducerFingerprint.checkoutBackend = function()
+      return minimalSourceBackend()
+    end
+  end
   local result = {
     prints = 0,
     state = countingState(),
     launches = {},
+    provisionerOptions = {},
     quitCodes = {},
     provisionerDisposals = 0,
   }
@@ -103,7 +135,8 @@ local function withAppHarness(opts, ready, fn)
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
-  InteractiveCacheBuild.new = function()
+  InteractiveCacheBuild.new = function(options)
+    result.provisionerOptions[#result.provisionerOptions + 1] = options
     return {
       update = function() end,
       dispose = function()
@@ -131,10 +164,69 @@ local function withAppHarness(opts, ready, fn)
   graphics.getDimensions = originalGetDimensions
   love.event.quit = originalQuit
   InteractiveCacheBuild.new = originalBuildNew
+  ProducerFingerprint.appBackend = harnessAppBackend
+  ProducerFingerprint.checkoutBackend = harnessCheckoutBackend
   if not ok then
     error(err, 0)
   end
   return result
+end
+
+---@param appBackend fun(): ProducerSourceTree
+---@param checkoutBackend fun(repositoryRoot: string): ProducerSourceTree
+---@param fn fun()
+local function withProducerBackends(appBackend, checkoutBackend, fn)
+  local originalAppBackend = ProducerFingerprint.appBackend
+  local originalCheckoutBackend = ProducerFingerprint.checkoutBackend
+  ProducerFingerprint.appBackend = appBackend
+  ProducerFingerprint.checkoutBackend = checkoutBackend
+  local ok, err = pcall(fn)
+  ProducerFingerprint.appBackend = originalAppBackend
+  ProducerFingerprint.checkoutBackend = originalCheckoutBackend
+  if not ok then
+    error(err, 0)
+  end
+end
+
+---@param root string
+---@param fn fun()
+local function withSourceBaseDirectory(root, fn)
+  local fs = love.filesystem
+  local original = fs.getSourceBaseDirectory
+  fs.getSourceBaseDirectory = function()
+    return root
+  end
+  local ok, err = pcall(fn)
+  fs.getSourceBaseDirectory = original
+  if not ok then
+    error(err, 0)
+  end
+end
+
+---@param files table<string, string>
+---@return ProducerSourceTree
+local function fakeSourceBackend(files)
+  return {
+    list = function()
+      local paths = {}
+      for path in pairs(files) do
+        paths[#paths + 1] = path
+      end
+      table.sort(paths, function(left, right)
+        return left > right
+      end)
+      return paths
+    end,
+    read = function(path)
+      return assert(files[path])
+    end,
+    getInfo = function(path)
+      if path == "romdump/src" then
+        return { type = "directory" }
+      end
+      return nil
+    end,
+  }
 end
 
 -- An importer stand-in in a given state. App reads isBusy()/state and forwards
@@ -316,6 +408,120 @@ function T.shell_exit_mapping_quits_only_for_a_hgss_quit_result()
     Assert.deepEqual(result.quitCodes, {})
     launch.onExit({ kind = "quit" })
     Assert.deepEqual(result.quitCodes, { 0 })
+  end)
+end
+
+-- Product startup reports a packaging defect before creating a scheduler or a
+-- game, and it never reaches the Unix checkout source adapter.
+function T.product_startup_rejects_a_missing_packaged_producer_tree_without_checkout_fallback()
+  local checkoutCalls = 0
+  withProducerBackends(function()
+    return {
+      list = function()
+        return {}
+      end,
+      read = function()
+        error("the missing packaged tree must fail before reads")
+      end,
+      getInfo = function()
+        return nil
+      end,
+    }
+  end, function()
+    checkoutCalls = checkoutCalls + 1
+    error("product startup must not select the checkout source")
+  end, function()
+    withAppHarness({ dev = false }, function(id)
+      return id == "heartgold"
+    end, function(result)
+      local err = Assert.throws(function()
+        App._bootExisting()
+      end)
+      local message = tostring(err)
+      Assert.isTrue(message:find("packaged producer tree", 1, true) ~= nil)
+      Assert.isTrue(message:find("romdump/src", 1, true) ~= nil)
+      Assert.equal(checkoutCalls, 0)
+      Assert.equal(#result.provisionerOptions, 0)
+      Assert.equal(#result.launches, 0)
+    end)
+  end)
+end
+
+-- Product startup computes one fingerprint from the packaged source tree and
+-- passes only that identity across the provisioning boundary.
+function T.product_startup_passes_vfs_fingerprint_without_checkout_metadata()
+  local files = {
+    ["build/Compiler.lua"] = "product compiler",
+    ["build/Readers.lua"] = "product readers",
+  }
+  local appBackend = fakeSourceBackend(files)
+  withProducerBackends(function()
+    return appBackend
+  end, function()
+    error("product startup must not select the checkout source")
+  end, function()
+    withAppHarness({ dev = false }, function(id)
+      return id == "heartgold"
+    end, function(result)
+      App._bootExisting()
+      local options = assert(result.provisionerOptions[1])
+      Assert.keySet(options, "producerFingerprint,versionId")
+      Assert.equal(options.versionId, "heartgold")
+      Assert.equal(options.producerFingerprint, ProducerFingerprint.compute(appBackend, "romdump/src"))
+      Assert.equal(#result.launches, 1)
+      Assert.equal(App.state, result.state)
+    end)
+  end)
+end
+
+-- Explicit development mode selects the checkout adapter and keeps its root
+-- available for worker bootstrap; changing checkout content changes identity.
+function T.development_startup_passes_checkout_fingerprint_and_worker_root()
+  local files = {
+    ["build/Compiler.lua"] = "checkout compiler",
+    ["build/Readers.lua"] = "checkout readers",
+  }
+  local checkoutRoot = "/deterministic/checkout"
+  local checkoutCalls = 0
+  local appBackendCalls = 0
+  local checkoutBackend = function(repositoryRoot)
+    checkoutCalls = checkoutCalls + 1
+    Assert.equal(repositoryRoot, checkoutRoot)
+    return fakeSourceBackend(files)
+  end
+  local appBackend = function()
+    appBackendCalls = appBackendCalls + 1
+    error("development startup must not use the product source")
+  end
+  withProducerBackends(appBackend, checkoutBackend, function()
+    withSourceBaseDirectory(checkoutRoot, function()
+      withAppHarness({ dev = true }, function(id)
+        return id == "heartgold"
+      end, function(result)
+        App._bootExisting()
+        local first = assert(result.provisionerOptions[1])
+        local firstFingerprint = first.producerFingerprint
+        files["build/Compiler.lua"] = "edited checkout compiler"
+        App._bootMainMenu({ "heartgold" })
+        local second = assert(result.provisionerOptions[2])
+        Assert.equal(checkoutCalls, 2)
+        Assert.equal(appBackendCalls, 0)
+        Assert.isFalse(firstFingerprint == second.producerFingerprint)
+        Assert.equal(first.developmentRepositoryRoot, checkoutRoot)
+        Assert.equal(second.developmentRepositoryRoot, checkoutRoot)
+        Assert.equal(
+          first.producerFingerprint,
+          ProducerFingerprint.compute(
+            fakeSourceBackend({
+              ["build/Compiler.lua"] = "checkout compiler",
+              ["build/Readers.lua"] = "checkout readers",
+            }),
+            "romdump/src"
+          )
+        )
+        Assert.equal(#result.launches, 2)
+      end)
+    end)
   end)
 end
 

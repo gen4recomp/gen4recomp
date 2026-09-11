@@ -29,6 +29,62 @@ local function normalizeRoot(root)
   return root
 end
 
+local function sortedFiles(root)
+  local command = "find " .. string.format("%q", root) .. " -type f -print"
+  local pipe = assert(io.popen(command, "r"), "cannot enumerate source checkout")
+  local files = {}
+  for line in pipe:lines() do
+    files[#files + 1] = line
+  end
+  local ok = pipe:close()
+  assert(ok ~= false, "source checkout enumeration failed")
+  table.sort(files)
+  return files
+end
+
+-- Unix-only source-checkout enumeration for explicit development tooling.
+---@param repositoryRoot string
+---@return ProducerSourceTree
+function ProducerFingerprint.checkoutBackend(repositoryRoot)
+  assert(type(repositoryRoot) == "string" and repositoryRoot ~= "", "development repository root is required")
+  local sourceRoot = repositoryRoot .. "/romdump/src"
+  local files = sortedFiles(sourceRoot)
+  local byRelative = {}
+  for _, path in ipairs(files) do
+    assert(path:sub(1, #sourceRoot + 1) == sourceRoot .. "/", "source checkout path escaped root")
+    byRelative[path:sub(#sourceRoot + 2)] = path
+  end
+  local function listFiles()
+    local result = {}
+    for path in pairs(byRelative) do
+      result[#result + 1] = path
+    end
+    table.sort(result)
+    return result
+  end
+  local function readFile(path)
+    local full = assert(byRelative[path], "source checkout file is not indexed: " .. tostring(path))
+    local file = assert(io.open(full, "rb"), "cannot read source checkout file: " .. full)
+    local data = file:read("*a")
+    file:close()
+    return assert(data)
+  end
+  local function getFileInfo(path)
+    if path == "romdump/src" then
+      return { type = "directory" }
+    end
+    if byRelative[path] then
+      return { type = "file" }
+    end
+    return nil
+  end
+  return {
+    list = listFiles,
+    read = readFile,
+    getInfo = getFileInfo,
+  }
+end
+
 -- Aggregate the fingerprint from an injected source-tree backend: list()
 -- returns every regular file path relative to romdump/src in any order;
 -- read(path) returns that file's contents. Paths are sorted internally, so

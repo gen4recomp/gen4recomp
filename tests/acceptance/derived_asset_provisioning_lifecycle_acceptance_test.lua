@@ -7,6 +7,7 @@ local App = require("app.src.App")
 local HgssGame = require("game.hgss.src.HgssGame")
 local RomImporter = require("romdump.src.source.RomImporter")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
 local T = {
   metadata = {
@@ -31,6 +32,7 @@ local function withApp(fn)
   local originalDimensions = love.graphics.getDimensions
   local originalQuit = love.event.quit
   local originalBuildNew = InteractiveCacheBuild.new
+  local originalAppBackend = ProducerFingerprint.appBackend
 
   local result = { events = {}, launches = {} }
   App.state = nil
@@ -45,6 +47,22 @@ local function withApp(fn)
     return 800, 600
   end
   love.event.quit = function() end
+  ProducerFingerprint.appBackend = function()
+    return {
+      list = function()
+        return {}
+      end,
+      read = function()
+        error("the acceptance fixture has no producer files")
+      end,
+      getInfo = function(path)
+        if path == "romdump/src" then
+          return { type = "directory" }
+        end
+        return nil
+      end,
+    }
+  end
   InteractiveCacheBuild.new = function()
     return {
       update = function() end,
@@ -86,6 +104,7 @@ local function withApp(fn)
   love.graphics.getDimensions = originalDimensions
   love.event.quit = originalQuit
   InteractiveCacheBuild.new = originalBuildNew
+  ProducerFingerprint.appBackend = originalAppBackend
   if not ok then
     error(err, 0)
   end

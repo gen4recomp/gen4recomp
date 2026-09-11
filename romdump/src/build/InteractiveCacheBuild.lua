@@ -5,7 +5,6 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local RomFs = require("romdump.src.source.RomFs")
-local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
 local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
@@ -78,67 +77,6 @@ InteractiveCacheBuild.__index = InteractiveCacheBuild
 
 local REQUIRED, FIELD, MAP, SCRIPT = 0, 10, 110, 120
 
-local function sortedFiles(root)
-  local command = "find " .. string.format("%q", root) .. " -type f -print"
-  local pipe = assert(io.popen(command, "r"), "cannot enumerate source checkout")
-  local files = {}
-  for line in pipe:lines() do
-    files[#files + 1] = line
-  end
-  local ok = pipe:close()
-  assert(ok ~= false, "source checkout enumeration failed")
-  table.sort(files)
-  return files
-end
-
----@param repositoryRoot string
----@return ProducerSourceTree
-local function checkoutBackend(repositoryRoot)
-  assert(type(repositoryRoot) == "string" and repositoryRoot ~= "", "development repository root is required")
-  local sourceRoot = repositoryRoot .. "/romdump/src"
-  local files = sortedFiles(sourceRoot)
-  local byRelative = {}
-  for _, path in ipairs(files) do
-    assert(path:sub(1, #sourceRoot + 1) == sourceRoot .. "/", "source checkout path escaped root")
-    byRelative[path:sub(#sourceRoot + 2)] = path
-  end
-  local function listFiles()
-    local result = {}
-    for path in pairs(byRelative) do
-      result[#result + 1] = path
-    end
-    table.sort(result)
-    return result
-  end
-  local function readFile(path)
-    local full = assert(byRelative[path], "source checkout file is not indexed: " .. tostring(path))
-    local file = assert(io.open(full, "rb"), "cannot read source checkout file: " .. full)
-    local data = file:read("*a")
-    file:close()
-    return assert(data)
-  end
-  local function getFileInfo(path)
-    if byRelative[path] then
-      return { type = "file" }
-    end
-    return nil
-  end
-  return {
-    list = listFiles,
-    read = readFile,
-    getInfo = getFileInfo,
-  }
-end
-
-local function productBackend()
-  local backend = ProducerFingerprint.appBackend()
-  local info = assert(backend.getInfo, "producer VFS backend must expose getInfo")("romdump/src")
-  if info and info.type == "directory" then
-    return backend, nil
-  end
-  return nil, "romdump/src is absent from the packaged source tree"
-end
-
 local function exactDescriptor(index, descriptor)
   assert(type(descriptor) == "table", "field cell descriptor is required")
   local found = FieldCellCache.find(index, descriptor.matrixMemberId, descriptor.x, descriptor.z)
@@ -191,14 +129,12 @@ end
 function InteractiveCacheBuild.new(options)
   assert(type(options) == "table", "interactive cache build options are required")
   local versionId = assert(options.versionId, "interactive cache build version is required")
-  local backend, missing = productBackend()
-  local developmentRoot
-  if backend == nil then
-    developmentRoot = options.developmentRepositoryRoot
-    assert(developmentRoot ~= nil, missing)
-    backend = checkoutBackend(developmentRoot)
-  end
-  local producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src")
+  assert(
+    type(options.producerFingerprint) == "string" and options.producerFingerprint ~= "",
+    "interactive cache build producer fingerprint is required"
+  )
+  local producerFingerprint = options.producerFingerprint
+  local developmentRoot = options.developmentRepositoryRoot
   local cacheFs = CacheFs.forVersion(versionId)
   local romFs, openError = RomFs.open(versionId)
   assert(romFs, openError)
