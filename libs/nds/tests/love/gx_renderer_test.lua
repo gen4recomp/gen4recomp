@@ -327,13 +327,7 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     lighting =
       FieldLightProfile.select(lighting, sceneRuntime.fieldTimeSeconds or FieldLightProfile.DEFAULT_TIME_SECONDS)
   end
-  local queue = RenderQueue.buildInto(worldParts or {}, viewMatrix, {
-    opaque = {},
-    cutout = {},
-    mixedOpaque = {},
-    wireframe = {},
-    blended = {},
-  })
+  local queue = RenderQueue.buildInto(worldParts or {}, viewMatrix, RenderQueue.newScratch())
   local worldProjection = camera:projection()
   local billboardProjection = camera:billboardProjection()
   return renderer:draw({

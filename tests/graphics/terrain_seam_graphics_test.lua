@@ -252,7 +252,7 @@ local function sweep(scope, batches, scale)
       scope:own(love.graphics.newMesh(VertexFormat.LAYOUT, loveVertices(compiled), "triangles", "static"))
   end
   local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-  local scratch = { opaque = {}, cutout = {}, mixedOpaque = {}, wireframe = {}, blended = {} }
+  local scratch = RenderQueue.newScratch()
   local projection = Matrix4.perspective(math.rad(30), 1280 / 720, 1, 100)
 
   local items = {}

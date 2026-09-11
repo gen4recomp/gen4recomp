@@ -47,13 +47,7 @@ local function fragmentPassesIn(queue, key)
 end
 
 local function scratch()
-  return {
-    opaque = {},
-    cutout = {},
-    mixedOpaque = {},
-    wireframe = {},
-    blended = {},
-  }
+  return RenderQueue.newScratch()
 end
 
 local function build(parts, viewMatrix)
@@ -453,6 +447,216 @@ function T.mixed_does_not_confuse_with_translucent_only()
   Assert.deepEqual(ids(storage, "blended"), { "trans-a", "mixed-a", "trans-b", "mixed-b" })
   -- Verify the fragmentPass values
   Assert.deepEqual(fragmentPassesIn(storage, "blended"), { "translucent", "mixed", "translucent", "mixed" })
+end
+
+-- Blended ordering through the queue-owned scratch constructor: every alpha
+-- class across multiple parts lands in its pass, blended sorts far-to-near
+-- with source-position tie breaks, and mixed items reference the same
+-- original record in both passes without mutating caller items.
+function T.preserves_exact_pass_membership_and_blended_order_through_owned_scratch()
+  local storage = RenderQueue.newScratch()
+  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local wall = item("wall", "opaque")
+  local fence = item("fence", "cutout")
+  local far = item("far", "translucent", { 0, 0, -10 })
+  local mixedMid = item("mixed-mid", "mixed", { 0, 0, -5 })
+  local tieLate = item("tie-late", "translucent", { 0, 0, -5 })
+  local near = item("near", "translucent", { 0, 0, -1 })
+  local wire = item("wire", "wireframe")
+  local queue = RenderQueue.buildInto({
+    { wall, fence, far, mixedMid },
+    { tieLate, near },
+    { wire },
+  }, view, storage)
+
+  Assert.isTrue(queue == storage)
+  Assert.deepEqual(ids(queue, "opaque"), { "wall" })
+  Assert.deepEqual(ids(queue, "cutout"), { "fence" })
+  Assert.deepEqual(ids(queue, "mixedOpaque"), { "mixed-mid" })
+  Assert.deepEqual(ids(queue, "wireframe"), { "wire" })
+  Assert.deepEqual(ids(queue, "blended"), { "far", "mixed-mid", "tie-late", "near" })
+  Assert.deepEqual(fragmentPassesIn(queue, "blended"), { "translucent", "mixed", "translucent", "translucent" })
+  Assert.isTrue(
+    queue.mixedOpaque[1] == mixedMid and queue.blended[2].item == mixedMid,
+    "the mixed item reaches both passes by identity"
+  )
+  Assert.isTrue(queue.blended[1].item == far, "the first entry is the farthest draw")
+  Assert.isTrue(queue.blended[#queue.blended].item == near, "the last entry is the nearest draw")
+  for _, original in ipairs({ wall, fence, far, mixedMid, tieLate, near, wire }) do
+    Assert.isNil(rawget(original, "viewZ"), "no sort key is written back onto caller items")
+    Assert.isNil(rawget(original, "position"), "no source position is written back onto caller items")
+  end
+end
+
+-- Warmed rebuilds at a stable blended cardinality reuse every piece of sort
+-- storage owned by the scratch: one comparator, one key buffer, the same
+-- unsorted wrapper objects, the same order table, and the same visible
+-- blended array. The field renderer must build its lifetime scratch through
+-- the same queue-owned constructor so production always carries valid sort
+-- storage.
+function T.warmed_rebuilds_reuse_sort_storage_and_leave_inputs_untouched()
+  local storage = RenderQueue.newScratch()
+  Assert.isTrue(type(storage._sortCompare) == "function", "the scratch owns one comparator")
+  Assert.notNil(storage._sortKeys, "the scratch owns reusable key storage")
+  Assert.notNil(storage._sortOrder, "the scratch owns a reusable order table")
+
+  local view = Matrix4.identity()
+  local first = item("first", "translucent", { 0, 0, -3 })
+  local second = item("mixed-second", "mixed", { 0, 0, -2 })
+  local third = item("third", "translucent", { 0, 0, -1 })
+  local parts = { { first, second, third } }
+  local before = {}
+  for index, original in ipairs(parts[1]) do
+    before[index] = {}
+    for key, value in pairs(original) do
+      before[index][key] = value
+    end
+  end
+
+  RenderQueue.buildInto(parts, view, storage)
+  local comparator = storage._sortCompare
+  local keys = storage._sortKeys
+  local order = storage._sortOrder
+  local blendedArray = storage.blended
+  local wrappers = {}
+  for index, wrapper in ipairs(storage.blended) do
+    wrappers[index] = wrapper
+  end
+  Assert.equal(#wrappers, 3)
+
+  RenderQueue.buildInto(parts, view, storage)
+
+  Assert.isTrue(storage._sortCompare == comparator, "the comparator is reused, not recreated per build")
+  Assert.isTrue(storage._sortKeys == keys, "the key buffer is reused across warmed builds")
+  Assert.isTrue(storage._sortOrder == order, "the order table is reused across warmed builds")
+  Assert.isTrue(storage.blended == blendedArray, "the visible blended array is reused across warmed builds")
+  Assert.equal(#storage.blended, 3)
+  for index, wrapper in ipairs(storage.blended) do
+    Assert.isTrue(wrapper == wrappers[index], "unsorted wrapper " .. index .. " is reused across warmed builds")
+  end
+  Assert.deepEqual(ids(storage, "blended"), { "first", "mixed-second", "third" })
+  for index, original in ipairs(parts[1]) do
+    Assert.deepEqual(original, before[index], "caller item " .. index .. " is untouched by warmed rebuilds")
+  end
+
+  local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+  local renderer = FieldRenderer.new({
+    gxRenderer = { stats = {}, draw = function() end, release = function() end },
+  })
+  Assert.isTrue(
+    type(renderer._queueScratch._sortCompare) == "function"
+      and renderer._queueScratch._sortKeys ~= nil
+      and renderer._queueScratch._sortOrder ~= nil,
+    "the field renderer lifetime scratch carries the queue-owned sort storage"
+  )
+  local rendererQueue = RenderQueue.buildInto(parts, view, renderer._queueScratch)
+  Assert.deepEqual(ids(rendererQueue, "blended"), { "first", "mixed-second", "third" })
+end
+
+-- Sort capacity grows once when blended cardinality exceeds it, then holds
+-- steady at or below the warmed maximum; shrinking clears stale references.
+-- The warmed timing sample below is measurement only: it reports the current
+-- cost so the later comparison can judge the non-regression gate without
+-- committing a machine-specific threshold to the suite.
+function T.sort_capacity_grows_once_then_holds_with_reported_warmed_cost()
+  local storage = RenderQueue.newScratch()
+  local view = Matrix4.identity()
+
+  local function partsWith(count)
+    local part = {}
+    for index = 1, count do
+      part[index] = item("glass-" .. index, "translucent", { 0, 0, -index })
+    end
+    return { part }
+  end
+
+  RenderQueue.buildInto(partsWith(1), view, storage)
+  local initialBuffer = storage._sortKeys
+  Assert.notNil(initialBuffer, "the scratch owns key storage from the first build")
+  Assert.equal(#storage.blended, 1)
+
+  local grownAt = nil
+  local grownBuffer = nil
+  local count = 2
+  while count <= 4096 do
+    RenderQueue.buildInto(partsWith(count), view, storage)
+    if storage._sortKeys ~= initialBuffer then
+      grownAt = count
+      grownBuffer = storage._sortKeys
+      break
+    end
+    count = count * 2
+  end
+  Assert.notNil(grownBuffer, "key storage grows once cardinality exceeds its initial capacity")
+  Assert.isTrue(grownBuffer ~= initialBuffer)
+
+  RenderQueue.buildInto(partsWith(grownAt), view, storage)
+  RenderQueue.buildInto(partsWith(grownAt), view, storage)
+  Assert.isTrue(storage._sortKeys == grownBuffer, "no further buffer replacement at the warmed maximum")
+  Assert.equal(#storage.blended, grownAt)
+  Assert.isTrue(storage.blended[1].item.id == "glass-" .. grownAt, "the first entry is still the farthest draw")
+  Assert.isTrue(storage.blended[#storage.blended].item.id == "glass-1", "the last entry is still the nearest draw")
+
+  RenderQueue.buildInto(partsWith(1), view, storage)
+  Assert.equal(#storage.blended, 1, "shrinking clears the visible blended tail")
+  Assert.isNil(storage.blended[2], "no stale blended reference survives shrinking")
+
+  RenderQueue.buildInto(partsWith(grownAt), view, storage)
+  Assert.isTrue(storage._sortKeys == grownBuffer, "capacity is retained after a smaller frame")
+  Assert.equal(#storage.blended, grownAt)
+
+  local benchParts = partsWith(64)
+  for _ = 1, 200 do
+    RenderQueue.buildInto(benchParts, view, storage)
+  end
+  local samples = {}
+  for sample = 1, 7 do
+    local started = os.clock()
+    for _ = 1, 1000 do
+      RenderQueue.buildInto(benchParts, view, storage)
+    end
+    samples[sample] = os.clock() - started
+  end
+  table.sort(samples)
+  local median = samples[4]
+  Assert.isTrue(median > 0, "the warmed benchmark completes and reports positive CPU time")
+  io.stderr:write(
+    string.format(
+      "[render-queue] warmed buildInto x1000 (64 blended): median %.6fs min %.6fs max %.6fs\n",
+      median,
+      samples[1],
+      samples[#samples]
+    )
+  )
+end
+
+-- Key storage tracks the first and last blended entries exactly, and the
+-- reusable order array sheds stale indexes when a later frame shrinks.
+function T.blended_key_storage_tracks_boundary_entries_and_order_tail_clears()
+  local storage = RenderQueue.newScratch()
+  local view = Matrix4.lookAt({ 0, 0, 5 }, { 0, 0, 0 }, { 0, 1, 0 })
+  local far = item("far", "translucent", { 0, 0, -10 })
+  local near = item("near", "translucent", { 0, 0, -1 })
+  RenderQueue.buildInto({ { far, near } }, view, storage)
+
+  Assert.equal(storage._sortKeys[0].entryIndex, 1, "the first key slot describes the first entry")
+  Assert.equal(storage._sortKeys[1].entryIndex, 2, "the last key slot describes the last entry")
+  Assert.equal(storage._sortKeys[0].position, 1)
+  Assert.equal(storage._sortKeys[1].position, 2)
+  Assert.isTrue(storage._sortKeys[0].viewZ < storage._sortKeys[1].viewZ, "the first key holds the farther depth")
+  Assert.deepEqual(ids(storage, "blended"), { "far", "near" })
+  Assert.equal(#storage._sortOrder, 2)
+
+  local third = item("third", "translucent", { 0, 0, -5 })
+  RenderQueue.buildInto({ { far, near, third } }, view, storage)
+  Assert.equal(#storage._sortOrder, 3)
+
+  RenderQueue.buildInto({ { near } }, view, storage)
+  Assert.equal(#storage.blended, 1, "shrinking clears the visible blended tail")
+  Assert.isNil(storage.blended[2], "no stale blended reference survives shrinking")
+  Assert.equal(#storage._sortOrder, 1, "shrinking clears stale order indexes")
+  Assert.isNil(storage._sortOrder[2], "no stale order index survives shrinking")
+  Assert.deepEqual(ids(storage, "blended"), { "near" })
 end
 
 return { tests = T }

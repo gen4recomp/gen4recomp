@@ -13,19 +13,33 @@
 -- caller's draw records: only the five known alpha classes are accepted
 -- (anything else -- including a missing class -- fails loudly instead of
 -- defaulting to opaque). Mixed items appear in mixedOpaque AND in blended
--- with fragmentPass="mixed"; blended contains decorated pass records
--- {item, fragmentPass, viewZ, position}, not original items. Translucent
--- items appear only in blended with fragmentPass="translucent". The sort
--- runs over local decorated entries so no field is written back onto
--- persistent items. The returned queue holds original items in
--- opaque/cutout/mixedOpaque/wireframe; blended holds decorated records.
+-- with fragmentPass="mixed"; blended contains queue-owned wrapper records
+-- {item, fragmentPass} that reference the original items. Translucent
+-- items appear only in blended with fragmentPass="translucent". Blended
+-- depth/source-order keys live in reusable key storage owned by the scratch;
+-- the visible blended array is filled with stable wrapper references after
+-- sorting a reusable integer order array, so warmed builds allocate nothing.
+-- The returned queue holds original items in
+-- opaque/cutout/mixedOpaque/wireframe; blended holds wrapper records.
+
+local ffi = require("ffi")
 
 local Errors = require("libs.errors.src.Errors")
 local Matrix4 = require("libs.math.src.Matrix4")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
 
+ffi.cdef([[
+typedef struct {
+  double viewZ;
+  int32_t position;
+  int32_t entryIndex;
+} G4RenderSortKey;
+]])
+
 local RenderQueue = {}
 local RENDER_QUEUE_UNKNOWN_ALPHA_CLASS = "RENDER_QUEUE_UNKNOWN_ALPHA_CLASS"
+
+local INITIAL_SORT_CAPACITY = 16
 
 local ALPHA_CLASSES = {
   [AlphaClassifier.OPAQUE] = true,
@@ -87,12 +101,72 @@ end
 ---@field mixedOpaque table[]
 ---@field wireframe table[]
 ---@field blended table[]
+---@field _blendedEntries table[]
+---@field _sortKeys ffi.cdata*
+---@field _sortOrder number[]
+---@field _sortCompare fun(leftIndex: number, rightIndex: number): boolean
+---@field _sortCapacity number
+
+-- The only supported scratch constructor. Allocates the five pass arrays,
+-- unsorted wrapper storage, the initial key buffer, the reusable order array,
+-- and one comparator that reads the scratch key buffer dynamically so later
+-- capacity growth cannot leave it pointing at stale storage.
+---@return RenderQueueScratch
+function RenderQueue.newScratch()
+  local scratch = {
+    opaque = {},
+    cutout = {},
+    mixedOpaque = {},
+    wireframe = {},
+    blended = {},
+    _blendedEntries = {},
+    _sortKeys = ffi.new("G4RenderSortKey[?]", INITIAL_SORT_CAPACITY),
+    _sortOrder = {},
+    _sortCapacity = INITIAL_SORT_CAPACITY,
+  }
+  ---@param leftIndex number
+  ---@param rightIndex number
+  ---@return boolean
+  local function sortCompare(leftIndex, rightIndex)
+    local keys = scratch._sortKeys
+    local left = keys[leftIndex - 1]
+    local right = keys[rightIndex - 1]
+    if left.viewZ ~= right.viewZ then
+      return left.viewZ < right.viewZ
+    end
+    return left.position < right.position
+  end
+  scratch._sortCompare = sortCompare
+  return scratch
+end
+
+-- Grow the key buffer geometrically when the blended count exceeds capacity.
+-- Copies the keys written so far in the current build so mid-build growth
+-- preserves earlier entries.
+---@param scratch RenderQueueScratch
+---@param needed number
+local function ensureSortCapacity(scratch, needed)
+  if needed <= scratch._sortCapacity then
+    return
+  end
+  local grown = scratch._sortCapacity * 2
+  if grown < needed then
+    grown = needed
+  end
+  local replacement = ffi.new("G4RenderSortKey[?]", grown)
+  local keys = scratch._sortKeys
+  for index = 0, needed - 2 do
+    replacement[index] = keys[index]
+  end
+  scratch._sortKeys = replacement
+  scratch._sortCapacity = grown
+end
 
 -- Build into renderer-owned scratch storage. Parts are traversed in source
 -- order and share one submission position sequence, including across part
 -- boundaries. The scratch arrays retain their identities across calls.
 -- Mixed items appear in both mixedOpaque and blended. Blended contains
--- decorated pass records, not original items.
+-- queue-owned wrapper records referencing the original items.
 ---@param parts table[][]
 ---@param viewMatrix number[]
 ---@param scratch RenderQueueScratch
@@ -104,6 +178,13 @@ function RenderQueue.buildInto(parts, viewMatrix, scratch)
   local wireframe = scratch.wireframe
   local blended = scratch.blended
   assert(opaque and cutout and mixedOpaque and wireframe and blended, "render queue scratch is incomplete")
+  local unsorted = scratch._blendedEntries
+  local order = scratch._sortOrder
+  local compare = scratch._sortCompare
+  assert(
+    unsorted and scratch._sortKeys and order and compare and scratch._sortCapacity,
+    "render queue scratch is incomplete"
+  )
 
   clear(opaque)
   clear(cutout)
@@ -112,6 +193,7 @@ function RenderQueue.buildInto(parts, viewMatrix, scratch)
 
   local position = 0
   local blendedCount = 0
+  local capacity = scratch._sortCapacity
   for _, part in ipairs(parts) do
     for _, item in ipairs(part) do
       position = position + 1
@@ -125,36 +207,63 @@ function RenderQueue.buildInto(parts, viewMatrix, scratch)
         mixedOpaque[#mixedOpaque + 1] = item
 
         blendedCount = blendedCount + 1
-        local entry = blended[blendedCount] or {}
+        if blendedCount > capacity then
+          ensureSortCapacity(scratch, blendedCount)
+          capacity = scratch._sortCapacity
+        end
+        local entry = unsorted[blendedCount]
+        if entry == nil then
+          entry = {}
+          unsorted[blendedCount] = entry
+        end
         entry.item = item
         entry.fragmentPass = AlphaClassifier.MIXED
-        entry.viewZ = itemViewSpaceZ(item, viewMatrix)
-        entry.position = position
-        blended[blendedCount] = entry
+        local key = scratch._sortKeys[blendedCount - 1]
+        key.viewZ = itemViewSpaceZ(item, viewMatrix)
+        key.position = position
+        key.entryIndex = blendedCount
       elseif mode == AlphaClassifier.TRANSLUCENT then
         blendedCount = blendedCount + 1
-        local entry = blended[blendedCount] or {}
+        if blendedCount > capacity then
+          ensureSortCapacity(scratch, blendedCount)
+          capacity = scratch._sortCapacity
+        end
+        local entry = unsorted[blendedCount]
+        if entry == nil then
+          entry = {}
+          unsorted[blendedCount] = entry
+        end
         entry.item = item
         entry.fragmentPass = AlphaClassifier.TRANSLUCENT
-        entry.viewZ = itemViewSpaceZ(item, viewMatrix)
-        entry.position = position
-        blended[blendedCount] = entry
+        local key = scratch._sortKeys[blendedCount - 1]
+        key.viewZ = itemViewSpaceZ(item, viewMatrix)
+        key.position = position
+        key.entryIndex = blendedCount
       else
         wireframe[#wireframe + 1] = item
       end
     end
   end
 
-  for i = #blended, blendedCount + 1, -1 do
-    blended[i] = nil
+  for index = 1, blendedCount do
+    order[index] = index
+  end
+  for index = #order, blendedCount + 1, -1 do
+    order[index] = nil
   end
 
-  table.sort(blended, function(a, b)
-    if a.viewZ ~= b.viewZ then
-      return a.viewZ < b.viewZ
-    end
-    return a.position < b.position
-  end)
+  if blendedCount > 1 then
+    table.sort(order, compare)
+  end
+
+  -- Order indexes double as unsorted-entry indexes: key slot i always
+  -- describes entry i, so the sorted order maps directly to wrappers.
+  for rank = 1, blendedCount do
+    blended[rank] = unsorted[order[rank]]
+  end
+  for index = #blended, blendedCount + 1, -1 do
+    blended[index] = nil
+  end
 
   return scratch
 end
