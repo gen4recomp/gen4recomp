@@ -438,6 +438,7 @@ function T.static_tabletop_alpha_is_forwarded_without_a_second_normalization()
       fogEnabled = false,
     },
   }
+  presentation:_buildStaticDraws()
   local function stubInstance()
     return {
       transform = nil,
