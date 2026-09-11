@@ -227,8 +227,7 @@ T["retained compiler uses injected hashing and counts coverage once"] = function
   } --[[@as RomFs]]
   local viewHashes = 0
   local bundle = ScriptCompiler.compile(romFs, function(bytes)
-    if type(bytes) == "table" then
-      Assert.isTrue(type(bytes.length) == "function", "member hashing must receive the retained BinaryView")
+    if bytes == member then
       viewHashes = viewHashes + 1
       return "member-view-hash:" .. tostring(viewHashes)
     end

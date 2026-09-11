@@ -59,7 +59,7 @@ function Session:compileMember(memberId)
   for _, entry in ipairs(planned.scripts) do
     scriptIndices[#scriptIndices + 1] = entry.scriptIndex
   end
-  local sourceHash = self.sha1hex(view)
+  local sourceHash = self.sha1hex(view:toString())
   local resources, results = ScriptCompiler.translateMember(memberIr, scriptIndices, {
     stdCatalog = self.stdCatalog,
     romSha1 = self.romSha1,

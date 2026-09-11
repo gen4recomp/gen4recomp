@@ -1243,6 +1243,16 @@ end
 
 -- Script index and emitted resources
 
+local function writeGenerationIndex(c, generation, marker, resources)
+  c:write(ScriptCache.generationMarkerPath(generation), marker)
+  c:writeLua(ScriptCache.generationIndexPath(generation), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = generation,
+    marker = marker,
+    resources = resources,
+  })
+end
+
 local function writeScriptIndex(c, resources)
   c:writeLua(ScriptCache.activeIndexPath(), {
     schema = ScriptCache.INDEX_SCHEMA,
@@ -1250,13 +1260,61 @@ local function writeScriptIndex(c, resources)
     marker = "m",
   })
   c:write(ScriptCache.markerPath(), "m")
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
+end
+
+local function writeGenerationResource(c, generation, member, id, kind)
+  c:write(
+    ScriptCache.scriptPath(generation, member, id),
+    string.format('return { kind = "%s", id = "%s" }\n', kind or "field_script", id)
+  )
+end
+
+function T.script_generation_readiness_does_not_require_active_selection()
+  local c = cache()
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", { { id = "a.b", member = 1, scriptIndex = 0 } })
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+
+  Assert.isTrue(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
+  Assert.isFalse(ScriptCache.isReady(c, "m"), "an inactive generation is not active-ready")
+end
+
+function T.script_generation_with_wrong_marker_is_not_ready()
+  local c = cache()
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", {})
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "other"))
+end
+
+function T.script_generation_with_missing_or_malformed_index_is_not_ready()
+  local c = cache()
   c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
+
+  c = cache()
+  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
+  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), { schema = "wrong" })
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
+end
+
+function T.script_generation_with_missing_marker_is_not_ready()
+  local c = cache()
   c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
     schema = ScriptCache.INDEX_SCHEMA,
     generation = SCRIPT_GENERATION,
     marker = "m",
-    resources = resources,
+    resources = {},
   })
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
+end
+
+function T.script_generation_with_missing_or_malformed_resource_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
+
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b", "other")
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
 end
 
 function T.script_index_missing_resources_is_not_ready()

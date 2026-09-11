@@ -210,7 +210,10 @@ function InteractiveCacheBuild.new(options)
     local index = FieldCellCache.loadIndex(cacheFs)
     local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()), "world manifest is missing")
     local scriptPlan = ScriptCompiler.plan(romFs, producerFingerprint)
-    if ScriptCacheWriter.isReady(cacheFs, scriptPlan.marker) then
+    if
+      not ScriptCache.isReady(cacheFs, scriptPlan.marker)
+      and ScriptCache.isGenerationReady(cacheFs, scriptPlan.generationKey, scriptPlan.marker)
+    then
       ScriptCacheWriter.activateGeneration(cacheFs, scriptPlan.generationKey)
     end
     local pool = CompilerPool.new({
@@ -496,29 +499,35 @@ function InteractiveCacheBuild:dispose()
   end
   self.closed = true
   local first
-  local function cleanup()
-    local complete = true
-    for _, member in ipairs(self.scriptPlan.members) do
-      if
-        self.cacheFs:read(ScriptCache.memberMarkerPath(self.scriptPlan.generationKey, member.memberId)) ~= member.marker
-      then
-        complete = false
-        break
+  local shutdownOk, shutdownErr = pcall(self.pool.shutdown, self.pool)
+  if not shutdownOk then
+    first = shutdownErr
+  else
+    local cleanupOk, cleanupErr = pcall(function()
+      local complete = true
+      for _, member in ipairs(self.scriptPlan.members) do
+        if
+          self.cacheFs:read(ScriptCache.memberMarkerPath(self.scriptPlan.generationKey, member.memberId))
+          ~= member.marker
+        then
+          complete = false
+          break
+        end
       end
+
+      if complete then
+        if not ScriptCache.isGenerationReady(self.cacheFs, self.scriptPlan.generationKey, self.scriptPlan.marker) then
+          ScriptCacheWriter.finalizeGeneration(self.cacheFs, self.scriptPlan)
+        end
+        if not ScriptCache.isReady(self.cacheFs, self.scriptPlan.marker) then
+          ScriptCacheWriter.activateGeneration(self.cacheFs, self.scriptPlan.generationKey)
+        end
+      end
+      ScriptCacheWriter.cleanupGenerations(self.cacheFs, { [self.scriptPlan.generationKey] = true })
+    end)
+    if not cleanupOk then
+      first = cleanupErr
     end
-    if complete then
-      ScriptCacheWriter.finalizeGeneration(self.cacheFs, self.scriptPlan)
-      ScriptCacheWriter.activateGeneration(self.cacheFs, self.scriptPlan.generationKey)
-    end
-    ScriptCacheWriter.cleanupGenerations(self.cacheFs, { [self.scriptPlan.generationKey] = true })
-  end
-  local ok, err = pcall(cleanup)
-  if not ok then
-    first = err
-  end
-  local shutOk, shutErr = pcall(self.pool.shutdown, self.pool)
-  if not shutOk and first == nil then
-    first = shutErr
   end
   local closeOk, closeErr = pcall(self.romFs.close, self.romFs)
   if not closeOk and first == nil then

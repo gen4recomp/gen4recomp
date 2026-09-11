@@ -164,13 +164,34 @@ end
 -- True only if the marker is exact, the index loads with the expected schema,
 -- resources is the required array of entries, and every indexed script's file
 -- loads as a field_script resource whose id matches its index entry.
+---@param cacheFs CacheFs
+---@param generation string
+---@param expectedMarker string
+---@return boolean
+function ScriptCache.isGenerationReady(cacheFs, generation, expectedMarker)
+  local ok, ready = pcall(function()
+    if not isSafeGeneration(generation) or type(expectedMarker) ~= "string" or expectedMarker == "" then
+      return false
+    end
+    local index = assert(ScriptCache.loadGenerationIndex(cacheFs, generation))
+    if index.generation ~= generation or index.marker ~= expectedMarker then
+      return false
+    end
+    if cacheFs:read(ScriptCache.generationMarkerPath(generation)) ~= expectedMarker then
+      return false
+    end
+    return resourceFilesReady(cacheFs, generation, index)
+  end)
+  return ok and ready == true
+end
+
 function ScriptCache.isReady(cacheFs, expectedMarker)
   local ok, ready = pcall(function()
-    if cacheFs:read(ScriptCache.markerPath()) ~= expectedMarker then
+    if type(expectedMarker) ~= "string" or expectedMarker == "" then
       return false
     end
     local active = assert(ScriptCache.loadActive(cacheFs))
-    return active.marker == expectedMarker and resourceFilesReady(cacheFs, active.generation, active.index)
+    return active.marker == expectedMarker and ScriptCache.isGenerationReady(cacheFs, active.generation, expectedMarker)
   end)
   return ok and ready == true
 end
