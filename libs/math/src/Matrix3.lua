@@ -11,6 +11,7 @@
 ---@field inverse fun(m: Matrix3.Values): Matrix3.Values?
 ---@field transform fun(m: Matrix3.Values, x: number, y: number, z: number): number, number, number
 ---@field modelNormal fun(model: Matrix4.Values): Matrix3.Values
+---@field modelNormalInto fun(out: Matrix3.Values, model: Matrix4.Values): Matrix3.Values
 ---@field normalMatrix fun(model: Matrix4.Values, view: Matrix4.Values): Matrix3.Values
 
 local Matrix3 = {}
@@ -119,6 +120,23 @@ function Matrix3.modelNormal(model)
   local inv = Matrix3.inverse(Matrix3.from4x4(model))
   assert(inv, "singular model transform has no normal matrix")
   return Matrix3.transpose(inv)
+end
+
+-- Model normal transform written into an existing 9-number table: the same
+-- inverse-transpose of the 4x4 model matrix's linear component as
+-- modelNormal, reusing the output. Translation has no effect; a singular
+-- model transform is invalid input and fails loudly.
+---@param out Matrix3.Values -- 9-number column-major output, overwritten
+---@param model Matrix4.Values -- 4x4 column-major model matrix
+---@return Matrix3.Values -- the same `out` table
+function Matrix3.modelNormalInto(out, model)
+  assert(type(out) == "table" and #out == 9, "modelNormalInto requires a 9-number output table")
+  local inv = Matrix3.inverse(Matrix3.from4x4(model))
+  assert(inv, "singular model transform has no normal matrix")
+  out[1], out[2], out[3] = inv[1], inv[4], inv[7]
+  out[4], out[5], out[6] = inv[2], inv[5], inv[8]
+  out[7], out[8], out[9] = inv[3], inv[6], inv[9]
+  return out
 end
 
 -- Normal matrix: inverse-transpose of the upper 3x3 of (view * model).

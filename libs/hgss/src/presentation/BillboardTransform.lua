@@ -24,20 +24,32 @@ local function columnMagnitude(m, col)
 end
 
 -- Extract the camera-independent data the renderer needs for an ordinary full
+-- billboard into existing 3-number tables: the same translation and
+-- basis-column magnitudes as components, reusing the outputs.
+---@param centerOut number[] -- 3-number output, overwritten with the base translation
+---@param scaleOut number[] -- 3-number output, overwritten with the per-axis scale
+---@param base number[] -- 16-element column-major base matrix
+---@return number[] center, number[] scale -- the same `centerOut`/`scaleOut` tables
+function BillboardTransform.componentsInto(centerOut, scaleOut, base)
+  assert(#base == 16, "billboard base needs a 4x4 matrix")
+  assert(type(centerOut) == "table" and #centerOut == 3, "billboard center needs a 3-number output")
+  assert(type(scaleOut) == "table" and #scaleOut == 3, "billboard scale needs a 3-number output")
+  scaleOut[1] = columnMagnitude(base, 0)
+  scaleOut[2] = columnMagnitude(base, 1)
+  scaleOut[3] = columnMagnitude(base, 2)
+  assert(scaleOut[1] > 0 and scaleOut[2] > 0 and scaleOut[3] > 0, "billboard scale must be non-zero")
+  centerOut[1], centerOut[2], centerOut[3] = base[13], base[14], base[15]
+  return centerOut, scaleOut
+end
+
+-- Extract the camera-independent data the renderer needs for an ordinary full
 -- billboard. The base rotation is deliberately discarded by Nitro BB semantics;
 -- only its translation and basis-column magnitudes survive.
 ---@param base number[]
 ---@return number[] center
 ---@return number[] scale
 function BillboardTransform.components(base)
-  assert(#base == 16, "billboard base needs a 4x4 matrix")
-  local scale = {
-    columnMagnitude(base, 0),
-    columnMagnitude(base, 1),
-    columnMagnitude(base, 2),
-  }
-  assert(scale[1] > 0 and scale[2] > 0 and scale[3] > 0, "billboard scale must be non-zero")
-  return { base[13], base[14], base[15] }, scale
+  return BillboardTransform.componentsInto({ 0, 0, 0 }, { 0, 0, 0 }, base)
 end
 
 -- `base` and `viewMatrix` are 16-element column-major matrices; the view matrix's

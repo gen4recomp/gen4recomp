@@ -756,8 +756,19 @@ function T.animated_building_loads_advances_and_renders()
 
   -- The production renderer draws the animated door. The renderer takes
   -- ordered parts; the loader's sync refreshed runtime.animatedBuildingDraws.
+  -- Test-only camera shape: the fake supplies the gameplay-visible fields
+  -- the renderer reads; the constructor-owned matrix buffers stay absent.
   local renderer = FieldRenderer.new()
   local identity = identityMatrix()
+  ---@class MapSceneLoaderAnimationTestCamera : FieldCamera
+  ---@field _projectionCache number[]|nil
+  ---@field _billboardProjectionCache number[]|nil
+  ---@field _viewBuffer Matrix4.Buffer|nil
+  ---@field _projectionBuffer Matrix4.Buffer|nil
+  ---@field _billboardProjectionBuffer Matrix4.Buffer|nil
+  ---@field _viewArray number[]|nil
+  ---@field _projectionArray number[]|nil
+  ---@field _billboardProjectionArray number[]|nil
   local camera = {
     cameraSourceY = 0,
     cameraAppliedY = 0,
@@ -788,7 +799,7 @@ function T.animated_building_loads_advances_and_renders()
     billboardProjection = function()
       return identity
     end,
-  } --[[@as FieldCamera]]
+  } --[[@as MapSceneLoaderAnimationTestCamera]]
   renderer:draw(
     runtime,
     camera,
@@ -973,19 +984,26 @@ function T.update_advances_the_pose_driven_draw_items()
   local door = assert(runtime.mapProps:doorAt(doorMapFor(runtime, 4, 14), 4, 14))
   door:open()
   runtime:updateAnimated()
-  local m0 = runtime.animatedBuildingDraws[1].transform
-  local normal0 = runtime.animatedBuildingDraws[1].modelNormal
-  Assert.deepEqual(normal0, Matrix3.modelNormal(m0))
+  local item0 = runtime.animatedBuildingDraws[1]
+  local normal0 = item0.modelNormal
+  Assert.deepEqual(normal0, Matrix3.modelNormal(item0.transform))
+  -- The draw list is a live view overwritten by each tick, so snapshot the
+  -- frame-0 numbers before advancing: retaining the tables would observe
+  -- frame 7.
+  local frame0 = {}
+  for i = 1, 16 do
+    frame0[i] = item0.transform[i]
+  end
   for _ = 1, 7 do
     runtime:updateAnimated()
   end
   local m7 = runtime.animatedBuildingDraws[1].transform
   local normal7 = runtime.animatedBuildingDraws[1].modelNormal
   Assert.deepEqual(normal7, Matrix3.modelNormal(m7), "the fixed-tick item refresh recomputes the model normal")
-  Assert.isFalse(normal0 == normal7, "animated item production replaces the changed normal transform")
+  Assert.isTrue(normal7 == normal0, "the reused normal array keeps its identity across ticks")
   local differs = false
   for i = 1, 16 do
-    if math.abs(m0[i] - m7[i]) > 1e-3 then
+    if math.abs(frame0[i] - m7[i]) > 1e-3 then
       differs = true
     end
   end
@@ -1052,11 +1070,11 @@ function T.draw_items_refresh_only_on_the_scene_tick()
   local instance = runtime.animatedInstances[1]
   -- The load-time build already produced the frame-0 draw list; a control
   -- op between ticks marks nothing: the cached list stays until the scene
-  -- tick rebuilds it.
+  -- tick overwrites it in place.
   local draws = runtime.animatedBuildingDraws
   instance:play("door.open")
   runtime:updateAnimated()
-  Assert.isFalse(runtime.animatedBuildingDraws == draws, "updateAnimated rebuilds the items")
+  Assert.isTrue(runtime.animatedBuildingDraws == draws, "updateAnimated overwrites the persistent items")
   Assert.equal(instance.animationState:attachments("joint")[1].player.frameFx, 4096)
 
   runtime:release()
@@ -1909,6 +1927,51 @@ function T.load_requires_the_scenes_fog_preset()
   Assert.throws(function()
     MapSceneLoader.load(cache, scene)
   end)
+end
+
+-- The fixed tick overwrites one persistent animated-draw aggregation list:
+-- the same outer array survives every scene tick, its entries are the
+-- instances' current live records, and the animation clocks still advance
+-- once per tick.
+function T.animated_aggregation_reuses_one_outer_list()
+  local desc = doorDescriptor()
+  local cache = sceneWith({
+    {
+      placementIndex = 0,
+      modelKey = "outdoor:26:door",
+      transform = doorTransform(),
+    },
+  }, { [desc.key] = desc }, { { x = 4, z = 14 } })
+  local runtime = MapSceneLoader.load(
+    cache,
+    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
+    { meshBuilder = fakeMeshBuilder }
+  )
+  Assert.equal(#runtime.animatedBuildingDraws, 1, "frame-0 animated items exist right after load")
+  local draws = runtime.animatedBuildingDraws
+  local instance = runtime.animatedInstances[1]
+  local frameZero = {}
+  for i = 1, 16 do
+    frameZero[i] = draws[1].transform[i]
+  end
+  instance:play("door.open", { loopMode = "once" })
+  for _ = 1, 8 do
+    runtime:updateAnimated()
+    Assert.isTrue(runtime.animatedBuildingDraws == draws, "scene ticks overwrite one persistent aggregation list")
+  end
+  Assert.equal(#draws, 1)
+  local attachment = instance.animationState:attachments("joint")[1]
+  Assert.equal(attachment.player.frameFx, 8 * 4096, "animation clocks still advance once per scene tick")
+  local current = instance:drawItems(instance.renderMeshesById)
+  Assert.isTrue(draws[1] == current[1], "aggregation entries reference the live draw records")
+  local moved = false
+  for i = 1, 16 do
+    if math.abs(draws[1].transform[i] - frameZero[i]) > 1e-3 then
+      moved = true
+    end
+  end
+  Assert.isTrue(moved, "the reused list carries the current pose")
+  runtime:release()
 end
 
 return {
