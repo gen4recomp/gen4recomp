@@ -25,6 +25,62 @@ local function requireModule(name, role)
   return assert(module)
 end
 
+-- A deterministic preparation queue over the ready cache: payloads are
+-- computed from the same cache bytes the worker would have prepared, so
+-- realization matches the production path without starting a thread.
+local function preparationQueue(cacheFs)
+  local SceneMesh =
+    requireModule("libs.hgss.src.presentation.SceneMesh", "the mesh preparation packs upload buffers from cache bytes")
+  local records = {}
+  local nextToken = 0
+  local queue = {}
+  function queue:request(kind, path, priority)
+    Assert.equal(priority, "demand", "the chooser prepares its concrete resources after opening")
+    nextToken = nextToken + 1
+    records[nextToken] = { kind = kind, path = path }
+    return nextToken
+  end
+  function queue:poll(token)
+    local record = assert(records[token], "unknown preparation token")
+    if record.payload == nil then
+      if record.kind == "mesh" then
+        record.payload = SceneMesh.prepareUpload(assert(cacheFs:read(record.path), "missing mesh " .. record.path))
+      else
+        local bytes = assert(cacheFs:read(record.path), "missing texture " .. record.path)
+        record.payload = { imageData = love.image.newImageData(love.filesystem.newFileData(bytes, "tex.png")) }
+      end
+    end
+    return "ready"
+  end
+  function queue:take(token)
+    local record = assert(records[token], "unknown preparation token")
+    local payload = assert(record.payload, "preparation result is not ready")
+    records[token] = nil
+    return payload
+  end
+  function queue:cancel(token)
+    records[token] = nil
+  end
+  function queue:release() end
+  return queue
+end
+
+-- Prepares the production chooser through the field-owned composition seam:
+-- concrete resources resolve through the queue while the renderer wrapper
+-- borrows the live backend. Returns the borrowed backend for release.
+local function prepareHost(host, cacheFs)
+  local GxRenderer = requireModule("libs.nds.src.love.GxRenderer", "the field graphics backend owns the shader suite")
+  local backend = GxRenderer.new()
+  local queue = preparationQueue(cacheFs)
+  for _ = 1, 4096 do
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1)
+    if host:isPresentationReady() then
+      return backend
+    end
+  end
+  error("the starter presentation never prepared", 0)
+end
+
 local function readyVersions()
   local versions = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
@@ -155,6 +211,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     local host = openProductionChoice(versionId, cacheFs)
     Assert.isFalse(host:status().done, versionId .. " opens an active chooser")
 
+    local backend = prepareHost(host, cacheFs)
     local initial = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
     Assert.isTrue(
       brightPixels(initial, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 20,
@@ -207,6 +264,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       versionId .. " confirmation view changes the realized scene"
     )
     host:dispose()
+    backend:release()
   end
 end
 
@@ -239,6 +297,7 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
     local status = host:status()
     Assert.isFalse(status.done, versionId .. " inspecting keeps the chooser active")
     Assert.equal(status.cursor, 1, versionId .. " the middle candidate remains selected")
+    local backend = prepareHost(host, cacheFs)
     local middleFrame = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
     Assert.isTrue(brightPixels(middleFrame, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 0, versionId .. " portrait is visible")
 
@@ -249,6 +308,7 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
       versionId .. " inspected portraits follow their generated candidates"
     )
     host:dispose()
+    backend:release()
   end
 end
 

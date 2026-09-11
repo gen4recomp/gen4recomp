@@ -115,8 +115,47 @@ end
 
 function FieldState:update(dt)
   self.runtime:update(dt)
+  self:_advanceStarterPreparation()
   self:_advanceEntryCover(dt)
   assert(self.actorPresentation, "field actor presentation is unavailable"):sync()
+end
+
+-- Advances the open starter chooser's presentation preparation by one
+-- resource step. The semantic app opening is the only start: idle choosers
+-- and prepared choosers do nothing here.
+function FieldState:_advanceStarterPreparation()
+  local runtime = assert(self.runtime, "field runtime is unavailable")
+  local starter = runtime.starterChoice
+  if starter == nil or type(starter.isActive) ~= "function" or not starter:isActive() then
+    return
+  end
+  if type(starter.isPresentationReady) ~= "function" or starter:isPresentationReady() then
+    return
+  end
+  if type(starter.advancePresentationPreparation) ~= "function" then
+    return
+  end
+  local resources = assert(self.presentationResources, "field presentation resources are unavailable")
+  local fieldRenderer = assert(resources.renderer, "field renderer is unavailable")
+  starter:advancePresentationPreparation({
+    assetPreparation = runtime.assetPreparation,
+    gxRenderer = assert(fieldRenderer.gxRenderer, "field graphics backend is unavailable"),
+  }, 1)
+end
+
+-- Whether starter-directed input must be suppressed: the chooser is open
+-- but its surface is not drawable yet, so invisible UI state cannot change.
+---@return boolean
+function FieldState:_starterPresentationHolding()
+  local runtime = self.runtime
+  local starter = runtime and runtime.starterChoice
+  if starter == nil or type(starter.isActive) ~= "function" or not starter:isActive() then
+    return false
+  end
+  if type(starter.isPresentationReady) ~= "function" then
+    return false
+  end
+  return not starter:isPresentationReady()
 end
 
 -- Advances the one-shot covered-entry reveal on the source-frame cadence,
@@ -431,11 +470,15 @@ function FieldState:draw()
   self:_drawEntryCoverIfNeeded(width, height)
   self:_drawScriptScreenFadeIfNeeded()
   -- The script-owned starter modal draws over the restored field while the
-  -- blocking choice owns it. The retail presentation realizes its scene on
-  -- first presentation; headless compositions never reach this path.
+  -- blocking choice owns it, but only once its surface is prepared. Before
+  -- that the field stays visible and starter input stays suppressed;
+  -- headless compositions never reach this path.
   local starter = self.runtime.starterChoice
   if starter ~= nil and starter:isActive() then
-    starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"), width, height)
+    local ready = type(starter.isPresentationReady) ~= "function" or starter:isPresentationReady()
+    if ready then
+      starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"), width, height)
+    end
   end
   if self.development then
     self:_drawHud()
@@ -669,15 +712,6 @@ function FieldState:keypressed(key, _, _)
   if self:_entryCoverActive() then
     return
   end
-  if self.runtime.actionKeys[key] then
-    self.runtime.input:pressAction("key:" .. key)
-  end
-  if self.runtime.cancelKeys[key] then
-    self.runtime.input:pressCancel("key:" .. key)
-  end
-  if self.runtime.menuKeys[key] then
-    self.runtime.input:pressMenu("key:" .. key)
-  end
   if key == "-" or key == "kp-" then
     self.runtime.zoom:zoomOut()
     self.runtime:applyZoomChange()
@@ -693,6 +727,18 @@ function FieldState:keypressed(key, _, _)
     self.runtime:applyZoomChange()
     return
   end
+  if self:_starterPresentationHolding() then
+    return
+  end
+  if self.runtime.actionKeys[key] then
+    self.runtime.input:pressAction("key:" .. key)
+  end
+  if self.runtime.cancelKeys[key] then
+    self.runtime.input:pressCancel("key:" .. key)
+  end
+  if self.runtime.menuKeys[key] then
+    self.runtime.input:pressMenu("key:" .. key)
+  end
   local direction = KEY_DIRECTIONS[key]
   if direction then
     self.runtime.input:pressDirection(direction, "key:" .. key)
@@ -704,6 +750,9 @@ function FieldState:keyreleased(key, _)
   -- Release mirrors press: one physical key may drive several held semantic
   -- states (e.g. Action bound to an arrow key), so every matching binding
   -- releases, never just the first.
+  if self:_starterPresentationHolding() then
+    return
+  end
   if self.runtime.actionKeys[key] then
     self.runtime.input:releaseAction("key:" .. key)
   end
@@ -738,6 +787,9 @@ function FieldState:gamepadpressed(joystick, button)
   if self:_entryCoverActive() then
     return
   end
+  if self:_starterPresentationHolding() then
+    return
+  end
   local source = "gamepad:" .. joystick:getID() .. ":" .. button
   if button == "a" then
     self.runtime.input:pressAction(source)
@@ -757,6 +809,9 @@ end
 ---@param joystick love.Joystick
 ---@param button string
 function FieldState:gamepadreleased(joystick, button)
+  if self:_starterPresentationHolding() then
+    return
+  end
   local source = "gamepad:" .. joystick:getID() .. ":" .. button
   if button == "a" then
     self.runtime.input:releaseAction(source)
@@ -785,6 +840,9 @@ function FieldState:gamepadaxis(joystick, axis, value)
   if self:_entryCoverActive() then
     return
   end
+  if self:_starterPresentationHolding() then
+    return
+  end
   local source = "gamepad:" .. joystick:getID() .. ":left"
   self.runtime.input:setStickAxis(source, axis == "leftx" and "x" or "y", value)
 end
@@ -794,6 +852,9 @@ end
 ---@param button integer
 function FieldState:mousepressed(x, y, button, _, _)
   if self:_entryCoverActive() then
+    return
+  end
+  if self:_starterPresentationHolding() then
     return
   end
   if button == 1 then
@@ -808,6 +869,9 @@ function FieldState:mousemoved(x, y, _, _, istouch)
   if self:_entryCoverActive() then
     return
   end
+  if self:_starterPresentationHolding() then
+    return
+  end
   if not istouch then
     self.runtime.input:pointerMove("mouse:1", x, y)
   end
@@ -817,6 +881,9 @@ end
 ---@param y number
 ---@param button integer
 function FieldState:mousereleased(x, y, button, _, _)
+  if self:_starterPresentationHolding() then
+    return
+  end
   if button == 1 then
     self.runtime.input:pointerUp("mouse:1", x, y)
   end
@@ -826,6 +893,9 @@ end
 ---@param y number
 function FieldState:wheelmoved(x, y)
   if self:_entryCoverActive() then
+    return
+  end
+  if self:_starterPresentationHolding() then
     return
   end
   self.runtime.input:pointerScroll("mouse", x, y)
@@ -838,6 +908,9 @@ function FieldState:touchpressed(id, x, y)
   if self:_entryCoverActive() then
     return
   end
+  if self:_starterPresentationHolding() then
+    return
+  end
   self.runtime.input:pointerDown("touch:" .. tostring(id), x, y)
 end
 
@@ -848,6 +921,9 @@ function FieldState:touchmoved(id, x, y)
   if self:_entryCoverActive() then
     return
   end
+  if self:_starterPresentationHolding() then
+    return
+  end
   self.runtime.input:pointerMove("touch:" .. tostring(id), x, y)
 end
 
@@ -855,6 +931,9 @@ end
 ---@param x number
 ---@param y number
 function FieldState:touchreleased(id, x, y)
+  if self:_starterPresentationHolding() then
+    return
+  end
   self.runtime.input:pointerUp("touch:" .. tostring(id), x, y)
 end
 

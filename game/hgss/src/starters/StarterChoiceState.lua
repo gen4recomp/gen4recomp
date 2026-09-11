@@ -6,10 +6,12 @@
 -- DS surfaces: the machine surface (world role, the only touch surface)
 -- and the info surface (auxiliary role). The three pre-created candidates
 -- are borrowed read-only for display; the task owns publication authority.
--- GPU resources realize lazily on first draw only: open, input, status, and
--- close never touch graphics objects, so headless compositions drive the
--- full choice without a GPU. Presentation resources release exactly once on
--- close/dispose while the candidate records stay with the task.
+-- The presentation prepares its graphics resources in bounded steps once
+-- the field advances it after opening, and draws only once prepared: open,
+-- input, status, and close never touch graphics objects, so headless
+-- compositions drive the full choice without a GPU. Presentation resources
+-- release exactly once on close/dispose while the candidate records stay
+-- with the task.
 
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -73,6 +75,33 @@ end
 ---@return boolean
 function StarterChoiceState:isActive()
   return self._controller ~= nil
+end
+
+-- Whether the presentation scene is fully prepared and drawable.
+-- Presentation-only: controller and script semantics never depend on it.
+---@return boolean
+function StarterChoiceState:isPresentationReady()
+  if self._controller == nil then
+    return false
+  end
+  local presentation = self._presentation
+  if presentation == nil then
+    return false
+  end
+  return presentation:isReady()
+end
+
+-- Advances presentation preparation by at most maxWorkUnits steps and
+-- returns the steps completed. Inactive choosers prepare nothing.
+-- Presentation-only: headless open and update never call this.
+---@param context StarterChoicePrepContext borrowed queue and field backend
+---@param maxWorkUnits integer? preparation steps allowed this update, one by default
+---@return integer steps completed
+function StarterChoiceState:advancePresentationPreparation(context, maxWorkUnits)
+  if self._controller == nil then
+    return 0
+  end
+  return assert(self._presentation, "no starter choice is active"):advancePreparation(context, maxWorkUnits)
 end
 
 -- Resolves one candidate portrait descriptor from the canonical mon record
@@ -357,14 +386,16 @@ function StarterChoiceState:_releasePresentation()
 end
 
 -- Draws the modal through the field text provider. Refreshes the scene fit
--- from the current drawable size, realizes presentation resources on first
--- presentation, and delegates the frame to the retail presentation.
+-- from the current drawable size and delegates the frame to the retail
+-- presentation. Drawing before preparation completes is a composition error
+-- and fails loudly; the field draws the starter surface only once ready.
 ---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
 ---@param width number
 ---@param height number
 function StarterChoiceState:drawPresentation(text, width, height)
   local controller = activeController(self)
   assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
+  assert(self:isPresentationReady(), "starter presentation is not prepared")
   self:resize(width, height)
   activePresentation(self):draw(controller:snapshot(), {
     candidates = assert(self._candidates, "starter presentation requires its candidates"),
