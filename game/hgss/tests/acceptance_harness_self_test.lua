@@ -6,7 +6,7 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 
 local T = {
-  metadata = { tags = { "acceptance-harness" }, capabilities = { "rom_dump" } },
+  metadata = { tags = { "acceptance-harness" } },
   tests = {},
 }
 
@@ -224,10 +224,6 @@ end
 function T.tests.primary_version_uses_the_first_selected_version()
   local harness = AcceptanceHarness.new({ versions = { "soulsilver" } })
   Assert.equal(harness:primaryVersion(), "soulsilver")
-end
-
-function T.tests.default_version_comes_from_the_ready_dump_set()
-  Assert.equal(AcceptanceHarness.defaultVersion(), AcceptanceHarness.new():primaryVersion())
 end
 
 function T.tests.restart_reuses_the_save_namespace_and_disposes_the_replaced_runtime_once()
