@@ -27,9 +27,6 @@ local CompiledNsbcaSampler = {}
 -- One fixed-point unit: fx32 values are 1.M.12 (4096 per unit), and the
 -- sampler works on raw words throughout.
 local FX_UNIT = 4096
--- The reconstruction scale of a compressed rotation entry's packed
--- 3-bit quotients (5 x 3 bits at positions 0,3,6,9,12 -> one 12.19 value).
-local PACKED_SCALE = 524288
 
 local HALF, QUARTER = 2, 4
 local FROM_MODEL = JointAnimBlend.FROM_MODEL
@@ -124,8 +121,13 @@ local function reconstruct(clip, key, _)
   for i = 1, 5 do
     cells[i] = asr(e[i], 3)
   end
-  local packed = (e[4] % 8) + (e[2] % 8) * 8 + (e[1] % 8) * 64 + (e[5] % 8) * 512
-  cells[6] = packed * PACKED_SCALE
+  -- All five low-3-bit remainders feed cell 5, narrowed to the low 13
+  -- bits sign-extended (the asm's trailing lsl #19 / asr #19 in
+  -- getRotDataByIdx_): a 13-bit signed rotation element. This must stay
+  -- in lockstep with NitroRotation.reconstruct over the raw bytes.
+  local packed = (e[4] % 8) + (e[3] % 8) * 8 + (e[2] % 8) * 64 + (e[1] % 8) * 512 + (e[5] % 8) * 4096
+  local low13 = packed % 8192
+  cells[6] = low13 >= 4096 and low13 - 8192 or low13
   return cells, true
 end
 

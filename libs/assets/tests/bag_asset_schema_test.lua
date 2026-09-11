@@ -216,6 +216,12 @@ local function validManifest()
             { x = 1, y = 0, z = 0 },
           },
         },
+        materials = {
+          diffuse = { r = 15, g = 15, b = 15 },
+          ambient = { r = 10, g = 10, b = 10 },
+          specular = { r = 15, g = 15, b = 15 },
+          emission = { r = 15, g = 15, b = 15 },
+        },
       },
     },
     interactive = {
@@ -508,6 +514,28 @@ function T.hero_light_vectors_are_a_required_static_quadruple()
     wrongCount.hero.presentation.lights.count = count
     assertInvalid(wrongCount, "exactly four hero lights are required")
   end
+end
+
+function T.hero_material_registers_are_a_required_static_quadruple()
+  local missing = validManifest()
+  missing.hero.presentation.materials = nil
+  assertInvalid(missing, "missing hero material registers must fail")
+  local short = validManifest()
+  short.hero.presentation.materials = {
+    diffuse = { r = 15, g = 15, b = 15 },
+    ambient = { r = 10, g = 10, b = 10 },
+    specular = { r = 15, g = 15, b = 15 },
+  }
+  assertInvalid(short, "three hero material registers must fail")
+  local ragged = validManifest()
+  ragged.hero.presentation.materials.ambient = { r = 10, g = 10 }
+  assertInvalid(ragged, "a hero material register without blue must fail")
+  local overflow = validManifest()
+  overflow.hero.presentation.materials.diffuse = { r = 32, g = 15, b = 15 }
+  assertInvalid(overflow, "a hero material channel past 31 must fail")
+  local extra = validManifest()
+  extra.hero.presentation.materials.kind = "static"
+  assertInvalid(extra, "an unknown hero materials field must fail")
 end
 
 function T.source_identities_are_rejected_inside_the_new_records()

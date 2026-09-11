@@ -635,6 +635,7 @@ local function _compile(romFs)
   local geometry = BagPresentationCompiler.compileGeometry(BagSources)
   local states = BagPresentationCompiler.compileStates(BagSources)
   local widgets = BagPresentationCompiler.compileWidgets(BagSources)
+  local materials = BagPresentationCompiler.compileMaterials(BagSources)
   local presentation = BagSources.presentation
   local manifest = {
     schema = BagCache.SCHEMA,
@@ -725,6 +726,7 @@ local function _compile(romFs)
             },
           },
         },
+        materials = materials,
       },
     },
     interactive = {

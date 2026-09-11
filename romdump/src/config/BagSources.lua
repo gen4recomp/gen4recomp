@@ -54,7 +54,13 @@
 -- Presentation: the per-frame camera copies target (0,0,0), distance
 -- 0x153B51, and the angle block (x 0xE982, y 0x1420) from static tables;
 -- perspective type/angle and clip planes (near 0x7B000, far 0x6A4000) are
--- static.
+-- static. The global material registers are the setup immediates:
+-- NNS_G3dGlbMaterialColorDiffAmb(0x3DEF, 0x294A, FALSE) and
+-- NNS_G3dGlbMaterialColorSpecEmi(0x3DEF, 0x3DEF, FALSE), so diffuse,
+-- specular, and emission are mid-gray 15 and ambient is gray 10 rather
+-- than white/zero. The model init additionally forces the material
+-- ambient onto the global register (ModifyMatFlag FALSE/AMBIENT) while
+-- diffuse, specular, and emission stay per-material.
 --
 -- Action text: msg_0010.gmm supplies the toss/register/unregister/cancel/
 -- confirm labels and the move/toss prompt templates; msg_0000.gmm supplies
@@ -315,6 +321,14 @@ BagSources.presentation = {
       { x = 1, y = 0, z = 0 },
       { x = 1, y = 0, z = 0 },
     },
+  },
+  -- Global material color registers as raw RGB555 words from the setup
+  -- immediates above; the compiler normalizes them to semantic colors.
+  materials = {
+    diffuse = 0x3DEF,
+    ambient = 0x294A,
+    specular = 0x3DEF,
+    emission = 0x3DEF,
   },
 }
 

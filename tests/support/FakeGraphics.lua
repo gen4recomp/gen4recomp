@@ -18,6 +18,8 @@
 ---@field primitives string[]
 ---@field rectangles table[]
 ---@field shaders table[]
+---@field canvases table[]
+---@field blendModes table[]
 ---@field pushDepth fun(): integer
 ---@field newImage fun(data?: table): table
 ---@field getLineWidth fun(): number
@@ -28,13 +30,15 @@ local FakeGraphics = {}
 -- verify exact restoration after a draw. The returned table is structurally
 -- a love.Graphics subset plus the recording fields; call sites pass it as
 -- the renderers' injectable graphics namespace.
----@param opts? { canvas?: any, shader?: any, blendMode?: any, blendAlpha?: any, depthMode?: any, depthWrite?: boolean, wireframe?: boolean, cullMode?: any, color?: number[], scissor?: number[], lineWidth?: number, imageSizes?: table[], failOnQuadCall?: integer, failOnDrawCall?: integer, failOnImageCall?: integer, failOnShaderCall?: integer, shaderReturnsNil?: boolean }
+---@param opts? { canvas?: any, shader?: any, blendMode?: any, blendAlpha?: any, depthMode?: any, depthWrite?: boolean, wireframe?: boolean, cullMode?: any, color?: number[], scissor?: number[], lineWidth?: number, imageSizes?: table[], failOnCanvasCall?: integer, failOnQuadCall?: integer, failOnDrawCall?: integer, failOnImageCall?: integer, failOnShaderCall?: integer, shaderReturnsNil?: boolean }
 ---@return FakeGraphics
 function FakeGraphics.new(opts)
   opts = opts or {}
   local images = {}
+  local canvases = {}
   local shaders = {}
-  local imageCalls, quadCalls, drawCalls, shaderCalls = 0, 0, 0, 0
+  local blendModes = {}
+  local canvasCalls, imageCalls, quadCalls, drawCalls, shaderCalls = 0, 0, 0, 0, 0
   local pushDepth = 0
   local draws = {}
   local transforms = {}
@@ -55,8 +59,10 @@ function FakeGraphics.new(opts)
   }
   return {
     images = images,
+    canvases = canvases,
     shaders = shaders,
     draws = draws,
+    blendModes = blendModes,
     transforms = transforms,
     primitives = primitives,
     rectangles = rectangles,
@@ -80,6 +86,23 @@ function FakeGraphics.new(opts)
       end
       shaders[#shaders + 1] = shader
       return shader
+    end,
+    newCanvas = function(width, height)
+      canvasCalls = canvasCalls + 1
+      if opts.failOnCanvasCall == canvasCalls then
+        error("injected newCanvas failure")
+      end
+      local canvas = {
+        width = width,
+        height = height,
+        releaseCount = 0,
+        setFilter = function() end,
+      }
+      function canvas:release()
+        self.releaseCount = self.releaseCount + 1
+      end
+      canvases[#canvases + 1] = canvas
+      return canvas
     end,
     newImage = function()
       imageCalls = imageCalls + 1
@@ -195,6 +218,7 @@ function FakeGraphics.new(opts)
     end,
     setBlendMode = function(mode, alpha)
       state.blendMode, state.blendAlpha = mode, alpha
+      blendModes[#blendModes + 1] = { mode, alpha }
     end,
     getDepthMode = function()
       return state.depthMode, state.depthWrite

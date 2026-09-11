@@ -108,4 +108,23 @@ function T.widget_without_browse_visibility_fails()
   Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
 end
 
+-- The audited NNS global material registers become source-independent
+-- semantic colors: the DiffAmb/SpecEmi immediates from the bag setup carry
+-- mid-gray diffuse/ambient/specular/emission instead of the white/zero
+-- registers the runtime previously assumed.
+function T.materials_normalize_the_audited_global_registers()
+  local materials = BagPresentationCompiler.compileMaterials(BagSources)
+  Assert.deepEqual(materials.diffuse, { r = 15, g = 15, b = 15 }, "diffuse keeps the audited 0x3DEF gray")
+  Assert.deepEqual(materials.ambient, { r = 10, g = 10, b = 10 }, "ambient keeps the audited 0x294A gray")
+  Assert.deepEqual(materials.specular, { r = 15, g = 15, b = 15 }, "specular keeps the audited 0x3DEF gray")
+  Assert.deepEqual(materials.emission, { r = 15, g = 15, b = 15 }, "emission keeps the audited 0x3DEF gray")
+end
+
+function T.materials_without_a_register_fail()
+  local edited = { presentation = { materials = { diffuse = 0x3DEF } } }
+  local ok, err = pcall(BagPresentationCompiler.compileMaterials, edited)
+  Assert.isFalse(ok, "a missing register must fail")
+  Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+end
+
 return { tests = T }

@@ -480,6 +480,38 @@ local function checkLights(lights, context)
   end
 end
 
+local function checkMaterialRegister(register, context, what)
+  if type(register) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(register, { r = true, g = true, b = true }, context, what)
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    if
+      type(register[channel]) ~= "number"
+      or register[channel] % 1 ~= 0
+      or register[channel] < 0
+      or register[channel] > 31
+    then
+      fail(what .. "." .. channel .. " must be 0..31", context)
+    end
+  end
+end
+
+local function checkMaterials(materials, context)
+  if type(materials) ~= "table" then
+    fail("hero.presentation.materials must be a record", context)
+  end
+  checkKeys(
+    materials,
+    { diffuse = true, ambient = true, specular = true, emission = true },
+    context,
+    "hero.presentation.materials"
+  )
+  for _, register in ipairs({ "diffuse", "ambient", "specular", "emission" }) do
+    checkMaterialRegister(materials[register], context, "hero.presentation.materials." .. register)
+  end
+end
+
 local function checkHero(hero, context)
   if type(hero) ~= "table" then
     fail("hero must be a record", context)
@@ -526,10 +558,16 @@ local function checkHero(hero, context)
   if type(presentation) ~= "table" then
     fail("hero.presentation must be a record", context)
   end
-  checkKeys(presentation, { camera = true, transform = true, lights = true }, context, "hero.presentation")
+  checkKeys(
+    presentation,
+    { camera = true, transform = true, lights = true, materials = true },
+    context,
+    "hero.presentation"
+  )
   checkCamera(presentation.camera, context)
   checkTransform(presentation.transform, context)
   checkLights(presentation.lights, context)
+  checkMaterials(presentation.materials, context)
 end
 
 local function checkInteractive(interactive, context)

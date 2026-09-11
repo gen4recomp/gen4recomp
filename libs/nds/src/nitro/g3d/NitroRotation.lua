@@ -17,11 +17,13 @@
 --   bit 15 clear -- compressed form: value & 0x7FFF indexes a table of
 --                  5 x u16 entries at the record's ofsPivotData. Cells 0-4
 --                  are the entry values shifted right 3 (arithmetic); cell 5
---                  packs the five low-3-bit remainders
---                  ((e3&7) | (e1&7)<<3 | (e0&7)<<6 | (e4&7)<<9) left-shifted
---                  19, exactly as the asm stores it. The caller computes
---                  cells 6-8 as the cross product of rows 0 x 1 and skips
---                  normalization (the encoder pre-normalizes the rows).
+--                  packs all five low-3-bit remainders as
+--                  (e3&7)|((e2&7)<<3)|((e1&7)<<6)|((e0&7)<<9)|((e4&7)<<12),
+--                  narrowed to the low 13 bits sign-extended (the asm's
+--                  trailing lsl #19 / asr #19), so the cell is a 13-bit
+--                  signed rotation element, never packed << 19. The caller
+--                  computes cells 6-8 as the cross product of rows 0 x 1 and
+--                  skips normalization (the encoder pre-normalizes the rows).
 --
 -- `reconstruct` handles one key; interpolating between two keys is the
 -- caller's job (the curve machinery in Nsbca.lua). Pure domain module.
@@ -95,8 +97,13 @@ function NitroRotation.reconstruct(r, rotBase, compBase, value, context)
   for i = 1, 5 do
     cells[i] = math.floor(e[i] / 8)
   end
-  local packed = (e[4] % 8) + (e[2] % 8) * 8 + (e[1] % 8) * 64 + (e[5] % 8) * 512
-  cells[6] = packed * 524288
+  -- All five remainders feed cell 5, and the asm keeps only the low 13
+  -- bits sign-extended (lsl #19 then asr #19): a 13-bit signed element.
+  -- Lua % on the s16 entries reproduces the asm's `and #7` on the
+  -- sign-extended words (both yield value mod 8 in the floor sense).
+  local packed = (e[4] % 8) + (e[3] % 8) * 8 + (e[2] % 8) * 64 + (e[1] % 8) * 512 + (e[5] % 8) * 4096
+  local low13 = packed % 8192
+  cells[6] = low13 >= 4096 and low13 - 8192 or low13
   return { cells = cells, compressed = true }
 end
 

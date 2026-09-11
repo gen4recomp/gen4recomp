@@ -183,6 +183,14 @@ function T.compiled_presentation_lengths_land_in_tile_space(romFs, versionId)
     "hero rotation is not a length"
   )
   Assert.deepEqual(manifest.hero.presentation.transform.scale, facts.transform.scale, "hero scale is not a length")
+  -- The compiled material registers keep the audited RGB555 immediates as
+  -- semantic colors: mid-gray diffuse/specular/emission, dimmer ambient.
+  Assert.deepEqual(manifest.hero.presentation.materials, {
+    diffuse = { r = 15, g = 15, b = 15 },
+    ambient = { r = 10, g = 10, b = 10 },
+    specular = { r = 15, g = 15, b = 15 },
+    emission = { r = 15, g = 15, b = 15 },
+  }, "compiled material registers keep the audited global colors")
 end
 
 function T.geometries_fit_the_canonical_panes(romFs, versionId)
