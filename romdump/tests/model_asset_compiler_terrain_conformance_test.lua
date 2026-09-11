@@ -11,7 +11,9 @@
 -- 8x8 map-texture shape, so UV normalization divides texel units by eight.
 
 local Assert = require("tests.support.Assert")
+local ffi = require("ffi")
 local Hashing = require("romdump.src.digest.Hashing")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local ModelAssetCompiler = require("romdump.src.digest.model.ModelAssetCompiler")
@@ -267,7 +269,7 @@ function T.non_terrain_roles_bypass_conformance()
   -- are the unchanged batches.
   local rawHashes = {}
   for _, raw in ipairs(cannedBatches()) do
-    rawHashes[#rawHashes + 1] = Hashing.sha1hex(MeshWriter.encode(raw))
+    rawHashes[#rawHashes + 1] = Hashing.sha1hex(MeshWriter.encode(raw --[[@as MeshWriter.Batch]]))
   end
   table.sort(rawHashes)
   local storedHashes = {}
@@ -283,7 +285,11 @@ function T.mesh_hashes_follow_post_conformance_bytes()
   local model, pack = fixtures()
   local meshes = compileWithCannedBatches(model, pack, "map")
   for sha1, batch in pairs(meshes) do
-    Assert.equal(sha1, Hashing.sha1hex(MeshWriter.encode(batch)), "every mesh key hashes the bytes actually stored")
+    Assert.equal(
+      sha1,
+      Hashing.sha1hex(MeshWriter.encode(batch --[[@as MeshWriter.Batch]])),
+      "every mesh key hashes the bytes actually stored"
+    )
   end
   local coarse = coarseStored(meshes)
   Assert.isTrue(hasVertexAt(coarse, 0, 1, 2), "the hashed content includes the inserted breakpoint")
@@ -392,6 +398,67 @@ function T.culled_candidate_does_not_trigger_an_interpolation_conflict()
   Assert.isFalse(hasVertexAt(coarse, 0, 1, 2), "the visible neighbor is unchanged")
   Assert.equal(coarse.vertexCount, 4, "no vertex churn from an ineligible candidate")
   Assert.equal(coarse.indexCount, 6, "no index churn from an ineligible candidate")
+end
+
+local function finalizedBytes(meshes)
+  local out = {}
+  for sha1, data in pairs(meshes) do
+    out[sha1] = ffi.string(data:getFFIPointer(), data:getSize())
+  end
+  return out
+end
+
+function T.finalized_model_compilation_reuses_context_arena_between_models()
+  Assert.isTrue(
+    type(GxDisplayList.newScratch) == "function",
+    "finalized model compilation requires a reusable decoder scratch"
+  )
+  local model, pack = fixtures()
+  local arena = GeometryBuffer.new()
+  local scratch = GxDisplayList.newScratch()
+  local observedScratch
+
+  local function compile()
+    local meshes, textures = {}, {}
+    local originalDecode = GxDisplayList.decode
+    GxDisplayList.decode = function(bytes, options)
+      observedScratch = options and options.scratch
+      return originalDecode(bytes, options)
+    end
+    local ok, result = pcall(ModelAssetCompiler.compileModel, model, pack, meshes, textures, {
+      role = "map",
+      textureArchive = "map_textures",
+      textureMemberId = 3,
+      modelArchive = "land_data",
+      modelMemberId = 244,
+      modelName = "map0",
+      finalizeMeshes = true,
+      geometryArena = arena,
+      gxScratch = scratch,
+    })
+    GxDisplayList.decode = originalDecode
+    if not ok then
+      error(result, 0)
+    end
+    return result, meshes
+  end
+
+  local first, firstMeshes = compile()
+  local numeric, attrib, indices = arena.numeric, arena.attrib, arena.indices
+  local firstVertexCount, firstIndexCount = arena.vertexCount, arena.indexCount
+  local firstVertexCapacity, firstIndexCapacity = arena.vertexCapacity, arena.indexCapacity
+  local second, secondMeshes = compile()
+
+  Assert.equal(observedScratch, scratch, "finalized model decoding borrows the context scratch")
+  Assert.equal(arena.numeric, numeric, "finalized models reuse numeric geometry storage")
+  Assert.equal(arena.attrib, attrib, "finalized models reuse attribute geometry storage")
+  Assert.equal(arena.indices, indices, "finalized models reuse index geometry storage")
+  Assert.equal(arena.vertexCapacity, firstVertexCapacity, "finalized models retain vertex high-water capacity")
+  Assert.equal(arena.indexCapacity, firstIndexCapacity, "finalized models retain index high-water capacity")
+  Assert.equal(arena.vertexCount, firstVertexCount, "finalized model boundaries reset logical vertices")
+  Assert.equal(arena.indexCount, firstIndexCount, "finalized model boundaries reset logical indices")
+  Assert.deepEqual(finalizedBytes(secondMeshes), finalizedBytes(firstMeshes), "finalized mesh bytes remain identical")
+  Assert.deepEqual(second.batches, first.batches, "finalized scene records remain identical")
 end
 
 return { tests = T }

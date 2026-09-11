@@ -84,9 +84,12 @@ end
 -- GxDisplayList dynamic mode); the straddle census over the corpus reads
 -- MeshCompiler.compileDynamic directly. The transform program is compiled
 -- once here and shared with the mesh compile.
-function NsbmdDynamicModel.compile(model)
+---@param model table<string, unknown>
+---@param context { geometryArena: GxGeometryBuffer|nil, gxScratch: GxDisplayList.Scratch|nil }?
+---@return { program: table<string, unknown>, meshes: DynamicMeshRecord[], materials: table[] }
+function NsbmdDynamicModel.compile(model, context)
   assert(type(model) == "table" and model.sbc ~= nil, "NsbmdDynamicModel.compile requires a decoded Nsbmd model")
-  local meshes, _, program = MeshCompiler.compileDynamic(model)
+  local meshes, _, program = MeshCompiler.compileDynamic(model, context)
   -- UVs are texel units; normalize against the material's authored texture
   -- size, the base dimensions texture pattern variants are authored against
   -- (the animated layers keep the per-variant normalization).

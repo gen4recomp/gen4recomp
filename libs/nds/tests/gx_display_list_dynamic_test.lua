@@ -5,6 +5,7 @@
 
 local Assert = require("tests.support.Assert")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local NB = require("tests.support.NitroBuilder")
 
 local T = {}
@@ -251,6 +252,29 @@ function T.straddle_source_is_the_prior_source_under_a_pop_boundary()
   Assert.equal(geom.segments[3].positionSource, "draw")
   Assert.deepEqual(geom.segments[3].straddle, { leading = 1, source = { slot = 3 } })
   Assert.equal(geom.straddlingPrimitives, 2)
+end
+
+function T.reused_scratch_preserves_dynamic_segments_and_straddles()
+  local dl = pack({
+    { { 0x40, 0x23 }, { 0, vtx16xy(0, 0), 0 } },
+    MTX_RESTORE,
+    { { 0x23, 0x23 }, { vtx16xy(1, 0), 0, vtx16xy(0, 1), 0 } },
+    { { 0x41 } },
+  })
+  local scratch = GxDisplayList.newScratch()
+  local arena = GxGeometryBuffer.new()
+  local reused = decode(dl, { dynamic = true, requireColorSource = true, arena = arena, scratch = scratch })
+  local fresh = decode(dl, { dynamic = true, requireColorSource = true })
+  Assert.equal(#reused.segments, #fresh.segments)
+  Assert.equal(reused.straddlingPrimitives, fresh.straddlingPrimitives)
+  for index, segment in ipairs(reused.segments) do
+    local expected = fresh.segments[index]
+    Assert.deepEqual(segment.positionSource, expected.positionSource)
+    Assert.deepEqual(segment.straddle, expected.straddle)
+    Assert.equal(segment.vertexCount, expected.vertexCount)
+    Assert.equal(segment.indexCount, expected.indexCount)
+    Assert.deepEqual(indexValues(segment), indexValues(expected))
+  end
 end
 
 function T.each_boundary_of_a_multi_split_run_carries_its_own_straddle()

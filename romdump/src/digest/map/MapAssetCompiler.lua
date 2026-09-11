@@ -59,6 +59,8 @@ end
 ---@param meshes table<string, table<string, unknown>>
 ---@param textures table<string, table<string, unknown>>
 ---@param unresolvedMaterials table[]
+---@param geometryArena GxGeometryBuffer|nil
+---@param gxScratch GxDisplayList.Scratch|nil
 ---@return table<string, unknown> neighbors
 ---@return table<string, unknown> textureSrt
 ---@return table<string, unknown> neighborChunkByMember
@@ -69,7 +71,9 @@ local function compileNeighborAssets(
   terrainAnimationCompiler,
   meshes,
   textures,
-  unresolvedMaterials
+  unresolvedMaterials,
+  geometryArena,
+  gxScratch
 )
   -- Plan the eight surrounding matrix cells and compile each unique land chunk
   -- once. Geometry/textures feed the draw ring; permission and BDHC artifacts
@@ -93,6 +97,8 @@ local function compileNeighborAssets(
       mapSymbol = resolved.map.symbol,
       neighborCells = neighborCells,
       terrainAnimationCompiler = terrainAnimationCompiler,
+      geometryArena = geometryArena,
+      gxScratch = gxScratch,
     })
     for sha1, b in pairs(chunk.meshes) do
       meshes[sha1] = b
@@ -207,6 +213,8 @@ local function compileCanonical(romFs, opts, plan)
       meshes = meshes,
       textures = textures,
       finalizeMeshes = true,
+      geometryArena = opts.geometryArena,
+      gxScratch = opts.gxScratch,
     })
     starterModelKey = extra.modelKey
     models[starterModelKey] = extra.model
@@ -386,6 +394,8 @@ local function _compile(romFs, idOrSymbol, opts)
     modelName = mapModel.name,
     terrainAnimationCompiler = terrainAnimationCompiler,
     finalizeMeshes = true,
+    geometryArena = opts.geometryArena,
+    gxScratch = opts.gxScratch,
   })
 
   -- Materials whose names the pack they bind to does not define. They draw
@@ -402,6 +412,8 @@ local function _compile(romFs, idOrSymbol, opts)
     meshes = meshes,
     textures = textures,
     finalizeMeshes = true,
+    geometryArena = opts.geometryArena,
+    gxScratch = opts.gxScratch,
     requiredModelMembers = resolved.map.symbol == StarterLab.mapSymbol and { StarterLab.modelMemberId } or nil,
   })
   appendUnresolved(unresolvedMaterials, { unresolved = buildingCompiled.unresolvedMaterials })
@@ -430,8 +442,17 @@ local function _compile(romFs, idOrSymbol, opts)
     }
   end
 
-  local neighbors, textureSrt, neighborChunkByMember =
-    compileNeighborAssets(romFs, resolved, mapId, terrainAnimationCompiler, meshes, textures, unresolvedMaterials)
+  local neighbors, textureSrt, neighborChunkByMember = compileNeighborAssets(
+    romFs,
+    resolved,
+    mapId,
+    terrainAnimationCompiler,
+    meshes,
+    textures,
+    unresolvedMaterials,
+    opts.geometryArena,
+    opts.gxScratch
+  )
 
   -- Dependency record -> hash -> marker.
   local dependencies = {

@@ -86,6 +86,8 @@ function NeighborChunkCompiler.compile(romFs, landMemberId, areaMemberId, contex
     modelMemberId = landMemberId,
     modelName = mapModel.name,
     finalizeMeshes = true,
+    geometryArena = context and context.geometryArena or nil,
+    gxScratch = context and context.gxScratch or nil,
   })
 
   -- NeighborRing bakes a fixed world offset into each draw, so it has nowhere to

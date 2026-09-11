@@ -136,8 +136,9 @@ end
 ---@param draws table[] SBC draw submissions (the NsbmdSbcEvaluator.evaluate shape)
 ---@param dynamic boolean
 ---@param arena GxGeometryBuffer
+---@param gxScratch GxDisplayList.Scratch|nil
 ---@return { draw: table<string, unknown>, shape: table<string, unknown>, matState: { polygonAttrRaw: integer, seed: table<string, unknown>|nil }, geom: table<string, unknown> }[]
-local function decodeDraws(model, draws, dynamic, arena)
+local function decodeDraws(model, draws, dynamic, arena, gxScratch)
   local shapeByIndex = {}
   for _, shp in ipairs(model.shapes) do
     shapeByIndex[shp.index] = shp
@@ -172,6 +173,8 @@ local function decodeDraws(model, draws, dynamic, arena)
     local context = { model = model.name, shape = shp.name, material = draw.materialIndex }
     local options = {
       arena = arena,
+      scratch = gxScratch,
+      collectCommands = false,
       initialState = initialState,
       requireColorSource = true,
       context = context,
@@ -200,13 +203,15 @@ end
 -- Compile the static batches of a decoded model (shapes, display lists,
 -- materials, sbc.commands, nodes).
 ---@param model table<string, unknown>
----@param context { geometryArena: GxGeometryBuffer|nil, textureSizes: table<integer, { width: number, height: number }>|nil }?
+---@param context { geometryArena: GxGeometryBuffer|nil, gxScratch: GxDisplayList.Scratch|nil, textureSizes: table<integer, { width: number, height: number }>|nil }?
 ---@return CompiledBatch[]
 function MeshCompiler.compile(model, context)
   local arena = context and context.geometryArena or GxGeometryBuffer.new()
   local textureSizes = context and context.textureSizes
   local batches = {}
-  for _, record in ipairs(decodeDraws(model, NsbmdStaticTransforms.evaluate(model), false, arena)) do
+  for _, record in
+    ipairs(decodeDraws(model, NsbmdStaticTransforms.evaluate(model), false, arena, context and context.gxScratch))
+  do
     local draw = record.draw
     local shp = record.shape
     local matState = record.matState
@@ -301,7 +306,7 @@ end
 ---@return { shape: string, straddling: integer }[]? straddlingPrimitives
 ---@return table<string, unknown> program
 ---@param model table<string, unknown>
----@param context { geometryArena: GxGeometryBuffer }?
+---@param context { geometryArena: GxGeometryBuffer|nil, gxScratch: GxDisplayList.Scratch|nil }?
 function MeshCompiler.compileDynamic(model, context)
   -- The draw set (order, visibility, material carries) is pose-independent:
   -- the bind-pose evaluation yields the same draws the static path compiles.
@@ -312,7 +317,7 @@ function MeshCompiler.compileDynamic(model, context)
   local arena = context and context.geometryArena or GxGeometryBuffer.new()
   local meshes = {}
   local straddlingByShape = {}
-  for drawIndex, record in ipairs(decodeDraws(model, draws, true, arena)) do
+  for drawIndex, record in ipairs(decodeDraws(model, draws, true, arena, context and context.gxScratch)) do
     local draw = record.draw
     local shp = record.shape
     local matState = record.matState

@@ -97,6 +97,8 @@ local function compileCell(romFs, descriptor, scratch, producerFingerprint)
     mapId = source.mapHeaderId,
     mapSymbol = assert(header).symbol,
     terrainAnimationCompiler = terrainAnimationCompiler,
+    geometryArena = scratch and scratch.geometryArena,
+    gxScratch = scratch and scratch.gxScratch,
   })
   local building = BuildingModelCompiler.compile(romFs, chunk.area, chunk.land, {
     mapId = source.mapHeaderId,
@@ -106,6 +108,8 @@ local function compileCell(romFs, descriptor, scratch, producerFingerprint)
     meshes = chunk.meshes,
     textures = chunk.textures,
     finalizeMeshes = true,
+    geometryArena = scratch and scratch.geometryArena,
+    gxScratch = scratch and scratch.gxScratch,
   })
   local textureSrt = terrainAnimationCompiler:compileTextureSrt()
   local dependencies = {

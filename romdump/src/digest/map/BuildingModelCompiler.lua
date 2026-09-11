@@ -79,6 +79,8 @@ local function modelContext(opts, area, archiveAlias, memberId, buildingNsbmd, b
     embeddedTex0Present = buildingNsbmd.embeddedTextures ~= nil,
     placementIndices = placementIndices,
     finalizeMeshes = opts.finalizeMeshes,
+    geometryArena = opts.geometryArena,
+    gxScratch = opts.gxScratch,
   }
 end
 
@@ -218,6 +220,8 @@ function BuildingModelCompiler.compileSelected(romFs, area, land, memberId, opts
     meshes = opts.meshes,
     textures = opts.textures,
     finalizeMeshes = opts.finalizeMeshes,
+    geometryArena = opts.geometryArena,
+    gxScratch = opts.gxScratch,
     requiredModelMembers = { memberId },
   })
   local modelKey = assert(compiled.modelKeyOf[memberId], "selected building member did not compile")

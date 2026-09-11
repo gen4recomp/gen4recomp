@@ -186,7 +186,14 @@ local function compileModel(model, texturePack, meshes, textures, context)
   -- boundary repair. Polygon state is decoded once per batch here and
   -- reused for conformance eligibility, alpha classification, and
   -- serialization below.
-  local compiled = MeshCompiler.compile(model, { geometryArena = context.geometryArena, textureSizes = textureSizes })
+  if context.finalizeMeshes and context.geometryArena then
+    context.geometryArena:reset()
+  end
+  local compiled = MeshCompiler.compile(model, {
+    geometryArena = context.geometryArena,
+    gxScratch = context.gxScratch,
+    textureSizes = textureSizes,
+  })
   local polyByBatch = {}
   for i, batch in ipairs(compiled) do
     polyByBatch[i] = DsPolygonAttr.decode(batch.polygonAttrRaw)

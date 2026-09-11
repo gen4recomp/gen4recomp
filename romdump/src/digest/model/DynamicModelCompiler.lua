@@ -163,7 +163,10 @@ function DynamicModelCompiler.compile(
   textures,
   meshes
 )
-  local dynamicModel = NsbmdDynamicModel.compile(buildingModel)
+  if context.finalizeMeshes and context.geometryArena then
+    context.geometryArena:reset()
+  end
+  local dynamicModel = NsbmdDynamicModel.compile(buildingModel, context)
   local base = MaterialCompiler.compile(buildingModel.materials, texPack, { context = context })
   for sha1, tex in pairs(base.textures) do
     textures[sha1] = tex

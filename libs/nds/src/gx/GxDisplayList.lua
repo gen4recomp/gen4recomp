@@ -182,32 +182,111 @@ end
 local Decoder = {}
 Decoder.__index = Decoder
 
--- GX_MTXMODE_*: which of the geometry engine's matrices the matrix commands act
--- on. The SBC stream leaves POSITION_VECTOR active before calling a shape's
--- display list (NitroSystem sbc.c restores it after every path that changes it),
--- so that is the mode a list starts in.
-local MTXMODE = { PROJECTION = 0, POSITION = 1, POSITION_VECTOR = 2, TEXTURE = 3 }
+---@class GxDisplayList.Scratch
+---@field matrix Matrix4.Buffer
+---@field matrixScratch Matrix4.Buffer
+---@field matrixOperand Matrix4.Buffer
+---@field directionMatrix Matrix4.Buffer
+---@field directionScratch Matrix4.Buffer
+---@field directionOperand Matrix4.Buffer
+---@field pushStack ffi.cdata*
+---@field directionPushStack ffi.cdata*
+---@field pushSources table<integer, DrawSource>
+---@field restoreStack ffi.cdata*
+---@field restoreInitialized ffi.cdata*
+---@field directionRestoreStack ffi.cdata*
+---@field directionRestoreInitialized ffi.cdata*
+---@field run ffi.cdata*
+---@field carry ffi.cdata*
+---@field runCapacity integer
 
-local function newDecoder(arena, runCapacity)
-  local d = setmetatable({
-    arena = arena,
+local function resetScratch(scratch)
+  Matrix4.identityInto(scratch.matrix)
+  Matrix4.identityInto(scratch.matrixScratch)
+  Matrix4.identityInto(scratch.matrixOperand)
+  Matrix4.identityInto(scratch.directionMatrix)
+  Matrix4.identityInto(scratch.directionScratch)
+  Matrix4.identityInto(scratch.directionOperand)
+  for i = 0, 31 do
+    Matrix4.identityInto(scratch.pushStack[i])
+    Matrix4.identityInto(scratch.directionPushStack[i])
+    Matrix4.identityInto(scratch.restoreStack[i])
+    Matrix4.identityInto(scratch.directionRestoreStack[i])
+    scratch.restoreInitialized[i] = 0
+    scratch.directionRestoreInitialized[i] = 0
+    scratch.pushSources[i] = nil
+  end
+end
+
+---@return GxDisplayList.Scratch
+function GxDisplayList.newScratch()
+  local scratch = {
     matrix = Matrix4.newBuffer(),
     matrixScratch = Matrix4.newBuffer(),
     matrixOperand = Matrix4.newBuffer(),
-    -- The vector matrix, which transforms normals. It tracks the position
-    -- matrix's linear part except where MTX_MODE selects the position matrix
-    -- alone, which is the only way the two can diverge.
     directionMatrix = Matrix4.newBuffer(),
     directionScratch = Matrix4.newBuffer(),
     directionOperand = Matrix4.newBuffer(),
     pushStack = ffi.new("G4Mat4[32]"),
     directionPushStack = ffi.new("G4Mat4[32]"),
     pushSources = {},
-    pushDepth = 0,
-    restoreStack = ffi.new("G4Mat4[32]"), -- MTX_RESTORE slots, default identity
+    restoreStack = ffi.new("G4Mat4[32]"),
     restoreInitialized = ffi.new("uint8_t[32]"),
     directionRestoreStack = ffi.new("G4Mat4[32]"),
     directionRestoreInitialized = ffi.new("uint8_t[32]"),
+    run = ffi.new("uint32_t[1]"),
+    carry = ffi.new("uint32_t[1]"),
+    runCapacity = 1,
+  }
+  ---@cast scratch GxDisplayList.Scratch
+  resetScratch(scratch)
+  return scratch
+end
+
+---@param scratch GxDisplayList.Scratch
+---@param required integer
+local function ensureRunCapacity(scratch, required)
+  if required <= scratch.runCapacity then
+    return
+  end
+  local capacity = scratch.runCapacity
+  while capacity < required do
+    capacity = capacity * 2
+  end
+  scratch.run = ffi.new("uint32_t[?]", capacity)
+  scratch.carry = ffi.new("uint32_t[?]", capacity)
+  scratch.runCapacity = capacity
+end
+
+-- GX_MTXMODE_*: which of the geometry engine's matrices the matrix commands act
+-- on. The SBC stream leaves POSITION_VECTOR active before calling a shape's
+-- display list (NitroSystem sbc.c restores it after every path that changes it),
+-- so that is the mode a list starts in.
+local MTXMODE = { PROJECTION = 0, POSITION = 1, POSITION_VECTOR = 2, TEXTURE = 3 }
+
+---@param arena GxGeometryBuffer
+---@param scratch GxDisplayList.Scratch
+---@return table<string, unknown>
+local function newDecoder(arena, scratch)
+  local d = setmetatable({
+    arena = arena,
+    matrix = scratch.matrix,
+    matrixScratch = scratch.matrixScratch,
+    matrixOperand = scratch.matrixOperand,
+    -- The vector matrix, which transforms normals. It tracks the position
+    -- matrix's linear part except where MTX_MODE selects the position matrix
+    -- alone, which is the only way the two can diverge.
+    directionMatrix = scratch.directionMatrix,
+    directionScratch = scratch.directionScratch,
+    directionOperand = scratch.directionOperand,
+    pushStack = scratch.pushStack,
+    directionPushStack = scratch.directionPushStack,
+    pushSources = scratch.pushSources,
+    pushDepth = 0,
+    restoreStack = scratch.restoreStack, -- MTX_RESTORE slots, default identity
+    restoreInitialized = scratch.restoreInitialized,
+    directionRestoreStack = scratch.directionRestoreStack,
+    directionRestoreInitialized = scratch.directionRestoreInitialized,
     posX = 0,
     posY = 0,
     posZ = 0,
@@ -221,7 +300,7 @@ local function newDecoder(arena, runCapacity)
     colorB = 255,
     colorSource = nil, -- resolved by COLOR/NORMAL or seeded from material state
     mtxMode = MTXMODE.POSITION_VECTOR,
-    run = ffi.new("uint32_t[?]", math.max(1, runCapacity)),
+    run = scratch.run,
     runCount = 0,
     runOpen = false,
     primType = nil,
@@ -236,16 +315,10 @@ local function newDecoder(arena, runCapacity)
     currentSegment = nil,
     runParity = 0, -- triangle-strip winding parity of the open run's first vertex
     runSplit = false, -- the open run was split at a mid-run matrix boundary
-    carry = ffi.new("uint32_t[?]", math.max(1, runCapacity)),
+    carry = scratch.carry,
     carryCount = 0,
     straddlingPrimitives = 0, -- straddling primitives, reported to the caller
   }, Decoder)
-  Matrix4.identityInto(d.matrix)
-  Matrix4.identityInto(d.directionMatrix)
-  for i = 0, 31 do
-    Matrix4.identityInto(d.restoreStack[i])
-    Matrix4.identityInto(d.directionRestoreStack[i])
-  end
   return d
 end
 
@@ -918,7 +991,10 @@ local function _decode(bytes, options)
   local reserveVertices = vertexCount + dynamicBoundaryCount * 3
   local arena = assert(options.arena or GxGeometryBuffer.new())
   arena:reserve(reserveVertices, reserveVertices * 3)
-  local d = newDecoder(arena, reserveVertices)
+  local scratch = options.scratch or GxDisplayList.newScratch()
+  resetScratch(scratch)
+  ensureRunCapacity(scratch, math.max(1, reserveVertices))
+  local d = newDecoder(arena, scratch)
   d.requireColorSource = options.requireColorSource == true
   d.slice = arena:beginSlice()
   -- The SBC evaluator supplies position matrices only; their direction
@@ -956,7 +1032,10 @@ local function _decode(bytes, options)
     d.colorSource = seed.colorSource
   end
   local pos = 0
-  local commands = {}
+  local commands
+  if options.collectCommands ~= false then
+    commands = {}
+  end
 
   while pos + 4 <= len do
     local cmdWord = r:u32le(pos)
@@ -978,7 +1057,9 @@ local function _decode(bytes, options)
       if op ~= 0x00 then
         local params = readCommandParameters(r, pos, n)
         pos = pos + n * 4
-        commands[#commands + 1] = { opcode = op, offset = cmdOffset + i - 1 }
+        if commands then
+          commands[#commands + 1] = { opcode = op, offset = cmdOffset + i - 1 }
+        end
         d.opcodeCounts[op] = (d.opcodeCounts[op] or 0) + 1
         applyCommand(d, op, params, cmdOffset + i - 1, options.context, d.runSplit, cmdOffset)
       end

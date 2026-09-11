@@ -5,7 +5,9 @@
 -- polygon-attr word, and rejects a missing shape or unsupported in-DL command.
 
 local Assert = require("tests.support.Assert")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local MeshCompiler = require("romdump.src.digest.model.MeshCompiler")
+local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local NsbmdStaticTransforms = require("romdump.src.digest.model.NsbmdStaticTransforms")
 local Matrix4 = require("libs.math.src.Matrix4")
@@ -458,6 +460,39 @@ function T.billboard_shape_using_matrix_restore_raises()
     MeshCompiler.compile(billboardModel(dl))
   end)
   Assert.equal(err.code, "MAP_COMPILE_BILLBOARD_MATRIX_RESTORE_UNSUPPORTED")
+end
+
+function T.production_mesh_decode_omits_command_trace_but_default_decode_keeps_it()
+  local fixture = model("color")
+  local originalDecode = GxDisplayList.decode
+  local observed = {}
+  GxDisplayList.decode = function(bytes, options)
+    local result, err = originalDecode(bytes, options)
+    observed[#observed + 1] = { options = options, result = result }
+    return result, err
+  end
+  local ok, compiled = pcall(MeshCompiler.compile, fixture)
+  GxDisplayList.decode = originalDecode
+  if not ok then
+    error(compiled, 0)
+  end
+
+  Assert.equal(#observed, 1, "mesh compilation decodes its display list through the production decoder")
+  Assert.equal(observed[1].options.collectCommands, false, "production mesh decode disables command traces")
+  Assert.isNil(observed[1].result.commands, "production mesh decode does not retain command records")
+  Assert.notNil(observed[1].result.opcodeCounts, "production validation retains opcode counts")
+  Assert.notNil(observed[1].result.polygonAttrs, "production validation retains polygon summaries")
+
+  local direct = assert(originalDecode(fixture.shapes[1].displayListBytes))
+  Assert.notNil(direct.commands, "standalone decoder calls retain diagnostic command records by default")
+  Assert.isTrue(#direct.commands > 0, "standalone decoder records non-NOP commands")
+
+  local reference = MeshCompiler.compile(fixture)
+  Assert.equal(
+    MeshWriter.encode(compiled[1] --[[@as MeshWriter.Batch]]),
+    MeshWriter.encode(reference[1] --[[@as MeshWriter.Batch]]),
+    "mesh bytes remain unchanged"
+  )
 end
 
 return { tests = T }

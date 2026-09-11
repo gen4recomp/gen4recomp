@@ -435,4 +435,148 @@ function T.projection_matrix_mode_is_fatal()
   Assert.equal(assert(err).code, "GX_PROJECTION_MATRIX_MODE_UNSUPPORTED")
 end
 
+local function scratchSnapshot(scratch)
+  local fields = {
+    "matrix",
+    "matrixScratch",
+    "matrixOperand",
+    "directionMatrix",
+    "directionScratch",
+    "directionOperand",
+    "pushStack",
+    "directionPushStack",
+    "restoreStack",
+    "restoreInitialized",
+    "directionRestoreStack",
+    "directionRestoreInitialized",
+    "run",
+    "carry",
+  }
+  local snapshot = { capacity = assert(scratch.runCapacity) }
+  for _, field in ipairs(fields) do
+    Assert.notNil(scratch[field], "decoder scratch owns " .. field)
+    snapshot[field] = scratch[field]
+  end
+  return snapshot
+end
+
+local function geometrySnapshot(decoded)
+  local slice = assert(decoded.slice)
+  local numeric = slice.arena.numeric
+  local attrib = slice.arena.attrib
+  local indices = slice.arena.indices
+  local vertices = {}
+  for offset = 0, slice.vertexCount - 1 do
+    local v = numeric[slice.vertexOffset + offset]
+    local a = attrib[slice.vertexOffset + offset]
+    vertices[#vertices + 1] = { v.x, v.y, v.z, v.u, v.v, v.nx, v.ny, v.nz, a.r, a.g, a.b, a.a, a.colorSource }
+  end
+  local indexValues = {}
+  for offset = 0, slice.indexCount - 1 do
+    indexValues[#indexValues + 1] = indices[slice.indexOffset + offset]
+  end
+  return {
+    vertices = vertices,
+    indices = indexValues,
+    bounds = decoded.bounds,
+    opcodeCounts = decoded.opcodeCounts,
+    polygonAttrs = decoded.polygonAttrs,
+    finalState = decoded.finalState,
+  }
+end
+
+function T.reuses_decoder_scratch_after_warmup()
+  Assert.isTrue(
+    type(Gx.newScratch) == "function",
+    "repeated display-list decoding requires an explicit reusable decoder scratch"
+  )
+  local scratch = Gx.newScratch()
+  local arena = geometryArena()
+  local warm = dl({
+    { op = 0x1C, p = { fx32(2), fx32(-3), fx32(0) } },
+    { op = 0x20, p = { 31 } },
+    { op = 0x40, p = { 0 } },
+    vtx16(0, 0, 0),
+    vtx16(1, 0, 0),
+    vtx16(0, 1, 0),
+    vtx16(2, 0, 0),
+    vtx16(3, 0, 0),
+    vtx16(2, 1, 0),
+    { op = 0x41 },
+  })
+  local small = dl({
+    { op = 0x20, p = { 31 } },
+    { op = 0x40, p = { 0 } },
+    vtx16(0, 0, 0),
+    vtx16(1, 0, 0),
+    vtx16(0, 1, 0),
+    { op = 0x41 },
+  })
+
+  local first = assert(Gx.decode(warm, { arena = arena, scratch = scratch }))
+  local afterWarmup = scratchSnapshot(scratch)
+  arena:reset()
+  local reused = assert(Gx.decode(small, { arena = arena, scratch = scratch }))
+
+  local afterReuse = scratchSnapshot(scratch)
+  for field, value in pairs(afterWarmup) do
+    Assert.equal(afterReuse[field], value, "decoder scratch reuses " .. field)
+  end
+  local fresh = assert(Gx.decode(small, { arena = geometryArena() }))
+  Assert.deepEqual(geometrySnapshot(reused), geometrySnapshot(fresh), "reused decode matches fresh decoder state")
+  Assert.isTrue(
+    first.slice.vertexCount > reused.slice.vertexCount,
+    "the second decode uses an equal-or-smaller workload"
+  )
+end
+
+function T.scratch_grows_run_and_carry_capacity_without_changing_output()
+  local scratch = Gx.newScratch()
+  local arena = geometryArena()
+  local bytes = dl({
+    { op = 0x40, p = { 0 } },
+    vtx16(0, 0, 0),
+    vtx16(1, 0, 0),
+    vtx16(0, 1, 0),
+    { op = 0x41 },
+  })
+  local decoded = assert(Gx.decode(bytes, { arena = arena, scratch = scratch, initialState = { colorSource = 0 } }))
+  local decodedSnapshot = geometrySnapshot(decoded)
+  Assert.equal(scratch.runCapacity, 4, "run/carry scratch grows geometrically")
+  local run, carry = scratch.run, scratch.carry
+  arena:reset()
+  local reused = assert(Gx.decode(bytes, { arena = arena, scratch = scratch, initialState = { colorSource = 0 } }))
+  Assert.equal(scratch.run, run, "grown run storage remains the high-water buffer")
+  Assert.equal(scratch.carry, carry, "grown carry storage remains the high-water buffer")
+  Assert.deepEqual(geometrySnapshot(reused), decodedSnapshot, "grown scratch preserves decoded output")
+end
+
+function T.scratch_reset_discards_restore_stack_state()
+  local scratch = Gx.newScratch()
+  local arena = geometryArena()
+  local stored = dl({
+    { op = 0x1C, p = { fx32(5), fx32(0), fx32(0) } },
+    { op = 0x13, p = { 2 } },
+    { op = 0x40, p = { 0 } },
+    vtx16(0, 0, 0),
+    vtx16(1, 0, 0),
+    vtx16(0, 1, 0),
+    { op = 0x41 },
+  })
+  local defaultRestore = dl({
+    { op = 0x14, p = { 2 } },
+    { op = 0x40, p = { 0 } },
+    vtx16(0, 0, 0),
+    vtx16(1, 0, 0),
+    vtx16(0, 1, 0),
+    { op = 0x41 },
+  })
+  assert(Gx.decode(stored, { arena = arena, scratch = scratch, initialState = { colorSource = 0 } }))
+  arena:reset()
+  local reused =
+    assert(Gx.decode(defaultRestore, { arena = arena, scratch = scratch, initialState = { colorSource = 0 } }))
+  local fresh = assert(Gx.decode(defaultRestore, { arena = geometryArena(), initialState = { colorSource = 0 } }))
+  Assert.deepEqual(geometrySnapshot(reused), geometrySnapshot(fresh), "restore slots return to default identity")
+end
+
 return { tests = T }

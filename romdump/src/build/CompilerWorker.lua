@@ -12,6 +12,8 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
+local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
 local CompilerWorker = {}
 
@@ -67,6 +69,8 @@ function CompilerWorker.execute(job, context)
     local ok, result = xpcall(function()
       local scratch = context.fieldCellScratch or {}
       context.fieldCellScratch = scratch
+      scratch.geometryArena = context.geometryArena
+      scratch.gxScratch = context.gxScratch
       local compiled = FieldCellCompiler.compileCell(context.romFs, descriptor, scratch, job.producerFingerprint)
       FieldCellCacheWriter.stagePrepared(artifact, descriptor, compiled)
       artifact:finishSuccess({
@@ -144,6 +148,8 @@ function CompilerWorker.execute(job, context)
       cacheFs = context.cacheFs,
       fieldCellIndex = FieldCellCache.loadIndex(context.cacheFs),
       producerFingerprint = job.producerFingerprint,
+      geometryArena = context.geometryArena,
+      gxScratch = context.gxScratch,
     })
   end, function(failure)
     return { failure = failure, traceback = debug.traceback("", 2) }
@@ -189,7 +195,17 @@ function CompilerWorker.run(workerId, versionId, inputChannel, resultChannel)
     error(openError, 0)
   end
   local cacheFs = CacheFs.forVersion(versionId)
-  local context = { romFs = romFs, cacheFs = cacheFs, workerId = workerId }
+  local context = {
+    romFs = romFs,
+    cacheFs = cacheFs,
+    workerId = workerId,
+    fieldCellScratch = {
+      geometryArena = GxGeometryBuffer.new(),
+      gxScratch = GxDisplayList.newScratch(),
+    },
+  }
+  context.geometryArena = context.fieldCellScratch.geometryArena
+  context.gxScratch = context.fieldCellScratch.gxScratch
   while true do
     local job = inputChannel:demand()
     assert(type(job) == "table", "worker received an invalid control message")
