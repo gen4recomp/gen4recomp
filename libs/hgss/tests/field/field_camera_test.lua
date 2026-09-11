@@ -93,52 +93,208 @@ function T.zoom_changes_projection_scale_without_moving_the_rom_camera()
   local camera = FieldCamera.new(profile(), { initialTarget = { x = 0, y = 0, z = 0 } })
   local eye = { x = camera.eye.x, y = camera.eye.y, z = camera.eye.z }
   local canonical = camera:projection()
+  local canonicalHorizontal, canonicalVertical = canonical[1], canonical[6]
   camera:setZoom(0.75)
   local zoomedOut = camera:projection()
-  Assert.isTrue(approx(zoomedOut[1], canonical[1] * 0.75))
-  Assert.isTrue(approx(zoomedOut[6], canonical[6] * 0.75))
+  Assert.isTrue(approx(zoomedOut[1], canonicalHorizontal * 0.75))
+  Assert.isTrue(approx(zoomedOut[6], canonicalVertical * 0.75))
   Assert.deepEqual(camera.eye, eye)
   Assert.throws(function()
     camera:setZoom(0)
   end)
 end
 
-function T.projection_caches_follow_aspect_and_zoom_invalidations()
+-- Aspect/zoom invalidation must refresh the world and billboard projections
+-- in place: repeated warmed reads and post-invalidation reads all observe the
+-- same live array identity, with distinct identities between the two kinds.
+function T.projection_caches_refresh_in_place_after_aspect_and_zoom_invalidations()
   local camera = FieldCamera.new(profile(), { initialTarget = { x = 0, y = 0, z = 0 } })
-  local projection = camera:projection()
-  local billboard = camera:billboardProjection()
-  Assert.equal(camera:projection(), projection, "unchanged projection inputs reuse the projection matrix")
-  Assert.equal(
-    camera:billboardProjection(),
-    billboard,
-    "unchanged projection inputs reuse the billboard projection matrix"
-  )
+  local projectionArray = camera:projection()
+  local billboardArray = camera:billboardProjection()
+  Assert.isFalse(projectionArray == billboardArray, "world and billboard projections are distinct arrays")
+  Assert.equal(camera:projection(), projectionArray, "unchanged projection inputs reuse the projection array")
+  Assert.equal(camera:billboardProjection(), billboardArray, "unchanged projection inputs reuse the billboard array")
 
+  local beforeHorizontalScale = projectionArray[1]
   camera:setProjectionAspect(32 / 9)
   local wideProjection = camera:projection()
   local wideBillboard = camera:billboardProjection()
-  Assert.isFalse(wideProjection == projection, "aspect changes replace the projection matrix")
-  Assert.isFalse(wideBillboard == billboard, "aspect changes replace the billboard projection matrix")
+  Assert.equal(wideProjection, projectionArray, "aspect changes refresh the projection array without replacing it")
+  Assert.equal(wideBillboard, billboardArray, "aspect changes refresh the billboard array without replacing it")
+  Assert.isFalse(wideProjection[1] == beforeHorizontalScale, "aspect change recomputes the horizontal scale")
   camera:setProjectionAspect(32 / 9)
-  Assert.equal(camera:projection(), wideProjection, "repeating the current aspect does not invalidate projection")
+  Assert.equal(camera:projection(), projectionArray, "repeating the current aspect keeps the same array contents")
   Assert.equal(
     camera:billboardProjection(),
-    wideBillboard,
-    "repeating the current aspect does not invalidate billboard projection"
+    billboardArray,
+    "repeating the current aspect keeps the same billboard array contents"
   )
 
+  local beforeZoomScale = wideProjection[1]
   camera:setZoom(0.75)
   local zoomedProjection = camera:projection()
   local zoomedBillboard = camera:billboardProjection()
-  Assert.isFalse(zoomedProjection == wideProjection, "zoom changes replace the projection matrix")
-  Assert.isFalse(zoomedBillboard == wideBillboard, "zoom changes replace the billboard projection matrix")
+  Assert.equal(zoomedProjection, projectionArray, "zoom changes refresh the projection array without replacing it")
+  Assert.equal(zoomedBillboard, billboardArray, "zoom changes refresh the billboard array without replacing it")
+  Assert.isTrue(
+    approx(zoomedProjection[1], beforeZoomScale * 0.75),
+    "zoom change recomputes the horizontal scale in place"
+  )
   camera:setZoom(0.75)
-  Assert.equal(camera:projection(), zoomedProjection, "repeating the current zoom does not invalidate projection")
+  Assert.equal(camera:projection(), projectionArray, "repeating the current zoom keeps the same array contents")
   Assert.equal(
     camera:billboardProjection(),
-    zoomedBillboard,
-    "repeating the current zoom does not invalidate billboard projection"
+    billboardArray,
+    "repeating the current zoom keeps the same billboard array contents"
   )
+end
+
+-- Repeated warmed `view` calls must reuse one live array: the identity never
+-- changes, only its 16 contents, and the contents match an independently
+-- interpolated look-at at each sampled alpha.
+function T.view_reuses_one_live_array_while_updating_its_contents_each_call()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  local identity = camera:view(0)
+  for _, alpha in ipairs({ 0, 0.25, 0.5, 0.75, 1 }) do
+    local eyeX = camera.previousEye.x + (camera.eye.x - camera.previousEye.x) * alpha
+    local eyeY = camera.previousEye.y + (camera.eye.y - camera.previousEye.y) * alpha
+    local eyeZ = camera.previousEye.z + (camera.eye.z - camera.previousEye.z) * alpha
+    local targetX = camera.previousTarget.x + (camera.target.x - camera.previousTarget.x) * alpha
+    local targetY = camera.previousTarget.y + (camera.target.y - camera.previousTarget.y) * alpha
+    local targetZ = camera.previousTarget.z + (camera.target.z - camera.previousTarget.z) * alpha
+    local expected = Matrix4.lookAt({ eyeX, eyeY, eyeZ }, { targetX, targetY, targetZ }, { 0, 1, 0 })
+    local view = camera:view(alpha)
+    Assert.equal(view, identity, "view reuses one live array across calls")
+    for index = 1, 16 do
+      Assert.near(view[index], expected[index], 1e-9, "view component " .. index .. " at alpha " .. alpha)
+    end
+  end
+end
+
+-- Ordinary fixed updates mutate the camera's own vector storage; they must
+-- never replace `eye`, `target`, `previousEye`, `previousTarget`, or
+-- `sourceTarget` with a freshly allocated table.
+function T.fixed_update_mutates_persistent_vector_storage_without_replacing_it()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  local eye = camera.eye
+  local target = camera.target
+  local previousEye = camera.previousEye
+  local previousTarget = camera.previousTarget
+  local sourceTarget = camera.sourceTarget
+  for tick = 1, 3 do
+    camera:updateFixed({ x = tick, y = tick, z = tick * 2 })
+    Assert.equal(camera.eye, eye, "eye storage identity is stable")
+    Assert.equal(camera.target, target, "target storage identity is stable")
+    Assert.equal(camera.previousEye, previousEye, "previousEye storage identity is stable")
+    Assert.equal(camera.previousTarget, previousTarget, "previousTarget storage identity is stable")
+    Assert.equal(camera.sourceTarget, sourceTarget, "sourceTarget storage identity is stable")
+  end
+end
+
+-- The transition player's own render-position table must be copied into
+-- persistent camera storage, not retained, and that storage must not be
+-- replaced by the copy.
+function T.transition_adjustment_copies_scalars_without_retaining_or_replacing_storage()
+  local camera = FieldCamera.new(profile(), { initialTarget = { x = 0, y = 0, z = 0 } })
+  local sourceTarget = camera.sourceTarget
+  local renderPosition = { x = 4, y = 5, z = 6 }
+  camera:setTransitionPlayer({
+    renderPosition = function()
+      return renderPosition
+    end,
+  })
+  camera:adjustTransition(3, "horizontal_stairs")
+  Assert.equal(
+    camera.sourceTarget,
+    sourceTarget,
+    "sourceTarget storage identity is stable across transition adjustment"
+  )
+  Assert.isFalse(camera.sourceTarget == renderPosition, "camera does not retain the player's own table")
+  Assert.equal(camera.sourceTarget.x, 4)
+  Assert.equal(camera.sourceTarget.y, 5)
+  Assert.equal(camera.sourceTarget.z, 6)
+end
+
+-- Once the in-place `Matrix4.*Into` helpers exist, the camera's view output
+-- must equal what they compute directly from the camera's own eye/target/up,
+-- across perspective and orthographic profiles, after ordinary movement,
+-- rebase, and collapsed interpolation.
+function T.view_matches_in_place_lookAt_math_for_both_profile_kinds()
+  local perspectiveCamera = FieldCamera.new(profile(), { initialTarget = { x = 0, y = 0, z = 0 } })
+  local orthographicCamera = FieldCamera.new(
+    profile({ projectionType = "orthographic", distanceTiles = 20, halfFovRadians = math.rad(30) }),
+    { initialTarget = { x = 0, y = 0, z = 0 } }
+  )
+  for _, camera in ipairs({ perspectiveCamera, orthographicCamera }) do
+    camera:updateFixed({ x = 1, y = 2, z = 3 })
+    camera:rebase(0.5, -0.25, 1)
+    camera:collapseRenderInterpolation()
+    local buffer = Matrix4.newBuffer()
+    Matrix4.lookAtInto(
+      buffer,
+      camera.eye.x,
+      camera.eye.y,
+      camera.eye.z,
+      camera.target.x,
+      camera.target.y,
+      camera.target.z,
+      camera.up.x,
+      camera.up.y,
+      camera.up.z
+    )
+    local expected = camera:view(1)
+    local actual = Matrix4.toArrayBuffer(buffer)
+    for index = 1, 16 do
+      Assert.near(actual[index], expected[index], 1e-9, "view component " .. index)
+    end
+  end
+end
+
+-- Once the in-place projection helpers exist, they must match the camera's
+-- own projection math for both perspective and orthographic profiles at the
+-- default (unzoomed) scale.
+function T.projection_matches_in_place_projection_math_for_both_profile_kinds()
+  local perspectiveCamera = FieldCamera.new(profile(), { initialTarget = { x = 0, y = 0, z = 0 } })
+  local perspectiveBuffer = Matrix4.newBuffer()
+  Matrix4.perspectiveInto(
+    perspectiveBuffer,
+    perspectiveCamera.profile.fullVerticalFovRadians,
+    perspectiveCamera.projectionAspect,
+    perspectiveCamera.near,
+    perspectiveCamera.far
+  )
+  local expectedPerspective = perspectiveCamera:projection()
+  local actualPerspective = Matrix4.toArrayBuffer(perspectiveBuffer)
+  for index = 1, 16 do
+    Assert.near(actualPerspective[index], expectedPerspective[index], 1e-9, "perspective component " .. index)
+  end
+
+  local orthographicCamera = FieldCamera.new(
+    profile({ projectionType = "orthographic", distanceTiles = 20, halfFovRadians = math.rad(30) }),
+    { initialTarget = { x = 0, y = 0, z = 0 } }
+  )
+  local halfY = math.tan(math.rad(30)) * 20
+  local halfX = halfY * orthographicCamera.projectionAspect
+  local orthographicBuffer = Matrix4.newBuffer()
+  Matrix4.orthographicInto(
+    orthographicBuffer,
+    -halfX,
+    halfX,
+    -halfY,
+    halfY,
+    orthographicCamera.near,
+    orthographicCamera.far
+  )
+  local expectedOrthographic = orthographicCamera:projection()
+  local actualOrthographic = Matrix4.toArrayBuffer(orthographicBuffer)
+  for index = 1, 16 do
+    Assert.near(actualOrthographic[index], expectedOrthographic[index], 1e-9, "orthographic component " .. index)
+  end
 end
 
 function T.canonical_projection_ignores_runtime_aspect_and_zoom()
