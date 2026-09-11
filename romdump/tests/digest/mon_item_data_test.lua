@@ -1,4 +1,4 @@
--- Item-data decoding contract for the mon catalog compiler. Fixture layout
+-- Item-data decoding contract for the item catalog compiler. Fixture layout
 -- mirrors pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
 -- include/item.h ItemData: a u16 price, the hold-effect byte, and the
 -- remaining effect/pocket fields the catalog never consumes. Native identity
@@ -7,12 +7,12 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
-local MonSources = require("romdump.src.config.MonSources")
+local ItemSources = require("romdump.src.config.ItemSources")
 
 local T = {}
 
 local function compiler()
-  return require("romdump.src.digest.mons.MonCatalogCompiler")
+  return require("romdump.src.digest.items.ItemCatalogCompiler")
 end
 
 local function memberWithHoldEffect(holdEffect)
@@ -39,29 +39,29 @@ function T.rejects_malformed_item_members()
   })
   Assert.isTrue(Errors.is(sizeErr))
   assert(sizeErr, "malformed item member must fail")
-  Assert.equal(sizeErr.code, "MON_ITEM_DATA_BAD_SIZE")
+  Assert.equal(sizeErr.code, "ITEM_DATA_BAD_SIZE")
 end
 
 function T.maps_native_identities_to_source_members()
-  Assert.equal(MonSources.itemDataMember(0), 0)
-  Assert.equal(MonSources.itemDataMember(112), 112)
-  Assert.equal(MonSources.itemDataMember(113), 0)
-  Assert.equal(MonSources.itemDataMember(134), 0)
-  Assert.equal(MonSources.itemDataMember(135), 113)
-  Assert.equal(MonSources.itemDataMember(427), 405)
-  Assert.equal(MonSources.itemDataMember(428), 0)
-  Assert.equal(MonSources.itemDataMember(429), 406)
-  Assert.equal(MonSources.itemDataMember(536), 513)
-  Assert.isFalse(pcall(MonSources.itemDataMember, 537))
+  Assert.equal(ItemSources.itemDataMember(0), 0)
+  Assert.equal(ItemSources.itemDataMember(112), 112)
+  Assert.equal(ItemSources.itemDataMember(113), 0)
+  Assert.equal(ItemSources.itemDataMember(134), 0)
+  Assert.equal(ItemSources.itemDataMember(135), 113)
+  Assert.equal(ItemSources.itemDataMember(427), 405)
+  Assert.equal(ItemSources.itemDataMember(428), 0)
+  Assert.equal(ItemSources.itemDataMember(429), 406)
+  Assert.equal(ItemSources.itemDataMember(536), 513)
+  Assert.isFalse(pcall(ItemSources.itemDataMember, 537))
 end
 
 function T.pins_the_friendship_and_ball_source_facts()
-  Assert.equal(MonSources.HOLD_EFFECT_FRIENDSHIP_UP, 53)
+  Assert.equal(ItemSources.HOLD_EFFECT_FRIENDSHIP_UP, 53)
   for _, nativeId in ipairs({ 1, 4, 16, 492, 498, 500 }) do
-    Assert.isTrue(MonSources.ballItemIds[nativeId] == true, "item " .. nativeId .. " is a ball")
+    Assert.isTrue(ItemSources.ballItemIds[nativeId] == true, "item " .. nativeId .. " is a ball")
   end
   for _, nativeId in ipairs({ 0, 17, 218, 327 }) do
-    Assert.isNil(MonSources.ballItemIds[nativeId], "item " .. nativeId .. " is not a ball")
+    Assert.isNil(ItemSources.ballItemIds[nativeId], "item " .. nativeId .. " is not a ball")
   end
 end
 

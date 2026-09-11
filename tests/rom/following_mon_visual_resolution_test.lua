@@ -8,8 +8,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-local MonCache = require("libs.assets.src.MonCache")
-local MonCatalog = require("libs.mons.src.MonCatalog")
+local MonBucket = require("tests.support.MonBucket")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -25,7 +24,7 @@ end
 
 T["starter and gendered follower visuals resolve to compiled actor visuals"] = function(_, versionId)
   local cacheFs = CacheFs.forVersion(versionId)
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  local catalog = MonBucket.openCatalogs(versionId)
   local known = bundleSprites(cacheFs)
   local representatives = { "CHIKORITA", "CYNDAQUIL", "TOTODILE", "PIKACHU" }
   for _, species in ipairs(representatives) do
