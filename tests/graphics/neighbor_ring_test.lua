@@ -27,13 +27,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local T = {}
 
 local function queueScratch()
-  return {
-    opaque = {},
-    cutout = {},
-    mixedOpaque = {},
-    wireframe = {},
-    blended = {},
-  }
+  return RenderQueue.newScratch()
 end
 
 -- One-triangle batch in the MeshWriter vertex layout.
