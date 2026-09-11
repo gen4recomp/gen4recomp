@@ -44,12 +44,12 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
   local testScript = handle:read("*a")
   handle:close()
 
-  handle = assert(io.open("scripts/lint.sh", "rb"))
-  local lintScript = handle:read("*a")
+  handle = assert(io.open("scripts/typecheck.sh", "rb"))
+  local typecheckScript = handle:read("*a")
   handle:close()
 
   contains(testScript, 'BUILD_LOG_DIR="$(mktemp -d)"', "test script")
-  contains(lintScript, 'LUALS_LOG_DIR="$(mktemp -d)"', "lint script")
+  contains(typecheckScript, 'LUALS_LOG_DIR="$(mktemp -d)"', "typecheck script")
 end
 
 -- The shell must not re-implement option scanning: `scripts/test.sh` decides

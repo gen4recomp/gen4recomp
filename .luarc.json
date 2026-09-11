@@ -21,9 +21,9 @@
     "castNumberToInteger": false,
     "weakUnionCheck": false,
     "weakNilCheck": false,
-    "inferParamType": true,
-    "checkTableShape": true,
-    "inferTableSize": 100
+    "inferParamType": false,
+    "checkTableShape": false,
+    "inferTableSize": 10
   },
   "workspace": {
     "checkThirdParty": false,

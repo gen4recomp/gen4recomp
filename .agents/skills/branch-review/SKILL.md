@@ -189,7 +189,7 @@ choice. State the alternatives and evidence concisely.
 
 Before declaring the review complete:
 
-1. Run `scripts/lint.sh` and fix every finding at its source.
+1. Run `scripts/lint.sh` and `scripts/typecheck.sh` and fix every finding at its source.
 2. Run the full available `scripts/test.sh` suite.
 3. Explicitly run affected ROM/acceptance evidence when the branch requires it and the
    capability is available. A ROM-gated requirement skipped because the dump is unavailable

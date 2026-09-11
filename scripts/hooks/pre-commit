@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installed by scripts/lib/repo-setup.sh via core.hooksPath. Bypass with --no-verify;
-# CI runs the same checks, so a bypass only defers the failure.
+# CI additionally runs the full whole-workspace typecheck (scripts/typecheck.sh),
+# so a bypass only defers the failure.
 set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"

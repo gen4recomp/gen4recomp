@@ -69,7 +69,7 @@ owns repository-wide/subsystem conventions not overridden by the spec.
    behavior. Run full `scripts/test.sh` when the change affects broad composition, test
    discovery/runner infrastructure, shared architecture boundaries, or cannot be isolated
    credibly.
-6. **Run `scripts/lint.sh`.** Fix every finding at its source.
+6. **Run `scripts/lint.sh` and `scripts/typecheck.sh`.** Fix every finding at its source.
 7. **Re-run checks affected by lint/review edits.** Do not repeat an already-passing expensive
    check merely because commit follows unless later edits could invalidate it.
 8. **Summarize** the concrete cleanup and evidence. State any unavailable required capability

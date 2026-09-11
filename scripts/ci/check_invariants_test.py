@@ -5,9 +5,9 @@ Invokes the repository invariant script in explicit-path mode against
 minimal temporary fixtures. Production scope is any explicit ``.lua``
 path; test scope is an explicit path containing a ``/tests/`` segment.
 Hook cases run the real pre-commit entrypoint in temporary Git
-repositories with a ``scripts/lint.sh`` double standing in for the full
-static gate, so they stay independent of formatter/type binaries while
-still proving the hook requires full lint.
+repositories with a ``scripts/lint.sh`` double standing in for the fast
+lint gate, so they stay independent of formatter/type binaries while
+still proving the hook requires lint.
 """
 
 from __future__ import annotations
@@ -330,7 +330,7 @@ def _init_repo(
     root: Path,
     fixtures: dict[str, str],
     *,
-    with_full_lint_stub: bool = True,
+    with_lint_stub: bool = True,
 ) -> Path:
     """Create an isolated Git repo wiring the current hook and checker.
 
@@ -338,8 +338,8 @@ def _init_repo(
     temporary repository alongside a valid ``.luarc.json``, the fixed core
     modules, and the given Lua fixtures, then commits a clean baseline. The
     hook under test is never installed, so the baseline commit cannot invoke
-    it. When ``with_full_lint_stub`` holds, a ``scripts/lint.sh`` double
-    accepting ``--check`` with exit zero stands in for the full static gate;
+    it. When ``with_lint_stub`` holds, a ``scripts/lint.sh`` double
+    accepting ``--check`` with exit zero stands in for the fast lint gate;
     the hook requires that collaborator, so hook success cases must keep the
     stub while the missing-lint case proves the dependency is real.
     """
@@ -355,11 +355,11 @@ def _init_repo(
     hook_target.parent.mkdir(parents=True, exist_ok=True)
     hook_target.write_bytes(HOOK_SOURCE.read_bytes())
     hook_target.chmod(0o755)
-    if with_full_lint_stub:
+    if with_lint_stub:
         lint_stub = root / "scripts" / "lint.sh"
         lint_stub.write_text(
             "#!/usr/bin/env bash\n"
-            "# Test double for the full static gate.\n"
+            "# Test double for the fast lint gate.\n"
             "set -euo pipefail\n"
             'if [ "${1:-}" != "--check" ]; then\n'
             '  echo "expected --check" >&2\n'
@@ -425,12 +425,12 @@ class StagedIndexGateTest(unittest.TestCase):
             result = _run_hook(repo)
             self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_hook_fails_without_full_lint_present(self) -> None:
+    def test_hook_fails_without_lint_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = _init_repo(
                 Path(directory),
                 {"app/src/sample.lua": CLEAN_PRODUCTION_BODY},
-                with_full_lint_stub=False,
+                with_lint_stub=False,
             )
             self.assertFalse((repo / "scripts/lint.sh").exists())
             _stage(
@@ -441,7 +441,7 @@ class StagedIndexGateTest(unittest.TestCase):
             result = _run_hook(repo)
             self.assertNotEqual(result.returncode, 0, result.stderr)
 
-    def test_failing_full_lint_blocks_clean_staged_change(self) -> None:
+    def test_failing_lint_blocks_clean_staged_change(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = _init_repo(
                 Path(directory), {"app/src/sample.lua": CLEAN_PRODUCTION_BODY}

@@ -7,9 +7,12 @@ name: CI
 # acceptance tests report explicit optional skips because CI has no
 # user-owned cartridge dump.
 #
-# CI runs the full static gate (scripts/lint.sh --check); the pre-commit
-# hook runs both the staged invariant gate and full lint. Hooks are opt-in
-# per clone and bypassable, so CI is the binding gate.
+# CI runs both fast lint (scripts/lint.sh --check) and the whole-workspace Lua
+# typecheck (scripts/typecheck.sh); the pre-commit hook runs only the staged
+# invariant gate and fast lint. Hooks are opt-in per clone and bypassable, so
+# CI is the binding gate for both. lint.sh also runs a reduced-workspace
+# (tests excluded) LuaLS pass in the background alongside its other checks,
+# so LuaLS must be installed before the lint step, not only before typecheck.
 #
 # Structural hotspot comparison is advisory and lives in the separate Code
 # health PR workflows; it never gates these jobs.
@@ -65,8 +68,11 @@ jobs:
             | sudo tee /usr/local/bin/lua-language-server >/dev/null
           sudo chmod +x /usr/local/bin/lua-language-server
 
-      - name: Run static checks
+      - name: Run lint checks
         run: scripts/lint.sh --check
+
+      - name: Run Lua typecheck
+        run: scripts/typecheck.sh
 
   test:
     runs-on: ubuntu-22.04

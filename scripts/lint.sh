@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Static checks for the whole repo: formatting (stylua) and diagnostics
-# (lua-language-server). Both analyze the full workspace — luals resolves
-# `require` paths against the repo root, so a per-file mode would be unsound.
-# Both exit non-zero on findings; `set -e` turns that into a failed check.
+# Fast developer-loop static checks: formatting (stylua), repository-owned
+# static/policy/invariant checks, and a reduced-workspace LuaLS check (tests
+# excluded) that runs in the background while the other checks execute, so
+# lint.sh's wall time is roughly the slower of the two rather than their sum.
+# The reduced check is generated from the committed .luarc.json plus
+# additional ignoreDir entries; it is deliberately incomplete (tests are
+# unchecked, and only Hint-or-higher findings on the reduced workspace are
+# caught). scripts/typecheck.sh remains the canonical whole-repository LuaLS
+# gate and is what CI binds on.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,6 +24,37 @@ for tool in stylua lua-language-server; do
   }
 done
 
+LUALS_LOG_DIR="$(mktemp -d)"
+LINT_LUARC="$(mktemp)"
+LUALS_OUTPUT="$(mktemp)"
+luals_pid=""
+cleanup() {
+  local status=$?
+  if [ -n "$luals_pid" ]; then
+    kill "$luals_pid" 2>/dev/null || true
+    wait "$luals_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$LUALS_LOG_DIR" "$LINT_LUARC" "$LUALS_OUTPUT"
+  exit "$status"
+}
+trap cleanup EXIT
+
+python3 - "$LINT_LUARC" <<'PYEOF'
+import json
+import sys
+
+with open(".luarc.json", encoding="utf-8") as f:
+    config = json.load(f)
+config.setdefault("workspace", {}).setdefault("ignoreDir", []).extend(["tests", "**/tests"])
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump(config, f)
+PYEOF
+
+echo "==> lua-language-server --check (tests excluded, running in background)"
+lua-language-server --check . --configpath="$LINT_LUARC" --num_threads="2" --checklevel=Hint --logpath="$LUALS_LOG_DIR" \
+  >"$LUALS_OUTPUT" 2>&1 &
+luals_pid=$!
+
 if [ "${#STYLUA_ARGS[@]}" -eq 0 ]; then
   echo "==> stylua"
 else
@@ -29,7 +65,6 @@ stylua "${STYLUA_ARGS[@]}" .
 scripts/lib/check-repository.sh
 scripts/lib/check-invariants.sh
 
-echo "==> temporary-spec reference guard"
 # Reject references to the planning spec ("tmp/spec", "spec section N",
 # "Workstream N", "milestone N", "slice N", "WS N"), planning language
 # ("under development", "provisional", "may change in a future API"), and
@@ -38,10 +73,7 @@ echo "==> temporary-spec reference guard"
 # purpose: bare "section"/"slice" and project concepts like the playable
 # "New Bark slice" stay legal. lint.sh is excluded because it contains the
 # patterns itself.
-permanent_prose_roots=(README.md docs data libs game romdump tests scripts gen4)
-if [ -d .agents/docs ]; then
-  permanent_prose_roots+=(.agents/docs)
-fi
+permanent_prose_roots=(README.md docs data libs game romdump tests scripts gen4 .agents/docs)
 if grep -RInE --include='*.lua' --include='*.md' --include='*.sh' --include='*.toml' \
   -e 'tmp/spec' -e 'spec section' -e 'Workstream' -e 'milestone' -e 'slice [0-9]' \
   -e 'WS[0-9]' -e 'under development' -e 'provisional' -e 'may change in a future API' \
@@ -52,7 +84,12 @@ if grep -RInE --include='*.lua' --include='*.md' --include='*.sh' --include='*.t
   exit 1
 fi
 
-echo "==> lua-language-server --check"
-LUALS_LOG_DIR="$(mktemp -d)"
-trap 'rm -rf -- "$LUALS_LOG_DIR"' EXIT
-lua-language-server --check . --num_threads="4" --checklevel=Hint --logpath="$LUALS_LOG_DIR"
+echo "==> waiting for reduced-workspace lua-language-server --check"
+luals_status=0
+wait "$luals_pid" || luals_status=$?
+luals_pid=""
+if [ "$luals_status" -ne 0 ]; then
+  cat "$LUALS_OUTPUT" >&2
+  echo "lint: reduced-workspace LuaLS check failed (tests excluded; run scripts/typecheck.sh for the complete check)" >&2
+  exit 1
+fi
