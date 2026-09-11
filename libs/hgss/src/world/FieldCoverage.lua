@@ -341,7 +341,13 @@ local function finishPending(self, pending)
       pending.phase = "complete"
     else
       local consumed = advancePending(self, pending, 1)
-      assert(consumed > 0 or pending.complete, "pending physical build made no progress")
+      -- Staging a presentation task and finding it still waiting on worker
+      -- preparation consumes no budget, but it is progress: the next pass
+      -- drives the staged task through its blocking finish.
+      assert(
+        consumed > 0 or pending.complete or pending.presentationTask ~= nil,
+        "pending physical build made no progress"
+      )
     end
   end
   return assert(pending.runtime)

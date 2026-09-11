@@ -23,6 +23,7 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 ---@field sceneLoader table<string, unknown>|nil presentation-only visual scene loader
 ---@field neighborLoader table<string, unknown>|nil presentation-only finite neighbor-ring loader
 ---@field sceneOptions table<string, unknown>|nil options passed to physical-cell presentation loading
+---@field assetPreparation table<string, unknown>|nil preparation queue forwarded into scene-loader options
 ---@field derivedAssets table<string, function>|nil semantic derived-asset host
 ---@field fieldCellIndex table<string, unknown>?
 ---@field entries table<integer, table<string, unknown>>
@@ -292,6 +293,7 @@ function FieldMapLoader.new(cacheFs, world, options)
     sceneLoader = options.sceneLoader,
     neighborLoader = options.neighborLoader,
     sceneOptions = options.sceneOptions,
+    assetPreparation = options.assetPreparation,
     derivedAssets = options.derivedAssets,
     fieldCellIndex = nil,
     entries = {},
@@ -473,7 +475,10 @@ function FieldMapLoader:load(idOrSymbol, _)
   local sceneRuntime
   if self.sceneLoader then
     sceneRuntime = physicalCells and self.sceneLoader.loadEnvironment(scene)
-      or self.sceneLoader.load(self.cacheFs, scene, { mapProps = mapProps })
+      or self.sceneLoader.load(self.cacheFs, scene, {
+        mapProps = mapProps,
+        assetPreparation = self.assetPreparation,
+      })
   end
   -- One transaction covers every step after the scene runtime is acquired:
   -- neighbor-ring load, terrain construction, neighbor decoding, region
@@ -594,14 +599,28 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
   local matrixMemberId = assert(matrix.memberId, "outdoor matrix member is required")
   local presentationLoader
   local presentationTaskFactory
+  -- Physical-cell presentation inherits the loader's scene options plus the
+  -- preparation queue without mutating the shared options table.
+  local sceneOptions = self.sceneOptions
+  if self.assetPreparation ~= nil then
+    local merged = {}
+    if sceneOptions then
+      for key, value in pairs(sceneOptions) do
+        merged[key] = value
+      end
+    end
+    merged.assetPreparation = self.assetPreparation
+    sceneOptions = merged
+  end
   if self.sceneLoader and self.sceneLoader.beginCell then
+    local mapLoader = self
     local function beginCell(_, cell)
-      return self.sceneLoader.beginCell(self.cacheFs, cell, self.sceneOptions)
+      return mapLoader.sceneLoader.beginCell(mapLoader.cacheFs, cell, sceneOptions)
     end
     presentationTaskFactory = beginCell
   elseif self.sceneLoader and self.sceneLoader.loadCell then
     local function loadCell(_, cell)
-      return self.sceneLoader.loadCell(self.cacheFs, cell, self.sceneOptions)
+      return self.sceneLoader.loadCell(self.cacheFs, cell, sceneOptions)
     end
     presentationLoader = loadCell
   end

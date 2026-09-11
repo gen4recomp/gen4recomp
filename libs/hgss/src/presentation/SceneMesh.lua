@@ -14,6 +14,8 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local G4MeshFormat = require("libs.assets.src.model.G4MeshFormat")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
+local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local ffi = require("ffi")
 
 local SceneMesh = {}
 
@@ -126,6 +128,86 @@ function SceneMesh.build(decoded)
   end
   mesh:setVertexMap(map)
   return mesh
+end
+
+-- The packed float count of one render vertex, derived from the authoritative
+-- vertex layout so a layout change fails loudly at the pack assertion below
+-- instead of silently writing the wrong stride.
+local function layoutComponents()
+  local total = 0
+  for _, attribute in ipairs(VertexFormat.LAYOUT) do
+    total = total + attribute[3]
+  end
+  return total
+end
+
+---@class SceneMesh.PreparedMesh
+---@field vertexData love.ByteData contiguous float upload buffer in VertexFormat.LAYOUT order
+---@field indexData love.ByteData zero-based index upload buffer
+---@field vertexCount integer
+---@field indexCount integer
+---@field indexType "uint16"|"uint32"
+---@field centerX number
+---@field centerY number
+---@field centerZ number
+---@field minX number
+---@field maxX number
+---@field minY number
+---@field maxY number
+---@field minZ number
+---@field maxZ number
+
+-- Decode a G4M2 batch and pack it into Data upload buffers without creating
+-- any GPU object: vertices as contiguous floats in VertexFormat.LAYOUT order
+-- and indices zero-based at the decoded 16/32-bit width, plus the same
+-- model-space center/AABB the GPU pool caches per geometry path. Pure apart
+-- from the Data allocation, so it runs on a worker thread.
+---@param bytes string
+---@param context unknown?
+---@return SceneMesh.PreparedMesh
+function SceneMesh.prepareUpload(bytes, context)
+  local decoded = SceneMesh.decode(bytes, context)
+  local components = layoutComponents()
+  for index, vertex in ipairs(decoded.vertices) do
+    assert(#vertex == components, "decoded vertex " .. index .. " does not match the render vertex layout")
+  end
+  local vertexData = love.data.newByteData(decoded.vertexCount * components * ffi.sizeof("float"))
+  local floats = ffi.cast("float *", vertexData:getFFIPointer())
+  for vertexIndex = 1, decoded.vertexCount do
+    local vertex = decoded.vertices[vertexIndex]
+    for component = 1, components do
+      floats[(vertexIndex - 1) * components + (component - 1)] = vertex[component]
+    end
+  end
+  local indexData = love.data.newByteData(decoded.indexCount * decoded.indexWidth)
+  if decoded.indexWidth == 2 then
+    local indices = ffi.cast("uint16_t *", indexData:getFFIPointer())
+    for i = 1, decoded.indexCount do
+      indices[i - 1] = decoded.indices[i]
+    end
+  else
+    local indices = ffi.cast("uint32_t *", indexData:getFFIPointer())
+    for i = 1, decoded.indexCount do
+      indices[i - 1] = decoded.indices[i]
+    end
+  end
+  local geometry = SceneDescriptor.meshGeometry(decoded.vertices)
+  return {
+    vertexData = vertexData,
+    indexData = indexData,
+    vertexCount = decoded.vertexCount,
+    indexCount = decoded.indexCount,
+    indexType = decoded.indexWidth == 2 and "uint16" or "uint32",
+    centerX = geometry.center[1],
+    centerY = geometry.center[2],
+    centerZ = geometry.center[3],
+    minX = geometry.bounds.minX,
+    maxX = geometry.bounds.maxX,
+    minY = geometry.bounds.minY,
+    maxY = geometry.bounds.maxY,
+    minZ = geometry.bounds.minZ,
+    maxZ = geometry.bounds.maxZ,
+  }
 end
 
 return SceneMesh

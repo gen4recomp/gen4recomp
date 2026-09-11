@@ -61,6 +61,11 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 
 local MapSceneLoader = {}
 
+-- Private staged-work sentinel: a build coroutine yields WAIT while its
+-- preparation-queue resource is still pending. WAIT consumes no work budget;
+-- only a checkpoint yield of 1 charges one unit.
+local WAIT = {}
+
 ---@class MapSceneLoader.ModelDescriptor
 ---@field kind "static"|"nitro-dynamic"
 ---@field batches MapSceneLoader.Batch[]?
@@ -95,6 +100,9 @@ local MapSceneLoader = {}
 ---@field poolReleased boolean
 ---@field thread thread?
 ---@field result MapSceneLoader.Runtime?
+---@field _queue table<string, unknown>?
+---@field _outstanding integer?
+---@field _stashed table<integer, table<string, unknown>>?
 ---@field advance fun(self: MapSceneLoader.BuildTask, maxWorkUnits: integer): integer
 ---@field isReady fun(self: MapSceneLoader.BuildTask): boolean
 ---@field takeResult fun(self: MapSceneLoader.BuildTask): MapSceneLoader.Runtime
@@ -154,14 +162,14 @@ end
 -- under its resolved sampler wrap. The wrap pair is part of the image
 -- identity, so materials with the same pixels but different wraps resolve to
 -- independent images.
-local function materialsById(list, pool, checkpoint)
+local function materialsById(list, acquireImage, checkpoint)
   local byId = {}
   for id, record in pairs(SceneDescriptor.materials(list)) do
     local wrap = SceneDescriptor.wrap(record)
     byId[id] = {
       id = record.id,
       name = record.name,
-      image = pool:imageFor(record.texture, wrap.x, wrap.y),
+      image = acquireImage(record.texture, wrap.x, wrap.y),
       texMatrix = IDENTITY_TEX_MATRIX,
       wrap = wrap,
     }
@@ -174,14 +182,80 @@ end
 -- failure; the owning build task releases the pool in that case. `opts.timeBand` seeds the time-of-day band
 -- (default: the band of the default field time, noon = day); `opts.meshBuilder`
 -- / `opts.imageBuilder` pass through to the pool (the GPU seams, injectable
--- in headless tests).
+-- in headless tests). `opts.assetPreparation` routes mesh/image acquisition
+-- through a preparation queue: CPU work runs on the worker while this build
+-- blocks at the first unprepared resource, and GPU realization still happens
+-- here on the main thread. `task` carries the outstanding prepared token
+-- across staged resumes when a queue is present.
 ---@param pool GpuAssetPool
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
 ---@param opts table<string, unknown>
 ---@param checkpoint fun()
+---@param task MapSceneLoader.BuildTask
 ---@return table<string, unknown>
-local function buildScene(pool, cacheFs, scene, opts, checkpoint)
+local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
+  local queue = opts.assetPreparation
+  -- Task-local realized entries: a repeated path/wrap within one scene
+  -- reuses its entry instead of repeating worker preparation. Checkpoint
+  -- accounting stays per acquisition site, exactly like the synchronous
+  -- path, so staged work budgets are unchanged.
+  local meshEntries = {}
+  local imageEntries = {}
+  -- Block at the first unprepared resource: request it, then poll until it
+  -- is ready, yielding WAIT (zero work) while pending. The task owns the
+  -- outstanding token so finish() can block-wait it and release() can
+  -- cancel it.
+  local function awaitPrepared(kind, path)
+    local token = queue:request(kind, path, "prefetch")
+    task._outstanding = token
+    while true do
+      if task._stashed ~= nil and task._stashed[token] ~= nil then
+        local stashed = task._stashed[token]
+        task._stashed[token] = nil
+        task._outstanding = nil
+        return stashed
+      end
+      local status, failure = queue:poll(token)
+      if status == "ready" then
+        task._outstanding = nil
+        return queue:take(token)
+      end
+      if status == "failed" then
+        task._outstanding = nil
+        error("prepared asset " .. path .. " (" .. kind .. ") failed: " .. tostring(failure), 0)
+      end
+      coroutine["yield"](WAIT)
+    end
+  end
+  local function acquireMesh(path)
+    local entry = meshEntries[path]
+    if entry == nil then
+      if queue then
+        entry = pool:meshFromPrepared(path, awaitPrepared("mesh", path))
+      else
+        entry = pool:meshFor(path)
+      end
+      meshEntries[path] = entry
+    end
+    return entry
+  end
+  local function acquireImage(path, wrapX, wrapY)
+    if path == nil then
+      return nil
+    end
+    local key = wrapX .. "|" .. wrapY .. "|" .. path
+    local image = imageEntries[key]
+    if image == nil then
+      if queue then
+        image = pool:imageFromPrepared(path, wrapX, wrapY, awaitPrepared("image", path))
+      else
+        image = pool:imageFor(path, wrapX, wrapY)
+      end
+      imageEntries[key] = image
+    end
+    return image
+  end
   local timeBand = opts.timeBand or TimeOfDayProps.bandForSeconds(FieldLightProfile.DEFAULT_TIME_SECONDS)
   assert(VALID_BANDS[timeBand], "unknown time-of-day band " .. tostring(timeBand))
   local bounds = { min = { math.huge, math.huge, math.huge }, max = { -math.huge, -math.huge, -math.huge } }
@@ -265,7 +339,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
   -- submission numbers: final queue traversal orders every part and draw in
   -- source order, positionally.
   local function drawItem(batch, materials, instanceTransform, includeInBounds)
-    local meshResource = pool:meshFor(batch.geometry)
+    local meshResource = acquireMesh(batch.geometry)
     checkpoint()
     local billboardBase, billboardCenter, billboardScale
     if batch.transformMode == PoseContract.BILLBOARD then
@@ -306,7 +380,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
   end
 
   -- Map terrain draws: identity transform, materials from the scene list.
-  local mapMaterials = materialsById(scene.materials, pool, checkpoint)
+  local mapMaterials = materialsById(scene.materials, acquireImage, checkpoint)
   local identity = Matrix4.identity()
   local mapDraws = {}
   for _, batch in ipairs(scene.mapBatches) do
@@ -340,7 +414,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
     bindings,
     scene.terrainAnimations.textureSrt,
     function(path, wrapX, wrapY)
-      return pool:imageFor(path, wrapX, wrapY)
+      return acquireImage(path, wrapX, wrapY)
     end,
     checkpoint
   )
@@ -361,7 +435,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
       local desc = assert(cacheFs:loadLua(MapAssetCache.modelPath(modelKey)), "missing model " .. modelKey)
       ---@cast desc MapSceneLoader.ModelDescriptor
       checkpoint()
-      local mats = materialsById(desc.materials, pool, checkpoint)
+      local mats = materialsById(desc.materials, acquireImage, checkpoint)
       -- Pattern-variant textures are resolved lazily at evaluation time; the
       -- sampler state is keyed by material (never by texture path -- two
       -- materials can share one texture under different wraps), so the
@@ -384,7 +458,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
       -- shared by every placement record.
       local meshBounds = {}
       for _, batch in ipairs(assert(batches)) do
-        meshBounds[#meshBounds + 1] = pool:meshFor(batch.geometry).bounds
+        meshBounds[#meshBounds + 1] = acquireMesh(batch.geometry).bounds
         checkpoint()
       end
       cached = {
@@ -451,7 +525,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
         checkpoint()
         local renderMeshesById = {}
         for _, mesh in ipairs(definition.meshes) do
-          local meshResource = pool:meshFor(mesh.geometry)
+          local meshResource = acquireMesh(mesh.geometry)
           renderMeshesById[mesh.id] = meshResource.mesh
           mesh.center = meshResource.center
           checkpoint()
@@ -462,7 +536,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint)
       end
       local function resolveImage(key, materialId)
         local wrap = assert(desc.wrapByMaterial[materialId], "missing wrap for animated texture " .. key)
-        return pool:imageFor(key, wrap.x, wrap.y)
+        return acquireImage(key, wrap.x, wrap.y)
       end
       local function resolveImageDuringConstruction(key, materialId)
         local image = resolveImage(key, materialId)
@@ -712,6 +786,13 @@ BuildTask.__index = BuildTask
 local function failTask(task, err)
   if task.state == "active" then
     task.state = "failed"
+    local token = task._outstanding
+    task._outstanding = nil
+    if token ~= nil and task._queue ~= nil then
+      -- Cancellation must not mask the original failure (the queue may
+      -- already be gone when unwinding through layered releases).
+      pcall(task._queue.cancel, task._queue, token)
+    end
     if not task.poolReleased then
       task.poolReleased = true
       task.pool:release()
@@ -740,6 +821,10 @@ function BuildTask:advance(maxWorkUnits)
       self.result = assert(yielded, "scene build returned no runtime")
       self.state = "ready"
     else
+      -- BuildTask semantics: 1 means one main-thread work unit; WAIT means worker pending.
+      if yielded == WAIT then
+        break
+      end
       assert(yielded == 1, "scene build yielded an invalid work unit")
       consumed = consumed + 1
     end
@@ -767,6 +852,20 @@ end
 ---@param self MapSceneLoader.BuildTask
 function BuildTask:finish()
   while self.state == "active" do
+    -- A coroutine suspended on worker preparation block-waits its
+    -- outstanding token instead of polling in a tight loop; the waited
+    -- payload is stashed for the resumed build to consume.
+    local outstanding = self._outstanding
+    if outstanding ~= nil and self._queue ~= nil then
+      local ok, payload = pcall(self._queue.wait, self._queue, outstanding)
+      if not ok then
+        self._outstanding = nil
+        failTask(self, payload)
+      end
+      self._stashed = self._stashed or {}
+      self._stashed[outstanding] = payload
+      self._outstanding = nil
+    end
     self:advance(1)
   end
   return self:takeResult()
@@ -779,6 +878,12 @@ function BuildTask:release()
   end
   self.state = "released"
   self.result = nil
+  local token = self._outstanding
+  self._outstanding = nil
+  if token ~= nil and self._queue ~= nil then
+    -- Release stays infallible even if the queue is already gone.
+    pcall(self._queue.cancel, self._queue, token)
+  end
   if not self.poolReleased then
     self.poolReleased = true
     self.pool:release()
@@ -797,9 +902,12 @@ end
 
 -- Begin one resumable scene build. The task owns the fresh pool until the
 -- completed runtime is transferred or the task is cancelled/failed.
+-- `opts.assetPreparation` routes mesh/image acquisition through a
+-- preparation queue (worker preparation, bounded main-thread realization);
+-- without it the build keeps the direct synchronous path.
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
----@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, imageBuilder?: GpuAssetPool.ImageBuilder }?
+---@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, imageBuilder?: GpuAssetPool.ImageBuilder, assetPreparation?: table<string, unknown> }?
 ---@return MapSceneLoader.BuildTask
 function MapSceneLoader.begin(cacheFs, scene, opts)
   opts = opts or {}
@@ -813,6 +921,9 @@ function MapSceneLoader.begin(cacheFs, scene, opts)
     state = "active",
     pool = pool,
     poolReleased = false,
+    _queue = opts.assetPreparation,
+    _outstanding = nil,
+    _stashed = nil,
     advance = BuildTask.advance,
     isReady = BuildTask.isReady,
     takeResult = BuildTask.takeResult,
@@ -821,7 +932,7 @@ function MapSceneLoader.begin(cacheFs, scene, opts)
   }
   setmetatable(task, BuildTask)
   task.thread = coroutine.create(function()
-    return buildScene(pool, cacheFs, scene, opts, checkpoint)
+    return buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   end)
   return task
 end

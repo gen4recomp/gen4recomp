@@ -48,6 +48,7 @@ local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MapProps = require("libs.hgss.src.world.MapProps")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
@@ -174,6 +175,7 @@ end
 ---@field fieldEffectAssets table<string, unknown>
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
+---@field assetPreparation AssetPreparationQueue? presentation-only preparation worker owner (nil when headless)
 local FieldRuntime = {}
 FieldRuntime.__index = FieldRuntime
 
@@ -632,9 +634,17 @@ function FieldRuntime:_load()
       modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
     })
 
+    -- Presentation mode owns one asset-preparation worker for the
+    -- runtime lifetime; a headless runtime leaves it nil and starts no
+    -- thread. It is constructed before the map loader so scene loading
+    -- can route mesh/image CPU work through it.
+    if self.presentation then
+      self.assetPreparation = AssetPreparationQueue.new(cacheFs)
+    end
     self.mapLoader = FieldMapLoader.new(cacheFs, world, {
       sceneLoader = self.presentation and MapSceneLoader or nil,
       neighborLoader = self.presentation and NeighborRing or nil,
+      assetPreparation = self.assetPreparation,
       derivedAssets = self.derivedAssets,
     })
     local function mapMatrixMemberId(logicalMap)
@@ -1747,6 +1757,13 @@ function FieldRuntime:_releaseAll()
   if self.mapLoader then
     self.mapLoader:release()
   end
+  -- The preparation worker is released after every presentation scene
+  -- consumer and pending task above, so no outstanding prepared token can
+  -- outlive its queue.
+  if self.assetPreparation then
+    self.assetPreparation:release()
+  end
+  self.assetPreparation = nil
   if self.audioSink then
     self.audioSink:release()
   end

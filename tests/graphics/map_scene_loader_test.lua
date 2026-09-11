@@ -14,6 +14,7 @@ local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local PngWriter = require("libs.assets.src.PngWriter")
+local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 
 local T = {}
 
@@ -168,6 +169,65 @@ local function fakeMesh()
 end
 
 local IDENTITY = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+
+-- A deterministic fake AssetPreparationQueue: `pendingPolls` controls how
+-- many poll() calls on a token return "pending" before it becomes "ready".
+-- Once ready, the payload is computed lazily from the same cache bytes a
+-- real worker would have prepared, so realized resources are equivalent to
+-- the synchronous path. Exercises MapSceneLoader's WAIT/checkpoint contract
+-- without starting any real thread.
+local function fakeAssetPreparationQueue(cache, opts)
+  opts = opts or {}
+  local pendingPolls = opts.pendingPolls or 0
+  local records = {}
+  local nextToken = 0
+  -- Requests actually routed through this queue, in order: the tests assert
+  -- against this log so a production path that silently keeps using the
+  -- synchronous acquisition (ignoring the injected queue) cannot pass by
+  -- accident.
+  local requestLog = {}
+  local queue = { requestLog = requestLog }
+  local function payloadFor(record)
+    if record.kind == "mesh" then
+      return SceneMesh.prepareUpload(assert(cache:read(record.path), "missing mesh " .. record.path))
+    end
+    local bytes = assert(cache:read(record.path), "missing texture " .. record.path)
+    return { imageData = love.image.newImageData(love.filesystem.newFileData(bytes, "tex.png")) }
+  end
+  function queue:request(kind, path, priority)
+    nextToken = nextToken + 1
+    records[nextToken] = { kind = kind, path = path, priority = priority, polls = 0 }
+    requestLog[#requestLog + 1] = { kind = kind, path = path, priority = priority }
+    return nextToken
+  end
+  function queue:poll(token)
+    local record = assert(records[token], "unknown token")
+    record.polls = record.polls + 1
+    if record.polls <= pendingPolls then
+      return "pending"
+    end
+    if not record.payload then
+      record.payload = payloadFor(record)
+    end
+    return "ready"
+  end
+  function queue:take(token)
+    local record = assert(records[token], "unknown token")
+    local payload = assert(record.payload, "take before ready")
+    records[token] = nil
+    return payload
+  end
+  function queue:wait(token)
+    while self:poll(token) ~= "ready" do
+    end
+    return self:take(token)
+  end
+  function queue:cancel(token)
+    records[token] = nil
+  end
+  function queue:release() end
+  return queue
+end
 
 function T.same_texture_with_different_wraps_gets_independent_images()
   local cache, geomPath, texPath = cacheFs()
@@ -399,6 +459,71 @@ function T.staged_scene_build_advances_one_atomic_operation_per_work_unit()
   Assert.equal(#staged.mapDraws, #synchronous.mapDraws, "staged and synchronous draw assembly agree")
   staged:release()
   synchronous:release()
+end
+
+-- A field scene task backed by an unprepared resource must yield "waiting"
+-- and return zero consumed work while pending, matching FieldCoverage's
+-- zero-consumption backoff contract, then produce a scene equivalent to the
+-- synchronous path once preparation completes.
+function T.build_task_waits_without_consuming_budget_until_prepared_assets_are_ready()
+  local cache, geomPath, texPath = cacheFs()
+  local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
+  s.mapBatches = { batch(geomPath, 0) }
+  local queue = fakeAssetPreparationQueue(cache, { pendingPolls = 2 })
+  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue })
+
+  local guard = 0
+  while not task:isReady() and guard < 100 do
+    local consumed = task:advance(1)
+    Assert.isTrue(consumed == 0 or consumed == 1, "advance never charges more than the supplied work budget")
+    guard = guard + 1
+  end
+  Assert.isTrue(guard < 100, "the staged build must complete in a bounded number of advances")
+  Assert.isTrue(
+    #queue.requestLog > 0,
+    "the build task must route resource acquisition through the injected preparation queue, not the synchronous path"
+  )
+  Assert.isTrue(
+    queue.requestLog[1].priority == "prefetch" or queue.requestLog[1].priority == "demand",
+    "field scene acquisition requests carry a valid queue priority"
+  )
+
+  local runtime = task:takeResult()
+  local synchronous = MapSceneLoader.load(cache, s)
+  Assert.equal(#runtime.mapDraws, 1, "the frame-0 scene still assembles once preparation completes")
+  Assert.deepEqual(
+    runtime.mapDraws[1].center,
+    synchronous.mapDraws[1].center,
+    "prepared-path geometry matches the synchronous path"
+  )
+  runtime:release()
+  synchronous:release()
+end
+
+-- Once resources are ready, realization is still bounded: a caller-supplied
+-- budget of N charges at most N resource realizations per call, exactly like
+-- the existing synchronous staged-build contract.
+function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
+  local cache, geomPath, texPath = cacheFs()
+  local s = scene({
+    material(0, texPath, { x = "clamp", y = "clamp" }),
+    material(1, texPath, { x = "repeat", y = "repeat" }),
+  })
+  s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
+  local queue = fakeAssetPreparationQueue(cache, { pendingPolls = 0 })
+  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue })
+
+  Assert.equal(task:advance(1), 1, "one ready resource realization is charged as one work unit")
+  Assert.isFalse(task:isReady(), "a multi-resource scene is not ready after one work unit")
+  Assert.equal(task:advance(1), 1, "a second resume realizes at most one more resource")
+
+  local runtime = task:finish()
+  Assert.equal(runtime.stats.textureCount, 2, "both distinct-wrap textures are realized by completion")
+  Assert.isTrue(
+    #queue.requestLog >= 2,
+    "prepared resources for a multi-texture scene are still routed through the injected queue"
+  )
+  runtime:release()
 end
 
 return {
