@@ -2,6 +2,7 @@
 
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapMatrix = require("romdump.src.digest.map.MapMatrix")
+local AreaData = require("romdump.src.digest.map.AreaData")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
 local NeighborChunkCompiler = require("romdump.src.digest.map.NeighborChunkCompiler")
 local TerrainAnimationCompiler = require("romdump.src.digest.map.TerrainAnimationCompiler")
@@ -76,6 +77,11 @@ end
 
 local function compileCell(romFs, descriptor, scratch, producerFingerprint)
   local _, source, header = readDescriptorSource(romFs, descriptor)
+  local areaNarc = assert(romFs:openNarc("area_data"))
+  local area = assert(AreaData.decode(readMember(areaNarc, descriptor.areaDataMemberId), {
+    alias = "area_data",
+    memberId = descriptor.areaDataMemberId,
+  }))
   local marker, dependencyHash = expectedMarker(romFs:metadata().sha1, descriptor, producerFingerprint)
   local animationCompilers = scratch and scratch.terrainAnimationCompilers
   if animationCompilers == nil and scratch then
@@ -87,7 +93,7 @@ local function compileCell(romFs, descriptor, scratch, producerFingerprint)
   if terrainAnimationCompiler == nil then
     terrainAnimationCompiler = TerrainAnimationCompiler.new(romFs, {
       mapId = source.mapHeaderId,
-      dynamicTextureType = assert(header).dynamicTextureType,
+      dynamicTextureType = area.dynamicTextureType,
     })
     if animationCompilers then
       animationCompilers[animationKey] = terrainAnimationCompiler
