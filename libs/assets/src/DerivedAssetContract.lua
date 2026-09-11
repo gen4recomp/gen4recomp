@@ -211,6 +211,28 @@ DerivedAssetContract.mons = {
   portraitManifestSchema = "g4-mon-portrait-manifest-v1",
 }
 
+-- The item class carries the source-independent item catalog (definitions,
+-- pockets, pocket names) plus the item-icon atlas with its manifest. The
+-- mon package and the Bag runtime resolve item identity through this class.
+DerivedAssetContract.items = {
+  cacheFormat = "item-cache-v1",
+  catalogSchema = "g4-item-catalog-v1",
+  indexSchema = "g4-item-index-v1",
+  iconManifestSchema = "g4-item-icons-v1",
+}
+
+-- The bag class carries the source-independent field-bag presentation: the
+-- upper-pane hero (gender backdrops, description frame, hero models with
+-- pocket-indexed animation states, camera/transform facts) plus the lower-
+-- pane controls (pocket tabs, six item slots, count readout, Cancel, the
+-- action/quantity/confirmation overlays, semantic action text/templates, and
+-- the two registration-slot markers). Item icons stay in the item
+-- class; the bag manifest references no icon pixels.
+DerivedAssetContract.bag = {
+  cacheFormat = "bag-cache-v2",
+  schema = "g4-bag-assets-v3",
+}
+
 DerivedAssetContract.audio = {
   cacheFormat = "g4-audio-cache-v1",
   -- The index carries the per-class symbol maps sequenceBySymbol and
