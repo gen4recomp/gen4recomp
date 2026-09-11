@@ -525,6 +525,18 @@ T["session script phase"] = function()
     collisionCandidates = function(self)
       return { { fieldX = self.fieldX, fieldZ = self.fieldZ, surfaceId = self.surfaceId } }
     end,
+    collisionCandidatesInto = function(self, out)
+      local current = out[1]
+      if current == nil then
+        current = {}
+        out[1] = current
+      end
+      current.fieldX = self.fieldX
+      current.fieldZ = self.fieldZ
+      current.surfaceId = self.surfaceId
+      out[2] = nil
+      return out
+    end,
     clearGesturePresentation = function() end,
     presentationState = function(self)
       local locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
@@ -534,6 +546,13 @@ T["session script phase"] = function()
         gestureTick = nil,
         gestureOffsetY = 0,
       }
+    end,
+    presentationStateInto = function(self, out)
+      out.locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+      out.gesturePose = nil
+      out.gestureTick = nil
+      out.gestureOffsetY = 0
+      return out
     end,
   }
   local runtimeMap = {
