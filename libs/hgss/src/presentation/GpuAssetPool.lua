@@ -20,10 +20,12 @@
 
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local VertexFormat = require("libs.assets.src.model.VertexFormat")
+local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
----@class GpuAssetPool.Mesh
+---@class GpuAssetPool.Mesh : love.Mesh
 ---@field release fun(self: GpuAssetPool.Mesh)
 ---@class GpuAssetPool.Image
 ---@field setFilter fun(self: GpuAssetPool.Image, min: string, mag: string)
@@ -51,6 +53,27 @@ GpuAssetPool.__index = GpuAssetPool
 -- mirrored-repeat mode (a repeated axis whose NSBTX material sets the flip
 -- bit).
 local WRAP_MODES = { clamp = true, ["repeat"] = true, [SceneDescriptor.MIRRORED_REPEAT] = true }
+
+-- The one sampler validation for both image acquisition paths: unknown wrap
+-- modes on a sampled material are malformed data and raise instead of
+-- degrading to clamp.
+local function checkWrap(path, wrapX, wrapY)
+  if not WRAP_MODES[wrapX] or not WRAP_MODES[wrapY] then
+    Errors.raise(
+      FieldErrors.GPU_ASSET_UNKNOWN_WRAP,
+      "unknown texture wrap mode " .. tostring(wrapX) .. "/" .. tostring(wrapY),
+      { path = path, wrapX = wrapX, wrapY = wrapY }
+    )
+  end
+end
+
+-- Configure a newly created image exactly once, before publication. Both the
+-- synchronous and the prepared paths configure through here so one sampler
+-- state always means one configuration.
+local function configureImage(image, wrapX, wrapY)
+  image:setFilter("nearest", "nearest")
+  image:setWrap(wrapX, wrapY)
+end
 
 -- Release the last object of an owned list -- the failed acquisition's own --
 -- after `revert` undid its dedup-cache bookkeeping. The pop happens only when
@@ -176,13 +199,7 @@ function GpuAssetPool:imageFor(path, wrapX, wrapY)
   local image = byWrap[key]
   if not image then
     guarded(self, function()
-      if not WRAP_MODES[wrapX] or not WRAP_MODES[wrapY] then
-        Errors.raise(
-          FieldErrors.GPU_ASSET_UNKNOWN_WRAP,
-          "unknown texture wrap mode " .. tostring(wrapX) .. "/" .. tostring(wrapY),
-          { path = path, wrapX = wrapX, wrapY = wrapY }
-        )
-      end
+      checkWrap(path, wrapX, wrapY)
       local created
       if self.imageBuilder then
         created = self.imageBuilder(path)
@@ -195,8 +212,103 @@ function GpuAssetPool:imageFor(path, wrapX, wrapY)
       ---@cast created GpuAssetPool.Image
       byWrap[key] = created
       self.images[#self.images + 1] = created
-      created:setFilter("nearest", "nearest")
-      created:setWrap(wrapX, wrapY)
+      configureImage(created, wrapX, wrapY)
+      image = created
+    end, function()
+      byWrap[key] = nil
+    end)
+  end
+  return image
+end
+
+-- Realize a worker-prepared mesh payload on the main thread. Shares the
+-- content-addressed dedup key, the cached center/AABB shape, the triangle
+-- stat, and the transactional rollback with meshFor: an already-realized
+-- path returns its entry without uploading a duplicate, and a failure
+-- between Mesh creation and publication releases the partial object and
+-- leaves the cache tables/counters unchanged.
+---@param path string
+---@param prepared SceneMesh.PreparedMesh
+---@return { mesh: GpuAssetPool.Mesh, triangles: integer, center: number[], bounds: { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number } }
+function GpuAssetPool:meshFromPrepared(path, prepared)
+  local entry = self._meshCache[path]
+  if not entry then
+    guarded(self, function()
+      assert(
+        type(prepared) == "table" and prepared.vertexData and prepared.indexData,
+        "prepared mesh payload is required"
+      )
+      assert(
+        prepared.indexType == "uint16" or prepared.indexType == "uint32",
+        "prepared mesh index type must be uint16 or uint32"
+      )
+      local mesh = self.graphics.newMesh(VertexFormat.LAYOUT, prepared.vertexCount, "triangles", "static")
+      ---@cast mesh GpuAssetPool.Mesh
+      -- Record ownership before the failure-capable upload steps, exactly
+      -- like the synchronous path, so a later failure pops and releases
+      -- exactly this mesh instead of orphaning it.
+      self.meshes[#self.meshes + 1] = mesh
+      if prepared.vertexCount == 0 then
+        Errors.raise(ErrorCodes.SCENE_DESC_EMPTY_MESH, "a mesh must have at least one vertex", { path = path })
+      end
+      mesh:setVertices(prepared.vertexData)
+      mesh:setVertexMap(prepared.indexData, prepared.indexType)
+      local triangleCount = prepared.indexCount / 3
+      ---@cast triangleCount integer
+      entry = {
+        mesh = mesh,
+        triangles = triangleCount,
+        center = { prepared.centerX, prepared.centerY, prepared.centerZ },
+        bounds = {
+          minX = prepared.minX,
+          maxX = prepared.maxX,
+          minY = prepared.minY,
+          maxY = prepared.maxY,
+          minZ = prepared.minZ,
+          maxZ = prepared.maxZ,
+        },
+      }
+      self._meshCache[path] = entry
+      self.triangles = self.triangles + entry.triangles
+    end)
+  end
+  return entry
+end
+
+-- Realize a worker-prepared image payload on the main thread. Shares the
+-- path-plus-wrap dedup identity, the sampler configuration, and the
+-- transactional rollback with imageFor.
+---@param path string?
+---@param wrapX string
+---@param wrapY string
+---@param prepared { imageData: unknown }
+---@return GpuAssetPool.Image?
+function GpuAssetPool:imageFromPrepared(path, wrapX, wrapY, prepared)
+  if not path then
+    return nil
+  end
+  local byWrap = self._imageCache[path]
+  if not byWrap then
+    byWrap = {}
+    self._imageCache[path] = byWrap
+  end
+  local key = wrapX .. "|" .. wrapY
+  local image = byWrap[key]
+  if not image then
+    guarded(self, function()
+      checkWrap(path, wrapX, wrapY)
+      assert(type(prepared) == "table" and prepared.imageData, "prepared image payload is required")
+      local created
+      if self.imageBuilder then
+        created = self.imageBuilder(path)
+        assert(created, "imageBuilder returned no image for " .. path)
+      else
+        created = self.graphics.newImage(prepared.imageData)
+      end
+      ---@cast created GpuAssetPool.Image
+      byWrap[key] = created
+      self.images[#self.images + 1] = created
+      configureImage(created, wrapX, wrapY)
       image = created
     end, function()
       byWrap[key] = nil
