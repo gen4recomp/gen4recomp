@@ -15,6 +15,7 @@ local RecordingScriptHosts = require("tests.acceptance.support.RecordingScriptHo
 local AcceptanceScriptFs = require("tests.acceptance.support.AcceptanceScriptFs")
 local RepoFs = require("game.src.RepoFs")
 local FieldMovement = require("tests.acceptance.support.FieldMovement")
+local BagSave = require("libs.hgss.src.save.BagSave")
 
 ---@class AcceptanceHarness
 ---@field versions string[]
@@ -1069,6 +1070,7 @@ function AcceptanceHarness.new(options)
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = mons,
+        bag = BagSave.empty(),
       }
     end,
     saveNamespace = options.saveNamespace or defaultNamespace,

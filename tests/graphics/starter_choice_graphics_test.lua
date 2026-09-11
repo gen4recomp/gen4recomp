@@ -45,18 +45,21 @@ local function openProductionChoice(versionId, cacheFs, speciesKeys)
   local StarterChoiceState = requireModule(STATE_MODULE, "the starter state owns the production chooser")
   local MonCache = requireModule(MON_CACHE_MODULE, "the generated mon cache owns the catalog")
   local MonCatalog = requireModule(CATALOG_MODULE, "the mon catalog names the candidates")
+  local ItemCache = requireModule("libs.assets.src.ItemCache", "the generated item cache owns the catalog")
+  local ItemCatalog = requireModule("libs.items.src.ItemCatalog", "the item catalog names the items")
   local HgssMonService = requireModule(SERVICE_MODULE, "the mon service builds the candidates")
   local MonsSave = requireModule(MONSAVE_MODULE, "the mon save owns the party bucket")
   local FieldFontLoader = requireModule(FONT_MODULE, "the field font owns the service charmap")
 
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  local monRoot = MonCache.loadCatalog(cacheFs)
+  local catalog = MonCatalog.new(monRoot, ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))
   local fontDef = FieldFontLoader.load(cacheFs)
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.empty(catalog:fingerprint(), 7),
     profile = { name = "GOLD", gender = 0, trainerId = 1 },
     game = versionId,
-    language = catalog.version.language,
+    language = monRoot.version.language,
     charmap = assert(fontDef.charmap, "production font carries the charmap"),
     mapSection = function()
       return 7
@@ -218,12 +221,14 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
   local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
   local MonCache = requireModule(MON_CACHE_MODULE, "the generated mon cache owns the portraits")
   local MonCatalog = requireModule(CATALOG_MODULE, "the mon catalog names the portrait species")
+  local ItemCache = requireModule("libs.assets.src.ItemCache", "the generated item cache owns the catalog")
+  local ItemCatalog = requireModule("libs.items.src.ItemCatalog", "the item catalog names the items")
   local Personality = requireModule("libs.mons.src.gen4.Personality", "personality owns gender and shininess")
 
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     loadManifest(cacheModule, cacheFs)
-    local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+    local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs), ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))
     local host = openProductionChoice(versionId, cacheFs, { "CHIKORITA", "PIKACHU", "TOTODILE" })
     local middle = assert(host._candidates[2], versionId .. " retains the middle candidate")
     local species = catalog:species(middle.species)
