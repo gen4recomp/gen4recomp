@@ -37,6 +37,9 @@ local function fingerprint(t, order)
     read = function(path)
       return t[path].contents
     end,
+    getInfo = function()
+      return nil
+    end,
   }
   return ProducerFingerprint.compute(backend)
 end
@@ -82,6 +85,44 @@ function T.mtime_only_changes_do_not_affect_the_fingerprint()
   local touched = tree()
   touched["CacheBuilder.lua"].mtime = 999
   Assert.equal(fingerprint(tree()), fingerprint(touched), "mtime must never enter the fingerprint")
+end
+
+function T.explicit_source_root_hashes_paths_relative_to_that_root()
+  local backend = {
+    list = function(root)
+      Assert.equal(root, "romdump/src")
+      return { "a.lua" }
+    end,
+    read = function(path, root)
+      Assert.equal(root, "romdump/src")
+      Assert.equal(path, "a.lua")
+      return "return 1"
+    end,
+    getInfo = function()
+      return nil
+    end,
+  }
+  Assert.equal(ProducerFingerprint.compute(backend, "romdump/src"), ProducerFingerprint.compute(backend, "romdump/src"))
+end
+
+function T.source_root_rejects_absolute_and_traversal_paths()
+  local backend = {
+    list = function()
+      return {}
+    end,
+    read = function()
+      return ""
+    end,
+    getInfo = function()
+      return nil
+    end,
+  }
+  Assert.throws(function()
+    ProducerFingerprint.compute(backend, "/romdump/src")
+  end)
+  Assert.throws(function()
+    ProducerFingerprint.compute(backend, "romdump/../src")
+  end)
 end
 
 return { tests = T }

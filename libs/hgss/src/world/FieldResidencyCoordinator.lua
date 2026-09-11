@@ -207,6 +207,9 @@ function FieldResidencyCoordinator:updatePrefetch(_)
   end
   for _, mapId in ipairs(self:_prefetchMapIds()) do
     if not self.residents[mapId] then
+      if type(self.mapLoader.request) == "function" and not self.mapLoader:request(mapId) then
+        return completed
+      end
       self:_acquireResident(mapId)
       return completed + 1
     end

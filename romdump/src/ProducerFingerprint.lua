@@ -11,27 +11,44 @@ local Hashing = require("romdump.src.digest.Hashing")
 local ProducerFingerprint = {}
 
 ---@class ProducerSourceTree
----@field list fun(): string[]
----@field read fun(path: string): string
+---@field list fun(root: string?): string[]
+---@field read fun(path: string, root: string?): string
+---@field getInfo fun(path: string): { type: string }|nil
+
+local function normalizeRoot(root)
+  root = root or "src"
+  assert(type(root) == "string" and root ~= "", "producer source root is required")
+  assert(root:sub(1, 1) ~= "/" and root:sub(-1) ~= "/", "producer source root must be relative")
+  assert(not root:find("[%z\\]"), "producer source root contains an invalid separator")
+  local components = {}
+  for component in root:gmatch("[^/]+") do
+    assert(component ~= "." and component ~= "..", "producer source root contains a traversal component")
+    components[#components + 1] = component
+  end
+  assert(#components > 0 and table.concat(components, "/") == root, "producer source root is not normalized")
+  return root
+end
 
 -- Aggregate the fingerprint from an injected source-tree backend: list()
 -- returns every regular file path relative to romdump/src in any order;
 -- read(path) returns that file's contents. Paths are sorted internally, so
 -- enumeration order never affects the result.
 ---@param backend ProducerSourceTree
+---@param root string?
 ---@return string
-function ProducerFingerprint.compute(backend)
+function ProducerFingerprint.compute(backend, root)
   assert(
     backend and type(backend.list) == "function" and type(backend.read) == "function",
     "ProducerFingerprint.compute requires a source-tree backend"
   )
-  local paths = backend.list()
+  root = normalizeRoot(root)
+  local paths = backend.list(root)
   assert(type(paths) == "table", "source tree listing must be a table")
   table.sort(paths)
   local parts = {}
   for _, path in ipairs(paths) do
     assert(type(path) == "string", "source tree paths must be strings")
-    local contents = backend.read(path)
+    local contents = backend.read(path, root)
     assert(type(contents) == "string", "source file must read as a string: " .. path)
     parts[#parts + 1] = path .. "\0" .. Hashing.sha1hex(contents)
   end
@@ -44,7 +61,8 @@ end
 function ProducerFingerprint.appBackend()
   assert(love and love.filesystem, "the app backend requires love.filesystem")
   local fs = love.filesystem
-  local function list()
+  local function list(root)
+    root = root or "src"
     local files = {}
     local function walk(dir)
       for _, name in ipairs(fs.getDirectoryItems(dir)) do
@@ -57,18 +75,19 @@ function ProducerFingerprint.appBackend()
         end
       end
     end
-    walk("src")
+    walk(root)
     for index, path in ipairs(files) do
-      files[index] = path:sub(#"src/" + 1)
+      files[index] = path:sub(#root + 2)
     end
     return files
   end
-  local function read(path)
-    return fs.read("src/" .. path)
+  local function read(path, root)
+    return fs.read((root or "src") .. "/" .. path)
   end
   return {
     list = list,
     read = read,
+    getInfo = fs.getInfo,
   }
 end
 

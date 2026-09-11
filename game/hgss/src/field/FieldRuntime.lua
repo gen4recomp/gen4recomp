@@ -98,6 +98,7 @@ end
 ---@field scriptHosts table<string, unknown>? deterministic host boundaries for script effects
 ---@field dayNight (fun(): string)? deterministic day/night source for the field-music policy
 ---@field audioOutput table<string, unknown>? { audio: table<string, unknown>, sound: table<string, unknown> } audio-output host namespaces for the LÖVE sink (defaults to love.audio + love.sound)
+---@field derivedAssets table<string, function>? semantic derived-asset host
 ---@field localClock LocalClock? injectable host-local civil-time boundary
 ---@field weatherClock table<string, unknown>? injectable host boundary { today()->{month,day}, hasPenalty()->boolean }
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
@@ -161,6 +162,7 @@ end
 ---@field startMenuPlacement StartMenuLayout.Placement? the one Start Menu placement record rendering and pointer mapping share
 ---@field dayNight fun(): string?
 ---@field audioOutput table<string, unknown>?
+---@field derivedAssets table<string, function>?
 ---@field audio FieldAudioController? production-composed audio service (absent when only a recording script adapter is injected, without an audio-output host)
 ---@field mapMusicDayNight (fun(): string)? production-composed day/night band source for the map-music lookup (present whenever the production composition exists)
 ---@field audioSink LoveAudioSink? production-composed LÖVE output sink (absent without an audio-output host)
@@ -540,6 +542,7 @@ function FieldRuntime.new(game, options)
     scriptHosts = options.scriptHosts,
     dayNight = options.dayNight,
     audioOutput = options.audioOutput,
+    derivedAssets = options.derivedAssets,
     saveStore = options.saveStore,
     saveValidation = options.saveValidation or GameSaveValidation.new({ overrideFs = effectiveOverrideFs }),
     savePublished = false,
@@ -632,6 +635,7 @@ function FieldRuntime:_load()
     self.mapLoader = FieldMapLoader.new(cacheFs, world, {
       sceneLoader = self.presentation and MapSceneLoader or nil,
       neighborLoader = self.presentation and NeighborRing or nil,
+      derivedAssets = self.derivedAssets,
     })
     local function mapMatrixMemberId(logicalMap)
       local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")

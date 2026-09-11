@@ -56,7 +56,12 @@ function T.input_callbacks_forward_complete_argument_tuples()
       calls.touchpressed = t
     end
 
-    local joystick = {}
+    ---@type love.Joystick
+    local joystick = {
+      getID = function()
+        return 1
+      end,
+    }
 
     Assert.equal(type(love.keypressed), "function", "love.keypressed must be registered by the entrypoint")
     Assert.equal(type(love.textinput), "function", "love.textinput must be registered by the entrypoint")
@@ -82,7 +87,10 @@ function T.input_callbacks_forward_complete_argument_tuples()
     end
 
     local gamepadaxisArgs = { joystick, "leftx", 0.75 }
-    love.gamepadaxis(unpack(gamepadaxisArgs))
+    local gamepadaxisJoystick = gamepadaxisArgs[1] --[[@as love.Joystick]]
+    local gamepadaxisAxis = gamepadaxisArgs[2] --[[@as string]]
+    local gamepadaxisValue = gamepadaxisArgs[3] --[[@as number]]
+    love.gamepadaxis(gamepadaxisJoystick, gamepadaxisAxis, gamepadaxisValue)
     actual = assert(calls.gamepadaxis, "love.gamepadaxis must reach App.gamepadaxis")
     Assert.equal(actual.n, #gamepadaxisArgs, "love.gamepadaxis must preserve every LÖVE argument")
     for i, v in ipairs(gamepadaxisArgs) do
@@ -91,16 +99,34 @@ function T.input_callbacks_forward_complete_argument_tuples()
     Assert.equal(actual[1], joystick, "love.gamepadaxis joystick identity must be preserved")
 
     local mousepressedArgs = { 12, 34, 1, false, 2 }
-    love.mousepressed(unpack(mousepressedArgs))
+    local mousepressedX = mousepressedArgs[1] --[[@as number]]
+    local mousepressedY = mousepressedArgs[2] --[[@as number]]
+    local mousepressedButton = mousepressedArgs[3] --[[@as number]]
+    local mousepressedIsTouch = mousepressedArgs[4] --[[@as boolean]]
+    local mousepressedPresses = mousepressedArgs[5] --[[@as number]]
+    love.mousepressed(mousepressedX, mousepressedY, mousepressedButton, mousepressedIsTouch, mousepressedPresses)
     actual = assert(calls.mousepressed, "love.mousepressed must reach App.mousepressed")
     Assert.equal(actual.n, #mousepressedArgs, "love.mousepressed must preserve every LÖVE argument")
     for i, v in ipairs(mousepressedArgs) do
       Assert.equal(actual[i], v, "love.mousepressed argument " .. i .. " changed")
     end
 
-    local touchId = "touch-1"
+    local touchId = "touch-1" --[[@as lightuserdata]]
     local touchpressedArgs = { touchId, 3, 4, 0.5, 0.25, 0.8 }
-    love.touchpressed(unpack(touchpressedArgs))
+    local touchpressedId = touchpressedArgs[1] --[[@as lightuserdata]]
+    local touchpressedX = touchpressedArgs[2] --[[@as number]]
+    local touchpressedY = touchpressedArgs[3] --[[@as number]]
+    local touchpressedDx = touchpressedArgs[4] --[[@as number]]
+    local touchpressedDy = touchpressedArgs[5] --[[@as number]]
+    local touchpressedPressure = touchpressedArgs[6] --[[@as number]]
+    love.touchpressed(
+      touchpressedId,
+      touchpressedX,
+      touchpressedY,
+      touchpressedDx,
+      touchpressedDy,
+      touchpressedPressure
+    )
     actual = assert(calls.touchpressed, "love.touchpressed must reach App.touchpressed")
     Assert.equal(actual.n, #touchpressedArgs, "love.touchpressed must preserve every LÖVE argument")
     for i, v in ipairs(touchpressedArgs) do

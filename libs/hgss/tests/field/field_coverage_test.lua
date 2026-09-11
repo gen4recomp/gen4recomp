@@ -1014,4 +1014,41 @@ function T.failed_pending_fallback_clears_its_owner_after_task_failure()
   coverage:release()
 end
 
+function T.recenter_ensures_all_required_cells_before_acquiring_any_runtime()
+  local events = {}
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    derivedAssets = {
+      ensureCell = function(descriptor)
+        events[#events + 1] = "ensure:" .. descriptor.x .. ":" .. descriptor.z
+      end,
+      requestCell = function()
+        return false
+      end,
+    },
+    loadCell = function(descriptor)
+      events[#events + 1] = "load:" .. descriptor.x .. ":" .. descriptor.z
+      return runtimeFactory({})(descriptor)
+    end,
+  })
+  events = {}
+  coverage:recenter(1, 2)
+
+  local firstLoad
+  for index, event in ipairs(events) do
+    if event:sub(1, 5) == "load:" then
+      firstLoad = index
+      break
+    end
+  end
+  Assert.equal(firstLoad, 4, "runtime acquisition starts only after all missing barriers")
+  for index = 1, 3 do
+    Assert.equal(events[index]:sub(1, 7), "ensure:", "every required cell is ensured before acquisition")
+  end
+  coverage:release()
+end
+
 return { metadata = { capabilities = {} }, tests = T }

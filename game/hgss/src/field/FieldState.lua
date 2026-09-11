@@ -20,6 +20,7 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field saveValidation GameSaveValidation? shared version-aware GameSave validator
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
+---@field derivedAssets table<string, function>? semantic derived-asset host
 
 ---@class FieldState
 ---@field runtime FieldRuntime?
@@ -72,6 +73,7 @@ function FieldState.new(game, options)
     saveStore = options.saveStore,
     saveValidation = options.saveValidation,
     audioOutput = options.audioOutput,
+    derivedAssets = options.derivedAssets,
   }
   -- Construction is binary: FieldRuntime.new either raised (boot failed) or
   -- returned a fully usable runtime, so presentation resources are acquired

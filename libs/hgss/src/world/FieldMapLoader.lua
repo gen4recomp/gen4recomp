@@ -23,6 +23,7 @@ local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 ---@field sceneLoader table<string, unknown>|nil presentation-only visual scene loader
 ---@field neighborLoader table<string, unknown>|nil presentation-only finite neighbor-ring loader
 ---@field sceneOptions table<string, unknown>|nil options passed to physical-cell presentation loading
+---@field derivedAssets table<string, function>|nil semantic derived-asset host
 ---@field fieldCellIndex table<string, unknown>?
 ---@field entries table<integer, table<string, unknown>>
 ---@field protectedMaps table<integer, boolean>
@@ -291,6 +292,7 @@ function FieldMapLoader.new(cacheFs, world, options)
     sceneLoader = options.sceneLoader,
     neighborLoader = options.neighborLoader,
     sceneOptions = options.sceneOptions,
+    derivedAssets = options.derivedAssets,
     fieldCellIndex = nil,
     entries = {},
     protectedMaps = {},
@@ -327,6 +329,9 @@ function FieldMapLoader:load(idOrSymbol, _)
   if existing then
     self:_touch(existing)
     return existing.runtimeMap
+  end
+  if self.derivedAssets then
+    self.derivedAssets.ensureField(record.id)
   end
 
   -- The generated world manifest is the sole source of map compatibility
@@ -562,6 +567,17 @@ function FieldMapLoader:load(idOrSymbol, _)
   return runtimeMap
 end
 
+---@param idOrSymbol integer|string
+---@return boolean
+function FieldMapLoader:request(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  if not self.derivedAssets then
+    return true
+  end
+  return self.derivedAssets.requestField(record.id)
+end
+
 -- Construct the session-owned physical window for an outdoor logical map.
 -- The loader provides validated cache access and presentation construction,
 -- but never stores or releases the returned owner.
@@ -597,6 +613,7 @@ function FieldMapLoader:createPhysicalCoverage(runtimeMap, position)
     anchorZ = math.floor(position.fieldZ / 32),
     presentationLoader = presentationLoader,
     presentationTaskFactory = presentationTaskFactory,
+    derivedAssets = self.derivedAssets,
   })
 end
 

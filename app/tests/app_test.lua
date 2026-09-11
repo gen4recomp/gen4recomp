@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
+local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 
 local App
 local ImportState
@@ -43,6 +44,7 @@ local function fresh()
   loadShellModules()
   App.state = nil
   App.importer = nil
+  App.provisioner = nil
   App.drawableWidth = nil
   App.drawableHeight = nil
 end
@@ -56,6 +58,7 @@ end
 ---@field state table
 ---@field launches table[]
 ---@field quitCodes integer[]
+---@field provisionerDisposals integer
 ---@param opts table|nil
 ---@param ready fun(id: string): boolean
 ---@param fn fun(result: AppStateHarness)
@@ -69,11 +72,13 @@ local function withAppHarness(opts, ready, fn)
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
   local originalQuit = love.event.quit
+  local originalBuildNew = InteractiveCacheBuild.new
   local result = {
     prints = 0,
     state = countingState(),
     launches = {},
     quitCodes = {},
+    provisionerDisposals = 0,
   }
   local unownedOption = {}
   App.opts = setmetatable(opts or { dev = false }, {
@@ -98,6 +103,26 @@ local function withAppHarness(opts, ready, fn)
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
+  InteractiveCacheBuild.new = function()
+    return {
+      update = function() end,
+      dispose = function()
+        result.provisionerDisposals = result.provisionerDisposals + 1
+      end,
+      requestField = function()
+        return true
+      end,
+      ensureField = function()
+        return true
+      end,
+      requestCell = function()
+        return true
+      end,
+      ensureCell = function()
+        return true
+      end,
+    }
+  end
   local ok, err = pcall(fn, result)
   App.opts = originalOpts
   RomImporter.isReady = originalIsReady
@@ -105,6 +130,7 @@ local function withAppHarness(opts, ready, fn)
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   love.event.quit = originalQuit
+  InteractiveCacheBuild.new = originalBuildNew
   if not ok then
     error(err, 0)
   end
@@ -241,10 +267,11 @@ function T.boot_existing_with_one_ready_version_enters_the_main_menu()
   end, function(result)
     App._bootExisting()
     local launch = assert(result.launches[1])
-    Assert.keySet(launch, "development,onExit,versionId")
+    Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
     Assert.equal(launch.versionId, "heartgold")
     Assert.isFalse(launch.development)
     Assert.equal(App.state, result.state)
+    Assert.equal(result.provisionerDisposals, 0, "launch must not dispose its new provisioner")
   end)
 end
 
@@ -259,7 +286,7 @@ function T.boot_existing_with_two_ready_versions_offers_the_selector_over_the_re
     Assert.deepEqual(selector.ready, { "heartgold", "soulsilver" })
     selector.onPick("soulsilver")
     local launch = assert(result.launches[1])
-    Assert.keySet(launch, "development,onExit,versionId")
+    Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
     Assert.equal(launch.versionId, "soulsilver")
     Assert.isTrue(launch.development)
     Assert.equal(App.state, result.state)
@@ -272,7 +299,7 @@ function T.completed_import_launches_the_imported_version_through_the_hgss_entry
   end, function(result)
     App._onImported("heartgold")
     local launch = assert(result.launches[1])
-    Assert.keySet(launch, "development,onExit,versionId")
+    Assert.keySet(launch, "derivedAssets,development,onExit,versionId")
     Assert.equal(launch.versionId, "heartgold")
     Assert.equal(App.state, result.state)
   end)

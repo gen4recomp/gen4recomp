@@ -185,6 +185,7 @@ end
 ---@return FieldTransition
 function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt, resolveDestination)
   local function onStart(_, trigger)
+    runtime.mapLoader:request(trigger.warp.destinationMapId)
     if runtime.audio then
       runtime.audio:beginWarp(trigger.warp.destinationMapId)
     end

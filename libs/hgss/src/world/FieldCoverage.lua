@@ -27,6 +27,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field loadCell fun(descriptor: table<string, unknown>): table<string, unknown>
 ---@field presentationLoader fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field presentationTaskFactory fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
+---@field derivedAssets table<string, function>?
 ---@field cells table<string, table<string, unknown>>
 ---@field prefetched table<string, table<string, unknown>>
 ---@field prefetchQueue table[]
@@ -390,6 +391,7 @@ function FieldCoverage.new(options)
     loadCell = options.loadCell,
     presentationLoader = options.presentationLoader,
     presentationTaskFactory = options.presentationTaskFactory,
+    derivedAssets = options.derivedAssets,
     cells = {},
     prefetched = {},
     prefetchQueue = {},
@@ -427,6 +429,18 @@ function FieldCoverage:recenter(anchorX, anchorZ)
   local hadCommittedCells = next(self.cells) ~= nil
   local candidate
   local ok, err = pcall(function()
+    local pending = self.pendingPrefetch
+    for _, position in ipairs(desired(anchorX, anchorZ)) do
+      local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
+      if descriptor then
+        local cellKey = key(position.x, position.z)
+        if not self.cells[cellKey] and not self.prefetched[cellKey] and (not pending or pending.cellKey ~= cellKey) then
+          if self.derivedAssets then
+            self.derivedAssets.ensureCell(descriptor)
+          end
+        end
+      end
+    end
     for _, position in ipairs(desired(anchorX, anchorZ)) do
       local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
       if descriptor then
@@ -435,11 +449,11 @@ function FieldCoverage:recenter(anchorX, anchorZ)
         if existing then
           staged[cellKey] = existing
         else
-          local pending = self.pendingPrefetch
+          local currentPending = self.pendingPrefetch
           local runtime
-          if pending and pending.cellKey == cellKey then
+          if currentPending and currentPending.cellKey == cellKey then
             self.pendingPrefetch = nil
-            runtime = finishPendingSafely(self, pending)
+            runtime = finishPendingSafely(self, currentPending)
           else
             runtime = finishPendingSafely(self, newPending(self, descriptor))
           end
@@ -581,6 +595,9 @@ function FieldCoverage:queuePrefetch(anchorX, anchorZ)
       and not self.prefetched[cellKey]
       and (not self.pendingPrefetch or self.pendingPrefetch.cellKey ~= cellKey)
     then
+      if self.derivedAssets then
+        self.derivedAssets.requestCell(descriptor)
+      end
       queued[#queued + 1] = descriptor
     end
   end
@@ -599,6 +616,10 @@ function FieldCoverage:updatePrefetch(maxWorkUnits)
     if not self.pendingPrefetch then
       local descriptor = table.remove(self.prefetchQueue, 1)
       if not descriptor then
+        break
+      end
+      if self.derivedAssets and not self.derivedAssets.requestCell(descriptor) then
+        table.insert(self.prefetchQueue, 1, descriptor)
         break
       end
       self.pendingPrefetch = newPending(self, descriptor)
@@ -886,6 +907,9 @@ local function acquireProbeCell(self, cellKey)
     FieldCellCache.find(self.index, self.matrixMemberId, cellX, cellZ),
     "probe source cell descriptor is missing"
   )
+  if self.derivedAssets then
+    self.derivedAssets.ensureCell(descriptor)
+  end
   return assert(runtimeFromDescriptor(self, descriptor, false)), true
 end
 
@@ -921,6 +945,9 @@ function FieldCoverage:probe(fieldX, fieldZ, context)
       else
         sourceRuntime, sourceTemporary = acquireProbeCell(self, context.currentCellKey)
       end
+    end
+    if self.derivedAssets and runtime == nil then
+      self.derivedAssets.ensureCell(descriptor)
     end
     runtime = runtime or assert(runtimeFromDescriptor(self, descriptor, false))
     local collision = runtime.collision:getLocal(localX, localZ)

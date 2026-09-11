@@ -20,6 +20,7 @@ local MonCatalog = require("libs.mons.src.MonCatalog")
 ---@field versionId string
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
+---@field derivedAssets table<string, function>?
 
 local HgssGame = {}
 
@@ -28,6 +29,7 @@ local function fieldStateOptions(options, saveStore, saveValidation, extra)
     development = options.development == true,
     saveStore = saveStore,
     saveValidation = saveValidation,
+    derivedAssets = options.derivedAssets,
   }
   if extra then
     for key, value in pairs(extra) do

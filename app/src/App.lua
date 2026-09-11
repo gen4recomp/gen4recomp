@@ -4,6 +4,7 @@ local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
+local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local ImportState = require("app.src.launcher.ImportState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
 
@@ -11,6 +12,7 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 ---@field opts AppOptions
 ---@field state table<string, unknown>|nil
 ---@field importer RomImporter|nil
+---@field provisioner DerivedAssetProvisioner|nil
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 local App = {}
@@ -35,11 +37,31 @@ local function launchHgss(versionId)
       love.event.quit(0)
     end
   end
-  App.setState(HgssGame.new({
-    versionId = versionId,
-    onExit = onExit,
-    development = App.opts.dev,
-  }))
+  local provisioner
+  local ok, result = pcall(function()
+    provisioner = DerivedAssetProvisioner.new({
+      versionId = versionId,
+      developmentRepositoryRoot = love.filesystem.getSourceBaseDirectory(),
+    })
+    return HgssGame.new({
+      versionId = versionId,
+      onExit = onExit,
+      development = App.opts.dev,
+      derivedAssets = provisioner:gameHost(),
+    })
+  end)
+  if not ok then
+    if provisioner then
+      provisioner:dispose()
+    end
+    error(result, 0)
+  end
+  local stateOk, stateError = pcall(App.setState, result)
+  if not stateOk then
+    provisioner:dispose()
+    error(stateError, 0)
+  end
+  App.provisioner = assert(provisioner)
 end
 
 function App.load(opts)
@@ -59,6 +81,11 @@ function App.setState(nextState)
   if previous and previous.dispose then
     previous:dispose()
   end
+  if previous and App.provisioner then
+    local provisioner = assert(App.provisioner)
+    App.provisioner = nil
+    provisioner:dispose()
+  end
 end
 
 function App._startImport()
@@ -71,6 +98,7 @@ end
 
 function App._onImported(versionId)
   App.importer = nil
+  App.provisioner = nil
   App._bootMainMenu({ versionId })
 end
 
@@ -101,6 +129,9 @@ function App.update(dt)
   end
   if App.importer and not App.importer:isBusy() and App.importer.state == RomImporter.STATES.ERROR then
     App.importer = nil
+  end
+  if App.provisioner then
+    App.provisioner:update()
   end
   if App.state and App.state.update then
     App.state:update(dt)

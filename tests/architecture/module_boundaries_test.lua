@@ -250,6 +250,7 @@ local APP_HGSS_IMPORTS = { ["game.hgss.src.HgssGame"] = true }
 local APP_ROMDUMP_IMPORTS = {
   ["romdump.src.source.GameVersion"] = true,
   ["romdump.src.source.RomImporter"] = true,
+  ["romdump.src.build.InteractiveCacheBuild"] = true,
 }
 
 local ROOT_FILE_PACKAGES = {
