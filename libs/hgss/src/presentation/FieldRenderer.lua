@@ -1,4 +1,4 @@
--- Adapts HGSS field presentation state into the normalized frame consumed by
+-- Adapts HGSS field presentation state into the frame consumed by
 -- the concrete Nintendo DS LÖVE renderer.
 
 local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
@@ -12,72 +12,9 @@ local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 ---@field renderState GxRenderer.Canvas?
 ---@field _ownsRenderer boolean
 ---@field _queueScratch RenderQueueScratch
+---@field clearColor number[]?
 local FieldRenderer = {}
 FieldRenderer.__index = FieldRenderer
-
-local DRAW_ITEM_FIELDS = {
-  "mesh",
-  "material",
-  "transform",
-  "modelNormal",
-  "billboardCenter",
-  "billboardScale",
-  "alphaClass",
-  "cullMode",
-  "fogEnabled",
-  "lightMask",
-  "polygonAlpha",
-  "polygonId",
-  "polygonMode",
-}
-
-local function normalizedItem(item, projection)
-  local normalized = { projection = projection }
-  for _, field in ipairs(DRAW_ITEM_FIELDS) do
-    normalized[field] = item[field]
-  end
-  return normalized
-end
-
-local function usesBillboardProjection(item)
-  return item.billboardProjection == true or item.fieldEffect ~= nil
-end
-
-local function normalizedQueue(queue, worldProjection, billboardProjection)
-  local normalized = {
-    opaque = {},
-    cutout = {},
-    mixedOpaque = {},
-    wireframe = {},
-    blended = {},
-  }
-  for _, pass in ipairs({ "opaque", "cutout", "mixedOpaque", "wireframe" }) do
-    for _, item in ipairs(queue[pass]) do
-      local projection = usesBillboardProjection(item) and billboardProjection or worldProjection
-      normalized[pass][#normalized[pass] + 1] = normalizedItem(item, projection)
-    end
-  end
-  for _, entry in ipairs(queue.blended) do
-    local item = entry.item
-    local projection = usesBillboardProjection(item) and billboardProjection or worldProjection
-    normalized.blended[#normalized.blended + 1] = {
-      item = normalizedItem(item, projection),
-      fragmentPass = entry.fragmentPass,
-    }
-  end
-  return normalized
-end
-
-local function normalizedSprites(spriteItems, billboardProjection)
-  if spriteItems == nil then
-    return nil
-  end
-  local normalized = {}
-  for _, item in ipairs(spriteItems) do
-    normalized[#normalized + 1] = normalizedItem(item, billboardProjection)
-  end
-  return normalized
-end
 
 local function selectedLighting(sceneRuntime)
   local profile = sceneRuntime.lighting
@@ -100,6 +37,7 @@ function FieldRenderer.new(opts)
     gxRenderer = gxRenderer,
     stats = gxRenderer.stats,
     _ownsRenderer = ownsRenderer,
+    clearColor = opts.clearColor,
     _queueScratch = {
       opaque = {},
       cutout = {},
@@ -132,8 +70,9 @@ function FieldRenderer:draw(sceneRuntime, camera, worldParts, spriteItems, viewp
     cameraZoom = camera.zoom,
     worldProjection = worldProjection,
     billboardProjection = billboardProjection,
-    queue = normalizedQueue(queue, worldProjection, billboardProjection),
-    spriteItems = normalizedSprites(spriteItems, billboardProjection),
+    clearColor = self.clearColor,
+    queue = queue,
+    spriteItems = spriteItems,
     viewport = viewport,
   })
   self.sceneColor = self.gxRenderer.sceneColor
