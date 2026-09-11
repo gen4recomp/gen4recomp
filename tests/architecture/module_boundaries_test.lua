@@ -169,6 +169,7 @@ local PACKAGE_RULES = {
     scanRoot = "libs/hgss",
     allowed = {
       hgss = true,
+      ui = true,
       mons = true,
       nds = true,
       script = true,
