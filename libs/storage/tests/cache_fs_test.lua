@@ -13,6 +13,19 @@ end
 
 local T = {}
 
+local function isManifestTempPath(path)
+  return path:match("^heartgold%.__g4publish%.[%w%-_]+%.__g4next$") ~= nil
+end
+
+local function findBackendFile(backend, prefix, suffix)
+  for path, data in pairs(backend.files) do
+    if path:sub(1, #prefix) == prefix and path:sub(-#suffix) == suffix then
+      return data
+    end
+  end
+  return nil
+end
+
 function T.prefix_reflects_version()
   Assert.equal(cache("heartgold"):prefix(), "heartgold/")
   Assert.equal(cache("soulsilver"):prefix(), "soulsilver/")
@@ -303,7 +316,7 @@ function T.publish_from_stage_handles_fresh_import()
   Assert.isNil(backend.files["heartgold.__g4next/romfs/a/0/0/2"])
 end
 
-function T.whole_version_publication_respects_restricted_directory_renames()
+function T.whole_version_publication_remains_direct_and_portable()
   local backend = ConstrainedCache.new()
   local live = cache("heartgold", backend)
   local stage = staging("heartgold", backend)
@@ -321,6 +334,18 @@ function T.whole_version_publication_respects_restricted_directory_renames()
   Assert.isNil(backend:getInfo("heartgold.__g4next"))
   Assert.isNil(backend:getInfo("heartgold.__g4old"))
   Assert.isNil(backend:getInfo("staging/heartgold"))
+  for path in pairs(backend.files) do
+    Assert.isFalse(
+      path:find("heartgold.__g4next.", 1, true) ~= nil,
+      "whole-version stage must not be copied to an attempt candidate"
+    )
+  end
+  for path in pairs(backend.dirs) do
+    Assert.isFalse(
+      path:find("heartgold.__g4next.", 1, true) ~= nil,
+      "whole-version stage must not be copied to an attempt candidate"
+    )
+  end
   assertPortableRenames(backend)
 end
 
@@ -342,14 +367,30 @@ function T.file_root_publication_moves_aside_existing_file_before_replacement()
 
   local second = ArtifactPublisher.begin(live, "map-index", { fileRoot })
   second.stage:write(fileRoot, "replacement-index")
-  backend:failNextRename("heartgold/" .. fileRoot .. ".__g4next")
+  local originalReplace = backend.replace
+  local failCandidate = true
+  backend.replace = function(self, sourcePath, destinationPath)
+    local candidatePrefix = "heartgold/" .. fileRoot .. ".__g4next"
+    if
+      failCandidate
+      and (sourcePath == candidatePrefix or sourcePath:sub(1, #candidatePrefix + 1) == candidatePrefix .. ".")
+    then
+      failCandidate = false
+      return false, "injected rename failure"
+    end
+    return originalReplace(self, sourcePath, destinationPath)
+  end
   local publishErr = Assert.throws(function()
     second:publish()
   end)
   Assert.isTrue(Errors.is(publishErr))
   Assert.equal(publishErr.code, StorageErrors.CACHE_REPLACE_FAILED)
   Assert.equal(live:read(fileRoot), "new-index", "failed replacement restores the previous file")
-  Assert.isNil(backend:getInfo("heartgold/" .. fileRoot .. ".__g4old"))
+  for _, entries in ipairs({ backend.files, backend.dirs }) do
+    for path in pairs(entries) do
+      Assert.isFalse(path:find("heartgold/" .. fileRoot .. ".__g4old", 1, true) ~= nil)
+    end
+  end
   assertPortableRenames(backend)
 end
 
@@ -607,7 +648,7 @@ function T.publish_from_stage_reports_incomplete_rollback()
     if sourcePath == "heartgold.__g4next" then
       return false, "injected publish failure"
     end
-    if sourcePath == "heartgold.__g4old" then
+    if sourcePath:find("heartgold.__g4old", 1, true) then
       return false, "injected rollback failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -622,7 +663,11 @@ function T.publish_from_stage_reports_incomplete_rollback()
     "the original publish error is the cause"
   )
   Assert.isTrue(tostring(err.context.rollback):match("injected rollback failure"), "the rollback error is recorded")
-  Assert.equal(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "OLD", "the aside keeps the last-known-good dump")
+  Assert.equal(
+    findBackendFile(backend, "heartgold.__g4old", "/romfs/a/0/0/2"),
+    "OLD",
+    "the aside keeps the last-known-good dump"
+  )
   Assert.equal(backend.files["heartgold.__g4next/romfs/a/0/0/2"], "NEW", "the staged dump stays in place")
 end
 
@@ -649,7 +694,11 @@ function T.publish_from_stage_reports_cleanup_failure()
   Assert.isTrue(Errors.is(err), "a cleanup failure must surface as a structured error")
   Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED)
   Assert.equal(backend.files["heartgold/romfs/a/0/0/2"], "NEW", "the new dump has landed before cleanup")
-  Assert.equal(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "OLD", "the old root is the only staging residue")
+  Assert.equal(
+    findBackendFile(backend, "heartgold.__g4old", "/romfs/a/0/0/2"),
+    "OLD",
+    "the old root is the only staging residue"
+  )
 end
 
 function T.remove_staged_tree_reports_backend_failure()
@@ -681,6 +730,51 @@ local function writePublicationRecord(backend, roots)
   backend:write(PUBLISH_MANIFEST, LuaWriter.encode({ schema = 1, roots = roots }))
 end
 
+local function writeAttemptPublicationRecord(backend, attemptId, roots)
+  backend:write(PUBLISH_MANIFEST, LuaWriter.encode({ schema = 2, attemptId = attemptId, roots = roots }))
+end
+
+local function attemptSibling(root, suffix, attemptId)
+  return siblingRoot(root, suffix .. "." .. attemptId)
+end
+
+local function assertAttemptResidueAbsent(backend)
+  Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
+  Assert.isNil(backend:getInfo(PUBLISH_NEXT))
+  Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
+  for _, entries in ipairs({ backend.files, backend.dirs }) do
+    for path in pairs(entries) do
+      Assert.isFalse(path:find(".__g4publish.", 1, true) ~= nil, "publication journal residue: " .. path)
+      Assert.isFalse(path:find(".__g4next.", 1, true) ~= nil, "candidate residue: " .. path)
+      Assert.isFalse(path:find(".__g4old.", 1, true) ~= nil, "backup residue: " .. path)
+    end
+  end
+end
+
+local function capturePublicationIdentity()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/identity"
+  local tx = ArtifactPublisher.begin(c, "publication-identity", { root })
+  tx.stage:write(root .. "/value", "new")
+  local manifestData
+  local commitData
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if isManifestTempPath(path) then
+      manifestData = data
+    elseif path == PUBLISH_COMMIT then
+      commitData = data
+    end
+    return originalWrite(self, path, data)
+  end
+  tx:publish()
+  Assert.notNil(manifestData, "publication must write a manifest")
+  Assert.notNil(commitData, "publication must write a commit token")
+  local manifest = assert(loadstring(manifestData))()
+  return { attemptId = manifest.attemptId, commit = commitData }
+end
+
 local function assertPublicationResidueAbsent(backend, roots)
   Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
   Assert.isNil(backend:getInfo(PUBLISH_NEXT))
@@ -689,6 +783,216 @@ local function assertPublicationResidueAbsent(backend, roots)
     Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4old")))
     Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4next")))
   end
+end
+
+function T.reentrant_recovery_cannot_delete_an_active_manifest_temp()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  c:write(root .. "/value", "old")
+  local tx = ArtifactPublisher.begin(c, "reentrant-recovery", { root })
+  tx.stage:write(root .. "/value", "new")
+
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    local ok, err = originalWrite(self, path, data)
+    if ok and path:find(".__g4publish.", 1, true) and path:find(".__g4next", 1, true) then
+      c:recoverPublication()
+    end
+    return ok, err
+  end
+
+  local ok, err = pcall(function()
+    tx:publish()
+  end)
+  Assert.isTrue(ok, tostring(err))
+  Assert.equal(c:read(root .. "/value"), "new")
+  assertAttemptResidueAbsent(backend)
+end
+
+function T.uncommitted_attempt_recovery_restores_only_its_owned_roots()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local roots = { "data/generated/alpha", "data/generated/beta" }
+  local attemptA = "attempt-a"
+  local attemptB = "attempt-b"
+
+  backend:write(livePath(roots[1]) .. "/value", "alpha-new")
+  backend:write(livePath(roots[2]) .. "/value", "beta-new")
+  backend:write(attemptSibling(roots[1], ".__g4old", attemptA) .. "/value", "alpha-original")
+  backend:write(attemptSibling(roots[1], ".__g4next", attemptA) .. "/value", "alpha-new")
+  backend:write(attemptSibling(roots[2], ".__g4next", attemptA) .. "/value", "beta-new")
+  backend:write(attemptSibling(roots[1], ".__g4old", attemptB) .. "/value", "foreign-old")
+  backend:write(attemptSibling(roots[2], ".__g4next", attemptB) .. "/value", "foreign-next")
+  writeAttemptPublicationRecord(backend, attemptA, {
+    { path = roots[1], hadLive = true },
+    { path = roots[2], hadLive = false },
+  })
+
+  c:recoverPublication()
+
+  Assert.equal(c:read(roots[1] .. "/value"), "alpha-original")
+  Assert.isNil(c:getInfo(roots[2]))
+  Assert.isNil(backend:getInfo(attemptSibling(roots[1], ".__g4old", attemptA)))
+  Assert.isNil(backend:getInfo(attemptSibling(roots[1], ".__g4next", attemptA)))
+  Assert.isNil(backend:getInfo(attemptSibling(roots[2], ".__g4next", attemptA)))
+  Assert.equal(backend.files[attemptSibling(roots[1], ".__g4old", attemptB) .. "/value"], "foreign-old")
+  Assert.equal(backend.files[attemptSibling(roots[2], ".__g4next", attemptB) .. "/value"], "foreign-next")
+
+  local replaceCalls = 0
+  local removeCalls = 0
+  local originalReplace = backend.replace
+  local originalRemove = backend.remove
+  backend.replace = function(self, sourcePath, destinationPath)
+    replaceCalls = replaceCalls + 1
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+  backend.remove = function(self, path)
+    removeCalls = removeCalls + 1
+    return originalRemove(self, path)
+  end
+  c:recoverPublication()
+  Assert.equal(replaceCalls, 0)
+  Assert.equal(removeCalls, 0)
+end
+
+function T.commit_identity_preserves_matching_attempt_and_rejects_mismatch()
+  local identityA = capturePublicationIdentity()
+  local identityB = capturePublicationIdentity()
+  local attemptA = identityA.attemptId or "attempt-a"
+  local attemptB = identityB.attemptId or "attempt-b"
+  Assert.isFalse(attemptA == attemptB, "publication attempts must have distinct identities")
+
+  local roots = { "data/generated/alpha", "data/generated/beta" }
+  local matchingBackend = FakeCache.new()
+  local matching = cache("heartgold", matchingBackend)
+  matchingBackend:write(livePath(roots[1]) .. "/value", "alpha-new")
+  matchingBackend:write(livePath(roots[2]) .. "/value", "beta-new")
+  matchingBackend:write(attemptSibling(roots[1], ".__g4old", attemptA) .. "/value", "alpha-original")
+  matchingBackend:write(attemptSibling(roots[2], ".__g4old", attemptA) .. "/value", "beta-original")
+  matchingBackend:write(attemptSibling(roots[1], ".__g4next", attemptA) .. "/value", "alpha-new")
+  writeAttemptPublicationRecord(matchingBackend, attemptA, {
+    { path = roots[1], hadLive = true },
+    { path = roots[2], hadLive = true },
+  })
+  matchingBackend:write(PUBLISH_COMMIT, identityA.commit)
+
+  matching:recoverPublication()
+
+  Assert.equal(matching:read(roots[1] .. "/value"), "alpha-new")
+  Assert.equal(matching:read(roots[2] .. "/value"), "beta-new")
+  assertAttemptResidueAbsent(matchingBackend)
+
+  local mismatchBackend = FakeCache.new()
+  local mismatch = cache("heartgold", mismatchBackend)
+  mismatchBackend:write(livePath(roots[1]) .. "/value", "alpha-new")
+  mismatchBackend:write(livePath(roots[2]) .. "/value", "beta-new")
+  mismatchBackend:write(attemptSibling(roots[1], ".__g4old", attemptA) .. "/value", "alpha-original")
+  mismatchBackend:write(attemptSibling(roots[2], ".__g4old", attemptA) .. "/value", "beta-original")
+  writeAttemptPublicationRecord(mismatchBackend, attemptA, {
+    { path = roots[1], hadLive = true },
+    { path = roots[2], hadLive = true },
+  })
+  mismatchBackend:write(PUBLISH_COMMIT, identityB.commit)
+
+  local ok, err = pcall(function()
+    mismatch:recoverPublication()
+  end)
+  Assert.isFalse(ok, "a commit for another attempt must not authorize cleanup")
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(assert(err).code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
+  Assert.equal(mismatch:read(roots[1] .. "/value"), "alpha-new")
+  Assert.equal(mismatch:read(roots[2] .. "/value"), "beta-new")
+  Assert.notNil(mismatchBackend:getInfo(PUBLISH_MANIFEST))
+  Assert.notNil(mismatchBackend:getInfo(PUBLISH_COMMIT))
+  Assert.equal(mismatchBackend.files[attemptSibling(roots[1], ".__g4old", attemptA) .. "/value"], "alpha-original")
+end
+
+function T.legacy_recovery_remains_available_and_new_publications_use_current_metadata()
+  local uncommittedBackend = FakeCache.new()
+  local uncommitted = cache("heartgold", uncommittedBackend)
+  local uncommittedRoots = { "data/generated/alpha", "data/generated/beta" }
+  uncommittedBackend:write(siblingRoot(uncommittedRoots[1], ".__g4old") .. "/value", "alpha-original")
+  uncommittedBackend:write(livePath(uncommittedRoots[1]) .. "/value", "alpha-new")
+  uncommittedBackend:write(livePath(uncommittedRoots[2]) .. "/value", "beta-new")
+  writePublicationRecord(uncommittedBackend, {
+    { path = uncommittedRoots[1], hadLive = true },
+    { path = uncommittedRoots[2], hadLive = false },
+  })
+  uncommitted:recoverPublication()
+  Assert.equal(uncommitted:read(uncommittedRoots[1] .. "/value"), "alpha-original")
+  Assert.isNil(uncommitted:getInfo(uncommittedRoots[2]))
+  assertPublicationResidueAbsent(uncommittedBackend, uncommittedRoots)
+
+  local committedBackend = FakeCache.new()
+  local committed = cache("heartgold", committedBackend)
+  local committedRoots = { "data/generated/alpha", "data/generated/beta" }
+  committedBackend:write(livePath(committedRoots[1]) .. "/value", "alpha-new")
+  committedBackend:write(livePath(committedRoots[2]) .. "/value", "beta-new")
+  committedBackend:write(siblingRoot(committedRoots[1], ".__g4old") .. "/value", "alpha-original")
+  committedBackend:write(siblingRoot(committedRoots[2], ".__g4old") .. "/value", "beta-original")
+  writePublicationRecord(committedBackend, {
+    { path = committedRoots[1], hadLive = true },
+    { path = committedRoots[2], hadLive = true },
+  })
+  committedBackend:write(PUBLISH_COMMIT, "g4-cache-publish-v1")
+  committed:recoverPublication()
+  Assert.equal(committed:read(committedRoots[1] .. "/value"), "alpha-new")
+  Assert.equal(committed:read(committedRoots[2] .. "/value"), "beta-new")
+  assertPublicationResidueAbsent(committedBackend, committedRoots)
+
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local root = "data/generated/alpha"
+  local tx = ArtifactPublisher.begin(c, "metadata-upgrade", { root })
+  tx.stage:write(root .. "/value", "new")
+  local manifestData
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    if path:find(".__g4publish.", 1, true) and path:find(".__g4next", 1, true) then
+      manifestData = data
+    end
+    return originalWrite(self, path, data)
+  end
+  tx:publish()
+  Assert.notNil(manifestData)
+  local manifest = assert(loadstring(manifestData))()
+  Assert.equal(manifest.schema, 2)
+  Assert.notNil(manifest.attemptId)
+end
+
+function T.prepromotion_orphan_temps_do_not_touch_live_roots()
+  local backend = FakeCache.new()
+  local c = cache("heartgold", backend)
+  local artifactRoot = "data/generated/orphan"
+  local artifactAttempt = "orphan-artifact"
+  backend:write(livePath(artifactRoot) .. "/value", "live")
+  backend:write(attemptSibling(artifactRoot, ".__g4next", artifactAttempt) .. "/value", "staged")
+  backend:write(
+    "heartgold.__g4publish." .. artifactAttempt .. ".__g4next",
+    LuaWriter.encode({
+      schema = 2,
+      attemptId = artifactAttempt,
+      roots = { { path = artifactRoot, hadLive = true } },
+    })
+  )
+
+  local wholeAttempt = "orphan-whole"
+  backend:write("heartgold/romfs/old", "live-whole")
+  backend:write("heartgold.__g4next/romfs/stage", "staged-whole")
+  backend:write(
+    "heartgold.__g4publish." .. wholeAttempt .. ".__g4next",
+    LuaWriter.encode({ schema = 2, attemptId = wholeAttempt, roots = { { path = "", hadLive = true } } })
+  )
+
+  c:recoverPublication()
+
+  Assert.equal(c:read(artifactRoot .. "/value"), "live")
+  Assert.isNil(backend:getInfo(attemptSibling(artifactRoot, ".__g4next", artifactAttempt)))
+  Assert.isNil(backend:getInfo("heartgold.__g4publish." .. artifactAttempt .. ".__g4next"))
+  Assert.equal(backend.files["heartgold/romfs/old"], "live-whole")
+  Assert.equal(backend.files["heartgold.__g4next/romfs/stage"], "staged-whole")
+  Assert.isNil(backend:getInfo("heartgold.__g4publish." .. wholeAttempt .. ".__g4next"))
 end
 
 function T.partial_phase_one_recovery_preserves_untouched_live_root()
@@ -766,7 +1070,7 @@ function T.malformed_publication_metadata_leaves_live_roots_untouched()
   stage:write(roots[1] .. "/stale", "stale-stage")
 
   local ok, err = pcall(function()
-    ArtifactPublisher.begin(c, "recovery-check", roots)
+    c:recoverPublication()
   end)
 
   Assert.isFalse(ok, "malformed publication metadata must stop stage initialization")
@@ -775,6 +1079,9 @@ function T.malformed_publication_metadata_leaves_live_roots_untouched()
   Assert.equal(c:read(roots[1] .. "/value"), "alpha-original")
   Assert.equal(c:read(roots[2] .. "/value"), "beta-original")
   Assert.equal(backend.files["staging/heartgold/recovery-check/" .. roots[1] .. "/stale"], "stale-stage")
+
+  ArtifactPublisher.begin(c, "recovery-check", roots)
+  Assert.isNil(backend.files["staging/heartgold/recovery-check/" .. roots[1] .. "/stale"])
 end
 
 function T.empty_publication_manifest_is_structured_and_non_destructive()
@@ -885,7 +1192,7 @@ function T.manifest_write_failure_does_not_touch_live_roots()
   tx.stage:write(root .. "/value", "new")
   local originalWrite = backend.write
   backend.write = function(self, path, data)
-    if path == PUBLISH_NEXT then
+    if isManifestTempPath(path) then
       return false, "injected manifest write failure"
     end
     return originalWrite(self, path, data)
@@ -911,7 +1218,7 @@ function T.manifest_promotion_failure_does_not_touch_live_roots()
   tx.stage:write(root .. "/value", "new")
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath == PUBLISH_NEXT then
+    if isManifestTempPath(sourcePath) then
       return false, "injected manifest promotion failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -961,7 +1268,7 @@ function T.cleanup_failure_keeps_committed_metadata_recoverable()
   tx.stage:write(root .. "/value", "new")
   local originalRemove = backend.remove
   backend.remove = function(self, path)
-    if path:find(".__g4old/", 1, true) then
+    if path:find(".__g4old", 1, true) then
       return false, "injected old cleanup failure"
     end
     return originalRemove(self, path)
@@ -977,7 +1284,11 @@ function T.cleanup_failure_keeps_committed_metadata_recoverable()
   Assert.notNil(backend:getInfo(PUBLISH_COMMIT))
   backend.remove = originalRemove
   c:recoverPublication()
-  Assert.isNil(backend:getInfo(siblingRoot(root, ".__g4old")))
+  for _, entries in ipairs({ backend.files, backend.dirs }) do
+    for path in pairs(entries) do
+      Assert.isFalse(path:find(siblingRoot(root, ".__g4old"), 1, true) ~= nil)
+    end
+  end
   Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
   Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
 end
