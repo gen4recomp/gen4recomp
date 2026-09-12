@@ -1010,6 +1010,7 @@ function T.indoor_map_compilation_keeps_its_existing_readiness_path()
 
   MapCacheWriter.write(cacheFs, bundle)
   local dependencies = MapAssetCache.dependencies(cacheFs, bundle.mapId)
+  Assert.equal(dependencies.cacheFormat, MapAssetCache.FORMAT)
   Assert.equal(dependencies.producerFingerprint, producerA)
   local matchingPlan = assert(MapCompilePlan.plan(romFs, index, MapRomFixture.MAP_SYMBOL, producerA))
   local changedProducerPlan = assert(MapCompilePlan.plan(romFs, index, MapRomFixture.MAP_SYMBOL, producerB))
@@ -1022,6 +1023,10 @@ function T.indoor_map_compilation_keeps_its_existing_readiness_path()
   Assert.isFalse(MapCompilePlan.isReady(cacheFs, changedProducerPlan))
   Assert.isFalse(MapCompilePlan.isReady(cacheFs, changedRomPlan))
   Assert.isTrue(MapAssetCache.isReady(cacheFs, bundle.mapId, bundle.marker))
+
+  dependencies.cacheFormat = "stale-map-cache-format"
+  cacheFs:writeLua(MapAssetCache.mapDir(bundle.mapId) .. "/dependencies.lua", dependencies)
+  Assert.isFalse(MapCompilePlan.isReady(cacheFs, matchingPlan))
 end
 
 return { tests = T }

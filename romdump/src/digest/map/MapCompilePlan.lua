@@ -171,7 +171,8 @@ function MapCompilePlan.isReady(cacheFs, mapPlan)
     return false
   end
   local dependencies = MapAssetCache.dependencies(cacheFs, mapId)
-  return dependencies.versionRomSha1 == mapPlan.romSha1
+  return dependencies.cacheFormat == MapAssetCache.FORMAT
+    and dependencies.versionRomSha1 == mapPlan.romSha1
     and dependencies.producerFingerprint == mapPlan.producerFingerprint
 end
 
