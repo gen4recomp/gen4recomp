@@ -499,6 +499,16 @@ end
 function FieldInput:uiSnapshot(tick)
   requireNonNegativeInteger(tick, "UI tick")
   local events = {}
+  if not self.uiActive then
+    -- An inactive modal owns no semantic input: hidden edges queued while
+    -- suspended are discarded here so they can never replay, while held
+    -- physical sources and repeat timing are left for the next lifetime.
+    self.uiPressedDirection = nil
+    self.uiConfirmPressed = nil
+    self.uiCancelPressed = nil
+    self.uiPointerEvents = {}
+    return events
+  end
   local direction = self.uiPressedDirection
   if direction then
     events[#events + 1] = { type = "navigate", direction = direction }

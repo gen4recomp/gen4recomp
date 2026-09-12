@@ -479,6 +479,14 @@ local function fieldComposition(starter, queue, backend)
       inputCalls[#inputCalls + 1] = { name, ... }
     end
   end
+  -- The host suspends modal UI semantics while the hidden chooser prepares
+  -- and restarts them on readiness; the stub owns that lifecycle seam
+  -- without counting it as gameplay input.
+  function input:clearUi() end
+  function input:beginUi(_) end
+  function input:uiSnapshot(_)
+    return {}
+  end
   local draws = { field = 0, starter = 0 }
   local runtime = {
     starterChoice = starter,
@@ -487,6 +495,7 @@ local function fieldComposition(starter, queue, backend)
     cancelKeys = { x = true },
     menuKeys = {},
     input = input,
+    session = { tick = 0 },
     update = function() end,
     dispose = function() end,
   }
@@ -580,7 +589,13 @@ function T.pending_preparation_keeps_the_field_visible_and_inputs_frozen()
   state:mousepressed(40, 40, 1)
   state:touchpressed(9, 40, 40)
   Assert.deepEqual(host:status(), before, "invisible chooser input never changes selection or confirmation")
-  Assert.equal(#inputCalls, 0, "starter-directed presses never reach gameplay input while invisible")
+  local seen = {}
+  for _, call in ipairs(inputCalls) do
+    seen[call[1]] = (seen[call[1]] or 0) + 1
+  end
+  Assert.equal(seen.pressAction or 0, 0, "invisible action presses never reach gameplay input")
+  Assert.equal(seen.pointerDown or 0, 0, "invisible pointer presses never reach gameplay input")
+  Assert.equal(seen.releaseAction or 0, 1, "the invisible release still clears its physical source")
 
   markQueueReady(queue)
   local consumed = host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1)
