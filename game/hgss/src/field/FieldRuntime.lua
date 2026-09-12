@@ -1389,7 +1389,6 @@ function FieldRuntime:_applicationDescriptors()
     local bagCursor = assert(self.bagCursor, "the bag application requires the runtime bag cursor")
     assert(self.itemCatalog ~= nil, "the bag application requires the shared item catalog")
     local manifest = BagCache.loadManifest(self.cacheFs)
-    ItemCache.loadIconManifest(self.cacheFs)
     local avatar = assert(self.avatar, "the bag application requires the player avatar")
     assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
     local heroGender = avatar.gender == 0 and "male" or "female"
