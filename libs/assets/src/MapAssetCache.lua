@@ -527,7 +527,8 @@ function MapAssetCache.isReady(cacheFs, mapId, expectedMarker)
     return false
   end
   ---@cast scene MapAssetCache.Scene
-  if not cacheFs:loadLua(dir .. "/dependencies.lua") then
+  local dependencies = cacheFs:loadLua(dir .. "/dependencies.lua")
+  if type(dependencies) ~= "table" then
     return false
   end
   if scene.type == "outdoor" then

@@ -61,6 +61,15 @@ function T.ready_only_with_exact_marker_and_files()
   Assert.isTrue(not MapAssetCache.isReady(c, 61, "different-marker"), "stale marker not ready")
 end
 
+function T.not_ready_with_non_table_dependencies()
+  local c = cache()
+  local marker = MapAssetCache.marker("romsha", 61, "dep")
+  writeReadyMap(c, marker)
+  c:write(MapAssetCache.mapDir(61) .. "/dependencies.lua", "return true\n")
+
+  Assert.isFalse(MapAssetCache.isReady(c, 61, marker), "non-table dependencies -> not ready")
+end
+
 function T.outdoor_canonical_scene_uses_its_physical_cell_artifacts()
   local c = cache()
   local mapId = 61
