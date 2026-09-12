@@ -383,27 +383,34 @@ local function manifestTempPath(cacheFs, manifest)
   return publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
 end
 
+local function publicationResourceIdentity(backend)
+  return rawget(backend, "_filesystem") or backend
+end
+
 local function activeAttempt(cacheFs)
-  local versions = activeAttempts[cacheFs.backend]
+  local resource = publicationResourceIdentity(cacheFs.backend)
+  local versions = activeAttempts[resource]
   return versions and versions[cacheFs.versionId]
 end
 
 local function registerAttempt(cacheFs, attemptId)
   assert(not activeAttempt(cacheFs), "a publication is already active for this cache version")
-  local versions = activeAttempts[cacheFs.backend]
+  local resource = publicationResourceIdentity(cacheFs.backend)
+  local versions = activeAttempts[resource]
   if not versions then
     versions = {}
-    activeAttempts[cacheFs.backend] = versions
+    activeAttempts[resource] = versions
   end
   versions[cacheFs.versionId] = attemptId
 end
 
 local function releaseAttempt(cacheFs, attemptId)
-  local versions = activeAttempts[cacheFs.backend]
+  local resource = publicationResourceIdentity(cacheFs.backend)
+  local versions = activeAttempts[resource]
   assert(versions and versions[cacheFs.versionId] == attemptId, "publication attempt ownership changed")
   versions[cacheFs.versionId] = nil
   if next(versions) == nil then
-    activeAttempts[cacheFs.backend] = nil
+    activeAttempts[resource] = nil
   end
 end
 
@@ -784,16 +791,25 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
 
     -- The new artifact is already live; cleanup is a distinct outcome, never a
     -- failed publication. The journal remains until every cleanup step succeeds.
-    local cleanupOk, cleanupErr = pcall(function()
-      finishCommittedPublication(cacheFs, manifest)
-      cleanup()
-    end)
-    if not cleanupOk then
+    local recoveryCleanupOk, recoveryCleanupErr = pcall(finishCommittedPublication, cacheFs, manifest)
+    if not recoveryCleanupOk then
       Errors.raise(
         StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
-        "the new artifact is live but its stage could not be removed",
+        "the new artifact is live but recovery material could not be removed",
         {
-          cause = tostring(cleanupErr),
+          phase = "recovery-material",
+          cause = tostring(recoveryCleanupErr),
+        }
+      )
+    end
+    local stageCleanupOk, stageCleanupErr = pcall(cleanup)
+    if not stageCleanupOk then
+      Errors.raise(
+        StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
+        "the new artifact is live but its private stage could not be removed",
+        {
+          phase = "private-stage",
+          cause = tostring(stageCleanupErr),
         }
       )
     end

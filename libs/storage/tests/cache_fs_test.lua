@@ -11,6 +11,37 @@ local function cache(versionId, backend)
   return CacheFs.forVersion(versionId, backend or FakeCache.new())
 end
 
+local function proxyBackends(backend)
+  local filesystem = {}
+  local function proxy()
+    return {
+      _filesystem = filesystem,
+      write = function(_, path, data)
+        return backend:write(path, data)
+      end,
+      read = function(_, path)
+        return backend:read(path)
+      end,
+      getInfo = function(_, path)
+        return backend:getInfo(path)
+      end,
+      createDirectory = function(_, path)
+        return backend:createDirectory(path)
+      end,
+      remove = function(_, path)
+        return backend:remove(path)
+      end,
+      replace = function(_, sourcePath, destinationPath)
+        return backend:replace(sourcePath, destinationPath)
+      end,
+      getDirectoryItems = function(_, path)
+        return backend:getDirectoryItems(path)
+      end,
+    }
+  end
+  return proxy(), proxy()
+end
+
 local T = {}
 
 local function isManifestTempPath(path)
@@ -787,17 +818,24 @@ end
 
 function T.reentrant_recovery_cannot_delete_an_active_manifest_temp()
   local backend = FakeCache.new()
-  local c = cache("heartgold", backend)
+  local backendA, backendB = proxyBackends(backend)
+  local c = cache("heartgold", backendA)
+  local sibling = cache("heartgold", backendB)
   local root = "data/generated/alpha"
   c:write(root .. "/value", "old")
   local tx = ArtifactPublisher.begin(c, "reentrant-recovery", { root })
   tx.stage:write(root .. "/value", "new")
 
+  local recoveryOk
+  local tempRemains
   local originalWrite = backend.write
   backend.write = function(self, path, data)
     local ok, err = originalWrite(self, path, data)
     if ok and path:find(".__g4publish.", 1, true) and path:find(".__g4next", 1, true) then
-      c:recoverPublication()
+      recoveryOk = pcall(function()
+        sibling:recoverPublication()
+      end)
+      tempRemains = backend:getInfo(path) ~= nil
     end
     return ok, err
   end
@@ -805,8 +843,63 @@ function T.reentrant_recovery_cannot_delete_an_active_manifest_temp()
   local ok, err = pcall(function()
     tx:publish()
   end)
+  Assert.isTrue(recoveryOk, "a sibling recovery must return without disturbing publication")
+  Assert.isTrue(tempRemains, "the active manifest temp must survive sibling recovery")
   Assert.isTrue(ok, tostring(err))
   Assert.equal(c:read(root .. "/value"), "new")
+  assertAttemptResidueAbsent(backend)
+end
+
+function T.sibling_publication_is_rejected_before_it_can_mutate_live_data()
+  local backend = FakeCache.new()
+  local backendA, backendB = proxyBackends(backend)
+  local first = cache("heartgold", backendA)
+  local sibling = cache("heartgold", backendB)
+  local otherVersion = cache("soulsilver", backendB)
+  local firstRoot = "data/generated/alpha"
+  local siblingLiveRoot = "data/generated/beta"
+  local otherRoot = "data/generated/gamma"
+  first:write(firstRoot .. "/value", "old")
+
+  local firstTx = ArtifactPublisher.begin(first, "first-publication", { firstRoot })
+  firstTx.stage:write(firstRoot .. "/value", "new")
+  local siblingTx = ArtifactPublisher.begin(sibling, "sibling-publication", { siblingLiveRoot })
+  siblingTx.stage:write(siblingLiveRoot .. "/value", "sibling")
+  local otherTx = ArtifactPublisher.begin(otherVersion, "independent-publication", { otherRoot })
+  otherTx.stage:write(otherRoot .. "/value", "independent")
+
+  local siblingOk
+  local siblingErr
+  local independentOk
+  local triggered = false
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    local ok, err = originalWrite(self, path, data)
+    if ok and not triggered and path:find("heartgold%.__g4publish.", 1, false) and path:find(".__g4next", 1, true) then
+      triggered = true
+      independentOk = pcall(function()
+        otherTx:publish()
+      end)
+      siblingOk, siblingErr = pcall(function()
+        siblingTx:publish()
+      end)
+    end
+    return ok, err
+  end
+
+  local firstOk, firstErr = pcall(function()
+    firstTx:publish()
+  end)
+
+  Assert.isTrue(triggered, "the second publication must be attempted during the first")
+  Assert.isTrue(independentOk, "different versions sharing a resource must remain independent")
+  Assert.isFalse(siblingOk, "a sibling publication must be rejected while the first is active")
+  Assert.isTrue(tostring(siblingErr):find("publication is already active", 1, true) ~= nil)
+  Assert.isTrue(firstOk, tostring(firstErr))
+  Assert.equal(first:read(firstRoot .. "/value"), "new")
+  Assert.isNil(sibling:getInfo(siblingLiveRoot))
+  Assert.isNil(backend:getInfo("heartgold/data/generated/beta.__g4next"))
+  Assert.equal(otherVersion:read(otherRoot .. "/value"), "independent")
   assertAttemptResidueAbsent(backend)
 end
 
@@ -1279,6 +1372,7 @@ function T.cleanup_failure_keeps_committed_metadata_recoverable()
   end)
 
   Assert.equal(err.code, StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED)
+  Assert.equal(err.context.phase, "recovery-material")
   Assert.equal(c:read(root .. "/value"), "new")
   Assert.notNil(backend:getInfo(PUBLISH_MANIFEST))
   Assert.notNil(backend:getInfo(PUBLISH_COMMIT))
