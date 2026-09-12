@@ -22,8 +22,18 @@ local function liveRoot(root)
   return "heartgold/" .. root
 end
 
-local function nextRoot(root)
-  return liveRoot(root) .. ".__g4next"
+local function hasAttemptRoot(path, root, suffix)
+  local prefix = liveRoot(root) .. suffix .. "."
+  return path:sub(1, #prefix) == prefix
+end
+
+local function findAttemptFile(backend, root, suffix, file)
+  for path, data in pairs(backend.files) do
+    if hasAttemptRoot(path, root, suffix) and path:sub(-#file) == file then
+      return data
+    end
+  end
+  return nil
 end
 
 local function oldRoot(root)
@@ -122,7 +132,15 @@ function T.directory_publication_preserves_contents_and_rolls_back_under_restric
   second.stage:write(root .. "/index.lua", "replacement-index")
   second.stage:write(root .. "/nested/value.bin", "replacement-value")
   second.stage:createDirectory(root .. "/empty")
-  backend:failNextRename("heartgold/" .. root .. ".__g4next")
+  local originalReplace = backend.replace
+  local failCandidate = true
+  backend.replace = function(self, sourcePath, destinationPath)
+    if failCandidate and hasAttemptRoot(sourcePath, root, ".__g4next") then
+      failCandidate = false
+      return false, "injected rename failure"
+    end
+    return originalReplace(self, sourcePath, destinationPath)
+  end
   local err = Assert.throws(function()
     second:publish()
   end)
@@ -187,7 +205,7 @@ function T.a_failed_publish_rolls_back_every_moved_root()
   backend.replace = function(self, sourcePath, destinationPath)
     -- Fail only the stage -> live rename of the second root; the rollback
     -- renames (which carry the ".old" suffix) must still succeed.
-    if sourcePath == nextRoot(ASSET) then
+    if hasAttemptRoot(sourcePath, ASSET, ".__g4next") then
       error("injected replace failure")
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -254,7 +272,7 @@ function T.publish_cannot_report_success_when_a_rename_reports_failure()
   backend.replace = function(self, sourcePath, destinationPath)
     -- Report failure only for the stage -> live rename of the second root;
     -- the rollback renames (which carry the ".old" suffix) must still succeed.
-    if sourcePath == nextRoot(ASSET) then
+    if hasAttemptRoot(sourcePath, ASSET, ".__g4next") then
       return false, "injected replace failure"
     end
     return FakeCache.replace(self, sourcePath, destinationPath)
@@ -306,10 +324,10 @@ function T.publish_reports_an_incomplete_rollback_when_a_rollback_rename_fails()
     -- Fail the stage -> live rename of the second root AND the aside restore
     -- of the first root (stage .old -> live), so the rollback cannot restore
     -- the first root.
-    if sourcePath == nextRoot(ASSET) then
+    if hasAttemptRoot(sourcePath, ASSET, ".__g4next") then
       return false, "injected replace failure"
     end
-    if sourcePath == oldRoot(DATA) then
+    if hasAttemptRoot(sourcePath, DATA, ".__g4old") then
       return false, "injected rollback failure"
     end
     return FakeCache.replace(self, sourcePath, destinationPath)
@@ -326,7 +344,7 @@ function T.publish_reports_an_incomplete_rollback_when_a_rollback_rename_fails()
   Assert.isTrue(tostring(err.context.cause):match("CACHE_REPLACE_FAILED"), "the original publish error is the cause")
   Assert.isTrue(tostring(err.context.rollback):match("injected rollback failure"), "the rollback error is recorded")
   Assert.equal(
-    backend.files[oldRoot(DATA) .. "/index.lua"],
+    findAttemptFile(backend, DATA, ".__g4old", "/index.lua"),
     "old-index",
     "the aside root stays in the stage as recovery material"
   )
@@ -358,7 +376,7 @@ function T.publish_reports_cleanup_failure_after_success()
   Assert.equal(cache:read(ASSET .. "/0000.png"), "new-png")
 end
 
-function T.begin_recovers_before_clearing_stage()
+function T.begin_clears_only_its_private_stage()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
   local roots = { DATA, ASSET }
@@ -379,8 +397,9 @@ function T.begin_recovers_before_clearing_stage()
 
   local tx = ArtifactPublisher.begin(cache, "recovery-check", roots)
 
-  Assert.equal(cache:read(DATA .. "/index.lua"), "old-index")
+  Assert.isNil(cache:read(DATA .. "/index.lua"))
   Assert.equal(cache:read(ASSET .. "/0000.png"), "old-png")
+  Assert.notNil(backend:getInfo("heartgold.__g4publish.lua"))
   Assert.isNil(tx.stage:read(DATA .. "/stale"))
 end
 
