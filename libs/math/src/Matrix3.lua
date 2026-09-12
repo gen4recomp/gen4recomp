@@ -117,9 +117,8 @@ end
 ---@param model Matrix4.Values -- 4x4 column-major model matrix
 ---@return Matrix3.Values -- 3x3 column-major inverse-transpose
 function Matrix3.modelNormal(model)
-  local inv = Matrix3.inverse(Matrix3.from4x4(model))
-  assert(inv, "singular model transform has no normal matrix")
-  return Matrix3.transpose(inv)
+  local out = { 0, 0, 0, 0, 0, 0, 0, 0, 0 } ---@type Matrix3.Values
+  return Matrix3.modelNormalInto(out, model)
 end
 
 -- Model normal transform written into an existing 9-number table: the same
@@ -131,11 +130,21 @@ end
 ---@return Matrix3.Values -- the same `out` table
 function Matrix3.modelNormalInto(out, model)
   assert(type(out) == "table" and #out == 9, "modelNormalInto requires a 9-number output table")
-  local inv = Matrix3.inverse(Matrix3.from4x4(model))
-  assert(inv, "singular model transform has no normal matrix")
-  out[1], out[2], out[3] = inv[1], inv[4], inv[7]
-  out[4], out[5], out[6] = inv[2], inv[5], inv[8]
-  out[7], out[8], out[9] = inv[3], inv[6], inv[9]
+  local m1, m2, m3 = model[1], model[2], model[3]
+  local m4, m5, m6 = model[5], model[6], model[7]
+  local m7, m8, m9 = model[9], model[10], model[11]
+  local det = m1 * (m5 * m9 - m6 * m8) - m4 * (m2 * m9 - m3 * m8) + m7 * (m2 * m6 - m3 * m5)
+  assert(math.abs(det) >= 1e-12, "singular model transform has no normal matrix")
+  local invDet = 1 / det ---@type number
+  out[1] = (m5 * m9 - m6 * m8) * invDet
+  out[2] = (m6 * m7 - m4 * m9) * invDet
+  out[3] = (m4 * m8 - m5 * m7) * invDet
+  out[4] = (m3 * m8 - m2 * m9) * invDet
+  out[5] = (m1 * m9 - m3 * m7) * invDet
+  out[6] = (m2 * m7 - m1 * m8) * invDet
+  out[7] = (m2 * m6 - m3 * m5) * invDet
+  out[8] = (m3 * m4 - m1 * m6) * invDet
+  out[9] = (m1 * m5 - m2 * m4) * invDet
   return out
 end
 

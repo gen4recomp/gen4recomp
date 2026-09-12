@@ -30,9 +30,7 @@
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
-local FixedPoint = require("libs.math.src.FixedPoint")
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
-local JointAnimBlend = require("libs.nds.src.nitro.g3d.JointAnimBlend")
 local NitroJointState = require("libs.nds.src.nitro.g3d.NitroJointState")
 local CompiledNsbcaSampler = require("libs.nds.src.nitro.g3d.CompiledNsbcaSampler")
 local NsbmdSbcEvaluator = require("libs.assets.src.model.NsbmdSbcEvaluator")
@@ -52,6 +50,9 @@ local NitroPoseBackend = {}
 ---@field _slotPool table<integer, number[]> -- retained matrix-slot tables
 ---@field _bases table<string, number[]> -- retained billboard-base tables by mesh id
 ---@field _nodeByMesh table<string, integer> -- mesh id to node index, fixed by the definition
+---@field _jointAttachments table<integer, unknown> -- reusable joint attachment list
+---@field _jointSampler table<string, unknown> -- reusable compiled-sampler storage
+---@field _srtScratch table<integer, table<string, unknown>> -- per-node SRT composition storage
 
 -- Convert a draw matrix to engine units into an existing 16-number table:
 -- only the translation column divides by the tile size (the uniform model-to-tile scale).
@@ -96,13 +97,17 @@ local function reusablePooled(pool, live, key)
 end
 
 -- The effective per-node SRT records from the instance's joint attachments:
--- sampling + blending per node, with channels the clips leave to the model
--- resolved against the program's bind SRTs. Attach rejects a second
--- same-kind clip, so at most one joint clip plays; the blend still runs
--- through JointAnimBlend with the full default ratio (the multi-attachment
--- blend was cut with same-kind stacking, so it always takes its
--- single-contributor shortcut).
-local function nodeSrt(program, attachments, out)
+-- sampling per node, with channels the clips leave to the model resolved
+-- against the program's bind SRTs. Attach rejects a second same-kind clip,
+-- so at most one joint clip plays; the sampled result feeds SRT composition
+-- directly instead of another single-contributor blend copy.
+---@param program table<string, unknown>
+---@param attachments table<integer, unknown>
+---@param out table<integer, table<string, unknown>>
+---@param jointSampler table<string, unknown>
+---@param srtScratch table<integer, table<string, unknown>>
+---@return table<integer, table<string, unknown>>
+local function nodeSrt(program, attachments, out, jointSampler, srtScratch)
   for key in pairs(out) do
     out[key] = nil
   end
@@ -124,9 +129,13 @@ local function nodeSrt(program, attachments, out)
       -- Targets that name nodes the program does not carry are ignored,
       -- like the digest-side provider's permissive binding.
       if nodeIndex ~= nil and program.nodes[nodeIndex + 1] then
-        local result = assert(CompiledNsbcaSampler.sample(clip, track.targetIndex, attachment.player.frameFx))
-        local blended = assert(JointAnimBlend.blend({ { ratio = FixedPoint.FX32_SCALE, result = result } }))
-        out[nodeIndex] = NitroJointState.srtFromBlend(blended, program.nodes[nodeIndex + 1])
+        local result = CompiledNsbcaSampler.sampleInto(jointSampler, clip, track.targetIndex, attachment.player.frameFx)
+        local nodeScratch = srtScratch[nodeIndex]
+        if nodeScratch == nil then
+          nodeScratch = NitroJointState.newScratch()
+          srtScratch[nodeIndex] = nodeScratch
+        end
+        out[nodeIndex] = NitroJointState.srtFromBlendInto(nodeScratch, result, program.nodes[nodeIndex + 1])
       end
     end
   end
@@ -208,6 +217,9 @@ function NitroPoseBackend.newScratch(definition)
     _slotPool = {},
     _bases = {},
     _nodeByMesh = {},
+    _jointAttachments = {},
+    _jointSampler = CompiledNsbcaSampler.newScratch(),
+    _srtScratch = {},
   }
   local function nodeSRT(nodeIndex)
     return scratch._srt[nodeIndex]
@@ -215,6 +227,12 @@ function NitroPoseBackend.newScratch(definition)
   scratch.provider = {
     nodeSRT = nodeSRT,
   }
+  -- Pre-size per-node SRT composition storage from the program topology so
+  -- a previously unaffected node does not allocate when it first receives
+  -- the already-known clip topology.
+  for nodeIndex in ipairs(program.nodes or {}) do
+    scratch._srtScratch[nodeIndex - 1] = NitroJointState.newScratch()
+  end
   for _, mesh in ipairs(definition.meshes or {}) do
     scratch._nodeByMesh[mesh.id] = mesh.nodeIndex
   end
@@ -247,7 +265,10 @@ function NitroPoseBackend.evaluateInto(instance, scratch)
   local program = requireProgram(def)
   local tileScale = program.tileScale
 
-  nodeSrt(program, instance.animationState:attachments(AnimationClip.CATEGORIES.joint), scratch._srt)
+  local jointAttachments =
+    instance.animationState:attachmentsInto(AnimationClip.CATEGORIES.joint, scratch._jointAttachments)
+  assert(#jointAttachments <= 1, "NitroPoseBackend supports at most one joint attachment")
+  nodeSrt(program, jointAttachments, scratch._srt, scratch._jointSampler, scratch._srtScratch)
   local result = NsbmdSbcEvaluator.evaluateInto(program, scratch.provider, scratch.sbc)
 
   local pose = scratch.pose

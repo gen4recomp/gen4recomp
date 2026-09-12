@@ -38,13 +38,40 @@ local function compileClip(bytes, name)
 end
 
 -- Sample both paths at every frame in 0..numFrame (whole and half frames)
--- and require identical results.
+-- and require identical results. The reusable sampler runs on one scratch
+-- across every frame/target so stale channel data cannot leak between
+-- samples either.
 local function assertIdenticalSampling(bytes, name, opts)
   opts = opts or {}
   local resource, reader, clip = compileClip(bytes, name)
   Assert.equal(clip.frameCount, resource.numFrame)
   Assert.equal(clip.category, "joint")
   Assert.equal(#clip.tracks, resource.numAnm)
+
+  local function checkSampled(sampled, expected, label)
+    -- Nsbca.sample reports per-channel from-model booleans; the compiled
+    -- sampler reports the NNSG3dAnmResult flag bits (scale 0x1, rot 0x2,
+    -- trans 0x4, inverse scale 0x8).
+    Assert.equal(math.floor(sampled.flags / 4) % 2 == 1, expected.transFromModel, label .. " transFromModel")
+    Assert.equal(math.floor(sampled.flags / 2) % 2 == 1, expected.rotFromModel, label .. " rotFromModel")
+    Assert.equal(sampled.flags % 2 == 1, expected.scaleFromModel, label .. " scaleFromModel")
+    if expected.trans then
+      for i, axis in ipairs({ "x", "y", "z" }) do
+        Assert.equal(sampled.trans[i], expected.trans[axis], label .. " trans " .. axis)
+      end
+    end
+    if expected.scale then
+      for i, axis in ipairs({ "x", "y", "z" }) do
+        Assert.equal(sampled.scale[i], expected.scale[axis], label .. " scale " .. axis)
+        Assert.equal(sampled.scaleEx[i], expected.inverseScale[axis], label .. " scaleEx " .. axis)
+      end
+    end
+    if expected.rot then
+      for i = 1, 9 do
+        Assert.equal(sampled.rot[i], expected.rot[i], label .. " rot " .. i)
+      end
+    end
+  end
 
   local frames = {}
   for f = 0, resource.numFrame - 1 do
@@ -55,33 +82,16 @@ local function assertIdenticalSampling(bytes, name, opts)
       frames[#frames + 1] = f * 4096 + 2048
     end
   end
+  local scratch = CompiledNsbcaSampler.newScratch()
   for _, targetIndex in ipairs(opts.targets or { 0 }) do
     for _, frameFx in ipairs(frames) do
       local expected = Nsbca.sample(reader, resource, targetIndex, frameFx)
       local actual = CompiledNsbcaSampler.sample(clip, targetIndex, frameFx)
       local label = string.format("%s target %d frame %d", name, targetIndex, frameFx / 4096)
-      -- Nsbca.sample reports per-channel from-model booleans; the compiled
-      -- sampler reports the NNSG3dAnmResult flag bits (scale 0x1, rot 0x2,
-      -- trans 0x4, inverse scale 0x8).
-      Assert.equal(math.floor(actual.flags / 4) % 2 == 1, expected.transFromModel, label .. " transFromModel")
-      Assert.equal(math.floor(actual.flags / 2) % 2 == 1, expected.rotFromModel, label .. " rotFromModel")
-      Assert.equal(actual.flags % 2 == 1, expected.scaleFromModel, label .. " scaleFromModel")
-      if expected.trans then
-        for i, axis in ipairs({ "x", "y", "z" }) do
-          Assert.equal(actual.trans[i], expected.trans[axis], label .. " trans " .. axis)
-        end
-      end
-      if expected.scale then
-        for i, axis in ipairs({ "x", "y", "z" }) do
-          Assert.equal(actual.scale[i], expected.scale[axis], label .. " scale " .. axis)
-          Assert.equal(actual.scaleEx[i], expected.inverseScale[axis], label .. " scaleEx " .. axis)
-        end
-      end
-      if expected.rot then
-        for i = 1, 9 do
-          Assert.equal(actual.rot[i], expected.rot[i], label .. " rot " .. i)
-        end
-      end
+      checkSampled(actual, expected, label)
+      local reused = CompiledNsbcaSampler.sampleInto(scratch, clip, targetIndex, frameFx)
+      Assert.isTrue(reused == scratch.result, label .. " reusable sampling returns the scratch result")
+      checkSampled(reused, expected, label .. " reusable")
     end
   end
 end
@@ -92,9 +102,14 @@ local function assertClamping(bytes, name)
   local expected = Nsbca.sample(reader, resource, 0, -4096)
   local actual = CompiledNsbcaSampler.sample(clip, 0, -4096)
   Assert.equal(actual.rot[1], expected.rot[1])
+  local scratch = CompiledNsbcaSampler.newScratch()
+  local reused = CompiledNsbcaSampler.sampleInto(scratch, clip, 0, -4096)
+  Assert.equal(reused.rot[1], expected.rot[1])
   local expectedMax = Nsbca.sample(reader, resource, 0, resource.numFrame * 4096)
   local actualMax = CompiledNsbcaSampler.sample(clip, 0, resource.numFrame * 4096)
   Assert.equal(actualMax.rot[1], expectedMax.rot[1])
+  local reusedMax = CompiledNsbcaSampler.sampleInto(scratch, clip, 0, resource.numFrame * 4096)
+  Assert.equal(reusedMax.rot[1], expectedMax.rot[1])
 end
 
 -- ---- fixtures ----
@@ -152,6 +167,30 @@ T.jnt_compressed_rotation = jntCompressed
 function T.frame_clamping_matches_the_decoder()
   local AF = require("tests.support.AnimationFixture")
   assertClamping(AF.jntDoor(), "jntDoor")
+end
+
+-- The reusable sampler owns its result: repeated samples into one scratch
+-- keep the same result and nested arrays while their contents track the
+-- current frame, matching the allocating sampler exactly.
+function T.reusable_sampling_keeps_stable_storage_with_current_contents()
+  local AF = require("tests.support.AnimationFixture")
+  local _, _, clip = compileClip(AF.jntDoor(), "jntDoor")
+  local scratch = CompiledNsbcaSampler.newScratch()
+  local first = CompiledNsbcaSampler.sampleInto(scratch, clip, 0, 0)
+  Assert.isTrue(first == scratch.result)
+  local trans, rot, scale, scaleEx = first.trans, first.rot, first.scale, first.scaleEx
+  local second = CompiledNsbcaSampler.sampleInto(scratch, clip, 0, 4096)
+  Assert.isTrue(second == first, "repeated sampling reuses the same result")
+  Assert.isTrue(second.trans == trans, "the translation array keeps its identity")
+  Assert.isTrue(second.rot == rot, "the rotation array keeps its identity")
+  Assert.isTrue(second.scale == scale, "the scale array keeps its identity")
+  Assert.isTrue(second.scaleEx == scaleEx, "the inverse-scale array keeps its identity")
+  local expected = CompiledNsbcaSampler.sample(clip, 0, 4096)
+  Assert.equal(second.flags, expected.flags)
+  Assert.deepEqual(second.trans, expected.trans)
+  Assert.deepEqual(second.rot, expected.rot)
+  Assert.deepEqual(second.scale, expected.scale)
+  Assert.deepEqual(second.scaleEx, expected.scaleEx)
 end
 
 -- The compiled clip envelope: binding tracks carry the targets' node

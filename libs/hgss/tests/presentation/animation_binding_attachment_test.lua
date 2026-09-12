@@ -338,4 +338,65 @@ function T.attach_accepts_a_custom_player()
   Assert.equal(handle.player, player)
 end
 
+-- ---- caller-owned attachment fills ----
+
+-- attachmentsInto fills the caller's list in attach order and returns the
+-- same table, matching the snapshot contents without allocating.
+function T.state_attachments_into_fills_the_caller_list_in_order()
+  local def = definition()
+  local state = ModelAnimationState.new(def)
+  local joint = state:attach(def:animation("joint"))
+  local material = state:attach(def:animation("material"))
+  local jointOut = {}
+  local returned = state:attachmentsInto("joint", jointOut)
+  Assert.isTrue(returned == jointOut, "the fill returns the caller-owned list")
+  Assert.equal(#jointOut, 1)
+  Assert.isTrue(jointOut[1] == joint)
+  local materialOut = {}
+  state:attachmentsInto("material", materialOut)
+  Assert.equal(#materialOut, 1)
+  Assert.isTrue(materialOut[1] == material)
+end
+
+-- A fill after detach clears the stale tail: no previous attachment
+-- survives in the reused list.
+function T.state_attachments_into_clears_the_stale_tail()
+  local def = definition()
+  local state = ModelAnimationState.new(def)
+  local joint = state:attach(def:animation("joint"))
+  local out = {}
+  state:attachmentsInto("joint", out)
+  Assert.equal(#out, 1)
+  state:detach(joint)
+  local returned = state:attachmentsInto("joint", out)
+  Assert.isTrue(returned == out)
+  Assert.equal(#out, 0, "detaching empties the next fill")
+  Assert.isNil(out[1])
+end
+
+-- The filled list is caller-owned: mutating it never disturbs the
+-- authoritative group, and the next fill overwrites the damage.
+function T.state_attachments_into_never_exposes_internal_storage()
+  local def = definition()
+  local state = ModelAnimationState.new(def)
+  local joint = state:attach(def:animation("joint"))
+  local out = {}
+  state:attachmentsInto("joint", out)
+  out[1] = nil
+  out[2] = joint
+  state:attachmentsInto("joint", out)
+  Assert.equal(#out, 1, "the fill overwrites caller damage")
+  Assert.isTrue(out[1] == joint)
+  Assert.equal(#state:attachments("joint"), 1, "caller damage never reaches the group")
+end
+
+-- An unknown category fails instead of filling an unrelated group.
+function T.state_attachments_into_rejects_an_unknown_category()
+  local def = definition()
+  local state = ModelAnimationState.new(def)
+  Assert.throws(function()
+    state:attachmentsInto("bogus", {})
+  end)
+end
+
 return { tests = T }

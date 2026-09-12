@@ -147,4 +147,51 @@ function T.model_normal_into_rejects_a_singular_transform()
   end)
 end
 
+function T.warmed_model_normal_into_reuses_output_without_heap_growth()
+  local models = {
+    Matrix4.identity(),
+    Matrix4.rotateY(0.83),
+    Matrix4.multiply(Matrix4.translate(7, -3, 11), Matrix4.rotateZ(-0.41)),
+    Matrix4.scale(2, 3, 4),
+    Matrix4.multiply(Matrix4.rotateY(-0.58), Matrix4.scale(2, 3, 4)),
+  }
+  local out = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+  for _, model in ipairs(models) do
+    local expected = Matrix3.modelNormal(model)
+    local returned = Matrix3.modelNormalInto(out, model)
+    Assert.isTrue(returned == out, "modelNormalInto reuses the caller output")
+    for i = 1, 9 do
+      Assert.isTrue(approx(out[i], expected[i]), "warmed normal output matches at cell " .. i)
+    end
+  end
+  Assert.throws(function()
+    Matrix3.modelNormalInto(out, Matrix4.scale(0, 1, 1))
+  end)
+
+  local iterations = 2000
+  local function run()
+    for i = 1, iterations do
+      Matrix3.modelNormalInto(out, models[(i % #models) + 1])
+    end
+  end
+  for _ = 1, 100 do
+    Matrix3.modelNormalInto(out, models[5])
+  end
+  -- Compile the measurement loop itself before stopping the collector: the
+  -- timed window must observe the warmed normal-matrix path, not the JIT
+  -- trace compilation of this harness loop.
+  run()
+  collectgarbage("collect")
+  collectgarbage("stop")
+  local before = collectgarbage("count")
+  local ok, runErr = pcall(run)
+  local after = collectgarbage("count")
+  collectgarbage("restart")
+  Assert.isTrue(ok, runErr)
+  Assert.isTrue(
+    after - before <= 1,
+    "warmed modelNormalInto must not grow the heap, grew " .. (after - before) .. " KiB"
+  )
+end
+
 return { tests = T }

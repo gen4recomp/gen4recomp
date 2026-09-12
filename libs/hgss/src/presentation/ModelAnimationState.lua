@@ -124,9 +124,21 @@ end
 -- array, so the snapshot is O(active), not O(ever-attached)).
 function ModelAnimationState:attachments(category)
   local out = {}
+  return self:attachmentsInto(category, out)
+end
+
+-- Fill a caller-owned list with the active attachments of one group, in
+-- attach order, clearing any stale tail from a longer previous fill.
+-- Returns the same `out` table; the internal group is never exposed.
+function ModelAnimationState:attachmentsInto(category, out)
+  assert(type(out) == "table", "attachmentsInto requires a caller-owned output table")
   local group = self.groups[category]
-  for _, attachment in ipairs(group) do
-    out[#out + 1] = attachment
+  assert(group ~= nil, "attachmentsInto requires a known attachment category")
+  for i, attachment in ipairs(group) do
+    out[i] = attachment
+  end
+  for i = #group + 1, #out do
+    out[i] = nil
   end
   return out
 end

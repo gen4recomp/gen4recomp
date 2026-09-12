@@ -6,9 +6,13 @@
 -- cross-check tests keep the samplers bit-identical.
 
 local Assert = require("tests.support.Assert")
+local AnimationClip = require("libs.assets.src.model.AnimationClip")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local NitroPoseBackend = require("libs.hgss.src.presentation.NitroPoseBackend")
+local CompiledNsbcaSampler = require("libs.nds.src.nitro.g3d.CompiledNsbcaSampler")
+local JointAnimBlend = require("libs.nds.src.nitro.g3d.JointAnimBlend")
+local NitroJointState = require("libs.nds.src.nitro.g3d.NitroJointState")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 
 local T = {}
@@ -661,6 +665,234 @@ function T.evaluate_into_reuses_pose_storage_with_identical_values()
   Assert.isTrue(reset == live, "the reset reuses the same pose containers")
   Assert.equal(reset.drawMatrices["draw0.seg0"].position[13], 0, "stopping the clip restores the bind pose")
   Assert.isNil(reset.nodeVisible[0], "no stale visibility survives the reset")
+end
+
+-- A stable single-joint animation keeps the same pose containers with
+-- values identical to the allocating snapshot path. Heap behavior below the
+-- sampling seam (transform-program replay) is owned elsewhere, so this test
+-- asserts values and container identity only.
+function T.warmed_single_joint_evaluation_reuses_intermediary_storage()
+  local def = singleMeshDefinition()
+  local instance = newInstance(def)
+  instance:play("trans")
+  instance:updateFixed()
+  local scratch = NitroPoseBackend.newScratch(def)
+
+  local function liveNumbers(pose)
+    local draw = assert(pose.drawMatrices["draw0.seg0"])
+    return {
+      position = snapshotNumbers(draw.position),
+      direction = snapshotNumbers(draw.direction),
+      node = snapshotNumbers(assert(pose.nodeMatrices[0])),
+    }
+  end
+
+  local live = NitroPoseBackend.evaluateInto(instance, scratch)
+  local reference = NitroPoseBackend.evaluate(instance)
+  local expected = liveNumbers(reference)
+  local actual = liveNumbers(live)
+  Assert.deepEqual(actual.position, expected.position)
+  Assert.deepEqual(actual.direction, expected.direction)
+  Assert.deepEqual(actual.node, expected.node)
+
+  instance:updateFixed()
+  local advanced = NitroPoseBackend.evaluateInto(instance, scratch)
+  local advancedReference = NitroPoseBackend.evaluate(instance)
+  Assert.deepEqual(liveNumbers(advanced).position, liveNumbers(advancedReference).position)
+
+  local draw = assert(live.drawMatrices["draw0.seg0"])
+  local position = draw.position
+  for _ = 1, 50 do
+    NitroPoseBackend.evaluateInto(instance, scratch)
+  end
+
+  local again = NitroPoseBackend.evaluateInto(instance, scratch)
+  Assert.isTrue(again == live, "warmed evaluation reuses the same pose containers")
+  Assert.isTrue(again.drawMatrices["draw0.seg0"] == draw, "warmed evaluation reuses the same draw records")
+  Assert.isTrue(draw.position == position, "warmed evaluation reuses the same draw matrices")
+  Assert.deepEqual(liveNumbers(again).position, liveNumbers(advancedReference).position)
+end
+
+-- The joint sampling/composition seam reuses its scratch storage across
+-- warmed repetitions: attachment fill, one target sample, and SRT
+-- composition run without heap growth while matching the allocating path.
+function T.warmed_joint_sampling_composition_reuses_scratch_storage()
+  local def = singleMeshDefinition()
+  local instance = newInstance(def)
+  instance:play("trans")
+  instance:updateFixed()
+  local poseProgram = assert(def.backend.program)
+  local jointCategory = AnimationClip.CATEGORIES.joint
+  local attachmentsOut = {}
+  local sampler = CompiledNsbcaSampler.newScratch()
+  local srtScratch = NitroJointState.newScratch()
+  local bindSrt = poseProgram.nodes[1]
+
+  local function runSeam()
+    local attachments = instance.animationState:attachmentsInto(jointCategory, attachmentsOut)
+    for _, attachment in ipairs(attachments) do
+      for _, track in ipairs(attachment.clip.tracks) do
+        local nodeIndex = attachment.binding.map[track.target]
+        if nodeIndex ~= nil and poseProgram.nodes[nodeIndex + 1] then
+          local result =
+            CompiledNsbcaSampler.sampleInto(sampler, attachment.clip, track.targetIndex, attachment.player.frameFx)
+          NitroJointState.srtFromBlendInto(srtScratch, result, poseProgram.nodes[nodeIndex + 1])
+        end
+      end
+    end
+  end
+
+  runSeam()
+  local firstResult = sampler.result
+  local firstTrans, firstRot, firstScale = firstResult.trans, firstResult.rot, firstResult.scale
+  local firstSrt = srtScratch.srt
+  local firstTranslation = srtScratch.srt.translation
+  Assert.isTrue(#attachmentsOut == 1, "the fixture carries one joint attachment")
+  local attachment = attachmentsOut[1]
+  local track = attachment.clip.tracks[1]
+  local expectedResult = CompiledNsbcaSampler.sample(attachment.clip, track.targetIndex, attachment.player.frameFx)
+  Assert.deepEqual({ firstResult.trans[1], firstResult.trans[2], firstResult.trans[3] }, {
+    expectedResult.trans[1],
+    expectedResult.trans[2],
+    expectedResult.trans[3],
+  })
+  local expectedSrt = NitroJointState.srtFromBlend(expectedResult, bindSrt)
+  Assert.deepEqual(
+    { firstSrt.translation.x, firstSrt.translation.y, firstSrt.translation.z },
+    { expectedSrt.translation.x, expectedSrt.translation.y, expectedSrt.translation.z }
+  )
+
+  runSeam()
+  Assert.isTrue(sampler.result == firstResult, "repeated sampling reuses the same result")
+  Assert.isTrue(sampler.result.trans == firstTrans, "repeated sampling reuses the translation array")
+  Assert.isTrue(sampler.result.rot == firstRot, "repeated sampling reuses the rotation array")
+  Assert.isTrue(sampler.result.scale == firstScale, "repeated sampling reuses the scale array")
+  Assert.isTrue(srtScratch.srt == firstSrt, "repeated composition reuses the same record")
+  Assert.isTrue(srtScratch.srt.translation == firstTranslation, "repeated composition reuses the translation storage")
+
+  local iterations = 2000
+  local function run()
+    for _ = 1, iterations do
+      runSeam()
+    end
+  end
+  -- Compile the measurement loop itself before stopping the collector: the
+  -- timed window must observe the warmed seam, not the JIT trace
+  -- compilation of this harness loop.
+  run()
+  collectgarbage("collect")
+  collectgarbage("stop")
+  local before = collectgarbage("count")
+  local ok, runErr = pcall(run)
+  local after = collectgarbage("count")
+  collectgarbage("restart")
+  Assert.isTrue(ok, runErr)
+  Assert.isTrue(
+    after - before <= 1,
+    "warmed joint sampling/composition must not grow the heap, grew " .. (after - before) .. " KiB"
+  )
+end
+
+-- The allocating snapshot never aliases the live pose: stopping the clip
+-- and re-evaluating in place resets the live containers while the earlier
+-- snapshot keeps its values.
+function T.evaluate_snapshot_is_never_mutated_by_later_evaluation()
+  local def = singleMeshDefinition()
+  local instance = newInstance(def)
+  instance:play("trans")
+  instance:updateFixed()
+  local snapshot = NitroPoseBackend.evaluate(instance)
+  Assert.equal(snapshot.drawMatrices["draw0.seg0"].position[13], 10 / 16)
+  Assert.equal(snapshot.nodeMatrices[0][13], 10)
+  instance:stop("trans")
+  local scratch = NitroPoseBackend.newScratch(def)
+  local live = NitroPoseBackend.evaluateInto(instance, scratch)
+  Assert.equal(live.drawMatrices["draw0.seg0"].position[13], 0, "stopping the clip restores the bind pose")
+  Assert.equal(snapshot.drawMatrices["draw0.seg0"].position[13], 10 / 16, "the snapshot keeps its draw values")
+  Assert.equal(snapshot.nodeMatrices[0][13], 10, "the snapshot keeps its node values")
+end
+
+local function zeroRot()
+  return { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+end
+
+-- The reusable SRT composition matches the allocating composition value
+-- for value while reusing its storage across calls.
+function T.reusable_srt_composition_matches_the_snapshot_path()
+  local F = JointAnimBlend.FROM_MODEL
+  local bind = bindNode(0, {
+    translation = { x = 3, y = 4, z = 5 },
+    rotation = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+    scale = { x = 2, y = 2, z = 2 },
+    inverseScale = { x = 0.5, y = 0.5, z = 0.5 },
+  })
+  -- Translation and scale sample; rotation resolves from the model.
+  local result = {
+    flags = F.rot,
+    trans = { 4096, 8192, -4096 },
+    rot = zeroRot(),
+    scale = { 8192, 8192, 8192 },
+    scaleEx = { 2048, 2048, 2048 },
+  }
+  local scratch = NitroJointState.newScratch()
+  local srt = NitroJointState.srtFromBlendInto(scratch, result, bind)
+  Assert.isTrue(srt == scratch.srt, "composition reuses the scratch record")
+  local expected = NitroJointState.srtFromBlend(result, bind)
+  Assert.deepEqual(
+    { srt.translation.x, srt.translation.y, srt.translation.z },
+    { expected.translation.x, expected.translation.y, expected.translation.z }
+  )
+  Assert.deepEqual(srt.rotation, expected.rotation)
+  Assert.deepEqual({ srt.scale.x, srt.scale.y, srt.scale.z }, { expected.scale.x, expected.scale.y, expected.scale.z })
+  Assert.deepEqual(
+    { srt.inverseScale.x, srt.inverseScale.y, srt.inverseScale.z },
+    { expected.inverseScale.x, expected.inverseScale.y, expected.inverseScale.z }
+  )
+  Assert.equal(srt.translation.x, 1)
+  Assert.equal(srt.translation.z, -1)
+  Assert.equal(srt.scale.x, 2)
+  Assert.equal(srt.inverseScale.x, 0.5)
+  Assert.equal(srt.matrixStackIndex, expected.matrixStackIndex)
+
+  local translation, rotation = srt.translation, srt.rotation
+  local again = NitroJointState.srtFromBlendInto(scratch, result, bind)
+  Assert.isTrue(again == srt, "repeated composition reuses the same record")
+  Assert.isTrue(srt.translation == translation, "the translation storage keeps its identity")
+  Assert.isTrue(srt.rotation == rotation, "the rotation storage keeps its identity")
+end
+
+-- Inverse-scale presence toggles without losing the retained buffer: a
+-- bind without inverse scale publishes nil, and the next present bind
+-- reuses the same buffer with fresh values instead of the stale ones.
+function T.reusable_srt_composition_toggles_inverse_scale_presence()
+  local F = JointAnimBlend.FROM_MODEL
+  local withInv = bindNode(0, {
+    translation = { x = 1, y = 0, z = 0 },
+    scale = { x = 2, y = 2, z = 2 },
+    inverseScale = { x = 0.5, y = 0.5, z = 0.5 },
+  })
+  local withoutInv = bindNode(0, {
+    translation = { x = 1, y = 0, z = 0 },
+    scale = { x = 2, y = 2, z = 2 },
+  })
+  local allFromModel = {
+    flags = F.trans + F.rot + F.scale,
+    trans = { 0, 0, 0 },
+    rot = zeroRot(),
+    scale = { 0, 0, 0 },
+    scaleEx = { 0, 0, 0 },
+  }
+  local scratch = NitroJointState.newScratch()
+  local first = NitroJointState.srtFromBlendInto(scratch, allFromModel, withInv)
+  local buffer = assert(first.inverseScale, "a present bind inverse scale publishes the retained buffer")
+  Assert.isTrue(buffer ~= withInv.inverseScale, "from-model values are copied, never aliased")
+  Assert.equal(buffer.x, 0.5)
+  local second = NitroJointState.srtFromBlendInto(scratch, allFromModel, withoutInv)
+  Assert.isNil(second.inverseScale, "an absent bind inverse scale publishes nil")
+  local third = NitroJointState.srtFromBlendInto(scratch, allFromModel, withInv)
+  local thirdInv = assert(third.inverseScale, "the retained buffer survives the nil transition")
+  Assert.isTrue(thirdInv == buffer, "the surviving buffer is the same retained storage")
+  Assert.equal(thirdInv.x, 0.5, "the buffer carries fresh values, not stale ones")
 end
 
 return { tests = T }
