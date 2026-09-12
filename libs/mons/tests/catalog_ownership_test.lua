@@ -118,7 +118,7 @@ function T.catalog_fingerprint_excludes_the_external_item_catalog()
   alteredRoot.items.POTION.nameIndefinite = "a changed Potion"
   local ItemCatalog = require("libs.items.src.ItemCatalog")
   local alteredItems = ItemCatalog.new(alteredRoot)
-  Assert.isTrue(alteredItems:fingerprint() ~= CatalogFixture.makeItemCatalog():fingerprint())
+  Assert.isTrue(alteredItems:item("POTION").description ~= CatalogFixture.makeItemCatalog():item("POTION").description)
   local OtherCatalog = require("libs.mons.src.MonCatalog")
   local relinked = OtherCatalog.new(CatalogFixture.buildAssetRoot(), alteredItems)
   Assert.equal(relinked:fingerprint(), catalog:fingerprint())

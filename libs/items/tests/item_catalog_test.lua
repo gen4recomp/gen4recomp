@@ -1,5 +1,5 @@
 -- Item catalog ownership: strict semantic/native lookups, pocket
--- definitions, deterministic fingerprints, and immutable-by-convention
+-- definitions, and immutable-by-convention
 -- records. Unknown identities raise structured item-domain errors.
 
 local Assert = require("tests.support.Assert")
@@ -104,13 +104,6 @@ function T.catalog_names_every_pocket()
   throwsItemInvalid(function()
     catalog:pocketName("BOGUS_POCKET")
   end)
-end
-
-function T.catalog_fingerprint_is_deterministic_and_covers_the_item_root()
-  local catalog = ItemFixture.makeCatalog()
-  local again = ItemFixture.makeCatalog()
-  Assert.equal(again:fingerprint(), catalog:fingerprint())
-  Assert.isTrue(type(catalog:fingerprint()) == "string" and catalog:fingerprint() ~= "")
 end
 
 function T.catalog_copies_its_input_root()

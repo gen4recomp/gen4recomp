@@ -3,12 +3,9 @@
 -- asset schema, copies it into package-owned state, and indexes semantic and
 -- native identities. Lookups never mutate and never reach source formats:
 -- native numeric identities stay only because exact native encoding gives
--- them current use. The fingerprint is a deterministic digest of the
--- canonical root; equal roots produce equal fingerprints. Pocket definitions
--- are the schema-owned source contract, re-exported here for consumers.
+-- them current use. Pocket definitions are the schema-owned source
+-- contract, re-exported here for consumers.
 
-local LuaWriter = require("libs.codec.src.LuaWriter")
-local U32 = require("libs.codec.src.U32")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ItemErrors = require("libs.items.src.errors")
 
@@ -16,7 +13,6 @@ local ItemErrors = require("libs.items.src.errors")
 ---@field private _root table<string, unknown>
 ---@field private _itemByNative table<integer, string>
 ---@field private _pocketByNative table<integer, string>
----@field private _fingerprint string
 local ItemCatalog = {}
 ItemCatalog.__index = ItemCatalog
 
@@ -35,35 +31,6 @@ local function copyValue(value)
   return out
 end
 
----@param a integer
----@param b integer
----@return integer
-local function xorByte(a, b)
-  local value = 0
-  local place = 1
-  for _ = 1, 8 do
-    local abit = math.floor(a / place) % 2
-    local bbit = math.floor(b / place) % 2
-    if abit ~= bbit then
-      value = value + place
-    end
-    place = place * 2
-  end
-  return value
-end
-
----@param text string
----@return string
-local function fingerprintText(text)
-  local hash = 2166136261
-  for index = 1, #text do
-    local low = hash % 256
-    hash = (hash - low) + xorByte(low, text:byte(index))
-    hash = U32.mul(hash, 16777619)
-  end
-  return string.format("%08x", hash)
-end
-
 ---@param root table<string, unknown>
 ---@return ItemCatalog
 function ItemCatalog.new(root)
@@ -74,7 +41,6 @@ function ItemCatalog.new(root)
     _root = owned,
     _itemByNative = {},
     _pocketByNative = {},
-    _fingerprint = "",
   }, ItemCatalog)
   for key, item in pairs(owned.items) do
     if self._itemByNative[item.nativeId] ~= nil then
@@ -89,13 +55,7 @@ function ItemCatalog.new(root)
   for key, pocket in pairs(owned.pockets) do
     self._pocketByNative[pocket.nativeId] = key
   end
-  self._fingerprint = fingerprintText(LuaWriter.encode(owned))
   return self
-end
-
----@return string
-function ItemCatalog:fingerprint()
-  return self._fingerprint
 end
 
 ---@param key string
