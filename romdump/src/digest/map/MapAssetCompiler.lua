@@ -469,6 +469,7 @@ local function _compile(romFs, idOrSymbol, opts)
     fieldLightSourcePath = selectedLight.sourcePath,
     fieldLightSourceSha1 = lightSha1,
     versionRomSha1 = romSha1,
+    producerFingerprint = opts.producerFingerprint or "",
     mapCatalogRecord = resolved.map,
     matrixMemberSha1 = Hashing.sha1hex(matrixBytes),
     areaDataMemberSha1 = Hashing.sha1hex(areaBytes),
@@ -596,14 +597,11 @@ function MapAssetCompiler.compile(romFs, idOrSymbol, opts)
   assert(romFs and romFs.openNarc, "compile requires a RomFs-shaped object")
   local ok, result = pcall(function()
     if opts and opts.fieldCellIndex then
-      local resolved = assert(MapResolver.resolve(romFs, idOrSymbol))
-      local areaNarc = assert(romFs:openNarc("area_data"))
-      local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
-      local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
-      if area.areaType == "outdoor" then
-        local plan = assert(MapCompilePlan.plan(romFs, opts.fieldCellIndex, idOrSymbol, opts.producerFingerprint))
+      local plan = assert(MapCompilePlan.plan(romFs, opts.fieldCellIndex, idOrSymbol, opts.producerFingerprint))
+      if plan.strategy == "canonical" then
         return compileCanonical(romFs, opts, plan)
       end
+      assert(plan.strategy == "aggregate", "unknown map compile strategy")
     end
     return _compile(romFs, idOrSymbol, opts)
   end)

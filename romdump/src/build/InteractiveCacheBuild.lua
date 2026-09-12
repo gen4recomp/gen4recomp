@@ -35,9 +35,13 @@ local CompilerPool = require("romdump.src.build.CompilerPool")
 ---@field failure string|Errors.Error?
 
 ---@class InteractiveCacheBuild.MapPlan
+---@field strategy "canonical"|"aggregate"
 ---@field cellPlans InteractiveCacheBuild.FieldCellPlan[]
 ---@field resolved { map: { id: integer } }
----@field expectedMarker string
+---@field expectedMarker string?
+---@field jobIdentity string
+---@field romSha1 string
+---@field producerFingerprint string
 ---@field failure string|Errors.Error?
 
 ---@class InteractiveCacheBuild.World
@@ -102,7 +106,7 @@ local function readyCell(cacheFs, plan)
 end
 
 local function readyMap(cacheFs, plan)
-  return MapAssetCache.isReady(cacheFs, plan.resolved.map.id, plan.expectedMarker)
+  return MapCompilePlan.isReady(cacheFs, plan)
 end
 
 local function allReady(self, mapPlan)
@@ -281,7 +285,7 @@ function InteractiveCacheBuild:_requestMapPlan(plan, priority)
   if readyMap(self.cacheFs, plan) then
     return true
   end
-  local key = "field-map:" .. plan.resolved.map.id .. ":" .. plan.expectedMarker
+  local key = "field-map:" .. plan.jobIdentity
   local ok, stateOrError = pcall(self.pool.request, self.pool, {
     kind = "map",
     key = key,
@@ -328,7 +332,7 @@ function InteractiveCacheBuild:ensureField(mapId)
   if plan.failure then
     error(plan.failure, 0)
   end
-  local key = "field-map:" .. plan.resolved.map.id .. ":" .. plan.expectedMarker
+  local key = "field-map:" .. plan.jobIdentity
   local state, details = self.pool:wait(key)
   if state ~= "ready" or not readyMap(self.cacheFs, plan) then
     error(details and details.error or plan.failure or "map publication failed", 0)
@@ -388,7 +392,7 @@ function InteractiveCacheBuild:_advanceSweep()
       self.pendingMaps[mapId] = plan
       if allReady(self, plan) then
         self:_requestMapPlan(plan, MAP)
-        self.farKey = "field-map:" .. mapId .. ":" .. plan.expectedMarker
+        self.farKey = "field-map:" .. plan.jobIdentity
       end
       return
     end

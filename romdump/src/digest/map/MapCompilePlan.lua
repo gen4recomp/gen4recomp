@@ -1,9 +1,10 @@
--- Maps one logical scene to its canonical physical-cell prerequisites.
+-- Selects a map producer strategy and describes its prerequisites and freshness identity.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local Hashing = require("romdump.src.digest.Hashing")
+local AreaData = require("romdump.src.digest.map.AreaData")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
@@ -27,8 +28,16 @@ local function lookup(index, matrixMemberId, x, z)
   return assert(descriptor)
 end
 
-local function plan(romFs, fieldCellIndex, mapId, producerFingerprint)
-  local resolved = assert(MapResolver.resolve(romFs, mapId))
+local function readMember(narc, alias, memberId)
+  local count = narc:memberCount()
+  assert(
+    memberId >= 0 and memberId < count,
+    string.format("%s member %d out of range (count %d)", alias, memberId, count)
+  )
+  return assert(narc:readMember(memberId))
+end
+
+local function canonicalPlan(romFs, fieldCellIndex, resolved, producerFingerprint)
   local central = lookup(fieldCellIndex, resolved.matrixMemberId, resolved.matrixX, resolved.matrixZ)
   local neighbors = NeighborPlan.plan(resolved.matrix, resolved.matrixX, resolved.matrixZ, function(mapHeaderId)
     local record = MapCatalog.areaForMapHeader(mapHeaderId)
@@ -91,6 +100,7 @@ local function plan(romFs, fieldCellIndex, mapId, producerFingerprint)
     cells = cellDependencies,
   }
   return {
+    strategy = "canonical",
     central = central,
     neighbors = placements,
     resolved = {
@@ -111,6 +121,32 @@ local function plan(romFs, fieldCellIndex, mapId, producerFingerprint)
   }
 end
 
+local function plan(romFs, fieldCellIndex, mapId, producerFingerprint)
+  local resolved = assert(MapResolver.resolve(romFs, mapId))
+  local areaNarc = assert(romFs:openNarc("area_data"))
+  local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
+  local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
+  local romSha1 = romFs:metadata().sha1
+  local fingerprint = producerFingerprint or ""
+
+  if area.areaType ~= "outdoor" then
+    return {
+      strategy = "aggregate",
+      resolved = { map = resolved.map },
+      cellPlans = {},
+      expectedMarker = nil,
+      romSha1 = romSha1,
+      producerFingerprint = fingerprint,
+      jobIdentity = "map:" .. resolved.map.id,
+    }
+  end
+
+  local canonical = canonicalPlan(romFs, fieldCellIndex, resolved, producerFingerprint)
+  canonical.romSha1 = romSha1
+  canonical.producerFingerprint = fingerprint
+  return canonical
+end
+
 function MapCompilePlan.plan(romFs, fieldCellIndex, mapId, producerFingerprint)
   assert(romFs and romFs.openNarc, "map compile planning requires RomFs")
   local ok, result = pcall(plan, romFs, fieldCellIndex, mapId, producerFingerprint)
@@ -121,6 +157,22 @@ function MapCompilePlan.plan(romFs, fieldCellIndex, mapId, producerFingerprint)
     return nil, result
   end
   error(result)
+end
+
+function MapCompilePlan.isReady(cacheFs, mapPlan)
+  assert(cacheFs and mapPlan, "map readiness requires cache and plan")
+  local mapId = mapPlan.resolved.map.id
+  if mapPlan.strategy == "canonical" then
+    return MapAssetCache.isReady(cacheFs, mapId, assert(mapPlan.expectedMarker))
+  end
+  assert(mapPlan.strategy == "aggregate", "unknown map compile strategy")
+  local marker = cacheFs:read(MapAssetCache.mapDir(mapId) .. "/complete")
+  if type(marker) ~= "string" or not MapAssetCache.isReady(cacheFs, mapId, marker) then
+    return false
+  end
+  local dependencies = MapAssetCache.dependencies(cacheFs, mapId)
+  return dependencies.versionRomSha1 == mapPlan.romSha1
+    and dependencies.producerFingerprint == mapPlan.producerFingerprint
 end
 
 return MapCompilePlan
