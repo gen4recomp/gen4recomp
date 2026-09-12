@@ -251,7 +251,7 @@ function T.failed_publish_keeps_recovery_material_in_staging()
   local newPersonal = require("tests.support.NarcBuilder").build({ "P0", "P1", "P2" })
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath == "heartgold.__g4next" or sourcePath == "heartgold.__g4old" then
+    if sourcePath == "heartgold.__g4next" or sourcePath:match("^heartgold%.__g4old%.[%w_-]+$") then
       return false, "injected publish failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -262,11 +262,14 @@ function T.failed_publish_keeps_recovery_material_in_staging()
 
   Assert.isNil(r.report, "expected extraction to fail")
   Assert.equal(r.err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
-  Assert.equal(
-    backend.files["heartgold.__g4old/romfs/a/0/0/2"],
-    oldPersonal,
-    "the last-known-good dump stays in the aside root"
-  )
+  local oldPrefix = "heartgold.__g4old."
+  local oldPersonalPath
+  for path in pairs(backend.files) do
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/romfs/a/0/0/2") == "/romfs/a/0/0/2" then
+      oldPersonalPath = path
+    end
+  end
+  Assert.equal(backend.files[oldPersonalPath], oldPersonal, "the last-known-good dump stays in the aside root")
   Assert.equal(backend.files["heartgold.__g4next/romfs/a/0/0/2"], newPersonal, "the staged dump stays in place")
 end
 

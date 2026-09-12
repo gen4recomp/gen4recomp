@@ -158,9 +158,13 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   FieldActorCacheWriter.write(cache, first)
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
+    local versionPrefix = "heartgold/"
     if
-      (sourcePath:find(".__g4next", 1, true) and sourcePath ~= "heartgold.__g4publish.__g4next")
-      or sourcePath:find(".__g4old", 1, true)
+      sourcePath:sub(1, #versionPrefix) == versionPrefix
+      and (
+        sourcePath:find(".__g4next.", #versionPrefix + 1, true)
+        or sourcePath:find(".__g4old.", #versionPrefix + 1, true)
+      )
     then
       return false, "injected publish failure"
     end
@@ -173,11 +177,14 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   end)
   Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
   Assert.notNil(backend:getInfo("staging/heartgold/field-actors"), "the stage is not removed once publish has begun")
-  Assert.equal(
-    backend.files["heartgold/" .. FieldActorCache.dir() .. ".__g4old/complete"],
-    first.marker,
-    "the last-known-good actor class stays in the stage as recovery material"
-  )
+  local oldPrefix = "heartgold/" .. FieldActorCache.dir() .. ".__g4old."
+  local oldMarker
+  for path, data in pairs(backend.files) do
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
+      oldMarker = data
+    end
+  end
+  Assert.equal(oldMarker, first.marker, "the last-known-good actor class stays in the stage as recovery material")
 end
 
 return { tests = T }

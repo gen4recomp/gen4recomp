@@ -518,15 +518,19 @@ local function readPublicationManifest(cacheFs)
   return readPublicationManifestAt(cacheFs, publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
 end
 
-local function writePublicationManifest(cacheFs, manifest)
+local function writePublicationManifestTemp(cacheFs, manifest)
   validateManifest(cacheFs, manifest)
   local tempPath = manifestTempPath(cacheFs, manifest)
-  local manifestPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
   local data = LuaWriter.encode(manifest)
   local ok, err = cacheFs.backend:write(tempPath, data)
   ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not write publication manifest", {
     path = tempPath,
   })
+end
+
+local function promotePublicationManifest(cacheFs, manifest)
+  local tempPath = manifestTempPath(cacheFs, manifest)
+  local manifestPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
   renamePath(cacheFs, tempPath, manifestPath)
 end
 
@@ -701,6 +705,24 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
 
   local ok, result = pcall(function()
     local manifest = { schema = PUBLICATION_SCHEMA, attemptId = attemptId, roots = {} }
+    for _, root in ipairs(normalizedRoots) do
+      manifest.roots[#manifest.roots + 1] = {
+        path = root,
+        hadLive = cacheFs.backend:getInfo(cacheFs:resolve(root)) ~= nil,
+      }
+    end
+
+    local manifestOk, manifestErr = pcall(writePublicationManifestTemp, cacheFs, manifest)
+    if not manifestOk then
+      local cleanupOk, cleanupErr = pcall(function()
+        cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
+      end)
+      if not cleanupOk then
+        rollbackIncomplete(manifestErr, cleanupErr)
+      end
+      error(manifestErr, 0)
+    end
+
     local candidates = {}
     local candidateOk, candidateErr = pcall(function()
       for _, root in ipairs(normalizedRoots) do
@@ -721,15 +743,12 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
         local candidateInfo = cacheFs.backend:getInfo(nextPath)
         assert(candidateInfo, "staged candidate info must be available")
         assert(candidateInfo.type == sourceInfo.type, "staged candidate type changed")
-        manifest.roots[#manifest.roots + 1] = {
-          path = root,
-          hadLive = cacheFs.backend:getInfo(cacheFs:resolve(root)) ~= nil,
-        }
       end
     end)
     if not candidateOk then
       local cleanupOk, cleanupErr = pcall(function()
         removeCandidates(cacheFs, candidates)
+        cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
       end)
       if not cleanupOk then
         rollbackIncomplete(candidateErr, cleanupErr)
@@ -737,16 +756,16 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
       error(candidateErr, 0)
     end
 
-    local manifestOk, manifestErr = pcall(writePublicationManifest, cacheFs, manifest)
-    if not manifestOk then
+    local promotionOk, promotionErr = pcall(promotePublicationManifest, cacheFs, manifest)
+    if not promotionOk then
       local cleanupOk, cleanupErr = pcall(function()
         removeCandidates(cacheFs, candidates)
         cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
       end)
       if not cleanupOk then
-        rollbackIncomplete(manifestErr, cleanupErr)
+        rollbackIncomplete(promotionErr, cleanupErr)
       end
-      error(manifestErr, 0)
+      error(promotionErr, 0)
     end
 
     local phase1Ok, phase1Err = pcall(function()

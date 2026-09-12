@@ -176,7 +176,8 @@ function T.publish_failure_keeps_the_last_known_good_world_live()
   first:publish()
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if sourcePath == "heartgold/" .. MapAssetCache.worldPath() .. ".__g4next" then
+    local candidatePrefix = "heartgold/" .. MapAssetCache.worldPath() .. ".__g4next."
+    if sourcePath:sub(1, #candidatePrefix) == candidatePrefix then
       return false, "injected publish failure"
     end
     return originalReplace(self, sourcePath, destinationPath)

@@ -133,8 +133,10 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
     if
-      (sourcePath:find(".__g4next", 1, true) and sourcePath ~= "heartgold.__g4publish.__g4next")
-      or sourcePath:find(".__g4old", 1, true)
+      sourcePath:sub(1, #"heartgold/") == "heartgold/"
+      and (
+        sourcePath:find(".__g4next.", #"heartgold/" + 1, true) or sourcePath:find(".__g4old.", #"heartgold/" + 1, true)
+      )
     then
       return false, "injected publish failure"
     end
@@ -148,11 +150,14 @@ function T.publish_failure_keeps_the_stage_with_recovery_material()
   Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
   local stageRoot = "staging/heartgold/map-" .. first.mapId
   Assert.notNil(backend:getInfo(stageRoot), "the stage is not removed once publish has begun")
-  Assert.equal(
-    backend.files["heartgold/" .. MapAssetCache.mapDir(first.mapId) .. ".__g4old/complete"],
-    first.marker,
-    "the last-known-good map stays in the stage as recovery material"
-  )
+  local oldPrefix = "heartgold/" .. MapAssetCache.mapDir(first.mapId) .. ".__g4old."
+  local oldMarker
+  for path, data in pairs(backend.files) do
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
+      oldMarker = data
+    end
+  end
+  Assert.equal(oldMarker, first.marker, "the last-known-good map stays in the stage as recovery material")
 end
 
 function T.failed_rebuild_preserves_the_previous_map()
