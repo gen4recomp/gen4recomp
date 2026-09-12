@@ -187,10 +187,9 @@ T["publish failure keeps the stage with recovery material"] = function()
   ScriptCacheWriter.write(cache, bundle())
   local originalReplace = backend.replace
   backend.replace = function(self, sourcePath, destinationPath)
-    if
-      sourcePath == "heartgold/" .. ScriptCache.activeDir() .. ".__g4next"
-      or sourcePath == "heartgold/" .. ScriptCache.activeDir() .. ".__g4old"
-    then
+    local nextPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4next."
+    local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
+    if sourcePath:sub(1, #nextPrefix) == nextPrefix or sourcePath:sub(1, #oldPrefix) == oldPrefix then
       return false, "injected publish failure"
     end
     return originalReplace(self, sourcePath, destinationPath)
@@ -204,8 +203,15 @@ T["publish failure keeps the stage with recovery material"] = function()
   end)
   Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
   Assert.notNil(backend:getInfo("staging/heartgold/scripts"), "the stage is not removed once publish has begun")
+  local oldPrefix = "heartgold/" .. ScriptCache.activeDir() .. ".__g4old."
+  local oldMarker
+  for path, data in pairs(backend.files) do
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
+      oldMarker = data
+    end
+  end
   Assert.equal(
-    backend.files["heartgold/" .. ScriptCache.activeDir() .. ".__g4old/complete"],
+    oldMarker,
     "script-cache-v4:rom-sha:dep-sha",
     "the last-known-good script class stays in the stage as recovery material"
   )

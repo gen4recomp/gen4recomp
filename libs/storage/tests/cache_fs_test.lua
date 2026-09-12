@@ -43,6 +43,7 @@ local function proxyBackends(backend)
 end
 
 local T = {}
+local assertAttemptResidueAbsent
 
 local function isManifestTempPath(path)
   return path:match("^heartgold%.__g4publish%.[%w%-_]+%.__g4next$") ~= nil
@@ -477,7 +478,7 @@ function T.candidate_copy_failure_cleans_partial_candidates_without_touching_liv
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, StorageErrors.CACHE_WRITE_FAILED)
   Assert.equal(live:read(root .. "/old.bin"), "old")
-  Assert.isNil(backend:getInfo("heartgold/" .. root .. ".__g4next"))
+  assertAttemptResidueAbsent(backend)
 end
 
 function T.interrupted_old_siblings_are_not_guessed_without_metadata()
@@ -494,7 +495,8 @@ function T.interrupted_old_siblings_are_not_guessed_without_metadata()
   tx.stage:write(secondRoot .. "/replacement.bin", "replacement")
   local originalWrite = backend.write
   backend.write = function(self, path, data)
-    if path:find(".__g4next", 1, true) then
+    local versionPrefix = "heartgold/"
+    if path:sub(1, #versionPrefix) == versionPrefix and path:find(".__g4next.", #versionPrefix + 1, true) then
       return false, "injected candidate write failure"
     end
     return originalWrite(self, path, data)
@@ -769,7 +771,7 @@ local function attemptSibling(root, suffix, attemptId)
   return siblingRoot(root, suffix .. "." .. attemptId)
 end
 
-local function assertAttemptResidueAbsent(backend)
+assertAttemptResidueAbsent = function(backend)
   Assert.isNil(backend:getInfo(PUBLISH_MANIFEST))
   Assert.isNil(backend:getInfo(PUBLISH_NEXT))
   Assert.isNil(backend:getInfo(PUBLISH_COMMIT))
@@ -780,6 +782,42 @@ local function assertAttemptResidueAbsent(backend)
       Assert.isFalse(path:find(".__g4old.", 1, true) ~= nil, "backup residue: " .. path)
     end
   end
+end
+
+function T.journals_manifest_before_file_candidate_materialization()
+  local backend = FakeCache.new()
+  local live = cache("heartgold", backend)
+  local root = "data/generated/map-index.lua"
+  live:write(root, "old-index")
+  local tx = ArtifactPublisher.begin(live, "map-index", { root })
+  tx.stage:write(root, "new-index")
+
+  local observed = false
+  local originalWrite = backend.write
+  backend.write = function(self, path, data)
+    local candidatePrefix = "heartgold/" .. root .. ".__g4next."
+    if not observed and path:sub(1, #candidatePrefix) == candidatePrefix then
+      observed = true
+      local attemptId = path:sub(#candidatePrefix + 1)
+      local tempPath = "heartgold.__g4publish." .. attemptId .. ".__g4next"
+      local manifestData = self:read(tempPath)
+      Assert.notNil(manifestData, "attempt temp manifest must precede candidate materialization")
+      local manifest = assert(loadstring(manifestData))()
+      Assert.equal(manifest.schema, 2)
+      Assert.equal(manifest.attemptId, attemptId)
+      Assert.equal(#manifest.roots, 1)
+      Assert.equal(manifest.roots[1].path, root)
+      Assert.isTrue(manifest.roots[1].hadLive)
+      Assert.isNil(self:getInfo("heartgold.__g4publish.lua"))
+    end
+    return originalWrite(self, path, data)
+  end
+
+  tx:publish()
+
+  Assert.isTrue(observed, "publication must materialize a file candidate")
+  Assert.equal(live:read(root), "new-index")
+  assertAttemptResidueAbsent(backend)
 end
 
 local function capturePublicationIdentity()
