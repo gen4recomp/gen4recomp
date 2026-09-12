@@ -44,18 +44,6 @@ local function fxToFloat(v)
   return wrap32(v) / FX_UNIT
 end
 
-local function vecFromResult(v)
-  return { x = fxToFloat(v[1]), y = fxToFloat(v[2]), z = fxToFloat(v[3]) }
-end
-
-local function rotFromResult(rot)
-  local out = {}
-  for i = 1, 9 do
-    out[i] = fxToFloat(rot[i])
-  end
-  return out
-end
-
 -- The SRT record a pose provider hands to the SBC evaluator (the decoded
 -- Nsbmd node record shape: translation/rotation/scale, the zero flags, the
 -- inverse scale, and the matrix-stack slot the evaluator stores into).
@@ -69,6 +57,98 @@ end
 ---@field scaleOne boolean
 ---@field matrixStackIndex integer
 
+-- Owner-held reusable composition storage: one persistent SRT record plus
+-- a retained inverse-scale vector for calls where inverse scale is present.
+---@return table<string, unknown>
+function NitroJointState.newScratch()
+  local scratch = {
+    srt = {
+      translation = { x = 0, y = 0, z = 0 },
+      rotation = { 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+      scale = { x = 0, y = 0, z = 0 },
+      inverseScale = nil,
+      transZero = false,
+      rotZero = false,
+      scaleOne = false,
+      matrixStackIndex = 0,
+    },
+    _inverseScale = { x = 0, y = 0, z = 0 },
+  }
+  return scratch
+end
+
+-- Compose the effective SRT record for a node into scratch-owned storage:
+-- the same channel resolution as srtFromBlend, copying bind components into
+-- persistent arrays instead of aliasing them. Returns the same `scratch.srt`
+-- on every call. Toggling inverse-scale presence sets `srt.inverseScale` to
+-- nil or the retained buffer without losing the buffer.
+---@param scratch table<string, unknown>
+---@param result JointAnimResult
+---@param bindSrt SrtRecord
+---@return SrtRecord
+function NitroJointState.srtFromBlendInto(scratch, result, bindSrt)
+  assert(
+    type(scratch) == "table" and type(scratch.srt) == "table",
+    "srtFromBlendInto requires joint composition scratch"
+  )
+  assert(type(result) == "table" and result.flags ~= nil, "srtFromBlendInto requires a blended joint result")
+  assert(type(bindSrt) == "table" and bindSrt.matrixStackIndex ~= nil, "srtFromBlendInto requires the node's bind SRT")
+  local srt = scratch.srt ---@type SrtRecord
+  local inv = scratch._inverseScale ---@type { x: number, y: number, z: number }
+
+  if fromModel(result.flags, F.trans) then
+    srt.translation.x = bindSrt.translation.x
+    srt.translation.y = bindSrt.translation.y
+    srt.translation.z = bindSrt.translation.z
+  else
+    srt.translation.x = fxToFloat(result.trans[1])
+    srt.translation.y = fxToFloat(result.trans[2])
+    srt.translation.z = fxToFloat(result.trans[3])
+  end
+
+  if fromModel(result.flags, F.rot) then
+    for i = 1, 9 do
+      srt.rotation[i] = bindSrt.rotation[i]
+    end
+  else
+    for i = 1, 9 do
+      srt.rotation[i] = fxToFloat(result.rot[i])
+    end
+  end
+
+  if fromModel(result.flags, F.scale) then
+    srt.scale.x = bindSrt.scale.x
+    srt.scale.y = bindSrt.scale.y
+    srt.scale.z = bindSrt.scale.z
+    if bindSrt.inverseScale then
+      inv.x = bindSrt.inverseScale.x
+      inv.y = bindSrt.inverseScale.y
+      inv.z = bindSrt.inverseScale.z
+      srt.inverseScale = inv
+    else
+      srt.inverseScale = nil
+    end
+  else
+    srt.scale.x = fxToFloat(result.scale[1])
+    srt.scale.y = fxToFloat(result.scale[2])
+    srt.scale.z = fxToFloat(result.scale[3])
+    if result.scaleEx then
+      inv.x = fxToFloat(result.scaleEx[1])
+      inv.y = fxToFloat(result.scaleEx[2])
+      inv.z = fxToFloat(result.scaleEx[3])
+      srt.inverseScale = inv
+    else
+      srt.inverseScale = nil
+    end
+  end
+
+  srt.transZero = false
+  srt.rotZero = false
+  srt.scaleOne = false
+  srt.matrixStackIndex = bindSrt.matrixStackIndex
+  return srt
+end
+
 -- Compose the effective SRT record for a node:
 --   result   a blended NNSG3dAnmResult (JointAnimBlend.blend output)
 --   bindSrt  the node's bind SRT record (the program's node entry)
@@ -81,40 +161,7 @@ end
 ---@param bindSrt SrtRecord
 ---@return SrtRecord
 function NitroJointState.srtFromBlend(result, bindSrt)
-  assert(type(result) == "table" and result.flags ~= nil, "srtFromBlend requires a blended joint result")
-  assert(type(bindSrt) == "table" and bindSrt.matrixStackIndex ~= nil, "srtFromBlend requires the node's bind SRT")
-
-  local trans, rot, scale, inverseScale
-  if fromModel(result.flags, F.trans) then
-    trans = bindSrt.translation
-  else
-    trans = vecFromResult(result.trans)
-  end
-
-  if fromModel(result.flags, F.rot) then
-    rot = bindSrt.rotation
-  else
-    rot = rotFromResult(result.rot)
-  end
-
-  if fromModel(result.flags, F.scale) then
-    scale = bindSrt.scale
-    inverseScale = bindSrt.inverseScale
-  else
-    scale = vecFromResult(result.scale)
-    inverseScale = result.scaleEx and vecFromResult(result.scaleEx) or nil
-  end
-
-  return {
-    translation = trans,
-    rotation = rot,
-    scale = scale,
-    inverseScale = inverseScale,
-    transZero = false,
-    rotZero = false,
-    scaleOne = false,
-    matrixStackIndex = bindSrt.matrixStackIndex,
-  }
+  return NitroJointState.srtFromBlendInto(NitroJointState.newScratch(), result, bindSrt)
 end
 
 return NitroJointState
