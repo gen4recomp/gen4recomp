@@ -30,6 +30,10 @@ local WORKER_ENTRY_NAME = "asset_preparation_worker.lua"
 local VALID_KINDS = { mesh = true, image = true }
 local VALID_PRIORITIES = { demand = true, prefetch = true }
 
+-- Upper bound between worker-liveness probes while a synchronous wait blocks
+-- on the reply channel.
+local WAIT_HEALTH_PROBE_SECONDS = 0.05
+
 -- Read the worker entry source through the LÖVE virtual filesystem first so
 -- packaged .love/fused builds resolve it from the source archive, then
 -- through the host file under the source base directory for checkout runs
@@ -210,8 +214,9 @@ end
 
 -- Absorb one worker reply: free the matching physical slot first (even when
 -- the logical token was cancelled and no longer exists), then publish or
--- discard the logical result, then dispatch the next queued job. Already
--- resolved tokens are never overwritten by late replies.
+-- discard the logical result. Replacement dispatch is left to the public
+-- operation that observes the freed slot. Already resolved tokens are never
+-- overwritten by late replies.
 ---@param response unknown
 function AssetPreparationQueue:_absorb(response)
   if type(response) ~= "table" then
@@ -222,11 +227,9 @@ function AssetPreparationQueue:_absorb(response)
   end
   local record = self._tokens[response.token]
   if record == nil then
-    self:_dispatch()
     return
   end
   if record.state ~= "queued" and record.state ~= "running" then
-    self:_dispatch()
     return
   end
   if response.ok then
@@ -252,7 +255,6 @@ function AssetPreparationQueue:_absorb(response)
     record.state = "failed"
     record.failure = response.error
   end
-  self:_dispatch()
 end
 
 -- Drain every pending worker reply without blocking.
@@ -303,6 +305,7 @@ function AssetPreparationQueue:poll(token)
   assert(record, "unknown preparation token")
   self:_drain()
   self:_checkWorkerHealth()
+  self:_dispatch()
   record = self._tokens[token]
   assert(record, "unknown preparation token")
   if record.state == "ready" then
@@ -322,6 +325,7 @@ function AssetPreparationQueue:take(token)
   local record = self._tokens[token]
   assert(record, "unknown preparation token")
   self:_drain()
+  self:_dispatch()
   record = self._tokens[token]
   assert(record, "unknown preparation token")
   assert(record.state == "ready", "preparation result is not ready")
@@ -357,6 +361,7 @@ function AssetPreparationQueue:wait(token)
   while true do
     self:_drain()
     self:_checkWorkerHealth()
+    self:_dispatch()
     local record = self._tokens[token]
     assert(record, "unknown preparation token")
     if record.state == "ready" then
@@ -366,9 +371,10 @@ function AssetPreparationQueue:wait(token)
     if record.state == "failed" then
       error("asset preparation failed for " .. tostring(record.logicalPath) .. ": " .. tostring(record.failure), 0)
     end
-    local response = self._reply:demand()
+    local response = self._reply:demand(WAIT_HEALTH_PROBE_SECONDS)
     if response ~= nil then
       self:_absorb(response)
+      self:_dispatch()
     end
   end
 end

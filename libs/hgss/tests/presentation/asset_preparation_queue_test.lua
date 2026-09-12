@@ -37,7 +37,7 @@ local function fakeThreadHost()
 
   local function newChannel()
     local values = {}
-    local channel = {}
+    local channel = { onDemand = nil }
     function channel:push(value)
       values[#values + 1] = value
       state.allPushes[#state.allPushes + 1] = { channel = channel, value = value }
@@ -49,7 +49,14 @@ local function fakeThreadHost()
       end
       return table.remove(values, 1)
     end
-    function channel:demand()
+    -- Mirrors love.thread Channel:demand(timeout): an omitted timeout stays
+    -- a nonblocking pop so existing tests run without delay, while a
+    -- test-local onDemand hook can observe the timeout and model a blocking
+    -- interval deterministically (for example worker death mid-wait).
+    function channel:demand(timeout)
+      if channel.onDemand ~= nil then
+        return channel.onDemand(timeout)
+      end
       return self:pop()
     end
     function channel:getCount()
@@ -511,6 +518,87 @@ function T.release_after_worker_death_joins_once_without_masking_cleanup()
     Assert.throws(function()
       queue:poll(token)
     end, "a released queue discards outstanding tokens rather than reviving them")
+  end)
+end
+
+function T.synchronous_wait_reobserves_worker_death_during_channel_block()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local token = queue:request("mesh", "geometry/stalled.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, token), "the idle worker takes the request immediately")
+
+    -- The worker dies after the wait's last health probe without producing
+    -- a reply; the wait must bound its channel block so liveness is
+    -- re-observed instead of hanging forever. An unbounded demand fails
+    -- loudly here rather than hanging the suite.
+    local requestIndex = requestChannelIndexFor(host, token)
+    local reply = responseChannelFor(host, requestIndex)
+    local demands = 0
+    reply.onDemand = function(timeout)
+      demands = demands + 1
+      if type(timeout) ~= "number" or timeout <= 0 or timeout > 0.1 then
+        error("synchronous wait performed an unbounded channel demand", 0)
+      end
+      host.threads[1]:stop("injected wait race")
+      return nil
+    end
+
+    local err = Assert.throws(function()
+      queue:wait(token)
+    end, "a wait whose worker dies mid-block must raise instead of hanging")
+    Assert.isTrue(demands >= 1, "the wait actually blocked on the reply channel")
+    Assert.isTrue(
+      tostring(err):find("injected wait race", 1, true) ~= nil,
+      "the wait reports the worker-stop cause: " .. tostring(err)
+    )
+
+    queue:release()
+  end)
+end
+
+function T.demand_admission_wins_over_queued_prefetch_when_request_discovers_a_completion()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
+    Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
+    local queuedPrefetch = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
+    Assert.isFalse(requestWasPushedFor(host, queuedPrefetch), "queued work waits for the busy worker")
+
+    -- The running job's reply arrives but is not processed yet; the demand
+    -- below discovers it during admission and must win the replacement
+    -- dispatch over the older queued prefetch.
+    local requestIndex = requestChannelIndexFor(host, running)
+    responseChannelFor(host, requestIndex):push(meshResponse(running, "geometry/running.g4mesh"))
+    local pushesBefore = #host.allPushes
+
+    local admitted = queue:request("mesh", "geometry/demand.g4mesh", "demand")
+
+    local newPushes = {}
+    for index = pushesBefore + 1, #host.allPushes do
+      local value = host.allPushes[index].value
+      if type(value) == "table" and value.token ~= nil and value.path ~= nil and value.kind ~= nil then
+        newPushes[#newPushes + 1] = value.token
+      end
+    end
+    Assert.equal(#newPushes, 1, "admission settles exactly one replacement dispatch")
+    Assert.equal(
+      newPushes[1],
+      admitted,
+      "the just-admitted demand wins the replacement dispatch over older queued prefetch"
+    )
+    Assert.isFalse(
+      requestWasPushedFor(host, queuedPrefetch),
+      "the older queued prefetch still waits while demand occupies the worker"
+    )
+
+    queue:take(running)
+    queue:cancel(admitted)
+    queue:cancel(queuedPrefetch)
+    queue:release()
   end)
 end
 

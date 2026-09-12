@@ -179,6 +179,11 @@ local IDENTITY = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
 local function fakeAssetPreparationQueue(cache, opts)
   opts = opts or {}
   local pendingPolls = opts.pendingPolls or 0
+  -- A single path whose preparation never completes: poll() stays pending
+  -- and wait() raises the injected failure, so a synchronous finish() can
+  -- prove failure propagation and cleanup of already-realized resources.
+  local waitFailurePath = opts.waitFailurePath
+  local waitFailureMessage = opts.waitFailureMessage or "injected preparation wait failure"
   local records = {}
   local nextToken = 0
   -- Requests actually routed through this queue, in order: the tests assert
@@ -202,6 +207,9 @@ local function fakeAssetPreparationQueue(cache, opts)
   end
   function queue:poll(token)
     local record = assert(records[token], "unknown token")
+    if waitFailurePath ~= nil and record.path == waitFailurePath then
+      return "pending"
+    end
     record.polls = record.polls + 1
     if record.polls <= pendingPolls then
       return "pending"
@@ -218,6 +226,10 @@ local function fakeAssetPreparationQueue(cache, opts)
     return payload
   end
   function queue:wait(token)
+    local record = assert(records[token], "unknown token")
+    if waitFailurePath ~= nil and record.path == waitFailurePath then
+      error(waitFailureMessage, 0)
+    end
     while self:poll(token) ~= "ready" do
     end
     return self:take(token)
@@ -524,6 +536,48 @@ function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
     "prepared resources for a multi-texture scene are still routed through the injected queue"
   )
   runtime:release()
+end
+
+-- A synchronous finish() whose outstanding mesh preparation fails inside
+-- wait() propagates that failure and releases the already-realized scene
+-- image exactly once; releasing the failed task afterwards releases nothing
+-- further.
+function T.synchronous_finish_propagates_preparation_wait_failure_and_releases_realized_images()
+  local cache, geomPath, texPath = cacheFs()
+  local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
+  s.mapBatches = { batch(geomPath, 0) }
+  local graphics = fakeGraphics()
+  local queue = fakeAssetPreparationQueue(cache, {
+    waitFailurePath = geomPath,
+    waitFailureMessage = "injected preparation wait failure",
+  })
+  local task = MapSceneLoader.begin(cache, s, { graphics = graphics, assetPreparation = queue })
+
+  Assert.equal(task:advance(1), 1, "the first work unit realizes the prepared texture")
+  Assert.isFalse(task:isReady(), "the scene is not ready while the mesh preparation is pending")
+  Assert.equal(task:advance(1), 0, "a pending preparation consumes no work budget")
+  Assert.equal(#graphics.images, 1, "the texture image was realized before the mesh failed")
+
+  local releases = 0
+  local image = graphics.images[1]
+  local baseRelease = image.release
+  image.release = function()
+    releases = releases + 1
+    baseRelease()
+  end
+
+  local err = Assert.throws(function()
+    task:finish()
+  end, "a failed preparation wait must fail the synchronous finish")
+  Assert.isTrue(
+    tostring(err):find("injected preparation wait failure", 1, true) ~= nil,
+    "the preparation wait failure propagates: " .. tostring(err)
+  )
+  Assert.isTrue(image.released, "the realized image is released with the failed finish")
+  Assert.equal(releases, 1, "the failed finish releases the realized image exactly once")
+
+  task:release()
+  Assert.equal(releases, 1, "releasing the failed task does not release twice")
 end
 
 return {
