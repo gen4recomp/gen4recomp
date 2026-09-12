@@ -268,13 +268,24 @@ function T.tests.passive_script_handoff_settles_the_player_visual()
     Assert.equal(handoff.playerVisual.pose, "idle")
     Assert.equal(handoff.playerVisual.poseTick, 0)
 
+    local function copyCameraMatrix(view)
+      local snapshot = {}
+      for index = 1, 16 do
+        snapshot[index] = view[index]
+      end
+      return snapshot
+    end
     local function sample()
       return {
         player = game.runtime.player:renderPosition(0),
-        camera = game.runtime.camera:view(0),
+        camera = copyCameraMatrix(game.runtime.camera:view(0)),
       }
     end
     local first = sample()
+    Assert.isFalse(
+      first.camera == game.runtime.camera:view(0),
+      "retained camera history must not alias the camera live view array"
+    )
     for _, alpha in ipairs({ 0.5, 1 }) do
       Assert.deepEqual(game.runtime.player:renderPosition(alpha), first.player)
       Assert.deepEqual(game.runtime.camera:view(alpha), first.camera)
