@@ -15,7 +15,8 @@
 ---@field _tokens table<integer, table<string, unknown>>
 ---@field _demand integer[]
 ---@field _prefetch integer[]
----@field _active integer?
+---@field _workerBusyToken integer?
+---@field _workerFailure string?
 ---@field _nextToken integer
 ---@field _released boolean
 ---@field _joined boolean
@@ -23,17 +24,43 @@ local AssetPreparationQueue = {}
 AssetPreparationQueue.__index = AssetPreparationQueue
 
 local WORKER_MODULE = "libs.hgss.src.presentation.asset_preparation_worker"
+local WORKER_PATH = "libs/hgss/src/presentation/asset_preparation_worker.lua"
+local WORKER_ENTRY_NAME = "asset_preparation_worker.lua"
 
 local VALID_KINDS = { mesh = true, image = true }
 local VALID_PRIORITIES = { demand = true, prefetch = true }
 
--- Read the worker entry source through the process require path. A LÖVE
--- Thread resolves filenames against the source directory, where this
--- module's sibling file is not visible, so the queue loads the code itself
--- and hands it to the thread as FileData. Plain io keeps this usable
--- alongside injected fake thread hosts (which ignore the argument).
+-- Read the worker entry source through the LÖVE virtual filesystem first so
+-- packaged .love/fused builds resolve it from the source archive, then
+-- through the host file under the source base directory for checkout runs
+-- where the app source mount does not include the repo-root library tree,
+-- and finally through the process require path for headless/fake hosts with
+-- no usable love.filesystem. A LÖVE Thread resolves filenames against the
+-- source directory, where this module's sibling file is not visible, so the
+-- queue loads the code itself and hands it to the thread as FileData.
 ---@return string?
 local function loadWorkerCode()
+  local hostLove = love
+  local filesystem = (type(hostLove) == "table") and hostLove.filesystem or nil
+  if filesystem and filesystem.read then
+    local ok, source = pcall(filesystem.read, WORKER_PATH)
+    if ok and type(source) == "string" then
+      return source
+    end
+    if filesystem.getSourceBaseDirectory then
+      local okBase, base = pcall(filesystem.getSourceBaseDirectory)
+      if okBase and type(base) == "string" and base ~= "" then
+        local handle = io.open(base .. "/" .. WORKER_PATH, "rb")
+        if handle then
+          local code = handle:read("*a")
+          handle:close()
+          if code then
+            return code
+          end
+        end
+      end
+    end
+  end
   local relative = WORKER_MODULE:gsub("%.", "/")
   for template in package.path:gmatch("[^;]+") do
     local candidate = template:gsub("%?", relative)
@@ -68,8 +95,10 @@ function AssetPreparationQueue.new(cacheFs, options)
   local workerSource = options.workerSource
   if workerSource == nil then
     local code = assert(loadWorkerCode(), "asset preparation worker source is unavailable")
-    if love.filesystem and love.filesystem.newFileData then
-      workerSource = love.filesystem.newFileData(code, "asset_preparation_worker.lua")
+    local hostLove = love
+    local filesystem = (type(hostLove) == "table") and hostLove.filesystem or nil
+    if filesystem and filesystem.newFileData then
+      workerSource = filesystem.newFileData(code, WORKER_ENTRY_NAME)
     else
       workerSource = code
     end
@@ -83,7 +112,8 @@ function AssetPreparationQueue.new(cacheFs, options)
     _tokens = {},
     _demand = {},
     _prefetch = {},
-    _active = nil,
+    _workerBusyToken = nil,
+    _workerFailure = nil,
     _nextToken = 0,
     _released = false,
     _joined = false,
@@ -106,10 +136,12 @@ function AssetPreparationQueue:_shiftLive(pending)
   return nil
 end
 
--- Dispatch one job while the worker is idle, choosing queued demand work
--- before queued prefetch work.
+-- Dispatch one job while the worker is physically idle, choosing queued
+-- demand work before queued prefetch work. Physical idleness is authoritative:
+-- a token cancelled after dispatch keeps occupying the worker until its late
+-- reply (or the worker's death) frees the slot.
 function AssetPreparationQueue:_dispatch()
-  if self._released or self._active ~= nil then
+  if self._released or self._workerFailure ~= nil or self._workerBusyToken ~= nil then
     return
   end
   local token = self:_shiftLive(self._demand) or self:_shiftLive(self._prefetch)
@@ -118,24 +150,84 @@ function AssetPreparationQueue:_dispatch()
   end
   local record = assert(self._tokens[token], "dispatched an unknown preparation token")
   record.state = "running"
-  self._active = token
+  self._workerBusyToken = token
   self._request:push({ op = "prepare", token = token, kind = record.kind, path = record.path })
 end
 
--- Absorb one worker reply: publish ready/failed state, free the worker, and
--- dispatch the next queued job. Replies for unknown tokens (cancelled,
--- transferred, or released work) are discarded.
+-- Record an unexpected worker exit exactly once: every still-live queued or
+-- running token fails with the terminal cause while already-ready payloads
+-- stay transferable. The queue never restarts the worker.
+---@param cause string?
+function AssetPreparationQueue:_enterTerminalFailure(cause)
+  if self._workerFailure ~= nil then
+    return
+  end
+  if cause == nil then
+    cause = "worker exited without an error"
+  end
+  self._workerFailure = "asset preparation worker stopped: " .. tostring(cause)
+  for _, record in pairs(self._tokens) do
+    if record.state == "queued" or record.state == "running" then
+      record.state = "failed"
+      record.failure = self._workerFailure
+    end
+  end
+  self._demand = {}
+  self._prefetch = {}
+  self._workerBusyToken = nil
+end
+
+-- Detect an unexpected worker exit after draining replies. Thread hosts
+-- without an isRunning probe stay usable; a production LÖVE Thread reporting
+-- a stopped worker terminalizes the queue.
+function AssetPreparationQueue:_checkWorkerHealth()
+  if self._released or self._workerFailure ~= nil then
+    return
+  end
+  local worker = self._worker
+  if type(worker.isRunning) ~= "function" then
+    return
+  end
+  local ok, running = pcall(function()
+    return worker:isRunning()
+  end)
+  if ok and running then
+    return
+  end
+  if not ok then
+    self:_enterTerminalFailure(running)
+    return
+  end
+  local cause = nil
+  if type(worker.getError) == "function" then
+    local _, workerError = pcall(function()
+      return worker:getError()
+    end)
+    cause = workerError
+  end
+  self:_enterTerminalFailure(cause)
+end
+
+-- Absorb one worker reply: free the matching physical slot first (even when
+-- the logical token was cancelled and no longer exists), then publish or
+-- discard the logical result, then dispatch the next queued job. Already
+-- resolved tokens are never overwritten by late replies.
 ---@param response unknown
 function AssetPreparationQueue:_absorb(response)
   if type(response) ~= "table" then
     return
   end
+  if self._workerBusyToken == response.token then
+    self._workerBusyToken = nil
+  end
   local record = self._tokens[response.token]
   if record == nil then
+    self:_dispatch()
     return
   end
-  if self._active == response.token then
-    self._active = nil
+  if record.state ~= "queued" and record.state ~= "running" then
+    self:_dispatch()
+    return
   end
   if response.ok then
     record.state = "ready"
@@ -184,6 +276,10 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
   assert(VALID_PRIORITIES[priority], "unknown preparation priority " .. tostring(priority))
   assert(type(logicalPath) == "string", "preparation path is required")
   self:_drain()
+  self:_checkWorkerHealth()
+  if self._workerFailure ~= nil then
+    error(self._workerFailure, 0)
+  end
   local resolved = self._cacheFs:resolve(logicalPath)
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
@@ -206,6 +302,7 @@ function AssetPreparationQueue:poll(token)
   local record = self._tokens[token]
   assert(record, "unknown preparation token")
   self:_drain()
+  self:_checkWorkerHealth()
   record = self._tokens[token]
   assert(record, "unknown preparation token")
   if record.state == "ready" then
@@ -232,8 +329,10 @@ function AssetPreparationQueue:take(token)
   return assert(record.payload, "ready preparation has no payload")
 end
 
--- Drop queued interest; a running job is not preempted but its late result
--- is discarded when it returns, and the worker is immediately reusable.
+-- Drop logical interest; a running job is not preempted and its late result
+-- is discarded when it returns. The physical slot stays occupied until that
+-- reply (or the worker's death) frees it, so cancellation never fabricates
+-- worker idleness and priority is decided at the next physical dispatch.
 ---@param token integer
 function AssetPreparationQueue:cancel(token)
   assert(self._tokens[token], "unknown preparation token")
@@ -246,10 +345,6 @@ function AssetPreparationQueue:cancel(token)
       end
     end
   end
-  if self._active == token then
-    self._active = nil
-    self:_dispatch()
-  end
 end
 
 -- Block efficiently until one token's payload is transferred, absorbing any
@@ -261,6 +356,7 @@ function AssetPreparationQueue:wait(token)
   assert(self._tokens[token], "unknown preparation token")
   while true do
     self:_drain()
+    self:_checkWorkerHealth()
     local record = self._tokens[token]
     assert(record, "unknown preparation token")
     if record.state == "ready" then
@@ -269,10 +365,6 @@ function AssetPreparationQueue:wait(token)
     end
     if record.state == "failed" then
       error("asset preparation failed for " .. tostring(record.logicalPath) .. ": " .. tostring(record.failure), 0)
-    end
-    if self._worker.isRunning and not self._worker:isRunning() then
-      local workerError = self._worker.getError and self._worker:getError()
-      error("asset preparation worker stopped: " .. tostring(workerError), 0)
     end
     local response = self._reply:demand()
     if response ~= nil then
@@ -292,7 +384,7 @@ function AssetPreparationQueue:release()
   self._tokens = {}
   self._demand = {}
   self._prefetch = {}
-  self._active = nil
+  self._workerBusyToken = nil
   pcall(function()
     self._request:push({ op = "shutdown" })
   end)

@@ -26,12 +26,14 @@ local function fakeCacheFs()
   }
 end
 
--- A deterministic fake love.thread: newChannel/newThread record every push
--- and every start/wait call, but never execute worker code. Tests drive
--- "worker completion" explicitly by pushing a response record and then
--- calling a queue method that is documented to drain replies (poll/wait).
+-- A deterministic fake love.thread: newChannel/newThread record every push,
+-- every construction source, and every start/wait call, but never execute
+-- worker code. Tests drive "worker completion" explicitly by pushing a
+-- response record and then calling a queue method that is documented to
+-- drain replies (poll/wait); thread:stop(message) models an unexpected
+-- worker exit whose cause is visible through getError.
 local function fakeThreadHost()
-  local state = { channels = {}, allPushes = {}, threads = {} }
+  local state = { channels = {}, allPushes = {}, threads = {}, threadSources = {} }
 
   local function newChannel()
     local values = {}
@@ -57,8 +59,9 @@ local function fakeThreadHost()
     return channel
   end
 
-  local function newThread()
-    local thread = { starts = 0, waits = 0 }
+  local function newThread(source)
+    state.threadSources[#state.threadSources + 1] = source
+    local thread = { starts = 0, waits = 0, alive = true, errorText = nil, source = source }
     function thread:start()
       self.starts = self.starts + 1
     end
@@ -66,10 +69,14 @@ local function fakeThreadHost()
       self.waits = self.waits + 1
     end
     function thread:getError()
-      return nil
+      return self.errorText
     end
     function thread:isRunning()
-      return self.starts > 0 and self.waits == 0
+      return self.alive and self.starts > 0 and self.waits == 0
+    end
+    function thread:stop(message)
+      self.alive = false
+      self.errorText = message
     end
     state.threads[#state.threads + 1] = thread
     return thread
@@ -243,19 +250,33 @@ function T.running_cancellation_discards_the_late_result()
 
     queue:cancel(running)
 
+    -- Logical cancellation frees no physical slot: a fresh request queues
+    -- behind the still-executing job instead of dispatching immediately.
+    local next = queue:request("mesh", "geometry/next.g4mesh", "demand")
+    Assert.isFalse(
+      requestWasPushedFor(host, next),
+      "a fresh request waits while the cancelled job still occupies the worker"
+    )
+
     -- The worker's job was already in flight and is not preempted; its late
-    -- result must still be discarded rather than published/taken.
+    -- result must still be discarded rather than published/taken, and only
+    -- then does the queued work dispatch.
     local requestIndex = requestChannelIndexFor(host, running)
     responseChannelFor(host, requestIndex):push(meshResponse(running, "geometry/running.g4mesh"))
 
     Assert.throws(function()
       queue:take(running)
     end, "a cancelled running token's late result cannot be taken")
+    Assert.equal(queue:poll(next), "pending")
+    Assert.isTrue(
+      requestWasPushedFor(host, next),
+      "the queued request dispatches after the late reply frees the worker"
+    )
 
-    -- The worker is not wedged: a fresh request still dispatches.
-    local next = queue:request("mesh", "geometry/next.g4mesh", "demand")
-    Assert.isTrue(requestWasPushedFor(host, next), "the queue recovers and dispatches after a cancelled job")
-    queue:cancel(next)
+    local nextIndex = requestChannelIndexFor(host, next)
+    responseChannelFor(host, nextIndex):push(meshResponse(next, "geometry/next.g4mesh"))
+    Assert.equal(queue:poll(next), "ready")
+    queue:take(next)
     queue:release()
   end)
 end
@@ -309,6 +330,186 @@ function T.release_while_busy_drains_and_discards_outstanding_work()
     Assert.equal(host.threads[1].waits, 1, "disposal joins the worker after outstanding work returns")
     Assert.throws(function()
       queue:poll(running)
+    end, "a released queue discards outstanding tokens rather than reviving them")
+  end)
+end
+
+function T.default_construction_uses_packaged_virtual_filesystem_source()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  local packagedCode = "-- packaged presentation worker source"
+  local fileData = {}
+  local fakeFilesystem = {
+    read = function(path)
+      if path == "libs/hgss/src/presentation/asset_preparation_worker.lua" then
+        return packagedCode
+      end
+      return nil
+    end,
+    newFileData = function(bytes, name)
+      local marker = { bytes = bytes, name = name }
+      fileData.marker = marker
+      return marker
+    end,
+    getSourceBaseDirectory = function()
+      return "/nonexistent-source-base"
+    end,
+  }
+  -- Host package paths intentionally cannot resolve the worker, so only the
+  -- packaged virtual-filesystem lookup can supply the source bytes.
+  local savedPath = package.path
+  package.path = "/nonexistent-package-path/?.lua"
+  local fakeLove = { thread = host.love.thread, filesystem = fakeFilesystem }
+  local ok, err = pcall(function()
+    withLove(fakeLove, function()
+      local queue = AssetPreparationQueue.new(fakeCacheFs(), { thread = host.love.thread })
+      queue:release()
+    end)
+  end)
+  package.path = savedPath
+  Assert.isTrue(ok, "default construction resolves worker source without host package paths: " .. tostring(err))
+  Assert.notNil(fileData.marker, "construction builds the worker from virtual-filesystem bytes")
+  Assert.equal(fileData.marker.bytes, packagedCode, "the worker is constructed from virtual-filesystem bytes")
+  Assert.equal(fileData.marker.name, "asset_preparation_worker.lua", "the packaged worker bytes keep their entry name")
+  Assert.equal(host.threadSources[1], fileData.marker, "the thread starts from the virtual-filesystem payload")
+end
+
+function T.cancelled_running_work_keeps_the_physical_slot_until_its_reply()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local runningPrefetch = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
+    Assert.isTrue(requestWasPushedFor(host, runningPrefetch), "the idle worker takes the first request immediately")
+    local queuedPrefetch = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
+
+    queue:cancel(runningPrefetch)
+
+    local lateDemand = queue:request("mesh", "geometry/late.g4mesh", "demand")
+    Assert.isFalse(
+      requestWasPushedFor(host, queuedPrefetch),
+      "no replacement work starts while the cancelled job still occupies the worker"
+    )
+    Assert.isFalse(
+      requestWasPushedFor(host, lateDemand),
+      "no replacement work starts while the cancelled job still occupies the worker"
+    )
+
+    local requestIndex = requestChannelIndexFor(host, runningPrefetch)
+    responseChannelFor(host, requestIndex):push(meshResponse(runningPrefetch, "geometry/running.g4mesh"))
+    Assert.equal(queue:poll(lateDemand), "pending")
+    Assert.isTrue(requestWasPushedFor(host, lateDemand), "the late demand wins the next physical dispatch")
+    Assert.isFalse(
+      requestWasPushedFor(host, queuedPrefetch),
+      "the queued prefetch still waits while demand occupies the worker"
+    )
+
+    local demandIndex = requestChannelIndexFor(host, lateDemand)
+    responseChannelFor(host, demandIndex):push(meshResponse(lateDemand, "geometry/late.g4mesh"))
+    Assert.equal(queue:poll(queuedPrefetch), "pending")
+    Assert.isTrue(requestWasPushedFor(host, queuedPrefetch), "the queued prefetch dispatches after demand completes")
+
+    queue:take(lateDemand)
+    queue:cancel(queuedPrefetch)
+    queue:release()
+  end)
+end
+
+function T.stopped_worker_fails_pending_and_future_requests()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local token = queue:request("mesh", "geometry/stalled.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, token), "the idle worker takes the request immediately")
+
+    local pushesBefore = #host.allPushes
+    host.threads[1]:stop("injected worker crash")
+
+    local tokenState, failure = queue:poll(token)
+    Assert.equal(tokenState, "failed", "a token cannot stay pending after its only worker stopped")
+    Assert.isTrue(
+      type(failure) == "string" and failure:find("injected worker crash", 1, true) ~= nil,
+      "the pending token reports the worker-stop cause: " .. tostring(failure)
+    )
+
+    local requestOk, requestResult = pcall(function()
+      return queue:request("mesh", "geometry/after.g4mesh", "demand")
+    end)
+    if requestOk then
+      local nextState, nextFailure = queue:poll(requestResult)
+      Assert.equal(nextState, "failed", "requests after worker death fail instead of queueing onto a dead worker")
+      Assert.isTrue(
+        type(nextFailure) == "string" and nextFailure:find("injected worker crash", 1, true) ~= nil,
+        "future requests report the same terminal cause: " .. tostring(nextFailure)
+      )
+    else
+      local message = tostring(requestResult)
+      Assert.isTrue(
+        message:find("injected worker crash", 1, true) ~= nil or message:find("worker stopped", 1, true) ~= nil,
+        "future requests report the terminal worker-stop cause: " .. message
+      )
+    end
+    Assert.equal(#host.allPushes, pushesBefore, "no further request is pushed after the worker stopped")
+
+    queue:release()
+  end)
+end
+
+function T.ready_payload_survives_worker_death_while_pending_work_fails()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local first = queue:request("mesh", "geometry/first.g4mesh", "demand")
+    local second = queue:request("mesh", "geometry/second.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, first), "the idle worker takes the first request immediately")
+    Assert.isFalse(requestWasPushedFor(host, second), "the second request waits for the busy worker")
+
+    local requestIndex = requestChannelIndexFor(host, first)
+    responseChannelFor(host, requestIndex):push(meshResponse(first, "geometry/first.g4mesh"))
+    Assert.equal(queue:poll(first), "ready")
+    Assert.isTrue(requestWasPushedFor(host, second), "the second request dispatches once the worker is idle")
+
+    host.threads[1]:stop("late worker crash")
+
+    Assert.equal(queue:poll(first), "ready", "a drained ready payload stays transferable after the worker dies")
+    local prepared = queue:take(first)
+    Assert.notNil(prepared, "the ready payload transfers exactly once despite the later worker death")
+
+    local pendingState, pendingFailure = queue:poll(second)
+    Assert.equal(pendingState, "failed", "still-pending work fails instead of staying pending forever")
+    Assert.isTrue(
+      type(pendingFailure) == "string" and pendingFailure:find("late worker crash", 1, true) ~= nil,
+      "pending work reports the worker-stop cause: " .. tostring(pendingFailure)
+    )
+
+    queue:release()
+  end)
+end
+
+function T.release_after_worker_death_joins_once_without_masking_cleanup()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local token = queue:request("mesh", "geometry/stalled.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, token), "the idle worker takes the request immediately")
+
+    host.threads[1]:stop(nil)
+
+    local tokenState, failure = queue:poll(token)
+    Assert.equal(tokenState, "failed", "pending work fails after the worker exits without an error")
+    Assert.isTrue(
+      type(failure) == "string" and failure:find("worker stopped", 1, true) ~= nil,
+      "the terminal cause stays descriptive without a worker error: " .. tostring(failure)
+    )
+
+    queue:release()
+    queue:release()
+    Assert.equal(host.threads[1].waits, 1, "release joins the worker exactly once even after terminal failure")
+    Assert.throws(function()
+      queue:poll(token)
     end, "a released queue discards outstanding tokens rather than reviving them")
   end)
 end
