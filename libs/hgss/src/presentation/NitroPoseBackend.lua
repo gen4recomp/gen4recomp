@@ -9,9 +9,10 @@
 --
 -- Sampling the attachments runs through CompiledNsbcaSampler over the
 -- clips' compiled payloads (NsbcaClipCompiler, digest side) -- the runtime
--- never touches NSBCA bytes -- then the per-node results blend through
--- JointAnimBlend and compose into SRT records via NitroJointState, the
--- same steps the digest-side NsbcaPoseProvider follows over raw decodes.
+-- never touches NSBCA bytes -- then, under the backend's at-most-one-joint-
+-- attachment invariant, the sampled result composes directly into SRT
+-- records via NitroJointState before SBC replay, the same steps the
+-- digest-side NsbcaPoseProvider follows over raw decodes.
 --
 -- The output is the PoseState: per-node matrices and visibility plus
 -- per-mesh draw transforms -- a Nitro draw is not one node matrix, so every
@@ -189,9 +190,10 @@ local function requireProgram(definition)
   return backend.program
 end
 
--- Owner-held reusable pose storage for one model definition: the evaluator
--- scratch plus the live pose tables. Warmed evaluations only overwrite
--- numbers, so repeated frames reuse every pose container.
+-- Owner-held reusable pose storage for one model definition: compiled-
+-- sampler scratch, per-node SRT composition scratch, and pose/draw/node/
+-- slot/billboard containers stay retained for reuse across evaluations.
+-- SBC replay keeps its own evaluator-owned storage.
 ---@param definition table<string, unknown>
 ---@return NitroPoseBackend.Scratch
 function NitroPoseBackend.newScratch(definition)
