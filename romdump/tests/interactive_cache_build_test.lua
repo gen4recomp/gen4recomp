@@ -12,6 +12,10 @@ local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local CompilerPool = require("romdump.src.build.CompilerPool")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
+local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
+local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
+local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
+local MapRomFixture = require("tests.support.MapRomFixture")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local RomFs = require("romdump.src.source.RomFs")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
@@ -122,22 +126,24 @@ end
 
 function T.pending_maps_advance_in_map_id_order()
   local oldCellReady = FieldCellCache.isCellReady
-  local oldMapReady = MapAssetCache.isReady
+  local oldMapReady = MapCompilePlan.isReady
   local requests = {}
   local ready = {}
   local function plan(mapId)
     return {
+      strategy = "canonical",
       expectedMarker = "map-marker-" .. mapId,
       resolved = { map = { id = mapId } },
       cellPlans = { { descriptor = {}, expectedMarker = "cell-marker" } },
+      jobIdentity = "map:" .. mapId,
     }
   end
 
   FieldCellCache.isCellReady = function()
     return true
   end
-  MapAssetCache.isReady = function(_, mapId)
-    return ready[mapId] == true
+  MapCompilePlan.isReady = function(_, mapPlan)
+    return ready[mapPlan.resolved.map.id] == true
   end
   local ok, err = pcall(function()
     local build = setmetatable({
@@ -157,11 +163,59 @@ function T.pending_maps_advance_in_map_id_order()
     build:_advancePendingMaps()
   end)
   FieldCellCache.isCellReady = oldCellReady
-  MapAssetCache.isReady = oldMapReady
+  MapCompilePlan.isReady = oldMapReady
   if not ok then
     error(err, 0)
   end
   Assert.deepEqual(requests, { 2, 1000000003, 1000000007 })
+end
+
+function T.indoor_map_ensure_uses_aggregate_readiness_and_job_identity()
+  local romFs = MapRomFixture.build({})
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local producerFingerprint = "synthetic-producer"
+  local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL, {
+    producerFingerprint = producerFingerprint,
+  }))
+  local plan = assert(
+    MapCompilePlan.plan(
+      romFs,
+      { schema = FieldCellCache.INDEX_SCHEMA, matrices = {} },
+      MapRomFixture.MAP_SYMBOL,
+      producerFingerprint
+    )
+  )
+  local requested = {}
+  local waitKey
+  local build = setmetatable({
+    cacheFs = cacheFs,
+    romFs = romFs,
+    producerFingerprint = producerFingerprint,
+    world = { byId = { [bundle.mapId] = {} } },
+    mapPlans = { [bundle.mapId] = plan },
+    closed = false,
+    pool = {
+      request = function(_, job)
+        requested[#requested + 1] = job
+        MapCacheWriter.write(cacheFs, bundle)
+        return "queued"
+      end,
+      wait = function(_, key)
+        waitKey = key
+        return "ready", { result = { marker = bundle.marker } }
+      end,
+    },
+  }, InteractiveCacheBuild)
+
+  local ok, err = pcall(function()
+    return build:ensureField(bundle.mapId)
+  end)
+  Assert.isTrue(ok, tostring(err))
+  Assert.equal(#requested, 1)
+  Assert.equal(requested[1].kind, "map")
+  Assert.equal(requested[1].key, "field-map:" .. plan.jobIdentity)
+  Assert.equal(requested[1].payload.mapId, bundle.mapId)
+  Assert.equal(waitKey, requested[1].key)
 end
 
 function T.disposal_publishes_the_final_member_before_activation()

@@ -1,4 +1,4 @@
--- Producer planning tests for canonical field-cell prerequisites.
+-- Producer planning tests cover canonical prerequisites and aggregate maps.
 
 local Assert = require("tests.support.Assert")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
@@ -36,9 +36,10 @@ local function indexFor(romFs)
 end
 
 function T.plans_canonical_cells_in_stable_order()
-  local romFs = MapRomFixture.build({})
+  local romFs = MapRomFixture.build({ areaTypeRaw = 1 })
   local first = assert(MapCompilePlan.plan(romFs, indexFor(romFs), MapRomFixture.MAP_SYMBOL, "producer"))
   local second = assert(MapCompilePlan.plan(romFs, indexFor(romFs), MapRomFixture.MAP_SYMBOL, "producer"))
+  Assert.equal(first.strategy, "canonical")
   Assert.equal(first.central.index, second.central.index)
   Assert.equal(#first.cellPlans, 1)
   Assert.equal(first.cellPlans[1].expectedMarker, second.cellPlans[1].expectedMarker)
@@ -46,11 +47,27 @@ function T.plans_canonical_cells_in_stable_order()
 end
 
 function T.rejects_a_missing_canonical_cell()
-  local romFs = MapRomFixture.build({})
+  local romFs = MapRomFixture.build({ areaTypeRaw = 1 })
   local empty = { schema = FieldCellCache.INDEX_SCHEMA, matrices = {} }
   local plan, err = MapCompilePlan.plan(romFs, empty, MapRomFixture.MAP_SYMBOL, "producer")
   Assert.isNil(plan)
   Assert.equal(assert(err).code, "MAP_CELL_PREREQUISITE_MISSING")
+end
+
+function T.indoor_maps_plan_as_aggregate_without_canonical_cells()
+  local romFs = MapRomFixture.build({})
+  local empty = { schema = FieldCellCache.INDEX_SCHEMA, matrices = {} }
+  local plan, err = MapCompilePlan.plan(romFs, empty, MapRomFixture.MAP_SYMBOL, "producer")
+
+  Assert.isNil(err, "indoor planning must not require canonical field cells")
+  plan = assert(plan)
+  Assert.equal(plan.strategy, "aggregate")
+  Assert.equal(plan.resolved.map.id, MapRomFixture.MAP_ID)
+  Assert.deepEqual(plan.cellPlans, {})
+  Assert.isNil(plan.expectedMarker)
+  Assert.equal(plan.romSha1, "rom-sha")
+  Assert.equal(plan.producerFingerprint, "producer")
+  Assert.equal(plan.jobIdentity, "map:" .. MapRomFixture.MAP_ID)
 end
 
 return { tests = T }

@@ -977,6 +977,8 @@ function T.canonical_map_is_ready_for_its_precomputed_marker()
     producerFingerprint = producerFingerprint,
   }))
   MapCacheWriter.write(cacheFs, bundle)
+  Assert.equal(plan.strategy, "canonical")
+  Assert.isTrue(MapCompilePlan.isReady(cacheFs, plan), "canonical plan accepts its published map")
   Assert.isTrue(
     MapAssetCache.isReady(cacheFs, MapRomFixture.MAP_ID, plan.expectedMarker),
     "published map is ready for the marker used to compile it"
@@ -987,17 +989,38 @@ end
 function T.indoor_map_compilation_keeps_its_existing_readiness_path()
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
+  local producerA = "synthetic-producer-a"
+  local producerB = "synthetic-producer-b"
   local romFs = MapRomFixture.build({})
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local index = fieldCellIndex(romFs)
 
   local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL, {
     cacheFs = cacheFs,
-    fieldCellIndex = {},
-    producerFingerprint = "synthetic-producer",
+    fieldCellIndex = index,
+    producerFingerprint = producerA,
+  }))
+  local changedBundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL, {
+    cacheFs = cacheFs,
+    fieldCellIndex = index,
+    producerFingerprint = producerB,
   }))
   Assert.equal(bundle.scene.type, "indoor")
+  Assert.isTrue(bundle.marker ~= changedBundle.marker, "aggregate marker must include producer identity")
 
   MapCacheWriter.write(cacheFs, bundle)
+  local dependencies = MapAssetCache.dependencies(cacheFs, bundle.mapId)
+  Assert.equal(dependencies.producerFingerprint, producerA)
+  local matchingPlan = assert(MapCompilePlan.plan(romFs, index, MapRomFixture.MAP_SYMBOL, producerA))
+  local changedProducerPlan = assert(MapCompilePlan.plan(romFs, index, MapRomFixture.MAP_SYMBOL, producerB))
+  local changedRomFs = MapRomFixture.build({})
+  changedRomFs.metadata = function()
+    return { sha1 = "different-rom-sha" }
+  end
+  local changedRomPlan = assert(MapCompilePlan.plan(changedRomFs, index, MapRomFixture.MAP_SYMBOL, producerA))
+  Assert.isTrue(MapCompilePlan.isReady(cacheFs, matchingPlan))
+  Assert.isFalse(MapCompilePlan.isReady(cacheFs, changedProducerPlan))
+  Assert.isFalse(MapCompilePlan.isReady(cacheFs, changedRomPlan))
   Assert.isTrue(MapAssetCache.isReady(cacheFs, bundle.mapId, bundle.marker))
 end
 
