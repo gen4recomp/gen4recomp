@@ -1,7 +1,8 @@
 -- Preparation lifecycle below the field scenarios: drawing before the
 -- scene is prepared fails loudly, reopening prepares the new presentation
--- again, every remaining input route stays suppressed while the chooser is
--- hidden, zoom controls stay live, and disposal ends preparation safely.
+-- again, activation stays suppressed while the chooser is hidden but release
+-- and neutral cleanup still reaches gameplay input, zoom controls stay live,
+-- and disposal ends preparation safely.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -12,6 +13,7 @@ local T = {}
 
 local STATE_MODULE = "game.hgss.src.starters.StarterChoiceState"
 local FIELD_STATE_MODULE = "game.hgss.src.field.FieldState"
+local FIELD_INPUT_MODULE = "libs.hgss.src.field.FieldInput"
 local CACHE_MODULE = "libs.assets.src.StarterChoiceAssetCache"
 local MODEL_MODULE = "libs.assets.src.model.ModelAsset"
 local SERVICE_MODULE = "libs.hgss.src.mons.HgssMonService"
@@ -370,6 +372,14 @@ local function fieldComposition(starter, queue, backend)
       inputCalls[#inputCalls + 1] = { name, ... }
     end
   end
+  -- The host suspends modal UI semantics while the hidden chooser prepares
+  -- and restarts them on readiness; the stub owns that lifecycle seam
+  -- without counting it as gameplay input.
+  function input:clearUi() end
+  function input:beginUi(_) end
+  function input:uiSnapshot(_)
+    return {}
+  end
   local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
   local runtime = {
     starterChoice = starter,
@@ -378,6 +388,7 @@ local function fieldComposition(starter, queue, backend)
     cancelKeys = { x = true },
     menuKeys = {},
     input = input,
+    session = { tick = 0 },
     zoom = {
       zoomIn = function()
         zoomCalls.zoomIn = zoomCalls.zoomIn + 1
@@ -409,6 +420,50 @@ local function fieldComposition(starter, queue, backend)
     development = false,
   }, FieldState)
   return state, inputCalls, zoomCalls
+end
+
+local function fieldCompositionWithRealInput(starter, queue, backend, input)
+  local FieldState = requireModule(FIELD_STATE_MODULE, "the field state owns presentation composition")
+  local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
+  local runtime = {
+    starterChoice = starter,
+    assetPreparation = queue,
+    actionKeys = { z = true },
+    cancelKeys = { x = true },
+    menuKeys = {},
+    input = input,
+    session = { tick = 0 },
+    zoom = {
+      zoomIn = function()
+        zoomCalls.zoomIn = zoomCalls.zoomIn + 1
+      end,
+      zoomOut = function()
+        zoomCalls.zoomOut = zoomCalls.zoomOut + 1
+      end,
+      reset = function()
+        zoomCalls.reset = zoomCalls.reset + 1
+      end,
+    },
+    applyZoomChange = function()
+      zoomCalls.applied = zoomCalls.applied + 1
+    end,
+    update = function() end,
+    dispose = function() end,
+  }
+  local state = setmetatable({
+    runtime = runtime,
+    actorPresentation = {
+      sync = function() end,
+    },
+    presentationResources = {
+      renderer = { gxRenderer = backend },
+      textRenderer = {},
+    },
+    _entryFade = nil,
+    _entryAccumulator = 0,
+    development = false,
+  }, FieldState)
+  return state, zoomCalls
 end
 
 local function advanceToReady(host, queue, backend, bound)
@@ -488,7 +543,7 @@ function T.reopening_prepares_the_new_presentation_again()
   host:dispose()
 end
 
-function T.remaining_input_routes_stay_suppressed_while_the_chooser_is_hidden()
+function T.activation_stays_suppressed_while_cleanup_reaches_input_when_hidden()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
@@ -504,18 +559,114 @@ function T.remaining_input_routes_stay_suppressed_while_the_chooser_is_hidden()
     end,
   }
   state:keypressed("w")
+  state:mousemoved(40, 40, 0, 0, false)
+  state:wheelmoved(0, 1)
+  state:touchmoved(9, 40, 40)
   state:keyreleased("w")
   state:gamepadreleased(joystick, "a")
   state:gamepadreleased(joystick, "b")
   state:gamepadaxis(joystick, "leftx", 0.5)
   state:gamepadaxis(joystick, "lefty", -0.5)
-  state:mousemoved(40, 40, 0, 0, false)
   state:mousereleased(40, 40, 1)
-  state:wheelmoved(0, 1)
-  state:touchmoved(9, 40, 40)
   state:touchreleased(9, 40, 40)
-  Assert.deepEqual(host:status(), before, "hidden chooser releases and pointer motion change nothing")
-  Assert.equal(#inputCalls, 0, "no release, stick, or pointer route reaches gameplay input while hidden")
+  Assert.deepEqual(host:status(), before, "hidden chooser input changes nothing semantic")
+  local seen = {}
+  for _, call in ipairs(inputCalls) do
+    seen[call[1]] = (seen[call[1]] or 0) + 1
+  end
+  Assert.equal(seen.pressDirection or 0, 0, "hidden direction presses stay suppressed")
+  Assert.equal(seen.pressAction or 0, 0, "hidden action presses stay suppressed")
+  Assert.equal(seen.pressCancel or 0, 0, "hidden cancel presses stay suppressed")
+  Assert.equal(seen.pointerDown or 0, 0, "hidden pointer presses stay suppressed")
+  Assert.equal(seen.pointerMove or 0, 0, "hidden pointer motion stays suppressed")
+  Assert.equal(seen.pointerScroll or 0, 0, "hidden wheel motion stays suppressed")
+  Assert.isTrue((seen.releaseDirection or 0) > 0, "hidden keyboard releases reach gameplay input")
+  Assert.isTrue((seen.releaseAction or 0) > 0, "hidden gamepad action releases reach gameplay input")
+  Assert.isTrue((seen.releaseCancel or 0) > 0, "hidden gamepad cancel releases reach gameplay input")
+  Assert.isTrue((seen.setStickAxis or 0) > 0, "hidden stick samples reach gameplay input")
+  Assert.isTrue((seen.pointerUp or 0) > 0, "hidden pointer releases reach gameplay input")
+  host:close()
+  host:dispose()
+end
+
+function T.hidden_keyboard_release_clears_held_direction_before_visible_repeat()
+  local FieldInput = requireModule(FIELD_INPUT_MODULE, "the field input owns physical source state")
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  local backend = stubBackend()
+  local input = FieldInput.new()
+  local state = fieldCompositionWithRealInput(host, queue, backend, input)
+  input:pressDirection("north", "key:w")
+  input:beginUi(0)
+  openTrio(host, service)
+  local before = host:status()
+  state:update(1 / 30)
+  Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
+
+  state:keyreleased("w")
+  Assert.isFalse(input:isHeld("north"), "the hidden release clears the held keyboard source")
+  local delay = FieldInput.UI_REPEAT_DELAY_TICKS
+  for tick = 1, delay + 2 do
+    Assert.deepEqual(input:uiSnapshot(tick), {}, "no hidden navigation may occur at tick " .. tick)
+  end
+  Assert.deepEqual(host:status(), before, "hidden preparation never moves starter selection")
+
+  queue.ready = true
+  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  state.runtime.session.tick = delay + 3
+  state:update(1 / 30)
+  Assert.isFalse(input:isHeld("north"), "readiness does not resurrect the released source")
+  Assert.deepEqual(
+    input:uiSnapshot(state.runtime.session.tick),
+    {},
+    "the first visible snapshot carries no stale navigation"
+  )
+  for tick = state.runtime.session.tick + 1, state.runtime.session.tick + delay - 1 do
+    Assert.deepEqual(input:uiSnapshot(tick), {}, "no repeat fires before a fresh visible delay at tick " .. tick)
+  end
+  Assert.deepEqual(host:status(), before, "the released key never moves starter selection")
+  host:close()
+  host:dispose()
+end
+
+function T.hidden_stick_neutral_clears_stick_ownership_before_readiness()
+  local FieldInput = requireModule(FIELD_INPUT_MODULE, "the field input owns physical source state")
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  local backend = stubBackend()
+  local input = FieldInput.new()
+  local state = fieldCompositionWithRealInput(host, queue, backend, input)
+  local joystick = {
+    getID = function()
+      return 7
+    end,
+  }
+  state:gamepadaxis(joystick, "leftx", -0.75)
+  input:beginUi(0)
+  openTrio(host, service)
+  state:update(1 / 30)
+  Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
+  Assert.isTrue(input:isHeld("west"), "the deflected stick holds its direction before neutralization")
+
+  state:gamepadaxis(joystick, "leftx", 0)
+  state:gamepadaxis(joystick, "lefty", 0)
+  Assert.isFalse(input:isHeld("west"), "the hidden neutral sample clears the held stick source")
+  Assert.isNil(input:heldUiDirection(), "the hidden neutral sample clears the held UI direction")
+  local delay = FieldInput.UI_REPEAT_DELAY_TICKS
+  for tick = 1, delay + 2 do
+    Assert.deepEqual(input:uiSnapshot(tick), {}, "no hidden navigation may occur at tick " .. tick)
+  end
+
+  queue.ready = true
+  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  state.runtime.session.tick = delay + 3
+  state:update(1 / 30)
+  Assert.isFalse(input:isHeld("west"), "readiness does not resurrect the neutralized stick")
+  Assert.deepEqual(
+    input:uiSnapshot(state.runtime.session.tick),
+    {},
+    "readiness carries no navigation from the old deflection"
+  )
   host:close()
   host:dispose()
 end

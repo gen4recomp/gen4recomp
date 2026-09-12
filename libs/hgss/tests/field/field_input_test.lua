@@ -345,6 +345,7 @@ end
 
 function T.ui_snapshot_normalizes_navigation_buttons_and_key_repeat()
   local input = FieldInput.new({ uiRepeatDelay = 3, uiRepeatInterval = 2 })
+  input:beginUi(0)
   input:pressDirection("south", "key:down")
   input:pressAction("key:z")
   input:pressCancel("key:x")
@@ -383,6 +384,7 @@ end
 
 function T.ui_stick_uses_hysteresis_and_modal_open_flushes_held_input()
   local input = FieldInput.new({ uiRepeatDelay = 3, uiRepeatInterval = 1 })
+  input:beginUi(0)
   input:setStick("gamepad:4:left", -0.7, 0)
   Assert.deepEqual(input:uiSnapshot(0), { { type = "navigate", direction = "left" } })
   input:setStick("gamepad:4:left", -0.5, 0)
@@ -399,6 +401,7 @@ end
 
 function T.releasing_an_inactive_direction_does_not_reset_active_direction_repeat()
   local input = FieldInput.new({ uiRepeatDelay = 3, uiRepeatInterval = 1 })
+  input:beginUi(0)
   input:pressDirection("north", "key:up")
   input:uiSnapshot(0)
   input:pressDirection("east", "key:right")
@@ -441,6 +444,36 @@ function T.ui_pointer_state_and_queued_events_clear_on_focus_loss()
   input:clearAll()
   input:pointerUp("touch:1", 1, 1)
   Assert.deepEqual(input:uiSnapshot(0), {})
+end
+
+function T.suspended_ui_snapshot_stays_empty_across_the_repeat_window()
+  local input = FieldInput.new({ uiRepeatDelay = 3, uiRepeatInterval = 1 })
+  input:beginUi(0)
+  input:pressDirection("north", "key:up")
+  Assert.deepEqual(input:uiSnapshot(0), { { type = "navigate", direction = "up" } })
+  input:clearUi()
+  for tick = 1, 6 do
+    Assert.deepEqual(input:uiSnapshot(tick), {}, "suspended UI emits nothing at tick " .. tick)
+  end
+  Assert.isTrue(input:isHeld("north"), "suspension preserves the held physical source")
+  Assert.equal(input:heldUiDirection(), "up", "suspension preserves the held UI direction")
+  input:beginUi(10)
+  Assert.deepEqual(input:uiSnapshot(10), {})
+  Assert.deepEqual(input:uiSnapshot(12), {})
+  Assert.deepEqual(input:uiSnapshot(13), { { type = "navigate", direction = "up" } })
+end
+
+function T.suspended_ui_snapshot_discards_queued_edges_without_replay()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:clearUi()
+  input:pressDirection("south", "key:down")
+  input:pressAction("key:z")
+  input:pressCancel("key:x")
+  Assert.deepEqual(input:uiSnapshot(1), {}, "suspended UI discards hidden edges instead of emitting them")
+  input:beginUi(2)
+  Assert.deepEqual(input:uiSnapshot(2), {}, "hidden edges never replay after the visible boundary")
+  Assert.isTrue(input:isHeld("south"), "discarding hidden edges preserves held physical sources")
 end
 
 function T.clear_ui_flushes_modal_events_without_releasing_field_controls()

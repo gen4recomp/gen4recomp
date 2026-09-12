@@ -35,6 +35,7 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field _entryAccumulator number source-frame time held for the covered-entry reveal
 ---@field development boolean product mode (default) hides the playtest HUD and ignores the F1/F2 developer binds
 ---@field topologyProvider fun(width: number, height: number): ScreenTopology
+---@field _starterUiSuspended boolean whether modal UI semantics are suspended while the open starter chooser prepares
 local FieldState = {}
 FieldState.__index = FieldState
 
@@ -90,6 +91,7 @@ function FieldState.new(game, options)
     spriteItems = {},
     _entryFade = options.initialFadeIn == true and StandardFade.new({ direction = "in", color = 0 }) or nil,
     _entryAccumulator = 0,
+    _starterUiSuspended = false,
   }, FieldState)
   local ok, err = pcall(function()
     self.presentationResources = FieldPresentationResources.new(runtime --[[@as FieldPresentationResourcesRuntime]])
@@ -116,6 +118,7 @@ end
 function FieldState:update(dt)
   self.runtime:update(dt)
   self:_advanceStarterPreparation()
+  self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)
   assert(self.actorPresentation, "field actor presentation is unavailable"):sync()
 end
@@ -156,6 +159,35 @@ function FieldState:_starterPresentationHolding()
     return false
   end
   return not starter:isPresentationReady()
+end
+
+-- Suspends modal UI semantics while the open starter chooser is still
+-- preparing its hidden presentation, then restarts the visible repeat window
+-- once it is drawable. Suspension clears semantic edges through the input
+-- owner; physical releases and stick-neutral samples keep reaching the input
+-- owner through the release callbacks below, and an inactive snapshot stays
+-- event-free until readiness resumes the modal lifetime.
+function FieldState:_syncStarterPresentationInput()
+  if self:_starterPresentationHolding() then
+    if not self._starterUiSuspended then
+      local runtime = assert(self.runtime, "field runtime is unavailable")
+      assert(runtime.input, "field input is unavailable"):clearUi()
+      self._starterUiSuspended = true
+    end
+    return
+  end
+  if not self._starterUiSuspended then
+    return
+  end
+  self._starterUiSuspended = false
+  local runtime = assert(self.runtime, "field runtime is unavailable")
+  local starter = runtime.starterChoice
+  if starter == nil or type(starter.isActive) ~= "function" or not starter:isActive() then
+    return
+  end
+  local input = assert(runtime.input, "field input is unavailable")
+  local session = assert(runtime.session, "field session is unavailable")
+  input:beginUi(session.tick)
 end
 
 -- Advances the one-shot covered-entry reveal on the source-frame cadence,
@@ -749,10 +781,8 @@ end
 function FieldState:keyreleased(key, _)
   -- Release mirrors press: one physical key may drive several held semantic
   -- states (e.g. Action bound to an arrow key), so every matching binding
-  -- releases, never just the first.
-  if self:_starterPresentationHolding() then
-    return
-  end
+  -- releases, never just the first. Releases stay live while the starter
+  -- chooser prepares so hidden preparation cannot leave a stale held source.
   if self.runtime.actionKeys[key] then
     self.runtime.input:releaseAction("key:" .. key)
   end
@@ -809,9 +839,6 @@ end
 ---@param joystick love.Joystick
 ---@param button string
 function FieldState:gamepadreleased(joystick, button)
-  if self:_starterPresentationHolding() then
-    return
-  end
   local source = "gamepad:" .. joystick:getID() .. ":" .. button
   if button == "a" then
     self.runtime.input:releaseAction(source)
@@ -838,9 +865,6 @@ function FieldState:gamepadaxis(joystick, axis, value)
     return
   end
   if self:_entryCoverActive() then
-    return
-  end
-  if self:_starterPresentationHolding() then
     return
   end
   local source = "gamepad:" .. joystick:getID() .. ":left"
@@ -881,9 +905,6 @@ end
 ---@param y number
 ---@param button integer
 function FieldState:mousereleased(x, y, button, _, _)
-  if self:_starterPresentationHolding() then
-    return
-  end
   if button == 1 then
     self.runtime.input:pointerUp("mouse:1", x, y)
   end
@@ -931,15 +952,13 @@ end
 ---@param x number
 ---@param y number
 function FieldState:touchreleased(id, x, y)
-  if self:_starterPresentationHolding() then
-    return
-  end
   self.runtime.input:pointerUp("touch:" .. tostring(id), x, y)
 end
 
 function FieldState:dispose()
   self._entryFade = nil
   self._entryAccumulator = 0
+  self._starterUiSuspended = false
   self._lastGeometrySignature = nil
   if self.worldParts then
     self.worldParts[5] = nil
