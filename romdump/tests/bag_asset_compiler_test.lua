@@ -128,9 +128,9 @@ local function animData(count)
   )
 end
 
--- One animation sequence with two realized frames: Bag v3 publishes static
--- realizations only, so the producer must reject the timeline instead of
--- playing or flattening it.
+-- One animation sequence with two realized frames: the current contract
+-- publishes static realizations only, so the producer must reject the
+-- timeline instead of playing or flattening it.
 local function animTwoFrameSequence()
   local header = u16(1) .. u16(2) .. u32(0x18) .. u32(0x28) .. u32(0x38) .. string.rep("\0", 8)
   local sequence = u32(2) .. u16(0) .. u16(1) .. u32(1) .. u32(0)
@@ -262,10 +262,6 @@ local function fixture(opts)
   members[BagSources.sprites.cursor.cell + 1] = cellData(cursorCells)
   members[BagSources.sprites.cursor.palette + 1] = palette256()
   members[BagSources.sprites.cursor.anim + 1] = animData(4)
-  members[BagSources.sprites.strip.char + 1] = charData(40)
-  members[BagSources.sprites.strip.cell + 1] = cellData({ { { x = 0, y = 0, tile = 0, size = 2 } } })
-  members[BagSources.sprites.strip.palette + 1] = palette256()
-  members[BagSources.sprites.strip.anim + 1] = animData(1)
   members[BagSources.chars.registrationMarker + 1] = charData(26)
   if opts.tamper then
     members = opts.tamper(members)
@@ -355,7 +351,7 @@ function T.animated_source_sequence_is_rejected_as_a_static_only_violation()
   local BagSources = require("romdump.src.config.BagSources")
   local romFs = fixture({
     tamper = function(members)
-      members[BagSources.sprites.strip.anim + 1] = animTwoFrameSequence()
+      members[BagSources.sprites.cursor.anim + 1] = animTwoFrameSequence()
       return members
     end,
   })
@@ -406,7 +402,6 @@ function T.producer_declares_the_audited_message_selection()
     { animation = 7, palette = 7 },
   })
   Assert.deepEqual(BagSources.spriteStates.tabs.selected, { animation = 8, palette = 9 })
-  Assert.deepEqual(BagSources.spriteStates.strip, { animation = 0 })
   Assert.deepEqual(BagSources.lowerLayers, {
     browse = { "listWash", "listSlots" },
     action = { "actionWash", "actionSlots" },
@@ -516,7 +511,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v3",
+    schema = "g4-bag-assets-v4",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -655,15 +650,6 @@ local function syntheticBundle(marker)
           textRect = { x = 20, y = 144, width = 236, height = 48 },
         },
       },
-      widgets = {
-        sourceStrip = {
-          image = "assets/generated/bag/source-strip-frame-1.png",
-          width = 32,
-          height = 16,
-          placement = { x = 177, y = 14 },
-          states = { browsing = false },
-        },
-      },
     },
   }
   local assets = {}
@@ -684,7 +670,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v3")
+  Assert.equal(loaded.schema, "g4-bag-assets-v4")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

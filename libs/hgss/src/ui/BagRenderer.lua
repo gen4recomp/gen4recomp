@@ -3,7 +3,7 @@
 -- backdrop, the borrowed 3D hero model clipped to the hero placement, the
 -- description frame, and the state-specific contextual text in the
 -- source font; the interactive pane composites the semantic state background,
--- source tabs/widgets, six-cell item grid with icons, names, quantities, and
+-- source tabs, six-cell item grid with icons, names, quantities, and
 -- registration markers, selected-tab/focus visuals, the derived page, and the
 -- generated cancel label. Empty cells paint no icons, so the source cell art
 -- stays authentic. The constrained description
@@ -224,7 +224,6 @@ function BagRenderer.new(opts)
     end
     acquire("tabSelected", interactive.pocketTabs.selected)
     acquire("focus", interactive.itemSlots.focus)
-    acquire("sourceStrip", interactive.widgets.sourceStrip)
     local registration =
       assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
     local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
@@ -314,21 +313,6 @@ function BagRenderer:_drawStateBackground(state)
   drawVisual(self._graphics, assert(self._visuals["background:" .. background]), 0, 0, false)
 end
 
--- The source strip widget draws only where the producer proves it visible:
--- at its template sprite center for the audited states. The manifest hides
--- it while browsing, so normal browse never paints it.
----@param state string
-function BagRenderer:_drawSourceStrip(state)
-  local widgets = assert(self._manifest.interactive, "the bag manifest must carry its interactive pane").widgets
-  local strip = assert(widgets and widgets.sourceStrip, "the bag manifest must carry its source strip widget")
-  local states = assert(strip.states, "the source strip carries its audited visibility")
-  if state ~= "browsing" or states.browsing ~= true then
-    return
-  end
-  local placement = assert(strip.placement, "the source strip carries its producer placement")
-  drawVisual(self._graphics, assert(self._visuals.sourceStrip), placement.x, placement.y, true)
-end
-
 ---@param rect table<string, number>
 function BagRenderer:_drawFocus(rect)
   drawVisual(self._graphics, assert(self._visuals.focus), rect.x + rect.width / 2, rect.y + rect.height / 2, true)
@@ -343,7 +327,6 @@ function BagRenderer:_drawInteractive(presentation, icons, layout)
   local interactive = manifest.interactive
   local state = assert(presentation.state, "the bag presentation names its state")
   self:_drawStateBackground(state)
-  self:_drawSourceStrip(state)
   local tabs = interactive.pocketTabs.rects
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
   local selectedTab = nil

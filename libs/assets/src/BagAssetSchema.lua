@@ -17,7 +17,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v3"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v4"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -125,37 +125,6 @@ local function checkVisual(value, context, what)
   checkImage({ image = value.image, width = value.width, height = value.height }, context, what)
   if value.offset ~= nil then
     checkOffset(value.offset, context, what .. ".offset")
-  end
-end
-
--- Source widgets pair their static visual with producer-proven canonical
--- placement (the template sprite center) and audited state visibility.
--- A bare visual without placement/visibility fails: runtime never supplies
--- the source anchor itself.
-local function checkWidget(value, context, what)
-  if type(value) ~= "table" then
-    fail(what .. " must be a semantic widget", context)
-  end
-  checkKeys(
-    value,
-    { image = true, width = true, height = true, offset = true, placement = true, states = true },
-    context,
-    what
-  )
-  checkImage({ image = value.image, width = value.width, height = value.height }, context, what)
-  if value.offset ~= nil then
-    checkOffset(value.offset, context, what .. ".offset")
-  end
-  if type(value.placement) ~= "table" then
-    fail(what .. ".placement must be a record", context)
-  end
-  checkPoint(value.placement, context, what .. ".placement")
-  if type(value.states) ~= "table" then
-    fail(what .. ".states must be a record", context)
-  end
-  checkKeys(value.states, { browsing = true }, context, what .. ".states")
-  if type(value.states.browsing) ~= "boolean" then
-    fail(what .. ".states.browsing must be a boolean", context)
   end
 end
 
@@ -578,7 +547,6 @@ local function checkInteractive(interactive, context)
     backgrounds = true,
     pocketTabs = true,
     itemSlots = true,
-    widgets = true,
     pageIndicator = true,
     cancel = true,
     text = true,
@@ -686,12 +654,6 @@ local function checkInteractive(interactive, context)
   checkKeys(fallback, { frame = true, textRect = true }, context, "interactive.overlays.descriptionFallback")
   checkRect(fallback.frame, context, "interactive.overlays.descriptionFallback.frame")
   checkRect(fallback.textRect, context, "interactive.overlays.descriptionFallback.textRect")
-  local widgets = interactive.widgets
-  if type(widgets) ~= "table" then
-    fail("interactive.widgets must be a record", context)
-  end
-  checkKeys(widgets, { sourceStrip = true }, context, "interactive.widgets")
-  checkWidget(widgets.sourceStrip, context, "interactive.widgets.sourceStrip")
 end
 
 -- Full manifest validation: shapes, canonical pane bounds, exact tab/slot/

@@ -74,10 +74,8 @@ function T.required_source_members_decode(romFs, _)
   end
   assertDecodes("decodeCell", BagSources.sprites.tabs.cell, "bag tab cell")
   assertDecodes("decodeCell", BagSources.sprites.cursor.cell, "bag cursor cell")
-  assertDecodes("decodeCell", BagSources.sprites.strip.cell, "bag strip cell")
   assertDecodes("decodeAnimation", BagSources.sprites.tabs.anim, "bag tab animation")
   assertDecodes("decodeAnimation", BagSources.sprites.cursor.anim, "bag cursor animation")
-  assertDecodes("decodeAnimation", BagSources.sprites.strip.anim, "bag strip animation")
   local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
   local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
   for _, gender in ipairs({ "male", "female" }) do

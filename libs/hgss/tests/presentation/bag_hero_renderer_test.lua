@@ -132,7 +132,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v3",
+    schema = "g4-bag-assets-v4",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -310,6 +310,7 @@ local function makeDoubles()
     pools = {},
     renderers = {},
     draws = {},
+    meshRequests = {},
     failMesh = false,
     failDefinition = false,
   }
@@ -317,6 +318,7 @@ local function makeDoubles()
   local PoolClass = {}
   PoolClass.__index = PoolClass
   function PoolClass:meshFor(path)
+    rec.meshRequests[#rec.meshRequests + 1] = tostring(path)
     if rec.failMesh then
       error("injected mesh failure for " .. tostring(path), 0)
     end
@@ -343,7 +345,12 @@ local function makeDoubles()
     end
     rec.descriptors[#rec.descriptors + 1] = desc
     rec.definitionKeys[#rec.definitionKeys + 1] = opts and opts.key or nil
-    local definition = { key = opts and opts.key, animations = desc.animations }
+    local geometry = "bag-hero/" .. tostring(opts and opts.key or "hero") .. "/geometry-0"
+    local definition = {
+      key = opts and opts.key,
+      animations = desc.animations,
+      meshes = { { id = "hero-mesh-0", geometry = geometry } },
+    }
     function definition:animation(nameOrSemantic)
       for _, clip in ipairs(self.animations) do
         if clip.name == nameOrSemantic or clip.id == nameOrSemantic then
@@ -725,6 +732,11 @@ function T.realization_failure_unwinds_acquired_resources_exactly_once()
     Assert.throws(function()
       renderer:draw("male", heroStatus("items", 0), heroPlacement())
     end, "a realization failure surfaces instead of substituting geometry")
+    Assert.equal(
+      rec.meshRequests[1],
+      "bag-hero/bag-hero:male/geometry-0",
+      "the failure occurs while acquiring the definition mesh geometry"
+    )
     local releases = 0
     for _, pool in ipairs(rec.pools) do
       releases = releases + pool.releaseCount

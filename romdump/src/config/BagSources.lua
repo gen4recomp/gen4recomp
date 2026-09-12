@@ -21,15 +21,19 @@
 -- GetPlttData selections (40/41) stay producer-side.
 --
 -- Sprites: the 39-entry ManagedSpriteTemplate table at ov15_02200B0C binds
--- three bag resource groups. Tabs and widgets use char 51 + palette 47 +
--- cell 49 + anim 50 (tab sprites sit at centers 16+32k, y 16 with anim and
+-- the live bag resource groups. Tabs use char 51 + palette 47 + cell 49 +
+-- anim 50 (tab sprites sit at centers 16+32k, y 16 with anim and
 -- palette slot equal to the pocket index; the highlight reuses anim 8 and
--- palette slot 9). The top strip uses char 26 + palette 15 + cell 25 +
--- anim 24. The selection cursor uses char 6 + cell 5 + palette 47 + anim 4
--- (four sequences for the four cursor cells). Item icons resolve through
--- archive 18 (GetItemIndexMapping/GetItemIconCell/GetItemIconAnim) and are
--- never compiled here. NANR 21 loads with no static template binding and is
--- recorded but not compiled.
+-- palette slot 9). The selection cursor uses char 6 + cell 5 + palette 47
+-- + anim 4 (four sequences for the four cursor cells). Item icons resolve
+-- through archive 18 (GetItemIndexMapping/GetItemIconCell/GetItemIconAnim)
+-- and are never compiled here. NANR 21 loads with no static template
+-- binding and is recorded but not compiled.
+--
+-- The top strip (template entry 0: char 26 + palette 15 + cell 25 +
+-- anim 24, sprite center (177, 14)) is intentionally uncompiled: the
+-- creation path hides sprite index 0 and no audited SetDrawFlag(1) path
+-- re-enables it, so it has no visible state.
 --
 -- Hero 3D: the model init selects by the gender byte (0 is male): model 55
 -- with pattern members 57-64, joint members 65-72, and material member 73,
@@ -128,9 +132,8 @@ BagSources.palettes = {
   lower = 40,
 }
 
--- Sprite (NCGR/NCER/NANR/NCLR) members by widget group.
+-- Sprite (NCGR/NCER/NANR/NCLR) members by live widget group.
 BagSources.sprites = {
-  strip = { char = 26, cell = 25, anim = 24, palette = 15 },
   cursor = { char = 6, cell = 5, anim = 4, palette = 47 },
   tabs = { char = 51, cell = 49, anim = 50, palette = 47 },
 }
@@ -152,7 +155,6 @@ BagSources.spriteStates = {
     selected = { animation = 8, palette = 9 },
   },
   cursor = { animations = { 0, 1, 2, 3 } },
-  strip = { animation = 0 },
 }
 
 -- BG surfaces are listed in retail bottom-to-top order. The producer applies
@@ -192,22 +194,8 @@ BagSources.messages = {
   },
 }
 
--- Source widget placement and visibility. Template entry 0 of the
--- 39-entry ManagedSpriteTemplate table at ov15_02200B0C is the strip widget
--- (char 26 + palette 15 + cell 25 + anim 24 group, animation 0): its template
--- position is the sprite center (177, 14), matching the tab convention where
--- template centers coincide with their rect centers (entry 9 at (16, 16) is
--- the center of the first 32x32 tab rect). The creation path hides it and no
--- audited state path ever shows it again: sprite index 0 is hidden at init
--- and every SetDrawFlag(1) in overlay_15.s addresses other sprite indexes,
--- so normal browse never renders the strip. Placement is the template sprite
--- center; states name the audited browse participation only.
-BagSources.widgets = {
-  sourceStrip = {
-    placement = { x = 177, y = 14 },
-    states = { browsing = false },
-  },
-}
+-- No compiled widget namespace: the only template entry outside the live
+-- tab/cursor groups is the permanently hidden top strip noted above.
 
 -- Spare hero pattern members the model init never reads.
 BagSources.sparePatternMembers = { 56, 75 }

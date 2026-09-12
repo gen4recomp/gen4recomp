@@ -83,11 +83,15 @@ function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v3", "the rebuilt Bag cache must publish the v3 contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v3", "the loader must require the v3 contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v4", "the rebuilt Bag cache must publish the current contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v4", "the loader must require the current contract")
   Assert.isFalse(
     BagAssetSchema.isValidManifest({ schema = "g4-bag-assets-v2" }),
-    "a v2 manifest must not validate through the v3 loader"
+    "a v2 manifest must not validate through the current loader"
+  )
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest({ schema = "g4-bag-assets-v3" }),
+    "a v3 manifest must not validate through the current loader"
   )
 
   local lights = assert(manifest.hero).presentation.lights
@@ -134,9 +138,7 @@ function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
   local focus = assert(interactive.itemSlots).focus
   assertImage(bundle, focus, "item focus cursor")
   assertStaticVisual(focus, "item focus cursor")
-  local sourceStrip = assert(interactive.widgets).sourceStrip
-  assertImage(bundle, sourceStrip, "source strip widget")
-  assertStaticVisual(sourceStrip, "source strip widget")
+  Assert.isNil(interactive.widgets, "the rebuilt manifest carries no retired widget namespace")
 
   Assert.equal(lights.count, 4, "the Bag hero must carry exactly four lights")
   Assert.equal(#lights.vectors, 4, "the Bag hero must carry exactly four light vectors")
@@ -145,20 +147,6 @@ function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
   for path in pairs(bundle.assets) do
     Assert.isFalse(path:find("icon", 1, true) ~= nil, "item icon pixels must remain outside the Bag bundle")
   end
-end
-
-function T.widget_placement_and_visibility_match_the_audited_source_facts(romFs)
-  local BagSources = require("romdump.src.config.BagSources")
-  local bundle = compile(romFs)
-  local manifest = assert(bundle.manifest)
-  local widget = assert(manifest.interactive.widgets).sourceStrip
-  assertImage(bundle, widget, "source strip widget")
-  Assert.deepEqual(
-    widget.placement,
-    BagSources.widgets.sourceStrip.placement,
-    "the published strip anchor must be the audited sprite center"
-  )
-  Assert.equal(widget.states.browsing, false, "the strip stays hidden in normal browse")
 end
 
 function T.published_visuals_carry_no_timeline_or_source_identities(romFs)
@@ -174,7 +162,6 @@ function T.published_visuals_carry_no_timeline_or_source_identities(romFs)
   end
   visuals[#visuals + 1] = { visual = interactive.pocketTabs.selected, label = "selected pocket tab" }
   visuals[#visuals + 1] = { visual = interactive.itemSlots.focus, label = "item focus cursor" }
-  visuals[#visuals + 1] = { visual = interactive.widgets.sourceStrip, label = "source strip widget" }
   visuals[#visuals + 1] = { visual = interactive.itemSlots.registration.slot1, label = "registration marker 1" }
   visuals[#visuals + 1] = { visual = interactive.itemSlots.registration.slot2, label = "registration marker 2" }
   for _, entry in ipairs(visuals) do

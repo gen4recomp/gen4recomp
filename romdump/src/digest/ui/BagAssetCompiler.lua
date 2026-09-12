@@ -1,6 +1,6 @@
 -- Compiles the generated field-bag presentation class: upper-pane hero
 -- backdrops and description frame, lower-pane list/action/quantity/
--- confirmation screens, semantic tab/focus/strip sprite visuals, the two
+-- confirmation screens, semantic tab/focus sprite visuals, the two
 -- registration-slot markers cropped from the marker source bitmap, semantic
 -- action labels and prompt templates lowered from the message banks, and
 -- both gender hero
@@ -190,7 +190,7 @@ local function compileVisual(spriteData, selector, role, assets)
   end
   assert(sequence ~= nil, "missing animation sequences fail above")
   if #sequence.frames ~= 1 then
-    sourceError(role .. " selects an animated sequence; Bag v3 publishes static realizations only", {
+    sourceError(role .. " selects an animated sequence; Bag v4 publishes static realizations only", {
       animation = selector.animation,
       frames = #sequence.frames,
     })
@@ -210,7 +210,6 @@ end
 local function compileSprites(archive, dependencies, assets)
   local tabsData = { compileSpriteData(archive, BagSources.sprites.tabs, "tabs", dependencies) }
   local cursorData = { compileSpriteData(archive, BagSources.sprites.cursor, "focus", dependencies) }
-  local stripData = { compileSpriteData(archive, BagSources.sprites.strip, "source-strip", dependencies) }
   local tabs = {}
   for index, selector in ipairs(BagSources.spriteStates.tabs.normal) do
     tabs[index] = compileVisual(tabsData, selector, "tab-normal-" .. index, assets)
@@ -219,7 +218,6 @@ local function compileSprites(archive, dependencies, assets)
     tabs = tabs,
     selected = compileVisual(tabsData, BagSources.spriteStates.tabs.selected, "tab-selected", assets),
     focus = compileVisual(cursorData, { animation = BagSources.spriteStates.cursor.animations[1] }, "focus", assets),
-    strip = compileVisual(stripData, { animation = BagSources.spriteStates.strip.animation }, "source-strip", assets),
   }
 end
 
@@ -634,7 +632,6 @@ local function _compile(romFs)
 
   local geometry = BagPresentationCompiler.compileGeometry(BagSources)
   local states = BagPresentationCompiler.compileStates(BagSources)
-  local widgets = BagPresentationCompiler.compileWidgets(BagSources)
   local materials = BagPresentationCompiler.compileMaterials(BagSources)
   local presentation = BagSources.presentation
   local manifest = {
@@ -755,16 +752,6 @@ local function _compile(romFs)
         },
         descriptionFallback = { frame = geometry.descriptionFrame, textRect = geometry.descriptionText },
       },
-      widgets = {
-        sourceStrip = {
-          image = sprites.strip.image,
-          width = sprites.strip.width,
-          height = sprites.strip.height,
-          offset = sprites.strip.offset,
-          placement = widgets.sourceStrip.placement,
-          states = widgets.sourceStrip.states,
-        },
-      },
     },
   }
   local ok, err = pcall(BagAssetSchema.assertManifest, manifest)
@@ -789,7 +776,6 @@ local function _compile(romFs)
       hero = BagSources.hero,
       messages = BagSources.messages,
       registration = BagSources.registration,
-      widgets = BagSources.widgets,
     },
     presentation = BagSources.presentation,
     geometry = BagSources.geometry,

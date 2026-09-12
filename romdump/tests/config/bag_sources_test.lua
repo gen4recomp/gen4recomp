@@ -59,8 +59,6 @@ function T.two_dimensional_roles_cover_the_audited_members()
   Assert.equal(BagSources.chars.upper, 7)
   Assert.equal(BagSources.chars.lower, 46)
   Assert.equal(BagSources.chars.registrationMarker, 37)
-  Assert.equal(BagSources.sprites.strip.char, 26)
-  Assert.equal(BagSources.sprites.strip.cell, 25)
   Assert.equal(BagSources.sprites.cursor.char, 6)
   Assert.equal(BagSources.sprites.cursor.cell, 5)
   Assert.equal(BagSources.sprites.tabs.char, 51)
@@ -182,16 +180,6 @@ function T.registration_facts_name_the_audited_bitmap_and_crops()
   Assert.isTrue(registration.slot1X + registration.markerWidth <= registration.bitmapWidth)
   Assert.isTrue(registration.slot2X + registration.markerWidth <= registration.bitmapWidth)
   Assert.deepEqual(registration.offset, { x = 0, y = 16 })
-end
-
-function T.strip_widget_carries_producer_placement_and_browse_visibility()
-  local BagSources = sources()
-  local widget = BagSources.widgets and BagSources.widgets.sourceStrip
-  Assert.notNil(widget, "the producer must own the strip widget placement record")
-  assert(widget ~= nil, "the strip widget record is required")
-  Assert.deepEqual(widget.placement, { x = 177, y = 14 }, "the strip keeps its audited sprite-center anchor")
-  Assert.notNil(widget.states, "the producer must own the strip visibility record")
-  Assert.equal(widget.states.browsing, false, "the strip is hidden in normal browse")
 end
 
 return { tests = T }

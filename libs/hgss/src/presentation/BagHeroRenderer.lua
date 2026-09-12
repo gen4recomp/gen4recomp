@@ -248,7 +248,7 @@ function BagHeroRenderer.new(opts)
   local cacheFs = assert(opts.cacheFs, "the bag hero renderer requires the asset filesystem")
   assert(type(cacheFs.read) == "function", "the bag hero renderer requires a readable asset filesystem")
   local manifest = assert(opts.manifest, "the bag hero renderer requires the bag manifest")
-  assert(manifest.schema == "g4-bag-assets-v3", "the bag hero renderer requires the v3 bag manifest")
+  assert(manifest.schema == "g4-bag-assets-v4", "the bag hero renderer requires the v4 bag manifest")
   local hero = assert(manifest.hero, "the bag manifest must carry its hero pane")
   local model = assert(hero.model, "the hero pane must carry its gender models")
   assert(type(model.male) == "table", "the hero pane must carry its male model")
@@ -343,20 +343,10 @@ function BagHeroRenderer:_ensureGender(gender)
     local nitroDescriptor = descriptor --[[@as ModelDefinition.Descriptor]]
     local definition = ModelDefinition.fromNitroDescriptor(nitroDescriptor, { key = "bag-hero:" .. gender })
     local renderMeshes = {}
-    -- Production definitions always carry meshes (the model gate requires a
-    -- non-empty mesh list); recording doubles omit the list, so there is
-    -- nothing to resolve for them.
-    for _, mesh in ipairs(definition.meshes or {}) do
+    for _, mesh in ipairs(definition.meshes) do
       local resource = pool:meshFor(mesh.geometry)
       renderMeshes[mesh.id] = resource.mesh
       mesh.center = resource.center
-    end
-    if next(renderMeshes) == nil then
-      -- Mesh-less fixtures still exercise the pool failure seam so a broken
-      -- pool surfaces through the unwind path instead of succeeding silently.
-      -- Unreachable with valid manifests: the model gate requires meshes, so
-      -- production always resolves at least one render mesh above.
-      pool:meshFor("bag-hero:unmeshed")
     end
     local materials = assert(descriptor.materials, "the hero model must carry its materials")
     local wrapsByMaterial = {}

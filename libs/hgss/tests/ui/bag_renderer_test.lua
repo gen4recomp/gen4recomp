@@ -131,15 +131,6 @@ local function manifest()
           },
         },
       },
-      widgets = {
-        sourceStrip = {
-          image = "bag/source-strip.png",
-          width = 32,
-          height = 16,
-          placement = { x = 177, y = 14 },
-          states = { browsing = false },
-        },
-      },
     },
   }
 end
@@ -164,7 +155,6 @@ local function seedCache()
     "bag/tab-normal-8.png",
     "bag/tab-selected.png",
     "bag/focus.png",
-    "bag/source-strip.png",
     "bag/registration-slot-1.png",
     "bag/registration-slot-2.png",
   }) do
@@ -394,7 +384,7 @@ function T.page_indicator_prints_inside_its_manifest_rectangle()
   draw:release()
 end
 
-function T.semantic_v3_visuals_drive_tabs_focus_strip_and_state_backgrounds()
+function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local calls = { quadFor = 0, dimensions = 0, keys = {} }
   local draw = BagRenderer.new({
@@ -409,10 +399,6 @@ function T.semantic_v3_visuals_drive_tabs_focus_strip_and_state_backgrounds()
     Assert.isTrue(wasDrawn(graphics, draw._images["tabNormal:" .. index]), "every normal tab visual is drawn")
   end
   Assert.isTrue(wasDrawn(graphics, draw._images.tabSelected), "the selected pocket visual is drawn")
-  Assert.isFalse(
-    wasDrawn(graphics, draw._images.sourceStrip),
-    "the manifest hides the source strip while browsing, so it never reaches the pane"
-  )
   Assert.isTrue(wasDrawn(graphics, draw._images.focus), "the item focus visual is drawn")
   Assert.isTrue(wasDrawn(graphics, draw._images["background:browse"]), "browse uses one semantic background")
   Assert.equal(#graphics.rectangles, 0, "browse focus is not a primitive rectangle")
@@ -438,7 +424,7 @@ function T.semantic_v3_visuals_drive_tabs_focus_strip_and_state_backgrounds()
   draw:release()
 end
 
-function T.browse_keeps_generated_chrome_without_the_hidden_widget()
+function T.browse_keeps_generated_chrome()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
   local draw = BagRenderer.new({
@@ -455,40 +441,9 @@ function T.browse_keeps_generated_chrome_without_the_hidden_widget()
   Assert.isTrue(wasDrawn(graphics, draw._images.tabSelected), "the selected pocket visual is drawn")
   Assert.isTrue(wasDrawn(graphics, draw._images.focus), "the item focus visual is drawn")
   Assert.isTrue(wasDrawn(graphics, draw._images["background:browse"]), "browse uses its semantic background")
-  Assert.isFalse(
-    wasDrawn(graphics, draw._images.sourceStrip),
-    "a widget the manifest hides while browsing never reaches the pane"
-  )
   Assert.isTrue(printedText(content, "BACK OUT"), "the generated cancel affordance prints its label")
   Assert.isTrue(printedText(content, "1/1"), "the page indicator prints its derived page")
   Assert.equal(#graphics.rectangles, 0, "browse chrome never falls back to primitive rectangles")
-  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
-  draw:release()
-end
-
-function T.visible_source_widget_draws_centered_at_its_producer_placement()
-  local fixture = manifest()
-  fixture.interactive.widgets.sourceStrip.states = { browsing = true }
-  fixture.interactive.widgets.sourceStrip.placement = { x = 100, y = 50 }
-  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local draw = BagRenderer.new({
-    cacheFs = seedCache(),
-    manifest = fixture,
-    text = text(),
-    graphics = graphics,
-    heroRenderer = heroSpy(nil),
-  })
-  draw:draw(status(), layout("horizontal"), { icons = icons() })
-  local strip = draw._images.sourceStrip
-  Assert.isTrue(wasDrawn(graphics, strip), "a widget the manifest shows while browsing reaches the pane")
-  local placed = false
-  for _, entry in ipairs(graphics.draws) do
-    if entry.image == strip and entry.quad == 84 and entry.x == 42 then
-      placed = true
-    end
-  end
-  Assert.isTrue(placed, "the widget draws centered at its producer placement, never a hardcoded anchor")
-  Assert.equal(#graphics.rectangles, 0, "the visible widget never falls back to primitive rectangles")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end
@@ -959,7 +914,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.isTrue(#graphics.images >= 20, "the renderer acquires every generated state image")
+  Assert.isTrue(#graphics.images >= 19, "the renderer acquires every generated state image")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1063,7 +1018,7 @@ function T.unknown_registration_slot_is_a_composition_error()
 end
 
 function T.marker_acquisition_failure_releases_acquired_images_once()
-  for _, failCall in ipairs({ 19, 20 }) do
+  for _, failCall in ipairs({ 18, 19 }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()
       BagRenderer.new({

@@ -77,7 +77,6 @@ function BagCache.referencedPaths(manifest)
   end
   addVisual(interactive.pocketTabs.selected)
   addVisual(interactive.itemSlots.focus)
-  addVisual(interactive.widgets.sourceStrip)
   addImage(interactive.itemSlots.registration.slot1)
   addImage(interactive.itemSlots.registration.slot2)
   return paths

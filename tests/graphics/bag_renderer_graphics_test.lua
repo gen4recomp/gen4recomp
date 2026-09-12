@@ -54,7 +54,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v3", versionId .. " renders the v3 bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v4", versionId .. " renders the v4 bag manifest")
   return cacheFs, manifest
 end
 
@@ -710,10 +710,7 @@ end
 -- browse background: empty item cells preserve the background
 -- pixel-for-pixel, the selected focus visual occupies its source-derived
 -- destination over the selected cell, and the generated Cancel label paints
--- inside the Cancel rectangle. The hidden source strip's static shape and
--- browse invisibility are pinned alongside (its footprint sits behind the
--- tab visuals, so pixel absence there is unobservable at this layer).
--- Every rectangle and visual comes from the generated manifest; the decoded
+-- inside the Cancel rectangle. Every rectangle and visual comes from the
 -- background is the anchor. Overlaps between sampled regions and other draws
 -- fail loudly instead of silently weakening the comparison.
 function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
@@ -791,19 +788,8 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
       focusFootprint.rect.y,
       versionId .. " samples the focus destination on exact pixels"
     )
-    local strip = assert(interactive.widgets.sourceStrip, versionId .. " carries its source strip widget")
     local cancelRect = assert(interactive.cancel, versionId .. " carries its cancel rectangle")
     local pageRect = assert(interactive.pageIndicator.rect, versionId .. " carries its page rectangle")
-    -- The source strip stays hidden in normal browse: its producer-audited
-    -- footprint sits behind the tab visuals, so pixel absence there is
-    -- unobservable at this layer. Absence is proven one layer down (the
-    -- renderer issues no strip draw while browsing) and at the producer
-    -- boundary (the contract pins states.browsing to false with the audited
-    -- placement); assert the static shape here so a timeline regression
-    -- cannot slip back in.
-    Assert.isTrue(type(strip.image) == "string", versionId .. " strip is a static source visual")
-    Assert.isNil(strip.frames, versionId .. " strip has no runtime frame timeline")
-    Assert.equal(strip.states.browsing, false, versionId .. " strip stays hidden in normal browse")
     local drawnRegions = { selectedFootprint }
     for _, footprint in ipairs(tabFootprints) do
       drawnRegions[#drawnRegions + 1] = footprint

@@ -279,15 +279,6 @@ local function bagManifest()
         },
         descriptionFallback = { frame = bagRect(0, 144, 256, 48), textRect = bagRect(20, 144, 228, 40) },
       },
-      widgets = {
-        sourceStrip = {
-          image = "test/bag/source-strip.png",
-          width = 32,
-          height = 32,
-          placement = { x = 177, y = 14 },
-          states = { browsing = false },
-        },
-      },
     },
   }
 end
@@ -340,7 +331,6 @@ function FieldStatePresentationFixture.cache()
   end
   cache:write("test/bag/tab-selected.png", solidPng(32, 32))
   cache:write("test/bag/focus.png", solidPng(32, 32))
-  cache:write("test/bag/source-strip.png", solidPng(32, 32))
   cache:write("test/bag/registration-slot-1.png", solidPng(40, 16))
   cache:write("test/bag/registration-slot-2.png", solidPng(40, 16))
   cache:write(

@@ -46,7 +46,7 @@ end
 
 local function manifest(overrides)
   local record = {
-    schema = "g4-bag-assets-v3",
+    schema = "g4-bag-assets-v4",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -154,7 +154,11 @@ local function makeDoubles()
   local definitionModule = {}
   function definitionModule.fromNitroDescriptor(desc, opts)
     rec.keys[#rec.keys + 1] = opts and opts.key or nil
-    local definition = { animations = desc.animations }
+    local key = (opts and opts.key) or "hero"
+    local definition = {
+      animations = desc.animations,
+      meshes = { { id = "hero-mesh-0", geometry = "bag-hero/" .. key .. "/geometry-0" } },
+    }
     function definition:animation(nameOrSemantic)
       for _, entry in ipairs(self.animations) do
         if entry.name == nameOrSemantic or entry.id == nameOrSemantic then

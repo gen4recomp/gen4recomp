@@ -84,30 +84,6 @@ function T.composed_state_layers_are_deterministic_and_follow_source_order()
   )
 end
 
-function T.widgets_publish_the_audited_strip_placement_and_visibility()
-  local widgets = BagPresentationCompiler.compileWidgets(BagSources)
-  Assert.deepEqual(
-    widgets.sourceStrip.placement,
-    { x = 177, y = 14 },
-    "the strip keeps its audited sprite-center anchor"
-  )
-  Assert.equal(widgets.sourceStrip.states.browsing, false, "the strip is hidden in normal browse")
-end
-
-function T.widget_placement_outside_the_pane_fails()
-  local edited = { widgets = { sourceStrip = { placement = { x = 300, y = 14 }, states = { browsing = false } } } }
-  local ok, err = pcall(BagPresentationCompiler.compileWidgets, edited)
-  Assert.isFalse(ok, "a placement escaping the pane must fail")
-  Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
-end
-
-function T.widget_without_browse_visibility_fails()
-  local edited = { widgets = { sourceStrip = { placement = { x = 177, y = 14 }, states = {} } } }
-  local ok, err = pcall(BagPresentationCompiler.compileWidgets, edited)
-  Assert.isFalse(ok, "a widget without browse visibility must fail")
-  Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
-end
-
 -- The audited NNS global material registers become source-independent
 -- semantic colors: the DiffAmb/SpecEmi immediates from the bag setup carry
 -- mid-gray diffuse/ambient/specular/emission instead of the white/zero

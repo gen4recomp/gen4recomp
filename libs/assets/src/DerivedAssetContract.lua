@@ -229,7 +229,7 @@ DerivedAssetContract.items = {
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v3",
+  schema = "g4-bag-assets-v4",
 }
 
 DerivedAssetContract.audio = {

@@ -170,7 +170,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v3",
+    schema = "g4-bag-assets-v4",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -266,15 +266,6 @@ local function validManifest()
         },
         descriptionFallback = { frame = rect(0, 144, 256, 48), textRect = rect(20, 144, 228, 40) },
       },
-      widgets = {
-        sourceStrip = {
-          image = "assets/generated/bag/source-strip-frame-1.png",
-          width = 32,
-          height = 16,
-          placement = { x = 177, y = 14 },
-          states = { browsing = false },
-        },
-      },
     },
   }
 end
@@ -283,8 +274,9 @@ function T.valid_manifest_passes_schema_and_cache_contract()
   local manifest = validManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the valid fixture must pass the schema")
   Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the valid fixture")
+  Assert.isNil(manifest.interactive.widgets, "the current manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v3")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v4")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -361,7 +353,7 @@ function T.old_cache_marker_forces_a_rebuild()
   cacheFs:writeLua(BagCache.manifestPath(), manifest)
   local oldMarker = "bag-cache-v1:deadbeef:feedface"
   cacheFs:write(BagCache.markerPath(), oldMarker)
-  Assert.isFalse(BagCache.isReady(cacheFs, oldMarker), "a previous cache marker must not read as v3 ready")
+  Assert.isFalse(BagCache.isReady(cacheFs, oldMarker), "a previous cache marker must not read as current ready")
 end
 
 local function assertInvalid(manifest, why)
@@ -369,9 +361,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v3")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v3")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v3")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v4")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v4")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v4")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -379,6 +371,9 @@ function T.previous_bag_contract_is_rejected()
   local manifest = validManifest()
   manifest.schema = "g4-bag-assets-v2"
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous Bag contract must not validate as current")
+  local stale = validManifest()
+  stale.schema = "g4-bag-assets-v3"
+  Assert.isFalse(BagAssetSchema.isValidManifest(stale), "the retired Bag contract must not validate as current")
 end
 
 function T.complete_manifest_with_text_and_registration_passes()
@@ -579,7 +574,10 @@ function T.schema_rejects_animated_visual_timelines()
       },
     },
   }
-  assertInvalid(backgroundTimeline, "a background frame timeline must fail; Bag v3 publishes static realizations")
+  assertInvalid(
+    backgroundTimeline,
+    "a background frame timeline must fail; the current contract publishes static realizations"
+  )
   local tabTimeline = validManifest()
   tabTimeline.interactive.pocketTabs.normal[1] = {
     frames = {
@@ -587,7 +585,7 @@ function T.schema_rejects_animated_visual_timelines()
       { image = "assets/generated/bag/tab-normal-1-frame-2.png", width = 16, height = 16, duration = 2 },
     },
   }
-  assertInvalid(tabTimeline, "a tab frame timeline must fail; Bag v3 publishes static realizations")
+  assertInvalid(tabTimeline, "a tab frame timeline must fail; the current contract publishes static realizations")
   local durationOnStatic = validManifest()
   durationOnStatic.interactive.itemSlots.focus = {
     image = "assets/generated/bag/focus-frame-1.png",
@@ -598,69 +596,34 @@ function T.schema_rejects_animated_visual_timelines()
   assertInvalid(durationOnStatic, "a duration on a static visual must fail")
 end
 
-function T.source_widget_requires_producer_placement_and_visibility()
-  local bare = validManifest()
-  bare.interactive.widgets.sourceStrip = visualRef("assets/generated/bag/source-strip-frame-1.png")
-  assertInvalid(bare, "a source widget without producer placement and visibility must fail")
-  local placed = validManifest()
-  placed.interactive.widgets.sourceStrip = {
-    image = "assets/generated/bag/source-strip-frame-1.png",
-    width = 32,
-    height = 16,
-    placement = { x = 177, y = 14 },
+function T.retired_widget_namespace_is_rejected_as_unknown()
+  local withWidgets = validManifest()
+  withWidgets.interactive.widgets = {
+    sourceStrip = {
+      image = "assets/generated/bag/source-strip-frame-1.png",
+      width = 32,
+      height = 16,
+      placement = { x = 177, y = 14 },
+      states = { browsing = false },
+    },
   }
-  assertInvalid(placed, "a source widget without visibility states must fail")
-  local visible = validManifest()
-  visible.interactive.widgets.sourceStrip = {
-    image = "assets/generated/bag/source-strip-frame-1.png",
-    width = 32,
-    height = 16,
-    states = { browsing = false },
-  }
-  assertInvalid(visible, "a source widget without canonical placement must fail")
-  local misplaced = validManifest()
-  misplaced.interactive.widgets.sourceStrip = {
-    image = "assets/generated/bag/source-strip-frame-1.png",
-    width = 32,
-    height = 16,
-    placement = { x = 250, y = 190 },
-    states = { browsing = false },
-  }
-  Assert.isTrue(
-    BagAssetSchema.isValidManifest(misplaced),
-    "a pane-fitting producer placement passes the shape contract; source truth is proven producer-side"
-  )
+  assertInvalid(withWidgets, "a retired widget namespace must fail as an unknown field")
 end
 
-function T.static_widget_with_producer_placement_and_visibility_passes()
+function T.cache_references_only_live_assets()
   local manifest = validManifest()
-  manifest.interactive.widgets.sourceStrip = {
-    image = "assets/generated/bag/source-strip-frame-1.png",
-    width = 32,
-    height = 16,
-    placement = { x = 177, y = 14 },
-    states = { browsing = false },
-  }
-  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the producer-placed static widget must pass")
-end
-
-function T.cache_references_the_source_widget_image()
-  local manifest = validManifest()
-  manifest.interactive.widgets.sourceStrip = {
-    image = "assets/generated/bag/source-strip-frame-1.png",
-    width = 32,
-    height = 16,
-    placement = { x = 177, y = 14 },
-    states = { browsing = false },
-  }
   local ok, paths = pcall(BagCache.referencedPaths, manifest)
-  Assert.isTrue(ok, "the cache must resolve a manifest with a placed widget")
+  Assert.isTrue(ok, "the cache must resolve the current manifest")
   assert(paths ~= nil, "a resolvable manifest must list its paths")
   local seen = {}
   for _, path in ipairs(paths) do
     seen[path] = true
   end
-  Assert.isTrue(seen["assets/generated/bag/source-strip-frame-1.png"], "the source widget image must be referenced")
+  Assert.isTrue(seen["assets/generated/bag/registration-slot-1.png"], "slot 1 marker must be referenced")
+  Assert.isTrue(seen["assets/generated/bag/tab-normal-1.png"], "tab visuals must be referenced")
+  for _, path in ipairs(paths) do
+    Assert.isNil(path:find("strip", 1, true), "no referenced path may belong to the retired strip asset")
+  end
 end
 
 return { tests = T }
