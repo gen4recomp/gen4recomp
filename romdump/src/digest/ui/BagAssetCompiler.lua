@@ -628,7 +628,7 @@ local function _compile(romFs)
     table.sort(keys)
     for _, sha1 in ipairs(keys) do
       local texture = textures[sha1]
-      assets[MapAssetCache.texturePath(sha1)] = PngWriter.encode(texture.width, texture.height, texture.pixels)
+      assets[MapAssetCache.texturePath(sha1)] = assert(texture.data, "compiled texture is missing finalized PNG Data")
     end
   end
 

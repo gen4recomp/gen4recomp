@@ -19,6 +19,7 @@ local COMPONENTS = { app = true, game = true, romdump = true }
 local TEST_LAYERS = { graphics = true, rom = true, acceptance = true }
 local IGNORED_PROJECT_DIRECTORIES = {
   [".agents"] = true,
+  [".worktrees"] = true,
   [".cache"] = true,
   [".claude"] = true,
   [".codex"] = true,
