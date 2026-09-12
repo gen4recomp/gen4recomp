@@ -65,8 +65,15 @@ local OLD_SUFFIX = ".__g4old"
 local PUBLICATION_MANIFEST_SUFFIX = ".__g4publish.lua"
 local PUBLICATION_MANIFEST_TEMP_SUFFIX = ".__g4publish.__g4next"
 local PUBLICATION_COMMIT_SUFFIX = ".__g4published"
-local PUBLICATION_SCHEMA = 1
+local PUBLICATION_MANIFEST_TEMP_PREFIX = ".__g4publish."
+local PUBLICATION_MANIFEST_TEMP_ATTEMPT_SUFFIX = ".__g4next"
+local PUBLICATION_SCHEMA = 2
+local LEGACY_PUBLICATION_SCHEMA = 1
 local PUBLICATION_COMMIT_CONTENT = "g4-cache-publish-v1"
+local PUBLICATION_COMMIT_PREFIX = "g4-cache-publish-v2:"
+
+local nextAttemptNumber = 0
+local activeAttempts = setmetatable({}, { __mode = "k" })
 
 local function siblingPath(fullPath, suffix)
   local parent, name = fullPath:match("^(.*)/([^/]+)$")
@@ -334,6 +341,82 @@ local function publicationPath(cacheFs, suffix)
   return cacheFs.versionId .. suffix
 end
 
+local function publicationManifestTempPath(cacheFs, attemptId)
+  return publicationPath(
+    cacheFs,
+    PUBLICATION_MANIFEST_TEMP_PREFIX .. attemptId .. PUBLICATION_MANIFEST_TEMP_ATTEMPT_SUFFIX
+  )
+end
+
+local function isSafeAttemptId(attemptId)
+  return type(attemptId) == "string" and attemptId ~= "" and attemptId:match("^[%w%-_]+$") ~= nil
+end
+
+local function attemptRootPath(cacheFs, root, suffix, attemptId)
+  local livePath = cacheFs:resolve(root)
+  return siblingPath(livePath, suffix .. "." .. attemptId)
+end
+
+local function candidateRootPath(cacheFs, root, attemptId)
+  if root == "" then
+    return siblingPath(cacheFs:resolve(""), NEXT_SUFFIX)
+  end
+  return attemptRootPath(cacheFs, root, NEXT_SUFFIX, attemptId)
+end
+
+local function legacyRootPath(cacheFs, root, suffix)
+  return siblingPath(cacheFs:resolve(root), suffix)
+end
+
+local function rootScratchPaths(cacheFs, manifest, entry)
+  if manifest.schema == PUBLICATION_SCHEMA then
+    return candidateRootPath(cacheFs, entry.path, manifest.attemptId),
+      attemptRootPath(cacheFs, entry.path, OLD_SUFFIX, manifest.attemptId)
+  end
+  return legacyRootPath(cacheFs, entry.path, NEXT_SUFFIX), legacyRootPath(cacheFs, entry.path, OLD_SUFFIX)
+end
+
+local function manifestTempPath(cacheFs, manifest)
+  if manifest.schema == PUBLICATION_SCHEMA then
+    return publicationManifestTempPath(cacheFs, manifest.attemptId)
+  end
+  return publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+end
+
+local function activeAttempt(cacheFs)
+  local versions = activeAttempts[cacheFs.backend]
+  return versions and versions[cacheFs.versionId]
+end
+
+local function registerAttempt(cacheFs, attemptId)
+  assert(not activeAttempt(cacheFs), "a publication is already active for this cache version")
+  local versions = activeAttempts[cacheFs.backend]
+  if not versions then
+    versions = {}
+    activeAttempts[cacheFs.backend] = versions
+  end
+  versions[cacheFs.versionId] = attemptId
+end
+
+local function releaseAttempt(cacheFs, attemptId)
+  local versions = activeAttempts[cacheFs.backend]
+  assert(versions and versions[cacheFs.versionId] == attemptId, "publication attempt ownership changed")
+  versions[cacheFs.versionId] = nil
+  if next(versions) == nil then
+    activeAttempts[cacheFs.backend] = nil
+  end
+end
+
+local function allocateAttemptId(cacheFs)
+  while true do
+    nextAttemptNumber = nextAttemptNumber + 1
+    local attemptId = "a" .. tostring(nextAttemptNumber)
+    if not cacheFs.backend:getInfo(publicationManifestTempPath(cacheFs, attemptId)) then
+      return attemptId
+    end
+  end
+end
+
 local function publicationMetadataError(message, context)
   Errors.raise(StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE, message, context)
 end
@@ -364,13 +447,24 @@ local function validateManifest(cacheFs, manifest)
   if type(manifest) ~= "table" then
     publicationMetadataError("publication manifest must be a table")
   end
-  local allowed = { schema = true, roots = true }
+  local schema = manifest.schema
+  local allowed
+  if schema == LEGACY_PUBLICATION_SCHEMA then
+    allowed = { schema = true, roots = true }
+  elseif schema == PUBLICATION_SCHEMA then
+    allowed = { schema = true, attemptId = true, roots = true }
+    if not isSafeAttemptId(manifest.attemptId) then
+      publicationMetadataError("publication manifest attempt identity is invalid")
+    end
+  else
+    publicationMetadataError("publication manifest schema is invalid")
+  end
   for key in pairs(manifest) do
     if not allowed[key] then
       publicationMetadataError("publication manifest has an unexpected field")
     end
   end
-  if manifest.schema ~= PUBLICATION_SCHEMA or type(manifest.roots) ~= "table" or #manifest.roots < 1 then
+  if type(manifest.roots) ~= "table" or #manifest.roots < 1 then
     publicationMetadataError("publication manifest schema is invalid")
   end
   local seen = {}
@@ -398,8 +492,7 @@ local function validateManifest(cacheFs, manifest)
   end
 end
 
-local function readPublicationManifest(cacheFs)
-  local path = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
+local function readPublicationManifestAt(cacheFs, path)
   if not cacheFs.backend:getInfo(path) then
     return nil
   end
@@ -414,13 +507,13 @@ local function readPublicationManifest(cacheFs)
   return manifest
 end
 
-local function removePublicationTree(cacheFs, suffix)
-  cacheFs:_removeTreeAt(publicationPath(cacheFs, suffix))
+local function readPublicationManifest(cacheFs)
+  return readPublicationManifestAt(cacheFs, publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
 end
 
 local function writePublicationManifest(cacheFs, manifest)
   validateManifest(cacheFs, manifest)
-  local tempPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+  local tempPath = manifestTempPath(cacheFs, manifest)
   local manifestPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
   local data = LuaWriter.encode(manifest)
   local ok, err = cacheFs.backend:write(tempPath, data)
@@ -430,9 +523,11 @@ local function writePublicationManifest(cacheFs, manifest)
   renamePath(cacheFs, tempPath, manifestPath)
 end
 
-local function writePublicationCommit(cacheFs)
+local function writePublicationCommit(cacheFs, manifest)
   local path = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
-  local ok, err = cacheFs.backend:write(path, PUBLICATION_COMMIT_CONTENT)
+  local content = manifest.schema == PUBLICATION_SCHEMA and PUBLICATION_COMMIT_PREFIX .. manifest.attemptId
+    or PUBLICATION_COMMIT_CONTENT
+  local ok, err = cacheFs.backend:write(path, content)
   return ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not write publication commit marker", {
     path = path,
   })
@@ -440,8 +535,7 @@ end
 
 local function removeNextRoots(cacheFs, manifest, preservedNextPath)
   for _, entry in ipairs(manifest.roots) do
-    local livePath = cacheFs:resolve(entry.path)
-    local nextPath = siblingPath(livePath, NEXT_SUFFIX)
+    local nextPath = rootScratchPaths(cacheFs, manifest, entry)
     if nextPath ~= preservedNextPath then
       cacheFs:_removeTreeAt(nextPath)
     end
@@ -451,7 +545,7 @@ end
 local function validateRecoveryState(cacheFs, manifest, committed)
   for _, entry in ipairs(manifest.roots) do
     local livePath = cacheFs:resolve(entry.path)
-    local oldPath = siblingPath(livePath, OLD_SUFFIX)
+    local _, oldPath = rootScratchPaths(cacheFs, manifest, entry)
     local liveExists = cacheFs.backend:getInfo(livePath) ~= nil
     local oldExists = cacheFs.backend:getInfo(oldPath) ~= nil
     if oldExists and not entry.hadLive then
@@ -471,8 +565,7 @@ local function rollbackPublication(cacheFs, manifest, preservedNextPath)
   for index = #manifest.roots, 1, -1 do
     local entry = manifest.roots[index]
     local livePath = cacheFs:resolve(entry.path)
-    local oldPath = siblingPath(livePath, OLD_SUFFIX)
-    local nextPath = siblingPath(livePath, NEXT_SUFFIX)
+    local nextPath, oldPath = rootScratchPaths(cacheFs, manifest, entry)
     if entry.hadLive then
       if cacheFs.backend:getInfo(oldPath) then
         if cacheFs.backend:getInfo(livePath) then
@@ -493,22 +586,71 @@ local function rollbackPublication(cacheFs, manifest, preservedNextPath)
     end
   end
   removeNextRoots(cacheFs, manifest, preservedNextPath)
-  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
-  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
+  cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
+  cacheFs:_removeTreeAt(publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
   return true
 end
 
 local function finishCommittedPublication(cacheFs, manifest)
   validateRecoveryState(cacheFs, manifest, true)
   for _, entry in ipairs(manifest.roots) do
-    local livePath = cacheFs:resolve(entry.path)
-    cacheFs:_removeTreeAt(siblingPath(livePath, OLD_SUFFIX))
+    local _, oldPath = rootScratchPaths(cacheFs, manifest, entry)
+    cacheFs:_removeTreeAt(oldPath)
   end
   removeNextRoots(cacheFs, manifest)
-  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
-  removePublicationTree(cacheFs, PUBLICATION_MANIFEST_SUFFIX)
-  removePublicationTree(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+  cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
+  cacheFs:_removeTreeAt(publicationPath(cacheFs, PUBLICATION_MANIFEST_SUFFIX))
+  cacheFs:_removeTreeAt(publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX))
   return true
+end
+
+local function validatePublicationCommit(cacheFs, manifest)
+  if manifest.schema == LEGACY_PUBLICATION_SCHEMA then
+    return true
+  end
+  local path = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+  local content, err = cacheFs.backend:read(path)
+  if content == nil then
+    publicationMetadataError("publication commit marker could not be read", { path = path, cause = tostring(err) })
+  end
+  if content ~= PUBLICATION_COMMIT_PREFIX .. manifest.attemptId then
+    publicationMetadataError("publication commit marker does not match the publication manifest", { path = path })
+  end
+  return true
+end
+
+local function recoverOrphanManifestTemps(cacheFs)
+  local items, err = cacheFs.backend:getDirectoryItems("")
+  if items == nil then
+    Errors.raise(CACHE_ERRORS.READ_FAILED, err or "could not list publication metadata", { path = "" })
+  end
+  assert(items, "publication metadata directory listing must be available")
+  local prefix = cacheFs.versionId .. PUBLICATION_MANIFEST_TEMP_PREFIX
+  local suffix = PUBLICATION_MANIFEST_TEMP_ATTEMPT_SUFFIX
+  for _, name in ipairs(items) do
+    if name == cacheFs.versionId .. PUBLICATION_MANIFEST_TEMP_SUFFIX then
+      cacheFs:_removeTreeAt(name)
+    elseif name:sub(1, #prefix) == prefix and name:sub(-#suffix) == suffix then
+      local attemptId = name:sub(#prefix + 1, -#suffix - 1)
+      if isSafeAttemptId(attemptId) then
+        local tempPath = publicationPath(cacheFs, PUBLICATION_MANIFEST_TEMP_PREFIX .. attemptId .. suffix)
+        local manifest = readPublicationManifestAt(cacheFs, tempPath)
+        if not manifest or manifest.schema ~= PUBLICATION_SCHEMA or manifest.attemptId ~= attemptId then
+          publicationMetadataError("publication temp manifest identity is invalid", { path = tempPath })
+        end
+        assert(manifest, "validated publication temp manifest must be available")
+        local roots = manifest.roots
+        assert(type(roots) == "table", "validated publication manifest roots must be a table")
+        for _, entry in ipairs(roots) do
+          if entry.path ~= "" then
+            local nextPath = rootScratchPaths(cacheFs, manifest, entry)
+            cacheFs:_removeTreeAt(nextPath)
+          end
+        end
+        cacheFs:_removeTreeAt(tempPath)
+      end
+    end
+  end
 end
 
 local function recoverPublicationState(cacheFs, preservedNextPath)
@@ -516,19 +658,23 @@ local function recoverPublicationState(cacheFs, preservedNextPath)
   local commitPath = publicationPath(cacheFs, PUBLICATION_COMMIT_SUFFIX)
   local hasCommit = cacheFs.backend:getInfo(commitPath) ~= nil
   if not manifest then
-    removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+    recoverOrphanManifestTemps(cacheFs)
     if hasCommit then
-      removePublicationTree(cacheFs, PUBLICATION_COMMIT_SUFFIX)
+      cacheFs:_removeTreeAt(commitPath)
     end
     return true
   end
   if hasCommit then
+    validatePublicationCommit(cacheFs, manifest)
     return finishCommittedPublication(cacheFs, manifest)
   end
   return rollbackPublication(cacheFs, manifest, preservedNextPath)
 end
 
 function CacheFs:recoverPublication()
+  if activeAttempt(self) then
+    return true
+  end
   return recoverPublicationState(self, nil)
 end
 
@@ -543,115 +689,122 @@ end
 local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
   local normalizedRoots = validateRoots(cacheFs, stageCache, roots)
   cacheFs:recoverPublication()
+  local attemptId = allocateAttemptId(cacheFs)
+  registerAttempt(cacheFs, attemptId)
 
-  local candidates = {}
-  local candidateOk, candidateErr = pcall(function()
-    for _, root in ipairs(normalizedRoots) do
-      local livePath = cacheFs:resolve(root)
-      local nextPath = siblingPath(livePath, NEXT_SUFFIX)
-      local sourcePath = stageCache:resolve(root)
-      local sourceInfo = stageCache.backend:getInfo(sourcePath)
-      if not sourceInfo then
-        Errors.raise(CACHE_ERRORS.FILE_MISSING, "staged root is missing", { path = sourcePath })
+  local ok, result = pcall(function()
+    local manifest = { schema = PUBLICATION_SCHEMA, attemptId = attemptId, roots = {} }
+    local candidates = {}
+    local candidateOk, candidateErr = pcall(function()
+      for _, root in ipairs(normalizedRoots) do
+        local sourcePath = stageCache:resolve(root)
+        local sourceInfo = stageCache.backend:getInfo(sourcePath)
+        if not sourceInfo then
+          Errors.raise(CACHE_ERRORS.FILE_MISSING, "staged root is missing", { path = sourcePath })
+        end
+        assert(sourceInfo, "staged root info must be available")
+        local nextPath = candidateRootPath(cacheFs, root, attemptId)
+        if sourcePath ~= nextPath then
+          candidates[#candidates + 1] = nextPath
+          if cacheFs.backend:getInfo(nextPath) then
+            cacheFs:_removeTreeAt(nextPath)
+          end
+          copyTree(cacheFs, sourcePath, nextPath)
+        end
+        local candidateInfo = cacheFs.backend:getInfo(nextPath)
+        assert(candidateInfo, "staged candidate info must be available")
+        assert(candidateInfo.type == sourceInfo.type, "staged candidate type changed")
+        manifest.roots[#manifest.roots + 1] = {
+          path = root,
+          hadLive = cacheFs.backend:getInfo(cacheFs:resolve(root)) ~= nil,
+        }
       end
-      assert(sourceInfo, "staged root info must be available")
-      if sourcePath ~= nextPath then
-        candidates[#candidates + 1] = nextPath
-        cacheFs:_removeTreeAt(nextPath)
-        copyTree(cacheFs, sourcePath, nextPath)
+    end)
+    if not candidateOk then
+      local cleanupOk, cleanupErr = pcall(function()
+        removeCandidates(cacheFs, candidates)
+      end)
+      if not cleanupOk then
+        rollbackIncomplete(candidateErr, cleanupErr)
       end
-      local candidateInfo = cacheFs.backend:getInfo(nextPath)
-      assert(candidateInfo, "staged candidate info must be available")
-      assert(candidateInfo.type == sourceInfo.type, "staged candidate type changed")
+      error(candidateErr, 0)
     end
-  end)
-  if not candidateOk then
+
+    local manifestOk, manifestErr = pcall(writePublicationManifest, cacheFs, manifest)
+    if not manifestOk then
+      local cleanupOk, cleanupErr = pcall(function()
+        removeCandidates(cacheFs, candidates)
+        cacheFs:_removeTreeAt(manifestTempPath(cacheFs, manifest))
+      end)
+      if not cleanupOk then
+        rollbackIncomplete(manifestErr, cleanupErr)
+      end
+      error(manifestErr, 0)
+    end
+
+    local phase1Ok, phase1Err = pcall(function()
+      for _, entry in ipairs(manifest.roots) do
+        if entry.hadLive then
+          local _, oldPath = rootScratchPaths(cacheFs, manifest, entry)
+          renamePath(cacheFs, cacheFs:resolve(entry.path), oldPath)
+        end
+      end
+    end)
+    if not phase1Ok then
+      local rollbackOk, rollbackErr = pcall(rollbackPublication, cacheFs, manifest, stageCache:resolve(""))
+      if not rollbackOk then
+        rollbackIncomplete(phase1Err, rollbackErr)
+      end
+      error(phase1Err, 0)
+    end
+
+    -- Phase 2: rename the adjacent candidates into place, in the given order.
+    local phase2Ok, phase2Err = pcall(function()
+      for _, entry in ipairs(manifest.roots) do
+        local nextPath = rootScratchPaths(cacheFs, manifest, entry)
+        renamePath(cacheFs, nextPath, cacheFs:resolve(entry.path))
+      end
+    end)
+    if not phase2Ok then
+      local rollbackOk, rollbackErr = pcall(rollbackPublication, cacheFs, manifest, stageCache:resolve(""))
+      if not rollbackOk then
+        rollbackIncomplete(phase2Err, rollbackErr)
+      end
+      error(phase2Err, 0)
+    end
+
+    local commitOk, commitErr = pcall(writePublicationCommit, cacheFs, manifest)
+    if not commitOk then
+      local rollbackOk, rollbackErr = pcall(rollbackPublication, cacheFs, manifest, stageCache:resolve(""))
+      if not rollbackOk then
+        rollbackIncomplete(commitErr, rollbackErr)
+      end
+      error(commitErr, 0)
+    end
+
+    -- The new artifact is already live; cleanup is a distinct outcome, never a
+    -- failed publication. The journal remains until every cleanup step succeeds.
     local cleanupOk, cleanupErr = pcall(function()
-      removeCandidates(cacheFs, candidates)
-      removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
+      finishCommittedPublication(cacheFs, manifest)
+      cleanup()
     end)
     if not cleanupOk then
-      rollbackIncomplete(candidateErr, cleanupErr)
+      Errors.raise(
+        StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
+        "the new artifact is live but its stage could not be removed",
+        {
+          cause = tostring(cleanupErr),
+        }
+      )
     end
-    error(candidateErr, 0)
-  end
-
-  local manifest = { schema = PUBLICATION_SCHEMA, roots = {} }
-  for _, root in ipairs(normalizedRoots) do
-    manifest.roots[#manifest.roots + 1] = {
-      path = root,
-      hadLive = cacheFs.backend:getInfo(cacheFs:resolve(root)) ~= nil,
-    }
-  end
-
-  local manifestOk, manifestErr = pcall(writePublicationManifest, cacheFs, manifest)
-  if not manifestOk then
-    local cleanupOk, cleanupErr = pcall(function()
-      removeCandidates(cacheFs, candidates)
-      removePublicationTree(cacheFs, PUBLICATION_MANIFEST_TEMP_SUFFIX)
-    end)
-    if not cleanupOk then
-      rollbackIncomplete(manifestErr, cleanupErr)
-    end
-    error(manifestErr, 0)
-  end
-
-  local phase1Ok, phase1Err = pcall(function()
-    for _, entry in ipairs(manifest.roots) do
-      if entry.hadLive then
-        local livePath = cacheFs:resolve(entry.path)
-        renamePath(cacheFs, livePath, siblingPath(livePath, OLD_SUFFIX))
-      end
-    end
+    return true
   end)
-  if not phase1Ok then
-    local rollbackOk, rollbackErr = pcall(recoverPublicationState, cacheFs, stageCache:resolve(""))
-    if not rollbackOk then
-      rollbackIncomplete(phase1Err, rollbackErr)
-    end
-    error(phase1Err, 0)
-  end
 
-  -- Phase 2: rename the adjacent candidates into place, in the given order.
-  local phase2Ok, phase2Err = pcall(function()
-    for _, entry in ipairs(manifest.roots) do
-      local livePath = cacheFs:resolve(entry.path)
-      renamePath(cacheFs, siblingPath(livePath, NEXT_SUFFIX), livePath)
-    end
-  end)
-  if not phase2Ok then
-    local rollbackOk, rollbackErr = pcall(recoverPublicationState, cacheFs, stageCache:resolve(""))
-    if not rollbackOk then
-      rollbackIncomplete(phase2Err, rollbackErr)
-    end
-    error(phase2Err, 0)
+  releaseAttempt(cacheFs, attemptId)
+  if not ok then
+    error(result, 0)
   end
-
-  local commitOk, commitErr = pcall(writePublicationCommit, cacheFs)
-  if not commitOk then
-    local rollbackOk, rollbackErr = pcall(recoverPublicationState, cacheFs, stageCache:resolve(""))
-    if not rollbackOk then
-      rollbackIncomplete(commitErr, rollbackErr)
-    end
-    error(commitErr, 0)
-  end
-
-  -- The new artifact is already live; cleanup is a distinct outcome, never a
-  -- failed publication. The journal remains until every cleanup step succeeds.
-  local cleanupOk, cleanupErr = pcall(function()
-    cacheFs:recoverPublication()
-    cleanup()
-  end)
-  if not cleanupOk then
-    Errors.raise(
-      StorageErrors.CACHE_PUBLISH_CLEANUP_FAILED,
-      "the new artifact is live but its stage could not be removed",
-      {
-        cause = tostring(cleanupErr),
-      }
-    )
-  end
-  return true
+  return result
 end
 
 -- Publish a set of staged roots (cache-relative paths mirrored under

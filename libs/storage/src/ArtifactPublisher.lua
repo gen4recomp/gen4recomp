@@ -28,8 +28,9 @@ ArtifactPublisher.__index = ArtifactPublisher
 -- root containing the completion marker must be listed last, so a process
 -- crash mid-publish can never leave the new marker visible without its full
 -- artifact (the marker root is moved aside and renamed into place last). Any
--- stale stage from a previous attempt, including an orphaned old root a crash
--- left behind, is removed first. The returned transaction exposes `stage` (a
+-- stale private stage from a previous attempt is removed first. Version-wide
+-- publication recovery remains owned by CacheFs at publication boundaries.
+-- The returned transaction exposes `stage` (a
 -- CacheFs mirroring the live layout under the staging root), `publish()`, and
 -- `abort()`.
 function ArtifactPublisher.begin(cacheFs, name, liveRoots)
@@ -43,7 +44,6 @@ function ArtifactPublisher.begin(cacheFs, name, liveRoots)
     seen[root] = true
   end
   local stage = CacheFs.forArtifactStage(cacheFs.versionId, name, cacheFs.backend)
-  cacheFs:recoverPublication()
   stage:removeTree("")
   return setmetatable({
     _cacheFs = cacheFs,

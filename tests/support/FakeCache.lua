@@ -110,7 +110,7 @@ function FakeCache:replace(sourcePath, destinationPath)
 end
 
 function FakeCache:getDirectoryItems(path)
-  local prefix = path .. "/"
+  local prefix = path == "" and "" or path .. "/"
   local seen, names = {}, {}
   local function consider(k)
     if k:sub(1, #prefix) == prefix then
