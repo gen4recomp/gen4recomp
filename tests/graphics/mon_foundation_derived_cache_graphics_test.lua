@@ -12,11 +12,21 @@ local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
 
-local function atlasData(cache, manifestPath)
+local function atlasPages(cache, manifestPath)
   local manifest = assert(cache:loadLua(manifestPath), "manifest must load: " .. manifestPath)
-  local imageBytes = assert(cache:read(manifest.image), "atlas must be present: " .. tostring(manifest.image))
-  local data = love.image.newImageData(love.filesystem.newFileData(imageBytes, manifest.image))
-  return manifest, data
+  local pages = {}
+  for _, pageId in ipairs(manifest.pageIds) do
+    local page = assert(manifest.pages[pageId], "page must be declared: " .. pageId)
+    local imageBytes = assert(cache:read(page.image), "page must be present: " .. tostring(page.image))
+    pages[pageId] = love.image.newImageData(love.filesystem.newFileData(imageBytes, page.image))
+  end
+  return manifest, pages
+end
+
+local function releasePages(pages)
+  for _, data in pairs(pages) do
+    data:release()
+  end
 end
 
 local function visiblePixels(data, rect)
@@ -45,38 +55,40 @@ function T.follower_variant_selectors_address_distinct_rendered_pixels(_, _)
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
       local cache = CacheFs.forVersion(versionId)
-      local portraits, portraitData = atlasData(cache, MonCache.portraitManifestPath())
+      local portraits, portraitPages = atlasPages(cache, MonCache.portraitManifestPath())
       local function portraitRect(selector)
         local entry = assert(portraits.entries[selector], versionId .. " portrait resolves: " .. selector)
-        return frameRect(entry)
+        return frameRect(entry), assert(portraitPages[entry.pageId], versionId .. " portrait page resolves")
       end
       for _, pair in ipairs({
         { "CHIKORITA/f0/male/plain", "CHIKORITA/f0/female/plain" },
         { "TOTODILE/f0/male/plain", "TOTODILE/f0/male/shiny" },
         { "UNOWN/f0/male/plain", "UNOWN/f5/male/plain" },
       }) do
-        local first, second = portraitRect(pair[1]), portraitRect(pair[2])
+        local first, firstData = portraitRect(pair[1])
+        local second, secondData = portraitRect(pair[2])
         Assert.isTrue(
-          first.x ~= second.x or first.y ~= second.y,
+          first.x ~= second.x or first.y ~= second.y or firstData ~= secondData,
           versionId .. " " .. pair[1] .. " and " .. pair[2] .. " address distinct frames"
         )
-        Assert.isTrue(visiblePixels(portraitData, first) > 0, versionId .. " " .. pair[1] .. " paints pixels")
-        Assert.isTrue(visiblePixels(portraitData, second) > 0, versionId .. " " .. pair[2] .. " paints pixels")
+        Assert.isTrue(visiblePixels(firstData, first) > 0, versionId .. " " .. pair[1] .. " paints pixels")
+        Assert.isTrue(visiblePixels(secondData, second) > 0, versionId .. " " .. pair[2] .. " paints pixels")
       end
-      portraitData:release()
-      local icons, iconData = atlasData(cache, MonCache.iconManifestPath())
+      releasePages(portraitPages)
+      local icons, iconPages = atlasPages(cache, MonCache.iconManifestPath())
       local function iconRect(selector)
         local entry = assert(icons.entries[selector], versionId .. " icon resolves: " .. selector)
-        return frameRect(entry)
+        return frameRect(entry), assert(iconPages[entry.pageId], versionId .. " icon page resolves")
       end
-      local unownPlain, unownVariant = iconRect("UNOWN/f0"), iconRect("UNOWN/f1")
+      local unownPlain, unownPlainData = iconRect("UNOWN/f0")
+      local unownVariant, unownVariantData = iconRect("UNOWN/f1")
       Assert.isTrue(
-        unownPlain.x ~= unownVariant.x or unownPlain.y ~= unownVariant.y,
+        unownPlain.x ~= unownVariant.x or unownPlain.y ~= unownVariant.y or unownPlainData ~= unownVariantData,
         versionId .. " form icons address distinct frames"
       )
-      Assert.isTrue(visiblePixels(iconData, unownPlain) > 0, versionId .. " UNOWN/f0 paints pixels")
-      Assert.isTrue(visiblePixels(iconData, unownVariant) > 0, versionId .. " UNOWN/f1 paints pixels")
-      iconData:release()
+      Assert.isTrue(visiblePixels(unownPlainData, unownPlain) > 0, versionId .. " UNOWN/f0 paints pixels")
+      Assert.isTrue(visiblePixels(unownVariantData, unownVariant) > 0, versionId .. " UNOWN/f1 paints pixels")
+      releasePages(iconPages)
     end
   end
 end

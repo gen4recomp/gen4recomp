@@ -294,7 +294,11 @@ function FieldStatePresentationFixture.cache()
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
   cache:writeLua(MonCache.iconManifestPath(), {
     schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.iconPagePath(0), width = 256, height = 128 },
+    },
+    pageIds = { 0 },
     entries = {
       ["TEST/f0"] = {
         x = 0,
@@ -302,6 +306,7 @@ function FieldStatePresentationFixture.cache()
         width = 32,
         height = 32,
         frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
+        pageId = 0,
       },
     },
     representative = { "TEST/f0" },
@@ -310,7 +315,7 @@ function FieldStatePresentationFixture.cache()
   for _ = 1, 64 * 64 do
     pixels[#pixels + 1] = string.char(255, 0, 0, 255)
   end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
+  cache:write(MonCache.iconPagePath(0), PngWriter.encode(64, 64, table.concat(pixels)))
   -- Minimal item icon manifest/atlas and bag manifest/images so the eager
   -- bag presentation resources resolve during FieldState construction.
   cache:writeLua(ItemCache.iconManifestPath(), {

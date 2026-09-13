@@ -1,8 +1,10 @@
--- Runtime owner of the compiled mon icon atlas. It loads and validates
--- the generated icon manifest once, acquires the atlas image once, hands out one
--- cached quad per icon key and frame, and releases the image exactly once.
--- Icon selection stays upstream (catalog form icons, egg selectors); an
--- unknown semantic key is a structured error, never a blank icon.
+-- Runtime owner of the compiled mon icon pages. It loads and validates
+-- the generated icon layout once, acquires one image per declared page,
+-- hands out one cached quad per icon key and frame, and releases every
+-- page image exactly once. Icon selection stays upstream (catalog form
+-- icons, egg selectors); an unknown semantic key is a structured error,
+-- never a blank icon. Portrait pages are never acquired here: field core
+-- warms the icon set, and portraits stay on demand elsewhere.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
@@ -12,7 +14,7 @@ local MonCache = require("libs.assets.src.MonCache")
 ---@class MonIconAssetProvider
 ---@field _graphics love.graphics
 ---@field _manifest table<string, unknown>
----@field _image love.Image?
+---@field _images table<integer, love.Image> page image by zero-based page id
 ---@field _quads table<string, love.Quad>
 ---@field _released boolean
 local MonIconAssetProvider = {}
@@ -55,6 +57,36 @@ local function entryFor(manifest, iconKey)
 end
 
 ---@param cacheFs CacheFs
+---@param graphics love.graphics
+---@param manifest table<string, unknown>
+---@param pageId integer
+---@return love.Image
+local function acquirePage(cacheFs, graphics, manifest, pageId)
+  local page = manifest.pages[pageId]
+  assert(page ~= nil, "icon page " .. pageId .. " is declared")
+  local path = MonCache.iconPagePath(pageId)
+  local data = cacheFs:read(path)
+  if not data then
+    Errors.raise(FieldErrors.MON_ICON_ATLAS_MISSING, "mon icon page missing at " .. path, { path = path })
+  end
+  local imageData = assert(data, "the icon page bytes are required")
+  local image = graphics.newImage(love.filesystem.newFileData(imageData, path))
+  image:setFilter("nearest", "nearest")
+  local imageWidth, imageHeight = image:getWidth(), image:getHeight()
+  for selector, entry in pairs(manifest.entries) do
+    if entry.pageId == pageId then
+      for _, frame in ipairs(entry.frames) do
+        assert(
+          frame.x + frame.width <= imageWidth and frame.y + frame.height <= imageHeight,
+          "icon frame for " .. selector .. " exceeds its page"
+        )
+      end
+    end
+  end
+  return image
+end
+
+---@param cacheFs CacheFs
 ---@param opts { graphics?: love.graphics }?
 ---@return MonIconAssetProvider
 function MonIconAssetProvider.new(cacheFs, opts)
@@ -66,33 +98,17 @@ function MonIconAssetProvider.new(cacheFs, opts)
   end
   assert(graphics and graphics.newImage and graphics.newQuad, "MonIconAssetProvider requires love.graphics")
   local manifest = loadManifest(cacheFs)
-  local data = cacheFs:read(MonCache.iconImagePath())
-  if not data then
-    Errors.raise(
-      FieldErrors.MON_ICON_ATLAS_MISSING,
-      "mon icon atlas missing at " .. MonCache.iconImagePath(),
-      { path = MonCache.iconImagePath() }
-    )
-  end
   local self = setmetatable({
     _graphics = graphics,
     _manifest = manifest,
-    _image = nil,
+    _images = {},
     _quads = {},
     _released = false,
   }, MonIconAssetProvider)
-  local imageData = assert(data, "the icon atlas bytes are required")
   local ok, err = pcall(function()
-    self._image = graphics.newImage(love.filesystem.newFileData(imageData, MonCache.iconImagePath()))
-    self._image:setFilter("nearest", "nearest")
-    local imageWidth, imageHeight = self._image:getWidth(), self._image:getHeight()
-    for selector, entry in pairs(manifest.entries) do
-      for _, frame in ipairs(entry.frames) do
-        assert(
-          frame.x + frame.width <= imageWidth and frame.y + frame.height <= imageHeight,
-          "icon frame for " .. selector .. " exceeds the atlas"
-        )
-      end
+    local pageIds = manifest.pageIds --[[@as integer[] ]]
+    for _, pageId in ipairs(pageIds) do
+      self._images[pageId] = acquirePage(cacheFs, graphics, manifest, pageId)
     end
   end)
   if not ok then
@@ -102,9 +118,14 @@ function MonIconAssetProvider.new(cacheFs, opts)
   return self
 end
 
----@return love.Image the shared atlas image for draw calls
-function MonIconAssetProvider:image()
-  return assert(self._image, "the icon atlas is loaded")
+-- The page image carrying one icon selector. Selectors sharing a page
+-- share its image; selectors on different pages resolve to their own.
+---@param iconKey string
+---@return love.Image the page image for draw calls
+function MonIconAssetProvider:image(iconKey)
+  assert(not self._released, "the icon provider is released")
+  local entry = entryFor(self._manifest, iconKey)
+  return assert(self._images[entry.pageId], "the icon page is loaded for " .. iconKey)
 end
 
 ---@param iconKey string
@@ -120,7 +141,7 @@ function MonIconAssetProvider:quadFor(iconKey, frameIndex)
   local quad = self._quads[cacheKey]
   if quad == nil then
     local frame = entry.frames[frameIndex]
-    local image = assert(self._image, "the icon atlas is loaded")
+    local image = assert(self._images[entry.pageId], "the icon page is loaded for " .. iconKey)
     quad = self._graphics.newQuad(frame.x, frame.y, frame.width, frame.height, image:getWidth(), image:getHeight())
     self._quads[cacheKey] = quad
   end
@@ -135,15 +156,19 @@ function MonIconAssetProvider:dimensions(iconKey)
   return { width = entry.width, height = entry.height }
 end
 
--- Releases the atlas image exactly once; quads reference no resources of
+-- Releases every page image exactly once; quads reference no resources of
 -- their own, so dropping the cache is sufficient. Safe to call repeatedly.
+-- A construction failure releases only the pages acquired before it and
+-- leaves unrelated shared resources live.
 function MonIconAssetProvider:release()
-  local image = self._image
-  self._image = nil
+  local images = self._images
+  self._images = {}
   self._quads = {}
   self._released = true
-  if image ~= nil and image.release then
-    image:release()
+  for _, image in pairs(images) do
+    if image ~= nil and image.release then
+      image:release()
+    end
   end
 end
 

@@ -20,7 +20,11 @@ local function iconCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:writeLua(MonCache.iconManifestPath(), {
     schema = MonCache.ICON_MANIFEST_SCHEMA,
-    image = MonCache.iconImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.iconPagePath(0), width = 256, height = 128 },
+    },
+    pageIds = { 0 },
     entries = {
       ["MON0/f0"] = {
         x = 0,
@@ -28,6 +32,7 @@ local function iconCache()
         width = 32,
         height = 32,
         frames = { { x = 0, y = 0, width = 32, height = 32, duration = 1 } },
+        pageId = 0,
       },
     },
     representative = { "MON0/f0" },
@@ -36,7 +41,7 @@ local function iconCache()
   for _ = 1, 64 * 64 do
     pixels[#pixels + 1] = string.char(200, 40, 40, 255)
   end
-  cache:write(MonCache.iconImagePath(), PngWriter.encode(64, 64, table.concat(pixels)))
+  cache:write(MonCache.iconPagePath(0), PngWriter.encode(64, 64, table.concat(pixels)))
   return cache
 end
 

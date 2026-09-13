@@ -26,6 +26,15 @@ ArtifactState.KINDS = {
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,
+  -- One staged mon artifact per job: the semantic catalog and the selector
+  -- layout each own their payload and marker, each icon/portrait page owns
+  -- its own image and marker, and the summary owns only the index,
+  -- provenance, and completion.
+  ["mon-catalog"] = true,
+  ["mon-layout"] = true,
+  ["mon-icon-page"] = true,
+  ["mon-portrait-page"] = true,
+  ["mon-summary"] = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"

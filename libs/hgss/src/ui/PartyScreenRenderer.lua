@@ -92,8 +92,8 @@ function PartyScreenRenderer:_drawSlot(record, rect, icons, disabled)
   graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
   local textColor = disabled and COLORS.textDim or COLORS.text
 
-  local iconImage = icons:image()
   local iconKey = assert(record.iconKey, "occupied slots carry an icon key")
+  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   local dims = icons:dimensions(record.iconKey)
   local iconX = rect.x + 6

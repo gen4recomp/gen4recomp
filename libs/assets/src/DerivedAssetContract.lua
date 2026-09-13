@@ -211,17 +211,24 @@ DerivedAssetContract.starterChoice = {
 }
 
 -- The mon class carries the complete species/form/move/ability/growth
--- catalog plus the party-icon and portrait atlases with their selection
--- manifests. Following-mon drawable definitions stay in the field-actor
--- class; the catalog references field-actor visual IDs only. Item identity
--- lives in the item class, never here: v3 drops the former generated item
--- collection so item-only metadata changes never invalidate mon buckets.
+-- catalog plus the party-icon and portrait atlas pages with their selection
+-- manifests. The semantic catalog stages apart from pixels; one layout
+-- manifest per kind assigns every reachable selector to a bounded page, and
+-- each page stages as its own image. Following-mon drawable definitions stay
+-- in the field-actor class; the catalog references field-actor visual IDs
+-- only. Item identity lives in the item class, never here: v3 drops the
+-- former generated item collection so item-only metadata changes never
+-- invalidate mon buckets.
 DerivedAssetContract.mons = {
   cacheFormat = "mon-cache-v1",
   catalogSchema = "g4-mon-catalog-v3",
-  indexSchema = "g4-mon-index-v1",
-  iconManifestSchema = "g4-mon-icon-manifest-v1",
-  portraitManifestSchema = "g4-mon-portrait-manifest-v1",
+  -- v2 replaces the whole-atlas index with a page inventory: the index binds
+  -- the catalog hash to one marker per icon/portrait page.
+  indexSchema = "g4-mon-index-v2",
+  -- v2 replaces the single global image with per-page records: each selector
+  -- entry carries its zero-based page id and page-local rectangles.
+  iconManifestSchema = "g4-mon-icon-manifest-v2",
+  portraitManifestSchema = "g4-mon-portrait-manifest-v2",
 }
 
 -- The item class carries the source-independent item catalog (definitions,
