@@ -641,7 +641,7 @@ end
 
 -- Register two owned key items, unregister the first to prove the source
 -- slot shift, save and reload to prove persistence, then remove the final
--- copy to prove registration clears.
+-- copy to prove registration survives until an explicit unregister clears it.
 function T.tests.registration_lifecycle_persists_and_clears()
   local game = AcceptanceHarness.new():boot({
     versionId = AcceptanceHarness.defaultVersion(),
@@ -721,7 +721,17 @@ function T.tests.registration_lifecycle_persists_and_clears()
       reloaded:take(SECOND_REGISTER_KEY, 1),
       "removing the final copy must succeed through the live service"
     )
-    Assert.deepEqual(reloaded:registeredItems(), {}, "removing the final copy must clear registration")
+    Assert.equal(reloaded:quantity(SECOND_REGISTER_KEY), 0, "a take to zero removes the pocket slot")
+    Assert.deepEqual(
+      reloaded:registeredItems(),
+      { SECOND_REGISTER_KEY },
+      "removing the final copy leaves registration untouched"
+    )
+    Assert.isTrue(
+      reloaded:unregister(SECOND_REGISTER_KEY),
+      "only explicit unregister clears registration through the live service"
+    )
+    Assert.deepEqual(reloaded:registeredItems(), {}, "explicit unregister must clear registration")
 
     state = hostCallbacks(game)
     view = openBag(game, state)
