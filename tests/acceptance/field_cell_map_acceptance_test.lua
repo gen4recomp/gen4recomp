@@ -54,7 +54,11 @@ end
 T.tests["canonical cell is independently ready"] = function()
   withOutdoor(function(game)
     local cacheFs = game.runtime.cacheFs
-    local _, _, descriptor = centralCell(game)
+    local coverage = centralCell(game)
+    local descriptor = assert(
+      FieldCellCache.find(coverage.index, coverage.matrixMemberId, coverage.anchorX, coverage.anchorZ),
+      "the committed central cell has its canonical index descriptor"
+    )
     Assert.equal(type(FieldCellCache.cellMarkerPath), "function", "per-cell completion owns a marker path")
     Assert.equal(type(FieldCellCache.isCellReady), "function", "per-cell readiness is a cache boundary")
     local markerPath = FieldCellCache.cellMarkerPath(descriptor.matrixMemberId, descriptor.index)

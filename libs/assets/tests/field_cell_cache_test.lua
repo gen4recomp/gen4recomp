@@ -366,6 +366,25 @@ function T.rejects_a_non_table_expected_descriptor()
   Assert.isFalse(FieldCellCache.validateCell(cache, cell, "marker"))
 end
 
+function T.rejects_loaded_cell_record_as_readiness_descriptor()
+  local cache = presentationCache({ geometry = true, texture = true, model = true })
+  local value = assert(cache:loadLua(FieldCellCache.indexPath()))
+  local descriptor = assert(FieldCellCache.find(value, 4, 0, 0))
+  Assert.isTrue(FieldCellCache.isCellReady(cache, descriptor, "marker"))
+
+  local cell = assert(cache:loadLua(FieldCellCache.cellPath(4, 1)))
+  local loadedCellShape = {}
+  for key, item in pairs(cell) do
+    if key ~= "file" then
+      loadedCellShape[key] = item
+    end
+  end
+  Assert.isFalse(
+    FieldCellCache.isCellReady(cache, loadedCellShape, "marker"),
+    "a loaded cell record without its canonical file is not a readiness descriptor"
+  )
+end
+
 function T.validates_static_and_dynamic_building_references()
   local cache = presentationCache({ geometry = true, texture = true, model = true })
   local originalLoadLua = cache.loadLua

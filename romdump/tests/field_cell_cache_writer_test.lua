@@ -111,10 +111,9 @@ function T.writes_a_complete_field_cell_class()
   local b = bundle("field-cell-cache-v2:one")
   Assert.equal(FieldCellCacheWriter.write(cache, b), b.marker)
   Assert.isTrue(FieldCellCacheWriter.isReady(cache, b.marker), "field-cell class is ready")
-  local cell = assert(cache:loadLua(FieldCellCache.cellPath(4, 1)))
   Assert.isTrue(
-    FieldCellCache.isCellReady(cache, cell, cell.cellMarker),
-    "a loaded physical cell remains a usable cache descriptor"
+    FieldCellCache.isCellReady(cache, b.index.matrices[1].cells[1], b.cells["4:1"].cellMarker),
+    "the published index descriptor identifies an independently ready cell"
   )
   Assert.isTrue(cache:exists(MapAssetCache.modelPath("outdoor:1:writer-test"), "file"))
 end
