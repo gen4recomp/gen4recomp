@@ -55,8 +55,8 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _backdropImage GpuAssetPool.Image? chooser backdrop image once realized
 ---@field _infoBaseImage GpuAssetPool.Image? info-surface base artwork once realized
 ---@field _infoOverlayImage GpuAssetPool.Image? info-surface overlay artwork once realized
----@field _portraitImage GpuAssetPool.Image? mon portrait atlas image once realized
----@field _portraitQuads table[] portrait atlas quads per candidate slot once realized
+---@field _portraitImages table<integer, GpuAssetPool.Image> mon portrait page images by zero-based page id once realized
+---@field _portraitQuads table[] portrait quads with their page image per candidate slot once realized
 ---@field _clipNames { turntable: string, ballEffect: string, ballRock: string[], ballOpen: string } instance play names resolved from bindings
 ---@field _sceneRuntime table<string, unknown> minimal renderer scene state (edge colors, fog, flat lighting)
 ---@field _entryTransition string? transition of the last semantic clock sync
@@ -138,7 +138,7 @@ end
 ---@class StarterChoicePresentation.Options
 ---@field manifest table<string, unknown> validated starter-application manifest
 ---@field cacheFs CacheFs generated-asset filesystem
----@field portraits table[] per-candidate portrait descriptors ({ selector: string })
+---@field portraits table[] per-candidate portrait descriptors ({ selector: string, pageId: integer })
 ---@field frameIndex integer player-owned text-frame choice for the framed info message
 
 ---@param opts StarterChoicePresentation.Options
@@ -159,6 +159,10 @@ function StarterChoicePresentation.new(opts)
     assert(
       type(descriptor) == "table" and type(descriptor.selector) == "string",
       "starter portrait descriptor " .. index .. " carries its atlas selector"
+    )
+    assert(
+      type(descriptor.pageId) == "number" and descriptor.pageId % 1 == 0 and descriptor.pageId >= 0,
+      "starter portrait descriptor " .. index .. " carries its page"
     )
   end
   assert(
@@ -191,7 +195,7 @@ function StarterChoicePresentation.new(opts)
     _backdropImage = nil,
     _infoBaseImage = nil,
     _infoOverlayImage = nil,
-    _portraitImage = nil,
+    _portraitImages = {},
     _portraitQuads = {},
     _clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" },
     _sceneRuntime = {},
@@ -669,9 +673,12 @@ end
 -- Every concrete mesh path and image (path plus sampler) the manifest
 -- needs, in first-use order with shared resources listed once. Mirrors the
 -- acquisition the first-draw path performed, so nothing drawable is missed.
+-- Portraits resolve to the deduplicated page images of the actual candidate
+-- descriptors: the whole portrait atlas is never requested.
 ---@param manifest table<string, unknown>
+---@param portraits table[] per-candidate portrait descriptors ({ selector: string, pageId: integer })
 ---@return string[] meshPaths, StarterChoicePrepStep[] imageSteps
-local function collectResources(manifest)
+local function collectResources(manifest, portraits)
   local models = assert(manifest.models, "starter manifest is missing its models")
   local meshPaths, seenMesh = {}, {}
   local function addMesh(path)
@@ -746,7 +753,21 @@ local function collectResources(manifest)
     infoOverlay.width,
     infoOverlay.height
   )
-  addImage(MonCache.portraitImagePath(), "clamp", "clamp")
+  portraits = portraits or {}
+  local seenPages = {}
+  for index, descriptor in ipairs(portraits) do
+    assert(type(descriptor) == "table", "starter portrait descriptor " .. index .. " carries its page")
+    local rawPageId = assert(descriptor.pageId, "starter portrait descriptor " .. index .. " carries its page")
+    assert(
+      type(rawPageId) == "number" and rawPageId % 1 == 0 and rawPageId >= 0,
+      "starter portrait descriptor " .. index .. " carries its page"
+    )
+    local pageId = math.floor(rawPageId)
+    if not seenPages[pageId] then
+      seenPages[pageId] = true
+      addImage(MonCache.portraitPagePath(pageId), "clamp", "clamp")
+    end
+  end
   return meshPaths, imageSteps
 end
 
@@ -779,7 +800,7 @@ function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
     return 0
   end
   if self._plan == nil then
-    local meshPaths, imageSteps = collectResources(self._manifest)
+    local meshPaths, imageSteps = collectResources(self._manifest, self._portraits)
     local queue = context.assetPreparation --[[@as AssetPreparationQueue?]]
     local pool = GpuAssetPool.new(self._cacheFs)
     local plan = {}
@@ -994,26 +1015,37 @@ function StarterChoicePresentation:_finishPreparation()
     self._imageEntries[assert(infoArtwork.overlay, "starter manifest is missing its info overlay layer").image .. "|clamp|clamp"],
     "starter presentation owns no info overlay layer"
   )
-  self._portraitImage = assert(
-    self._imageEntries[MonCache.portraitImagePath() .. "|clamp|clamp"],
-    "starter presentation owns no portrait atlas"
-  )
+  self._portraitImages = {}
+  for _, descriptor in ipairs(self._portraits) do
+    local pageId = assert(descriptor.pageId, "starter portrait descriptor carries its page")
+    if self._portraitImages[pageId] == nil then
+      self._portraitImages[pageId] = assert(
+        self._imageEntries[MonCache.portraitPagePath(pageId) .. "|clamp|clamp"],
+        "starter presentation owns no portrait page " .. pageId
+      )
+    end
+  end
   local portraitManifest = self._cacheFs:loadLua(MonCache.portraitManifestPath())
   assert(portraitManifest ~= nil, "starter presentation requires the mon portrait entries")
   local entries = assert(portraitManifest.entries, "starter presentation requires the mon portrait entries")
-  local atlas = assert(self._portraitImage, "starter presentation owns no portrait atlas")
-  local atlasWidth, atlasHeight = atlas:getWidth(), atlas:getHeight()
   local quads = {}
   for index, descriptor in ipairs(self._portraits) do
     local entry = assert(
       entries[descriptor.selector],
       "starter candidate has no portrait entry for " .. tostring(descriptor.selector)
     )
+    local pageImage = assert(
+      self._portraitImages[descriptor.pageId],
+      "starter presentation owns no portrait page for " .. tostring(descriptor.selector)
+    )
+    local atlasWidth, atlasHeight = pageImage:getWidth(), pageImage:getHeight()
+    local quad
     if graphics ~= nil and graphics.newQuad ~= nil then
-      quads[index] = graphics.newQuad(entry.x, entry.y, entry.width, entry.height, atlasWidth, atlasHeight)
+      quad = graphics.newQuad(entry.x, entry.y, entry.width, entry.height, atlasWidth, atlasHeight)
     else
-      quads[index] = { x = entry.x, y = entry.y, width = entry.width, height = entry.height }
+      quad = { x = entry.x, y = entry.y, width = entry.width, height = entry.height }
     end
+    quads[index] = { image = pageImage, quad = quad }
   end
   self._portraitQuads = quads
   local fogTable = {}
@@ -1567,15 +1599,14 @@ end
 -- position under the caller's logical scope.
 ---@param snapshot StarterChoiceController.Snapshot controller snapshot
 function StarterChoicePresentation:_drawInfoPortrait(snapshot)
-  local quad = assert(
+  local framed = assert(
     self._portraitQuads[snapshot.selection + 1],
     "starter presentation owns no portrait for the inspected candidate"
   )
-  local atlas = assert(self._portraitImage, "starter presentation owns no portrait atlas")
   local portrait = self._manifest.surfaces.info.portrait
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(atlas, quad, portrait.x, portrait.y)
+  graphics.draw(framed.image, framed.quad, portrait.x, portrait.y)
 end
 
 -- Draws every published outer application frame through the already-owned
@@ -1749,7 +1780,6 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windo
   local placement = assert(pane.placement, "the starter compact pane carries its placement")
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
   local infoText, _ = infoMessageFor(self, snapshot)
-  local atlas = assert(self._portraitImage, "starter presentation owns no portrait atlas")
   local selected = snapshot.selection
   local timing = self._manifest.scene.timing
   local machineAlpha = self._machineFade / timing.machineFadeTicks
@@ -1763,9 +1793,9 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windo
     )
     graphics.setColor(1, 1, 1, 1)
     for index, origin in ipairs(COMPACT_PORTRAITS) do
-      local quad =
+      local framed =
         assert(self._portraitQuads[index], "starter presentation owns no portrait for candidate slot " .. index)
-      graphics.draw(atlas, quad, origin.x, origin.y)
+      graphics.draw(framed.image, framed.quad, origin.x, origin.y)
     end
     local focus = assert(COMPACT_PORTRAITS[selected + 1], "starter compact focus names a candidate portrait")
     graphics.setColor(1, 1, 1, 1)
@@ -1806,7 +1836,7 @@ function StarterChoicePresentation:_releaseGpu()
   self._backdropImage = nil
   self._infoBaseImage = nil
   self._infoOverlayImage = nil
-  self._portraitImage = nil
+  self._portraitImages = {}
   self._portraitQuads = {}
   self._clipNames = { turntable = "", ballEffect = "", ballRock = {}, ballOpen = "" }
   self._ready = false

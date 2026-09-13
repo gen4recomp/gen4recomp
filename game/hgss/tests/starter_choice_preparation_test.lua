@@ -342,13 +342,18 @@ local function readyHeadlessCache()
           width = 80,
           height = 80,
           frames = { { x = 0, y = 0, width = 80, height = 80, duration = 1 } },
+          pageId = 0,
         }
       end
     end
   end
   cacheFs:writeLua(MonCache.portraitManifestPath(), {
     schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
-    image = MonCache.portraitImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.portraitPagePath(0), width = 640, height = 320 },
+    },
+    pageIds = { 0 },
     entries = portraitEntries,
     representative = { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
   })
@@ -406,13 +411,14 @@ local function openHeadlessChoice()
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
+  local cacheFs = readyHeadlessCache()
   local host = StarterChoiceState.new({
     catalog = catalog,
-    cacheFs = readyHeadlessCache(),
+    cacheFs = cacheFs,
     frameIndex = 3,
     measureDisplay = headlessBox,
   })
-  return host, service
+  return host, service, cacheFs
 end
 
 local function openTrio(host, service)
@@ -852,6 +858,135 @@ function T.malformed_prepared_payloads_fail_preparation_without_blank_scene()
     "the preparation failure carries a diagnosable cause"
   )
   Assert.isFalse(host:isPresentationReady(), "a failed preparation never reports the scene drawable")
+  host:close()
+  host:dispose()
+end
+
+local function pagedPortraitManifest(cacheFs, speciesForms, pageOf)
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait pages")
+  local entries = {}
+  local order = {}
+  for _, record in ipairs(speciesForms) do
+    for _, gender in ipairs({ "male", "female" }) do
+      for _, shiny in ipairs({ false, true }) do
+        local selector = MonCache.portraitSelector(record.species, record.form, gender, shiny)
+        order[#order + 1] = selector
+      end
+    end
+  end
+  table.sort(order)
+  for index, selector in ipairs(order) do
+    local cell = index - 1
+    entries[selector] = {
+      x = (cell % 8) * 80,
+      y = math.floor(cell / 8) * 80,
+      width = 80,
+      height = 80,
+      frames = {
+        {
+          x = (cell % 8) * 80,
+          y = math.floor(cell / 8) * 80,
+          width = 80,
+          height = 80,
+          duration = 8,
+        },
+      },
+      pageId = pageOf(selector),
+    }
+  end
+  local manifest = {
+    schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.portraitPagePath(0), width = 640, height = 320 },
+      [1] = { pageId = 1, image = MonCache.portraitPagePath(1), width = 640, height = 320 },
+    },
+    pageIds = { 0, 1 },
+    entries = entries,
+    representative = { order[1] },
+  }
+  cacheFs:writeLua(MonCache.portraitManifestPath(), manifest)
+  return manifest
+end
+
+local function candidateSelector(candidate, catalog, entries)
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait selectors")
+  local Personality = requireModule("libs.mons.src.gen4.Personality", "personality owns gender and shininess")
+  local ratio = catalog:species(candidate.species).genderRatio
+  local gender = Personality.gender(ratio, candidate.personality)
+  local shiny = Personality.shiny(candidate.origin.trainerId, candidate.personality)
+  if gender == "genderless" then
+    local maleSelector = MonCache.portraitSelector(candidate.species, candidate.form, "male", shiny)
+    if entries[maleSelector] ~= nil then
+      gender = "male"
+    else
+      gender = "female"
+    end
+  end
+  local selector = MonCache.portraitSelector(candidate.species, candidate.form, gender, shiny)
+  Assert.notNil(entries[selector], "the candidate selector stays planned: " .. selector)
+  return selector
+end
+
+function T.chooser_requests_only_the_pages_selected_by_its_candidates()
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait pages")
+  Assert.equal(type(MonCache.portraitPagePath), "function", "portrait pages have their own path constructor")
+  local host, service, cacheFs = openHeadlessChoice()
+  local catalog = CatalogFixture.makeCatalog()
+  local candidates = {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("SHEDINJA"),
+    service:buildStarter("TOTODILE"),
+  }
+  local speciesForms = {
+    { species = "CHIKORITA", form = 0 },
+    { species = "TOTODILE", form = 0 },
+    { species = "EEVEE", form = 0 },
+    { species = "EEVEE", form = 1 },
+    { species = "SHEDINJA", form = 0 },
+  }
+  pagedPortraitManifest(cacheFs, speciesForms, function()
+    return 0
+  end)
+  host:open(0, candidates)
+  local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the paged manifest stays staged")
+  local selectors = {}
+  for index, candidate in ipairs(candidates) do
+    selectors[index] = candidateSelector(candidate, catalog, portraits.entries)
+  end
+  Assert.isTrue(selectors[1] ~= selectors[2] and selectors[2] ~= selectors[3], "the trio carries distinct selectors")
+  pagedPortraitManifest(cacheFs, speciesForms, function(selector)
+    if selector == selectors[3] then
+      return 1
+    end
+    return 0
+  end)
+  host:close()
+  host:open(0, candidates)
+  portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the repaged manifest stays staged")
+  local queue = fakePreparationQueue()
+  queue.ready = true
+  local backend = stubBackend()
+  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable from its selected pages")
+  local pagesByImage = {}
+  for pageId, page in pairs(assert(portraits.pages, "the staged manifest carries its pages")) do
+    pagesByImage[page.image] = pageId
+  end
+  local requestedPages = {}
+  for _, request in ipairs(queue.requests) do
+    Assert.isTrue(
+      request.path ~= MonCache.portraitImagePath(),
+      "the chooser never falls back to a whole portrait atlas"
+    )
+    if pagesByImage[request.path] ~= nil then
+      requestedPages[request.path] = true
+    end
+  end
+  local expected = {}
+  expected[MonCache.portraitPagePath(0)] = true
+  expected[MonCache.portraitPagePath(1)] = true
+  Assert.deepEqual(requestedPages, expected, "only the distinct pages of the actual candidates are requested")
   host:close()
   host:dispose()
 end

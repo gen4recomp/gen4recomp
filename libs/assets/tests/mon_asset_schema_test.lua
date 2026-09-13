@@ -247,8 +247,12 @@ end
 function T.manifests_require_entries_and_resolving_representatives()
   local MonAssetSchema = schema()
   local manifest = {
-    schema = "g4-mon-icon-manifest-v1",
-    image = "assets/generated/mon/icons.png",
+    schema = "g4-mon-icon-manifest-v2",
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = "assets/generated/mon/icons/0.png", width = 256, height = 128 },
+    },
+    pageIds = { 0 },
     entries = {
       ["CHIKORITA/f0"] = {
         x = 0,
@@ -256,6 +260,7 @@ function T.manifests_require_entries_and_resolving_representatives()
         width = 32,
         height = 32,
         frames = { { x = 0, y = 0, width = 32, height = 32, duration = 8 } },
+        pageId = 0,
       },
     },
     representative = { "CHIKORITA/f0" },
@@ -263,20 +268,82 @@ function T.manifests_require_entries_and_resolving_representatives()
   Assert.isTrue(MonAssetSchema.assertIconManifest(manifest))
   Assert.isTrue(MonAssetSchema.isValidIconManifest(manifest))
   local dangling = {
-    schema = "g4-mon-icon-manifest-v1",
-    image = "assets/generated/mon/icons.png",
+    schema = "g4-mon-icon-manifest-v2",
+    version = { id = "heartgold", language = "english" },
+    pages = manifest.pages,
+    pageIds = manifest.pageIds,
     entries = manifest.entries,
     representative = { "MISSING/f0" },
   }
   Assert.isFalse(MonAssetSchema.isValidIconManifest(dangling))
+  local escaped = {
+    schema = "g4-mon-icon-manifest-v2",
+    version = { id = "heartgold", language = "english" },
+    pages = manifest.pages,
+    pageIds = manifest.pageIds,
+    entries = {
+      ["CHIKORITA/f0"] = {
+        x = 224,
+        y = 96,
+        width = 32,
+        height = 32,
+        frames = { { x = 224, y = 96, width = 64, height = 32, duration = 8 } },
+        pageId = 0,
+      },
+    },
+    representative = { "CHIKORITA/f0" },
+  }
+  Assert.isFalse(MonAssetSchema.isValidIconManifest(escaped))
   local portrait = {
-    schema = "g4-mon-portrait-manifest-v1",
-    image = "assets/generated/mon/portraits.png",
+    schema = "g4-mon-portrait-manifest-v2",
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = "assets/generated/mon/portraits/0.png", width = 640, height = 320 },
+    },
+    pageIds = { 0 },
     entries = manifest.entries,
     representative = { "CHIKORITA/f0" },
   }
   Assert.isTrue(MonAssetSchema.assertPortraitManifest(portrait))
   Assert.isFalse(MonAssetSchema.isValidPortraitManifest(manifest))
+end
+
+function T.index_binds_the_catalog_hash_to_one_marker_per_page()
+  local MonAssetSchema = schema()
+  local index = {
+    schema = "g4-mon-index-v2",
+    version = { id = "heartgold", language = "english" },
+    catalogHash = string.rep("a", 40),
+    catalog = "data/generated/mon/catalog.lua",
+    iconManifest = "data/generated/mon/icons.lua",
+    portraitManifest = "data/generated/mon/portraits.lua",
+    iconPages = { "icon-marker-0" },
+    portraitPages = { "portrait-marker-0" },
+  }
+  Assert.isTrue(MonAssetSchema.assertIndex(index))
+  Assert.isTrue(MonAssetSchema.isValidIndex(index))
+  local legacy = {
+    schema = "g4-mon-index-v1",
+    version = { id = "heartgold", language = "english" },
+    catalogHash = string.rep("a", 40),
+    catalog = "data/generated/mon/catalog.lua",
+    iconManifest = "data/generated/mon/icons.lua",
+    portraitManifest = "data/generated/mon/portraits.lua",
+    iconPages = { "icon-marker-0" },
+    portraitPages = { "portrait-marker-0" },
+  }
+  Assert.isFalse(MonAssetSchema.isValidIndex(legacy))
+  local empty = {
+    schema = "g4-mon-index-v2",
+    version = { id = "heartgold", language = "english" },
+    catalogHash = string.rep("a", 40),
+    catalog = "data/generated/mon/catalog.lua",
+    iconManifest = "data/generated/mon/icons.lua",
+    portraitManifest = "data/generated/mon/portraits.lua",
+    iconPages = {},
+    portraitPages = { "portrait-marker-0" },
+  }
+  Assert.isFalse(MonAssetSchema.isValidIndex(empty))
 end
 
 return { tests = T }

@@ -652,8 +652,10 @@ local function checkHash(value, context, code, field)
   end
 end
 
--- Class index validation: schema identity, version, content hashes, and
--- cache-relative paths.
+-- Class index validation: schema identity, version, the catalog content
+-- hash, cache-relative payload paths, and one marker per declared icon and
+-- portrait page in ascending page order. The index binds the summary, never
+-- the pixels: page images stay page-owned.
 function MonAssetSchema.assertIndex(index)
   local context = {}
   if type(index) ~= "table" then
@@ -663,16 +665,14 @@ function MonAssetSchema.assertIndex(index)
     schema = true,
     version = true,
     catalogHash = true,
-    iconHash = true,
-    portraitHash = true,
     catalog = true,
-    icons = true,
     iconManifest = true,
-    portraits = true,
     portraitManifest = true,
+    iconPages = true,
+    portraitPages = true,
   }, context, "MON_INDEX_INVALID")
-  if index.schema ~= "g4-mon-index-v1" then
-    fail("MON_INDEX_INVALID", "index schema must be g4-mon-index-v1", context)
+  if index.schema ~= "g4-mon-index-v2" then
+    fail("MON_INDEX_INVALID", "index schema must be g4-mon-index-v2", context)
   end
   if type(index.version) ~= "table" then
     fail("MON_INDEX_INVALID", "index version must be a record", context)
@@ -681,13 +681,20 @@ function MonAssetSchema.assertIndex(index)
   checkNonEmptyString(index.version.id, context, "MON_INDEX_INVALID", "index version id")
   checkNonEmptyString(index.version.language, context, "MON_INDEX_INVALID", "index version language")
   checkHash(index.catalogHash, context, "MON_INDEX_INVALID", "catalogHash")
-  checkHash(index.iconHash, context, "MON_INDEX_INVALID", "iconHash")
-  checkHash(index.portraitHash, context, "MON_INDEX_INVALID", "portraitHash")
   checkNonEmptyString(index.catalog, context, "MON_INDEX_INVALID", "catalog path")
-  checkNonEmptyString(index.icons, context, "MON_INDEX_INVALID", "icons path")
   checkNonEmptyString(index.iconManifest, context, "MON_INDEX_INVALID", "iconManifest path")
-  checkNonEmptyString(index.portraits, context, "MON_INDEX_INVALID", "portraits path")
   checkNonEmptyString(index.portraitManifest, context, "MON_INDEX_INVALID", "portraitManifest path")
+  for _, field in ipairs({ "iconPages", "portraitPages" }) do
+    local markers = index[field]
+    if not Validate.isArray(markers) or #markers == 0 then
+      fail("MON_INDEX_INVALID", field .. " must carry one marker per page", context)
+    end
+    for position, marker in ipairs(markers) do
+      if type(marker) ~= "string" or marker == "" then
+        fail("MON_INDEX_INVALID", field .. " marker " .. position .. " must be a non-empty string", context)
+      end
+    end
+  end
   return true
 end
 
@@ -709,8 +716,11 @@ local function checkManifestRect(rect, context, code, field)
   end
 end
 
--- Presentation manifest validation: every entry addresses atlas rectangles
--- with animation frames, and every representative selector resolves.
+-- Presentation manifest validation: the manifest names every page with
+-- its image and dimensions, every entry carries its page id with
+-- page-local rectangles and animation frames, and every representative
+-- selector resolves. No source archive, member, or palette identity may
+-- appear here: pages are source-independent.
 function MonAssetSchema.assertManifest(manifest, expectedSchema)
   local context = {}
   if type(manifest) ~= "table" then
@@ -718,14 +728,56 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
   end
   checkKeys(
     manifest,
-    { schema = true, image = true, entries = true, representative = true },
+    { schema = true, version = true, pages = true, pageIds = true, entries = true, representative = true },
     context,
     "MON_MANIFEST_INVALID"
   )
   if manifest.schema ~= expectedSchema then
     fail("MON_MANIFEST_INVALID", "manifest schema must be " .. expectedSchema, context)
   end
-  checkNonEmptyString(manifest.image, context, "MON_MANIFEST_INVALID", "manifest image")
+  if type(manifest.version) ~= "table" then
+    fail("MON_MANIFEST_INVALID", "manifest version must be a record", context)
+  end
+  checkKeys(manifest.version, { id = true, language = true }, context, "MON_MANIFEST_INVALID")
+  checkNonEmptyString(manifest.version.id, context, "MON_MANIFEST_INVALID", "manifest version id")
+  checkNonEmptyString(manifest.version.language, context, "MON_MANIFEST_INVALID", "manifest version language")
+  if type(manifest.pages) ~= "table" then
+    fail("MON_MANIFEST_INVALID", "manifest pages must be a record", context)
+  end
+  local pageCount = 0
+  for pageId, page in pairs(manifest.pages) do
+    if type(pageId) ~= "number" or pageId % 1 ~= 0 or pageId < 0 then
+      fail("MON_MANIFEST_INVALID", "manifest page ids must be non-negative integers", context)
+    end
+    if type(page) ~= "table" then
+      fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " must be a record", context)
+    end
+    checkKeys(page, { pageId = true, image = true, width = true, height = true }, context, "MON_MANIFEST_INVALID")
+    if page.pageId ~= pageId then
+      fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " must carry its own id", context)
+    end
+    checkNonEmptyString(page.image, context, "MON_MANIFEST_INVALID", "manifest page " .. pageId .. " image")
+    for _, axis in ipairs({ "width", "height" }) do
+      if type(page[axis]) ~= "number" or page[axis] % 1 ~= 0 or page[axis] <= 0 then
+        fail("MON_MANIFEST_INVALID", "manifest page " .. pageId .. " " .. axis .. " must be positive", context)
+      end
+    end
+    pageCount = pageCount + 1
+  end
+  if pageCount == 0 then
+    fail("MON_MANIFEST_INVALID", "manifest must declare pages", context)
+  end
+  if not Validate.isArray(manifest.pageIds) or #manifest.pageIds ~= pageCount then
+    fail("MON_MANIFEST_INVALID", "manifest pageIds must inventory every declared page", context)
+  end
+  for position, pageId in ipairs(manifest.pageIds) do
+    if pageId ~= position - 1 then
+      fail("MON_MANIFEST_INVALID", "manifest page ids must be consecutive from zero", context)
+    end
+    if manifest.pages[pageId] == nil then
+      fail("MON_MANIFEST_INVALID", "manifest page inventory names undeclared page " .. pageId, context)
+    end
+  end
   if type(manifest.entries) ~= "table" then
     fail("MON_MANIFEST_INVALID", "manifest entries must be a record", context)
   end
@@ -740,11 +792,22 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
     end
     checkKeys(
       entry,
-      { x = true, y = true, width = true, height = true, frames = true },
+      { x = true, y = true, width = true, height = true, frames = true, pageId = true },
       context,
       "MON_MANIFEST_INVALID"
     )
     checkManifestRect(entry, context, "MON_MANIFEST_INVALID", "manifest entry " .. selector)
+    if type(entry.pageId) ~= "number" or entry.pageId % 1 ~= 0 or entry.pageId < 0 then
+      fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " must carry a page id", context)
+    end
+    local page = manifest.pages[entry.pageId]
+    if page == nil then
+      fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " names undeclared page " .. entry.pageId, context)
+    end
+    assert(page ~= nil, "the manifest carries the entry page")
+    if entry.x + entry.width > page.width or entry.y + entry.height > page.height then
+      fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " escapes its page bounds", context)
+    end
     if not Validate.isArray(entry.frames) or #entry.frames == 0 then
       fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " must carry frames", context)
     end
@@ -773,6 +836,13 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
           fail("MON_MANIFEST_INVALID", "manifest entry " .. selector .. " frame duration must be positive", context)
         end
       end
+      if frame.x + frame.width > page.width or frame.y + frame.height > page.height then
+        fail(
+          "MON_MANIFEST_INVALID",
+          "manifest entry " .. selector .. " frame " .. frameIndex .. " escapes its page bounds",
+          context
+        )
+      end
     end
     local first = entry.frames[1]
     if entry.x ~= first.x or entry.y ~= first.y or entry.width ~= first.width or entry.height ~= first.height then
@@ -794,11 +864,11 @@ function MonAssetSchema.assertManifest(manifest, expectedSchema)
 end
 
 function MonAssetSchema.assertIconManifest(manifest)
-  return MonAssetSchema.assertManifest(manifest, "g4-mon-icon-manifest-v1")
+  return MonAssetSchema.assertManifest(manifest, "g4-mon-icon-manifest-v2")
 end
 
 function MonAssetSchema.assertPortraitManifest(manifest)
-  return MonAssetSchema.assertManifest(manifest, "g4-mon-portrait-manifest-v1")
+  return MonAssetSchema.assertManifest(manifest, "g4-mon-portrait-manifest-v2")
 end
 
 function MonAssetSchema.isValidIconManifest(manifest)
