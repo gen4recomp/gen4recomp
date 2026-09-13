@@ -35,6 +35,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
+local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 
 local FieldCacheBuild = {}
 
@@ -62,6 +63,55 @@ local function requireBundle(bundle, err)
   end
   assert(Errors.is(err), "field cache stage failure must be a structured error")
   return nil, err
+end
+
+-- Bounded per-bank message build: one shared source session compiles,
+-- stages, and validates a single bank at a time, dropping each decoded and
+-- tokenized bundle before the next bank starts. The family summary is
+-- published only once every required bank is ready.
+---@param context VersionBuildContext
+---@return true|nil, Errors.Error|string|nil
+local function buildMessageBanks(context)
+  local opened, session = pcall(FieldMessageCompiler.newSession, context.romFs)
+  if not opened then
+    if Errors.is(session) then
+      return nil, session --[[@as Errors.Error]]
+    end
+    error(session, 0)
+  end
+  assert(session ~= nil, "unreachable: a successful session open always returns a session")
+  local bankIds = FieldMessageCompiler.requiredBankIds()
+  local bankMarkers = {}
+  local compiled = 0
+  for _, bankId in ipairs(bankIds) do
+    local one, bankErr = session:compileBank(bankId)
+    if not one then
+      session:close()
+      assert(Errors.is(bankErr), "field cache stage failure must be a structured error")
+      return nil, bankErr
+    end
+    bankMarkers[bankId] = one.marker
+    if context.forced or not FieldMessageCache.isBankReady(context.cacheFs, bankId, one.marker) then
+      FieldMessageCacheWriter.writeBank(context.cacheFs, one)
+      compiled = compiled + 1
+    end
+  end
+  session:close()
+  local index = {
+    schema = FieldMessageCache.INDEX_SCHEMA,
+    version = context.version,
+    bankIds = bankIds,
+  }
+  local summaryMarker = FieldMessageCacheWriter.summaryMarker(index, bankMarkers)
+  if context.forced or not FieldMessageCacheWriter.isReady(context.cacheFs, summaryMarker) then
+    FieldMessageCacheWriter.writeSummary(context.cacheFs, index, bankMarkers)
+    context.log(string.format("build-cache: %s field messages compiled (%d banks)", context.version, #bankIds))
+  elseif compiled > 0 then
+    context.log(string.format("build-cache: %s field messages compiled (%d banks)", context.version, #bankIds))
+  else
+    context.log(string.format("build-cache: %s field messages current", context.version))
+  end
+  return true
 end
 
 ---@param context VersionBuildContext
@@ -123,21 +173,10 @@ local function buildLateFieldAssets(context)
     end
   )
 
-  bundle, err = FieldMessageCompiler.compile(context.romFs)
-  local message = requireBundle(bundle, err)
-  if not message then
-    return nil, err
+  local messagesReady, messagesErr = buildMessageBanks(context)
+  if messagesReady == nil then
+    return nil, messagesErr
   end
-  writeIfStale(
-    context,
-    message,
-    FieldMessageCacheWriter,
-    FieldMessageCacheWriter.isReady,
-    "field messages",
-    function(value)
-      return string.format(" (%d banks)", #value.index.bankIds)
-    end
-  )
 
   return true
 end

@@ -6,6 +6,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+local FieldMessageCacheWriter = require("romdump.src.digest.ui.FieldMessageCacheWriter")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
@@ -121,7 +122,15 @@ function T.compiled_cache_artifacts_are_ready_and_stable(romFs, version)
     end
   end
   Assert.isTrue(menuBankSelected, "the standard menu bank must be selected for the derived cache")
-  Assert.isTrue(FieldMessageCache.isReady(cache, messageBundle.marker))
+  local messageSession = assert(FieldMessageCompiler.newSession(romFs))
+  local bankMarkers = {}
+  for _, bankId in ipairs(messageBundle.index.bankIds) do
+    local one = assert(messageSession:compileBank(bankId))
+    bankMarkers[bankId] = one.marker
+  end
+  messageSession:close()
+  local messageSummary = FieldMessageCacheWriter.summaryMarker(messageBundle.index, bankMarkers)
+  Assert.isTrue(FieldMessageCache.isReady(cache, messageSummary))
   Assert.equal(FieldMessageCache.bankPath(542), "data/generated/field/messages/banks/0542.lua")
   local fontBundle = assert(FieldFontCompiler.compile(romFs))
   Assert.isTrue(require("romdump.src.digest.ui.FieldFontCacheWriter").isReady(cache, fontBundle.marker))

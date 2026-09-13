@@ -136,7 +136,11 @@ function T.compiles_tokenized_lossless_banks()
   Assert.equal(bank.schema, FieldMessageCache.SCHEMA)
   Assert.equal(bank.bankId, 542)
   Assert.equal(bank.messageCount, 2)
-  Assert.isNil(bank.source, "bank source identity lives in the dependency record")
+  -- A bank record carries no source identity; read it as an open map to
+  -- prove the field is absent.
+  ---@type table<string, unknown>
+  local bankShape = bank
+  Assert.isNil(bankShape.source, "bank source identity lives in the dependency record")
   Assert.deepEqual(bank.messages[0].raw, { 0x0141, 0x0153, 0x015B, 0x01AD, 0x01DE, 0xFFFF })
   -- The asset carries the modder-facing display text beside the tokens.
   Assert.equal(bank.messages[0].text, "Wow, ")
@@ -147,8 +151,10 @@ function T.compiles_tokenized_lossless_banks()
   Assert.equal(bank.messages[1].tokens[#bank.messages[1].tokens].kind, "eos")
 
   Assert.equal(bundle.dependencies.messageNarc.narcId, 27)
-  Assert.equal(bundle.dependencies.bank542MemberSha1, "member-542-sha")
-  Assert.equal(bundle.dependencies.bank543MemberSha1, "member-543-sha")
+  ---@type table<string, unknown>
+  local dependencyShas = bundle.dependencies
+  Assert.equal(dependencyShas.bank542MemberSha1, "member-542-sha")
+  Assert.equal(dependencyShas.bank543MemberSha1, "member-543-sha")
   for _, bankId in ipairs(bundle.index.bankIds) do
     Assert.equal(bundle.dependencies["bank" .. bankId .. "MemberSha1"], "member-" .. bankId .. "-sha")
   end
@@ -354,6 +360,138 @@ function T.unmapped_glyph_fails_compilation_with_context()
   Assert.equal(assert(err).code, "MESSAGE_GLYPH_UNMAPPED")
   Assert.equal(assert(err).context.bankId, 542)
   Assert.equal(assert(err).context.messageId, 0)
+end
+
+-- One worker source session compiles a single selected bank: only the
+-- chosen member is read and decoded, the bank record matches the aggregate
+-- normalization exactly, the result never retains the whole corpus, and the
+-- session closes idempotently and compiles nothing afterwards.
+function T.session_compiles_a_selected_bank_without_its_siblings()
+  Assert.equal(type(FieldMessageCompiler.newSession), "function", "per-bank production reuses one source session")
+  local romFs, sha1, hashLua = fixture()
+  local reads = {}
+  local innerOpen = romFs.openNarc
+  romFs.openNarc = function(_, alias)
+    local archive = assert(innerOpen(romFs, alias), "the message archive opens in the test fixture")
+    local innerRead = archive.readMember
+    return {
+      readMember = function(_, memberId)
+        reads[memberId] = (reads[memberId] or 0) + 1
+        return innerRead(archive, memberId)
+      end,
+    }
+  end
+  local session = assert(FieldMessageCompiler.newSession(romFs, sha1, hashLua))
+  Assert.equal(type(session.compileBank), "function", "the session compiles one bank at a time")
+  local one = assert(session:compileBank(542))
+  Assert.equal(one.bankId, 542)
+  -- A one-bank result carries no corpus; read it as an open map to prove
+  -- the field is absent.
+  ---@type table<string, unknown>
+  local oneShape = one
+  Assert.isNil(oneShape.banks, "a one-bank result must not retain the whole corpus")
+  Assert.notNil(reads[542], "the selected bank is decoded")
+  Assert.isNil(reads[543], "compiling one bank must not decode its siblings")
+  local whole = assert(FieldMessageCompiler.compile(romFs, sha1, hashLua))
+  Assert.equal(
+    LuaWriter.encode(one.bank),
+    LuaWriter.encode(whole.banks[542]),
+    "the one-bank record matches the aggregate normalization"
+  )
+  session:close()
+  session:close()
+  Assert.isNil(session:compileBank(542), "a closed session compiles nothing")
+end
+
+-- Banks read only through runtime protocol constants stay selected even when
+-- no map header or script bank references them, exactly once each.
+function T.protocol_only_banks_stay_selected_without_map_or_script_references()
+  local mapReferenced = {}
+  for map in MapCatalog.all() do
+    mapReferenced[assert(map.messageMemberId)] = true
+  end
+  local scriptReferenced = {}
+  for _, bankId in pairs(ScriptMembers.banks) do
+    scriptReferenced[assert(bankId)] = true
+  end
+  for _, bankId in ipairs({ 219, 445 }) do
+    Assert.isNil(mapReferenced[bankId], "bank " .. bankId .. " has no map-header reference")
+    Assert.isNil(scriptReferenced[bankId], "bank " .. bankId .. " has no script-bank reference")
+  end
+  local selected = {}
+  for _, bankId in ipairs(FieldMessageCompiler.requiredBankIds()) do
+    Assert.isNil(selected[bankId], "a source bank must be emitted only once")
+    selected[bankId] = true
+  end
+  Assert.isTrue(selected[219] == true, "the opening-introduction bank stays selected")
+  Assert.isTrue(selected[445] == true, "the opposite-protagonist name bank stays selected")
+  Assert.isTrue(selected[MenuProtocol.STANDARD_MESSAGE_BANK] == true, "the standard list-menu bank stays selected")
+end
+
+-- A malformed bank fails alone with its bank/message context while valid
+-- banks from the same session stay usable: one bad member never poisons the
+-- session and never stands in as an empty success.
+function T.malformed_bank_fails_alone_without_poisoning_the_session()
+  Assert.equal(type(FieldMessageCompiler.newSession), "function", "per-bank production reuses one source session")
+  local valid = FieldMessageBank.encodeForTests({ { 0x012F, 0xFFFF } }, 0x1700)
+  local malformed = FieldMessageBank.encodeForTests({ { 0x0001, 0xFFFF } }, 0x1701)
+  local romFs = {
+    resolvedNarc = function()
+      return { symbol = "NARC_msgdata_msg", alias = "messages", narcId = 27, fileId = 77, path = "a/0/2/7" }
+    end,
+    read = function()
+      return "archive-bytes"
+    end,
+    openNarc = function()
+      return {
+        readMember = function(_, memberId)
+          if memberId == 700 then
+            return valid
+          end
+          if memberId == 701 then
+            return malformed
+          end
+          error("unexpected bank " .. tostring(memberId))
+        end,
+      }
+    end,
+    metadata = function()
+      return { sha1 = "rom-sha" }
+    end,
+    version = function()
+      return "heartgold"
+    end,
+  }
+  ---@cast romFs RomFs
+  local session = assert(FieldMessageCompiler.newSession(romFs --[[@as RomFs]]))
+  local first = assert(session:compileBank(700))
+  Assert.equal(first.bankId, 700)
+  local missing, err = session:compileBank(701)
+  Assert.isNil(missing, "a malformed bank must not produce a bank record")
+  err = assert(err, "a malformed bank must report its structured failure")
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "MESSAGE_GLYPH_UNMAPPED")
+  Assert.equal(err.context.bankId, 701)
+  Assert.equal(err.context.messageId, 0)
+  local second = assert(session:compileBank(700), "the session keeps serving valid banks after a failure")
+  Assert.equal(LuaWriter.encode(second.bank), LuaWriter.encode(first.bank))
+  session:close()
+end
+
+-- Bank keys are validated at the session boundary: a malformed key is a
+-- programming fault, never a structured source failure, and rejecting it
+-- never poisons the session for valid banks.
+function T.bank_keys_are_validated_at_the_session_boundary()
+  local romFs = fixture()
+  local session = assert(FieldMessageCompiler.newSession(romFs))
+  for _, badKey in ipairs({ -1, 1.5, "542" }) do
+    Assert.throws(function()
+      session:compileBank(badKey)
+    end)
+  end
+  local valid = assert(session:compileBank(542), "rejected keys never poison the session")
+  Assert.equal(valid.bankId, 542)
+  session:close()
 end
 
 return { tests = T }
