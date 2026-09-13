@@ -79,6 +79,11 @@
 -- job identity, and each successful publication leaves a generation receipt
 -- beside the family output, so a receipt plus the family validator proves
 -- the current generation without recompiling.
+--
+-- world schema 1: the world manifest is a structural catalog derived from
+-- source analysis alone. Membership means the source map is structurally
+-- loadable, never that its scene geometry compiled; every record carries the
+-- resolver-normalized world origin alongside its source identities.
 
 local DerivedAssetContract = {}
 
@@ -96,6 +101,10 @@ DerivedAssetContract.map = {
   sceneSchema = "g4-map-scene-v10",
   terrainSchema = "g4-terrain-surfaces-v1",
   collisionVersion = 1,
+}
+
+DerivedAssetContract.world = {
+  schema = "g4-world-v1",
 }
 
 DerivedAssetContract.fieldCells = {
