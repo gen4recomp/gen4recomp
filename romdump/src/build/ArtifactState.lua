@@ -26,6 +26,11 @@ ArtifactState.KINDS = {
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,
+  -- One staged audio bank closure (or the family summary) per job: each bank
+  -- owns its bank record, its sequence records, and its completion record
+  -- with shared content-addressed samples, the summary owns only the
+  -- provenance, the index, and the completion.
+  ["audio-bank"] = true,
   -- One staged mon artifact per job: the semantic catalog and the selector
   -- layout each own their payload and marker, each icon/portrait page owns
   -- its own image and marker, and the summary owns only the index,

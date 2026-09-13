@@ -4,20 +4,59 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local CompilerPool = require("romdump.src.build.CompilerPool")
+local AudioCache = require("libs.assets.src.audio.AudioCache")
 local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
 
 local ScriptAudioCacheBuild = {}
 
----@param bundle table<string, unknown>|nil
 ---@param err Errors.Error|string|nil
----@return table<string, unknown>|nil, Errors.Error|string|nil
-local function requireBundle(bundle, err)
-  if bundle then
-    return bundle
-  end
+---@return nil, Errors.Error|string|nil
+local function requireError(err)
   assert(Errors.is(err), "script/audio stage failure must be a structured error")
   return nil, err
+end
+
+-- Bounded per-bank audio build: the catalog plans every bank closure without
+-- touching waves, then one closure at a time compiles, stages, and validates
+-- through the audio writer, dropping each bank's decoded PCM before the next
+-- bank starts. The family summary publishes only once every planned closure
+-- is current.
+---@param context VersionBuildContext
+---@return true|nil, Errors.Error|string|nil
+local function buildAudioBanks(context)
+  local catalog, planErr = AudioCompiler.plan(context.romFs)
+  if catalog == nil then
+    return requireError(planErr)
+  end
+  local identity, identityErr = AudioCompiler.soundIdentity(context.romFs)
+  if identity == nil then
+    return requireError(identityErr)
+  end
+  local bankMarkers = {}
+  local compiled = 0
+  for _, bankPlan in ipairs(catalog.bankPlans) do
+    local expected = AudioCompiler.bankMarker(identity, bankPlan)
+    bankMarkers[bankPlan.bankId] = expected
+    if context.forced or not AudioCache.isBankReady(context.cacheFs, bankPlan.bankId, expected) then
+      local marker, bankErr = AudioCacheWriter.writeBank(context.cacheFs, context.romFs, bankPlan)
+      if marker == nil then
+        return requireError(bankErr)
+      end
+      assert(marker == expected, "a staged bank closure carries its planned marker")
+      compiled = compiled + 1
+    end
+  end
+  local summaryMarker = AudioCacheWriter.summaryMarker(catalog, bankMarkers)
+  if context.forced or not AudioCacheWriter.isReady(context.cacheFs, summaryMarker) then
+    AudioCacheWriter.writeSummary(context.cacheFs, catalog)
+    context.log(string.format("build-cache: %s audio compiled", context.version))
+  elseif compiled > 0 then
+    context.log(string.format("build-cache: %s audio compiled", context.version))
+  else
+    context.log(string.format("build-cache: %s audio current", context.version))
+  end
+  return true
 end
 
 ---@param context VersionBuildContext
@@ -73,16 +112,9 @@ function ScriptAudioCacheBuild.build(context)
     context.log(string.format("build-cache: %s scripts current", context.version))
   end
 
-  local audioBundle, audioErr = AudioCompiler.compile(context.romFs)
-  local audio = requireBundle(audioBundle, audioErr)
-  if not audio then
+  local audioReady, audioErr = buildAudioBanks(context)
+  if audioReady == nil then
     return nil, audioErr
-  end
-  if context.forced or not AudioCacheWriter.isReady(context.cacheFs, audio.marker) then
-    AudioCacheWriter.write(context.cacheFs, audio)
-    context.log(string.format("build-cache: %s audio compiled", context.version))
-  else
-    context.log(string.format("build-cache: %s audio current", context.version))
   end
   return true
 end
