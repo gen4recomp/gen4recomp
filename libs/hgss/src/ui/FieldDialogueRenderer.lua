@@ -26,7 +26,7 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class FieldDialogueRenderer
 ---@field _theme FieldDialogueTheme
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _text FieldDialogueRenderer.TextRenderer the shared glyph atlas/line drawing collaborator
 ---@field _manifest table<string, unknown> the generated field-UI manifest
 ---@field _focusIndicatorEnabled boolean whether the source focus indicator is composed
@@ -67,7 +67,7 @@ function FieldDialogueRenderer.new(opts)
     graphics = assert(love.graphics)
   end
   assert(graphics and graphics.newImage and graphics.newQuad, "FieldDialogueRenderer requires love.graphics")
-  ---@cast graphics love.Graphics|love.graphics
+  ---@cast graphics love.graphics
   local text = opts.text
   assert(
     text and type(text.drawLine) == "function" and type(text.drawFocusIndicator) == "function",

@@ -11,7 +11,7 @@
 -- suites assert exactly the record shapes this helper produces; the real
 -- love.graphics object is never touched.
 
----@class FakeGraphics: love.Graphics
+---@class FakeGraphics: love.graphics
 ---@field images table[]
 ---@field draws table[]
 ---@field transforms table[]
@@ -26,7 +26,7 @@ local FakeGraphics = {}
 
 -- opts.canvas/shader/blendMode/... seed the settable state so tests can
 -- verify exact restoration after a draw. The returned table is structurally
--- a love.Graphics subset plus the recording fields; call sites pass it as
+-- a love.graphics subset plus the recording fields; call sites pass it as
 -- the renderers' injectable graphics namespace.
 ---@param opts? { canvas?: any, shader?: any, blendMode?: any, blendAlpha?: any, depthMode?: any, depthWrite?: boolean, wireframe?: boolean, cullMode?: any, color?: number[], scissor?: number[], lineWidth?: number, imageSizes?: table[], failOnQuadCall?: integer, failOnDrawCall?: integer, failOnImageCall?: integer, failOnShaderCall?: integer, shaderReturnsNil?: boolean }
 ---@return FakeGraphics

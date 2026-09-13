@@ -45,13 +45,13 @@ local DEFAULT_SOURCE_TYPE = 0
 -- alpha (defaulting to opaque).
 ---@param color { r: integer, g: integer, b: integer }
 ---@param alpha number?
----@param lg love.Graphics|love.graphics
+---@param lg love.graphics
 local function setColor255(lg, color, alpha)
   lg.setColor(color.r / 255, color.g / 255, color.b / 255, alpha or 1)
 end
 
 ---@class FieldSignpostRenderer
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _windowStyles FieldSignpostRenderer.WindowStyles
 ---@field _text FieldSignpostRenderer.TextRenderer the shared glyph atlas/line drawing collaborator
 ---@field _manifest table<string, unknown> the generated field-UI manifest
@@ -91,7 +91,7 @@ function FieldSignpostRenderer.new(opts)
     graphics = love and love.graphics
   end
   assert(graphics and graphics.newImage and graphics.newQuad, "FieldSignpostRenderer requires love.graphics")
-  ---@cast graphics love.Graphics|love.graphics
+  ---@cast graphics love.graphics
   local windowStyles = opts.windowStyles
   assert(
     windowStyles and type(windowStyles.resolve) == "function",

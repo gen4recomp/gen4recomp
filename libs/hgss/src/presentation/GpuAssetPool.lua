@@ -25,21 +25,15 @@ local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
----@class GpuAssetPool.Mesh : love.Mesh
----@field release fun(self: GpuAssetPool.Mesh)
----@class GpuAssetPool.Image
----@field setFilter fun(self: GpuAssetPool.Image, min: string, mag: string)
----@field setWrap fun(self: GpuAssetPool.Image, wrapX: string, wrapY: string)
----@field release fun(self: GpuAssetPool.Image)
----@field getWidth fun(self: GpuAssetPool.Image): integer
----@field getHeight fun(self: GpuAssetPool.Image): integer
+---@class GpuAssetPool.Mesh: love.Mesh
+---@class GpuAssetPool.Image: love.Image
 ---@class GpuAssetPool.Graphics
 ---@field newImage fun(data: unknown): GpuAssetPool.Image
 ---@alias GpuAssetPool.MeshBuilder fun(decoded: table<string, unknown>): GpuAssetPool.Mesh
 ---@alias GpuAssetPool.ImageBuilder fun(path: string): GpuAssetPool.Image
 ---@class GpuAssetPool
 ---@field cacheFs table<string, unknown>
----@field graphics GpuAssetPool.Graphics|love.Graphics|love.graphics
+---@field graphics GpuAssetPool.Graphics|love.graphics
 ---@field meshBuilder GpuAssetPool.MeshBuilder
 ---@field imageBuilder GpuAssetPool.ImageBuilder?
 ---@field meshes GpuAssetPool.Mesh[]
@@ -122,13 +116,13 @@ end
 function GpuAssetPool.new(cacheFs, opts)
   assert(cacheFs and cacheFs.read, "GpuAssetPool requires a CacheFs-shaped object")
   opts = opts or {}
-  ---@type GpuAssetPool.Graphics|love.Graphics|love.graphics|nil
+  ---@type GpuAssetPool.Graphics|love.graphics|nil
   local graphics = opts.graphics
   if graphics == nil then
     graphics = love and love.graphics
   end
   assert(graphics and graphics.newImage, "GpuAssetPool requires love.graphics")
-  ---@cast graphics GpuAssetPool.Graphics|love.Graphics|love.graphics
+  ---@cast graphics GpuAssetPool.Graphics|love.graphics
   return setmetatable({
     cacheFs = cacheFs,
     graphics = graphics,

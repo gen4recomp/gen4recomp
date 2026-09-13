@@ -10,7 +10,7 @@ local FieldDrawState = {}
 -- Captures every graphics state the renderers touch. The scissor tuple is
 -- stored as a table so a cleared scissor (nil tuple) is distinguishable from
 -- an active one.
----@param lg love.Graphics|love.graphics
+---@param lg love.graphics
 ---@return table<string, unknown>
 function FieldDrawState.save(lg)
   local blendMode, blendAlpha = lg.getBlendMode()
@@ -32,7 +32,7 @@ end
 
 -- Restores the exact captured state, including re-enabling a scissor that
 -- was active before the draw.
----@param lg love.Graphics|love.graphics
+---@param lg love.graphics
 ---@param state table<string, unknown>
 function FieldDrawState.restore(lg, state)
   lg.setCanvas(state.canvas)
@@ -62,7 +62,7 @@ end
 -- state is restored, and any draw error re-raises after the cleanup, so a
 -- failing renderer never leaves the transform stack unbalanced or the
 -- graphics state changed for the caller's next frame.
----@param lg love.Graphics|love.graphics
+---@param lg love.graphics
 ---@param draw fun()
 function FieldDrawState.protectedDraw(lg, draw)
   local state = FieldDrawState.save(lg)

@@ -58,7 +58,7 @@ end
 
 ---@class FieldTextRenderer : FieldDialogueRenderer.TextRenderer, FieldSignpostRenderer.TextRenderer
 ---@field fontDef FieldFontDef
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _atlas love.Image?
 ---@field _maskAtlas love.Image?
 ---@field _paletteShader love.Shader?
@@ -89,7 +89,7 @@ function FieldTextRenderer.new(opts)
     graphics = love and love.graphics
   end
   assert(graphics and graphics.newImage and graphics.newQuad, "FieldTextRenderer requires love.graphics")
-  ---@cast graphics love.Graphics|love.graphics
+  ---@cast graphics love.graphics
   local readSource = opts.readSource or defaultReadSource
   local fontDef = FieldFontLoader.load(opts.cacheFs, fontId)
   local self = setmetatable({

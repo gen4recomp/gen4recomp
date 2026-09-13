@@ -15,13 +15,13 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 
 ---@class FieldWindowRenderer
 ---@field _manifest table<string, unknown> the runtime-validated generated field-UI manifest
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _frameImage love.Image?
 ---@field _frameQuadCache table<integer, love.Quad[]>|nil per-frame tile quads, built lazily
 local FieldWindowRenderer = {}
 FieldWindowRenderer.__index = FieldWindowRenderer
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: love.Graphics|love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: love.graphics }
 ---@return FieldWindowRenderer
 function FieldWindowRenderer.new(opts)
   assert(

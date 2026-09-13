@@ -28,7 +28,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class StartMenuRenderer
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _backgroundImage love.Image?
 ---@field _cursorImage love.Image?
 ---@field _backgroundQuad love.Quad?
@@ -56,7 +56,7 @@ function StartMenuRenderer.new(opts)
     graphics = love and love.graphics
   end
   assert(graphics and graphics.newImage and graphics.newQuad, "StartMenuRenderer requires love.graphics")
-  ---@cast graphics love.Graphics|love.graphics
+  ---@cast graphics love.graphics
   local cacheFs = opts.cacheFs
   local manifest = opts.manifest
   assert(type(manifest) == "table", "StartMenuRenderer requires the runtime-validated field-UI manifest")

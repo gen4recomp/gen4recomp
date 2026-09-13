@@ -49,7 +49,7 @@ class SourceScopeTest(unittest.TestCase):
             "tests/unit.lua": "test",
             "libs/example/tests/unit.lua": "test",
             "scripts/ci/tool.lua": "tooling",
-            "types/love.lua": "type",
+            "vendor/love2d-types/library/love.lua": "vendor",
             "vendor/library.lua": "vendor",
             "site/generated.lua": "generated",
             "data/generated/catalog.lua": "generated",

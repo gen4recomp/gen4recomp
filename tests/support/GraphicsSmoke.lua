@@ -25,7 +25,7 @@ function Scope:own(resource)
   return resource
 end
 
----@param lg love.Graphics
+---@param lg love.graphics
 ---@return table
 local function capture(lg)
   local red, green, blue, alpha = lg.getColor()
@@ -44,7 +44,7 @@ local function capture(lg)
   }
 end
 
----@param lg love.Graphics
+---@param lg love.graphics
 ---@param state table
 local function restore(lg, state)
   lg.setCanvas(state.canvas)
@@ -66,7 +66,7 @@ end
 local function wrap(body)
   return function(context)
     local lg = love.graphics
-    ---@cast lg love.Graphics
+    ---@cast lg love.graphics
     local before = capture(lg)
     local scope = setmetatable({ _owned = {} }, Scope)
 

@@ -20,6 +20,7 @@ local TEST_LAYERS = { graphics = true, rom = true, acceptance = true }
 local IGNORED_PROJECT_DIRECTORIES = {
   [".agents"] = true,
   [".cache"] = true,
+  [".worktrees"] = true,
   [".claude"] = true,
   [".codex"] = true,
   [".git"] = true,

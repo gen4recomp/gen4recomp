@@ -10,7 +10,7 @@
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 
 ---@class PartyScreenRenderer
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 local PartyScreenRenderer = {}
 PartyScreenRenderer.__index = PartyScreenRenderer
 
@@ -45,7 +45,7 @@ local HP_ZONE_COLORS = {
 
 local GENDER_TEXT = { male = "M", female = "F", genderless = "" }
 
----@param opts { graphics?: love.Graphics|love.graphics }?
+---@param opts { graphics?: love.graphics }?
 ---@return PartyScreenRenderer
 function PartyScreenRenderer.new(opts)
   opts = opts or {}
@@ -61,7 +61,7 @@ function PartyScreenRenderer.new(opts)
   return setmetatable({ _graphics = graphics }, PartyScreenRenderer)
 end
 
----@param graphics love.Graphics|love.graphics
+---@param graphics love.graphics
 ---@param color number[]
 local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4])

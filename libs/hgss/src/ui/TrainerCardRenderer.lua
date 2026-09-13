@@ -26,7 +26,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class TrainerCardRenderer
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _text FieldTextRenderer the shared glyph atlas/text drawing collaborator
 ---@field _cardImage love.Image?
 ---@field _cardQuad love.Quad?
@@ -57,7 +57,7 @@ TrainerCardRenderer.TRAINER_ID_DIGITS = 5
 -- calls; LÖVE itself remains an allowed presentation-layer dependency (the
 -- PNG bytes still enter through love.filesystem.newFileData).
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: FieldTextRenderer, graphics?: love.Graphics|love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: FieldTextRenderer, graphics?: love.graphics }
 ---@return TrainerCardRenderer
 function TrainerCardRenderer.new(opts)
   assert(

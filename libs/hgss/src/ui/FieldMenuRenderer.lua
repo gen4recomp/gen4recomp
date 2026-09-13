@@ -5,7 +5,7 @@
 local FieldMenuTheme = require("libs.hgss.src.ui.FieldMenuTheme")
 
 ---@class FieldMenuRenderer
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _theme FieldMenuTheme
 local FieldMenuRenderer = {}
 FieldMenuRenderer.__index = FieldMenuRenderer
@@ -42,7 +42,7 @@ local function assertPresentation(presentation)
   return status, layout
 end
 
----@param opts { graphics?: love.Graphics|love.graphics, theme?: FieldMenuTheme }?
+---@param opts { graphics?: love.graphics, theme?: FieldMenuTheme }?
 ---@return FieldMenuRenderer
 function FieldMenuRenderer.new(opts)
   opts = opts or {}

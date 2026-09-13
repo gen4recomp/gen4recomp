@@ -36,7 +36,10 @@ function love.conf(t)
     t.window.width = WindowConfig.REFERENCE_WIDTH
     t.window.height = WindowConfig.REFERENCE_HEIGHT
     t.window.resizable = false
-    t.window.visible = false
+    -- The vendored LoveConfig shape omits this valid LÖVE window setting.
+    local window = t.window
+    ---@cast window +{ visible: boolean }
+    window.visible = false
     t.window.vsync = 0
     t.window.depth = 24 -- the render-target smoke tests need a depth buffer
     t.window.stencil = 8

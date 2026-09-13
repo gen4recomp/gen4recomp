@@ -10,7 +10,7 @@ local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local MonCache = require("libs.assets.src.MonCache")
 
 ---@class MonIconAssetProvider
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _manifest table<string, unknown>
 ---@field _image love.Image?
 ---@field _quads table<string, love.Quad>
@@ -55,7 +55,7 @@ local function entryFor(manifest, iconKey)
 end
 
 ---@param cacheFs CacheFs
----@param opts { graphics?: love.Graphics|love.graphics }?
+---@param opts { graphics?: love.graphics }?
 ---@return MonIconAssetProvider
 function MonIconAssetProvider.new(cacheFs, opts)
   assert(cacheFs ~= nil, "MonIconAssetProvider requires a CacheFs")

@@ -228,7 +228,7 @@ end
 ---@return GxRenderer
 function GxRenderer.new(opts)
   opts = opts or {}
-  ---@type GxRenderer.Graphics|love.Graphics|love.graphics|nil
+  ---@type GxRenderer.Graphics|love.graphics|nil
   local graphics = opts.graphics
   if graphics == nil then
     graphics = love and love.graphics
