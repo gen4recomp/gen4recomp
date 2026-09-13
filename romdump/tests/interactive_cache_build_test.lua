@@ -6,6 +6,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FakeCache = require("tests.support.FakeCache")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
@@ -111,9 +112,30 @@ local function scriptPlan(marker)
   }
 end
 
+local memberStageCounter = 0
+
 local function stageMember(cache, plan, memberId)
   local id = memberId == 0 and "script.one" or "script.two"
-  Assert.isTrue(ScriptCacheWriter.stageMember(cache, plan, scriptMember(memberId, id, GENERATION)))
+  local staged = scriptMember(memberId, id, GENERATION)
+  memberStageCounter = memberStageCounter + 1
+  local artifact = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = "interactive-outer",
+    epoch = 1,
+    kind = "script-member",
+    key = tostring(memberId),
+    jobKey = "script-member:" .. tostring(memberId),
+    stageName = "interactive-member-" .. tostring(memberStageCounter),
+  })
+  Assert.isTrue(ScriptCacheWriter.stageMember(artifact, plan, staged))
+  artifact:finishSuccess({ marker = staged.marker })
+  Assert.isTrue(artifact:publish({
+    generationId = "interactive-outer",
+    epoch = 1,
+    kind = "script-member",
+    key = tostring(memberId),
+    jobKey = "script-member:" .. tostring(memberId),
+  }))
 end
 
 local function fakeRomFs()
@@ -251,9 +273,10 @@ function T.startup_activates_a_complete_inactive_generation_without_rewriting_me
   local plan = scriptPlan("script-marker")
   stageMember(cache, plan, 0)
   stageMember(cache, plan, 1)
-  Assert.isTrue(ScriptCacheWriter.finalizeGeneration(cache, plan))
+  Assert.isTrue(ScriptCacheWriter.writeSummary(cache, plan))
+  cache:removeTree(ScriptCache.activeDir())
   local originalMember = assert(cache:read(ScriptCache.scriptPath(GENERATION, 0, "script.one")))
-  local activationCount = 0
+  local summaryCount = 0
 
   local originalCacheForVersion = CacheFs.forVersion
   local originalRomFsOpen = RomFs.open
@@ -264,7 +287,7 @@ function T.startup_activates_a_complete_inactive_generation_without_rewriting_me
   local originalLoadIndex = FieldCellCache.loadIndex
   local originalScriptPlan = ScriptCompiler.plan
   local originalPoolNew = CompilerPool.new
-  local originalActivate = ScriptCacheWriter.activateGeneration
+  local originalActivate = ScriptCacheWriter.writeSummary
 
   CacheFs.forVersion = function()
     return cache
@@ -295,9 +318,9 @@ function T.startup_activates_a_complete_inactive_generation_without_rewriting_me
   CompilerPool.new = function()
     return { shutdown = function() end }
   end
-  ScriptCacheWriter.activateGeneration = function(cacheFs, generation)
-    activationCount = activationCount + 1
-    return originalActivate(cacheFs, generation)
+  ScriptCacheWriter.writeSummary = function(cacheFs, summaryPlan)
+    summaryCount = summaryCount + 1
+    return originalActivate(cacheFs, summaryPlan)
   end
   cache:writeLua(MapAssetCache.worldPath(), { byId = {}, maps = {} })
 
@@ -315,14 +338,14 @@ function T.startup_activates_a_complete_inactive_generation_without_rewriting_me
   FieldCellCache.loadIndex = originalLoadIndex
   ScriptCompiler.plan = originalScriptPlan
   CompilerPool.new = originalPoolNew
-  ScriptCacheWriter.activateGeneration = originalActivate
+  ScriptCacheWriter.writeSummary = originalActivate
 
   if not ok then
     error(buildOrError, 0)
   end
   local build = assert(buildOrError)
   local active = assert(cache:loadLua(ScriptCache.activeIndexPath()))
-  Assert.equal(activationCount, 1)
+  Assert.equal(summaryCount, 1)
   Assert.equal(active.generation, GENERATION)
   Assert.equal(cache:read(ScriptCache.scriptPath(GENERATION, 0, "script.one")), originalMember)
   build.romFs:close()

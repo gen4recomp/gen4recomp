@@ -2,7 +2,10 @@
 -- corpus is one of the independently rebuildable derived classes (map
 -- geometry, actor visuals, messages/font, scripts): changing the script
 -- translator must not disturb the raw ROM dump or any compiled map.
--- The class is ready only when the completion marker matches exactly and
+-- Each immutable generation keeps its summary (index, provenance, coverage,
+-- marker) under a `metadata/` child and its member payloads under
+-- `members/`, so the summary can be published without replacing member
+-- artifacts. The class is ready only when the completion marker matches exactly and
 -- every indexed script file is present, so a partial build never reads as
 -- complete. Paths are cache-relative; all IO goes through a CacheFs.
 
@@ -69,24 +72,28 @@ function ScriptCache.generationDir(generation)
   return GENERATIONS_DIR .. "/" .. generation
 end
 
+function ScriptCache.generationMetadataDir(generation)
+  return ScriptCache.generationDir(generation) .. "/metadata"
+end
+
 function ScriptCache.generationIndexPath(generation)
-  return ScriptCache.generationDir(generation) .. "/index.lua"
+  return ScriptCache.generationMetadataDir(generation) .. "/index.lua"
 end
 
 function ScriptCache.generationProvenancePath(generation)
-  return ScriptCache.generationDir(generation) .. "/provenance.lua"
+  return ScriptCache.generationMetadataDir(generation) .. "/provenance.lua"
 end
 
 function ScriptCache.generationCoverageJsonPath(generation)
-  return ScriptCache.generationDir(generation) .. "/coverage.json"
+  return ScriptCache.generationMetadataDir(generation) .. "/coverage.json"
 end
 
 function ScriptCache.generationCoverageMdPath(generation)
-  return ScriptCache.generationDir(generation) .. "/coverage.md"
+  return ScriptCache.generationMetadataDir(generation) .. "/coverage.md"
 end
 
 function ScriptCache.generationMarkerPath(generation)
-  return ScriptCache.generationDir(generation) .. "/complete"
+  return ScriptCache.generationMetadataDir(generation) .. "/complete"
 end
 
 function ScriptCache.memberDir(generation, memberId)

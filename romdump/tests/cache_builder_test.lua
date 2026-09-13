@@ -634,13 +634,9 @@ local function makeFakes()
   fakes.ScriptCacheWriter.isReady = function()
     return not env.stale.ScriptCacheWriter
   end
-  fakes.ScriptCacheWriter.finalizeGeneration = function()
-    env.calls[#env.calls + 1] = "ScriptCacheWriter.finalizeGeneration"
+  fakes.ScriptCacheWriter.writeSummary = function()
+    env.calls[#env.calls + 1] = "ScriptCacheWriter.writeSummary"
     env.stale.ScriptCacheWriter = nil
-    return true
-  end
-  fakes.ScriptCacheWriter.activateGeneration = function()
-    env.calls[#env.calls + 1] = "ScriptCacheWriter.activateGeneration"
     return true
   end
   fakes.AudioCompiler.compile = function()
@@ -861,7 +857,7 @@ function T.forced_build_keeps_a_ready_script_generation_current()
   requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
   for _, call in ipairs(env.calls) do
     Assert.isTrue(
-      call ~= "ScriptCacheWriter.finalizeGeneration" and call ~= "ScriptCacheWriter.activateGeneration",
+      call ~= "ScriptCacheWriter.writeSummary",
       "a forced build must not replace a ready planned script generation"
     )
   end

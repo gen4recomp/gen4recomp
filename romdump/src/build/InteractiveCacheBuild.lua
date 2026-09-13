@@ -155,7 +155,7 @@ function InteractiveCacheBuild.new(options)
       not ScriptCache.isReady(cacheFs, scriptPlan.marker)
       and ScriptCache.isGenerationReady(cacheFs, scriptPlan.generationKey, scriptPlan.marker)
     then
-      ScriptCacheWriter.activateGeneration(cacheFs, scriptPlan.generationKey)
+      ScriptCacheWriter.writeSummary(cacheFs, scriptPlan)
     end
     local pool = CompilerPool.new({
       versionId = versionId,
@@ -457,11 +457,8 @@ function InteractiveCacheBuild:dispose()
       end
 
       if complete then
-        if not ScriptCache.isGenerationReady(self.cacheFs, self.scriptPlan.generationKey, self.scriptPlan.marker) then
-          ScriptCacheWriter.finalizeGeneration(self.cacheFs, self.scriptPlan)
-        end
         if not ScriptCache.isReady(self.cacheFs, self.scriptPlan.marker) then
-          ScriptCacheWriter.activateGeneration(self.cacheFs, self.scriptPlan.generationKey)
+          ScriptCacheWriter.writeSummary(self.cacheFs, self.scriptPlan)
         end
       end
       ScriptCacheWriter.cleanupGenerations(self.cacheFs, { [self.scriptPlan.generationKey] = true })
