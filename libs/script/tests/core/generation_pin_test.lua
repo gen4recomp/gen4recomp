@@ -13,7 +13,6 @@ local T = {}
 local SCRIPT_ID = "vanilla.test.generation_pin"
 local LEGACY_DIR = "data/generated/script"
 local ACTIVE_DIR = LEGACY_DIR .. "/active"
-local GENERATIONS_DIR = LEGACY_DIR .. "/generations"
 local GENERATION_A = string.rep("a", 40)
 local GENERATION_B = string.rep("b", 40)
 
@@ -26,7 +25,6 @@ local function scriptText(generation)
 end
 
 local function writeSelection(cache, generation, marker)
-  local generationDir = GENERATIONS_DIR .. "/" .. generation
   local index = {
     schema = ScriptCache.INDEX_SCHEMA,
     generation = generation,
@@ -39,9 +37,9 @@ local function writeSelection(cache, generation, marker)
     marker = marker,
   })
   cache:write(ACTIVE_DIR .. "/complete", marker)
-  cache:writeLua(generationDir .. "/index.lua", index)
-  cache:write(generationDir .. "/complete", marker)
-  cache:write(generationDir .. "/members/0000/scripts/" .. SCRIPT_ID .. ".lua", scriptText(generation))
+  cache:writeLua(ScriptCache.generationIndexPath(generation), index)
+  cache:write(ScriptCache.generationMarkerPath(generation), marker)
+  cache:write(ScriptCache.scriptPath(generation, 0, SCRIPT_ID), scriptText(generation))
 
   -- Keep the old mutable paths populated only as a fixture for the pre-pin
   -- behavior. A pinned loader must not consult them after construction.

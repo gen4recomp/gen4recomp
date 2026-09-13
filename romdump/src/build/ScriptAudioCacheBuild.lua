@@ -98,8 +98,7 @@ function ScriptAudioCacheBuild.build(context)
         return nil, details and details.error or "script member compilation failed"
       end
     end
-    ScriptCacheWriter.finalizeGeneration(context.cacheFs, plan)
-    ScriptCacheWriter.activateGeneration(context.cacheFs, plan.generationKey)
+    ScriptCacheWriter.writeSummary(context.cacheFs, plan)
     context.log(
       string.format(
         "build-cache: %s scripts compiled (%d resources, %d members)",

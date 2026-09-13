@@ -1,20 +1,26 @@
--- Persists the derived script class through the shared staged publication
--- primitive: the provenance record, the index, the coverage report, and one
--- file per translated script are written into a disposable staging root,
--- readback-validated there, and only then is the completed stage published
--- with the marker last. Staging and validation are one step; publication
--- happens outside that step's error handler, so a publish failure never
--- triggers writer-level stage cleanup that could delete the last remaining
--- copy of the previous artifact.
+-- Persists the derived script class through worker-owned prepared stages:
+-- each member job stages exactly its own member directory into a private
+-- stage, readback-validated there, and only the controller publishes it, so
+-- a private repair of an already selected generation never mutates live
+-- files. A final summary job proves every planned member is current in the
+-- live cache, then stages the generation summary (under the generation's
+-- `metadata/` child, disjoint from `members/`) together with the active
+-- selector in one transaction. Staging and validation are one step;
+-- publication happens outside that step's error handler, so a publish
+-- failure never triggers writer-level stage cleanup that could delete the
+-- last remaining copy of the previous artifact.
 
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Coverage = require("romdump.src.digest.script.Coverage")
-local CacheFs = require("libs.storage.src.CacheFs")
+local Errors = require("libs.errors.src.Errors")
 
 local ScriptCacheWriter = {}
 
+---@param cacheFs CacheFs
+---@param marker string
+---@return boolean
 function ScriptCacheWriter.isReady(cacheFs, marker)
   return ScriptCache.isReady(cacheFs, marker)
 end
@@ -88,7 +94,9 @@ local function memberFor(plan, memberId)
       return member
     end
   end
-  error("unknown planned script member: " .. tostring(memberId), 3)
+  Errors.raise("SCRIPT_MEMBER_INVALID", "unknown planned script member: " .. tostring(memberId), {
+    memberId = memberId,
+  })
 end
 
 local function memberResourceIndex(plan, memberId)
@@ -103,13 +111,23 @@ end
 
 local function validateMember(plan, member)
   local planned = memberFor(plan, member.memberId)
-  assert(member.marker == planned.marker, "script member marker mismatch")
-  assert(type(member.coverage) == "table", "script member coverage is missing")
+  if member.marker ~= planned.marker then
+    Errors.raise("SCRIPT_MEMBER_INVALID", "script member marker mismatch", { memberId = member.memberId })
+  end
+  if type(member.coverage) ~= "table" then
+    Errors.raise("SCRIPT_MEMBER_INVALID", "script member coverage is missing", { memberId = member.memberId })
+  end
   local expected = memberResourceIndex(plan, member.memberId)
-  assert(#expected == #member.resources, "script member resource count mismatch")
+  if #expected ~= #member.resources then
+    Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource count mismatch", { memberId = member.memberId })
+  end
   local seen = {}
   for _, entry in ipairs(member.resources) do
-    assert(type(entry.id) == "string" and not seen[entry.id], "script member resource identity is invalid")
+    if type(entry.id) ~= "string" or seen[entry.id] then
+      Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource identity is invalid", {
+        memberId = member.memberId,
+      })
+    end
     seen[entry.id] = true
     local found
     for _, candidate in ipairs(expected) do
@@ -118,35 +136,68 @@ local function validateMember(plan, member)
         break
       end
     end
-    assert(found ~= nil, "script member resource is not in the plan")
-    assert(type(entry.resource) == "table" and entry.resource.id == entry.id, "script member resource is malformed")
+    if found == nil then
+      Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource is not in the plan", {
+        memberId = member.memberId,
+        id = entry.id,
+      })
+    end
+    if type(entry.resource) ~= "table" or entry.resource.id ~= entry.id then
+      Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource is malformed", {
+        memberId = member.memberId,
+        id = entry.id,
+      })
+    end
   end
 end
 
 local function validateCoverage(plan, memberId, coverage)
+  local context = { memberId = memberId }
+  local function invalid(message)
+    Errors.raise("SCRIPT_MEMBER_COVERAGE_INVALID", message, context)
+  end
   local expected = memberResourceIndex(plan, memberId)
-  assert(type(coverage) == "table", "script member coverage is malformed")
-  assert(type(coverage.source) == "table", "script member coverage source is missing")
-  assert(type(coverage.totals) == "table", "script member coverage totals are missing")
-  assert(coverage.totals.members == 1, "script member coverage must describe one member")
-  assert(coverage.totals.scripts == #expected, "script member coverage script count mismatch")
-  assert(type(coverage.opcodes) == "table", "script member coverage opcodes are missing")
-  assert(
-    type(coverage.scripts) == "table" and #coverage.scripts == #expected,
-    "script member coverage scripts are invalid"
-  )
+  if type(coverage) ~= "table" then
+    invalid("script member coverage is malformed")
+  end
+  if type(coverage.source) ~= "table" then
+    invalid("script member coverage source is missing")
+  end
+  if type(coverage.totals) ~= "table" then
+    invalid("script member coverage totals are missing")
+  end
+  if coverage.totals.members ~= 1 then
+    invalid("script member coverage must describe one member")
+  end
+  if coverage.totals.scripts ~= #expected then
+    invalid("script member coverage script count mismatch")
+  end
+  if type(coverage.opcodes) ~= "table" then
+    invalid("script member coverage opcodes are missing")
+  end
+  if type(coverage.scripts) ~= "table" or #coverage.scripts ~= #expected then
+    invalid("script member coverage scripts are invalid")
+  end
   local expectedById = {}
   for _, entry in ipairs(expected) do
     expectedById[entry.id] = entry
   end
   local seen = {}
   for _, entry in ipairs(coverage.scripts) do
-    assert(type(entry) == "table" and type(entry.publicId) == "string", "script member coverage identity is invalid")
-    assert(not seen[entry.publicId], "script member coverage contains a duplicate resource")
+    if type(entry) ~= "table" or type(entry.publicId) ~= "string" then
+      invalid("script member coverage identity is invalid")
+    end
+    if seen[entry.publicId] then
+      invalid("script member coverage contains a duplicate resource")
+    end
     local planned = expectedById[entry.publicId]
-    assert(planned ~= nil, "script member coverage resource is not in the plan")
+    if type(planned) ~= "table" then
+      invalid("script member coverage resource is not in the plan")
+    end
     local sourceId = string.format("hgss.scr_seq.%04d.%03d", memberId, planned.scriptIndex)
-    assert(entry.sourceId == sourceId, "script member coverage source identity mismatch")
+    if entry.sourceId ~= sourceId then
+      invalid("script member coverage source identity mismatch")
+    end
     seen[entry.publicId] = true
   end
 end
@@ -160,49 +211,39 @@ local function resourceMatchesEntry(resource, entry)
   return type(source) == "table" and source.member == entry.member and source.scriptIndex == entry.scriptIndex
 end
 
-local function readbackResource(cacheFs, plan, entry)
-  local resource = cacheFs:loadModule(ScriptCache.scriptPath(plan.generationKey, entry.member, entry.id))
-  assert(resourceMatchesEntry(resource, entry), "script resource readback identity mismatch")
+local function readbackResource(reader, plan, entry)
+  local resource = reader:loadModule(ScriptCache.scriptPath(plan.generationKey, entry.member, entry.id))
+  if not resourceMatchesEntry(resource, entry) then
+    Errors.raise("SCRIPT_MEMBER_READBACK_FAILED", "script resource readback identity mismatch", {
+      memberId = entry.member,
+      id = entry.id,
+    })
+  end
 end
 
-local function memberIsComplete(cacheFs, plan, member)
-  if cacheFs:read(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId)) ~= member.marker then
-    return false
+-- A staging handle is a worker-owned preparation, never a live cache: the
+-- member writer rejects anything without a private stage before any file
+-- write, so an active generation can never be edited in place.
+local function assertArtifact(artifact, operation)
+  if
+    type(artifact) ~= "table"
+    or type(artifact.stageFs) ~= "function"
+    or type(artifact.cacheFs) ~= "function"
+    or type(artifact.addOwnedRoot) ~= "function"
+  then
+    Errors.raise("SCRIPT_MEMBER_INVALID", operation .. " requires a PreparedArtifact", {})
   end
-  local coverage = cacheFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId))
-  local ok = pcall(validateCoverage, plan, member.memberId, coverage)
-  if not ok then
-    return false
-  end
-  for _, entry in ipairs(memberResourceIndex(plan, member.memberId)) do
-    local loaded = cacheFs:loadModule(ScriptCache.scriptPath(plan.generationKey, member.memberId, entry.id))
-    if not resourceMatchesEntry(loaded, entry) then
-      return false
-    end
-  end
-  return true
 end
 
-local function activeGeneration(cacheFs)
-  local liveCache = CacheFs.forVersion(cacheFs.versionId, cacheFs.backend)
-  local active = liveCache:loadLua(ScriptCache.activeIndexPath())
-  if type(active) == "table" and type(active.generation) == "string" then
-    return active.generation
-  end
-  return nil
-end
-
-function ScriptCacheWriter.stageMember(cacheFs, plan, member)
-  assert(cacheFs and cacheFs.writeLua and plan and member, "stageMember requires a cache and member")
+-- The one staging step every member entry point shares: validate the
+-- compiled payload against the plan, write exactly this member's payload and
+-- marker into the given stage filesystem, and prove they read back with the
+-- current identity before the marker lands. Never touches a sibling member
+-- or the live cache.
+local function persistMember(stage, plan, member)
   validateMember(plan, member)
-  if activeGeneration(cacheFs) == plan.generationKey and not memberIsComplete(cacheFs, plan, member) then
-    error("cannot stage a member into the active script generation", 2)
-  end
-  if memberIsComplete(cacheFs, plan, member) then
-    return true
-  end
   local root = ScriptCache.memberDir(plan.generationKey, member.memberId)
-  cacheFs:removeTree(root)
+  stage:removeTree(root)
   local emitOpts = {
     sourcePath = plan.sourcePath,
     romSha1 = plan.romSha1,
@@ -210,17 +251,22 @@ function ScriptCacheWriter.stageMember(cacheFs, plan, member)
   }
   for _, entry in ipairs(member.resources) do
     local path = ScriptCache.scriptPath(plan.generationKey, member.memberId, entry.id)
-    cacheFs:write(path, ScriptCompiler.emit(entry, emitOpts))
-    readbackResource(cacheFs, plan, entry)
+    stage:write(path, ScriptCompiler.emit(entry, emitOpts))
+    readbackResource(stage, plan, entry)
   end
-  cacheFs:writeLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId), member.coverage)
+  stage:writeLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId), member.coverage)
   validateCoverage(
     plan,
     member.memberId,
-    assert(cacheFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
+    assert(stage:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
   )
-  cacheFs:write(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId), member.marker)
-  return true
+  stage:write(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId), member.marker)
+  if stage:read(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId)) ~= member.marker then
+    Errors.raise("SCRIPT_MEMBER_READBACK_FAILED", "script member marker readback failed", {
+      memberId = member.memberId,
+    })
+  end
+  return member.marker
 end
 
 local function aggregateCoverage(records, plan)
@@ -249,7 +295,36 @@ local function aggregateCoverage(records, plan)
   }
 end
 
-function ScriptCacheWriter.finalizeGeneration(cacheFs, plan)
+-- Stage one compiled member through a caller-owned prepared artifact: the
+-- stage owns exactly this member's directory, so member jobs never overlap
+-- and a private repair of an already selected generation never touches live
+-- files. Publication stays with the caller; a stage failure leaves the
+-- previous live member untouched once the caller aborts the disposable
+-- stage.
+---@param artifact PreparedArtifact
+---@param plan { generationKey: string, marker: string, version: string, sourcePath: string, romSha1: string, dependencies: table<string, unknown>, memberCount: integer, members: unknown[], resources: unknown[], skippedMembers: integer[]|nil, index: table<string, unknown>|nil }
+---@param member { memberId: integer, marker: string, coverage: table<string, unknown>, resources: unknown[] }
+---@return string
+function ScriptCacheWriter.stageMember(artifact, plan, member)
+  assertArtifact(artifact, "stageMember")
+  assert(type(plan) == "table" and type(member) == "table", "stageMember requires a plan and member")
+  validateMember(plan, member)
+  artifact:addOwnedRoot(ScriptCache.memberDir(plan.generationKey, member.memberId))
+  return persistMember(artifact:stageFs(), plan, member)
+end
+
+local function orderedMembers(plan)
+  local ordered = {}
+  for _, member in ipairs(plan.members) do
+    ordered[#ordered + 1] = member
+  end
+  table.sort(ordered, function(a, b)
+    return a.memberId < b.memberId
+  end)
+  return ordered
+end
+
+local function checkPlan(plan)
   assert(type(plan) == "table" and type(plan.generationKey) == "string", "script generation plan is required")
   assert(
     type(plan.marker) == "string" and type(plan.members) == "table",
@@ -306,61 +381,171 @@ function ScriptCacheWriter.finalizeGeneration(cacheFs, plan)
       )
     end
   end
+  return expectedIndex
+end
 
-  local orderedMembers = {}
-  for _, member in ipairs(plan.members) do
-    orderedMembers[#orderedMembers + 1] = member
-  end
-  table.sort(orderedMembers, function(a, b)
-    return a.memberId < b.memberId
-  end)
-  local records = {}
-  for _, member in ipairs(orderedMembers) do
-    assert(cacheFs:read(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId)) == member.marker)
-    local coverage = assert(cacheFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
-    validateCoverage(plan, member.memberId, coverage)
-    records[#records + 1] = coverage
+local function memberIsComplete(liveFs, plan, member)
+  local ok, complete = pcall(function()
+    if liveFs:read(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId)) ~= member.marker then
+      return false
+    end
+    validateCoverage(
+      plan,
+      member.memberId,
+      assert(liveFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
+    )
     for _, entry in ipairs(memberResourceIndex(plan, member.memberId)) do
-      readbackResource(cacheFs, plan, entry)
+      readbackResource(liveFs, plan, entry)
+    end
+    return true
+  end)
+  return ok and complete == true
+end
+
+local function aggregateCoverage(records, plan)
+  if #records == 0 then
+    return { source = { repository = "g4recomp", romSha1 = plan.romSha1 or "" }, totals = { members = 0, scripts = 0 } }
+  end
+  if records[1].totals ~= nil then
+    return Coverage.aggregate(records)
+  end
+  local scripts = 0
+  for _, record in ipairs(records) do
+    scripts = scripts + (record.scripts or 0)
+  end
+  return {
+    source = { repository = "g4recomp", romSha1 = plan.romSha1 or "" },
+    totals = {
+      members = #records,
+      scripts = scripts,
+      reachableInstructions = 0,
+      supportedInstructions = 0,
+      unsupportedInstructions = 0,
+      malformedInstructions = 0,
+    },
+    opcodes = {},
+    scripts = {},
+  }
+end
+
+-- The one staging step every summary entry point shares: prove every planned
+-- member is current in the live cache under its planned marker, then write
+-- the generation summary into the generation's `metadata/` child plus the
+-- active selector into the stage. Member directories are never staged here,
+-- so the summary cannot erase independently published members, and the
+-- parent generation directory is never replaced.
+local function persistSummary(stage, liveFs, plan)
+  local expectedIndex = checkPlan(plan)
+  local missing = {}
+  for _, member in ipairs(orderedMembers(plan)) do
+    if not memberIsComplete(liveFs, plan, member) then
+      missing[#missing + 1] = member.memberId
     end
   end
+  if #missing > 0 then
+    Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses incomplete member coverage", {
+      generation = plan.generationKey,
+      missingMemberIds = missing,
+    })
+  end
+  local records = {}
+  for _, member in ipairs(orderedMembers(plan)) do
+    records[#records + 1] = assert(liveFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
+  end
   local coverage = aggregateCoverage(records, plan)
-  cacheFs:writeLua(ScriptCache.generationIndexPath(plan.generationKey), expectedIndex)
-  cacheFs:writeLua(ScriptCache.generationProvenancePath(plan.generationKey), {
+  local coverageJson = jsonValue(coverage) .. "\n"
+  local coverageMd = Coverage.markdown(coverage)
+  local provenance = {
     schema = ScriptCache.PROVENANCE_SCHEMA,
     generation = plan.generationKey,
     marker = plan.marker,
     dependencies = plan.dependencies,
+  }
+  stage:writeLua(ScriptCache.generationIndexPath(plan.generationKey), expectedIndex)
+  stage:writeLua(ScriptCache.generationProvenancePath(plan.generationKey), provenance)
+  stage:write(ScriptCache.generationCoverageJsonPath(plan.generationKey), coverageJson)
+  stage:write(ScriptCache.generationCoverageMdPath(plan.generationKey), coverageMd)
+  stage:write(ScriptCache.generationMarkerPath(plan.generationKey), plan.marker)
+  local stagedIndex = stage:loadLua(ScriptCache.generationIndexPath(plan.generationKey))
+  if
+    type(stagedIndex) ~= "table"
+    or stagedIndex.schema ~= ScriptCache.INDEX_SCHEMA
+    or stagedIndex.generation ~= plan.generationKey
+    or stagedIndex.marker ~= plan.marker
+  then
+    Errors.raise("SCRIPT_SUMMARY_READBACK_FAILED", "script summary index readback failed", {
+      generation = plan.generationKey,
+    })
+  end
+  if stage:read(ScriptCache.generationMarkerPath(plan.generationKey)) ~= plan.marker then
+    Errors.raise("SCRIPT_SUMMARY_READBACK_FAILED", "script summary marker readback failed", {
+      generation = plan.generationKey,
+    })
+  end
+  stage:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = plan.generationKey,
+    marker = plan.marker,
   })
-  cacheFs:write(ScriptCache.generationCoverageJsonPath(plan.generationKey), jsonValue(coverage) .. "\n")
-  cacheFs:write(ScriptCache.generationCoverageMdPath(plan.generationKey), Coverage.markdown(coverage))
-  cacheFs:write(ScriptCache.generationMarkerPath(plan.generationKey), plan.marker)
-  return true
+  stage:writeLua(ScriptCache.provenancePath(), provenance)
+  stage:write(ScriptCache.coverageJsonPath(), coverageJson)
+  stage:write(ScriptCache.coverageMdPath(), coverageMd)
+  stage:write(ScriptCache.markerPath(), plan.marker)
+  local stagedActive = stage:loadLua(ScriptCache.activeIndexPath())
+  if
+    type(stagedActive) ~= "table"
+    or stagedActive.schema ~= ScriptCache.INDEX_SCHEMA
+    or stagedActive.generation ~= plan.generationKey
+    or stagedActive.marker ~= plan.marker
+  then
+    Errors.raise("SCRIPT_SUMMARY_READBACK_FAILED", "script active selection readback failed", {
+      generation = plan.generationKey,
+    })
+  end
+  if stage:read(ScriptCache.markerPath()) ~= plan.marker then
+    Errors.raise("SCRIPT_SUMMARY_READBACK_FAILED", "script active marker readback failed", {
+      generation = plan.generationKey,
+    })
+  end
+  return plan.marker
 end
 
-function ScriptCacheWriter.activateGeneration(cacheFs, generationKey)
-  local index = assert(cacheFs:loadLua(ScriptCache.generationIndexPath(generationKey)))
-  local marker = assert(cacheFs:read(ScriptCache.generationMarkerPath(generationKey)))
-  assert(index.schema == ScriptCache.INDEX_SCHEMA and index.generation == generationKey and index.marker == marker)
-  local tx = ArtifactPublisher.begin(cacheFs, "scripts", { ScriptCache.activeDir() })
-  local stage = tx.stage
-  local activeIndex = {
-    schema = ScriptCache.INDEX_SCHEMA,
-    generation = generationKey,
-    marker = marker,
-  }
-  stage:writeLua(ScriptCache.activeIndexPath(), activeIndex)
-  local provenance = cacheFs:loadLua(ScriptCache.generationProvenancePath(generationKey))
-  assert(provenance ~= nil)
-  stage:writeLua(ScriptCache.provenancePath(), provenance)
-  stage:write(
-    ScriptCache.coverageJsonPath(),
-    assert(cacheFs:read(ScriptCache.generationCoverageJsonPath(generationKey)))
-  )
-  stage:write(ScriptCache.coverageMdPath(), assert(cacheFs:read(ScriptCache.generationCoverageMdPath(generationKey))))
-  stage:write(ScriptCache.markerPath(), marker)
+-- Stage the generation summary through a caller-owned prepared artifact: the
+-- stage owns exactly the generation metadata directory plus the active
+-- selector directory in one publication transaction, never the member
+-- directories. Publication stays with the caller; a summary failure leaves
+-- the previous active selector usable for its old identity.
+---@param artifact PreparedArtifact
+---@param plan { generationKey: string, marker: string, version: string, sourcePath: string, romSha1: string, dependencies: table<string, unknown>, memberCount: integer, members: unknown[], resources: unknown[], skippedMembers: integer[]|nil, index: table<string, unknown>|nil }
+---@return string
+function ScriptCacheWriter.stageSummary(artifact, plan)
+  assertArtifact(artifact, "stageSummary")
+  assert(type(plan) == "table", "stageSummary requires a generation plan")
+  artifact:addOwnedRoot(ScriptCache.generationMetadataDir(plan.generationKey))
+  artifact:addOwnedRoot(ScriptCache.activeDir())
+  return persistSummary(artifact:stageFs(), artifact:cacheFs(), plan)
+end
+
+-- Publish the generation summary straight into the live cache for the batch
+-- build. Refuses while any planned member is unpublished; raises like every
+-- other writer boundary.
+---@param cacheFs CacheFs
+---@param plan { generationKey: string, marker: string, version: string, sourcePath: string, romSha1: string, dependencies: table<string, unknown>, memberCount: integer, members: unknown[], resources: unknown[], skippedMembers: integer[]|nil, index: table<string, unknown>|nil }
+---@return string
+function ScriptCacheWriter.writeSummary(cacheFs, plan)
+  assert(cacheFs and cacheFs.writeLua, "writeSummary requires a cache")
+  assert(type(plan) == "table" and type(plan.generationKey) == "string", "writeSummary requires a generation plan")
+  local tx = ArtifactPublisher.begin(cacheFs, "scripts", {
+    ScriptCache.generationMetadataDir(plan.generationKey),
+    ScriptCache.activeDir(),
+  })
+  local ok, result = pcall(persistSummary, tx.stage, cacheFs, plan)
+  if not ok then
+    tx:abort()
+    error(result, 0)
+  end
   tx:publish()
-  return true
+  return result
 end
 
 function ScriptCacheWriter.cleanupGenerations(cacheFs, keepSet)
@@ -378,60 +563,6 @@ function ScriptCacheWriter.cleanupGenerations(cacheFs, keepSet)
       cacheFs:removeTree(ScriptCache.generationDir(generation))
     end
   end
-  return true
-end
-
-function ScriptCacheWriter.write(cacheFs, bundle)
-  assert(bundle and bundle.marker and bundle.index and bundle.resources, "write requires a script bundle")
-  assert(bundle.index.schema == ScriptCache.INDEX_SCHEMA, "bundle index schema mismatch")
-  if ScriptCache.isReady(cacheFs, bundle.marker) then
-    return true
-  end
-  local members = {}
-  for _, entry in ipairs(bundle.resources) do
-    local target = members[entry.member]
-    if target == nil then
-      target = {
-        memberId = entry.member,
-        resources = {},
-        coverage = assert(
-          bundle.memberCoverage and bundle.memberCoverage[entry.member],
-          "script bundle member coverage is required"
-        ),
-      }
-      members[entry.member] = target
-    end
-    target.resources[#target.resources + 1] = entry
-  end
-  local orderedMembers = {}
-  for memberId, member in pairs(members) do
-    member.marker = bundle.marker .. ":member:" .. tostring(memberId)
-    orderedMembers[#orderedMembers + 1] = member
-  end
-  table.sort(orderedMembers, function(a, b)
-    return a.memberId < b.memberId
-  end)
-  local generationKey = assert(bundle.index.generation, "script bundle generation is required")
-  assert(bundle.index.marker == bundle.marker, "script bundle marker does not match its index")
-  local plan = {
-    generationKey = generationKey,
-    marker = bundle.marker,
-    version = bundle.index.version,
-    sourcePath = "romfs/" .. bundle.dependencies.scrSeqNarc.path,
-    romSha1 = bundle.dependencies.versionRomSha1,
-    dependencies = bundle.dependencies,
-    memberCount = bundle.index.memberCount,
-    members = orderedMembers,
-    resources = bundle.index.resources,
-    index = bundle.index,
-  }
-  plan.index.generation = generationKey
-  plan.index.marker = bundle.marker
-  for _, member in ipairs(orderedMembers) do
-    ScriptCacheWriter.stageMember(cacheFs, plan, member)
-  end
-  ScriptCacheWriter.finalizeGeneration(cacheFs, plan)
-  ScriptCacheWriter.activateGeneration(cacheFs, generationKey)
   return true
 end
 

@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
@@ -30,14 +31,50 @@ local function buildGeneration(romFs, plan, order, cache)
   local session = assert(Session.new(romFs, plan))
   for _, memberId in ipairs(order) do
     local member = assert(session:compileMember(memberId))
+    local artifact = PreparedArtifact.new({
+      cacheFs = cache,
+      generationId = "rom-outer-generation",
+      epoch = 1,
+      kind = "script-member",
+      key = tostring(memberId),
+      jobKey = "script-member:" .. tostring(memberId),
+      stageName = "rom-member-" .. tostring(memberId),
+    })
     Assert.isTrue(
-      ScriptCacheWriter.stageMember(cache, plan, member),
-      "a completed member must publish only inside its inert generation"
+      ScriptCacheWriter.stageMember(artifact, plan, member),
+      "a completed member must stage only inside its own preparation"
     )
+    artifact:finishSuccess({ marker = member.marker })
+    Assert.isTrue(artifact:publish({
+      generationId = "rom-outer-generation",
+      epoch = 1,
+      kind = "script-member",
+      key = tostring(memberId),
+      jobKey = "script-member:" .. tostring(memberId),
+    }))
   end
-  Assert.isTrue(ScriptCacheWriter.finalizeGeneration(cache, plan), "the complete generation must finalize")
+  local summary = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = "rom-outer-generation",
+    epoch = 1,
+    kind = "script-member",
+    key = "global",
+    jobKey = "script-member:global",
+    stageName = "rom-summary",
+  })
   Assert.isTrue(
-    ScriptCacheWriter.activateGeneration(cache, plan.generationKey),
+    ScriptCacheWriter.stageSummary(summary, plan) ~= nil,
+    "the complete generation must publish its summary"
+  )
+  summary:finishSuccess({ marker = plan.marker })
+  Assert.isTrue(
+    summary:publish({
+      generationId = "rom-outer-generation",
+      epoch = 1,
+      kind = "script-member",
+      key = "global",
+      jobKey = "script-member:global",
+    }),
     "the complete generation must activate"
   )
 end
@@ -54,9 +91,9 @@ local function publishedGeneration(cache, plan)
     active = active,
     marker = cache:read(ScriptCache.markerPath()),
     generationIndex = generationIndex,
-    provenance = cache:read(ScriptCache.generationDir(generation) .. "/provenance.lua"),
-    coverage = cache:read(ScriptCache.generationDir(generation) .. "/coverage.json"),
-    coverageMarkdown = cache:read(ScriptCache.generationDir(generation) .. "/coverage.md"),
+    provenance = cache:read(ScriptCache.generationProvenancePath(generation)),
+    coverage = cache:read(ScriptCache.generationCoverageJsonPath(generation)),
+    coverageMarkdown = cache:read(ScriptCache.generationCoverageMdPath(generation)),
     resources = resources,
     planMarker = plan.marker,
   }
