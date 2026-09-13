@@ -41,9 +41,7 @@ local function assetBytes(value)
     return value
   end
   assert(
-    type(value) == "userdata"
-      and type(value.getFFIPointer) == "function"
-      and type(value.getSize) == "function",
+    type(value) == "userdata" and type(value.getFFIPointer) == "function" and type(value.getSize) == "function",
     "bundle assets are strings or LÖVE Data"
   )
   return ffi.string(value:getFFIPointer(), value:getSize())
@@ -246,7 +244,11 @@ function T.recompilation_is_deterministic(romFs, versionId)
   end
   Assert.deepEqual(assetKeys(second), assetKeys(first), "asset sets must match")
   for _, path in ipairs(assetKeys(first)) do
-    Assert.equal(assetBytes(second.assets[path]), assetBytes(first.assets[path]), "asset " .. path .. " must be byte-identical")
+    Assert.equal(
+      assetBytes(second.assets[path]),
+      assetBytes(first.assets[path]),
+      "asset " .. path .. " must be byte-identical"
+    )
   end
 end
 
