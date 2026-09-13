@@ -302,7 +302,8 @@ function FieldCellCache.isCellReady(cacheFs, descriptor, expectedMarker)
   if cacheFs:read(FieldCellCache.cellMarkerPath(descriptor.matrixMemberId, descriptor.index)) ~= expectedMarker then
     return false
   end
-  local cell = cacheFs:loadLua(descriptor.file)
+  local cellPath = descriptor.file or FieldCellCache.cellPath(descriptor.matrixMemberId, descriptor.index)
+  local cell = cacheFs:loadLua(cellPath)
   if not FieldCellCache.validateCell(cacheFs, cell, descriptor) then
     return false
   end

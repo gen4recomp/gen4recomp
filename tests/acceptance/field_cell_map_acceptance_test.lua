@@ -87,24 +87,18 @@ T.tests["map scene reuses canonical central assets"] = function()
   end)
 end
 
-T.tests["physical cell and logical map presentation agree"] = function()
+T.tests["physical cell and logical map data agree"] = function()
   withOutdoor(function(game)
     local _, runtime, descriptor = centralCell(game)
     local logicalScene = assert(game.runtime.runtimeMap and game.runtime.runtimeMap.scene, "logical scene is loaded")
-    local cellPresentation = assert(runtime.presentation, "the physical cell has a production presentation")
-    local cellScene = assert(cellPresentation.scene, "the physical presentation retains its normalized scene")
-    assertBatchReferences(logicalScene.mapBatches, cellScene.mapBatches, "logical/physical map")
-    Assert.equal(#logicalScene.materials, #cellScene.materials, "logical/physical material count")
-    Assert.equal(#logicalScene.buildingInstances, #cellScene.buildingInstances, "logical/physical building count")
+    assert(runtime.descriptor == descriptor, "the physical runtime retains its canonical cell descriptor")
+    assertBatchReferences(logicalScene.mapBatches, descriptor.batches, "logical/physical map")
+    Assert.equal(#logicalScene.materials, #descriptor.materials, "logical/physical material count")
+    Assert.equal(#logicalScene.buildingInstances, #descriptor.buildingInstances, "logical/physical building count")
     Assert.deepEqual(
       logicalScene.calibration,
       descriptor.calibration,
       "logical scene uses the canonical cell calibration"
-    )
-    Assert.deepEqual(
-      cellScene.calibration,
-      descriptor.calibration,
-      "physical cell presentation uses the canonical cell calibration"
     )
   end)
 end

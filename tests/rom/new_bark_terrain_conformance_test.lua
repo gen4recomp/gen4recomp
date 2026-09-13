@@ -10,6 +10,8 @@
 -- exemplar only; production behavior takes no per-material branch.
 
 local Assert = require("tests.support.Assert")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
+local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 
 local T = {}
@@ -35,12 +37,34 @@ local function bundleFor(romFs, versionId)
 end
 
 local function meshBatches(bundle, records)
+  local arena = GxGeometryBuffer.new()
   local out = {}
   for _, record in ipairs(records) do
     local sha1 = record.geometry:match("(%x+)%.g4mesh$")
     Assert.notNil(sha1, "terrain batch geometry is a content-addressed .g4mesh path")
     ---@cast sha1 string
-    out[#out + 1] = assert(bundle.meshes[sha1], "the shared mesh pool holds " .. sha1)
+    local decoded = CompiledAsset.mesh(assert(bundle.meshes[sha1], "the shared mesh pool holds " .. sha1))
+    arena:reserve(decoded.vertexCount, decoded.indexCount)
+    local slice = arena:beginSlice()
+    for _, vertex in ipairs(decoded.vertices) do
+      local numeric = arena.numeric[arena.vertexCount]
+      local attrib = arena.attrib[arena.vertexCount]
+      numeric.x, numeric.y, numeric.z = vertex[1], vertex[2], vertex[3]
+      numeric.u, numeric.v = vertex[4], vertex[5]
+      numeric.nx, numeric.ny, numeric.nz = vertex[6], vertex[7], vertex[8]
+      attrib.r = vertex[9] * 255
+      attrib.g = vertex[10] * 255
+      attrib.b = vertex[11] * 255
+      attrib.a = vertex[12] * 255
+      attrib.colorSource = vertex[13]
+      arena.vertexCount = arena.vertexCount + 1
+    end
+    for _, index in ipairs(decoded.indices) do
+      arena.indices[arena.indexCount] = index
+      arena.indexCount = arena.indexCount + 1
+    end
+    slice.materialIndex = record.material
+    out[#out + 1] = arena:finishSlice(slice)
   end
   return out
 end

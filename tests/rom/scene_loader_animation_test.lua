@@ -6,8 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local T = {}
 
@@ -20,8 +19,8 @@ function T.new_bark_animated_descriptors_reference_round_tripping_g4mesh(romFs)
       for _, mesh in ipairs(desc.dynamic.batches) do
         local sha = assert(mesh.geometry:match("geometry/([%w]+)%.g4mesh"), "batch references .g4mesh geometry")
         local batch = assert(bundle.meshes[sha], "batch geometry present in the bundle")
-        local decoded = assert(SceneMesh.decode(MeshWriter.encode(batch)))
-        Assert.equal(decoded.vertexCount, #batch.vertices)
+        local decoded = CompiledAsset.mesh(batch)
+        Assert.equal(decoded.vertexCount, #decoded.vertices)
         Assert.isTrue(mesh.cullMode ~= nil, "per-segment cull state compiled")
         Assert.isTrue(mesh.polygonMode ~= nil, "per-segment polygon mode compiled")
         Assert.isTrue(mesh.polygonId ~= nil, "per-segment polygon id compiled")

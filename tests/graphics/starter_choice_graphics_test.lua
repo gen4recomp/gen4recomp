@@ -49,14 +49,15 @@ local function openProductionChoice(versionId, cacheFs, speciesKeys)
   local MonsSave = requireModule(MONSAVE_MODULE, "the mon save owns the party bucket")
   local FieldFontLoader = requireModule(FONT_MODULE, "the field font owns the service charmap")
 
-  local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs))
+  local catalogRoot = MonCache.loadCatalog(cacheFs)
+  local catalog = MonCatalog.new(catalogRoot)
   local fontDef = FieldFontLoader.load(cacheFs)
   local service = HgssMonService.new({
     catalog = catalog,
     bucket = MonsSave.empty(catalog:fingerprint(), 7),
     profile = { name = "GOLD", gender = 0, trainerId = 1 },
     game = versionId,
-    language = catalog.version.language,
+    language = catalogRoot.version.language,
     charmap = assert(fontDef.charmap, "production font carries the charmap"),
     mapSection = function()
       return 7
@@ -179,6 +180,12 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     Assert.isNil(host:hitTest(-1, -1), versionId .. " outside coordinates hit no ball")
 
     host:move("right")
+    host:update()
+    local rotating = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+    Assert.isTrue(
+      frameDistance(initial, rotating, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 10,
+      versionId .. " rotation realizes an intermediate scene"
+    )
     Assert.isTrue(
       stepHostUntil(host, function()
         return snapshotOf(host, versionId).transition == "idle"
@@ -186,11 +193,6 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       versionId .. " rotation reaches its semantic boundary"
     )
     local rotated = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
-    Assert.isTrue(
-      frameDistance(initial, rotated, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 10,
-      versionId .. " rotation changes the realized scene"
-    )
-
     Assert.isNil(host:confirm(), versionId .. " first activation enters inspection")
     Assert.equal(snapshotOf(host, versionId).selectionState, "inspect", versionId .. " enters inspection state")
     Assert.isNil(host:confirm(), versionId .. " second activation starts the confirmation view")

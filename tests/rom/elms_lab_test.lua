@@ -15,6 +15,7 @@ local MapAssetInspector = require("romdump.src.digest.map.MapAssetInspector")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local InventoryAssert = require("tests.support.InventoryAssert")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldActorCompiler = require("romdump.src.digest.actor.FieldActorCompiler")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
@@ -204,9 +205,9 @@ function T.material_and_vertex_validity(romFs)
 
   local bundle = assert(MapAssetCompiler.compile(romFs, "MAP_NEW_BARK_ELMS_LAB_1F"))
   for sha, batch in pairs(bundle.meshes) do
-    for _, v in ipairs(batch.vertices) do
-      Assert.notNil(v.colorSource, "vertex has resolved color source in " .. sha)
-      Assert.isTrue(v.colorSource >= 0 and v.colorSource <= 2, "colorSource is valid in " .. sha)
+    for _, v in ipairs(CompiledAsset.mesh(batch).vertices) do
+      Assert.notNil(v[13], "vertex has resolved color source in " .. sha)
+      Assert.isTrue(v[13] >= 0 and v[13] <= 2, "colorSource is valid in " .. sha)
     end
   end
 end

@@ -33,8 +33,8 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
-local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local RomRuntimeMap = require("tests.support.RomRuntimeMap")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local SceneLoaderFixture = {}
 
@@ -91,7 +91,7 @@ local function writeBundle(backend, assets)
   backend:write(MapAssetCache.mapDir(scene.mapId) .. "/scene.lua", LuaWriter.encode(scene))
   backend:write(scene.collision.file, CollisionGridAsset.encode(assets.collision))
   for sha, mesh in pairs(assets.meshes) do
-    backend:write(MapAssetCache.geometryPath(sha), MeshWriter.encode(mesh))
+    backend:write(MapAssetCache.geometryPath(sha), CompiledAsset.bytes(mesh))
   end
   for modelKey, desc in pairs(assets.models) do
     backend:write(MapAssetCache.modelPath(modelKey), LuaWriter.encode(desc))

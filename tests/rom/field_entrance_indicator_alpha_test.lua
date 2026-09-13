@@ -78,7 +78,7 @@ local function testMember85Alpha(romFs)
     Assert.notNil(texture.alphaUsage, "compiled effect texture must classify decoded alpha")
     if texture.alphaUsage.hasZero then
       transparentOutput = true
-      Assert.isTrue(hasZeroAlpha(texture.pixels), "compiled zero-alpha usage must have alpha-zero pixels")
+      Assert.isTrue(hasZeroAlpha(texture.data:getString()), "compiled zero-alpha usage must have alpha-zero pixels")
     end
   end
   Assert.isTrue(transparentOutput, "member 85 transparent coverage must survive compilation")
@@ -94,7 +94,7 @@ local function testMember85Alpha(romFs)
         "source color-zero transparency must survive for material " .. entry.material.name
       )
       Assert.isTrue(
-        hasZeroAlpha(compiledTexture.pixels),
+        hasZeroAlpha(compiledTexture.data:getString()),
         "source color-zero transparency must produce alpha-zero pixels for material " .. entry.material.name
       )
     end

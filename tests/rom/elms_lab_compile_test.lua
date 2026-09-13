@@ -14,6 +14,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local T = {}
 local SYMBOL = "MAP_NEW_BARK_ELMS_LAB_1F"
@@ -143,8 +144,8 @@ function T.uvs_are_normalized(romFs, version)
   local _, bundle = compileInto(romFs, version)
   local maxUV = 0
   for _, batch in pairs(bundle.meshes) do
-    for _, vtx in ipairs(batch.vertices) do
-      maxUV = math.max(maxUV, math.abs(vtx.u), math.abs(vtx.v))
+    for _, vtx in ipairs(CompiledAsset.mesh(batch).vertices) do
+      maxUV = math.max(maxUV, math.abs(vtx[4]), math.abs(vtx[5]))
     end
   end
   Assert.isTrue(maxUV <= 8, "normalized UVs stay small, got max " .. maxUV)

@@ -19,18 +19,27 @@ local function testExclamationModelSurface(romFs)
 
   local textureCount = 0
   for _, texture in pairs(bundle.textures) do
+    local image = love.image.newImageData(assert(texture.data))
     textureCount = textureCount + 1
     Assert.isTrue(texture.width > 0, "the compiled exclamation texture must have a nonzero width")
     Assert.isTrue(texture.height > 0, "the compiled exclamation texture must have a nonzero height")
-    Assert.equal(#texture.pixels, texture.width * texture.height * 4, "pixel buffer must match its own dimensions")
+    Assert.equal(image:getWidth(), texture.width, "PNG width matches the compiled texture dimensions")
+    Assert.equal(image:getHeight(), texture.height, "PNG height matches the compiled texture dimensions")
 
     local nonTransparentFound = false
-    for offset = 4, #texture.pixels, 4 do
-      if string.byte(texture.pixels, offset) ~= 0 then
-        nonTransparentFound = true
+    for y = 0, texture.height - 1 do
+      for x = 0, texture.width - 1 do
+        local _, _, _, alpha = image:getPixel(x, y)
+        if alpha ~= 0 then
+          nonTransparentFound = true
+          break
+        end
+      end
+      if nonTransparentFound then
         break
       end
     end
+    image:release()
     Assert.isTrue(nonTransparentFound, "the compiled exclamation texture must not be fully transparent/blank")
   end
   Assert.isTrue(textureCount > 0, "member 118 must bind at least one source texture")

@@ -22,6 +22,7 @@ local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local RomRuntimeMap = require("tests.support.RomRuntimeMap")
 local TransitionTrigger = require("libs.hgss.src.transition.TransitionTrigger")
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
+local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local T = {}
 
@@ -40,11 +41,11 @@ local function footprintOf(desc, assets)
   for _, batch in ipairs(batches) do
     local sha = assert(batch.geometry:match("geometry/([%w]+)%.g4mesh"), "batch references .g4mesh geometry")
     local mesh = assert(assets.meshes[sha], "batch geometry present in the bundle")
-    for _, v in ipairs(mesh.vertices) do
-      minX = minX == nil and v.x or math.min(minX, v.x)
-      maxX = maxX == nil and v.x or math.max(maxX, v.x)
-      minZ = minZ == nil and v.z or math.min(minZ, v.z)
-      maxZ = maxZ == nil and v.z or math.max(maxZ, v.z)
+    for _, v in ipairs(CompiledAsset.mesh(mesh).vertices) do
+      minX = minX == nil and v[1] or math.min(minX, v[1])
+      maxX = maxX == nil and v[1] or math.max(maxX, v[1])
+      minZ = minZ == nil and v[3] or math.min(minZ, v[3])
+      maxZ = maxZ == nil and v[3] or math.max(maxZ, v[3])
     end
   end
   return {

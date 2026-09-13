@@ -10,6 +10,7 @@ local SaveFs = require("libs.storage.src.SaveFs")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
 local T = {
   metadata = {
@@ -295,6 +296,7 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     fieldNew = FieldState.new,
     storeNew = GameSaveStore.new,
     oakCompose = OakIntroComposition.compose,
+    appBackend = ProducerFingerprint.appBackend,
   }
   local ok, err = xpcall(function()
     local oakHost = {
@@ -340,6 +342,12 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
       actors = false,
       dev = false,
     }
+    -- `love app/` mounts only app/ as its product VFS root. The repository
+    -- source tree stands in for the packaged producer tree in this source-run
+    -- acceptance, while App remains on its product (no checkout metadata) path.
+    ProducerFingerprint.appBackend = function()
+      return ProducerFingerprint.checkoutBackend(love.filesystem.getSourceBaseDirectory())
+    end
     App.state = nil
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
     Assert.equal(App.state.state:view().kind, "main_menu")
@@ -462,6 +470,7 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
   FieldState.new = original.fieldNew
   GameSaveStore.new = original.storeNew
   OakIntroComposition.compose = original.oakCompose
+  ProducerFingerprint.appBackend = original.appBackend
   clearCheckpoints(saveStore)
   if not ok then
     error(err, 0)

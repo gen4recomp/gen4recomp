@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -16,6 +17,8 @@ end
 
 function T.independent_map_jobs_use_distinct_workers(romFs, versionId)
   local CompilerPool = requirePool()
+  local producerBackend = ProducerFingerprint.checkoutBackend(love.filesystem.getSourceBaseDirectory())
+  local producerFingerprint = ProducerFingerprint.compute(producerBackend, "romdump/src")
   local pool = CompilerPool.new({
     versionId = versionId,
     mode = "batch",
@@ -30,7 +33,7 @@ function T.independent_map_jobs_use_distinct_workers(romFs, versionId)
       kind = "map",
       key = job.key,
       priority = 0,
-      payload = { mapId = job.mapId },
+      payload = { mapId = job.mapId, producerFingerprint = producerFingerprint },
     })
   end
   pool:drain()
