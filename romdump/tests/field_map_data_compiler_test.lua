@@ -458,10 +458,10 @@ function T.field_map_data_stage_writes_exactly_its_own_map_record()
     cacheFs = cache,
     generationId = generation,
     epoch = 1,
-    kind = "field-map-data",
+    kind = "map-data",
     key = "60",
-    jobKey = "field-map-data:60",
-    stageName = "field-map-data-60",
+    jobKey = "map-data:60",
+    stageName = "map-data-60",
   })
   FieldMapDataCacheWriter.stage(artifact, bundle)
   local stage = artifact:stageFs()
@@ -477,9 +477,9 @@ function T.field_map_data_stage_writes_exactly_its_own_map_record()
   artifact:publish({
     generationId = generation,
     epoch = 1,
-    kind = "field-map-data",
+    kind = "map-data",
     key = "60",
-    jobKey = "field-map-data:60",
+    jobKey = "map-data:60",
   })
   Assert.isTrue(FieldMapDataCache.isReady(cache, 60, bundle.marker), "the staged record publishes ready")
 
@@ -493,9 +493,9 @@ function T.field_map_data_stage_writes_exactly_its_own_map_record()
     cacheFs = cache,
     generationId = generation,
     epoch = 1,
-    kind = "field-map-data",
+    kind = "map-data",
     key = "60",
-    jobKey = "field-map-data:60",
+    jobKey = "map-data:60",
     stageName = "field-map-data-60-retry",
   })
   local ok, stageErr = pcall(FieldMapDataCacheWriter.stage, retry, malformed)

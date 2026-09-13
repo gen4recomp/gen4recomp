@@ -6,37 +6,11 @@
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
-local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
-local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
-local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
-local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
-local ScriptCompileSession = require("romdump.src.digest.script.ScriptCompileSession")
-local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
-local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
-local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
+local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
 
 local CompilerWorker = {}
-
-local function failArtifact(artifact, failure, traceback)
-  local ok, finalizeError = pcall(artifact.finishFailure, artifact, failure, traceback)
-  if not ok then
-    error(finalizeError, 0)
-  end
-end
-
-local function mapResult(bundle)
-  return {
-    mapId = bundle.mapId,
-    marker = bundle.marker,
-    mapSymbol = bundle.scene.mapSymbol,
-    width = bundle.scene.matrix.width,
-    height = bundle.scene.matrix.height,
-    unresolvedMaterials = bundle.unresolvedMaterials,
-  }
-end
 
 local function wallSeconds()
   local host = rawget(_G, "love")
@@ -46,16 +20,7 @@ end
 
 ---@param context table<string, unknown>
 local function closeContext(context)
-  if context.scriptSession ~= nil then
-    local session = context.scriptSession
-    context.scriptSession = nil
-    context.scriptPlan = nil
-    context.scriptGenerationKey = nil
-    pcall(session.close, session)
-  else
-    context.scriptPlan = nil
-    context.scriptGenerationKey = nil
-  end
+  ArtifactJobs.closeSessions(context)
   if context.romFs ~= nil then
     local romFs = context.romFs
     context.romFs = nil
@@ -107,159 +72,7 @@ end
 ---@return table<string, unknown>
 function CompilerWorker.execute(job, context)
   assert(type(job) == "table", "worker job must be a table")
-  assert(
-    job.kind == "map" or job.kind == "field-cell" or job.kind == "script-member",
-    "unsupported compiler job kind: " .. tostring(job.kind)
-  )
-  assert(type(job.key) == "string" and job.key ~= "", "worker job key is required")
-  assert(context and context.romFs and context.cacheFs, "worker context is incomplete")
-  assert(type(job.stageName) == "string", "worker job stage name is required")
-  assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
-  assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
-
-  if job.kind == "field-cell" then
-    local descriptor = {
-      matrixMemberId = assert(job.matrixMemberId),
-      index = assert(job.index),
-      x = assert(job.x),
-      z = assert(job.z),
-      mapHeaderId = assert(job.mapHeaderId),
-      altitude = assert(job.altitude),
-      landDataMemberId = assert(job.landDataMemberId),
-      areaDataMemberId = assert(job.areaDataMemberId),
-      file = FieldCellCache.cellPath(job.matrixMemberId, job.index),
-    }
-    local artifact = PreparedArtifact.new({
-      cacheFs = context.cacheFs,
-      generationId = job.generationId,
-      epoch = job.epoch,
-      kind = job.kind,
-      key = job.key,
-      jobKey = job.kind .. ":" .. job.key,
-      stageName = job.stageName,
-    })
-    local ok, result = xpcall(function()
-      local scratch = context.fieldCellScratch or {}
-      context.fieldCellScratch = scratch
-      scratch.geometryArena = context.geometryArena
-      scratch.gxScratch = context.gxScratch
-      scratch.terrainScratch = context.terrainScratch
-      local compiled = FieldCellCompiler.compileCell(context.romFs, descriptor, scratch, job.producerFingerprint)
-      FieldCellCacheWriter.stagePrepared(artifact, descriptor, compiled)
-      artifact:finishSuccess({
-        marker = compiled.cell.cellMarker,
-        matrixMemberId = descriptor.matrixMemberId,
-        index = descriptor.index,
-      })
-      return { stageName = job.stageName, result = { marker = compiled.cell.cellMarker } }
-    end, function(failure)
-      return { failure = failure, traceback = debug.traceback("", 2) }
-    end)
-    if not ok then
-      failArtifact(artifact, result.failure, result.traceback)
-      error(result.failure, 0)
-    end
-    return result
-  end
-
-  if job.kind == "script-member" then
-    assert(type(job.memberId) == "number" and job.memberId % 1 == 0, "script member job requires an integer memberId")
-    assert(type(job.generationKey) == "string" and job.generationKey ~= "", "script member generation is required")
-    if context.scriptGenerationKey ~= job.generationKey then
-      if context.scriptSession ~= nil then
-        context.scriptSession:close()
-      end
-      context.scriptGenerationKey = job.generationKey
-      context.scriptPlan = nil
-      context.scriptSession = nil
-    end
-    local plan = context.scriptPlan
-    if plan == nil then
-      local producerFingerprint = assert(job.producerFingerprint, "script member producer fingerprint is required")
-      plan = ScriptCompiler.plan(context.romFs, producerFingerprint)
-      assert(plan.generationKey == job.generationKey, "script job generation does not match the source plan")
-      context.scriptPlan = plan
-    end
-    local session = context.scriptSession
-    if session == nil then
-      session = ScriptCompileSession.new(context.romFs, plan)
-      context.scriptSession = session
-    end
-    local artifact = PreparedArtifact.new({
-      cacheFs = context.cacheFs,
-      generationId = job.generationId,
-      epoch = job.epoch,
-      kind = job.kind,
-      key = job.key,
-      jobKey = job.kind .. ":" .. job.key,
-      stageName = job.stageName,
-    })
-    local ok, result = xpcall(function()
-      local member = session:compileMember(job.memberId)
-      ScriptCacheWriter.stageMember(artifact, plan, member)
-      artifact:finishSuccess({ memberId = member.memberId, marker = member.marker })
-      return { stageName = job.stageName, result = { memberId = member.memberId, marker = member.marker } }
-    end, function(failure)
-      return { failure = failure, traceback = debug.traceback("", 2) }
-    end)
-    if not ok then
-      failArtifact(artifact, result.failure, result.traceback)
-      error(result.failure, 0)
-    end
-    return result
-  end
-
-  assert(type(job.mapId) == "number" and job.mapId % 1 == 0, "map job requires an integer mapId")
-
-  local artifact = PreparedArtifact.new({
-    cacheFs = context.cacheFs,
-    generationId = job.generationId,
-    epoch = job.epoch,
-    kind = job.kind,
-    key = job.key,
-    jobKey = job.kind .. ":" .. job.key,
-    stageName = job.stageName,
-  })
-
-  local ok, bundle, compileError = xpcall(function()
-    return MapAssetCompiler.compile(context.romFs, job.mapId, {
-      cacheFs = context.cacheFs,
-      fieldCellIndex = FieldCellCache.loadIndex(context.cacheFs),
-      producerFingerprint = job.producerFingerprint,
-      geometryArena = context.geometryArena,
-      gxScratch = context.gxScratch,
-      terrainScratch = context.terrainScratch,
-    })
-  end, function(failure)
-    return { failure = failure, traceback = debug.traceback("", 2) }
-  end)
-  if not ok then
-    local errorInfo = assert(bundle)
-    local failure = errorInfo.failure
-    local traceback = errorInfo.traceback
-    failArtifact(artifact, failure, traceback)
-    error(failure, 0)
-  end
-  if not bundle then
-    failArtifact(artifact, compileError)
-    error(compileError, 0)
-  end
-
-  local result = mapResult(bundle)
-  local stageOk, stageError = xpcall(function()
-    MapCacheWriter.stage(artifact, bundle)
-    artifact:finishSuccess(result)
-  end, function(failure)
-    return { failure = failure, traceback = debug.traceback("", 2) }
-  end)
-  if not stageOk then
-    local errorInfo = assert(stageError)
-    local failure = errorInfo.failure
-    local traceback = errorInfo.traceback
-    failArtifact(artifact, failure, traceback)
-    error(failure, 0)
-  end
-  return { stageName = job.stageName, result = result }
+  return ArtifactJobs.execute(job, context)
 end
 
 ---@param workerId integer
@@ -296,19 +109,9 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
         key = job.key or jobKey,
         generationId = job.generationId,
         epoch = job.epoch,
-        mapId = job.mapId,
-        matrixMemberId = job.matrixMemberId,
-        index = job.index,
-        x = job.x,
-        z = job.z,
-        mapHeaderId = job.mapHeaderId,
-        altitude = job.altitude,
-        landDataMemberId = job.landDataMemberId,
-        areaDataMemberId = job.areaDataMemberId,
-        memberId = job.memberId,
-        generationKey = job.generationKey,
         producerFingerprint = job.producerFingerprint,
         stageName = job.stageName,
+        payload = job.payload,
       }
       local retiring = job.sizeClass == "jumbo"
       local ok, result = xpcall(function()
@@ -360,10 +163,7 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
       end
     end
   end
-  if context.scriptSession ~= nil then
-    context.scriptSession:close()
-    context.scriptSession = nil
-  end
+  ArtifactJobs.closeSessions(context)
   if context.romFs ~= nil then
     local romFs = context.romFs
     context.romFs = nil

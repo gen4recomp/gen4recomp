@@ -255,7 +255,8 @@ function T.world_catalog_compiles_from_source_without_geometry()
   local ok, bundle = pcall(WorldManifest.compileCatalog, romFs)
   MapAssetCompiler.compile = savedMapCompile
   FieldCellCompiler.compileCell = savedCellCompile
-  local catalog = assert(ok and bundle, bundle)
+  assert(ok, bundle)
+  local catalog = assert(bundle, "catalog compilation must produce a bundle")
   Assert.equal(type(catalog.maps), "table")
   Assert.isTrue(#catalog.maps > 0, "the source catalog is non-empty")
   for index, record in ipairs(catalog.maps) do
@@ -393,10 +394,10 @@ function T.world_catalog_replacement_leaves_compiled_children_untouched()
     cacheFs = cache,
     generationId = generation,
     epoch = 1,
-    kind = "world",
+    kind = "world-catalog",
     key = "global",
-    jobKey = "world:global",
-    stageName = "world",
+    jobKey = "world-catalog:global",
+    stageName = "world-catalog",
   })
   WorldManifest.stageCatalog(artifact, catalog)
   local stage = artifact:stageFs()
@@ -406,9 +407,9 @@ function T.world_catalog_replacement_leaves_compiled_children_untouched()
   artifact:publish({
     generationId = generation,
     epoch = 1,
-    kind = "world",
+    kind = "world-catalog",
     key = "global",
-    jobKey = "world:global",
+    jobKey = "world-catalog:global",
   })
   local live = assert(cache:loadLua(MapAssetCache.worldPath()))
   Assert.equal(live.bySymbol["MAP_NEW_BARK"], 60, "the structural catalog is live")
@@ -433,10 +434,10 @@ function T.world_catalog_stage_failure_preserves_the_previous_world()
     cacheFs = cache,
     generationId = generation,
     epoch = 1,
-    kind = "world",
+    kind = "world-catalog",
     key = "global",
-    jobKey = "world:global",
-    stageName = "world",
+    jobKey = "world-catalog:global",
+    stageName = "world-catalog",
   })
   local err = Assert.throws(function()
     WorldManifest.stageCatalog(artifact, catalog)
