@@ -28,11 +28,52 @@ local OAK_INTRO_MESSAGE_BANK = 219
 -- it either; it must be listed explicitly.
 local OPPOSITE_PROTAGONIST_NAME_BANK = 445
 
+---@class FieldMessageCompiler.BankMessage
+---@field id integer
+---@field text string
+---@field raw integer[]
+---@field tokens FieldMessageText.Token[]
+
+---@class FieldMessageCompiler.Bank
+---@field schema string
+---@field bankId integer
+---@field messageCount integer
+---@field key integer
+---@field messages table<integer, FieldMessageCompiler.BankMessage>
+
 ---@class FieldMessageCompiler.Bundle
 ---@field marker string
----@field index { schema: string, version: string, bankIds: integer[] }
----@field banks table<integer, table<string, unknown>>
----@field dependencies table<string, unknown>
+---@field index FieldMessageCache.Index
+---@field banks table<integer, FieldMessageCompiler.Bank>
+---@field dependencies FieldMessageCompiler.Dependencies
+
+---@class FieldMessageCompiler.BankBundle
+---@field bankId integer
+---@field bank FieldMessageCompiler.Bank
+---@field marker string
+---@field dependencies FieldMessageCompiler.Dependencies
+
+---@class FieldMessageCompiler.Dependencies
+---@field cacheFormat string
+---@field charmapVersion string
+---@field manifestSchema string
+---@field versionRomSha1 string
+---@field messageNarc FieldMessageCompiler.NarcIdentity
+
+---@class FieldMessageCompiler.NarcIdentity
+---@field symbol string
+---@field alias string
+---@field narcId integer
+---@field fileId integer
+---@field path string
+---@field sha1 string
+
+---@class FieldMessageCompiler.Session
+---@field compileBank FieldMessageCompiler.CompileBank
+---@field close FieldMessageCompiler.CloseSession
+
+---@alias FieldMessageCompiler.CompileBank fun(self: FieldMessageCompiler.Session, bankId: integer): FieldMessageCompiler.BankBundle?, Errors.Error?
+---@alias FieldMessageCompiler.CloseSession fun(self: FieldMessageCompiler.Session)
 
 local FieldMessageCompiler = {}
 
@@ -105,6 +146,29 @@ local function compileBank(source, bankId, sha1hex)
     messages = messages,
   },
     memberSha1
+end
+
+---@param bankId unknown
+local function checkBankId(bankId)
+  assert(type(bankId) == "number" and bankId >= 0 and bankId % 1 == 0, "bankId must be a non-negative integer")
+end
+
+local function bankDependencies(source, romFs, bankId, memberSha1)
+  return {
+    cacheFormat = FieldMessageCache.FORMAT,
+    charmapVersion = FieldMessageCompiler.CHARMAP_VERSION,
+    manifestSchema = manifest.schema,
+    versionRomSha1 = romFs:metadata().sha1,
+    messageNarc = {
+      symbol = source.archiveInfo.symbol,
+      alias = source.archiveInfo.alias,
+      narcId = source.archiveInfo.narcId,
+      fileId = source.archiveInfo.fileId,
+      path = source.archiveInfo.path,
+      sha1 = source.archiveSha1,
+    },
+    ["bank" .. bankId .. "MemberSha1"] = memberSha1,
+  }
 end
 
 -- Returns every source-referenced message bank in stable order. Map headers and
@@ -195,6 +259,54 @@ function FieldMessageCompiler.compile(romFs, sha1hex, hashLua)
     return nil, result --[[@as Errors.Error]]
   end
   error(result)
+end
+
+-- A worker-private source session: the message archive and its immutable
+-- identity are opened once, then each selected bank compiles through the
+-- same one-bank normalization. The session retains no decoded or tokenized
+-- bank: each returned bundle belongs to its caller and must be staged or
+-- dropped before the next bank starts. Close is idempotent; a closed
+-- session compiles nothing. The session never stages or publishes.
+---@param romFs RomFs
+---@param sha1hex? fun(bytes: string): string|nil
+---@param hashLua? fun(value: unknown): string|nil
+---@return FieldMessageCompiler.Session
+function FieldMessageCompiler.newSession(romFs, sha1hex, hashLua)
+  assert(romFs and romFs.read and romFs.openNarc and romFs.resolvedNarc, "session requires a RomFs-shaped object")
+  sha1hex = sha1hex or Hashing.sha1hex
+  hashLua = hashLua or Hashing.hashLua
+  local source = loadSource(romFs, sha1hex)
+  local closed = false
+  local session = {}
+  ---@param bankId integer
+  ---@return FieldMessageCompiler.BankBundle?
+  ---@return Errors.Error?
+  function session:compileBank(bankId)
+    if closed then
+      return nil
+    end
+    checkBankId(bankId)
+    local ok, bank, memberSha1 = pcall(compileBank, source, bankId, sha1hex)
+    if not ok then
+      if Errors.is(bank) then
+        return nil, bank --[[@as Errors.Error]]
+      end
+      error(bank, 0)
+    end
+    assert(bank ~= nil and memberSha1 ~= nil, "one-bank normalization must return its bank")
+    local dependencies = bankDependencies(source, romFs, bankId, memberSha1)
+    local marker = FieldMessageCache.marker(romFs:metadata().sha1, hashLua(dependencies))
+    return {
+      bankId = bankId,
+      bank = bank,
+      marker = marker,
+      dependencies = dependencies,
+    }
+  end
+  function session:close()
+    closed = true
+  end
+  return session --[[@as FieldMessageCompiler.Session]]
 end
 
 return FieldMessageCompiler

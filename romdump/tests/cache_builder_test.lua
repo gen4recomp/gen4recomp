@@ -448,6 +448,37 @@ local function makeFakes()
   fakes.FieldMessageCompiler.compile = function()
     return env.messageBundle
   end
+  fakes.FieldMessageCompiler.requiredBankIds = function()
+    return { 4, 8 }
+  end
+  fakes.FieldMessageCompiler.newSession = function()
+    local session = {}
+    function session:compileBank(bankId)
+      return {
+        bankId = bankId,
+        bank = { bankId = bankId },
+        marker = "msg-bank-" .. bankId,
+        dependencies = {},
+      }
+    end
+    function session:close() end
+    return session
+  end
+  fakes.FieldMessageCache.INDEX_SCHEMA = "test-message-index-v1"
+  fakes.FieldMessageCache.isBankReady = function()
+    return not env.stale.FieldMessageCacheWriter
+  end
+  fakes.FieldMessageCacheWriter.writeBank = function()
+    env.calls[#env.calls + 1] = "FieldMessageCacheWriter.writeBank"
+    env.stale.FieldMessageCacheWriter = nil
+  end
+  fakes.FieldMessageCacheWriter.writeSummary = function()
+    env.calls[#env.calls + 1] = "FieldMessageCacheWriter.writeSummary"
+    env.stale.FieldMessageCacheWriter = nil
+  end
+  fakes.FieldMessageCacheWriter.summaryMarker = function()
+    return "msg-summary-v1"
+  end
   fakes.FieldWeatherCompiler = {
     compile = function()
       return env.weatherBundle
@@ -1016,7 +1047,7 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
   requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
   local writes = {}
   for _, call in ipairs(env.calls) do
-    if call:find(".write$") ~= nil or call == "WorldManifest.stage" then
+    if call:find("write", 1, true) ~= nil or call == "WorldManifest.stage" then
       writes[#writes + 1] = call
     end
   end
@@ -1032,7 +1063,9 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
     "FieldFontCacheWriter.write",
     "FieldMapDataCacheWriter.write",
     "FieldMapDataCacheWriter.write",
-    "FieldMessageCacheWriter.write",
+    "FieldMessageCacheWriter.writeBank",
+    "FieldMessageCacheWriter.writeBank",
+    "FieldMessageCacheWriter.writeSummary",
     "FieldUiCacheWriter.write",
     "FieldWeatherCacheWriter.write",
     "IntroAssetCacheWriter.write",
@@ -1049,7 +1082,7 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
     if call == "DerivedCacheState.invalidate" then
       invalidateIndex = index
     end
-    if firstWriteIndex == nil and (call:find(".write$") ~= nil or call == "WorldManifest.stage") then
+    if firstWriteIndex == nil and (call:find("write", 1, true) ~= nil or call == "WorldManifest.stage") then
       firstWriteIndex = index
     end
   end
