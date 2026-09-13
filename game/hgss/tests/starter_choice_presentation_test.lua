@@ -243,7 +243,7 @@ local function openPresentation(frameIndex)
         return nil
       end,
     },
-    portraits = { { selector = "a" }, { selector = "b" }, { selector = "c" } },
+    portraits = { { selector = "a", pageId = 0 }, { selector = "b", pageId = 0 }, { selector = "c", pageId = 1 } },
     frameIndex = frameIndex == nil and 3 or frameIndex,
   })
   presentation:reset()
@@ -485,7 +485,7 @@ function T.construction_carries_the_player_frame_choice()
         return nil
       end,
     },
-    portraits = { { selector = "a" }, { selector = "b" }, { selector = "c" } },
+    portraits = { { selector = "a", pageId = 0 }, { selector = "b", pageId = 0 }, { selector = "c", pageId = 1 } },
   })
   Assert.isFalse(ok, "a missing frame index fails instead of falling back to frame 0")
 end

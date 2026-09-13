@@ -106,14 +106,16 @@ end
 
 -- Resolves one candidate portrait descriptor from the canonical mon record
 -- through the existing portrait contract: personality-derived gender and
--- shininess select the front-portrait atlas entry. A source-genderless
+-- shininess select the front-portrait layout entry. A source-genderless
 -- species resolves to whichever male/female source variant the portrait
 -- manifest actually carries. A candidate with no portrait entry fails
--- loudly; no vanilla substitute is ever shown.
+-- loudly; no vanilla substitute is ever shown. The descriptor carries its
+-- layout page id so the presentation requests only the pages its actual
+-- candidates select.
 ---@param candidate table<string, unknown> canonical mon record
 ---@param entries table<string, unknown> portrait manifest entries by selector
 ---@param catalog MonCatalog generated mon catalog for gender ratios
----@return table<string, unknown> { speciesKey: string, form: integer, gender: string, shiny: boolean, selector: string }
+---@return table<string, unknown> { speciesKey: string, form: integer, gender: string, shiny: boolean, selector: string, pageId: integer }
 local function portraitDescriptor(candidate, entries, catalog)
   assert(type(candidate) == "table", "starter candidates carry mon records")
   local speciesKey = assert(candidate.species, "starter candidate carries its species key")
@@ -140,8 +142,21 @@ local function portraitDescriptor(candidate, entries, catalog)
     end
   end
   local selector = MonCache.portraitSelector(speciesKey, candidate.form, gender, shiny)
-  assert(entries[selector] ~= nil, "starter candidate has no portrait entry for " .. tostring(speciesKey))
-  return { speciesKey = speciesKey, form = candidate.form, gender = gender, shiny = shiny, selector = selector }
+  local entry = entries[selector]
+  assert(entry ~= nil, "starter candidate has no portrait entry for " .. tostring(speciesKey))
+  local pageId = entry.pageId
+  assert(
+    type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0,
+    "starter candidate portrait entry carries its page for " .. tostring(speciesKey)
+  )
+  return {
+    speciesKey = speciesKey,
+    form = candidate.form,
+    gender = gender,
+    shiny = shiny,
+    selector = selector,
+    pageId = pageId,
+  }
 end
 
 -- Opens the modal on the task cursor with the three pre-created candidates.

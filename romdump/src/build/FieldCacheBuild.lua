@@ -10,11 +10,15 @@ local FieldActorCompiler = require("romdump.src.digest.actor.FieldActorCompiler"
 local FieldActorCacheWriter = require("romdump.src.digest.actor.FieldActorCacheWriter")
 local FollowingMonVisualCompiler = require("romdump.src.digest.actor.FollowingMonVisualCompiler")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
+local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
 local ItemCatalogCompiler = require("romdump.src.digest.items.ItemCatalogCompiler")
 local ItemCacheWriter = require("romdump.src.digest.items.ItemCacheWriter")
 local BagAssetCompiler = require("romdump.src.digest.ui.BagAssetCompiler")
 local BagCacheWriter = require("romdump.src.digest.ui.BagCacheWriter")
+local MonCache = require("libs.assets.src.MonCache")
+local MonSources = require("romdump.src.config.MonSources")
+local Hashing = require("romdump.src.digest.Hashing")
 local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
 local FieldFontCacheWriter = require("romdump.src.digest.ui.FieldFontCacheWriter")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
@@ -211,17 +215,23 @@ function FieldCacheBuild.build(context)
     return string.format(" (%d sprites)", #value.index.spriteIds)
   end)
 
-  local monBundle, monErr = MonCatalogCompiler.compileAll(context.romFs)
-  local mons = requireBundle(monBundle, monErr)
+  -- Bounded per-page mon build: the semantic catalog and the selector
+  -- layout stage first without touching pixels, then each page compiles and
+  -- stages from its own source records with only one page buffer live at a
+  -- time. The family summary is published only once every declared page is
+  -- ready. Follower references validate against the merged actor index
+  -- before anything stages.
+  local catalogBundle, catalogErr = MonCatalogCompiler.compileCatalog(context.romFs)
+  local mons = requireBundle(catalogBundle, catalogErr)
   if not mons then
-    return nil, monErr
+    return nil, catalogErr
   end
   local actorSpriteIds = {}
   for _, spriteId in ipairs(actor.index.spriteIds) do
     actorSpriteIds[spriteId] = true
   end
   local monSpecies = 0
-  for speciesKey, species in pairs(mons.catalog.species) do
+  for speciesKey, species in pairs(mons.species) do
     monSpecies = monSpecies + 1
     for formId, form in pairs(species.forms) do
       if form.follower ~= nil then
@@ -242,9 +252,69 @@ function FieldCacheBuild.build(context)
       end
     end
   end
-  writeIfStale(context, mons, MonCacheWriter, MonCacheWriter.isReady, "mons", function()
-    return string.format(" (%d species)", monSpecies)
-  end)
+  local romSha1 = context.romFs:metadata().sha1
+  local catalogMarker = MonCacheWriter.catalogMarker(romSha1, mons)
+  if context.forced or not MonCache.isCatalogReady(context.cacheFs, catalogMarker) then
+    MonCacheWriter.writeCatalog(context.cacheFs, mons, catalogMarker)
+  end
+  local plannedBundle, plannedErr = MonPresentationCompiler.plan(context.romFs, mons)
+  local planned = requireBundle(plannedBundle, plannedErr)
+  if not planned then
+    return nil, plannedErr
+  end
+  local layoutMarker = MonCacheWriter.layoutMarker(romSha1, planned.icons, planned.portraits)
+  if context.forced or not MonCache.isLayoutReady(context.cacheFs, layoutMarker) then
+    MonCacheWriter.writeLayout(context.cacheFs, planned.icons, planned.portraits, layoutMarker)
+  end
+  local iconPageMarkers, portraitPageMarkers = {}, {}
+  ---@param kind "icons"|"portraits" presentation kind
+  ---@param manifest table<string, unknown> planned manifest of the page kind
+  ---@param plans table<integer, table<string, unknown>> page source plans by zero-based page id
+  ---@param markers string[] collected page markers in ascending page order
+  ---@return true|nil, Errors.Error|string|nil
+  local function buildPages(kind, manifest, plans, markers)
+    local pageIds = manifest.pageIds --[[@as integer[] ]]
+    for _, pageId in ipairs(pageIds) do
+      local marker = MonCacheWriter.pageMarker(romSha1, kind, pageId, manifest)
+      markers[pageId + 1] = marker
+      if context.forced or not MonCache.isPageReady(context.cacheFs, kind, pageId, marker) then
+        local pageBundle, pageErr = MonPresentationCompiler.compilePage(context.romFs, kind, plans[pageId])
+        local page = requireBundle(pageBundle, pageErr)
+        if not page then
+          return nil, pageErr
+        end
+        page.marker = marker
+        MonCacheWriter.writePage(context.cacheFs, page)
+      end
+    end
+    return true
+  end
+  local iconsReady, iconsErr = buildPages("icons", planned.icons, planned.iconPages, iconPageMarkers)
+  if not iconsReady then
+    return nil, iconsErr
+  end
+  local portraitsReady, portraitsErr =
+    buildPages("portraits", planned.portraits, planned.portraitPages, portraitPageMarkers)
+  if not portraitsReady then
+    return nil, portraitsErr
+  end
+  local index = MonCacheWriter.buildIndex(
+    mons.version --[[@as { id: string, language: string }]],
+    Hashing.hashLua(mons),
+    iconPageMarkers,
+    portraitPageMarkers
+  )
+  local summaryMarker = MonCacheWriter.summaryMarker(index)
+  if context.forced or not MonCacheWriter.isReady(context.cacheFs, summaryMarker) then
+    MonCacheWriter.writeSummary(context.cacheFs, index, {
+      schema = "g4-mon-provenance-v1",
+      source = MonSources.provenance,
+      rom = { version = mons.version.id, sha1 = romSha1 },
+    })
+    context.log(string.format("build-cache: %s mons compiled (%d species)", context.version, monSpecies))
+  else
+    context.log(string.format("build-cache: %s mons current", context.version))
+  end
 
   local itemBundle, itemErr = ItemCatalogCompiler.compileAll(context.romFs)
   local items = requireBundle(itemBundle, itemErr)

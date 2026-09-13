@@ -287,13 +287,18 @@ local function readyCacheFs()
           width = 80,
           height = 80,
           frames = { { x = 0, y = 0, width = 80, height = 80, duration = 1 } },
+          pageId = 0,
         }
       end
     end
   end
   cacheFs:writeLua(MonCache.portraitManifestPath(), {
     schema = MonCache.PORTRAIT_MANIFEST_SCHEMA,
-    image = MonCache.portraitImagePath(),
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.portraitPagePath(0), width = 640, height = 320 },
+    },
+    pageIds = { 0 },
     entries = portraitEntries,
     representative = { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
   })
