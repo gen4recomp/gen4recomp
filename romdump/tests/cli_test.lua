@@ -25,6 +25,7 @@ function T.defaults_are_all_off()
   Assert.isNil(o.importRom --[[@as any]])
   Assert.isFalse(o.forceDump)
   Assert.isFalse(o.allowCompileExclusions)
+  Assert.isFalse(o.dev)
 end
 
 -- Every command flag resolves to exactly one named command; the enum is the
@@ -76,6 +77,16 @@ function T.parses_forcedump_with_required_rom()
   Assert.equal(o.command, "build-cache")
   Assert.isTrue(o.forceDump)
   Assert.equal(o.romPath, "/tmp/hg.nds")
+end
+
+function T.dev_flag_selects_the_development_identity_with_release_default()
+  Assert.isFalse(Cli.parse({ "--build-cache" }).dev, "direct CLI mode defaults to release")
+  local dev = Cli.parse({ "--build-cache", "--dev" })
+  Assert.equal(dev.command, "build-cache")
+  Assert.isTrue(dev.dev)
+  local withRom = Cli.parse({ "--dev", "--build-cache", "/tmp/hg.nds" })
+  Assert.isTrue(withRom.dev)
+  Assert.equal(withRom.romPath, "/tmp/hg.nds")
 end
 
 function T.unknown_tokens_are_rejected()

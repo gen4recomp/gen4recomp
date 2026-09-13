@@ -113,9 +113,10 @@ paths, offsets, packing, and decompilation catalogs remain producer-side unless
 a product feature gives one semantic meaning.
 
 The raw dump is lossless and versioned independently from derived assets. A
-producer fingerprint and asset-contract identity determine whether a full
-rebuild is needed; per-artifact completion markers repair missing derived
-classes without invalidating the raw dump.
+coarse logical cache generation — the development producer-byte digest or the
+explicit per-game release counter — together with the asset-contract identity
+determines whether a full rebuild is needed; per-artifact completion markers
+repair missing derived classes without invalidating the raw dump.
 
 ## ID namespaces
 

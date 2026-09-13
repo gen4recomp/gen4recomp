@@ -2,9 +2,12 @@
 -- options table naming exactly one command (`opts.command`), or nil when no
 -- command flag appears. Unknown options, stray arguments, missing option
 -- values, and a second command flag are rejected with a raise that main.lua
--- turns into a usage message and exit status 2. It holds no state and never
--- touches love, so main.lua can dispatch and the parser can be unit tested
--- off-runtime.
+-- turns into a usage message and exit status 2. `opts.dev` selects the
+-- development cache identity (hash of the producer working-tree bytes) for
+-- the build commands; without it the packaged CLI uses the release cache
+-- identity (the explicit per-game counter, no source reads). It holds no
+-- state and never touches love, so main.lua can dispatch and the parser can
+-- be unit tested off-runtime.
 
 local Cli = {}
 
@@ -14,7 +17,7 @@ Cli.EXIT_USAGE = 2
 
 Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--build-cache [path]]"
   .. " [--check-dump] [--check-derived-cache]"
-  .. " [--allow-compile-exclusions]"
+  .. " [--allow-compile-exclusions] [--dev]"
 
 -- Every command flag maps to the command it selects; --import-rom,
 -- --build-cache, and --forcedump have their own loop branches because they
@@ -39,11 +42,11 @@ end
 
 -- argv: the array LÖVE passes to love.load.
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean }
+---@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean }
 function Cli.parse(argv)
   argv = argv or {}
 
-  local opts = { command = nil, romPath = nil, forceDump = false, allowCompileExclusions = false }
+  local opts = { command = nil, romPath = nil, forceDump = false, allowCompileExclusions = false, dev = false }
   local commandFlag = nil
 
   local function setCommand(flag)
@@ -81,6 +84,8 @@ function Cli.parse(argv)
       end
     elseif token == "--allow-compile-exclusions" then
       opts.allowCompileExclusions = true
+    elseif token == "--dev" then
+      opts.dev = true
     elseif COMMAND_FLAGS[token] then
       setCommand(token)
     elseif token:sub(1, 2) == "--" then
