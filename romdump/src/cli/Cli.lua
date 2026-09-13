@@ -2,9 +2,12 @@
 -- options table naming exactly one command (`opts.command`), or nil when no
 -- command flag appears. Unknown options, stray arguments, missing option
 -- values, and a second command flag are rejected with a raise that main.lua
--- turns into a usage message and exit status 2. It holds no state and never
--- touches love, so main.lua can dispatch and the parser can be unit tested
--- off-runtime.
+-- turns into a usage message and exit status 2. `opts.dev` selects the
+-- development cache identity (hash of the producer working-tree bytes) for
+-- the build commands; without it the packaged CLI uses the release cache
+-- identity (the explicit per-game counter, no source reads). It holds no
+-- state and never touches love, so main.lua can dispatch and the parser can
+-- be unit tested off-runtime.
 
 local Cli = {}
 
@@ -14,7 +17,7 @@ Cli.EXIT_USAGE = 2
 
 Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--build-cache [path]]"
   .. " [--check-dump] [--check-derived-cache]"
-  .. " [--allow-compile-exclusions]"
+  .. " [--allow-compile-exclusions] [--dev]"
   .. " [--discover-app <overlay-id> --rom-source <path> [--output <path>]"
   .. " [--resource-detail <fileId>:<memberId>]...]"
 
@@ -63,7 +66,7 @@ end
 
 -- argv: the array LÖVE passes to love.load.
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[] }
+---@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, overlayId: integer|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[] }
 function Cli.parse(argv)
   argv = argv or {}
 
@@ -72,6 +75,7 @@ function Cli.parse(argv)
     romPath = nil,
     forceDump = false,
     allowCompileExclusions = false,
+    dev = false,
     overlayId = nil,
     outputPath = nil,
     resourceDetails = {},
@@ -116,6 +120,8 @@ function Cli.parse(argv)
       end
     elseif token == "--allow-compile-exclusions" then
       opts.allowCompileExclusions = true
+    elseif token == "--dev" then
+      opts.dev = true
     elseif token == "--discover-app" then
       setCommand(token)
       opts.overlayId = parseOverlayId(argv, i, token)

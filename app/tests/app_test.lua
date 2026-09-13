@@ -411,54 +411,21 @@ function T.shell_exit_mapping_quits_only_for_a_hgss_quit_result()
   end)
 end
 
--- Product startup reports a packaging defect before creating a scheduler or a
--- game, and it never reaches the Unix checkout source adapter.
-function T.product_startup_rejects_a_missing_packaged_producer_tree_without_checkout_fallback()
-  local checkoutCalls = 0
+-- Release startup selects the explicit per-game counter without reading any
+-- producer source: both source backends fail the boot if touched.
+function T.release_startup_passes_the_release_counter_without_reading_producer_sources()
+  local touches = 0
+  local function touch()
+    touches = touches + 1
+    error("release startup must not touch producer sources")
+  end
+  local hostileBackend = { list = touch, read = touch, getInfo = touch }
   withProducerBackends(function()
-    return {
-      list = function()
-        return {}
-      end,
-      read = function()
-        error("the missing packaged tree must fail before reads")
-      end,
-      getInfo = function()
-        return nil
-      end,
-    }
+    touches = touches + 1
+    return hostileBackend
   end, function()
-    checkoutCalls = checkoutCalls + 1
-    error("product startup must not select the checkout source")
-  end, function()
-    withAppHarness({ dev = false }, function(id)
-      return id == "heartgold"
-    end, function(result)
-      local err = Assert.throws(function()
-        App._bootExisting()
-      end)
-      local message = tostring(err)
-      Assert.isTrue(message:find("packaged producer tree", 1, true) ~= nil)
-      Assert.isTrue(message:find("romdump/src", 1, true) ~= nil)
-      Assert.equal(checkoutCalls, 0)
-      Assert.equal(#result.provisionerOptions, 0)
-      Assert.equal(#result.launches, 0)
-    end)
-  end)
-end
-
--- Product startup computes one fingerprint from the packaged source tree and
--- passes only that identity across the provisioning boundary.
-function T.product_startup_passes_vfs_fingerprint_without_checkout_metadata()
-  local files = {
-    ["build/Compiler.lua"] = "product compiler",
-    ["build/Readers.lua"] = "product readers",
-  }
-  local appBackend = fakeSourceBackend(files)
-  withProducerBackends(function()
-    return appBackend
-  end, function()
-    error("product startup must not select the checkout source")
+    touches = touches + 1
+    error("release startup must not select the checkout source")
   end, function()
     withAppHarness({ dev = false }, function(id)
       return id == "heartgold"
@@ -467,16 +434,40 @@ function T.product_startup_passes_vfs_fingerprint_without_checkout_metadata()
       local options = assert(result.provisionerOptions[1])
       Assert.keySet(options, "producerFingerprint,versionId")
       Assert.equal(options.versionId, "heartgold")
-      Assert.equal(options.producerFingerprint, ProducerFingerprint.compute(appBackend, "romdump/src"))
+      Assert.equal(options.producerFingerprint, "r1")
+      Assert.equal(touches, 0)
       Assert.equal(#result.launches, 1)
       Assert.equal(App.state, result.state)
     end)
   end)
 end
 
--- Explicit development mode selects the checkout adapter and keeps its root
--- available for worker bootstrap; changing checkout content changes identity.
-function T.development_startup_passes_checkout_fingerprint_and_worker_root()
+-- The release counter is selected per game from the explicit release table.
+function T.release_startup_selects_the_per_game_release_counter()
+  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
+  withProducerBackends(function()
+    error("release startup must not use the product source")
+  end, function()
+    error("release startup must not select the checkout source")
+  end, function()
+    withAppHarness({ dev = false }, function(id)
+      return id == "soulsilver"
+    end, function(result)
+      App._bootExisting()
+      local options = assert(result.provisionerOptions[1])
+      Assert.keySet(options, "producerFingerprint,versionId")
+      Assert.equal(options.versionId, "soulsilver")
+      Assert.equal(options.producerFingerprint, "r" .. tostring(DerivedCacheVersions.soulsilver))
+      Assert.equal(#result.launches, 1)
+    end)
+  end)
+end
+
+-- Explicit development mode selects the checkout adapter, keeps its root
+-- available for worker bootstrap, and freezes the digest for the process: a
+-- second boot keeps the first digest even after checkout bytes change, and
+-- the checkout is enumerated once.
+function T.development_startup_freezes_the_checkout_digest_for_the_process()
   local files = {
     ["build/Compiler.lua"] = "checkout compiler",
     ["build/Readers.lua"] = "checkout readers",
@@ -504,20 +495,17 @@ function T.development_startup_passes_checkout_fingerprint_and_worker_root()
         files["build/Compiler.lua"] = "edited checkout compiler"
         App._bootMainMenu({ "heartgold" })
         local second = assert(result.provisionerOptions[2])
-        Assert.equal(checkoutCalls, 2)
+        Assert.equal(checkoutCalls, 1, "the frozen process digest must not rescan the checkout")
         Assert.equal(appBackendCalls, 0)
-        Assert.isFalse(firstFingerprint == second.producerFingerprint)
+        Assert.equal(second.producerFingerprint, firstFingerprint, "checkout edits wait for a process restart")
         Assert.equal(first.developmentRepositoryRoot, checkoutRoot)
         Assert.equal(second.developmentRepositoryRoot, checkoutRoot)
         Assert.equal(
           first.producerFingerprint,
-          ProducerFingerprint.compute(
-            fakeSourceBackend({
-              ["build/Compiler.lua"] = "checkout compiler",
-              ["build/Readers.lua"] = "checkout readers",
-            }),
-            "romdump/src"
-          )
+          ProducerFingerprint.compute(fakeSourceBackend({
+            ["build/Compiler.lua"] = "checkout compiler",
+            ["build/Readers.lua"] = "checkout readers",
+          }))
         )
         Assert.equal(#result.launches, 2)
       end)

@@ -4,6 +4,7 @@ local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local HgssGame = require("game.hgss.src.HgssGame")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local ImportState = require("app.src.launcher.ImportState")
@@ -32,23 +33,44 @@ local function readyVersions()
   return out
 end
 
+-- The process development digest, frozen on first selection: a developer
+-- restarts the process to consume producer edits. The frozen selection
+-- records which checkout factory produced it, so a backend swap (a different
+-- process configuration) reselects instead of reusing a stale digest.
+local frozenDevelopment = nil
+
+local function developmentProducerId(repositoryRoot)
+  local factory = ProducerFingerprint.checkoutBackend
+  if frozenDevelopment ~= nil and frozenDevelopment.root == repositoryRoot and frozenDevelopment.factory == factory then
+    return frozenDevelopment.producerId
+  end
+  local producerId = ProducerFingerprint.compute(factory(repositoryRoot))
+  frozenDevelopment = { root = repositoryRoot, factory = factory, producerId = producerId }
+  return producerId
+end
+
+local function releaseProducerId(versionId)
+  local counter = DerivedCacheVersions[versionId]
+  assert(
+    type(counter) == "number" and counter == math.floor(counter) and counter >= 1,
+    "release counter must be a positive integer for version: " .. tostring(versionId)
+  )
+  return "r" .. tostring(counter)
+end
+
 local function provisionerOptions(versionId)
   if App.opts.dev == true then
     local repositoryRoot = love.filesystem.getSourceBaseDirectory()
-    local backend = ProducerFingerprint.checkoutBackend(repositoryRoot)
     return {
       versionId = versionId,
-      producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src"),
+      producerFingerprint = developmentProducerId(repositoryRoot),
       developmentRepositoryRoot = repositoryRoot,
     }
   end
 
-  local backend = ProducerFingerprint.appBackend()
-  local info = assert(backend.getInfo, "producer VFS backend must expose getInfo")("romdump/src")
-  assert(info and info.type == "directory", "packaged producer tree romdump/src is missing or is not a directory")
   return {
     versionId = versionId,
-    producerFingerprint = ProducerFingerprint.compute(backend, "romdump/src"),
+    producerFingerprint = releaseProducerId(versionId),
   }
 end
 
