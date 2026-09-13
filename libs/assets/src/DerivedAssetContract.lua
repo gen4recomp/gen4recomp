@@ -203,9 +203,13 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
+  -- v5 moves the generation summary (index, provenance, coverage, marker)
+  -- under a `metadata/` child of the generation directory, disjoint from
+  -- the `members/` payload roots, so one summary publication can own the
+  -- metadata directory plus the active selector without replacing members.
   -- v4 shards the generated corpus into immutable generations and member
   -- roots. The active selector is separate from the generation contents.
-  cacheFormat = "script-cache-v4",
+  cacheFormat = "script-cache-v5",
   indexSchema = "g4-script-index-v2",
   provenanceSchema = "g4-script-provenance-v2",
 }
