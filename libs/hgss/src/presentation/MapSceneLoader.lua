@@ -103,6 +103,7 @@ local WAIT = {}
 ---@field _queue table<string, unknown>?
 ---@field _outstanding integer?
 ---@field _stashed table<integer, table<string, unknown>>?
+---@field _finishing boolean
 ---@field advance fun(self: MapSceneLoader.BuildTask, maxWorkUnits: integer): integer
 ---@field isReady fun(self: MapSceneLoader.BuildTask): boolean
 ---@field takeResult fun(self: MapSceneLoader.BuildTask): MapSceneLoader.Runtime
@@ -207,7 +208,8 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   -- outstanding token so finish() can block-wait it and release() can
   -- cancel it.
   local function awaitPrepared(kind, path)
-    local token = queue:request(kind, path, "prefetch")
+    local priority = task._finishing and "demand" or "prefetch"
+    local token = queue:request(kind, path, priority)
     task._outstanding = token
     while true do
       if task._stashed ~= nil and task._stashed[token] ~= nil then
@@ -874,12 +876,22 @@ end
 ---@return MapSceneLoader.Runtime
 ---@param self MapSceneLoader.BuildTask
 function BuildTask:finish()
+  -- Finishing is synchronous from here on: the outstanding prefetch token,
+  -- if any, becomes demand before the block-wait, and every later resource
+  -- acquisition while finishing requests demand. Ordinary staged advances
+  -- keep prefetching.
+  self._finishing = true
   while self.state == "active" do
     -- A coroutine suspended on worker preparation block-waits its
     -- outstanding token instead of polling in a tight loop; the waited
     -- payload is stashed for the resumed build to consume.
     local outstanding = self._outstanding
     if outstanding ~= nil and self._queue ~= nil then
+      local promoteOk, promoteErr = pcall(self._queue.promote, self._queue, outstanding, "demand")
+      if not promoteOk then
+        self._outstanding = nil
+        failTask(self, promoteErr)
+      end
       local ok, payload = pcall(self._queue.wait, self._queue, outstanding)
       if not ok then
         self._outstanding = nil
@@ -947,6 +959,7 @@ function MapSceneLoader.begin(cacheFs, scene, opts)
     _queue = opts.assetPreparation,
     _outstanding = nil,
     _stashed = nil,
+    _finishing = false,
     advance = BuildTask.advance,
     isReady = BuildTask.isReady,
     takeResult = BuildTask.takeResult,

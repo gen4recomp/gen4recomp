@@ -98,6 +98,13 @@ local EMISSIVE_WHITE = 31 + 32 * 31 + 1024 * 31
 -- semantic coordinate. Matches StarterChoiceState.
 local SURFACE_GAP = 8
 
+-- Submitted-but-unconsumed preparation tokens the chooser holds at once.
+-- The worker answers faster than the main thread uploads, so an unbounded
+-- window would retain an entire chooser's decoded payloads waiting for
+-- one-frame-at-a-time upload; two keeps the worker fed while bounding
+-- retained work.
+local PREPARATION_WINDOW = 2
+
 ---@param value unknown
 ---@return boolean
 local function isFiniteNumber(value)
@@ -656,7 +663,8 @@ end
 ---@field wrapY string?
 ---@field width number?
 ---@field height number?
----@field token integer?
+---@field token integer? live submitted token while the window holds this step
+---@field requested boolean? whether this step was ever submitted to the queue
 
 ---@class StarterChoicePrepContext
 ---@field assetPreparation table<string, unknown>? borrowed preparation queue; nil prepares synchronously from the cache
@@ -685,44 +693,7 @@ end
 
 -- Stand-in records own no graphics objects and carry no animation state,
 -- so their lifecycle operations do nothing.
-local function releaseStandIn() end
-
 local function updateStandIn() end
-
--- A mesh entry with no upload behind it, for geometry-free descriptors
--- driven through queues that carry no upload buffers. It draws nothing and
--- releases nothing; it only keeps the assembly shape intact.
----@return StarterChoiceMeshEntry
-local function stubMeshEntry()
-  return {
-    mesh = {
-      release = releaseStandIn,
-    },
-    triangles = 0,
-    center = { 0, 0, 0 },
-    bounds = { minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0 },
-  }
-end
-
--- An image with no pixels behind it, for payloads that carry no upload
--- buffers. It reports a fixed size for quad construction and draws nothing
--- on its own; only compositions without real graphics ever observe it.
----@param width number
----@param height number
----@return GpuAssetPool.Image
-local function stubImage(width, height)
-  local image = { _width = width, _height = height }
-  function image:getWidth()
-    return self._width
-  end
-  function image:getHeight()
-    return self._height
-  end
-  function image:setFilter() end
-  function image:setWrap() end
-  function image:release() end
-  return image --[[@as GpuAssetPool.Image]]
-end
 
 -- A model instance stand-in for descriptors with no drawable batches. It
 -- keeps the assembly shape (transform, fixed-tick advance, pose evaluation,
@@ -750,18 +721,9 @@ local function stubInstance()
   return instance --[[@as ModelInstance]]
 end
 
--- A window primitive stand-in for compositions without the generated
--- field-UI manifest. It paints no frame and releases nothing.
-local function stubWindow()
-  local window = {}
-  function window:drawWindow() end
-  function window:release() end
-  return window
-end
-
 -- A prepared payload carries upload buffers exactly when it came from the
--- real preparation worker. Queues without a worker hand back bare records;
--- those resolve to stand-in entries that keep the assembly shape.
+-- preparation worker. Anything else is malformed generated data and fails
+-- loudly below instead of rendering a blank scene.
 ---@param payload table<string, unknown>?
 ---@return boolean
 local function isMeshPayload(payload)
@@ -900,32 +862,24 @@ function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
     plan[#plan + 1] = { kind = "models" }
     plan[#plan + 1] = { kind = "finish" }
     if queue ~= nil then
-      local submitted = {}
+      self._prepareQueue = queue
+      self._pool = pool
+      self._backend = backend
+      self._plan = plan
+      self._planIndex = 1
       local submitOk, submitErr = pcall(function()
-        for _, step in ipairs(plan) do
-          if step.kind == "mesh" or step.kind == "image" then
-            step.token =
-              queue:request(step.kind, assert(step.path, "starter preparation step carries no path"), "demand")
-            submitted[#submitted + 1] = assert(step.token, "starter preparation request returned no token")
-          end
-        end
+        self:_submitWindow()
       end)
       if not submitOk then
-        for _, token in ipairs(submitted) do
-          pcall(queue.cancel, queue, token)
-        end
-        pool:release()
+        self:_releaseGpu()
         error(submitErr, 0)
       end
-      for _, token in ipairs(submitted) do
-        self._outstanding[token] = true
-      end
-      self._prepareQueue = queue
+    else
+      self._pool = pool
+      self._backend = backend
+      self._plan = plan
+      self._planIndex = 1
     end
-    self._pool = pool
-    self._backend = backend
-    self._plan = plan
-    self._planIndex = 1
   end
   local completed = 0
   while completed < maxWorkUnits and not self._ready do
@@ -942,6 +896,32 @@ function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
     completed = completed + 1
   end
   return completed
+end
+
+-- Submits the earliest never-submitted resource steps until the
+-- submitted-but-unconsumed window is full. Runs once when the plan is
+-- created and again after every consumed payload, so at most
+-- PREPARATION_WINDOW tokens stay outstanding while every staged asset is
+-- still eventually requested.
+function StarterChoicePresentation:_submitWindow()
+  local queue = assert(self._prepareQueue, "starter preparation owns no queue")
+  local plan = assert(self._plan, "starter preparation owns no plan")
+  local outstanding = 0
+  for _ in pairs(self._outstanding) do
+    outstanding = outstanding + 1
+  end
+  for _, step in ipairs(plan) do
+    if outstanding >= PREPARATION_WINDOW then
+      return
+    end
+    if (step.kind == "mesh" or step.kind == "image") and not step.requested then
+      step.token = queue:request(step.kind, assert(step.path, "starter preparation step carries no path"), "demand")
+      assert(step.token ~= nil, "starter preparation request returned no token")
+      step.requested = true
+      self._outstanding[step.token] = true
+      outstanding = outstanding + 1
+    end
+  end
 end
 
 -- Runs the next plan step. Returns true when a step completed and false
@@ -984,6 +964,9 @@ function StarterChoicePresentation:_advancePlanStep()
       )
     end
     self:_realizePrepared(step, queue:take(token))
+    self._planIndex = self._planIndex + 1
+    self:_submitWindow()
+    return true
   else
     self:_realizeSynchronous(step)
   end
@@ -991,30 +974,28 @@ function StarterChoicePresentation:_advancePlanStep()
   return true
 end
 
--- Realizes one taken payload through the owned pool, or records a stand-in
--- entry when the payload carries no upload buffers.
+-- Realizes one taken payload through the owned pool. A payload without
+-- upload buffers is malformed and fails instead of rendering a blank scene.
 ---@param step StarterChoicePrepStep
 ---@param payload table<string, unknown>
 function StarterChoicePresentation:_realizePrepared(step, payload)
   local pool = assert(self._pool, "starter preparation owns no pool")
   local path = assert(step.path, "starter preparation step carries no path")
   if step.kind == "mesh" then
-    if isMeshPayload(payload) then
-      self._meshEntries[path] = pool:meshFromPrepared(path, payload --[[@as SceneMesh.PreparedMesh]])
-    else
-      self._meshEntries[path] = stubMeshEntry()
+    if not isMeshPayload(payload) then
+      error("starter preparation produced no mesh upload buffers for " .. tostring(path), 0)
     end
+    self._meshEntries[path] = pool:meshFromPrepared(path, payload --[[@as SceneMesh.PreparedMesh]])
     return
   end
   assert(step.kind == "image", "starter preparation step carries an unknown kind " .. tostring(step.kind))
   local wrapX, wrapY =
     assert(step.wrapX, "starter image step carries no wrap"), assert(step.wrapY, "starter image step carries no wrap")
-  local key = path .. "|" .. wrapX .. "|" .. wrapY
-  if isImagePayload(payload) then
-    self._imageEntries[key] = pool:imageFromPrepared(path, wrapX, wrapY, payload --[[@as { imageData: unknown }]])
-    return
+  if not isImagePayload(payload) then
+    error("starter preparation produced no image upload buffers for " .. tostring(path), 0)
   end
-  self._imageEntries[key] = stubImage(step.width or 64, step.height or 64)
+  self._imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] =
+    pool:imageFromPrepared(path, wrapX, wrapY, payload --[[@as { imageData: unknown }]])
 end
 
 -- Realizes one resource synchronously from the cache for compositions
@@ -1106,12 +1087,9 @@ function StarterChoicePresentation:_finishPreparation()
   end
   self._portraitQuads = quads
   local uiManifest = self._cacheFs:loadLua(FieldUiAssetCache.manifestPath())
-  if uiManifest == nil then
-    self._window = stubWindow()
-  else
-    assert(FieldUiAssetCache.validateManifest(uiManifest), "starter field-UI manifest is invalid")
-    self._window = FieldWindowRenderer.new({ cacheFs = self._cacheFs, manifest = uiManifest, graphics = graphics })
-  end
+  assert(uiManifest ~= nil, "starter presentation requires the generated field-UI manifest")
+  assert(FieldUiAssetCache.validateManifest(uiManifest), "starter field-UI manifest is invalid")
+  self._window = FieldWindowRenderer.new({ cacheFs = self._cacheFs, manifest = uiManifest, graphics = graphics })
   local fogTable = {}
   for index = 1, 32 do
     fogTable[index] = 0

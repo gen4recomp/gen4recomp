@@ -225,6 +225,11 @@ local function fakeAssetPreparationQueue(cache, opts)
     records[token] = nil
     return payload
   end
+  function queue:promote(token, priority)
+    local record = assert(records[token], "unknown token")
+    assert(priority == "demand", "unknown preparation priority " .. tostring(priority))
+    record.priority = priority
+  end
   function queue:wait(token)
     local record = assert(records[token], "unknown token")
     if waitFailurePath ~= nil and record.path == waitFailurePath then
