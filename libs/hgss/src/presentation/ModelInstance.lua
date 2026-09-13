@@ -159,6 +159,23 @@ local function identityNormalInto(out)
   out[7], out[8], out[9] = 0, 0, 1
 end
 
+-- The item normal for a composed item transform: identity for
+-- translation-only transforms and for singular (zero-scale hidden)
+-- geometry, which renders nothing, so its normals are moot; otherwise the
+-- inverse-transpose model normal. Broken programs still raise at their own
+-- sites.
+---@param out number[]
+---@param transform number[]
+local function writeNormalInto(out, transform)
+  if isTranslationOnly(transform) then
+    identityNormalInto(out)
+  elseif Matrix3.inverse(Matrix3.from4x4(transform)) ~= nil then
+    Matrix3.modelNormalInto(out, transform)
+  else
+    identityNormalInto(out)
+  end
+end
+
 -- One normalized RGB triple of the effective material into an existing
 -- 3-number array: the evaluated channel when present, else the base color.
 ---@param out number[]
@@ -494,11 +511,7 @@ function ModelInstance:drawItems(renderMeshesById)
           item.billboardBase = nil
           item.billboardCenter = nil
           item.billboardScale = nil
-          if isTranslationOnly(item.transform) then
-            identityNormalInto(item.modelNormal)
-          else
-            Matrix3.modelNormalInto(item.modelNormal, item.transform)
-          end
+          writeNormalInto(item.modelNormal, item.transform)
         end
       else
         if pose and pose.nodeMatrices[mesh.nodeIndex] then
@@ -511,11 +524,7 @@ function ModelInstance:drawItems(renderMeshesById)
         item.billboardBase = nil
         item.billboardCenter = nil
         item.billboardScale = nil
-        if isTranslationOnly(item.transform) then
-          identityNormalInto(item.modelNormal)
-        else
-          Matrix3.modelNormalInto(item.modelNormal, item.transform)
-        end
+        writeNormalInto(item.modelNormal, item.transform)
       end
       local meshState = assert(
         backendMeshes[mesh.id],
