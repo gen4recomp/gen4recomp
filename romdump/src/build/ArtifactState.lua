@@ -23,6 +23,9 @@ ArtifactState.KINDS = {
   -- single world file, and each field-map-data job owns its own map record.
   world = true,
   ["field-map-data"] = true,
+  -- One staged message bank (or the family summary) per job: each bank owns
+  -- its payload and marker, the summary owns only the index and completion.
+  ["message-bank"] = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"

@@ -10,6 +10,7 @@ local FieldMessageCache = {}
 
 ---@class FieldMessageCache.Index
 ---@field schema string
+---@field version string
 ---@field bankIds integer[]
 
 local Validate = require("libs.assets.src.Validate")
@@ -36,11 +37,35 @@ function FieldMessageCache.markerPath()
 end
 
 function FieldMessageCache.bankPath(bankId)
+  assert(Validate.isNonNegativeInteger(bankId), "bankId must be a non-negative integer")
   return string.format("%s/banks/%04d.lua", DATA_DIR, bankId)
+end
+
+function FieldMessageCache.bankMarkerPath(bankId)
+  assert(Validate.isNonNegativeInteger(bankId), "bankId must be a non-negative integer")
+  return string.format("%s/banks/%04d.complete", DATA_DIR, bankId)
 end
 
 function FieldMessageCache.marker(romSha1, depHash)
   return string.format("%s:%s:%s", FieldMessageCache.FORMAT, romSha1, depHash)
+end
+
+-- True only if the bank's own marker is exact and its payload loads with
+-- the expected schema and matching identity. Reads staged or published
+-- files only; never touches source decoding or tokenization.
+---@param cacheFs CacheFs
+---@param bankId integer
+---@param expectedMarker string
+---@return boolean
+function FieldMessageCache.isBankReady(cacheFs, bankId, expectedMarker)
+  if cacheFs:read(FieldMessageCache.bankMarkerPath(bankId)) ~= expectedMarker then
+    return false
+  end
+  local bank = cacheFs:loadLua(FieldMessageCache.bankPath(bankId)) ---@type table?
+  if type(bank) ~= "table" or bank.schema ~= FieldMessageCache.SCHEMA or bank.bankId ~= bankId then
+    return false
+  end
+  return true
 end
 
 -- True only if the marker is exact, the index loads with the expected schema,
