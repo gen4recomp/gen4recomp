@@ -578,6 +578,105 @@ function T.interpolates_inserted_vertex_attributes_in_the_coarse_domain()
   Assert.equal(inserted.colorSource, 2, "the categorical color source is preserved, never averaged")
 end
 
+-- The coarse side is to the right of the seam. Its local edge is stored from
+-- the upper endpoint to the lower endpoint, opposite the canonical position
+-- identity direction. The fine side supplies one breakpoint at z=1.
+local function reversedAttributeFixture()
+  local coarse = B({
+    V(4, 1, 0),
+    V(0, 1, 0, { u = 0, v = 8, nx = 10, r = 10, g = 20, b = 30, a = 40, colorSource = 2 }),
+    V(0, 1, 4, { u = 8, v = 0, nx = 30, r = 50, g = 60, b = 70, a = 200, colorSource = 2 }),
+    V(4, 1, 4),
+  }, { 0, 2, 1, 0, 3, 2 })
+  local fine = B({
+    V(-4, 1, 0),
+    V(0, 1, 0),
+    V(-4, 1, 1),
+    V(0, 1, 1),
+    V(-4, 1, 4),
+    V(0, 1, 4),
+  }, { 0, 1, 3, 0, 3, 2, 2, 3, 5, 2, 5, 4 })
+  return denseBatches({ coarse, fine })
+end
+
+function T.interpolates_a_reversed_single_break_in_the_geometric_direction()
+  local input = reversedAttributeFixture()
+  local beforeAreas = triangleAreas(input[1])
+  local before = beforeAreas[1] + beforeAreas[2]
+  local after = conform(cloneBatches(input))
+  Assert.equal(after[1].indexCount, 9, "one reversed-edge breakpoint creates exactly one split")
+  local inserted = vertexAt(after[1], 0, 1, 1)
+  Assert.notNil(inserted, "the reversed coarse edge gains the shared breakpoint")
+  ---@cast inserted table
+  Assert.equal(inserted.u, 2, "reversed-edge u interpolation follows the geometric direction")
+  Assert.equal(inserted.v, 6, "reversed-edge v interpolation follows the geometric direction")
+  Assert.equal(inserted.nx, 15, "reversed-edge normal interpolation follows the geometric direction")
+  Assert.equal(inserted.r, 20, "reversed-edge color interpolation follows the geometric direction")
+  Assert.equal(inserted.g, 30, "reversed-edge color interpolation follows the geometric direction")
+  Assert.equal(inserted.b, 40, "reversed-edge color interpolation follows the geometric direction")
+  Assert.equal(inserted.a, 80, "reversed-edge alpha interpolation follows the geometric direction")
+  Assert.equal(inserted.colorSource, 2, "reversed-edge color source remains categorical")
+  local total = 0
+  for _, area in ipairs(triangleAreas(after[1])) do
+    Assert.isTrue(math.abs(area) > 1e-12, "reversed-edge split emits no degenerate triangle")
+    Assert.isTrue(area * before > 0, "reversed-edge split preserves winding")
+    total = total + area
+  end
+  Assert.near(total, before, 1e-9, "reversed-edge split preserves area")
+  Assert.equal(#junctions(after), 0, "reversed-edge split leaves no T-junction")
+  Assert.deepEqual(
+    denseSnapshot(conform(cloneBatches(after))),
+    denseSnapshot(after),
+    "reversed-edge conformance is idempotent"
+  )
+end
+
+-- The same reversed local edge carries two breakpoints at z=2 and z=4.
+local function reversedMultiSplit()
+  local coarse = B({
+    V(4, 1, 0),
+    V(0, 1, 0),
+    V(0, 1, 6),
+    V(4, 1, 6),
+  }, { 0, 2, 1, 0, 3, 2 })
+  local laterPoint = B({
+    V(0, 1, 4),
+    V(-4, 1, 3),
+    V(-4, 1, 5),
+  }, { 0, 1, 2 })
+  local earlierPoint = B({
+    V(0, 1, 2),
+    V(-4, 1, 1),
+    V(-4, 1, 3),
+  }, { 0, 1, 2 })
+  return denseBatches({ coarse, laterPoint, earlierPoint })
+end
+
+function T.repairs_a_reversed_multi_break_edge_without_topology_growth()
+  local input = reversedMultiSplit()
+  local beforeAreas = triangleAreas(input[1])
+  local beforeTotal = beforeAreas[1] + beforeAreas[2]
+  local after = conform(cloneBatches(input))
+  Assert.equal(after[1].indexCount, 12, "two reversed-edge breakpoints create only two extra triangles")
+  Assert.equal(countAt({ after[1] }, 0, 1, 2), 1, "the first reversed-edge breakpoint is inserted once")
+  Assert.equal(countAt({ after[1] }, 0, 1, 4), 1, "the second reversed-edge breakpoint is inserted once")
+  local total = 0
+  for _, area in ipairs(triangleAreas(after[1])) do
+    Assert.isTrue(math.abs(area) > 1e-12, "reversed multi-break emits no degenerate triangle")
+    Assert.isTrue(area * beforeTotal > 0, "reversed multi-break preserves winding")
+    total = total + area
+  end
+  Assert.near(total, beforeTotal, 1e-9, "reversed multi-break preserves area")
+  Assert.equal(#junctions(after), 0, "reversed multi-break leaves no T-junction")
+  local repeated = conform(cloneBatches(input))
+  Assert.deepEqual(denseSnapshot(repeated), denseSnapshot(after), "reversed multi-break output is deterministic")
+  Assert.deepEqual(
+    denseSnapshot(conform(cloneBatches(after))),
+    denseSnapshot(after),
+    "reversed multi-break conformance is idempotent"
+  )
+end
+
 function T.fails_loudly_on_categorical_color_source_conflict()
   local err = Assert.throws(function()
     conform(attributeFixture(0, 1))

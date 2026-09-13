@@ -16,6 +16,9 @@ local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 
 local T = {}
 
+---@class NewBarkGeometrySlice: G4GxGeometrySlice
+---@field materialIndex integer
+
 local CONFORMER_MODULE = "romdump.src.digest.map.TerrainBoundaryConformer"
 
 local function conformer()
@@ -46,6 +49,7 @@ local function meshBatches(bundle, records)
     local decoded = CompiledAsset.mesh(assert(bundle.meshes[sha1], "the shared mesh pool holds " .. sha1))
     arena:reserve(decoded.vertexCount, decoded.indexCount)
     local slice = arena:beginSlice()
+    ---@cast slice NewBarkGeometrySlice
     for _, vertex in ipairs(decoded.vertices) do
       local numeric = arena.numeric[arena.vertexCount]
       local attrib = arena.attrib[arena.vertexCount]

@@ -99,6 +99,11 @@ assert(ffi.sizeof("G4SplitEvent") == 32, "G4SplitEvent must remain 32 bytes")
 local TOLERANCE = 1e-9
 local UINT32_MAX = 0xFFFFFFFF
 local TRIANGLE_SLOT_SIZE = assert(ffi.sizeof("G4TriangleSlot"))
+-- This is a pathological-runtime ceiling, not a convergence bound. Valid
+-- duplicate physical triangle owners may require several refinement passes;
+-- this high safeguard only prevents a broken topology from consuming
+-- unbounded time and memory.
+local MAX_CONFORMANCE_PASSES = 128
 
 local function isFinite(value)
   return value == value and value ~= math.huge and value ~= -math.huge
@@ -417,10 +422,14 @@ end
 ---@param ia integer
 ---@param ib integer
 local function countEdge(scratch, a, b, triangle, ia, ib)
+  local reversed = a > b
   local edge = findEdge(scratch, a, b)
   edge.count = edge.count + 1
   if edge.count == 1 then
-    edge.firstTriangle, edge.ia, edge.ib = triangle, ia, ib
+    if reversed then
+      ia, ib = ib, ia
+    end
+    edge.firstTriangle, edge.ia, edge.ib, edge.pad = triangle, ia, ib, reversed and 1 or 0
   end
 end
 
@@ -606,6 +615,18 @@ local function splitParam(scratch, aId, bId, pointId)
   return t
 end
 
+local function mayLieInsideEdgeBounds(scratch, aId, bId, pointId)
+  local ax, ay, az = positionCoordinates(scratch, aId)
+  local bx, by, bz = positionCoordinates(scratch, bId)
+  local px, py, pz = positionCoordinates(scratch, pointId)
+  return px >= math.min(ax, bx) - TOLERANCE
+    and px <= math.max(ax, bx) + TOLERANCE
+    and py >= math.min(ay, by) - TOLERANCE
+    and py <= math.max(ay, by) + TOLERANCE
+    and pz >= math.min(az, bz) - TOLERANCE
+    and pz <= math.max(az, bz) + TOLERANCE
+end
+
 local function eventEdgeIds(event, analyses)
   local ids = analyses[event.batchIndex + 1].positionIds
   local a, b = tonumber(ids[event.ia]), tonumber(ids[event.ib])
@@ -663,24 +684,61 @@ local function sortEvents(scratch, count, analyses)
   end
 end
 
+local function collectBoundaryPoints(analyses, scratch)
+  local total = 0
+  for _, analysis in ipairs(analyses) do
+    total = total + analysis.pointCount
+  end
+  ensureArray(scratch, "boundaryPointIds", "boundaryPointCapacity", "uint32_t", math.max(1, total))
+  local sourceByPoint = {}
+  local output = 0
+  for candidateBatch, candidate in ipairs(analyses) do
+    for pointIndex = 0, candidate.pointCount - 1 do
+      local pointId = assert(tonumber(candidate.pointIds[pointIndex]))
+      scratch.boundaryPointIds[output] = pointId
+      output = output + 1
+      local source = candidateBatch - 1
+      if sourceByPoint[pointId] == nil or source < sourceByPoint[pointId] then
+        sourceByPoint[pointId] = source
+      end
+    end
+  end
+  sortUint32(scratch.boundaryPointIds, total, scratch)
+  local unique = 0
+  for index = 0, total - 1 do
+    local pointId = scratch.boundaryPointIds[index]
+    if unique == 0 or pointId ~= scratch.boundaryPointIds[unique - 1] then
+      scratch.boundaryPointIds[unique] = pointId
+      unique = unique + 1
+    end
+  end
+  ensureArray(scratch, "boundaryPointSources", "boundaryPointSourceCapacity", "uint32_t", math.max(1, unique))
+  for index = 0, unique - 1 do
+    scratch.boundaryPointSources[index] = assert(sourceByPoint[tonumber(scratch.boundaryPointIds[index])])
+  end
+  return unique
+end
+
 local function collectEvents(analyses, scratch)
   scratch.eventCount = 0
+  local uniqueCandidatePoints = collectBoundaryPoints(analyses, scratch)
   for batchIndex, analysis in ipairs(analyses) do
     for edgeIndex = 0, analysis.edgeCount - 1 do
       local edge = analysis.edges[edgeIndex]
-      for candidateBatch, candidate in ipairs(analyses) do
-        for pointIndex = 0, candidate.pointCount - 1 do
-          local pointId = tonumber(candidate.pointIds[pointIndex])
-          local t = splitParam(scratch, edge.a, edge.b, pointId)
-          if t ~= nil then
-            local index = scratch.eventCount
-            ensureArray(scratch, "events", "eventCapacity", "G4SplitEvent", index + 1)
-            local event = scratch.events[index]
-            event.batchIndex, event.candidateBatch, event.ia, event.ib, event.pointVertex, event.t =
-              batchIndex - 1, candidateBatch - 1, edge.ia, edge.ib, pointId, t
-            event.pad = 0
-            scratch.eventCount = index + 1
-          end
+      for pointIndex = 0, uniqueCandidatePoints - 1 do
+        local pointId = tonumber(scratch.boundaryPointIds[pointIndex])
+        local t
+        if mayLieInsideEdgeBounds(scratch, edge.a, edge.b, pointId) then
+          t = splitParam(scratch, edge.a, edge.b, pointId)
+        end
+        if t ~= nil then
+          local index = scratch.eventCount
+          ensureArray(scratch, "events", "eventCapacity", "G4SplitEvent", index + 1)
+          local event = scratch.events[index]
+          event.batchIndex, event.candidateBatch, event.ia, event.ib, event.pointVertex, event.t =
+            batchIndex - 1, scratch.boundaryPointSources[pointIndex], edge.ia, edge.ib, pointId, t
+          event.pad = edge.pad
+          scratch.eventCount = index + 1
         end
       end
     end
@@ -715,8 +773,10 @@ local function collectBreaks(scratch, start, finish)
       count = count + 1
     end
   end
+  local value = scratch.breakValue or ffi.new("G4SplitEvent")
+  scratch.breakValue = value
   for index = 1, count - 1 do
-    local value = scratch.breaks[index]
+    copyEvent(value, scratch.breaks[index])
     local cursor = index - 1
     while
       cursor >= 0
@@ -877,8 +937,19 @@ local function applyBatch(batch, destination, analyses, scratch, eventStart, eve
     end
     local breakCount = collectBreaks(scratch, index, finish)
     local start, edgeFinish = first.ia, first.ib
+    local currentStartId, edgeFinishId = eventEdgeIds(first, analyses)
     for breakIndex = 0, breakCount - 1 do
       local br = scratch.breaks[breakIndex]
+      assert(
+        splitParam(scratch, currentStartId, edgeFinishId, br.pointVertex) ~= nil,
+        string.format(
+          "terrain boundary breakpoint is not inside the remaining edge segment (start=%d finish=%d point=%d t=%.17g)",
+          currentStartId,
+          edgeFinishId,
+          br.pointVertex,
+          br.t
+        )
+      )
       appendInterpolatedVertex(
         batch,
         destination,
@@ -902,6 +973,7 @@ local function applyBatch(batch, destination, analyses, scratch, eventStart, eve
       end
       assert(owner ~= nil, "terrain boundary repair found no owning triangle for a planned split")
       triangleCount = splitTriangle(scratch.triangles, triangleCount, owner, start, edgeFinish, localVertexCount)
+      currentStartId = br.pointVertex
       start, localVertexCount = localVertexCount, localVertexCount + 1
       destination.vertexCount = destinationOffset + localVertexCount
     end
@@ -961,6 +1033,22 @@ local function conformPasses(batches, context, scratch)
     end
     pass = pass + 1
     local planned, plannedCounts = validateEventGroups(batches, analyses, scratch, eventCount, context)
+    if pass > MAX_CONFORMANCE_PASSES then
+      Errors.raise(
+        "MAP_COMPILE_TERRAIN_BOUNDARY_PATHOLOGICAL_CONVERGENCE",
+        "terrain boundary repair exceeded its convergence pass safeguard",
+        errorContext(context, {
+          batchCount = #batches,
+          passes = pass,
+          refinements = refinements,
+          remainingEvents = eventCount,
+          plannedRefinements = planned,
+          initialTriangles = initialTris,
+          totalTriangles = triCount,
+          triangleGrowth = triCount / initialTris,
+        })
+      )
+    end
     local maxRefinements = initialTris * distinctPositions
     if planned == 0 or refinements + planned > maxRefinements then
       Errors.raise(
@@ -972,6 +1060,10 @@ local function conformPasses(batches, context, scratch)
           refinements = refinements,
           maxRefinements = maxRefinements,
           remainingEvents = eventCount,
+          initialTriangles = initialTris,
+          totalTriangles = triCount,
+          triangleGrowth = triCount / initialTris,
+          plannedRefinements = planned,
         })
       )
     end
