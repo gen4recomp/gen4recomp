@@ -402,32 +402,6 @@ local function memberIsComplete(liveFs, plan, member)
   return ok and complete == true
 end
 
-local function aggregateCoverage(records, plan)
-  if #records == 0 then
-    return { source = { repository = "g4recomp", romSha1 = plan.romSha1 or "" }, totals = { members = 0, scripts = 0 } }
-  end
-  if records[1].totals ~= nil then
-    return Coverage.aggregate(records)
-  end
-  local scripts = 0
-  for _, record in ipairs(records) do
-    scripts = scripts + (record.scripts or 0)
-  end
-  return {
-    source = { repository = "g4recomp", romSha1 = plan.romSha1 or "" },
-    totals = {
-      members = #records,
-      scripts = scripts,
-      reachableInstructions = 0,
-      supportedInstructions = 0,
-      unsupportedInstructions = 0,
-      malformedInstructions = 0,
-    },
-    opcodes = {},
-    scripts = {},
-  }
-end
-
 -- The one staging step every summary entry point shares: prove every planned
 -- member is current in the live cache under its planned marker, then write
 -- the generation summary into the generation's `metadata/` child plus the

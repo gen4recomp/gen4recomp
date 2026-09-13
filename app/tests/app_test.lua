@@ -65,6 +65,13 @@ local function fresh()
   App.state = nil
   App.importer = nil
   App.provisioner = nil
+  if App.pool ~= nil then
+    pcall(function()
+      App.pool:shutdown()
+    end)
+  end
+  App.pool = nil
+  App.epoch = 0
   App.drawableWidth = nil
   App.drawableHeight = nil
 end
@@ -139,8 +146,14 @@ local function withAppHarness(opts, ready, fn)
     result.provisionerOptions[#result.provisionerOptions + 1] = options
     return {
       update = function() end,
-      dispose = function()
+      retire = function()
         result.provisionerDisposals = result.provisionerDisposals + 1
+      end,
+      requestMilestone = function()
+        return true
+      end,
+      status = function()
+        return { bootstrap = "ready", fieldCore = "ready" }
       end,
       requestField = function()
         return true
@@ -432,9 +445,14 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
     end, function(result)
       App._bootExisting()
       local options = assert(result.provisionerOptions[1])
-      Assert.keySet(options, "producerFingerprint,versionId")
-      Assert.equal(options.versionId, "heartgold")
-      Assert.equal(options.producerFingerprint, "r1")
+      Assert.keySet(options, "epoch,identity,pool,sweepEnabled")
+      Assert.equal(options.epoch, 1)
+      Assert.notNil(options.pool)
+      Assert.isTrue(options.sweepEnabled)
+      local identity = assert(options.identity)
+      Assert.equal(identity.versionId, "heartgold")
+      Assert.equal(identity.producerId, "r1")
+      Assert.equal(type(identity.generationId), "string")
       Assert.equal(touches, 0)
       Assert.equal(#result.launches, 1)
       Assert.equal(App.state, result.state)
@@ -455,9 +473,11 @@ function T.release_startup_selects_the_per_game_release_counter()
     end, function(result)
       App._bootExisting()
       local options = assert(result.provisionerOptions[1])
-      Assert.keySet(options, "producerFingerprint,versionId")
-      Assert.equal(options.versionId, "soulsilver")
-      Assert.equal(options.producerFingerprint, "r" .. tostring(DerivedCacheVersions.soulsilver))
+      Assert.keySet(options, "epoch,identity,pool,sweepEnabled")
+      Assert.equal(options.epoch, 1)
+      local identity = assert(options.identity)
+      Assert.equal(identity.versionId, "soulsilver")
+      Assert.equal(identity.producerId, "r" .. tostring(DerivedCacheVersions.soulsilver))
       Assert.equal(#result.launches, 1)
     end)
   end)
@@ -491,17 +511,22 @@ function T.development_startup_freezes_the_checkout_digest_for_the_process()
       end, function(result)
         App._bootExisting()
         local first = assert(result.provisionerOptions[1])
-        local firstFingerprint = first.producerFingerprint
+        local firstProducer = assert(assert(first.identity).producerId)
         files["build/Compiler.lua"] = "edited checkout compiler"
         App._bootMainMenu({ "heartgold" })
         local second = assert(result.provisionerOptions[2])
         Assert.equal(checkoutCalls, 1, "the frozen process digest must not rescan the checkout")
         Assert.equal(appBackendCalls, 0)
-        Assert.equal(second.producerFingerprint, firstFingerprint, "checkout edits wait for a process restart")
-        Assert.equal(first.developmentRepositoryRoot, checkoutRoot)
-        Assert.equal(second.developmentRepositoryRoot, checkoutRoot)
         Assert.equal(
-          first.producerFingerprint,
+          assert(assert(second.identity).producerId),
+          firstProducer,
+          "checkout edits wait for a process restart"
+        )
+        Assert.equal(second.epoch, 2, "each selection mints a new epoch on the shared pool")
+        Assert.equal(second.pool, first.pool, "selections share the process pool")
+        Assert.notNil(App.pool, "the process pool stays available for worker bootstrap")
+        Assert.equal(
+          firstProducer,
           ProducerFingerprint.compute(fakeSourceBackend({
             ["build/Compiler.lua"] = "checkout compiler",
             ["build/Readers.lua"] = "checkout readers",

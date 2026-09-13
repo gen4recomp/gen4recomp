@@ -57,7 +57,15 @@ local function runtimeForSwap(sourceCoverage)
   local runtime = setmetatable({
     physicalCoverage = sourceCoverage,
     runtimeMap = sourceRuntimeMap,
-    transition = FieldTransition.new({ loader = {}, prepare = function() end, commit = function() end }),
+    transition = FieldTransition.new({
+      loader = {
+        requestWarp = function()
+          return true
+        end,
+      },
+      prepare = function() end,
+      commit = function() end,
+    }),
     session = { beginMapEntry = function() end },
     zoneController = { currentMap = sourceRuntimeMap },
     fieldTerrainEffectController = { clear = function() end },
@@ -253,7 +261,11 @@ function T.destination_preparation_failure_discards_only_the_staged_owner()
   }
   local cleanupCalls = 0
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return {
         destinationMap = destination,
@@ -379,7 +391,15 @@ function T.runtime_disposal_discards_an_uncommitted_replacement()
   local sourceCoverage = releaseSpy("source")
   local destinationCoverage = releaseSpy("destination")
   local runtime = runtimeForSwap(sourceCoverage)
-  runtime.transition = FieldTransition.new({ loader = {}, prepare = function() end, commit = function() end })
+  runtime.transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
+    prepare = function() end,
+    commit = function() end,
+  })
   runtime.transition.resolution = {
     physical = {
       coverage = destinationCoverage,

@@ -322,6 +322,41 @@ function T.catalog_authority_preserves_errors_and_ignores_orphans_and_reserved_g
   Assert.notNil(findEntry(assert(store:list()), validId))
 end
 
+function T.metadata_listing_never_deep_validates_and_keeps_ordering_and_errors()
+  local backend = FakeCache.new()
+  local validations = 0
+  local store = newStore(backend, {
+    recordValidate = function(candidate)
+      validations = validations + 1
+      local GameSave = require("libs.hgss.src.save.GameSave")
+      return GameSave.validate(candidate)
+    end,
+  })
+  local firstId = store:reserve()
+  local secondId = store:reserve()
+  store:publishFirst(record(firstId, "heartgold"))
+  store:publishFirst(record(secondId, "soulsilver"))
+  Assert.equal(validations, 2)
+  backend.files[gamePath(secondId)] = LuaWriter.encode(record(secondId, "soulsilver", { playerData = {} }))
+
+  local metadata = assert(store:listMetadata())
+  Assert.equal(validations, 2, "metadata listing performs no deep validation")
+  Assert.equal(#metadata, 2)
+  Assert.equal(metadata[1].saveId, secondId)
+  Assert.equal(metadata[2].saveId, firstId)
+  Assert.equal(metadata[2].versionId, "heartgold")
+  Assert.equal(assert(metadata[2].playerData and metadata[2].playerData.profile).name, "GOLD")
+  Assert.isNil(metadata[2].error)
+  local broken = assert(findEntry(metadata, secondId))
+  Assert.isTrue(Errors.is(broken.error), "a malformed envelope lists its error, never a silent card")
+  Assert.equal(broken.error.code, "GAME_SAVE_BUCKET_INVALID")
+
+  local listed = assert(store:list())
+  Assert.equal(#listed, 2, "deep listing keeps the same catalog ordering")
+  Assert.equal(listed[1].saveId, secondId)
+  Assert.equal(listed[2].saveId, firstId)
+end
+
 function T.deleted_ids_are_not_reusable_and_published_order_follows_creation()
   local backend = FakeCache.new()
   local store = newStore(backend)

@@ -22,6 +22,8 @@
 local Errors = require("libs.errors.src.Errors")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Hashing = require("romdump.src.digest.Hashing")
+local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+local Schema = require("libs.script.src.Schema")
 
 local DerivedCacheState = {}
 
@@ -141,6 +143,25 @@ local function currentGeneration(inputs)
       inputs.scriptApi
     ),
   }
+end
+
+-- Selection identity for the interactive app shell: the caller supplies the
+-- version, validated ROM SHA-1, and producer identity, while the
+-- asset-contract revision and script API version resolve here. Game-side
+-- composition therefore never imports producer constant owners directly;
+-- the current schema-2 record is the only identity vocabulary.
+---@param inputs { versionId: string, romSha1: string, producerId: string, developmentRepositoryRoot?: string }
+---@return table<string, unknown>
+function DerivedCacheState.currentForSelection(inputs)
+  assert(type(inputs) == "table", "selection identity inputs are required")
+  return currentGeneration({
+    versionId = inputs.versionId,
+    romSha1 = inputs.romSha1,
+    mode = inputs.developmentRepositoryRoot ~= nil and "development" or "release",
+    producerId = inputs.producerId,
+    assetRevision = DerivedAssetContract.revision,
+    scriptApi = Schema.API_VERSION,
+  })
 end
 
 -- The current identity for the given inputs: either the strict schema-2

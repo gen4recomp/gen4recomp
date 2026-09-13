@@ -41,7 +41,7 @@ end
 local function state(options)
   options = options or {}
   options.saveStore = options.saveStore or {
-    list = function()
+    listMetadata = function()
       return {}
     end,
   }
@@ -251,7 +251,7 @@ function T.pointer_overflow_focuses_the_lane_without_continuing()
   local results = {}
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {
           {
             saveId = "save-00000001",
@@ -299,7 +299,7 @@ function T.clipped_save_cards_cannot_be_pointer_activated()
   local results = {}
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
       load = function(_, saveId)
@@ -327,7 +327,7 @@ end
 function T.state_publishes_separate_catalogs_and_preserves_initial_save_focus()
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {
           {
             saveId = "save-00000001",
@@ -346,20 +346,23 @@ function T.state_publishes_separate_catalogs_and_preserves_initial_save_focus()
   Assert.isNil(view.items)
 end
 
-function T.state_translates_catalog_and_load_failures_to_recoverable_state()
+function T.state_translates_catalog_failures_to_recoverable_state_and_emits_continue_as_an_intent()
   local catalogFailure = Errors.new("GAME_SAVE_CATALOG_INVALID", "catalog unreadable")
   local menu = state({ saveStore = {
-    list = function()
+    listMetadata = function()
       error(catalogFailure)
     end,
   } })
   Assert.equal(menu:view().catalogError, "catalog unreadable")
   Assert.equal(menu:view().focusedId, "new-game")
 
-  local loadFailure = Errors.new("GAME_SAVE_LOAD_FAILED", "save could not be loaded")
-  local loadMenu = state({
+  -- Continue is an intent carrying the selected save id, not a validity
+  -- claim: the owning route validates the record strictly after field core
+  -- and location geometry are ready. Nothing loads here.
+  local results = {}
+  local intentMenu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {
           {
             saveId = "save-00000001",
@@ -370,14 +373,16 @@ function T.state_translates_catalog_and_load_failures_to_recoverable_state()
         }
       end,
       load = function()
-        error(loadFailure)
+        error("Continue must not load before preparation", 0)
       end,
     },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
   })
-  loadMenu:keypressed("return")
-  local failed = loadMenu:view()
-  Assert.equal(failed.saves[1].errorSummary, "save could not be loaded")
-  Assert.isFalse(failed.saves[1].canContinue)
+  intentMenu:keypressed("return")
+  Assert.deepEqual(results, { { kind = "continue", saveId = "save-00000001" } })
+  Assert.isTrue(intentMenu:view().saves[1].canContinue)
 end
 
 function T.state_deletes_unavailable_save_only_after_confirmation()
@@ -387,7 +392,7 @@ function T.state_deletes_unavailable_save_only_after_confirmation()
   local deleted = 0
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
       delete = function(_, saveId)
@@ -416,7 +421,7 @@ function T.state_keeps_delete_failure_visible_and_save_available_for_retry()
   }
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
       delete = function()
@@ -441,7 +446,7 @@ function T.shared_aliases_activate_back_out_and_request_delete()
   local results = {}
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return { { saveId = "one", playerData = {}, versionId = "heartgold", playTimeSeconds = 0 } }
       end,
     },
@@ -561,7 +566,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   local deleted = 0
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
       delete = function(_, saveId)
@@ -597,7 +602,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   }
   local cancelMenu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
       delete = function()
@@ -754,7 +759,7 @@ function T.pointer_click_on_focused_delete_action_confirms_deletion()
   local results = {}
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
       delete = function(_, saveId)
@@ -960,7 +965,7 @@ local function drawnMenu(entries, width, height, setup)
   local renderer = menuRenderer(recordingText(calls), graphics)
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
     },
@@ -1622,7 +1627,7 @@ local function versionedBackgroundDraw(versionId)
   })
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {}
       end,
     },
@@ -1831,7 +1836,7 @@ local function scaledDrawnMenu(entries, width, height)
     MainMenuRenderer.new({ text = scaledRecordingText(calls, graphics), graphics = graphics, versionId = "heartgold" })
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
     },
@@ -1978,7 +1983,7 @@ function T.overflow_focus_keeps_the_parent_card_neutral()
   local renderer = menuRenderer(recordingText(calls), graphics)
   local menu = state({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return { catalogEntry("save-00000001", "Goldie", 4980) }
       end,
     },

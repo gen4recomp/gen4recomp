@@ -109,6 +109,49 @@ local function directSurface(destinationMap, warp, localX, localZ)
   return best
 end
 
+-- Shared destination coordinate selection for planning and resolution:
+-- the global arrival coordinates and the selected destination warp record
+-- for a source warp, preserving direct-before-dynamic-sentinel behavior
+-- and indexed validation. Pure over already-loaded field data; height and
+-- surface selection stay in resolveDestination.
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@param destinationFieldData table<string, unknown>
+---@return { fieldX: integer, fieldZ: integer, warp: table<string, unknown> }
+function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData)
+  assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
+  assert(
+    destinationFieldData and destinationFieldData.events and destinationFieldData.events.warps,
+    "destination field warp data required"
+  )
+  -- A scripted `direct` record carries pre-resolved global coordinates and
+  -- selects itself before every indexed-path dispatch, including the
+  -- dynamic-warp refusal.
+  if warp.direct then
+    assert(type(warp.x) == "number" and type(warp.z) == "number", "direct warp carries global coordinates")
+    return { fieldX = warp.x, fieldZ = warp.z, warp = warp }
+  end
+  if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
+    Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSUPPORTED, "dynamic warp anchors are not supported", {
+      sourceMapId = sourceMap.mapId,
+      sourceWarpId = warp.index,
+      destinationMapId = warp.destinationMapId,
+      destinationWarpId = warp.destinationWarpId,
+    })
+  end
+  local destinationWarps = destinationFieldData.events.warps
+  local destinationWarp = destinationWarps[warp.destinationWarpId + 1]
+  if not destinationWarp or destinationWarp.index ~= warp.destinationWarpId then
+    Errors.raise(FieldErrors.FIELD_DESTINATION_WARP_UNKNOWN, "destination warp index is unavailable", {
+      sourceMapId = sourceMap.mapId,
+      sourceWarpId = warp.index,
+      destinationMapId = warp.destinationMapId,
+      destinationWarpId = warp.destinationWarpId,
+    })
+  end
+  return { fieldX = destinationWarp.x, fieldZ = destinationWarp.z, warp = destinationWarp }
+end
+
 function WarpSystem.resolveDestination(loader, sourceMap, warp)
   assert(loader and loader.load, "warp destination loader required")
   assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
@@ -120,12 +163,21 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
   -- including the dynamic-warp refusal.
   if warp.direct then
     local destinationMap = loadDestination(loader, sourceMap, warp)
-    local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, warp.x, warp.z)
+    local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
+    local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
     local sample = directSurface(destinationMap, warp, localX, localZ)
     -- The direct record is the source trigger and the destination record in
     -- one table: it carries the pre-resolved destination coordinates.
-    local destinationRecord = warp
-    return resolutionRecord(sourceMap, warp, destinationMap, destinationRecord, warp.x, warp.z, sample)
+    local destinationRecord = coordinates.warp
+    return resolutionRecord(
+      sourceMap,
+      warp,
+      destinationMap,
+      destinationRecord,
+      coordinates.fieldX,
+      coordinates.fieldZ,
+      sample
+    )
   end
   if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
     Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSUPPORTED, "dynamic warp anchors are not supported", {
@@ -137,17 +189,10 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
   end
 
   local destinationMap = loadDestination(loader, sourceMap, warp)
-  local destinationWarp = warps(destinationMap)[warp.destinationWarpId + 1]
-  if not destinationWarp or destinationWarp.index ~= warp.destinationWarpId then
-    Errors.raise(FieldErrors.FIELD_DESTINATION_WARP_UNKNOWN, "destination warp index is unavailable", {
-      sourceMapId = sourceMap.mapId,
-      sourceWarpId = warp.index,
-      destinationMapId = destinationMap.mapId,
-      destinationWarpId = warp.destinationWarpId,
-    })
-  end
+  local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
+  local destinationWarp = coordinates.warp
 
-  local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, destinationWarp.x, destinationWarp.z)
+  local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
   local hintY = destinationWarp.y / WARP_Y_SCALE
   local sample = SurfaceResolver.new(destinationMap.terrain):resolve({
     localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
@@ -159,8 +204,8 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
     warp,
     destinationMap,
     destinationWarp,
-    destinationWarp.x,
-    destinationWarp.z,
+    coordinates.fieldX,
+    coordinates.fieldZ,
     sample
   )
 end
