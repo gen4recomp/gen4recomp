@@ -115,10 +115,15 @@
 -- map scene schema 10: Elm's Lab publishes the generated starter-ball model
 -- reference and its normalized runtime placement transforms.
 -- instead of raw HGSS movement selectors.
+--
+-- revision 11: prepared stages carry their generation, epoch, and canonical
+-- job identity, and each successful publication leaves a generation receipt
+-- beside the family output, so a receipt plus the family validator proves
+-- the current generation without recompiling.
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 10
+DerivedAssetContract.revision = 11
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",
