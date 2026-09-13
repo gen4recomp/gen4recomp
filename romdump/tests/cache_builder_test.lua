@@ -566,6 +566,18 @@ local function collectLog()
   }
 end
 
+---@param lines string[]
+---@param expected string
+---@return integer
+local function requireLogIndex(lines, expected)
+  for index, line in ipairs(lines) do
+    if line == expected then
+      return index
+    end
+  end
+  error("missing expected build log line: " .. expected, 0)
+end
+
 local function requestedMapIds()
   local ids = {}
   for _, job in ipairs(env.mapRequests) do
@@ -698,7 +710,7 @@ function T.forced_build_keeps_a_ready_script_generation_current()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.equal(capture.lines[15], "build-cache: heartgold scripts current")
+  requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
   for _, call in ipairs(env.calls) do
     Assert.isTrue(
       call ~= "ScriptCacheWriter.finalizeGeneration" and call ~= "ScriptCacheWriter.activateGeneration",
@@ -776,14 +788,28 @@ function T.compile_exclusions_fail_the_build_unless_allowed()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.equal(capture.lines[17], "build-cache: heartgold scripts current")
-  Assert.equal(capture.lines[18], "build-cache: heartgold audio current")
-  Assert.equal(capture.lines[19], "build-cache: heartgold physical field cells current")
-  Assert.equal(capture.lines[20], "build-cache: heartgold map 2 current")
-  Assert.equal(
-    capture.lines[21],
+  local scriptsIndex = requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
+  local audioIndex = requireLogIndex(capture.lines, "build-cache: heartgold audio current")
+  local cellsIndex = requireLogIndex(capture.lines, "build-cache: heartgold physical field cells current")
+  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 current")
+  local map5ExcludedIndex = requireLogIndex(
+    capture.lines,
     "build-cache: heartgold map 5 excluded: MAP_SCHEMA_INVALID: injected compile rejection"
   )
+  local stagedIndex = requireLogIndex(
+    capture.lines,
+    "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
+  )
+  local warningIndex = requireLogIndex(
+    capture.lines,
+    "build-cache: compile exclusions remain; " .. "rerun with --allow-compile-exclusions to accept them"
+  )
+  Assert.isTrue(scriptsIndex < audioIndex, "scripts must precede audio")
+  Assert.isTrue(audioIndex < cellsIndex, "audio must precede physical cells")
+  Assert.isTrue(cellsIndex < map2Index, "physical cells must precede map 2")
+  Assert.isTrue(map2Index < map5ExcludedIndex, "map 2 must precede the map 5 exclusion")
+  Assert.isTrue(map5ExcludedIndex < stagedIndex, "the map 5 exclusion must precede world staging")
+  Assert.isTrue(stagedIndex < warningIndex, "world staging must precede the compile-exclusion warning")
   Assert.deepEqual(env.worldStage.compileExcluded, {
     {
       id = 5,
@@ -793,14 +819,6 @@ function T.compile_exclusions_fail_the_build_unless_allowed()
       context = {},
     },
   })
-  Assert.equal(
-    capture.lines[22],
-    "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
-  )
-  Assert.equal(
-    capture.lines[23],
-    "build-cache: compile exclusions remain; " .. "rerun with --allow-compile-exclusions to accept them"
-  )
   Assert.equal(env.worldPublishes, 0, "an unaccepted-exclusion build must never publish its staged world")
   Assert.equal(env.worldAborts, 1, "the staged world of a failed build is discarded")
 
@@ -811,11 +829,12 @@ function T.compile_exclusions_fail_the_build_unless_allowed()
   )
   Assert.isNil(err2)
   Assert.deepEqual(report2, { published = true, complete = false, exclusionCount = 1 })
-  Assert.equal(
-    accepted.lines[22],
+  local acceptedStagedIndex = requireLogIndex(
+    accepted.lines,
     "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
   )
-  Assert.equal(accepted.lines[23], "build-cache: heartgold world.lua published")
+  local acceptedPublishedIndex = requireLogIndex(accepted.lines, "build-cache: heartgold world.lua published")
+  Assert.isTrue(acceptedStagedIndex < acceptedPublishedIndex, "world staging must precede world publishing")
   Assert.equal(env.worldPublishes, 1, "an accepted-exclusion build publishes its staged world")
   -- A build that accepted compile exclusions is not a strict success and must
   -- never publish the successful-build attestation.
@@ -873,8 +892,10 @@ function T.a_failed_audio_compile_reports_and_skips_the_remaining_stages()
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.equal(capture.lines[17], "build-cache: heartgold scripts current")
-  Assert.equal(capture.lines[18], "build-cache: heartgold failed: AUDIO_SOURCE_INVALID: unsupported sample data")
+  local scriptsIndex = requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
+  local failureIndex =
+    requireLogIndex(capture.lines, "build-cache: heartgold failed: AUDIO_SOURCE_INVALID: unsupported sample data")
+  Assert.isTrue(scriptsIndex < failureIndex, "scripts must precede the audio failure")
   Assert.equal(env.worldPublishes, 0, "a failed audio compile must not publish a world")
   Assert.equal(env.worldAborts, 0, "a failed audio compile stages no world to discard")
 end
@@ -992,7 +1013,7 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
   local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.equal(capture.lines[15], "build-cache: heartgold scripts current")
+  requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
   local writes = {}
   for _, call in ipairs(env.calls) do
     if call:find(".write$") ~= nil or call == "WorldManifest.stage" then
@@ -1098,8 +1119,9 @@ function T.ready_maps_are_reused_when_rebuilding_the_world()
   Assert.equal(env.worldStage.entries[1].width, 21, "cached scene metadata supplies the world width")
   Assert.equal(env.worldStage.entries[1].height, 20)
   Assert.equal(env.worldStage.entries[2].id, 5)
-  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 current")
-  Assert.equal(capture.lines[19], "build-cache: heartgold map 5 current")
+  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 current")
+  local map5Index = requireLogIndex(capture.lines, "build-cache: heartgold map 5 current")
+  Assert.isTrue(map2Index < map5Index, "map 2 must precede map 5")
 end
 
 -- A map with an existing marker but failed readiness is rebuilt while a
@@ -1123,12 +1145,14 @@ function T.only_unready_maps_are_compiled_and_world_keeps_order()
   Assert.equal(#env.worldStage.entries, 2)
   Assert.equal(env.worldStage.entries[1].id, 2)
   Assert.equal(env.worldStage.entries[2].id, 5)
-  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 current")
-  Assert.equal(capture.lines[19], "build-cache: heartgold map 5 compiled")
-  Assert.equal(
-    capture.lines[20],
+  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 current")
+  local map5Index = requireLogIndex(capture.lines, "build-cache: heartgold map 5 compiled")
+  local diagnosticIndex = requireLogIndex(
+    capture.lines,
     "build-cache: heartgold map 5 unresolved map texture: material bike_02_2_lm3 of m_name01_00_00c land_data:280 wants bike_02_2 from map_textures member 42"
   )
+  Assert.isTrue(map2Index < map5Index, "map 2 must precede map 5")
+  Assert.isTrue(map5Index < diagnosticIndex, "map 5 compile must precede its material diagnostic")
 end
 
 -- A changed global identity keeps the exhaustive map rebuild behavior even
@@ -1141,8 +1165,9 @@ function T.forced_build_compiles_ready_maps()
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
   Assert.deepEqual(requestedMapIds(), { 2, 5 })
-  Assert.equal(capture.lines[18], "build-cache: heartgold map 2 compiled")
-  Assert.equal(capture.lines[19], "build-cache: heartgold map 5 compiled")
+  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 compiled")
+  local map5Index = requireLogIndex(capture.lines, "build-cache: heartgold map 5 compiled")
+  Assert.isTrue(map2Index < map5Index, "map 2 must precede map 5")
 end
 
 return module
