@@ -64,20 +64,30 @@ local function validateBundle(bundle)
   end
 end
 
----@param tx table<string, unknown>
+---@param stage CacheFs
 ---@param bundle table<string, unknown>
----@param cacheFs CacheFs
-local function stageBundle(tx, bundle, cacheFs)
-  local stage = tx.stage
+---@param liveFs CacheFs|nil live filesystem hosting already-published shared blobs
+---@param share (fun(path: string))|nil shared-file registrar for worker stages
+local function stageBundle(stage, bundle, liveFs, share)
   for _, path in ipairs(StarterChoiceAssetCache.referencedPaths(bundle.manifest)) do
     if path:sub(1, #StarterChoiceAssetCache.assetDir()) == StarterChoiceAssetCache.assetDir() then
       stage:write(path, bundle.assets[path])
+    elseif share ~= nil then
+      stage:write(path, bundle.assets[path])
+      share(path)
     else
-      cacheFs:write(path, bundle.assets[path])
+      assert(liveFs, "starter-choice staging requires a live filesystem for shared blobs")
+      liveFs:write(path, bundle.assets[path])
     end
   end
   stage:writeLua(StarterChoiceAssetCache.manifestPath(), bundle.manifest)
   local manifest = stage:loadLua(StarterChoiceAssetCache.manifestPath())
+  if manifest == nil then
+    Errors.raise(StarterChoiceAssetCacheWriter.ERROR.READBACK_FAILED, "starter-choice manifest readback is missing", {})
+  end
+  -- Errors.raise always throws but carries no noreturn annotation, so the
+  -- missing guard alone does not narrow; reaching here proves a table.
+  assert(manifest ~= nil, "starter-choice manifest readback is present after the missing guard")
   local valid, err = StarterChoiceAssetCache.validateManifest(manifest)
   if not valid then
     assert(err)
@@ -88,7 +98,7 @@ local function stageBundle(tx, bundle, cacheFs)
     )
   end
   for _, path in ipairs(StarterChoiceAssetCache.referencedPaths(manifest)) do
-    local present = stage:exists(path, "file") or cacheFs:exists(path, "file")
+    local present = stage:exists(path, "file") or (liveFs ~= nil and liveFs:exists(path, "file"))
     if not present then
       Errors.raise(
         StarterChoiceAssetCacheWriter.ERROR.READBACK_FAILED,
@@ -98,6 +108,21 @@ local function stageBundle(tx, bundle, cacheFs)
     end
   end
   stage:write(StarterChoiceAssetCache.markerPath(), bundle.marker)
+end
+
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function StarterChoiceAssetCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "starter-choice staging requires a PreparedArtifact")
+  assert(bundle, "starter-choice staging requires a bundle")
+  validateBundle(bundle)
+  artifact:addOwnedRoot(StarterChoiceAssetCache.assetDir())
+  artifact:addOwnedRoot(StarterChoiceAssetCache.dir())
+  stageBundle(artifact:stageFs(), bundle, artifact:cacheFs(), function(path)
+    artifact:addSharedFile(path)
+  end)
+  return bundle.marker
 end
 
 ---@param cacheFs CacheFs
@@ -111,7 +136,7 @@ function StarterChoiceAssetCacheWriter.write(cacheFs, bundle)
     "starter-choice",
     { StarterChoiceAssetCache.assetDir(), StarterChoiceAssetCache.dir() }
   )
-  local ok, err = pcall(stageBundle, tx, bundle, cacheFs)
+  local ok, err = pcall(stageBundle, tx.stage, bundle, cacheFs, nil)
   if not ok then
     tx:abort()
     error(err, 0)

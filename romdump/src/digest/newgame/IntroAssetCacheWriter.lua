@@ -12,8 +12,7 @@ function IntroAssetCacheWriter.isReady(cacheFs, marker)
   return IntroAssetCache.isReady(cacheFs, marker)
 end
 
-local function stageBundle(tx, bundle)
-  local stage = tx.stage
+local function stageBundle(stage, bundle)
   stage:writeLua(IntroAssetCache.provenancePath(), bundle.dependencies)
   for path, bytes in pairs(bundle.assets) do
     stage:write(path, bytes)
@@ -50,6 +49,19 @@ local function stageBundle(tx, bundle)
   stage:write(IntroAssetCache.markerPath(), bundle.marker)
 end
 
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function IntroAssetCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "intro staging requires a PreparedArtifact")
+  assert(bundle and bundle.marker and bundle.manifest and bundle.dependencies and bundle.assets)
+  assert(bundle.manifest.schemaVersion == 11, "intro manifest schema mismatch")
+  artifact:addOwnedRoot(IntroAssetCache.assetDir())
+  artifact:addOwnedRoot(IntroAssetCache.dir())
+  stageBundle(artifact:stageFs(), bundle)
+  return bundle.marker
+end
+
 ---@param cacheFs CacheFs
 ---@param bundle table<string, unknown>
 ---@return boolean
@@ -57,7 +69,7 @@ function IntroAssetCacheWriter.write(cacheFs, bundle)
   assert(cacheFs and bundle and bundle.marker and bundle.manifest and bundle.dependencies and bundle.assets)
   assert(bundle.manifest.schemaVersion == IntroAssetCache.SCHEMA_VERSION, "intro manifest schema mismatch")
   local tx = ArtifactPublisher.begin(cacheFs, "intro", { IntroAssetCache.assetDir(), IntroAssetCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle)
+  local ok, err = pcall(stageBundle, tx.stage, bundle)
   if not ok then
     tx:abort()
     error(err, 0)

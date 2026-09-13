@@ -399,7 +399,7 @@ local function assertJobShape(job, selected)
     }) do
       assert(type(job.payload[key]) == "number" and job.payload[key] % 1 == 0, "field-cell job requires " .. key)
     end
-  else
+  elseif job.kind == "script-member" then
     assert(
       type(job.payload.memberId) == "number" and job.payload.memberId % 1 == 0,
       "script member job requires an integer memberId"
@@ -757,6 +757,9 @@ function CompilerPool:_dispatch()
       areaDataMemberId = record.payload.areaDataMemberId,
       memberId = record.payload.memberId,
       generationKey = record.payload.generationKey,
+      bankId = record.payload.bankId,
+      pageKind = record.payload.pageKind,
+      pageId = record.payload.pageId,
       producerFingerprint = record.payload.producerFingerprint,
       stageName = stageName,
     })

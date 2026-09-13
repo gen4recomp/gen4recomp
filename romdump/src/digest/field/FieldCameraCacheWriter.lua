@@ -16,8 +16,7 @@ function FieldCameraCacheWriter.isReady(cacheFs, marker)
   return FieldCameraCache.isReady(cacheFs, marker)
 end
 
-local function persist(tx, bundle)
-  local stage = tx.stage
+local function persist(stage, bundle)
   stage:writeLua(FieldCameraCache.profilesPath(), bundle.profiles)
   stage:writeLua(FieldCameraCache.provenancePath(), bundle.provenance)
   local profiles, profileErr = stage:loadLua(FieldCameraCache.profilesPath())
@@ -35,10 +34,20 @@ local function persist(tx, bundle)
   return bundle.marker
 end
 
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function FieldCameraCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "camera staging requires a PreparedArtifact")
+  assert(type(bundle) == "table" and bundle.marker, "invalid camera bundle")
+  artifact:addOwnedRoot(FieldCameraCache.dir())
+  return persist(artifact:stageFs(), bundle)
+end
+
 function FieldCameraCacheWriter.write(cacheFs, bundle)
   assert(cacheFs and type(bundle) == "table" and bundle.marker, "invalid camera bundle")
   local tx = ArtifactPublisher.begin(cacheFs, "field-cameras", { FieldCameraCache.dir() })
-  local ok, result = pcall(persist, tx, bundle)
+  local ok, result = pcall(persist, tx.stage, bundle)
   if not ok then
     tx:abort()
     error(result, 0)

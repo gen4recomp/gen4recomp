@@ -18,8 +18,7 @@ function FieldFontCacheWriter.isReady(cacheFs, marker)
   return FieldFontCache.isReady(cacheFs, marker)
 end
 
-local function stageBundle(tx, bundle)
-  local stage = tx.stage
+local function stageBundle(stage, bundle)
   stage:writeLua(FieldFontCache.provenancePath(), {
     schema = "g4-field-font-provenance-v1",
     dependencies = bundle.dependencies,
@@ -47,6 +46,22 @@ local function stageBundle(tx, bundle)
   stage:write(FieldFontCache.markerPath(), bundle.marker)
 end
 
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function FieldFontCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "field-font staging requires a PreparedArtifact")
+  assert(bundle and bundle.marker and bundle.fonts, "stage requires a font bundle")
+  for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
+    local font = assert(bundle.fonts[fontId], "font bundle is missing required font " .. fontId)
+    assert(font.font.schema == FieldFontCache.SCHEMA, "font def schema mismatch")
+  end
+  artifact:addOwnedRoot(FieldFontCache.assetDir())
+  artifact:addOwnedRoot(FieldFontCache.dir())
+  stageBundle(artifact:stageFs(), bundle)
+  return bundle.marker
+end
+
 function FieldFontCacheWriter.write(cacheFs, bundle)
   assert(bundle and bundle.marker and bundle.fonts, "write requires a font bundle")
   for _, fontId in ipairs(FieldFontCache.REQUIRED_FONT_IDS) do
@@ -57,7 +72,7 @@ function FieldFontCacheWriter.write(cacheFs, bundle)
     FieldFontCache.assetDir(),
     FieldFontCache.dir(),
   })
-  local ok, err = pcall(stageBundle, tx, bundle)
+  local ok, err = pcall(stageBundle, tx.stage, bundle)
   if not ok then
     tx:abort()
     error(err, 0)

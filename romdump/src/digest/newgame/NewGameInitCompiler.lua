@@ -127,11 +127,17 @@ function NewGameInitCompiler.compileFromRom(romFs, sha1hex, hashLua)
     local archive = assert(romFs:openNarc("field_scripts"))
     local sourcePath = "romfs/" .. archiveInfo.path
     local catalog = { flags = require("romdump.src.reference.hgss.flags").byId }
-    local memberIrs = ScriptBinaryDecoder.decodeArchive(archive, ScriptMembers.banks, sourcePath, catalog)
 
     local stdCatalog = SourceCatalog.catalog()
     local member = standardInitMember(stdCatalog)
-    local memberIr = assert(memberIrs[member], "standard init script member is not decodable")
+    local memberBytes = assert(archive:memberView(member), "standard init script member is not readable")
+    local memberIr = assert(
+      ScriptBinaryDecoder.parseMember(memberBytes, member, sourcePath, {
+        msgBank = ScriptMembers.banks[member],
+        catalog = catalog,
+      }),
+      "standard init script member is not decodable"
+    )
     local script = assert(memberIr.scripts[0], "standard init script has no script index 0")
 
     local instructions = {}
@@ -144,14 +150,14 @@ function NewGameInitCompiler.compileFromRom(romFs, sha1hex, hashLua)
     end
 
     local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-    local memberBytes = assert(archive:readMember(member))
+    local sourceBytes = assert(archive:readMember(member))
     local artifact = NewGameInitCompiler.compile({
       versionId = romFs:version(),
       standardScriptMember = member,
       instructions = instructions,
       symbolTable = FieldScriptSymbols.flagsByName,
       variableSymbols = FieldScriptSymbols.variablesByName,
-      sourceSha1 = sha1hex(memberBytes),
+      sourceSha1 = sha1hex(sourceBytes),
     })
 
     local depHash = hashLua(artifact)

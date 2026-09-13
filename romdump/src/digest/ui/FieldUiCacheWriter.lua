@@ -16,8 +16,7 @@ function FieldUiCacheWriter.isReady(cacheFs, marker)
   return FieldUiAssetCache.isReady(cacheFs, marker)
 end
 
-local function stageBundle(tx, bundle)
-  local stage = tx.stage
+local function stageBundle(stage, bundle)
   stage:writeLua(FieldUiAssetCache.provenancePath(), {
     schema = "g4-field-ui-provenance-v1",
     dependencies = bundle.dependencies,
@@ -45,6 +44,19 @@ local function stageBundle(tx, bundle)
   stage:write(FieldUiAssetCache.markerPath(), bundle.marker)
 end
 
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function FieldUiCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "field-ui staging requires a PreparedArtifact")
+  assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "stage requires a UI bundle")
+  assert(bundle.manifest.schema == FieldUiAssetCache.SCHEMA, "ui manifest schema mismatch")
+  artifact:addOwnedRoot(FieldUiAssetCache.assetDir())
+  artifact:addOwnedRoot(FieldUiAssetCache.dir())
+  stageBundle(artifact:stageFs(), bundle)
+  return bundle.marker
+end
+
 function FieldUiCacheWriter.write(cacheFs, bundle)
   assert(bundle and bundle.marker and bundle.manifest and bundle.assets, "write requires a UI bundle")
   assert(bundle.manifest.schema == FieldUiAssetCache.SCHEMA, "ui manifest schema mismatch")
@@ -52,7 +64,7 @@ function FieldUiCacheWriter.write(cacheFs, bundle)
     FieldUiAssetCache.assetDir(),
     FieldUiAssetCache.dir(),
   })
-  local ok, err = pcall(stageBundle, tx, bundle)
+  local ok, err = pcall(stageBundle, tx.stage, bundle)
   if not ok then
     tx:abort()
     error(err, 0)

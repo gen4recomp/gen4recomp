@@ -1,6 +1,11 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local Hashing = require("romdump.src.digest.Hashing")
+local Narc = require("libs.nds.src.nitro.Narc")
+local NarcBuilder = require("tests.support.NarcBuilder")
+local NewGameInitCompiler = require("romdump.src.digest.newgame.NewGameInitCompiler")
+local ScriptFixture = require("tests.support.ScriptFixture")
 
 local PINNED_STD_INIT_SCRIPT = {
   { mnemonic = "SetFlag", operands = { "FLAG_HIDE_ELMS_LAB_OFFICER" } },
@@ -169,7 +174,6 @@ end
 local T = {}
 
 function T.compiles_the_real_standard_init_script_with_ordered_operations()
-  local NewGameInitCompiler = require("romdump.src.digest.newgame.NewGameInitCompiler")
   local vars = FieldScriptSymbols.variablesByName
 
   local artifact = NewGameInitCompiler.compile({
@@ -218,7 +222,6 @@ function T.compiles_the_real_standard_init_script_with_ordered_operations()
 end
 
 function T.non_field_side_effect_is_explicit_and_bounded_to_loto_id_set()
-  local NewGameInitCompiler = require("romdump.src.digest.newgame.NewGameInitCompiler")
   local vars = FieldScriptSymbols.variablesByName
 
   local artifact = NewGameInitCompiler.compile({
@@ -256,7 +259,6 @@ function T.non_field_side_effect_is_explicit_and_bounded_to_loto_id_set()
 end
 
 function T.unknown_lottery_symbols_fail_explicitly()
-  local NewGameInitCompiler = require("romdump.src.digest.newgame.NewGameInitCompiler")
   throwsCode("NEW_GAME_INIT_SOURCE_INVALID", function()
     NewGameInitCompiler.compile({
       versionId = "heartgold",
@@ -266,6 +268,95 @@ function T.unknown_lottery_symbols_fail_explicitly()
       variableSymbols = {},
     })
   end)
+end
+
+function T.compile_from_rom_decodes_only_the_catalog_selected_member()
+  local initMember = 149
+  local firstFlag = 413
+  local secondFlag = 420
+  local initBytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 30, args = { { value = firstFlag, width = 2 } } },
+          { op = 30, args = { { value = secondFlag, width = 2 } } },
+          { op = 2, args = {} },
+        },
+      },
+    },
+  })
+  local otherBytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = { { op = 2, args = {} } },
+      },
+    },
+  })
+  local members = {}
+  for memberId = 0, initMember do
+    members[#members + 1] = memberId == initMember and initBytes or otherBytes
+  end
+  local archive = assert(Narc.open(NarcBuilder.build(members), "synthetic scripts"))
+  local viewed = {}
+  local spy = {
+    memberCount = function()
+      return archive:memberCount()
+    end,
+    memberView = function(_, memberId)
+      viewed[#viewed + 1] = memberId
+      return archive:memberView(memberId)
+    end,
+    readMember = function(_, memberId)
+      return archive:readMember(memberId)
+    end,
+  }
+  local romFs = {
+    read = function()
+      error("initializer must read through the script archive")
+    end,
+    openNarc = function(_, alias)
+      Assert.equal(alias, "field_scripts")
+      return spy
+    end,
+    resolvedNarc = function(_, alias)
+      Assert.equal(alias, "field_scripts")
+      return { path = "synthetic/scr_seq.narc" }
+    end,
+    version = function()
+      return "heartgold"
+    end,
+    metadata = function()
+      return { sha1 = "synthetic-rom-sha" }
+    end,
+  }
+
+  local compiled = assert(NewGameInitCompiler.compileFromRom(romFs))
+
+  local selected = {}
+  for _, memberId in ipairs(viewed) do
+    selected[memberId] = true
+  end
+  local selectedList = {}
+  for memberId in pairs(selected) do
+    selectedList[#selectedList + 1] = memberId
+  end
+  Assert.deepEqual(selectedList, { initMember })
+  Assert.equal(compiled.artifact.sourceDependency.standardScriptMember, initMember)
+  Assert.equal(compiled.artifact.sourceDependency.sha1, Hashing.sha1hex(initBytes))
+  Assert.equal(compiled.artifact.schema, "g4-new-game-init-v2")
+  Assert.equal(#compiled.artifact.operations, 2)
+  Assert.deepEqual(compiled.artifact.operations[1], {
+    op = "set_flag",
+    id = firstFlag,
+    symbol = "FLAG_HIDE_ELMS_LAB_OFFICER",
+  })
+  Assert.deepEqual(compiled.artifact.operations[2], {
+    op = "set_flag",
+    id = secondFlag,
+    symbol = "FLAG_HIDE_ROUTE_29_FRIEND",
+  })
 end
 
 return { tests = T }
