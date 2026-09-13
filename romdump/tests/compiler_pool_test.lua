@@ -133,8 +133,26 @@ function T.failed_preparation_preserves_the_previous_map()
   local prepared = requirePreparedArtifact()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
+  local generation = "failed-preparation-generation"
   local first = BundleFixture.minimal()
-  MapCacheWriter.write(cache, first)
+  local baseline = prepared.new({
+    cacheFs = cache,
+    generationId = generation,
+    epoch = 1,
+    kind = "map",
+    key = tostring(first.mapId),
+    jobKey = "map:" .. first.mapId,
+    stageName = "map-preparation-baseline",
+  })
+  MapCacheWriter.stage(baseline, first)
+  baseline:finishSuccess({ mapId = first.mapId, marker = first.marker })
+  baseline:publish({
+    generationId = generation,
+    epoch = 1,
+    kind = "map",
+    key = tostring(first.mapId),
+    jobKey = "map:" .. first.mapId,
+  })
   local oldMarker = cache:read(MapAssetCache.mapDir(first.mapId) .. "/complete")
   local oldScene = cache:read(MapAssetCache.mapDir(first.mapId) .. "/scene.lua")
 
@@ -148,8 +166,11 @@ function T.failed_preparation_preserves_the_previous_map()
 
   local artifact = prepared.new({
     cacheFs = cache,
+    generationId = generation,
+    epoch = 1,
     kind = "map",
-    jobKey = "map:61",
+    key = tostring(first.mapId),
+    jobKey = "map:" .. first.mapId,
     stageName = "map-preparation-test",
   })
   Assert.throws(function()
@@ -279,38 +300,66 @@ function T.constructor_failure_joins_started_workers()
   end
 end
 
-function T.staged_shared_files_promote_once_and_keep_existing_bytes()
+function T.staged_shared_files_promote_once_and_conflicts_fail()
   local prepared = requirePreparedArtifact()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
-  local first = prepared.new({
-    cacheFs = cache,
-    kind = "map",
-    jobKey = "map:61",
-    stageName = "promotion-first",
-  })
-  first:stageFs():write("geometry/shared", "first")
-  first:addSharedFile("geometry/shared")
-  first:stageFs():write("maps/61/complete", "ready")
-  first:addOwnedRoot("maps/61")
-  first:finishSuccess({ mapId = 61 })
-  first:publish()
+  local generation = "shared-promotion-generation"
+  local function publishShared(key, stageName, sharedBytes)
+    local artifact = prepared.new({
+      cacheFs = cache,
+      generationId = generation,
+      epoch = 1,
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      stageName = stageName,
+    })
+    artifact:stageFs():write("geometry/shared", sharedBytes)
+    artifact:addSharedFile("geometry/shared")
+    artifact:stageFs():write("maps/" .. key .. "/complete", "ready")
+    artifact:addOwnedRoot("maps/" .. key)
+    artifact:finishSuccess({ mapId = tonumber(key), marker = "complete" })
+    artifact:publish({
+      generationId = generation,
+      epoch = 1,
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+    })
+  end
+  publishShared("61", "promotion-first", "first")
   Assert.equal(cache:read("geometry/shared"), "first")
 
-  local second = prepared.new({
-    cacheFs = cache,
-    kind = "map",
-    jobKey = "map:62",
-    stageName = "promotion-second",
-  })
-  second:stageFs():write("geometry/shared", "different")
-  second:addSharedFile("geometry/shared")
-  second:stageFs():write("maps/62/complete", "ready")
-  second:addOwnedRoot("maps/62")
-  second:finishSuccess({ mapId = 62 })
-  second:publish()
-  Assert.equal(cache:read("geometry/shared"), "first", "an existing immutable file is not overwritten")
+  publishShared("62", "promotion-second", "first")
+  Assert.equal(cache:read("geometry/shared"), "first", "identical shared bytes promote once")
   Assert.equal(cache:read("maps/62/complete"), "ready")
+
+  local clashing = prepared.new({
+    cacheFs = cache,
+    generationId = generation,
+    epoch = 1,
+    kind = "map",
+    key = "63",
+    jobKey = "map:63",
+    stageName = "promotion-conflict",
+  })
+  clashing:stageFs():write("geometry/shared", "different")
+  clashing:addSharedFile("geometry/shared")
+  clashing:stageFs():write("maps/63/complete", "ready")
+  clashing:addOwnedRoot("maps/63")
+  clashing:finishSuccess({ mapId = 63, marker = "complete" })
+  Assert.throws(function()
+    clashing:publish({
+      generationId = generation,
+      epoch = 1,
+      kind = "map",
+      key = "63",
+      jobKey = "map:63",
+    })
+  end)
+  Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict never overwrites live bytes")
+  Assert.isFalse(cache:exists("maps/63/complete"), "a shared conflict never exposes the staged family")
 end
 
 function T.shutdown_is_idempotent_and_joins_workers()
