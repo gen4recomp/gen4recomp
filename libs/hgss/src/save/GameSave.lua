@@ -240,6 +240,77 @@ function GameSave.validateSaveId(saveId)
   error(result)
 end
 
+-- Read-only display envelope for menu listing: save schema/id/version, the
+-- display profile name and the integral bounded play time. It performs no
+-- generated-cache lookup and implies no semantic validity; a listed record
+-- is not thereby loadable. Never throws a validation failure: malformed
+-- input returns a structured error instead.
+---@param record unknown
+---@return table<string, unknown>|nil, Errors.Error?
+function GameSave.metadata(record)
+  local ok, envelopeOrError = pcall(function()
+    if type(record) ~= "table" then
+      Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "game save must be a table", {})
+    end
+    assert(type(record) == "table")
+    if record.schema ~= GameSave.SCHEMA then
+      Errors.raise(
+        GameSaveErrors.GAME_SAVE_SCHEMA_UNSUPPORTED,
+        "unsupported game save schema",
+        { schema = record.schema }
+      )
+    end
+    validateSaveIdRaised(record.saveId)
+    if not safeComponent(record.versionId) then
+      Errors.raise(
+        GameSaveErrors.GAME_SAVE_VERSION_INVALID,
+        "game save version is missing",
+        { versionId = record.versionId }
+      )
+    end
+    if
+      not integer(record.playTimeSeconds)
+      or record.playTimeSeconds < 0
+      or record.playTimeSeconds > GameSave.MAX_PLAY_TIME_SECONDS
+    then
+      Errors.raise(
+        GameSaveErrors.GAME_SAVE_PLAY_TIME_INVALID,
+        "game save play time exceeds 999:59:59",
+        { playTimeSeconds = record.playTimeSeconds }
+      )
+    end
+    local playerData = record.playerData
+    if type(playerData) ~= "table" then
+      Errors.raise(
+        GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+        "game save playerData bucket is required",
+        { bucket = "playerData" }
+      )
+    end
+    local profile = playerData.profile
+    if type(profile) ~= "table" or type(profile.name) ~= "string" or profile.name == "" then
+      Errors.raise(
+        GameSaveErrors.GAME_SAVE_BUCKET_INVALID,
+        "game save display profile name is required",
+        { bucket = "playerData.profile" }
+      )
+    end
+    return {
+      saveId = record.saveId,
+      versionId = record.versionId,
+      playerData = { profile = { name = profile.name } },
+      playTimeSeconds = record.playTimeSeconds,
+    }
+  end)
+  if ok then
+    return envelopeOrError
+  end
+  if Errors.is(envelopeOrError) then
+    return nil, envelopeOrError --[[@as Errors.Error]]
+  end
+  error(envelopeOrError)
+end
+
 ---@param record table<string, unknown>
 ---@param opts table<string, unknown>?
 ---@return table<string, unknown>|nil, Errors.Error?

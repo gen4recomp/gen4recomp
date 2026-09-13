@@ -65,6 +65,46 @@ function T.validates_required_buckets_and_numeric_ranges()
   end)
 end
 
+function T.metadata_extracts_only_the_display_envelope_without_semantic_checks()
+  local named = record({ playerData = { profile = { name = "GOLD" } } })
+  local envelope = assert(GameSave.metadata(named))
+  Assert.deepEqual(envelope, {
+    saveId = "save-00000001",
+    versionId = "heartgold",
+    playerData = { profile = { name = "GOLD" } },
+    playTimeSeconds = 0,
+  })
+
+  -- Semantic breakage the strict validator rejects never reaches the menu:
+  -- the envelope validates while full validation fails.
+  local semanticallyBroken = record({ playerData = { profile = { name = "GOLD" } } })
+  semanticallyBroken.mons = { fingerprint = "drifted" }
+  semanticallyBroken.world = {}
+  Assert.isNil(GameSave.validate(semanticallyBroken))
+  Assert.notNil(GameSave.metadata(semanticallyBroken))
+
+  returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
+    return GameSave.metadata(record({ schema = "g4-field-save-v3" }))
+  end)
+  returnsCode("GAME_SAVE_SAVE_ID_INVALID", function()
+    return GameSave.metadata(record({ saveId = "../escape" }))
+  end)
+  returnsCode("GAME_SAVE_VERSION_INVALID", function()
+    return GameSave.metadata(record({ versionId = "" }))
+  end)
+  returnsCode("GAME_SAVE_PLAY_TIME_INVALID", function()
+    return GameSave.metadata(record({ playTimeSeconds = -1 }))
+  end)
+  returnsCode("GAME_SAVE_BUCKET_INVALID", function()
+    local value = record()
+    value.playerData = { profile = {} }
+    return GameSave.metadata(value)
+  end)
+  returnsCode("GAME_SAVE_INVALID", function()
+    return GameSave.metadata("not a record")
+  end)
+end
+
 function T.live_weather_is_optional_for_legacy_records_and_strict_when_present()
   Assert.isTrue(GameSave.validate(record({ weatherId = 0 })) ~= nil)
   Assert.isTrue(GameSave.validate(record({ weatherId = 13 })) ~= nil)

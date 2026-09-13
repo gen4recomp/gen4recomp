@@ -22,6 +22,14 @@ local function unusedBuildState()
   return build --[[@as InteractiveCacheBuild]]
 end
 
+-- These ordering tests never drive the session: the stand-in is present only
+-- so the double conforms to the provisioner surface.
+---@return InteractiveCacheBuild
+local function unusedSession()
+  local session = {} --[[@as unknown]]
+  return session --[[@as InteractiveCacheBuild]]
+end
+
 local function withApp(fn)
   local originalState = App.state
   local originalImporter = App.importer
@@ -115,7 +123,10 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     App._bootMainMenu({ "heartgold" })
     local launch = assert(result.launches[1])
     local host = assert(launch.derivedAssets, "the running game must receive a derived-asset host")
-    Assert.keySet(host, "ensureCell,ensureField,requestCell,requestField")
+    Assert.keySet(
+      host,
+      "ensureCell,ensureField,requestCell,requestField,requestMilestone,requestMonPortraitPage,status"
+    )
     Assert.equal(type(host.requestField), "function")
     Assert.equal(type(host.ensureField), "function")
     Assert.equal(type(host.requestCell), "function")
@@ -132,6 +143,8 @@ T.tests["producer progress runs before the running game update"] = function()
     local provisioner = {
       build = unusedBuildState(),
       closed = false,
+      session = unusedSession(),
+      retired = false,
       host = nil,
       update = function()
         order[#order + 1] = "provisioner:update"
@@ -161,6 +174,8 @@ T.tests["game disposal precedes producer disposal"] = function()
     local provisioner = {
       build = unusedBuildState(),
       closed = false,
+      session = unusedSession(),
+      retired = false,
       host = nil,
       dispose = function()
         events[#events + 1] = "provisioner:dispose"

@@ -535,18 +535,34 @@ function FieldCoverage:_descriptorSet(anchorX, anchorZ, radius)
   return result
 end
 
+-- One authoritative committed-descriptor selector: the radius-1 policy
+-- around an anchor, with holes excluded. Pure over the given index; the
+-- halo, the committed window and location planning all share it.
+---@param index table<string, unknown>
+---@param matrixMemberId integer
 ---@param anchorX integer
 ---@param anchorZ integer
 ---@return table[]
-function FieldCoverage:descriptorsFor(anchorX, anchorZ)
+function FieldCoverage.descriptorsAt(index, matrixMemberId, anchorX, anchorZ)
+  assert(type(index) == "table", "committed-descriptor selection requires the cell index")
+  assert(type(matrixMemberId) == "number" and matrixMemberId % 1 == 0, "matrix member is required")
+  assert(type(anchorX) == "number" and anchorX % 1 == 0, "anchor x must be an integer")
+  assert(type(anchorZ) == "number" and anchorZ % 1 == 0, "anchor z must be an integer")
   local result = {}
   for _, position in ipairs(desired(anchorX, anchorZ)) do
-    local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
+    local descriptor = FieldCellCache.find(index, matrixMemberId, position.x, position.z)
     if descriptor then
       result[#result + 1] = descriptor
     end
   end
   return result
+end
+
+---@param anchorX integer
+---@param anchorZ integer
+---@return table[]
+function FieldCoverage:descriptorsFor(anchorX, anchorZ)
+  return FieldCoverage.descriptorsAt(self.index, self.matrixMemberId, anchorX, anchorZ)
 end
 
 ---@return table[]
@@ -602,7 +618,7 @@ function FieldCoverage:queuePrefetch(anchorX, anchorZ)
       and (not self.pendingPrefetch or self.pendingPrefetch.cellKey ~= cellKey)
     then
       if self.derivedAssets then
-        self.derivedAssets.requestCell(descriptor)
+        self.derivedAssets.requestCell(descriptor, "near")
       end
       queued[#queued + 1] = descriptor
     end
@@ -624,7 +640,7 @@ function FieldCoverage:updatePrefetch(maxWorkUnits)
       if not descriptor then
         break
       end
-      if self.derivedAssets and not self.derivedAssets.requestCell(descriptor) then
+      if self.derivedAssets and not self.derivedAssets.requestCell(descriptor, "near") then
         table.insert(self.prefetchQueue, 1, descriptor)
         break
       end

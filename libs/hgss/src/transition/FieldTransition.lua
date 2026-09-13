@@ -108,6 +108,10 @@ FieldTransition.PHASES = {
 
 function FieldTransition.new(options)
   assert(options and options.loader, "field transition loader required")
+  assert(
+    type(options.loader.requestWarp) == "function",
+    "field transition loader prepares destinations through requestWarp"
+  )
   assert(type(options.prepare) == "function", "field transition prepare callback required")
   assert(type(options.commit) == "function", "field transition commit callback required")
   return setmetatable({
@@ -821,7 +825,23 @@ function FieldTransition:updateFixed()
     return playerAdvanced
   end
   if self.phase == FieldTransition.PHASES.load_destination then
-    local ok, err = pcall(function()
+    -- Destination artifacts compile under the held cover: pending keeps the
+    -- current world, the input lock and the full-black fade while the source
+    -- session keeps pumping; only readiness runs resolution and preparation
+    -- once, and failures use the existing abort path.
+    local ok, requestReady, requestError = pcall(function()
+      return self.loader:requestWarp(self.sourceMap, self.sourceWarp)
+    end)
+    if not ok then
+      return self:_abort(requestReady)
+    end
+    if requestError ~= nil then
+      return self:_abort(requestError)
+    end
+    if not requestReady then
+      return false
+    end
+    local resolveOk, err = pcall(function()
       local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp)
       self.resolution = result
       if self.profileId == FieldTransitionProfile.HORIZONTAL_STAIRS then
@@ -848,7 +868,7 @@ function FieldTransition:updateFixed()
       end
       self.prepared = self.prepare(result, self.destinationFacing)
     end)
-    if not ok then
+    if not resolveOk then
       return self:_abort(err)
     end
     self.phase = FieldTransition.PHASES.swap_map

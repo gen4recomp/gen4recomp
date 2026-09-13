@@ -197,6 +197,26 @@ function FieldResidencyCoordinator:initialize()
   return self
 end
 
+-- Nonblocking near demand for a prefetched logical map: the loader plans the
+-- logical map and its committed footprint around the current coverage anchor
+-- without acquiring scenes or GPU resources. Readiness never loads; the
+-- synchronous acquisition stays the loud path. A loader without the demand
+-- operation reads as ready.
+---@param mapId integer
+---@return boolean
+function FieldResidencyCoordinator:_demandPrefetchMap(mapId)
+  if type(self.mapLoader.requestLocation) ~= "function" then
+    return true
+  end
+  local fieldX, fieldZ = 0, 0
+  local coverage = self.coverage
+  if coverage and type(coverage.anchorX) == "number" and type(coverage.anchorZ) == "number" then
+    fieldX, fieldZ = coverage.anchorX * 32, coverage.anchorZ * 32
+  end
+  local ready = self.mapLoader:requestLocation(mapId, fieldX, fieldZ, "near")
+  return ready
+end
+
 ---@return integer
 ---@param _ integer? legacy caller budget, intentionally ignored
 function FieldResidencyCoordinator:updatePrefetch(_)
@@ -207,7 +227,7 @@ function FieldResidencyCoordinator:updatePrefetch(_)
   end
   for _, mapId in ipairs(self:_prefetchMapIds()) do
     if not self.residents[mapId] then
-      if type(self.mapLoader.request) == "function" and not self.mapLoader:request(mapId) then
+      if not self:_demandPrefetchMap(mapId) then
         return completed
       end
       self:_acquireResident(mapId)

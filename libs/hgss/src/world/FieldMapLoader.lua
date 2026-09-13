@@ -11,6 +11,7 @@ local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local DoorTiles = require("libs.hgss.src.transition.DoorTiles")
+local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local MapProps = require("libs.hgss.src.world.MapProps")
 local ModelDoorMetadata = require("libs.hgss.src.world.ModelDoorMetadata")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
@@ -572,15 +573,149 @@ function FieldMapLoader:load(idOrSymbol, _)
   return runtimeMap
 end
 
+-- Converts map-local coordinates into the global field domain normal
+-- loading uses. The structural world record carries the origin; records
+-- from a manifest without it fall back to the load-authoritative scene
+-- matrix, which is the same origin the collision load consumes.
 ---@param idOrSymbol integer|string
----@return boolean
-function FieldMapLoader:request(idOrSymbol)
+---@param localX integer
+---@param localZ integer
+---@return { x: integer, z: integer }
+function FieldMapLoader:globalPosition(idOrSymbol, localX, localZ)
   assert(not self.released, "field map loader is released")
+  assert(type(localX) == "number" and localX % 1 == 0, "local x must be an integer")
+  assert(type(localZ) == "number" and localZ % 1 == 0, "local z must be an integer")
   local record = worldRecord(self.world, idOrSymbol)
-  if not self.derivedAssets then
+  local originX, originZ = record.worldOriginX, record.worldOriginZ
+  if type(originX) ~= "number" or type(originZ) ~= "number" then
+    local mapDir = MapAssetCache.mapDir(record.id)
+    local scene = loadRequired(self.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
+    -- loadRequired either returns the scene table or raises, so the matrix
+    -- below is unknown-typed and its origin reads need no nil guard beyond
+    -- the validated check that follows.
+    local matrix = scene.matrix
+    if type(matrix) ~= "table" or type(matrix.worldOriginX) ~= "number" or type(matrix.worldOriginZ) ~= "number" then
+      Errors.raise(
+        FieldErrors.FIELD_MAP_WORLD_INVALID,
+        "world manifest and scene matrix origins are missing; rebuild the derived cache",
+        { mapId = record.id }
+      )
+    end
+    originX, originZ = matrix.worldOriginX, matrix.worldOriginZ
+  end
+  return { x = localX + originX, z = localZ + originZ }
+end
+
+-- Nonblocking location demand: requests the logical map and, for a
+-- destination with physical cells, every valid descriptor in the existing
+-- radius-1 committed footprint. Performs no scene, terrain, or GPU
+-- acquisition. Returns ready/pending/error without blocking.
+---@param idOrSymbol integer|string
+---@param fieldX integer
+---@param fieldZ integer
+---@param urgency string
+---@return boolean
+---@return string|nil
+function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
+  assert(not self.released, "field map loader is released")
+  assert(type(fieldX) == "number" and fieldX % 1 == 0, "field x must be an integer")
+  assert(type(fieldZ) == "number" and fieldZ % 1 == 0, "field z must be an integer")
+  assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
+  local record = worldRecord(self.world, idOrSymbol)
+  local host = self.derivedAssets
+  if host == nil then
     return true
   end
-  return self.derivedAssets.requestField(record.id)
+  local pending = false
+  local function consume(ready, failure)
+    if failure ~= nil then
+      return failure
+    end
+    if not ready then
+      pending = true
+    end
+    return nil
+  end
+  local mapFailure = consume(host.requestField(record.id, urgency))
+  if mapFailure ~= nil then
+    return false, mapFailure
+  end
+  local matrix = record.matrix
+  if type(matrix) == "table" and type(matrix.memberId) == "number" then
+    if self.fieldCellIndex == nil then
+      local indexOk, indexOrError = pcall(loadFieldCellIndex, self.cacheFs)
+      if not indexOk then
+        return false, Errors.is(indexOrError) and Errors.format(indexOrError) or tostring(indexOrError)
+      end
+      self.fieldCellIndex = indexOrError
+    end
+    local anchorX, anchorZ = math.floor(fieldX / 32), math.floor(fieldZ / 32)
+    for _, descriptor in ipairs(FieldCoverage.descriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ)) do
+      local cellFailure = consume(host.requestCell(descriptor, urgency))
+      if cellFailure ~= nil then
+        return false, cellFailure
+      end
+    end
+  end
+  if pending then
+    return false
+  end
+  return true
+end
+
+-- Nonblocking warp demand over already-loaded lightweight field data:
+-- resolves the destination coordinates through the shared warp selection
+-- and requests the destination closure as required. Returns
+-- ready/pending/error before resolution and preparation run.
+---@param sourceMap table<string, unknown>
+---@param warp table<string, unknown>
+---@return boolean
+---@return string|nil
+function FieldMapLoader:requestWarp(sourceMap, warp)
+  assert(not self.released, "field map loader is released")
+  assert(type(sourceMap) == "table", "warp demand requires the source map")
+  assert(type(warp) == "table", "warp demand requires the warp record")
+  if self.derivedAssets == nil then
+    return true
+  end
+  if type(warp.destinationMapId) ~= "number" or warp.destinationMapId % 1 ~= 0 then
+    return false, "warp destination map is missing"
+  end
+  local fieldData, fieldError = self:_destinationFieldData(warp.destinationMapId)
+  if fieldData == nil then
+    return false, fieldError
+  end
+  local coordinatesOk, coordinatesOrError = pcall(WarpSystem.destinationCoordinates, sourceMap, warp, fieldData)
+  if not coordinatesOk then
+    return false, Errors.is(coordinatesOrError) and Errors.format(coordinatesOrError) or tostring(coordinatesOrError)
+  end
+  local coordinates = assert(coordinatesOrError)
+  return self:requestLocation(warp.destinationMapId, coordinates.fieldX, coordinates.fieldZ, "required")
+end
+
+-- Reads only the generated semantic field record needed to plan a warp
+-- destination. Like transitionEnvironment this never loads a scene,
+-- collision grid, terrain, or GPU resource.
+---@param mapId integer
+---@return table<string, unknown>?
+---@return string|nil
+function FieldMapLoader:_destinationFieldData(mapId)
+  local fieldData, loadError = self.cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId))
+  if fieldData == nil then
+    return nil,
+      "destination field record is unavailable: " .. (Errors.is(loadError) and Errors.format(loadError) or tostring(
+        loadError
+      ))
+  end
+  if
+    type(fieldData) ~= "table"
+    or fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA
+    or fieldData.mapId ~= mapId
+    or not FieldMapDataCache.hasRequiredEvents(fieldData.events)
+  then
+    return nil, "destination field record is invalid; rebuild the derived cache"
+  end
+  return fieldData
 end
 
 -- Construct the session-owned physical window for an outdoor logical map.

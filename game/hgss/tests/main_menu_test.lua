@@ -153,7 +153,7 @@ function T.long_menu_keeps_the_last_focused_card_inside_the_content_viewport()
   end
   local menu = MainMenuState.new({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return entries
       end,
     },
@@ -179,7 +179,7 @@ function T.pointer_outside_the_content_viewport_does_not_activate_a_clipped_card
   local results = {}
   local menu = MainMenuState.new({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return {}
       end,
     },
@@ -216,7 +216,7 @@ end
 function T.catalog_error_is_not_represented_as_an_empty_catalog()
   local catalogError = Errors.new("GAME_SAVE_CATALOG_INVALID", "catalog unreadable")
   local store = {
-    list = function()
+    listMetadata = function()
       error(catalogError)
     end,
   }
@@ -237,10 +237,10 @@ function T.failed_delete_preserves_its_error_after_catalog_refresh()
       playTimeSeconds = 60,
     },
   }
-  local calls = { list = 0, delete = 0 }
+  local calls = { listMetadata = 0, delete = 0 }
   local store = {}
-  function store:list()
-    calls.list = calls.list + 1
+  function store:listMetadata()
+    calls.listMetadata = calls.listMetadata + 1
     return entries
   end
   function store:delete(saveId)
@@ -261,7 +261,7 @@ function T.failed_delete_preserves_its_error_after_catalog_refresh()
   menu:keypressed("return")
 
   local failed = menu:view()
-  Assert.equal(calls.list, 2)
+  Assert.equal(calls.listMetadata, 2)
   Assert.equal(calls.delete, 1)
   Assert.isNil(failed.dialog)
   Assert.equal(failed.focusedId, "save-00000001")
@@ -281,10 +281,10 @@ function T.successful_delete_refreshes_the_catalog_without_an_error()
       playTimeSeconds = 60,
     },
   }
-  local calls = { list = 0, delete = 0 }
+  local calls = { listMetadata = 0, delete = 0 }
   local store = {}
-  function store:list()
-    calls.list = calls.list + 1
+  function store:listMetadata()
+    calls.listMetadata = calls.listMetadata + 1
     return entries
   end
   function store:delete(saveId)
@@ -306,7 +306,7 @@ function T.successful_delete_refreshes_the_catalog_without_an_error()
   menu:keypressed("return")
 
   local deleted = menu:view()
-  Assert.equal(calls.list, 2)
+  Assert.equal(calls.listMetadata, 2)
   Assert.equal(calls.delete, 1)
   Assert.isNil(deleted.catalogError)
   Assert.equal(#deleted.items, 1)
@@ -317,7 +317,7 @@ end
 function T.malformed_save_metadata_is_an_unavailable_deletable_card()
   local menu = MainMenuState.new({
     saveStore = {
-      list = function()
+      listMetadata = function()
         return { { saveId = "save-00000001", playerData = {} } }
       end,
     },
@@ -332,24 +332,21 @@ function T.malformed_save_metadata_is_an_unavailable_deletable_card()
   Assert.notNil(card.errorSummary)
 end
 
-function T.continue_emits_the_loaded_canonical_record_without_another_read()
-  local loaded = {
+function T.continue_emits_the_selected_save_intent_without_loading()
+  local listed = {
     saveId = "save-00000001",
     versionId = "heartgold",
     playerData = { profile = { name = "GOLD" } },
     playTimeSeconds = 0,
   }
-  local loads = 0
   local results = {}
   local menu = MainMenuState.new({
     saveStore = {
-      list = function()
-        return { loaded }
+      listMetadata = function()
+        return { listed }
       end,
-      load = function(_, saveId)
-        loads = loads + 1
-        Assert.equal(saveId, loaded.saveId)
-        return loaded
+      load = function()
+        error("Continue must not load before preparation", 0)
       end,
     },
     readyVersions = { "heartgold" },
@@ -361,8 +358,7 @@ function T.continue_emits_the_loaded_canonical_record_without_another_read()
   })
   menu:keypressed("down")
   menu:keypressed("return")
-  Assert.equal(loads, 1)
-  Assert.deepEqual(results, { { kind = "continue", game = loaded } })
+  Assert.deepEqual(results, { { kind = "continue", saveId = "save-00000001" } })
 end
 
 return { tests = T }

@@ -113,6 +113,39 @@ function T.rejects_dynamic_and_missing_destination_warps()
   end)
 end
 
+function T.destination_coordinates_share_planning_and_resolution_selection()
+  local source = runtimeMap(61, 0, 0, {})
+  local destinationWarp = { index = 2, x = 684, z = 393, destinationMapId = 61, destinationWarpId = 0, y = 32 }
+  local fieldData = { events = { warps = { [3] = destinationWarp } } }
+  local indexed = WarpSystem.destinationCoordinates(source, {
+    index = 0,
+    x = 4,
+    z = 14,
+    destinationMapId = 60,
+    destinationWarpId = 2,
+  }, fieldData)
+  Assert.equal(indexed.fieldX, 684)
+  Assert.equal(indexed.fieldZ, 393)
+  Assert.equal(indexed.warp, destinationWarp)
+
+  local directWarp = { index = 0, x = 688, z = 392, destinationMapId = 60, destinationWarpId = 1, direct = true }
+  local direct = WarpSystem.destinationCoordinates(source, directWarp, { events = { warps = {} } })
+  Assert.equal(direct.fieldX, 688)
+  Assert.equal(direct.fieldZ, 392)
+  Assert.equal(direct.warp, directWarp)
+
+  throwsCode("FIELD_DYNAMIC_WARP_UNSUPPORTED", function()
+    WarpSystem.destinationCoordinates(source, {
+      index = 0,
+      destinationMapId = 60,
+      destinationWarpId = WarpSystem.DYNAMIC_WARP_SENTINEL,
+    }, fieldData)
+  end)
+  throwsCode("FIELD_DESTINATION_WARP_UNKNOWN", function()
+    WarpSystem.destinationCoordinates(source, { index = 0, destinationMapId = 60, destinationWarpId = 4 }, fieldData)
+  end)
+end
+
 -- A loader failure for the destination map is wrapped into the warp-boundary
 -- code with the warp identity in context; any other loader error propagates
 -- unchanged.
