@@ -188,21 +188,38 @@ function T.queued_jobs_are_deduplicated_and_priority_fifo()
   local CompilerPool = requirePool()
   local host = newThreadHost(4)
   local pool = assert(withLove(host.love, function()
-    return CompilerPool.new({ versionId = "heartgold", mode = "batch", developmentRepositoryRoot = "/checkout" })
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
   end))
-
-  pool:request({ kind = "map", key = "map:A", priority = 100, payload = { mapId = 60 } })
-  pool:request({ kind = "map", key = "map:B", priority = 20, payload = { mapId = 61 } })
-  pool:request({ kind = "map", key = "map:A", priority = 5, payload = { mapId = 60 } })
-  pool:request({ kind = "map", key = "map:C", priority = 20, payload = { mapId = 62 } })
   withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = "deduplication-generation" }, 1)
+  end)
+
+  local function mapJob(key, mapId, priority)
+    return {
+      generationId = "deduplication-generation",
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = "normal",
+      payload = { mapId = mapId },
+    }
+  end
+
+  withLove(host.love, function()
+    pool:request(mapJob("60", 60, 100))
+    pool:request(mapJob("61", 61, 10))
+    pool:request(mapJob("60", 60, 0))
+    pool:request(mapJob("62", 62, 10))
     pool:update()
   end)
 
-  Assert.deepEqual(host.dispatched, { "map:A", "map:B", "map:C" })
-  Assert.equal(pool:status("map:A"), "running")
-  Assert.equal(pool:status("map:B"), "running")
-  Assert.equal(pool:status("map:C"), "running")
+  Assert.deepEqual(host.dispatched, { "map:60", "map:61", "map:62" })
+  Assert.equal(pool:status("map:60"), "running")
+  Assert.equal(pool:status("map:61"), "running")
+  Assert.equal(pool:status("map:62"), "running")
   pool:shutdown()
 end
 
@@ -380,6 +397,162 @@ function T.worker_dispatcher_rejects_unknown_job_kinds()
   Assert.throws(function()
     CompilerWorker.execute({ kind = "unknown", key = "unknown:1" }, {})
   end)
+end
+
+function T.plain_worker_failures_keep_their_message()
+  local CompilerPool = requirePool()
+  local prepared = requirePreparedArtifact()
+  local ScopedFs = require("libs.storage.src.ScopedFs")
+  local backendStore = FakeCache.new()
+  local filesystem = {
+    write = function(path, data)
+      return backendStore:write(path, data)
+    end,
+    read = function(path)
+      return backendStore:read(path)
+    end,
+    getInfo = function(path)
+      return backendStore:getInfo(path)
+    end,
+    createDirectory = function(path)
+      return backendStore:createDirectory(path)
+    end,
+    remove = function(path)
+      return backendStore:remove(path)
+    end,
+    getDirectoryItems = function(path)
+      return backendStore:getDirectoryItems(path)
+    end,
+  }
+  local resultChannel = nil
+  local inputChannels = {}
+  local channels = {}
+  local function newChannel()
+    local values = {}
+    local channel = {}
+    function channel:push(value)
+      values[#values + 1] = value
+      return true
+    end
+    function channel:pop()
+      if #values == 0 then
+        return nil
+      end
+      return table.remove(values, 1)
+    end
+    function channel:demand()
+      return self:pop()
+    end
+    function channel:getCount()
+      return #values
+    end
+    channels[#channels + 1] = channel
+    return channel
+  end
+  local function newThread()
+    local thread = { starts = 0, waits = 0 }
+    function thread:start()
+      self.starts = self.starts + 1
+    end
+    function thread:wait()
+      self.waits = self.waits + 1
+    end
+    function thread:getError()
+      return nil
+    end
+    function thread:isRunning()
+      return self.starts > 0 and self.waits == 0
+    end
+    return thread
+  end
+  local fakeLove = {
+    filesystem = filesystem,
+    system = {
+      getProcessorCount = function()
+        return 2
+      end,
+    },
+    timer = {
+      getTime = function()
+        return 0
+      end,
+    },
+    thread = {
+      newChannel = newChannel,
+      newThread = newThread,
+    },
+  }
+  local generationId = "plain-failure-generation"
+  local pool = assert(withLove(fakeLove, function()
+    local instance = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+    instance:selectGeneration({ versionId = "heartgold", generationId = generationId }, 1)
+    instance:request({
+      versionId = "heartgold",
+      generationId = generationId,
+      epoch = 1,
+      kind = "map",
+      key = "60",
+      jobKey = "map:60",
+      priority = 0,
+      sizeClass = "normal",
+      payload = { mapId = 60 },
+    })
+    instance:update()
+    return instance
+  end))
+  resultChannel = channels[1]
+  for index = 2, #channels do
+    inputChannels[#inputChannels + 1] = channels[index]
+  end
+  local stageName, workerId = nil, nil
+  for offset, channel in ipairs(inputChannels) do
+    local dispatched = channel:pop()
+    if type(dispatched) == "table" and dispatched.jobKey == "map:60" then
+      stageName = dispatched.stageName
+      workerId = offset
+    end
+  end
+  Assert.notNil(stageName, "the pool dispatched the job with a stage name")
+  Assert.notNil(workerId, "the pool dispatched the job to a known worker")
+  local backend = withLove(fakeLove, function()
+    return ScopedFs.loveBackend()
+  end)
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local artifact = prepared.new({
+    cacheFs = cache,
+    generationId = generationId,
+    epoch = 1,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = stageName,
+  })
+  artifact:finishFailure("plain worker boom")
+  resultChannel:push({
+    workerId = workerId,
+    epoch = 1,
+    generationId = generationId,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = stageName,
+    status = "failed",
+  })
+  withLove(fakeLove, function()
+    pool:update()
+  end)
+  local state, details = pool:status("map:60")
+  Assert.equal(state, "failed", "the worker failure settles the job")
+  local message = tostring(details and details.error or "")
+  Assert.isTrue(
+    message:find("plain worker boom", 1, true) ~= nil,
+    "the surfaced failure keeps the worker message: " .. message
+  )
+  Assert.isTrue(
+    message:find("table: 0x", 1, true) == nil,
+    "the surfaced failure is never an opaque table address: " .. message
+  )
+  pool:shutdown()
 end
 
 return { tests = T }
