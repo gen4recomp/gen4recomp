@@ -6,6 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 
@@ -123,6 +124,78 @@ function T.source_root_rejects_absolute_and_traversal_paths()
   Assert.throws(function()
     ProducerFingerprint.compute(backend, "romdump/../src")
   end)
+end
+
+-- The default digest enumerates exactly the fixed broad source-root set,
+-- once per root, and aggregates `root/path + TAB + SHA256(bytes) + LF` lines
+-- sorted across all roots under one SHA-256 `d` token.
+function T.default_roots_enumerate_the_fixed_broad_source_set()
+  local expectedRoots = {
+    "romdump/src",
+    "libs/assets/src",
+    "libs/codec/src",
+    "libs/errors/src",
+    "libs/math/src",
+    "libs/nds/src",
+    "libs/script/src",
+    "libs/storage/src",
+    "gen4",
+    "data/manifests",
+  }
+  local listed = {}
+  local backend = {
+    list = function(root)
+      listed[#listed + 1] = root
+      return { "a.lua" }
+    end,
+    read = function(path, root)
+      Assert.equal(path, "a.lua")
+      return "contents of " .. root
+    end,
+    getInfo = function()
+      return nil
+    end,
+  }
+  local digest = ProducerFingerprint.compute(backend)
+  Assert.equal(#listed, #expectedRoots)
+  local seen = {}
+  for _, root in ipairs(listed) do
+    seen[root] = (seen[root] or 0) + 1
+  end
+  for _, root in ipairs(expectedRoots) do
+    Assert.equal(seen[root], 1, "the default digest must enumerate " .. root .. " exactly once")
+  end
+  local lines = {}
+  for _, root in ipairs(expectedRoots) do
+    lines[#lines + 1] = root .. "/a.lua\t" .. Sha256.hex("contents of " .. root) .. "\n"
+  end
+  table.sort(lines)
+  Assert.equal(digest, "d" .. Sha256.hex(table.concat(lines)))
+end
+
+-- An explicit root list limits enumeration to those roots; an empty
+-- selection hashes the empty manifest, never a fallback constant.
+function T.explicit_root_lists_limit_enumeration_to_those_roots()
+  local listed = {}
+  local backend = {
+    list = function(root)
+      listed[#listed + 1] = root
+      return {}
+    end,
+    read = function()
+      error("an empty selection must not read")
+    end,
+    getInfo = function()
+      return nil
+    end,
+  }
+  Assert.equal(
+    ProducerFingerprint.compute(backend, { "gen4", "data/manifests" }),
+    "d" .. Sha256.hex(""),
+    "an empty selection hashes the empty manifest"
+  )
+  table.sort(listed)
+  Assert.deepEqual(listed, { "data/manifests", "gen4" })
 end
 
 return { tests = T }

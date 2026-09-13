@@ -57,7 +57,7 @@ function Runner._runBuildCache()
   end
   local targets = readyVersions()
   if #targets > 0 then
-    return Runner._runBuild({ allowCompileExclusions = opts.allowCompileExclusions })
+    return Runner._runBuild({ allowCompileExclusions = opts.allowCompileExclusions, dev = opts.dev })
   end
   if opts.romPath then
     return Runner._startImport(opts.romPath)
@@ -114,7 +114,11 @@ end
 -- Build the derived cache for every listed version (or every ready version)
 -- and quit with the build status. The pipeline itself lives in CacheBuilder;
 -- this wrapper owns only the process exit codes; the machine-readable report
--- is the builder's own, passed through unchanged. A map whose cell could not
+-- is the builder's own, passed through unchanged. The development flag is
+-- forwarded explicitly to the build owners: true selects the development
+-- cache identity (producer working-tree bytes), false the release identity
+-- (the explicit per-game counter). The mode is never inferred from the
+-- working directory. A map whose cell could not
 -- be selected is recorded as `excluded`; a resolved map
 -- rejected with a structured compiler error is recorded as `compileExcluded`,
 -- writes no partial artifacts, and makes the build exit nonzero unless the
@@ -122,13 +126,18 @@ end
 -- already matches the current build is left in place, so an unchanged cache
 -- rebuilds only what is stale. The option wins over any CLI state; callers
 -- pass the parsed flag through explicitly.
----@param options { versionIds: string[]?, allowCompileExclusions: boolean?, noQuit: boolean? }|nil
+---@param options { versionIds: string[]?, allowCompileExclusions: boolean?, dev: boolean?, noQuit: boolean? }|nil
 ---@return table<string, unknown>|nil, string|nil
 function Runner._runBuild(options)
   options = options or {}
+  local dev = options.dev
+  if dev == nil then
+    dev = Runner.opts ~= nil and Runner.opts.dev == true
+  end
   local CacheBuilder = require("romdump.src.CacheBuilder")
   local report, err = CacheBuilder.buildVersions(options.versionIds or readyVersions(), {
     allowCompileExclusions = options.allowCompileExclusions,
+    dev = dev,
   })
   if report then
     if not options.noQuit then
@@ -200,6 +209,7 @@ function Runner._finishImport(status)
   local report, err = Runner._runBuild({
     versionIds = { versionId },
     allowCompileExclusions = Runner.opts.allowCompileExclusions,
+    dev = Runner.opts.dev,
     noQuit = true,
   })
   if not report then
