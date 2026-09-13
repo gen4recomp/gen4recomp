@@ -71,13 +71,25 @@ function T.standard_fade_in_uses_the_reversed_recurrence_and_holds_its_terminal_
 end
 
 function T.transition_exposes_profile_presentation_state()
-  local transition = FieldTransition.new({ loader = {}, prepare = function() end, commit = function() end })
+  local transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
+    prepare = function() end,
+    commit = function() end,
+  })
   Assert.equal(type(transition.presentationStatus), "function")
 end
 
 function T.fixed_updates_do_not_mutate_the_source_fade()
   local transition = FieldTransition.new({
-    loader = {},
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
     resolveDestination = function()
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
@@ -99,6 +111,9 @@ local function recordingLoader()
   local protections = {}
   return {
     protections = protections,
+    requestWarp = function()
+      return true
+    end,
     protectMap = function(_, mapId, protected)
       protections[#protections + 1] = { mapId, protected }
     end,
@@ -134,6 +149,9 @@ function T.fades_loads_swaps_while_black_and_completes()
   local loader = {
     protectMap = function(_, mapId, protected)
       protections[#protections + 1] = { mapId, protected }
+    end,
+    requestWarp = function()
+      return true
     end,
   }
   local transition = FieldTransition.new({
@@ -242,6 +260,9 @@ function T.default_resolver_handles_direct_warp_records()
     load = function()
       return destination
     end,
+    requestWarp = function()
+      return true
+    end,
   }
   local transition = FieldTransition.new({
     loader = loader,
@@ -259,6 +280,98 @@ function T.default_resolver_handles_direct_warp_records()
   Assert.equal(transition.resolution.fieldZ, 392)
   Assert.equal(transition.resolution.destinationWarp.direct, true)
   Assert.deepEqual(transition.suppression, { mapId = 60, fieldX = 688, fieldZ = 392 })
+end
+
+-- A pending destination demand holds the covered transition: the source
+-- stays authoritative and input stays locked while compilation continues,
+-- and readiness runs the existing resolution/preparation/commit exactly
+-- once. A demand failure uses the existing abort path.
+function T.pending_destination_demand_holds_the_cover_until_ready()
+  local gate = "pending"
+  local prepares, commits = {}, {}
+  local loader = {
+    requestWarp = function()
+      if gate == "pending" then
+        return false
+      end
+      if gate == "error" then
+        return false, "destination closure failed"
+      end
+      return true
+    end,
+  }
+  local transition = FieldTransition.new({
+    loader = loader,
+    resolveDestination = function()
+      return {
+        destinationMap = { mapId = 60 },
+        fieldX = 684,
+        fieldZ = 393,
+        surfaceId = 0,
+        worldY = 0,
+        suppression = { mapId = 60, fieldX = 684, fieldZ = 393 },
+      }
+    end,
+    prepare = function(result)
+      prepares[#prepares + 1] = result
+      return {}
+    end,
+    commit = function(result, facing)
+      commits[#commits + 1] = { result = result, facing = facing }
+    end,
+  })
+  transition:start(
+    sourceMap(),
+    { warp = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  advanceTo(transition, "load_destination", 32)
+  for _ = 1, 10 do
+    step(transition)
+    Assert.equal(transition.phase, "load_destination", "pending demand holds the covered transition")
+    Assert.isTrue(transition.locked, "input stays locked while the destination compiles")
+  end
+  Assert.deepEqual(prepares, {}, "no preparation runs while the destination is pending")
+  Assert.deepEqual(commits, {}, "no commit runs while the destination is pending")
+  gate = "ready"
+  advanceTo(transition, "idle", 32)
+  Assert.equal(#prepares, 1, "readiness runs existing preparation exactly once")
+  Assert.equal(#commits, 1, "readiness commits exactly once")
+end
+
+function T.destination_demand_failure_aborts_with_source_ownership()
+  local transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return false, "destination closure failed"
+      end,
+    },
+    resolveDestination = function()
+      error("resolution must not run before demand readiness", 0)
+    end,
+    prepare = function()
+      error("preparation must not run before demand readiness", 0)
+    end,
+    commit = function()
+      error("commit must not run before demand readiness", 0)
+    end,
+  })
+  transition:start(
+    sourceMap(),
+    { warp = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  advanceTo(transition, "idle", 32)
+  Assert.equal(transition.phase, "idle")
+  Assert.isFalse(transition.locked)
+  Assert.equal(tostring(transition.error), "destination closure failed")
+  Assert.isNil(transition.sourceMap, "aborted demand keeps no source reference")
+  Assert.deepEqual(transition.warpContext, {
+    sourceMapId = 61,
+    sourceWarpId = 0,
+    destinationMapId = 60,
+    destinationWarpId = 0,
+  })
 end
 
 -- A failed resolution aborts to a coherent idle state: unlocked, source
@@ -573,6 +686,9 @@ local function transitionFixture(opts)
         return destination
       end,
       protectMap = function() end,
+      requestWarp = function()
+        return true
+      end,
     }
   local swaps = {}
   local sounds = {}
@@ -1194,6 +1310,9 @@ function T.finish_does_not_touch_map_protection()
       if not protected then
         error("release failed", 0)
       end
+    end,
+    requestWarp = function()
+      return true
     end,
   }
   local transition = FieldTransition.new({

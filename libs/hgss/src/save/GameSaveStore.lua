@@ -151,6 +151,7 @@ end
 ---@field private _busy boolean
 ---@field reserve fun(self: GameSaveStore): string
 ---@field list fun(self: GameSaveStore): table[]
+---@field listMetadata fun(self: GameSaveStore): table[]
 ---@field load fun(self: GameSaveStore, saveId: string): table<string, unknown>?, Errors.Error?
 ---@field publishFirst fun(self: GameSaveStore, record: table<string, unknown>): boolean
 ---@field save fun(self: GameSaveStore, record: table<string, unknown>): boolean
@@ -272,6 +273,34 @@ function GameSaveStore:_loadPublished(saveId)
   return self:_validateRecord(record --[[@as table]], saveId)
 end
 
+-- Reads one payload's display envelope without deep validation: the raw
+-- record is loaded as stored and only GameSave.metadata runs over it. The
+-- injected record validator never runs and no generated cache is touched.
+-- A catalog-listed id whose payload carries another id is a mismatch.
+---@param saveId string
+---@return table<string, unknown>
+function GameSaveStore:_loadEnvelope(saveId)
+  local record, err = self.saveFs:loadLua(self:_gamePath(saveId))
+  if record == nil then
+    if err ~= nil then
+      error(err)
+    end
+    Errors.raise(GameSaveErrors.GAME_SAVE_NOT_PUBLISHED, "save payload is missing", { saveId = saveId })
+  end
+  assert(type(record) == "table")
+  local envelope, envelopeErr = GameSave.metadata(record)
+  if envelope == nil then
+    error(assert(envelopeErr))
+  end
+  if envelope.saveId ~= saveId then
+    Errors.raise(GameSaveErrors.GAME_SAVE_SAVE_ID_MISMATCH, "game save id does not match its catalog identity", {
+      expected = saveId,
+      actual = envelope.saveId,
+    })
+  end
+  return envelope
+end
+
 ---@return string
 function GameSaveStore:reserve()
   local saveId = self:_mutate(function()
@@ -309,6 +338,30 @@ function GameSaveStore:list()
       entries[#entries + 1] = { saveId = saveId, error = recordOrError }
     else
       error(recordOrError)
+    end
+  end
+  return entries
+end
+
+-- Metadata-only listing for menu cards: validates the catalog and each
+-- payload's display envelope without invoking the injected deep validator
+-- and without reading generated caches. A listed envelope is not thereby
+-- semantically valid. Ordering and per-entry error reporting match list().
+---@return table[]
+function GameSaveStore:listMetadata()
+  local catalog = self:_readCatalog()
+  local entries = {}
+  for index = #catalog.saveIds, 1, -1 do
+    local saveId = catalog.saveIds[index]
+    local ok, envelopeOrError = pcall(function()
+      return self:_loadEnvelope(saveId)
+    end)
+    if ok then
+      entries[#entries + 1] = assert(envelopeOrError --[[@as table]])
+    elseif Errors.is(envelopeOrError) then
+      entries[#entries + 1] = { saveId = saveId, error = envelopeOrError }
+    else
+      error(envelopeOrError)
     end
   end
   return entries

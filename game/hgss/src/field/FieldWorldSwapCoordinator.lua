@@ -184,8 +184,10 @@ end
 ---@param resolveDestination function
 ---@return FieldTransition
 function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt, resolveDestination)
-  local function onStart(_, trigger)
-    runtime.mapLoader:request(trigger.warp.destinationMapId)
+  local function onStart(sourceMap, trigger)
+    -- Start destination compilation under the emerging cover. Readiness stays
+    -- gated at load_destination, so this early demand never blocks or commits.
+    runtime.mapLoader:requestWarp(sourceMap, trigger.warp)
     if runtime.audio then
       runtime.audio:beginWarp(trigger.warp.destinationMapId)
     end

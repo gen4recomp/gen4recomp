@@ -44,6 +44,9 @@ local function fakeStore(entries)
   function store:list()
     return self.entries
   end
+  function store:listMetadata()
+    return self.entries
+  end
   function store:load(saveId)
     self.loads[#self.loads + 1] = saveId
     for _, entry in ipairs(self.entries) do
@@ -60,12 +63,58 @@ local function fakeStore(entries)
   return store
 end
 
+local function readyHost()
+  return {
+    requestMilestone = function()
+      return true
+    end,
+    requestField = function()
+      return true
+    end,
+    ensureField = function()
+      return true
+    end,
+    requestCell = function()
+      return true
+    end,
+    ensureCell = function()
+      return true
+    end,
+    requestMonPortraitPage = function()
+      return true
+    end,
+    status = function()
+      return {}
+    end,
+  }
+end
+
+local function planningLoader()
+  return {
+    requestLocation = function()
+      return true
+    end,
+    globalPosition = function(_, _, fieldX, fieldZ)
+      return { x = fieldX, z = fieldZ }
+    end,
+  }
+end
+
+local function settle(game)
+  for _ = 1, 10 do
+    game:update(1 / 60)
+  end
+end
+
 local function saveRecord(saveId)
   return {
     saveId = saveId,
     versionId = READY_VERSION,
     playerData = { profile = { name = "GOLD" } },
     playTimeSeconds = 0,
+    mapId = 60,
+    fieldX = 684,
+    fieldZ = 393,
   }
 end
 
@@ -224,8 +273,18 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     context.stores[1] = fakeStore({ continueRecord })
     context.stores[2] = fakeStore({})
     context.stores[3] = fakeStore({})
-    local candidate = { saveId = "save-00000003", versionId = READY_VERSION, playerData = nil }
-    local finalized = { saveId = candidate.saveId, versionId = READY_VERSION, playerData = {} }
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    local finalized = {
+      saveId = candidate.saveId,
+      versionId = READY_VERSION,
+      playerData = {},
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
     context.candidate = candidate
     context.candidateFactory = function(options)
       Assert.equal(options.saveService, context.stores[2])
@@ -254,6 +313,8 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
         exits[#exits + 1] = result
       end,
       development = false,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     Assert.equal(getmetatable(game).__index, modules.game)
     Assert.equal(getmetatable(game.state).__index, modules.menu)
@@ -262,8 +323,11 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     Assert.equal(#context.storeCalls, 1)
 
     game.state:keypressed("return")
+    Assert.equal(#context.fieldCalls, 0, "Continue waits for core and geometry before strict load")
+    settle(game)
     Assert.equal(#context.fieldCalls, 1)
     Assert.equal(context.fieldCalls[1].game, continueRecord)
+    Assert.deepEqual(context.stores[1].loads, { continueRecord.saveId })
     Assert.equal(type(context.storeCalls[1].options.recordValidate), "function")
     local firstField = game.state
     game:setState(nil)
@@ -275,6 +339,8 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
         exits[#exits + 1] = result
       end,
       development = true,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     newGame.state:keypressed("return")
     Assert.equal(#context.candidateCalls, 1)
@@ -282,6 +348,8 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     context.oakCalls[1].onComplete(finalized)
     Assert.equal(#context.applyCalls, 1)
     Assert.equal(context.applyCalls[1], finalized)
+    Assert.equal(#context.fieldCalls, 1, "the handoff requests core and geometry before constructing field")
+    settle(newGame)
     Assert.equal(#context.fieldCalls, 2)
     Assert.equal(context.fieldCalls[2].game, finalized)
     Assert.isTrue(context.fieldCalls[2].options.development)
@@ -293,6 +361,8 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
       onExit = function(result)
         exits[#exits + 1] = result
       end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     quitGame.state:keypressed("escape")
     Assert.deepEqual(exits, { { kind = "quit" } })
@@ -306,6 +376,8 @@ function T.menu_presentation_is_wired_from_fakes_and_released_exactly_once()
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     Assert.equal(#context.textCalls, 1, "menu text construction must run once per game")
     Assert.equal(#context.menuRendererCalls, 1, "menu renderer construction must run once per game")
@@ -327,6 +399,8 @@ function T.menu_renderer_failure_releases_the_allocated_text_exactly_once()
     local ok, err = pcall(modules.hgssGame.new, {
       versionId = READY_VERSION,
       onExit = function() end,
+      derivedAssets = readyHost(),
+      fieldMapLoader = planningLoader(),
     })
     Assert.isFalse(ok, "a menu renderer failure must fail game construction")
     Assert.isTrue(string.find(tostring(err), "injected menu renderer failure") ~= nil)
@@ -347,6 +421,34 @@ function T.composition_spies_restore_presentation_constructors_when_the_body_thr
   Assert.isTrue(string.find(tostring(err), "injected composition body failure") ~= nil)
   Assert.equal(fieldText.new, textNew, "the text constructor must be restored after a throw")
   Assert.equal(menuRenderer.new, rendererNew, "the menu renderer constructor must be restored after a throw")
+end
+
+function T.cancelling_field_preparation_returns_to_the_menu_without_publishing()
+  withCompositionSpies(function(modules, context)
+    local continueRecord = saveRecord("save-00000002")
+    context.stores[1] = fakeStore({ continueRecord })
+    local pending = true
+    local host = readyHost()
+    host.requestMilestone = function()
+      return not pending
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.fieldCalls, 0, "pending core never constructs the field")
+    game.state:keypressed("escape")
+    Assert.equal(getmetatable(game.state).__index, modules.menu, "cancellation returns to the owning menu")
+    Assert.equal(#context.fieldCalls, 0, "cancellation publishes no field")
+    pending = false
+    settle(game)
+    Assert.equal(#context.fieldCalls, 0, "a cancelled preparation never transfers late")
+    game:dispose()
+  end)
 end
 
 return { tests = T }

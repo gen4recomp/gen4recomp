@@ -1,58 +1,116 @@
--- Owns interactive derived-asset production for one running game.
+-- Semantic derived-asset host for one selected game. It wraps the selected
+-- generation session on the injected process-owned compiler pool: fixed
+-- milestone/field/cell/page/status operations propagate the session's
+-- ready/pending/error distinctions with string urgencies, and disposal
+-- retires the session without joining or destroying the shared pool.
 
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+local GameVersion = require("romdump.src.source.GameVersion")
+local DerivedCacheState = require("romdump.src.DerivedCacheState")
+local Errors = require("libs.errors.src.Errors")
+
+---@class DerivedAssetProvisionerOptions
+---@field versionId string selected game version
+---@field producerFingerprint string release counter or development digest
+---@field developmentRepositoryRoot string? present in development mode
+---@field pool table<string, function> process-owned compiler pool, borrowed
+---@field epoch integer selected source epoch, a positive integer
 
 ---@class DerivedAssetProvisioner
----@field build InteractiveCacheBuild
----@field closed boolean
----@field host table<string, function>|nil
+---@field session InteractiveCacheBuild
+---@field retired boolean
+---@field host table<string, function>?
 local DerivedAssetProvisioner = {}
 DerivedAssetProvisioner.__index = DerivedAssetProvisioner
 
----@param options table<string, unknown>
+---@param options DerivedAssetProvisionerOptions
+---@return table<string, unknown> generation identity for the selected source
+local function sessionIdentity(options)
+  assert(type(options.versionId) == "string" and options.versionId ~= "", "provisioner version is required")
+  assert(
+    type(options.producerFingerprint) == "string" and options.producerFingerprint ~= "",
+    "provisioner producer fingerprint is required"
+  )
+  local info = GameVersion.info(options.versionId)
+  assert(info ~= nil, "unsupported version: " .. tostring(options.versionId))
+  return DerivedCacheState.currentForSelection({
+    versionId = options.versionId,
+    romSha1 = assert(info.sha1, "version has no ROM identity"),
+    producerId = options.producerFingerprint,
+    developmentRepositoryRoot = options.developmentRepositoryRoot,
+  })
+end
+
+---@param options DerivedAssetProvisionerOptions
 ---@return DerivedAssetProvisioner
 function DerivedAssetProvisioner.new(options)
-  local build = InteractiveCacheBuild.new(options)
-  local self = setmetatable({ build = build, closed = false, host = nil }, DerivedAssetProvisioner)
+  assert(type(options) == "table", "derived-asset provisioner options are required")
+  assert(type(options.pool) == "table", "derived-asset provisioner requires the process-owned pool")
+  assert(
+    type(options.epoch) == "number" and options.epoch % 1 == 0 and options.epoch >= 1,
+    "provisioner epoch must be a positive integer"
+  )
+  local session = InteractiveCacheBuild.new({
+    identity = sessionIdentity(options),
+    epoch = options.epoch,
+    pool = options.pool,
+    sweepEnabled = true,
+  })
+  local self = setmetatable({ session = session, retired = false, host = nil }, DerivedAssetProvisioner)
+  local function guard()
+    if self.retired then
+      Errors.raise("DERIVED_ASSETS_RETIRED", "derived-asset provisioner is retired", {})
+    end
+    return assert(self.session, "derived-asset session is unavailable")
+  end
   self.host = {
-    requestField = function(mapId)
-      assert(not self.closed, "derived-asset provisioner is disposed")
-      return build:requestField(mapId, 10)
+    requestMilestone = function(name, urgency)
+      return guard():requestMilestone(name, urgency)
+    end,
+    requestField = function(mapId, urgency)
+      return guard():requestField(mapId, urgency)
     end,
     ensureField = function(mapId)
-      assert(not self.closed, "derived-asset provisioner is disposed")
-      return build:ensureField(mapId)
+      return guard():ensureField(mapId)
     end,
-    requestCell = function(descriptor)
-      assert(not self.closed, "derived-asset provisioner is disposed")
-      return build:requestCell(descriptor, 20)
+    requestCell = function(descriptor, urgency)
+      return guard():requestCell(descriptor, urgency)
     end,
     ensureCell = function(descriptor)
-      assert(not self.closed, "derived-asset provisioner is disposed")
-      return build:ensureCell(descriptor)
+      return guard():ensureCell(descriptor)
+    end,
+    requestMonPortraitPage = function(pageId, urgency)
+      return guard():requestMonPortraitPage(pageId, urgency)
+    end,
+    status = function()
+      return guard():status()
     end,
   }
   return self
 end
 
+---@return table<string, function> borrowed semantic host for the selected game
 function DerivedAssetProvisioner:gameHost()
-  assert(not self.closed, "derived-asset provisioner is disposed")
-  return self.host
+  assert(not self.retired, "derived-asset provisioner is retired")
+  return assert(self.host, "derived-asset host is unavailable")
 end
 
 function DerivedAssetProvisioner:update()
-  if not self.closed then
-    self.build:update()
+  if not self.retired then
+    self.session:update()
   end
 end
 
 function DerivedAssetProvisioner:dispose()
-  if self.closed then
+  if self.retired then
     return
   end
-  self.closed = true
+  self.retired = true
   self.host = nil
-  self.build:dispose()
+  -- Retiring the session closes its source readers and drops its queued
+  -- interest; physical workers keep their capacity until their actual
+  -- completion, and the process pool itself is never touched here.
+  self.session:retire()
 end
 
 return DerivedAssetProvisioner

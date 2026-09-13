@@ -780,7 +780,7 @@ end
 
 function T.unrelated_derived_families_keep_their_identities()
   Assert.equal(DerivedAssetContract.intro.cacheFormat, "intro-cache-v14")
-  Assert.equal(DerivedAssetContract.mons.portraitManifestSchema, "g4-mon-portrait-manifest-v1")
+  Assert.equal(DerivedAssetContract.mons.portraitManifestSchema, "g4-mon-portrait-manifest-v2")
 end
 
 function T.starter_contract_carries_the_inspect_pivot_and_rejects_the_previous_shape()

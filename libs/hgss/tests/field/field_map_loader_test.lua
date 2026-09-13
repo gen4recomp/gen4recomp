@@ -865,4 +865,151 @@ function T.reloading_an_evicted_map_builds_a_fresh_map_props()
   loader:release()
 end
 
+local function planningHost(calls, fieldReady, cellReady)
+  return {
+    requestField = function(mapId, urgency)
+      calls[#calls + 1] = { kind = "field", mapId = mapId, urgency = urgency }
+      return fieldReady
+    end,
+    requestCell = function(descriptor, urgency)
+      calls[#calls + 1] = { kind = "cell", descriptor = descriptor, urgency = urgency }
+      return cellReady
+    end,
+  }
+end
+
+local function outdoorPlanningFixture()
+  local cache, world = fixture(1)
+  world.maps[1].matrix = { memberId = 0 }
+  world.maps[1].worldOriginX = 672
+  world.maps[1].worldOriginZ = 384
+  local cell = {
+    schema = FieldCellCache.CELL_SCHEMA,
+    matrixMemberId = 0,
+    index = 0,
+    x = 21,
+    z = 12,
+    mapHeaderId = 0,
+    altitude = 0,
+    origin = { x = 0, y = 0, z = 0 },
+    landDataMemberId = 0,
+    areaDataMemberId = 0,
+    file = FieldCellCache.cellPath(0, 0),
+    collision = { file = FieldCellCache.collisionPath(0, 0) },
+    terrain = { file = FieldCellCache.terrainPath(0, 0), schema = "g4-terrain-surfaces-v1" },
+    batches = {},
+    materials = {},
+    buildingInstances = {},
+    terrainAnimations = { textureSrt = false },
+  }
+  cache.loadLua = function(_, path)
+    if path == FieldCellCache.indexPath() then
+      return {
+        schema = FieldCellCache.INDEX_SCHEMA,
+        matrices = { { matrixMemberId = 0, width = 47, height = 17, cells = { cell } } },
+      }
+    end
+    error("location planning reads no scene, terrain, or GPU resource: " .. tostring(path), 0)
+  end
+  return cache, world
+end
+
+function T.global_position_converts_local_coordinates_through_structural_origins()
+  local cache, world = fixture(2)
+  local loader = FieldMapLoader.new(cache, world, {})
+  -- The structural world record wins over the scene matrix when present.
+  world.maps[2].worldOriginX = 100
+  world.maps[2].worldOriginZ = 200
+  local converted = loader:globalPosition("MAP_1", 3, 4)
+  Assert.deepEqual(converted, { x = 103, z = 204 })
+  -- Records without a manifest origin fall back to the load-authoritative
+  -- scene matrix (map 0 carries worldOriginX 0 from its scene).
+  local fallback = loader:globalPosition(0, 3, 4)
+  Assert.deepEqual(fallback, { x = 3, z = 4 })
+  loader:release()
+end
+
+function T.request_location_demands_the_logical_map_and_committed_footprint()
+  local cache, world = outdoorPlanningFixture()
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, false, true) })
+  local ready, failure = loader:requestLocation(0, 695, 397, "required")
+  Assert.isFalse(ready, "a pending logical map holds the location")
+  Assert.isNil(failure)
+  local kinds = {}
+  for _, call in ipairs(calls) do
+    kinds[#kinds + 1] = call.kind .. ":" .. call.urgency
+    if call.kind == "field" then
+      Assert.equal(call.mapId, 0)
+    else
+      Assert.equal(call.descriptor.x, 21)
+      Assert.equal(call.descriptor.z, 12)
+    end
+  end
+  Assert.deepEqual(kinds, { "field:required", "cell:required" })
+
+  local readyCalls = {}
+  local readyLoader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(readyCalls, true, true) })
+  Assert.isTrue(readyLoader:requestLocation("MAP_0", 695, 397, "required"))
+  Assert.equal(#readyCalls, 2, "the ready closure requests its committed cell alongside the map")
+  readyLoader:release()
+  loader:release()
+end
+
+function T.request_location_without_a_host_is_immediately_ready()
+  local cache, world = outdoorPlanningFixture()
+  local loader = FieldMapLoader.new(cache, world, {})
+  Assert.isTrue(loader:requestLocation(0, 695, 397, "required"))
+  Assert.isTrue(loader:requestWarp({ mapId = 0 }, { destinationMapId = 0, destinationWarpId = 0 }))
+  loader:release()
+end
+
+function T.request_warp_plans_indexed_and_direct_destinations_as_required()
+  local cache, world = outdoorPlanningFixture()
+  local fieldPath = "data/generated/field/maps/0000/field.lua"
+  local fieldData = {
+    schema = "g4-field-map-v9",
+    mapId = 0,
+    events = {
+      background = {},
+      objects = {},
+      warps = { { index = 0, x = 695, z = 397, destinationMapId = 0, destinationWarpId = 0, y = 0 } },
+      coordinates = {},
+    },
+  }
+  local realLoadLua = cache.loadLua
+  cache.loadLua = function(_, path)
+    if path == fieldPath then
+      return fieldData
+    end
+    return realLoadLua(cache, path)
+  end
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, { derivedAssets = planningHost(calls, true, true) })
+  local ready, failure = loader:requestWarp({ mapId = 1 }, {
+    index = 0,
+    x = 4,
+    z = 14,
+    destinationMapId = 0,
+    destinationWarpId = 0,
+  })
+  Assert.isTrue(ready, "a ready destination closure releases the warp")
+  Assert.isNil(failure)
+  Assert.equal(calls[1].kind, "field")
+  Assert.equal(calls[1].mapId, 0)
+  Assert.equal(calls[1].urgency, "required")
+
+  local directReady = loader:requestWarp({ mapId = 1 }, { direct = true, x = 695, z = 397, destinationMapId = 0 })
+  Assert.isTrue(directReady, "a direct record plans its own global coordinates")
+
+  local coldReady, coldFailure = loader:requestWarp({ mapId = 1 }, {
+    index = 0,
+    destinationMapId = 0,
+    destinationWarpId = 4,
+  })
+  Assert.isFalse(coldReady, "an unknown destination index never reads as ready")
+  Assert.notNil(coldFailure, "planning failures propagate instead of pending forever")
+  loader:release()
+end
+
 return { tests = T }

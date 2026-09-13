@@ -8,6 +8,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
@@ -15,6 +16,8 @@ local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local RepoFs = require("game.src.RepoFs")
 local CacheFs = require("libs.storage.src.CacheFs")
+local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
+local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local ItemCache = require("libs.assets.src.ItemCache")
@@ -24,7 +27,8 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 ---@field versionId string
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
----@field derivedAssets table<string, function>?
+---@field derivedAssets table<string, function> semantic derived-asset host for gated field entry
+---@field fieldMapLoader table<string, unknown>? borrowed metadata-only loader for entry planning
 
 local HgssGame = {}
 
@@ -74,13 +78,52 @@ end
 ---@param saveValidation GameSaveValidation
 ---@param versionId string
 local function installRoutes(options, game, saveStore, saveValidation, versionId)
+  local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
+  local width, height = love.graphics.getDimensions()
+  local menuOptions = {
+    saveStore = saveStore,
+    readyVersions = { versionId },
+    width = width,
+    height = height,
+  }
+  local bootMenu -- forward: menu construction closes over the result router below
+  local function backToMenu()
+    game:setState(bootMenu())
+  end
   local function enterField(record, extraOptions)
     game:setState(FieldState.new(record, fieldStateOptions(options, saveStore, saveValidation, extraOptions)))
+  end
+  local function entryLoader()
+    -- The borrowed composition loader plans entry geometry; otherwise a
+    -- temporary metadata-only loader over the version cache. Planning
+    -- acquires no entries, scenes, or GPU resources through it.
+    if options.fieldMapLoader ~= nil then
+      return assert(options.fieldMapLoader)
+    end
+    local cacheFs = CacheFs.forVersion(versionId)
+    local world =
+      assert(cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
+    return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
+  end
+  local function enterPreparation(preparationOptions)
+    game:setState(FieldPreparationState.new({
+      kind = preparationOptions.kind,
+      saveId = preparationOptions.saveId,
+      candidate = preparationOptions.candidate,
+      versionId = versionId,
+      derivedAssets = derivedAssets,
+      saveStore = saveStore,
+      loader = entryLoader(),
+      enterField = enterField,
+      onCancel = backToMenu,
+    }))
   end
 
   local function onOakComplete(result)
     assert(type(result) == "table" and result.playerData ~= nil, "Oak intro completed without a finalized game")
-    enterField(NewGameInitialization.apply(result), { initialFadeIn = true })
+    -- Initialization applies exactly once to the finalized candidate before
+    -- the handoff plans its field entry; waiting updates never apply it again.
+    enterPreparation({ kind = "newgame", candidate = NewGameInitialization.apply(result) })
   end
 
   local function bootOakIntro()
@@ -98,26 +141,35 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     elseif result.kind == "new_game" then
       bootOakIntro()
     elseif result.kind == "continue" then
-      enterField(assert(result.game))
+      -- Continue is a save intent, not a loaded record: field core, strict
+      -- validation and location geometry gate the transfer.
+      enterPreparation({ kind = "continue", saveId = assert(result.saveId) })
     end
   end
 
-  local width, height = love.graphics.getDimensions()
-  local versionCache = CacheFs.forVersion(versionId)
-  local menuText = FieldTextRenderer.new({ cacheFs = versionCache })
-  local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, versionId = versionId })
-  if not rendererOk then
-    menuText:release()
-    error(menuRendererOrError, 0)
+  local function makeMenuRenderer()
+    local versionCache = CacheFs.forVersion(versionId)
+    local menuText = FieldTextRenderer.new({ cacheFs = versionCache })
+    local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, versionId = versionId })
+    if not rendererOk then
+      menuText:release()
+      error(menuRendererOrError, 0)
+    end
+    return assert(menuRendererOrError)
   end
-  game:setState(MainMenuState.new({
-    saveStore = saveStore,
-    readyVersions = { versionId },
-    width = width,
-    height = height,
-    renderer = assert(menuRendererOrError),
-    onResult = onMenuResult,
-  }))
+
+  function bootMenu()
+    return MainMenuState.new({
+      saveStore = menuOptions.saveStore,
+      readyVersions = menuOptions.readyVersions,
+      width = menuOptions.width,
+      height = menuOptions.height,
+      renderer = makeMenuRenderer(),
+      onResult = onMenuResult,
+    })
+  end
+
+  game:setState(bootMenu())
 end
 
 ---@param options HgssGameOptions

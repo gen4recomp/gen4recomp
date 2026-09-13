@@ -48,6 +48,8 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _plan table<string, unknown>[]? ordered preparation steps while preparation runs
 ---@field _planIndex integer next preparation step to run
 ---@field _outstanding table<integer, boolean> preparation tokens awaiting a result
+---@field _pageHost table<string, function>? borrowed semantic host while portrait pages gate submission
+---@field _pageReady table<integer, boolean> actual portrait pages confirmed current by the host
 ---@field _meshEntries table<string, table<string, unknown>> realized mesh entries by geometry path
 ---@field _imageEntries table<string, unknown> realized images by path-plus-wrap key
 ---@field _definitions table<string, ModelDefinition> model definitions by scene role
@@ -216,6 +218,8 @@ function StarterChoicePresentation.new(opts)
     _plan = nil,
     _planIndex = 1,
     _outstanding = {},
+    _pageHost = nil,
+    _pageReady = {},
     _meshEntries = {},
     _imageEntries = {},
     _definitions = {},
@@ -667,12 +671,14 @@ end
 ---@field wrapY string?
 ---@field width number?
 ---@field height number?
+---@field pageId integer? portrait atlas page gating image submission while set
 ---@field token integer? live submitted token while the window holds this step
 ---@field requested boolean? whether this step was ever submitted to the queue
 
 ---@class StarterChoicePrepContext
 ---@field assetPreparation table<string, unknown>? borrowed preparation queue; nil prepares synchronously from the cache
 ---@field gxRenderer table<string, unknown> borrowed field graphics backend for the renderer wrapper
+---@field derivedAssets table<string, function>? borrowed semantic host gating actual portrait pages
 
 -- One realized entry source over the presentation-owned entry tables.
 ---@param presentation StarterChoicePresentation
@@ -759,13 +765,13 @@ local function collectResources(manifest, portraits)
     end
   end
   local imageSteps, seenImage = {}, {}
-  local function addImage(path, wrapX, wrapY, width, height)
+  local function addImage(path, wrapX, wrapY, width, height, pageId)
     assert(type(path) == "string", "starter image reference carries no path")
     local key = path .. "|" .. wrapX .. "|" .. wrapY
     if not seenImage[key] then
       seenImage[key] = true
       imageSteps[#imageSteps + 1] =
-        { kind = "image", path = path, wrapX = wrapX, wrapY = wrapY, width = width, height = height }
+        { kind = "image", path = path, wrapX = wrapX, wrapY = wrapY, width = width, height = height, pageId = pageId }
     end
   end
   local function addMaterialImages(materials)
@@ -835,10 +841,54 @@ local function collectResources(manifest, portraits)
     local pageId = math.floor(rawPageId)
     if not seenPages[pageId] then
       seenPages[pageId] = true
-      addImage(MonCache.portraitPagePath(pageId), "clamp", "clamp")
+      addImage(MonCache.portraitPagePath(pageId), "clamp", "clamp", nil, nil, pageId)
     end
   end
   return meshPaths, imageSteps
+end
+
+-- The distinct actual portrait pages this chooser's candidates select,
+-- in first-use order. The whole atlas is never requested.
+---@return integer[]
+function StarterChoicePresentation:_portraitPages()
+  local pages, seen = {}, {}
+  for _, descriptor in ipairs(self._portraits) do
+    local pageId = assert(descriptor.pageId, "starter portrait descriptor carries its page")
+    if not seen[pageId] then
+      seen[pageId] = true
+      pages[#pages + 1] = pageId
+    end
+  end
+  return pages
+end
+
+-- Requests each distinct actual portrait page as required and records
+-- current pages. A nil host leaves readiness untouched, preserving the
+-- established hostless preparation path. A page failure is malformed or
+-- missing generated data and fails loudly: no absent page is ever loaded
+-- as an old-generation file or replaced with a default portrait.
+---@param host table<string, function>?
+---@return boolean allReady
+function StarterChoicePresentation:_pollPortraitPages(host)
+  if host == nil then
+    return true
+  end
+  self._pageHost = host
+  local allReady = true
+  for _, pageId in ipairs(self:_portraitPages()) do
+    if not self._pageReady[pageId] then
+      local ready, failure = host.requestMonPortraitPage(pageId, "required")
+      if failure ~= nil then
+        error("starter portrait page " .. tostring(pageId) .. " is unavailable: " .. tostring(failure), 0)
+      end
+      if ready then
+        self._pageReady[pageId] = true
+      else
+        allReady = false
+      end
+    end
+  end
+  return allReady
 end
 
 -- Whether the presentation scene is fully prepared and drawable.
@@ -868,6 +918,13 @@ function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
   )
   if maxWorkUnits == 0 then
     return 0
+  end
+  if context.derivedAssets ~= nil then
+    local pollOk, pollError = pcall(self._pollPortraitPages, self, context.derivedAssets)
+    if not pollOk then
+      self:_releaseGpu()
+      error(pollError, 0)
+    end
   end
   if self._plan == nil then
     local meshPaths, imageSteps = collectResources(self._manifest, self._portraits)
@@ -920,8 +977,10 @@ function StarterChoicePresentation:advancePreparation(context, maxWorkUnits)
 end
 
 -- Submits the earliest never-submitted resource steps until the
--- submitted-but-unconsumed window is full. Runs once when the plan is
--- created and again after every consumed payload, so at most
+-- submitted-but-unconsumed window is full. Portrait image steps wait for
+-- their page receipt before submission, so already-derived resources keep
+-- flowing through the window while a page compiles. Runs once when the plan
+-- is created and again after every consumed payload, so at most
 -- PREPARATION_WINDOW tokens stay outstanding while every staged asset is
 -- still eventually requested.
 function StarterChoicePresentation:_submitWindow()
@@ -936,11 +995,16 @@ function StarterChoicePresentation:_submitWindow()
       return
     end
     if (step.kind == "mesh" or step.kind == "image") and not step.requested then
-      step.token = queue:request(step.kind, assert(step.path, "starter preparation step carries no path"), "demand")
-      assert(step.token ~= nil, "starter preparation request returned no token")
-      step.requested = true
-      self._outstanding[step.token] = true
-      outstanding = outstanding + 1
+      if step.pageId ~= nil and self._pageHost ~= nil and not self._pageReady[step.pageId] then
+        -- The page is not current yet: later ready steps may still fill the
+        -- window, and this step submits once its receipt arrives.
+      else
+        step.token = queue:request(step.kind, assert(step.path, "starter preparation step carries no path"), "demand")
+        assert(step.token ~= nil, "starter preparation request returned no token")
+        step.requested = true
+        self._outstanding[step.token] = true
+        outstanding = outstanding + 1
+      end
     end
   end
 end
@@ -952,6 +1016,12 @@ function StarterChoicePresentation:_advancePlanStep()
   local plan = assert(self._plan, "starter preparation owns no plan")
   local step = plan[self._planIndex]
   if step == nil then
+    return false
+  end
+  if step.pageId ~= nil and self._pageHost ~= nil and not self._pageReady[step.pageId] then
+    -- The page receipt is still pending: other already-derived steps ahead
+    -- of it completed in order, and preparation resumes here once it is
+    -- current. No absent path reaches the queue or the pool.
     return false
   end
   if step.kind == "models" then
@@ -966,6 +1036,14 @@ function StarterChoicePresentation:_advancePlanStep()
   end
   local queue = self._prepareQueue
   if queue ~= nil then
+    if step.token == nil then
+      -- Skipped while its page was pending and never submitted since: submit
+      -- now that the receipt is current, or wait when the window is full.
+      self:_submitWindow()
+      if step.token == nil then
+        return false
+      end
+    end
     local token = assert(step.token, "starter preparation step owns no token")
     local status, failure = queue:poll(token)
     if status == "pending" then

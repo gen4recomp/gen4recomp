@@ -7,8 +7,7 @@ local MainMenuController = require("game.hgss.src.menu.MainMenuController")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 
 ---@class MainMenuSaveStore
----@field list fun(self: MainMenuSaveStore): table[]
----@field load fun(self: MainMenuSaveStore, saveId: string): table<string, unknown>|nil, Errors.Error?
+---@field listMetadata fun(self: MainMenuSaveStore): table[]
 ---@field delete fun(self: MainMenuSaveStore, saveId: string): boolean
 
 ---@class MainMenuState
@@ -154,7 +153,11 @@ function MainMenuState.new(options)
 end
 
 function MainMenuState:_readSaves()
-  local ok, entriesOrError = pcall(self.saveStore.list, self.saveStore)
+  -- Menu cards list validated display envelopes only: no deep validation
+  -- and no generated-cache reads, so a cold cache never reads as a corrupt
+  -- save. Continue stays an intent; semantic validity is decided later at
+  -- field entry.
+  local ok, entriesOrError = pcall(self.saveStore.listMetadata, self.saveStore)
   if not ok then
     if Errors.is(entriesOrError) then
       return {}, errorSummary(entriesOrError)
@@ -177,17 +180,6 @@ function MainMenuState:refresh()
   return true
 end
 
-function MainMenuState:_markLoadError(saveId, failure)
-  for _, save in ipairs(self.saves) do
-    if save.saveId == saveId then
-      save.playerName = nil
-      save.playTimeLabel = nil
-      save.errorSummary = errorSummary(failure)
-      save.canContinue = false
-      return
-    end
-  end
-end
 
 function MainMenuState:_emit(result)
   if self.onResult then
@@ -206,16 +198,10 @@ function MainMenuState:_continue(saveId)
   if not save or not save.canContinue then
     return
   end
-  local ok, recordOrError, loadError = pcall(self.saveStore.load, self.saveStore, saveId)
-  if not ok then
-    self:_markLoadError(saveId, recordOrError)
-    return
-  end
-  if recordOrError == nil then
-    self:_markLoadError(saveId, loadError or "save could not be loaded")
-    return
-  end
-  self:_emit({ kind = "continue", game = recordOrError })
+  -- Continue is an intent carrying the selected save id, not a validity
+  -- claim: the owning route validates the record strictly after field core
+  -- and location geometry are ready. Nothing loads here.
+  self:_emit({ kind = "continue", saveId = assert(save.saveId) })
 end
 
 function MainMenuState:_delete(saveId)

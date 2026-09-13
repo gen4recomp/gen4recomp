@@ -963,4 +963,121 @@ function T.chooser_requests_only_the_pages_selected_by_its_candidates()
   host:dispose()
 end
 
+function T.actual_portrait_pages_are_required_before_their_image_paths()
+  local MonCache = requireModule("libs.assets.src.MonCache", "the generated mon cache owns the portrait pages")
+  local host, service, cacheFs = openHeadlessChoice()
+  local catalog = CatalogFixture.makeCatalog()
+  local candidates = {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("SHEDINJA"),
+    service:buildStarter("TOTODILE"),
+  }
+  local speciesForms = {
+    { species = "CHIKORITA", form = 0 },
+    { species = "TOTODILE", form = 0 },
+    { species = "EEVEE", form = 0 },
+    { species = "EEVEE", form = 1 },
+    { species = "SHEDINJA", form = 0 },
+  }
+  pagedPortraitManifest(cacheFs, speciesForms, function()
+    return 0
+  end)
+  host:open(0, candidates)
+  local portraits = assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the paged manifest stays staged")
+  local selectors = {}
+  for index, candidate in ipairs(candidates) do
+    selectors[index] = candidateSelector(candidate, catalog, portraits.entries)
+  end
+  pagedPortraitManifest(cacheFs, speciesForms, function(selector)
+    if selector == selectors[3] then
+      return 1
+    end
+    return 0
+  end)
+  host:close()
+  host:open(0, candidates)
+
+  local pagesPending = true
+  local pageRequests = {}
+  local derivedAssets = {
+    requestMonPortraitPage = function(pageId, urgency)
+      pageRequests[#pageRequests + 1] = { pageId = pageId, urgency = urgency }
+      if pagesPending then
+        return false
+      end
+      return true
+    end,
+  }
+  local queue = fakePreparationQueue()
+  queue.ready = true
+  local backend = stubBackend()
+  local context = { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets }
+  for _ = 1, 64 do
+    host:advancePresentationPreparation(context, 1)
+  end
+  Assert.isFalse(host:isPresentationReady(), "the chooser holds its input until its actual pages are ready")
+  local pendingPages = {}
+  for _, request in ipairs(pageRequests) do
+    pendingPages[request.pageId] = true
+    Assert.equal(request.urgency, "required", "actual pages ride required interest")
+  end
+  Assert.deepEqual(pendingPages, { [0] = true, [1] = true }, "only the actual candidates pages are requested")
+  for _, request in ipairs(queue.requests) do
+    Assert.isFalse(
+      request.path == MonCache.portraitPagePath(0) or request.path == MonCache.portraitPagePath(1),
+      "no page image reaches preparation while its page is pending"
+    )
+  end
+
+  pagesPending = false
+  local finished = false
+  for _ = 1, 256 do
+    host:advancePresentationPreparation(context, 1)
+    if host:isPresentationReady() then
+      finished = true
+      break
+    end
+  end
+  Assert.isTrue(finished, "the chooser becomes drawable once its actual pages are ready")
+  local submittedPages = {}
+  for _, request in ipairs(queue.requests) do
+    if request.path == MonCache.portraitPagePath(0) or request.path == MonCache.portraitPagePath(1) then
+      submittedPages[request.path] = true
+    end
+    Assert.isTrue(request.path ~= MonCache.portraitImagePath(), "ready pages never fall back to a whole portrait atlas")
+  end
+  local expectedReady = {}
+  expectedReady[MonCache.portraitPagePath(0)] = true
+  expectedReady[MonCache.portraitPagePath(1)] = true
+  Assert.deepEqual(submittedPages, expectedReady, "every actual page image submits once its page is current")
+  host:close()
+  host:dispose()
+end
+
+function T.absent_portrait_page_fails_preparation_without_substitution()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  queue.ready = true
+  local backend = stubBackend()
+  openTrio(host, service)
+  local derivedAssets = {
+    requestMonPortraitPage = function(pageId, _)
+      return false, "test generation mon-portrait-page " .. tostring(pageId) .. ": source has no such page"
+    end,
+  }
+  local failure = Assert.throws(function()
+    host:advancePresentationPreparation(
+      { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets },
+      1
+    )
+  end, "an absent portrait page fails instead of substituting content")
+  Assert.isTrue(
+    tostring(failure):find("portrait page 0", 1, true) ~= nil,
+    "the failure names the unavailable page: " .. tostring(failure)
+  )
+  Assert.isFalse(host:isPresentationReady(), "a failed page never reports the scene drawable")
+  host:close()
+  host:dispose()
+end
+
 return { tests = T }
