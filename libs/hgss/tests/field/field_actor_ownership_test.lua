@@ -441,7 +441,7 @@ function T.unflagged_compatible_saved_actor_restores_normally()
 
   Assert.isTrue(ok, tostring(err))
   local restoredActor = assert(manager:getById(actorId))
-  Assert.equal(restoredActor.fieldX, 10)
+  Assert.equal(restoredActor:getFieldPosition().fieldX, 10)
   Assert.equal(restoredActor.facing, "north")
   manager:dispose()
 end
@@ -489,7 +489,7 @@ function T.flagged_later_invalid_record_fails_before_earlier_restore_is_publishe
   Assert.isFalse(ok, "a later flagged incompatibility must fail the whole staged restore")
   assertErrorCode(err, "SCRIPT_TASK_UNSERIALIZABLE")
   Assert.equal(manager:getById(firstActorId), original, "failed restore must keep the published actor world")
-  Assert.equal(original.fieldX, 2, "failed restore must not publish earlier actor changes")
+  Assert.equal(original:getFieldPosition().fieldX, 2, "failed restore must not publish earlier actor changes")
   Assert.isNil(manager:getById(secondActorId))
   manager:dispose()
 end

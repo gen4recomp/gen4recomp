@@ -1644,7 +1644,7 @@ function T.restore_skips_records_whose_source_flag_was_set_after_the_save()
   local reloaded = manager(objects, { eventState = flagged, restoredObjects = validated })
   Assert.isNil(reloaded:getById("map:61:object:0"), "the flagged event stays absent")
   local kept = assert(reloaded:getById("map:61:object:1"), "unflagged actors still restore")
-  Assert.equal(kept.fieldX, 4)
+  Assert.equal(kept:getFieldPosition().fieldX, 4)
   reloaded:dispose()
 end
 
