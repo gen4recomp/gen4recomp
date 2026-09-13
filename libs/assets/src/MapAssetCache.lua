@@ -68,6 +68,76 @@ function MapAssetCache.worldPath()
   return DERIVED_DATA .. "/world.lua"
 end
 
+-- Structural world identity: catalog membership means the source map is
+-- structurally loadable, never that its scene geometry compiled. Artifact
+-- readiness stays a per-artifact property.
+MapAssetCache.WORLD_SCHEMA = Contract.world.schema
+
+local WORLD_FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
+
+---@param value unknown
+---@return boolean
+local function isU16(value)
+  return type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 65535
+end
+
+---@param value unknown
+---@return boolean
+local function isFiniteNumberValue(value)
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+-- True only when the value is a current structural world catalog: the schema
+-- tag matches, maps are ordered records carrying their source identities and
+-- resolver-normalized origins, byId maps each id to its array position,
+-- bySymbol maps each symbol to its id, and the analysis accounts every header.
+---@param value unknown
+---@return boolean
+function MapAssetCache.isStructuralWorld(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  if value.schema ~= MapAssetCache.WORLD_SCHEMA then
+    return false
+  end
+  if not Validate.isArray(value.maps) then
+    return false
+  end
+  if type(value.byId) ~= "table" or type(value.bySymbol) ~= "table" then
+    return false
+  end
+  for index, record in ipairs(value.maps) do
+    if
+      type(record) ~= "table"
+      or not Validate.isNonNegativeInteger(record.id)
+      or type(record.symbol) ~= "string"
+      or #record.symbol == 0
+      or type(record.mapSection) ~= "string"
+      or #record.mapSection == 0
+      or not isU16(record.mapSectionNativeId)
+      or WORLD_FOLLOW_MODES[record.followMode] ~= true
+      or not isFiniteNumberValue(record.worldOriginX)
+      or not isFiniteNumberValue(record.worldOriginZ)
+      or type(record.matrix) ~= "table"
+      or not Validate.isNonNegativeInteger(record.matrix.memberId)
+    then
+      return false
+    end
+    if value.byId[record.id] ~= index or value.bySymbol[record.symbol] ~= record.id then
+      return false
+    end
+  end
+  local analysis = value.analysis
+  if
+    type(analysis) ~= "table"
+    or not Validate.isNonNegativeInteger(analysis.mapHeaderCount)
+    or not Validate.isArray(analysis.excluded)
+  then
+    return false
+  end
+  return true
+end
+
 function MapAssetCache.geometryPath(sha1)
   return string.format("%s/maps/geometry/%s.g4mesh", DERIVED_ASSETS, sha1)
 end
