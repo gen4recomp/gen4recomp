@@ -5,9 +5,6 @@ local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local CompiledAsset = {}
 
 function CompiledAsset.bytes(data)
-  if type(data) == "string" then
-    return data
-  end
   assert(type(data) == "userdata" and type(data.getString) == "function", "compiled asset must be love.Data")
   return data:getString()
 end

@@ -9,13 +9,23 @@ local FieldEntranceIndicatorCompiler = require("romdump.src.digest.field.FieldEn
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local RomSuite = require("tests.rom.support.RomSuite")
 
-local function hasZeroAlpha(pixels)
-  for offset = 4, #pixels, 4 do
-    if string.byte(pixels, offset) == 0 then
-      return true
+local function hasZeroAlpha(texture)
+  local image = love.image.newImageData(assert(texture.data))
+  local found = false
+  for y = 0, image:getHeight() - 1 do
+    for x = 0, image:getWidth() - 1 do
+      local _, _, _, alpha = image:getPixel(x, y)
+      if alpha == 0 then
+        found = true
+        break
+      end
+    end
+    if found then
+      break
     end
   end
-  return false
+  image:release()
+  return found
 end
 
 local function testMember85Alpha(romFs)
@@ -78,7 +88,7 @@ local function testMember85Alpha(romFs)
     Assert.notNil(texture.alphaUsage, "compiled effect texture must classify decoded alpha")
     if texture.alphaUsage.hasZero then
       transparentOutput = true
-      Assert.isTrue(hasZeroAlpha(texture.data:getString()), "compiled zero-alpha usage must have alpha-zero pixels")
+      Assert.isTrue(hasZeroAlpha(texture), "compiled zero-alpha usage must have alpha-zero pixels")
     end
   end
   Assert.isTrue(transparentOutput, "member 85 transparent coverage must survive compilation")
@@ -94,7 +104,7 @@ local function testMember85Alpha(romFs)
         "source color-zero transparency must survive for material " .. entry.material.name
       )
       Assert.isTrue(
-        hasZeroAlpha(compiledTexture.data:getString()),
+        hasZeroAlpha(compiledTexture),
         "source color-zero transparency must produce alpha-zero pixels for material " .. entry.material.name
       )
     end
