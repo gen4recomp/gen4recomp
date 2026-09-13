@@ -92,6 +92,86 @@ function T.worker_prepares_mesh_and_image_payloads_without_touching_graphics()
   Assert.equal(statsAfter.canvases, statsBefore.canvases, "preparation alone creates no GPU Canvas")
 end
 
+function T.packaged_worker_module_resolves_and_prepares_through_a_real_thread()
+  -- The worker entry must resolve through the normal packaged require path
+  -- and expose its channel entry instead of executing its channel loop on
+  -- require: a small literal bootstrap requires this module inside the real
+  -- worker thread, so checkout-file reads cannot be the load mechanism.
+  local ok, worker = pcall(require, "libs.hgss.src.presentation.asset_preparation_worker")
+  Assert.isTrue(ok, "the packaged worker module must be requirable in the main state: " .. tostring(worker))
+  Assert.equal(
+    type(worker.run),
+    "function",
+    "the worker module exposes its request/reply entry for the packaged bootstrap"
+  )
+
+  -- The real-thread half: default construction still starts a worker that
+  -- prepares real cache bytes into CPU payloads without touching graphics.
+  local AssetPreparationQueue = requireQueue()
+  local cache = preparedCache()
+  local statsBefore = love.graphics.getStats()
+
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache)
+    local meshToken = queue:request("mesh", MESH_PATH, "demand")
+    local imageToken = queue:request("image", TEXTURE_PATH, "demand")
+
+    local mesh = queue:wait(meshToken)
+    Assert.notNil(mesh.vertexData, "the packaged worker replies with packed vertex Data")
+    Assert.notNil(mesh.indexData, "the packaged worker replies with packed index Data")
+
+    local image = queue:wait(imageToken)
+    Assert.notNil(image.imageData, "the packaged worker replies with decoded ImageData")
+    Assert.equal(image.imageData:getWidth(), 2)
+    Assert.equal(image.imageData:getHeight(), 2)
+
+    queue:release()
+  end)
+
+  local statsAfter = love.graphics.getStats()
+  cache:removeTree("")
+
+  if not runOk then
+    error(runErr, 0)
+  end
+  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
+function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
+  local AssetPreparationQueue = requireQueue()
+  local cache = preparedCache()
+  cache:write(TEXTURE_PATH, "not a png")
+  local statsBefore = love.graphics.getStats()
+
+  local meshAfterFailure = false
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache)
+    local badToken = queue:request("image", TEXTURE_PATH, "demand")
+    local waitOk, waitErr = pcall(queue.wait, queue, badToken)
+    Assert.isFalse(waitOk, "undecodable image bytes fail instead of hanging the waiter")
+    Assert.isTrue(
+      tostring(waitErr):find(TEXTURE_PATH, 1, true) ~= nil,
+      "the image failure names its logical path: " .. tostring(waitErr)
+    )
+
+    local meshToken = queue:request("mesh", MESH_PATH, "demand")
+    local mesh = queue:wait(meshToken)
+    Assert.notNil(mesh.vertexData, "the worker loop survives a failed image decode")
+    meshAfterFailure = true
+
+    queue:release()
+  end)
+
+  local statsAfter = love.graphics.getStats()
+  cache:removeTree("")
+
+  if not runOk then
+    error(runErr, 0)
+  end
+  Assert.isTrue(meshAfterFailure, "a later mesh request still prepares after the image failure")
+  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
 return {
   metadata = { capabilities = { "graphics" } },
   tests = T,

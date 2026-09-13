@@ -24,8 +24,23 @@ local AssetPreparationQueue = {}
 AssetPreparationQueue.__index = AssetPreparationQueue
 
 local WORKER_MODULE = "libs.hgss.src.presentation.asset_preparation_worker"
-local WORKER_PATH = "libs/hgss/src/presentation/asset_preparation_worker.lua"
-local WORKER_ENTRY_NAME = "asset_preparation_worker.lua"
+
+-- The literal thread entry: install the explicitly supplied development
+-- search path when required (checkout runs, where the worker file is not
+-- visible to the thread otherwise), then resolve the worker module through
+-- the packaged require path and enter its channel loop. Packaged builds
+-- resolve the module from the source archive; no checkout file is read.
+local BOOTSTRAP = string.format(
+  [[
+local requestChannel, replyChannel, developmentPath = ...
+if type(developmentPath) == "string" and developmentPath ~= "" then
+  package.path = developmentPath
+end
+local Worker = require(%q)
+Worker.run(requestChannel, replyChannel)
+]],
+  WORKER_MODULE
+)
 
 local VALID_KINDS = { mesh = true, image = true }
 local VALID_PRIORITIES = { demand = true, prefetch = true }
@@ -33,52 +48,6 @@ local VALID_PRIORITIES = { demand = true, prefetch = true }
 -- Upper bound between worker-liveness probes while a synchronous wait blocks
 -- on the reply channel.
 local WAIT_HEALTH_PROBE_SECONDS = 0.05
-
--- Read the worker entry source through the LÖVE virtual filesystem first so
--- packaged .love/fused builds resolve it from the source archive, then
--- through the host file under the source base directory for checkout runs
--- where the app source mount does not include the repo-root library tree,
--- and finally through the process require path for headless/fake hosts with
--- no usable love.filesystem. A LÖVE Thread resolves filenames against the
--- source directory, where this module's sibling file is not visible, so the
--- queue loads the code itself and hands it to the thread as FileData.
----@return string?
-local function loadWorkerCode()
-  local hostLove = love
-  local filesystem = (type(hostLove) == "table") and hostLove.filesystem or nil
-  if filesystem and filesystem.read then
-    local ok, source = pcall(filesystem.read, WORKER_PATH)
-    if ok and type(source) == "string" then
-      return source
-    end
-    if filesystem.getSourceBaseDirectory then
-      local okBase, base = pcall(filesystem.getSourceBaseDirectory)
-      if okBase and type(base) == "string" and base ~= "" then
-        local handle = io.open(base .. "/" .. WORKER_PATH, "rb")
-        if handle then
-          local code = handle:read("*a")
-          handle:close()
-          if code then
-            return code
-          end
-        end
-      end
-    end
-  end
-  local relative = WORKER_MODULE:gsub("%.", "/")
-  for template in package.path:gmatch("[^;]+") do
-    local candidate = template:gsub("%?", relative)
-    local handle = io.open(candidate, "r")
-    if handle then
-      local code = handle:read("*a")
-      handle:close()
-      if code then
-        return code
-      end
-    end
-  end
-  return nil
-end
 
 ---@class AssetPreparationQueueOptions
 ---@field thread table<string, unknown>? injectable love.thread-shaped namespace (defaults to the global one)
@@ -98,14 +67,7 @@ function AssetPreparationQueue.new(cacheFs, options)
   local replyChannel = threadHost.newChannel()
   local workerSource = options.workerSource
   if workerSource == nil then
-    local code = assert(loadWorkerCode(), "asset preparation worker source is unavailable")
-    local hostLove = love
-    local filesystem = (type(hostLove) == "table") and hostLove.filesystem or nil
-    if filesystem and filesystem.newFileData then
-      workerSource = filesystem.newFileData(code, WORKER_ENTRY_NAME)
-    else
-      workerSource = code
-    end
+    workerSource = BOOTSTRAP
   end
   local worker = threadHost.newThread(workerSource)
   local self = setmetatable({
@@ -122,7 +84,7 @@ function AssetPreparationQueue.new(cacheFs, options)
     _released = false,
     _joined = false,
   }, AssetPreparationQueue)
-  worker:start(requestChannel, replyChannel)
+  worker:start(requestChannel, replyChannel, package.path)
   return self
 end
 
@@ -349,6 +311,31 @@ function AssetPreparationQueue:cancel(token)
       end
     end
   end
+end
+
+-- Upgrade a queued prefetch token to demand without dispatching it again:
+-- the same token keeps its identity and outranks later prefetch work at the
+-- next physical dispatch. Idempotent for demand, running, ready, or failed
+-- tokens; unknown or already-released tokens fail loudly. A running token is
+-- never re-dispatched. Promotion itself never dispatches; the next poll,
+-- wait, or request performs the replacement dispatch.
+---@param token integer
+---@param priority "demand"
+function AssetPreparationQueue:promote(token, priority)
+  assert(priority == "demand", "unknown preparation priority " .. tostring(priority))
+  local record = self._tokens[token]
+  assert(record, "unknown preparation token")
+  if record.state ~= "queued" or record.priority == "demand" then
+    return
+  end
+  record.priority = "demand"
+  for index, queued in ipairs(self._prefetch) do
+    if queued == token then
+      table.remove(self._prefetch, index)
+      break
+    end
+  end
+  self._demand[#self._demand + 1] = token
 end
 
 -- Block efficiently until one token's payload is transferred, absorbing any

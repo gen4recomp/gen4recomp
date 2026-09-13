@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
@@ -266,11 +267,49 @@ local function fakePreparationQueue()
     return "pending"
   end
   function queue:take(token)
-    Assert.notNil(self.live[token], "take transfers a live preparation token")
+    local record = assert(self.live[token], "take transfers a live preparation token")
     Assert.isTrue(self.ready, "take transfers only prepared payloads")
     self.live[token] = nil
     self.takes = self.takes + 1
-    return { payload = token }
+    -- Real-shaped worker payloads, packed from real cache bytes for meshes
+    -- and blank decoded ImageData for images, so realization matches the
+    -- production path without starting a thread.
+    if record.kind == "mesh" then
+      if self.sharedMeshPayload == nil then
+        local MeshWriter =
+          requireModule("libs.assets.src.model.MeshWriter", "the mesh writer packs the shared fixture payload")
+        local SceneMesh = requireModule(
+          "libs.hgss.src.presentation.SceneMesh",
+          "the mesh preparation packs upload buffers from cache bytes"
+        )
+        local function vertex(x, z)
+          return {
+            x = x,
+            y = 0,
+            z = z,
+            u = 0,
+            v = 0,
+            nx = 0,
+            ny = 1,
+            nz = 0,
+            r = 255,
+            g = 255,
+            b = 255,
+            a = 255,
+            colorSource = 0,
+          }
+        end
+        self.sharedMeshPayload = SceneMesh.prepareUpload(
+          MeshWriter.encode({
+            vertices = { vertex(0, 0), vertex(2, 0), vertex(0, 2) },
+            indices = { 0, 1, 2 },
+          }),
+          "geometry/shared.g4mesh"
+        )
+      end
+      return self.sharedMeshPayload
+    end
+    return { imageData = love.image.newImageData(2, 2) }
   end
   function queue:cancel(token)
     self.live[token] = nil
@@ -332,6 +371,16 @@ local function readyHeadlessCache()
     representative = { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
   })
   cacheFs:write(cacheModule.markerPath(), marker)
+  -- The generated field-UI manifest the presentation window requires, with
+  -- real frame-strip bytes behind it: readiness must prove the full finish
+  -- path, never a stand-in window.
+  local FieldUiAssetCache =
+    requireModule("libs.assets.src.field.FieldUiAssetCache", "the generated field-UI cache owns the window manifest")
+  local uiManifest = FieldUiFixture.manifest()
+  uiManifest.reference = { width = 256, height = 192 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), "the field-UI fixture validates")
+  cacheFs:writeLua(FieldUiAssetCache.manifestPath(), uiManifest)
+  cacheFs:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   return cacheFs
 end
 
