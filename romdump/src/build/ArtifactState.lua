@@ -19,6 +19,10 @@ ArtifactState.KINDS = {
   map = true,
   ["field-cell"] = true,
   ["script-member"] = true,
+  -- Structural producers with staged publication: the world catalog owns the
+  -- single world file, and each field-map-data job owns its own map record.
+  world = true,
+  ["field-map-data"] = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"

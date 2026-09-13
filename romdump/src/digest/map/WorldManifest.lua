@@ -1,6 +1,8 @@
 -- Builds and persists the whole-ROM world manifest: the map index the game
 -- boots and switches on. Pure build-side domain (no love); stage() takes a
--- CacheFs. Source of map identity is the compiled scenes, not the ROM.
+-- CacheFs. Source of catalog membership is source analysis, not compiled
+-- scenes: a record means the source map is structurally loadable, while
+-- artifact readiness stays a per-artifact property.
 --
 -- The manifest follows the shared staged-publication lifecycle of every other
 -- generated artifact: it is written into the disposable artifact stage, read
@@ -11,6 +13,9 @@
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local Errors = require("libs.errors.src.Errors")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
+local MapAnalysis = require("romdump.src.digest.map.MapAnalysis")
+local MapResolver = require("romdump.src.digest.map.MapResolver")
+local Hashing = require("romdump.src.digest.Hashing")
 
 local WorldManifest = {}
 
@@ -151,6 +156,96 @@ function WorldManifest.stage(cacheFs, entries, excluded, compileExcluded)
     error(result, 0)
   end
   return newStagedWorld(cacheFs.versionId, tx)
+end
+
+-- Derive the structural world catalog from source analysis alone, without
+-- reading any compiled scene: every source-resolved map becomes a catalog
+-- record carrying its runtime identities plus the resolver-normalized world
+-- origin, while source-excluded headers are accounted exclusions with
+-- reasons. Geometry work never runs here; a later map/cell failure is a job
+-- diagnostic that leaves this namespace untouched. Returns the catalog bundle
+-- (schema-tagged manifest plus its marker) or raises the existing structured
+-- source error on malformed metadata.
+---@param romFs table<string, unknown> RomFs-shaped source filesystem
+---@return table<string, unknown>
+function WorldManifest.compileCatalog(romFs)
+  assert(romFs and romFs.openNarc and romFs.metadata, "catalog compilation requires a RomFs-shaped object")
+  local analyses = MapAnalysis.analyze(romFs)
+  local entries, excluded = {}, {}
+  for _, result in ipairs(analyses) do
+    if result.status == "excluded" then
+      excluded[#excluded + 1] = {
+        id = result.id,
+        symbol = result.symbol,
+        reason = result.reason,
+        matchCount = result.matchCount,
+      }
+    else
+      local resolved, resolveErr = MapResolver.resolve(romFs, result.id)
+      if not resolved then
+        error(resolveErr, 0)
+      end
+      entries[#entries + 1] = {
+        id = result.id,
+        symbol = result.symbol,
+        mapCode = result.mapCode,
+        mapSection = result.mapSection,
+        mapSectionNativeId = result.mapSectionNativeId,
+        followMode = result.followMode,
+        width = resolved.matrix.width,
+        height = resolved.matrix.height,
+        matrix = {
+          memberId = result.matrixMemberId,
+          x = result.matrixX,
+          z = result.matrixZ,
+          index = result.matrixIndex,
+          landDataMemberId = result.landDataMemberId,
+          selection = result.source,
+          matchCount = result.matchCount,
+        },
+        worldOriginX = resolved.worldOriginX,
+        worldOriginZ = resolved.worldOriginZ,
+      }
+    end
+  end
+  local manifest = WorldManifest.build(entries, excluded)
+  manifest.schema = MapAssetCache.WORLD_SCHEMA
+  local marker = "g4-world-catalog-v1:" .. romFs:metadata().sha1 .. ":" .. Hashing.hashLua(manifest)
+  manifest.marker = marker
+  return manifest
+end
+
+-- Stage a compiled catalog through a caller-owned prepared artifact. The
+-- stage owns the world file only, never sibling map records or the parent
+-- generated directory; readback must validate as a structural world or the
+-- stage fails and the previous live world stays authoritative. Returns the
+-- catalog marker for the caller's receipt.
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function WorldManifest.stageCatalog(artifact, bundle)
+  assert(artifact and artifact.stageFs, "catalog staging requires a PreparedArtifact")
+  assert(
+    type(bundle) == "table" and type(bundle.maps) == "table" and type(bundle.marker) == "string",
+    "invalid catalog bundle"
+  )
+  artifact:addOwnedRoot(MapAssetCache.worldPath())
+  local stage = artifact:stageFs()
+  stage:writeLua(MapAssetCache.worldPath(), {
+    schema = MapAssetCache.WORLD_SCHEMA,
+    maps = bundle.maps,
+    bySymbol = bundle.bySymbol,
+    byId = bundle.byId,
+    analysis = bundle.analysis,
+  })
+  if not MapAssetCache.isStructuralWorld(stage:loadLua(MapAssetCache.worldPath())) then
+    Errors.raise(
+      "WORLD_MANIFEST_READBACK_FAILED",
+      "world.lua did not read back as a structural catalog",
+      { path = MapAssetCache.worldPath() }
+    )
+  end
+  return bundle.marker
 end
 
 return WorldManifest
