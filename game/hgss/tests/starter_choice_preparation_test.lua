@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 
 local T = {}
@@ -245,9 +246,46 @@ local function fakePreparationQueue()
     takes = 0,
     cancels = {},
     ready = false,
+    malformed = false,
     tokens = 0,
     live = {},
   }
+  -- One shared mesh upload payload for every mesh take, packed from real
+  -- cache bytes exactly like the worker packs them; image takes decode a
+  -- fresh blank ImageData each. Both are real-shaped worker payloads, so
+  -- realization matches the production path without starting a thread.
+  local sharedMeshPayload = nil
+  local function meshPayload()
+    if sharedMeshPayload == nil then
+      local MeshWriter = require("libs.assets.src.model.MeshWriter")
+      local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+      local function vertex(x, z)
+        return {
+          x = x,
+          y = 0,
+          z = z,
+          u = 0,
+          v = 0,
+          nx = 0,
+          ny = 1,
+          nz = 0,
+          r = 255,
+          g = 255,
+          b = 255,
+          a = 255,
+          colorSource = 0,
+        }
+      end
+      sharedMeshPayload = SceneMesh.prepareUpload(
+        MeshWriter.encode({
+          vertices = { vertex(0, 0), vertex(2, 0), vertex(0, 2) },
+          indices = { 0, 1, 2 },
+        }),
+        "geometry/shared.g4mesh"
+      )
+    end
+    return sharedMeshPayload
+  end
   function queue:request(kind, logicalPath, priority)
     self.tokens = self.tokens + 1
     local token = self.tokens
@@ -263,11 +301,17 @@ local function fakePreparationQueue()
     return "pending"
   end
   function queue:take(token)
-    Assert.notNil(self.live[token], "take transfers a live preparation token")
+    local record = assert(self.live[token], "take transfers a live preparation token")
     Assert.isTrue(self.ready, "take transfers only prepared payloads")
     self.live[token] = nil
     self.takes = self.takes + 1
-    return { payload = token }
+    if self.malformed then
+      return { payload = token }
+    end
+    if record.kind == "mesh" then
+      return meshPayload()
+    end
+    return { imageData = love.image.newImageData(2, 2) }
   end
   function queue:cancel(token)
     self.live[token] = nil
@@ -309,6 +353,16 @@ local function readyHeadlessCache()
     representative = { MonCache.portraitSelector("CHIKORITA", 0, "male", false) },
   })
   cacheFs:write(cacheModule.markerPath(), marker)
+  -- The generated field-UI manifest the presentation window requires, with
+  -- real frame-strip bytes behind it: readiness must prove the full finish
+  -- path, never a stand-in window.
+  local FieldUiAssetCache =
+    requireModule("libs.assets.src.field.FieldUiAssetCache", "the generated field-UI cache owns the window manifest")
+  local uiManifest = FieldUiFixture.manifest()
+  uiManifest.reference = { width = 256, height = 192 }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), "the field-UI fixture validates")
+  cacheFs:writeLua(FieldUiAssetCache.manifestPath(), uiManifest)
+  cacheFs:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   return cacheFs
 end
 
@@ -742,6 +796,64 @@ function T.zero_budget_advances_nothing_and_disposal_ends_preparation()
     "disposal names itself: " .. tostring(disposedErr)
   )
   Assert.equal(host:advancePresentationPreparation(context, 1), 0, "the idle state stays quiet after disposal")
+end
+
+local function livePreparationTokens(queue)
+  local count = 0
+  for _ in pairs(queue.live) do
+    count = count + 1
+  end
+  return count
+end
+
+function T.chooser_holds_at_most_two_unconsumed_preparation_tokens()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  local backend = stubBackend()
+  openTrio(host, service)
+  local context = { assetPreparation = queue, gxRenderer = backend }
+
+  -- The worker answers faster than the main thread uploads: every advance
+  -- below leaves preparation outstanding, so the submitted-but-unconsumed
+  -- window is fully stressed before anything is taken.
+  for _ = 1, 8 do
+    host:advancePresentationPreparation(context, 1)
+    Assert.isTrue(
+      livePreparationTokens(queue) <= 2,
+      "the chooser keeps at most two submitted-unconsumed tokens while preparation is outstanding"
+    )
+  end
+  queue.ready = true
+  Assert.isTrue(advanceToReady(host, queue, backend), "every staged asset still realizes once preparation completes")
+  Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable after bounded preparation")
+  host:close()
+  host:dispose()
+end
+
+function T.malformed_prepared_payloads_fail_preparation_without_blank_scene()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  -- The fake hands back bare records that carry no mesh upload buffers and
+  -- no decoded image data: exactly the malformed shape production must fail
+  -- instead of rendering as a blank scene.
+  queue.malformed = true
+  queue.ready = true
+  local backend = stubBackend()
+  openTrio(host, service)
+  local context = { assetPreparation = queue, gxRenderer = backend }
+
+  local failure = Assert.throws(function()
+    for _ = 1, 64 do
+      host:advancePresentationPreparation(context, 1)
+    end
+  end, "a prepared payload without upload buffers fails instead of realizing a blank scene")
+  Assert.isTrue(
+    type(failure) == "string" or type(failure) == "table",
+    "the preparation failure carries a diagnosable cause"
+  )
+  Assert.isFalse(host:isPresentationReady(), "a failed preparation never reports the scene drawable")
+  host:close()
+  host:dispose()
 end
 
 return { tests = T }

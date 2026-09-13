@@ -68,9 +68,10 @@ local function fakeThreadHost()
 
   local function newThread(source)
     state.threadSources[#state.threadSources + 1] = source
-    local thread = { starts = 0, waits = 0, alive = true, errorText = nil, source = source }
-    function thread:start()
+    local thread = { starts = 0, waits = 0, alive = true, errorText = nil, source = source, startArgs = {} }
+    function thread:start(...)
       self.starts = self.starts + 1
+      self.startArgs[#self.startArgs + 1] = { ... }
     end
     function thread:wait()
       self.waits = self.waits + 1
@@ -125,6 +126,20 @@ end
 
 local function requestWasPushedFor(state, token)
   return requestChannelIndexFor(state, token) ~= nil
+end
+
+-- How many physical worker requests carried `token` (identified by the flat
+-- request shape). Promotion must change a token's priority without
+-- dispatching it a second time.
+local function pushCountFor(state, token)
+  local count = 0
+  for _, entry in ipairs(state.allPushes) do
+    local value = entry.value
+    if type(value) == "table" and value.token == token and value.path ~= nil and value.kind ~= nil then
+      count = count + 1
+    end
+  end
+  return count
 end
 
 -- One request/reply Channel pair per queue: the response channel for a
@@ -191,6 +206,33 @@ function T.one_time_take_and_unknown_token_fail_loudly()
       queue:cancel("never-requested")
     end, "cancelling an unknown token fails loudly")
 
+    queue:release()
+  end)
+end
+
+function T.cancelled_ready_payload_never_transfers_but_leaves_unrelated_work_alone()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local first = queue:request("mesh", "geometry/first.g4mesh", "demand")
+    local requestIndex = requestChannelIndexFor(host, first)
+    responseChannelFor(host, requestIndex):push(meshResponse(first, "geometry/first.g4mesh"))
+    Assert.equal(queue:poll(first), "ready")
+
+    -- A ready token cancelled before take releases its references without
+    -- affecting unrelated resources: the payload never transfers.
+    queue:cancel(first)
+    Assert.throws(function()
+      queue:take(first)
+    end, "a cancelled ready token cannot be taken")
+
+    local second = queue:request("mesh", "geometry/second.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, second), "unrelated work still dispatches after a ready cancellation")
+    local secondIndex = requestChannelIndexFor(host, second)
+    responseChannelFor(host, secondIndex):push(meshResponse(second, "geometry/second.g4mesh"))
+    Assert.equal(queue:poll(second), "ready")
+    Assert.notNil(queue:take(second), "the unrelated payload still transfers exactly once")
     queue:release()
   end)
 end
@@ -341,44 +383,28 @@ function T.release_while_busy_drains_and_discards_outstanding_work()
   end)
 end
 
-function T.default_construction_uses_packaged_virtual_filesystem_source()
+function T.default_construction_starts_the_worker_from_a_literal_require_bootstrap()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
-  local packagedCode = "-- packaged presentation worker source"
-  local fileData = {}
-  local fakeFilesystem = {
-    read = function(path)
-      if path == "libs/hgss/src/presentation/asset_preparation_worker.lua" then
-        return packagedCode
-      end
-      return nil
-    end,
-    newFileData = function(bytes, name)
-      local marker = { bytes = bytes, name = name }
-      fileData.marker = marker
-      return marker
-    end,
-    getSourceBaseDirectory = function()
-      return "/nonexistent-source-base"
-    end,
-  }
-  -- Host package paths intentionally cannot resolve the worker, so only the
-  -- packaged virtual-filesystem lookup can supply the source bytes.
-  local savedPath = package.path
-  package.path = "/nonexistent-package-path/?.lua"
-  local fakeLove = { thread = host.love.thread, filesystem = fakeFilesystem }
-  local ok, err = pcall(function()
-    withLove(fakeLove, function()
-      local queue = AssetPreparationQueue.new(fakeCacheFs(), { thread = host.love.thread })
-      queue:release()
-    end)
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs(), { thread = host.love.thread })
+    local source = host.threadSources[1]
+    Assert.equal(type(source), "string", "the worker starts from a literal bootstrap string")
+    Assert.isTrue(
+      source:find("asset_preparation_worker", 1, true) ~= nil,
+      "the bootstrap requires the worker module through the packaged path"
+    )
+    Assert.isTrue(source:find(".run(", 1, true) ~= nil, "the bootstrap enters the worker through its channel entry")
+    Assert.isNil(source:find("io.open", 1, true), "the bootstrap never reads checkout files")
+    local startArgs = assert(host.threads[1].startArgs[1], "the worker start carries its channel arguments")
+    Assert.isTrue(
+      startArgs[1] == host.channels[1] and startArgs[2] == host.channels[2],
+      "the worker starts with the queue request/reply channel pair"
+    )
+    Assert.equal(type(startArgs[3]), "string", "the worker start carries the module search path context")
+    Assert.isTrue(#startArgs[3] > 0, "the search path context is non-empty")
+    queue:release()
   end)
-  package.path = savedPath
-  Assert.isTrue(ok, "default construction resolves worker source without host package paths: " .. tostring(err))
-  Assert.notNil(fileData.marker, "construction builds the worker from virtual-filesystem bytes")
-  Assert.equal(fileData.marker.bytes, packagedCode, "the worker is constructed from virtual-filesystem bytes")
-  Assert.equal(fileData.marker.name, "asset_preparation_worker.lua", "the packaged worker bytes keep their entry name")
-  Assert.equal(host.threadSources[1], fileData.marker, "the thread starts from the virtual-filesystem payload")
 end
 
 function T.cancelled_running_work_keeps_the_physical_slot_until_its_reply()
@@ -598,6 +624,172 @@ function T.demand_admission_wins_over_queued_prefetch_when_request_discovers_a_c
     queue:take(running)
     queue:cancel(admitted)
     queue:cancel(queuedPrefetch)
+    queue:release()
+  end)
+end
+
+function T.cancelled_running_prefetch_holds_the_worker_until_queued_demand_dispatches()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
+    Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
+    local queuedDemand = queue:request("mesh", "geometry/queued-demand.g4mesh", "demand")
+    local queuedPrefetch = queue:request("mesh", "geometry/queued-prefetch.g4mesh", "prefetch")
+    Assert.isFalse(requestWasPushedFor(host, queuedDemand), "queued work waits for the busy worker")
+    Assert.isFalse(requestWasPushedFor(host, queuedPrefetch), "queued work waits for the busy worker")
+
+    queue:cancel(running)
+
+    -- Cancellation frees no physical slot: even a fresh demand queues
+    -- behind the still-executing job instead of dispatching immediately.
+    local lateDemand = queue:request("mesh", "geometry/late-demand.g4mesh", "demand")
+    Assert.equal(pushCountFor(host, queuedDemand), 0, "nothing dispatches while the cancelled job runs")
+    Assert.equal(pushCountFor(host, queuedPrefetch), 0, "nothing dispatches while the cancelled job runs")
+    Assert.equal(pushCountFor(host, lateDemand), 0, "nothing dispatches while the cancelled job runs")
+
+    local requestIndex = requestChannelIndexFor(host, running)
+    responseChannelFor(host, requestIndex):push(meshResponse(running, "geometry/running.g4mesh"))
+    Assert.equal(queue:poll(lateDemand), "pending")
+    Assert.equal(pushCountFor(host, queuedDemand), 1, "the earlier demand wins the first dispatch after the late reply")
+    Assert.equal(pushCountFor(host, lateDemand), 0, "the later demand still waits its turn")
+    Assert.equal(pushCountFor(host, queuedPrefetch), 0, "demand outranks queued prefetch at dispatch time")
+
+    local demandIndex = requestChannelIndexFor(host, queuedDemand)
+    responseChannelFor(host, demandIndex):push(meshResponse(queuedDemand, "geometry/queued-demand.g4mesh"))
+    Assert.equal(queue:poll(queuedDemand), "ready")
+    Assert.equal(pushCountFor(host, lateDemand), 1, "the later demand dispatches once the worker is idle")
+    Assert.equal(pushCountFor(host, queuedPrefetch), 0, "prefetch still waits while demand occupies the worker")
+
+    queue:take(queuedDemand)
+    queue:cancel(lateDemand)
+    local lateIndex = requestChannelIndexFor(host, lateDemand)
+    responseChannelFor(host, lateIndex):push(meshResponse(lateDemand, "geometry/late-demand.g4mesh"))
+    Assert.equal(queue:poll(queuedPrefetch), "pending")
+    Assert.equal(pushCountFor(host, queuedPrefetch), 1, "the queued prefetch dispatches after every demand completes")
+
+    local prefetchIndex = requestChannelIndexFor(host, queuedPrefetch)
+    responseChannelFor(host, prefetchIndex):push(meshResponse(queuedPrefetch, "geometry/queued-prefetch.g4mesh"))
+    Assert.equal(queue:poll(queuedPrefetch), "ready")
+    queue:take(queuedPrefetch)
+    queue:release()
+  end)
+end
+
+function T.late_reply_after_mass_cancellation_dispatches_exactly_one_job()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
+    local firstQueued = queue:request("mesh", "geometry/first-queued.g4mesh", "prefetch")
+    local secondQueued = queue:request("mesh", "geometry/second-queued.g4mesh", "prefetch")
+
+    queue:cancel(running)
+    queue:cancel(firstQueued)
+    queue:cancel(secondQueued)
+
+    local next = queue:request("mesh", "geometry/next.g4mesh", "demand")
+    Assert.isFalse(
+      requestWasPushedFor(host, next),
+      "a fresh request waits while the cancelled job still occupies the worker"
+    )
+
+    -- The cancelled job's late reply frees the worker; the cancelled queued
+    -- tokens must never reach the worker input channel as stale jobs.
+    local requestIndex = requestChannelIndexFor(host, running)
+    responseChannelFor(host, requestIndex):push(meshResponse(running, "geometry/running.g4mesh"))
+    Assert.equal(queue:poll(next), "pending")
+    Assert.equal(pushCountFor(host, next), 1, "the late reply frees the worker for exactly one next job")
+    Assert.equal(pushCountFor(host, firstQueued), 0, "a cancelled queued token never reaches the worker")
+    Assert.equal(pushCountFor(host, secondQueued), 0, "a cancelled queued token never reaches the worker")
+
+    local nextIndex = requestChannelIndexFor(host, next)
+    responseChannelFor(host, nextIndex):push(meshResponse(next, "geometry/next.g4mesh"))
+    Assert.equal(queue:poll(next), "ready", "the next job's own payload still publishes normally")
+    queue:take(next)
+    queue:release()
+  end)
+end
+
+function T.queued_wait_reobserves_worker_death_through_bounded_demands()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
+    local queued = queue:request("mesh", "geometry/queued.g4mesh", "demand")
+    Assert.isFalse(requestWasPushedFor(host, queued), "the second request waits for the busy worker")
+
+    -- A synchronous wait on work that never dispatched must still bound its
+    -- channel block, so a worker dying mid-block is re-observed instead of
+    -- hanging the waiter forever.
+    local requestIndex = requestChannelIndexFor(host, running)
+    local reply = responseChannelFor(host, requestIndex)
+    local demands = 0
+    reply.onDemand = function(timeout)
+      demands = demands + 1
+      if type(timeout) ~= "number" or timeout <= 0 or timeout > 0.1 then
+        error("synchronous wait performed an unbounded channel demand", 0)
+      end
+      host.threads[1]:stop("injected queued wait race")
+      return nil
+    end
+
+    local err = Assert.throws(function()
+      queue:wait(queued)
+    end, "a queued wait whose worker dies mid-block must raise instead of hanging")
+    Assert.isTrue(demands >= 1, "the wait actually blocked on the reply channel")
+    Assert.isTrue(
+      tostring(err):find("injected queued wait race", 1, true) ~= nil,
+      "the queued wait reports the worker-stop cause: " .. tostring(err)
+    )
+
+    local runningState, runningFailure = queue:poll(running)
+    Assert.equal(runningState, "failed", "the running token fails too instead of staying pending forever")
+    Assert.isTrue(
+      type(runningFailure) == "string" and runningFailure:find("injected queued wait race", 1, true) ~= nil,
+      "the running token reports the same terminal cause: " .. tostring(runningFailure)
+    )
+
+    queue:release()
+  end)
+end
+
+function T.finish_promotes_the_queued_prefetch_token_to_demand()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "prefetch")
+    Assert.isTrue(requestWasPushedFor(host, running), "the idle worker takes the first request immediately")
+    local queued = queue:request("mesh", "geometry/queued.g4mesh", "prefetch")
+    Assert.isFalse(requestWasPushedFor(host, queued), "the second request waits for the busy worker")
+
+    -- Finishing the scene task upgrades its outstanding prefetch token to
+    -- demand in place: the same token keeps its identity and is never
+    -- dispatched twice for the promotion itself.
+    queue:promote(queued, "demand")
+    Assert.equal(pushCountFor(host, queued), 0, "promotion upgrades priority without dispatching by itself")
+
+    local laterPrefetch = queue:request("mesh", "geometry/later.g4mesh", "prefetch")
+
+    local requestIndex = requestChannelIndexFor(host, running)
+    responseChannelFor(host, requestIndex):push(meshResponse(running, "geometry/running.g4mesh"))
+    Assert.equal(queue:poll(running), "ready")
+    Assert.equal(pushCountFor(host, queued), 1, "the promoted token wins the next physical dispatch")
+    Assert.isFalse(requestWasPushedFor(host, laterPrefetch), "the promoted demand outranks later prefetch work")
+
+    Assert.throws(function()
+      queue:promote("never-requested", "demand")
+    end, "promoting an unknown token fails loudly")
+
+    queue:take(running)
+    queue:cancel(queued)
+    queue:cancel(laterPrefetch)
     queue:release()
   end)
 end
