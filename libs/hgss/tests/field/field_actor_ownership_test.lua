@@ -299,7 +299,6 @@ end
 function T.persistence_translates_actor_state_to_the_existing_save_record()
   local persistence = FieldActorPersistence.new()
   local FieldObjectActor = require("libs.hgss.src.actors.FieldObjectActor")
-  local FieldActorFixture = require("tests.support.FieldActorFixture")
   local visual = FieldActorFixture.visual(99)
   local numericStore = FieldActorStore.new()
   local testActor = FieldObjectActor.new({

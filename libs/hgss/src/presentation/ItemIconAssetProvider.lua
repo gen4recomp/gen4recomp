@@ -11,7 +11,7 @@ local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ItemCache = require("libs.assets.src.ItemCache")
 
 ---@class ItemIconAssetProvider
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _manifest table<string, unknown>
 ---@field _image love.Image?
 ---@field _quads table<string, love.Quad>
@@ -56,7 +56,7 @@ local function entryFor(manifest, iconKey)
 end
 
 ---@param cacheFs CacheFs
----@param opts { graphics?: love.Graphics|love.graphics }?
+---@param opts { graphics?: love.graphics }?
 ---@return ItemIconAssetProvider
 function ItemIconAssetProvider.new(cacheFs, opts)
   assert(cacheFs ~= nil, "ItemIconAssetProvider requires a CacheFs")

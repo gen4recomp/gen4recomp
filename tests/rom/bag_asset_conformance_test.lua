@@ -7,6 +7,7 @@
 -- committed commercial payloads.
 
 local Assert = require("tests.support.Assert")
+local ffi = require("ffi")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
@@ -30,6 +31,22 @@ local function bundleFor(romFs, versionId)
     compiledByVersion[versionId] = compileBundle(romFs)
   end
   return compiledByVersion[versionId]
+end
+
+-- Bundle assets are Lua strings or finalized LÖVE Data values; the
+-- determinism contract compares byte content, never object identity (two
+-- compiles hand back distinct Data objects holding identical PNG bytes).
+local function assetBytes(value)
+  if type(value) == "string" then
+    return value
+  end
+  assert(
+    type(value) == "userdata"
+      and type(value.getFFIPointer) == "function"
+      and type(value.getSize) == "function",
+    "bundle assets are strings or LÖVE Data"
+  )
+  return ffi.string(value:getFFIPointer(), value:getSize())
 end
 
 function T.bag_archive_resolves_through_the_semantic_alias(romFs, _)
@@ -229,7 +246,7 @@ function T.recompilation_is_deterministic(romFs, versionId)
   end
   Assert.deepEqual(assetKeys(second), assetKeys(first), "asset sets must match")
   for _, path in ipairs(assetKeys(first)) do
-    Assert.equal(second.assets[path], first.assets[path], "asset " .. path .. " must be byte-identical")
+    Assert.equal(assetBytes(second.assets[path]), assetBytes(first.assets[path]), "asset " .. path .. " must be byte-identical")
   end
 end
 

@@ -281,7 +281,7 @@ function BagHeroRenderer.new(opts)
 end
 
 ---@param self BagHeroRenderer
----@return love.Graphics|love.graphics
+---@return love.graphics
 local function graphicsFor(self)
   local graphics = self._graphics
   if graphics == nil then
@@ -381,7 +381,7 @@ function BagHeroRenderer:_ensureGender(gender)
   end
 end
 
----@param graphics love.Graphics|love.graphics
+---@param graphics love.graphics
 ---@param scissor number[]?
 local function restoreScissor(graphics, scissor)
   if scissor ~= nil then

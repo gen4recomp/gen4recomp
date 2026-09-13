@@ -20,7 +20,7 @@
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class BagRenderer
----@field _graphics love.Graphics|love.graphics
+---@field _graphics love.graphics
 ---@field _text table<string, unknown> the shared glyph atlas/text drawing collaborator
 ---@field _heroRenderer table<string, unknown> the borrowed hero model renderer owned by field presentation resources
 ---@field _manifest table<string, unknown>
@@ -36,7 +36,7 @@ local FALLBACK_COLORS = {
   border = { 0.75, 0.75, 0.85, 1 },
 }
 
----@param graphics love.Graphics|love.graphics
+---@param graphics love.graphics
 ---@param color number[]
 local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4])
@@ -121,7 +121,7 @@ local function contextualText(presentation, manifest)
   return selected.description
 end
 
----@param graphics love.Graphics|love.graphics
+---@param graphics love.graphics
 ---@param path string
 ---@param data string
 ---@param images table<string, love.Image>
@@ -134,7 +134,7 @@ local function loadImage(graphics, path, data, images, key)
   return image
 end
 
----@param graphics love.Graphics|love.graphics
+---@param graphics love.graphics
 ---@param cacheFs CacheFs
 ---@param visual table<string, unknown>
 ---@param key string
@@ -161,7 +161,7 @@ end
 
 -- Draws one source-realized static visual. The source anchor is centered
 -- when a placement point is supplied; generated offsets apply verbatim.
----@param graphics love.Graphics|love.graphics
+---@param graphics love.graphics
 ---@param visual table<string, unknown>
 ---@param x number
 ---@param y number
@@ -181,7 +181,7 @@ local function drawVisual(graphics, visual, x, y, centered)
   graphics.draw(assert(image), drawX, drawY)
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.Graphics|love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics }
 ---@return BagRenderer
 function BagRenderer.new(opts)
   assert(type(opts) == "table", "bag renderer options must be a table")
