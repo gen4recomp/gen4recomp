@@ -34,6 +34,8 @@ local FAKE_PATHS = {
   "romdump.src.digest.items.ItemCacheWriter",
   "romdump.src.digest.ui.BagAssetCompiler",
   "romdump.src.digest.ui.BagCacheWriter",
+  "romdump.src.digest.mons.MonPresentationCompiler",
+  "libs.assets.src.MonCache",
   "romdump.src.digest.ui.FieldMessageCompiler",
   "romdump.src.digest.ui.FieldMessageCacheWriter",
   "libs.assets.src.field.FieldMessageCache",
@@ -63,6 +65,7 @@ local FAKE_PATHS = {
   "libs.assets.src.ScriptCache",
   "romdump.src.digest.audio.AudioCompiler",
   "romdump.src.digest.audio.AudioCacheWriter",
+  "libs.assets.src.audio.AudioCache",
   "romdump.src.digest.field.FieldCellCompiler",
   "romdump.src.digest.field.FieldCellCacheWriter",
   "libs.assets.src.field.FieldCellCache",
@@ -184,11 +187,10 @@ local function newEnv()
     followerBundle = { marker = "follower-v1" },
     monBundle = {
       marker = "mon-v1",
-      catalog = {
-        species = {
-          BULBASAUR = { forms = {} },
-          CHARMANDER = { forms = {} },
-        },
+      version = { id = "heartgold", language = "english" },
+      species = {
+        BULBASAUR = { forms = {} },
+        CHARMANDER = { forms = {} },
       },
     },
     itemBundle = {
@@ -210,6 +212,12 @@ local function newEnv()
         },
       },
     },
+    monPlan = {
+      icons = { pageIds = { 0 } },
+      portraits = { pageIds = { 0 } },
+      iconPages = { [0] = { pageId = 0 } },
+      portraitPages = { [0] = { pageId = 0 } },
+    },
     fieldBundles = {
       { mapId = 3, marker = "fd-3" },
       { mapId = 7, marker = "fd-7" },
@@ -225,6 +233,12 @@ local function newEnv()
     messageBundle = { marker = "msg-v1", index = { bankIds = { 4, 8 } } },
     scriptBundle = { marker = "scr-v1", index = { resourceCount = 2, scriptMemberCount = 9 } },
     audioBundle = { marker = "audio-v1", index = {} },
+    audioPlan = {
+      index = { banks = {}, sequences = {} },
+      bankPlans = {
+        { bankId = 0, sequenceIds = {} },
+      },
+    },
     audioError = nil,
     fieldCellBundle = { marker = "cells-v1", index = {}, cells = {} },
   }
@@ -261,6 +275,9 @@ local function makeFakes()
       version = version,
       close = function()
         env.closes[#env.closes + 1] = version
+      end,
+      metadata = function()
+        return { sha1 = "rom-sha" }
       end,
     }
   end
@@ -409,7 +426,7 @@ local function makeFakes()
     end,
   }
   fakes.MonCatalogCompiler = {
-    compileAll = function()
+    compileCatalog = function()
       return env.monBundle
     end,
   }
@@ -421,6 +438,72 @@ local function makeFakes()
   fakes.BagAssetCompiler.compile = function()
     return env.bagBundle
   end
+  -- The mon family stages through disjoint markers: one stale flag gates
+  -- every mon readiness check, mirroring the single-writer idiom the other
+  -- families use.
+  fakes.MonPresentationCompiler = {
+    plan = function(_, catalog)
+      assert(catalog == env.monBundle, "mon planning consumes the compiled catalog")
+      return env.monPlan
+    end,
+    compilePage = function(_, kind, pagePlan)
+      return { kind = kind, pageId = pagePlan.pageId }
+    end,
+  }
+  fakes.MonCache = {
+    isCatalogReady = function()
+      return not env.stale.MonCacheWriter
+    end,
+    isLayoutReady = function()
+      return not env.stale.MonCacheWriter
+    end,
+    isPageReady = function()
+      return not env.stale.MonCacheWriter
+    end,
+  }
+  -- Intermediate mon stages record without clearing the shared stale flag:
+  -- only the family summary gate decides the compiled/current log line, so
+  -- it must still observe staleness after the earlier stages write. The
+  -- summary write publishes the family, like the shared auto-fake idiom.
+  fakes.MonCacheWriter = {
+    catalogMarker = function()
+      return "mon-catalog-v1"
+    end,
+    layoutMarker = function()
+      return "mon-layout-v1"
+    end,
+    pageMarker = function(_, kind, pageId)
+      return "mon-page-" .. kind .. "-" .. pageId
+    end,
+    buildIndex = function()
+      return {
+        schema = "test-mon-index-v1",
+        iconPages = { "mon-page-icons-0" },
+        portraitPages = {
+          "mon-page-portraits-0",
+        },
+      }
+    end,
+    summaryMarker = function()
+      return "mon-summary-v1"
+    end,
+    isReady = function()
+      return not env.stale.MonCacheWriter
+    end,
+    writeCatalog = function()
+      env.calls[#env.calls + 1] = "MonCacheWriter.writeCatalog"
+    end,
+    writeLayout = function()
+      env.calls[#env.calls + 1] = "MonCacheWriter.writeLayout"
+    end,
+    writePage = function()
+      env.calls[#env.calls + 1] = "MonCacheWriter.writePage"
+    end,
+    writeSummary = function()
+      env.calls[#env.calls + 1] = "MonCacheWriter.writeSummary"
+      env.stale.MonCacheWriter = nil
+    end,
+  }
   fakes.FieldMapDataCompiler.compileAll = function()
     return env.fieldBundles
   end
@@ -563,6 +646,40 @@ local function makeFakes()
   fakes.AudioCompiler.compile = function()
     return env.audioBundle, env.audioError
   end
+  fakes.AudioCompiler.plan = function()
+    if env.audioBundle == nil then
+      return nil, env.audioError
+    end
+    return env.audioPlan
+  end
+  fakes.AudioCompiler.soundIdentity = function()
+    return "audio-identity"
+  end
+  fakes.AudioCompiler.bankMarker = function(_, bankPlan)
+    return "audio-bank-marker-" .. bankPlan.bankId
+  end
+  fakes.AudioCache = {
+    isBankReady = function()
+      return not env.stale.AudioCacheWriter
+    end,
+  }
+  fakes.AudioCacheWriter = {
+    isReady = function()
+      return not env.stale.AudioCacheWriter
+    end,
+    writeBank = function(_, _, bankPlan)
+      env.calls[#env.calls + 1] = "AudioCacheWriter.writeBank"
+      env.stale.AudioCacheWriter = nil
+      return "audio-bank-marker-" .. bankPlan.bankId
+    end,
+    writeSummary = function()
+      env.calls[#env.calls + 1] = "AudioCacheWriter.writeSummary"
+      env.stale.AudioCacheWriter = nil
+    end,
+    summaryMarker = function()
+      return "audio-summary-v1"
+    end,
+  }
   fakes.FieldCellCompiler.compile = function()
     return env.fieldCellBundle
   end
@@ -1053,7 +1170,8 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
   end
   table.sort(writes)
   Assert.deepEqual(writes, {
-    "AudioCacheWriter.write",
+    "AudioCacheWriter.writeBank",
+    "AudioCacheWriter.writeSummary",
     "BagCacheWriter.write",
     "FieldActorCacheWriter.write",
     "FieldActorEmoteCacheWriter.write",
@@ -1072,7 +1190,11 @@ function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_suc
     "ItemCacheWriter.write",
     "MapCacheWriter.write",
     "MapCacheWriter.write",
-    "MonCacheWriter.write",
+    "MonCacheWriter.writeCatalog",
+    "MonCacheWriter.writeLayout",
+    "MonCacheWriter.writePage",
+    "MonCacheWriter.writePage",
+    "MonCacheWriter.writeSummary",
     "NewGameInitCacheWriter.write",
     "StarterChoiceAssetCacheWriter.write",
     "WorldManifest.stage",

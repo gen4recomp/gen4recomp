@@ -239,6 +239,48 @@ local function validateBankSamples(cacheFs, keys)
   return nil
 end
 
+-- One bank closure against the files at hand, without the family index: the
+-- bank asset passes its validator under its own identity, every named
+-- sequence asset passes its validator under its own identity while naming
+-- this bank, and every bank-referenced sample's metadata and payload
+-- validate. Samples stream one at a time; no payload set is accumulated.
+-- Returns nil when the closure is valid or a problem message otherwise,
+-- never raises. The family summary replays the complete walk over the
+-- combined on-disk graph; this scope never claims family readiness.
+---@param assetFs CacheFs
+---@param bankId integer
+---@param sequenceIds integer[]
+---@return string|nil
+function AudioCacheValidator.validateBankClosure(assetFs, bankId, sequenceIds)
+  local bank = assetFs:loadLua(AudioCache.bankPath(bankId)) ---@type table?
+  if type(bank) ~= "table" then
+    return "bank asset is missing or unreadable"
+  end
+  if not passes(AudioBank.validate, bank) then
+    return "bank fails its validator"
+  end
+  if bank.id ~= bankId then
+    return "bank identity does not match its closure"
+  end
+  for _, sequenceId in ipairs(sequenceIds) do
+    local sequence = assetFs:loadLua(AudioCache.sequencePath(sequenceId)) ---@type table?
+    if type(sequence) ~= "table" then
+      return "closure sequence asset is missing or unreadable"
+    end
+    if not passes(AudioSequence.validate, sequence) then
+      return "closure sequence fails its validator"
+    end
+    if sequence.id ~= sequenceId or sequence.bankId ~= bankId then
+      return "closure sequence identity does not match its bank"
+    end
+  end
+  local keys = AudioBank.sampleKeys(bank)
+  if keys == nil then
+    return "bank sample references are malformed"
+  end
+  return validateBankSamples(assetFs, keys)
+end
+
 ---@param cacheFs CacheFs
 ---@param id number
 ---@param entry AudioCacheValidator.IndexEntry
@@ -281,16 +323,20 @@ local function validateBanks(cacheFs, index)
   return nil
 end
 
----@param cacheFs CacheFs
+-- The authoritative walk over an explicitly supplied index: the same rule
+-- readiness runs, with assets read from the given filesystem. Summary
+-- staging validates the staged index against the already published bank
+-- closures through this entry point without assembling a second PCM bundle.
+---@param assetFs CacheFs
+---@param index AudioCacheValidator.Index|table<string, unknown>|nil
 ---@return string|nil
-function AudioCacheValidator.validate(cacheFs)
-  local index = cacheFs:loadLua(AudioCache.indexPath()) ---@type table?
+function AudioCacheValidator.validateWithIndex(assetFs, index)
   local problem = validateIndexRoot(index)
   if problem ~= nil then
     return problem
   end
   ---@cast index AudioCacheValidator.Index
-  local sequenceProblem, usedPlayers = validateSequences(cacheFs, index)
+  local sequenceProblem, usedPlayers = validateSequences(assetFs, index)
   if sequenceProblem ~= nil then
     return sequenceProblem
   end
@@ -303,7 +349,14 @@ function AudioCacheValidator.validate(cacheFs)
   if problem ~= nil then
     return problem
   end
-  return validateBanks(cacheFs, index)
+  return validateBanks(assetFs, index)
+end
+
+---@param cacheFs CacheFs
+---@return string|nil
+function AudioCacheValidator.validate(cacheFs)
+  local index = cacheFs:loadLua(AudioCache.indexPath()) ---@type table?
+  return AudioCacheValidator.validateWithIndex(cacheFs, index)
 end
 
 return AudioCacheValidator
