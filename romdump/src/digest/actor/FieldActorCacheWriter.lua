@@ -17,9 +17,7 @@ function FieldActorCacheWriter.isReady(cacheFs, marker)
   return FieldActorCache.isReady(cacheFs, marker)
 end
 
-local function persist(tx, bundle)
-  local stage = tx.stage
-
+local function persist(stage, bundle)
   for _, spriteId in ipairs(bundle.index.spriteIds) do
     local atlas = bundle.atlases[spriteId]
     local visual = bundle.visuals[spriteId]
@@ -66,13 +64,24 @@ local function persist(tx, bundle)
   return bundle.marker
 end
 
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function FieldActorCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "actor staging requires a PreparedArtifact")
+  assert(type(bundle) == "table" and bundle.marker, "invalid actor bundle")
+  artifact:addOwnedRoot(FieldActorCache.assetDir())
+  artifact:addOwnedRoot(FieldActorCache.dir())
+  return persist(artifact:stageFs(), bundle)
+end
+
 function FieldActorCacheWriter.write(cacheFs, bundle)
   assert(cacheFs and type(bundle) == "table" and bundle.marker, "invalid actor bundle")
   local tx = ArtifactPublisher.begin(cacheFs, "field-actors", {
     FieldActorCache.assetDir(),
     FieldActorCache.dir(),
   })
-  local ok, result = pcall(persist, tx, bundle)
+  local ok, result = pcall(persist, tx.stage, bundle)
   if not ok then
     tx:abort()
     error(result, 0)

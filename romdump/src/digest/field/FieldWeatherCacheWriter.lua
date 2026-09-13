@@ -13,8 +13,7 @@ function FieldWeatherCacheWriter.isReady(cacheFs, marker)
   return FieldWeatherCache.isReady(cacheFs, marker)
 end
 
-local function stageBundle(tx, bundle)
-  local stage = tx.stage
+local function stageBundle(stage, bundle)
   stage:writeLua(FieldWeatherCache.provenancePath(), bundle.provenance)
   stage:writeLua(FieldWeatherCache.catalogPath(), bundle.catalog)
   local catalog = stage:loadLua(FieldWeatherCache.catalogPath())
@@ -31,13 +30,25 @@ local function stageBundle(tx, bundle)
   stage:write(FieldWeatherCache.markerPath(), bundle.marker)
 end
 
+---@param artifact PreparedArtifact
+---@param bundle table<string, unknown>
+---@return string
+function FieldWeatherCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "weather staging requires a PreparedArtifact")
+  assert(bundle and bundle.marker and bundle.catalog and bundle.provenance, "stage requires a weather bundle")
+  assert(bundle.catalog.schema == FieldWeatherCache.SCHEMA, "weather catalog schema mismatch")
+  artifact:addOwnedRoot(FieldWeatherCache.dir())
+  stageBundle(artifact:stageFs(), bundle)
+  return bundle.marker
+end
+
 function FieldWeatherCacheWriter.write(cacheFs, bundle)
   assert(bundle and bundle.marker and bundle.catalog and bundle.provenance, "write requires a weather bundle")
   assert(bundle.catalog.schema == FieldWeatherCache.SCHEMA, "weather catalog schema mismatch")
   local tx = ArtifactPublisher.begin(cacheFs, "field-weather", {
     FieldWeatherCache.dir(),
   })
-  local ok, err = pcall(stageBundle, tx, bundle)
+  local ok, err = pcall(stageBundle, tx.stage, bundle)
   if not ok then
     tx:abort()
     error(err, 0)

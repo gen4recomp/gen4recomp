@@ -16,21 +16,24 @@ local StorageErrors = require("libs.storage.src.errors")
 local ArtifactState = {}
 
 ArtifactState.KINDS = {
-  map = true,
-  ["field-cell"] = true,
-  ["script-member"] = true,
-  -- Structural producers with staged publication: the world catalog owns the
-  -- single world file, and each field-map-data job owns its own map record.
-  world = true,
-  ["field-map-data"] = true,
-  -- One staged message bank (or the family summary) per job: each bank owns
-  -- its payload and marker, the summary owns only the index and completion.
-  ["message-bank"] = true,
-  -- One staged audio bank closure (or the family summary) per job: each bank
-  -- owns its bank record, its sequence records, and its completion record
-  -- with shared content-addressed samples, the summary owns only the
-  -- provenance, the index, and the completion.
-  ["audio-bank"] = true,
+  -- Structural world catalog (one world file) and canonical field-cell
+  -- index: the planning roots every geometry job resolves against.
+  ["world-catalog"] = true,
+  ["field-cell-index"] = true,
+  -- Coarse bootstrap field families: each job stages its whole bundle
+  -- without publishing from workers.
+  ["field-camera"] = true,
+  ["field-weather"] = true,
+  ["field-effects"] = true,
+  ["field-emotes"] = true,
+  ["field-ui"] = true,
+  ["field-font"] = true,
+  -- Game-start families: intro visuals, the standard-init initializer, the
+  -- merged ordinary actor/follower bundle and starter-choice assets.
+  intro = true,
+  ["new-game-init"] = true,
+  actors = true,
+  ["starter-choice"] = true,
   -- One staged mon artifact per job: the semantic catalog and the selector
   -- layout each own their payload and marker, each icon/portrait page owns
   -- its own image and marker, and the summary owns only the index,
@@ -40,6 +43,26 @@ ArtifactState.KINDS = {
   ["mon-icon-page"] = true,
   ["mon-portrait-page"] = true,
   ["mon-summary"] = true,
+  -- One staged message bank (or the family summary) per job: each bank owns
+  -- its payload and marker, the summary owns only the index and completion.
+  ["message-bank"] = true,
+  ["message-summary"] = true,
+  -- One staged audio bank closure (or the family summary) per job: each bank
+  -- owns its bank record, its sequence records, and its completion record
+  -- with shared content-addressed samples, the summary owns only the
+  -- provenance, the index, and the completion.
+  ["audio-bank"] = true,
+  ["audio-summary"] = true,
+  -- One staged script member (or the generation summary) per job: each
+  -- nonempty member owns its scripts and marker, the summary owns only the
+  -- generation metadata and the active selection.
+  ["script-member"] = true,
+  ["script-summary"] = true,
+  -- One staged field record per supported map, one staged cell per canonical
+  -- physical descriptor, and one staged scene per source-resolved map.
+  ["map-data"] = true,
+  ["field-cell"] = true,
+  map = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"
@@ -61,9 +84,14 @@ local function isCanonicalInteger(text)
   return text == "0" or text:match("^[1-9][0-9]*$") ~= nil
 end
 
+-- Families addressed only as a whole carry the global key; paged and
+-- per-member families carry their canonical integer selector, and field
+-- cells carry their canonical matrix/index pair and nothing else: a bare
+-- integer never addresses a cell.
 local function checkKey(kind, key)
   assert(type(key) == "string" and key ~= "", "artifact key must be a non-empty string")
   if key == "global" or isCanonicalInteger(key) then
+    assert(kind ~= "field-cell" or key:find("-", 1, true) ~= nil, "invalid artifact key for field-cell: " .. key)
     return
   end
   local first, second = key:match("^([0-9]+)-([0-9]+)$")

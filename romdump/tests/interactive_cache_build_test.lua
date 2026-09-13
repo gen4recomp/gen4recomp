@@ -1,433 +1,407 @@
--- Interactive producer tests use cache readiness seams to verify deterministic
--- orchestration without opening a ROM or starting worker threads.
+-- Generation-session contract tests without opening a ROM or starting
+-- worker threads: constructor validation precedes every side effect, the
+-- closed dispatch maps every family to its size class and urgency, milestone
+-- membership is exact, dependencies resolve through the fixed table, and the
+-- follower check names its missing visual. Positive session behavior lives
+-- in the ROM census, which owns a real dump.
 
 local Assert = require("tests.support.Assert")
+local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
-local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FakeCache = require("tests.support.FakeCache")
-local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
-local ScriptCache = require("libs.assets.src.ScriptCache")
-local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
+local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
-local CompilerPool = require("romdump.src.build.CompilerPool")
-local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
-local FieldCellCacheWriter = require("romdump.src.digest.field.FieldCellCacheWriter")
-local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
-local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
-local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
-local MapRomFixture = require("tests.support.MapRomFixture")
-local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
-local RomFs = require("romdump.src.source.RomFs")
-local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 
 local T = {}
 
-local GENERATION = string.rep("a", 40)
-
-local function scriptResource(id, generation, memberId)
+local function untouchedPool()
   return {
-    api = 1,
-    id = id,
-    metadata = {
-      generated = true,
-      source = {
-        repository = "g4recomp",
-        romSha1 = generation,
-        member = memberId,
-        scriptIndex = 0,
-      },
-      coverage = { complete = true, unsupportedCount = 0 },
-    },
-    steps = { { op = "stop" } },
-  }
-end
-
-local function scriptMember(memberId, id, generation)
-  return {
-    memberId = memberId,
-    marker = generation .. ":member:" .. tostring(memberId),
-    coverage = {
-      source = { repository = "g4recomp", romSha1 = generation },
-      totals = {
-        members = 1,
-        scripts = 1,
-        reachableInstructions = 1,
-        supportedInstructions = 1,
-        unsupportedInstructions = 0,
-        malformedInstructions = 0,
-      },
-      opcodes = {},
-      scripts = {
-        {
-          sourceId = string.format("hgss.scr_seq.%04d.%03d", memberId, 0),
-          publicId = id,
-          status = "complete",
-          unsupported = {},
-        },
-      },
-    },
-    resources = {
-      {
-        id = id,
-        member = memberId,
-        scriptIndex = 0,
-        sourceHash = generation,
-        resource = scriptResource(id, generation, memberId),
-        report = { complete = true, unsupportedCount = 0 },
-      },
-    },
-  }
-end
-
-local function scriptPlan(marker)
-  local resources = {
-    { id = "script.one", member = 0, scriptIndex = 0 },
-    { id = "script.two", member = 1, scriptIndex = 0 },
-  }
-  return {
-    generationKey = GENERATION,
-    marker = marker,
-    version = "heartgold",
-    sourcePath = "romfs/field_scripts.narc",
-    romSha1 = "rom-sha",
-    memberCount = 2,
-    members = {
-      { memberId = 0, marker = GENERATION .. ":member:0", scripts = { { scriptIndex = 0, id = "script.one" } } },
-      { memberId = 1, marker = GENERATION .. ":member:1", scripts = { { scriptIndex = 0, id = "script.two" } } },
-    },
-    resources = resources,
-    index = {
-      schema = ScriptCache.INDEX_SCHEMA,
-      version = "heartgold",
-      generation = GENERATION,
-      marker = marker,
-      memberCount = 2,
-      scriptMemberCount = 2,
-      skippedMemberCount = 0,
-      scriptCount = 2,
-      resourceCount = 2,
-      resources = resources,
-    },
-  }
-end
-
-local memberStageCounter = 0
-
-local function stageMember(cache, plan, memberId)
-  local id = memberId == 0 and "script.one" or "script.two"
-  local staged = scriptMember(memberId, id, GENERATION)
-  memberStageCounter = memberStageCounter + 1
-  local artifact = PreparedArtifact.new({
-    cacheFs = cache,
-    generationId = "interactive-outer",
-    epoch = 1,
-    kind = "script-member",
-    key = tostring(memberId),
-    jobKey = "script-member:" .. tostring(memberId),
-    stageName = "interactive-member-" .. tostring(memberStageCounter),
-  })
-  Assert.isTrue(ScriptCacheWriter.stageMember(artifact, plan, staged))
-  artifact:finishSuccess({ marker = staged.marker })
-  Assert.isTrue(artifact:publish({
-    generationId = "interactive-outer",
-    epoch = 1,
-    kind = "script-member",
-    key = tostring(memberId),
-    jobKey = "script-member:" .. tostring(memberId),
-  }))
-end
-
-local function fakeRomFs()
-  return {
-    close = function(self)
-      self.closed = true
+    selectGeneration = function()
+      error("session validation must precede pool selection")
+    end,
+    request = function()
+      error("session validation must precede pool requests")
+    end,
+    status = function()
+      error("session validation must precede pool status")
+    end,
+    update = function()
+      error("session validation must precede pool updates")
     end,
   }
 end
 
-function T.pending_maps_advance_in_map_id_order()
-  local oldCellReady = FieldCellCache.isCellReady
-  local oldMapReady = MapCompilePlan.isReady
-  local requests = {}
-  local ready = {}
-  local function plan(mapId)
-    return {
-      strategy = "canonical",
-      expectedMarker = "map-marker-" .. mapId,
-      resolved = { map = { id = mapId } },
-      cellPlans = { { descriptor = {}, expectedMarker = "cell-marker" } },
-      jobIdentity = "map:" .. mapId,
-    }
-  end
-
-  FieldCellCache.isCellReady = function()
-    return true
-  end
-  MapCompilePlan.isReady = function(_, mapPlan)
-    return ready[mapPlan.resolved.map.id] == true
-  end
-  local ok, err = pcall(function()
-    local build = setmetatable({
-      cacheFs = {},
-      pendingMaps = {
-        late = plan(1000000007),
-        first = plan(2),
-        middle = plan(1000000003),
-      },
-      pool = {
-        request = function(_, job)
-          requests[#requests + 1] = job.payload.mapId
-          return "queued"
-        end,
-      },
-    }, InteractiveCacheBuild)
-    build:_advancePendingMaps()
-  end)
-  FieldCellCache.isCellReady = oldCellReady
-  MapCompilePlan.isReady = oldMapReady
-  if not ok then
-    error(err, 0)
-  end
-  Assert.deepEqual(requests, { 2, 1000000003, 1000000007 })
-end
-
-function T.indoor_map_ensure_uses_aggregate_readiness_and_job_identity()
-  local romFs = MapRomFixture.build({})
-  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
-  local producerFingerprint = "synthetic-producer"
-  local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL, {
-    producerFingerprint = producerFingerprint,
-  }))
-  local plan = assert(
-    MapCompilePlan.plan(
-      romFs,
-      { schema = FieldCellCache.INDEX_SCHEMA, matrices = {} },
-      MapRomFixture.MAP_SYMBOL,
-      producerFingerprint
-    )
-  )
-  local requested = {}
-  local waitKey
-  local build = setmetatable({
-    cacheFs = cacheFs,
-    romFs = romFs,
-    producerFingerprint = producerFingerprint,
-    world = { byId = { [bundle.mapId] = {} } },
-    mapPlans = { [bundle.mapId] = plan },
-    closed = false,
-    pool = {
-      request = function(_, job)
-        requested[#requested + 1] = job
-        MapCacheWriter.write(cacheFs, bundle)
-        return "queued"
-      end,
-      wait = function(_, key)
-        waitKey = key
-        return "ready", { result = { marker = bundle.marker } }
-      end,
-    },
-  }, InteractiveCacheBuild)
-
-  local ok, err = pcall(function()
-    return build:ensureField(bundle.mapId)
-  end)
-  Assert.isTrue(ok, tostring(err))
-  Assert.equal(#requested, 1)
-  Assert.equal(requested[1].kind, "map")
-  Assert.equal(requested[1].key, "field-map:" .. plan.jobIdentity)
-  Assert.equal(requested[1].payload.mapId, bundle.mapId)
-  Assert.equal(waitKey, requested[1].key)
-end
-
-function T.disposal_publishes_the_final_member_before_activation()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local plan = scriptPlan("script-marker")
-  stageMember(cache, plan, 0)
-  local shutdowns = 0
-  local build = setmetatable({
-    cacheFs = cache,
-    pool = {
-      shutdown = function()
-        shutdowns = shutdowns + 1
-        stageMember(cache, plan, 1)
-      end,
-    },
-    romFs = fakeRomFs(),
-    scriptPlan = plan,
-    closed = false,
-  }, InteractiveCacheBuild)
-
-  build:dispose()
-
-  Assert.equal(shutdowns, 1)
-  Assert.equal(cache:read(ScriptCache.generationMarkerPath(GENERATION)), plan.marker)
-  Assert.equal(cache:read(ScriptCache.markerPath()), plan.marker)
-  local active = assert(cache:loadLua(ScriptCache.activeIndexPath()))
-  Assert.equal(active.generation, GENERATION)
-end
-
-function T.startup_activates_a_complete_inactive_generation_without_rewriting_members()
-  local backend = FakeCache.new()
-  local cache = CacheFs.forVersion("heartgold", backend)
-  local plan = scriptPlan("script-marker")
-  stageMember(cache, plan, 0)
-  stageMember(cache, plan, 1)
-  Assert.isTrue(ScriptCacheWriter.writeSummary(cache, plan))
-  cache:removeTree(ScriptCache.activeDir())
-  local originalMember = assert(cache:read(ScriptCache.scriptPath(GENERATION, 0, "script.one")))
-  local summaryCount = 0
-
-  local originalCacheForVersion = CacheFs.forVersion
-  local originalRomFsOpen = RomFs.open
-  local originalProducerBackend = ProducerFingerprint.appBackend
-  local originalProducerCompute = ProducerFingerprint.compute
-  local originalCompileIndex = FieldCellCompiler.compileIndex
-  local originalWriteIndex = FieldCellCacheWriter.writeIndex
-  local originalLoadIndex = FieldCellCache.loadIndex
-  local originalScriptPlan = ScriptCompiler.plan
-  local originalPoolNew = CompilerPool.new
-  local originalActivate = ScriptCacheWriter.writeSummary
-
-  CacheFs.forVersion = function()
-    return cache
-  end
-  RomFs.open = function()
-    return fakeRomFs()
-  end
-  ProducerFingerprint.appBackend = function()
-    return {
-      getInfo = function()
-        return { type = "directory" }
-      end,
-    }
-  end
-  ProducerFingerprint.compute = function()
-    return "producer-fingerprint"
-  end
-  FieldCellCompiler.compileIndex = function()
-    return { indexMarker = "current-index" }
-  end
-  FieldCellCacheWriter.writeIndex = function() end
-  FieldCellCache.loadIndex = function()
-    return { matrices = {} }
-  end
-  ScriptCompiler.plan = function()
-    return plan
-  end
-  CompilerPool.new = function()
-    return { shutdown = function() end }
-  end
-  ScriptCacheWriter.writeSummary = function(cacheFs, summaryPlan)
-    summaryCount = summaryCount + 1
-    return originalActivate(cacheFs, summaryPlan)
-  end
-  cache:writeLua(MapAssetCache.worldPath(), { byId = {}, maps = {} })
-
-  local ok, buildOrError = pcall(InteractiveCacheBuild.new, {
+local function identity()
+  return {
     versionId = "heartgold",
-    producerFingerprint = "producer-fingerprint",
-  })
-
-  CacheFs.forVersion = originalCacheForVersion
-  RomFs.open = originalRomFsOpen
-  ProducerFingerprint.appBackend = originalProducerBackend
-  ProducerFingerprint.compute = originalProducerCompute
-  FieldCellCompiler.compileIndex = originalCompileIndex
-  FieldCellCacheWriter.writeIndex = originalWriteIndex
-  FieldCellCache.loadIndex = originalLoadIndex
-  ScriptCompiler.plan = originalScriptPlan
-  CompilerPool.new = originalPoolNew
-  ScriptCacheWriter.writeSummary = originalActivate
-
-  if not ok then
-    error(buildOrError, 0)
-  end
-  local build = assert(buildOrError)
-  local active = assert(cache:loadLua(ScriptCache.activeIndexPath()))
-  Assert.equal(summaryCount, 1)
-  Assert.equal(active.generation, GENERATION)
-  Assert.equal(cache:read(ScriptCache.scriptPath(GENERATION, 0, "script.one")), originalMember)
-  build.romFs:close()
+    generationId = "g4:heartgold:rom:producer:a1:s1",
+    producerId = "d" .. string.rep("3", 64),
+  }
 end
 
-function T.missing_or_empty_producer_fingerprint_fails_before_opening_dependencies()
-  local originalCacheForVersion = CacheFs.forVersion
-  local originalRomFsOpen = RomFs.open
-  local originalPoolNew = CompilerPool.new
-  local function unexpectedCall()
-    error("producer fingerprint validation must precede dependency construction")
-  end
-
-  CacheFs.forVersion = unexpectedCall
-  RomFs.open = unexpectedCall
-  CompilerPool.new = unexpectedCall
-  local ok, err = pcall(function()
-    local function assertInvalid(producerFingerprint)
-      local success, failure = pcall(InteractiveCacheBuild.new, {
-        versionId = "heartgold",
-        producerFingerprint = producerFingerprint,
-      })
-      Assert.isFalse(success)
-      Assert.isTrue(tostring(failure):find("producer fingerprint is required", 1, true) ~= nil)
-    end
-    assertInvalid(nil)
-    assertInvalid("")
-  end)
-  CacheFs.forVersion = originalCacheForVersion
-  RomFs.open = originalRomFsOpen
-  CompilerPool.new = originalPoolNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
-function T.incomplete_target_remains_inert_after_shutdown()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local plan = scriptPlan("script-marker")
-  stageMember(cache, plan, 0)
-  local romFs = fakeRomFs()
-  local build = setmetatable({
-    cacheFs = cache,
-    pool = { shutdown = function() end },
-    romFs = romFs,
-    scriptPlan = plan,
-    closed = false,
-  }, InteractiveCacheBuild)
-
-  build:dispose()
-
-  Assert.isNil(cache:read(ScriptCache.generationMarkerPath(GENERATION)))
-  Assert.isNil(cache:read(ScriptCache.markerPath()))
-  Assert.equal(cache:read(ScriptCache.memberMarkerPath(GENERATION, 0)), plan.members[1].marker)
-  Assert.isTrue(romFs.closed)
-end
-
-function T.shutdown_failure_closes_rom_without_mutating_script_selection()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local plan = scriptPlan("script-marker")
-  stageMember(cache, plan, 0)
-  local romFs = fakeRomFs()
-  local build = setmetatable({
-    cacheFs = cache,
-    pool = {
-      shutdown = function()
-        error("shutdown failed")
-      end,
+function T.session_options_are_validated_before_any_side_effect()
+  local cases = {
+    { options = nil, message = "options are required" },
+    { options = {}, message = "identity is required" },
+    { options = { identity = {}, epoch = 1, pool = untouchedPool() }, message = "version is required" },
+    {
+      options = { identity = { versionId = "heartgold" }, epoch = 1, pool = untouchedPool() },
+      message = "generation is required",
     },
-    romFs = romFs,
-    scriptPlan = plan,
-    closed = false,
-  }, InteractiveCacheBuild)
+    {
+      options = {
+        identity = { versionId = "heartgold", generationId = "g", producerId = "d" .. string.rep("3", 64) },
+        pool = untouchedPool(),
+      },
+      message = "epoch must be a positive integer",
+    },
+    {
+      options = { identity = identity(), epoch = 1 },
+      message = "process-owned pool",
+    },
+    {
+      options = { identity = identity(), epoch = 1, pool = untouchedPool(), sweepEnabled = "yes" },
+      message = "must be a boolean",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local ok, err = pcall(InteractiveCacheBuild.new, case.options)
+    Assert.isFalse(ok, "malformed session options must fail")
+    Assert.isTrue(
+      tostring(err):find(case.message, 1, true) ~= nil,
+      "session rejection names its cause: " .. tostring(err)
+    )
+  end
+end
 
-  local failure = Assert.throws(function()
-    build:dispose()
+function T.urgency_maps_once_to_pool_priorities()
+  Assert.equal(ArtifactJobs.priorityFor("required"), 0)
+  Assert.equal(ArtifactJobs.priorityFor("near"), 10)
+  Assert.equal(ArtifactJobs.priorityFor("sweep"), 100)
+  Assert.throws(function()
+    ArtifactJobs.priorityFor("eventually")
   end)
-  Assert.isTrue(tostring(failure):find("shutdown failed", 1, true) ~= nil)
-  Assert.isNil(cache:read(ScriptCache.generationMarkerPath(GENERATION)))
-  Assert.isNil(cache:read(ScriptCache.markerPath()))
-  Assert.equal(cache:read(ScriptCache.memberMarkerPath(GENERATION, 0)), plan.members[1].marker)
-  Assert.isTrue(romFs.closed)
+end
+
+function T.every_family_maps_to_its_fixed_size_class()
+  local expected = {
+    ["world-catalog"] = "normal",
+    ["field-cell-index"] = "normal",
+    ["field-camera"] = "normal",
+    ["field-weather"] = "normal",
+    ["field-effects"] = "normal",
+    ["field-emotes"] = "normal",
+    ["field-ui"] = "normal",
+    intro = "normal",
+    ["new-game-init"] = "normal",
+    ["starter-choice"] = "normal",
+    ["mon-icon-page"] = "normal",
+    ["mon-portrait-page"] = "normal",
+    ["map-data"] = "normal",
+    ["message-summary"] = "normal",
+    ["mon-summary"] = "normal",
+    ["field-font"] = "heavy",
+    actors = "heavy",
+    ["mon-catalog"] = "heavy",
+    ["mon-layout"] = "heavy",
+    ["audio-bank"] = "heavy",
+    ["audio-summary"] = "heavy",
+    ["script-member"] = "heavy",
+    ["script-summary"] = "heavy",
+    ["message-bank"] = "heavy",
+    ["field-cell"] = "jumbo",
+    map = "jumbo",
+  }
+  local count = 0
+  for kind, size in pairs(expected) do
+    Assert.equal(ArtifactJobs.sizeClass(kind), size, "size class of " .. kind)
+    count = count + 1
+  end
+  local kinds = 0
+  for _ in pairs(ArtifactState.KINDS) do
+    kinds = kinds + 1
+  end
+  Assert.equal(count, kinds, "the size policy covers exactly the closed vocabulary")
+  Assert.throws(function()
+    ArtifactJobs.sizeClass("world")
+  end)
+end
+
+local function jobSet(jobs)
+  local set = {}
+  for _, job in ipairs(jobs) do
+    set[job.kind .. ":" .. job.key] = true
+  end
+  return set
+end
+
+function T.bootstrap_membership_is_the_fixed_set_plus_audio_closures()
+  local jobs = ArtifactJobs.bootstrapJobs({ 7, 0 })
+  local set = jobSet(jobs)
+  for _, name in ipairs({
+    "world-catalog:global",
+    "field-cell-index:global",
+    "field-camera:global",
+    "field-weather:global",
+    "field-effects:global",
+    "field-emotes:global",
+    "field-ui:global",
+    "field-font:global",
+    "intro:global",
+    "new-game-init:global",
+    "mon-catalog:global",
+    "mon-layout:global",
+    "message-bank:219",
+    "audio-summary:global",
+    "audio-bank:7",
+    "audio-bank:0",
+  }) do
+    Assert.isTrue(set[name] == true, "bootstrap carries " .. name)
+  end
+  Assert.equal(#jobs, 16, "bootstrap carries nothing else")
+  for _, job in ipairs(jobs) do
+    local kind = job.kind
+    Assert.isTrue(
+      kind ~= "map"
+        and kind ~= "field-cell"
+        and kind ~= "map-data"
+        and kind ~= "script-member"
+        and kind ~= "script-summary"
+        and kind ~= "message-summary"
+        and kind ~= "mon-icon-page"
+        and kind ~= "mon-portrait-page"
+        and kind ~= "mon-summary"
+        and kind ~= "actors"
+        and kind ~= "starter-choice",
+      "bootstrap never pulls geometry, records, scripts, pages, or actors: " .. kind
+    )
+  end
+end
+
+function T.field_core_contains_bootstrap_without_geometry_or_portraits()
+  local lists = {
+    audioBankIds = { 7 },
+    messageBankIds = { 219, 220 },
+    scriptMemberIds = { 149 },
+    iconPageIds = { 3 },
+    mapDataIds = { 7 },
+  }
+  local core = jobSet(ArtifactJobs.fieldCoreJobs(lists))
+  local bootstrap = ArtifactJobs.bootstrapJobs(lists.audioBankIds)
+  for _, job in ipairs(bootstrap) do
+    Assert.isTrue(core[job.kind .. ":" .. job.key] == true, "core keeps bootstrap work")
+  end
+  for _, name in ipairs({
+    "actors:global",
+    "starter-choice:global",
+    "message-bank:219",
+    "message-bank:220",
+    "message-summary:global",
+    "script-member:149",
+    "script-summary:global",
+    "mon-icon-page:3",
+    "map-data:7",
+  }) do
+    Assert.isTrue(core[name] == true, "core carries " .. name)
+  end
+  for identityKey in pairs(core) do
+    local kind = identityKey:match("^([^:]+):")
+    Assert.isTrue(
+      kind ~= "map" and kind ~= "field-cell" and kind ~= "mon-portrait-page" and kind ~= "mon-summary",
+      "field entry never waits for geometry or portraits: " .. identityKey
+    )
+  end
+end
+
+local function syntheticPlans()
+  return {
+    iconPageIds = { 0, 1 },
+    portraitPageIds = { 0, 1, 2 },
+    messageBankIds = { 219 },
+    audioBankIds = { 7 },
+    scriptMemberIds = { 149 },
+    mapCellKeys = { [7] = { "12-5", "12-6" } },
+  }
+end
+
+local function dependencySet(kind, key, plans)
+  local set = {}
+  for _, dep in ipairs(ArtifactJobs.dependencies(kind, key, plans or syntheticPlans())) do
+    set[dep.kind .. ":" .. dep.key] = true
+  end
+  return set
+end
+
+function T.dependencies_resolve_through_the_fixed_table()
+  Assert.deepEqual(dependencySet("mon-layout", "global"), { ["mon-catalog:global"] = true })
+  Assert.deepEqual(dependencySet("mon-icon-page", "3"), { ["mon-layout:global"] = true })
+  Assert.deepEqual(dependencySet("mon-portrait-page", "12"), { ["mon-layout:global"] = true })
+  local summary = dependencySet("mon-summary", "global")
+  for _, name in ipairs({
+    "mon-catalog:global",
+    "mon-layout:global",
+    "mon-icon-page:0",
+    "mon-icon-page:1",
+    "mon-portrait-page:0",
+    "mon-portrait-page:1",
+    "mon-portrait-page:2",
+  }) do
+    Assert.isTrue(summary[name] == true, "mon summary pulls " .. name)
+  end
+  Assert.deepEqual(dependencySet("message-summary", "global"), { ["message-bank:219"] = true })
+  Assert.deepEqual(dependencySet("audio-summary", "global"), { ["audio-bank:7"] = true })
+  Assert.deepEqual(dependencySet("script-summary", "global"), { ["script-member:149"] = true })
+  local map = dependencySet("map", "7")
+  for _, name in ipairs({ "world-catalog:global", "field-cell-index:global", "field-cell:12-5", "field-cell:12-6" }) do
+    Assert.isTrue(map[name] == true, "map pulls " .. name)
+  end
+  Assert.deepEqual(dependencySet("field-cell", "12-5"), { ["field-cell-index:global"] = true })
+  Assert.deepEqual(dependencySet("actors", "global"), {})
+  Assert.deepEqual(dependencySet("intro", "global"), {})
+  Assert.throws(function()
+    ArtifactJobs.dependencies("world", "global", syntheticPlans())
+  end)
+end
+
+function T.job_identities_validate_through_the_closed_vocabulary()
+  Assert.equal(ArtifactJobs.jobKey("map", "7"), "map:7")
+  Assert.equal(ArtifactJobs.jobKey("field-cell", "12-5"), "field-cell:12-5")
+  Assert.throws(function()
+    ArtifactJobs.jobKey("bogus-kind", "global")
+  end)
+  Assert.throws(function()
+    ArtifactJobs.jobKey("map", "not-a-key")
+  end)
+end
+
+function T.follower_references_validate_against_the_merged_index()
+  local catalog = {
+    species = {
+      CHIKORITA = {
+        forms = {
+          [0] = { follower = { visualId = 41 } },
+          [1] = { follower = { visualId = 42, female = { visualId = 43 } } },
+        },
+      },
+    },
+  }
+  Assert.isTrue(ArtifactJobs.checkFollowers(catalog, { [41] = true, [42] = true, [43] = true }))
+  local ok, err = ArtifactJobs.checkFollowers(catalog, { [41] = true })
+  Assert.isNil(ok, "an absent follower visual fails the check")
+  Assert.isTrue(tostring(err):find("42", 1, true) ~= nil, "the failure names its visual: " .. tostring(err))
+end
+
+-- A generation session over synthetic message plans: the pool records every
+-- dispatched job and answers scripted states, while the cache is a real
+-- CacheFs over an in-memory backend. Only the public request surface is
+-- exercised; the field set below is the session's own documented state.
+local SUMMARY_GENERATION = "summary-gate-generation"
+
+local function recordingPool()
+  local pool = { submitted = {}, states = {} }
+  function pool:update() end
+  function pool:status(jobKey)
+    return self.states[jobKey] or "unknown"
+  end
+  function pool:request(job)
+    self.submitted[#self.submitted + 1] = job.jobKey
+    return self.states[job.jobKey] or "queued", nil
+  end
+  return pool
+end
+
+local function summarySession(pool, cacheFs, bankIds)
+  return setmetatable({
+    versionId = "heartgold",
+    generationId = SUMMARY_GENERATION,
+    producerId = "d" .. string.rep("3", 64),
+    epoch = 1,
+    pool = pool,
+    sweepEnabled = false,
+    cacheFs = cacheFs,
+    messageBankIds = bankIds,
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = {},
+    portraitPageIds = {},
+    mapCellKeys = {},
+    interest = {},
+    byKey = {},
+    milestones = {},
+    recorded = {},
+    retired = false,
+  }, InteractiveCacheBuild)
+end
+
+local function submittedSet(pool)
+  local set = {}
+  for _, jobKey in ipairs(pool.submitted) do
+    set[jobKey] = true
+  end
+  return set
+end
+
+local function publishMessageBank(cacheFs, bankId, marker)
+  cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = SUMMARY_GENERATION,
+    kind = "message-bank",
+    key = tostring(bankId),
+    marker = marker,
+  })
+  cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
+  cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = bankId,
+  })
+end
+
+function T.summary_dispatch_waits_for_bank_publication()
+  local pool = recordingPool()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local session = summarySession(pool, cacheFs, { 3, 5 })
+  local ready, failure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(ready, "the summary is pending while its banks are cold")
+  Assert.isNil(failure, "no failure is reported while the summary waits for its banks")
+  local submitted = submittedSet(pool)
+  Assert.isTrue(submitted["message-bank:3"] == true, "a cold bank dispatches")
+  Assert.isTrue(submitted["message-bank:5"] == true, "a cold bank dispatches")
+  Assert.isNil(submitted["message-summary:global"], "the summary never occupies a worker while its banks are pending")
+
+  pool.states["message-bank:3"] = "ready"
+  pool.states["message-bank:5"] = "ready"
+  publishMessageBank(cacheFs, 3, "bank-marker-3")
+  publishMessageBank(cacheFs, 5, "bank-marker-5")
+  local again, againFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(again, "the unpublished summary stays pending once its banks publish")
+  Assert.isNil(againFailure, "no failure is reported once the banks publish")
+  Assert.isTrue(submittedSet(pool)["message-summary:global"] == true, "the summary dispatches once every bank is ready")
+end
+
+function T.warm_summary_answers_without_dispatch()
+  local pool = recordingPool()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  publishMessageBank(cacheFs, 3, "bank-marker-3")
+  publishMessageBank(cacheFs, 5, "bank-marker-5")
+  cacheFs:writeLua(ArtifactState.path("message-summary", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = SUMMARY_GENERATION,
+    kind = "message-summary",
+    key = "global",
+    marker = "summary-marker",
+  })
+  cacheFs:write(FieldMessageCache.markerPath(), "summary-marker")
+  cacheFs:writeLua(FieldMessageCache.indexPath(), {
+    schema = FieldMessageCache.INDEX_SCHEMA,
+    version = "heartgold",
+    bankIds = { 3, 5 },
+  })
+  local session = summarySession(pool, cacheFs, { 3, 5 })
+  local ready, failure = session:requestJob("message-summary", "global", "required")
+  Assert.isTrue(ready, "a published summary answers ready")
+  Assert.isNil(failure, "a published summary reports no failure")
+  Assert.equal(#pool.submitted, 0, "warm readiness dispatches nothing")
 end
 
 return { metadata = { capabilities = {} }, tests = T }
