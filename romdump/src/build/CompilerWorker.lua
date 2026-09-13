@@ -1,4 +1,8 @@
--- Runs fixed producer jobs inside one persistent LÖVE worker VM.
+-- Runs fixed producer jobs inside one persistent worker VM.
+-- Each job carries its explicit source version, generation, and epoch. The
+-- worker opens or switches its source context only at job boundaries, stages
+-- one prepared artifact per job, releases transient scratch after heavy work,
+-- and exits after jumbo work so the controller can recycle the VM.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
@@ -35,6 +39,70 @@ local function mapResult(bundle)
   }
 end
 
+local function wallSeconds()
+  local host = rawget(_G, "love")
+  assert(host and host.timer and type(host.timer.getTime) == "function", "worker wall clock is required")
+  return host.timer.getTime()
+end
+
+---@param context table<string, unknown>
+local function closeContext(context)
+  if context.scriptSession ~= nil then
+    local session = context.scriptSession
+    context.scriptSession = nil
+    context.scriptPlan = nil
+    context.scriptGenerationKey = nil
+    pcall(session.close, session)
+  else
+    context.scriptPlan = nil
+    context.scriptGenerationKey = nil
+  end
+  if context.romFs ~= nil then
+    local romFs = context.romFs
+    context.romFs = nil
+    context.cacheFs = nil
+    context.versionId = nil
+    pcall(romFs.close, romFs)
+  else
+    context.cacheFs = nil
+    context.versionId = nil
+  end
+  context.terrainScratch = {}
+  if context.fieldCellScratch ~= nil then
+    context.fieldCellScratch.terrainScratch = context.terrainScratch
+  end
+end
+
+---@param job table<string, unknown>
+---@param context table<string, unknown>
+local function switchContext(job, context)
+  assert(type(job.versionId) == "string" and job.versionId ~= "", "worker job version is required")
+  assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
+  assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
+  if context.versionId ~= job.versionId then
+    closeContext(context)
+    local romFs, openError = RomFs.open(job.versionId)
+    if not romFs then
+      error(openError, 0)
+    end
+    context.romFs = romFs
+    context.cacheFs = CacheFs.forVersion(job.versionId)
+    context.versionId = job.versionId
+  end
+  assert(context.romFs and context.cacheFs, "worker context is incomplete")
+end
+
+---@param context table<string, unknown>
+local function releaseHeavyScratch(context)
+  context.terrainScratch = {}
+  local scratch = context.fieldCellScratch
+  if type(scratch) == "table" then
+    scratch.terrainScratch = context.terrainScratch
+    scratch.lastBundle = nil
+    scratch.lastDescriptor = nil
+  end
+end
+
 ---@param job table<string, unknown>
 ---@param context table<string, unknown>
 ---@return table<string, unknown>
@@ -47,6 +115,8 @@ function CompilerWorker.execute(job, context)
   assert(type(job.key) == "string" and job.key ~= "", "worker job key is required")
   assert(context and context.romFs and context.cacheFs, "worker context is incomplete")
   assert(type(job.stageName) == "string", "worker job stage name is required")
+  assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
+  assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
 
   if job.kind == "field-cell" then
     local descriptor = {
@@ -62,8 +132,11 @@ function CompilerWorker.execute(job, context)
     }
     local artifact = PreparedArtifact.new({
       cacheFs = context.cacheFs,
+      generationId = job.generationId,
+      epoch = job.epoch,
       kind = job.kind,
-      jobKey = job.key,
+      key = job.key,
+      jobKey = job.kind .. ":" .. job.key,
       stageName = job.stageName,
     })
     local ok, result = xpcall(function()
@@ -115,8 +188,11 @@ function CompilerWorker.execute(job, context)
     end
     local artifact = PreparedArtifact.new({
       cacheFs = context.cacheFs,
+      generationId = job.generationId,
+      epoch = job.epoch,
       kind = job.kind,
-      jobKey = job.key,
+      key = job.key,
+      jobKey = job.kind .. ":" .. job.key,
       stageName = job.stageName,
     })
     local ok, result = xpcall(function()
@@ -139,8 +215,11 @@ function CompilerWorker.execute(job, context)
 
   local artifact = PreparedArtifact.new({
     cacheFs = context.cacheFs,
+    generationId = job.generationId,
+    epoch = job.epoch,
     kind = job.kind,
-    jobKey = job.key,
+    key = job.key,
+    jobKey = job.kind .. ":" .. job.key,
     stageName = job.stageName,
   })
 
@@ -186,20 +265,11 @@ function CompilerWorker.execute(job, context)
 end
 
 ---@param workerId integer
----@param versionId string
 ---@param inputChannel table<string, function>
 ---@param resultChannel table<string, function>
-function CompilerWorker.run(workerId, versionId, inputChannel, resultChannel)
+function CompilerWorker.run(workerId, inputChannel, resultChannel)
   assert(type(workerId) == "number" and workerId % 1 == 0, "worker id must be an integer")
-  assert(type(versionId) == "string", "worker version is required")
-  local romFs, openError = RomFs.open(versionId)
-  if not romFs then
-    error(openError, 0)
-  end
-  local cacheFs = CacheFs.forVersion(versionId)
   local context = {
-    romFs = romFs,
-    cacheFs = cacheFs,
     workerId = workerId,
     terrainScratch = {},
     fieldCellScratch = {
@@ -216,49 +286,91 @@ function CompilerWorker.run(workerId, versionId, inputChannel, resultChannel)
     if job.kind == "stop" then
       break
     end
-    local jobKey = assert(job.jobKey or job.key)
-    local executeJob = {
-      kind = job.kind,
-      key = jobKey,
-      mapId = job.mapId,
-      matrixMemberId = job.matrixMemberId,
-      index = job.index,
-      x = job.x,
-      z = job.z,
-      mapHeaderId = job.mapHeaderId,
-      altitude = job.altitude,
-      landDataMemberId = job.landDataMemberId,
-      areaDataMemberId = job.areaDataMemberId,
-      memberId = job.memberId,
-      generationKey = job.generationKey,
-      producerFingerprint = job.producerFingerprint,
-      stageName = job.stageName,
-    }
-    local ok, result = xpcall(function()
-      return CompilerWorker.execute(executeJob, context)
-    end, function(failure)
-      return failure
-    end)
-    if ok then
-      resultChannel:push({
-        workerId = workerId,
-        jobKey = jobKey,
-        stageName = result.stageName,
-        status = "prepared",
-      })
+    if job.kind == "close-context" then
+      closeContext(context)
+      resultChannel:push({ workerId = workerId, kind = "close-ack" })
     else
-      resultChannel:push({
-        workerId = workerId,
-        jobKey = jobKey,
+      local jobKey = assert(job.jobKey or job.key)
+      local startedAt = wallSeconds()
+      switchContext(job, context)
+      local executeJob = {
+        kind = job.kind,
+        key = job.key or jobKey,
+        generationId = job.generationId,
+        epoch = job.epoch,
+        mapId = job.mapId,
+        matrixMemberId = job.matrixMemberId,
+        index = job.index,
+        x = job.x,
+        z = job.z,
+        mapHeaderId = job.mapHeaderId,
+        altitude = job.altitude,
+        landDataMemberId = job.landDataMemberId,
+        areaDataMemberId = job.areaDataMemberId,
+        memberId = job.memberId,
+        generationKey = job.generationKey,
+        producerFingerprint = job.producerFingerprint,
         stageName = job.stageName,
-        status = "failed",
-      })
+      }
+      local retiring = job.sizeClass == "jumbo"
+      local ok, result = xpcall(function()
+        return CompilerWorker.execute(executeJob, context)
+      end, function(failure)
+        return failure
+      end)
+      local workSeconds = wallSeconds() - startedAt
+      if job.sizeClass == "heavy" then
+        releaseHeavyScratch(context)
+      end
+      if ok then
+        resultChannel:push({
+          workerId = workerId,
+          epoch = job.epoch,
+          generationId = job.generationId,
+          kind = job.kind,
+          key = executeJob.key,
+          jobKey = jobKey,
+          stageName = result.stageName,
+          status = "prepared",
+          compileSeconds = nil,
+          stageSeconds = nil,
+          workSeconds = workSeconds,
+          stagedBytes = 0,
+          timingReason = "interleaved",
+          retiring = retiring,
+        })
+      else
+        resultChannel:push({
+          workerId = workerId,
+          epoch = job.epoch,
+          generationId = job.generationId,
+          kind = job.kind,
+          key = executeJob.key,
+          jobKey = jobKey,
+          stageName = job.stageName,
+          status = "failed",
+          compileSeconds = nil,
+          stageSeconds = nil,
+          workSeconds = workSeconds,
+          stagedBytes = 0,
+          timingReason = "interleaved",
+          retiring = retiring,
+        })
+      end
+      if retiring then
+        break
+      end
     end
   end
   if context.scriptSession ~= nil then
     context.scriptSession:close()
+    context.scriptSession = nil
   end
-  romFs:close()
+  if context.romFs ~= nil then
+    local romFs = context.romFs
+    context.romFs = nil
+    romFs:close()
+  end
 end
 
 return CompilerWorker

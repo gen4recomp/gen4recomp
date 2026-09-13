@@ -1,5 +1,11 @@
 -- Owns producer worker threads, priority scheduling, and serialized publication.
+-- A process-owned pool admits canonical jobs for one selected game version and
+-- generation epoch at a time. Each job carries its explicit version,
+-- generation, epoch, kind, key, priority, and size class. Physical worker
+-- occupancy is tracked separately from queued interest so retiring a game
+-- epoch never frees a still-executing worker.
 
+local ArtifactState = require("romdump.src.build.ArtifactState")
 local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
@@ -10,29 +16,46 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field sequence integer
 ---@field index integer?
 ---@class CompilerPool.Job
----@field key string
+---@field versionId string
+---@field generationId string
+---@field epoch integer
 ---@field kind string
----@field payload table<string, unknown>
+---@field key string
+---@field jobKey string
 ---@field priority integer
+---@field sizeClass string
+---@field payload table<string, unknown>
 ---@field sequence integer
 ---@field state string
 ---@field node CompilerPool.Node?
 ---@field details table<string, unknown>?
 ---@field stageName string?
+---@field workerId integer?
+---@field timing table<string, unknown>?
+---@field retired boolean?
 ---@class CompilerPool.Worker
 ---@field id integer
 ---@field thread table<string, function>
 ---@field input table<string, function>
----@field busyKey string?
+---@field slot CompilerPool.Job?
+---@field retiring boolean
 ---@field started boolean
+---@field joined boolean
+---@field closeSent boolean
+---@field closeAcked boolean
+---@field closeAfter boolean
 ---@class CompilerPool.Completion
 ---@field record CompilerPool.Job
 ---@field workerId integer
----@class CompilerPool
+---@class CompilerPool.Selected
 ---@field versionId string
+---@field generationId string
+---@field epoch integer
+---@class CompilerPool
 ---@field mode "batch"|"interactive"
 ---@field developmentRepositoryRoot string?
----@field cacheFs CacheFs
+---@field selected CompilerPool.Selected?
+---@field selectedCacheFs CacheFs?
 ---@field resultChannel table<string, function>
 ---@field heap CompilerPool.Node[]
 ---@field jobs table<string, CompilerPool.Job>
@@ -41,21 +64,37 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field sequence integer
 ---@field nonce integer
 ---@field closed boolean
+---@field quiescing boolean
 ---@field fatalError string|Errors.Error?
+---@field recentTimings table<string, unknown>[]
 local CompilerPool = {}
 CompilerPool.__index = CompilerPool
 
 local nextNonce = 0
 local PUBLICATION_BUDGET = 1
+local WAIT_TIMEOUT_SECONDS = 0.5
+local MAX_RECENT_TIMINGS = 32
 
 local BOOTSTRAP = [[
-local developmentRepositoryRoot, versionId, workerId, inputChannel, resultChannel = ...
+local developmentRepositoryRoot, workerId, inputChannel, resultChannel = ...
 if developmentRepositoryRoot ~= nil then
   package.path = developmentRepositoryRoot .. "/?.lua;" .. developmentRepositoryRoot .. "/?/init.lua;" .. package.path
 end
 local CompilerWorker = require("romdump.src.build.CompilerWorker")
-CompilerWorker.run(workerId, versionId, inputChannel, resultChannel)
+CompilerWorker.run(workerId, inputChannel, resultChannel)
 ]]
+
+local FIXED_PRIORITIES = {
+  [0] = true,
+  [10] = true,
+  [100] = true,
+}
+
+local SIZE_CLASSES = {
+  normal = true,
+  heavy = true,
+  jumbo = true,
+}
 
 local function before(a, b)
   return a.priority < b.priority or (a.priority == b.priority and a.sequence < b.sequence)
@@ -114,19 +153,23 @@ local function pushHeap(heap, node)
   siftUp(heap, index)
 end
 
-local function popHeap(heap)
-  local first = heap[1]
-  if not first then
+---@param heap CompilerPool.Node[]
+---@param index integer
+---@return CompilerPool.Node?
+local function removeHeapAt(heap, index)
+  local node = heap[index]
+  if not node then
     return nil
   end
   local last = table.remove(heap)
-  if last ~= first then
-    heap[1] = last
-    last.index = 1
-    siftDown(heap, 1)
+  if last ~= node then
+    heap[index] = last
+    last.index = index
+    siftUp(heap, index)
+    siftDown(heap, index)
   end
-  first.index = nil
-  return first
+  node.index = nil
+  return node
 end
 
 local function requireFunction(value, name)
@@ -141,13 +184,12 @@ local function restoreError(value)
   if type(value) == "table" and type(value.code) == "string" and type(value.message) == "string" then
     return Errors.new(value.code, value.message, value.context)
   end
-  return tostring(value)
-end
-
-local function removeStage(cacheFs, stageName)
-  if type(stageName) == "string" and stageName ~= "" then
-    CacheFs.forArtifactStage(cacheFs.versionId, stageName, cacheFs.backend):removeTree("")
+  -- A staged failure without a code carries only a message; surface the
+  -- message itself, never the wrapper table's address.
+  if type(value) == "table" and type(value.message) == "string" then
+    return value.message
   end
+  return tostring(value)
 end
 
 local function validateChannel(channel, name)
@@ -179,21 +221,26 @@ end
 
 local function cleanupWorkers(workers)
   for _, worker in ipairs(workers) do
-    if worker.started then
+    if worker.started and not worker.joined then
       pcall(worker.input.push, worker.input, { kind = "stop" })
     end
   end
   for _, worker in ipairs(workers) do
-    if worker.started then
+    if worker.started and not worker.joined then
       pcall(worker.thread.wait, worker.thread)
+      worker.joined = true
     end
   end
 end
 
+---@param options table<string, unknown>
+---@return CompilerPool
 local function newPool(options)
   assert(type(options) == "table", "compiler pool options are required")
-  assert(type(options.versionId) == "string", "compiler pool versionId is required")
   assert(options.mode == "batch" or options.mode == "interactive", "compiler pool mode is invalid")
+  if options.versionId ~= nil then
+    assert(type(options.versionId) == "string", "compiler pool versionId must be a string")
+  end
   local host = rawget(_G, "love")
   local threadApi = host and host.thread
   if type(threadApi) ~= "table" then
@@ -206,10 +253,10 @@ local function newPool(options)
   validateChannel(resultChannel, "result channel")
   nextNonce = nextNonce + 1
   local pool = setmetatable({
-    versionId = options.versionId,
     mode = options.mode,
     developmentRepositoryRoot = options.developmentRepositoryRoot,
-    cacheFs = CacheFs.forVersion(options.versionId),
+    selected = nil,
+    selectedCacheFs = nil,
     resultChannel = resultChannel,
     heap = {},
     jobs = {},
@@ -218,7 +265,9 @@ local function newPool(options)
     sequence = 0,
     nonce = nextNonce,
     closed = false,
+    quiescing = false,
     fatalError = nil,
+    recentTimings = {},
   }, CompilerPool)
 
   local ok, failure = pcall(function()
@@ -232,9 +281,20 @@ local function newPool(options)
       if thread.isRunning ~= nil then
         requireFunction(thread.isRunning, "Thread:isRunning")
       end
-      local worker = { id = workerId, thread = thread, input = input, busyKey = nil, started = false }
+      local worker = {
+        id = workerId,
+        thread = thread,
+        input = input,
+        slot = nil,
+        retiring = false,
+        started = false,
+        joined = false,
+        closeSent = false,
+        closeAcked = false,
+        closeAfter = false,
+      }
       pool.workers[#pool.workers + 1] = worker
-      thread:start(options.developmentRepositoryRoot, options.versionId, workerId, input, resultChannel)
+      thread:start(options.developmentRepositoryRoot, workerId, input, resultChannel)
       worker.started = true
     end
   end)
@@ -249,15 +309,81 @@ function CompilerPool.new(options)
   return newPool(options)
 end
 
-local function assertJob(job)
-  assert(type(job) == "table", "compiler job must be a table")
+---@param identity table<string, unknown>
+---@param epoch integer
+function CompilerPool:selectGeneration(identity, epoch)
+  assert(not self.closed, "compiler pool is shut down")
+  assert(type(identity) == "table", "compiler pool generation identity is required")
+  assert(type(identity.versionId) == "string" and identity.versionId ~= "", "compiler pool versionId is required")
   assert(
-    job.kind == "map" or job.kind == "field-cell" or job.kind == "script-member",
-    "unsupported compiler job kind: " .. tostring(job.kind)
+    type(identity.generationId) == "string" and identity.generationId ~= "",
+    "compiler pool generationId is required"
   )
+  assert(type(epoch) == "number" and epoch % 1 == 0 and epoch >= 1, "compiler pool epoch must be a positive integer")
+  local current = self.selected
+  if
+    current
+    and current.versionId == identity.versionId
+    and current.generationId == identity.generationId
+    and current.epoch == epoch
+  then
+    return
+  end
+  for _, node in ipairs(self.heap) do
+    local record = self.jobs[node.key]
+    if record then
+      record.state = "cancelled"
+      record.node = nil
+    end
+  end
+  self.heap = {}
+  for _, completion in ipairs(self.completions) do
+    self:_abortStage(completion.record)
+    if self.jobs[completion.record.jobKey] == completion.record then
+      completion.record.state = "cancelled"
+    end
+    -- A prepared heavy/jumbo result pins its worker until publication drains
+    -- it. Dropping the completion queue must release that pin: the worker
+    -- would otherwise stay busy forever behind a cancelled record, and the
+    -- jumbo exclusivity rule would block all future jumbo dispatch.
+    self:_freeSlot(completion.record, completion.workerId)
+  end
+  self.completions = {}
+  -- Running slots stay physically busy under their old identity but leave the
+  -- selected lookup, so an equal kind:key requested for the new epoch is new
+  -- interest rather than a promotion of the retired record.
+  self.jobs = {}
+  self.selected = { versionId = identity.versionId, generationId = identity.generationId, epoch = epoch }
+  self.selectedCacheFs = CacheFs.forVersion(identity.versionId)
+  self.quiescing = false
+  for _, worker in ipairs(self.workers) do
+    worker.closeSent = false
+    worker.closeAcked = false
+    worker.closeAfter = false
+  end
+end
+
+local function assertJobShape(job, selected)
+  assert(type(job) == "table", "compiler job must be a table")
+  assert(type(job.versionId) == "string" and job.versionId ~= "", "compiler job versionId is required")
+  assert(type(job.generationId) == "string" and job.generationId ~= "", "compiler job generationId is required")
+  assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "compiler job epoch must be an integer")
+  assert(ArtifactState.KINDS[job.kind], "unsupported compiler job kind: " .. tostring(job.kind))
   assert(type(job.key) == "string" and job.key ~= "", "compiler job key is required")
-  assert(type(job.priority) == "number" and job.priority % 1 == 0, "compiler job priority must be an integer")
+  ArtifactState.path(job.kind, job.key)
+  assert(type(job.jobKey) == "string" and job.jobKey ~= "", "compiler job jobKey is required")
+  assert(job.jobKey == job.kind .. ":" .. job.key, "compiler job identity must match its kind and key")
+  assert(
+    type(job.priority) == "number" and job.priority % 1 == 0 and FIXED_PRIORITIES[job.priority],
+    "compiler job priority must be 0, 10, or 100"
+  )
+  assert(SIZE_CLASSES[job.sizeClass], "compiler job sizeClass must be normal, heavy, or jumbo")
   assert(type(job.payload) == "table", "compiler job payload is required")
+  if selected then
+    assert(job.versionId == selected.versionId, "compiler job version does not match the selected generation")
+    assert(job.generationId == selected.generationId, "compiler job generation does not match the selected generation")
+    assert(job.epoch == selected.epoch, "compiler job epoch does not match the selected generation")
+  end
   if job.kind == "map" then
     assert(type(job.payload.mapId) == "number" and job.payload.mapId % 1 == 0, "map job requires an integer mapId")
   elseif job.kind == "field-cell" then
@@ -287,63 +413,306 @@ end
 
 function CompilerPool:request(job)
   assert(not self.closed, "compiler pool is shut down")
-  assertJob(job)
-  local existing = self.jobs[job.key]
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
+  assert(not self.quiescing, "compiler pool is quiescing")
+  local selected = assert(self.selected, "compiler pool has no selected generation")
+  assertJobShape(job, selected)
+  local existing = self.jobs[job.jobKey]
   if existing then
     if existing.state == "failed" then
       error(existing.details and existing.details.error or "compiler job failed", 2)
     end
-    if existing.state == "queued" and job.priority < existing.priority then
-      existing.priority = job.priority
-      existing.node.priority = job.priority
-      siftUp(self.heap, existing.node.index)
+    if existing.state == "cancelled" then
+      self.jobs[job.jobKey] = nil
+    else
+      if existing.state == "queued" and job.priority < existing.priority then
+        existing.priority = job.priority
+        existing.node.priority = job.priority
+        siftUp(self.heap, existing.node.index)
+      end
+      return existing.state, existing.details
     end
-    return existing.state, existing.details
   end
 
   self.sequence = self.sequence + 1
   local record = {
+    versionId = job.versionId,
+    generationId = job.generationId,
+    epoch = job.epoch,
     key = job.key,
     kind = job.kind,
+    jobKey = job.jobKey,
     payload = job.payload,
     priority = job.priority,
+    sizeClass = job.sizeClass,
     sequence = self.sequence,
     state = "queued",
     node = nil,
     details = nil,
   }
-  record.node = { key = record.key, priority = record.priority, sequence = record.sequence }
-  self.jobs[record.key] = record
+  record.node = { key = record.jobKey, priority = record.priority, sequence = record.sequence }
+  self.jobs[record.jobKey] = record
   pushHeap(self.heap, record.node)
   return record.state
 end
 
-function CompilerPool:retry(key, priority)
+function CompilerPool:retry(jobKey, priority)
   assert(not self.closed, "compiler pool is shut down")
-  local record = assert(self.jobs[key], "unknown compiler job: " .. tostring(key))
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
+  assert(not self.quiescing, "compiler pool is quiescing")
+  local record = assert(self.jobs[jobKey], "unknown compiler job: " .. tostring(jobKey))
   assert(record.state == "failed", "only failed compiler jobs can be retried")
-  assert(type(priority) == "number" and priority % 1 == 0, "retry priority must be an integer")
+  assert(
+    type(priority) == "number" and priority % 1 == 0 and FIXED_PRIORITIES[priority],
+    "retry priority must be 0, 10, or 100"
+  )
   self.sequence = self.sequence + 1
   record.priority = priority
   record.sequence = self.sequence
   record.details = nil
   record.state = "queued"
-  record.node = { key = record.key, priority = priority, sequence = self.sequence }
+  record.node = { key = record.jobKey, priority = priority, sequence = self.sequence }
   pushHeap(self.heap, record.node)
   return record.state
 end
 
-function CompilerPool:status(key)
-  local record = self.jobs[key]
+---@param jobKey string
+---@return string
+---@return table<string, unknown>?
+function CompilerPool:status(jobKey)
+  local record = self.jobs[jobKey]
   if not record then
     return "unknown"
+  end
+  if record.state == "queued" then
+    local reason = self:_admissionBlockReason(record)
+    if reason then
+      return record.state, { waitingOn = reason }
+    end
   end
   return record.state, record.details
 end
 
-function CompilerPool:_idleWorker()
+---@param record CompilerPool.Job
+---@return string?
+function CompilerPool:_admissionBlockReason(record)
+  if self.fatalError then
+    return "infrastructure-failure"
+  end
+  if self.quiescing then
+    return "quiescing"
+  end
+  if self:_runningCount() + #self.completions > #self.workers then
+    return "prepared-backpressure"
+  end
+  local heavyActive, jumboActive = self:_activeSizes()
+  if record.sizeClass == "jumbo" then
+    if jumboActive > 0 or heavyActive > 0 then
+      return "active-job"
+    end
+    for _, worker in ipairs(self.workers) do
+      if worker.slot ~= nil or worker.retiring then
+        return "active-job"
+      end
+    end
+    return nil
+  end
+  if jumboActive > 0 then
+    return "active-job"
+  end
+  if record.sizeClass == "heavy" and heavyActive > 0 then
+    return "active-job"
+  end
+  local root = self.heap[1]
+  if root and root.key ~= record.jobKey then
+    local rootRecord = self.jobs[root.key]
+    if rootRecord and rootRecord.sizeClass == "jumbo" and rootRecord.priority <= record.priority then
+      local allIdle = true
+      for _, worker in ipairs(self.workers) do
+        if worker.slot ~= nil or worker.retiring then
+          allIdle = false
+          break
+        end
+      end
+      if not allIdle then
+        return "reserved-for-jumbo"
+      end
+    end
+  end
+  local idle = false
   for _, worker in ipairs(self.workers) do
-    if worker.busyKey == nil then
+    if worker.slot == nil and not worker.retiring then
+      idle = true
+      break
+    end
+  end
+  if not idle then
+    return "active-job"
+  end
+  return nil
+end
+
+---@return integer, integer
+function CompilerPool:_activeSizes()
+  local heavy, jumbo = 0, 0
+  local seen = {}
+  local function count(record)
+    if record == nil or seen[record] then
+      return
+    end
+    seen[record] = true
+    if record.state == "running" then
+      if record.sizeClass == "heavy" then
+        heavy = heavy + 1
+      elseif record.sizeClass == "jumbo" then
+        jumbo = jumbo + 1
+      end
+    elseif record.state == "prepared" and not record.retired then
+      -- A prepared heavy/jumbo result keeps counting until publication drains
+      -- it. Normal results join the bounded backlog without holding activity,
+      -- and a recycled jumbo worker's queued result no longer blocks admission.
+      if record.sizeClass == "heavy" then
+        heavy = heavy + 1
+      elseif record.sizeClass == "jumbo" then
+        jumbo = jumbo + 1
+      end
+    end
+  end
+  for _, record in pairs(self.jobs) do
+    count(record)
+  end
+  -- Detached slots from a retired epoch stay physically busy and keep counting
+  -- against size admission until their completion or termination is observed.
+  for _, worker in ipairs(self.workers) do
+    count(worker.slot)
+  end
+  return heavy, jumbo
+end
+
+---@return integer
+function CompilerPool:_runningCount()
+  local running = 0
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil then
+      running = running + 1
+    end
+  end
+  return running
+end
+
+---@param versionId string
+---@return CacheFs
+function CompilerPool:_cacheFsFor(versionId)
+  if self.selected and self.selectedCacheFs and versionId == self.selected.versionId then
+    return self.selectedCacheFs
+  end
+  return CacheFs.forVersion(versionId)
+end
+
+---@param record CompilerPool.Job
+function CompilerPool:_abortStage(record)
+  if type(record.stageName) ~= "string" or record.stageName == "" then
+    return
+  end
+  local ok, artifact = pcall(PreparedArtifact.open, {
+    cacheFs = self:_cacheFsFor(record.versionId),
+    generationId = record.generationId,
+    epoch = record.epoch,
+    kind = record.kind,
+    key = record.key,
+    jobKey = record.jobKey,
+    stageName = record.stageName,
+  })
+  if ok and artifact:isAbortable() then
+    pcall(artifact.abort, artifact)
+  end
+end
+
+---@param worker CompilerPool.Worker
+---@return boolean
+local function workerIdle(worker)
+  return worker.started and not worker.joined and worker.slot == nil and not worker.retiring
+end
+
+function CompilerPool:_eligibleRecord()
+  if self.quiescing or #self.heap == 0 then
+    return nil
+  end
+  if self:_runningCount() + #self.completions > #self.workers then
+    return nil
+  end
+  local heavyActive, jumboActive = self:_activeSizes()
+  local ordered = {}
+  for _, node in ipairs(self.heap) do
+    ordered[#ordered + 1] = node
+  end
+  table.sort(ordered, before)
+  local rootRecord = self.jobs[ordered[1].key]
+  local reserveJumbo = false
+  if rootRecord and rootRecord.sizeClass == "jumbo" then
+    local allIdle = true
+    for _, worker in ipairs(self.workers) do
+      if not workerIdle(worker) then
+        allIdle = false
+        break
+      end
+    end
+    if not allIdle or heavyActive > 0 or jumboActive > 0 then
+      reserveJumbo = true
+    end
+  end
+  for _, node in ipairs(ordered) do
+    local record = self.jobs[node.key]
+    if record and record.state == "queued" then
+      if record.sizeClass == "jumbo" then
+        local allIdle = true
+        for _, worker in ipairs(self.workers) do
+          if not workerIdle(worker) then
+            allIdle = false
+            break
+          end
+        end
+        if allIdle and heavyActive == 0 and jumboActive == 0 then
+          return record
+        end
+      else
+        if jumboActive == 0 then
+          if record.sizeClass == "heavy" and heavyActive > 0 then
+            -- At most one heavy job executes at a time.
+          elseif reserveJumbo and rootRecord and record.priority >= rootRecord.priority then
+            -- The drained window is reserved for the waiting jumbo job unless
+            -- higher-priority work arrives first.
+          else
+            for _, worker in ipairs(self.workers) do
+              if workerIdle(worker) then
+                return record
+              end
+            end
+            return nil
+          end
+        end
+      end
+    end
+  end
+  return nil
+end
+
+---@param record CompilerPool.Job
+---@return CompilerPool.Worker?
+function CompilerPool:_idleWorkerFor(record)
+  if record.sizeClass == "jumbo" then
+    local first = self.workers[1]
+    if first and workerIdle(first) then
+      return first
+    end
+    return nil
+  end
+  for _, worker in ipairs(self.workers) do
+    if workerIdle(worker) then
       return worker
     end
   end
@@ -352,21 +721,31 @@ end
 
 function CompilerPool:_dispatch()
   while true do
-    local worker = self:_idleWorker()
-    local node = worker and popHeap(self.heap)
-    if not worker or not node then
+    local record = self:_eligibleRecord()
+    if not record then
       return
     end
-    local record = assert(self.jobs[node.key], "heap references an unknown compiler job")
-    assert(record.state == "queued", "heap contains a settled compiler job")
+    local worker = self:_idleWorkerFor(record)
+    if not worker then
+      return
+    end
+    assert(record.node and record.node.index, "queued compiler job is missing its heap position")
+    removeHeapAt(self.heap, record.node.index)
+    record.node = nil
     self.sequence = self.sequence + 1
     local stageName = string.format("run%d-w%d-j%d", self.nonce, worker.id, self.sequence)
-    worker.busyKey = record.key
     record.state = "running"
     record.stageName = stageName
+    record.workerId = worker.id
+    worker.slot = record
     local ok, pushError = pcall(worker.input.push, worker.input, {
       kind = record.kind,
-      jobKey = record.key,
+      key = record.key,
+      jobKey = record.jobKey,
+      versionId = record.versionId,
+      generationId = record.generationId,
+      epoch = record.epoch,
+      sizeClass = record.sizeClass,
       mapId = record.payload.mapId,
       matrixMemberId = record.payload.matrixMemberId,
       index = record.payload.index,
@@ -382,9 +761,12 @@ function CompilerPool:_dispatch()
       stageName = stageName,
     })
     if not ok then
-      worker.busyKey = nil
+      worker.slot = nil
       record.state = "failed"
       record.details = { error = pushError }
+      record.stageName = nil
+      record.workerId = nil
+      self.fatalError = pushError
       error(pushError, 0)
     end
   end
@@ -395,24 +777,61 @@ function CompilerPool:_settleFailure(record, workerId, failure)
   record.details = { workerId = workerId, error = failure }
 end
 
+---@param message table<string, unknown>
+---@param reason string
+---@noreturn
+function CompilerPool:_stopWithProtocolFailure(message, reason)
+  local failure = "compiler protocol failure: " .. reason
+  if type(message) == "table" and message.jobKey ~= nil then
+    failure = failure .. " for " .. tostring(message.jobKey)
+  end
+  self.fatalError = failure
+  error(failure, 0)
+end
+
+---@param record CompilerPool.Job
+---@param message table<string, unknown>
 function CompilerPool:_readFailure(record, message)
   local failure = "worker failed" ---@type string|Errors.Error
-  local ok, artifact = pcall(PreparedArtifact.open, {
-    cacheFs = self.cacheFs,
-    kind = record.kind,
-    jobKey = record.key,
-    stageName = message.stageName,
-  })
-  if ok then
-    local manifest = artifact:manifest()
-    failure = restoreError(manifest.error or failure)
-    if artifact:isAbortable() then
-      artifact:abort()
+  local stageName = message.stageName
+  local opened = false
+  if type(stageName) == "string" and stageName ~= "" then
+    local ok, artifact = pcall(PreparedArtifact.open, {
+      cacheFs = self:_cacheFsFor(record.versionId),
+      generationId = record.generationId,
+      epoch = record.epoch,
+      kind = record.kind,
+      key = record.key,
+      jobKey = record.jobKey,
+      stageName = stageName,
+    })
+    if ok then
+      opened = true
+      local manifest = artifact:manifest()
+      failure = restoreError(manifest.error or failure)
+      if artifact:isAbortable() then
+        artifact:abort()
+      end
     end
-  else
-    removeStage(self.cacheFs, message.stageName)
+  end
+  if not opened then
+    failure = restoreError(failure)
   end
   self:_settleFailure(record, message.workerId, failure)
+end
+
+---@param message table<string, unknown>
+---@return table<string, unknown>
+local function messageIdentity(message)
+  return {
+    workerId = message.workerId,
+    epoch = message.epoch,
+    generationId = message.generationId,
+    kind = message.kind,
+    key = message.key,
+    jobKey = message.jobKey,
+    stageName = message.stageName,
+  }
 end
 
 function CompilerPool:_collectResults()
@@ -421,35 +840,194 @@ function CompilerPool:_collectResults()
     if message == nil then
       return
     end
-    assert(type(message) == "table", "worker completion must be a table")
-    local record = self.jobs[message.jobKey]
-    assert(record, "worker completed an unknown job")
-    assert(record.state == "running", "worker completed an already-settled job")
-    local worker = self.workers[message.workerId]
-    assert(worker and worker.busyKey == record.key, "worker completion ownership mismatch")
-    worker.busyKey = nil
-    if message.status == "failed" then
-      self:_readFailure(record, message)
-    elseif message.status == "prepared" then
-      assert(message.stageName == record.stageName, "worker completion stage mismatch")
-      record.state = "prepared"
-      self.completions[#self.completions + 1] = { record = record, workerId = message.workerId }
+    if type(message) == "table" and message.kind == "close-ack" then
+      local worker = self.workers[message.workerId]
+      if worker then
+        worker.closeAcked = true
+      end
+    elseif type(message) == "table" and (message.status == "prepared" or message.status == "failed") then
+      self:_acceptCompletion(message)
     else
-      error("unknown worker completion status: " .. tostring(message.status), 0)
+      self:_stopWithProtocolFailure(message, "unknown worker message")
+    end
+    self:_replaceRetiredWorkers()
+  end
+end
+
+---@param message table<string, unknown>
+function CompilerPool:_acceptCompletion(message)
+  assert(type(message) == "table", "worker completion must be a table")
+  local workerId = message.workerId
+  local worker = self.workers[workerId]
+  if type(workerId) ~= "number" or not worker then
+    self:_stopWithProtocolFailure(message, "unknown worker")
+  end
+  assert(worker, "compiler worker is required")
+  local slot = worker.slot
+  if not slot then
+    self:_stopWithProtocolFailure(message, "duplicate completion for an idle worker")
+  end
+  assert(slot, "compiler worker slot is required")
+  local identity = messageIdentity(message)
+  if
+    identity.workerId ~= worker.id
+    or identity.epoch ~= slot.epoch
+    or identity.generationId ~= slot.generationId
+    or identity.kind ~= slot.kind
+    or identity.key ~= slot.key
+    or identity.jobKey ~= slot.jobKey
+    or identity.stageName ~= slot.stageName
+  then
+    self:_stopWithProtocolFailure(message, "completion does not match its worker slot")
+  end
+  if slot.state ~= "running" then
+    self:_stopWithProtocolFailure(message, "worker completed an already-settled job")
+  end
+  local selected = self.selected
+  local current = selected and self.jobs[slot.jobKey]
+  local obsolete = current ~= slot
+  if not obsolete then
+    if selected == nil then
+      obsolete = true
+    else
+      obsolete = slot.generationId ~= selected.generationId
+        or slot.epoch ~= selected.epoch
+        or slot.versionId ~= selected.versionId
+    end
+  end
+  -- A prepared heavy/jumbo result keeps its worker until publication drains
+  -- it. Normal results and recycled workers release the slot at once; the
+  -- queued result keeps counting through the finite prepared backlog instead
+  -- of a pinned worker.
+  local function release()
+    worker.slot = nil
+    if worker.closeAfter and not message.retiring then
+      self:_sendCloseContext(worker)
+    end
+  end
+  if message.status == "failed" then
+    release()
+    if obsolete then
+      self:_abortStage(slot)
+      slot.state = "cancelled"
+      if message.retiring then
+        worker.retiring = true
+      end
+      return
+    end
+    self:_readFailure(slot, message)
+    if message.retiring then
+      worker.retiring = true
+    end
+    self:_recordTiming(slot, message)
+    return
+  end
+  if obsolete then
+    release()
+    self:_abortStage(slot)
+    slot.state = "cancelled"
+    if message.retiring then
+      worker.retiring = true
+    end
+    return
+  end
+  slot.state = "prepared"
+  slot.timing = {
+    compileSeconds = message.compileSeconds,
+    stageSeconds = message.stageSeconds,
+    workSeconds = message.workSeconds,
+    stagedBytes = message.stagedBytes,
+    timingReason = message.timingReason,
+  }
+  self.completions[#self.completions + 1] = { record = slot, workerId = worker.id }
+  if message.retiring then
+    slot.retired = true
+    release()
+    worker.retiring = true
+  elseif slot.sizeClass == "normal" then
+    release()
+  end
+end
+
+---@param record CompilerPool.Job
+---@param message table<string, unknown>
+function CompilerPool:_recordTiming(record, message)
+  record.timing = {
+    compileSeconds = message.compileSeconds,
+    stageSeconds = message.stageSeconds,
+    workSeconds = message.workSeconds,
+    stagedBytes = message.stagedBytes,
+    timingReason = message.timingReason,
+  }
+end
+
+---@param worker CompilerPool.Worker
+function CompilerPool:_sendCloseContext(worker)
+  if worker.closeSent or not worker.started or worker.joined then
+    return
+  end
+  local ok = pcall(worker.input.push, worker.input, { kind = "close-context" })
+  if ok then
+    worker.closeSent = true
+  end
+end
+
+function CompilerPool:_replaceRetiredWorkers()
+  local host = rawget(_G, "love")
+  local threadApi = host and host.thread
+  for _, worker in ipairs(self.workers) do
+    if worker.retiring and not worker.joined then
+      local threadError = worker.thread:getError()
+      local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
+      if threadError or dead then
+        pcall(worker.thread.wait, worker.thread)
+        worker.joined = true
+        if not self.closed and type(threadApi) == "table" then
+          local created, replacement = pcall(function()
+            local input = threadApi.newChannel()
+            validateChannel(input, "worker input channel")
+            local thread = threadApi.newThread(BOOTSTRAP)
+            requireFunction(thread.start, "Thread:start")
+            requireFunction(thread.wait, "Thread:wait")
+            requireFunction(thread.getError, "Thread:getError")
+            if thread.isRunning ~= nil then
+              requireFunction(thread.isRunning, "Thread:isRunning")
+            end
+            thread:start(self.developmentRepositoryRoot, worker.id, input, self.resultChannel)
+            return {
+              id = worker.id,
+              thread = thread,
+              input = input,
+              slot = nil,
+              retiring = false,
+              started = true,
+              joined = false,
+              closeSent = false,
+              closeAcked = false,
+              closeAfter = false,
+            }
+          end)
+          if created and replacement then
+            self.workers[worker.id] = replacement
+          end
+        end
+      end
     end
   end
 end
 
 function CompilerPool:_pollWorkerFailures()
   for _, worker in ipairs(self.workers) do
-    if worker.busyKey ~= nil then
+    if worker.retiring then
+      -- An exiting jumbo worker reports before it stops; its termination is
+      -- joined during replacement, never treated as a worker death.
+    elseif worker.slot ~= nil then
       local errorText = worker.thread:getError()
       local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
       if errorText or dead then
-        local record = self.jobs[worker.busyKey]
-        removeStage(self.cacheFs, record.stageName)
+        local record = worker.slot
         self:_settleFailure(record, worker.id, errorText or "compiler worker stopped unexpectedly")
-        worker.busyKey = nil
+        worker.slot = nil
         self.fatalError = errorText or "compiler worker stopped unexpectedly"
       end
     end
@@ -462,13 +1040,33 @@ function CompilerPool:_publishOne()
     return false
   end
   local record = completion.record
-  local artifact = PreparedArtifact.open({
-    cacheFs = self.cacheFs,
+  if record.state ~= "prepared" then
+    self:_abortStage(record)
+    self:_freeSlot(record, completion.workerId)
+    return true
+  end
+  local openOk, artifact = pcall(PreparedArtifact.open, {
+    cacheFs = self:_cacheFsFor(record.versionId),
+    generationId = record.generationId,
+    epoch = record.epoch,
     kind = record.kind,
-    jobKey = record.key,
+    key = record.key,
+    jobKey = record.jobKey,
     stageName = record.stageName,
   })
-  local ok, failure = pcall(artifact.publish, artifact)
+  if not openOk then
+    self:_settleFailure(record, completion.workerId, artifact)
+    self:_freeSlot(record, completion.workerId)
+    return true
+  end
+  local ok, failure = pcall(artifact.publish, artifact, {
+    generationId = record.generationId,
+    epoch = record.epoch,
+    kind = record.kind,
+    key = record.key,
+    jobKey = record.jobKey,
+    stageName = record.stageName,
+  })
   if not ok then
     if artifact:isAbortable() then
       artifact:abort()
@@ -482,17 +1080,65 @@ function CompilerPool:_publishOne()
       result = manifest.result,
       stageName = record.stageName,
     }
+    self.recentTimings[#self.recentTimings + 1] = {
+      jobKey = record.jobKey,
+      workerId = completion.workerId,
+      compileSeconds = record.timing and record.timing.compileSeconds,
+      stageSeconds = record.timing and record.timing.stageSeconds,
+      workSeconds = record.timing and record.timing.workSeconds,
+      stagedBytes = record.timing and record.timing.stagedBytes,
+    }
+    if #self.recentTimings > MAX_RECENT_TIMINGS then
+      table.remove(self.recentTimings, 1)
+    end
   end
+  self:_freeSlot(record, completion.workerId)
   return true
 end
 
-function CompilerPool:update(publicationBudget)
+---@param record CompilerPool.Job
+---@param workerId integer
+function CompilerPool:_freeSlot(record, workerId)
+  local worker = self.workers[workerId]
+  if worker and worker.slot == record then
+    worker.slot = nil
+    if worker.closeAfter then
+      self:_sendCloseContext(worker)
+    end
+  else
+    for _, other in ipairs(self.workers) do
+      if other.slot == record then
+        other.slot = nil
+        if other.closeAfter then
+          self:_sendCloseContext(other)
+        end
+        break
+      end
+    end
+  end
+end
+
+---@param budget number?
+function CompilerPool:update(budget)
   assert(not self.closed, "compiler pool is shut down")
-  self:_pollWorkerFailures()
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
+  -- Collect worker reports before polling liveness so a completion that
+  -- arrived ahead of its worker's exit is accepted on its slot instead of
+  -- being mistaken for a death.
   self:_collectResults()
-  local budget = publicationBudget or PUBLICATION_BUDGET
-  while budget > 0 and self:_publishOne() do
-    budget = budget - 1
+  self:_pollWorkerFailures()
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
+  local remaining = budget
+  if remaining == nil then
+    remaining = PUBLICATION_BUDGET
+  end
+  assert(type(remaining) == "number", "publication budget must be a number")
+  while remaining > 0 and self:_publishOne() do
+    remaining = remaining - 1
   end
   self:_dispatch()
   if self.fatalError then
@@ -509,6 +1155,11 @@ function CompilerPool:_hasUnsettled()
       return true
     end
   end
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil or worker.retiring then
+      return true
+    end
+  end
   return false
 end
 
@@ -517,16 +1168,26 @@ function CompilerPool:_waitForResult()
   if self.fatalError then
     error(self.fatalError, 0)
   end
-  local message = self.resultChannel:demand()
+  local message = self.resultChannel:demand(WAIT_TIMEOUT_SECONDS)
+  self:_pollWorkerFailures()
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
   if message ~= nil then
     self.resultChannel:push(message)
   end
 end
 
-function CompilerPool:wait(key)
+---@param jobKey string
+---@return string
+---@return table<string, unknown>?
+function CompilerPool:wait(jobKey)
   assert(not self.closed, "compiler pool is shut down")
-  local record = assert(self.jobs[key], "unknown compiler job: " .. tostring(key))
+  local record = assert(self.jobs[jobKey], "unknown compiler job: " .. tostring(jobKey))
   while record.state ~= "ready" and record.state ~= "failed" do
+    if self.fatalError then
+      error(self.fatalError, 0)
+    end
     self:update(math.huge)
     if record.state ~= "ready" and record.state ~= "failed" then
       self:_waitForResult()
@@ -547,36 +1208,134 @@ function CompilerPool:drain()
   return true
 end
 
+function CompilerPool:quiesce()
+  assert(not self.closed, "compiler pool is shut down")
+  self.quiescing = true
+  for _, node in ipairs(self.heap) do
+    local record = self.jobs[node.key]
+    if record then
+      record.state = "cancelled"
+      record.node = nil
+    end
+  end
+  self.heap = {}
+  for _, worker in ipairs(self.workers) do
+    if worker.slot == nil and not worker.retiring then
+      self:_sendCloseContext(worker)
+    else
+      worker.closeAfter = true
+    end
+  end
+end
+
+---@return boolean
+function CompilerPool:isQuiescent()
+  if not self.quiescing then
+    return false
+  end
+  if #self.heap > 0 or #self.completions > 0 then
+    return false
+  end
+  for _, record in pairs(self.jobs) do
+    if record.state == "running" or record.state == "prepared" or record.state == "queued" then
+      return false
+    end
+  end
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil or worker.retiring then
+      return false
+    end
+    if not worker.closeAcked then
+      return false
+    end
+  end
+  return true
+end
+
+---@return table<string, unknown>
+function CompilerPool:diagnostics()
+  local counts = { queued = 0, running = 0, prepared = 0, ready = 0, failed = 0, cancelled = 0 }
+  local sizes = { normal = 0, heavy = 0, jumbo = 0 }
+  local active = {}
+  for _, record in pairs(self.jobs) do
+    if counts[record.state] ~= nil then
+      counts[record.state] = counts[record.state] + 1
+    end
+    if sizes[record.sizeClass] ~= nil then
+      sizes[record.sizeClass] = sizes[record.sizeClass] + 1
+    end
+    if record.state == "running" or record.state == "prepared" then
+      active[#active + 1] = record.jobKey
+    end
+  end
+  table.sort(active)
+  local selected = nil
+  if self.selected then
+    selected = {
+      versionId = self.selected.versionId,
+      generationId = self.selected.generationId,
+      epoch = self.selected.epoch,
+    }
+  end
+  return {
+    mode = self.mode,
+    selected = selected,
+    quiescing = self.quiescing,
+    workerCount = #self.workers,
+    counts = counts,
+    sizes = sizes,
+    activeJobKeys = active,
+    pendingPublications = #self.completions,
+    error = self.fatalError,
+    recentTimings = self.recentTimings,
+  }
+end
+
 function CompilerPool:shutdown()
   if self.closed then
     return true
   end
   for _, node in ipairs(self.heap) do
     local record = self.jobs[node.key]
-    record.state = "cancelled"
-    record.node = nil
+    if record then
+      record.state = "cancelled"
+      record.node = nil
+    end
   end
   self.heap = {}
-  cleanupWorkers(self.workers)
-  self:_collectResults()
-  while self:_publishOne() do
+  for _, worker in ipairs(self.workers) do
+    if worker.started and not worker.joined then
+      pcall(worker.input.push, worker.input, { kind = "stop" })
+    end
   end
   for _, worker in ipairs(self.workers) do
-    if worker.busyKey ~= nil then
-      local record = self.jobs[worker.busyKey]
-      local ok, artifact = pcall(PreparedArtifact.open, {
-        cacheFs = self.cacheFs,
-        kind = record.kind,
-        jobKey = record.key,
-        stageName = record.stageName,
-      })
-      if ok and artifact:isAbortable() then
-        artifact:abort()
-      elseif not ok then
-        removeStage(self.cacheFs, record.stageName)
+    if worker.started and not worker.joined then
+      pcall(worker.thread.wait, worker.thread)
+      worker.joined = true
+    end
+  end
+  pcall(function()
+    self:_collectResults()
+  end)
+  while true do
+    local ok, more = pcall(function()
+      return self:_publishOne()
+    end)
+    if not ok or not more then
+      break
+    end
+  end
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil then
+      local record = assert(worker.slot, "compiler worker slot is required")
+      pcall(function()
+        self:_abortStage(record)
+      end)
+      if record.state == "running" or record.state == "prepared" then
+        record.state = "failed"
+        record.details = { workerId = worker.id, error = "compiler worker stopped during shutdown" }
       end
-      self:_settleFailure(record, worker.id, "compiler worker stopped during shutdown")
-      worker.busyKey = nil
+      worker.slot = nil
     end
   end
   self.closed = true
