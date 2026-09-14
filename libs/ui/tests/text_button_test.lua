@@ -490,4 +490,61 @@ function T.face_divider_is_source_pixel_chrome()
   )
 end
 
+function T.selected_output_matches_shared_outline()
+  local TextButton = textButtonModule()
+  local ok, FocusOutline = pcall(require, "libs.ui.src.FocusOutline")
+  Assert.isTrue(ok, "FocusOutline missing: " .. tostring(FocusOutline))
+  local cases = {
+    { bounds = rect(10, 20, 120, 56), scale = 1 },
+    { bounds = rect(0, 0, 240, 112), scale = 2 },
+  }
+  for _, case in ipairs(cases) do
+    local scale = case.scale
+    local button = TextButton.resolve({ rect = case.bounds, scale = scale })
+    local text = {
+      measure = function()
+        return 20
+      end,
+      lineHeight = 16,
+      draw = function() end,
+    }
+    local gButton, callsButton = recordingGraphics()
+    gButton._state.lineWidth = 7
+    TextButton.draw(gButton, button, { label = "Yes", selected = true, text = text })
+    local buttonLines = {}
+    for _, r in ipairs(callsButton.rectangles) do
+      if r.mode == "line" then
+        buttonLines[#buttonLines + 1] = r
+      end
+    end
+    Assert.equal(#buttonLines, 2, "selected draws exactly two focus lines at scale " .. tostring(scale))
+
+    local gDirect, callsDirect = recordingGraphics()
+    gDirect._state.lineWidth = 7
+    FocusOutline.draw(gDirect, case.bounds, { scale = scale })
+    Assert.equal(#callsDirect.rectangles, 2)
+    for index = 1, 2 do
+      Assert.deepEqual(buttonLines[index], callsDirect.rectangles[index])
+    end
+    Assert.equal(buttonLines[1].lineWidth, 5 * scale)
+    Assert.equal(buttonLines[2].lineWidth, 3 * scale)
+    Assert.deepEqual(buttonLines[1].color, { 1, 1, 1, 1 })
+    Assert.deepEqual(buttonLines[2].color, { 1, 0, 0, 1 })
+    local inset = 1 * scale
+    Assert.equal(buttonLines[1].x, case.bounds.x + inset)
+    Assert.equal(buttonLines[1].y, case.bounds.y + inset)
+    Assert.equal(buttonLines[1].w, case.bounds.width - inset * 2)
+    Assert.equal(buttonLines[1].h, case.bounds.height - inset * 2)
+    Assert.equal(gButton._state.lineWidth, 7, "selected restores line width at scale " .. tostring(scale))
+
+    local gQuiet, callsQuiet = recordingGraphics()
+    gQuiet._state.lineWidth = 7
+    TextButton.draw(gQuiet, button, { label = "Yes", selected = false, text = text })
+    for _, r in ipairs(callsQuiet.rectangles) do
+      Assert.isTrue(r.mode ~= "line", "unselected emits no focus line at scale " .. tostring(scale))
+    end
+    Assert.equal(gQuiet._state.lineWidth, 7)
+  end
+end
+
 return { tests = T }

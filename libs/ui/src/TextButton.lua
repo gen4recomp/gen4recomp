@@ -1,6 +1,7 @@
 -- Yes/No-style text button composing the generic Button geometry.
 
 local Button = require("libs.ui.src.Button")
+local FocusOutline = require("libs.ui.src.FocusOutline")
 
 ---@class TextAdapter
 ---@field measure fun(label:string):number
@@ -116,37 +117,6 @@ local function drawFaceDivider(graphics, button, colors)
   graphics.rectangle("fill", innerRect.x, splitY - scale, innerRect.width, dividerHeight)
 end
 
-local function drawFocusOutline(graphics, button, colors)
-  local scale = assert(button.scale, "text button scale is missing")
-  local whiteWidth = 5 * scale
-  local redWidth = 3 * scale
-  local outerRadius = 3 * scale
-  local inset = 1 * scale
-  local radius = math.max(0, outerRadius - whiteWidth / 2)
-  graphics.setColor(colors.focusOuter[1], colors.focusOuter[2], colors.focusOuter[3], colors.focusOuter[4])
-  graphics.setLineWidth(whiteWidth)
-  graphics.rectangle(
-    "line",
-    button.rect.x + inset,
-    button.rect.y + inset,
-    button.rect.width - inset * 2,
-    button.rect.height - inset * 2,
-    radius,
-    radius
-  )
-  graphics.setColor(colors.focusInner[1], colors.focusInner[2], colors.focusInner[3], colors.focusInner[4])
-  graphics.setLineWidth(redWidth)
-  graphics.rectangle(
-    "line",
-    button.rect.x + inset,
-    button.rect.y + inset,
-    button.rect.width - inset * 2,
-    button.rect.height - inset * 2,
-    radius,
-    radius
-  )
-end
-
 ---@param graphics table<string, unknown>
 ---@param button table<string, unknown>
 ---@param spec { label: string, selected: boolean, text: TextAdapter, colors?: table<string, unknown> }
@@ -204,7 +174,11 @@ function TextButton.draw(graphics, button, spec)
   drawFaceDivider(graphics, button, colors)
 
   if spec.selected then
-    drawFocusOutline(graphics, button, colors)
+    FocusOutline.draw(graphics, button.rect, {
+      scale = button.scale,
+      outerColor = colors.focusOuter,
+      innerColor = colors.focusInner,
+    })
   end
 
   graphics.push()
