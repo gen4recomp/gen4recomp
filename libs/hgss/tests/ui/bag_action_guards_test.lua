@@ -30,13 +30,13 @@ local TAB_RECTS = {
   { x = 224, y = 0, width = 32, height = 32 },
 }
 
-local SLOT_RECTS = {
-  { x = 32, y = 40, width = 88, height = 32 },
-  { x = 160, y = 40, width = 88, height = 32 },
-  { x = 32, y = 80, width = 88, height = 32 },
-  { x = 160, y = 80, width = 88, height = 32 },
-  { x = 32, y = 120, width = 88, height = 32 },
-  { x = 160, y = 120, width = 88, height = 32 },
+local SLOT_SHAPES = {
+  { rect = { x = 0, y = 32, width = 128, height = 42 }, center = { x = 48, y = 56 } },
+  { rect = { x = 128, y = 32, width = 128, height = 42 }, center = { x = 176, y = 56 } },
+  { rect = { x = 0, y = 74, width = 128, height = 44 }, center = { x = 48, y = 96 } },
+  { rect = { x = 128, y = 74, width = 128, height = 44 }, center = { x = 176, y = 96 } },
+  { rect = { x = 0, y = 118, width = 128, height = 36 }, center = { x = 48, y = 136 } },
+  { rect = { x = 128, y = 118, width = 128, height = 36 }, center = { x = 176, y = 136 } },
 }
 
 local function manifest()
@@ -45,10 +45,10 @@ local function manifest()
     tabs[index] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
   end
   local slots = {}
-  for index, rect in ipairs(SLOT_RECTS) do
-    slots[index] = {
-      rect = { x = rect.x, y = rect.y, width = rect.width, height = rect.height },
-      iconCenter = { x = rect.x + 16, y = rect.y + 16 },
+  for _, shape in ipairs(SLOT_SHAPES) do
+    slots[#slots + 1] = {
+      rect = { x = shape.rect.x, y = shape.rect.y, width = shape.rect.width, height = shape.rect.height },
+      iconCenter = { x = shape.center.x, y = shape.center.y },
     }
   end
   return {
@@ -56,7 +56,10 @@ local function manifest()
       pocketTabs = { rects = tabs },
       itemSlots = { slots = slots },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
-      cancel = { x = 192, y = 168, width = 56, height = 16 },
+      cancel = {
+        rect = { x = 192, y = 168, width = 64, height = 24 },
+        textRect = { x = 192, y = 168, width = 56, height = 16 },
+      },
       overlays = {
         descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
         actionMenu = {
@@ -576,7 +579,7 @@ function T.pointer_cell_tap_steers_the_move_target()
 end
 
 local function tapCell(control, layout, visibleIndex)
-  local rect = SLOT_RECTS[visibleIndex + 1]
+  local rect = SLOT_SHAPES[visibleIndex + 1].rect
   tap(control, layout, rect.x + rect.width / 2, rect.y + rect.height / 2)
 end
 
@@ -590,7 +593,10 @@ local function tapButton(control, layout, layoutManifest, buttonIndex)
 end
 
 local function tapCancel(control, layout, layoutManifest)
-  local rect = assert(layoutManifest.interactive.cancel, "the pointer journey needs the cancel rectangle")
+  local rect = assert(
+    layoutManifest.interactive.cancel and layoutManifest.interactive.cancel.rect,
+    "the pointer journey needs the cancel rectangle"
+  )
   tap(control, layout, rect.x + rect.width / 2, rect.y + rect.height / 2)
 end
 

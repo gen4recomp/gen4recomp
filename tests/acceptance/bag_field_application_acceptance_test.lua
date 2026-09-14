@@ -335,10 +335,11 @@ function T.tests.bag_cancel_pointer_closes_through_the_host()
     local frame = assert(interactive.frame, "the interactive placement must expose its host frame")
     local scale = assert(interactive.scale, "the interactive placement must expose its scale")
     local manifest = BagCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
-    local cancel = assert(
+    local cancelGeometry = assert(
       manifest.interactive and manifest.interactive.cancel,
-      "the generated manifest must carry its cancel rectangle"
+      "the generated manifest must carry its cancel geometry"
     )
+    local cancel = assert(cancelGeometry.rect, "the generated manifest must carry its cancel control rectangle")
     local hostX = frame.x + (cancel.x + cancel.width / 2) * scale
     local hostY = frame.y + (cancel.y + cancel.height / 2) * scale
 

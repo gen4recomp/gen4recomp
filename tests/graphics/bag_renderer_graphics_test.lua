@@ -54,7 +54,7 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v4", versionId .. " renders the v4 bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v5", versionId .. " renders the v5 bag manifest")
   return cacheFs, manifest
 end
 
@@ -383,10 +383,12 @@ local function regionDistance(first, second, rect, stride)
   return changed
 end
 
+-- The realized destination of one tab visual: its tab anchor (the rect
+-- center) plus the generated offset, which already positions the image.
 local function visualRect(rect, visual)
   local offset = visual.offset or { x = 0, y = 0 }
-  local x = rect.x + rect.width / 2 + offset.x - visual.width / 2
-  local y = rect.y + rect.height / 2 + offset.y - visual.height / 2
+  local x = rect.x + rect.width / 2 + offset.x
+  local y = rect.y + rect.height / 2 + offset.y
   return { x = x, y = y, width = visual.width, height = visual.height }
 end
 
@@ -636,8 +638,8 @@ function T.registration_slots_render_distinct_markers(scope, context)
   end
 end
 
--- Each selected pocket overlays its generated selected visual over the normal
--- visual in that pocket's generated rectangle. Compare the exact source-pixel
+-- Each selected pocket draws its highlight substrate under its normal icon
+-- in that pocket's generated rectangle. Compare the exact source-pixel
 -- difference with the exact difference between two real BagRenderer captures;
 -- the baseline selection is chosen from a generated visual footprint that does
 -- not overlap the target rectangle, so no fixed tab position, color, or
@@ -661,10 +663,11 @@ function T.all_pocket_tabs_render_the_source_selected_visual_in_their_rects(scop
       local normal = decodeImage(scope, cacheFs, visual.image, versionId .. " normal tab " .. index)
       Assert.isTrue(hasOccupiedPixel(normal), versionId .. " normal tab " .. index .. " has source occupancy")
     end
-    Assert.isTrue(type(tabs.selected.image) == "string", versionId .. " selected tab is a static source visual")
-    Assert.isNil(tabs.selected.frames, versionId .. " selected tab has no runtime frame timeline")
-    local sourceSelected = decodeImage(scope, cacheFs, tabs.selected.image, versionId .. " selected tab")
-    Assert.isTrue(hasOccupiedPixel(sourceSelected), versionId .. " selected tab has source occupancy")
+    Assert.isTrue(type(tabs.highlight.image) == "string", versionId .. " highlight is a static source visual")
+    Assert.isNil(tabs.highlight.frames, versionId .. " highlight has no runtime frame timeline")
+    Assert.isNil(tabs.selected, versionId .. " carries no retired selected tab visual")
+    local sourceHighlight = decodeImage(scope, cacheFs, tabs.highlight.image, versionId .. " tab highlight")
+    Assert.isTrue(hasOccupiedPixel(sourceHighlight), versionId .. " highlight has source occupancy")
     local pocketRecords = pockets()
     local captures = {}
     for index, pocket in ipairs(pocketRecords) do
@@ -676,7 +679,7 @@ function T.all_pocket_tabs_render_the_source_selected_visual_in_their_rects(scop
       for candidate = 1, #pocketRecords do
         if
           candidate ~= index
-          and rectanglesDoNotOverlap(tabs.rects[index], visualRect(tabs.rects[candidate], tabs.selected))
+          and rectanglesDoNotOverlap(tabs.rects[index], visualRect(tabs.rects[candidate], tabs.highlight))
         then
           baselineIndex = candidate
           break
@@ -730,7 +733,8 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     local composed = render(scope, owned, record, layout)
     local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
 
-    local browse = assert(interactive.backgrounds.browse, versionId .. " carries its browse background")
+    local browseVariants = assert(interactive.backgrounds.browse, versionId .. " carries its browse backgrounds")
+    local browse = assert(browseVariants[record.pocket], versionId .. " carries the pocket browse background")
     local backdrop = decodeImage(scope, cacheFs, browse.image, versionId .. " browse background")
     local backdropOffset = browse.offset or { x = 0, y = 0 }
     local function backdropPixel(hostX, hostY)
@@ -770,25 +774,16 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     end
     Assert.notNil(selectedTabIndex, versionId .. " resolves the selected tab for " .. tostring(record.pocket))
     local selectedFootprint = {
-      rect = visualRect(tabs.rects[assert(selectedTabIndex)], tabs.selected),
-      label = "selected tab",
+      rect = visualRect(tabs.rects[assert(selectedTabIndex)], tabs.highlight),
+      label = "selected highlight",
     }
     local slots = assert(interactive.itemSlots.slots, versionId .. " carries item slot rectangles")
-    local focusVisual = assert(interactive.itemSlots.focus, versionId .. " carries its focus visual")
-    local focusImage = decodeImage(scope, cacheFs, focusVisual.image, versionId .. " focus visual")
+    Assert.isNil(interactive.itemSlots.focus, versionId .. " publishes no generated focus visual")
     local selectedRect = assert(slots[1].rect, versionId .. " carries its first item-cell rectangle")
-    local focusFootprint = { rect = visualRect(selectedRect, focusVisual), label = "selection focus" }
-    Assert.equal(
-      math.floor(focusFootprint.rect.x),
-      focusFootprint.rect.x,
-      versionId .. " samples the focus destination on exact pixels"
-    )
-    Assert.equal(
-      math.floor(focusFootprint.rect.y),
-      focusFootprint.rect.y,
-      versionId .. " samples the focus destination on exact pixels"
-    )
-    local cancelRect = assert(interactive.cancel, versionId .. " carries its cancel rectangle")
+    local focusFootprint = { rect = selectedRect, label = "selection focus" }
+    local cancelGeometry = assert(interactive.cancel, versionId .. " carries its cancel geometry")
+    local cancelRect = assert(cancelGeometry.rect, versionId .. " carries its cancel control rectangle")
+    local cancelTextRect = assert(cancelGeometry.textRect, versionId .. " carries its cancel text window")
     local pageRect = assert(interactive.pageIndicator.rect, versionId .. " carries its page rectangle")
     local drawnRegions = { selectedFootprint }
     for _, footprint in ipairs(tabFootprints) do
@@ -799,49 +794,68 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     drawnRegions[#drawnRegions + 1] = { rect = pageRect, label = "page" }
 
     -- Empty cells preserve the generated background pixel-for-pixel: no
-    -- icon, name, quantity, focus, or chrome paints over them.
+    -- icon, name, quantity, or chrome paints over them. The shared item
+    -- outline straddles the focused cell's edges by half its 5px outer line,
+    -- so pixels within that documented spillover of the focused cell are
+    -- the outline's own proof below, not background evidence here.
+    local spill = 3
+    local spillZone = {
+      x = selectedRect.x - spill,
+      y = selectedRect.y - spill,
+      width = selectedRect.width + spill * 2,
+      height = selectedRect.height + spill * 2,
+    }
+    local function inSpillZone(x, y)
+      return x >= spillZone.x
+        and y >= spillZone.y
+        and x < spillZone.x + spillZone.width
+        and y < spillZone.y + spillZone.height
+    end
     local emptyChecked = 0
     for index = 3, 6 do
       local rect = assert(slots[index].rect, versionId .. " carries cell rectangle " .. index)
       assertNoOverlap(rect, drawnRegions, versionId .. " empty cell " .. index)
       for y = rect.y, rect.y + rect.height - 1 do
         for x = rect.x, rect.x + rect.width - 1 do
-          assertMatchesBackdrop(interactiveFrame.x + x, interactiveFrame.y + y, versionId .. " empty cell " .. index)
-          emptyChecked = emptyChecked + 1
+          if not inSpillZone(x, y) then
+            assertMatchesBackdrop(interactiveFrame.x + x, interactiveFrame.y + y, versionId .. " empty cell " .. index)
+            emptyChecked = emptyChecked + 1
+          end
         end
       end
     end
     Assert.isTrue(emptyChecked > 0, versionId .. " samples empty-cell background pixels")
 
-    -- The selection focus occupies its source-derived destination: where its
-    -- opaque pixels differ from the background, the composed pane carries
-    -- the focus pixels themselves rather than background or icon content.
-    local focusChecked = 0
-    for y = 0, focusImage:getHeight() - 1 do
-      for x = 0, focusImage:getWidth() - 1 do
-        local red, green, blue, alpha = focusImage:getPixel(x, y)
-        if alpha > 0.5 then
-          local canonicalX = focusFootprint.rect.x + x
-          local canonicalY = focusFootprint.rect.y + y
-          local expected = backdropPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
-          if expected ~= nil then
-            local focusPixel = { quantize(red), quantize(green), quantize(blue), quantize(alpha) }
-            if focusPixel[1] ~= expected[1] or focusPixel[2] ~= expected[2] or focusPixel[3] ~= expected[3] then
-              local actual = composedPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
-              Assert.deepEqual(
-                { actual[1], actual[2], actual[3] },
-                { focusPixel[1], focusPixel[2], focusPixel[3] },
-                versionId .. " focus carries its own pixels at " .. x .. "," .. y
-              )
-              focusChecked = focusChecked + 1
-            end
-          end
-        end
-      end
-    end
-    Assert.isTrue(focusChecked > 0, versionId .. " proves focus pixels over the selected cell")
+    -- Item focus is the shared outline over the full selected cell: a second
+    -- render with item focus off differs inside that cell and matches
+    -- everywhere else, so the outline paints and never bleeds.
+    local unfocusedRecord = presentation(firstIcon, secondIcon, heroStatus, { focus = "cancel" })
+    local unfocused = render(scope, owned, unfocusedRecord, layout)
+    local focusRegion = {
+      x = interactiveFrame.x + selectedRect.x,
+      y = interactiveFrame.y + selectedRect.y,
+      width = selectedRect.width,
+      height = selectedRect.height,
+    }
+    Assert.isTrue(
+      regionDistance(composed, unfocused, focusRegion, 1) > 0,
+      versionId .. " item focus paints over the selected cell"
+    )
+    -- cells 3 and 4; cell 5 is far from the outline spillover and must match
+    -- exactly.
+    local emptyRect = assert(slots[5].rect, versionId .. " carries its fifth item-cell rectangle")
+    Assert.equal(
+      regionDistance(composed, unfocused, {
+        x = interactiveFrame.x + emptyRect.x,
+        y = interactiveFrame.y + emptyRect.y,
+        width = emptyRect.width,
+        height = emptyRect.height,
+      }, 1),
+      0,
+      versionId .. " item focus never paints outside its cell"
+    )
 
-    -- The generated Cancel label paints inside the Cancel rectangle: the
+    -- The generated Cancel label paints inside the Cancel text window: the
     -- region differs from the bare background there.
     local cancelLabel = assert(
       interactive.text and interactive.text.actions and interactive.text.actions.cancel,
@@ -849,8 +863,8 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     )
     Assert.isTrue(type(cancelLabel) == "string" and cancelLabel ~= "", versionId .. " labels Cancel from source")
     local cancelChanged = 0
-    for y = cancelRect.y, cancelRect.y + cancelRect.height - 1 do
-      for x = cancelRect.x, cancelRect.x + cancelRect.width - 1 do
+    for y = cancelTextRect.y, cancelTextRect.y + cancelTextRect.height - 1 do
+      for x = cancelTextRect.x, cancelTextRect.x + cancelTextRect.width - 1 do
         local expected = backdropPixel(interactiveFrame.x + x, interactiveFrame.y + y)
         if expected ~= nil then
           local actual = composedPixel(interactiveFrame.x + x, interactiveFrame.y + y)

@@ -22,13 +22,13 @@ local TAB_RECTS = {
   { x = 224, y = 0, width = 32, height = 32 },
 }
 
-local SLOT_RECTS = {
-  { x = 32, y = 40, width = 88, height = 32 },
-  { x = 160, y = 40, width = 88, height = 32 },
-  { x = 32, y = 80, width = 88, height = 32 },
-  { x = 160, y = 80, width = 88, height = 32 },
-  { x = 32, y = 120, width = 88, height = 32 },
-  { x = 160, y = 120, width = 88, height = 32 },
+local SLOT_SHAPES = {
+  { rect = { x = 0, y = 32, width = 128, height = 42 }, center = { x = 48, y = 56 } },
+  { rect = { x = 128, y = 32, width = 128, height = 42 }, center = { x = 176, y = 56 } },
+  { rect = { x = 0, y = 74, width = 128, height = 44 }, center = { x = 48, y = 96 } },
+  { rect = { x = 128, y = 74, width = 128, height = 44 }, center = { x = 176, y = 96 } },
+  { rect = { x = 0, y = 118, width = 128, height = 36 }, center = { x = 48, y = 136 } },
+  { rect = { x = 128, y = 118, width = 128, height = 36 }, center = { x = 176, y = 136 } },
 }
 
 local function manifest()
@@ -37,10 +37,10 @@ local function manifest()
     tabs[index] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
   end
   local slots = {}
-  for index, rect in ipairs(SLOT_RECTS) do
-    slots[index] = {
-      rect = { x = rect.x, y = rect.y, width = rect.width, height = rect.height },
-      iconCenter = { x = rect.x + 16, y = rect.y + 16 },
+  for _, shape in ipairs(SLOT_SHAPES) do
+    slots[#slots + 1] = {
+      rect = { x = shape.rect.x, y = shape.rect.y, width = shape.rect.width, height = shape.rect.height },
+      iconCenter = { x = shape.center.x, y = shape.center.y },
     }
   end
   return {
@@ -48,7 +48,10 @@ local function manifest()
       pocketTabs = { rects = tabs },
       itemSlots = { slots = slots },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
-      cancel = { x = 192, y = 168, width = 56, height = 16 },
+      cancel = {
+        rect = { x = 192, y = 168, width = 64, height = 24 },
+        textRect = { x = 192, y = 168, width = 56, height = 16 },
+      },
       overlays = {
         descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
         actionMenu = {
@@ -335,7 +338,7 @@ function T.fractional_scale_hit_tests_cover_the_cancel_center_and_far_edge()
   Assert.equal(resolved.mode, "horizontal")
   local interactive = resolved.interactive
   Assert.isTrue(interactive.scale ~= math.floor(interactive.scale), "the wide composition uses a fractional scale")
-  local cancel = layoutManifest.interactive.cancel
+  local cancel = layoutManifest.interactive.cancel.rect
   local function hostAt(logicalX, logicalY)
     return interactive.frame.x + logicalX * interactive.scale, interactive.frame.y + logicalY * interactive.scale
   end
@@ -348,6 +351,39 @@ function T.fractional_scale_hit_tests_cover_the_cancel_center_and_far_edge()
   Assert.equal(edge.kind, "cancel")
   local outsideX, outsideY = hostAt(cancel.x + cancel.width + 0.5, cancel.y + cancel.height / 2)
   Assert.isNil(resolved.interactiveHitTest(outsideX, outsideY, state), "points past the cancel edge carry no target")
+end
+
+function T.full_item_and_cancel_regions_are_interactive()
+  local resolved = BagLayout.resolve({ topology = oneDisplay(512, 384, false), manifest = manifest() })
+  Assert.equal(resolved.mode, "horizontal")
+  local interactive = resolved.interactive
+  local function hostAt(logicalX, logicalY)
+    return interactive.frame.x + logicalX * interactive.scale, interactive.frame.y + logicalY * interactive.scale
+  end
+  local state = browsing()
+  -- Points use the full source control geometry: the first cell's left edge
+  -- outside the legacy text window, the second cell's right edge, a gap
+  -- point that must not bleed, an empty cell, and the rightmost Cancel strip.
+  local x, y = hostAt(8, 40)
+  local edge = assert(resolved.interactiveHitTest(x, y, state), "the full first-cell region resolves")
+  Assert.equal(edge.kind, "item")
+  Assert.equal(edge.visibleIndex, 0)
+  x, y = hostAt(250, 60)
+  local right = assert(resolved.interactiveHitTest(x, y, state), "the full second-cell region resolves")
+  Assert.equal(right.kind, "item")
+  Assert.equal(right.visibleIndex, 1)
+  x, y = hostAt(8, 160)
+  Assert.isNil(resolved.interactiveHitTest(x, y, state), "gaps between control regions carry no target")
+  local emptyState = browsing({ true, true, false, true, true, true })
+  x, y = hostAt(40, 90)
+  Assert.isNil(resolved.interactiveHitTest(x, y, emptyState), "the full region never makes an empty cell selectable")
+  x, y = hostAt(250, 176)
+  local cancel = assert(resolved.interactiveHitTest(x, y, state), "the full Cancel region resolves")
+  Assert.equal(cancel.kind, "cancel")
+  x, y = hostAt(48, 16)
+  local tab = assert(resolved.interactiveHitTest(x, y, state), "tab targets are unchanged")
+  Assert.equal(tab.kind, "pocket")
+  Assert.equal(tab.pocket, "medicine")
 end
 
 return { tests = T }

@@ -47,7 +47,7 @@ local function checkManifest(manifest)
   for _, slot in ipairs(slots) do
     checkRect(assert(slot.rect, "every slot needs its rectangle"), "slot")
   end
-  checkRect(assert(interactive.cancel, "the manifest must carry its cancel rectangle"), "cancel")
+  checkRect(assert(interactive.cancel.rect, "the manifest must carry its cancel control rectangle"), "cancel")
   local fallback = assert(
     interactive.overlays and interactive.overlays.descriptionFallback,
     "the manifest must carry its description fallback"
@@ -188,7 +188,7 @@ function BagLayout.resolve(spec)
 
   local tabs = interactive.pocketTabs.rects
   local slots = interactive.itemSlots.slots
-  local cancelRect = interactive.cancel
+  local cancelRect = interactive.cancel.rect
   local fallbackFrame = interactive.overlays.descriptionFallback.frame
   local buttons = actionButtons(interactive)
 

@@ -4,7 +4,8 @@
 -- description frame, and the state-specific contextual text in the
 -- source font; the interactive pane composites the semantic state background,
 -- source tabs, six-cell item grid with icons, names, quantities, and
--- registration markers, selected-tab/focus visuals, the derived page, and the
+-- registration markers, the selected-tab highlight beneath its icon, the
+-- shared item focus outline, the derived page, and the
 -- generated cancel label. Empty cells paint no icons, so the source cell art
 -- stays authentic. The constrained description
 -- overlay fills the canonical fallback frame with the selected icon, name,
@@ -18,6 +19,8 @@
 -- state it touches.
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local FocusOutline = require("libs.ui.src.FocusOutline")
+local BagSave = require("libs.hgss.src.save.BagSave")
 
 ---@class BagRenderer
 ---@field _graphics love.graphics
@@ -159,26 +162,36 @@ local function loadVisual(graphics, cacheFs, visual, key, images)
   error(key .. " carries no realized static image", 0)
 end
 
--- Draws one source-realized static visual. The source anchor is centered
--- when a placement point is supplied; generated offsets apply verbatim.
+-- Draws one realized static visual at its placement point plus its generated
+-- offset, which already positions the image relative to the anchor the
+-- producer composed it against. Placement points are sprite anchors (tab
+-- rect centers) or pane origins, never image centers.
 ---@param graphics love.graphics
 ---@param visual table<string, unknown>
 ---@param x number
 ---@param y number
----@param centered boolean
-local function drawVisual(graphics, visual, x, y, centered)
+local function drawVisual(graphics, visual, x, y)
   local image = assert(visual.image, "static visuals carry their realized image")
-  local width = assert(visual.width, "static visuals carry their image width")
-  local height = assert(visual.height, "static visuals carry their image height")
   local offset = visual.offset or { x = 0, y = 0 }
-  local drawX = x + offset.x
-  local drawY = y + offset.y
-  if centered then
-    drawX = drawX - width / 2
-    drawY = drawY - height / 2
-  end
   setColor(graphics, WHITE)
-  graphics.draw(assert(image), drawX, drawY)
+  graphics.draw(assert(image), x + offset.x, y + offset.y)
+end
+
+-- Resolves one zero-based field-font palette slot to byte-valued RGB, exactly
+-- like the Oak confirmation path: ROM palettes are byte-valued while
+-- normalized fixture palettes may already be unit-scaled.
+---@param fontDef table<string, unknown>
+---@param slot integer
+---@return { r: number, g: number, b: number }
+local function fontSlot(fontDef, slot)
+  local palette = assert(fontDef.palette, "bag text needs the shared field font palette")
+  local color = assert(palette[slot + 1], "bag text needs field font palette slot " .. slot)
+  local r, g, b =
+    assert(tonumber(color.r or color[1])), assert(tonumber(color.g or color[2])), assert(tonumber(color.b or color[3]))
+  if r > 1 or g > 1 or b > 1 then
+    r, g, b = r / 255, g / 255, b / 255
+  end
+  return { r = r * 255, g = g * 255, b = b * 255 }
 end
 
 ---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics }
@@ -217,13 +230,15 @@ function BagRenderer.new(opts)
       height = 192,
     })
     for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-      acquire("background:" .. state, interactive.backgrounds[state])
+      local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
+      for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+        acquire("background:" .. state .. ":" .. pocket, assert(pockets[pocket], state .. " carries " .. pocket))
+      end
     end
     for index, visual in ipairs(interactive.pocketTabs.normal) do
       acquire("tabNormal:" .. index, visual)
     end
-    acquire("tabSelected", interactive.pocketTabs.selected)
-    acquire("focus", interactive.itemSlots.focus)
+    acquire("tabHighlight", interactive.pocketTabs.highlight)
     local registration =
       assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
     local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
@@ -263,11 +278,58 @@ function BagRenderer:_drawLines(text, x, y, maxLines)
 end
 
 ---@param text string
+---@param x number
+---@param y number
+---@param palette { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number }, background: { r: number, g: number, b: number, a: number } }
+---@param maxLines integer?
+function BagRenderer:_drawPaletteLines(text, x, y, palette, maxLines)
+  local drawn = 0
+  for line in (plainText(text) .. "\n"):gmatch("([^\n]*)\n") do
+    if maxLines ~= nil and drawn >= maxLines then
+      break
+    end
+    self._text:drawTextWithPalette(line, x, y + drawn * LINE_HEIGHT, palette)
+    drawn = drawn + 1
+  end
+end
+
+---@param text string
 ---@param rect table<string, number>
 function BagRenderer:_drawCentered(text, rect)
   local content = plainText(text)
   local width = self._text:textWidth(content)
   self._text:drawText(content, rect.x + (rect.width - width) / 2, rect.y + 2)
+end
+
+---@param text string
+---@param rect table<string, number>
+---@param palette { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number }, background: { r: number, g: number, b: number, a: number } }
+function BagRenderer:_drawCenteredWithPalette(text, rect, palette)
+  local content = plainText(text)
+  local width = self._text:textWidth(content)
+  self._text:drawTextWithPalette(content, rect.x + (rect.width - width) / 2, rect.y + 2, palette)
+end
+
+-- The three field-font slot triples the Bag uses: item rows, the count
+-- readout, and the description window (whose colors Cancel shares). The
+-- background role stays transparent so generated pixels remain visible
+-- beneath glyph masks. Built once per draw, never per glyph.
+---@return { item: table<string, unknown>, count: table<string, unknown>, description: table<string, unknown> }
+function BagRenderer:_palettes()
+  local fontDef = assert(self._text.fontDef, "bag text needs the shared field font definition")
+  local function record(foregroundSlot, shadowSlot)
+    local background = fontSlot(fontDef, 0)
+    return {
+      foreground = fontSlot(fontDef, foregroundSlot),
+      shadow = fontSlot(fontDef, shadowSlot),
+      background = { r = background.r, g = background.g, b = background.b, a = 0 },
+    }
+  end
+  return {
+    item = record(1, 2),
+    count = record(15, 1),
+    description = record(15, 14),
+  }
 end
 
 -- The hero background beneath the 3D model: the gender-selected source
@@ -278,29 +340,32 @@ function BagRenderer:_drawHeroBackground(presentation)
   local gender = assert(presentation.heroGender, "the bag presentation names its hero gender")
   assert(gender == "male" or gender == "female", "the hero gender selects its backdrop")
   local key = gender == "male" and "heroMale" or "heroFemale"
-  drawVisual(graphics, assert(self._visuals[key]), 0, 0, false)
+  drawVisual(graphics, assert(self._visuals[key]), 0, 0)
 end
 
 -- The hero foreground above the 3D model: the description frame with the
--- state-specific contextual text in canonical coordinates.
+-- state-specific contextual text in canonical coordinates, printed through
+-- the description window colors.
 ---@param presentation table<string, unknown>
-function BagRenderer:_drawHeroForeground(presentation)
+---@param descriptionPalette table<string, unknown>
+function BagRenderer:_drawHeroForeground(presentation, descriptionPalette)
   local graphics = self._graphics
   local manifest = self._manifest
-  drawVisual(graphics, assert(self._visuals.descriptionFrame), 0, 0, false)
+  drawVisual(graphics, assert(self._visuals.descriptionFrame), 0, 0)
   local textRect = manifest.hero.description.textRect
   local contextual = contextualText(presentation, manifest)
   if contextual ~= nil then
     setColor(graphics, WHITE)
-    self:_drawLines(contextual, textRect.x, textRect.y, 3)
+    self:_drawPaletteLines(contextual, textRect.x, textRect.y, descriptionPalette, 3)
   end
 end
 
--- Draws the one generated semantic lower-pane background for the current
--- state. Every image is asserted at construction, so an unknown state fails
--- instead of borrowing another state's screen.
+-- Draws the one generated lower-pane background for the current state and
+-- pocket. Every image is asserted at construction, so an unknown
+-- state/pocket fails instead of borrowing another pocket's screen.
 ---@param state string
-function BagRenderer:_drawStateBackground(state)
+---@param pocket string
+function BagRenderer:_drawStateBackground(state, pocket)
   local backgroundByState = {
     browsing = "browse",
     description_overlay = "browse",
@@ -310,49 +375,55 @@ function BagRenderer:_drawStateBackground(state)
     toss_confirm = "confirmation",
   }
   local background = assert(backgroundByState[state], "the bag renderer draws a known lower-pane state")
-  drawVisual(self._graphics, assert(self._visuals["background:" .. background]), 0, 0, false)
+  local key = "background:" .. background .. ":" .. pocket
+  drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
 end
 
+-- Item selection reuses the shared button focus outline over the full item
+-- control rect at pane scale. Only item cells ever carry this treatment.
 ---@param rect table<string, number>
 function BagRenderer:_drawFocus(rect)
-  drawVisual(self._graphics, assert(self._visuals.focus), rect.x + rect.width / 2, rect.y + rect.height / 2, true)
+  FocusOutline.draw(self._graphics, rect, { scale = 1 })
 end
 
 ---@param presentation table<string, unknown>
 ---@param icons table<string, unknown>
 ---@param layout table<string, unknown>
-function BagRenderer:_drawInteractive(presentation, icons, layout)
+---@param palettes { item: table<string, unknown>, count: table<string, unknown>, description: table<string, unknown> }
+function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local graphics = self._graphics
   local manifest = self._manifest
   local interactive = manifest.interactive
   local state = assert(presentation.state, "the bag presentation names its state")
-  self:_drawStateBackground(state)
-  local tabs = interactive.pocketTabs.rects
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
+  self:_drawStateBackground(state, pocket)
+  local tabs = interactive.pocketTabs.rects
   local selectedTab = nil
   for index, tab in ipairs(presentation.pockets) do
-    local rect = assert(tabs[index], "each pocket has a generated tab rectangle")
-    drawVisual(
-      graphics,
-      assert(self._visuals["tabNormal:" .. index]),
-      rect.x + rect.width / 2,
-      rect.y + rect.height / 2,
-      true
-    )
     if tab.pocket == pocket then
-      selectedTab = rect
+      selectedTab = assert(tabs[index], "each pocket has a generated tab rectangle")
     end
   end
   if selectedTab == nil then
     error("the current pocket has no generated tab", 0)
   end
+  -- The highlight draws beneath the icons: highlight first, then every
+  -- normal icon including the selected pocket's own.
   drawVisual(
     graphics,
-    assert(self._visuals.tabSelected),
+    assert(self._visuals.tabHighlight),
     selectedTab.x + selectedTab.width / 2,
-    selectedTab.y + selectedTab.height / 2,
-    true
+    selectedTab.y + selectedTab.height / 2
   )
+  for index = 1, 8 do
+    local rect = assert(tabs[index], "each pocket has a generated tab rectangle")
+    drawVisual(
+      graphics,
+      assert(self._visuals["tabNormal:" .. index]),
+      rect.x + rect.width / 2,
+      rect.y + rect.height / 2
+    )
+  end
   local slots = interactive.itemSlots.slots
   local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
   assert(type(visibleSlots) == "table" and #visibleSlots == 6, "the presentation carries six visible cells")
@@ -363,7 +434,8 @@ function BagRenderer:_drawInteractive(presentation, icons, layout)
   local iconImage = icons:image()
   for index = 1, 6 do
     local cell = visibleSlots[index]
-    local rect = slots[index].rect
+    local slot = assert(slots[index], "the presentation carries six generated cells")
+    local rect = assert(slot.rect, "every cell needs its control rectangle")
     if cell ~= nil and cell.empty ~= true then
       local registrationSlot = cell.registrationSlot
       if registrationSlot ~= nil then
@@ -376,21 +448,30 @@ function BagRenderer:_drawInteractive(presentation, icons, layout)
           graphics,
           { image = marker, width = 40, height = 16 },
           rect.x + registrationOffset.x,
-          rect.y + registrationOffset.y,
-          false
+          rect.y + registrationOffset.y
         )
       end
       local iconKey = assert(cell.icon, "occupied cells carry an icon key")
       local quad = icons:quadFor(iconKey)
       local dims = icons:dimensions(iconKey)
-      local center = slots[index].iconCenter
+      local center = assert(slot.iconCenter, "every cell needs its icon center")
       setColor(graphics, WHITE)
       graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
       setColor(graphics, WHITE)
+      -- Item strings come from the text window and its explicit anchors,
+      -- never from the control rect.
+      local textRect = assert(slot.textRect, "every cell needs its text window")
+      local nameAt = assert(slot.nameAt, "every cell needs its name anchor")
+      local quantityAt = assert(slot.quantityAt, "every cell needs its quantity anchor")
       assert(type(cell.name) == "string", "occupied cells carry a name")
-      self._text:drawText(plainText(cell.name), rect.x + 38, rect.y + 2)
+      self._text:drawTextWithPalette(plainText(cell.name), textRect.x + nameAt.x, textRect.y + nameAt.y, palettes.item)
       assert(type(cell.quantity) == "number", "occupied cells carry a quantity")
-      self._text:drawText("x" .. cell.quantity, rect.x + 38, rect.y + 2 + LINE_HEIGHT)
+      self._text:drawTextWithPalette(
+        "x" .. cell.quantity,
+        textRect.x + quantityAt.x,
+        textRect.y + quantityAt.y,
+        palettes.item
+      )
     end
   end
   local focus = presentation.focus
@@ -400,17 +481,19 @@ function BagRenderer:_drawInteractive(presentation, icons, layout)
     assert(type(absolute) == "number" and type(start) == "number", "selection indexes are numbers")
     local cell = absolute - start + 1
     if cell >= 1 and cell <= 6 then
-      self:_drawFocus(slots[cell].rect)
+      local focused = visibleSlots[cell]
+      if focused ~= nil and focused.empty ~= true then
+        self:_drawFocus(assert(slots[cell].rect, "every cell needs its control rectangle"))
+      end
     end
-  elseif focus == "cancel" then
-    local cancelRect = interactive.cancel
-    self:_drawFocus(cancelRect)
   end
   local page = assert(presentation.page, "the bag presentation derives its page")
   setColor(graphics, WHITE)
-  self:_drawCentered(page.current .. "/" .. page.count, interactive.pageIndicator.rect)
+  self:_drawCenteredWithPalette(page.current .. "/" .. page.count, interactive.pageIndicator.rect, palettes.count)
   local cancelLabel = assert(interactive.text.actions.cancel, "the bag manifest carries its cancel label")
-  self:_drawCentered(cancelLabel, interactive.cancel)
+  -- Cancel chrome lives in the selected background pixels; only the label
+  -- prints, placed by the label window rather than the control rect.
+  self:_drawCenteredWithPalette(cancelLabel, interactive.cancel.textRect, palettes.description)
   if presentation.state == "description_overlay" and layout.mode == "interactive_only" then
     self:_drawDescriptionOverlay(presentation, icons, iconImage)
   elseif presentation.state == "action_menu" then
@@ -422,12 +505,11 @@ function BagRenderer:_drawInteractive(presentation, icons, layout)
   elseif presentation.state == "move_select" then
     self:_drawMoveHighlight(presentation)
   end
-  self:_drawConstrainedContextual(presentation, layout)
+  self:_drawConstrainedContextual(presentation, layout, palettes.description)
 end
 
 -- The action menu draws the generated semantic label for each offered
--- action into its generated button rectangle, then uses the source focus
--- visual for the selected action. An offered action without a
+-- action into its generated button rectangle. An offered action without a
 -- generated label, or more actions than generated buttons, fails instead
 -- of printing an internal id or inventing geometry.
 ---@param presentation table<string, unknown>
@@ -435,8 +517,6 @@ function BagRenderer:_drawActionMenu(presentation)
   local graphics = self._graphics
   local actions = assert(presentation.actions, "the action menu carries its actions")
   assert(type(actions) == "table" and #actions >= 1, "the action menu carries its actions")
-  local selectedAction = assert(presentation.selectedAction, "the action menu carries its selection")
-  assert(type(selectedAction) == "number", "the action menu carries its selection")
   local manifest = self._manifest
   local menu = assert(manifest.interactive.overlays.actionMenu, "the action menu needs its generated button geometry")
   local buttons = assert(menu.buttons, "the action menu needs its generated button geometry")
@@ -454,17 +534,14 @@ function BagRenderer:_drawActionMenu(presentation)
     setColor(graphics, WHITE)
     self._text:drawText(label, rect.x + 4, rect.y + 2)
   end
-  local selectedButton = assert(buttons[selectedAction + 1], "the selected action has generated button geometry")
-  self:_drawFocus(selectedButton)
 end
 
 -- Responsive pointer affordances reuse the generated action-button
--- rectangles for centered labels and source focus visuals. The confirm
+-- rectangles for centered labels. The confirm
 -- label is the generated semantic action text shared with the action menu.
 ---@param buttons table<integer, table<string, number>>
 ---@param labeled table<integer, string>
----@param focusedIndex integer?
-function BagRenderer:_drawResponsiveButtons(buttons, labeled, focusedIndex)
+function BagRenderer:_drawResponsiveButtons(buttons, labeled)
   local indexes = {}
   for index in pairs(labeled) do
     indexes[#indexes + 1] = index
@@ -475,9 +552,6 @@ function BagRenderer:_drawResponsiveButtons(buttons, labeled, focusedIndex)
     local rect = assert(buttons[index], "responsive affordances reuse generated buttons")
     setColor(self._graphics, WHITE)
     self:_drawCentered(label, rect)
-  end
-  if focusedIndex ~= nil then
-    self:_drawFocus(assert(buttons[focusedIndex], "the focused affordance has generated button geometry"))
   end
 end
 
@@ -539,8 +613,7 @@ end
 function BagRenderer:_drawConfirmationState(presentation)
   assert(presentation.quantity ~= nil, "the toss confirmation carries its amount")
   assert(presentation.selected ~= nil, "the toss confirmation needs its selected item")
-  assert(self._visuals["background:confirmation"] ~= nil, "the toss confirmation draws its generated screen")
-  self:_drawResponsiveButtons(self:_actionButtons(), { [3] = self:_confirmLabel() }, 3)
+  self:_drawResponsiveButtons(self:_actionButtons(), { [3] = self:_confirmLabel() })
 end
 
 -- Without a hero pane the state-specific contextual text would be lost, so
@@ -550,7 +623,8 @@ end
 -- the same text in the hero description rect.
 ---@param presentation table<string, unknown>
 ---@param layout table<string, unknown>
-function BagRenderer:_drawConstrainedContextual(presentation, layout)
+---@param descriptionPalette table<string, unknown>
+function BagRenderer:_drawConstrainedContextual(presentation, layout, descriptionPalette)
   if layout.mode ~= "interactive_only" then
     return
   end
@@ -568,23 +642,17 @@ function BagRenderer:_drawConstrainedContextual(presentation, layout)
   setColor(graphics, FALLBACK_COLORS.border)
   graphics.rectangle("line", frame.x, frame.y, frame.width, frame.height)
   setColor(graphics, WHITE)
-  self:_drawLines(contextual, frame.x + 4, frame.y + 2, 2)
+  self:_drawPaletteLines(contextual, frame.x + 4, frame.y + 2, descriptionPalette, 2)
 end
 
--- The move target uses the generated focus visual. The controller drives the
--- window with the target, so the cell is always among the visible six.
+-- The move target keeps its explicit confirm affordance; the controller
+-- drives the window with the target, so the cell is always among the
+-- visible six.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawMoveHighlight(presentation)
-  local manifest = self._manifest
-  local target = assert(presentation.moveTarget, "move selection carries its target")
-  local start = assert(presentation.visibleStart, "the presentation carries its window start")
-  assert(type(target) == "number" and type(start) == "number", "move indexes are numbers")
-  local cell = target - start + 1
-  if cell >= 1 and cell <= 6 then
-    local rect = manifest.interactive.itemSlots.slots[cell].rect
-    self:_drawFocus(rect)
-  end
-  self:_drawResponsiveButtons(self:_actionButtons(), { [3] = self:_confirmLabel() }, 3)
+  assert(presentation.moveTarget ~= nil, "move selection carries its target")
+  assert(presentation.visibleStart ~= nil, "the presentation carries its window start")
+  self:_drawResponsiveButtons(self:_actionButtons(), { [3] = self:_confirmLabel() })
 end
 
 ---@param presentation table<string, unknown>
@@ -629,6 +697,7 @@ function BagRenderer:draw(presentation, layout, collaborators)
   end
   local icons = assert(collaborators and collaborators.icons, "occupied cells need the icon provider")
   local graphics = self._graphics
+  local palettes = self:_palettes()
   FieldDrawState.protectedDraw(graphics, function()
     local mode = assert(layout.mode, "the bag layout names its mode")
     if mode ~= "interactive_only" then
@@ -663,7 +732,7 @@ function BagRenderer:draw(presentation, layout, collaborators)
         graphics.setScissor(math.floor(frame.x), math.floor(frame.y), math.floor(frame.width), math.floor(frame.height))
         graphics.translate(frame.x, frame.y)
         graphics.scale(hero.scale, hero.scale)
-        self:_drawHeroForeground(presentation)
+        self:_drawHeroForeground(presentation, palettes.description)
       end)
     end
     local interactive = assert(layout.interactive, "every mode places the interactive pane")
@@ -673,7 +742,7 @@ function BagRenderer:draw(presentation, layout, collaborators)
       graphics.setScissor(math.floor(frame.x), math.floor(frame.y), math.floor(frame.width), math.floor(frame.height))
       graphics.translate(frame.x, frame.y)
       graphics.scale(interactive.scale, interactive.scale)
-      self:_drawInteractive(presentation, icons, layout)
+      self:_drawInteractive(presentation, icons, layout, palettes)
     end)
     graphics.pop()
     if not ok then

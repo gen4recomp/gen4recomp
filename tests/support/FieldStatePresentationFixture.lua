@@ -140,18 +140,35 @@ local function bagManifest()
   for i = 0, 7 do
     tabs[#tabs + 1] = bagRect(i * 32, 0, 32, 32)
   end
+  local tabNormals = {}
+  for i = 1, 8 do
+    tabNormals[#tabNormals + 1] = bagImageRef("test/bag/tab-normal-" .. i .. ".png")
+  end
+  local slotShapes = {
+    { rect = { 0, 32, 128, 42 }, text = { 32, 40, 88, 32 }, center = { 48, 56 } },
+    { rect = { 128, 32, 128, 42 }, text = { 160, 40, 88, 32 }, center = { 176, 56 } },
+    { rect = { 0, 74, 128, 44 }, text = { 32, 80, 88, 32 }, center = { 48, 96 } },
+    { rect = { 128, 74, 128, 44 }, text = { 160, 80, 88, 32 }, center = { 176, 96 } },
+    { rect = { 0, 118, 128, 36 }, text = { 32, 120, 88, 32 }, center = { 48, 136 } },
+    { rect = { 128, 118, 128, 36 }, text = { 160, 120, 88, 32 }, center = { 176, 136 } },
+  }
   local slots = {}
-  local index = 0
-  for row = 0, 2 do
-    for col = 0, 1 do
-      index = index + 1
-      local x = col == 0 and 32 or 160
-      local y = 40 + row * 40
-      slots[index] = {
-        rect = bagRect(x, y, 88, 32),
-        iconCenter = { x = x + 16, y = y + 16 },
-      }
+  for _, shape in ipairs(slotShapes) do
+    slots[#slots + 1] = {
+      rect = bagRect(shape.rect[1], shape.rect[2], shape.rect[3], shape.rect[4]),
+      textRect = bagRect(shape.text[1], shape.text[2], shape.text[3], shape.text[4]),
+      iconCenter = { x = shape.center[1], y = shape.center[2] },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    }
+  end
+  local backgrounds = {}
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    local pockets = {}
+    for _, pocket in ipairs(BAG_POCKETS) do
+      pockets[pocket] = bagImageRef("test/bag/background-" .. state .. "-" .. pocket .. ".png")
     end
+    backgrounds[state] = pockets
   end
   return {
     schema = BagAssetSchema.SCHEMA,
@@ -209,29 +226,14 @@ local function bagManifest()
       },
     },
     interactive = {
-      backgrounds = {
-        browse = bagImageRef("test/bag/background-browse.png"),
-        action = bagImageRef("test/bag/background-action.png"),
-        quantity = bagImageRef("test/bag/background-quantity.png"),
-        confirmation = bagImageRef("test/bag/background-confirmation.png"),
-      },
+      backgrounds = backgrounds,
       pocketTabs = {
         rects = tabs,
-        normal = {
-          bagImageRef("test/bag/tab-normal-1.png"),
-          bagImageRef("test/bag/tab-normal-2.png"),
-          bagImageRef("test/bag/tab-normal-3.png"),
-          bagImageRef("test/bag/tab-normal-4.png"),
-          bagImageRef("test/bag/tab-normal-5.png"),
-          bagImageRef("test/bag/tab-normal-6.png"),
-          bagImageRef("test/bag/tab-normal-7.png"),
-          bagImageRef("test/bag/tab-normal-8.png"),
-        },
-        selected = bagImageRef("test/bag/tab-selected.png"),
+        normal = tabNormals,
+        highlight = bagImageRef("test/bag/tab-highlight.png"),
       },
       itemSlots = {
         slots = slots,
-        focus = bagImageRef("test/bag/focus.png"),
         registration = {
           slot1 = { image = "test/bag/registration-slot-1.png", width = 40, height = 16 },
           slot2 = { image = "test/bag/registration-slot-2.png", width = 40, height = 16 },
@@ -239,7 +241,10 @@ local function bagManifest()
         },
       },
       pageIndicator = { rect = bagRect(80, 168, 56, 16), textAt = { x = 0, y = 0 } },
-      cancel = bagRect(192, 168, 56, 16),
+      cancel = {
+        rect = bagRect(192, 168, 64, 24),
+        textRect = bagRect(192, 168, 56, 16),
+      },
       text = {
         actions = {
           toss = "TOSS",
@@ -321,16 +326,16 @@ function FieldStatePresentationFixture.cache()
   cache:write("test/bag/hero-male.png", solidPng(32, 32))
   cache:write("test/bag/hero-female.png", solidPng(32, 32))
   cache:write("test/bag/description-frame.png", solidPng(32, 32))
-  cache:write("test/bag/background-browse.png", solidPng(32, 32))
-  cache:write("test/bag/background-action.png", solidPng(32, 32))
-  cache:write("test/bag/background-quantity.png", solidPng(32, 32))
-  cache:write("test/bag/background-confirmation.png", solidPng(32, 32))
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    for _, pocket in ipairs(BAG_POCKETS) do
+      cache:write("test/bag/background-" .. state .. "-" .. pocket .. ".png", solidPng(32, 32))
+    end
+  end
   cache:write("test/bag/description-frame-alt.png", solidPng(32, 32))
   for index = 1, 8 do
     cache:write("test/bag/tab-normal-" .. index .. ".png", solidPng(32, 32))
   end
-  cache:write("test/bag/tab-selected.png", solidPng(32, 32))
-  cache:write("test/bag/focus.png", solidPng(32, 32))
+  cache:write("test/bag/tab-highlight.png", solidPng(32, 32))
   cache:write("test/bag/registration-slot-1.png", solidPng(40, 16))
   cache:write("test/bag/registration-slot-2.png", solidPng(40, 16))
   cache:write(

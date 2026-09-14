@@ -23,18 +23,18 @@ local function manifest()
     tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
   end
   local slots = {}
-  local rects = {
-    { 32, 40 },
-    { 160, 40 },
-    { 32, 80 },
-    { 160, 80 },
-    { 32, 120 },
-    { 160, 120 },
+  local shapes = {
+    { { 0, 32, 128, 42 }, { 48, 56 } },
+    { { 128, 32, 128, 42 }, { 176, 56 } },
+    { { 0, 74, 128, 44 }, { 48, 96 } },
+    { { 128, 74, 128, 44 }, { 176, 96 } },
+    { { 0, 118, 128, 36 }, { 48, 136 } },
+    { { 128, 118, 128, 36 }, { 176, 136 } },
   }
-  for index, origin in ipairs(rects) do
+  for index, shape in ipairs(shapes) do
     slots[index] = {
-      rect = { x = origin[1], y = origin[2], width = 88, height = 32 },
-      iconCenter = { x = origin[1] + 16, y = origin[2] + 16 },
+      rect = { x = shape[1][1], y = shape[1][2], width = shape[1][3], height = shape[1][4] },
+      iconCenter = { x = shape[2][1], y = shape[2][2] },
     }
   end
   local states = {}
@@ -53,7 +53,10 @@ local function manifest()
       pocketTabs = { rects = tabs },
       itemSlots = { slots = slots },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
-      cancel = { x = 192, y = 168, width = 56, height = 16 },
+      cancel = {
+        rect = { x = 192, y = 168, width = 64, height = 24 },
+        textRect = { x = 192, y = 168, width = 56, height = 16 },
+      },
       overlays = {
         descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
         actionMenu = {
@@ -220,7 +223,7 @@ end
 
 local function cancelCenter(state)
   local placement = state:status().layout.interactive
-  local cancelRect = manifest().interactive.cancel
+  local cancelRect = manifest().interactive.cancel.rect
   return placement.frame.x + (cancelRect.x + cancelRect.width / 2) * placement.scale,
     placement.frame.y + (cancelRect.y + cancelRect.height / 2) * placement.scale
 end
@@ -402,6 +405,234 @@ function T.dispose_discards_the_pending_close()
   state:dispose()
   state:dispose()
   Assert.isNil(state:takeResult(), "disposal drops the pending result")
+end
+
+local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local FakeGraphics = require("tests.support.FakeGraphics").new
+
+local V5_POCKETS = POCKETS
+
+-- Production-composition manifest in the generated v5 shape: the layout
+-- fields above plus pocket-aware backgrounds and highlight tabs for the
+-- composed draw. No production wiring changes.
+local function v5manifest()
+  local manifested = manifest()
+  manifested.hero.background = {
+    male = { image = "test/bag/hero-male.png", width = 256, height = 192 },
+    female = { image = "test/bag/hero-female.png", width = 256, height = 192 },
+  }
+  manifested.hero.description = {
+    frame = {
+      image = "test/bag/description.png",
+      alternateImage = "test/bag/description.png",
+      rect = { x = 0, y = 144, width = 256, height = 48 },
+    },
+    textRect = { x = 20, y = 144, width = 228, height = 40 },
+  }
+  local backgrounds = {}
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    local pockets = {}
+    for _, pocket in ipairs(V5_POCKETS) do
+      pockets[pocket] = {
+        image = "test/bag/background-" .. state .. "-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
+    end
+    backgrounds[state] = pockets
+  end
+  manifested.interactive.backgrounds = backgrounds
+  local tabs = {}
+  local normals = {}
+  for index = 0, 7 do
+    tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
+    normals[index + 1] = {
+      image = "test/bag/tab-normal-" .. (index + 1) .. ".png",
+      width = 16,
+      height = 16,
+      offset = { x = 3, y = -2 },
+    }
+  end
+  manifested.interactive.pocketTabs = {
+    rects = tabs,
+    normal = normals,
+    highlight = { image = "test/bag/tab-highlight.png", width = 24, height = 24, offset = { x = -4, y = 4 } },
+  }
+  manifested.interactive.itemSlots.focus = nil
+  manifested.interactive.itemSlots.registration = {
+    slot1 = { image = "test/bag/registration-slot-1.png", width = 40, height = 16 },
+    slot2 = { image = "test/bag/registration-slot-2.png", width = 40, height = 16 },
+    offset = { x = 0, y = 16 },
+  }
+  manifested.interactive.text = {
+    actions = {
+      toss = "TOSS",
+      move = "MOVE",
+      register = "REGISTER",
+      unregister = "DESELECT",
+      cancel = "CANCEL",
+      confirm = "YES",
+    },
+    movePrompt = {
+      segments = { { kind = "text", value = "Move " }, { kind = "item" }, { kind = "text", value = "?" } },
+    },
+    tossQuantity = {
+      segments = { { kind = "text", value = "Toss " }, { kind = "item" }, { kind = "text", value = "?" } },
+    },
+    tossConfirm = {
+      segments = {
+        { kind = "text", value = "Toss " },
+        { kind = "quantity" },
+        { kind = "text", value = " " },
+        { kind = "item" },
+        { kind = "text", value = "?" },
+      },
+    },
+  }
+  local textRects = {
+    { 32, 40, 88, 32 },
+    { 160, 40, 88, 32 },
+    { 32, 80, 88, 32 },
+    { 160, 80, 88, 32 },
+    { 32, 120, 88, 32 },
+    { 160, 120, 88, 32 },
+  }
+  for index, slot in ipairs(manifested.interactive.itemSlots.slots) do
+    local window = assert(textRects[index], "every composed cell needs its text window")
+    slot.textRect = { x = window[1], y = window[2], width = window[3], height = window[4] }
+    slot.nameAt = { x = 0, y = 0 }
+    slot.quantityAt = { x = 48, y = 16 }
+  end
+  return manifested
+end
+
+local function seedV5Cache()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local function put(path)
+    cache:write(path, "png-bytes")
+  end
+  put("test/bag/hero-male.png")
+  put("test/bag/hero-female.png")
+  put("test/bag/description.png")
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    for _, pocket in ipairs(V5_POCKETS) do
+      put("test/bag/background-" .. state .. "-" .. pocket .. ".png")
+    end
+  end
+  for index = 1, 8 do
+    put("test/bag/tab-normal-" .. index .. ".png")
+  end
+  put("test/bag/tab-highlight.png")
+  put("test/bag/registration-slot-1.png")
+  put("test/bag/registration-slot-2.png")
+  return cache
+end
+
+local function composedText()
+  local paletted = {}
+  local palette = {}
+  for index = 1, 16 do
+    palette[index] = { r = (index * 37) % 256, g = (index * 91) % 256, b = (index * 53) % 256 }
+  end
+  local fake = { paletted = paletted, fontDef = { palette = palette } }
+  function fake:drawText(content, x, y)
+    paletted[#paletted + 1] = { text = content, x = x, y = y, plain = true }
+  end
+  function fake:drawTextWithPalette(content, x, y, paletteRecord)
+    paletted[#paletted + 1] = { text = content, x = x, y = y, palette = paletteRecord }
+  end
+  function fake:textWidth(content)
+    return #content * 8
+  end
+  return fake
+end
+
+local function composedIcons()
+  return {
+    image = function()
+      return "atlas"
+    end,
+    quadFor = function(_, key)
+      return { key = key }
+    end,
+    dimensions = function(_)
+      return { width = 32, height = 32 }
+    end,
+  }
+end
+
+local function composedHeroSpy()
+  local spy = { draws = 0, releaseCount = 0 }
+  function spy:draw(_gender, _heroStatus, _heroPlacement)
+    self.draws = self.draws + 1
+  end
+  function spy:release()
+    self.releaseCount = self.releaseCount + 1
+  end
+  return spy
+end
+
+local function wasDrawn(graphics, image)
+  for _, entry in ipairs(graphics.draws) do
+    if entry.image == image then
+      return true
+    end
+  end
+  return false
+end
+
+function T.production_bag_draws_pocket_specific_presentation()
+  local manifested = v5manifest()
+  local options = composition({ manifest = manifested })
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local view = state:status()
+  Assert.equal(view.pocket, "balls", "the composed status browses the selected pocket")
+  Assert.equal(view.layout.mode, "horizontal", "the wide composition keeps its arrangement")
+  local graphics = FakeGraphics({})
+  local content = composedText()
+  local hero = composedHeroSpy()
+  local draw = BagRenderer.new({
+    cacheFs = seedV5Cache(),
+    manifest = manifested,
+    text = content,
+    graphics = graphics,
+    heroRenderer = hero,
+  })
+  local icons = composedIcons()
+  draw:draw(view, assert(view.layout, "the composed status carries its resolved layout"), { icons = icons })
+  local ballsBackground = draw._images["background:browse:balls"]
+  local medicineBackground = draw._images["background:browse:medicine"]
+  Assert.notNil(ballsBackground, "the balls background is bound")
+  Assert.isTrue(wasDrawn(graphics, ballsBackground), "the open bag draws its pocket background")
+  Assert.isFalse(wasDrawn(graphics, medicineBackground), "the open bag never borrows another pocket")
+  Assert.equal(hero.draws, 1, "the composed draw delegates exactly one hero model draw")
+  -- Switching pockets through the live cursor re-resolves production status
+  -- and the redraw follows with no missing-background fallback.
+  options.cursor:setPocket("medicine")
+  state:updateFixed({})
+  local switched = state:status()
+  Assert.equal(switched.pocket, "medicine", "the composed status follows the pocket switch")
+  for key in pairs(graphics.draws) do
+    graphics.draws[key] = nil
+  end
+  draw:draw(switched, assert(switched.layout, "the switched status carries its layout"), { icons = icons })
+  Assert.isTrue(wasDrawn(graphics, medicineBackground), "the switched pocket draws its own background")
+  Assert.isFalse(wasDrawn(graphics, ballsBackground), "the switched pocket never falls back to balls")
+  Assert.equal(graphics.pushDepth(), 0, "the composed draws keep the transform stack balanced")
+  draw:release()
+  for _, image in ipairs(graphics.images) do
+    Assert.equal(image.releaseCount, 1, "every owned image releases exactly once")
+  end
+  Assert.equal(hero.releaseCount, 0, "the borrowed hero renderer stays owned by its composer")
+  draw:release()
+  for _, image in ipairs(graphics.images) do
+    Assert.equal(image.releaseCount, 1, "a second release stays a safe no-op")
+  end
+  state:dispose()
 end
 
 function T.missing_capabilities_fail_at_construction()

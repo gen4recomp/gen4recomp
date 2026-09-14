@@ -27,19 +27,44 @@ local function manifest()
   for index = 0, 7 do
     tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
   end
+  local normals = {}
+  for index = 0, 7 do
+    normals[index + 1] = {
+      image = "bag/tab-normal-" .. (index + 1) .. ".png",
+      width = 16,
+      height = 16,
+      offset = { x = 3, y = -2 },
+    }
+  end
+  local pockets = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+  local backgrounds = {}
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    local variants = {}
+    for _, pocket in ipairs(pockets) do
+      variants[pocket] = {
+        image = "bag/background-" .. state .. "-" .. pocket .. ".png",
+        width = 256,
+        height = 192,
+      }
+    end
+    backgrounds[state] = variants
+  end
   local slots = {}
-  local rects = {
-    { 32, 40 },
-    { 160, 40 },
-    { 32, 80 },
-    { 160, 80 },
-    { 32, 120 },
-    { 160, 120 },
+  local shapes = {
+    { { 0, 32, 128, 42 }, { 32, 40, 88, 32 }, { 48, 56 } },
+    { { 128, 32, 128, 42 }, { 160, 40, 88, 32 }, { 176, 56 } },
+    { { 0, 74, 128, 44 }, { 32, 80, 88, 32 }, { 48, 96 } },
+    { { 128, 74, 128, 44 }, { 160, 80, 88, 32 }, { 176, 96 } },
+    { { 0, 118, 128, 36 }, { 32, 120, 88, 32 }, { 48, 136 } },
+    { { 128, 118, 128, 36 }, { 160, 120, 88, 32 }, { 176, 136 } },
   }
-  for index, origin in ipairs(rects) do
+  for index, shape in ipairs(shapes) do
     slots[index] = {
-      rect = { x = origin[1], y = origin[2], width = 88, height = 32 },
-      iconCenter = { x = origin[1] + 16, y = origin[2] + 16 },
+      rect = { x = shape[1][1], y = shape[1][2], width = shape[1][3], height = shape[1][4] },
+      textRect = { x = shape[2][1], y = shape[2][2], width = shape[2][3], height = shape[2][4] },
+      iconCenter = { x = shape[3][1], y = shape[3][2] },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
     }
   end
   return {
@@ -54,29 +79,14 @@ local function manifest()
       },
     },
     interactive = {
-      backgrounds = {
-        browse = { image = "bag/background-browse.png", width = 256, height = 192 },
-        action = { image = "bag/background-action.png", width = 256, height = 192 },
-        quantity = { image = "bag/background-quantity.png", width = 256, height = 192 },
-        confirmation = { image = "bag/background-confirmation.png", width = 256, height = 192 },
-      },
+      backgrounds = backgrounds,
       pocketTabs = {
         rects = tabs,
-        normal = {
-          { image = "bag/tab-normal-1.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-2.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-3.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-4.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-5.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-6.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-7.png", width = 16, height = 16 },
-          { image = "bag/tab-normal-8.png", width = 16, height = 16 },
-        },
-        selected = { image = "bag/tab-selected.png", width = 16, height = 16 },
+        normal = normals,
+        highlight = { image = "bag/tab-highlight.png", width = 24, height = 24, offset = { x = -4, y = 4 } },
       },
       itemSlots = {
         slots = slots,
-        focus = { image = "bag/focus.png", width = 16, height = 16 },
         registration = {
           slot1 = { image = "bag/registration-slot-1.png", width = 40, height = 16 },
           slot2 = { image = "bag/registration-slot-2.png", width = 40, height = 16 },
@@ -84,7 +94,10 @@ local function manifest()
         },
       },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
-      cancel = { x = 192, y = 168, width = 56, height = 16 },
+      cancel = {
+        rect = { x = 192, y = 168, width = 64, height = 24 },
+        textRect = { x = 192, y = 168, width = 56, height = 16 },
+      },
       text = {
         actions = {
           toss = "TRASH",
@@ -137,27 +150,23 @@ end
 
 local function seedCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  for _, path in ipairs({
+  local paths = {
     "bag/hero-male.png",
     "bag/hero-female.png",
     "bag/description.png",
-    "bag/background-browse.png",
-    "bag/background-action.png",
-    "bag/background-quantity.png",
-    "bag/background-confirmation.png",
-    "bag/tab-normal-1.png",
-    "bag/tab-normal-2.png",
-    "bag/tab-normal-3.png",
-    "bag/tab-normal-4.png",
-    "bag/tab-normal-5.png",
-    "bag/tab-normal-6.png",
-    "bag/tab-normal-7.png",
-    "bag/tab-normal-8.png",
-    "bag/tab-selected.png",
-    "bag/focus.png",
-    "bag/registration-slot-1.png",
-    "bag/registration-slot-2.png",
-  }) do
+  }
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+      paths[#paths + 1] = "bag/background-" .. state .. "-" .. pocket .. ".png"
+    end
+  end
+  for index = 1, 8 do
+    paths[#paths + 1] = "bag/tab-normal-" .. index .. ".png"
+  end
+  paths[#paths + 1] = "bag/tab-highlight.png"
+  paths[#paths + 1] = "bag/registration-slot-1.png"
+  paths[#paths + 1] = "bag/registration-slot-2.png"
+  for _, path in ipairs(paths) do
     cache:write(path, "png-bytes")
   end
   return cache
@@ -165,10 +174,18 @@ end
 
 local function text()
   local printed = {}
+  local palette = {}
+  for index = 1, 16 do
+    palette[index] = { r = 255, g = 255, b = 255 }
+  end
   return {
     printed = printed,
+    fontDef = { palette = palette },
     drawText = function(_, content, x, y)
       printed[#printed + 1] = { text = content, x = x, y = y }
+    end,
+    drawTextWithPalette = function(_, content, x, y, paletteRecord)
+      printed[#printed + 1] = { text = content, x = x, y = y, palette = paletteRecord }
     end,
     textWidth = function(_, content)
       return #content * 8
@@ -398,10 +415,20 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
   for index = 1, 8 do
     Assert.isTrue(wasDrawn(graphics, draw._images["tabNormal:" .. index]), "every normal tab visual is drawn")
   end
-  Assert.isTrue(wasDrawn(graphics, draw._images.tabSelected), "the selected pocket visual is drawn")
-  Assert.isTrue(wasDrawn(graphics, draw._images.focus), "the item focus visual is drawn")
-  Assert.isTrue(wasDrawn(graphics, draw._images["background:browse"]), "browse uses one semantic background")
-  Assert.equal(#graphics.rectangles, 0, "browse focus is not a primitive rectangle")
+  Assert.isTrue(wasDrawn(graphics, draw._images.tabHighlight), "the selected pocket highlight is drawn")
+  Assert.isNil(draw._images.focus, "no generated focus image is bound")
+  Assert.isNil(draw._images.tabSelected, "no retired selected tab visual is bound")
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["background:browse:balls"]),
+    "browse uses the pocket-specific background"
+  )
+  local outlineWidths = {}
+  for _, rectangle in ipairs(graphics.rectangles) do
+    Assert.equal(rectangle.mode, "line", "item focus never falls back to primitive fills")
+    outlineWidths[#outlineWidths + 1] = rectangle.lineWidth
+  end
+  table.sort(outlineWidths)
+  Assert.deepEqual(outlineWidths, { 3, 5 }, "browse focus is the shared two-line outline")
   Assert.equal(calls.quadFor, 2, "the renderer keeps the existing item icon lookup count")
   Assert.deepEqual(calls.keys, { "POTION", "POKE_BALL" }, "the renderer keeps the existing icon keys")
 
@@ -419,7 +446,10 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
       or state == "toss_quantity" and "quantity"
       or state == "toss_confirm" and "confirmation"
       or "browse"
-    Assert.isTrue(wasDrawn(graphics, draw._images["background:" .. key]), state .. " selects its semantic background")
+    Assert.isTrue(
+      wasDrawn(graphics, draw._images["background:" .. key .. ":balls"]),
+      state .. " selects its pocket-specific background"
+    )
   end
   draw:release()
 end
@@ -438,12 +468,17 @@ function T.browse_keeps_generated_chrome()
   for index = 1, 8 do
     Assert.isTrue(wasDrawn(graphics, draw._images["tabNormal:" .. index]), "every normal tab visual is drawn")
   end
-  Assert.isTrue(wasDrawn(graphics, draw._images.tabSelected), "the selected pocket visual is drawn")
-  Assert.isTrue(wasDrawn(graphics, draw._images.focus), "the item focus visual is drawn")
-  Assert.isTrue(wasDrawn(graphics, draw._images["background:browse"]), "browse uses its semantic background")
+  Assert.isTrue(wasDrawn(graphics, draw._images.tabHighlight), "the selected pocket highlight is drawn")
+  Assert.isNil(draw._images.focus, "the item focus visual is never bound")
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["background:browse:balls"]),
+    "browse uses its pocket-specific background"
+  )
   Assert.isTrue(printedText(content, "BACK OUT"), "the generated cancel affordance prints its label")
   Assert.isTrue(printedText(content, "1/1"), "the page indicator prints its derived page")
-  Assert.equal(#graphics.rectangles, 0, "browse chrome never falls back to primitive rectangles")
+  for _, rectangle in ipairs(graphics.rectangles) do
+    Assert.equal(rectangle.mode, "line", "browse chrome never falls back to primitive fills")
+  end
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end
@@ -502,11 +537,9 @@ function T.empty_pockets_draw_no_icons_but_keep_navigation_labels()
   for index = 1, 6 do
     cells[index] = { empty = true, visibleIndex = index - 1 }
   end
-  draw:draw(
-    status({ slots = {}, visibleSlots = cells, selected = nil, selectedAbsoluteIndex = 0 }),
-    layout("horizontal"),
-    { icons = icons() }
-  )
+  local record = status({ slots = {}, visibleSlots = cells, selectedAbsoluteIndex = 0 })
+  record.selected = nil
+  draw:draw(record, layout("horizontal"), { icons = icons() })
   for _, entry in ipairs(graphics.draws) do
     local quad = entry.quad
     Assert.isTrue(type(quad) ~= "table" or quad.key == nil, "empty cells draw no item icons")
@@ -642,7 +675,9 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
     Assert.isFalse(printedText(content, "toss"), "the raw toss id never reaches the screen in " .. mode)
     Assert.isFalse(printedText(content, "move"), "the raw move id never reaches the screen in " .. mode)
     Assert.isFalse(printedText(content, "cancel"), "the raw cancel id never reaches the screen in " .. mode)
-    Assert.equal(#graphics.rectangles, 0, "source focus replaces generic menu frames in " .. mode)
+    for _, rectangle in ipairs(graphics.rectangles) do
+      Assert.equal(rectangle.mode, "line", "only the shared item outline may emit primitives in " .. mode)
+    end
     Assert.equal(fillCount(graphics), 0, "no generic fill covers the generated action screen in " .. mode)
     Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced in " .. mode)
     draw:release()
@@ -901,20 +936,26 @@ function T.nested_states_label_their_responsive_buttons()
   Assert.isTrue(textInRect(content, "-", buttons[1]), "the quantity state labels its decrement button")
   Assert.isTrue(textInRect(content, "+", buttons[2]), "the quantity state labels its increment button")
   Assert.isTrue(textInRect(content, "YES", buttons[3]), "the quantity state labels its confirm button")
-  Assert.equal(#graphics.rectangles, 0, "quantity affordances use source presentation")
+  for _, rectangle in ipairs(graphics.rectangles) do
+    Assert.equal(rectangle.mode, "line", "only the shared item outline may emit primitives")
+  end
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   local confirmGraphics, confirmContent = drawFor("toss_confirm")
   Assert.isTrue(textInRect(confirmContent, "YES", buttons[3]), "the confirmation state labels its confirm button")
-  Assert.equal(#confirmGraphics.rectangles, 0, "confirmation affordance uses source presentation")
+  for _, rectangle in ipairs(confirmGraphics.rectangles) do
+    Assert.equal(rectangle.mode, "line", "only the shared item outline may emit primitives")
+  end
   local moveGraphics, moveContent = drawFor("move_select")
   Assert.isTrue(textInRect(moveContent, "YES", buttons[3]), "move selection labels its confirm button")
-  Assert.equal(#moveGraphics.rectangles, 0, "move confirm affordance uses source presentation")
+  for _, rectangle in ipairs(moveGraphics.rectangles) do
+    Assert.equal(rectangle.mode, "line", "only the shared item outline may emit primitives")
+  end
 end
 
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.isTrue(#graphics.images >= 19, "the renderer acquires every generated state image")
+  Assert.isTrue(#graphics.images >= 46, "the renderer acquires every generated state image")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -930,7 +971,6 @@ local function heroPresentation(overrides)
   record.hero = heroStatusRecord()
   return record
 end
-
 local function rendererWithHero(graphics, order)
   local spy = heroSpy(order)
   local draw = BagRenderer.new({
@@ -1018,7 +1058,7 @@ function T.unknown_registration_slot_is_a_composition_error()
 end
 
 function T.marker_acquisition_failure_releases_acquired_images_once()
-  for _, failCall in ipairs({ 18, 19 }) do
+  for _, failCall in ipairs({ 45, 46 }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()
       BagRenderer.new({
@@ -1108,6 +1148,307 @@ function T.registration_markers_follow_live_service_slot_identities()
   Assert.equal(#secondMarks, 1, "the second registration draws its marker in its own cell")
   Assert.isTrue(firstMarks[1] ~= secondMarks[1], "the two slots stay visually distinct")
   Assert.equal(#thirdMarks, 0, "an unregistered occupied cell draws no marker")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+local POCKET_KEYS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+
+-- Strict generated-shape fixture: pocket-aware state backgrounds, normal plus
+-- highlight tab visuals with non-zero source offsets, split slot geometry with
+-- explicit text anchors, and a Cancel control rect separate from its text
+-- window. No retired selected/focus visuals.
+local function v5manifest()
+  return manifest()
+end
+
+local function seedV5Cache(reads)
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local function put(path)
+    cache:write(path, "png-bytes")
+  end
+  put("bag/hero-male.png")
+  put("bag/hero-female.png")
+  put("bag/description.png")
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    for _, pocket in ipairs(POCKET_KEYS) do
+      put("bag/background-" .. state .. "-" .. pocket .. ".png")
+    end
+  end
+  for index = 1, 8 do
+    put("bag/tab-normal-" .. index .. ".png")
+  end
+  put("bag/tab-highlight.png")
+  put("bag/registration-slot-1.png")
+  put("bag/registration-slot-2.png")
+  if reads == nil then
+    return cache
+  end
+  local wrapped = {}
+  function wrapped:read(path)
+    reads[#reads + 1] = path
+    return cache:read(path)
+  end
+  function wrapped:write(path, data)
+    return cache:write(path, data)
+  end
+  return wrapped
+end
+
+-- Palette-aware text double: records plain and palette-driven calls
+-- separately and carries a 16-entry field font palette with distinct colors
+-- in every audited slot.
+local function paletteText()
+  local printed = {}
+  local paletted = {}
+  local palette = {}
+  for index = 1, 16 do
+    palette[index] = { r = (index * 37) % 256, g = (index * 91) % 256, b = (index * 53) % 256 }
+  end
+  local fake = {
+    printed = printed,
+    paletted = paletted,
+    fontDef = { palette = palette },
+  }
+  function fake:drawText(content, x, y)
+    printed[#printed + 1] = { text = content, x = x, y = y }
+  end
+  function fake:drawTextWithPalette(content, x, y, paletteRecord)
+    paletted[#paletted + 1] = { text = content, x = x, y = y, palette = paletteRecord }
+  end
+  function fake:textWidth(content)
+    return #content * 8
+  end
+  return fake
+end
+
+-- Expected palette record for zero-based field font slots, following the
+-- existing renderer convention of byte-valued colors with a transparent
+-- background role so generated pixels stay visible beneath glyph masks.
+local function paletteRecord(content, foregroundSlot, shadowSlot)
+  local entries = content.fontDef.palette
+  local function byte(entry)
+    return { r = entry.r, g = entry.g, b = entry.b }
+  end
+  local background = byte(entries[1])
+  background.a = 0
+  return {
+    foreground = byte(entries[foregroundSlot + 1]),
+    shadow = byte(entries[shadowSlot + 1]),
+    background = background,
+  }
+end
+
+local function palettedAt(content, needle)
+  for _, entry in ipairs(content.paletted) do
+    if entry.text == needle then
+      return entry
+    end
+  end
+  return nil
+end
+
+local function v5renderer(graphics, content, reads)
+  local manifested = v5manifest()
+  return BagRenderer.new({
+    cacheFs = seedV5Cache(reads),
+    manifest = manifested,
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  }),
+    manifested
+end
+
+local function singlePane()
+  return {
+    mode = "interactive_only",
+    hero = nil,
+    interactive = {
+      frame = { x = 0, y = 0, width = 256, height = 192 },
+      scale = 1,
+      logicalWidth = 256,
+      logicalHeight = 192,
+    },
+    descriptionFallback = { x = 0, y = 144, width = 256, height = 48 },
+    interactiveHitTest = function()
+      return nil
+    end,
+  }
+end
+
+function T.browse_selects_the_background_of_the_current_pocket()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw, manifested = v5renderer(graphics, text(), nil)
+  local itemsBackground = draw._images["background:browse:items"]
+  local medicineBackground = draw._images["background:browse:medicine"]
+  Assert.notNil(itemsBackground, "the items browse background is bound")
+  Assert.notNil(medicineBackground, "the medicine browse background is bound")
+  Assert.isTrue(itemsBackground ~= medicineBackground, "pocket variants are distinct bindings")
+  draw:draw(status({ pocket = "items" }), singlePane(), { icons = icons() })
+  Assert.isTrue(wasDrawn(graphics, itemsBackground), "the items pocket draws its own background")
+  Assert.isFalse(wasDrawn(graphics, medicineBackground), "the items pocket never borrows the medicine background")
+  for key in pairs(graphics.draws) do
+    graphics.draws[key] = nil
+  end
+  draw:draw(status({ pocket = "medicine" }), singlePane(), { icons = icons() })
+  Assert.isTrue(wasDrawn(graphics, medicineBackground), "the medicine pocket draws its own background")
+  Assert.isFalse(wasDrawn(graphics, itemsBackground), "the medicine pocket never falls back to items")
+  Assert.equal(manifested.interactive.backgrounds.browse.items.width, 256, "the pocket variant keeps pane size")
+  draw:release()
+end
+
+function T.tabs_draw_at_source_anchors_with_highlight_under_icon()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw, manifested = v5renderer(graphics, content, nil)
+  local record = status({ pocket = "balls" })
+  record.selected = nil
+  draw:draw(record, singlePane(), { icons = icons() })
+  -- Single-pane draws without selection: background, highlight, then the
+  -- eight normal icons. No item focus and no tab outline may appear.
+  local visuals = {}
+  for _, entry in ipairs(graphics.draws) do
+    if type(entry.quad) ~= "table" then
+      visuals[#visuals + 1] = entry
+    end
+  end
+  Assert.equal(#visuals, 10, "one background, one highlight, and eight normal tab icons are drawn")
+  local highlight = manifested.interactive.pocketTabs.highlight
+  local highlightOffset = highlight.offset or { x = 0, y = 0 }
+  local selectedRect = manifested.interactive.pocketTabs.rects[3]
+  local selectedAnchor = { x = selectedRect.x + selectedRect.width / 2, y = selectedRect.y + selectedRect.height / 2 }
+  Assert.equal(visuals[2].quad, selectedAnchor.x + highlightOffset.x, "the highlight applies its offset once")
+  Assert.equal(visuals[2].x, selectedAnchor.y + highlightOffset.y, "the highlight applies its vertical offset once")
+  for index = 1, 8 do
+    local rect = manifested.interactive.pocketTabs.rects[index]
+    local normal = manifested.interactive.pocketTabs.normal[index]
+    local offset = normal.offset or { x = 0, y = 0 }
+    local entry = visuals[2 + index]
+    Assert.equal(
+      entry.quad,
+      rect.x + rect.width / 2 + offset.x,
+      "normal tab " .. index .. " draws at its anchor plus offset"
+    )
+    Assert.equal(
+      entry.x,
+      rect.y + rect.height / 2 + offset.y,
+      "normal tab " .. index .. " draws at its vertical anchor plus offset"
+    )
+  end
+  Assert.equal(#graphics.rectangles, 0, "tab selection never uses the item focus outline")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+function T.item_rows_use_split_text_geometry_with_unchanged_icons()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local draw, manifested = v5renderer(graphics, content, nil)
+  draw:draw(status({ pocket = "items" }), singlePane(), { icons = icons() })
+  local first = manifested.interactive.itemSlots.slots[1]
+  local iconDraw = nil
+  for _, entry in ipairs(graphics.draws) do
+    if type(entry.quad) == "table" and entry.quad.key == "POTION" then
+      iconDraw = entry
+    end
+  end
+  Assert.notNil(iconDraw, "the occupied cell draws its icon")
+  Assert.equal(iconDraw.x, first.iconCenter.x - 16, "the icon stays centered at its source center")
+  Assert.equal(iconDraw.y, first.iconCenter.y - 16, "the icon keeps its vertical source center")
+  local name = assert(palettedAt(content, "POTION"), "the item name prints through the palette path")
+  Assert.equal(name.x, first.textRect.x + 0, "the name starts at the text window origin")
+  Assert.equal(name.y, first.textRect.y + 0, "the name keeps the text window top")
+  local quantity = assert(palettedAt(content, "x5"), "the quantity prints through the palette path")
+  Assert.equal(quantity.x, first.textRect.x + 48, "the quantity uses its explicit anchor")
+  Assert.equal(quantity.y, first.textRect.y + 16, "the quantity keeps its explicit vertical anchor")
+  Assert.isTrue(first.rect.x + 38 ~= name.x, "the full control rect never contributes a text offset")
+  draw:release()
+end
+
+function T.item_focus_uses_the_shared_outline_over_the_full_rect()
+  local reads = {}
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw, manifested = v5renderer(graphics, paletteText(), reads)
+  for _, path in ipairs(reads) do
+    Assert.isFalse(path:find("focus", 1, true) ~= nil, "no generated focus image is ever acquired")
+  end
+  Assert.isNil(draw._images.focus, "no focus image binding is owned")
+  draw:draw(status({ pocket = "items", focus = "items" }), layout("horizontal"), { icons = icons() })
+  local full = manifested.interactive.itemSlots.slots[1].rect
+  local outer, inner = nil, nil
+  for _, rectangle in ipairs(graphics.rectangles) do
+    if rectangle.mode == "line" then
+      if rectangle.lineWidth == 5 then
+        outer = rectangle
+      elseif rectangle.lineWidth == 3 then
+        inner = rectangle
+      end
+    end
+  end
+  Assert.notNil(outer, "the shared outline draws its white outer line")
+  Assert.notNil(inner, "the shared outline draws its red inner line")
+  for _, rectangle in ipairs({ outer, inner }) do
+    Assert.equal(rectangle.x, full.x + 1, "focus insets around the full item rect")
+    Assert.equal(rectangle.y, full.y + 1, "focus keeps the full item vertical inset")
+    Assert.equal(rectangle.w, full.width - 2, "focus spans the full item width")
+    Assert.equal(rectangle.h, full.height - 2, "focus spans the full item height")
+  end
+  local drawsBefore = #graphics.draws
+  draw:release()
+  for _, image in ipairs(graphics.images) do
+    Assert.equal(image.releaseCount, 1, "every owned image releases exactly once")
+  end
+  draw:release()
+  for _, image in ipairs(graphics.images) do
+    Assert.equal(image.releaseCount, 1, "a second release stays a safe no-op")
+  end
+  Assert.equal(#graphics.draws, drawsBefore, "release draws nothing further")
+end
+
+function T.visible_strings_use_source_palette_roles()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local draw = v5renderer(graphics, content, nil)
+  draw:draw(status({ pocket = "items" }), singlePane(), { icons = icons() })
+  Assert.equal(#content.printed, 0, "no audited string falls back to plain glyph output")
+  local name = assert(palettedAt(content, "POTION"), "the item name prints through the palette path")
+  Assert.deepEqual(name.palette, paletteRecord(content, 1, 2), "item names use the list roles")
+  local quantity = assert(palettedAt(content, "x5"), "the quantity prints through the palette path")
+  Assert.deepEqual(quantity.palette, paletteRecord(content, 1, 2), "quantities use the list roles")
+  local page = assert(palettedAt(content, "1/1"), "the page indicator prints through the palette path")
+  Assert.deepEqual(page.palette, paletteRecord(content, 15, 1), "the page indicator uses its source roles")
+  local description =
+    assert(palettedAt(content, "POTION description"), "the description prints through the palette path")
+  Assert.deepEqual(description.palette, paletteRecord(content, 15, 14), "descriptions use the window roles")
+  local cancel = assert(palettedAt(content, "BACK OUT"), "Cancel prints through the palette path")
+  Assert.deepEqual(cancel.palette, paletteRecord(content, 15, 14), "Cancel uses the window roles")
+  Assert.equal(description.palette.background.a, 0, "glyph backgrounds stay transparent over source pixels")
+  draw:release()
+end
+
+function T.cancel_uses_background_chrome_and_its_text_window()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local draw, manifested = v5renderer(graphics, content, nil)
+  draw:draw(status({ pocket = "items" }), layout("horizontal"), { icons = icons() })
+  for _, rectangle in ipairs(graphics.rectangles) do
+    Assert.equal(rectangle.mode, "line", "only the shared focus outline may emit primitives")
+  end
+  local cancel = manifested.interactive.cancel
+  local label = assert(palettedAt(content, "BACK OUT"), "Cancel prints through the palette path")
+  local width = content:textWidth("BACK OUT")
+  Assert.equal(
+    label.x,
+    cancel.textRect.x + (cancel.textRect.width - width) / 2,
+    "the Cancel label centers inside its text window"
+  )
+  Assert.equal(label.y, cancel.textRect.y + 2, "the Cancel label keeps the text window top")
+  Assert.isTrue(
+    label.x ~= cancel.rect.x + (cancel.rect.width - width) / 2,
+    "the full control rect never places the label"
+  )
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end
