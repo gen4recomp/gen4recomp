@@ -168,7 +168,7 @@ function T.serial_intent_is_the_only_public_concurrency_override()
   Assert.isTrue(serial.serial, "--serial forces one-process execution")
 
   local lines = Cli.renderPlan(serial, {}, 1)
-  contains(lines, "prepare=0", "plan")
+  contains(lines, "prepare=none", "plan")
   contains(lines, "jobs=1", "plan")
 end
 

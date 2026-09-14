@@ -96,7 +96,7 @@ local SANITIZE_ENV =
   "unset G4RECOMP_TEST_RUN_DIR G4RECOMP_TEST_WORKERS G4RECOMP_TEST_WORKER G4RECOMP_TEST_AGGREGATE G4RECOMP_TEST_ACCEPTANCE_NAMESPACE;"
 
 -- Shared preamble for every generated fake `love`: answers `--plan` with the
--- exact `prepare=0`/`jobs=N` records the real plan protocol requires, using a
+-- exact `prepare=none`/`fresh=0`/`jobs=N` records the real plan protocol requires, using a
 -- test-only worker count that never reaches production code, and otherwise
 -- falls through to the scenario-specific worker/aggregate body appended below.
 local FAKE_LOVE_PREAMBLE = [[
@@ -109,7 +109,8 @@ for arg in "$@"; do
   fi
 done
 if [ "$is_plan" = true ]; then
-  echo "prepare=0"
+  echo "prepare=none"
+  echo "fresh=0"
   echo "jobs=${FAKE_LOVE_PLAN_JOBS:-1}"
   exit 0
 fi

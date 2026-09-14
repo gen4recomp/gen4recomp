@@ -11,7 +11,7 @@
 
 local Suite = {}
 
-local METADATA_KEYS = { capabilities = true, tags = true, slow = true }
+local METADATA_KEYS = { capabilities = true, tags = true, slow = true, derivedAssets = true }
 local MODULE_KEYS = { metadata = true, beforeAll = true, afterAll = true, tests = true }
 
 local function sortedKeys(t)
@@ -53,6 +53,7 @@ end
 ---@field module string
 ---@field layer string
 ---@field capabilities string[]
+---@field derivedAssets string[] closed derived-cache requirements this suite consumes
 ---@field tags string[]
 ---@field slow boolean
 ---@field tests string[] sorted test names
@@ -102,6 +103,7 @@ function Suite.normalize(mod, moduleName, defaultLayer)
     module = moduleName,
     layer = layer,
     capabilities = stringArray(metadata.capabilities, "capabilities", moduleName),
+    derivedAssets = stringArray(metadata.derivedAssets, "derivedAssets", moduleName),
     tags = stringArray(metadata.tags, "tags", moduleName),
     slow = metadata.slow == true,
     tests = names,

@@ -18,19 +18,15 @@ local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
-local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
-local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
-local CacheFs = require("libs.storage.src.CacheFs")
-local MonCache = require("libs.assets.src.MonCache")
-local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonsSave = require("libs.mons.src.MonsSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "field-core", "map:60", "map:61" },
     tags = { "cache", "lifecycle", "application" },
   },
   tests = {},
@@ -223,7 +219,7 @@ local function completeOak(game, oakState)
   -- presented: draw calls stay stubbed at the host boundary (no GPU work)
   -- while the production renderer observes the presented frame.
   local originalDraw = love.graphics.draw
-  rawset(love.graphics, "draw", function(...)
+  rawset(love.graphics, "draw", function()
     return nil
   end)
   local ok, completed = pcall(function()
@@ -352,7 +348,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
           Assert.equal(distinctCount, 1, "only the initial location geometry is awaited")
           Assert.equal(requested.pages, 0, "unrelated portrait pages remain sweep while entering field")
           geometryReady = true
-          local waited = 0
+          waited = 0
           while #fieldCalls == 0 and waited < 60 do
             game:update(1 / 60)
             waited = waited + 1
@@ -507,13 +503,13 @@ function T.tests.warp_waits_under_cover_then_commits_once()
   local versionId = AcceptanceHarness.defaultVersion()
   local pendingAll = false
   local host = passHost()
-  function host.requestField(mapId, urgency)
+  function host.requestField(_, _)
     if pendingAll then
       return false
     end
     return true
   end
-  function host.requestCell(descriptor, urgency)
+  function host.requestCell(_, _)
     if pendingAll then
       return false
     end
@@ -764,7 +760,7 @@ function T.tests.actual_candidate_pages_are_demand_loaded_and_close_drops_intere
     end
     Assert.isFalse(chooser:isPresentationReady(), "a closed chooser receives no late page resources")
     host.pagesPending = true
-    local reopened = game.runtime.starterChoice
+    local reopened = assert(game.runtime.starterChoice, "the starter choice task stays live while closed")
     reopened:open(0, customizedCandidates())
     pump(game, 60, nil, true, host)
     Assert.isFalse(reopened:isPresentationReady(), "the reopened chooser waits for its own customized pages")

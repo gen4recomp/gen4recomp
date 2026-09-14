@@ -102,5 +102,6 @@ local T = GraphicsSmoke.suite({
   end,
 })
 T.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+T.metadata.derivedAssets = { "bootstrap" }
 T.metadata.tags = { "field", "transition", "materials" }
 return T

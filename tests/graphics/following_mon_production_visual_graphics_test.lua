@@ -570,4 +570,5 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.derivedAssets = { "field-core", "map:63" }
 return suite

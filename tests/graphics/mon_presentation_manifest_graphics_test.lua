@@ -219,4 +219,5 @@ local suite = GraphicsSmoke.suite({
   starter_portraits_follow_source_row_layout = starter_portraits_follow_source_row_layout,
 })
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
+suite.metadata.derivedAssets = { "complete" }
 return suite
