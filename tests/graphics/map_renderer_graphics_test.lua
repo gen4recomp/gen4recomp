@@ -16,6 +16,7 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FakeCache = require("tests.support.FakeCache")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
+local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local Matrix4 = require("libs.math.src.Matrix4")
 local DsFog = require("tests.support.DsFog")
 local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
@@ -4562,15 +4563,6 @@ local function actorPatternImage(scope)
   return image
 end
 
-local function pixelEquals(image, x1, y1, x2, y2)
-  local r1, g1, b1, a1 = image:getPixel(x1, y1)
-  local r2, g2, b2, a2 = image:getPixel(x2, y2)
-  return math.abs(r1 - r2) <= 1 / 255
-    and math.abs(g1 - g2) <= 1 / 255
-    and math.abs(b1 - b2) <= 1 / 255
-    and math.abs(a1 - a2) <= 1 / 255
-end
-
 local function redBounds(image)
   local left, top, right, bottom
   for y = 0, image:getHeight() - 1 do
@@ -4904,53 +4896,142 @@ function T.presentation_cutout_holes_remain_world_pixels_under_direct_replace(sc
   Assert.isTrue(solidR > 0.7 and solidG < 0.1, "an accepted cutout texel replaces the world")
 end
 
-function T.logical_billboard_output_uses_exact_integer_blocks(scope)
-  local width, height, presentationPixelScale = 641, 479, 3
+-- A real FieldCamera perspective profile with zero yaw/pitch: the eye sits
+-- directly behind the target on the Z axis (writeEyeFromTarget with
+-- angleXRaw = angleYRaw = 0), so moving a billboard's world Z changes only
+-- its distance from the eye -- the single depth axis these scenarios sample.
+local function perspectiveFieldCamera(distanceTiles, aspect)
+  local camera = FieldCamera.new({
+    projectionType = "perspective",
+    distanceTiles = distanceTiles,
+    angleXRaw = 0,
+    angleYRaw = 0,
+    halfFovRadians = math.rad(30),
+    fullVerticalFovRadians = math.rad(60),
+    nearTiles = 0.1,
+    farTiles = 400,
+    targetOffsetTiles = { x = 0, y = 0, z = 0 },
+  })
+  camera:setProjectionAspect(aspect)
+  return camera
+end
+
+-- Projects a presentationQuadMesh billboard's four local corners (-1..1 in
+-- local x/y) through the real camera's own view and billboard-projection
+-- matrices, independent of any renderer ceil-allocation or target-size
+-- logic, and returns its screen footprint in presentation pixels.
+local function independentBillboardFootprint(camera, center, billboardScale, canvasW, canvasH)
+  local view = camera:view()
+  local vcx = view[1] * center[1] + view[5] * center[2] + view[9] * center[3] + view[13]
+  local vcy = view[2] * center[1] + view[6] * center[2] + view[10] * center[3] + view[14]
+  local vcz = view[3] * center[1] + view[7] * center[2] + view[11] * center[3] + view[15]
+  local proj = camera:billboardProjection()
+  local minX, maxX, minY, maxY
+  for _, corner in ipairs({ { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } }) do
+    local vx = vcx + corner[1] * billboardScale[1]
+    local vy = vcy + corner[2] * billboardScale[2]
+    local clipX = proj[1] * vx + proj[5] * vy + proj[9] * vcz + proj[13]
+    local clipY = proj[2] * vx + proj[6] * vy + proj[10] * vcz + proj[14]
+    local clipW = proj[4] * vx + proj[8] * vy + proj[12] * vcz + proj[16]
+    local ndcX, ndcY = clipX / clipW, clipY / clipW
+    minX, maxX = math.min(minX or ndcX, ndcX), math.max(maxX or ndcX, ndcX)
+    minY, maxY = math.min(minY or ndcY, ndcY), math.max(maxY or ndcY, ndcY)
+  end
+  return (maxX - minX) * 0.5 * canvasW, (maxY - minY) * 0.5 * canvasH
+end
+
+-- Nearer than, farther than, and exactly at the camera's target distance.
+local PERSPECTIVE_FOOTPRINT_DEPTHS = { nearer = 6, reference = 0, farther = -6 }
+
+function T.perspective_billboard_footprint_follows_camera_depth_at_presentation_resolution(scope)
+  local width, height, presentationPixelScale = 1280, 720, 6
+  local viewport = FieldViewport.new(width, height, { mode = "expanded" })
+  local camera = perspectiveFieldCamera(10, viewport:worldAspect())
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
-  local target, color = presentationTarget(scope, width, height)
-  local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), stripedImage(scope, 16))
-  sprite.billboardScale = { 0.35, 0.35, 1 }
+  local billboardScale = { 0.9, 0.9, 1 }
 
-  love.graphics.setCanvas(target)
-  love.graphics.clear(0, 0, 0, 1)
-  render(
-    renderer,
-    emptyRuntime(),
-    fixedCamera(),
-    {},
-    { sprite },
-    FieldViewport.new(width, height, { mode = "strict" }),
-    presentationPixelScale
+  local function measure(z)
+    local target, color = presentationTarget(scope, width, height)
+    local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), solidAlphaImage(scope, 255, 0, 0, 255))
+    sprite.billboardCenter = { 0, 0, z }
+    sprite.billboardScale = billboardScale
+    love.graphics.setCanvas(target)
+    love.graphics.clear(0, 0, 0, 1)
+    render(renderer, emptyRuntime(), camera, {}, { sprite }, viewport, presentationPixelScale)
+    love.graphics.setCanvas()
+    local bounds = redBounds(color:newImageData())
+    return bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1
+  end
+
+  local measured, expected, hadBetweenMultiplesSample = {}, {}, false
+  for label, z in pairs(PERSPECTIVE_FOOTPRINT_DEPTHS) do
+    local w, h = measure(z)
+    local expectedW, expectedH = independentBillboardFootprint(camera, { 0, 0, z }, billboardScale, width, height)
+    measured[label] = { w = w, h = h }
+    expected[label] = { w = expectedW, h = expectedH }
+    local nearestW = math.floor(expectedW / presentationPixelScale + 0.5) * presentationPixelScale
+    local nearestH = math.floor(expectedH / presentationPixelScale + 0.5) * presentationPixelScale
+    if math.abs(expectedW - nearestW) > 1.5 or math.abs(expectedH - nearestH) > 1.5 then
+      hadBetweenMultiplesSample = true
+    end
+  end
+
+  Assert.isTrue(
+    hadBetweenMultiplesSample,
+    "at least one sampled depth must project to a footprint materially between adjacent N-pixel multiples"
   )
-  love.graphics.setCanvas()
-
-  local image = color:newImageData()
-  local visible = 0
-  for y = 160, 318 do
-    for x = 190, 449 do
-      local r, _, b = image:getPixel(x, y)
-      if r > 0.75 or b > 0.75 then
-        visible = visible + 1
-      end
-    end
+  Assert.isTrue(
+    measured.nearer.w > measured.reference.w and measured.reference.w > measured.farther.w,
+    "footprint width shrinks continuously as depth increases"
+  )
+  Assert.isTrue(
+    measured.nearer.h > measured.reference.h and measured.reference.h > measured.farther.h,
+    "footprint height shrinks continuously as depth increases"
+  )
+  for label in pairs(PERSPECTIVE_FOOTPRINT_DEPTHS) do
+    Assert.near(
+      measured[label].w,
+      expected[label].w,
+      1.5,
+      "the " .. label .. " footprint width matches the camera's own projected bounds, not a coarse raster multiple"
+    )
+    Assert.near(
+      measured[label].h,
+      expected[label].h,
+      1.5,
+      "the " .. label .. " footprint height matches the camera's own projected bounds, not a coarse raster multiple"
+    )
   end
-  Assert.isTrue(visible > 100, "the high-contrast billboard covers the block test window")
+end
 
-  for y = 160, 318 - presentationPixelScale + 1, presentationPixelScale do
-    for x = 190, 449 - presentationPixelScale + 1, presentationPixelScale do
-      local r, _, b = image:getPixel(x, y)
-      if r > 0.75 or b > 0.75 then
-        for dy = 0, presentationPixelScale - 1 do
-          for dx = 0, presentationPixelScale - 1 do
-            Assert.isTrue(
-              pixelEquals(image, x, y, x + dx, y + dy),
-              "every logical billboard pixel must occupy one exact nearest-neighbor block"
-            )
-          end
-        end
-      end
-    end
+-- The presentation pixel scale is the anchor snap spacing, not a geometry
+-- raster resolution: holding the camera, viewport, and billboard fixed and
+-- changing N alone must not change the rasterized footprint.
+function T.presentation_pixel_scale_does_not_rescale_a_fixed_perspective_billboard(scope)
+  local width, height = 1280, 720
+  local viewport = FieldViewport.new(width, height, { mode = "expanded" })
+  local camera = perspectiveFieldCamera(10, viewport:worldAspect())
+  local billboardScale = { 0.53, 0.53, 1 }
+  local center = { 0.05, -0.03, -2.37 }
+
+  local function measure(presentationPixelScale)
+    local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+    local target, color = presentationTarget(scope, width, height)
+    local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), solidAlphaImage(scope, 255, 0, 0, 255))
+    sprite.billboardCenter = center
+    sprite.billboardScale = billboardScale
+    love.graphics.setCanvas(target)
+    love.graphics.clear(0, 0, 0, 1)
+    render(renderer, emptyRuntime(), camera, {}, { sprite }, viewport, presentationPixelScale)
+    love.graphics.setCanvas()
+    local bounds = redBounds(color:newImageData())
+    return bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1
   end
+
+  local w3, h3 = measure(3)
+  local w6, h6 = measure(6)
+  Assert.near(w3, w6, 1.5, "changing N alone must not rescale the projected billboard width")
+  Assert.near(h3, h6, 1.5, "changing N alone must not rescale the projected billboard height")
 end
 
 function T.strict_odd_viewport_composites_logical_blocks_from_a_whole_host_origin(scope)
@@ -4981,6 +5062,64 @@ function T.strict_odd_viewport_composites_logical_blocks_from_a_whole_host_origi
     end
   end
   Assert.isTrue(visible > 100, "the strict logical composite remains visible")
+end
+
+-- A strict viewport with a fractional fitted height (601x480 fits to
+-- height 450.75) forces a ceil physical allocation with a fractional
+-- embedding scale. Two perspective billboards near opposite visible corners
+-- must each rasterize at their own real projected footprint -- not stretched
+-- toward the ceil-allocated canvas -- and must not bleed into the
+-- right/bottom allocation fringe.
+function T.strict_fractional_viewport_allocation_matches_the_visible_projection_without_stretch(scope)
+  local width, height, presentationPixelScale = 601, 480, 3
+  local viewport = FieldViewport.new(width, height, { mode = "strict" })
+  local rectangle = viewport.worldViewport
+  Assert.equal(rectangle.width, 601)
+  Assert.near(rectangle.height, 450.75, 1e-9)
+
+  local camera = perspectiveFieldCamera(10, viewport:worldAspect())
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local billboardScale = { 0.18, 0.18, 1 }
+  local nearTopLeft = { -0.6, 0.55, 0 }
+  local nearBottomRight = { 0.6, -0.55, 0 }
+
+  local target, color = presentationTarget(scope, width, height)
+  local topLeftSprite =
+    presentationSprite(scope, presentationQuadMesh(scope, 0), solidAlphaImage(scope, 255, 0, 0, 255))
+  topLeftSprite.billboardCenter = nearTopLeft
+  topLeftSprite.billboardScale = billboardScale
+  local bottomRightSprite =
+    presentationSprite(scope, presentationQuadMesh(scope, 0), solidAlphaImage(scope, 0, 255, 0, 255))
+  bottomRightSprite.billboardCenter = nearBottomRight
+  bottomRightSprite.billboardScale = billboardScale
+
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  render(renderer, emptyRuntime(), camera, {}, { topLeftSprite, bottomRightSprite }, viewport, presentationPixelScale)
+  love.graphics.setCanvas()
+
+  local image = color:newImageData()
+  local red = redBounds(image)
+  local green = colorBounds(image, "green")
+  local redW, redH = red.right - red.left + 1, red.bottom - red.top + 1
+  local greenW, greenH = green.right - green.left + 1, green.bottom - green.top + 1
+  local expectedRedW, expectedRedH =
+    independentBillboardFootprint(camera, nearTopLeft, billboardScale, rectangle.width, rectangle.height)
+  local expectedGreenW, expectedGreenH =
+    independentBillboardFootprint(camera, nearBottomRight, billboardScale, rectangle.width, rectangle.height)
+
+  Assert.near(redW, expectedRedW, 1.5, "the top-left marker's ceil-allocated footprint is not stretched")
+  Assert.near(redH, expectedRedH, 1.5, "the top-left marker's ceil-allocated footprint is not stretched")
+  Assert.near(greenW, expectedGreenW, 1.5, "the bottom-right marker's ceil-allocated footprint is not stretched")
+  Assert.near(greenH, expectedGreenH, 1.5, "the bottom-right marker's ceil-allocated footprint is not stretched")
+  Assert.isTrue(
+    red.top >= math.floor(rectangle.y),
+    "the top-left marker registers at the exact visible top, not a shifted allocation"
+  )
+  Assert.isTrue(
+    green.bottom <= math.ceil(rectangle.y + rectangle.height),
+    "the bottom-right marker's allocation fringe is clipped, not stretched into the visible area"
+  )
 end
 
 function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
@@ -5049,53 +5188,25 @@ local function renderActorPattern(scope, renderer, width, height, presentationPi
   return color:newImageData()
 end
 
-function T.actor_billboard_uses_an_exact_32_by_32_logical_footprint(scope)
-  local width, height, presentationPixelScale = 640, 480, 4
-  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
-  local center = { 0.037, -0.041, 0 }
-  local image = renderActorPattern(scope, renderer, width, height, presentationPixelScale, center)
-  local bounds = redBounds(image)
-  local blue = colorBounds(image, "blue")
-  local green = colorBounds(image, "green")
-  local expected = {
-    x = math.floor((center[1] * 0.5 + 0.5) * (width / presentationPixelScale) + 0.5) * presentationPixelScale,
-    y = math.floor((-center[2] * 0.5 + 0.5) * (height / presentationPixelScale) + 0.5) * presentationPixelScale,
-  }
-
-  Assert.equal(bounds.right - bounds.left + 1, 32 * presentationPixelScale, "actor width remains 32 logical cells")
-  Assert.equal(bounds.bottom - bounds.top + 1, 32 * presentationPixelScale, "actor height remains 32 logical cells")
-  Assert.equal((bounds.left + bounds.right + 1) / 2, expected.x, "actor anchor lands on a logical grid line")
-  Assert.equal(
-    (bounds.top + bounds.bottom + 1) / 2,
-    expected.y + 16 * presentationPixelScale,
-    "actor bottom anchor uses the same Y grid phase"
-  )
-  Assert.equal(blue.right - blue.left + 1, 2 * presentationPixelScale, "vertical marker keeps its source width")
-  Assert.equal(green.bottom - green.top + 1, 2 * presentationPixelScale, "horizontal marker keeps its source height")
-end
-
-function T.actor_billboard_keeps_its_logical_aspect_on_a_wide_host(scope)
+-- A constant 32x32 screen footprint is not a valid perspective-billboard
+-- invariant (GD-01): under a real camera, footprint is camera-projected
+-- output. What must still hold on any host is the actor's own source aspect
+-- ratio (its pattern image is square), within ordinary raster tolerance --
+-- not an exact pixel count tied to the presentation pixel scale.
+function T.actor_billboard_keeps_its_source_aspect_on_a_wide_host(scope)
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local center = { 0.037, -0.041, 0 }
   local standard = renderActorPattern(scope, renderer, 640, 480, 4, center)
   local wide = renderActorPattern(scope, renderer, 1280, 720, 6, center)
   local standardBounds = redBounds(standard)
   local wideBounds = redBounds(wide)
+  local standardW = standardBounds.right - standardBounds.left + 1
+  local standardH = standardBounds.bottom - standardBounds.top + 1
+  local wideW = wideBounds.right - wideBounds.left + 1
+  local wideH = wideBounds.bottom - wideBounds.top + 1
 
-  Assert.equal(standardBounds.right - standardBounds.left + 1, 32 * 4, "standard actor width is source-faithful")
-  Assert.equal(standardBounds.bottom - standardBounds.top + 1, 32 * 4, "standard actor height is source-faithful")
-  Assert.equal(wideBounds.right - wideBounds.left + 1, 32 * 6, "wide host does not add an actor column")
-  Assert.equal(wideBounds.bottom - wideBounds.top + 1, 32 * 6, "wide host does not add an actor row")
-  Assert.equal(
-    (wideBounds.left + wideBounds.right + 1) / 2,
-    math.floor((center[1] * 0.5 + 0.5) * (1280 / 6) + 0.5) * 6,
-    "wide host keeps the grid-line anchor phase"
-  )
-  Assert.equal(
-    (wideBounds.right - wideBounds.left + 1) / 6,
-    (wideBounds.bottom - wideBounds.top + 1) / 6,
-    "wide host keeps the actor's logical aspect"
-  )
+  Assert.near(standardW / standardH, 1, 0.05, "the standard host keeps the actor's square source aspect")
+  Assert.near(wideW / wideH, 1, 0.05, "the wide host keeps the actor's square source aspect")
 end
 
 local function expectedIdentityBillboardCenter(width, height, presentationPixelScale, center)

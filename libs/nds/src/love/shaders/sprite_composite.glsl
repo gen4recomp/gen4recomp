@@ -1,6 +1,7 @@
 // Coverage-masked integer composite for ordinary presentation billboards.
 // The billboard shader owns color, fog, and result alpha; this pass only
-// decides whether a logical pixel replaces the resolved world pixel.
+// decides whether a presentation-sprite pixel replaces the resolved world
+// pixel.
 
 #ifdef PIXEL
 uniform Image u_coverage;

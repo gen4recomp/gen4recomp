@@ -845,14 +845,27 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
       break
     end
   end
-  Assert.notNil(compositeDraw, "the logical sprite layer is composited once after world resolve")
+  Assert.notNil(compositeDraw, "the presentation sprite layer is composited once after world resolve")
   Assert.isNil(compositeDraw.depthMode, "the final sprite composite does not use host depth")
+  local compositeScaleX, compositeScaleY = compositeDraw.args[4], compositeDraw.args[5]
+  Assert.isTrue(
+    compositeScaleX == nil or compositeScaleX == 1,
+    "the final sprite composite is 1:1, never multiplied by the presentation pixel scale"
+  )
+  Assert.isTrue(
+    compositeScaleY == nil or compositeScaleY == 1,
+    "the final sprite composite is 1:1, never multiplied by the presentation pixel scale"
+  )
   assertRestoredState(lg, canvas, shader)
   renderer:release()
   assertResourcesReleased(lg, renderer, 2)
 end
 
-function T.logical_sprite_targets_are_persistent_and_transactional()
+-- Physical sprite target allocation tracks only the visible viewport: N is a
+-- snap-grid input, never an allocation input, so a frame that changes only N
+-- must reuse the live target generation, and only a viewport dimension change
+-- may replace it.
+function T.presentation_sprite_targets_are_physical_and_transactional()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
@@ -860,11 +873,11 @@ function T.logical_sprite_targets_are_persistent_and_transactional()
   local viewport = { worldViewport = { x = 0, y = 0, width = 640, height = 480 } }
 
   render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
-  Assert.equal(renderer._spriteW, 214)
-  Assert.equal(renderer._spriteH, 160)
-  Assert.notNil(renderer._spriteColor, "the logical color layer is published")
+  Assert.equal(renderer._spriteW, 640, "physical allocation is the ceil visible width, not viewport/N")
+  Assert.equal(renderer._spriteH, 480, "physical allocation is the ceil visible height, not viewport/N")
+  Assert.notNil(renderer._spriteColor, "the presentation color layer is published")
   Assert.notNil(renderer._spriteCoverage, "coverage is a separate layer")
-  Assert.notNil(renderer._spriteDepth, "sprite ordering uses a logical depth layer")
+  Assert.notNil(renderer._spriteDepth, "sprite ordering uses a presentation depth layer")
   local spriteColor = renderer._spriteColor --[[@as GxRendererTest.Canvas]]
   local spriteCoverage = renderer._spriteCoverage --[[@as GxRendererTest.Canvas]]
   Assert.deepEqual(spriteColor.filter, { "nearest", "nearest" })
@@ -872,26 +885,29 @@ function T.logical_sprite_targets_are_persistent_and_transactional()
   local firstTargets = renderer._spriteTargets
   local firstCanvasCount = #lg.canvases
 
-  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
-  Assert.equal(#lg.canvases, firstCanvasCount, "steady sprite frames allocate no new targets")
-  Assert.equal(renderer._spriteTargets, firstTargets, "steady sprite frames reuse one target generation")
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 4)
+  Assert.equal(#lg.canvases, firstCanvasCount, "changing N alone allocates no new sprite target")
+  Assert.equal(renderer._spriteTargets, firstTargets, "changing N alone reuses the same target generation")
+  Assert.equal(renderer._spriteW, 640, "changing N alone does not change the physical allocation width")
+  Assert.equal(renderer._spriteH, 480, "changing N alone does not change the physical allocation height")
 
+  local widerViewport = { worldViewport = { x = 0, y = 0, width = 800, height = 480 } }
   lg.setFailOnNewCanvas(#lg.canvases + 2)
   local failed = Assert.throws(function()
-    render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 4)
+    render(renderer, scene.runtime, scene.camera, nil, { item }, widerViewport, 0, nil, 4)
   end)
   Assert.isTrue(tostring(failed):find("injected canvas failure", 1, true) ~= nil)
   Assert.equal(renderer._spriteTargets, firstTargets, "failed replacement keeps the live target generation")
-  Assert.equal(renderer._spriteW, 214)
-  Assert.equal(renderer._spriteH, 160)
+  Assert.equal(renderer._spriteW, 640)
+  Assert.equal(renderer._spriteH, 480)
   for index = firstCanvasCount + 1, #lg.canvases do
     Assert.equal(lg.canvases[index].releaseCount, 1, "every partial sprite target is released")
   end
 
   lg.setFailOnNewCanvas(nil)
-  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 4)
-  Assert.equal(renderer._spriteW, 160)
-  Assert.equal(renderer._spriteH, 120)
+  render(renderer, scene.runtime, scene.camera, nil, { item }, widerViewport, 0, nil, 4)
+  Assert.equal(renderer._spriteW, 800, "a wider visible viewport replaces the physical allocation")
+  Assert.equal(renderer._spriteH, 480)
   Assert.notNil(renderer._spriteTargets)
   for _, canvas in ipairs(lg.canvases) do
     if canvas ~= renderer._spriteColor and canvas ~= renderer._spriteCoverage and canvas ~= renderer._spriteDepth then
@@ -907,7 +923,12 @@ function T.logical_sprite_targets_are_persistent_and_transactional()
   end
 end
 
-function T.logical_sprite_uniforms_embed_the_visible_viewport_in_the_ceil_allocation()
+-- The physical allocation embedding and the logical anchor-snap grid are two
+-- independent uniforms: embedding follows the visible viewport over the
+-- ceil-allocated physical target, while the snap grid follows the visible
+-- viewport over the presentation pixel scale. Neither may borrow the other's
+-- divisor.
+function T.presentation_sprite_allocation_embeds_the_visible_viewport_and_snap_grid_is_independent()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg })
   local scene = emptySceneCamera()
@@ -919,20 +940,27 @@ function T.logical_sprite_uniforms_embed_the_visible_viewport_in_the_ceil_alloca
     scene.camera,
     nil,
     { item },
-    { worldViewport = { x = 0, y = 0, width = 641, height = 479 } },
+    { worldViewport = { x = 0, y = 0, width = 641.4, height = 479.7 } },
     0,
     nil,
     3
   )
 
+  Assert.equal(renderer._spriteW, 642, "physical allocation ceils the visible width")
+  Assert.equal(renderer._spriteH, 480, "physical allocation ceils the visible height")
+
   local spriteShader = renderer.spriteShader --[[@as GxRendererTest.Shader]]
   local scale = spriteShader.uniforms.u_presentationScale
   local offset = spriteShader.uniforms.u_presentationOffset
-  local viewport = spriteShader.uniforms.u_presentationViewportSize
-  Assert.near(viewport[1], 641 / 3, 1e-9)
-  Assert.near(viewport[2], 479 / 3, 1e-9)
-  Assert.near(scale[1], 641 / 642, 1e-9)
-  Assert.near(scale[2], 479 / 480, 1e-9)
+  local snapGrid = spriteShader.uniforms.u_presentationSnapGridSize
+  Assert.notNil(
+    snapGrid,
+    "the vertex shader receives an explicit anchor snap-grid uniform, separate from allocation embedding"
+  )
+  Assert.near(snapGrid[1], 641.4 / 3, 1e-9, "the snap grid extent is the visible width divided by N")
+  Assert.near(snapGrid[2], 479.7 / 3, 1e-9, "the snap grid extent is the visible height divided by N")
+  Assert.near(scale[1], 641.4 / 642, 1e-9, "the embedding scale is the visible width over the physical allocation")
+  Assert.near(scale[2], 479.7 / 480, 1e-9, "the embedding scale is the visible height over the physical allocation")
   Assert.near(offset[1], scale[1] - 1, 1e-9)
   Assert.near(offset[2], scale[2] - 1, 1e-9)
   local nonDivisibleScale = { scale[1], scale[2] }
@@ -953,12 +981,12 @@ function T.logical_sprite_uniforms_embed_the_visible_viewport_in_the_ceil_alloca
   local divisibleSpriteShader = divisibleRenderer.spriteShader --[[@as GxRendererTest.Shader]]
   scale = divisibleSpriteShader.uniforms.u_presentationScale
   offset = divisibleSpriteShader.uniforms.u_presentationOffset
-  Assert.deepEqual(scale, { 1, 1 })
+  Assert.deepEqual(scale, { 1, 1 }, "an exact-integer visible viewport needs no embedding correction")
   Assert.deepEqual(offset, { 0, 0 })
-  Assert.near(nonDivisibleScale[1], 641 / 642, 1e-9)
-  Assert.near(nonDivisibleScale[2], 479 / 480, 1e-9)
-  Assert.near(nonDivisibleOffset[1], 641 / 642 - 1, 1e-9)
-  Assert.near(nonDivisibleOffset[2], 479 / 480 - 1, 1e-9)
+  Assert.near(nonDivisibleScale[1], 641.4 / 642, 1e-9)
+  Assert.near(nonDivisibleScale[2], 479.7 / 480, 1e-9)
+  Assert.near(nonDivisibleOffset[1], 641.4 / 642 - 1, 1e-9)
+  Assert.near(nonDivisibleOffset[2], 479.7 / 480 - 1, 1e-9)
   divisibleRenderer:release()
   renderer:release()
 end

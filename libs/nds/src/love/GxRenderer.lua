@@ -1,9 +1,11 @@
 -- Draws a loaded runtime scene through a bounded world-raster pass and a
--- logical-resolution presentation billboard stage.
+-- presentation-resolution billboard stage.
 -- The world color/state/depth targets share bounded dimensions; ordinary
 -- opaque/cutout actor billboards resolve the world first and draw to one
--- logical color/coverage/depth layer without writing world renderState or
--- receiving world edges.
+-- presentation-resolution color/coverage/depth layer without writing world
+-- renderState or receiving world edges. `presentationPixelScale` only
+-- controls the logical grid spacing that snaps each billboard's projected
+-- center; it does not reduce the layer's raster resolution.
 --
 -- The HGSS presentation owner builds the world render queue exactly once per
 -- frame and supplies it here. The world MRT pass consumes it. Opaque, cutout, and mixed-opaque
@@ -400,9 +402,10 @@ function GxRenderer:_releaseSpriteTargets()
   self._spriteTargets, self._spriteW, self._spriteH = nil, nil, nil
 end
 
--- Recreate the complete logical billboard layer transactionally. The old
--- generation stays published until color, coverage, depth, and their target
--- descriptor have all been created and configured.
+-- Recreate the complete presentation billboard layer transactionally at
+-- physical/presentation resolution. The old generation stays published until
+-- color, coverage, depth, and their target descriptor have all been created
+-- and configured.
 function GxRenderer:_ensureSpriteTargets(spriteW, spriteH)
   if self._spriteTargets and self._spriteW == spriteW and self._spriteH == spriteH then
     return
@@ -1173,28 +1176,36 @@ function GxRenderer:draw(frame)
     lg.setShader()
 
     -- The world is now present at presentation resolution. Ordinary billboards
-    -- rasterize into one logical color/coverage/depth layer, so host depth is
-    -- never borrowed for sprite ordering or cleared as part of this path.
+    -- rasterize into one presentation-resolution color/coverage/depth layer,
+    -- so host depth is never borrowed for sprite ordering or cleared as part
+    -- of this path.
     if hasPresentationSprites then
       local presentationPixelScale = assert(validatedPresentationPixelScale)
       self._activeShader = self:_ensureSpriteShader()
       local spriteShader = assert(self._activeShader)
       spriteShader:send("u_presentationSprite", true)
-      local logicalW = math.ceil(rectangle.width / presentationPixelScale)
-      local logicalH = math.ceil(rectangle.height / presentationPixelScale)
-      local presentationViewportW = rectangle.width / presentationPixelScale
-      local presentationViewportH = rectangle.height / presentationPixelScale
-      self:_ensureSpriteTargets(logicalW, logicalH)
+      -- The sprite raster target is physical/presentation resolution: the
+      -- camera projection determines every billboard vertex, so this
+      -- resolution must not coarsen it. `presentationPixelScale` (N) only
+      -- derives the separate logical snap-grid extent used to quantize the
+      -- projected billboard center below.
+      local visibleW, visibleH = rectangle.width, rectangle.height
+      local spriteW, spriteH = math.ceil(visibleW), math.ceil(visibleH)
+      local snapGridW = visibleW / presentationPixelScale
+      local snapGridH = visibleH / presentationPixelScale
+      self:_ensureSpriteTargets(spriteW, spriteH)
       local spriteTargets = assert(self._spriteTargets)
       lg.setCanvas(spriteTargets)
       lg.clear(0, 0, 0, 0, false, true)
       lg.setDepthMode("less", true)
       lg.setBlendMode("replace", "premultiplied")
-      spriteShader:send("u_presentationViewportSize", { presentationViewportW, presentationViewportH })
+      spriteShader:send("u_presentationSnapGridSize", { snapGridW, snapGridH })
+      -- Embed the exact visible physical viewport into the ceil-allocated
+      -- sprite target: any ceil fringe lands only on the right/bottom.
       local scale = self._presentationScale
       local offset = self._presentationOffset
-      scale[1] = presentationViewportW / logicalW
-      scale[2] = presentationViewportH / logicalH
+      scale[1] = visibleW / spriteW
+      scale[2] = visibleH / spriteH
       offset[1] = scale[1] - 1
       offset[2] = scale[2] - 1
       spriteShader:send("u_presentationScale", scale)
@@ -1242,7 +1253,9 @@ function GxRenderer:draw(frame)
         local compositeShader = self:_ensureSpriteCompositeShader()
         compositeShader:send("u_coverage", self._spriteCoverage)
         lg.setShader(compositeShader)
-        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y, 0, presentationPixelScale, presentationPixelScale)
+        -- The sprite canvas is already physical/presentation resolution, so
+        -- the final composite is 1:1 -- no more magnification by N.
+        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y)
         lg.setShader()
       end
     end

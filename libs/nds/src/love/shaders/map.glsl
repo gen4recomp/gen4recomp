@@ -91,7 +91,7 @@ uniform vec2 u_presentationScale;
 uniform vec2 u_presentationOffset;
 uniform vec2 u_stateSize;
 #ifdef PRESENTATION_SPRITE_LAYER
-uniform vec2 u_presentationViewportSize;
+uniform vec2 u_presentationSnapGridSize;
 #endif
 #endif
 
@@ -266,13 +266,13 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
       vec2 centerNdc = centerClip.xy / centerClip.w;
       vec2 rasterCoord;
 #ifdef PRESENTATION_SPRITE_LAYER
-      rasterCoord = (centerNdc * 0.5 + 0.5) * u_presentationViewportSize;
+      rasterCoord = (centerNdc * 0.5 + 0.5) * u_presentationSnapGridSize;
 #else
       rasterCoord = (centerNdc * 0.5 + 0.5) * u_stateSize;
 #endif
       vec2 rasterCenterNdc = ((floor(rasterCoord) + 0.5) / u_stateSize) * 2.0 - 1.0;
 #ifdef PRESENTATION_SPRITE_LAYER
-      rasterCenterNdc = (floor(rasterCoord + 0.5) / u_presentationViewportSize) * 2.0 - 1.0;
+      rasterCenterNdc = (floor(rasterCoord + 0.5) / u_presentationSnapGridSize) * 2.0 - 1.0;
 #endif
       clip.xy += (rasterCenterNdc - centerNdc) * clip.w;
     }
@@ -314,9 +314,6 @@ uniform bool u_presentationSprite;
 uniform bool u_spriteFogEnabled;
 uniform Image u_renderState;
 uniform vec2 u_stateSize;
-#ifdef PRESENTATION_SPRITE_LAYER
-uniform vec2 u_presentationViewportSize;
-#endif
 uniform bool u_fogEnabled;
 uniform vec3 u_fogColor;
 uniform vec4 u_fogTable0;
@@ -490,9 +487,9 @@ void effect()
 
 #ifdef PRESENTATION_SPRITE
   if (u_presentationSprite) {
-    // Render-state and logical sprite canvases share the offscreen canvas
-    // orientation. The direct host path, retained for shader compatibility,
-    // uses the opposite presentation orientation.
+    // Render-state and presentation sprite canvases share the offscreen
+    // canvas orientation. The direct host path, retained for shader
+    // compatibility, uses the opposite presentation orientation.
     if (v_spriteUv.x < 0.0 || v_spriteUv.x > 1.0 || v_spriteUv.y < 0.0 || v_spriteUv.y > 1.0) discard;
 #ifdef PRESENTATION_SPRITE_LAYER
     vec2 stateUv = v_spriteUv;
