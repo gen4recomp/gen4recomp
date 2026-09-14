@@ -112,7 +112,7 @@ local function normalizedSprites(spriteItems, billboardProjection)
   return normalized
 end
 
-local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport)
+local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, pixelScale)
   local viewMatrix = camera:view()
   local lighting = sceneRuntime.lighting
   if lighting and lighting.records then
@@ -127,12 +127,12 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     edgeColors = sceneRuntime.edgeColors,
     fog = sceneRuntime.fog,
     viewMatrix = viewMatrix,
-    cameraZoom = camera.zoom,
     worldProjection = worldProjection,
     billboardProjection = billboardProjection,
     queue = normalizedQueue(queue, worldProjection, billboardProjection),
     spriteItems = normalizedSprites(spriteItems, billboardProjection),
     viewport = viewport,
+    pixelScale = pixelScale or 3,
   })
 end
 
@@ -4349,6 +4349,7 @@ function T.presentation_world_depth_rejects_behind_sprite(scope)
   )
   love.graphics.setCanvas()
 
+  Assert.notNil(renderer._spriteColor, "world-depth registration is exercised through the logical sprite layer")
   local r, g, b = color:newImageData():getPixel(320, 240)
   Assert.isTrue(r > g and r > b, "world geometry remains visible over the behind sprite")
   Assert.isTrue(g < 0.2 and b < 0.2, "the behind sprite does not leak through world depth")
@@ -4513,6 +4514,46 @@ local function presentationCenter(image, width, height)
   end
   Assert.isTrue(count >= 4, "the diagnostic sprite leaves a readable red center region")
   return sumX / count, sumY / count
+end
+
+local function stripedImage(scope, width)
+  local data = love.image.newImageData(width, 1)
+  for x = 0, width - 1 do
+    if x % 2 == 0 then
+      data:setPixel(x, 0, 1, 0, 0, 1)
+    else
+      data:setPixel(x, 0, 0, 0, 1, 1)
+    end
+  end
+  local image = scope:own(love.graphics.newImage(data))
+  image:setFilter("nearest", "nearest")
+  return image
+end
+
+local function pixelEquals(image, x1, y1, x2, y2)
+  local r1, g1, b1, a1 = image:getPixel(x1, y1)
+  local r2, g2, b2, a2 = image:getPixel(x2, y2)
+  return math.abs(r1 - r2) <= 1 / 255
+    and math.abs(g1 - g2) <= 1 / 255
+    and math.abs(b1 - b2) <= 1 / 255
+    and math.abs(a1 - a2) <= 1 / 255
+end
+
+local function redBounds(image)
+  local left, top, right, bottom
+  for y = 0, image:getHeight() - 1 do
+    for x = 0, image:getWidth() - 1 do
+      local r, g, b = image:getPixel(x, y)
+      if r > 0.75 and g < 0.1 and b < 0.1 then
+        left = math.min(left or x, x)
+        top = math.min(top or y, y)
+        right = math.max(right or x, x)
+        bottom = math.max(bottom or y, y)
+      end
+    end
+  end
+  Assert.notNil(left, "the diagnostic sprite remains visible")
+  return { left = left, top = top, right = right, bottom = bottom }
 end
 
 local function renderRegistration(scope, renderer, width, height, center, viewport)
@@ -4689,6 +4730,7 @@ function T.presentation_sprite_fog_uses_the_world_endpoint_density_rules(scope)
   local sprite = presentationSprite(scope, presentationQuadMesh(scope, -300), image)
   sprite.billboardCenter = nil
   sprite.billboardScale = nil
+  sprite.transform = Matrix4.scale(8, 8, 1)
   sprite.fogEnabled = true
   local normalRamp = {}
   local saturatingRamp = {}
@@ -4727,6 +4769,7 @@ function T.presentation_sprite_fog_uses_the_world_endpoint_density_rules(scope)
 
   local normal = renderSprite(normalRamp)
   local saturating = renderSprite(saturatingRamp)
+  Assert.isTrue(normal[2] > 0.9, "the ordinary fog ramp keeps the sprite visible")
   Assert.isTrue(normal[2] < 0.99, "the ordinary fog ramp preserves its final density of 124")
   Assert.isTrue(saturating[2] > 0.99, "a final raw density at or above 127 saturates to 128")
 end
@@ -4764,6 +4807,7 @@ function T.fogged_presentation_rgb_survives_zero_result_alpha(scope)
 
   local pixel =
     { renderPresentationCase(scope, renderer, flashFogRuntime(), { { world } }, { sprite }):getPixel(320, 240) }
+  Assert.notNil(renderer._spriteCoverage, "coverage is independent from the fogged result alpha")
   Assert.near(pixel[1], 0, 1 / 255, "full fog removes the source red channel")
   Assert.near(pixel[2], 0, 1 / 255, "full fog leaves no source green channel")
   Assert.near(pixel[3], 1, 1 / 255, "full fog stores the blue fog RGB")
@@ -4807,6 +4851,93 @@ function T.presentation_cutout_holes_remain_world_pixels_under_direct_replace(sc
   local solidR, solidG = pixels:getPixel(340, 240)
   Assert.isTrue(holeG > 0.7 and holeR < 0.1, "an alpha5-zero cutout texel leaves the world untouched")
   Assert.isTrue(solidR > 0.7 and solidG < 0.1, "an accepted cutout texel replaces the world")
+end
+
+function T.logical_billboard_output_uses_exact_integer_blocks(scope)
+  local width, height, pixelScale = 641, 479, 3
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local target, color = presentationTarget(scope, width, height)
+  local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), stripedImage(scope, 16))
+  sprite.billboardScale = { 0.35, 0.35, 1 }
+
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  render(
+    renderer,
+    emptyRuntime(),
+    fixedCamera(),
+    {},
+    { sprite },
+    FieldViewport.new(width, height, { mode = "strict" }),
+    pixelScale
+  )
+  love.graphics.setCanvas()
+
+  local image = color:newImageData()
+  local visible = 0
+  for y = 160, 318 do
+    for x = 190, 449 do
+      local r, _, b = image:getPixel(x, y)
+      if r > 0.75 or b > 0.75 then
+        visible = visible + 1
+      end
+    end
+  end
+  Assert.isTrue(visible > 100, "the high-contrast billboard covers the block test window")
+
+  for y = 160, 318 - pixelScale + 1, pixelScale do
+    for x = 190, 449 - pixelScale + 1, pixelScale do
+      local r, _, b = image:getPixel(x, y)
+      if r > 0.75 or b > 0.75 then
+        for dy = 0, pixelScale - 1 do
+          for dx = 0, pixelScale - 1 do
+            Assert.isTrue(
+              pixelEquals(image, x, y, x + dx, y + dy),
+              "every logical billboard pixel must occupy one exact nearest-neighbor block"
+            )
+          end
+        end
+      end
+    end
+  end
+end
+
+function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
+  local width, height, pixelScale = 640, 480, 4
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local target, color = presentationTarget(scope, width, height)
+  local mesh = presentationQuadMesh(scope, 0)
+  local image = solidAlphaImage(scope, 255, 0, 0, 255)
+
+  local function renderAt(centerX)
+    local sprite = presentationSprite(scope, mesh, image)
+    sprite.billboardCenter = { centerX, 0, 0 }
+    sprite.billboardScale = { 0.1, 0.1, 1 }
+    love.graphics.setCanvas(target)
+    love.graphics.clear(0, 0, 0, 1)
+    render(
+      renderer,
+      emptyRuntime(),
+      fixedCamera(),
+      {},
+      { sprite },
+      FieldViewport.new(width, height, { mode = "strict" }),
+      pixelScale
+    )
+    love.graphics.setCanvas()
+    return redBounds(color:newImageData())
+  end
+
+  local initial = renderAt(0)
+  local subLogical = renderAt(0.004)
+  local nextLogical = renderAt(0.014)
+  Assert.equal(subLogical.left, initial.left, "sub-logical interpolation must not change the billboard phase")
+  Assert.equal(subLogical.top, initial.top, "sub-logical interpolation must not change the vertical phase")
+  Assert.equal(
+    nextLogical.left - initial.left,
+    pixelScale,
+    "crossing one logical pixel advances the host billboard by one integer block"
+  )
 end
 
 return GraphicsSmoke.suite(T)

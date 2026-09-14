@@ -1,8 +1,9 @@
 -- Draws a loaded runtime scene through a bounded world-raster pass and a
--- native-resolution presentation billboard stage.
+-- logical-resolution presentation billboard stage.
 -- The world color/state/depth targets share bounded dimensions; ordinary
--- opaque/cutout actor billboards resolve the world first and draw directly to
--- the host window without writing world renderState or receiving world edges.
+-- opaque/cutout actor billboards resolve the world first and draw to one
+-- logical color/coverage/depth layer without writing world renderState or
+-- receiving world edges.
 --
 -- The HGSS presentation owner builds the world render queue exactly once per
 -- frame and supplies it here. The world MRT pass consumes it. Opaque, cutout, and mixed-opaque
@@ -16,7 +17,7 @@
 -- texture and the same bounded-resolution renderState through explicit
 -- snap/clamp to render-state pixel centers (never texture-clamp reliance),
 -- probing the four orthogonal neighbors at a distance of one integer edge
--- radius computed from the world target height and camera zoom, and
+-- radius computed from the world target height and resolved pixel scale, and
 -- applies, in order: edge marking, fog, then the project's current antialias
 -- approximation (50% mix of fogged candidates -- not exact hardware
 -- lower-pixel coverage). Both candidates share the center state's single
@@ -28,7 +29,7 @@
 -- canvas allocation, or target configuration releases everything already
 -- created, and a canvas recreation keeps the previous target set usable until
 -- the replacement is complete. It restores the exact caller state it changed
--- (canvas, shader, depth, cull, blend, wireframe, color) even when drawing
+-- (canvas, shader, depth, cull, blend, wireframe, color, scissor) even when drawing
 -- raises, so the diagnostic UI drawn afterwards is unaffected. It builds no
 -- persistent meshes or textures and reads no ROM/NARC data -- those belong to
 -- the loader and compiler; here everything is already resident.
@@ -70,12 +71,16 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field setMeshCullMode fun(mode?: string)
 ---@field isWireframe fun(): boolean
 ---@field setWireframe fun(enabled: boolean)
+---@field getScissor fun(): integer?, integer?, integer?, integer?
+---@field setScissor fun(x: integer?, y: integer?, width: integer?, height: integer?)
 ---@class GxRenderer
 ---@field _graphics GxRenderer.Graphics
 ---@field clearColor number[]
 ---@field shader GxRenderer.Shader|love.Shader
 ---@field spriteShader GxRenderer.Shader|love.Shader
 ---@field _spriteShaderSource string
+---@field spriteCompositeShader GxRenderer.Shader|love.Shader
+---@field _spriteCompositeShaderSource string
 ---@field worldShader GxRenderer.Shader|love.Shader
 ---@field edgeShader GxRenderer.Shader|love.Shader
 ---@field _edgeColorsCache number[][]
@@ -92,6 +97,9 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _spareState GxRenderer.Canvas?
 ---@field _sourceColor GxRenderer.Canvas?
 ---@field _sourceMeta GxRenderer.Canvas?
+---@field _spriteColor GxRenderer.Canvas?
+---@field _spriteCoverage GxRenderer.Canvas?
+---@field _spriteDepth GxRenderer.Canvas?
 ---@field colorW integer?
 ---@field colorH integer?
 ---@field stateW integer?
@@ -101,6 +109,9 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field _colorClearTargets GxRenderer.TargetDescriptor?
 ---@field _sourceColorTargets GxRenderer.TargetDescriptor?
 ---@field _sourceMetaTargets GxRenderer.TargetDescriptor?
+---@field _spriteTargets GxRenderer.TargetDescriptor?
+---@field _spriteW integer?
+---@field _spriteH integer?
 ---@field _lightMaterialColorCache { diffuse: number[], ambient: number[], specular: number[], emission: number[] }
 ---@field _lightVectorCache number[][]
 ---@field _lightColorCache number[][]
@@ -128,6 +139,7 @@ local SHADER_SOURCE_PATHS = {
   resolve = "libs/nds/src/love/shaders/edge.glsl",
   source = "libs/nds/src/love/shaders/source.glsl",
   composite = "libs/nds/src/love/shaders/composite.glsl",
+  spriteComposite = "libs/nds/src/love/shaders/sprite_composite.glsl",
 }
 
 ---@param path string
@@ -205,6 +217,14 @@ local function validateWorldRasterScale(scale)
     scale == nil
       or (type(scale) == "number" and scale > 0 and scale == scale and scale ~= math.huge and scale ~= -math.huge),
     "world raster scale must be finite and > 0, got " .. tostring(scale)
+  )
+  return scale
+end
+
+local function validatePixelScale(scale)
+  assert(
+    type(scale) == "number" and scale >= 1 and scale % 1 == 0,
+    "pixel scale must be a positive integer, got " .. tostring(scale)
   )
   return scale
 end
@@ -299,13 +319,14 @@ function GxRenderer.new(opts)
   local ok, err = pcall(function()
     local colorSource = readSource(SHADER_SOURCE_PATHS.color)
     renderer.shader = graphics.newShader(colorSource)
-    renderer._spriteShaderSource = "#define PRESENTATION_SPRITE\n" .. colorSource
+    renderer._spriteShaderSource = "#define PRESENTATION_SPRITE\n#define PRESENTATION_SPRITE_LAYER\n" .. colorSource
     renderer.edgeShader = graphics.newShader(readSource(SHADER_SOURCE_PATHS.resolve))
     renderer.worldShader = graphics.newShader("#define WORLD_MRT\n" .. colorSource)
     if translucencyMode == GxRenderer.TRANSLUCENCY_EXACT then
       renderer.sourceShader = graphics.newShader(readSource(SHADER_SOURCE_PATHS.source))
       renderer.compositeShader = graphics.newShader(readSource(SHADER_SOURCE_PATHS.composite))
     end
+    renderer._spriteCompositeShaderSource = readSource(SHADER_SOURCE_PATHS.spriteComposite)
   end)
   if not ok then
     renderer:release()
@@ -320,6 +341,15 @@ function GxRenderer:_ensureSpriteShader()
   end
   local shader = self._graphics.newShader(self._spriteShaderSource)
   self.spriteShader = shader
+  return shader
+end
+
+function GxRenderer:_ensureSpriteCompositeShader()
+  if self.spriteCompositeShader then
+    return self.spriteCompositeShader
+  end
+  local shader = self._graphics.newShader(self._spriteCompositeShaderSource)
+  self.spriteCompositeShader = shader
   return shader
 end
 
@@ -354,6 +384,53 @@ function GxRenderer:_releaseTargets()
   self._colorClearTargets = nil
   self._sourceColorTargets = nil
   self._sourceMetaTargets = nil
+end
+
+function GxRenderer:_releaseSpriteTargets()
+  if self._spriteColor then
+    self._spriteColor:release()
+  end
+  if self._spriteCoverage then
+    self._spriteCoverage:release()
+  end
+  if self._spriteDepth then
+    self._spriteDepth:release()
+  end
+  self._spriteColor, self._spriteCoverage, self._spriteDepth = nil, nil, nil
+  self._spriteTargets, self._spriteW, self._spriteH = nil, nil, nil
+end
+
+-- Recreate the complete logical billboard layer transactionally. The old
+-- generation stays published until color, coverage, depth, and their target
+-- descriptor have all been created and configured.
+function GxRenderer:_ensureSpriteTargets(spriteW, spriteH)
+  if self._spriteTargets and self._spriteW == spriteW and self._spriteH == spriteH then
+    return
+  end
+
+  local lg = assert(self._graphics)
+  local spriteColor, spriteCoverage, spriteDepth
+  local spriteTargets
+  local ok, err = pcall(function()
+    spriteColor = lg.newCanvas(spriteW, spriteH)
+    spriteColor:setFilter("nearest", "nearest")
+    spriteCoverage = lg.newCanvas(spriteW, spriteH, { format = "rgba8" })
+    spriteCoverage:setFilter("nearest", "nearest")
+    spriteDepth = lg.newCanvas(spriteW, spriteH, { format = "depth24stencil8", readable = false })
+    spriteTargets = { spriteColor, spriteCoverage, depthstencil = spriteDepth }
+  end)
+  if not ok then
+    for _, canvas in ipairs({ spriteColor, spriteCoverage, spriteDepth }) do
+      if canvas then
+        pcall(canvas.release, canvas)
+      end
+    end
+    error(err)
+  end
+
+  self:_releaseSpriteTargets()
+  self._spriteColor, self._spriteCoverage, self._spriteDepth = spriteColor, spriteCoverage, spriteDepth
+  self._spriteTargets, self._spriteW, self._spriteH = spriteTargets, spriteW, spriteH
 end
 
 local function sendStateUniforms(shader, renderState, stateW, stateH)
@@ -899,6 +976,7 @@ function GxRenderer:draw(frame)
   local viewMatrix = assert(frame.viewMatrix, "GxRenderer requires a view matrix")
   assert(frame.worldProjection, "GxRenderer requires a world projection")
   assert(frame.billboardProjection, "GxRenderer requires a billboard projection")
+  local pixelScale = validatePixelScale(frame.pixelScale)
   -- The world MRT shader derives its depth from the host fragment's normalized
   -- window depth (map.glsl's dsZbufferDepth, the DS field Z-buffer domain).
   local lg = assert(self._graphics)
@@ -922,14 +1000,7 @@ function GxRenderer:draw(frame)
 
   -- The final pass samples neighbors in world-raster pixels, so edge width
   -- remains tied to the DS-relative world rather than host resolution.
-  local edgeRadiusPx = 1
-  local cameraZoom = frame.cameraZoom
-  if cameraZoom == nil then
-    cameraZoom = 1
-  end
-  if type(cameraZoom) == "number" and cameraZoom > 0 then
-    edgeRadiusPx = math.max(1, math.floor((colorH / 192) * cameraZoom + 0.5))
-  end
+  local edgeRadiusPx = math.max(1, math.floor(pixelScale * colorH / rectangle.height + 0.5))
 
   local presentationCanvas = lg.getCanvas()
   local function doDraw()
@@ -1082,11 +1153,6 @@ function GxRenderer:draw(frame)
     self.edgeShader:send("u_antialiasEnabled", true)
     self.edgeShader:send("u_edgeRadiusPx", edgeRadiusPx)
     lg.setCanvas(presentationCanvas)
-    if spriteItems and #spriteItems > 0 then
-      -- Clear the presentation depth before resolving the world. The resolve
-      -- must remain the first color write on the target.
-      lg.clear(false, false, true)
-    end
     lg.setDepthMode()
     lg.setBlendMode("replace", "premultiplied")
     lg.setColor(1, 1, 1, 1)
@@ -1095,34 +1161,28 @@ function GxRenderer:draw(frame)
     lg.draw(activeColor, rectangle.x, rectangle.y, 0, rectangle.width / colorW, rectangle.height / colorH)
     lg.setShader()
 
-    -- The world is now present at presentation resolution. The host depth
-    -- buffer is borrowed for sprite-vs-sprite ordering; presentation sprites
-    -- sample world DS depth for world-vs-sprite occlusion and draw directly to
-    -- the window. Their fogged RGB and DS result alpha are written directly
-    -- with replace/premultiplied semantics; no sprite color or state canvas is
-    -- allocated.
+    -- The world is now present at presentation resolution. Ordinary billboards
+    -- rasterize into one logical color/coverage/depth layer, so host depth is
+    -- never borrowed for sprite ordering or cleared as part of this path.
     if spriteItems and #spriteItems > 0 then
       self._activeShader = self:_ensureSpriteShader()
       local spriteShader = assert(self._activeShader)
       spriteShader:send("u_presentationSprite", true)
-      local targetWidth, targetHeight
-      if presentationCanvas then
-        local colorCanvas = assert(presentationColorCanvas)
-        targetWidth, targetHeight = colorCanvas:getWidth(), colorCanvas:getHeight()
-      else
-        targetWidth, targetHeight = lg.getDimensions()
-      end
-      assert(targetWidth > 0 and targetHeight > 0, "GxRenderer requires positive presentation target dimensions")
+      local logicalW = math.ceil(rectangle.width / pixelScale)
+      local logicalH = math.ceil(rectangle.height / pixelScale)
+      local presentationViewportW = rectangle.width / pixelScale
+      local presentationViewportH = rectangle.height / pixelScale
+      self:_ensureSpriteTargets(logicalW, logicalH)
+      local spriteTargets = assert(self._spriteTargets)
+      lg.setCanvas(spriteTargets)
+      lg.clear(0, 0, 0, 0, false, true)
+      lg.setDepthMode("less", true)
+      lg.setBlendMode("replace", "premultiplied")
+      spriteShader:send("u_presentationViewportSize", { presentationViewportW, presentationViewportH })
       local scale = self._presentationScale
       local offset = self._presentationOffset
-      scale[1] = rectangle.width / targetWidth
-      scale[2] = rectangle.height / targetHeight
-      offset[1] = (2 * rectangle.x + rectangle.width) / targetWidth - 1
-      offset[2] = 1 - (2 * rectangle.y + rectangle.height) / targetHeight
-      if presentationCanvas then
-        scale[2] = -scale[2]
-        offset[2] = -offset[2]
-      end
+      scale[1], scale[2] = 1, 1
+      offset[1], offset[2] = 0, 0
       spriteShader:send("u_presentationScale", scale)
       spriteShader:send("u_presentationOffset", offset)
       spriteShader:send("u_view", "column", viewMatrix)
@@ -1135,7 +1195,6 @@ function GxRenderer:draw(frame)
 
       local function drawSprite(item, fragmentPass)
         spriteShader:send("u_spriteFogEnabled", item.fogEnabled == true)
-        lg.setDepthMode("less", true)
         self:_drawItem(item, frame.billboardProjection, fragmentPass)
       end
       for _, item in ipairs(spriteItems) do
@@ -1150,6 +1209,28 @@ function GxRenderer:draw(frame)
         drawSprite(item, fragmentPass)
       end
       self._activeShader = nil
+
+      local callerScissorX, callerScissorY, callerScissorW, callerScissorH = lg.getScissor()
+      local clipX, clipY = rectangle.x, rectangle.y
+      local clipRight, clipBottom = rectangle.x + rectangle.width, rectangle.y + rectangle.height
+      if callerScissorX ~= nil then
+        clipX = math.max(clipX, callerScissorX)
+        clipY = math.max(clipY, callerScissorY)
+        clipRight = math.min(clipRight, callerScissorX + callerScissorW)
+        clipBottom = math.min(clipBottom, callerScissorY + callerScissorH)
+      end
+      if clipRight > clipX and clipBottom > clipY then
+        lg.setScissor(clipX, clipY, clipRight - clipX, clipBottom - clipY)
+        lg.setCanvas(presentationCanvas)
+        lg.setDepthMode()
+        lg.setBlendMode("replace", "premultiplied")
+        lg.setColor(1, 1, 1, 1)
+        local compositeShader = self:_ensureSpriteCompositeShader()
+        compositeShader:send("u_coverage", self._spriteCoverage)
+        lg.setShader(compositeShader)
+        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y, 0, pixelScale, pixelScale)
+        lg.setShader()
+      end
     end
   end
 
@@ -1164,6 +1245,7 @@ function GxRenderer:draw(frame)
   local cullMode = lg.getMeshCullMode()
   local wireframe = lg.isWireframe()
   local color = { lg.getColor() }
+  local scissor = { lg.getScissor() }
 
   local ok, err = pcall(doDraw)
 
@@ -1175,6 +1257,7 @@ function GxRenderer:draw(frame)
   lg.setWireframe(wireframe)
   lg.setMeshCullMode(cullMode)
   lg.setColor(color[1], color[2], color[3], color[4])
+  lg.setScissor(scissor[1], scissor[2], scissor[3], scissor[4])
 
   if not ok then
     error(err)
@@ -1200,9 +1283,13 @@ function GxRenderer:release()
   if self.spriteShader then
     self.spriteShader:release()
   end
+  if self.spriteCompositeShader then
+    self.spriteCompositeShader:release()
+  end
   self.shader, self.worldShader, self.spriteShader, self.edgeShader = nil, nil, nil, nil
-  self.sourceShader, self.compositeShader = nil, nil
+  self.sourceShader, self.compositeShader, self.spriteCompositeShader = nil, nil, nil
   self:_releaseTargets()
+  self:_releaseSpriteTargets()
 end
 
 return GxRenderer

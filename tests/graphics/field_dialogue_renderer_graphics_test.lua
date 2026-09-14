@@ -60,7 +60,6 @@ local function canonicalRender(scope, frameIndex)
   local dialogue = renderer(scope)
   local controller = FieldDialogueFixture.openDialogue("AB", frameIndex)
   settleDialogue(controller)
-  local viewport = FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" })
   local presentation = DialoguePresentationLayout.compute(
     { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
     { scale = 1, cursorPlacement = CURSOR_PLACEMENT }

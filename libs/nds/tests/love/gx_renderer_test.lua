@@ -49,6 +49,7 @@ local T = {}
 ---@field wireframe table[]
 ---@field clear table[]
 ---@field draw table[]
+---@field scissor table[]
 ---@class GxRendererTest.Graphics : GxRenderer.Graphics
 ---@field shaders GxRendererTest.Shader[]
 ---@field canvases GxRendererTest.Canvas[]
@@ -75,6 +76,9 @@ local T = {}
 ---@field setColor fun(r: number, g: number, b: number, a: number)
 ---@field draw fun(mesh: table, ...)
 ---@field clear fun(...)
+---@field getScissor fun(): integer?, integer?, integer?, integer?
+---@field setScissor fun(x: integer?, y: integer?, w: integer?, h: integer?)
+---@field setFailOnScissor fun(value: integer|nil)
 
 -- Eight zero-based RGB555-packed edge colors, the shape
 -- MapAssetCompiler now emits (HgssFieldEdgeColors.TABLE_A/TABLE_B) and
@@ -185,6 +189,7 @@ local function fakeGraphics(opts)
     wireframe = {},
     clear = {},
     draw = {},
+    scissor = {},
   }
   local state = {
     canvas = opts.canvas,
@@ -196,6 +201,7 @@ local function fakeGraphics(opts)
     wireframe = opts.wireframe,
     cullMode = opts.cullMode,
     color = opts.color or { 1, 1, 1, 1 },
+    scissor = opts.scissor,
   }
   local graphics = {
     shaders = shaders,
@@ -319,11 +325,25 @@ local function fakeGraphics(opts)
     clear = function(...)
       calls.clear[#calls.clear + 1] = { ... }
     end,
+    getScissor = function()
+      if state.scissor == nil then
+        return nil
+      end
+      return state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4]
+    end,
+    setScissor = function(x, y, w, h)
+      opts.scissorCalls = (opts.scissorCalls or 0) + 1
+      if opts.failOnScissor and opts.scissorCalls == opts.failOnScissor then
+        error("injected scissor failure")
+      end
+      state.scissor = x and { x, y, w, h } or nil
+      calls.scissor[#calls.scissor + 1] = state.scissor
+    end,
   } --[[@as GxRendererTest.Graphics]]
   return graphics
 end
 
-local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, clearColor)
+local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, clearColor, pixelScale)
   local viewMatrix = camera:view(alpha)
   local lighting = sceneRuntime.lighting
   if lighting and lighting.records then
@@ -345,6 +365,7 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     spriteItems = spriteItems,
     viewport = viewport,
     clearColor = clearColor,
+    pixelScale = pixelScale or 3,
   })
 end
 
@@ -422,7 +443,10 @@ local function assertResourcesReleased(lg, renderer, extraShaderCount)
     Assert.equal(canvas.releaseCount, 1, "renderer released every created canvas exactly once")
   end
   local expectedShaderCount = renderer.translucencyMode == GxRenderer.TRANSLUCENCY_EXACT and 5 or 3
-  expectedShaderCount = expectedShaderCount + (extraShaderCount or 0)
+  expectedShaderCount = expectedShaderCount
+    + (renderer.spriteShader and 1 or 0)
+    + (renderer.spriteCompositeShader and 1 or 0)
+    + (extraShaderCount or 0)
   Assert.equal(#lg.shaders, expectedShaderCount, "shader ownership matches the renderer translucency mode")
 end
 
@@ -597,22 +621,16 @@ function T.no_fixed_semantic_size_helper_remains()
   Assert.isNil(rawget(GxRenderer, "semanticTargetSize"), "the fixed-192 semantic-size helper is removed")
 end
 
--- The renderer sends the edge radius on the real draw
--- path is the nearest integer of the viewport's field-pixel scale
--- (referenceFrame.height / 192 * zoom), minimum 1. At 1280x720 expanded
--- (referenceFrame.height 720) with zoom 1, the scale is 720/192 = 3.75, so
--- the radius is floor(3.75 + 0.5) = 4; the same viewport at zoom 0.5 gives
--- floor(1.875 + 0.5) = 2; a 2560x1440 viewport at zoom 1 gives
--- floor(7.5 + 0.5) = 8; a 480p viewport at zoom 1 gives floor(2.5 + 0.5) = 3.
+-- The renderer sends the edge radius from the explicit integer field scale
+-- and the bounded world raster dimensions, never from camera zoom.
 function T.draw_sends_the_rounded_field_pixel_scale_as_the_edge_radius()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
   local edgeShader = lg.shaders[2]
 
-  local function radiusSentFor(viewport, zoom)
-    scene.camera.zoom = zoom
-    render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0)
+  local function radiusSentFor(viewport, pixelScale)
+    render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0, nil, pixelScale)
     local last
     for _, send in ipairs(edgeShader.sends) do
       if send.name == "u_edgeRadiusPx" then
@@ -622,10 +640,10 @@ function T.draw_sends_the_rounded_field_pixel_scale_as_the_edge_radius()
     return last
   end
 
-  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 1.0), 4, "radius 4 at 720p zoom 1")
-  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 0.5), 2, "radius 2 at 720p zoom 0.5")
-  Assert.equal(radiusSentFor(FieldViewport.new(2560, 1440, { mode = "expanded" }), 1.0), 8, "radius 8 at 1440p zoom 1")
-  Assert.equal(radiusSentFor(FieldViewport.new(640, 480, { mode = "strict" }), 1.0), 3, "radius 3 at 480p zoom 1")
+  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 3), 3, "radius 3 at 720p 3x")
+  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 1), 1, "radius 1 at 720p 1x")
+  Assert.equal(radiusSentFor(FieldViewport.new(2560, 1440, { mode = "expanded" }), 6), 6, "radius 6 at 1440p 6x")
+  Assert.equal(radiusSentFor(FieldViewport.new(640, 480, { mode = "strict" }), 3), 3, "radius 3 at 480p 3x")
   renderer:release()
 end
 
@@ -680,7 +698,7 @@ function T.invalid_presentation_descriptor_restores_exact_caller_state()
   assertResourcesReleased(lg, renderer)
 end
 
-function T.presentation_sprites_use_direct_replace_with_depth_writes()
+function T.logical_sprite_draw_uses_replace_with_depth_writes()
   local canvas, shader = {}, {}
   canvas.getWidth = function()
     return 640
@@ -1002,7 +1020,11 @@ function T.new_releases_prior_shaders_when_compositor_shader_fails()
       "rethrows the shader failure at " .. failAt
     )
     local created = failAt - 1
-    Assert.equal(#lg.shaders, created, "only the prior shaders were created before failure at " .. failAt)
+    Assert.equal(
+      #lg.shaders,
+      created,
+      "only the prior shaders were created before failure at " .. failAt .. " (actual " .. #lg.shaders .. ")"
+    )
     for i = 1, created do
       Assert.equal(lg.shaders[i].releaseCount, 1, "shader " .. i .. " is released when shader " .. failAt .. " fails")
     end
@@ -1029,6 +1051,7 @@ function T.new_reads_shader_sources_through_the_injected_reader()
     "libs/nds/src/love/shaders/edge.glsl",
     "libs/nds/src/love/shaders/source.glsl",
     "libs/nds/src/love/shaders/composite.glsl",
+    "libs/nds/src/love/shaders/sprite_composite.glsl",
   })
   Assert.equal(lg.shaders[1].source, "source:libs/nds/src/love/shaders/map.glsl")
   Assert.equal(lg.shaders[2].source, "source:libs/nds/src/love/shaders/edge.glsl")
@@ -1097,7 +1120,11 @@ function T.new_compositor_source_read_failure_releases_prior_shaders()
       "rethrows the read failure at " .. failAt
     )
     local created = failAt
-    Assert.equal(#lg.shaders, created, "only the prior shaders were created before failure at " .. failAt)
+    Assert.equal(
+      #lg.shaders,
+      created,
+      "only the prior shaders were created before failure at " .. failAt .. " (actual " .. #lg.shaders .. ")"
+    )
     for i = 1, created do
       Assert.equal(
         lg.shaders[i].releaseCount,

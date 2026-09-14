@@ -77,7 +77,8 @@ local function fixtureDraw(gxRenderer)
     { { ordinaryItem, fieldEffectItem } },
     { spriteItem },
     { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
-    0
+    0,
+    3
   )
   return {
     fieldRenderer = fieldRenderer,
@@ -136,7 +137,8 @@ function T.repeated_draws_reuse_the_same_queue_pass_array_identities()
     { { fixture.ordinaryItem, fixture.fieldEffectItem } },
     { fixture.spriteItem },
     { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
-    0
+    0,
+    3
   )
 
   Assert.equal(frames[2].queue, firstQueue, "the renderer-owned queue scratch is reused across draws")
@@ -182,7 +184,8 @@ function T.blended_entries_stay_the_render_queues_own_wrapper_around_the_origina
     { { translucentItem } },
     nil,
     { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
-    0
+    0,
+    3
   )
 
   Assert.isTrue(
@@ -327,15 +330,15 @@ function T.rejects_a_missing_or_non_positive_camera_far_plane()
   local viewport = { worldViewport = { x = 0, y = 0, width = 1, height = 1 } }
 
   Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
+    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
   end)
   camera.far = 0
   Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
+    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
   end)
   camera.far = -10
   Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
+    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
   end)
   Assert.equal(draws, 0, "invalid camera configuration never reaches the GX renderer")
 end

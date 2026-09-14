@@ -449,7 +449,8 @@ function FieldState:draw()
     self:_worldParts(alpha),
     self.spriteItems,
     self.runtime.viewport,
-    alpha
+    alpha,
+    self.runtime.fieldPixelScale:resolvedScale()
   )
   assert(
     type(self.runtime.acknowledgeDestinationPresentation) == "function",

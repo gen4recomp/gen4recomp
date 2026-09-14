@@ -90,6 +90,9 @@ uniform bool u_presentationSprite;
 uniform vec2 u_presentationScale;
 uniform vec2 u_presentationOffset;
 uniform vec2 u_stateSize;
+#ifdef PRESENTATION_SPRITE_LAYER
+uniform vec2 u_presentationViewportSize;
+#endif
 #endif
 
 // 1.0.9 domain scale shared by normals and the transformed light-direction
@@ -245,6 +248,11 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
   if (!u_presentationSprite) {
     clip.y = -clip.y;
   }
+#ifdef PRESENTATION_SPRITE_LAYER
+  if (u_presentationSprite) {
+    clip.y = -clip.y;
+  }
+#endif
 #else
   clip.y = -clip.y;
 #endif
@@ -253,8 +261,16 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
     vec4 centerClip = u_proj * vec4(viewCenter, 1.0);
     if (centerClip.w > 0.0) {
       vec2 centerNdc = centerClip.xy / centerClip.w;
-      vec2 rasterCoord = (centerNdc * 0.5 + 0.5) * u_stateSize;
+      vec2 rasterCoord;
+#ifdef PRESENTATION_SPRITE_LAYER
+      rasterCoord = (centerNdc * 0.5 + 0.5) * u_presentationViewportSize;
+#else
+      rasterCoord = (centerNdc * 0.5 + 0.5) * u_stateSize;
+#endif
       vec2 rasterCenterNdc = ((floor(rasterCoord) + 0.5) / u_stateSize) * 2.0 - 1.0;
+#ifdef PRESENTATION_SPRITE_LAYER
+      rasterCenterNdc = ((floor(rasterCoord) + 0.5) / u_presentationViewportSize) * 2.0 - 1.0;
+#endif
       clip.xy += (rasterCenterNdc - centerNdc) * clip.w;
     }
   }
@@ -295,6 +311,9 @@ uniform bool u_presentationSprite;
 uniform bool u_spriteFogEnabled;
 uniform Image u_renderState;
 uniform vec2 u_stateSize;
+#ifdef PRESENTATION_SPRITE_LAYER
+uniform vec2 u_presentationViewportSize;
+#endif
 uniform bool u_fogEnabled;
 uniform vec3 u_fogColor;
 uniform vec4 u_fogTable0;
@@ -468,11 +487,15 @@ void effect()
 
 #ifdef PRESENTATION_SPRITE
   if (u_presentationSprite) {
-    // Render-state canvases use the canvas texture orientation while this
-    // stage is rasterized directly to the window, so presentation Y is
-    // inverted when looking up the corresponding bounded world pixel.
+    // Render-state and logical sprite canvases share the offscreen canvas
+    // orientation. The direct host path, retained for shader compatibility,
+    // uses the opposite presentation orientation.
     if (v_spriteUv.x < 0.0 || v_spriteUv.x > 1.0 || v_spriteUv.y < 0.0 || v_spriteUv.y > 1.0) discard;
+#ifdef PRESENTATION_SPRITE_LAYER
+    vec2 stateUv = v_spriteUv;
+#else
     vec2 stateUv = vec2(v_spriteUv.x, 1.0 - v_spriteUv.y);
+#endif
     stateUv = clamp(stateUv, vec2(0.0), vec2(1.0) - 0.5 / u_stateSize);
     float worldDepth = Texel(u_renderState, stateUv).g;
     float spriteDepthValue = spriteDepth(gl_FragCoord.z);
@@ -488,7 +511,10 @@ void effect()
   }
 #endif
 
-#ifdef WORLD_MRT
+#ifdef PRESENTATION_SPRITE_LAYER
+  love_Canvases[0] = vec4(outRgb, alpha);
+  love_Canvases[1] = vec4(1.0);
+#elif defined(WORLD_MRT)
   love_Canvases[0] = vec4(outRgb, alpha);
   love_Canvases[1] = vec4(u_polygonId, dsZbufferDepth(gl_FragCoord.z), u_polygonFogEnabled ? 1.0 : 0.0, 0.0);
 #else
