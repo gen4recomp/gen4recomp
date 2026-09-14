@@ -555,6 +555,7 @@ function T.final_prompt_boundary_closes_without_repeating_its_window()
 
   c:step({ actionPressed = true })
   Assert.equal(c:status().state, "CLOSING", "one confirmation executes the clear and finishes")
+  Assert.equal(#c:status().visibleLines, 0, "the clear handoff shows no stale prompt text")
   c:step({})
   Assert.equal(c:status().state, "CLOSED")
   Assert.equal(completed, 1, "the message completes exactly once")

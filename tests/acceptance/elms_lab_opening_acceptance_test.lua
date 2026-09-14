@@ -163,22 +163,72 @@ function T.tests.fresh_entry_triggers_the_welcome_scene_through_elms_post_chime_
     -- Drive real dialogue/script advancement (never a blind sleep) until the
     -- source email chime plays: the scene's own preceding `GenderMsgBox`
     -- requires the same semantic confirm edge every other dialogue scenario
-    -- in this suite uses.
+    -- in this suite uses. The opening prompt keeps the printer: quiet ticks
+    -- at its final boundary must not advance the script, and exactly one
+    -- fresh edge releases it.
+    local OPENING_BANK_ID = 543
+    local OPENING_MESSAGE_ID = 0
+    local QUIET_TICKS = 8
+    local function isOpeningFinalBoundary(snapshot)
+      local dialogue = snapshot.dialogue
+      return dialogue.modal
+        and dialogue.bankId == OPENING_BANK_ID
+        and dialogue.messageId == OPENING_MESSAGE_ID
+        and dialogue.state == "WAITING_BOUNDARY"
+        and dialogue.pageIndex == dialogue.pageCount
+    end
+    local function chimeCount()
+      local count = 0
+      for _, effect in ipairs(game:hostEffects()) do
+        if effect == "audio:SEQ_SE_GS_PHONE0" then
+          count = count + 1
+        end
+      end
+      return count
+    end
     local chimeSeen = false
     local poseAtChime
+    local boundaryProved = false
     for _ = 1, 400 do
       if game.runtime.errorText then
         error("runtime fault: " .. tostring(game.runtime.errorText))
       end
-      for _, effect in ipairs(game:hostEffects()) do
-        if effect == "audio:SEQ_SE_GS_PHONE0" then
-          chimeSeen = true
-        end
-      end
-      if chimeSeen then
+      if chimeCount() > 0 then
+        chimeSeen = true
         break
       end
-      if game:snapshot().dialogue.modal then
+      local snapshot = game:snapshot()
+      if isOpeningFinalBoundary(snapshot) and not boundaryProved then
+        local poseBefore = elmPose(game)
+        local chimesBefore = chimeCount()
+        for _ = 1, QUIET_TICKS do
+          game:step()
+          local quiet = game:snapshot()
+          Assert.isTrue(quiet.dialogue.modal, "the opening prompt must stay modal without input")
+          Assert.equal(quiet.dialogue.bankId, OPENING_BANK_ID, "quiet ticks must not leave the opening message")
+          Assert.equal(quiet.dialogue.messageId, OPENING_MESSAGE_ID, "quiet ticks must not leave the opening message")
+          Assert.equal(
+            quiet.dialogue.state,
+            "WAITING_BOUNDARY",
+            "quiet ticks must not cross the opening prompt boundary"
+          )
+          Assert.equal(
+            quiet.dialogue.pageIndex,
+            quiet.dialogue.pageCount,
+            "quiet ticks must hold the final opening boundary"
+          )
+          Assert.isTrue(quiet.fieldLocked, "the field stays locked at the opening prompt")
+          Assert.isTrue(
+            samePose(elmPose(game), poseBefore),
+            "Elm must not begin post-dialogue movement before the opening prompt edge"
+          )
+          Assert.equal(chimeCount(), chimesBefore, "the email chime must wait for the opening prompt edge")
+        end
+        boundaryProved = true
+        game.runtime:pressAction()
+        game:step()
+        game.runtime:releaseAction()
+      elseif snapshot.dialogue.modal then
         game.runtime:pressAction()
         game:step()
         game.runtime:releaseAction()
@@ -186,6 +236,7 @@ function T.tests.fresh_entry_triggers_the_welcome_scene_through_elms_post_chime_
         game:step()
       end
     end
+    Assert.isTrue(boundaryProved, "the opening prompt boundary must be reached and held before the chime")
     Assert.isTrue(chimeSeen, "the source email chime must play before Elm's post-chime movement")
     Assert.isTrue(game:snapshot().fieldLocked, "the field stays locked through the chime")
     poseAtChime = elmPose(game)

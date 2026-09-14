@@ -157,6 +157,13 @@ function T.tests.elm_aide_obtain_item_hands_back_exactly_once()
     local completed = false
     local lastSnapshot = nil
     local childInstanceId = nil
+    -- The aide greeting keeps the printer at its trailing prompt: quiet
+    -- ticks at its final boundary must grant nothing, and exactly one fresh
+    -- edge releases it into the item-space branch.
+    local GREETING_BANK_ID = 543
+    local GREETING_MESSAGE_ID = 19
+    local GREETING_QUIET_TICKS = 8
+    local greetingProved = false
     for _ = 1, 1500 do
       local snapshot = game:snapshot()
       lastSnapshot = snapshot
@@ -188,7 +195,35 @@ function T.tests.elm_aide_obtain_item_hands_back_exactly_once()
       local dialogue = snapshot.dialogue
       if dialogue.modal then
         local bankId, messageId = dialogue.bankId, dialogue.messageId
-        if bankId == OBTAIN_BANK_ID and (messageId == FIRST_MESSAGE_ID or messageId == FINAL_MESSAGE_ID) then
+        if
+          not greetingProved
+          and bankId == GREETING_BANK_ID
+          and messageId == GREETING_MESSAGE_ID
+          and dialogue.state == "WAITING_BOUNDARY"
+          and dialogue.pageIndex == dialogue.pageCount
+        then
+          for _ = 1, GREETING_QUIET_TICKS do
+            game:step()
+            local quiet = game:snapshot().dialogue
+            Assert.isTrue(quiet.modal, "the aide greeting must stay modal without input")
+            Assert.equal(quiet.bankId, GREETING_BANK_ID, "quiet ticks must not leave the aide greeting")
+            Assert.equal(quiet.messageId, GREETING_MESSAGE_ID, "quiet ticks must not leave the aide greeting")
+            Assert.equal(quiet.state, "WAITING_BOUNDARY", "quiet ticks must not cross the greeting prompt boundary")
+            Assert.equal(quiet.pageIndex, quiet.pageCount, "quiet ticks must hold the final greeting boundary")
+            Assert.equal(bag:quantity("POTION"), 0, "no Potion may grant before the greeting edge")
+            Assert.equal(
+              #scriptStarts(game, COMMON_SCRIPT_ID),
+              0,
+              "no obtain-item child may start before the greeting edge"
+            )
+            Assert.equal(#fanfareEffects(game), 0, "no item fanfare may play before the greeting edge")
+          end
+          greetingProved = true
+          game.runtime:pressAction()
+          game:step()
+          game.runtime:releaseAction()
+          otherPresses = otherPresses + 1
+        elseif bankId == OBTAIN_BANK_ID and (messageId == FIRST_MESSAGE_ID or messageId == FINAL_MESSAGE_ID) then
           -- The obtain messages own no input: the first stays open through
           -- the fanfare wait, and the final dismisses through its explicit
           -- button wait. Exactly one edge is ever sent, for the fully
@@ -240,6 +275,7 @@ function T.tests.elm_aide_obtain_item_hands_back_exactly_once()
       )
     end
     Assert.equal(finalPresses, 1, "the final obtain message must dismiss through exactly one action edge")
+    Assert.isTrue(greetingProved, "the aide greeting boundary must be reached and held before the grant")
 
     -- Quiet ticks with no input: nothing may replay once the parent is done.
     for _ = 1, 30 do

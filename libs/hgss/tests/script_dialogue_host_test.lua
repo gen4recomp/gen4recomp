@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local ScriptDialogueHost = require("libs.hgss.src.script.ScriptDialogueHost")
+local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -617,6 +618,165 @@ function T.item_text_with_an_unknown_native_identity_faults()
     textAt(withItems, { text = "item_name", value = 9999 })
   end)
   Assert.isTrue(Errors.is(err), "an unknown native identity faults instead of rendering a marker")
+end
+
+local CURSOR = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 }
+
+local function hostGlyph(text, code)
+  return { kind = "glyph", code = code, text = text, raw = { code } }
+end
+
+local function hostLine(tokens)
+  return { tokens = tokens, width = 0 }
+end
+
+local function hostPage(lines, breakKind)
+  return { lines = lines, breakKind = breakKind }
+end
+
+local function printCharmap()
+  local charmap = {}
+  for byte = 32, 126 do
+    charmap[string.char(byte)] = 0x2000 + byte
+  end
+  return charmap
+end
+
+-- Production controller behind the script host, fed by a test-local
+-- precomputed one-page layout. The message provider carries a plain
+-- two-glyph message the host resolves; the controller layout decides the
+-- boundary shape under test.
+local function productionHostWithPages(pages)
+  local provider = assert(FieldMessageProvider.new(cacheWith({ [901] = nameBankArtifact(901, "AB", "AB") })))
+  local controller = FieldDialogueController.new({
+    layout = function()
+      return { pages = pages, warnings = {}, lineHeight = 16, lineSpacing = 0 }
+    end,
+    policy = { interGlyphDelay = 0, glyphBudget = 1, abAcceleration = true },
+    continueCursor = CURSOR,
+  })
+  local hostObject = ScriptDialogueHost.new({
+    controller = controller,
+    provider = provider,
+    layout = function(formatted)
+      return formatted
+    end,
+    fontDef = { charmap = printCharmap() },
+    player = {
+      name = function()
+        return "Gold"
+      end,
+      gender = function()
+        return 0
+      end,
+    },
+  })
+  return hostObject, controller
+end
+
+local function openTestMessage(hostObject)
+  hostObject:openMessage({ message = "msg.hgss.0901.00000" })
+  hostObject:startPrint("msg.hgss.0901.00000", {}, {})
+end
+
+local function revealToWait(hostObject, controller)
+  local guard = 0
+  while controller:status().state == "OPENING" or controller:status().state == "REVEALING" do
+    hostObject:advance({})
+    guard = guard + 1
+    Assert.isTrue(guard < 40, "the test window reveals promptly")
+  end
+  return controller:status()
+end
+
+-- A trailing prompt boundary belongs to the native printer: quiet ticks
+-- must not complete it, a held edge must not cross it, and one fresh edge
+-- performs the clear handoff, which the host then holds for script closure.
+function T.trailing_prompt_boundary_needs_a_fresh_edge_and_holds_the_clear_handoff()
+  local hostObject, controller = productionHostWithPages({
+    hostPage({ hostLine({ hostGlyph("A", 1), hostGlyph("B", 2) }) }, "prompt"),
+  })
+  openTestMessage(hostObject)
+  local waiting = revealToWait(hostObject, controller)
+  Assert.equal(waiting.state, "WAITING_BOUNDARY", "a trailing prompt waits as a boundary")
+  Assert.isFalse(hostObject:printProgress().done, "an unconfirmed trailing prompt is not printer completion")
+  for _ = 1, 6 do
+    hostObject:advance({})
+    Assert.equal(controller:status().state, "WAITING_BOUNDARY", "quiet ticks must not cross the prompt")
+    Assert.isFalse(hostObject:printProgress().done, "quiet ticks must not complete the printer")
+  end
+  hostObject:advance({ actionDown = true })
+  Assert.equal(controller:status().state, "WAITING_BOUNDARY", "held input alone must not cross the prompt")
+  hostObject:advance({ pressedAction = true, actionDown = true })
+  local cleared = controller:status()
+  Assert.equal(cleared.state, "CLOSING", "one fresh edge performs the prompt clear handoff")
+  Assert.equal(#cleared.visibleLines, 0, "the clear handoff shows no stale prompt text")
+  Assert.isTrue(hostObject:printProgress().done, "the clear handoff is printer completion")
+  for _ = 1, 3 do
+    hostObject:advance({})
+    Assert.equal(controller:status().state, "CLOSING", "the host holds the handoff instead of closing it")
+    Assert.isTrue(hostObject:isOpen(), "the window stays modal until script closure")
+  end
+  hostObject:close(true)
+  Assert.isFalse(hostObject:isOpen(), "explicit script closure releases the window")
+end
+
+-- A trailing page boundary behaves the same way through the scroll effect:
+-- the fresh edge enters the scroll, the scroll settles into the handoff,
+-- and the host holds it for script closure.
+function T.trailing_page_boundary_needs_a_fresh_edge_and_holds_the_scroll_handoff()
+  local hostObject, controller = productionHostWithPages({
+    hostPage({ hostLine({ hostGlyph("A", 1) }), hostLine({ hostGlyph("B", 2) }) }, "page"),
+  })
+  openTestMessage(hostObject)
+  local waiting = revealToWait(hostObject, controller)
+  Assert.equal(waiting.state, "WAITING_BOUNDARY", "a trailing page waits as a boundary")
+  Assert.isFalse(hostObject:printProgress().done, "an unconfirmed trailing page is not printer completion")
+  for _ = 1, 6 do
+    hostObject:advance({})
+    Assert.equal(controller:status().state, "WAITING_BOUNDARY", "quiet ticks must not cross the page")
+    Assert.isFalse(hostObject:printProgress().done, "quiet ticks must not complete the printer")
+  end
+  hostObject:advance({ pressedAction = true, actionDown = true })
+  Assert.equal(controller:status().state, "SCROLLING", "one fresh edge performs the page scroll effect")
+  Assert.isFalse(hostObject:printProgress().done, "an unfinished scroll is not printer completion")
+  local guard = 0
+  while controller:status().state == "SCROLLING" do
+    hostObject:advance({})
+    guard = guard + 1
+    Assert.isTrue(guard < 10, "the final scroll finishes on cadence")
+    Assert.isFalse(
+      hostObject:printProgress().done and controller:status().state == "SCROLLING",
+      "scrolling must not report completion"
+    )
+  end
+  Assert.equal(controller:status().state, "CLOSING", "the scroll settles into the handoff")
+  Assert.isTrue(hostObject:printProgress().done, "the scroll handoff is printer completion")
+  for _ = 1, 3 do
+    hostObject:advance({})
+    Assert.equal(controller:status().state, "CLOSING", "the host holds the handoff instead of closing it")
+    Assert.isTrue(hostObject:isOpen(), "the window stays modal until script closure")
+  end
+  hostObject:close(true)
+  Assert.isFalse(hostObject:isOpen(), "explicit script closure releases the window")
+end
+
+-- Plain end-of-text stays print-only: it completes without an invented
+-- input wait, and a fresh edge at that wait belongs to the later script
+-- owner rather than the controller.
+function T.plain_end_of_text_completes_without_an_invented_input_wait()
+  local hostObject, controller = productionHostWithPages({
+    hostPage({ hostLine({ hostGlyph("A", 1), hostGlyph("B", 2) }) }, "eos"),
+  })
+  openTestMessage(hostObject)
+  local waiting = revealToWait(hostObject, controller)
+  Assert.equal(waiting.state, "WAITING_CLOSE", "plain end-of-text waits for close")
+  Assert.isTrue(hostObject:printProgress().done, "plain end-of-text is printer completion without input")
+  hostObject:advance({ pressedAction = true, actionDown = true })
+  Assert.equal(controller:status().state, "WAITING_CLOSE", "the close wait keeps the edge for its script owner")
+  Assert.isTrue(hostObject:isOpen(), "the window stays modal until script closure")
+  hostObject:close(true)
+  Assert.isFalse(hostObject:isOpen(), "explicit script closure releases the window")
 end
 
 return { tests = T }

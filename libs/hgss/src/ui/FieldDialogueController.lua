@@ -649,6 +649,7 @@ function FieldDialogueController:step(snapshot)
           self:_beginScroll()
         elseif self._pageIndex >= #self._pages then
           self._retainedLines = {}
+          self._revealed = 0
           self._state = "CLOSING"
         else
           self._retainedLines = {}

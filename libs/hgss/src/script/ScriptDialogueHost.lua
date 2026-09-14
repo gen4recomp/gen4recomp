@@ -428,16 +428,16 @@ function ScriptDialogueHost:startPrint(message, bindings, textArgs)
 end
 
 -- Typing progress for the dialogue task: page and glyph within the current
--- page, plus completion of the whole reveal (the controller reached its
--- final wait).
+-- page, plus native printer completion. Only the end-of-text wait and the
+-- post-boundary handoff count as complete: a prompt/page boundary still
+-- belongs to the printer until a fresh edge performs its clear/scroll.
 ---@return table<string, unknown>|nil { pageIndex, glyphIndex, done }
 function ScriptDialogueHost:printProgress()
   if not self:isOpen() then
     return { pageIndex = 0, glyphIndex = 0, done = true }
   end
   local status = self._controller:status()
-  local finalBoundary = status.state == "WAITING_BOUNDARY" and (status.pageIndex or 0) >= (status.pageCount or 0)
-  local done = status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED" or finalBoundary
+  local done = status.state == "WAITING_CLOSE" or status.state == "CLOSING" or status.state == "CLOSED"
   return {
     pageIndex = math.max(0, (status.pageIndex or 1) - 1),
     glyphIndex = status.revealedGlyphs or 0,
@@ -481,20 +481,19 @@ function ScriptDialogueHost:advance(input)
   end
   input = input or {}
   local status = self._controller:status()
-  -- DialogueTask owns the final confirm edge and performs the delayed close.
-  -- Passing that edge to the controller would close it early, leaving the
-  -- task blocked forever waiting for an edge that has already been consumed.
-  -- A final prompt/page boundary counts as the final wait: it needs the one
-  -- task-owned confirmation before the delayed close, never a controller
-  -- scroll/advance.
-  local finalBoundary = status.state == "WAITING_BOUNDARY" and (status.pageIndex or 0) >= (status.pageCount or 0)
-  local finalWait = status.state == "WAITING_CLOSE" or finalBoundary
-  local actionPressed = input.pressedAction == true and not finalWait
-  local cancelPressed = input.pressedCancel == true and not finalWait
+  -- A held post-boundary handoff stays open until script ownership closes
+  -- or replaces it; stepping it here would close the window out from under
+  -- the later close. Native prompt/page boundaries still own their fresh
+  -- continuation edge, while the end-of-text wait reserves its edge for the
+  -- explicit task-owned input that follows printing.
+  if status.state == "CLOSING" then
+    return
+  end
+  local printerDone = status.state == "WAITING_CLOSE"
   self._controller:step({
-    actionPressed = actionPressed,
+    actionPressed = input.pressedAction == true and not printerDone,
     actionDown = input.actionDown == true,
-    cancelPressed = cancelPressed,
+    cancelPressed = input.pressedCancel == true and not printerDone,
     cancelDown = input.cancelDown == true,
   })
 end
