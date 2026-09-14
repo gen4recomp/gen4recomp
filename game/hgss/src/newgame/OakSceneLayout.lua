@@ -94,8 +94,8 @@ function OakSceneLayout.dialogue(safeFrame, reservesDialogue, preferredScale)
   local outerWidth, outerHeight = 256 * scale, 48 * scale
   return {
     outerRect = rect(
-      safeFrame.x + (safeFrame.width - outerWidth) / 2,
-      safeFrame.y + safeFrame.height - outerHeight,
+      PixelScale.snapLogical(safeFrame.x + (safeFrame.width - outerWidth) / 2),
+      PixelScale.snapLogical(safeFrame.y + safeFrame.height - outerHeight),
       outerWidth,
       outerHeight
     ),
@@ -103,9 +103,10 @@ function OakSceneLayout.dialogue(safeFrame, reservesDialogue, preferredScale)
   }
 end
 
-function OakSceneLayout.sceneRegions(width, safeFrame)
+function OakSceneLayout.sceneRegions(width, safeFrame, contentWidthCap)
+  assert(contentWidthCap > 0, "Oak scene content width cap must be positive")
   local scene = rect(0, safeFrame.y, width, safeFrame.height)
-  local contentWidth = math.min(scene.width, 1120)
+  local contentWidth = math.min(scene.width, contentWidthCap)
   local sceneContent = rect(scene.x + (scene.width - contentWidth) / 2, scene.y, contentWidth, scene.height)
   return scene, sceneContent
 end

@@ -9,6 +9,26 @@ local function compute(width, height, view, glyphs, manifestData, preferredScale
   return OakIntroLayout.compute(width, height, view, glyphs, manifestData, resolvedPreferredScale)
 end
 
+local function computeForHost(width, height, view, glyphs, manifestData)
+  local bounds = { x = 0, y = 0, width = width, height = height }
+  local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
+  local scale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
+  local surface = PixelScale.cover(bounds, scale)
+  return OakIntroLayout.compute(
+    surface.logicalViewport.width,
+    surface.logicalViewport.height,
+    view,
+    glyphs,
+    manifestData,
+    scale
+  ),
+    surface
+end
+
+local function logicalHostMetric(physicalPixels, scale)
+  return math.floor(physicalPixels / scale + 0.5)
+end
+
 local function widget(width, height, anchor, sourceBounds)
   return {
     width = width,
@@ -136,6 +156,46 @@ local function assertInterpolated(actual, from, to, progress)
   Assert.near(actual.scale, expectedScale, 1e-6)
   Assert.near(actual.width, expectedWidth, 1e-4)
   Assert.near(actual.height, expectedHeight, 1e-4)
+end
+
+function T.tests.wide_host_metrics_stay_in_physical_pixel_policy_after_logical_conversion()
+  local layout, surface = computeForHost(1710, 895, compositionView(1, "gender_select"), {}, manifest())
+  local scale = surface.scale
+  Assert.equal(layout.safeFrame.x, logicalHostMetric(12, scale))
+  Assert.equal(layout.stageContent.width, logicalHostMetric(1120, scale))
+  Assert.equal(layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width), logicalHostMetric(8, scale))
+end
+
+function T.tests.odd_logical_viewport_places_dialogue_on_its_pixel_grid()
+  local layout = computeForHost(1705, 895, ordinaryView(0), {}, manifest())
+  Assert.equal(layout.dialogue.outerRect.x, math.floor(layout.dialogue.outerRect.x))
+  Assert.equal(layout.dialogue.outerRect.y, math.floor(layout.dialogue.outerRect.y))
+end
+
+function T.tests.ordinary_source_group_moves_as_one_unit_above_reserved_dialogue()
+  local data = manifest()
+  data.widgets.oak.height = 200
+  data.widgets.oak.sourceBounds.height = 200
+  local reserved = computeForHost(1710, 895, ordinaryView(0), {}, data)
+  local unreserved = computeForHost(1710, 895, {
+    phase = "intro",
+    visual = "oak",
+    primaryWidget = "oak",
+    revealWidget = "ball_open",
+    oakBgScrollX = 0,
+  }, {}, data)
+  Assert.isTrue(disjoint(reserved.subject, reserved.dialogue.outerRect))
+  Assert.isTrue(disjoint(reserved.reveal, reserved.dialogue.outerRect))
+  local subjectDelta = reserved.subject.y - unreserved.subject.y
+  local revealDelta = reserved.reveal.y - unreserved.reveal.y
+  Assert.equal(subjectDelta, math.floor(subjectDelta))
+  Assert.equal(revealDelta, subjectDelta)
+  Assert.near(
+    reserved.subject.y - reserved.reveal.y,
+    unreserved.subject.y - unreserved.reveal.y,
+    1e-9,
+    "subject and reveal source geometry must retain their relative placement"
+  )
 end
 
 function T.tests.source_points_and_slide_direction_survive_responsive_hosts()

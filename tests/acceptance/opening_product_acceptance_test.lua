@@ -102,12 +102,74 @@ local function inside(inner, outer)
     and inner.y + inner.height <= outer.y + outer.height
 end
 
+local function disjoint(first, second)
+  return first.x + first.width <= second.x
+    or second.x + second.width <= first.x
+    or first.y + first.height <= second.y
+    or second.y + second.height <= first.y
+end
+
+local function roundedLogicalMetric(physicalPixels, scale)
+  return math.floor(physicalPixels / scale + 0.5) * scale
+end
+
+local function assertReservedDialogueIsClear(layout)
+  if layout.dialogue == nil then
+    return
+  end
+  local dialogue = layout.dialogue.outerRect
+  Assert.equal(dialogue.x, math.floor(dialogue.x), "dialogue X must align to the logical raster")
+  Assert.equal(dialogue.y, math.floor(dialogue.y), "dialogue Y must align to the logical raster")
+  for _, item in ipairs({
+    layout.subject,
+    layout.reveal,
+    layout.oakRegion,
+    layout.selectorRegion,
+    layout.namePreview,
+  }) do
+    if item ~= nil then
+      Assert.isTrue(disjoint(item, dialogue), "Oak content must not enter reserved dialogue")
+    end
+  end
+  for _, item in pairs(layout.genderButtons or {}) do
+    Assert.isTrue(disjoint(item.rect, dialogue), "gender choice must not enter reserved dialogue")
+  end
+  for _, item in pairs(layout.confirmationButtons or {}) do
+    Assert.isTrue(disjoint(item.rect, dialogue), "confirmation choice must not enter reserved dialogue")
+  end
+end
+
+local function assertWideHostMetrics(view, width, height)
+  local surface = assert(view.pixelSurface)
+  local layout = assert(view.layout)
+  local scale = surface.scale
+  Assert.equal(surface.physicalFrame.width, width)
+  Assert.equal(surface.physicalFrame.height, height)
+  Assert.equal(layout.safeFrame.x * scale, roundedLogicalMetric(12, scale))
+  Assert.equal(layout.stageContent.width * scale, roundedLogicalMetric(1120, scale))
+  local oakRegion = assert(layout.oakRegion)
+  local selectorRegion = assert(layout.selectorRegion)
+  Assert.equal((selectorRegion.x - (oakRegion.x + oakRegion.width)) * scale, roundedLogicalMetric(8, scale))
+end
+
+local function assertOneToOneHostMetrics(view, width, height)
+  local surface = assert(view.pixelSurface)
+  local layout = assert(view.layout)
+  Assert.equal(surface.scale, 1)
+  local minimum = math.min(width, height)
+  Assert.equal(layout.safeFrame.x, math.min(12, math.floor(minimum * 0.035 + 0.5)))
+  local oakRegion = assert(layout.oakRegion)
+  local selectorRegion = assert(layout.selectorRegion)
+  Assert.equal(selectorRegion.y - (oakRegion.y + oakRegion.height), math.min(8, math.floor(minimum * 0.02 + 0.5)))
+end
+
 local function assertProfileLayout(view)
   local layout = assert(view.layout, "the production Oak state must publish a layout")
   local logicalViewport =
     assert(view.pixelSurface, "the production Oak state must publish a pixel surface").logicalViewport
   Assert.equal(layout.viewport.width, logicalViewport.width)
   Assert.equal(layout.viewport.height, logicalViewport.height)
+  assertReservedDialogueIsClear(layout)
   if view.phase == "gender_select" then
     Assert.isTrue(inside(layout.subject, layout.oakRegion), "Oak must occupy the composed scene region")
     Assert.isTrue(layout.selectorRegion ~= nil, "gender selection must publish a selector region")
@@ -115,6 +177,7 @@ local function assertProfileLayout(view)
       for gender = 0, 1 do
         local button = assert(layout.genderButtons and layout.genderButtons[gender])
         Assert.isTrue(inside(button.rect, layout.selectorRegion), "gender button must stay inside the selector region")
+        Assert.deepEqual(button.button.rect, button.rect)
       end
     end
   elseif view.phase == "name_edit" then
@@ -368,9 +431,15 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
         assertProfileLayout(view)
         if view.phase == "gender_select" and not checkedResponsiveProfileLayout then
           checkedResponsiveProfileLayout = true
-          for _, size in ipairs({ { 1024, 768 }, { 1920, 1080 }, { 390, 844 } }) do
+          for _, size in ipairs({ { 1705, 895 }, { 1710, 895 }, { 1920, 1080 }, { 390, 844 }, { 256, 1080 } }) do
             App.resize(size[1], size[2])
-            assertProfileLayout(state:view())
+            local resizedView = state:view()
+            assertProfileLayout(resizedView)
+            if size[1] >= 1705 then
+              assertWideHostMetrics(resizedView, size[1], size[2])
+            elseif size[1] == 256 then
+              assertOneToOneHostMetrics(resizedView, size[1], size[2])
+            end
           end
           App.resize(initialWidth, initialHeight)
         end

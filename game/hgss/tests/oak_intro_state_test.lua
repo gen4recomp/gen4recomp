@@ -264,6 +264,19 @@ function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls
   Assert.deepEqual(controller.pressed, { "female" }, "physical points outside the frame must not activate controls")
 end
 
+function T.wide_host_view_keeps_responsive_metrics_on_the_physical_grid()
+  local state, controller = stateHarness()
+  controller.phase = "gender_select"
+  state:resize(1710, 895)
+  local view = state:view()
+  local surface = assert(view.pixelSurface)
+  local layout = assert(view.layout)
+  Assert.equal(surface.scale, 4)
+  Assert.equal(layout.safeFrame.x * surface.scale, 12)
+  Assert.equal(layout.stageContent.width * surface.scale, 1120)
+  Assert.equal((layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width)) * surface.scale, 8)
+end
+
 function T.pointer_hits_the_same_button_geometry_used_by_presentation()
   local state, controller = stateHarness()
   controller.phase = "gender_select"

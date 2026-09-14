@@ -12,6 +12,10 @@ local function clamp(value, low, high)
   return math.max(low, math.min(high, value))
 end
 
+local function logicalHostMetric(physicalPixels, presentationScale)
+  return math.floor(physicalPixels / presentationScale + 0.5)
+end
+
 local function rect(x, y, width, height)
   assert(width > 0 and height > 0, "Oak layout rectangle must be positive")
   return { x = x, y = y, width = width, height = height }
@@ -91,6 +95,41 @@ local function validateSubjectState(view, dialogue, subjectId, subjectWidget, or
       assert(dialogue ~= nil, "Oak name composition requires reserved dialogue")
     end
   end
+end
+
+local function translateSourceGroupAboveDialogue(scene, dialogue, gap, subject, reveal)
+  if dialogue == nil or (subject == nil and reveal == nil) then
+    return subject, reveal
+  end
+  local visualHost = OakSceneLayout.aboveDialogue(scene, dialogue, gap)
+  local bottom = -math.huge
+  for _, item in ipairs({ subject, reveal }) do
+    if item ~= nil then
+      bottom = math.max(bottom, item.y + item.height)
+    end
+  end
+  local delta = 0
+  if bottom > visualHost.y + visualHost.height then
+    -- Keep the bottom edge above dialogue even when the source group is
+    -- taller than the usable host; the excess is clipped at the viewport top.
+    delta = -math.ceil(bottom - (visualHost.y + visualHost.height))
+  end
+  if delta == 0 then
+    return subject, reveal
+  end
+  local function translated(item)
+    if item == nil then
+      return nil
+    end
+    return {
+      x = item.x,
+      y = item.y + delta,
+      width = item.width,
+      height = item.height,
+      scale = item.scale,
+    }
+  end
+  return translated(subject), translated(reveal)
 end
 
 local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
@@ -229,13 +268,18 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   )
   local reference = manifest.sourceReference
   assert(reference.width > 0 and reference.height > 0, "Oak source reference is invalid")
-  local minimum = math.min(width, height)
-  local inset = math.min(12, math.floor(minimum * 0.035 + 0.5), math.max(0, math.floor((minimum - 1) / 2)))
+  local physicalWidth, physicalHeight = width * preferredScale, height * preferredScale
+  local physicalMinimum = math.min(physicalWidth, physicalHeight)
+  local inset = logicalHostMetric(
+    math.min(12, math.floor(physicalMinimum * 0.035 + 0.5), math.max(0, math.floor((physicalMinimum - 1) / 2))),
+    preferredScale
+  )
   local safeFrame = rect(inset, inset, width - inset * 2, height - inset * 2)
-  local gap = math.min(8, math.max(0, math.floor(minimum * 0.02 + 0.5)))
+  local gap = logicalHostMetric(math.min(8, math.max(0, math.floor(physicalMinimum * 0.02 + 0.5))), preferredScale)
+  local contentWidthCap = logicalHostMetric(1120, preferredScale)
   local mode = OakSceneLayout.mode(view)
   local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue, preferredScale)
-  local scene, sceneContent = OakSceneLayout.sceneRegions(width, safeFrame)
+  local scene, sceneContent = OakSceneLayout.sceneRegions(width, safeFrame, contentWidthCap)
   local result ---@type OakIntroStateLayout
   result = {
     viewport = rect(0, 0, width, height),
@@ -262,15 +306,20 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     local visibleSourceX = subjectId == "oak" and -(view.oakBgScrollX or 0) or 0
     ordinarySubject = OakSceneLayout.sourceWidgetRect(subjectWidget, canvas, visibleSourceX)
   end
+  local ordinaryReveal
+  if view.revealWidget then
+    ordinaryReveal = OakSceneLayout.revealRect(widget(manifest, view.revealWidget), canvas)
+  end
+  ordinarySubject, ordinaryReveal =
+    translateSourceGroupAboveDialogue(scene, dialogue, gap, ordinarySubject, ordinaryReveal)
   local selectedSubject, oakRegion, selectorRegion, nameStage, nameChoiceRegion, selectorActive =
     subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
   result.subject = selectedSubject
   result.oakRegion = oakRegion
   result.selectorRegion = selectorRegion
   if view.revealWidget then
-    local revealWidget = widget(manifest, view.revealWidget)
     result.revealCanvas = canvas
-    result.reveal = OakSceneLayout.revealRect(revealWidget, canvas)
+    result.reveal = ordinaryReveal
   end
   profileLayout(
     result,
