@@ -1,7 +1,6 @@
 -- Yes/No-style text button composing the generic Button geometry.
 
 local Button = require("libs.ui.src.Button")
-local FocusOutline = require("libs.ui.src.FocusOutline")
 
 ---@class TextAdapter
 ---@field measure fun(label:string):number
@@ -117,6 +116,39 @@ local function drawFaceDivider(graphics, button, colors)
   graphics.rectangle("fill", innerRect.x, splitY - scale, innerRect.width, dividerHeight)
 end
 
+local function drawFocusOutline(graphics, button, colors)
+  local scale = assert(button.scale, "text button scale is missing")
+  local outlineRect = assert(button.rect, "text button rectangle is missing")
+  local outerWidth = 5 * scale
+  local innerWidth = 3 * scale
+  local inset = 1 * scale
+  local radius = math.max(0, 3 * scale - outerWidth / 2)
+  local outer = assert(colors.focusOuter, "text button focus outer color is missing")
+  local inner = assert(colors.focusInner, "text button focus inner color is missing")
+  graphics.setColor(outer[1], outer[2], outer[3], outer[4])
+  graphics.setLineWidth(outerWidth)
+  graphics.rectangle(
+    "line",
+    outlineRect.x + inset,
+    outlineRect.y + inset,
+    outlineRect.width - inset * 2,
+    outlineRect.height - inset * 2,
+    radius,
+    radius
+  )
+  graphics.setColor(inner[1], inner[2], inner[3], inner[4])
+  graphics.setLineWidth(innerWidth)
+  graphics.rectangle(
+    "line",
+    outlineRect.x + inset,
+    outlineRect.y + inset,
+    outlineRect.width - inset * 2,
+    outlineRect.height - inset * 2,
+    radius,
+    radius
+  )
+end
+
 ---@param graphics table<string, unknown>
 ---@param button table<string, unknown>
 ---@param spec { label: string, selected: boolean, text: TextAdapter, colors?: table<string, unknown> }
@@ -174,11 +206,7 @@ function TextButton.draw(graphics, button, spec)
   drawFaceDivider(graphics, button, colors)
 
   if spec.selected then
-    FocusOutline.draw(graphics, button.rect, {
-      scale = button.scale,
-      outerColor = colors.focusOuter,
-      innerColor = colors.focusInner,
-    })
+    drawFocusOutline(graphics, button, colors)
   end
 
   graphics.push()
