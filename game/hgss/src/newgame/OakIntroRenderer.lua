@@ -246,8 +246,8 @@ end
 ---@param surface table<string, unknown>
 function OakIntroRenderer:_ensureLogicalCanvas(surface)
   assert(not self.released, "Oak renderer is released")
-  local width = assert(surface.logicalWidth)
-  local height = assert(surface.logicalHeight)
+  local width = assert(surface.allocationWidth)
+  local height = assert(surface.allocationHeight)
   if self.logicalCanvas and self.logicalCanvasWidth == width and self.logicalCanvasHeight == height then
     return
   end
@@ -435,11 +435,12 @@ function OakIntroRenderer:draw(view, overlay)
       overlay()
     end
     graphics.setCanvas(callerCanvas)
-    setCompositeScissor(graphics, surface.physicalFrame)
+    local placement = surface.placement
+    setCompositeScissor(graphics, placement.frame)
     graphics.setShader(nil)
     graphics.setColor(1, 1, 1, 1)
     graphics.setBlendMode("replace", "premultiplied")
-    graphics.draw(self.logicalCanvas, surface.physicalFrame.x, surface.physicalFrame.y, 0, surface.scale, surface.scale)
+    graphics.draw(self.logicalCanvas, placement.origin.x, placement.origin.y, 0, placement.scale, placement.scale)
   end)
 end
 

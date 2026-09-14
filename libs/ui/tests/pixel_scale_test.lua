@@ -1,4 +1,5 @@
 local Assert = require("tests.support.Assert")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {}
 
@@ -19,7 +20,7 @@ end
 
 function T.preferred_fitting_resolves_an_integer_at_least_one()
   local PixelScale = pixelScaleFor("preferred integer fitting")
-  Assert.keySet(PixelScale, "cover,fitPreferred,hostToLogical,logicalToHost,snapLogical")
+  Assert.keySet(PixelScale, "cover,fitPreferred,snapLogical")
   local referenceWidth, referenceHeight = 256, 192
 
   local exact = PixelScale.fitPreferred(rect(0, 0, 512, 384), referenceWidth, referenceHeight, 2)
@@ -55,53 +56,65 @@ function T.preferred_fitting_resolves_an_integer_at_least_one()
       PixelScale.fitPreferred(rect(0, 0, 640, candidate), referenceWidth, referenceHeight, 2)
     end)
   end
+  local nilBounds = nil
   rejects(function()
-    PixelScale.fitPreferred(nil, referenceWidth, referenceHeight, 2)
+    PixelScale.fitPreferred(nilBounds --[[@as any]], referenceWidth, referenceHeight, 2)
   end)
 end
 
-function T.coverage_descriptor_round_trips_and_snaps_without_mutation()
+function T.coverage_descriptor_separates_exact_visible_area_from_ceil_allocation()
   local PixelScale = pixelScaleFor("coverage and coordinate transforms")
   local bounds = rect(17, 29, 641, 479)
 
   for _, scale in ipairs({ 2, 3, 4, 5 }) do
     local surface = PixelScale.cover(bounds, scale)
-    Assert.keySet(surface, "logicalHeight,logicalViewport,logicalWidth,physicalFrame,scale")
-    Assert.equal(surface.scale, scale)
-    Assert.equal(surface.logicalWidth, math.ceil(bounds.width / scale))
-    Assert.equal(surface.logicalHeight, math.ceil(bounds.height / scale))
+    Assert.keySet(surface, "allocationHeight,allocationWidth,logicalViewport,placement")
+    Assert.deepEqual(surface.placement.frame, bounds)
+    Assert.isTrue(surface.placement.frame ~= bounds, "coverage copies the placement frame")
+    Assert.equal(surface.placement.origin.x, bounds.x)
+    Assert.equal(surface.placement.origin.y, bounds.y)
+    Assert.equal(surface.placement.scale, scale)
+    Assert.near(surface.placement.logicalWidth, bounds.width / scale)
+    Assert.near(surface.placement.logicalHeight, bounds.height / scale)
+    Assert.equal(surface.allocationWidth, math.ceil(bounds.width / scale))
+    Assert.equal(surface.allocationHeight, math.ceil(bounds.height / scale))
     Assert.equal(surface.logicalViewport.x, 0)
     Assert.equal(surface.logicalViewport.y, 0)
     Assert.near(surface.logicalViewport.width, bounds.width / scale)
     Assert.near(surface.logicalViewport.height, bounds.height / scale)
-    Assert.equal(surface.physicalFrame.x, bounds.x)
-    Assert.equal(surface.physicalFrame.y, bounds.y)
-    Assert.equal(surface.physicalFrame.width, bounds.width)
-    Assert.equal(surface.physicalFrame.height, bounds.height)
-    Assert.isTrue(surface.physicalFrame ~= bounds, "coverage copies the physical frame")
 
-    local overhangWidth = surface.logicalWidth * scale - bounds.width
-    local overhangHeight = surface.logicalHeight * scale - bounds.height
+    local overhangWidth = surface.allocationWidth * scale - bounds.width
+    local overhangHeight = surface.allocationHeight * scale - bounds.height
     Assert.isTrue(overhangWidth >= 0 and overhangWidth < scale, "logical width covers by less than one block")
     Assert.isTrue(overhangHeight >= 0 and overhangHeight < scale, "logical height covers by less than one block")
 
     for _, point in ipairs({
       { x = bounds.x, y = bounds.y },
       { x = bounds.x + 12.25, y = bounds.y + 34.75 },
-      { x = bounds.x + bounds.width + 3.5, y = bounds.y - 2.25 },
     }) do
-      local logicalX, logicalY = PixelScale.hostToLogical(surface, point.x, point.y)
-      local hostX, hostY = PixelScale.logicalToHost(surface, logicalX, logicalY)
-      Assert.near(hostX, point.x, 1e-9, "host/logical conversion preserves x outside and inside the frame")
-      Assert.near(hostY, point.y, 1e-9, "host/logical conversion preserves y outside and inside the frame")
+      local logicalX, logicalY = LayoutGeometry.hostToLogical(surface.placement, point.x, point.y)
+      assert(logicalX ~= nil and logicalY ~= nil, "interior points round-trip")
+      local hostX, hostY = LayoutGeometry.logicalToHost(surface.placement, logicalX, logicalY)
+      Assert.near(hostX, point.x, 1e-9, "host/logical conversion preserves x inside the frame")
+      Assert.near(hostY, point.y, 1e-9, "host/logical conversion preserves y inside the frame")
+    end
+
+    for _, point in ipairs({
+      { x = bounds.x + bounds.width + 3.5, y = bounds.y - 2.25 },
+      { x = bounds.x + bounds.width, y = bounds.y },
+      { x = bounds.x, y = bounds.y + bounds.height },
+    }) do
+      local logicalX, logicalY = LayoutGeometry.hostToLogical(surface.placement, point.x, point.y)
+      Assert.isNil(logicalX, "points outside the frame, including the far edge, must not round-trip")
+      Assert.isNil(logicalY, "points outside the frame, including the far edge, must not round-trip")
     end
   end
 
   local exact = PixelScale.cover(rect(17, 29, 640, 480), 4)
-  Assert.equal(exact.logicalWidth * exact.scale, exact.physicalFrame.width)
-  Assert.equal(exact.logicalHeight * exact.scale, exact.physicalFrame.height)
+  Assert.equal(exact.allocationWidth * exact.placement.scale, exact.placement.frame.width)
+  Assert.equal(exact.allocationHeight * exact.placement.scale, exact.placement.frame.height)
 
-  local savedFrame = PixelScale.cover(bounds, 3).physicalFrame
+  local savedFrame = PixelScale.cover(bounds, 3).placement.frame
   bounds.x, bounds.y, bounds.width, bounds.height = 900, 700, 2, 3
   Assert.deepEqual(savedFrame, { x = 17, y = 29, width = 641, height = 479 })
 
@@ -122,8 +135,9 @@ function T.coverage_descriptor_round_trips_and_snaps_without_mutation()
       PixelScale.snapLogical(candidate)
     end)
   end
+  local fractionalScale = 1.5
   rejects(function()
-    PixelScale.cover(rect(0, 0, 640, 480), 1.5)
+    PixelScale.cover(rect(0, 0, 640, 480), fractionalScale --[[@as integer]])
   end)
   rejects(function()
     PixelScale.cover(rect(0, 0, math.huge, 480), 2)
@@ -136,12 +150,6 @@ function T.coverage_descriptor_round_trips_and_snaps_without_mutation()
   end)
   rejects(function()
     PixelScale.cover(rect(0, math.huge, 640, 480), 2)
-  end)
-  rejects(function()
-    PixelScale.hostToLogical(exact, 0 / 0, 4)
-  end)
-  rejects(function()
-    PixelScale.logicalToHost(exact, 4, math.huge)
   end)
 end
 

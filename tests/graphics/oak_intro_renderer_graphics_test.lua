@@ -801,23 +801,23 @@ function T.logical_surface_uses_the_resolution_matrix_and_reuses_stable_canvases
     frame.layout.viewport = surface.logicalViewport
     renderer:draw(frame)
 
-    if surface.logicalWidth ~= previousWidth or surface.logicalHeight ~= previousHeight then
+    if surface.allocationWidth ~= previousWidth or surface.allocationHeight ~= previousHeight then
       expectedCanvasCount = expectedCanvasCount + 1
     end
     Assert.equal(#graphics.canvases, expectedCanvasCount, width .. "x" .. height .. " Canvas allocation count")
     local canvas = assert(graphics.canvases[#graphics.canvases])
-    Assert.equal(canvas.width, surface.logicalWidth)
-    Assert.equal(canvas.height, surface.logicalHeight)
+    Assert.equal(canvas.width, surface.allocationWidth)
+    Assert.equal(canvas.height, surface.allocationHeight)
     Assert.deepEqual(canvas.filters[#canvas.filters], { min = "nearest", mag = "nearest" })
 
     local final = assert(graphics.draws[#graphics.draws])
     Assert.equal(final.image, canvas)
-    Assert.equal(final.x, surface.physicalFrame.x)
-    Assert.equal(final.y, surface.physicalFrame.y)
+    Assert.equal(final.x, surface.placement.frame.x)
+    Assert.equal(final.y, surface.placement.frame.y)
     Assert.equal(final.sx, scale)
     Assert.equal(final.sy, scale)
 
-    previousWidth, previousHeight = surface.logicalWidth, surface.logicalHeight
+    previousWidth, previousHeight = surface.allocationWidth, surface.allocationHeight
     local stableFrame = view()
     stableFrame.pixelSurface = surface
     stableFrame.layout.viewport = surface.logicalViewport

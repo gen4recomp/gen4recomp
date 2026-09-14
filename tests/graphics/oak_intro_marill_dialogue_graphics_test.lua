@@ -11,6 +11,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local PixelScale = require("libs.ui.src.PixelScale")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local RomImporter = require("romdump.src.source.RomImporter")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 
@@ -191,12 +192,12 @@ local function assertSubjectPixelsUseSourceBounds(scope, state, view, widgetId, 
   local surface = assert(view.pixelSurface)
   local logicalX = PixelScale.snapLogical(canvas.origin.x + widget.sourceBounds.x * canvas.scale)
   local logicalY = PixelScale.snapLogical(canvas.origin.y + widget.sourceBounds.y * canvas.scale)
-  local expectedX, expectedY = PixelScale.logicalToHost(surface, logicalX, logicalY)
+  local expectedX, expectedY = LayoutGeometry.logicalToHost(surface.placement, logicalX, logicalY)
   local expected = {
     x = expectedX,
     y = expectedY,
-    width = widget.width * canvas.scale * surface.scale,
-    height = widget.height * canvas.scale * surface.scale,
+    width = widget.width * canvas.scale * surface.placement.scale,
+    height = widget.height * canvas.scale * surface.placement.scale,
   }
   local background = renderWithoutSubject(scope, state, view)
   local subject = renderWithSubject(scope, state, view)
@@ -303,25 +304,29 @@ function T.marill_pixels_remain_visible_above_the_dialogue_at_host_sizes(scope)
             + (intro.sourceCenter.x - intro.anchor.x) * layout.revealCanvas.scale
           local fixedRevealY = layout.revealCanvas.origin.y
             + (intro.sourceCenter.y - intro.anchor.y) * layout.revealCanvas.scale
-          local revealX, revealY =
-            PixelScale.logicalToHost(surface, PixelScale.snapLogical(reveal.x), PixelScale.snapLogical(reveal.y))
-          local revealWidth = reveal.width * surface.scale
-          local revealHeight = reveal.height * surface.scale
-          local dialogueX, dialogueY = PixelScale.logicalToHost(surface, dialogue.outerRect.x, dialogue.outerRect.y)
-          local dialogueWidth = dialogue.outerRect.width * surface.scale
-          local dialogueHeight = dialogue.outerRect.height * surface.scale
+          local revealX, revealY = LayoutGeometry.logicalToHost(
+            surface.placement,
+            PixelScale.snapLogical(reveal.x),
+            PixelScale.snapLogical(reveal.y)
+          )
+          local revealWidth = reveal.width * surface.placement.scale
+          local revealHeight = reveal.height * surface.placement.scale
+          local dialogueX, dialogueY =
+            LayoutGeometry.logicalToHost(surface.placement, dialogue.outerRect.x, dialogue.outerRect.y)
+          local dialogueWidth = dialogue.outerRect.width * surface.placement.scale
+          local dialogueHeight = dialogue.outerRect.height * surface.placement.scale
           local xStart = math.max(0, math.floor(revealX))
           local yStart = math.max(0, math.floor(revealY))
           local xEnd = math.min(size.width - 1, math.ceil(revealX + revealWidth) - 1)
           local yEnd = math.min(size.height - 1, math.ceil(revealY + revealHeight) - 1)
           local changedOutsideDialogue, survivedOutsideDialogue = 0, 0
           local expectedPixels, expectedSurvived = 0, 0
-          local fixedHostX, fixedHostY = PixelScale.logicalToHost(
-            surface,
+          local fixedHostX, fixedHostY = LayoutGeometry.logicalToHost(
+            surface.placement,
             PixelScale.snapLogical(fixedRevealX),
             PixelScale.snapLogical(fixedRevealY)
           )
-          local sourcePixelScale = reveal.scale * surface.scale
+          local sourcePixelScale = reveal.scale * surface.placement.scale
           local expectedXStart = math.max(0, math.floor(fixedHostX + minX * sourcePixelScale))
           local expectedYStart = math.max(0, math.floor(fixedHostY + minY * sourcePixelScale))
           local expectedXEnd = math.min(size.width - 1, math.ceil(fixedHostX + (maxX + 1) * sourcePixelScale) - 1)

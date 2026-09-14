@@ -5,6 +5,7 @@
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 
@@ -75,7 +76,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field nameInputEnabled boolean
 ---@field choiceLabels table<integer, string>?
 ---@field layout OakIntroStateLayout?
----@field pixelSurface { scale: integer, logicalWidth: integer, logicalHeight: integer, logicalViewport: OakIntroStateRectangle, physicalFrame: OakIntroStateRectangle }?
+---@field pixelSurface PixelScale.Surface?
 
 ---@class OakIntroStateLayoutView: OakIntroStateView
 ---@field layout OakIntroStateLayout
@@ -190,7 +191,7 @@ local function resolvePixelSurface(width, height)
   local bounds = { x = 0, y = 0, width = width, height = height }
   local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
   local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
-  return PixelScale.cover(bounds, outputScale), outputScale
+  return PixelScale.cover(bounds, outputScale)
 end
 
 local function glyphList(value)
@@ -475,7 +476,7 @@ end
 function OakIntroState:view()
   local view = self.controller:view()
   ---@cast view OakIntroStateView
-  local surface, preferredScale = resolvePixelSurface(self.width, self.height)
+  local surface = resolvePixelSurface(self.width, self.height)
   view.pixelSurface = surface
   view.layout = OakIntroLayout.compute(
     surface.logicalViewport.width,
@@ -483,7 +484,7 @@ function OakIntroState:view()
     view,
     self.glyphs,
     self.manifest,
-    preferredScale
+    surface.placement.scale --[[@as integer]]
   )
   if self.dialogueController then
     view.dialogueStatus = self.dialogueController:status()
@@ -582,11 +583,11 @@ function OakIntroState:_pointer(x, y)
   local view = self:view()
   local layout = view.layout
   local surface = assert(view.pixelSurface)
-  if not OakIntroLayout.contains(surface.physicalFrame, x, y) then
+  local logicalX, logicalY = LayoutGeometry.hostToLogical(surface.placement, x, y)
+  if logicalX == nil or logicalY == nil then
     self:_sync()
     return
   end
-  local logicalX, logicalY = PixelScale.hostToLogical(surface, x, y)
   if self.dialogueController and self.dialogueController:isModal() then
     self:_sync()
     return

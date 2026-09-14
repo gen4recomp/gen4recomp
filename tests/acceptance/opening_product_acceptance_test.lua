@@ -142,9 +142,9 @@ end
 local function assertWideHostMetrics(view, width, height)
   local surface = assert(view.pixelSurface)
   local layout = assert(view.layout)
-  local scale = surface.scale
-  Assert.equal(surface.physicalFrame.width, width)
-  Assert.equal(surface.physicalFrame.height, height)
+  local scale = surface.placement.scale
+  Assert.equal(surface.placement.frame.width, width)
+  Assert.equal(surface.placement.frame.height, height)
   Assert.equal(layout.safeFrame.x * scale, roundedLogicalMetric(12, scale))
   Assert.equal(layout.stageContent.width * scale, roundedLogicalMetric(1120, scale))
   local oakRegion = assert(layout.oakRegion)
@@ -155,7 +155,7 @@ end
 local function assertOneToOneHostMetrics(view, width, height)
   local surface = assert(view.pixelSurface)
   local layout = assert(view.layout)
-  Assert.equal(surface.scale, 1)
+  Assert.equal(surface.placement.scale, 1)
   local minimum = math.min(width, height)
   Assert.equal(layout.safeFrame.x, math.min(12, math.floor(minimum * 0.035 + 0.5)))
   local oakRegion = assert(layout.oakRegion)

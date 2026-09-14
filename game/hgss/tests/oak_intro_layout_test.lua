@@ -160,7 +160,7 @@ end
 
 function T.tests.wide_host_metrics_stay_in_physical_pixel_policy_after_logical_conversion()
   local layout, surface = computeForHost(1710, 895, compositionView(1, "gender_select"), {}, manifest())
-  local scale = surface.scale
+  local scale = surface.placement.scale
   Assert.equal(layout.safeFrame.x, logicalHostMetric(12, scale))
   Assert.equal(layout.stageContent.width, logicalHostMetric(1120, scale))
   Assert.equal(layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width), logicalHostMetric(8, scale))

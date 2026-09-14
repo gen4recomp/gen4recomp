@@ -9,7 +9,7 @@ local NewGame = require("game.hgss.src.newgame.NewGame")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
-local PixelScale = require("libs.ui.src.PixelScale")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {}
 local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
@@ -230,7 +230,7 @@ function T.pointer_hits_the_same_drawn_virtual_key_geometry()
   local state, controller = stateHarness()
   local layout = state:view().layout
   local key = layout.nameGrid[3].rect
-  local x, y = PixelScale.logicalToHost(assert(state:view().pixelSurface), key.x + 1, key.y + 1)
+  local x, y = LayoutGeometry.logicalToHost(assert(state:view().pixelSurface).placement, key.x + 1, key.y + 1)
   state:mousepressed(x, y, 1)
   Assert.deepEqual(controller.text, { "é" })
 end
@@ -240,14 +240,14 @@ function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls
   state:resize(641, 481)
   local nameView = state:view()
   local surface = assert(nameView.pixelSurface)
-  Assert.equal(surface.scale, 2)
+  Assert.equal(surface.placement.scale, 2)
   Assert.equal(surface.logicalViewport.width, 320.5)
   Assert.equal(surface.logicalViewport.height, 240.5)
   Assert.equal(nameView.layout.viewport.width, surface.logicalViewport.width)
   Assert.equal(nameView.layout.viewport.height, surface.logicalViewport.height)
 
   local key = assert(nameView.layout.nameGrid[3])
-  local keyX, keyY = PixelScale.logicalToHost(surface, key.rect.x + 1, key.rect.y + 1)
+  local keyX, keyY = LayoutGeometry.logicalToHost(surface.placement, key.rect.x + 1, key.rect.y + 1)
   state:mousepressed(keyX, keyY, 1)
   Assert.deepEqual(controller.text, { "é" })
 
@@ -256,11 +256,11 @@ function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls
   local gender = assert(genderView.layout.genderButtons[1])
   local genderX = gender.rect.x + gender.rect.width / 2
   local genderY = gender.rect.y + gender.rect.height / 2
-  local hostX, hostY = PixelScale.logicalToHost(surface, genderX, genderY)
+  local hostX, hostY = LayoutGeometry.logicalToHost(surface.placement, genderX, genderY)
   state:mousepressed(hostX, hostY, 1)
   Assert.deepEqual(controller.pressed, { "female" })
 
-  state:mousepressed(surface.physicalFrame.x + surface.physicalFrame.width + 1, hostY, 1)
+  state:mousepressed(surface.placement.frame.x + surface.placement.frame.width + 1, hostY, 1)
   Assert.deepEqual(controller.pressed, { "female" }, "physical points outside the frame must not activate controls")
 end
 
@@ -271,18 +271,18 @@ function T.wide_host_view_keeps_responsive_metrics_on_the_physical_grid()
   local view = state:view()
   local surface = assert(view.pixelSurface)
   local layout = assert(view.layout)
-  Assert.equal(surface.scale, 4)
-  Assert.equal(layout.safeFrame.x * surface.scale, 12)
-  Assert.equal(layout.stageContent.width * surface.scale, 1120)
-  Assert.equal((layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width)) * surface.scale, 8)
+  Assert.equal(surface.placement.scale, 4)
+  Assert.equal(layout.safeFrame.x * surface.placement.scale, 12)
+  Assert.equal(layout.stageContent.width * surface.placement.scale, 1120)
+  Assert.equal((layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width)) * surface.placement.scale, 8)
 end
 
 function T.pointer_hits_the_same_button_geometry_used_by_presentation()
   local state, controller = stateHarness()
   controller.phase = "gender_select"
   local genderLayout = state:view().layout
-  local genderX, genderY = PixelScale.logicalToHost(
-    assert(state:view().pixelSurface),
+  local genderX, genderY = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
     genderLayout.genderButtons[1].rect.x + genderLayout.genderButtons[1].rect.width / 2,
     genderLayout.genderButtons[1].rect.y + genderLayout.genderButtons[1].rect.height / 2
   )
@@ -293,20 +293,20 @@ function T.pointer_hits_the_same_button_geometry_used_by_presentation()
   controller.choice = { kind = "gender", selected = 0 }
   local layout = state:view().layout
   Assert.isNil(layout.genderButtons)
-  local profileX, profileY = PixelScale.logicalToHost(
-    assert(state:view().pixelSurface),
+  local profileX, profileY = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
     layout.selectedProfileButton.rect.x + layout.selectedProfileButton.rect.width / 2,
     layout.selectedProfileButton.rect.y + layout.selectedProfileButton.rect.height / 2
   )
   state:mousepressed(profileX, profileY, 1)
   Assert.deepEqual(controller.pressed, { "female" })
-  local yesX, yesY = PixelScale.logicalToHost(
-    assert(state:view().pixelSurface),
+  local yesX, yesY = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
     layout.confirmationButtons[0].rect.x + 1,
     layout.confirmationButtons[0].rect.y + 1
   )
-  local noX, noY = PixelScale.logicalToHost(
-    assert(state:view().pixelSurface),
+  local noX, noY = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
     layout.confirmationButtons[1].rect.x + 1,
     layout.confirmationButtons[1].rect.y + 1
   )
