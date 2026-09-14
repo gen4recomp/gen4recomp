@@ -62,6 +62,115 @@ local function unionSelectedCapabilities(listing)
   return caps
 end
 
+-- The invocation preparation receipt the shell entrypoint verified for this
+-- run, or nil when no private preparation backs the run. The file is a
+-- data-only Lua table the shell wrote inside the private test root; it is
+-- read back in an empty environment and schema-checked, never executed as
+-- code with ambient privileges.
+local PREPARATION_SCHEMA = "g4-test-preparation-v1"
+local PREPARATION_ENV = "G4RECOMP_TEST_PREPARATION"
+
+---@param path string
+---@return table|nil, string|nil
+local function readPreparationRecord(path)
+  local handle, openError = io.open(path, "r")
+  if handle == nil then
+    return nil, "cannot read preparation record: " .. tostring(openError)
+  end
+  local source = handle:read("*a")
+  handle:close()
+  local chunk, loadError
+  if loadstring ~= nil then
+    chunk, loadError = loadstring(source, "@" .. path)
+    if chunk ~= nil then
+      setfenv(chunk, {})
+    end
+  else
+    chunk, loadError = load(source, "@" .. path, "t", {})
+  end
+  if chunk == nil then
+    return nil, "cannot parse preparation record: " .. tostring(loadError)
+  end
+  local ok, record = pcall(chunk)
+  if not ok or type(record) ~= "table" then
+    return nil, "preparation record is not a data table"
+  end
+  if record.schema ~= PREPARATION_SCHEMA then
+    return nil, "preparation record schema mismatch"
+  end
+  if type(record.data_home) ~= "string" or record.data_home == "" then
+    return nil, "preparation record carries no private data home"
+  end
+  for _, section in ipairs({ "source", "preparation" }) do
+    local entry = record[section]
+    if type(entry) ~= "table" then
+      return nil, "preparation record carries no " .. section
+    end
+    if type(entry.version_id) ~= "string" or type(entry.rom_sha1) ~= "string" then
+      return nil, "preparation record " .. section .. " names no source identity"
+    end
+  end
+  local preparation = record.preparation
+  if type(preparation.requested) ~= "table" or type(preparation.requested_ready) ~= "boolean" then
+    return nil, "preparation record names no prepared closure"
+  end
+  return record, nil
+end
+
+-- The capability context for one executing process: the private source the
+-- shell selected and the exact closure it prepared, validated against the
+-- record the shell verified for this invocation. A corrupt record is an
+-- explicit failure, never a silent downgrade into skips.
+---@return table, string|nil
+local function preparationContext()
+  local context = {}
+  local path = ENV[PREPARATION_ENV]
+  if type(path) ~= "string" or path == "" then
+    return context, nil
+  end
+  local record, reason = readPreparationRecord(path)
+  if record == nil then
+    return context, tostring(reason) .. ": " .. path
+  end
+  context.dataHome = record.data_home
+  context.source = {
+    versionId = record.source.version_id,
+    romSha1 = record.source.rom_sha1,
+    generationId = record.source.generation_id,
+  }
+  local requested = {}
+  for _, requirement in ipairs(record.preparation.requested) do
+    if type(requirement) == "string" then
+      requested[#requested + 1] = requirement
+    end
+  end
+  context.preparation = {
+    versionId = record.preparation.version_id,
+    romSha1 = record.preparation.rom_sha1,
+    generationId = record.preparation.generation_id,
+    requested = requested,
+    requestedReady = record.preparation.requested_ready,
+    complete = record.preparation.complete == true,
+  }
+  return context, nil
+end
+
+-- Fails before any test setup or mutable fixture when the process save
+-- directory escaped the private data home the invocation record carries
+-- (an inherited wrapper or environment file redirected it elsewhere).
+---@param dataHome string|nil
+---@return string|nil failure
+local function checkDataHome(dataHome)
+  if dataHome == nil then
+    return nil
+  end
+  local saveDirectory = love.filesystem.getSaveDirectory()
+  if saveDirectory == dataHome or saveDirectory:sub(1, #dataHome + 1) == dataHome .. "/" then
+    return nil
+  end
+  return "the save directory " .. tostring(saveDirectory) .. " escaped the private test root " .. tostring(dataHome)
+end
+
 -- The whole command: parse, detect capabilities, run or list, report, and
 -- return the process exit status.
 ---@param argv string[]
@@ -93,12 +202,23 @@ local function main(argv)
       processorCount = math.max(1, love.system.getProcessorCount())
     end
     local jobs = Parallel.effectiveJobs(plan, #listing, processorCount)
-    print(table.concat(Cli.renderPlan(plan, unionSelectedCapabilities(listing), jobs), "\n"))
+    local planOk, lines =
+      pcall(Cli.renderPlan, plan, unionSelectedCapabilities(listing), jobs, TestRunner.selectedRequirements(listing))
+    if not planOk then
+      io.stderr:write("test: " .. tostring(lines) .. "\n")
+      return Cli.EXIT_USAGE
+    end
+    print(table.concat(lines, "\n"))
     return 0
   end
 
+  local preparation, preparationError = preparationContext()
   local function detect()
-    local capabilities, versions = Capabilities.detect({ env = ENV })
+    local capabilities, versions = Capabilities.detect({
+      env = ENV,
+      source = preparation.source,
+      preparation = preparation.preparation,
+    })
     if plan.romSource ~= nil then
       capabilities.rom_source = true
     end
@@ -107,6 +227,13 @@ local function main(argv)
 
   if context.kind == "worker" then
     local workerOk, workerError = pcall(function()
+      if preparationError ~= nil then
+        error("test: " .. preparationError, 0)
+      end
+      local homeError = checkDataHome(preparation.dataHome)
+      if homeError ~= nil then
+        error("test: " .. homeError, 0)
+      end
       local capabilities = detect()
       local result = TestRunner.run(runnerOptions({
         capabilities = capabilities,
@@ -154,6 +281,16 @@ local function main(argv)
   if plan.list then
     print(table.concat(Report.listingLines(list(plan)), "\n"))
     return 0
+  end
+
+  if preparationError ~= nil then
+    io.stderr:write("test: " .. preparationError .. "\n")
+    return 1
+  end
+  local homeError = checkDataHome(preparation.dataHome)
+  if homeError ~= nil then
+    io.stderr:write("test: " .. homeError .. "\n")
+    return 1
   end
 
   local progress = Progress.new(function(text)

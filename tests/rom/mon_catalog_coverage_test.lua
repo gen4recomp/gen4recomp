@@ -77,5 +77,5 @@ function T.growth_curves_cover_levels_1_through_100(romFs, versionId)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump" }
 return suite

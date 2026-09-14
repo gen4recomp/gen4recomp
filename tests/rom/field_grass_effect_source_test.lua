@@ -196,6 +196,6 @@ local suite = RomSuite.fromFacts({
     )
   end,
 })
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "field", "grass", "source" }
 return suite

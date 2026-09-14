@@ -15,6 +15,7 @@ local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "field-core", "map:63", "map:64" },
     tags = { "product", "opening", "checkpoint" },
   },
   tests = {},
@@ -226,8 +227,18 @@ local function completeOak(onDraw)
     if onDraw then
       onDraw()
     end
-    local view = App.state.state:view()
-    if view.phase == "name_edit" then
+    -- The Oak-to-field handoff routes through a preparation state that
+    -- publishes no view (the Game host contract is update/draw only);
+    -- re-fetch after drawing since a presented frame can complete the
+    -- handoff, and drive viewless frames instead of observing them.
+    local current = assert(App.state and App.state.state, "Oak must remain active until the profile is finalized")
+    if current.runtime ~= nil then
+      return
+    end
+    local view = current.view and current:view() or nil
+    if view == nil then
+      tick(1)
+    elseif view.phase == "name_edit" then
       App.textinput("GOLD")
       -- Navigate keyboard focus onto the virtual Confirm key before
       -- activating it, matching the one confirm-capable-device contract.
@@ -423,7 +434,12 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     withDrawRecorder(handoffDraws, function()
       completeOak(function()
         local state = assert(App.state and App.state.state)
-        local view = state:view()
+        -- Preparation frames publish no view; only Oak frames contribute
+        -- to the phase trace and layout checks.
+        local view = state.view and state:view() or nil
+        if view == nil then
+          return
+        end
         if not seenPhases[view.phase] then
           phases[#phases + 1] = view.phase
           seenPhases[view.phase] = true
