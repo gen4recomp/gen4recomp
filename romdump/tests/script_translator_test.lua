@@ -353,8 +353,11 @@ T["fold respects interior labels"] = function()
       {
         offset = 0x20,
         instructions = {
-          -- 0x20: Goto (6 bytes) -> 0x26, target 0x2C (labels the GoToIf)
-          { op = 22, args = { { target = 0x2C, width = 4 } } },
+          -- 0x20: Call (6 bytes) -> 0x26, target 0x2C (labels the GoToIf;
+          -- Call never terminates the walk, so the compare at 0x26 stays
+          -- reachable too -- unlike an unconditional GoTo, which redirects
+          -- permanently and would leave 0x26 dead).
+          { op = 26, args = { { target = 0x2C, width = 4 } } },
           -- 0x26: compare (6 bytes) -> 0x2C
           { op = 17, args = { { value = 1, width = 2 }, { value = 2, width = 2 } } },
           -- 0x2C: GoToIf (7 bytes) -> 0x33, target 0x44 (labeled entry)
@@ -798,8 +801,11 @@ T["signal_caller preserves the fallthrough chain"] = function()
           { op = 28, args = { { value = 1, width = 1 }, { target = 0x2F, width = 4 } } },
           -- 0x2D: signal_caller (2 bytes) -> 0x2F
           { op = 21, args = {} },
-          -- 0x2F: Goto (6 bytes) -> 0x35, target 0x3B
-          { op = 22, args = { { target = 0x3B, width = 4 } } },
+          -- 0x2F: Goto (6 bytes) -> 0x35, target 0x35 (jumps to its own
+          -- fallthrough: an unconditional GoTo never leaves live code
+          -- unreached, so the post-signal set_var needs its own real
+          -- target to stay reachable, matching the source's "goto next").
+          { op = 22, args = { { target = 0x35, width = 4 } } },
           -- 0x35: SetVar (6 bytes) -> 0x3B
           { op = 41, args = { { value = 0x4001, width = 2 }, { value = 5, width = 2 } } },
           -- 0x3B: End (2 bytes) -> 0x3D

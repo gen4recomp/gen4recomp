@@ -1131,7 +1131,7 @@ function T.registration_markers_follow_live_service_slot_identities()
     local found = {}
     for _, entry in ipairs(graphics.draws) do
       if type(entry.image) == "table" and type(entry.quad) ~= "table" then
-        if entry.quad == x and entry.x == y then
+        if entry.x == x and entry.y == y then
           found[#found + 1] = entry.image
         end
       end
@@ -1319,20 +1319,20 @@ function T.tabs_draw_at_source_anchors_with_highlight_under_icon()
   local highlightOffset = highlight.offset or { x = 0, y = 0 }
   local selectedRect = manifested.interactive.pocketTabs.rects[3]
   local selectedAnchor = { x = selectedRect.x + selectedRect.width / 2, y = selectedRect.y + selectedRect.height / 2 }
-  Assert.equal(visuals[2].quad, selectedAnchor.x + highlightOffset.x, "the highlight applies its offset once")
-  Assert.equal(visuals[2].x, selectedAnchor.y + highlightOffset.y, "the highlight applies its vertical offset once")
+  Assert.equal(visuals[2].x, selectedAnchor.x + highlightOffset.x, "the highlight applies its offset once")
+  Assert.equal(visuals[2].y, selectedAnchor.y + highlightOffset.y, "the highlight applies its vertical offset once")
   for index = 1, 8 do
     local rect = manifested.interactive.pocketTabs.rects[index]
     local normal = manifested.interactive.pocketTabs.normal[index]
     local offset = normal.offset or { x = 0, y = 0 }
     local entry = visuals[2 + index]
     Assert.equal(
-      entry.quad,
+      entry.x,
       rect.x + rect.width / 2 + offset.x,
       "normal tab " .. index .. " draws at its anchor plus offset"
     )
     Assert.equal(
-      entry.x,
+      entry.y,
       rect.y + rect.height / 2 + offset.y,
       "normal tab " .. index .. " draws at its vertical anchor plus offset"
     )

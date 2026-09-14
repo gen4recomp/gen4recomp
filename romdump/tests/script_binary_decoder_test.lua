@@ -221,6 +221,34 @@ T["walk terminates at script terminators"] = function()
   Assert.equal(member.scripts[0].instructions[1].opcode, 2)
 end
 
+-- 6b. GoTo (ScrCmd_GoTo) always redirects the source interpreter
+-- (ScriptJump, unconditional) and never falls through, so the walk must
+-- terminate there exactly like End/RestartCurrentScript/Return. Retail
+-- padding right after a GoTo can coincidentally look like a two-byte
+-- little-endian opcode field once shifted (e.g. a stray 0x00 byte followed
+-- by a real opcode's low byte reads as thatOpcode*256); continuing the walk
+-- into it must never decode a phantom instruction or record a decode note.
+T["walk terminates at an unconditional GoTo"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      {
+        offset = 0x20,
+        instructions = {
+          { op = 22, args = { { target = 0x20, width = 4 } } },
+        },
+      },
+    },
+  })
+  -- Trailing padding right after the GoTo: 0x00 then 0x64 (100), the exact
+  -- retail shape that misreads as opcode 25600 (100 * 256) if the walk
+  -- continues past the jump.
+  bytes = bytes .. "\0" .. string.char(100)
+  local member = decode(bytes, 5)
+  Assert.equal(#member.scripts[0].instructions, 1)
+  Assert.equal(member.scripts[0].instructions[1].opcode, 22)
+  Assert.isNil(member.scripts[0].decodeNote)
+end
+
 -- 7. A truncated trailing instruction is recorded as a decode note instead
 -- of raising.
 T["truncated instructions record a note"] = function()

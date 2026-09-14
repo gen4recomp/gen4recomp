@@ -271,9 +271,17 @@ local function registerMovementSpan(state, offset, size)
 end
 
 -- Dead movement data is recognized only where the script walk has no other
--- justification for continuing.
-local function movementShapeAt(state, cursor)
-  for back = 0, 3 do
+-- justification for continuing. `maxBack` bounds how far the search may
+-- reach behind `cursor`: a fresh unknown opcode may genuinely sit a few
+-- bytes into an already-terminated movement run (the caller has no owned
+-- bytes immediately before it to protect), but the padding right after a
+-- terminator (skipTerminatedRegion) has no such slack -- backing into it
+-- would re-scan bytes this same walk already decoded as the terminator's
+-- own instruction, and a coincidental byte match there (e.g. a jump's own
+-- operand happening to scan like a terminated movement run) must never be
+-- registered as a movement block.
+local function movementShapeAt(state, cursor, maxBack)
+  for back = 0, maxBack do
     local candidate = cursor - back
     if candidate >= 0 then
       local size, terminated = scanMovement(state.bytes, candidate)
@@ -294,12 +302,18 @@ local function spanningMovementAt(state, cursor)
 end
 
 local function skipTerminatedRegion(state, cursor)
-  for lookahead = 1, 4 do
+  -- A justified position (some instruction's own resolved jump/call target)
+  -- is unambiguous regardless of distance: GoTo's dead zone is the source's
+  -- own loop-condition idiom (`goto check; body: ...; check: compare; goto_if
+  -- body`) as often as it is a few bytes of padding, so the search cannot
+  -- stop at a small fixed window the way movement-shape recovery does.
+  local length = state.bytes:length()
+  for lookahead = 1, length - cursor - 1 do
     if state.justified[cursor + lookahead] ~= 0 then
       return cursor + lookahead, true
     end
   end
-  local candidate, shapeSize = movementShapeAt(state, cursor)
+  local candidate, shapeSize = movementShapeAt(state, cursor, 0)
   if candidate == nil then
     return nil, false
   end
@@ -419,7 +433,7 @@ local function readInstructionOperands(state, opcode, cursor, widths)
 end
 
 local function decodeUnknownOpcode(state, script, cursor, opcode)
-  local candidate, shapeSize = movementShapeAt(state, cursor)
+  local candidate, shapeSize = movementShapeAt(state, cursor, 3)
   if candidate == nil then
     if state.materialize then
       script.decodeNote = { offset = cursor, opcode = opcode }
@@ -488,7 +502,12 @@ local function decodeKnownInstruction(state, script, cursor, opcode, widths)
     script.instructions[#script.instructions + 1] =
       RawIr.instruction(cursor, opcode, CommandCatalog.name(opcode), materializedOperands, size, nil)
   end
-  if opcode == 2 or opcode == 21 or opcode == 27 then
+  -- End (2), RestartCurrentScript (21), the unconditional GoTo (22), and
+  -- Return (27) never fall through in the source interpreter (ScrCmd_GoTo
+  -- always calls ScriptJump; the conditional GoTo/Call variants keep
+  -- decoding linearly). Bytes right after them are dead padding or movement
+  -- data, never more of this script's instructions.
+  if opcode == 2 or opcode == 21 or opcode == 22 or opcode == 27 then
     return cursor + size, opcode, nil
   end
   return cursor + size, nil, nil

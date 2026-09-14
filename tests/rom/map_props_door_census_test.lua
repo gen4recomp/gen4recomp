@@ -44,8 +44,10 @@ function T.resolved_maps_warp_bearing_doors_resolve(romFs, versionId, context)
       error(versionId .. ": resolved map " .. result.symbol .. " (" .. mapId .. ") has no derived cache", 0)
     end
     local scene = assert(cache:loadLua(dir .. "/scene.lua"), versionId .. ": scene " .. mapId .. " is loadable")
-    local collisionBytes =
-      assert(cache:read(MapAssetCache.collisionPath(mapId)), versionId .. ": collision " .. mapId .. " is readable")
+    local collisionBytes = assert(
+      cache:read(MapAssetCache.collisionPathFor(scene, mapId)),
+      versionId .. ": collision " .. mapId .. " is readable"
+    )
     local decoded = assert(
       CollisionGridAsset.decode(collisionBytes, { mapId = mapId }),
       versionId .. ": collision " .. mapId .. " decodes"

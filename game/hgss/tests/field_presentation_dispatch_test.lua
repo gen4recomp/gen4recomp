@@ -195,7 +195,14 @@ end
 ---@param viewport table?
 ---@return table
 local function drawRuntime(viewport)
-  return { viewport = viewport }
+  return {
+    viewport = viewport,
+    fieldPixelScale = {
+      resolvedScale = function(_)
+        return 1
+      end,
+    },
+  }
 end
 
 -- Installs recording constructor doubles, requires the real presentation

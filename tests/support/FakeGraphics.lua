@@ -20,7 +20,6 @@
 ---@field primitives string[]
 ---@field rectangles table[]
 ---@field shaders table[]
----@field canvases table[]
 ---@field blendModes table[]
 ---@field scissorIntersections table[]
 ---@field pushDepth fun(): integer
@@ -92,23 +91,6 @@ function FakeGraphics.new(opts)
       shaders[#shaders + 1] = shader
       return shader
     end,
-    newCanvas = function(width, height)
-      canvasCalls = canvasCalls + 1
-      if opts.failOnCanvasCall == canvasCalls then
-        error("injected newCanvas failure")
-      end
-      local canvas = {
-        width = width,
-        height = height,
-        releaseCount = 0,
-        setFilter = function() end,
-      }
-      function canvas:release()
-        self.releaseCount = self.releaseCount + 1
-      end
-      canvases[#canvases + 1] = canvas
-      return canvas
-    end,
     newImage = function()
       imageCalls = imageCalls + 1
       if opts.failOnImageCall == imageCalls then
@@ -138,6 +120,10 @@ function FakeGraphics.new(opts)
       return image
     end,
     newCanvas = function(width, height)
+      canvasCalls = canvasCalls + 1
+      if opts.failOnCanvasCall == canvasCalls then
+        error("injected newCanvas failure")
+      end
       local canvas = {
         width = width,
         height = height,

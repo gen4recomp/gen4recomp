@@ -93,7 +93,8 @@ function T.tests.real_door_tiles_stay_within_the_corpus_backed_bound(context)
       if cache:exists(dir .. "/complete") then
         sceneCount = sceneCount + 1
         local scene = assert(cache:loadLua(dir .. "/scene.lua"), "scene " .. map.id .. " is loadable")
-        local collisionBytes = assert(cache:read(MapAssetCache.collisionPath(map.id)), "collision asset readable")
+        local collisionBytes =
+          assert(cache:read(MapAssetCache.collisionPathFor(scene, map.id)), "collision asset readable")
         local grid = assert(CollisionGridAsset.decode(collisionBytes, "map " .. map.id))
         local facts = doorFacts(scene, CollisionGrid.new(grid))
         if facts.tiles > 0 then
@@ -165,7 +166,8 @@ function T.tests.every_warp_bearing_door_tile_resolves_exactly_one_placement(con
       local dir = MapAssetCache.mapDir(map.id)
       if cache:exists(dir .. "/complete") then
         local scene = assert(cache:loadLua(dir .. "/scene.lua"), "scene " .. map.id .. " is loadable")
-        local collisionBytes = assert(cache:read(MapAssetCache.collisionPath(map.id)), "collision asset readable")
+        local collisionBytes =
+          assert(cache:read(MapAssetCache.collisionPathFor(scene, map.id)), "collision asset readable")
         local grid = CollisionGrid.new(assert(CollisionGridAsset.decode(collisionBytes, "map " .. map.id)))
         local fieldData =
           assert(cache:loadLua(FieldMapDataCache.fieldPath(map.id)), "field data " .. map.id .. " is loadable")
