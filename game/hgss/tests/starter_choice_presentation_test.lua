@@ -5,8 +5,6 @@
 -- centers, camera matrices) never advance a clock; reset clears all progress.
 
 local Assert = require("tests.support.Assert")
-local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
-local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 
 local T = {}
 
@@ -492,22 +490,74 @@ function T.construction_carries_the_player_frame_choice()
   Assert.isFalse(ok, "a missing frame index fails instead of falling back to frame 0")
 end
 
-function T.draw_keeps_starter_world_raster_policy_separate_from_presentation_scale()
+function T.draw_borrows_the_configured_backend_without_changing_its_raster_policy()
   local presentation = openPresentation()
   local captured
+  local releaseCalls = 0
   local backend = {
     stats = {},
-    worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
+    worldRasterScale = 7,
     draw = function(_, frame)
       captured = frame
     end,
-    release = function() end,
+    release = function()
+      releaseCalls = releaseCalls + 1
+    end,
   }
-  presentation._renderer = FieldRenderer.new({
-    gxRenderer = backend,
-    worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
-  })
-  presentation._ready = true
+  local function image(width, height)
+    return {
+      getWidth = function()
+        return width
+      end,
+      getHeight = function()
+        return height
+      end,
+    }
+  end
+  local manifest = presentation._manifest
+  presentation._backend = backend
+  presentation._imageEntries = {
+    [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
+    [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
+    [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
+    ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),
+  }
+  presentation._cacheFs.loadLua = function(_, path)
+    if path == "data/generated/mon/portraits.lua" then
+      return {
+        entries = {
+          a = { x = 0, y = 0, width = 80, height = 80 },
+          b = { x = 0, y = 0, width = 80, height = 80 },
+          c = { x = 0, y = 0, width = 80, height = 80 },
+        },
+      }
+    end
+    return nil
+  end
+  presentation._staticBatches = {}
+  presentation._instances = {}
+  presentation._renderMeshes = {}
+  for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
+    presentation._instances[role] = {
+      evaluatePose = function() end,
+      drawItems = function()
+        return {}
+      end,
+      play = function()
+        return { player = { completed = false, updateFixed = function() end } }
+      end,
+      stop = function() end,
+    }
+    presentation._renderMeshes[role] = {}
+  end
+  presentation:_finishPreparation()
+
+  Assert.equal(presentation._renderer.gxRenderer, backend, "Starter wraps the exact field backend it borrowed")
+  Assert.isFalse(presentation._renderer._ownsRenderer, "Starter's wrapper does not own the borrowed backend")
+  Assert.equal(backend.worldRasterScale, 7, "Starter does not reconfigure the borrowed backend raster scale")
+  presentation._renderer:release()
+  Assert.equal(releaseCalls, 0, "releasing Starter's wrapper never releases the borrowed backend")
+
   presentation._backdropImage = {
     getWidth = function()
       return 512
@@ -558,7 +608,7 @@ function T.draw_keeps_starter_world_raster_policy_separate_from_presentation_sca
     error(err, 0)
   end
 
-  Assert.equal(backend.worldRasterScale, FieldPresentationConfig.WORLD_3D_RASTER_SCALE)
+  Assert.equal(backend.worldRasterScale, 7, "drawing leaves the borrowed backend configuration unchanged")
   Assert.equal(captured.cameraZoom, 1, "Starter's fixed camera zoom reaches the renderer frame")
   Assert.isNil(captured.presentationPixelScale, "Starter's no-sprite frame has no presentation scale")
 end

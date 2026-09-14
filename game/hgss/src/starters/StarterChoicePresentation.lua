@@ -20,7 +20,6 @@ local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache
 local MonCache = require("libs.assets.src.MonCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
@@ -1132,7 +1131,6 @@ function StarterChoicePresentation:_finishPreparation()
   self._renderer = FieldRenderer.new({
     gxRenderer = assert(self._backend, "starter preparation owns no field graphics backend"),
     clearColor = { clear.r, clear.g, clear.b, clear.a },
-    worldRasterScale = FieldPresentationConfig.WORLD_3D_RASTER_SCALE,
   })
   local animations = self._manifest.animations
   local models = self._manifest.models
