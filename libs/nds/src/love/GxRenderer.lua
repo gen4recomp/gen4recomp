@@ -17,7 +17,7 @@
 -- texture and the same bounded-resolution renderState through explicit
 -- snap/clamp to render-state pixel centers (never texture-clamp reliance),
 -- probing the four orthogonal neighbors at a distance of one integer edge
--- radius computed from the world target height and resolved pixel scale, and
+-- radius computed from the world target height and camera zoom, and
 -- applies, in order: edge marking, fog, then the project's current antialias
 -- approximation (50% mix of fogged candidates -- not exact hardware
 -- lower-pixel coverage). Both candidates share the center state's single
@@ -221,10 +221,10 @@ local function validateWorldRasterScale(scale)
   return scale
 end
 
-local function validatePixelScale(scale)
+local function validatePresentationPixelScale(scale)
   assert(
     type(scale) == "number" and scale >= 1 and scale % 1 == 0,
-    "pixel scale must be a positive integer, got " .. tostring(scale)
+    "presentation scale must be a positive integer, got " .. tostring(scale)
   )
   return scale
 end
@@ -976,7 +976,11 @@ function GxRenderer:draw(frame)
   local viewMatrix = assert(frame.viewMatrix, "GxRenderer requires a view matrix")
   assert(frame.worldProjection, "GxRenderer requires a world projection")
   assert(frame.billboardProjection, "GxRenderer requires a billboard projection")
-  local pixelScale = validatePixelScale(frame.pixelScale)
+  local hasPresentationSprites = spriteItems ~= nil and #spriteItems > 0
+  local validatedPresentationPixelScale
+  if hasPresentationSprites then
+    validatedPresentationPixelScale = validatePresentationPixelScale(frame.presentationPixelScale)
+  end
   -- The world MRT shader derives its depth from the host fragment's normalized
   -- window depth (map.glsl's dsZbufferDepth, the DS field Z-buffer domain).
   local lg = assert(self._graphics)
@@ -1000,7 +1004,14 @@ function GxRenderer:draw(frame)
 
   -- The final pass samples neighbors in world-raster pixels, so edge width
   -- remains tied to the DS-relative world rather than host resolution.
-  local edgeRadiusPx = math.max(1, math.floor(pixelScale * colorH / rectangle.height + 0.5))
+  local edgeRadiusPx = 1
+  local cameraZoom = frame.cameraZoom
+  if cameraZoom == nil then
+    cameraZoom = 1
+  end
+  if type(cameraZoom) == "number" and cameraZoom > 0 then
+    edgeRadiusPx = math.max(1, math.floor((colorH / 192) * cameraZoom + 0.5))
+  end
 
   local presentationCanvas = lg.getCanvas()
   local function doDraw()
@@ -1164,14 +1175,15 @@ function GxRenderer:draw(frame)
     -- The world is now present at presentation resolution. Ordinary billboards
     -- rasterize into one logical color/coverage/depth layer, so host depth is
     -- never borrowed for sprite ordering or cleared as part of this path.
-    if spriteItems and #spriteItems > 0 then
+    if hasPresentationSprites then
+      local presentationPixelScale = assert(validatedPresentationPixelScale)
       self._activeShader = self:_ensureSpriteShader()
       local spriteShader = assert(self._activeShader)
       spriteShader:send("u_presentationSprite", true)
-      local logicalW = math.ceil(rectangle.width / pixelScale)
-      local logicalH = math.ceil(rectangle.height / pixelScale)
-      local presentationViewportW = rectangle.width / pixelScale
-      local presentationViewportH = rectangle.height / pixelScale
+      local logicalW = math.ceil(rectangle.width / presentationPixelScale)
+      local logicalH = math.ceil(rectangle.height / presentationPixelScale)
+      local presentationViewportW = rectangle.width / presentationPixelScale
+      local presentationViewportH = rectangle.height / presentationPixelScale
       self:_ensureSpriteTargets(logicalW, logicalH)
       local spriteTargets = assert(self._spriteTargets)
       lg.setCanvas(spriteTargets)
@@ -1228,7 +1240,7 @@ function GxRenderer:draw(frame)
         local compositeShader = self:_ensureSpriteCompositeShader()
         compositeShader:send("u_coverage", self._spriteCoverage)
         lg.setShader(compositeShader)
-        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y, 0, pixelScale, pixelScale)
+        lg.draw(assert(self._spriteColor), rectangle.x, rectangle.y, 0, presentationPixelScale, presentationPixelScale)
         lg.setShader()
       end
     end

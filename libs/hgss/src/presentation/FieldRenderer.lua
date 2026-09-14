@@ -48,15 +48,11 @@ end
 ---@param spriteItems table[]?
 ---@param viewport table<string, unknown>
 ---@param alpha number
----@param pixelScale integer
-function FieldRenderer:draw(sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, pixelScale)
+---@param presentationPixelScale integer?
+function FieldRenderer:draw(sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, presentationPixelScale)
   assert(type(sceneRuntime) == "table", "field scene presentation is required")
   assert(type(camera) == "table", "field presentation camera is required")
   assert(type(camera.far) == "number" and camera.far > 0, "FieldRenderer requires camera.far to be a positive number")
-  assert(
-    type(pixelScale) == "number" and pixelScale >= 1 and pixelScale % 1 == 0,
-    "FieldRenderer requires a positive integer pixel scale"
-  )
   local viewMatrix = camera:view(alpha)
   local worldProjection = camera:projection()
   local billboardProjection = camera:billboardProjection()
@@ -66,7 +62,8 @@ function FieldRenderer:draw(sceneRuntime, camera, worldParts, spriteItems, viewp
     edgeColors = sceneRuntime.edgeColors,
     fog = sceneRuntime.fog,
     viewMatrix = viewMatrix,
-    pixelScale = pixelScale,
+    cameraZoom = camera.zoom,
+    presentationPixelScale = presentationPixelScale,
     worldProjection = worldProjection,
     billboardProjection = billboardProjection,
     clearColor = self.clearColor,

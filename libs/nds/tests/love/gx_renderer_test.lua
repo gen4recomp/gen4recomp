@@ -343,7 +343,17 @@ local function fakeGraphics(opts)
   return graphics
 end
 
-local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, alpha, clearColor, pixelScale)
+local function render(
+  renderer,
+  sceneRuntime,
+  camera,
+  worldParts,
+  spriteItems,
+  viewport,
+  alpha,
+  clearColor,
+  presentationPixelScale
+)
   local viewMatrix = camera:view(alpha)
   local lighting = sceneRuntime.lighting
   if lighting and lighting.records then
@@ -365,7 +375,7 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     spriteItems = spriteItems,
     viewport = viewport,
     clearColor = clearColor,
-    pixelScale = pixelScale or 3,
+    presentationPixelScale = presentationPixelScale,
   })
 end
 
@@ -621,16 +631,17 @@ function T.no_fixed_semantic_size_helper_remains()
   Assert.isNil(rawget(GxRenderer, "semanticTargetSize"), "the fixed-192 semantic-size helper is removed")
 end
 
--- The renderer sends the edge radius from the explicit integer field scale
--- and the bounded world raster dimensions, never from camera zoom.
-function T.draw_sends_the_rounded_field_pixel_scale_as_the_edge_radius()
+-- The renderer sends the edge radius from camera zoom and bounded world raster
+-- dimensions, independently of the logical presentation scale.
+function T.draw_sends_the_rounded_camera_zoom_as_the_edge_radius()
   local lg = fakeGraphics()
   local renderer = GxRenderer.new({ graphics = lg, translucencyMode = GxRenderer.TRANSLUCENCY_EXACT })
   local scene = emptySceneCamera()
   local edgeShader = lg.shaders[2]
 
-  local function radiusSentFor(viewport, pixelScale)
-    render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0, nil, pixelScale)
+  local function radiusSentFor(viewport, zoom)
+    scene.camera.zoom = zoom
+    render(renderer, scene.runtime, scene.camera, nil, nil, viewport, 0, nil, 3)
     local last
     for _, send in ipairs(edgeShader.sends) do
       if send.name == "u_edgeRadiusPx" then
@@ -640,10 +651,79 @@ function T.draw_sends_the_rounded_field_pixel_scale_as_the_edge_radius()
     return last
   end
 
-  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 3), 3, "radius 3 at 720p 3x")
-  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 1), 1, "radius 1 at 720p 1x")
-  Assert.equal(radiusSentFor(FieldViewport.new(2560, 1440, { mode = "expanded" }), 6), 6, "radius 6 at 1440p 6x")
-  Assert.equal(radiusSentFor(FieldViewport.new(640, 480, { mode = "strict" }), 3), 3, "radius 3 at 480p 3x")
+  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 1), 4, "radius 4 at 720p zoom 1")
+  Assert.equal(radiusSentFor(FieldViewport.new(1280, 720, { mode = "expanded" }), 0.5), 2, "radius 2 at 720p zoom 0.5")
+  Assert.equal(radiusSentFor(FieldViewport.new(2560, 1440, { mode = "expanded" }), 1), 8, "radius 8 at 1440p zoom 1")
+  Assert.equal(radiusSentFor(FieldViewport.new(640, 480, { mode = "strict" }), 1), 3, "radius 3 at 480p zoom 1")
+  renderer:release()
+end
+
+local function headlessSpriteItem()
+  return {
+    mesh = { setTexture = function() end },
+    material = { texMatrix = Matrix4.identity() },
+    transform = Matrix4.identity(),
+    modelNormal = Matrix3.identity(),
+    billboardProjection = true,
+    alphaClass = "opaque",
+    cullMode = "back",
+    polygonAlpha = 1,
+    polygonMode = "modulation",
+    polygonId = 0,
+    lightMask = 0,
+    alphaCutoff = 0.5 / 255,
+    center = { 0, 0, 0 },
+  }
+end
+
+function T.presentation_scale_does_not_change_world_edge_radius()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  scene.camera.zoom = 1
+  local item = headlessSpriteItem()
+  local viewport = FieldViewport.new(640, 480, { mode = "strict" })
+  local edgeShader = lg.shaders[2]
+
+  local function radiusSentFor(presentationPixelScale)
+    render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, presentationPixelScale)
+    local last
+    for _, send in ipairs(edgeShader.sends) do
+      if send.name == "u_edgeRadiusPx" then
+        last = send.values[1]
+      end
+    end
+    return last
+  end
+
+  Assert.equal(radiusSentFor(2), 3, "scale 2 uses the world/camera radius")
+  Assert.equal(radiusSentFor(4), 3, "scale 4 leaves the world/camera radius unchanged")
+  renderer:release()
+end
+
+function T.presentation_sprites_require_a_positive_integer_scale()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  scene.camera.zoom = 1
+  local item = headlessSpriteItem()
+  local viewport = FieldViewport.new(640, 480, { mode = "strict" })
+
+  for _, case in ipairs({ { value = nil }, { value = 0 }, { value = 1.5 } }) do
+    local presentationPixelScale = case.value
+    local err = Assert.throws(function()
+      render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, presentationPixelScale)
+    end)
+    Assert.isTrue(
+      tostring(err):find("presentation scale", 1, true) ~= nil,
+      "invalid presentation scale diagnostics name the logical layer"
+    )
+    Assert.isNil(renderer.spriteShader, "invalid presentation scales fail before sprite shader creation")
+    Assert.isNil(renderer._spriteTargets, "invalid presentation scales fail before sprite target creation")
+  end
+
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+  Assert.notNil(renderer._spriteTargets, "a valid integer scale enables the presentation sprite layer")
   renderer:release()
 end
 
@@ -734,7 +814,17 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
     center = { 0, 0, 0 },
   }
   local scene = emptySceneCamera()
-  render(renderer, scene.runtime, scene.camera, nil, { item }, FieldViewport.new(640, 480, { mode = "strict" }), 0)
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    FieldViewport.new(640, 480, { mode = "strict" }),
+    0,
+    nil,
+    3
+  )
   local spriteDraw
   for _, draw in ipairs(lg.calls.draw) do
     if draw.mesh == item.mesh then
@@ -760,24 +850,6 @@ function T.logical_sprite_draw_uses_replace_with_depth_writes()
   assertRestoredState(lg, canvas, shader)
   renderer:release()
   assertResourcesReleased(lg, renderer, 2)
-end
-
-local function headlessSpriteItem()
-  return {
-    mesh = { setTexture = function() end },
-    material = { texMatrix = Matrix4.identity() },
-    transform = Matrix4.identity(),
-    modelNormal = Matrix3.identity(),
-    billboardProjection = true,
-    alphaClass = "opaque",
-    cullMode = "back",
-    polygonAlpha = 1,
-    polygonMode = "modulation",
-    polygonId = 0,
-    lightMask = 0,
-    alphaCutoff = 0.5 / 255,
-    center = { 0, 0, 0 },
-  }
 end
 
 function T.logical_sprite_targets_are_persistent_and_transactional()
@@ -833,6 +905,62 @@ function T.logical_sprite_targets_are_persistent_and_transactional()
   for _, canvas in ipairs(lg.canvases) do
     Assert.equal(canvas.releaseCount, 1, "release disposes every canvas exactly once")
   end
+end
+
+function T.logical_sprite_uniforms_embed_the_visible_viewport_in_the_ceil_allocation()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = headlessSpriteItem()
+
+  render(
+    renderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    { worldViewport = { x = 0, y = 0, width = 641, height = 479 } },
+    0,
+    nil,
+    3
+  )
+
+  local spriteShader = renderer.spriteShader --[[@as GxRendererTest.Shader]]
+  local scale = spriteShader.uniforms.u_presentationScale
+  local offset = spriteShader.uniforms.u_presentationOffset
+  local viewport = spriteShader.uniforms.u_presentationViewportSize
+  Assert.near(viewport[1], 641 / 3, 1e-9)
+  Assert.near(viewport[2], 479 / 3, 1e-9)
+  Assert.near(scale[1], 641 / 642, 1e-9)
+  Assert.near(scale[2], 479 / 480, 1e-9)
+  Assert.near(offset[1], scale[1] - 1, 1e-9)
+  Assert.near(offset[2], scale[2] - 1, 1e-9)
+  local nonDivisibleScale = { scale[1], scale[2] }
+  local nonDivisibleOffset = { offset[1], offset[2] }
+
+  local divisibleRenderer = GxRenderer.new({ graphics = lg })
+  render(
+    divisibleRenderer,
+    scene.runtime,
+    scene.camera,
+    nil,
+    { item },
+    { worldViewport = { x = 0, y = 0, width = 642, height = 480 } },
+    0,
+    nil,
+    3
+  )
+  local divisibleSpriteShader = divisibleRenderer.spriteShader --[[@as GxRendererTest.Shader]]
+  scale = divisibleSpriteShader.uniforms.u_presentationScale
+  offset = divisibleSpriteShader.uniforms.u_presentationOffset
+  Assert.deepEqual(scale, { 1, 1 })
+  Assert.deepEqual(offset, { 0, 0 })
+  Assert.near(nonDivisibleScale[1], 641 / 642, 1e-9)
+  Assert.near(nonDivisibleScale[2], 479 / 480, 1e-9)
+  Assert.near(nonDivisibleOffset[1], 641 / 642 - 1, 1e-9)
+  Assert.near(nonDivisibleOffset[2], 479 / 480 - 1, 1e-9)
+  divisibleRenderer:release()
+  renderer:release()
 end
 
 function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_failure()

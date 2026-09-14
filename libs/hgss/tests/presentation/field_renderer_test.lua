@@ -27,7 +27,7 @@ end
 -- below: a distinguishable world projection, a distinguishable billboard
 -- projection, and a two-record lighting table so time-of-day selection is
 -- independently observable from the draw-record identity assertions.
-local function fixtureDraw(gxRenderer)
+local function fixtureDraw(gxRenderer, includeSprites)
   local fieldRenderer = FieldRenderer.new({ gxRenderer = gxRenderer })
   local view = Matrix4.identity()
   local worldProjection = Matrix4.identity()
@@ -71,14 +71,20 @@ local function fixtureDraw(gxRenderer)
     edgeColors = { [0] = 0 },
     fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = {} },
   }
+  local presentationPixelScale = 3 ---@type integer?
+  local spriteItems = { spriteItem }
+  if includeSprites == false then
+    presentationPixelScale = nil
+    spriteItems = nil
+  end
   fieldRenderer:draw(
     sceneRuntime,
     camera,
     { { ordinaryItem, fieldEffectItem } },
-    { spriteItem },
+    spriteItems,
     { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
     0,
-    3
+    presentationPixelScale
   )
   return {
     fieldRenderer = fieldRenderer,
@@ -114,8 +120,27 @@ function T.forwards_original_queue_and_sprite_records_to_the_gx_backend()
     fixture.billboardProjection,
     "the billboard projection is a frame-level field"
   )
+  Assert.equal(captured.cameraZoom, fixture.camera.zoom, "the camera zoom reaches the NDS frame independently")
+  Assert.equal(captured.presentationPixelScale, 3, "the field presentation scale reaches the NDS frame")
   Assert.isNil(captured.sceneRuntime, "the frame does not leak the HGSS scene runtime")
   Assert.isNil(captured.camera, "the frame does not leak the camera object")
+end
+
+function T.no_sprite_draw_forwards_camera_zoom_without_a_presentation_scale()
+  local frames = {}
+  local fakeRenderer = {
+    stats = {},
+    draw = function(_, frame)
+      frames[#frames + 1] = frame
+    end,
+    release = function() end,
+  }
+  local fixture = fixtureDraw(fakeRenderer, false)
+
+  Assert.equal(#frames, 1, "a no-sprite field draw reaches the backend exactly once")
+  Assert.equal(frames[1].cameraZoom, fixture.camera.zoom, "camera zoom is still forwarded without sprites")
+  Assert.isNil(frames[1].presentationPixelScale, "no-sprite frames carry no presentation-scale policy")
+  Assert.equal(frames[1].queue.opaque[1], fixture.ordinaryItem, "the world queue is unchanged by scale decoupling")
 end
 
 function T.repeated_draws_reuse_the_same_queue_pass_array_identities()
@@ -184,8 +209,7 @@ function T.blended_entries_stay_the_render_queues_own_wrapper_around_the_origina
     { { translucentItem } },
     nil,
     { worldViewport = { x = 0, y = 0, width = 1, height = 1 } },
-    0,
-    3
+    0
   )
 
   Assert.isTrue(
@@ -330,15 +354,15 @@ function T.rejects_a_missing_or_non_positive_camera_far_plane()
   local viewport = { worldViewport = { x = 0, y = 0, width = 1, height = 1 } }
 
   Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
+    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
   end)
   camera.far = 0
   Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
+    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
   end)
   camera.far = -10
   Assert.throws(function()
-    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
+    fieldRenderer:draw(sceneRuntime, camera, nil, nil, viewport, 0)
   end)
   Assert.equal(draws, 0, "invalid camera configuration never reaches the GX renderer")
 end

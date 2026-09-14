@@ -112,7 +112,10 @@ local function normalizedSprites(spriteItems, billboardProjection)
   return normalized
 end
 
-local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, pixelScale)
+local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, presentationPixelScale)
+  if spriteItems ~= nil and #spriteItems > 0 then
+    presentationPixelScale = presentationPixelScale or 3
+  end
   local viewMatrix = camera:view()
   local lighting = sceneRuntime.lighting
   if lighting and lighting.records then
@@ -132,7 +135,7 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     queue = normalizedQueue(queue, worldProjection, billboardProjection),
     spriteItems = normalizedSprites(spriteItems, billboardProjection),
     viewport = viewport,
-    pixelScale = pixelScale or 3,
+    presentationPixelScale = presentationPixelScale,
   })
 end
 
@@ -4854,7 +4857,7 @@ function T.presentation_cutout_holes_remain_world_pixels_under_direct_replace(sc
 end
 
 function T.logical_billboard_output_uses_exact_integer_blocks(scope)
-  local width, height, pixelScale = 641, 479, 3
+  local width, height, presentationPixelScale = 641, 479, 3
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local target, color = presentationTarget(scope, width, height)
   local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), stripedImage(scope, 16))
@@ -4869,7 +4872,7 @@ function T.logical_billboard_output_uses_exact_integer_blocks(scope)
     {},
     { sprite },
     FieldViewport.new(width, height, { mode = "strict" }),
-    pixelScale
+    presentationPixelScale
   )
   love.graphics.setCanvas()
 
@@ -4885,12 +4888,12 @@ function T.logical_billboard_output_uses_exact_integer_blocks(scope)
   end
   Assert.isTrue(visible > 100, "the high-contrast billboard covers the block test window")
 
-  for y = 160, 318 - pixelScale + 1, pixelScale do
-    for x = 190, 449 - pixelScale + 1, pixelScale do
+  for y = 160, 318 - presentationPixelScale + 1, presentationPixelScale do
+    for x = 190, 449 - presentationPixelScale + 1, presentationPixelScale do
       local r, _, b = image:getPixel(x, y)
       if r > 0.75 or b > 0.75 then
-        for dy = 0, pixelScale - 1 do
-          for dx = 0, pixelScale - 1 do
+        for dy = 0, presentationPixelScale - 1 do
+          for dx = 0, presentationPixelScale - 1 do
             Assert.isTrue(
               pixelEquals(image, x, y, x + dx, y + dy),
               "every logical billboard pixel must occupy one exact nearest-neighbor block"
@@ -4903,7 +4906,7 @@ function T.logical_billboard_output_uses_exact_integer_blocks(scope)
 end
 
 function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
-  local width, height, pixelScale = 640, 480, 4
+  local width, height, presentationPixelScale = 640, 480, 4
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
   local target, color = presentationTarget(scope, width, height)
   local mesh = presentationQuadMesh(scope, 0)
@@ -4922,7 +4925,7 @@ function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
       {},
       { sprite },
       FieldViewport.new(width, height, { mode = "strict" }),
-      pixelScale
+      presentationPixelScale
     )
     love.graphics.setCanvas()
     return redBounds(color:newImageData())
@@ -4935,7 +4938,7 @@ function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
   Assert.equal(subLogical.top, initial.top, "sub-logical interpolation must not change the vertical phase")
   Assert.equal(
     nextLogical.left - initial.left,
-    pixelScale,
+    presentationPixelScale,
     "crossing one logical pixel advances the host billboard by one integer block"
   )
 end

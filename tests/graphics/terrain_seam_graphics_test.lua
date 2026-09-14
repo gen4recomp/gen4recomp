@@ -276,7 +276,6 @@ local function sweep(scope, batches, scale)
       billboardProjection = projection,
       queue = queue,
       viewport = viewport,
-      pixelScale = 3,
     })
   end
 
