@@ -272,7 +272,7 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
 #endif
       vec2 rasterCenterNdc = ((floor(rasterCoord) + 0.5) / u_stateSize) * 2.0 - 1.0;
 #ifdef PRESENTATION_SPRITE_LAYER
-      rasterCenterNdc = ((floor(rasterCoord) + 0.5) / u_presentationViewportSize) * 2.0 - 1.0;
+      rasterCenterNdc = (floor(rasterCoord + 0.5) / u_presentationViewportSize) * 2.0 - 1.0;
 #endif
       clip.xy += (rasterCenterNdc - centerNdc) * clip.w;
     }

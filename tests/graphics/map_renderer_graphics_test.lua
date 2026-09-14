@@ -4444,6 +4444,17 @@ local function presentationQuadMesh(scope, z)
   }))
 end
 
+local function actorBillboardMesh(scope)
+  return scope:own(syntheticMesh({
+    { -16, -32, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 16, -32, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 16, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { -16, -32, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 16, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { -16, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+  }))
+end
+
 local function presentationSprite(_, mesh, image)
   return {
     mesh = mesh,
@@ -4533,6 +4544,24 @@ local function stripedImage(scope, width)
   return image
 end
 
+local function actorPatternImage(scope)
+  local data = love.image.newImageData(32, 32)
+  for y = 0, 31 do
+    for x = 0, 31 do
+      if x >= 8 and x < 10 then
+        data:setPixel(x, y, 0, 0, 1, 1)
+      elseif y >= 22 and y < 24 then
+        data:setPixel(x, y, 0, 1, 0, 1)
+      else
+        data:setPixel(x, y, 1, 0, 0, 1)
+      end
+    end
+  end
+  local image = scope:own(love.graphics.newImage(data))
+  image:setFilter("nearest", "nearest")
+  return image
+end
+
 local function pixelEquals(image, x1, y1, x2, y2)
   local r1, g1, b1, a1 = image:getPixel(x1, y1)
   local r2, g2, b2, a2 = image:getPixel(x2, y2)
@@ -4556,6 +4585,25 @@ local function redBounds(image)
     end
   end
   Assert.notNil(left, "the diagnostic sprite remains visible")
+  return { left = left, top = top, right = right, bottom = bottom }
+end
+
+local function colorBounds(image, color)
+  local left, top, right, bottom
+  for y = 0, image:getHeight() - 1 do
+    for x = 0, image:getWidth() - 1 do
+      local r, g, b = image:getPixel(x, y)
+      local matches = (color == "blue" and b > 0.75 and r < 0.1 and g < 0.1)
+        or (color == "green" and g > 0.75 and r < 0.1 and b < 0.1)
+      if matches then
+        left = math.min(left or x, x)
+        top = math.min(top or y, y)
+        right = math.max(right or x, x)
+        bottom = math.max(bottom or y, y)
+      end
+    end
+  end
+  Assert.notNil(left, color .. " actor marker remains visible")
   return { left = left, top = top, right = right, bottom = bottom }
 end
 
@@ -4974,7 +5022,80 @@ function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
 end
 
 local function snappedLogicalCoordinate(ndc, visibleExtent)
-  return math.floor((ndc * 0.5 + 0.5) * visibleExtent) + 0.5
+  return math.floor((ndc * 0.5 + 0.5) * visibleExtent + 0.5)
+end
+
+local function renderActorPattern(scope, renderer, width, height, presentationPixelScale, center)
+  local target, color = presentationTarget(scope, width, height)
+  local sprite = presentationSprite(scope, actorBillboardMesh(scope), actorPatternImage(scope))
+  sprite.billboardCenter = center
+  sprite.billboardScale = {
+    2 / (width / presentationPixelScale),
+    2 / (height / presentationPixelScale),
+    1,
+  }
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  render(
+    renderer,
+    emptyRuntime(),
+    fixedCamera(),
+    {},
+    { sprite },
+    FieldViewport.new(width, height, { mode = "expanded" }),
+    presentationPixelScale
+  )
+  love.graphics.setCanvas()
+  return color:newImageData()
+end
+
+function T.actor_billboard_uses_an_exact_32_by_32_logical_footprint(scope)
+  local width, height, presentationPixelScale = 640, 480, 4
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local center = { 0.037, -0.041, 0 }
+  local image = renderActorPattern(scope, renderer, width, height, presentationPixelScale, center)
+  local bounds = redBounds(image)
+  local blue = colorBounds(image, "blue")
+  local green = colorBounds(image, "green")
+  local expected = {
+    x = math.floor((center[1] * 0.5 + 0.5) * (width / presentationPixelScale) + 0.5) * presentationPixelScale,
+    y = math.floor((-center[2] * 0.5 + 0.5) * (height / presentationPixelScale) + 0.5) * presentationPixelScale,
+  }
+
+  Assert.equal(bounds.right - bounds.left + 1, 32 * presentationPixelScale, "actor width remains 32 logical cells")
+  Assert.equal(bounds.bottom - bounds.top + 1, 32 * presentationPixelScale, "actor height remains 32 logical cells")
+  Assert.equal((bounds.left + bounds.right + 1) / 2, expected.x, "actor anchor lands on a logical grid line")
+  Assert.equal(
+    (bounds.top + bounds.bottom + 1) / 2,
+    expected.y + 16 * presentationPixelScale,
+    "actor bottom anchor uses the same Y grid phase"
+  )
+  Assert.equal(blue.right - blue.left + 1, 2 * presentationPixelScale, "vertical marker keeps its source width")
+  Assert.equal(green.bottom - green.top + 1, 2 * presentationPixelScale, "horizontal marker keeps its source height")
+end
+
+function T.actor_billboard_keeps_its_logical_aspect_on_a_wide_host(scope)
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local center = { 0.037, -0.041, 0 }
+  local standard = renderActorPattern(scope, renderer, 640, 480, 4, center)
+  local wide = renderActorPattern(scope, renderer, 1280, 720, 6, center)
+  local standardBounds = redBounds(standard)
+  local wideBounds = redBounds(wide)
+
+  Assert.equal(standardBounds.right - standardBounds.left + 1, 32 * 4, "standard actor width is source-faithful")
+  Assert.equal(standardBounds.bottom - standardBounds.top + 1, 32 * 4, "standard actor height is source-faithful")
+  Assert.equal(wideBounds.right - wideBounds.left + 1, 32 * 6, "wide host does not add an actor column")
+  Assert.equal(wideBounds.bottom - wideBounds.top + 1, 32 * 6, "wide host does not add an actor row")
+  Assert.equal(
+    (wideBounds.left + wideBounds.right + 1) / 2,
+    math.floor((center[1] * 0.5 + 0.5) * (1280 / 6) + 0.5) * 6,
+    "wide host keeps the grid-line anchor phase"
+  )
+  Assert.equal(
+    (wideBounds.right - wideBounds.left + 1) / 6,
+    (wideBounds.bottom - wideBounds.top + 1) / 6,
+    "wide host keeps the actor's logical aspect"
+  )
 end
 
 local function expectedIdentityBillboardCenter(width, height, presentationPixelScale, center)
@@ -5134,14 +5255,14 @@ function T.non_divisible_billboard_snapping_has_the_same_x_and_y_phase(scope)
     return bounds.left, bounds.top
   end
 
-  local initialX, initialY = renderAt(-0.004, 0.004)
-  local subLogicalX, _ = renderAt(0, 0.004)
-  local nextLogicalX, _ = renderAt(0.006, 0.004)
+  local initialX, initialY = renderAt(-0.006, 0.004)
+  local subLogicalX, _ = renderAt(-0.004, 0.004)
+  local nextLogicalX, _ = renderAt(0, 0.004)
   Assert.equal(subLogicalX, initialX, "sub-logical X motion does not change the snapped phase")
   Assert.equal(nextLogicalX - initialX, presentationPixelScale, "one logical X cell moves one physical block")
 
-  local _, subLogicalYPosition = renderAt(-0.004, 0)
-  local _, nextLogicalYPosition = renderAt(-0.004, -0.006)
+  local _, subLogicalYPosition = renderAt(-0.006, 0)
+  local _, nextLogicalYPosition = renderAt(-0.006, -0.01)
   Assert.equal(subLogicalYPosition, initialY, "sub-logical Y motion does not change the snapped phase")
   Assert.equal(
     nextLogicalYPosition - initialY,
