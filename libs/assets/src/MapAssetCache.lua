@@ -54,20 +54,6 @@ function MapAssetCache.collisionPath(mapId)
   return MapAssetCache.mapDir(mapId) .. "/collision.g4collision"
 end
 
--- The scene's actual collision asset path: an outdoor scene's collision grid
--- is a shared field cell (`scene.collision.file`), never the per-map path;
--- every other scene type owns its collision grid at the per-map path.
----@param scene table<string, unknown>
----@param mapId integer
----@return string
-function MapAssetCache.collisionPathFor(scene, mapId)
-  if scene.type == "outdoor" then
-    local collision = assert(scene.collision, "an outdoor scene must carry its collision")
-    return assert(collision.file, "an outdoor scene must carry its collision file")
-  end
-  return MapAssetCache.collisionPath(mapId)
-end
-
 function MapAssetCache.neighborCollisionPath(mapId, landDataMemberId)
   return string.format("%s/neighbors/%d/collision.g4collision", MapAssetCache.mapDir(mapId), landDataMemberId)
 end

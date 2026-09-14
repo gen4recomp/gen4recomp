@@ -23,6 +23,17 @@ local MapProps = require("libs.hgss.src.world.MapProps")
 
 local T = {}
 
+-- The scene's actual collision asset path: an outdoor scene's collision grid
+-- is a shared field cell (`scene.collision.file`), never the per-map path;
+-- every other scene type owns its collision grid at the per-map path.
+local function collisionPath(scene, mapId)
+  if scene.type == "outdoor" then
+    local collision = assert(scene.collision, "an outdoor scene must carry its collision")
+    return assert(collision.file, "an outdoor scene must carry its collision file")
+  end
+  return MapAssetCache.collisionPath(mapId)
+end
+
 function T.resolved_maps_warp_bearing_doors_resolve(romFs, versionId, context)
   local cache = CacheFs.forVersion(versionId)
   if not cache:exists("data/generated/maps", "directory") then
@@ -44,10 +55,8 @@ function T.resolved_maps_warp_bearing_doors_resolve(romFs, versionId, context)
       error(versionId .. ": resolved map " .. result.symbol .. " (" .. mapId .. ") has no derived cache", 0)
     end
     local scene = assert(cache:loadLua(dir .. "/scene.lua"), versionId .. ": scene " .. mapId .. " is loadable")
-    local collisionBytes = assert(
-      cache:read(MapAssetCache.collisionPathFor(scene, mapId)),
-      versionId .. ": collision " .. mapId .. " is readable"
-    )
+    local collisionBytes =
+      assert(cache:read(collisionPath(scene, mapId)), versionId .. ": collision " .. mapId .. " is readable")
     local decoded = assert(
       CollisionGridAsset.decode(collisionBytes, { mapId = mapId }),
       versionId .. ": collision " .. mapId .. " decodes"
