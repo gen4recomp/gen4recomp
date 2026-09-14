@@ -46,7 +46,7 @@ end
 
 local function manifest(overrides)
   local record = {
-    schema = "g4-bag-assets-v5",
+    schema = "g4-bag-assets-v6",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -378,6 +378,39 @@ function T.draw_stays_inside_the_hero_placement()
     Assert.equal(viewport.worldViewport.width, 256, "the viewport stays at canonical width")
     Assert.equal(viewport.worldViewport.height, 192, "the viewport stays at canonical height")
     Assert.equal(viewport.worldViewport.x, 0, "the viewport matches the hero placement origin")
+    renderer:release()
+  end)
+end
+
+-- The canonical camera stage is host-independent: two different host frames
+-- for one semantic draw share the exact view/projection and keep the
+-- canonical 256x192 world viewport, so responsive placement only ever scales
+-- the corrected canonical target.
+function T.canonical_camera_stage_ignores_the_host_placement()
+  withDoubles(function(rec)
+    local Hero = requireHero()
+    local renderer = newHero(Hero, manifest())
+    local first = placement()
+    first.frame = { x = 0, y = 0, width = 256, height = 192 }
+    renderer:draw("male", status(), first)
+    local second = placement()
+    second.frame = { x = 40, y = 8, width = 512, height = 384 }
+    renderer:draw("male", status(), second)
+    Assert.equal(#rec.draws, 2, "both host placements reach the shared renderer")
+    local firstCamera, secondCamera = rec.draws[1][2], rec.draws[2][2]
+    Assert.deepEqual(
+      firstCamera:projection(),
+      secondCamera:projection(),
+      "the canonical projection ignores the host placement"
+    )
+    Assert.deepEqual(firstCamera:view(1), secondCamera:view(1), "the canonical view ignores the host placement")
+    for index = 1, 2 do
+      local viewport = rec.draws[index][5]
+      Assert.equal(viewport.worldViewport.width, 256, "draw " .. index .. " keeps the canonical width")
+      Assert.equal(viewport.worldViewport.height, 192, "draw " .. index .. " keeps the canonical height")
+      Assert.equal(viewport.worldViewport.x, 0, "draw " .. index .. " keeps the canonical origin")
+      Assert.equal(viewport.worldViewport.y, 0, "draw " .. index .. " keeps the canonical origin")
+    end
     renderer:release()
   end)
 end

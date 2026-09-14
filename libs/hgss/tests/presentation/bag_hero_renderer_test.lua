@@ -132,7 +132,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v5",
+    schema = "g4-bag-assets-v6",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -201,7 +201,6 @@ local function validManifest()
       pocketTabs = {
         image = imageRef("assets/generated/bag/tabs.png"),
         tabs = tabs(),
-        highlight = { animIndex = 8, paletteSlot = 9 },
       },
       itemSlots = {
         slots = slots(),
