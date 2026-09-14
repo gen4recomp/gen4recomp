@@ -247,13 +247,15 @@ local function fixture(opts)
     members[memberId + 1] = screenData()
   end
   local tabCells = {}
-  for _ = 1, 8 do
-    tabCells[#tabCells + 1] = { { x = 0, y = 0, tile = 0, size = 2 } }
+  for _ = 1, 24 do
+    -- Center-anchored objects like the retail tab cells, so composed sprite
+    -- placements stay inside the canonical pane.
+    tabCells[#tabCells + 1] = { { x = -16, y = -16, tile = 0, size = 2 } }
   end
   members[BagSources.sprites.tabs.char + 1] = charData(200)
   members[BagSources.sprites.tabs.cell + 1] = cellData(tabCells)
   members[BagSources.sprites.tabs.palette + 1] = palette256()
-  members[BagSources.sprites.tabs.anim + 1] = animData(9)
+  members[BagSources.sprites.tabs.anim + 1] = animData(24)
   local cursorCells = {}
   for _ = 1, 4 do
     cursorCells[#cursorCells + 1] = { { x = 0, y = 0, tile = 0, size = 1 } }
@@ -520,7 +522,13 @@ function T.producer_declares_the_audited_message_selection()
     { animation = 6, palette = 6 },
     { animation = 7, palette = 7 },
   })
-  Assert.deepEqual(BagSources.spriteStates.tabs.highlight, { animation = 8, palette = 9 })
+  Assert.deepEqual(BagSources.spriteStates.focus, {
+    tabs = { animation = 8, palette = 9 },
+    items = { animation = 10, palette = 9 },
+    cancel = { animation = 17, palette = 9 },
+    actions = { animation = 23, palette = 9 },
+  })
+  Assert.deepEqual(BagSources.spriteStates.cancelFace, { animation = 16, palette = 8 })
   Assert.deepEqual(BagSources.lowerLayers, {
     browse = { "listWash", "listSlots" },
     action = { "actionWash", "actionSlots" },
@@ -639,7 +647,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v5",
+    schema = "g4-bag-assets-v6",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -712,49 +720,48 @@ local function syntheticBundle(marker)
           { image = "assets/generated/bag/tab-normal-7.png", width = 16, height = 16 },
           { image = "assets/generated/bag/tab-normal-8.png", width = 16, height = 16 },
         },
-        highlight = { image = "assets/generated/bag/tab-highlight-frame-1.png", width = 16, height = 16 },
       },
       itemSlots = {
         slots = {
           {
             rect = { x = 0, y = 32, width = 128, height = 42 },
             textRect = { x = 32, y = 40, width = 88, height = 32 },
-            iconCenter = { x = 48, y = 56 },
+            iconCenter = { x = 22, y = 59 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 128, y = 32, width = 128, height = 42 },
             textRect = { x = 160, y = 40, width = 88, height = 32 },
-            iconCenter = { x = 176, y = 56 },
+            iconCenter = { x = 152, y = 59 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 0, y = 74, width = 128, height = 44 },
             textRect = { x = 32, y = 80, width = 88, height = 32 },
-            iconCenter = { x = 48, y = 96 },
+            iconCenter = { x = 22, y = 100 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 128, y = 74, width = 128, height = 44 },
             textRect = { x = 160, y = 80, width = 88, height = 32 },
-            iconCenter = { x = 176, y = 96 },
+            iconCenter = { x = 152, y = 100 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 0, y = 118, width = 128, height = 36 },
             textRect = { x = 32, y = 120, width = 88, height = 32 },
-            iconCenter = { x = 48, y = 136 },
+            iconCenter = { x = 22, y = 139 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 128, y = 118, width = 128, height = 36 },
             textRect = { x = 160, y = 120, width = 88, height = 32 },
-            iconCenter = { x = 176, y = 136 },
+            iconCenter = { x = 152, y = 139 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
@@ -766,6 +773,45 @@ local function syntheticBundle(marker)
         },
       },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
+      focus = {
+        tabs = {
+          visual = { image = "assets/generated/bag/focus-tabs-frame-1.png", width = 16, height = 16 },
+          targets = {
+            { x = 16, y = 16 },
+            { x = 48, y = 16 },
+            { x = 80, y = 16 },
+            { x = 112, y = 16 },
+            { x = 144, y = 16 },
+            { x = 176, y = 16 },
+            { x = 208, y = 16 },
+            { x = 240, y = 16 },
+          },
+        },
+        items = {
+          visual = { image = "assets/generated/bag/focus-items-frame-1.png", width = 16, height = 16 },
+          targets = {
+            { x = 48, y = 56 },
+            { x = 176, y = 56 },
+            { x = 48, y = 96 },
+            { x = 176, y = 96 },
+            { x = 48, y = 136 },
+            { x = 176, y = 136 },
+          },
+        },
+        cancel = {
+          visual = { image = "assets/generated/bag/focus-cancel-frame-1.png", width = 16, height = 16 },
+          target = { x = 224, y = 176 },
+        },
+        actions = {
+          visual = { image = "assets/generated/bag/focus-actions-frame-1.png", width = 16, height = 16 },
+          targets = {
+            { x = 48, y = 144 },
+            { x = 144, y = 144 },
+            { x = 48, y = 176 },
+            { x = 144, y = 176 },
+          },
+        },
+      },
       cancel = {
         rect = { x = 192, y = 168, width = 64, height = 24 },
         textRect = { x = 192, y = 168, width = 56, height = 16 },
@@ -836,7 +882,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v5")
+  Assert.equal(loaded.schema, "g4-bag-assets-v6")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

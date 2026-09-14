@@ -12,9 +12,11 @@ local BagAssetSchema = require("libs.assets.src.BagAssetSchema")
 local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local Hashing = require("romdump.src.digest.Hashing")
+local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -359,6 +361,106 @@ function T.runtime_manifest_carries_no_source_identities(romFs, versionId)
     end
   end
   check(manifest, "manifest")
+end
+
+-- Each published normal tab must realize its own audited pocket artwork:
+-- the generated pixels equal the frame the shared rasterizer derives
+-- independently from the decoded tab source members under the producer's
+-- normal selector, and every tab carries opaque content of its own.
+function T.normal_tabs_match_their_audited_source_realizations(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc("bag_ui"))
+  local function decoded(kind, memberId, what)
+    local bytes = assert(archive:readMember(memberId), "bag member " .. memberId .. " must exist")
+    local record, err = G2dDecoder[kind](bytes, { label = what })
+    Assert.notNil(record, what .. " must decode: " .. (err and err.message or "?"))
+    return assert(record)
+  end
+  local group = BagSources.sprites.tabs
+  local charData = decoded("decodeChar", group.char, "tab char")
+  local paletteData = decoded("decodePalette", group.palette, "tab palette")
+  local cellData = decoded("decodeCell", group.cell, "tab cell")
+  local animation = decoded("decodeAnimation", group.anim, "tab animation")
+  local manifest = bundle.manifest
+  for index, selector in ipairs(assert(BagSources.spriteStates.tabs.normal, "normal tab selectors must be audited")) do
+    local sequence = assert(animation.anims[selector.animation + 1], "normal tab " .. index .. " selects a sequence")
+    local expected = G2dRasterizer.renderAnimationFrame(
+      charData,
+      paletteData,
+      cellData,
+      sequence,
+      1,
+      { role = "conformance-tab-" .. index, animation = selector.animation, frame = 0 },
+      selector.palette
+    )
+    local visual = assert(manifest.interactive.pocketTabs.normal[index], "normal tab " .. index .. " must be published")
+    local png = assert(bundle.assets[visual.image], "normal tab " .. index .. " bytes must be compiled")
+    local width, height, rgba = PngReader.rgba(png)
+    Assert.equal(width, expected.width, "normal tab " .. index .. " width matches its source realization")
+    Assert.equal(height, expected.height, "normal tab " .. index .. " height matches its source realization")
+    Assert.equal(rgba, expected.pixels, "normal tab " .. index .. " pixels match its source realization")
+    local expectedOffset = nil
+    if expected.offset.x ~= 0 or expected.offset.y ~= 0 then
+      expectedOffset = { x = expected.offset.x, y = expected.offset.y }
+    end
+    Assert.deepEqual(visual.offset, expectedOffset, "normal tab " .. index .. " offset matches its source realization")
+    local opaque = 0
+    for i = 4, #rgba, 4 do
+      if string.byte(rgba, i) ~= 0 then
+        opaque = opaque + 1
+      end
+    end
+    Assert.isTrue(opaque > 0, "normal tab " .. index .. " carries visible source content")
+  end
+  local seen = {}
+  for index, tab in ipairs(manifest.interactive.pocketTabs.normal) do
+    local bytes = assert(bundle.assets[tab.image], "normal tab " .. index .. " bytes must be compiled")
+    Assert.isNil(seen[bytes], "normal tabs must not repeat one shared image")
+    seen[bytes] = true
+  end
+end
+
+-- The finalized state backgrounds visibly contain the static Cancel
+-- face/chrome before runtime draws any text: the canonical Cancel rect
+-- carries richer opaque content than a same-size plain wash strip from the
+-- same background.
+function T.finalized_backgrounds_carry_static_cancel_chrome(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local cancel = bundle.manifest.interactive.cancel
+  local function distinctOpaqueColors(rgba, width, rect)
+    local colors = {}
+    for y = rect.y, rect.y + rect.height - 1 do
+      for x = rect.x, rect.x + rect.width - 1 do
+        local offset = (y * width + x) * 4 + 1
+        if string.byte(rgba, offset + 3) ~= 0 then
+          local key = string.byte(rgba, offset)
+            .. ","
+            .. string.byte(rgba, offset + 1)
+            .. ","
+            .. string.byte(rgba, offset + 2)
+          colors[key] = true
+        end
+      end
+    end
+    local count = 0
+    for _ in pairs(colors) do
+      count = count + 1
+    end
+    return count
+  end
+  for _, state in ipairs({ "browse", "action" }) do
+    for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+      local background = bundle.manifest.interactive.backgrounds[state][pocket]
+      local _, _, rgba =
+        PngReader.rgba(assert(bundle.assets[background.image], state .. "/" .. pocket .. " must compile"))
+      local chrome = distinctOpaqueColors(rgba, 256, cancel.rect)
+      local wash = distinctOpaqueColors(rgba, 256, { x = 0, y = 168, width = 64, height = 24 })
+      Assert.isTrue(
+        chrome > wash,
+        state .. "/" .. pocket .. " Cancel chrome must enrich the Cancel rect beyond plain wash"
+      )
+    end
+  end
 end
 
 local suite = RomSuite.fromFacts(T)

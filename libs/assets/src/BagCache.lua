@@ -77,7 +77,10 @@ function BagCache.referencedPaths(manifest)
   for _, visual in ipairs(interactive.pocketTabs.normal) do
     addVisual(visual)
   end
-  addVisual(interactive.pocketTabs.highlight)
+  addVisual(interactive.focus.tabs.visual)
+  addVisual(interactive.focus.items.visual)
+  addVisual(interactive.focus.cancel.visual)
+  addVisual(interactive.focus.actions.visual)
   addImage(interactive.itemSlots.registration.slot1)
   addImage(interactive.itemSlots.registration.slot2)
   return paths

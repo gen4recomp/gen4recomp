@@ -190,7 +190,7 @@ local function writeSpriteFrame(rendered, path, assets)
   return visual
 end
 
-local function compileVisual(spriteData, selector, role, assets)
+local function renderStaticFrame(spriteData, selector, role)
   local charData, paletteData, cellData, animation = unpack(spriteData)
   local sequence = animation.anims[selector.animation + 1]
   if sequence == nil then
@@ -203,7 +203,7 @@ local function compileVisual(spriteData, selector, role, assets)
       frames = #sequence.frames,
     })
   end
-  local rendered = G2dRasterizer.renderAnimationFrame(
+  return G2dRasterizer.renderAnimationFrame(
     charData,
     paletteData,
     cellData,
@@ -212,6 +212,10 @@ local function compileVisual(spriteData, selector, role, assets)
     { role = role, animation = selector.animation, frame = 0 },
     selector.palette
   )
+end
+
+local function compileVisual(spriteData, selector, role, assets)
+  local rendered = renderStaticFrame(spriteData, selector, role)
   return writeSpriteFrame(rendered, BagCache.assetDir() .. "/" .. role .. "-frame-1.png", assets)
 end
 
@@ -221,9 +225,19 @@ local function compileSprites(archive, dependencies, assets)
   for index, selector in ipairs(BagSources.spriteStates.tabs.normal) do
     tabs[index] = compileVisual(tabsData, selector, "tab-normal-" .. index, assets)
   end
+  local focusStates = BagSources.spriteStates.focus
   return {
     tabs = tabs,
-    highlight = compileVisual(tabsData, BagSources.spriteStates.tabs.highlight, "tab-highlight", assets),
+    focus = {
+      tabs = compileVisual(tabsData, focusStates.tabs, "focus-tabs", assets),
+      items = compileVisual(tabsData, focusStates.items, "focus-items", assets),
+      cancel = compileVisual(tabsData, focusStates.cancel, "focus-cancel", assets),
+      actions = compileVisual(tabsData, focusStates.actions, "focus-actions", assets),
+    },
+    -- The unselected Cancel face is realized for finalized-background
+    -- composition below; it is never written to the bundle as a runtime
+    -- asset.
+    cancelFace = renderStaticFrame(tabsData, BagSources.spriteStates.cancelFace, "cancel-face"),
   }
 end
 
@@ -261,7 +275,7 @@ local function effectiveLowerPalette(sourceColors, pocketIndex)
   return { colors = effective }
 end
 
-local function compileLowerBackgrounds(lower, assets)
+local function compileLowerBackgrounds(lower, cancelFace, assets)
   local screenRoles = {
     listWash = "list-wash",
     listSlots = "list-slots",
@@ -271,6 +285,51 @@ local function compileLowerBackgrounds(lower, assets)
     quantityAlt = "quantity-alt",
     confirmation = "confirmation",
   }
+  -- The unselected Cancel face is a sprite in retail, so the finalized
+  -- browse/action backgrounds carry its static pixels composited at the
+  -- audited Cancel anchor; runtime never replays the sprite.
+  local cancelAnchor = BagSources.focusTargets.cancel
+  local faceX = cancelAnchor.x + cancelFace.offset.x
+  local faceY = cancelAnchor.y + cancelFace.offset.y
+  if faceX < 0 or faceY < 0 or faceX + cancelFace.width > 256 or faceY + cancelFace.height > 192 then
+    sourceError("cancel face placement escapes the canonical pane", { x = faceX, y = faceY })
+  end
+  local function compositeCancelChrome(image)
+    local spans = {}
+    local cursor = 1
+    for row = 0, cancelFace.height - 1 do
+      local targetOffset = ((faceY + row) * image.width + faceX) * 4 + 1
+      spans[#spans + 1] = image.pixels:sub(cursor, targetOffset - 1)
+      local blended = {}
+      for col = 0, cancelFace.width - 1 do
+        local sourceOffset = (row * cancelFace.width + col) * 4 + 1
+        local sourceA = string.byte(cancelFace.pixels, sourceOffset + 3)
+        if sourceA == 0 then
+          blended[#blended + 1] = image.pixels:sub(targetOffset, targetOffset + 3)
+        else
+          local sourceR, sourceG, sourceB = string.byte(cancelFace.pixels, sourceOffset, sourceOffset + 2)
+          if sourceA == 255 then
+            blended[#blended + 1] = string.char(sourceR, sourceG, sourceB, 255)
+          else
+            local destinationR, destinationG, destinationB, destinationA =
+              string.byte(image.pixels, targetOffset, targetOffset + 3)
+            local outputA = sourceA + math.floor(destinationA * (255 - sourceA) / 255 + 0.5)
+            blended[#blended + 1] = string.char(
+              math.floor((sourceR * sourceA + destinationR * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
+              math.floor((sourceG * sourceA + destinationG * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
+              math.floor((sourceB * sourceA + destinationB * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
+              outputA
+            )
+          end
+        end
+        targetOffset = targetOffset + 4
+      end
+      spans[#spans + 1] = table.concat(blended)
+      cursor = targetOffset
+    end
+    spans[#spans + 1] = image.pixels:sub(cursor)
+    return { width = image.width, height = image.height, pixels = table.concat(spans) }
+  end
   local backgrounds = {}
   for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
     local pockets = {}
@@ -284,6 +343,9 @@ local function compileLowerBackgrounds(lower, assets)
       end
       local image = BagPresentationCompiler.composeImages(layers, "interactive background " .. state)
       image = BagPresentationCompiler.cropImage(image, 256, 192, "interactive background " .. state)
+      if state == "browse" or state == "action" then
+        image = compositeCancelChrome(image)
+      end
       local path = BagCache.assetDir() .. "/background-" .. state .. "-" .. pocketState.pocket .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
       pockets[pocketState.pocket] = { image = path, width = image.width, height = image.height }
@@ -657,7 +719,7 @@ local function _compile(romFs)
   assert(messageArchive ~= nil, "unavailable message archives fail above")
   local text = compileText(messageArchive, dependencies)
   local sprites = compileSprites(archive, dependencies, assets)
-  local backgrounds = compileLowerBackgrounds(lower, assets)
+  local backgrounds = compileLowerBackgrounds(lower, sprites.cancelFace, assets)
   local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
@@ -778,7 +840,6 @@ local function _compile(romFs)
       pocketTabs = {
         rects = geometry.tabs,
         normal = sprites.tabs,
-        highlight = sprites.highlight,
       },
       itemSlots = {
         slots = geometry.slots,
@@ -787,6 +848,12 @@ local function _compile(romFs)
           slot2 = markers.slot2,
           offset = { x = BagSources.registration.offset.x, y = BagSources.registration.offset.y },
         },
+      },
+      focus = {
+        tabs = { visual = sprites.focus.tabs, targets = geometry.focus.tabs },
+        items = { visual = sprites.focus.items, targets = geometry.focus.items },
+        cancel = { visual = sprites.focus.cancel, target = geometry.focus.cancel },
+        actions = { visual = sprites.focus.actions, targets = geometry.focus.actions },
       },
       pageIndicator = geometry.pageIndicator,
       cancel = geometry.cancel,
@@ -818,6 +885,8 @@ local function _compile(romFs)
       palettes = BagSources.palettes,
       sprites = BagSources.sprites,
       spriteStates = BagSources.spriteStates,
+      focusTargets = BagSources.focusTargets,
+      itemIconCenters = BagSources.itemIconCenters,
       lowerLayers = BagSources.lowerLayers,
       hero = BagSources.hero,
       messages = BagSources.messages,

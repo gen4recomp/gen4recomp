@@ -195,6 +195,9 @@ local function semanticText()
   }
 end
 
+-- Previous highlight-shaped manifest: stale once the semantic focus
+-- contract is current. Staleness scenarios use it directly; every other
+-- scenario builds on the focus-shaped fixture below.
 local function validManifest()
   local states = {}
   for _, pocket in ipairs(POCKETS) do
@@ -299,56 +302,104 @@ local function validManifest()
   }
 end
 
-function T.valid_manifest_passes_schema_and_cache_contract()
+-- The semantic focus contract: four focus classes with exact target
+-- cardinalities (eight tab targets, six item targets, one Cancel target,
+-- four action targets). Pocket tabs carry only rects and normal art; the
+-- retired highlight has no place in the generated manifest.
+local function focusVisual(path)
+  return { image = path, width = 32, height = 32 }
+end
+
+local function focusTargets()
+  local tabTargets = {}
+  for k = 0, 7 do
+    tabTargets[#tabTargets + 1] = { x = 16 + 32 * k, y = 16 }
+  end
+  local items = {}
+  for _, y in ipairs({ 56, 96, 136 }) do
+    items[#items + 1] = { x = 48, y = y }
+    items[#items + 1] = { x = 176, y = y }
+  end
+  return {
+    tabs = tabTargets,
+    items = items,
+    cancel = { x = 224, y = 176 },
+    actions = {
+      { x = 48, y = 144 },
+      { x = 144, y = 144 },
+      { x = 48, y = 176 },
+      { x = 144, y = 176 },
+    },
+  }
+end
+
+local function validFocusManifest()
   local manifest = validManifest()
-  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the valid fixture must pass the schema")
-  Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the valid fixture")
-  Assert.isNil(manifest.interactive.widgets, "the current manifest carries no dead widget namespace")
+  manifest.schema = "g4-bag-assets-v6"
+  manifest.interactive.pocketTabs = {
+    rects = manifest.interactive.pocketTabs.rects,
+    normal = manifest.interactive.pocketTabs.normal,
+  }
+  local targets = focusTargets()
+  manifest.interactive.focus = {
+    tabs = { visual = focusVisual("assets/generated/bag/focus-tabs.png"), targets = targets.tabs },
+    items = { visual = focusVisual("assets/generated/bag/focus-items.png"), targets = targets.items },
+    cancel = { visual = focusVisual("assets/generated/bag/focus-cancel.png"), target = targets.cancel },
+    actions = { visual = focusVisual("assets/generated/bag/focus-actions.png"), targets = targets.actions },
+  }
+  return manifest
+end
+
+function T.previous_manifest_fails_schema_and_cache_contract()
+  local manifest = validManifest()
+  Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous highlight-shaped fixture is stale")
+  Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
+  Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v5")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v6")
 end
 
 function T.schema_rejects_wrong_logical_size()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.logicalSize = { width = 512, height = 192 }
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "only the canonical pane size is valid")
 end
 
 function T.schema_rejects_out_of_bounds_rectangles()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.interactive.cancel = rect(250, 168, 56, 16)
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "a rectangle escaping the pane must fail")
-  manifest = validManifest()
+  manifest = validFocusManifest()
   manifest.interactive.pocketTabs.rects[8] = rect(224, 0, 33, 32)
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "an overflowing tab must fail")
 end
 
 function T.schema_rejects_wrong_tab_and_slot_cardinality()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.interactive.pocketTabs.rects[8] = nil
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "seven tabs must fail")
-  manifest = validManifest()
+  manifest = validFocusManifest()
   manifest.interactive.itemSlots.slots[7] = manifest.interactive.itemSlots.slots[1]
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "seven slots must fail")
 end
 
 function T.schema_rejects_missing_hero_model_and_clips()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.hero.model.female = nil
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "both gender models are required")
-  manifest = validManifest()
+  manifest = validFocusManifest()
   manifest.hero.animations.states[3].pose = "pocket.medicine.pose.missing"
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "an unresolvable pose clip must fail")
-  manifest = validManifest()
+  manifest = validFocusManifest()
   manifest.hero.animations.material.male = "male.material.missing"
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "an unresolvable material clip must fail")
 end
 
 function T.schema_rejects_source_identities_in_the_runtime_manifest()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.hero.presentation.camera.target = { x = 0, y = 0, z = 0, memberId = 55 }
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "a member identity must fail")
-  manifest = validManifest()
+  manifest = validFocusManifest()
   manifest.interactive.backgrounds.browse = {
     image = "assets/generated/bag/list-slots.png",
     width = 256,
@@ -359,7 +410,7 @@ function T.schema_rejects_source_identities_in_the_runtime_manifest()
 end
 
 function T.cache_reports_ready_only_with_every_referenced_file()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   local marker = BagCache.marker("deadbeef", "feedface")
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   cacheFs:writeLua(BagCache.manifestPath(), manifest)
@@ -374,7 +425,7 @@ function T.cache_reports_ready_only_with_every_referenced_file()
 end
 
 function T.old_cache_marker_forces_a_rebuild()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   for _, path in ipairs(BagCache.referencedPaths(manifest)) do
     cacheFs:write(path, "payload")
@@ -390,32 +441,38 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v5")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v5")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v5")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v6")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v6")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v6")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
 function T.previous_bag_contract_is_rejected()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.schema = "g4-bag-assets-v2"
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous Bag contract must not validate as current")
-  local retired = validManifest()
+  local retired = validFocusManifest()
   retired.schema = "g4-bag-assets-v3"
   Assert.isFalse(BagAssetSchema.isValidManifest(retired), "the retired Bag contract must not validate as current")
-  local stale = validManifest()
-  stale.schema = "g4-bag-assets-v4"
-  Assert.isFalse(BagAssetSchema.isValidManifest(stale), "the superseded Bag contract must not validate as current")
+  local superseded = validFocusManifest()
+  superseded.schema = "g4-bag-assets-v4"
+  Assert.isFalse(BagAssetSchema.isValidManifest(superseded), "the superseded Bag contract must not validate as current")
+  local stale = validFocusManifest()
+  stale.schema = "g4-bag-assets-v5"
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(stale),
+    "the highlight-shaped Bag contract must not validate as current"
+  )
 end
 
 function T.complete_manifest_with_text_and_registration_passes()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the complete fixture must pass")
   Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the complete fixture")
 end
 
 function T.incomplete_manifest_is_rejected()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.schema = "g4-bag-assets-v1"
   manifest.interactive.text = nil
   manifest.interactive.itemSlots.registration = nil
@@ -424,57 +481,57 @@ function T.incomplete_manifest_is_rejected()
 end
 
 function T.manifest_without_semantic_text_is_rejected()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.interactive.text = nil
   assertInvalid(manifest, "semantic action labels and templates are mandatory")
 end
 
 function T.manifest_without_registration_markers_is_rejected()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   manifest.interactive.itemSlots.registration = nil
   assertInvalid(manifest, "both registration markers are mandatory")
 end
 
 function T.every_action_label_is_required_and_non_empty()
   for _, action in ipairs({ "toss", "move", "register", "unregister", "cancel", "confirm" }) do
-    local missing = validManifest()
+    local missing = validFocusManifest()
     missing.interactive.text.actions[action] = nil
     assertInvalid(missing, "a missing " .. action .. " label must fail")
-    local empty = validManifest()
+    local empty = validFocusManifest()
     empty.interactive.text.actions[action] = ""
     assertInvalid(empty, "an empty " .. action .. " label must fail")
   end
 end
 
 function T.unknown_action_and_template_fields_are_rejected()
-  local extraAction = validManifest()
+  local extraAction = validFocusManifest()
   extraAction.interactive.text.actions.use = "USE"
   assertInvalid(extraAction, "an action outside the runtime vocabulary must fail")
-  local extraTemplate = validManifest()
+  local extraTemplate = validFocusManifest()
   extraTemplate.interactive.text.inspectPrompt = { segments = { { kind = "text", value = "?" } } }
   assertInvalid(extraTemplate, "a template outside the runtime vocabulary must fail")
-  local extraField = validManifest()
+  local extraField = validFocusManifest()
   extraField.interactive.text.bank = 10
   assertInvalid(extraField, "producer-side message selection must not leak into the manifest")
 end
 
 function T.template_segments_are_strict()
-  local empty = validManifest()
+  local empty = validFocusManifest()
   empty.interactive.text.movePrompt = { segments = {} }
   assertInvalid(empty, "a template with no segments must fail")
-  local missingValue = validManifest()
+  local missingValue = validFocusManifest()
   missingValue.interactive.text.movePrompt = { segments = { { kind = "text" } } }
   assertInvalid(missingValue, "a text segment without a value must fail")
-  local emptyValue = validManifest()
+  local emptyValue = validFocusManifest()
   emptyValue.interactive.text.movePrompt = { segments = { { kind = "text", value = "" } } }
   assertInvalid(emptyValue, "an empty text value must fail")
-  local unknownKind = validManifest()
+  local unknownKind = validFocusManifest()
   unknownKind.interactive.text.movePrompt = { segments = { { kind = "icon" } } }
   assertInvalid(unknownKind, "an unknown segment kind must fail")
-  local itemExtra = validManifest()
+  local itemExtra = validFocusManifest()
   itemExtra.interactive.text.movePrompt = { segments = { { kind = "item", value = "Potion" } } }
   assertInvalid(itemExtra, "an item segment must carry no extra fields")
-  local quantityExtra = validManifest()
+  local quantityExtra = validFocusManifest()
   quantityExtra.interactive.text.tossConfirm = {
     segments = { { kind = "quantity", count = 1 } },
   }
@@ -482,91 +539,91 @@ function T.template_segments_are_strict()
 end
 
 function T.registration_markers_are_exactly_sized()
-  local wide = validManifest()
+  local wide = validFocusManifest()
   wide.interactive.itemSlots.registration.slot1 = markerImage("assets/generated/bag/registration-slot-1.png")
   wide.interactive.itemSlots.registration.slot1.width = 41
   assertInvalid(wide, "a 41-pixel marker must fail")
-  local short = validManifest()
+  local short = validFocusManifest()
   short.interactive.itemSlots.registration.slot2 = markerImage("assets/generated/bag/registration-slot-2.png")
   short.interactive.itemSlots.registration.slot2.height = 15
   assertInvalid(short, "a 15-pixel marker must fail")
 end
 
 function T.registration_offset_keeps_the_marker_inside_every_slot()
-  local paneFittingButSlotOverflowing = validManifest()
+  local paneFittingButSlotOverflowing = validFocusManifest()
   paneFittingButSlotOverflowing.interactive.itemSlots.registration.offset = { x = 200, y = 0 }
   assertInvalid(paneFittingButSlotOverflowing, "an offset that pushes the 40x16 marker outside an 88x32 slot must fail")
-  local bottomOverflowing = validManifest()
+  local bottomOverflowing = validFocusManifest()
   bottomOverflowing.interactive.itemSlots.registration.offset = { x = 0, y = 21 }
   assertInvalid(bottomOverflowing, "an offset that pushes the marker below the slot must fail")
-  local missing = validManifest()
+  local missing = validFocusManifest()
   missing.interactive.itemSlots.registration.offset = nil
   assertInvalid(missing, "a missing registration offset must fail")
 end
 
 function T.quantity_background_is_a_required_semantic_surface()
-  local single = validManifest()
+  local single = validFocusManifest()
   single.interactive.backgrounds.quantity = nil
   assertInvalid(single, "a missing quantity background must fail")
-  local missing = validManifest()
+  local missing = validFocusManifest()
   missing.interactive.backgrounds.quantity.items.width = 128
   assertInvalid(missing, "a non-canonical quantity background must fail")
 end
 
 function T.hero_light_vectors_are_a_required_static_quadruple()
-  local missing = validManifest()
+  local missing = validFocusManifest()
   missing.hero.presentation.lights.vectors = nil
   assertInvalid(missing, "missing hero light vectors must fail")
-  local short = validManifest()
+  local short = validFocusManifest()
   short.hero.presentation.lights.vectors = {
     { x = 1, y = 0, z = 0 },
     { x = 1, y = 0, z = 0 },
     { x = 1, y = 0, z = 0 },
   }
   assertInvalid(short, "three hero light vectors must fail")
-  local ragged = validManifest()
+  local ragged = validFocusManifest()
   ragged.hero.presentation.lights.vectors[2] = { x = 1, y = 0 }
   assertInvalid(ragged, "a hero light vector without depth must fail")
-  local infinite = validManifest()
+  local infinite = validFocusManifest()
   infinite.hero.presentation.lights.vectors[1] = { x = math.huge, y = 0, z = 0 }
   assertInvalid(infinite, "a non-finite hero light vector must fail")
-  local leaky = validManifest()
+  local leaky = validFocusManifest()
   leaky.hero.presentation.lights.vectors[4] = { x = 1, y = 0, z = 0, memberId = 37 }
   assertInvalid(leaky, "a source identity inside a hero light vector must fail")
-  local extra = validManifest()
+  local extra = validFocusManifest()
   extra.hero.presentation.lights.kind = "static"
   assertInvalid(extra, "an unknown hero lights field must fail")
   for _, count in ipairs({ 3, 5 }) do
-    local wrongCount = validManifest()
+    local wrongCount = validFocusManifest()
     wrongCount.hero.presentation.lights.count = count
     assertInvalid(wrongCount, "exactly four hero lights are required")
   end
 end
 
 function T.hero_material_registers_are_a_required_static_quadruple()
-  local missing = validManifest()
+  local missing = validFocusManifest()
   missing.hero.presentation.materials = nil
   assertInvalid(missing, "missing hero material registers must fail")
-  local short = validManifest()
+  local short = validFocusManifest()
   short.hero.presentation.materials = {
     diffuse = { r = 15, g = 15, b = 15 },
     ambient = { r = 10, g = 10, b = 10 },
     specular = { r = 15, g = 15, b = 15 },
   }
   assertInvalid(short, "three hero material registers must fail")
-  local ragged = validManifest()
+  local ragged = validFocusManifest()
   ragged.hero.presentation.materials.ambient = { r = 10, g = 10 }
   assertInvalid(ragged, "a hero material register without blue must fail")
-  local overflow = validManifest()
+  local overflow = validFocusManifest()
   overflow.hero.presentation.materials.diffuse = { r = 32, g = 15, b = 15 }
   assertInvalid(overflow, "a hero material channel past 31 must fail")
-  local extra = validManifest()
+  local extra = validFocusManifest()
   extra.hero.presentation.materials.kind = "static"
   assertInvalid(extra, "an unknown hero materials field must fail")
 end
 
 function T.source_identities_are_rejected_inside_the_new_records()
-  local memberLeak = validManifest()
+  local memberLeak = validFocusManifest()
   memberLeak.interactive.itemSlots.registration.slot1 = {
     image = "assets/generated/bag/registration-slot-1.png",
     width = 40,
@@ -574,7 +631,7 @@ function T.source_identities_are_rejected_inside_the_new_records()
     memberId = 37,
   }
   assertInvalid(memberLeak, "a source member identity must fail")
-  local segmentLeak = validManifest()
+  local segmentLeak = validFocusManifest()
   segmentLeak.interactive.text.movePrompt = {
     segments = { { kind = "text", value = "Move", memberId = 37 } },
   }
@@ -582,7 +639,7 @@ function T.source_identities_are_rejected_inside_the_new_records()
 end
 
 function T.cache_references_both_registration_markers()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   local ok, paths = pcall(BagCache.referencedPaths, manifest)
   Assert.isTrue(ok, "the cache must resolve a complete valid manifest")
   assert(paths ~= nil, "a resolvable manifest must list its paths")
@@ -595,7 +652,7 @@ function T.cache_references_both_registration_markers()
 end
 
 function T.schema_rejects_animated_visual_timelines()
-  local backgroundTimeline = validManifest()
+  local backgroundTimeline = validFocusManifest()
   backgroundTimeline.interactive.backgrounds.browse = {
     frames = {
       {
@@ -610,7 +667,7 @@ function T.schema_rejects_animated_visual_timelines()
     backgroundTimeline,
     "a background frame timeline must fail; the current contract publishes static realizations"
   )
-  local tabTimeline = validManifest()
+  local tabTimeline = validFocusManifest()
   tabTimeline.interactive.pocketTabs.normal[1] = {
     frames = {
       { image = "assets/generated/bag/tab-normal-1-frame-1.png", width = 16, height = 16, duration = 2 },
@@ -618,7 +675,7 @@ function T.schema_rejects_animated_visual_timelines()
     },
   }
   assertInvalid(tabTimeline, "a tab frame timeline must fail; the current contract publishes static realizations")
-  local durationOnStatic = validManifest()
+  local durationOnStatic = validFocusManifest()
   durationOnStatic.interactive.itemSlots.focus = {
     image = "assets/generated/bag/focus-frame-1.png",
     width = 16,
@@ -629,7 +686,7 @@ function T.schema_rejects_animated_visual_timelines()
 end
 
 function T.retired_widget_namespace_is_rejected_as_unknown()
-  local withWidgets = validManifest()
+  local withWidgets = validFocusManifest()
   withWidgets.interactive.widgets = {
     sourceStrip = {
       image = "assets/generated/bag/source-strip-frame-1.png",
@@ -643,7 +700,7 @@ function T.retired_widget_namespace_is_rejected_as_unknown()
 end
 
 function T.cache_references_only_live_assets()
-  local manifest = validManifest()
+  local manifest = validFocusManifest()
   local ok, paths = pcall(BagCache.referencedPaths, manifest)
   Assert.isTrue(ok, "the cache must resolve the current manifest")
   assert(paths ~= nil, "a resolvable manifest must list its paths")
@@ -656,6 +713,96 @@ function T.cache_references_only_live_assets()
   for _, path in ipairs(paths) do
     Assert.isNil(path:find("strip", 1, true), "no referenced path may belong to the retired strip asset")
   end
+end
+
+function T.semantic_focus_contract_validates_with_exact_target_counts()
+  local manifest = validFocusManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the focus manifest must pass the schema")
+  Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the focus manifest")
+  Assert.keySet(manifest.interactive.pocketTabs, "normal,rects", "pocket tabs carry only rects and normal art")
+  Assert.keySet(manifest.interactive.focus, "actions,cancel,items,tabs", "focus carries exactly four classes")
+  Assert.equal(#manifest.interactive.focus.tabs.targets, 8, "eight tab targets are required")
+  Assert.equal(#manifest.interactive.focus.items.targets, 6, "six item targets are required")
+  Assert.equal(#manifest.interactive.focus.actions.targets, 4, "four action targets are required")
+end
+
+function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v6", "the schema carries the focus contract")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v6", "the central contract carries the focus schema")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v6", "the loader requires the focus schema")
+  Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(validManifest()),
+    "the previous highlight-shaped manifest must not validate as current"
+  )
+end
+
+function T.focus_target_counts_and_bounds_are_strict()
+  local shortTabs = validFocusManifest()
+  shortTabs.interactive.focus.tabs.targets[8] = nil
+  assertInvalid(shortTabs, "seven tab targets must fail")
+  local longItems = validFocusManifest()
+  longItems.interactive.focus.items.targets[7] = longItems.interactive.focus.items.targets[1]
+  assertInvalid(longItems, "seven item targets must fail")
+  local missingCancel = validFocusManifest()
+  missingCancel.interactive.focus.cancel = nil
+  assertInvalid(missingCancel, "a missing Cancel focus class must fail")
+  local shortActions = validFocusManifest()
+  shortActions.interactive.focus.actions.targets[4] = nil
+  assertInvalid(shortActions, "three action targets must fail")
+  local escaped = validFocusManifest()
+  escaped.interactive.focus.tabs.targets[8] = { x = 256, y = 200 }
+  assertInvalid(escaped, "a focus target outside the canonical pane must fail")
+  local extraClass = validFocusManifest()
+  extraClass.interactive.focus.extra = { visual = focusVisual("assets/generated/bag/focus-extra.png"), targets = {} }
+  assertInvalid(extraClass, "a fifth focus class must fail")
+  local highlightAlias = validFocusManifest()
+  highlightAlias.interactive.pocketTabs.highlight = visualRef("assets/generated/bag/tab-highlight-frame-1.png")
+  assertInvalid(highlightAlias, "the retired tab highlight must fail as an unknown field")
+end
+
+function T.focus_visual_timelines_and_source_identities_are_rejected()
+  local timeline = validFocusManifest()
+  timeline.interactive.focus.items.visual = {
+    image = "assets/generated/bag/focus-items.png",
+    width = 32,
+    height = 32,
+    duration = 2,
+  }
+  assertInvalid(timeline, "a duration on a focus visual must fail")
+  local frames = validFocusManifest()
+  frames.interactive.focus.tabs = {
+    frames = { { image = "assets/generated/bag/focus-tabs.png", width = 32, height = 32, duration = 2 } },
+  }
+  assertInvalid(frames, "a focus frame timeline must fail")
+  local leaked = validFocusManifest()
+  leaked.interactive.focus.cancel.visual = {
+    image = "assets/generated/bag/focus-cancel.png",
+    width = 32,
+    height = 32,
+    animIndex = 17,
+  }
+  assertInvalid(leaked, "a source animation identity inside a focus visual must fail")
+end
+
+function T.cache_readiness_owns_every_focus_visual()
+  local manifest = validFocusManifest()
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the focus manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  local counts = {}
+  for _, path in ipairs(paths) do
+    counts[path] = (counts[path] or 0) + 1
+  end
+  for _, path in ipairs({
+    "assets/generated/bag/focus-tabs.png",
+    "assets/generated/bag/focus-items.png",
+    "assets/generated/bag/focus-cancel.png",
+    "assets/generated/bag/focus-actions.png",
+  }) do
+    Assert.equal(counts[path], 1, path .. " must be referenced exactly once")
+  end
+  Assert.isNil(counts["assets/generated/bag/tab-highlight-frame-1.png"], "no retired highlight path may survive")
 end
 
 return { tests = T }

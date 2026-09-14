@@ -23,13 +23,26 @@
 --
 -- Sprites: the 39-entry ManagedSpriteTemplate table at ov15_02200B0C binds
 -- the live bag resource groups. Tabs use char 51 + palette 47 + cell 49 +
--- anim 50 (tab sprites sit at centers 16+32k, y 16 with anim and
--- palette slot equal to the pocket index; the highlight reuses anim 8 and
--- palette slot 9). The selection cursor uses char 6 + cell 5 + palette 47
--- + anim 4 (four sequences for the four cursor cells). Item icons resolve
--- through archive 18 (GetItemIndexMapping/GetItemIconCell/GetItemIconAnim)
--- and are never compiled here. NANR 21 loads with no static template
--- binding and is recorded but not compiled.
+-- anim 50: template entries 9..16 carry the eight pocket tabs at centers
+-- 16+32k, y 16 with animation and palette slot equal to the pocket index,
+-- and entry 19 carries the unselected Cancel face at (224, 176) with
+-- animation 16 and palette slot 8. The movable focus sprite is template
+-- entry 20 (animation 8, palette slot 9 at creation); ov15_021FFECC drives
+-- that single sprite through the 21-record position/state table at
+-- ov15_02200AB8, applying one record's X, Y, animation, and palette
+-- override per call (records 0..7 tab targets, 8..13 item targets, 14..15
+-- the lower-left pair, 16 Cancel, 17..20 action targets). The item-row loop
+-- at ov15_02200140 instead positions template entries 1..6 -- the six item
+-- icon sprites whose per-slot char/palette tags ov15_021FF8F0 rebinds to the
+-- item graphics -- at their own template X/Y centers (22/152,
+-- 59/100/139); those placements never pass through the focus table.
+-- Entries 28..31 sit at the four action-button centers with animation 22;
+-- entries 32..37 are the quantity-screen widgets driven with the tables at
+-- ov15_02200A58 and ov15_02200A88; the remaining entries are auxiliary
+-- states. Item icons resolve through archive 18
+-- (GetItemIndexMapping/GetItemIconCell/GetItemIconAnim) and are never
+-- compiled here. NANR 21 loads with no static template binding and is
+-- recorded but not compiled.
 --
 -- The top strip (template entry 0: char 26 + palette 15 + cell 25 +
 -- anim 24, sprite center (177, 14)) is intentionally uncompiled: the
@@ -47,10 +60,10 @@
 -- Geometry: window tiles convert at 8 pixels per tile. Item slots pair the
 -- six touch bounds at ov15_02200684 with the six 88x32 window rectangles
 -- from the twelve-entry window table at ov15_02200908 (two layers sharing
--- six grid positions); tab centers from the per-pocket placement table at
--- ov15_02200AB8 (sprite centers, matching the template row); icon centers
--- from the same table's slot entries; the cursor anchor from the sprite
--- position update (y 177, x stepping 16 from 16); the count readout and
+-- six grid positions); tab rects tile the top strip row; icon centers are
+-- the six item-icon template placements (entries 1..6, positioned by the
+-- item-row loop), never the focus table's item targets; the cursor anchor
+-- from the sprite position update (y 177, x stepping 16 from 16); the count readout and
 -- Cancel windows from the lower-screen window setup; the description window
 -- and its text origin from the upper-screen window setup and the
 -- description printer; action buttons and quantity digits from their window
@@ -153,6 +166,9 @@ BagSources.sprites = {
 
 -- Source-selected sprite states. Animation and palette numbers stay in this
 -- producer-only audit; generated visuals contain only the realized pixels.
+-- The focus states select frames of the tab resource group for the movable
+-- focus sprite (template entry 20); the Cancel face selects the unselected
+-- Cancel artwork for finalized-background composition.
 BagSources.spriteStates = {
   tabs = {
     normal = {
@@ -165,8 +181,14 @@ BagSources.spriteStates = {
       { animation = 6, palette = 6 },
       { animation = 7, palette = 7 },
     },
-    highlight = { animation = 8, palette = 9 },
   },
+  focus = {
+    tabs = { animation = 8, palette = 9 },
+    items = { animation = 10, palette = 9 },
+    cancel = { animation = 17, palette = 9 },
+    actions = { animation = 23, palette = 9 },
+  },
+  cancelFace = { animation = 16, palette = 8 },
   cursor = { animations = { 0, 1, 2, 3 } },
 }
 
@@ -207,8 +229,12 @@ BagSources.messages = {
   },
 }
 
--- No compiled widget namespace: the only template entry outside the live
--- tab/cursor groups is the permanently hidden top strip noted above.
+-- Template-entry inventory beyond the tab/cursor groups: entry 0 is the
+-- permanently hidden top strip; entries 1..6 are the item icons, entry 19
+-- the Cancel face, entry 20 the movable focus sprite, entries 28..31 the
+-- action-button faces, and entries 7..8, 17..18, 21..27, 32..38 auxiliary
+-- row/quantity states. Only the entries named by the geometry/focus records
+-- below select compiled visuals.
 
 -- Spare hero pattern members the model init never reads.
 BagSources.sparePatternMembers = { 56, 75 }
@@ -249,47 +275,46 @@ BagSources.geometry = {
     rect(192, 0, 32, 32),
     rect(224, 0, 32, 32),
   },
-  highlight = { animIndex = 8, paletteSlot = 9 },
   slots = {
     {
       rect = rect(0, 32, 128, 42),
       textRect = rect(32, 40, 88, 32),
-      iconCenter = { x = 48, y = 56 },
+      iconCenter = { x = 22, y = 59 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(128, 32, 128, 42),
       textRect = rect(160, 40, 88, 32),
-      iconCenter = { x = 176, y = 56 },
+      iconCenter = { x = 152, y = 59 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(0, 74, 128, 44),
       textRect = rect(32, 80, 88, 32),
-      iconCenter = { x = 48, y = 96 },
+      iconCenter = { x = 22, y = 100 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(128, 74, 128, 44),
       textRect = rect(160, 80, 88, 32),
-      iconCenter = { x = 176, y = 96 },
+      iconCenter = { x = 152, y = 100 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(0, 118, 128, 36),
       textRect = rect(32, 120, 88, 32),
-      iconCenter = { x = 48, y = 136 },
+      iconCenter = { x = 22, y = 139 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(128, 118, 128, 36),
       textRect = rect(160, 120, 88, 32),
-      iconCenter = { x = 176, y = 136 },
+      iconCenter = { x = 152, y = 139 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
@@ -313,6 +338,53 @@ BagSources.geometry = {
     rect(160, 112, 16, 24),
     rect(192, 112, 16, 24),
   },
+}
+
+-- Movable focus targets in canonical pane pixels: the position records the
+-- focus-table update applies to the single managed focus sprite, grouped by
+-- semantic class. Eight tab targets tile the strip row, six item targets
+-- mark the item rows, one Cancel target marks the Cancel face, and four
+-- action targets sit on the action-button grid. These are focus anchors,
+-- never item-icon geometry.
+BagSources.focusTargets = {
+  tabs = {
+    { x = 16, y = 16 },
+    { x = 48, y = 16 },
+    { x = 80, y = 16 },
+    { x = 112, y = 16 },
+    { x = 144, y = 16 },
+    { x = 176, y = 16 },
+    { x = 208, y = 16 },
+    { x = 240, y = 16 },
+  },
+  items = {
+    { x = 48, y = 56 },
+    { x = 176, y = 56 },
+    { x = 48, y = 96 },
+    { x = 176, y = 96 },
+    { x = 48, y = 136 },
+    { x = 176, y = 136 },
+  },
+  cancel = { x = 224, y = 176 },
+  actions = {
+    { x = 48, y = 144 },
+    { x = 144, y = 144 },
+    { x = 48, y = 176 },
+    { x = 144, y = 176 },
+  },
+}
+
+-- Item-icon placements in canonical pane pixels: the template X/Y centers
+-- of the six item-icon sprites, positioned by the item-row loop. Kept apart
+-- from the focus records above so a focus coordinate can never silently
+-- stand in for an icon placement again.
+BagSources.itemIconCenters = {
+  { x = 22, y = 59 },
+  { x = 152, y = 59 },
+  { x = 22, y = 100 },
+  { x = 152, y = 100 },
+  { x = 22, y = 139 },
+  { x = 152, y = 139 },
 }
 
 -- Registration marker source facts. The retail registration path loads Bag
