@@ -259,6 +259,9 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
 #ifdef PRESENTATION_SPRITE
   if (u_presentationSprite) {
     vec4 centerClip = u_proj * vec4(viewCenter, 1.0);
+#ifdef PRESENTATION_SPRITE_LAYER
+    centerClip.y = -centerClip.y;
+#endif
     if (centerClip.w > 0.0) {
       vec2 centerNdc = centerClip.xy / centerClip.w;
       vec2 rasterCoord;

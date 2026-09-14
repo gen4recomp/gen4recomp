@@ -4943,4 +4943,231 @@ function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
   )
 end
 
+local function snappedLogicalCoordinate(ndc, visibleExtent)
+  return math.floor((ndc * 0.5 + 0.5) * visibleExtent) + 0.5
+end
+
+local function expectedIdentityBillboardCenter(width, height, presentationPixelScale, center)
+  local visibleW = width / presentationPixelScale
+  local visibleH = height / presentationPixelScale
+  return {
+    x = snappedLogicalCoordinate(center[1], visibleW) * presentationPixelScale,
+    y = snappedLogicalCoordinate(-center[2], visibleH) * presentationPixelScale,
+  }
+end
+
+local function renderIdentityBillboard(
+  scope,
+  renderer,
+  width,
+  height,
+  presentationPixelScale,
+  center,
+  billboardScale,
+  worldParts
+)
+  local target, color = presentationTarget(scope, width, height)
+  local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), solidAlphaImage(scope, 255, 0, 0, 255))
+  sprite.billboardCenter = center
+  sprite.billboardScale = billboardScale
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  render(
+    renderer,
+    emptyRuntime(),
+    fixedCamera(),
+    worldParts or {},
+    { sprite },
+    FieldViewport.new(width, height, { mode = "expanded" }),
+    presentationPixelScale
+  )
+  love.graphics.setCanvas()
+  return color:newImageData()
+end
+
+local function identityWorldLandmark(scope, image)
+  local mesh = scope:own(syntheticMesh({
+    { 0.18, -0.08, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 0.30, -0.08, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 0.30, 0.08, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 0.18, -0.08, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 0.30, 0.08, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { 0.18, 0.08, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+  }))
+  local item = opaqueFinalStateItem(mesh, 8, false)
+  item.material.image = image
+  return item
+end
+
+function T.non_divisible_billboard_matches_the_visible_world_projection(scope)
+  local width, height, presentationPixelScale = 641, 479, 3
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local center = { 0.82, 0.28, 0 }
+  local billboardScale = { 0.12, 0.09, 1 }
+  local landmark = identityWorldLandmark(scope, solidAlphaImage(scope, 0, 255, 0, 255))
+  local image = renderIdentityBillboard(
+    scope,
+    renderer,
+    width,
+    height,
+    presentationPixelScale,
+    center,
+    billboardScale,
+    { { landmark } }
+  )
+  local actual = redBounds(image)
+  local expected = expectedIdentityBillboardCenter(width, height, presentationPixelScale, center)
+  local landmarkX, landmarkY = colorCenter(image, "green")
+
+  Assert.near(
+    (actual.left + actual.right + 1) / 2,
+    expected.x,
+    0.6,
+    "the non-divisible X center uses visible logical coordinates"
+  )
+  Assert.near(
+    (actual.top + actual.bottom + 1) / 2,
+    expected.y,
+    0.6,
+    "the non-divisible Y center uses visible logical coordinates"
+  )
+  Assert.near(
+    actual.right - actual.left + 1,
+    billboardScale[1] * width,
+    2,
+    "the billboard width is not stretched by ceil allocation"
+  )
+  Assert.near(
+    actual.bottom - actual.top + 1,
+    billboardScale[2] * height,
+    2,
+    "the billboard height is not stretched by ceil allocation"
+  )
+  Assert.near(
+    landmarkX,
+    (0.24 + 1) * width / 2,
+    1.5,
+    "the world reference remains at its independent projected position"
+  )
+  Assert.near(landmarkY, height / 2, 1.5, "the world reference keeps its vertical registration")
+end
+
+function T.non_divisible_billboard_surplus_stays_at_the_right_and_bottom(scope)
+  local cases = {
+    { width = 641, height = 480, center = { -0.82, 0, 0 }, label = "width remainder" },
+    { width = 639, height = 479, center = { 0, 0.82, 0 }, label = "height remainder" },
+    { width = 641, height = 479, center = { 0.82, 0.82, 0 }, label = "two-axis remainder" },
+  }
+  local presentationPixelScale = 3
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  for _, case in ipairs(cases) do
+    local image = renderIdentityBillboard(
+      scope,
+      renderer,
+      case.width,
+      case.height,
+      presentationPixelScale,
+      case.center,
+      { 0.035, 0.035, 1 }
+    )
+    local actualX, actualY = presentationCenter(image, case.width, case.height)
+    local expected = expectedIdentityBillboardCenter(case.width, case.height, presentationPixelScale, case.center)
+    Assert.near(actualX, expected.x, 0.6, case.label .. " keeps the left anchor")
+    Assert.near(actualY, expected.y, 0.6, case.label .. " keeps the top anchor")
+  end
+end
+
+function T.non_divisible_billboard_snapping_has_the_same_x_and_y_phase(scope)
+  local width, height, presentationPixelScale = 641, 479, 3
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local target, color = presentationTarget(scope, width, height)
+  local mesh = presentationQuadMesh(scope, 0)
+  local image = solidAlphaImage(scope, 255, 0, 0, 255)
+
+  local function renderAt(centerX, centerY)
+    local sprite = presentationSprite(scope, mesh, image)
+    sprite.billboardCenter = { centerX, centerY, 0 }
+    sprite.billboardScale = { 0.08, 0.08, 1 }
+    love.graphics.setCanvas(target)
+    love.graphics.clear(0, 0, 0, 1)
+    render(
+      renderer,
+      emptyRuntime(),
+      fixedCamera(),
+      {},
+      { sprite },
+      FieldViewport.new(width, height, { mode = "expanded" }),
+      presentationPixelScale
+    )
+    love.graphics.setCanvas()
+    local bounds = redBounds(color:newImageData())
+    return bounds.left, bounds.top
+  end
+
+  local initialX, initialY = renderAt(-0.004, 0.004)
+  local subLogicalX, _ = renderAt(0, 0.004)
+  local nextLogicalX, _ = renderAt(0.006, 0.004)
+  Assert.equal(subLogicalX, initialX, "sub-logical X motion does not change the snapped phase")
+  Assert.equal(nextLogicalX - initialX, presentationPixelScale, "one logical X cell moves one physical block")
+
+  local _, subLogicalYPosition = renderAt(-0.004, 0)
+  local _, nextLogicalYPosition = renderAt(-0.004, -0.006)
+  Assert.equal(subLogicalYPosition, initialY, "sub-logical Y motion does not change the snapped phase")
+  Assert.equal(
+    nextLogicalYPosition - initialY,
+    presentationPixelScale,
+    "one logical Y cell moves one physical block in the rendered orientation"
+  )
+end
+
+local function edgeWorldQuad(scope, z, right, r, g, b, polygonId)
+  local mesh = scope:own(syntheticMesh({
+    { -1, -1, z, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { right, -1, z, 1, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { right, 3, z, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { -1, -1, z, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { right, 3, z, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+    { -1, 3, z, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0 },
+  }))
+  local item = opaqueFinalStateItem(mesh, polygonId, false)
+  item.material.image = solidAlphaImage(scope, r, g, b, 255)
+  return item
+end
+
+function T.non_divisible_billboard_depth_registration_matches_the_right_edge_boundary(scope)
+  local width, height, presentationPixelScale = 641, 479, 3
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local target, color = presentationTarget(scope, width, height)
+  local worldRight = 0.37
+  local worldZ = -0.5
+  local spriteZ = -1.0
+  local world = edgeWorldQuad(scope, worldZ, worldRight, 220, 20, 20, 3)
+  local sprite = presentationSprite(scope, depthQuadMesh(scope, spriteZ), solidAlphaImage(scope, 20, 220, 20, 255))
+  sprite.billboardCenter = { 0, 0, 0 }
+  sprite.billboardScale = { 1, 1, 1 }
+  local camera = perspectiveCamera()
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  render(
+    renderer,
+    emptyRuntime(),
+    camera,
+    { { world } },
+    { sprite },
+    FieldViewport.new(width, height, { mode = "expanded" }),
+    presentationPixelScale
+  )
+  love.graphics.setCanvas()
+
+  local pixels = color:newImageData()
+  local projectedRight = projectedCenter(camera.projection(), { worldRight, 0, worldZ })
+  local projectedPhysicalRight = (projectedRight.x + 1) * 0.5 * width
+  local boundary = math.ceil(projectedPhysicalRight / presentationPixelScale) * presentationPixelScale
+  local row = math.floor(height / 2)
+  local before = { pixels:getPixel(boundary - presentationPixelScale, row) }
+  local after = { pixels:getPixel(boundary, row) }
+  Assert.isTrue(before[1] > before[2], "the front world state is visible immediately before the edge boundary")
+  Assert.isTrue(after[2] > after[1], "the behind billboard is visible immediately after the edge boundary")
+end
+
 return GraphicsSmoke.suite(T)

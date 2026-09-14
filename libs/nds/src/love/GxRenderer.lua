@@ -1193,8 +1193,10 @@ function GxRenderer:draw(frame)
       spriteShader:send("u_presentationViewportSize", { presentationViewportW, presentationViewportH })
       local scale = self._presentationScale
       local offset = self._presentationOffset
-      scale[1], scale[2] = 1, 1
-      offset[1], offset[2] = 0, 0
+      scale[1] = presentationViewportW / logicalW
+      scale[2] = presentationViewportH / logicalH
+      offset[1] = scale[1] - 1
+      offset[2] = scale[2] - 1
       spriteShader:send("u_presentationScale", scale)
       spriteShader:send("u_presentationOffset", offset)
       spriteShader:send("u_view", "column", viewMatrix)
