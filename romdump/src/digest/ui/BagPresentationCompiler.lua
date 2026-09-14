@@ -196,9 +196,26 @@ function BagPresentationCompiler.compileGeometry(config)
     if type(slot) ~= "table" then
       Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "item slot " .. index .. " is malformed", {})
     end
+    local full = checkRect(slot.rect, "item slot " .. index)
+    local window = checkRect(slot.textRect, "item slot " .. index .. " text window")
+    if
+      window.x < full.x
+      or window.y < full.y
+      or window.x + window.width > full.x + full.width
+      or window.y + window.height > full.y + full.height
+    then
+      Errors.raise(
+        BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+        "item slot " .. index .. " text window escapes its touch rect",
+        {}
+      )
+    end
     slots[index] = {
-      rect = checkRect(slot.rect, "item slot " .. index),
+      rect = full,
+      textRect = window,
       iconCenter = checkPoint(slot.iconCenter, "item slot " .. index .. " icon center"),
+      nameAt = checkPoint(slot.nameAt, "item slot " .. index .. " name anchor"),
+      quantityAt = checkPoint(slot.quantityAt, "item slot " .. index .. " quantity anchor"),
     }
   end
   local cursor = geometry.cursorAnchor
@@ -239,6 +256,20 @@ function BagPresentationCompiler.compileGeometry(config)
   for index, digit in ipairs(geometry.quantityDigits) do
     quantityDigits[index] = checkRect(digit, "quantity digit " .. index)
   end
+  local cancelSource = geometry.cancel
+  if type(cancelSource) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel affordance", {})
+  end
+  local cancelRect = checkRect(cancelSource.rect, "cancel")
+  local cancelText = checkRect(cancelSource.textRect, "cancel text window")
+  if
+    cancelText.x < cancelRect.x
+    or cancelText.y < cancelRect.y
+    or cancelText.x + cancelText.width > cancelRect.x + cancelRect.width
+    or cancelText.y + cancelText.height > cancelRect.y + cancelRect.height
+  then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel text window escapes its button rect", {})
+  end
   return {
     tabs = tabs,
     highlight = { animIndex = geometry.highlight.animIndex, paletteSlot = geometry.highlight.paletteSlot },
@@ -255,7 +286,7 @@ function BagPresentationCompiler.compileGeometry(config)
       rect = checkRect(countReadout.rect, "count readout"),
       textAt = checkPoint(countReadout.textAt, "count readout text"),
     },
-    cancel = checkRect(geometry.cancel, "cancel"),
+    cancel = { rect = cancelRect, textRect = cancelText },
     descriptionFrame = checkRect(geometry.descriptionFrame, "description frame"),
     descriptionText = checkRect(geometry.descriptionText, "description text"),
     actionButtons = actionButtons,

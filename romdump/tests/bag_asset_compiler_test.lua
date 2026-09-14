@@ -351,7 +351,7 @@ function T.animated_source_sequence_is_rejected_as_a_static_only_violation()
   local BagSources = require("romdump.src.config.BagSources")
   local romFs = fixture({
     tamper = function(members)
-      members[BagSources.sprites.cursor.anim + 1] = animTwoFrameSequence()
+      members[BagSources.sprites.tabs.anim + 1] = animTwoFrameSequence()
       return members
     end,
   })
@@ -362,6 +362,125 @@ function T.animated_source_sequence_is_rejected_as_a_static_only_violation()
   Assert.notNil(
     tostring(typed.message):find("static"),
     "the failure must name the static-only contract rather than a later stage"
+  )
+end
+
+-- The pocket-dependent lower palette comes from the second decoded palette
+-- slot: without the previous lower member the 2D stages still complete and
+-- compilation reaches the hero stage, while a corrupt pocket member fails at
+-- the lower-palette decode even when the previous member is intact.
+function T.lower_palette_uses_the_pocket_dependent_source_member()
+  local previousLowerMember, pocketLowerMember = 40, 41
+  local pastTwoDimensions = fixture({
+    tamper = function(members)
+      members[previousLowerMember + 1] = "not-a-palette-container"
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(pastTwoDimensions)
+  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
+  local typed = assert(err, "compilation without the previous lower member must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("hero"),
+    "without the previous lower member the 2D stages must complete and reach the hero stage, got: "
+      .. tostring(typed.message)
+  )
+  local corruptPocket = fixture({
+    tamper = function(members)
+      members[pocketLowerMember + 1] = "not-a-palette-container"
+      return members
+    end,
+  })
+  local pocketBundle, pocketErr = BagAssetCompiler.compile(corruptPocket)
+  Assert.isNil(pocketBundle, "a corrupt pocket palette member must not compile")
+  local pocketTyped = assert(pocketErr, "a corrupt pocket palette member must carry an error")
+  Assert.equal(pocketTyped.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(pocketTyped.message):find("lower%-palette"),
+    "a corrupt pocket palette member must fail at the lower-palette decode, got: " .. tostring(pocketTyped.message)
+  )
+end
+
+local function screenWithPaletteBank(bank)
+  local entries = {}
+  for _ = 1, 32 * 32 - 1 do
+    entries[#entries + 1] = u16(0)
+  end
+  entries[#entries + 1] = u16(bank * 4096)
+  return container(
+    "RCSN",
+    { block("SCRN", u16(256) .. u16(256) .. u32(0) .. u32(32 * 32 * 2) .. table.concat(entries)) }
+  )
+end
+
+local function paletteWithBanks(banks)
+  local colors = {}
+  for i = 1, banks * 16 do
+    colors[i] = (i * 0x39B) % 0x8000
+  end
+  return paletteData(colors)
+end
+
+-- Lower screens may only address the four destination banks the retail setup
+-- reproduces; any other bank reference fails before publication.
+function T.lower_screen_bank_outside_the_retail_setup_fails()
+  local romFs = fixture({
+    tamper = function(members)
+      local BagSources = require("romdump.src.config.BagSources")
+      members[BagSources.screens.listSlots + 1] = screenWithPaletteBank(4)
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a lower screen outside the reproduced bank setup must not compile")
+  local typed = assert(err, "an unsupported lower palette bank must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("palette") or tostring(typed.message):find("bank"),
+    "an unsupported lower palette bank must fail at palette composition, got: " .. tostring(typed.message)
+  )
+end
+
+-- The last pocket needs the bank past its own index, so a palette source
+-- without that bank fails instead of wrapping or clamping.
+function T.pocket_seven_without_its_overflow_bank_fails()
+  local romFs = fixture({
+    tamper = function(members)
+      -- Slot 42 is the zero-based member-41 slot regardless of the configured
+      -- lower member; the overflow bank lives in that member's palette data.
+      members[42] = paletteWithBanks(8)
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a palette source without the overflow bank must not compile")
+  local typed = assert(err, "a missing overflow bank must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("palette") or tostring(typed.message):find("bank"),
+    "a missing overflow bank must fail at palette composition, got: " .. tostring(typed.message)
+  )
+end
+
+-- Item focus is no longer a generated cursor visual: corrupt cursor members
+-- must not stop compilation before the hero stage.
+function T.cursor_members_are_not_required_for_compilation()
+  local BagSources = require("romdump.src.config.BagSources")
+  local romFs = fixture({
+    tamper = function(members)
+      members[BagSources.sprites.cursor.char + 1] = "not-a-char-container"
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
+  local typed = assert(err, "compilation without cursor members must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("hero"),
+    "without cursor members the remaining stages must complete and reach the hero stage, got: "
+      .. tostring(typed.message)
   )
 end
 
@@ -401,7 +520,7 @@ function T.producer_declares_the_audited_message_selection()
     { animation = 6, palette = 6 },
     { animation = 7, palette = 7 },
   })
-  Assert.deepEqual(BagSources.spriteStates.tabs.selected, { animation = 8, palette = 9 })
+  Assert.deepEqual(BagSources.spriteStates.tabs.highlight, { animation = 8, palette = 9 })
   Assert.deepEqual(BagSources.lowerLayers, {
     browse = { "listWash", "listSlots" },
     action = { "actionWash", "actionSlots" },
@@ -497,6 +616,15 @@ local function heroDescriptor(gender)
   }
 end
 
+local function pocketBackgrounds(state)
+  local pockets = {}
+  for _, pocket in ipairs(POCKETS) do
+    pockets[pocket] =
+      { image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png", width = 256, height = 192 }
+  end
+  return pockets
+end
+
 local function syntheticBundle(marker)
   local states = {}
   for _, pocket in ipairs(POCKETS) do
@@ -511,7 +639,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v4",
+    schema = "g4-bag-assets-v5",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -567,10 +695,10 @@ local function syntheticBundle(marker)
     },
     interactive = {
       backgrounds = {
-        browse = { image = "assets/generated/bag/background-browse.png", width = 256, height = 192 },
-        action = { image = "assets/generated/bag/background-action.png", width = 256, height = 192 },
-        quantity = { image = "assets/generated/bag/background-quantity.png", width = 256, height = 192 },
-        confirmation = { image = "assets/generated/bag/background-confirmation.png", width = 256, height = 192 },
+        browse = pocketBackgrounds("browse"),
+        action = pocketBackgrounds("action"),
+        quantity = pocketBackgrounds("quantity"),
+        confirmation = pocketBackgrounds("confirmation"),
       },
       pocketTabs = {
         rects = tabs,
@@ -584,18 +712,53 @@ local function syntheticBundle(marker)
           { image = "assets/generated/bag/tab-normal-7.png", width = 16, height = 16 },
           { image = "assets/generated/bag/tab-normal-8.png", width = 16, height = 16 },
         },
-        selected = { image = "assets/generated/bag/tab-selected-frame-1.png", width = 16, height = 16 },
+        highlight = { image = "assets/generated/bag/tab-highlight-frame-1.png", width = 16, height = 16 },
       },
       itemSlots = {
         slots = {
-          { rect = { x = 32, y = 40, width = 88, height = 32 }, iconCenter = { x = 48, y = 56 } },
-          { rect = { x = 160, y = 40, width = 88, height = 32 }, iconCenter = { x = 176, y = 56 } },
-          { rect = { x = 32, y = 80, width = 88, height = 32 }, iconCenter = { x = 48, y = 96 } },
-          { rect = { x = 160, y = 80, width = 88, height = 32 }, iconCenter = { x = 176, y = 96 } },
-          { rect = { x = 32, y = 120, width = 88, height = 32 }, iconCenter = { x = 48, y = 136 } },
-          { rect = { x = 160, y = 120, width = 88, height = 32 }, iconCenter = { x = 176, y = 136 } },
+          {
+            rect = { x = 0, y = 32, width = 128, height = 42 },
+            textRect = { x = 32, y = 40, width = 88, height = 32 },
+            iconCenter = { x = 48, y = 56 },
+            nameAt = { x = 0, y = 0 },
+            quantityAt = { x = 48, y = 16 },
+          },
+          {
+            rect = { x = 128, y = 32, width = 128, height = 42 },
+            textRect = { x = 160, y = 40, width = 88, height = 32 },
+            iconCenter = { x = 176, y = 56 },
+            nameAt = { x = 0, y = 0 },
+            quantityAt = { x = 48, y = 16 },
+          },
+          {
+            rect = { x = 0, y = 74, width = 128, height = 44 },
+            textRect = { x = 32, y = 80, width = 88, height = 32 },
+            iconCenter = { x = 48, y = 96 },
+            nameAt = { x = 0, y = 0 },
+            quantityAt = { x = 48, y = 16 },
+          },
+          {
+            rect = { x = 128, y = 74, width = 128, height = 44 },
+            textRect = { x = 160, y = 80, width = 88, height = 32 },
+            iconCenter = { x = 176, y = 96 },
+            nameAt = { x = 0, y = 0 },
+            quantityAt = { x = 48, y = 16 },
+          },
+          {
+            rect = { x = 0, y = 118, width = 128, height = 36 },
+            textRect = { x = 32, y = 120, width = 88, height = 32 },
+            iconCenter = { x = 48, y = 136 },
+            nameAt = { x = 0, y = 0 },
+            quantityAt = { x = 48, y = 16 },
+          },
+          {
+            rect = { x = 128, y = 118, width = 128, height = 36 },
+            textRect = { x = 160, y = 120, width = 88, height = 32 },
+            iconCenter = { x = 176, y = 136 },
+            nameAt = { x = 0, y = 0 },
+            quantityAt = { x = 48, y = 16 },
+          },
         },
-        focus = { image = "assets/generated/bag/focus-frame-1.png", width = 16, height = 16 },
         registration = {
           slot1 = { image = "assets/generated/bag/registration-slot-1.png", width = 40, height = 16 },
           slot2 = { image = "assets/generated/bag/registration-slot-2.png", width = 40, height = 16 },
@@ -603,7 +766,10 @@ local function syntheticBundle(marker)
         },
       },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
-      cancel = { x = 192, y = 168, width = 56, height = 16 },
+      cancel = {
+        rect = { x = 192, y = 168, width = 64, height = 24 },
+        textRect = { x = 192, y = 168, width = 56, height = 16 },
+      },
       text = {
         actions = {
           toss = "TOSS",
@@ -670,7 +836,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v4")
+  Assert.equal(loaded.schema, "g4-bag-assets-v5")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

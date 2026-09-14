@@ -16,9 +16,10 @@
 -- backdrop and 94 the male backdrop, selected by the gender byte; 54 and 9
 -- are the mode-swapped description frame screens) and char 46 + screens
 -- 39/42/43/44/45/52/53 (lower pane; 43+39 browse, 44+42 action menu, 45
--- confirmation, 52/53 quantity). Raster palettes 8 (upper) and 40 (lower)
--- reproduce the retail layer colors; palette slots and the text-layer
--- GetPlttData selections (40/41) stay producer-side.
+-- confirmation, 52/53 quantity). Raster palettes 8 (upper) and 41 (lower)
+-- reproduce the retail layer colors; the lower palette below is the member
+-- the retail pocket switch selects (decoded GetPlttData slot 1), and the
+-- text-layer GetPlttData slot selections stay producer-side.
 --
 -- Sprites: the 39-entry ManagedSpriteTemplate table at ov15_02200B0C binds
 -- the live bag resource groups. Tabs use char 51 + palette 47 + cell 49 +
@@ -43,9 +44,10 @@
 -- wrapped modulo 8, and switched on pocket change), so each state pairs one
 -- pattern clip with one joint clip plus the shared material clip.
 --
--- Geometry: window tiles convert at 8 pixels per tile. Item slots come from
--- the twelve-entry window table at ov15_02200908 (two layers sharing six
--- grid positions); tab centers from the per-pocket placement table at
+-- Geometry: window tiles convert at 8 pixels per tile. Item slots pair the
+-- six touch bounds at ov15_02200684 with the six 88x32 window rectangles
+-- from the twelve-entry window table at ov15_02200908 (two layers sharing
+-- six grid positions); tab centers from the per-pocket placement table at
 -- ov15_02200AB8 (sprite centers, matching the template row); icon centers
 -- from the same table's slot entries; the cursor anchor from the sprite
 -- position update (y 177, x stepping 16 from 16); the count readout and
@@ -74,7 +76,7 @@
 -- Registration markers: Bag UI character member 37 holds the 104x16 source
 -- bitmap; slot 1 copies source X 24 and slot 2 copies source X 64 (Y 0,
 -- 40x16 each), placed slot-locally at offset (0, 16). The hero draws with identity rotation, unit scale, translation
--- (0,-48,0), and four white lights all pointing down positive x: the hero
+-- (0,-45,0), and four white lights all pointing down positive x: the hero
 -- init loops four times over NNS_G3dGlbLightVector(i, 0x1000, 0, 0) with
 -- NNS_G3dGlbLightColor(i, 0x7FFF), so every light carries unit vector
 -- (1, 0, 0) in manifest float domain (0x1000 is 1.0 fixed-point) and white
@@ -126,10 +128,21 @@ BagSources.chars = {
   registrationMarker = 37,
 }
 
--- Palette (NCLR) members used for rasterization by semantic role.
+-- Palette (NCLR) members used for rasterization by semantic role. The lower
+-- member feeds the pocket-dependent realization: destination banks 0..3
+-- copy source banks p, p, p+1, p (16 colors each) for zero-based pocket p,
+-- matching the retail lower-BG palette switch.
 BagSources.palettes = {
   upper = 8,
-  lower = 40,
+  lower = 41,
+}
+
+-- Pocket-relative source bank offsets for the lower background realization.
+-- Destination bank d (0..3) copies source bank p + offsets[d + 1], where p
+-- is the zero-based pocket index and each bank holds bankSize colors.
+BagSources.lowerPaletteBanks = {
+  bankSize = 16,
+  offsets = { 0, 0, 1, 0 },
 }
 
 -- Sprite (NCGR/NCER/NANR/NCLR) members by live widget group.
@@ -152,7 +165,7 @@ BagSources.spriteStates = {
       { animation = 6, palette = 6 },
       { animation = 7, palette = 7 },
     },
-    selected = { animation = 8, palette = 9 },
+    highlight = { animation = 8, palette = 9 },
   },
   cursor = { animations = { 0, 1, 2, 3 } },
 }
@@ -221,8 +234,10 @@ local function rect(x, y, width, height)
 end
 
 -- Canonical pane geometry in pixels. Tab rectangles tile the top strip row;
--- slots form the two-column by three-row grid with per-slot icon centers;
--- the cursor anchor is center-origin with the audited stepping.
+-- slots pair the full touch bounds with the text windows the item rows print
+-- into (per-slot icon centers and the standard text-window-local name and
+-- quantity anchors); Cancel pairs its full button bound with its text
+-- window; the cursor anchor is center-origin with the audited stepping.
 BagSources.geometry = {
   tabs = {
     rect(0, 0, 32, 32),
@@ -236,16 +251,55 @@ BagSources.geometry = {
   },
   highlight = { animIndex = 8, paletteSlot = 9 },
   slots = {
-    { rect = rect(32, 40, 88, 32), iconCenter = { x = 48, y = 56 } },
-    { rect = rect(160, 40, 88, 32), iconCenter = { x = 176, y = 56 } },
-    { rect = rect(32, 80, 88, 32), iconCenter = { x = 48, y = 96 } },
-    { rect = rect(160, 80, 88, 32), iconCenter = { x = 176, y = 96 } },
-    { rect = rect(32, 120, 88, 32), iconCenter = { x = 48, y = 136 } },
-    { rect = rect(160, 120, 88, 32), iconCenter = { x = 176, y = 136 } },
+    {
+      rect = rect(0, 32, 128, 42),
+      textRect = rect(32, 40, 88, 32),
+      iconCenter = { x = 48, y = 56 },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
+    {
+      rect = rect(128, 32, 128, 42),
+      textRect = rect(160, 40, 88, 32),
+      iconCenter = { x = 176, y = 56 },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
+    {
+      rect = rect(0, 74, 128, 44),
+      textRect = rect(32, 80, 88, 32),
+      iconCenter = { x = 48, y = 96 },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
+    {
+      rect = rect(128, 74, 128, 44),
+      textRect = rect(160, 80, 88, 32),
+      iconCenter = { x = 176, y = 96 },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
+    {
+      rect = rect(0, 118, 128, 36),
+      textRect = rect(32, 120, 88, 32),
+      iconCenter = { x = 48, y = 136 },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
+    {
+      rect = rect(128, 118, 128, 36),
+      textRect = rect(160, 120, 88, 32),
+      iconCenter = { x = 176, y = 136 },
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    },
   },
   cursorAnchor = { size = 16, y = 177, xBase = 16, xStep = 16, count = 8, origin = "center" },
   countReadout = { rect = rect(80, 168, 56, 16), textAt = { x = 0, y = 0 } },
-  cancel = rect(192, 168, 56, 16),
+  cancel = {
+    rect = rect(192, 168, 64, 24),
+    textRect = rect(192, 168, 56, 16),
+  },
   descriptionFrame = rect(0, 144, 256, 48),
   descriptionText = rect(20, 144, 236, 48),
   actionButtons = {
@@ -296,7 +350,7 @@ BagSources.presentation = {
     clipFar = 6963200 / 4096,
   },
   transform = {
-    translation = { x = 0, y = -48, z = 0 },
+    translation = { x = 0, y = -45, z = 0 },
     rotation = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
     scale = { x = 1, y = 1, z = 1 },
   },

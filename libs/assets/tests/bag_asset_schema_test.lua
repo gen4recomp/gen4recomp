@@ -106,22 +106,57 @@ local function tabs()
 end
 
 local function slots()
+  local fullRects = {
+    rect(0, 32, 128, 42),
+    rect(128, 32, 128, 42),
+    rect(0, 74, 128, 44),
+    rect(128, 74, 128, 44),
+    rect(0, 118, 128, 36),
+    rect(128, 118, 128, 36),
+  }
+  local textRects = {
+    rect(32, 40, 88, 32),
+    rect(160, 40, 88, 32),
+    rect(32, 80, 88, 32),
+    rect(160, 80, 88, 32),
+    rect(32, 120, 88, 32),
+    rect(160, 120, 88, 32),
+  }
+  local iconCenters = {
+    { x = 48, y = 56 },
+    { x = 176, y = 56 },
+    { x = 48, y = 96 },
+    { x = 176, y = 96 },
+    { x = 48, y = 136 },
+    { x = 176, y = 136 },
+  }
   local out = {}
-  local index = 0
-  for row = 0, 2 do
-    for col = 0, 1 do
-      index = index + 1
-      out[index] = {
-        rect = rect(col == 0 and 32 or 160, 40 + row * 40, 88, 32),
-        iconCenter = { x = col == 0 and 48 or 176, y = 56 + row * 40 },
-      }
-    end
+  for index = 1, 6 do
+    out[index] = {
+      rect = fullRects[index],
+      textRect = textRects[index],
+      iconCenter = iconCenters[index],
+      nameAt = { x = 0, y = 0 },
+      quantityAt = { x = 48, y = 16 },
+    }
   end
   return out
 end
 
 local function markerImage(path)
   return { image = path, width = 40, height = 16 }
+end
+
+local function backgrounds()
+  local out = {}
+  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+    local pockets = {}
+    for _, pocket in ipairs(POCKETS) do
+      pockets[pocket] = imageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png")
+    end
+    out[state] = pockets
+  end
+  return out
 end
 
 local function semanticText()
@@ -170,7 +205,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v4",
+    schema = "g4-bag-assets-v5",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -225,12 +260,7 @@ local function validManifest()
       },
     },
     interactive = {
-      backgrounds = {
-        browse = imageRef("assets/generated/bag/background-browse.png"),
-        action = imageRef("assets/generated/bag/background-action.png"),
-        quantity = imageRef("assets/generated/bag/background-quantity.png"),
-        confirmation = imageRef("assets/generated/bag/background-confirmation.png"),
-      },
+      backgrounds = backgrounds(),
       pocketTabs = {
         rects = tabs(),
         normal = {
@@ -243,11 +273,10 @@ local function validManifest()
           visualRef("assets/generated/bag/tab-normal-7.png"),
           visualRef("assets/generated/bag/tab-normal-8.png"),
         },
-        selected = visualRef("assets/generated/bag/tab-selected-frame-1.png"),
+        highlight = visualRef("assets/generated/bag/tab-highlight-frame-1.png"),
       },
       itemSlots = {
         slots = slots(),
-        focus = visualRef("assets/generated/bag/focus-frame-1.png"),
         registration = {
           slot1 = markerImage("assets/generated/bag/registration-slot-1.png"),
           slot2 = markerImage("assets/generated/bag/registration-slot-2.png"),
@@ -255,7 +284,7 @@ local function validManifest()
         },
       },
       pageIndicator = { rect = rect(80, 168, 56, 16), textAt = { x = 0, y = 0 } },
-      cancel = rect(192, 168, 56, 16),
+      cancel = { rect = rect(192, 168, 64, 24), textRect = rect(192, 168, 56, 16) },
       text = semanticText(),
       overlays = {
         actionMenu = {
@@ -276,7 +305,7 @@ function T.valid_manifest_passes_schema_and_cache_contract()
   Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the valid fixture")
   Assert.isNil(manifest.interactive.widgets, "the current manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v4")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v5")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -361,9 +390,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v4")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v4")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v4")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v5")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v5")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v5")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -371,9 +400,12 @@ function T.previous_bag_contract_is_rejected()
   local manifest = validManifest()
   manifest.schema = "g4-bag-assets-v2"
   Assert.isFalse(BagAssetSchema.isValidManifest(manifest), "the previous Bag contract must not validate as current")
+  local retired = validManifest()
+  retired.schema = "g4-bag-assets-v3"
+  Assert.isFalse(BagAssetSchema.isValidManifest(retired), "the retired Bag contract must not validate as current")
   local stale = validManifest()
-  stale.schema = "g4-bag-assets-v3"
-  Assert.isFalse(BagAssetSchema.isValidManifest(stale), "the retired Bag contract must not validate as current")
+  stale.schema = "g4-bag-assets-v4"
+  Assert.isFalse(BagAssetSchema.isValidManifest(stale), "the superseded Bag contract must not validate as current")
 end
 
 function T.complete_manifest_with_text_and_registration_passes()
@@ -465,7 +497,7 @@ function T.registration_offset_keeps_the_marker_inside_every_slot()
   paneFittingButSlotOverflowing.interactive.itemSlots.registration.offset = { x = 200, y = 0 }
   assertInvalid(paneFittingButSlotOverflowing, "an offset that pushes the 40x16 marker outside an 88x32 slot must fail")
   local bottomOverflowing = validManifest()
-  bottomOverflowing.interactive.itemSlots.registration.offset = { x = 0, y = 17 }
+  bottomOverflowing.interactive.itemSlots.registration.offset = { x = 0, y = 21 }
   assertInvalid(bottomOverflowing, "an offset that pushes the marker below the slot must fail")
   local missing = validManifest()
   missing.interactive.itemSlots.registration.offset = nil
@@ -477,7 +509,7 @@ function T.quantity_background_is_a_required_semantic_surface()
   single.interactive.backgrounds.quantity = nil
   assertInvalid(single, "a missing quantity background must fail")
   local missing = validManifest()
-  missing.interactive.backgrounds.quantity.width = 128
+  missing.interactive.backgrounds.quantity.items.width = 128
   assertInvalid(missing, "a non-canonical quantity background must fail")
 end
 

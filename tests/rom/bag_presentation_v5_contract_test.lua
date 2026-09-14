@@ -79,22 +79,30 @@ local function compile(romFs)
   return assert(bundle)
 end
 
+local POCKETS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+
 function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v4", "the rebuilt Bag cache must publish the current contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v4", "the loader must require the current contract")
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest({ schema = "g4-bag-assets-v2" }),
-    "a v2 manifest must not validate through the current loader"
-  )
-  Assert.isFalse(
-    BagAssetSchema.isValidManifest({ schema = "g4-bag-assets-v3" }),
-    "a v3 manifest must not validate through the current loader"
-  )
+  Assert.equal(manifest.schema, "g4-bag-assets-v5", "the rebuilt Bag cache must publish the current contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v5", "the loader must require the current contract")
+  Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
+  for _, stale in ipairs({ "g4-bag-assets-v2", "g4-bag-assets-v3", "g4-bag-assets-v4" }) do
+    Assert.isFalse(
+      BagAssetSchema.isValidManifest({ schema = stale }),
+      "a " .. stale .. " manifest must not validate through the current loader"
+    )
+  end
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the rebuilt bundle must validate as the current contract")
 
-  local lights = assert(manifest.hero).presentation.lights
+  local hero = assert(manifest.hero)
+  local translation = assert(hero.presentation).transform.translation
+  Assert.equal(translation.x, 0)
+  Assert.near(translation.y, -45 / 16, 1e-9, "the compiled hero height normalizes the retail source vector once")
+  Assert.equal(translation.z, 0)
+
+  local lights = assert(hero.presentation).lights
   for _, count in ipairs({ 3, 5 }) do
     local original = lights.count
     lights.count = count
@@ -109,11 +117,25 @@ function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
   local interactive = assert(manifest.interactive)
   local backgrounds = assert(interactive.backgrounds, "Bag backgrounds must be producer-composed semantic images")
   for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-    local background = assert(backgrounds[state], state .. " must have a producer-composed background")
-    Assert.equal(background.width, 256, state .. " background must use canonical pane width")
-    Assert.equal(background.height, 192, state .. " background must use canonical pane height")
-    assertImage(bundle, background, state .. " background")
-    assertStaticVisual(background, state .. " background")
+    local pockets = assert(backgrounds[state], state .. " must publish every pocket variant")
+    local seen = {}
+    for _, pocket in ipairs(POCKETS) do
+      local background = assert(pockets[pocket], state .. " must publish the " .. pocket .. " background")
+      Assert.equal(background.width, 256, state .. "/" .. pocket .. " background must use canonical pane width")
+      Assert.equal(background.height, 192, state .. "/" .. pocket .. " background must use canonical pane height")
+      assertImage(bundle, background, state .. "/" .. pocket .. " background")
+      assertStaticVisual(background, state .. "/" .. pocket .. " background")
+      seen[#seen + 1] = bundle.assets[background.image]
+    end
+    local distinct = {}
+    for _, bytes in ipairs(seen) do
+      distinct[bytes] = true
+    end
+    local distinctCount = 0
+    for _ in pairs(distinct) do
+      distinctCount = distinctCount + 1
+    end
+    Assert.isTrue(distinctCount > 1, state .. " backgrounds must vary with the current pocket")
   end
 
   local tabs = assert(interactive.pocketTabs)
@@ -123,21 +145,49 @@ function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
     normalBytes[index] = assertImage(bundle, tab, "normal pocket tab " .. index)
     assertStaticVisual(tab, "normal pocket tab " .. index)
   end
-  local selected = assert(tabs.selected, "the selected pocket decoration must be a semantic visual")
-  local selectedBytes = assertImage(bundle, selected, "selected pocket tab")
-  assertStaticVisual(selected, "selected pocket tab")
-  Assert.isFalse(
-    selected.image ~= nil and selected.image == tabs.normal[1].image,
-    "selected and normal pocket visuals must not alias the same generated image"
-  )
+  Assert.isNil(tabs.selected, "the retired selected-tab semantic must not be published")
+  local highlight = assert(tabs.highlight, "the tab highlight must be a semantic visual")
+  local highlightBytes = assertImage(bundle, highlight, "tab highlight")
+  assertStaticVisual(highlight, "tab highlight")
   Assert.isTrue(
-    selectedBytes ~= normalBytes[1],
-    "selected and normal pocket visuals must differ in their generated pixels"
+    highlightBytes ~= normalBytes[1],
+    "highlight and normal pocket visuals must differ in their generated pixels"
   )
 
-  local focus = assert(interactive.itemSlots).focus
-  assertImage(bundle, focus, "item focus cursor")
-  assertStaticVisual(focus, "item focus cursor")
+  local itemSlots = assert(interactive.itemSlots)
+  Assert.isNil(itemSlots.focus, "no generated item-focus visual may be published")
+  local fullRects = {
+    { x = 0, y = 32, width = 128, height = 42 },
+    { x = 128, y = 32, width = 128, height = 42 },
+    { x = 0, y = 74, width = 128, height = 44 },
+    { x = 128, y = 74, width = 128, height = 44 },
+    { x = 0, y = 118, width = 128, height = 36 },
+    { x = 128, y = 118, width = 128, height = 36 },
+  }
+  Assert.equal(#assert(itemSlots.slots), 6, "all six item slots must be generated")
+  for index, slot in ipairs(itemSlots.slots) do
+    Assert.deepEqual(slot.rect, fullRects[index], "item slot " .. index .. " carries the full touch rect")
+    Assert.notNil(slot.textRect, "item slot " .. index .. " carries a separate text window")
+    Assert.equal(slot.textRect.width, 88, "item slot " .. index .. " text window keeps the source width")
+    Assert.equal(slot.textRect.height, 32, "item slot " .. index .. " text window keeps the source height")
+    Assert.notNil(slot.iconCenter, "item slot " .. index .. " carries its icon center")
+    Assert.deepEqual(slot.nameAt, { x = 0, y = 0 }, "item slot " .. index .. " names the standard name anchor")
+    Assert.deepEqual(
+      slot.quantityAt,
+      { x = 48, y = 16 },
+      "item slot " .. index .. " names the standard quantity anchor"
+    )
+  end
+  Assert.notNil(itemSlots.registration.slot1, "registration marker 1 must remain published")
+  Assert.notNil(itemSlots.registration.slot2, "registration marker 2 must remain published")
+
+  local cancel = assert(interactive.cancel, "Cancel must publish split geometry")
+  Assert.deepEqual(cancel.rect, { x = 192, y = 168, width = 64, height = 24 }, "Cancel carries the full button rect")
+  Assert.deepEqual(
+    cancel.textRect,
+    { x = 192, y = 168, width = 56, height = 16 },
+    "Cancel carries the separate text window"
+  )
   Assert.isNil(interactive.widgets, "the rebuilt manifest carries no retired widget namespace")
 
   Assert.equal(lights.count, 4, "the Bag hero must carry exactly four lights")
@@ -146,6 +196,7 @@ function T.rebuilt_bundle_publishes_source_faithful_semantic_presentation(romFs)
   assertNoSourceIdentity(manifest, "manifest")
   for path in pairs(bundle.assets) do
     Assert.isFalse(path:find("icon", 1, true) ~= nil, "item icon pixels must remain outside the Bag bundle")
+    Assert.isFalse(path:find("focus", 1, true) ~= nil, "no generated focus asset may remain in the Bag bundle")
   end
 end
 
@@ -155,13 +206,15 @@ function T.published_visuals_carry_no_timeline_or_source_identities(romFs)
   local interactive = assert(manifest.interactive)
   local visuals = {}
   for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-    visuals[#visuals + 1] = { visual = interactive.backgrounds[state], label = state .. " background" }
+    for _, pocket in ipairs(POCKETS) do
+      visuals[#visuals + 1] =
+        { visual = interactive.backgrounds[state][pocket], label = state .. "/" .. pocket .. " background" }
+    end
   end
   for index, visual in ipairs(assert(interactive.pocketTabs.normal)) do
     visuals[#visuals + 1] = { visual = visual, label = "normal pocket tab " .. index }
   end
-  visuals[#visuals + 1] = { visual = interactive.pocketTabs.selected, label = "selected pocket tab" }
-  visuals[#visuals + 1] = { visual = interactive.itemSlots.focus, label = "item focus cursor" }
+  visuals[#visuals + 1] = { visual = interactive.pocketTabs.highlight, label = "tab highlight" }
   visuals[#visuals + 1] = { visual = interactive.itemSlots.registration.slot1, label = "registration marker 1" }
   visuals[#visuals + 1] = { visual = interactive.itemSlots.registration.slot2, label = "registration marker 2" }
   for _, entry in ipairs(visuals) do

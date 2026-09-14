@@ -142,25 +142,33 @@ local function compileScreens(archive, dependencies, assets)
     readMember(archive, BagSources.palettes.lower, "lower-palette", dependencies),
     "lower-palette"
   )
-  local images = {}
   local references = {}
+  local lowerScreens = {}
   for _, spec in ipairs(SCREEN_ROLES) do
     local screen = decode("decodeScreen", readMember(archive, spec.member, spec.role, dependencies), spec.role)
-    local image = rasterizeScreen(
-      spec.upper and upperChar or lowerChar,
-      spec.upper and upperPalette.colors or lowerPalette.colors,
-      screen,
-      spec.role
-    )
-    image = BagPresentationCompiler.cropImage(image, 256, 192, spec.role)
-    images[spec.role] = image
     if spec.upper then
+      local image = rasterizeScreen(upperChar, upperPalette.colors, screen, spec.role)
+      image = BagPresentationCompiler.cropImage(image, 256, 192, spec.role)
       local path = BagCache.assetDir() .. "/" .. spec.role .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
       references[spec.role] = { image = path, width = image.width, height = image.height }
+    else
+      for _, entry in ipairs(screen.entries) do
+        if entry.palette > 3 then
+          sourceError("lower screen references palette bank outside the reproduced 0..3 setup", {
+            role = spec.role,
+            bank = entry.palette,
+          })
+        end
+      end
+      lowerScreens[spec.role] = screen
     end
   end
-  return images, references, lowerPalette.colors
+  return references, {
+    charData = lowerChar,
+    colors = lowerPalette.colors,
+    screens = lowerScreens,
+  }
 end
 
 local function compileSpriteData(archive, group, role, dependencies)
@@ -190,7 +198,7 @@ local function compileVisual(spriteData, selector, role, assets)
   end
   assert(sequence ~= nil, "missing animation sequences fail above")
   if #sequence.frames ~= 1 then
-    sourceError(role .. " selects an animated sequence; Bag v4 publishes static realizations only", {
+    sourceError(role .. " selects an animated sequence; the bag contract publishes static realizations only", {
       animation = selector.animation,
       frames = #sequence.frames,
     })
@@ -209,19 +217,51 @@ end
 
 local function compileSprites(archive, dependencies, assets)
   local tabsData = { compileSpriteData(archive, BagSources.sprites.tabs, "tabs", dependencies) }
-  local cursorData = { compileSpriteData(archive, BagSources.sprites.cursor, "focus", dependencies) }
   local tabs = {}
   for index, selector in ipairs(BagSources.spriteStates.tabs.normal) do
     tabs[index] = compileVisual(tabsData, selector, "tab-normal-" .. index, assets)
   end
   return {
     tabs = tabs,
-    selected = compileVisual(tabsData, BagSources.spriteStates.tabs.selected, "tab-selected", assets),
-    focus = compileVisual(cursorData, { animation = BagSources.spriteStates.cursor.animations[1] }, "focus", assets),
+    highlight = compileVisual(tabsData, BagSources.spriteStates.tabs.highlight, "tab-highlight", assets),
   }
 end
 
-local function compileBackgrounds(screenImages, assets)
+-- Realize one pocket's lower background palette: destination banks 0..3 copy
+-- the audited source banks relative to the zero-based pocket index. The
+-- effective palette is a private compile-time value; only rasterized pixels
+-- reach the bundle.
+---@param sourceColors { r: integer, g: integer, b: integer }[]
+---@param pocketIndex integer
+---@return { colors: { r: integer, g: integer, b: integer }[] }
+local function effectiveLowerPalette(sourceColors, pocketIndex)
+  local remap = BagSources.lowerPaletteBanks
+  local bankSize = remap.bankSize
+  local highestBank = pocketIndex
+  for _, offset in ipairs(remap.offsets) do
+    highestBank = math.max(highestBank, pocketIndex + offset)
+  end
+  if #sourceColors < (highestBank + 1) * bankSize then
+    sourceError("lower palette carries no source bank for the pocket realization", {
+      pocket = pocketIndex,
+      bank = highestBank,
+      available = #sourceColors,
+    })
+  end
+  local effective = {}
+  for index, color in ipairs(sourceColors) do
+    effective[index] = color
+  end
+  for destination = 0, 3 do
+    local sourceBank = pocketIndex + remap.offsets[destination + 1]
+    for entry = 0, bankSize - 1 do
+      effective[destination * bankSize + entry + 1] = sourceColors[sourceBank * bankSize + entry + 1]
+    end
+  end
+  return { colors = effective }
+end
+
+local function compileLowerBackgrounds(lower, assets)
   local screenRoles = {
     listWash = "list-wash",
     listSlots = "list-slots",
@@ -233,15 +273,22 @@ local function compileBackgrounds(screenImages, assets)
   }
   local backgrounds = {}
   for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-    local layers = {}
-    for _, sourceName in ipairs(BagSources.lowerLayers[state]) do
-      local role = assert(screenRoles[sourceName], "audited Bag layer has no semantic role: " .. sourceName)
-      layers[#layers + 1] = assert(screenImages[role], "audited Bag layer was not decoded: " .. sourceName)
+    local pockets = {}
+    for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
+      local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
+      local layers = {}
+      for _, sourceName in ipairs(BagSources.lowerLayers[state]) do
+        local role = assert(screenRoles[sourceName], "audited Bag layer has no semantic role: " .. sourceName)
+        local screen = assert(lower.screens[role], "audited Bag layer was not decoded: " .. sourceName)
+        layers[#layers + 1] = rasterizeScreen(lower.charData, palette.colors, screen, role)
+      end
+      local image = BagPresentationCompiler.composeImages(layers, "interactive background " .. state)
+      image = BagPresentationCompiler.cropImage(image, 256, 192, "interactive background " .. state)
+      local path = BagCache.assetDir() .. "/background-" .. state .. "-" .. pocketState.pocket .. ".png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      pockets[pocketState.pocket] = { image = path, width = image.width, height = image.height }
     end
-    local image = BagPresentationCompiler.composeImages(layers, "interactive background " .. state)
-    local path = BagCache.assetDir() .. "/background-" .. state .. ".png"
-    assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
-    backgrounds[state] = { image = path, width = image.width, height = image.height }
+    backgrounds[state] = pockets
   end
   return backgrounds
 end
@@ -594,7 +641,7 @@ local function _compile(romFs)
   dependencies[#dependencies + 1] = { name = BagSources.archive.alias .. ":narc", sha1 = Hashing.sha1hex(archiveBytes) }
 
   local assets = {}
-  local screenImages, screenReferences, lowerColors = compileScreens(archive, dependencies, assets)
+  local screenReferences, lower = compileScreens(archive, dependencies, assets)
   local messageArchive, messageArchiveErr = romFs:openNarc("messages")
   if messageArchive == nil then
     error(
@@ -610,8 +657,8 @@ local function _compile(romFs)
   assert(messageArchive ~= nil, "unavailable message archives fail above")
   local text = compileText(messageArchive, dependencies)
   local sprites = compileSprites(archive, dependencies, assets)
-  local backgrounds = compileBackgrounds(screenImages, assets)
-  local markers = compileRegistrationMarkers(archive, lowerColors, dependencies, assets)
+  local backgrounds = compileLowerBackgrounds(lower, assets)
+  local markers = compileRegistrationMarkers(archive, lower.colors, dependencies, assets)
   local textures, meshes = {}, {}
   local male = compileHero(archive, "male", dependencies, textures, meshes)
   local female = compileHero(archive, "female", dependencies, textures, meshes)
@@ -731,11 +778,10 @@ local function _compile(romFs)
       pocketTabs = {
         rects = geometry.tabs,
         normal = sprites.tabs,
-        selected = sprites.selected,
+        highlight = sprites.highlight,
       },
       itemSlots = {
         slots = geometry.slots,
-        focus = sprites.focus,
         registration = {
           slot1 = markers.slot1,
           slot2 = markers.slot2,

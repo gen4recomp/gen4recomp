@@ -76,18 +76,34 @@ function T.canonical_geometry_covers_tabs_slots_and_affordances()
     Assert.equal(tab.height, 32)
   end
   Assert.equal(#geometry.slots, 6)
+  local fullRects = {
+    { x = 0, y = 32, width = 128, height = 42 },
+    { x = 128, y = 32, width = 128, height = 42 },
+    { x = 0, y = 74, width = 128, height = 44 },
+    { x = 128, y = 74, width = 128, height = 44 },
+    { x = 0, y = 118, width = 128, height = 36 },
+    { x = 128, y = 118, width = 128, height = 36 },
+  }
   local seen = {}
-  for _, slot in ipairs(geometry.slots) do
+  for index, slot in ipairs(geometry.slots) do
     local cell = slot.rect
-    Assert.equal(cell.width, 88)
-    Assert.equal(cell.height, 32)
-    Assert.isTrue(cell.x == 32 or cell.x == 160, "slots sit in two columns")
-    Assert.isTrue(cell.y == 40 or cell.y == 80 or cell.y == 120, "slots sit in three rows")
+    Assert.deepEqual(cell, fullRects[index], "slot " .. index .. " carries the full touch rect")
     local key = cell.x .. "," .. cell.y
     Assert.isNil(seen[key], "slots must not overlap")
     seen[key] = true
+    Assert.equal(slot.textRect.width, 88, "slot " .. index .. " text window keeps the source width")
+    Assert.equal(slot.textRect.height, 32, "slot " .. index .. " text window keeps the source height")
+    Assert.isTrue(
+      slot.textRect.x >= cell.x
+        and slot.textRect.y >= cell.y
+        and slot.textRect.x + slot.textRect.width <= cell.x + cell.width
+        and slot.textRect.y + slot.textRect.height <= cell.y + cell.height,
+      "slot " .. index .. " text window must sit inside the touch rect"
+    )
     Assert.isTrue(slot.iconCenter.x >= cell.x and slot.iconCenter.x <= cell.x + cell.width)
     Assert.isTrue(slot.iconCenter.y >= cell.y and slot.iconCenter.y <= cell.y + cell.height)
+    Assert.deepEqual(slot.nameAt, { x = 0, y = 0 }, "slot " .. index .. " names the standard name anchor")
+    Assert.deepEqual(slot.quantityAt, { x = 48, y = 16 }, "slot " .. index .. " names the standard quantity anchor")
   end
   for _, name in ipairs({
     "cursorAnchor",
@@ -106,7 +122,8 @@ function T.canonical_geometry_covers_tabs_slots_and_affordances()
     Assert.isTrue(rect.x + rect.width <= 256 and rect.y + rect.height <= 192, what .. " must fit the pane")
   end
   fits(geometry.countReadout.rect, "count readout")
-  fits(geometry.cancel, "cancel")
+  fits(geometry.cancel.rect, "cancel")
+  fits(geometry.cancel.textRect, "cancel text window")
   fits(geometry.descriptionFrame, "description frame")
   fits(geometry.descriptionText, "description text")
   for _, button in ipairs(geometry.actionButtons) do
@@ -115,6 +132,17 @@ function T.canonical_geometry_covers_tabs_slots_and_affordances()
   for _, digit in ipairs(geometry.quantityDigits) do
     fits(digit, "quantity digit")
   end
+end
+
+function T.lower_palette_names_the_pocket_dependent_member_and_remap()
+  local BagSources = sources()
+  Assert.equal(BagSources.palettes.lower, 41, "the lower realization decodes the pocket-selected member")
+  Assert.deepEqual(
+    BagSources.lowerPaletteBanks,
+    { bankSize = 16, offsets = { 0, 0, 1, 0 } },
+    "destination banks copy the audited pocket-relative source banks"
+  )
+  Assert.deepEqual(BagSources.spriteStates.tabs.highlight, { animation = 8, palette = 9 })
 end
 
 function T.presentation_facts_are_finite_source_independent_values()

@@ -2,8 +2,10 @@
 -- The manifest carries the upper-pane hero (gender backdrops, description
 -- frame, gender hero models with pocket-indexed animation states, normalized
 -- camera/transform/light facts) plus the lower-pane controls (eight pocket
--- tabs, six item slots with icon anchors and registration markers, the count
--- readout, Cancel, semantic action text/templates, and the action/quantity/
+-- tabs with a highlight visual, six item slots pairing full touch rects with
+-- text windows and explicit text anchors plus registration markers, the count
+-- readout, Cancel with its text window, pocket-aware state backgrounds,
+-- semantic action text/templates, and the action/quantity/
 -- confirmation overlays). Every loader, producer
 -- writer, and test calls these validators, so no second interpretation of
 -- the shapes exists. Unknown fields, wrong pane sizes, out-of-bounds
@@ -17,7 +19,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v4"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v5"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -539,6 +541,35 @@ local function checkHero(hero, context)
   checkMaterials(presentation.materials, context)
 end
 
+local function checkLocalPoint(value, bounds, context, what)
+  if type(value) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(value, { x = true, y = true }, context, what)
+  for _, axis in ipairs({ "x", "y" }) do
+    if type(value[axis]) ~= "number" or value[axis] % 1 ~= 0 or value[axis] < 0 then
+      fail(what .. "." .. axis .. " must be a non-negative integer", context)
+    end
+  end
+  local limit = { x = bounds.width, y = bounds.height }
+  for _, axis in ipairs({ "x", "y" }) do
+    if value[axis] > limit[axis] then
+      fail(what .. "." .. axis .. " escapes its text window", context)
+    end
+  end
+end
+
+local function checkContained(inner, outer, context, what)
+  if
+    inner.x < outer.x
+    or inner.y < outer.y
+    or inner.x + inner.width > outer.x + outer.width
+    or inner.y + inner.height > outer.y + outer.height
+  then
+    fail(what .. " escapes its containing rect", context)
+  end
+end
+
 local function checkInteractive(interactive, context)
   if type(interactive) ~= "table" then
     fail("interactive must be a record", context)
@@ -563,17 +594,29 @@ local function checkInteractive(interactive, context)
     "interactive.backgrounds"
   )
   for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-    local visual = backgrounds[state]
-    checkVisual(visual, context, "interactive.backgrounds." .. state)
-    if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
-      fail("interactive.backgrounds." .. state .. " must use the canonical pane size", context)
+    local pockets = backgrounds[state]
+    if type(pockets) ~= "table" then
+      fail("interactive.backgrounds." .. state .. " must be a pocket record", context)
+    end
+    local allowed = {}
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      allowed[pocket] = true
+    end
+    checkKeys(pockets, allowed, context, "interactive.backgrounds." .. state)
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      local visual = pockets[pocket]
+      local what = "interactive.backgrounds." .. state .. "." .. pocket
+      checkVisual(visual, context, what)
+      if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
+        fail(what .. " must use the canonical pane size", context)
+      end
     end
   end
   local pocketTabs = interactive.pocketTabs
   if type(pocketTabs) ~= "table" then
     fail("interactive.pocketTabs must be a record", context)
   end
-  checkKeys(pocketTabs, { rects = true, normal = true, selected = true }, context, "interactive.pocketTabs")
+  checkKeys(pocketTabs, { rects = true, normal = true, highlight = true }, context, "interactive.pocketTabs")
   if not Validate.isArray(pocketTabs.rects) or #pocketTabs.rects ~= BagAssetSchema.TAB_COUNT then
     fail("interactive.pocketTabs.rects must carry exactly eight tab rectangles", context)
   end
@@ -586,12 +629,12 @@ local function checkInteractive(interactive, context)
   for index, visual in ipairs(pocketTabs.normal) do
     checkVisual(visual, context, "interactive.pocketTabs.normal[" .. index .. "]")
   end
-  checkVisual(pocketTabs.selected, context, "interactive.pocketTabs.selected")
+  checkVisual(pocketTabs.highlight, context, "interactive.pocketTabs.highlight")
   local itemSlots = interactive.itemSlots
   if type(itemSlots) ~= "table" then
     fail("interactive.itemSlots must be a record", context)
   end
-  checkKeys(itemSlots, { slots = true, focus = true, registration = true }, context, "interactive.itemSlots")
+  checkKeys(itemSlots, { slots = true, registration = true }, context, "interactive.itemSlots")
   if not Validate.isArray(itemSlots.slots) or #itemSlots.slots ~= BagAssetSchema.SLOT_COUNT then
     fail("interactive.itemSlots.slots must carry exactly six item slots", context)
   end
@@ -600,11 +643,19 @@ local function checkInteractive(interactive, context)
     if type(slot) ~= "table" then
       fail(what .. " must be a record", context)
     end
-    checkKeys(slot, { rect = true, iconCenter = true }, context, what)
+    checkKeys(
+      slot,
+      { rect = true, textRect = true, iconCenter = true, nameAt = true, quantityAt = true },
+      context,
+      what
+    )
     checkRect(slot.rect, context, what .. ".rect")
+    checkRect(slot.textRect, context, what .. ".textRect")
+    checkContained(slot.textRect, slot.rect, context, what .. ".textRect")
     checkPoint(slot.iconCenter, context, what .. ".iconCenter")
+    checkLocalPoint(slot.nameAt, slot.textRect, context, what .. ".nameAt")
+    checkLocalPoint(slot.quantityAt, slot.textRect, context, what .. ".quantityAt")
   end
-  checkVisual(itemSlots.focus, context, "interactive.itemSlots.focus")
   local pageIndicator = interactive.pageIndicator
   if type(pageIndicator) ~= "table" then
     fail("interactive.pageIndicator must be a record", context)
@@ -612,7 +663,14 @@ local function checkInteractive(interactive, context)
   checkKeys(pageIndicator, { rect = true, textAt = true }, context, "interactive.pageIndicator")
   checkRect(pageIndicator.rect, context, "interactive.pageIndicator.rect")
   checkPoint(pageIndicator.textAt, context, "interactive.pageIndicator.textAt")
-  checkRect(interactive.cancel, context, "interactive.cancel")
+  local cancel = interactive.cancel
+  if type(cancel) ~= "table" then
+    fail("interactive.cancel must be a record", context)
+  end
+  checkKeys(cancel, { rect = true, textRect = true }, context, "interactive.cancel")
+  checkRect(cancel.rect, context, "interactive.cancel.rect")
+  checkRect(cancel.textRect, context, "interactive.cancel.textRect")
+  checkContained(cancel.textRect, cancel.rect, context, "interactive.cancel.textRect")
   checkText(interactive.text, context)
   checkRegistration(itemSlots.registration, itemSlots.slots, context)
   local overlays = interactive.overlays

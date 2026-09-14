@@ -15,16 +15,19 @@ function T.geometry_preserves_the_audited_rectangles()
   Assert.equal(geometry.tabs[1].x, 0)
   Assert.equal(geometry.tabs[8].x, 224)
   Assert.equal(#geometry.slots, 6)
-  Assert.equal(geometry.slots[1].rect.x, 32)
-  Assert.equal(geometry.slots[1].rect.y, 40)
+  Assert.equal(geometry.slots[1].rect.x, 0)
+  Assert.equal(geometry.slots[1].rect.y, 32)
+  Assert.equal(geometry.slots[1].textRect.x, 32)
+  Assert.equal(geometry.slots[1].textRect.y, 40)
   Assert.equal(geometry.slots[1].iconCenter.x, 48)
-  Assert.equal(geometry.slots[6].rect.x, 160)
-  Assert.equal(geometry.slots[6].rect.y, 120)
+  Assert.equal(geometry.slots[6].rect.x, 128)
+  Assert.equal(geometry.slots[6].rect.y, 118)
   Assert.equal(geometry.slots[6].iconCenter.y, 136)
   Assert.equal(geometry.cursor.size, 16)
   Assert.equal(geometry.cursor.anchorY, 177)
   Assert.equal(geometry.pageIndicator.rect.x, 80)
-  Assert.equal(geometry.cancel.x, 192)
+  Assert.equal(geometry.cancel.rect.x, 192)
+  Assert.equal(geometry.cancel.textRect.width, 56)
   Assert.equal(geometry.descriptionFrame.y, 144)
   Assert.equal(#geometry.actionButtons, 4)
   Assert.equal(#geometry.quantityDigits, 3)
@@ -101,6 +104,82 @@ function T.materials_without_a_register_fail()
   local ok, err = pcall(BagPresentationCompiler.compileMaterials, edited)
   Assert.isFalse(ok, "a missing register must fail")
   Assert.notNil(tostring(err):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+end
+
+-- The retail hero transform carries the audited source height; the compiled
+-- runtime translation normalizes it once through the model-unit scale.
+function T.hero_translation_uses_the_retail_source_height()
+  local MapUnits = require("romdump.src.digest.map.MapUnits")
+  local translation =
+    assert(BagSources.presentation, "the source config carries a presentation record").transform.translation
+  Assert.deepEqual(translation, { x = 0, y = -45, z = 0 }, "the hero source translation must match the retail vector")
+  Assert.equal(
+    translation.y / MapUnits.MODEL_UNITS_PER_TILE,
+    -45 / 16,
+    "the normalized runtime height follows the source fact"
+  )
+end
+
+-- Item slots publish the full source touch rects alongside the narrower text
+-- windows they contain; icon centers stay on the audited points and the
+-- standard row anchors are explicit text-window-local points.
+function T.slots_publish_full_touch_rects_with_separate_text_windows()
+  local geometry = BagPresentationCompiler.compileGeometry(BagSources)
+  local fullRects = {
+    { x = 0, y = 32, width = 128, height = 42 },
+    { x = 128, y = 32, width = 128, height = 42 },
+    { x = 0, y = 74, width = 128, height = 44 },
+    { x = 128, y = 74, width = 128, height = 44 },
+    { x = 0, y = 118, width = 128, height = 36 },
+    { x = 128, y = 118, width = 128, height = 36 },
+  }
+  local textRects = {
+    { x = 32, y = 40, width = 88, height = 32 },
+    { x = 160, y = 40, width = 88, height = 32 },
+    { x = 32, y = 80, width = 88, height = 32 },
+    { x = 160, y = 80, width = 88, height = 32 },
+    { x = 32, y = 120, width = 88, height = 32 },
+    { x = 160, y = 120, width = 88, height = 32 },
+  }
+  local iconCenters = {
+    { x = 48, y = 56 },
+    { x = 176, y = 56 },
+    { x = 48, y = 96 },
+    { x = 176, y = 96 },
+    { x = 48, y = 136 },
+    { x = 176, y = 136 },
+  }
+  Assert.equal(#geometry.slots, 6)
+  for index = 1, 6 do
+    local slot = assert(geometry.slots[index], "slot " .. index .. " must be published")
+    Assert.deepEqual(slot.rect, fullRects[index], "slot " .. index .. " carries the full source touch rect")
+    Assert.deepEqual(slot.textRect, textRects[index], "slot " .. index .. " carries the separate text window")
+    Assert.deepEqual(slot.iconCenter, iconCenters[index], "slot " .. index .. " keeps the audited icon center")
+    Assert.deepEqual(slot.nameAt, { x = 0, y = 0 }, "slot " .. index .. " names the standard name anchor")
+    Assert.deepEqual(slot.quantityAt, { x = 48, y = 16 }, "slot " .. index .. " names the standard quantity anchor")
+    Assert.isTrue(
+      slot.textRect.x >= slot.rect.x
+        and slot.textRect.y >= slot.rect.y
+        and slot.textRect.x + slot.textRect.width <= slot.rect.x + slot.rect.width
+        and slot.textRect.y + slot.textRect.height <= slot.rect.y + slot.rect.height,
+      "slot " .. index .. " text window must be contained in the full touch rect"
+    )
+  end
+end
+
+-- Cancel publishes the full button rect alongside its narrower text window.
+function T.cancel_publishes_the_full_button_rect_with_its_text_window()
+  local geometry = BagPresentationCompiler.compileGeometry(BagSources)
+  Assert.deepEqual(
+    geometry.cancel.rect,
+    { x = 192, y = 168, width = 64, height = 24 },
+    "cancel carries the full source button rect"
+  )
+  Assert.deepEqual(
+    geometry.cancel.textRect,
+    { x = 192, y = 168, width = 56, height = 16 },
+    "cancel carries the separate text window"
+  )
 end
 
 return { tests = T }

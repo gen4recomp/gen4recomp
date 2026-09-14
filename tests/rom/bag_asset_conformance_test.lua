@@ -218,7 +218,8 @@ function T.geometries_fit_the_canonical_panes(romFs, versionId)
     fits(slot.rect, "slot")
   end
   fits(manifest.interactive.pageIndicator.rect, "page indicator")
-  fits(manifest.interactive.cancel, "cancel")
+  fits(manifest.interactive.cancel.rect, "cancel")
+  fits(manifest.interactive.cancel.textRect, "cancel text window")
   fits(manifest.hero.description.frame.rect, "description frame")
   fits(manifest.hero.description.textRect, "description text")
   for _, button in ipairs(manifest.interactive.overlays.actionMenu.buttons) do
