@@ -151,4 +151,5 @@ local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 suite.metadata.slow = true
 suite.metadata.tags = { "door", "census" }
 suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.derivedAssets = { "complete" }
 return suite

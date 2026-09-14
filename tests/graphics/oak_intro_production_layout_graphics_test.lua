@@ -14,6 +14,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local T = {
   metadata = {
     capabilities = { "graphics", "derived_cache" },
+    derivedAssets = { "bootstrap" },
     tags = { "oak", "responsive", "generated-assets" },
   },
   tests = {},

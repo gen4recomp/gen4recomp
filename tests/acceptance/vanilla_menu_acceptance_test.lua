@@ -8,6 +8,7 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "field-core", "map:7" },
     tags = { "field", "menu", "responsive", "topology", "script" },
   },
   tests = {},

@@ -283,5 +283,5 @@ function T.source_members_feed_the_dependency_identity(romFs, versionId)
 end
 
 local suite = RomSuite.fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump" }
 return suite

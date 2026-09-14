@@ -1,9 +1,14 @@
--- Detects the capabilities a test run has available. Three are owned here:
+-- Detects the capabilities a test run has available. Five are owned here:
 --
---   graphics      a preflight really built and released a Shader, Canvas, Mesh,
---                 and Image against the host's graphics namespace
---   rom_dump      at least one GameVersion is ready through RomImporter.isReady
---   derived_cache the incremental cache builder ran successfully for that dump
+--   graphics                a preflight really built and released a Shader, Canvas, Mesh,
+--                           and Image against the host's graphics namespace
+--   rom_dump                at least one GameVersion is ready through RomImporter.isReady
+--   derived_cache           the incremental cache builder ran successfully for that dump,
+--                           reported through the shell entrypoint's environment claim
+--   derived_assets          an invocation preparation receipt proves the requested
+--                           closure ready for the selected source and generation
+--   complete_derived_cache  the receipt additionally proves an exhaustive current
+--                           audit of the whole corpus
 --
 -- A host with no graphics module simply lacks the capability, and the graphics
 -- suites skip explicitly. A host that has the module but cannot produce a
@@ -14,7 +19,8 @@
 -- the shell entrypoint's step (`scripts/test.sh` runs `love romdump/
 -- --build-cache` before the ROM-gated layers) and it reports the outcome through
 -- PORTEMON_DERIVED_CACHE_READY. A ready raw dump alone therefore never claims a
--- current derived cache.
+-- current derived cache. The scoped capabilities never follow that bare flag:
+-- only a verified invocation receipt establishes them.
 
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -62,12 +68,57 @@ local function preflight(graphics, image)
   end
 end
 
+---@class CapabilitySource
+---@field versionId string selected game version
+---@field romSha1 string selected NDS content hash
+---@field generationId string|nil selected generation token when known
+
+---@class CapabilityPreparation
+---@field versionId string prepared game version
+---@field romSha1 string prepared NDS content hash
+---@field generationId string|nil prepared generation token when known
+---@field requested string[] prepared closed requirements
+---@field requestedReady boolean whether the requested closure is ready
+---@field complete boolean whether an exhaustive current audit proved the corpus
+
 ---@class CapabilityOptions
 ---@field env table<string, string>|nil
 ---@field isReady (fun(versionId: string): boolean)|nil
 ---@field versions string[]|nil
 ---@field graphics table|false|nil love.graphics-shaped namespace; false means absent
 ---@field image table|false|nil love.image-shaped namespace; false means absent
+---@field source CapabilitySource|nil selected source this run must prove
+---@field preparation CapabilityPreparation|nil invocation preparation receipt the shell verified
+
+-- Whether an invocation preparation receipt proves the requested closure
+-- for exactly the selected source: the closure must be ready, name at least
+-- one requirement, and match the selection on version, content hash, and
+-- generation. A failed preparation or a receipt for another generation
+-- proves nothing and must never downgrade into an optional skip.
+---@param source CapabilitySource|nil
+---@param preparation CapabilityPreparation|nil
+---@return boolean
+local function verifiesClosure(source, preparation)
+  if type(source) ~= "table" or type(preparation) ~= "table" then
+    return false
+  end
+  if preparation.requestedReady ~= true then
+    return false
+  end
+  if type(preparation.requested) ~= "table" or #preparation.requested == 0 then
+    return false
+  end
+  if preparation.versionId ~= source.versionId then
+    return false
+  end
+  if preparation.romSha1 ~= source.romSha1 then
+    return false
+  end
+  if preparation.generationId ~= source.generationId then
+    return false
+  end
+  return true
+end
 
 -- `options.env` is supplied by the caller (see `tests/run.lua`) so detection
 -- never depends on the ambient environment; `isReady`/`versions` are injected by
@@ -105,6 +156,13 @@ function Capabilities.detect(options)
     capabilities.rom_dump = true
     if env[Capabilities.DERIVED_CACHE_ENV] == "1" then
       capabilities.derived_cache = true
+    end
+  end
+  if verifiesClosure(options.source, options.preparation) then
+    capabilities.derived_assets = true
+    local preparation = assert(options.preparation, "a verified closure carries its receipt")
+    if preparation.complete == true then
+      capabilities.complete_derived_cache = true
     end
   end
   return capabilities, ready

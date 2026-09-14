@@ -20,7 +20,7 @@ Cli.LAYERS = { "unit", "component", "graphics", "rom", "acceptance" }
 -- preparation follows the selected suites' declared capabilities.
 local ROM_GATED = { rom = true, acceptance = true }
 
-local ROM_CAPABILITIES = { "rom_dump", "derived_cache" }
+local ROM_CAPABILITIES = { "rom_dump", "derived_cache", "derived_assets", "complete_derived_cache" }
 
 local STRICT_ENV = "PORTEMON_REQUIRE_ROM_TESTS"
 local GRAPHICS_STRICT_ENV = "PORTEMON_REQUIRE_GRAPHICS_TESTS"
@@ -31,7 +31,7 @@ local STRICT_COMMAND = STRICT_ENV .. "=1 scripts/test.sh"
 Cli.USAGE = table.concat({
   "usage: scripts/test.sh [--plan] [--list] [--layer <" .. table.concat(Cli.LAYERS, "|") .. ">]",
   "                      [--filter <substring>] [--tag <tag>] [--slow] [--serial]",
-  "                      [--rom-source <path-to-nds-or-zip>]",
+  "                      [--rom-source <path-to-nds-or-zip>] [--fresh]",
 }, "\n")
 
 local function isLayer(value)
@@ -70,6 +70,7 @@ end
 ---@field slow boolean
 ---@field serial boolean
 ---@field romSource string|nil
+---@field fresh boolean
 ---@field strict boolean
 ---@field graphicsStrict boolean
 ---@field requiredCapabilities string[]
@@ -91,6 +92,7 @@ function Cli.parse(argv, context)
     list = false,
     slow = false,
     serial = false,
+    fresh = false,
     strict = env[STRICT_ENV] == "1",
     graphicsStrict = env[GRAPHICS_STRICT_ENV] == "1",
     requiredCapabilities = {},
@@ -137,6 +139,9 @@ function Cli.parse(argv, context)
     elseif option == "--serial" then
       plan.serial = true
       index = index + 1
+    elseif option == "--fresh" then
+      plan.fresh = true
+      index = index + 1
     elseif option == "--rom-source" then
       local path = value(argv, index + 1)
       if path == nil then
@@ -165,20 +170,62 @@ function Cli.parse(argv, context)
     plan.requiredCapabilities[#plan.requiredCapabilities + 1] = "rom_source"
   end
 
+  -- An explicit cold rerun is only meaningful against a named source.
+  if plan.fresh and plan.romSource == nil then
+    return nil, "--fresh requires --rom-source <path-to-nds-or-zip>"
+  end
+
   return plan
 end
 
+-- A closed preparation requirement is a fixed scope word or a canonical
+-- kind:key pair with no whitespace: anything else never reaches the cache
+-- builder and is a usage failure before any import.
+---@param requirement string
+---@return boolean
+local function isRequirementShape(requirement)
+  if type(requirement) ~= "string" or requirement == "" then
+    return false
+  end
+  if requirement:find("%s") ~= nil then
+    return false
+  end
+  if requirement:find(":") == nil then
+    return requirement:match("^[A-Za-z][A-Za-z0-9_-]*$") ~= nil
+  end
+  local kind, key = requirement:match("^([^:]+):(.+)$")
+  return kind ~= nil and kind ~= "" and key ~= nil and key ~= "" and key:find(":") == nil
+end
+
+-- The preparation scope the exact requirement union implies: no scope when
+-- nothing is required, the exhaustive scope when any selected suite requests
+-- the complete corpus, otherwise the partial assets scope.
+---@param requirements string[]
+---@return string
+local function prepareScope(requirements)
+  if #requirements == 0 then
+    return "none"
+  end
+  for _, requirement in ipairs(requirements) do
+    if requirement == "complete" then
+      return "complete"
+    end
+  end
+  return "assets"
+end
+
 -- The machine-readable `key=value` response the shell entrypoint consumes in
--- place of its own option scanning: whether the derived cache must be
--- prepared before the run (a listing executes nothing, and a selection needs
--- it exactly when at least one selected test belongs to a suite declaring
--- `derived_cache`; a supplied source is always imported, whatever the
--- selection) and the source path to import.
+-- place of its own option scanning: the preparation scope the actually
+-- selected suites imply (`none`, `assets`, or `complete`), the cold-rerun
+-- flag, the source path to import (never for a listing, which executes
+-- nothing), the repeated closed requirements of the selection, and the
+-- effective worker count.
 ---@param plan TestPlan
----@param selectedCapabilities table<string, boolean>|nil union of declared capabilities of suites with selected tests
+---@param _ table<string, boolean>|nil retained union of declared capabilities; scope comes from requirements
 ---@param effectiveJobs integer|nil effective worker count
+---@param selectedRequirements string[]|nil deduplicated union of derived requirements of suites with selected tests
 ---@return string[]
-function Cli.renderPlan(plan, selectedCapabilities, effectiveJobs)
+function Cli.renderPlan(plan, _, effectiveJobs, selectedRequirements)
   if effectiveJobs == nil then
     effectiveJobs = 1
   end
@@ -186,11 +233,34 @@ function Cli.renderPlan(plan, selectedCapabilities, effectiveJobs)
     type(effectiveJobs) == "number" and effectiveJobs % 1 == 0 and effectiveJobs > 0,
     "effective jobs must be positive"
   )
-  local selected = selectedCapabilities or {}
-  local prepare = not plan.list and (plan.romSource ~= nil or selected.derived_cache == true)
-  local lines = { "prepare=" .. (prepare and "1" or "0"), "jobs=" .. effectiveJobs }
-  if plan.romSource ~= nil then
+  local requirements = {}
+  local seen = {}
+  for _, requirement in ipairs(selectedRequirements or {}) do
+    if not isRequirementShape(requirement) then
+      error("invalid cache requirement '" .. tostring(requirement) .. "'", 0)
+    end
+    if not seen[requirement] then
+      seen[requirement] = true
+      requirements[#requirements + 1] = requirement
+    end
+  end
+  table.sort(requirements)
+  -- A listing executes nothing, so it prepares nothing even when the listed
+  -- suites declare requirements; the rows below stay informative only.
+  local scope = prepareScope(requirements)
+  if plan.list then
+    scope = "none"
+  end
+  local lines = {
+    "prepare=" .. scope,
+    "fresh=" .. (plan.fresh and "1" or "0"),
+    "jobs=" .. effectiveJobs,
+  }
+  if plan.romSource ~= nil and not plan.list then
     lines[#lines + 1] = "rom_source=" .. plan.romSource
+  end
+  for _, requirement in ipairs(requirements) do
+    lines[#lines + 1] = "require=" .. requirement
   end
   return lines
 end

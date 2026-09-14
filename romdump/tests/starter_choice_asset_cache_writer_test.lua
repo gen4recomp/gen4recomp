@@ -73,6 +73,7 @@ local function publishedCache(versionId)
     FieldEmoteAssetCache.markerPath(),
     NewGameInitCache.markerPath(),
     FieldCellCache.markerPath(),
+    FieldCellCache.indexMarkerPath(),
     MonCache.markerPath(),
     ItemCache.markerPath(),
     BagCache.markerPath(),

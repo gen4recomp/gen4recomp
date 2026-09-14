@@ -6,15 +6,20 @@
 #   scripts/test.sh --filter <substring>
 #   scripts/test.sh --serial
 #   scripts/test.sh --rom-source <path-to.nds-or-zip>
+#   scripts/test.sh --rom-source <path-to.nds-or-zip> --fresh
 #
 # Arguments are parsed by tests/runner/Cli.lua; this script only decides where
 # the save root lives and whether to prepare the derived cache first. That
 # decision comes from the runner's own plan mode (`--plan`): the plan call
-# itself exits 2 on a usage error and answers, machine-readably, whether
-# preparation (and a supplied source import) is needed — the shell never
-# re-implements option scanning. With a ready dump the published derived cache
-# is checked before the ROM-gated layers. The incremental builder runs only
-# when that audit finds no usable cache; with no dump those layers skip loudly.
+# itself exits 2 on a usage error and answers, machine-readably, the
+# preparation scope, the cold-rerun flag, the source to import, and the exact
+# closed requirements of the selection — the shell never re-implements option
+# scanning. An explicit source seeds a persistent private cache rooted at
+# ${XDG_CACHE_HOME:-$HOME/.cache}/portemon/rom-tests/<rom-sha1>/ and guarded
+# by an exclusive lock; a later plain run reuses the last successfully
+# selected private cache, and --fresh performs a real cold import into an
+# owned temporary root that is removed after its children exit. The product
+# cache and personal saves are never touched by test preparation.
 # PORTEMON_REQUIRE_ROM_TESTS=1 makes a missing dump fatal.
 # Exit status: 0 green, 1 failures or a missing required capability, 2 usage.
 set -euo pipefail
@@ -29,9 +34,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# No inherited worker token may leak into planning, cache preparation, or
-# serial execution; only a worker subshell below exports one.
+# No inherited worker token, stale preparation record, or stale readiness
+# claim may leak into planning, cache preparation, or serial execution; only
+# a worker subshell below exports one, and readiness is published only for
+# preparation this invocation established.
 unset PORTEMON_TEST_ACCEPTANCE_NAMESPACE
+unset PORTEMON_TEST_PREPARATION
+unset PORTEMON_DERIVED_CACHE_READY
 
 # Terminate every still-tracked child before waiting any of them, so one
 # long-running child cannot delay signal delivery to the others; then wait
@@ -51,7 +60,8 @@ terminate_children() {
 # Disable INT/TERM traps first so cancellation cannot reenter itself, then
 # terminate/reap owned children, then exit with the conventional signal
 # status. The EXIT trap runs after this exits, so run_dir cleanup happens
-# only once every tracked child has been reaped.
+# only once every tracked child has been reaped. Locks held on shell file
+# descriptors release when this process exits, which is after the reap.
 cancel_parallel() {
   trap - INT TERM
   terminate_children
@@ -70,69 +80,381 @@ export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 # may still override it for diagnosis, like the SDL variables above.
 export PORTEMON_REQUIRE_GRAPHICS_TESTS="${PORTEMON_REQUIRE_GRAPHICS_TESTS:-1}"
 
-# `love romdump/ --build-cache` exits 2 with "no ready dump" when there is
-# nothing to prepare; any other nonzero status is a real preparation failure.
-NO_DUMP_STATUS=2
+# A selection file value is only ever a version name or a content hash: it
+# must never become a path. Reject everything else before any filesystem use.
+is_version_name() {
+  [[ "$1" =~ ^[a-z][a-z0-9]*$ ]]
+}
 
-# The runner's plan answer: preparation is needed for everything except a
-# listing and the three ROM-independent layers, and a supplied source is
-# always imported. A misread plan (protocol drift) must fail loudly rather
+is_content_hash() {
+  [[ "$1" =~ ^[0-9a-f]{40}$ ]]
+}
+
+# A closed preparation requirement is a scope word or one kind:key pair with
+# no whitespace; the cache builder owns the authoritative grammar and rejects
+# the rest as a usage error.
+is_requirement() {
+  [[ "$1" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] || [[ "$1" =~ ^[^:[:space:]]+:[^:[:space:]]+$ ]]
+}
+
+# Read the private last-selected source without trusting it: the file must
+# hold exactly the two strict lines, otherwise there is no selection.
+read_selection() {
+  select_version=""
+  select_sha=""
+  [ -f "$selection_file" ] || return 0
+  if [ "$(wc -l <"$selection_file" | tr -d ' ')" != 2 ]; then
+    return 0
+  fi
+  local version_line="" sha_line=""
+  version_line="$(sed -n 's/^version=//p' -- "$selection_file" | head -n 1)"
+  sha_line="$(sed -n 's/^rom_sha1=//p' -- "$selection_file" | head -n 1)"
+  if is_version_name "$version_line" && is_content_hash "$sha_line"; then
+    select_version="$version_line"
+    select_sha="$sha_line"
+  fi
+  return 0
+}
+
+# Atomically record the last successfully selected private source. Only
+# validated version/hash pairs reach this writer; callers validate first.
+write_selection() {
+  mkdir -p -- "$test_root"
+  local temporary="$test_root/selected-rom.tmp.$$"
+  printf 'version=%s\nrom_sha1=%s\n' "$1" "$2" >"$temporary"
+  mv -- "$temporary" "$selection_file"
+}
+
+# Validate one ROM path through the canonical source owner and report its
+# version identity without importing, creating cache state, or starting
+# compiler workers. Exits nonzero when the source is unusable.
+probe_source() {
+  local probe_out=""
+  local probe_status=0
+  probe_out="$(love romdump/ --probe-rom "$1")" || probe_status=$?
+  if [ "$probe_status" -ne 0 ]; then
+    printf '%s\n' "$probe_out"
+    echo "test: source validation failed for $1 (exit $probe_status)" >&2
+    exit "$probe_status"
+  fi
+  probe_version="$(printf '%s\n' "$probe_out" | sed -n 's/^version=//p' | head -n 1)"
+  probe_sha="$(printf '%s\n' "$probe_out" | sed -n 's/^rom_sha1=//p' | head -n 1)"
+  if ! is_version_name "$probe_version" || ! is_content_hash "$probe_sha"; then
+    echo "test: source validation answered an unusable identity for $1" >&2
+    exit 1
+  fi
+}
+
+# Whether the prepared manifest of one private root already covers the exact
+# requirement union of this selection. A complete corpus implies every
+# partial closure it contains.
+manifest_covers() {
+  local manifest="$1/prepared"
+  [ -f "$manifest" ] || return 1
+  if grep -qx 'complete' -- "$manifest" 2>/dev/null; then
+    return 0
+  fi
+  if [ "${#requires[@]}" -eq 0 ]; then
+    return 0
+  fi
+  local requirement=""
+  for requirement in "${requires[@]}"; do
+    grep -qxF -- "$requirement" "$manifest" 2>/dev/null || return 1
+  done
+  return 0
+}
+
+# Merge one successful preparation into the persistent manifest. A complete
+# scope subsumes every partial requirement.
+merge_manifest() {
+  local manifest="$1/prepared"
+  if [ "$2" = 1 ]; then
+    printf 'complete\n' >"$manifest"
+    return 0
+  fi
+  if [ "${#requires[@]}" -eq 0 ]; then
+    return 0
+  fi
+  {
+    if [ -f "$manifest" ]; then
+      cat -- "$manifest"
+    fi
+    printf '%s\n' "${requires[@]}"
+  } | LC_ALL=C sort -u >"$manifest.tmp"
+  mv -- "$manifest.tmp" "$manifest"
+}
+
+# Escape one value for embedding in a double-quoted Lua string. Callers only
+# pass values that already passed the strict shape checks above; newlines and
+# control characters are rejected rather than escaped.
+lua_quote() {
+  local value="$1"
+  if [[ "$value" == *$'\n'* ]]; then
+    echo "test: refusing to serialize a multiline value" >&2
+    exit 1
+  fi
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+# Publish the invocation preparation record the test workers validate: the
+# canonical private data home, the selected source, and the exact closure
+# this invocation established. Workers grant scoped capabilities only from
+# this record, never from an inherited environment boolean.
+write_receipt() {
+  local data_home="$1" version="$2" sha="$3" complete="$4"
+  local receipt="$data_home/preparation.lua"
+  {
+    printf 'return {\n  schema = "g4-test-preparation-v1",\n  data_home = %s,\n' "$(lua_quote "$data_home")"
+    printf '  source = { version_id = %s, rom_sha1 = %s },\n' "$(lua_quote "$version")" "$(lua_quote "$sha")"
+    printf '  preparation = { version_id = %s, rom_sha1 = %s, requested = {' "$(lua_quote "$version")" "$(lua_quote "$sha")"
+    local requirement=""
+    if [ "${#requires[@]}" -gt 0 ]; then
+      for requirement in "${requires[@]}"; do
+        printf ' %s,' "$(lua_quote "$requirement")"
+      done
+    fi
+    printf ' }, requested_ready = true, complete = %s },\n}\n' "$complete"
+  } >"$receipt.tmp"
+  mv -- "$receipt.tmp" "$receipt"
+  export PORTEMON_TEST_PREPARATION="$receipt"
+}
+
+# Run the cache builder's scoped preparation for the exact requirement union
+# and merge the success into the persistent manifest. Returns the complete
+# flag (0/1) in prepare_complete. Any failure exits without touching the
+# last valid selection or the persistent manifest.
+run_scoped_prepare() {
+  local version="$1" rom_dir="$2"
+  local prepare_args=()
+  local requirement=""
+  for requirement in "${requires[@]}"; do
+    prepare_args+=(--require "$requirement")
+  done
+  local prepare_out=""
+  local prepare_status=0
+  prepare_out="$(love romdump/ --prepare-cache --version "$version" "${prepare_args[@]}")" || prepare_status=$?
+  printf '%s\n' "$prepare_out"
+  if [ "$prepare_status" -ne 0 ]; then
+    echo "test: scoped cache preparation failed (exit $prepare_status)" >&2
+    exit "$prepare_status"
+  fi
+  prepare_complete=0
+  case "$prepare_out" in
+    *complete=true*) prepare_complete=1 ;;
+  esac
+  case "$prepare_out" in
+    *ready=false*)
+      echo "test: scoped cache preparation left requirements unready" >&2
+      exit 1
+      ;;
+  esac
+  merge_manifest "$rom_dir" "$prepare_complete"
+}
+
+# The runner's plan answer: the preparation scope the actual selection
+# implies, the cold-rerun flag, the source to import, and the exact closed
+# requirements. A misread plan (protocol drift) must fail loudly rather
 # than silently run against a stale cache.
-plan="$(love app/ --test --plan "$@")"
+plan_status=0
+plan="$(love app/ --test --plan "$@")" || plan_status=$?
+if [ "$plan_status" -ne 0 ]; then
+  exit "$plan_status"
+fi
 prepare=""
+fresh="0"
 rom_source=""
 jobs=""
+requires=()
 while IFS= read -r line; do
   case "$line" in
     prepare=*) prepare="${line#prepare=}" ;;
+    fresh=*) fresh="${line#fresh=}" ;;
     rom_source=*) rom_source="${line#rom_source=}" ;;
     jobs=*) jobs="${line#jobs=}" ;;
+    require=*)
+      requirement="${line#require=}"
+      if ! is_requirement "$requirement"; then
+        echo "test: the runner plan named an invalid requirement '$requirement'" >&2
+        exit 1
+      fi
+      requires+=("$requirement")
+      ;;
   esac
 done <<<"$plan"
-if [ "$prepare" != 0 ] && [ "$prepare" != 1 ]; then
-  echo "test: the runner plan did not answer prepare=0|1 (got '$prepare')" >&2
+if [ "$prepare" != "none" ] && [ "$prepare" != "assets" ] && [ "$prepare" != "complete" ]; then
+  echo "test: the runner plan did not answer prepare=none|assets|complete (got '$prepare')" >&2
+  exit 1
+fi
+if [ "$fresh" != "0" ] && [ "$fresh" != "1" ]; then
+  echo "test: the runner plan did not answer fresh=0|1 (got '$fresh')" >&2
   exit 1
 fi
 if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "test: the runner plan did not answer a positive jobs count (got '$jobs')" >&2
   exit 1
 fi
+if [ -z "$rom_source" ] && [ "$fresh" = 1 ]; then
+  echo "test: --fresh requires --rom-source <path-to-nds-or-zip>" >&2
+  exit 2
+fi
 
-status=0
-if [ "$prepare" = 1 ]; then
-  if [ -n "$rom_source" ]; then
-    # An isolated save root: importing and building a supplied source must never
-    # touch the user's ordinary cache or saves.
-    isolated="$(mktemp -d)"
-    temp_dirs+=("$isolated")
-    export XDG_DATA_HOME="$isolated"
-    echo "== import and build $rom_source into $isolated =="
-    love romdump/ --build-cache "$rom_source"
+# Private developer test roots live under the cache home, never under the
+# product save root; isolation is applied after the shared dev setup above
+# so no inherited override can restore the product root for a child.
+test_root="${XDG_CACHE_HOME:-$HOME/.cache}/portemon/rom-tests"
+selection_file="$test_root/selected-rom"
+
+# Exclusive per-ROM mutation lock. Only Linux developer tooling provides it;
+# selections that never mutate need no lock and stay portable.
+take_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "test: the private test cache requires flock (Linux developer tooling)" >&2
+    exit 1
+  fi
+  exec {lock_fd}>"$1/lock"
+  flock "$lock_fd"
+}
+
+if [ "$fresh" = 1 ]; then
+  # An explicit cold rerun: a new empty temporary data home, a real import,
+  # and the declared closure only. Persistent artifacts and the private
+  # default selection are neither read nor written; only the owned temporary
+  # directory is removed after all children exit.
+  fresh_root="$(mktemp -d)"
+  temp_dirs+=("$fresh_root")
+  export XDG_DATA_HOME="$fresh_root"
+  unset PORTEMON_SAVE_DIR
+  echo "== cold import $rom_source into $fresh_root =="
+  love romdump/ --import-rom "$rom_source"
+  if [ "$prepare" != "none" ]; then
+    probe_source "$rom_source"
+    run_scoped_prepare "$probe_version" "$fresh_root"
+    write_receipt "$fresh_root" "$probe_version" "$probe_sha" "$([ "$prepare_complete" = 1 ] && echo true || echo false)"
+    export PORTEMON_DERIVED_CACHE_READY=1
   else
+    rm -f -- "$fresh_root/preparation.lua"
+  fi
+elif [ -n "$rom_source" ]; then
+  # An explicit source: reuse the verified private root for its canonical
+  # content hash, importing only when its raw dump is absent.
+  file_sha="$(sha1sum -- "$rom_source" | cut -d ' ' -f 1)"
+  read_selection
+  version=""
+  sha=""
+  if [ -n "$select_sha" ] && [ "$select_sha" = "$file_sha" ]; then
+    version="$select_version"
+    sha="$select_sha"
+  elif [ "$(head -c 2 -- "$rom_source")" = "PK" ]; then
+    probe_source "$rom_source"
+    version="$probe_version"
+    sha="$probe_sha"
+  else
+    sha="$file_sha"
+  fi
+  rom_dir="$test_root/$sha"
+  data_home="$rom_dir/data-home"
+  mkdir -p -- "$data_home"
+  take_lock "$rom_dir"
+  export XDG_DATA_HOME="$data_home"
+  unset PORTEMON_SAVE_DIR
+  if [ ! -f "$rom_dir/rom-ready" ]; then
+    echo "== import and build $rom_source into $data_home =="
     BUILD_LOG_DIR="$(mktemp -d)"
     temp_dirs+=("$BUILD_LOG_DIR")
     BUILD_LOG="$BUILD_LOG_DIR/buildcache.log"
-    # The producer fingerprint + build-state check makes --build-cache cheap
-    # when nothing relevant changed: an identity match with a fully available
-    # cache means no ROM open and no compilation. A producer/contract/dump
-    # change rebuilds once; a damaged cache takes the repair path. This
-    # prevents tests from accepting a merely complete but stale cache.
-    love romdump/ --build-cache >"$BUILD_LOG" 2>&1 || status=$?
-    if [ "$status" -ne 0 ] && [ "$status" -ne "$NO_DUMP_STATUS" ]; then
-      tail -n 20 "$BUILD_LOG" >&2
-      echo "test: derived-cache preparation failed (exit $status); see $BUILD_LOG" >&2
-      exit "$status"
+    build_status=0
+    love romdump/ --build-cache "$rom_source" >"$BUILD_LOG" 2>&1 || build_status=$?
+    if [ "$build_status" -ne 0 ]; then
+      tail -n 20 -- "$BUILD_LOG" >&2
+      echo "test: private cache import failed (exit $build_status); see $BUILD_LOG" >&2
+      exit "$build_status"
     fi
     { grep -v ' current$' "$BUILD_LOG" | tail -n 5; } || true
+    if [ -z "$version" ]; then
+      version="$(awk '/^import complete: /{print $3; exit}' "$BUILD_LOG")"
+      if ! is_version_name "$version"; then
+        version="$(awk '/^build-cache: /{print $2; exit}' "$BUILD_LOG")"
+      fi
+      if ! is_version_name "$version"; then
+        version=""
+      fi
+    fi
+    printf 'rom_sha1=%s\n' "$sha" >"$rom_dir/rom-ready"
+    if [ -n "$version" ]; then
+      printf 'version=%s\nrom_sha1=%s\n' "$version" "$sha" >"$rom_dir/rom-ready"
+    fi
+    printf 'complete\n' >"$rom_dir/prepared"
+  elif [ "$prepare" != "none" ] && ! manifest_covers "$rom_dir"; then
+    if [ -z "$version" ]; then
+      version="$(sed -n 's/^version=//p' -- "$rom_dir/rom-ready" | head -n 1)"
+    fi
+    if ! is_version_name "$version"; then
+      probe_source "$rom_source"
+      if [ "$probe_sha" != "$sha" ]; then
+        echo "test: private cache identity changed; refusing to mix roots" >&2
+        exit 1
+      fi
+      version="$probe_version"
+    fi
+    echo "== prepare ${requires[*]} for $version in $data_home =="
+    run_scoped_prepare "$version" "$rom_dir"
   fi
-
-  if [ "$status" -eq 0 ]; then
+  if [ -n "$version" ]; then
+    write_selection "$version" "$sha"
+    echo "== private ROM test cache: $version $sha in $data_home =="
+  fi
+  if [ "$prepare" != "none" ] && manifest_covers "$rom_dir"; then
+    if [ -n "$version" ]; then
+      if grep -qx 'complete' -- "$rom_dir/prepared" 2>/dev/null; then
+        complete_value=true
+      else
+        complete_value=false
+      fi
+      write_receipt "$data_home" "$version" "$sha" "$complete_value"
+    fi
     export PORTEMON_DERIVED_CACHE_READY=1
+  else
+    rm -f -- "$data_home/preparation.lua"
+    unset PORTEMON_DERIVED_CACHE_READY
   fi
+elif [ "$prepare" != "none" ]; then
+  # A plain run: reuse the last successfully selected private cache when it
+  # names a supported hash whose raw dump validates, otherwise run the
+  # ROM-independent suites with explicit unavailable-ROM skips. The product
+  # cache is never prepared here.
+  read_selection
+  if [ -n "$select_sha" ] && [ -f "$test_root/$select_sha/rom-ready" ]; then
+    rom_dir="$test_root/$select_sha"
+    data_home="$rom_dir/data-home"
+    mkdir -p -- "$data_home"
+    take_lock "$rom_dir"
+    export XDG_DATA_HOME="$data_home"
+    unset PORTEMON_SAVE_DIR
+    version="$select_version"
+    if ! manifest_covers "$rom_dir"; then
+      echo "== prepare ${requires[*]} for $version in $data_home =="
+      run_scoped_prepare "$version" "$rom_dir"
+    fi
+    echo "== private ROM test cache: $version $select_sha in $data_home =="
+    if grep -qx 'complete' -- "$rom_dir/prepared" 2>/dev/null; then
+      complete_value=true
+    else
+      complete_value=false
+    fi
+    write_receipt "$data_home" "$version" "$select_sha" "$complete_value"
+    export PORTEMON_DERIVED_CACHE_READY=1
+  else
+    unset PORTEMON_DERIVED_CACHE_READY
+  fi
+else
+  unset PORTEMON_DERIVED_CACHE_READY
 fi
 
-# Not `exec`: the isolated save root of --rom-source is removed by the EXIT trap,
-# which a replaced process would never run.
+# Not `exec`: the isolated save roots above are removed by the EXIT trap,
+# which a replaced process would never run. Locks held above release when
+# this process exits, which is after every child below has been reaped.
 status=0
 echo "Running tests..."
 if [ "$jobs" -eq 1 ]; then
@@ -187,5 +509,8 @@ else
     unset "pids[1]"
   fi
   trap - INT TERM
+fi
+if [ -n "${lock_fd:-}" ]; then
+  exec {lock_fd}>&-
 fi
 exit "$status"

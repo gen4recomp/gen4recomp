@@ -16,6 +16,7 @@ local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "field-core", "map:7" },
     tags = { "field", "menu", "party" },
   },
   tests = {},

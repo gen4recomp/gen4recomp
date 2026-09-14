@@ -18,6 +18,7 @@ local T = {
   metadata = {
     slow = true,
     capabilities = { "rom_dump", "derived_cache" },
+    derivedAssets = { "complete" },
     tags = { "census", "animation" },
   },
   tests = {},
