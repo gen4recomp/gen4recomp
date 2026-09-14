@@ -2,8 +2,9 @@
 -- stage/validate/publish lifecycle. Shared content-addressed model blobs go
 -- directly to the live shared roots (idempotent and inert on failure, like
 -- map geometry); the bag-owned manifest, pane/sprite images, and completion
--- marker stage under the family roots with the marker last, so a failed
--- publication leaves the previous ready family untouched.
+-- marker stage under the family roots with the marker last, so a staging
+-- failure before publication preserves the live family. Once publication
+-- begins the shared publisher owns rollback, recovery, and cleanup outcomes.
 
 local Errors = require("libs.errors.src.Errors")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
@@ -16,7 +17,6 @@ local BagCacheWriter = {}
 BagCacheWriter.ERROR = {
   BUNDLE_INVALID = "BAG_CACHE_BUNDLE_INVALID",
   READBACK_FAILED = "BAG_CACHE_READBACK_FAILED",
-  PUBLICATION_FAILED = "BAG_CACHE_PUBLICATION_FAILED",
 }
 
 function BagCacheWriter.isReady(cacheFs, marker)
@@ -110,14 +110,7 @@ function BagCacheWriter.write(cacheFs, bundle)
     tx:abort()
     error(err, 0)
   end
-  local published, publishErr = pcall(tx.publish, tx)
-  if not published then
-    Errors.raise(
-      BagCacheWriter.ERROR.PUBLICATION_FAILED,
-      "bag publication failed: " .. tostring(publishErr),
-      { cause = tostring(publishErr) }
-    )
-  end
+  tx:publish()
   return true
 end
 

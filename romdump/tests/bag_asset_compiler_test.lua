@@ -734,4 +734,66 @@ function T.writer_rejects_an_invalid_manifest_before_staging()
   Assert.isNil(cacheFs:read(BagCache.markerPath()), "no marker may leak from a rejected bundle")
 end
 
+function T.publication_rollback_failure_preserves_the_shared_error_and_recovery_material()
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local first = syntheticBundle(BagCache.marker("rom", "deps"))
+  Assert.isTrue(BagCacheWriter.write(cacheFs, first))
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
+    local versionPrefix = "heartgold/"
+    if
+      sourcePath:sub(1, #versionPrefix) == versionPrefix
+      and (
+        sourcePath:find(".__g4next.", #versionPrefix + 1, true)
+        or sourcePath:find(".__g4old.", #versionPrefix + 1, true)
+      )
+    then
+      return false, "injected publish failure"
+    end
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+  local second = syntheticBundle(BagCache.marker("rom", "deps2"))
+  local err = Assert.throws(function()
+    BagCacheWriter.write(cacheFs, second)
+  end, "a failed publish with a failed rollback must surface the shared error")
+  Assert.isTrue(Errors.is(err), "the failure must be structured")
+  Assert.equal(err.code, "CACHE_PUBLISH_ROLLBACK_INCOMPLETE")
+  Assert.notNil(backend:getInfo("staging/heartgold/bag"), "the stage is not removed once publish has begun")
+  local oldPrefix = "heartgold/" .. BagCache.dir() .. ".__g4old."
+  local oldMarker
+  for path, data in pairs(backend.files) do
+    if path:sub(1, #oldPrefix) == oldPrefix and path:sub(-#"/complete") == "/complete" then
+      oldMarker = data
+    end
+  end
+  Assert.equal(oldMarker, first.marker, "the last-known-good bag class stays in the stage as recovery material")
+end
+
+function T.cleanup_failure_after_success_reports_the_live_artifact()
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local first = syntheticBundle(BagCache.marker("rom", "deps"))
+  Assert.isTrue(BagCacheWriter.write(cacheFs, first))
+  local originalRemove = backend.remove
+  backend.remove = function(self, path)
+    local stageRoot = "staging/heartgold/bag"
+    local inStage = path == stageRoot or path:sub(1, #stageRoot + 1) == stageRoot .. "/"
+    if inStage and backend:getInfo(stageRoot) ~= nil then
+      return false, "injected cleanup failure"
+    end
+    return originalRemove(self, path)
+  end
+  local second = syntheticBundle(BagCache.marker("rom", "deps2"))
+  local err = Assert.throws(function()
+    BagCacheWriter.write(cacheFs, second)
+  end, "a cleanup failure after success must surface the shared error")
+  Assert.isTrue(Errors.is(err), "the failure must be structured")
+  Assert.equal(err.code, "CACHE_PUBLISH_CLEANUP_FAILED")
+  Assert.equal(err.context.phase, "private-stage")
+  Assert.equal(cacheFs:read(BagCache.markerPath()), second.marker, "the new marker is live despite the cleanup failure")
+  Assert.isTrue(BagCacheWriter.isReady(cacheFs, second.marker), "the new class is ready despite the cleanup failure")
+  Assert.notNil(backend:getInfo("staging/heartgold/bag"), "stage cleanup remains incomplete")
+end
+
 return { tests = T }
