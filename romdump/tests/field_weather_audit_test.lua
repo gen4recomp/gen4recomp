@@ -60,33 +60,42 @@ function T.audit_with_stale_weather_marker_requires_a_build()
   Assert.isFalse(available, "a missing weather marker must make the cache unavailable")
 end
 
-function T.builder_treats_stale_weather_artifact_as_a_required_write()
-  local ok, FieldCacheBuild = pcall(require, "romdump.src.build.FieldCacheBuild")
-  if not ok then
-    error("FieldCacheBuild is absent: cannot verify weather build wiring", 0)
-  end
-  -- The field build owner must include the weather compiler; this is a
-  -- structural check that the extracted field stage references the artifact.
-  local info = debug.getinfo(FieldCacheBuild.build, "S")
-  local contents = ""
-  if info and info.source and info.source:sub(1, 1) == "@" then
-    local handle = io.open(info.source:sub(2), "r")
-    if handle then
-      contents = handle:read("*a")
-      handle:close()
-    end
-  end
-  -- Also accept the in-memory source via debug.getinfo line scan as fallback
-  if contents == "" then
-    contents = tostring(info and info.source or "")
-  end
-  Assert.isTrue(
-    contents:find("FieldWeather", 1, true) ~= nil
-      or contents:find("fieldWeather", 1, true) ~= nil
-      or contents:find("weather", 1, true) ~= nil
-      or tostring(info.source):find("weather", 1, true) ~= nil,
-    "CacheBuilder must mention the weather artifact"
-  )
+function T.common_session_compiles_field_weather_through_the_single_dispatcher()
+  local compilerPath = "romdump.src.digest.field.FieldWeatherCompiler"
+  local writerPath = "romdump.src.digest.field.FieldWeatherCacheWriter"
+  local savedCompiler, savedWriter = package.loaded[compilerPath], package.loaded[writerPath]
+  local compiled = { marker = "weather-marker", catalog = {}, provenance = {} }
+  local stagedBundle
+  package.loaded[compilerPath] = {
+    compile = function()
+      return compiled
+    end,
+  }
+  package.loaded[writerPath] = {
+    stage = function(artifact, bundle)
+      stagedBundle = bundle
+      artifact:addOwnedRoot("data/generated/field-weather")
+      return bundle.marker
+    end,
+  }
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ok, outcome = pcall(ArtifactJobs.execute, {
+    kind = "field-weather",
+    key = "global",
+    generationId = "test-generation",
+    epoch = 1,
+    stageName = "weather-dispatch-test",
+  }, {
+    romFs = {},
+    cacheFs = CacheFs.forVersion("heartgold", FakeCache.new()),
+  })
+  package.loaded[compilerPath] = savedCompiler
+  package.loaded[writerPath] = savedWriter
+  Assert.isTrue(ok, "the single dispatcher runs the weather family: " .. tostring(outcome))
+  Assert.equal(outcome.result.marker, "weather-marker")
+  Assert.equal(stagedBundle, compiled, "the dispatcher stages the family compiler bundle")
+  Assert.equal(ArtifactJobs.sizeClass("field-weather"), "normal")
+  Assert.deepEqual(ArtifactJobs.dependencies("field-weather", "global", {}), {})
 end
 
 return { tests = T }

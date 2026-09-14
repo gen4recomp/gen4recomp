@@ -386,4 +386,128 @@ function T.identity_matching_is_strict_about_schema_and_extra_fields()
   Assert.isFalse(DerivedCacheState.matches(widened, identity), "extra identity fields must not compare equal")
 end
 
+-- Drive the real headless preparation command the way production invokes it:
+-- stub only the host boundaries (ready dump, ROM identity, build session,
+-- process exit), while producer selection stays real. Every stub is restored
+-- and the dirty-probe scratch file is removed on every path.
+---@param stubs { isReady?: fun(versionId: string): boolean }
+---@param fn fun(select: (fun(dev: boolean): string), exits: integer[])
+local function withPreparationCommand(stubs, fn)
+  local Runner = require("romdump.src.cli.Runner")
+  local RomImporter = require("romdump.src.source.RomImporter")
+  local realIsReady = RomImporter.isReady
+  local realRomFs = package.loaded["romdump.src.source.RomFs"]
+  local realBuilder = package.loaded["romdump.src.CacheBuilder"]
+  local realQuit = love.event.quit
+  local realOpts = Runner.opts
+  local identities = {}
+  local exits = {}
+  RomImporter.isReady = stubs.isReady or function()
+    return true
+  end
+  package.loaded["romdump.src.source.RomFs"] = {
+    open = function()
+      return {
+        metadata = function()
+          return { sha1 = HEARTGOLD_SHA1 }
+        end,
+        close = function() end,
+      }
+    end,
+  }
+  package.loaded["romdump.src.CacheBuilder"] = {
+    prepareVersion = function(version, options)
+      identities[#identities + 1] = { version = version, identity = options.identity }
+      return {
+        requestedReady = true,
+        complete = true,
+        counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
+      }
+    end,
+  }
+  love.event.quit = function(code)
+    exits[#exits + 1] = code
+  end
+  local function select(dev)
+    Runner.opts = { version = "heartgold", requirements = { "bootstrap" }, dev = dev }
+    Runner._runPrepareCache()
+    local selected = identities[#identities]
+    assert(selected ~= nil, "preparation must forward an identity to the build session")
+    assert(selected.version == "heartgold", "preparation must prepare the requested version")
+    return assert(selected.identity).producerId
+  end
+  local ok, err = pcall(fn, select, exits)
+  RomImporter.isReady = realIsReady
+  package.loaded["romdump.src.source.RomFs"] = realRomFs
+  package.loaded["romdump.src.CacheBuilder"] = realBuilder
+  love.event.quit = realQuit
+  Runner.opts = realOpts
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Production development selection must hash the real working tree resolved
+-- against the repository root the app runs from: the digest is non-empty, a
+-- changed producer byte changes it, and removing the byte restores it. The
+-- dirty probe is a single scratch file inside a resolved root, removed
+-- before the test ends.
+function T.production_development_selection_follows_working_tree_bytes()
+  local repositoryRoot = love.filesystem.getSourceBaseDirectory()
+  local scratchPath = repositoryRoot .. "/romdump/src/__dirty_probe_tmp.lua"
+  assert(scratchPath:find("%.%.") == nil, "the dirty probe must stay inside the resolved root")
+  withPreparationCommand({}, function(select, exits)
+    local clean = select(true)
+    Assert.isTrue(
+      clean:match("^d[0-9a-f]+$") ~= nil and #clean == 65,
+      "development selection must be a d-prefixed SHA-256 token, got " .. tostring(clean)
+    )
+    Assert.isTrue(
+      clean ~= "d" .. Sha256.hex(""),
+      "development selection must hash working-tree bytes, never the empty manifest"
+    )
+    local probe = assert(io.open(scratchPath, "w"), "the dirty probe must open inside the resolved root")
+    probe:write("return {} -- dirty working-tree probe\n")
+    probe:close()
+    local probeOk, dirtyOrErr = pcall(select, true)
+    local removeOk = os.remove(scratchPath)
+    assert(removeOk, "the dirty probe must be removed from the working tree")
+    Assert.isTrue(probeOk, "selection with a dirty byte must succeed: " .. tostring(dirtyOrErr))
+    ---@cast dirtyOrErr string
+    Assert.isTrue(dirtyOrErr ~= clean, "a changed producer byte must change the development digest")
+    Assert.equal(select(true), clean, "removing the dirty byte must restore the digest")
+    Assert.deepEqual(exits, { 0, 0, 0 }, "every development selection must report success")
+  end)
+  Assert.isNil(io.open(scratchPath, "r"), "the dirty probe must not survive the test")
+end
+
+-- Production release selection uses the explicit per-game counter and never
+-- enumerates or reads producer sources, even when every source backend fails.
+function T.production_release_selection_reads_no_producer_sources()
+  local realCompute = ProducerFingerprint.compute
+  local realAppBackend = ProducerFingerprint.appBackend
+  local realCheckoutBackend = ProducerFingerprint.checkoutBackend
+  local touches = 0
+  local function touch()
+    touches = touches + 1
+    error("release selection must not touch producer sources", 0)
+  end
+  ProducerFingerprint.compute = touch
+  ProducerFingerprint.appBackend = touch
+  ProducerFingerprint.checkoutBackend = touch
+  local ok, err = pcall(function()
+    withPreparationCommand({}, function(select, exits)
+      Assert.equal(select(false), "r1", "release selection must carry the explicit per-game counter")
+      Assert.deepEqual(exits, { 0 }, "release selection must report success")
+    end)
+  end)
+  ProducerFingerprint.compute = realCompute
+  ProducerFingerprint.appBackend = realAppBackend
+  ProducerFingerprint.checkoutBackend = realCheckoutBackend
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(touches, 0, "release selection must perform zero producer-source reads")
+end
+
 return { tests = T }

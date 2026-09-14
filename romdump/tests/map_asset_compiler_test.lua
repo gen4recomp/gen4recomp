@@ -46,6 +46,40 @@ local TerrainFixture = require("tests.support.TerrainFixture")
 
 local T = {}
 
+-- One-shot staged map publication through the worker path: stage into a
+-- disposable root, finish, and publish. A staging failure aborts the stage.
+---@param cacheFs CacheFs
+---@param bundle table<string, unknown>
+---@return string marker
+local function stageMap(cacheFs, bundle)
+  local mapId = assert(bundle.mapId, "map bundle needs its map identity")
+  local key = tostring(mapId)
+  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local prepared = PreparedArtifact.new({
+    cacheFs = cacheFs,
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = "map-" .. key,
+  })
+  local ok, stageErr = pcall(MapCacheWriter.stage, prepared, bundle)
+  if not ok then
+    prepared:abort()
+    error(stageErr, 0)
+  end
+  prepared:finishSuccess({ marker = bundle.marker })
+  prepared:publish({
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+  })
+  return bundle.marker
+end
+
 local function compile(opts)
   local romFs = MapRomFixture.build(opts)
   local bundle, err = MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL)
@@ -924,7 +958,7 @@ function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   Assert.equal(model.animations[1].semanticNames[1], "door.open")
 
   local c = CacheFs.forVersion("heartgold", FakeCache.new())
-  local marker = MapCacheWriter.write(c, bundle)
+  local marker = stageMap(c, bundle)
   Assert.isTrue(MapAssetCache.isReady(c, bundle.mapId, marker), "the written map reads ready")
   Assert.isTrue(c:exists(MapAssetCache.modelPath(model.key)), "the model descriptor is on disk")
   -- The model key is content-addressed over the descriptor: a static
@@ -976,7 +1010,7 @@ function T.canonical_map_is_ready_for_its_precomputed_marker()
     fieldCellIndex = index,
     producerFingerprint = producerFingerprint,
   }))
-  MapCacheWriter.write(cacheFs, bundle)
+  stageMap(cacheFs, bundle)
   Assert.equal(plan.strategy, "canonical")
   Assert.isTrue(MapCompilePlan.isReady(cacheFs, plan), "canonical plan accepts its published map")
   Assert.isTrue(
@@ -1008,7 +1042,7 @@ function T.indoor_map_compilation_keeps_its_existing_readiness_path()
   Assert.equal(bundle.scene.type, "indoor")
   Assert.isTrue(bundle.marker ~= changedBundle.marker, "aggregate marker must include producer identity")
 
-  MapCacheWriter.write(cacheFs, bundle)
+  stageMap(cacheFs, bundle)
   local dependencies = MapAssetCache.dependencies(cacheFs, bundle.mapId)
   Assert.equal(dependencies.cacheFormat, MapAssetCache.FORMAT)
   Assert.equal(dependencies.producerFingerprint, producerA)

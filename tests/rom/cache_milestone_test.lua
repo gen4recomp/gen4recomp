@@ -431,6 +431,8 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       "script-summary:global",
       "actors:global",
       "starter-choice:global",
+      "items:global",
+      "bag:global",
     }) do
       membership[#membership + 1] = name
     end
@@ -586,6 +588,8 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     expect("script-summary", "global", scriptMemberKeys)
     expect("actors", "global")
     expect("starter-choice", "global")
+    expect("items", "global")
+    expect("bag", "global")
     Assert.equal(
       #missing,
       0,
@@ -621,6 +625,8 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     "field-font",
     "intro",
     "new-game-init",
+    "items",
+    "bag",
     "mon-catalog",
   }) do
     completeKind(kind)

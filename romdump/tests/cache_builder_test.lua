@@ -1,83 +1,25 @@
--- CacheBuilder contract: per-version derived-cache compilation with the
--- machine-readable build-cache log, compile-exclusion handling, and
--- per-version failure continuation. The digest and cache modules are faked
--- through package.loaded before CacheBuilder is required, so the pipeline is
--- exercised without a ROM or filesystem.
+-- CacheBuilder contract: buildVersions prepares every listed version with
+-- the complete scope through one common generation session per version. A
+-- matching attestation with a valid audit is a fast path that compiles
+-- nothing; a strict success defers its new attestation until every requested
+-- version satisfies the completion policy; accepted map exclusions and any
+-- version failure publish no new attestation. The session, pool, cache, and
+-- state modules are faked through package.loaded before CacheBuilder is
+-- required, so delegation is exercised without a ROM or filesystem.
 
 local Assert = require("tests.support.Assert")
-local Errors = require("libs.errors.src.Errors")
 
--- Every module CacheBuilder requires at load; each is replaced with a fake.
+-- Every module CacheBuilder requires at load that touches the host; each is
+-- replaced with a fake. Pure vocabulary modules (ArtifactState, GameVersion,
+-- contracts) stay real so requirement parsing and identity shape are proved.
 local FAKE_PATHS = {
-  "romdump.src.build.FieldCacheBuild",
-  "romdump.src.build.ScriptAudioCacheBuild",
-  "romdump.src.build.MapCacheBuild",
-  "romdump.src.build.CompilerPool",
-  "romdump.src.source.RomFs",
   "libs.storage.src.CacheFs",
-  "romdump.src.digest.map.MapAnalysis",
-  "romdump.src.digest.map.MapAssetCompiler",
-  "romdump.src.digest.map.MapCacheWriter",
-  "libs.assets.src.MapAssetCache",
-  "romdump.src.digest.map.WorldManifest",
-  "romdump.src.digest.field.FieldCameraCompiler",
-  "romdump.src.digest.field.FieldCameraCacheWriter",
-  "romdump.src.digest.field.FieldMapDataCompiler",
-  "romdump.src.digest.field.FieldMapDataCacheWriter",
-  "libs.assets.src.field.FieldMapDataCache",
-  "romdump.src.digest.actor.FieldActorCompiler",
-  "romdump.src.digest.actor.FieldActorCacheWriter",
-  "romdump.src.digest.actor.FollowingMonVisualCompiler",
-  "romdump.src.digest.mons.MonCatalogCompiler",
-  "romdump.src.digest.mons.MonCacheWriter",
-  "romdump.src.digest.items.ItemCatalogCompiler",
-  "romdump.src.digest.items.ItemCacheWriter",
-  "romdump.src.digest.ui.BagAssetCompiler",
-  "romdump.src.digest.ui.BagCacheWriter",
-  "romdump.src.digest.mons.MonPresentationCompiler",
-  "libs.assets.src.MonCache",
-  "romdump.src.digest.ui.FieldMessageCompiler",
-  "romdump.src.digest.ui.FieldMessageCacheWriter",
-  "libs.assets.src.field.FieldMessageCache",
-  "romdump.src.digest.ui.FieldFontCompiler",
-  "romdump.src.digest.ui.FieldFontCacheWriter",
-  "libs.assets.src.field.FieldFontCache",
-  "romdump.src.digest.ui.FieldUiCompiler",
-  "romdump.src.digest.ui.FieldUiCacheWriter",
-  "libs.assets.src.field.FieldUiAssetCache",
-  "romdump.src.digest.newgame.IntroAssetCompiler",
-  "romdump.src.digest.newgame.IntroAssetCacheWriter",
-  "libs.assets.src.newgame.IntroAssetCache",
-  "romdump.src.digest.newgame.StarterChoiceAssetCompiler",
-  "romdump.src.digest.newgame.StarterChoiceAssetCacheWriter",
-  "romdump.src.digest.field.FieldWeatherCompiler",
-  "romdump.src.digest.field.FieldWeatherCacheWriter",
-  "romdump.src.digest.newgame.NewGameInitCompiler",
-  "romdump.src.digest.newgame.NewGameInitCacheWriter",
-  "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
-  "romdump.src.digest.field.FieldEntranceIndicatorCacheWriter",
-  "libs.assets.src.field.FieldEffectAssetCache",
-  "romdump.src.digest.actor.FieldActorEmoteCompiler",
-  "romdump.src.digest.actor.FieldActorEmoteCacheWriter",
-  "libs.assets.src.field.FieldEmoteAssetCache",
-  "romdump.src.digest.script.ScriptCompiler",
-  "romdump.src.digest.script.ScriptCacheWriter",
-  "libs.assets.src.ScriptCache",
-  "romdump.src.digest.audio.AudioCompiler",
-  "romdump.src.digest.audio.AudioCacheWriter",
-  "libs.assets.src.audio.AudioCache",
-  "romdump.src.digest.field.FieldCellCompiler",
-  "romdump.src.digest.field.FieldCellCacheWriter",
-  "libs.assets.src.field.FieldCellCache",
+  "romdump.src.source.RomFs",
   "romdump.src.DerivedCacheState",
   "romdump.src.ProducerFingerprint",
   "romdump.src.DerivedCacheAudit",
-}
-
-local REAL_BUILD_OWNERS = {
-  ["romdump.src.build.FieldCacheBuild"] = true,
-  ["romdump.src.build.ScriptAudioCacheBuild"] = true,
-  ["romdump.src.build.MapCacheBuild"] = true,
+  "romdump.src.build.InteractiveCacheBuild",
+  "romdump.src.build.CompilerPool",
 }
 
 local T = {}
@@ -86,662 +28,264 @@ local saved = {}
 local env
 local CacheBuilder
 
--- One shared environment drives every fake; tests swap in fresh state per test.
 local function newEnv()
   return {
-    stale = {},
-    openFailures = {},
-    failCompilers = {},
-    compileFailures = {},
-    calls = {},
-    mapRequests = {},
+    identity = {
+      versionId = "heartgold",
+      generationId = "test-generation",
+      producerId = "d" .. string.rep("1", 64),
+    },
+    readyKeys = {},
+    failKeys = {},
+    excludedKeys = {},
+    milestones = {
+      bootstrap = { "world-catalog:global", "field-camera:global" },
+      ["field-core"] = { "world-catalog:global", "actors:global", "map:7" },
+    },
+    sessions = {},
+    pools = {},
+    shutdowns = 0,
+    retires = 0,
     opens = {},
     closes = {},
-    worldStage = nil,
-    -- Derived-cache state gate: the identity comparison outcome and the
-    -- fast-path availability audit. Defaults model a damaged cache under a
-    -- matching identity, which runs the incremental pipeline (the existing
-    -- tests below).
-    stateMatches = true,
+    openFailures = {},
+    dumpMarkers = {},
+    stateStored = nil,
+    stateMatches = false,
     auditAvailable = false,
-    stateMatchesCalls = 0,
-    auditCalls = 0,
-    stateInvalidations = 0,
-    statePublishes = 0,
-    identityInputs = nil,
-    producerComputations = 0,
-    manifestRaise = nil,
-    worldPublishes = 0,
-    worldAborts = 0,
-    mapResults = {
-      {
-        status = "resolved",
-        id = 2,
-        symbol = "s_town",
-        matrixMemberId = 1,
-        matrixX = 0,
-        matrixZ = 1,
-        matrixIndex = 2,
-        landDataMemberId = 3,
-        source = "direct",
-        matchCount = 1,
-        mapSection = "town",
-        mapSectionNativeId = 126,
-        followMode = "ALLOW",
-      },
-      {
-        status = "resolved",
-        id = 5,
-        symbol = "s_route",
-        matrixMemberId = 6,
-        matrixX = 2,
-        matrixZ = 3,
-        matrixIndex = 4,
-        landDataMemberId = 5,
-        source = "matrix",
-        matchCount = 2,
-        mapSection = "route",
-        mapSectionNativeId = 177,
-        followMode = "HEIGHT_RESTRICT",
-      },
-    },
-    mapBundles = {
-      [2] = {
-        mapId = 2,
-        marker = "m2",
-        scene = {
-          schema = "test-map-scene-v1",
-          mapId = 2,
-          mapSymbol = "s_town",
-          matrix = { width = 20, height = 20 },
-        },
-        unresolvedMaterials = {},
-      },
-      [5] = {
-        mapId = 5,
-        marker = "m5",
-        scene = {
-          schema = "test-map-scene-v1",
-          mapId = 5,
-          mapSymbol = "s_route",
-          matrix = { width = 10, height = 10 },
-        },
-        unresolvedMaterials = {
-          {
-            role = "map",
-            kind = "texture",
-            material = "bike_02_2_lm3",
-            modelName = "m_name01_00_00c",
-            modelArchive = "land_data",
-            modelMemberId = 280,
-            name = "bike_02_2",
-            source = "map_textures member 42",
-          },
-        },
-      },
-    },
-    mapReadiness = { [2] = true, [5] = true },
-    mapReadinessCalls = {},
-    cameraBundle = { marker = "cam-v1" },
-    actorBundle = { marker = "act-v1", index = { spriteIds = { 0, 1, 2 } } },
-    followerBundle = { marker = "follower-v1" },
-    monBundle = {
-      marker = "mon-v1",
-      version = { id = "heartgold", language = "english" },
-      species = {
-        BULBASAUR = { forms = {} },
-        CHARMANDER = { forms = {} },
-      },
-    },
-    itemBundle = {
-      marker = "item-v1",
-      catalog = {
-        items = {
-          POTION = {},
-          POKE_BALL = {},
-        },
-      },
-    },
-    bagBundle = {
-      marker = "bag-v1",
-      manifest = {
-        hero = {
-          animations = {
-            states = { {}, {} },
-          },
-        },
-      },
-    },
-    monPlan = {
-      icons = { pageIds = { 0 } },
-      portraits = { pageIds = { 0 } },
-      iconPages = { [0] = { pageId = 0 } },
-      portraitPages = { [0] = { pageId = 0 } },
-    },
-    fieldBundles = {
-      { mapId = 3, marker = "fd-3" },
-      { mapId = 7, marker = "fd-7" },
-    },
-    fontBundle = { fonts = { [0] = {}, [4] = {} }, marker = "font-v1" },
-    uiBundle = { marker = "ui-v1" },
-    introBundle = { marker = "intro-v1" },
-    starterChoiceBundle = { marker = "starter-v1" },
-    weatherBundle = { marker = "weather-v1" },
-    newGameInitBundle = { marker = "newgameinit-v1" },
-    effectBundle = { marker = "effect-v1" },
-    emoteBundle = { marker = "emote-v1" },
-    messageBundle = { marker = "msg-v1", index = { bankIds = { 4, 8 } } },
-    scriptBundle = { marker = "scr-v1", index = { resourceCount = 2, scriptMemberCount = 9 } },
-    audioBundle = { marker = "audio-v1", index = {} },
-    audioPlan = {
-      index = { banks = {}, sequences = {} },
-      bankPlans = {
-        { bankId = 0, sequenceIds = {} },
-      },
-    },
-    audioError = nil,
-    fieldCellBundle = { marker = "cells-v1", index = {}, cells = {} },
+    auditCalls = {},
+    invalidatedVersions = {},
+    publishes = {},
+    updateRaise = nil,
+    logLines = {},
   }
+end
+
+local function splitJobKey(jobKey)
+  local kind, key = jobKey:match("^([^:]+):(.+)$")
+  return kind, key
+end
+
+local function makeSession(pool, identity, sweepEnabled)
+  local session = {
+    pool = pool,
+    identity = identity,
+    sweepEnabled = sweepEnabled,
+    requested = {},
+    retired = false,
+  }
+  function session:_answer(jobKey)
+    if env.updateRaise ~= nil then
+      error(env.updateRaise, 0)
+    end
+    if env.failKeys[jobKey] ~= nil then
+      return false, jobKey .. ": " .. env.failKeys[jobKey]
+    end
+    if env.excludedKeys[jobKey] then
+      return false, jobKey .. ": source-planned exclusion"
+    end
+    if env.readyKeys[jobKey] or (self.completed ~= nil and self.completed[jobKey]) then
+      return true, nil
+    end
+    return false, nil
+  end
+  function session:requestJob(kind, key, urgency)
+    assert(not self.retired, "generation session is retired")
+    assert(type(kind) == "string" and type(key) == "string", "job needs its canonical kind and key")
+    assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
+    local jobKey = kind .. ":" .. key
+    self.requested[#self.requested + 1] = jobKey
+    self.pool.requested[#self.pool.requested + 1] = jobKey
+    return self:_answer(jobKey)
+  end
+  function session:requestMilestone(name, urgency)
+    assert(not self.retired, "generation session is retired")
+    assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+    local members = env.milestones[name] or {}
+    local failures = {}
+    local ready = true
+    for _, jobKey in ipairs(members) do
+      local kind, key = splitJobKey(jobKey)
+      local ok, failure = self:requestJob(kind, key, urgency)
+      if failure ~= nil and not env.excludedKeys[jobKey] then
+        failures[#failures + 1] = failure
+      end
+      if not ok and env.excludedKeys[jobKey] == nil then
+        ready = false
+      end
+    end
+    if #failures > 0 then
+      return false, failures[1]
+    end
+    return ready, nil
+  end
+  function session:update()
+    assert(not self.retired, "generation session is retired")
+    if env.updateRaise ~= nil then
+      error(env.updateRaise, 0)
+    end
+    self.completed = self.completed or {}
+    for _, jobKey in ipairs(self.requested) do
+      if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil then
+        self.completed[jobKey] = true
+      end
+    end
+  end
+  function session:status()
+    local ready, failed = 0, 0
+    local failures = {}
+    self.completed = self.completed or {}
+    for _, jobKey in ipairs(self.requested) do
+      if env.failKeys[jobKey] ~= nil then
+        failed = failed + 1
+        failures[#failures + 1] = jobKey .. ": " .. env.failKeys[jobKey]
+      elseif env.excludedKeys[jobKey] then
+        failed = failed + 1
+        failures[#failures + 1] = jobKey .. ": source-planned exclusion"
+      elseif self.completed[jobKey] or env.readyKeys[jobKey] then
+        ready = ready + 1
+      end
+    end
+    return { ready = ready, failed = failed, failures = failures, enumerated = #self.requested }
+  end
+  function session:retire()
+    self.retired = true
+    env.retires = env.retires + 1
+  end
+  return session
 end
 
 local function makeFakes()
   local fakes = {}
-  for _, path in ipairs(FAKE_PATHS) do
-    local name = path:match("([^%.]+)$")
-    local m = {}
-    -- WorldManifest's real surface is stage/publish/abort only, not the
-    -- shared stale-gate pair: CacheBuilder never writes it directly.
-    if name ~= "WorldManifest" then
-      -- isReady is the stale gate shared by every cache class; write records
-      -- and publishes the artifact, so a later identical build sees it as
-      -- current.
-      m.isReady = function()
-        return not env.stale[name]
+  fakes.CacheFs = {
+    forVersion = function(versionId)
+      return {
+        versionId = versionId,
+        read = function(_, path)
+          if path == "rom-dump.complete" then
+            return env.dumpMarkers[versionId] or ("g4-rom-dump-v1:" .. versionId .. ":deadbeef")
+          end
+          return nil
+        end,
+        loadLua = function()
+          return env.stateStored
+        end,
+        remove = function()
+          return true
+        end,
+      }
+    end,
+  }
+  fakes.RomFs = {
+    open = function(versionId)
+      if env.openFailures[versionId] ~= nil then
+        return nil, env.openFailures[versionId]
       end
-      m.write = function()
-        env.calls[#env.calls + 1] = name .. ".write"
-        env.stale[name] = nil
-      end
-    end
-    fakes[name] = m
-  end
-
-  fakes.RomFs.open = function(version)
-    if env.openFailures[version] ~= nil then
-      return nil, env.openFailures[version]
-    end
-    env.opens[#env.opens + 1] = version
-    return {
-      version = version,
-      close = function()
-        env.closes[#env.closes + 1] = version
-      end,
-      metadata = function()
-        return { sha1 = "rom-sha" }
-      end,
-    }
-  end
-  fakes.CacheFs.forVersion = function(version)
-    env.calls[#env.calls + 1] = "CacheFs.forVersion:" .. version
-    return {
-      version = version,
-      versionId = version,
-      read = function(_, path)
-        if path == "rom-dump.complete" then
-          return "g4-rom-dump-v1:" .. version .. ":deadbeef"
-        end
-        local mapId = path:match("^maps/(%d+)/complete$")
-        if mapId then
-          return env.mapBundles[tonumber(mapId)].marker
-        end
-        return nil
-      end,
-      loadLua = function(_, path)
-        local mapId = path:match("^maps/(%d+)/scene.lua$")
-        if mapId then
-          return env.mapBundles[tonumber(mapId)].scene
-        end
-        return env.stateStored
-      end,
-    }
-  end
+      env.opens[#env.opens + 1] = versionId
+      return {
+        version = versionId,
+        metadata = function()
+          return { sha1 = string.rep("a", 40) }
+        end,
+        close = function()
+          env.closes[#env.closes + 1] = versionId
+        end,
+      }
+    end,
+  }
   fakes.DerivedCacheState = {
     path = "data/generated/build.lua",
-    current = function(inputs)
-      env.identityInputs = inputs
-      env.calls[#env.calls + 1] = "DerivedCacheState.current"
-      return { identity = true }
+    matches = function(stored)
+      return env.stateMatches and stored == env.stateStored
     end,
-    matches = function()
-      env.stateMatchesCalls = env.stateMatchesCalls + 1
-      return env.stateMatches
+    invalidate = function(cacheFs)
+      env.invalidatedVersions[#env.invalidatedVersions + 1] = cacheFs.versionId
     end,
-    invalidate = function()
-      env.stateInvalidations = env.stateInvalidations + 1
-      env.calls[#env.calls + 1] = "DerivedCacheState.invalidate"
-    end,
-    publish = function()
-      env.statePublishes = env.statePublishes + 1
-      env.calls[#env.calls + 1] = "DerivedCacheState.publish"
+    publish = function(_, identity)
+      env.publishes[#env.publishes + 1] = identity
     end,
   }
   fakes.ProducerFingerprint = {
+    checkoutBackend = function()
+      return {}
+    end,
     appBackend = function()
       return {}
     end,
     compute = function()
-      env.producerComputations = env.producerComputations + 1
-      return "producer-fingerprint"
+      return "d" .. string.rep("1", 64)
     end,
   }
   fakes.DerivedCacheAudit = {
-    isAvailable = function()
-      env.auditCalls = env.auditCalls + 1
+    isAvailable = function(_, generationId)
+      env.auditCalls[#env.auditCalls + 1] = generationId
+      -- The legacy probe reflects the pre-build cache state; a generation
+      -- proof after a successful strict drain always passes because the
+      -- session validated every requested job.
+      if generationId ~= nil then
+        return true
+      end
       return env.auditAvailable
     end,
   }
-  fakes.MapAnalysis.analyze = function()
-    return env.mapResults
-  end
-  fakes.MapAssetCache.mapDir = function(mapId)
-    return "maps/" .. mapId
-  end
-  fakes.MapAssetCache.SCENE_SCHEMA = "test-map-scene-v1"
-  fakes.MapAssetCache.isReady = function(_, mapId, expectedMarker)
-    env.mapReadinessCalls[#env.mapReadinessCalls + 1] = { mapId = mapId, marker = expectedMarker }
-    return env.mapReadiness[mapId] == true
-  end
-  fakes.MapAssetCompiler.compile = function(_, mapId)
-    if env.compileFailures[mapId] ~= nil then
-      return nil, env.compileFailures[mapId]
-    end
-    return env.mapBundles[mapId]
-  end
-  fakes.CompilerPool.new = function()
-    local jobs, results = {}, {}
-    local pool = {}
-    function pool:request(job)
-      if job.kind == "map" then
-        env.mapRequests[#env.mapRequests + 1] = job
+  fakes.CompilerPool = {
+    new = function()
+      local pool = { requested = {}, selected = nil }
+      function pool:selectGeneration(identity, epoch)
+        self.selected = { identity = identity, epoch = epoch }
       end
-      jobs[job.key] = job
-    end
-    function pool:drain()
-      for key, job in pairs(jobs) do
-        if job.kind == "script-member" then
-          results[key] = {
-            state = "ready",
-            details = { workerId = 1, result = { memberId = job.payload.memberId } },
-          }
-        else
-          local bundle, compileError = fakes.MapAssetCompiler.compile(nil, job.payload.mapId)
-          if bundle then
-            fakes.MapCacheWriter.write(nil, bundle)
-            results[key] = {
-              state = "ready",
-              details = {
-                workerId = 1,
-                result = {
-                  mapId = bundle.mapId,
-                  marker = bundle.marker,
-                  mapSymbol = bundle.scene.mapSymbol,
-                  width = bundle.scene.matrix.width,
-                  height = bundle.scene.matrix.height,
-                  unresolvedMaterials = bundle.unresolvedMaterials,
-                },
-              },
-            }
-          else
-            results[key] = { state = "failed", details = { error = compileError } }
-          end
-        end
+      function pool:update() end
+      function pool:drain() end
+      function pool:shutdown()
+        env.shutdowns = env.shutdowns + 1
       end
-    end
-    function pool:status(key)
-      local result = results[key]
-      return result.state, result.details
-    end
-    function pool:shutdown() end
-    return pool
-  end
-  fakes.FieldCameraCompiler.compile = function(romFs)
-    if env.failCompilers[romFs.version] ~= nil then
-      local failure = env.failCompilers[romFs.version]
-      if Errors.is(failure) then
-        return nil, failure
-      end
-      error(failure, 0)
-    end
-    return env.cameraBundle
-  end
-  fakes.FieldActorCompiler.compile = function()
-    return env.actorBundle
-  end
-  fakes.FollowingMonVisualCompiler = {
-    compile = function()
-      return env.followerBundle
-    end,
-    mergeIntoActorBundle = function(actor, follower)
-      actor.mergedFollower = follower
+      env.pools[#env.pools + 1] = pool
+      return pool
     end,
   }
-  fakes.MonCatalogCompiler = {
-    compileCatalog = function()
-      return env.monBundle
+  fakes.InteractiveCacheBuild = {
+    new = function(options)
+      assert(type(options) == "table", "generation session options are required")
+      assert(type(options.identity) == "table", "generation session identity is required")
+      assert(type(options.epoch) == "number", "generation session epoch is required")
+      assert(type(options.pool) == "table", "generation session requires the process-owned pool")
+      assert(type(options.sweepEnabled) == "boolean", "generation session sweep choice is required")
+      local session = makeSession(options.pool, options.identity, options.sweepEnabled)
+      env.sessions[#env.sessions + 1] = session
+      return session
     end,
   }
-  fakes.ItemCatalogCompiler = {
-    compileAll = function()
-      return env.itemBundle
-    end,
-  }
-  fakes.BagAssetCompiler.compile = function()
-    return env.bagBundle
-  end
-  -- The mon family stages through disjoint markers: one stale flag gates
-  -- every mon readiness check, mirroring the single-writer idiom the other
-  -- families use.
-  fakes.MonPresentationCompiler = {
-    plan = function(_, catalog)
-      assert(catalog == env.monBundle, "mon planning consumes the compiled catalog")
-      return env.monPlan
-    end,
-    compilePage = function(_, kind, pagePlan)
-      return { kind = kind, pageId = pagePlan.pageId }
-    end,
-  }
-  fakes.MonCache = {
-    isCatalogReady = function()
-      return not env.stale.MonCacheWriter
-    end,
-    isLayoutReady = function()
-      return not env.stale.MonCacheWriter
-    end,
-    isPageReady = function()
-      return not env.stale.MonCacheWriter
-    end,
-  }
-  -- Intermediate mon stages record without clearing the shared stale flag:
-  -- only the family summary gate decides the compiled/current log line, so
-  -- it must still observe staleness after the earlier stages write. The
-  -- summary write publishes the family, like the shared auto-fake idiom.
-  fakes.MonCacheWriter = {
-    catalogMarker = function()
-      return "mon-catalog-v1"
-    end,
-    layoutMarker = function()
-      return "mon-layout-v1"
-    end,
-    pageMarker = function(_, kind, pageId)
-      return "mon-page-" .. kind .. "-" .. pageId
-    end,
-    buildIndex = function()
-      return {
-        schema = "test-mon-index-v1",
-        iconPages = { "mon-page-icons-0" },
-        portraitPages = {
-          "mon-page-portraits-0",
-        },
-      }
-    end,
-    summaryMarker = function()
-      return "mon-summary-v1"
-    end,
-    isReady = function()
-      return not env.stale.MonCacheWriter
-    end,
-    writeCatalog = function()
-      env.calls[#env.calls + 1] = "MonCacheWriter.writeCatalog"
-    end,
-    writeLayout = function()
-      env.calls[#env.calls + 1] = "MonCacheWriter.writeLayout"
-    end,
-    writePage = function()
-      env.calls[#env.calls + 1] = "MonCacheWriter.writePage"
-    end,
-    writeSummary = function()
-      env.calls[#env.calls + 1] = "MonCacheWriter.writeSummary"
-      env.stale.MonCacheWriter = nil
-    end,
-  }
-  fakes.FieldMapDataCompiler.compileAll = function()
-    return env.fieldBundles
-  end
-  fakes.FieldFontCompiler.compile = function()
-    return env.fontBundle
-  end
-  fakes.FieldUiCompiler.compile = function(romFs)
-    if env.failCompilers[romFs.version] ~= nil then
-      local failure = env.failCompilers[romFs.version]
-      if Errors.is(failure) then
-        return nil, failure
-      end
-      error(failure, 0)
-    end
-    return env.uiBundle
-  end
-  fakes.IntroAssetCompiler.compile = function()
-    return env.introBundle
-  end
-  fakes.StarterChoiceAssetCompiler = {
-    compile = function()
-      return env.starterChoiceBundle
-    end,
-  }
-  fakes.FieldMessageCompiler.compile = function()
-    return env.messageBundle
-  end
-  fakes.FieldMessageCompiler.requiredBankIds = function()
-    return { 4, 8 }
-  end
-  fakes.FieldMessageCompiler.newSession = function()
-    local session = {}
-    function session:compileBank(bankId)
-      return {
-        bankId = bankId,
-        bank = { bankId = bankId },
-        marker = "msg-bank-" .. bankId,
-        dependencies = {},
-      }
-    end
-    function session:close() end
-    return session
-  end
-  fakes.FieldMessageCache.INDEX_SCHEMA = "test-message-index-v1"
-  fakes.FieldMessageCache.isBankReady = function()
-    return not env.stale.FieldMessageCacheWriter
-  end
-  fakes.FieldMessageCacheWriter.writeBank = function()
-    env.calls[#env.calls + 1] = "FieldMessageCacheWriter.writeBank"
-    env.stale.FieldMessageCacheWriter = nil
-  end
-  fakes.FieldMessageCacheWriter.writeSummary = function()
-    env.calls[#env.calls + 1] = "FieldMessageCacheWriter.writeSummary"
-    env.stale.FieldMessageCacheWriter = nil
-  end
-  fakes.FieldMessageCacheWriter.summaryMarker = function()
-    return "msg-summary-v1"
-  end
-  fakes.FieldWeatherCompiler = {
-    compile = function()
-      return env.weatherBundle
-    end,
-  }
-  fakes.FieldEntranceIndicatorCompiler = {
-    compile = function()
-      return env.effectBundle
-    end,
-  }
-  fakes.FieldActorEmoteCompiler = {
-    compile = function()
-      return env.emoteBundle
-    end,
-  }
-  fakes.NewGameInitCompiler = {
-    compileFromRom = function(romFs)
-      if env.failCompilers[romFs.version] ~= nil then
-        local failure = env.failCompilers[romFs.version]
-        if Errors.is(failure) then
-          return nil, failure
-        end
-        error(failure, 0)
-      end
-      return env.newGameInitBundle
-    end,
-  }
-  fakes.FieldWeatherCacheWriter = {
-    isReady = function()
-      return not env.stale.FieldWeatherCacheWriter
-    end,
-    write = function()
-      env.calls[#env.calls + 1] = "FieldWeatherCacheWriter.write"
-      env.stale.FieldWeatherCacheWriter = nil
-    end,
-  }
-  fakes.ScriptCompiler.plan = function()
-    local resources = {
-      { id = "script.one", member = 0, scriptIndex = 0 },
-      { id = "script.two", member = 1, scriptIndex = 0 },
-    }
-    local generationKey = string.rep("a", 40)
-    local marker = env.scriptBundle.marker
-    local members = {}
-    for memberId = 0, env.scriptBundle.index.scriptMemberCount - 1 do
-      members[#members + 1] = { memberId = memberId, marker = generationKey .. ":member:" .. memberId, scripts = {} }
-    end
-    members[1].scripts = { { scriptIndex = 0, id = resources[1].id } }
-    members[2].scripts = { { scriptIndex = 0, id = resources[2].id } }
-    return {
-      generationKey = generationKey,
-      marker = marker,
-      version = "heartgold",
-      sourcePath = "romfs/field_scripts.narc",
-      romSha1 = "rom-sha",
-      dependencies = { scrSeqNarc = { path = "field_scripts.narc" }, versionRomSha1 = "rom-sha" },
-      memberCount = env.scriptBundle.index.scriptMemberCount,
-      members = members,
-      resources = resources,
-      index = {
-        schema = "g4-script-index-v2",
-        generation = generationKey,
-        marker = marker,
-        resources = resources,
-        resourceCount = #resources,
-        scriptMemberCount = #members,
-      },
-    }
-  end
-  fakes.ScriptCacheWriter.isReady = function()
-    return not env.stale.ScriptCacheWriter
-  end
-  fakes.ScriptCacheWriter.writeSummary = function()
-    env.calls[#env.calls + 1] = "ScriptCacheWriter.writeSummary"
-    env.stale.ScriptCacheWriter = nil
-    return true
-  end
-  fakes.AudioCompiler.compile = function()
-    return env.audioBundle, env.audioError
-  end
-  fakes.AudioCompiler.plan = function()
-    if env.audioBundle == nil then
-      return nil, env.audioError
-    end
-    return env.audioPlan
-  end
-  fakes.AudioCompiler.soundIdentity = function()
-    return "audio-identity"
-  end
-  fakes.AudioCompiler.bankMarker = function(_, bankPlan)
-    return "audio-bank-marker-" .. bankPlan.bankId
-  end
-  fakes.AudioCache = {
-    isBankReady = function()
-      return not env.stale.AudioCacheWriter
-    end,
-  }
-  fakes.AudioCacheWriter = {
-    isReady = function()
-      return not env.stale.AudioCacheWriter
-    end,
-    writeBank = function(_, _, bankPlan)
-      env.calls[#env.calls + 1] = "AudioCacheWriter.writeBank"
-      env.stale.AudioCacheWriter = nil
-      return "audio-bank-marker-" .. bankPlan.bankId
-    end,
-    writeSummary = function()
-      env.calls[#env.calls + 1] = "AudioCacheWriter.writeSummary"
-      env.stale.AudioCacheWriter = nil
-    end,
-    summaryMarker = function()
-      return "audio-summary-v1"
-    end,
-  }
-  fakes.FieldCellCompiler.compile = function()
-    return env.fieldCellBundle
-  end
-  fakes.WorldManifest.stage = function(cacheFs, entries, excluded, compileExcluded)
-    if env.manifestRaise ~= nil then
-      error(env.manifestRaise, 0)
-    end
-    env.calls[#env.calls + 1] = "WorldManifest.stage"
-    env.worldStage = { entries = entries, excluded = excluded, compileExcluded = compileExcluded }
-    return {
-      version = cacheFs.versionId,
-      publish = function()
-        env.worldPublishes = env.worldPublishes + 1
-        env.calls[#env.calls + 1] = "WorldManifest.publish"
-      end,
-      abort = function()
-        env.worldAborts = env.worldAborts + 1
-        env.calls[#env.calls + 1] = "WorldManifest.abort"
-      end,
-    }
-  end
   return fakes
 end
 
-local function collectLog()
-  local lines = {}
-  return {
-    lines = lines,
-    log = function(line)
-      lines[#lines + 1] = line
-    end,
-  }
+local function testLog()
+  return function(line)
+    env.logLines[#env.logLines + 1] = line
+  end
 end
 
----@param lines string[]
----@param expected string
----@return integer
-local function requireLogIndex(lines, expected)
-  for index, line in ipairs(lines) do
-    if line == expected then
-      return index
-    end
+local function requestedSet(session)
+  local set = {}
+  for _, jobKey in ipairs(session.requested) do
+    set[jobKey] = true
   end
-  error("missing expected build log line: " .. expected, 0)
-end
-
-local function requestedMapIds()
-  local ids = {}
-  for _, job in ipairs(env.mapRequests) do
-    ids[#ids + 1] = job.payload.mapId
-  end
-  return ids
+  return set
 end
 
 local module = {
   beforeAll = function()
+    -- Pure identity computation stays real; only the stateful attestation
+    -- behavior (match/invalidate/publish) is faked.
+    local realCurrent = require("romdump.src.DerivedCacheState").current
     for _, path in ipairs(FAKE_PATHS) do
       saved[path] = package.loaded[path]
       package.loaded[path] = nil
     end
     env = newEnv()
     local fakes = makeFakes()
+    fakes.DerivedCacheState.current = realCurrent
     for _, path in ipairs(FAKE_PATHS) do
-      if not REAL_BUILD_OWNERS[path] then
-        package.loaded[path] = fakes[path:match("([^%.]+)$")]
-      end
+      package.loaded[path] = fakes[path:match("([^%.]+)$")]
     end
     package.loaded["romdump.src.CacheBuilder"] = nil
     CacheBuilder = require("romdump.src.CacheBuilder")
@@ -755,570 +299,198 @@ local module = {
   tests = T,
 }
 
--- Every current class is logged in pipeline order, the staged world receives
--- the resolved map records, and the strict build publishes it and reports a
--- complete build.
-function T.current_build_logs_every_class_and_stages_and_publishes_the_world_manifest()
-  env = newEnv()
-  env.mapReadiness = { [2] = false, [5] = false }
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(capture.lines, {
-    "build-cache: heartgold field cameras current",
-    "build-cache: heartgold field actors current",
-    "build-cache: heartgold mons current",
-    "build-cache: heartgold items current",
-    "build-cache: heartgold bag current",
-    "build-cache: heartgold map 3 field data current",
-    "build-cache: heartgold map 7 field data current",
-    "build-cache: heartgold field font current",
-    "build-cache: heartgold field ui current",
-    "build-cache: heartgold intro assets current",
-    "build-cache: heartgold starter choice assets current",
-    "build-cache: heartgold warp entrance field effect current",
-    "build-cache: heartgold field emote indicator current",
-    "build-cache: heartgold field weather current",
-    "build-cache: heartgold fresh-game startup initializer current",
-    "build-cache: heartgold field messages current",
-    "build-cache: heartgold scripts current",
-    "build-cache: heartgold audio current",
-    "build-cache: heartgold physical field cells current",
-    "build-cache: heartgold map 2 compiled",
-    "build-cache: heartgold map 5 compiled",
-    "build-cache: heartgold map 5 unresolved map texture: material bike_02_2_lm3 of m_name01_00_00c land_data:280 wants bike_02_2 from map_textures member 42",
-    "build-cache: heartgold world.lua staged (2 maps, 0 unresolved cells, 0 compile-excluded)",
-    "build-cache: heartgold world.lua published",
-  })
-  Assert.equal(env.worldPublishes, 1, "a strict build publishes the staged world")
-  Assert.equal(env.worldAborts, 0, "a strict build never discards the staged world")
-  Assert.deepEqual(env.worldStage.entries, {
-    {
-      id = 2,
-      symbol = "s_town",
-      mapSection = "town",
-      mapSectionNativeId = 126,
-      followMode = "ALLOW",
-      width = 20,
-      height = 20,
-      matrix = { memberId = 1, x = 0, z = 1, index = 2, landDataMemberId = 3, selection = "direct", matchCount = 1 },
-    },
-    {
-      id = 5,
-      symbol = "s_route",
-      mapSection = "route",
-      mapSectionNativeId = 177,
-      followMode = "HEIGHT_RESTRICT",
-      width = 10,
-      height = 10,
-      matrix = { memberId = 6, x = 2, z = 3, index = 4, landDataMemberId = 5, selection = "matrix", matchCount = 2 },
-    },
-  })
-end
-
--- Running the cache build twice with identical dependencies must take the
--- actor "current" path on the second run and perform no actor rewrite: the
--- build never invalidates live artifacts before its readiness check.
-function T.unchanged_second_build_rewrites_nothing()
-  env = newEnv()
-  env.stale.FieldActorCacheWriter = true
-  local first = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = first.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.isTrue(first.lines[2]:find("field actors compiled", 1, true) ~= nil, first.lines[2])
-  local function actorWrites()
-    local count = 0
-    for _, call in ipairs(env.calls) do
-      if call == "FieldActorCacheWriter.write" then
-        count = count + 1
-      end
-    end
-    return count
-  end
-  Assert.equal(actorWrites(), 1, "the first build publishes the actor artifact")
-
-  local second = collectLog()
-  local report2, err2 = CacheBuilder.buildVersions({ "heartgold" }, { log = second.log })
-  Assert.isNil(err2)
-  Assert.deepEqual(report2, { published = true, complete = true, exclusionCount = 0 })
-  Assert.isTrue(second.lines[2]:find("field actors current", 1, true) ~= nil, second.lines[2])
-  Assert.equal(actorWrites(), 1, "an unchanged second build must not rewrite actor assets")
-end
-
-function T.forced_build_keeps_a_ready_script_generation_current()
-  env = newEnv()
-  env.stateMatches = false
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
-  for _, call in ipairs(env.calls) do
-    Assert.isTrue(
-      call ~= "ScriptCacheWriter.writeSummary",
-      "a forced build must not replace a ready planned script generation"
-    )
-  end
-end
-
--- A stale class is compiled through its writer and logged with its counts;
--- writer order follows the class order of the pipeline.
-function T.stale_classes_compile_with_counts_in_pipeline_order()
-  env = newEnv()
-  env.mapReadiness = { [2] = false, [5] = false }
-  env.stale = {
-    FieldCameraCacheWriter = true,
-    FieldActorCacheWriter = true,
-    MonCacheWriter = true,
-    ItemCacheWriter = true,
-    BagCacheWriter = true,
-    StarterChoiceAssetCacheWriter = true,
-    FieldMapDataCache = true,
-    FieldFontCacheWriter = true,
-    FieldUiCacheWriter = true,
-    FieldWeatherCacheWriter = true,
-    NewGameInitCacheWriter = true,
-    FieldMessageCacheWriter = true,
-    ScriptCacheWriter = true,
-    AudioCacheWriter = true,
-    FieldCellCacheWriter = true,
-    MapAssetCache = true,
-  }
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(capture.lines, {
-    "build-cache: heartgold field cameras compiled",
-    "build-cache: heartgold field actors compiled (3 sprites)",
-    "build-cache: heartgold mons compiled (2 species)",
-    "build-cache: heartgold items compiled (2 items)",
-    "build-cache: heartgold bag compiled (2 states)",
-    "build-cache: heartgold map 3 field data compiled",
-    "build-cache: heartgold map 7 field data compiled",
-    "build-cache: heartgold field font compiled",
-    "build-cache: heartgold field ui compiled",
-    "build-cache: heartgold intro assets current",
-    "build-cache: heartgold starter choice assets compiled",
-    "build-cache: heartgold warp entrance field effect current",
-    "build-cache: heartgold field emote indicator current",
-    "build-cache: heartgold field weather compiled",
-    "build-cache: heartgold fresh-game startup initializer compiled",
-    "build-cache: heartgold field messages compiled (2 banks)",
-    "build-cache: heartgold scripts compiled (2 resources, 9 members)",
-    "build-cache: heartgold audio compiled",
-    "build-cache: heartgold physical field cells compiled",
-    "build-cache: heartgold map 2 compiled",
-    "build-cache: heartgold map 5 compiled",
-    "build-cache: heartgold map 5 unresolved map texture: material bike_02_2_lm3 of m_name01_00_00c land_data:280 wants bike_02_2 from map_textures member 42",
-    "build-cache: heartgold world.lua staged (2 maps, 0 unresolved cells, 0 compile-excluded)",
-    "build-cache: heartgold world.lua published",
-  })
-  Assert.equal(env.stateInvalidations, 1, "the damaged attestation is invalidated before the rebuild")
-  Assert.equal(env.statePublishes, 1, "a strict rebuild publishes the new identity")
-end
-
--- A structured compile rejection is recorded in the manifest, logged, and
--- fails the build unless the caller accepts compile exclusions. An unaccepted
--- exclusion build never publishes its staged world; an accepted one publishes
--- it but reports an explicit partial status.
-function T.compile_exclusions_fail_the_build_unless_allowed()
-  env = newEnv()
-  env.mapReadiness[5] = false
-  env.compileFailures[5] = Errors.new("MAP_SCHEMA_INVALID", "injected compile rejection")
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(report)
-  Assert.equal(err, "cache preparation failed")
-  local scriptsIndex = requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
-  local audioIndex = requireLogIndex(capture.lines, "build-cache: heartgold audio current")
-  local cellsIndex = requireLogIndex(capture.lines, "build-cache: heartgold physical field cells current")
-  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 current")
-  local map5ExcludedIndex = requireLogIndex(
-    capture.lines,
-    "build-cache: heartgold map 5 excluded: MAP_SCHEMA_INVALID: injected compile rejection"
-  )
-  local stagedIndex = requireLogIndex(
-    capture.lines,
-    "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
-  )
-  local warningIndex = requireLogIndex(
-    capture.lines,
-    "build-cache: compile exclusions remain; " .. "rerun with --allow-compile-exclusions to accept them"
-  )
-  Assert.isTrue(scriptsIndex < audioIndex, "scripts must precede audio")
-  Assert.isTrue(audioIndex < cellsIndex, "audio must precede physical cells")
-  Assert.isTrue(cellsIndex < map2Index, "physical cells must precede map 2")
-  Assert.isTrue(map2Index < map5ExcludedIndex, "map 2 must precede the map 5 exclusion")
-  Assert.isTrue(map5ExcludedIndex < stagedIndex, "the map 5 exclusion must precede world staging")
-  Assert.isTrue(stagedIndex < warningIndex, "world staging must precede the compile-exclusion warning")
-  Assert.deepEqual(env.worldStage.compileExcluded, {
-    {
-      id = 5,
-      symbol = "s_route",
-      errorCode = "MAP_SCHEMA_INVALID",
-      message = "injected compile rejection",
-      context = {},
-    },
-  })
-  Assert.equal(env.worldPublishes, 0, "an unaccepted-exclusion build must never publish its staged world")
-  Assert.equal(env.worldAborts, 1, "the staged world of a failed build is discarded")
-
-  local accepted = collectLog()
-  local report2, err2 = CacheBuilder.buildVersions(
-    { "heartgold" },
-    { allowCompileExclusions = true, log = accepted.log }
-  )
-  Assert.isNil(err2)
-  Assert.deepEqual(report2, { published = true, complete = false, exclusionCount = 1 })
-  local acceptedStagedIndex = requireLogIndex(
-    accepted.lines,
-    "build-cache: heartgold world.lua staged (1 maps, 0 unresolved cells, 1 compile-excluded)"
-  )
-  local acceptedPublishedIndex = requireLogIndex(accepted.lines, "build-cache: heartgold world.lua published")
-  Assert.isTrue(acceptedStagedIndex < acceptedPublishedIndex, "world staging must precede world publishing")
-  Assert.equal(env.worldPublishes, 1, "an accepted-exclusion build publishes its staged world")
-  -- A build that accepted compile exclusions is not a strict success and must
-  -- never publish the successful-build attestation.
-  Assert.equal(env.statePublishes, 0, "an exclusion-accepting build must not publish state")
-end
-
--- One version whose source data fails to compile is reported, its RomFs
--- handle is still closed, and the remaining versions run to completion. The
--- whole batch failed, so the successfully built version's staged world must
--- never become authoritative: the last-known-good world.lua stays live.
-function T.a_failed_version_continues_and_closes_its_romfs()
-  env = newEnv()
-  env.failCompilers.heartgold = Errors.new("FIELD_CAMERA_VERSION_UNSUPPORTED", "injected compile failure")
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold", "soulsilver" }, { log = capture.log })
-  Assert.isNil(report)
-  Assert.equal(err, "cache preparation failed")
-  Assert.equal(
-    capture.lines[1],
-    "build-cache: heartgold failed: FIELD_CAMERA_VERSION_UNSUPPORTED: injected compile failure"
-  )
-  Assert.equal(capture.lines[2], "build-cache: soulsilver field cameras current")
-  Assert.deepEqual(env.closes, { "heartgold", "soulsilver" })
-  Assert.equal(env.worldPublishes, 0, "a later version failure must keep the staged world unpublished")
-  Assert.equal(env.worldAborts, 1, "the staged world of the failed batch is discarded")
-end
-
--- A typed field-UI compile failure is an ordinary per-version source-data
--- failure: the version reports the typed code, no field-UI class is written,
--- the staged world is discarded, and the remaining versions run to
--- completion.
-function T.a_failed_ui_compile_reports_and_skips_the_ui_publish()
-  env = newEnv()
-  env.failCompilers.heartgold = Errors.new("FIELD_UI_SOURCE_INVALID", "unsupported cursor geometry")
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold", "soulsilver" }, { log = capture.log })
-  Assert.isNil(report)
-  Assert.equal(err, "cache preparation failed")
-  Assert.equal(capture.lines[1], "build-cache: heartgold failed: FIELD_UI_SOURCE_INVALID: unsupported cursor geometry")
-  Assert.equal(capture.lines[2], "build-cache: soulsilver field cameras current")
-  for _, call in ipairs(env.calls) do
-    Assert.isTrue(call ~= "FieldUiCacheWriter.write", "a failed UI compile must never publish a field-UI class")
-  end
-  Assert.equal(env.worldPublishes, 0, "a later version failure must keep the staged world unpublished")
-  Assert.equal(env.worldAborts, 1, "the staged world of the failed batch is discarded")
-end
-
--- A typed audio compile failure is reported by the audio stage rather than
--- being mistaken for the earlier script stage's (nil) error.
-function T.a_failed_audio_compile_reports_and_skips_the_remaining_stages()
-  env = newEnv()
-  env.audioBundle = nil
-  env.audioError = Errors.new("AUDIO_SOURCE_INVALID", "unsupported sample data")
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(report)
-  Assert.equal(err, "cache preparation failed")
-  local scriptsIndex = requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
-  local failureIndex =
-    requireLogIndex(capture.lines, "build-cache: heartgold failed: AUDIO_SOURCE_INVALID: unsupported sample data")
-  Assert.isTrue(scriptsIndex < failureIndex, "scripts must precede the audio failure")
-  Assert.equal(env.worldPublishes, 0, "a failed audio compile must not publish a world")
-  Assert.equal(env.worldAborts, 0, "a failed audio compile stages no world to discard")
-end
-
--- An open failure is logged like any per-version failure, closes nothing, and
--- does not stop the remaining versions.
-function T.open_failure_is_reported_and_closes_nothing()
-  env = newEnv()
-  env.openFailures.heartgold = Errors.new("ROMFS_LOAD_FAILED", "injected open failure", { path = "rom_metadata.lua" })
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold", "soulsilver" }, { log = capture.log })
-  Assert.isNil(report)
-  Assert.equal(err, "cache preparation failed")
-  Assert.isTrue(capture.lines[1]:find("injected open failure", 1, true) ~= nil, capture.lines[1])
-  Assert.equal(capture.lines[2], "build-cache: soulsilver field cameras current")
-  Assert.deepEqual(env.opens, { "soulsilver" })
-  Assert.deepEqual(env.closes, { "soulsilver" })
-end
-
--- A programming fault inside a version's build is rethrown after the version's
--- RomFs is closed: it must never be flattened into a normal failed-version
--- report, and the remaining versions must not run.
-function T.a_programming_fault_aborts_the_batch_after_closing_the_romfs()
-  env = newEnv()
-  env.failCompilers.heartgold = "boom"
-  local capture = collectLog()
-  local raised = Assert.throws(function()
-    CacheBuilder.buildVersions({ "heartgold", "soulsilver" }, { log = capture.log })
-  end)
-  Assert.equal(raised, "boom", "the original fault must propagate unchanged")
-  Assert.deepEqual(env.opens, { "heartgold" }, "the batch must stop at the faulting version")
-  Assert.deepEqual(env.closes, { "heartgold" }, "the version's RomFs is closed before the fault rethrows")
-  Assert.deepEqual(capture.lines, {}, "a programming fault must not become a failed-version report")
-end
-
--- A structured error raised directly by a writer (a cache write failure or a
--- duplicate world-manifest id) is not a per-version source-data failure: it
--- indicates a broken builder/cache invariant and must abort the batch, not be
--- flattened into a failed-version report.
-function T.a_raised_structured_error_aborts_the_batch()
-  env = newEnv()
-  env.manifestRaise = Errors.new("WORLD_MANIFEST_DUP_ID", "duplicate map id 2", { id = 2 })
-  local raised = Assert.throws(function()
-    CacheBuilder.buildVersions({ "heartgold", "soulsilver" }, { log = collectLog().log })
-  end)
-  Assert.equal(raised.code, "WORLD_MANIFEST_DUP_ID", "the structured error must propagate unchanged")
-  Assert.deepEqual(env.opens, { "heartgold" }, "the batch must stop at the faulting version")
-  Assert.deepEqual(env.closes, { "heartgold" }, "the version's RomFs is closed before the fault rethrows")
-end
-
 -- An empty version list is part of the function contract: no build runs and
 -- the caller-facing error names the empty selection.
 function T.empty_version_list_returns_no_ready_version_to_compile()
   env = newEnv()
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({}, { log = capture.log })
+  local report, err = CacheBuilder.buildVersions({}, { log = testLog() })
   Assert.isNil(report)
   Assert.equal(err, "no ready version to compile")
-  Assert.deepEqual(capture.lines, { "build: no ready version to compile" })
+  Assert.deepEqual(env.logLines, { "build: no ready version to compile" })
+  Assert.equal(#env.pools, 0, "no pool is created for an empty selection")
+end
+
+-- The complete scope drives one common session per version with the sweep
+-- enabled, requests field core plus the mon summary, and publishes the
+-- schema-2 attestation only after every version succeeds.
+function T.complete_scope_delegates_to_one_common_session_per_version()
+  env = newEnv()
+  env.auditAvailable = true
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.equal(#env.sessions, 1, "one common session serves the version")
+  Assert.isTrue(env.sessions[1].sweepEnabled, "an exhaustive client drains the sweep")
+  local requested = requestedSet(env.sessions[1])
+  Assert.isTrue(requested["world-catalog:global"], "field core is requested")
+  Assert.isTrue(requested["actors:global"], "field core is requested")
+  Assert.isTrue(requested["mon-summary:global"], "the mon summary is requested")
+  Assert.equal(#env.publishes, 1, "a strict success publishes its attestation")
+  local identity = env.publishes[1]
+  Assert.equal(identity.versionId, "heartgold")
+  Assert.equal(identity.mode, "development")
+  Assert.equal(identity.producerId, "d" .. string.rep("1", 64))
+  Assert.equal(identity.romSha1, string.rep("a", 40))
+  Assert.equal(env.auditCalls[#env.auditCalls], identity.generationId, "strict success proves the generation")
+  Assert.equal(env.shutdowns, 1, "the command shuts its pool down")
+  Assert.equal(env.retires, 1, "the command retires its session")
+end
+
+-- A matching attestation with a valid audit is a fast path: no session, no
+-- pool, no invalidation, and the current-style report line.
+function T.matching_attestation_with_available_cache_compiles_nothing()
+  env = newEnv()
+  env.stateStored = { schema = 2, generationId = "test-generation" }
+  env.stateMatches = true
+  env.auditAvailable = true
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.deepEqual(env.logLines, { "build-cache: heartgold current" })
+  Assert.equal(#env.sessions, 0, "the fast path opens no session")
+  Assert.equal(#env.pools, 0, "the fast path creates no pool")
+  Assert.deepEqual(env.invalidatedVersions, {}, "a current cache is never invalidated")
+  Assert.equal(#env.publishes, 0, "a current cache is never republished")
+end
+
+-- A matching identity with a damaged cache enters repair: the stale
+-- attestation is invalidated before the rebuild and the strict success
+-- publishes the new identity.
+function T.damaged_cache_invalidates_before_repair_and_republishes()
+  env = newEnv()
+  env.stateStored = { schema = 2, generationId = "test-generation" }
+  env.stateMatches = true
+  env.auditAvailable = false
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(err)
+  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
+  Assert.deepEqual(env.invalidatedVersions, { "heartgold" })
+  Assert.equal(#env.publishes, 1, "a strict repair republishes the attestation")
+end
+
+-- Map compile failures fail the batch by default; with explicitly accepted
+-- exclusions the batch succeeds partially but publishes no attestation.
+function T.compile_exclusions_fail_the_batch_unless_allowed()
+  env = newEnv()
+  env.failKeys["map:7"] = "MAP_SCHEMA_INVALID: injected compile rejection"
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(report)
+  Assert.equal(err, "cache preparation failed")
+  Assert.equal(#env.publishes, 0, "a failed batch publishes no attestation")
+
+  env = newEnv()
+  env.failKeys["map:7"] = "MAP_SCHEMA_INVALID: injected compile rejection"
+  env.auditAvailable = true
+  local accepted, acceptedErr = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", allowCompileExclusions = true, log = testLog() }
+  )
+  Assert.isNil(acceptedErr)
+  Assert.deepEqual(accepted, { published = true, complete = false, exclusionCount = 1 })
+  Assert.equal(#env.publishes, 0, "an exclusion-accepting batch never attests completeness")
+end
+
+-- A non-map failure is never hidden by the map-exclusion option.
+function T.non_map_family_failure_is_never_hidden_by_map_exclusions()
+  env = newEnv()
+  env.failKeys["actors:global"] = "ACTOR_SOURCE_INVALID: injected actor rejection"
+  env.auditAvailable = true
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", allowCompileExclusions = true, log = testLog() }
+  )
+  Assert.isNil(report)
+  Assert.equal(err, "cache preparation failed")
+  Assert.equal(#env.publishes, 0, "a hidden family failure must never pass as partial success")
+end
+
+-- One version whose source fails to open is reported while the remaining
+-- versions still run; the batch fails and no new attestation is published
+-- for any version, while previously valid attestations are untouched.
+function T.a_failed_version_continues_without_publishing_new_attestations()
+  local Errors = require("libs.errors.src.Errors")
+  env = newEnv()
+  env.openFailures.heartgold = Errors.new("ROMFS_LOAD_FAILED", "injected open failure", {})
+  env.auditAvailable = true
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold", "soulsilver" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(report)
+  Assert.equal(err, "cache preparation failed")
+  Assert.deepEqual(env.opens, { "soulsilver" })
+  Assert.deepEqual(env.closes, { "soulsilver" })
+  Assert.equal(#env.sessions, 1, "the remaining version still prepares through its session")
+  Assert.equal(#env.publishes, 0, "a failed batch defers every new attestation")
+end
+
+-- A previously valid attestation for an unaffected version is preserved when
+-- another version fails: the fast path never invalidates.
+function T.valid_attestations_for_unaffected_versions_are_preserved()
+  local Errors = require("libs.errors.src.Errors")
+  env = newEnv()
+  env.stateStored = { schema = 2, generationId = "test-generation" }
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.openFailures.soulsilver = Errors.new("ROMFS_LOAD_FAILED", "injected open failure", {})
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold", "soulsilver" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(report)
+  Assert.equal(err, "cache preparation failed")
+  Assert.deepEqual(env.invalidatedVersions, {}, "the unaffected version keeps its attestation")
+  Assert.equal(env.logLines[1], "build-cache: heartgold current")
+end
+
+-- A programming fault inside a version's preparation rethrows after session
+-- retirement and pool shutdown instead of becoming a failed-version report.
+function T.a_programming_fault_rethrows_after_cleanup()
+  env = newEnv()
+  env.updateRaise = "boom"
+  local raised = Assert.throws(function()
+    CacheBuilder.buildVersions(
+      { "heartgold" },
+      { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+    )
+  end)
+  Assert.equal(raised, "boom", "the original fault must propagate unchanged")
+  Assert.equal(env.retires, 1, "the faulting session is retired")
+  Assert.equal(env.shutdowns, 1, "the owned pool is shut down")
+  Assert.equal(#env.publishes, 0, "a faulting batch publishes no attestation")
 end
 
 -- The log option defaults to print, the plain-Lua output of the CLI.
 function T.log_defaults_to_print()
   env = newEnv()
+  env.auditAvailable = true
   local lines = {}
   local realPrint = print
   _G.print = function(line)
     lines[#lines + 1] = tostring(line)
   end
-  local ok, report, err = pcall(CacheBuilder.buildVersions, { "heartgold" })
+  local ok, report, err = pcall(
+    CacheBuilder.buildVersions,
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout" }
+  )
   _G.print = realPrint
   Assert.isTrue(ok, tostring(report))
-  Assert.equal(err, nil)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.equal(lines[1], "build-cache: heartgold field cameras current")
-end
-
--- A matching identity with a fully available cache must short-circuit: zero
--- compiler functions, zero RomFs opens, no state mutation, and the
--- current-style report line. This is the regression test for the original
--- performance problem (expensive compilation before marker checks).
-function T.matching_identity_with_available_cache_invokes_no_compilers_and_no_romfs()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = true
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(capture.lines, { "build-cache: heartgold current" })
-  Assert.deepEqual(env.opens, {}, "the fast path must never open the ROM")
-  Assert.equal(env.stateMatchesCalls, 1, "the stored identity must be compared exactly once")
-  Assert.equal(env.auditCalls, 1, "the availability audit is the fast-path gate")
-  Assert.equal(env.stateInvalidations, 0, "a current cache must not be invalidated")
-  Assert.equal(env.statePublishes, 0, "a current cache must not be republished")
-  Assert.equal(env.worldPublishes, 0, "a fast-path build must not republish the world")
-  Assert.equal(env.worldAborts, 0, "a fast-path build stages nothing to discard")
-  Assert.equal(env.producerComputations, 1, "the producer fingerprint is part of the identity")
-  Assert.equal(
-    env.identityInputs.dump,
-    "g4-rom-dump-v1:heartgold:deadbeef",
-    "the identity carries the published dump marker"
-  )
-end
-
--- An identity mismatch forces every stale writer even though the ordinary
--- marker checks would say current; a ready script generation remains current;
--- the state is invalidated before any mutation begins; and the strict rebuild
--- publishes the new identity.
-function T.producer_mismatch_forces_stale_writers_and_publishes_after_strict_success()
-  env = newEnv()
-  env.stateMatches = false
-  env.stale = {}
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  requireLogIndex(capture.lines, "build-cache: heartgold scripts current")
-  local writes = {}
-  for _, call in ipairs(env.calls) do
-    if call:find("write", 1, true) ~= nil or call == "WorldManifest.stage" then
-      writes[#writes + 1] = call
-    end
-  end
-  table.sort(writes)
-  Assert.deepEqual(writes, {
-    "AudioCacheWriter.writeBank",
-    "AudioCacheWriter.writeSummary",
-    "BagCacheWriter.write",
-    "FieldActorCacheWriter.write",
-    "FieldActorEmoteCacheWriter.write",
-    "FieldCameraCacheWriter.write",
-    "FieldCellCacheWriter.write",
-    "FieldEntranceIndicatorCacheWriter.write",
-    "FieldFontCacheWriter.write",
-    "FieldMapDataCacheWriter.write",
-    "FieldMapDataCacheWriter.write",
-    "FieldMessageCacheWriter.writeBank",
-    "FieldMessageCacheWriter.writeBank",
-    "FieldMessageCacheWriter.writeSummary",
-    "FieldUiCacheWriter.write",
-    "FieldWeatherCacheWriter.write",
-    "IntroAssetCacheWriter.write",
-    "ItemCacheWriter.write",
-    "MapCacheWriter.write",
-    "MapCacheWriter.write",
-    "MonCacheWriter.writeCatalog",
-    "MonCacheWriter.writeLayout",
-    "MonCacheWriter.writePage",
-    "MonCacheWriter.writePage",
-    "MonCacheWriter.writeSummary",
-    "NewGameInitCacheWriter.write",
-    "StarterChoiceAssetCacheWriter.write",
-    "WorldManifest.stage",
-  }, "every stale class must regenerate despite current-looking markers")
-  local invalidateIndex, firstWriteIndex
-  for index, call in ipairs(env.calls) do
-    if call == "DerivedCacheState.invalidate" then
-      invalidateIndex = index
-    end
-    if firstWriteIndex == nil and (call:find("write", 1, true) ~= nil or call == "WorldManifest.stage") then
-      firstWriteIndex = index
-    end
-  end
-  Assert.isTrue(
-    invalidateIndex ~= nil and invalidateIndex < firstWriteIndex,
-    "the state must be invalidated before any artifact mutation"
-  )
-  Assert.equal(env.statePublishes, 1, "a fully strict rebuild publishes the new identity")
-  Assert.equal(env.worldPublishes, 1, "a fully strict rebuild publishes the new world")
-  Assert.equal(env.worldAborts, 0, "a fully strict rebuild never discards the staged world")
-end
-
--- A failed build must never publish the state; it was already invalidated
--- before mutation began, and nothing reaches the authoritative world index.
-function T.a_failed_build_does_not_publish_state()
-  env = newEnv()
-  env.failCompilers.heartgold = Errors.new("FIELD_CAMERA_VERSION_UNSUPPORTED", "injected compile failure")
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(report)
-  Assert.equal(err, "cache preparation failed")
-  Assert.equal(env.stateInvalidations, 1, "the stale/missing state is invalidated before the build")
-  Assert.equal(env.statePublishes, 0, "a failed build must never publish state")
-  Assert.equal(env.worldPublishes, 0, "a failed build must never publish the world")
-  Assert.equal(env.worldAborts, 0, "the failing version staged no world to discard")
-end
-
--- A matching identity with a damaged cache must enter the incremental repair
--- path (marker checks decide what to rewrite) instead of fast-pathing, and a
--- strict repair republishes the state.
-function T.matching_identity_with_damaged_cache_repairs_incrementally()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = false
-  env.stale = { FieldCameraCacheWriter = true }
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.equal(capture.lines[1], "build-cache: heartgold field cameras compiled")
-  Assert.equal(capture.lines[2], "build-cache: heartgold field actors current")
-  Assert.deepEqual(env.opens, { "heartgold" }, "repair must open the ROM")
-  Assert.equal(env.stateInvalidations, 1, "the damaged attestation is invalidated before repair")
-  Assert.equal(env.statePublishes, 1, "a strict repair republishes the state")
-  Assert.equal(env.worldPublishes, 1, "a strict repair publishes the repaired world")
-end
-
--- A damaged higher-level cache can rebuild its world from the existing map
--- artifacts without scheduling work for maps that pass full readiness.
-function T.ready_maps_are_reused_when_rebuilding_the_world()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = false
-  env.mapBundles[2].scene.matrix.width = 21
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(requestedMapIds(), {})
-  Assert.deepEqual(env.mapReadinessCalls, {
-    { mapId = 2, marker = "m2" },
-    { mapId = 5, marker = "m5" },
-  })
-  Assert.equal(#env.worldStage.entries, 2)
-  Assert.equal(env.worldStage.entries[1].id, 2)
-  Assert.equal(env.worldStage.entries[1].symbol, "s_town")
-  Assert.equal(env.worldStage.entries[1].width, 21, "cached scene metadata supplies the world width")
-  Assert.equal(env.worldStage.entries[1].height, 20)
-  Assert.equal(env.worldStage.entries[2].id, 5)
-  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 current")
-  local map5Index = requireLogIndex(capture.lines, "build-cache: heartgold map 5 current")
-  Assert.isTrue(map2Index < map5Index, "map 2 must precede map 5")
-end
-
--- A map with an existing marker but failed readiness is rebuilt while a
--- neighboring ready map remains untouched and both entries retain analysis order.
-function T.only_unready_maps_are_compiled_and_world_keeps_order()
-  env = newEnv()
-  env.stateMatches = true
-  env.auditAvailable = false
-  env.mapReadiness[5] = false
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(requestedMapIds(), { 5 })
-  Assert.deepEqual(env.mapRequests[1], {
-    kind = "map",
-    key = "map:5",
-    priority = 0,
-    payload = { mapId = 5, producerFingerprint = "producer-fingerprint" },
-  })
-  Assert.equal(#env.worldStage.entries, 2)
-  Assert.equal(env.worldStage.entries[1].id, 2)
-  Assert.equal(env.worldStage.entries[2].id, 5)
-  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 current")
-  local map5Index = requireLogIndex(capture.lines, "build-cache: heartgold map 5 compiled")
-  local diagnosticIndex = requireLogIndex(
-    capture.lines,
-    "build-cache: heartgold map 5 unresolved map texture: material bike_02_2_lm3 of m_name01_00_00c land_data:280 wants bike_02_2 from map_textures member 42"
-  )
-  Assert.isTrue(map2Index < map5Index, "map 2 must precede map 5")
-  Assert.isTrue(map5Index < diagnosticIndex, "map 5 compile must precede its material diagnostic")
-end
-
--- A changed global identity keeps the exhaustive map rebuild behavior even
--- when every old map artifact passes readiness.
-function T.forced_build_compiles_ready_maps()
-  env = newEnv()
-  env.stateMatches = false
-  local capture = collectLog()
-  local report, err = CacheBuilder.buildVersions({ "heartgold" }, { log = capture.log })
-  Assert.isNil(err)
-  Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
-  Assert.deepEqual(requestedMapIds(), { 2, 5 })
-  local map2Index = requireLogIndex(capture.lines, "build-cache: heartgold map 2 compiled")
-  local map5Index = requireLogIndex(capture.lines, "build-cache: heartgold map 5 compiled")
-  Assert.isTrue(map2Index < map5Index, "map 2 must precede map 5")
+  Assert.isTrue(#lines > 0, "the build reports its progress")
 end
 
 return module

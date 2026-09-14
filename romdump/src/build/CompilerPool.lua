@@ -746,6 +746,8 @@ function CompilerPool:_dispatch()
       generationId = record.generationId,
       epoch = record.epoch,
       sizeClass = record.sizeClass,
+      payload = record.payload,
+      producerFingerprint = record.payload.producerFingerprint,
       mapId = record.payload.mapId,
       matrixMemberId = record.payload.matrixMemberId,
       index = record.payload.index,
@@ -760,7 +762,6 @@ function CompilerPool:_dispatch()
       bankId = record.payload.bankId,
       pageKind = record.payload.pageKind,
       pageId = record.payload.pageId,
-      producerFingerprint = record.payload.producerFingerprint,
       stageName = stageName,
     })
     if not ok then
@@ -841,7 +842,7 @@ function CompilerPool:_collectResults()
   while true do
     local message = self.resultChannel:pop()
     if message == nil then
-      return
+      break
     end
     if type(message) == "table" and message.kind == "close-ack" then
       local worker = self.workers[message.workerId]
@@ -853,8 +854,11 @@ function CompilerPool:_collectResults()
     else
       self:_stopWithProtocolFailure(message, "unknown worker message")
     end
-    self:_replaceRetiredWorkers()
   end
+  -- Reaping retired workers cannot wait for unrelated message traffic: once
+  -- every other job settles, no further completion arrives to trigger the
+  -- check above, and jumbo work would stall behind the unreaped worker.
+  self:_replaceRetiredWorkers()
 end
 
 ---@param message table<string, unknown>
@@ -1280,6 +1284,25 @@ function CompilerPool:diagnostics()
       epoch = self.selected.epoch,
     }
   end
+  local workerStates = {}
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil or worker.retiring then
+      workerStates[#workerStates + 1] = "w" .. tostring(worker.id) .. ":busy"
+    end
+  end
+  local heapStates = {}
+  for index, node in ipairs(self.heap) do
+    if index > 12 then
+      heapStates[#heapStates + 1] = "+" .. tostring(#self.heap - 12) .. " more"
+      break
+    end
+    local record = self.jobs[node.key]
+    if record == nil then
+      heapStates[#heapStates + 1] = "orphan"
+    else
+      heapStates[#heapStates + 1] = tostring(record.state) .. ":" .. tostring(record.sizeClass)
+    end
+  end
   return {
     mode = self.mode,
     selected = selected,
@@ -1288,6 +1311,8 @@ function CompilerPool:diagnostics()
     counts = counts,
     sizes = sizes,
     activeJobKeys = active,
+    workerStates = #workerStates > 0 and table.concat(workerStates, ",") or "idle",
+    heapStates = table.concat(heapStates, ","),
     pendingPublications = #self.completions,
     error = self.fatalError,
     recentTimings = self.recentTimings,

@@ -50,6 +50,8 @@ local SIZE_CLASS = {
   intro = "normal",
   ["new-game-init"] = "normal",
   ["starter-choice"] = "normal",
+  items = "normal",
+  bag = "normal",
   ["mon-icon-page"] = "normal",
   ["mon-portrait-page"] = "normal",
   ["map-data"] = "normal",
@@ -150,6 +152,8 @@ function ArtifactJobs.fieldCoreJobs(lists)
   local mapDataIds = assert(lists.mapDataIds, "field-core needs the supported field records")
   jobs[#jobs + 1] = { kind = "actors", key = "global" }
   jobs[#jobs + 1] = { kind = "starter-choice", key = "global" }
+  jobs[#jobs + 1] = { kind = "items", key = "global" }
+  jobs[#jobs + 1] = { kind = "bag", key = "global" }
   jobs[#jobs + 1] = { kind = "message-summary", key = "global" }
   jobs[#jobs + 1] = { kind = "script-summary", key = "global" }
   for _, bankId in ipairs(messageBankIds) do
@@ -459,6 +463,26 @@ local function executeActors(artifact, context)
   return FieldActorCacheWriter.stage(artifact, actor)
 end
 
+local function executeItems(artifact, context)
+  local ItemCatalogCompiler = require("romdump.src.digest.items.ItemCatalogCompiler")
+  local ItemCacheWriter = require("romdump.src.digest.items.ItemCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return ItemCatalogCompiler.compileAll(romFs)
+  end, "items")
+  return ItemCacheWriter.stage(artifact, bundle)
+end
+
+local function executeBag(artifact, context)
+  local BagAssetCompiler = require("romdump.src.digest.ui.BagAssetCompiler")
+  local BagCacheWriter = require("romdump.src.digest.ui.BagCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return BagAssetCompiler.compile(romFs)
+  end, "bag")
+  return BagCacheWriter.stage(artifact, bundle)
+end
+
 local function executeMonCatalog(artifact, context)
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
   local romFs = assert(context.romFs, "mon catalog jobs require a source reader")
@@ -713,6 +737,10 @@ local function dispatchExecute(artifact, job, context)
     return executeNewGameInit(artifact, context)
   elseif job.kind == "actors" then
     return executeActors(artifact, context)
+  elseif job.kind == "items" then
+    return executeItems(artifact, context)
+  elseif job.kind == "bag" then
+    return executeBag(artifact, context)
   elseif job.kind == "mon-catalog" then
     return executeMonCatalog(artifact, context)
   elseif job.kind == "mon-layout" then
@@ -895,6 +923,12 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
     elseif kind == "starter-choice" then
       local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
       return StarterChoiceAssetCache.isReady(cacheFs, marker)
+    elseif kind == "items" then
+      local ItemCache = require("libs.assets.src.ItemCache")
+      return ItemCache.isReady(cacheFs, marker)
+    elseif kind == "bag" then
+      local BagCache = require("libs.assets.src.BagCache")
+      return BagCache.isReady(cacheFs, marker)
     elseif kind == "mon-catalog" then
       local MonCache = require("libs.assets.src.MonCache")
       return MonCache.isCatalogReady(cacheFs, marker)

@@ -23,7 +23,6 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local AssetErrors = require("libs.assets.src.errors")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
-local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 
 local MapCacheWriter = {}
 
@@ -182,26 +181,6 @@ function MapCacheWriter.stage(prepared, bundle)
   if not ok then
     error(result, 0)
   end
-  return result
-end
-
--- Synchronous compatibility for existing producer callers. It uses the same
--- private-stage and controller publication lifecycle as worker jobs.
-function MapCacheWriter.write(cacheFs, bundle)
-  assert(type(bundle) == "table" and bundle.mapId and bundle.marker, "invalid bundle")
-  local prepared = PreparedArtifact.new({
-    cacheFs = cacheFs,
-    kind = "map",
-    jobKey = "map:" .. bundle.mapId,
-    stageName = "map-" .. bundle.mapId,
-  })
-  local ok, result = pcall(MapCacheWriter.stage, prepared, bundle)
-  if not ok then
-    prepared:abort()
-    error(result, 0)
-  end
-  prepared:finishSuccess({ mapId = bundle.mapId, marker = bundle.marker })
-  prepared:publish()
   return result
 end
 

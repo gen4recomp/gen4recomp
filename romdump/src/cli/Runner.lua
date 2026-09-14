@@ -42,7 +42,16 @@ function Runner.load(opts)
   if command == "check-derived-cache" then
     return Runner._runCheckDerivedCache()
   end
-  print("romdump: no command given (expected --import-rom, --check-dump, --check-derived-cache, or --build-cache)")
+  if command == "probe-rom" then
+    return Runner._runProbeRom()
+  end
+  if command == "prepare-cache" then
+    return Runner._runPrepareCache()
+  end
+  print(
+    "romdump: no command given (expected --import-rom, --check-dump, --check-derived-cache, --build-cache,"
+      .. " --probe-rom, or --prepare-cache)"
+  )
   love.event.quit(Cli.EXIT_USAGE)
 end
 
@@ -126,7 +135,7 @@ end
 -- already matches the current build is left in place, so an unchanged cache
 -- rebuilds only what is stale. The option wins over any CLI state; callers
 -- pass the parsed flag through explicitly.
----@param options { versionIds: string[]?, allowCompileExclusions: boolean?, dev: boolean?, noQuit: boolean? }|nil
+---@param options { versionIds: string[]?, allowCompileExclusions: boolean?, dev: boolean?, developmentRepositoryRoot?: string, profile: string?, noQuit: boolean? }|nil
 ---@return table<string, unknown>|nil, string|nil
 function Runner._runBuild(options)
   options = options or {}
@@ -134,10 +143,23 @@ function Runner._runBuild(options)
   if dev == nil then
     dev = Runner.opts ~= nil and Runner.opts.dev == true
   end
+  local profile = options.profile
+  if profile == nil then
+    profile = Runner.opts ~= nil and Runner.opts.profile or nil
+  end
+  -- The batch builder resolves development sources against this checkout
+  -- root; default to the repository root this process runs from. All love
+  -- coupling stays in this CLI owner; the builder receives an explicit root.
+  local developmentRepositoryRoot = options.developmentRepositoryRoot
+  if developmentRepositoryRoot == nil and dev == true then
+    developmentRepositoryRoot = love.filesystem.getSourceBaseDirectory()
+  end
   local CacheBuilder = require("romdump.src.CacheBuilder")
   local report, err = CacheBuilder.buildVersions(options.versionIds or readyVersions(), {
     allowCompileExclusions = options.allowCompileExclusions,
     dev = dev,
+    developmentRepositoryRoot = developmentRepositoryRoot,
+    profile = profile,
   })
   if report then
     if not options.noQuit then
@@ -149,6 +171,131 @@ function Runner._runBuild(options)
     love.event.quit(1)
   end
   return nil, err
+end
+
+-- Validate one ROM path through the canonical source owner and report its
+-- version identity without importing, creating cache state, or starting
+-- compiler workers. The hash covers the selected NDS bytes, never a ZIP
+-- container or filename.
+function Runner._runProbeRom()
+  local path = assert(Runner.opts.romPath, "probe requires a ROM path")
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local source, sourceErr = RomSource.fromPath(path)
+  if source == nil then
+    print("probe failed: " .. Errors.format(sourceErr))
+    return love.event.quit(1)
+  end
+  local rom, romErr = NdsRom.open(source)
+  if rom == nil then
+    source:release()
+    print("probe failed: " .. Errors.format(romErr))
+    return love.event.quit(1)
+  end
+  local versionId = rom:versionInfo().id
+  local sha1 = source:sha1()
+  rom:release()
+  print("version=" .. versionId)
+  print("rom_sha1=" .. sha1)
+  return love.event.quit(0)
+end
+
+-- Prepare exactly the declared closure through the common session. A targeted
+-- scope never starts an unrelated sweep and its success never attests a
+-- complete cache; only an explicitly requested complete scope can publish
+-- full attestation. Usage faults exit 2, genuine preparation failures exit 1.
+function Runner._runPrepareCache()
+  local opts = Runner.opts
+  local version = assert(opts.version, "prepare requires a version")
+  local requirements = assert(opts.requirements, "prepare requires at least one requirement")
+  local rebuild = opts.rebuild or {}
+  if #rebuild > 0 then
+    if opts.dev ~= true then
+      print("prepare-cache: --rebuild requires --dev")
+      return love.event.quit(Cli.EXIT_USAGE)
+    end
+    local exhaustive = false
+    for _, requirement in ipairs(requirements) do
+      if requirement == "complete" then
+        exhaustive = true
+      end
+    end
+    for _, job in ipairs(rebuild) do
+      local included = exhaustive
+      if not included then
+        for _, requirement in ipairs(requirements) do
+          if requirement == job then
+            included = true
+            break
+          end
+        end
+      end
+      if not included then
+        print("prepare-cache: --rebuild '" .. job .. "' is not in --require")
+        return love.event.quit(Cli.EXIT_USAGE)
+      end
+    end
+  end
+  if not RomImporter.isReady(version) then
+    print("prepare-cache: no ready dump for " .. version .. "; import a ROM first")
+    return love.event.quit(Cli.EXIT_USAGE)
+  end
+  local RomFs = require("romdump.src.source.RomFs")
+  local opened, openErr = RomFs.open(version)
+  if opened == nil then
+    print("prepare-cache: " .. version .. " failed: " .. Errors.format(openErr))
+    return love.event.quit(1)
+  end
+  local sha1 = opened:metadata().sha1
+  opened:close()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
+  -- Development selection hashes the producer working tree resolved against
+  -- the repository root this process runs from: none of the default source
+  -- roots resolve under the packaged VFS root, so the VFS backend would hash
+  -- the empty manifest. Release selection uses the explicit per-game counter
+  -- and reads no producer sources.
+  local sourceBase = love.filesystem.getSourceBaseDirectory()
+  local producerId
+  if opts.dev == true then
+    producerId = ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(sourceBase))
+  else
+    producerId = "r" .. tostring(assert(DerivedCacheVersions[version], "release counter is required"))
+  end
+  local identity = DerivedCacheState.currentForSelection({
+    versionId = version,
+    romSha1 = sha1,
+    producerId = producerId,
+    developmentRepositoryRoot = opts.dev == true and sourceBase or nil,
+  })
+  local CacheBuilder = require("romdump.src.CacheBuilder")
+  local report, err = CacheBuilder.prepareVersion(version, {
+    identity = identity,
+    requirements = requirements,
+    rebuild = rebuild,
+    profile = opts.profile,
+    allowCompileExclusions = opts.allowCompileExclusions,
+    dev = opts.dev == true,
+  })
+  if report == nil then
+    print("prepare-cache: " .. version .. " failed: " .. Errors.format(err))
+    return love.event.quit(1)
+  end
+  print(
+    string.format(
+      "prepare-cache: %s ready=%s complete=%s planned=%d successful=%d failed=%d cancelled=%d excluded=%d",
+      version,
+      tostring(report.requestedReady),
+      tostring(report.complete),
+      report.counts.planned,
+      report.counts.successful,
+      report.counts.failed,
+      report.counts.cancelled,
+      report.counts.excluded
+    )
+  )
+  return love.event.quit(0)
 end
 
 function Runner._startImport(path)
