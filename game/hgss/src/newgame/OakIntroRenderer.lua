@@ -4,6 +4,8 @@
 
 local ImageButton = require("libs.ui.src.ImageButton")
 local TextButton = require("libs.ui.src.TextButton")
+local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class OakIntroRenderer
 ---@field graphics table<string, unknown>
@@ -12,7 +14,10 @@ local TextButton = require("libs.ui.src.TextButton")
 ---@field assets table<string, unknown>
 ---@field bindings table<string, unknown>
 ---@field manifest table<string, unknown>
----@field draw fun(self: OakIntroRenderer, view: table<string, unknown>)
+---@field logicalCanvas table<string, unknown>?
+---@field logicalCanvasWidth integer?
+---@field logicalCanvasHeight integer?
+---@field draw fun(self: OakIntroRenderer, view: table<string, unknown>, overlay: (fun())?)
 ---@field dispose fun(self: OakIntroRenderer)
 local REQUIRED_ASSETS = {
   "oak",
@@ -190,6 +195,9 @@ function OakIntroRenderer.new(options)
     images = images,
     bindings = bindings,
     revealShader = revealShader,
+    logicalCanvas = nil,
+    logicalCanvasWidth = nil,
+    logicalCanvasHeight = nil,
     released = false,
   }, OakIntroRenderer)
   ---@cast renderer OakIntroRenderer
@@ -197,22 +205,13 @@ function OakIntroRenderer.new(options)
 end
 
 local function drawAsset(self, assetId, frameIndex, region, opacity, brightness, tint)
-  local asset = self.assets[assetId]
-  assert(asset ~= nil, "intro asset is missing: " .. assetId)
-  local frame = asset.frames[frameIndex or 1]
+  assert(self.assets[assetId] ~= nil, "intro asset is missing: " .. assetId)
   local binding = self.bindings[assetId] and self.bindings[assetId][frameIndex or 1]
   assert(binding ~= nil, "intro frame is missing: " .. assetId)
-  local isSourcePlaced = region.scale ~= nil
-  local scale, x, y
-  if isSourcePlaced then
-    scale = region.scale
-    x = region.x
-    y = region.y
-  else
-    scale = math.min(region.width / frame.width, region.height / frame.height)
-    x = region.x + (region.width - frame.width * scale) / 2
-    y = region.y + (region.height - frame.height * scale) / 2
-  end
+  local scale = assert(region.scale, "pixel-authored Oak region scale is required")
+  assert(scale > 0 and scale == math.floor(scale), "pixel-authored Oak region scale must be a positive integer")
+  local x = PixelScale.snapLogical(region.x)
+  local y = PixelScale.snapLogical(region.y)
   if brightness ~= nil then
     assert(brightness >= 0 and brightness <= 1, "intro reveal brightness is out of range")
   end
@@ -242,6 +241,52 @@ local function drawBackground(self, region)
   local sy = region.height / frame.height
   self.graphics.setColor(1, 1, 1, 1)
   self.graphics.draw(binding.image, binding.quad, region.x, region.y, 0, sx, sy)
+end
+
+---@param surface table<string, unknown>
+function OakIntroRenderer:_ensureLogicalCanvas(surface)
+  assert(not self.released, "Oak renderer is released")
+  local width = assert(surface.logicalWidth)
+  local height = assert(surface.logicalHeight)
+  if self.logicalCanvas and self.logicalCanvasWidth == width and self.logicalCanvasHeight == height then
+    return
+  end
+  local ok, replacement = pcall(self.graphics.newCanvas, width, height)
+  if not ok then
+    error(replacement, 0)
+  end
+  assert(replacement ~= nil, "Oak logical Canvas construction returned no Canvas")
+  local configured, failure = pcall(function()
+    if replacement.setFilter then
+      replacement:setFilter("nearest", "nearest")
+    end
+  end)
+  if not configured then
+    if replacement.release then
+      replacement:release()
+    end
+    error(failure, 0)
+  end
+  local previous = self.logicalCanvas
+  self.logicalCanvas = replacement
+  self.logicalCanvasWidth = width
+  self.logicalCanvasHeight = height
+  if previous and previous.release then
+    previous:release()
+  end
+end
+
+local function setCompositeScissor(graphics, frame)
+  local x, y, width, height = graphics.getScissor()
+  if x == nil then
+    graphics.setScissor(frame.x, frame.y, frame.width, frame.height)
+    return
+  end
+  local right = math.min(x + width, frame.x + frame.width)
+  local bottom = math.min(y + height, frame.y + frame.height)
+  local left = math.max(x, frame.x)
+  local top = math.max(y, frame.y)
+  graphics.setScissor(left, top, math.max(0, right - left), math.max(0, bottom - top))
 end
 
 ---@param view table<string, unknown>
@@ -346,32 +391,56 @@ function OakIntroRenderer:_draw(view)
   if view.phase == "name_edit" and view.name ~= "" then
     local preview = assert(layout.namePreview, "Oak name preview is missing")
     local textWidth = self.text.textWidth and self.text:textWidth(view.name) or 0
-    self.text:drawText(view.name, preview.x + (preview.width - textWidth) / 2, preview.y + (preview.height - 16) / 2)
+    self.text:drawText(
+      view.name,
+      PixelScale.snapLogical(preview.x + (preview.width - textWidth) / 2),
+      PixelScale.snapLogical(preview.y + (preview.height - 16) / 2)
+    )
   end
   if view.phase == "name_edit" then
     for _, entry in ipairs(layout.nameKeys or layout.nameGrid) do
       local width = self.text.textWidth and self.text:textWidth(entry.label) or 0
-      self.text:drawText(entry.label, entry.rect.x + (entry.rect.width - width) / 2, entry.rect.y + 6)
+      self.text:drawText(
+        entry.label,
+        PixelScale.snapLogical(entry.rect.x + (entry.rect.width - width) / 2),
+        PixelScale.snapLogical(entry.rect.y + 6)
+      )
     end
     local focused = assert(layout.nameKeys[view.virtualGlyphFocus], "Oak virtual focus is invalid")
     graphics.setColor(0.8, 0.9, 1, 1)
-    graphics.rectangle("line", focused.rect.x, focused.rect.y, focused.rect.width, focused.rect.height)
+    graphics.rectangle(
+      "line",
+      PixelScale.snapLogical(focused.rect.x),
+      PixelScale.snapLogical(focused.rect.y),
+      PixelScale.snapLogical(focused.rect.width),
+      PixelScale.snapLogical(focused.rect.height)
+    )
   end
 end
 
-function OakIntroRenderer:draw(view)
+function OakIntroRenderer:draw(view, overlay)
   assert(not self.released, "Oak renderer is released")
-  local graphics = self.graphics
-  local red, green, blue, alpha = graphics.getColor()
-  local shader = graphics.getShader()
-  local ok, failure = xpcall(function()
-    self:_draw(view)
-  end, debug.traceback)
-  graphics.setShader(shader)
-  graphics.setColor(red, green, blue, alpha)
-  if not ok then
-    error(failure, 0)
+  assert(type(view.pixelSurface) == "table", "Oak draw requires a pixel surface")
+  if overlay ~= nil then
+    assert(type(overlay) == "function", "Oak draw overlay must be callable")
   end
+  local surface = view.pixelSurface
+  self:_ensureLogicalCanvas(surface)
+  local graphics = self.graphics
+  FieldDrawState.protectedDraw(graphics, function()
+    local callerCanvas = graphics.getCanvas()
+    graphics.setCanvas(self.logicalCanvas)
+    self:_draw(view)
+    if overlay then
+      overlay()
+    end
+    graphics.setCanvas(callerCanvas)
+    setCompositeScissor(graphics, surface.physicalFrame)
+    graphics.setShader(nil)
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setBlendMode("replace", "premultiplied")
+    graphics.draw(self.logicalCanvas, surface.physicalFrame.x, surface.physicalFrame.y, 0, surface.scale, surface.scale)
+  end)
 end
 
 function OakIntroRenderer:dispose()
@@ -386,6 +455,12 @@ function OakIntroRenderer:dispose()
   releaseAll(resources)
   self.images = {}
   self.bindings = {}
+  if self.logicalCanvas and self.logicalCanvas.release then
+    self.logicalCanvas:release()
+  end
+  self.logicalCanvas = nil
+  self.logicalCanvasWidth = nil
+  self.logicalCanvasHeight = nil
   if self.revealShader and self.revealShader.release then
     self.revealShader:release()
   end

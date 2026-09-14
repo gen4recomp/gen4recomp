@@ -13,6 +13,7 @@
 
 ---@class FakeGraphics: love.graphics
 ---@field images table[]
+---@field canvases table[]
 ---@field draws table[]
 ---@field transforms table[]
 ---@field primitives string[]
@@ -132,6 +133,30 @@ function FakeGraphics.new(opts)
       images[#images + 1] = image
       return image
     end,
+    newCanvas = function(width, height)
+      local canvas = {
+        width = width,
+        height = height,
+        filters = {},
+        released = false,
+        releaseCount = 0,
+      }
+      canvas.setFilter = function(_, min, mag)
+        canvas.filters[#canvas.filters + 1] = { min = min, mag = mag }
+      end
+      canvas.getWidth = function()
+        return canvas.width
+      end
+      canvas.getHeight = function()
+        return canvas.height
+      end
+      canvas.release = function()
+        canvas.released = true
+        canvas.releaseCount = canvas.releaseCount + 1
+      end
+      canvases[#canvases + 1] = canvas
+      return canvas
+    end,
     newQuad = function(x, y, w, h, imgW, imgH)
       quadCalls = quadCalls + 1
       if opts.failOnQuadCall == quadCalls then
@@ -160,6 +185,9 @@ function FakeGraphics.new(opts)
     end,
     draw = function(image, quad, x, y, rotation, sx, sy)
       drawCalls = drawCalls + 1
+      if type(quad) == "number" then
+        quad, x, y, rotation, sx, sy = nil, quad, x, y, rotation, sx or rotation
+      end
       draws[#draws + 1] = {
         kind = "draw",
         image = image,

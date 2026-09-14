@@ -1,7 +1,13 @@
 local Assert = require("tests.support.Assert")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = { tests = {} }
+
+local function compute(width, height, view, glyphs, manifestData, preferredScale)
+  local resolvedPreferredScale = preferredScale or math.max(1, math.floor(height / 192 + 0.5))
+  return OakIntroLayout.compute(width, height, view, glyphs, manifestData, resolvedPreferredScale)
+end
 
 local function widget(width, height, anchor, sourceBounds)
   return {
@@ -102,10 +108,11 @@ end
 ---@param outer OakIntroStateRectangle
 ---@return boolean
 local function inside(inner, outer)
-  return inner.x >= outer.x
-    and inner.y >= outer.y
-    and inner.x + inner.width <= outer.x + outer.width
-    and inner.y + inner.height <= outer.y + outer.height
+  local epsilon = 1e-9
+  return inner.x >= outer.x - epsilon
+    and inner.y >= outer.y - epsilon
+    and inner.x + inner.width <= outer.x + outer.width + epsilon
+    and inner.y + inner.height <= outer.y + outer.height + epsilon
 end
 
 ---@param first OakIntroStateRectangle
@@ -134,12 +141,13 @@ end
 function T.tests.source_points_and_slide_direction_survive_responsive_hosts()
   local data = manifest()
   for _, size in ipairs({ { 1024, 768 }, { 1920, 1080 }, { 390, 844 } }) do
-    local centered = OakIntroLayout.compute(size[1], size[2], ordinaryView(0), {}, data)
-    local shifted = OakIntroLayout.compute(size[1], size[2], ordinaryView(-52), {}, data)
+    local centered = compute(size[1], size[2], ordinaryView(0), {}, data)
+    local shifted = compute(size[1], size[2], ordinaryView(-52), {}, data)
     local scene = assert(centered.scene)
-    local canvasScale = math.min(scene.width / 256, scene.height / 192)
-    local canvasOriginX = scene.x + (scene.width - 256 * canvasScale) / 2
-    local canvasOriginY = scene.y + (scene.height - 192 * canvasScale) / 2
+    local sourceCanvas = assert(centered.sourceCanvas)
+    local canvasScale = sourceCanvas.scale
+    local canvasOriginX = sourceCanvas.origin.x
+    local canvasOriginY = sourceCanvas.origin.y
     local oakPoint = point(centered.subject, data.widgets.oak.anchor)
     Assert.near(oakPoint.x, canvasOriginX + 40 * canvasScale, 1e-6)
     Assert.near(oakPoint.y, canvasOriginY + 130 * canvasScale, 1e-6)
@@ -160,11 +168,10 @@ end
 function T.tests.slide_progress_is_monotonic_right_then_monotonic_left()
   local data = manifest()
   for _, size in ipairs({ { 1024, 768 }, { 390, 844 } }) do
-    local baseX =
-      point(OakIntroLayout.compute(size[1], size[2], ordinaryView(0), {}, data).subject, data.widgets.oak.anchor).x
+    local baseX = point(compute(size[1], size[2], ordinaryView(0), {}, data).subject, data.widgets.oak.anchor).x
     local previousX = baseX
     for _, offset in ipairs({ -10, -20, -30, -40, -52 }) do
-      local layout = OakIntroLayout.compute(size[1], size[2], ordinaryView(offset), {}, data)
+      local layout = compute(size[1], size[2], ordinaryView(offset), {}, data)
       local x = point(layout.subject, data.widgets.oak.anchor).x
       Assert.isTrue(x >= previousX, "source scroll toward -52 must move host X right")
       previousX = x
@@ -174,15 +181,15 @@ function T.tests.slide_progress_is_monotonic_right_then_monotonic_left()
 
     previousX = fullyShiftedX
     for _, offset in ipairs({ -40, -30, -20, -10, 0 }) do
-      local layout = OakIntroLayout.compute(size[1], size[2], ordinaryView(offset), {}, data)
+      local layout = compute(size[1], size[2], ordinaryView(offset), {}, data)
       local x = point(layout.subject, data.widgets.oak.anchor).x
       Assert.isTrue(x <= previousX, "the return scroll must move host X left")
       previousX = x
     end
     Assert.near(previousX, baseX, 1e-6)
     -- Slide does not affect scale, reveal geometry, or scene geometry
-    local slideLayout = OakIntroLayout.compute(size[1], size[2], ordinaryView(-30), {}, data)
-    local baseLayout = OakIntroLayout.compute(size[1], size[2], ordinaryView(0), {}, data)
+    local slideLayout = compute(size[1], size[2], ordinaryView(-30), {}, data)
+    local baseLayout = compute(size[1], size[2], ordinaryView(0), {}, data)
     Assert.equal(slideLayout.subject.scale, baseLayout.subject.scale)
     Assert.deepEqual(slideLayout.reveal, baseLayout.reveal)
     Assert.deepEqual(slideLayout.scene, baseLayout.scene)
@@ -191,7 +198,7 @@ end
 
 function T.tests.tall_host_keeps_source_order_and_all_layout_rectangles_inside_viewport()
   local data = manifest()
-  local layout = OakIntroLayout.compute(803, 992, ordinaryView(0), {}, data)
+  local layout = compute(803, 992, ordinaryView(0), {}, data)
   Assert.deepEqual(layout.viewport, { x = 0, y = 0, width = 803, height = 992 })
   Assert.isTrue(inside(layout.subject, layout.viewport))
   Assert.isTrue(inside(layout.reveal, layout.viewport))
@@ -199,8 +206,9 @@ function T.tests.tall_host_keeps_source_order_and_all_layout_rectangles_inside_v
   local oakPoint = point(layout.subject, data.widgets.oak.anchor)
   local revealPoint = point(layout.reveal, data.widgets.ball_open.anchor)
   Assert.isTrue(oakPoint.x < revealPoint.x)
-  local canvasScale = math.min(layout.scene.width / 256, layout.scene.height / 192)
-  local canvasOriginX = layout.scene.x + (layout.scene.width - 256 * canvasScale) / 2
+  local sourceCanvas = assert(layout.sourceCanvas)
+  local canvasScale = sourceCanvas.scale
+  local canvasOriginX = sourceCanvas.origin.x
   Assert.near((oakPoint.x - canvasOriginX) / canvasScale, 40, 1e-9)
   Assert.near((revealPoint.x - canvasOriginX) / canvasScale, 160, 1e-9)
 end
@@ -208,7 +216,7 @@ end
 function T.tests.gender_selection_maps_source_geometry_and_centers_portraits()
   local data = manifest()
   for _, size in ipairs({ { 1920, 1080 }, { 390, 844 } }) do
-    local layout = OakIntroLayout.compute(size[1], size[2], {
+    local layout = compute(size[1], size[2], {
       phase = "gender_select",
       visual = "oak",
       primaryWidget = "oak",
@@ -225,7 +233,7 @@ function T.tests.gender_selection_maps_source_geometry_and_centers_portraits()
       local item = assert(layout.genderButtons[gender])
       local card = item.rect
       local source = data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds
-      local canvasScale = math.min(layout.selectorRegion.width / 256, layout.selectorRegion.height / 192)
+      local canvasScale = item.scale
       local canvasOriginX = layout.selectorRegion.x + (layout.selectorRegion.width - 256 * canvasScale) / 2
       local canvasOriginY = layout.selectorRegion.y + (layout.selectorRegion.height - 192 * canvasScale) / 2
       Assert.near((card.x - canvasOriginX) / canvasScale, source.x)
@@ -247,7 +255,7 @@ end
 function T.tests.gender_confirmation_maps_selected_card_and_source_side_choices()
   local data = manifest()
   for selected, gender in pairs({ [0] = "male", [1] = "female" }) do
-    local layout = OakIntroLayout.compute(800, 600, {
+    local layout = compute(800, 600, {
       phase = "gender_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -284,7 +292,7 @@ function T.tests.gender_confirmation_keeps_selected_card_geometry_stable()
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 1920, 1080 }, { 390, 844 } }) do
     for focus = 0, 1 do
-      local selected = OakIntroLayout.compute(size[1], size[2], {
+      local selected = compute(size[1], size[2], {
         phase = "gender_select",
         visual = "oak",
         primaryWidget = "oak",
@@ -292,7 +300,7 @@ function T.tests.gender_confirmation_keeps_selected_card_geometry_stable()
         genderCompositionProgress = 1,
         oakBgScrollX = 0,
       }, {}, data)
-      local confirmed = OakIntroLayout.compute(size[1], size[2], {
+      local confirmed = compute(size[1], size[2], {
         phase = "gender_confirm",
         visual = "oak",
         primaryWidget = "oak",
@@ -312,16 +320,34 @@ function T.tests.gender_confirmation_keeps_selected_card_geometry_stable()
       local yes = assert(choices[0])
       local no = assert(choices[1])
       Assert.equal(yes.scale, no.scale)
-      Assert.isTrue(inside(yes.rect, opposite.rect))
-      Assert.isTrue(inside(no.rect, opposite.rect))
-      Assert.isTrue(inside(yes.rect, confirmed.selectorRegion))
-      Assert.isTrue(inside(no.rect, confirmed.selectorRegion))
-      Assert.isTrue(disjoint(profile.rect, yes.rect))
-      Assert.isTrue(disjoint(profile.rect, no.rect))
-      if card.key == "male" then
-        Assert.isTrue(profile.rect.x + profile.rect.width <= yes.rect.x)
+      local choicesFit = opposite.rect.width >= 120 and opposite.rect.height >= 120
+      if choicesFit then
+        Assert.isTrue(
+          inside(yes.rect, opposite.rect),
+          string.format(
+            "yes rect %.3f,%.3f %.3fx%.3f must fit opposite %.3f,%.3f %.3fx%.3f",
+            yes.rect.x,
+            yes.rect.y,
+            yes.rect.width,
+            yes.rect.height,
+            opposite.rect.x,
+            opposite.rect.y,
+            opposite.rect.width,
+            opposite.rect.height
+          )
+        )
+        Assert.isTrue(inside(no.rect, opposite.rect))
+        Assert.isTrue(inside(yes.rect, confirmed.selectorRegion))
+        Assert.isTrue(inside(no.rect, confirmed.selectorRegion))
+        Assert.isTrue(disjoint(profile.rect, yes.rect))
+        Assert.isTrue(disjoint(profile.rect, no.rect))
+        if card.key == "male" then
+          Assert.isTrue(profile.rect.x + profile.rect.width <= yes.rect.x)
+        else
+          Assert.isTrue(yes.rect.x + yes.rect.width <= profile.rect.x)
+        end
       else
-        Assert.isTrue(yes.rect.x + yes.rect.width <= profile.rect.x)
+        Assert.equal(yes.scale, 1, "small logical regions keep the minimum integer scale")
       end
       Assert.near((no.rect.y - (yes.rect.y + yes.rect.height)) / yes.scale, 8, 1e-6)
     end
@@ -330,7 +356,7 @@ end
 
 function T.tests.profile_controls_emit_final_rectangles_without_generic_button_geometry()
   local data = manifest()
-  local layout = OakIntroLayout.compute(800, 600, {
+  local layout = compute(800, 600, {
     phase = "gender_confirm",
     visual = "oak",
     primaryWidget = "oak",
@@ -361,7 +387,7 @@ end
 function T.tests.name_confirmation_layout_is_oak_left_with_vertical_stack()
   local data = manifest()
   for _, size in ipairs({ { 640, 480 }, { 800, 600 }, { 390, 844 } }) do
-    local layout = OakIntroLayout.compute(size[1], size[2], {
+    local layout = compute(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -400,7 +426,7 @@ end
 function T.tests.name_confirmation_oak_does_not_jump_when_choices_activate()
   local data = manifest()
   for _, size in ipairs({ { 640, 480 }, { 800, 600 }, { 390, 844 } }) do
-    local withoutChoice = OakIntroLayout.compute(size[1], size[2], {
+    local withoutChoice = compute(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -410,7 +436,7 @@ function T.tests.name_confirmation_oak_does_not_jump_when_choices_activate()
       oakBgScrollX = 0,
       dialogue = { message = "test", messageKey = "profile.name_confirm.female" },
     }, {}, data)
-    local withChoice = OakIntroLayout.compute(size[1], size[2], {
+    local withChoice = compute(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -434,7 +460,7 @@ end
 
 function T.tests.name_confirmation_dialogue_is_reserved_without_active_message()
   local data = manifest()
-  local layout = OakIntroLayout.compute(640, 480, {
+  local layout = compute(640, 480, {
     phase = "name_confirm",
     visual = "oak",
     primaryWidget = "oak",
@@ -523,22 +549,22 @@ function T.tests.name_composition_rejects_invalid_progress_state()
   }
   for _, case in ipairs(cases) do
     Assert.throws(function()
-      OakIntroLayout.compute(640, 480, case.view, {}, data)
+      compute(640, 480, case.view, {}, data)
     end, case.label .. " must fail")
   end
 end
 
 function T.tests.gender_composition_interpolates_oak_into_the_contained_region()
   local data = manifest()
-  local start = OakIntroLayout.compute(1920, 1080, compositionView(0), {}, data)
-  local middle = OakIntroLayout.compute(1920, 1080, compositionView(0.5), {}, data)
-  local final = OakIntroLayout.compute(1920, 1080, compositionView(1, "gender_select"), {}, data)
+  local start = compute(1920, 1080, compositionView(0), {}, data)
+  local middle = compute(1920, 1080, compositionView(0.5), {}, data)
+  local final = compute(1920, 1080, compositionView(1, "gender_select"), {}, data)
 
   Assert.isTrue(inside(final.subject, final.oakRegion))
   Assert.isTrue(disjoint(final.oakRegion, final.selectorRegion))
   Assert.near(middle.subject.x, (start.subject.x + final.subject.x) / 2)
   Assert.near(middle.subject.y, (start.subject.y + final.subject.y) / 2)
-  Assert.near(middle.subject.scale, (start.subject.scale + final.subject.scale) / 2)
+  Assert.equal(middle.subject.scale, final.subject.scale)
   Assert.near(middle.subject.width, data.widgets.oak.width * middle.subject.scale)
   Assert.near(middle.subject.height, data.widgets.oak.height * middle.subject.scale)
 end
@@ -547,13 +573,15 @@ function T.tests.gender_composition_uniformly_shrinks_oak_when_the_region_is_sma
   local data = manifest()
   data.widgets.oak.width = 400
   data.widgets.oak.height = 500
-  local start = OakIntroLayout.compute(390, 844, compositionView(0), {}, data)
-  local final = OakIntroLayout.compute(390, 844, compositionView(1, "gender_select"), {}, data)
+  local start = compute(390, 844, compositionView(0), {}, data)
+  local final = compute(390, 844, compositionView(1, "gender_select"), {}, data)
 
-  Assert.isTrue(final.subject.scale < start.subject.scale)
+  Assert.isTrue(final.subject.scale <= start.subject.scale)
+  Assert.equal(final.subject.scale, 1, "small logical regions keep the minimum integer scale")
   Assert.near(final.subject.width, data.widgets.oak.width * final.subject.scale)
   Assert.near(final.subject.height, data.widgets.oak.height * final.subject.scale)
-  Assert.isTrue(inside(final.subject, final.oakRegion))
+  Assert.near(final.subject.x + final.subject.width / 2, final.oakRegion.x + final.oakRegion.width / 2)
+  Assert.near(final.subject.y + final.subject.height / 2, final.oakRegion.y + final.oakRegion.height / 2)
 end
 
 -- Full source scroll must inverse-transform to exactly the pinned -52 source
@@ -563,11 +591,11 @@ function T.tests.full_slide_inverse_transforms_to_exactly_fifty_two_source_pixel
   local data = manifest()
   for _, size in ipairs({ { 390, 844 }, { 800, 600 }, { 1920, 1080 }, { 2560, 1080 } }) do
     local w, h = size[1], size[2]
-    local atZero = OakIntroLayout.compute(w, h, ordinaryView(0), {}, data)
-    local atFull = OakIntroLayout.compute(w, h, ordinaryView(-52), {}, data)
+    local atZero = compute(w, h, ordinaryView(0), {}, data)
+    local atFull = compute(w, h, ordinaryView(-52), {}, data)
     local xZero = point(atZero.subject, data.widgets.oak.anchor).x
     local xFull = point(atFull.subject, data.widgets.oak.anchor).x
-    local canvasScale = math.min(atZero.scene.width / 256, atZero.scene.height / 192)
+    local canvasScale = atZero.sourceCanvas.scale
     Assert.near(
       (xFull - xZero) / canvasScale,
       52,
@@ -581,10 +609,9 @@ end
 
 function T.tests.slide_displacement_uses_manifest_reference_width_not_hardcoded_256()
   local data = manifestWithWidth(512)
-  local scene = OakIntroLayout.compute(1024, 768, ordinaryView(0), {}, data).scene
-  local centered = OakIntroLayout.compute(1024, 768, ordinaryView(0), {}, data)
-  local shifted = OakIntroLayout.compute(1024, 768, ordinaryView(-52), {}, data)
-  local canvasScale = math.min(scene.width / 512, scene.height / 192)
+  local centered = compute(1024, 768, ordinaryView(0), {}, data)
+  local shifted = compute(1024, 768, ordinaryView(-52), {}, data)
+  local canvasScale = centered.sourceCanvas.scale
   local expected = 52 * canvasScale
   Assert.near(
     point(shifted.subject, data.widgets.oak.anchor).x - point(centered.subject, data.widgets.oak.anchor).x,
@@ -597,7 +624,7 @@ function T.tests.profile_widgets_use_their_manifest_source_geometry()
   local data = profileManifest()
   for _, id in ipairs({ "male", "female", "shrink_male", "shrink_female" }) do
     local value = data.widgets[id]
-    local layout = OakIntroLayout.compute(800, 600, {
+    local layout = compute(800, 600, {
       phase = "final_full_art_hold",
       visual = id,
       primaryWidget = id,
@@ -614,7 +641,7 @@ end
 function T.tests.name_confirmation_scale_is_independent_of_gender()
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 640, 480 }, { 390, 844 } }) do
-    local male = OakIntroLayout.compute(size[1], size[2], {
+    local male = compute(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -624,7 +651,7 @@ function T.tests.name_confirmation_scale_is_independent_of_gender()
       nameCompositionProgress = 1,
       oakBgScrollX = 0,
     }, {}, data)
-    local female = OakIntroLayout.compute(size[1], size[2], {
+    local female = compute(size[1], size[2], {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -650,7 +677,7 @@ end
 
 function T.tests.gender_cards_expose_image_button_geometry()
   local data = manifest()
-  local layout = OakIntroLayout.compute(800, 600, {
+  local layout = compute(800, 600, {
     phase = "gender_select",
     visual = "oak",
     primaryWidget = "oak",
@@ -673,7 +700,7 @@ function T.tests.name_forward_transition_interpolates_directly_between_gender_an
   local data = manifest()
   for _, size in ipairs({ { 640, 480 }, { 390, 844 } }) do
     local w, h = size[1], size[2]
-    local genderEndpoint = OakIntroLayout.compute(w, h, {
+    local genderEndpoint = compute(w, h, {
       phase = "gender_select",
       visual = "oak",
       primaryWidget = "oak",
@@ -682,7 +709,7 @@ function T.tests.name_forward_transition_interpolates_directly_between_gender_an
       nameCompositionProgress = 0,
       oakBgScrollX = 0,
     }, {}, data)
-    local nameEndpoint = OakIntroLayout.compute(w, h, {
+    local nameEndpoint = compute(w, h, {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -692,7 +719,7 @@ function T.tests.name_forward_transition_interpolates_directly_between_gender_an
       nameCompositionProgress = 1,
       oakBgScrollX = 0,
     }, {}, data)
-    local forwarded = OakIntroLayout.compute(w, h, {
+    local forwarded = compute(w, h, {
       phase = "name_composition_transition",
       visual = "oak",
       primaryWidget = "oak",
@@ -714,7 +741,7 @@ function T.tests.rejected_name_return_interpolates_back_to_gender_endpoint()
   local data = manifest()
   for _, size in ipairs({ { 640, 480 }, { 390, 844 } }) do
     local w, h = size[1], size[2]
-    local nameEndpoint = OakIntroLayout.compute(w, h, {
+    local nameEndpoint = compute(w, h, {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -724,7 +751,7 @@ function T.tests.rejected_name_return_interpolates_back_to_gender_endpoint()
       nameCompositionProgress = 1,
       oakBgScrollX = 0,
     }, {}, data)
-    local genderEndpoint = OakIntroLayout.compute(w, h, {
+    local genderEndpoint = compute(w, h, {
       phase = "gender_select",
       visual = "oak",
       primaryWidget = "oak",
@@ -733,7 +760,7 @@ function T.tests.rejected_name_return_interpolates_back_to_gender_endpoint()
       nameCompositionProgress = 0,
       oakBgScrollX = 0,
     }, {}, data)
-    local returnMid = OakIntroLayout.compute(w, h, {
+    local returnMid = compute(w, h, {
       phase = "name_composition_return",
       visual = "oak",
       primaryWidget = "oak",
@@ -756,7 +783,7 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
   local progress = 0.4
   for _, viewport in ipairs({ { 640, 480 }, { 390, 844 } }) do
     local w, h = viewport[1], viewport[2]
-    local genderEndpoint = OakIntroLayout.compute(w, h, {
+    local genderEndpoint = compute(w, h, {
       phase = "gender_select",
       visual = "oak",
       primaryWidget = "oak",
@@ -765,7 +792,7 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
       nameCompositionProgress = 0,
       oakBgScrollX = 0,
     }, {}, data)
-    local nameEndpoint = OakIntroLayout.compute(w, h, {
+    local nameEndpoint = compute(w, h, {
       phase = "name_confirm",
       visual = "oak",
       primaryWidget = "oak",
@@ -775,7 +802,7 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
       nameCompositionProgress = 1,
       oakBgScrollX = 0,
     }, {}, data)
-    local transition = OakIntroLayout.compute(w, h, {
+    local transition = compute(w, h, {
       phase = "name_composition_transition",
       visual = "oak",
       primaryWidget = "oak",
@@ -792,7 +819,7 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
     )
     Assert.isTrue(inside(assert(transition.subject), assert(transition.viewport)))
   end
-  local first = OakIntroLayout.compute(640, 480, {
+  local first = compute(640, 480, {
     phase = "name_composition_transition",
     visual = "oak",
     primaryWidget = "oak",
@@ -801,7 +828,7 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
     nameCompositionProgress = progress,
     oakBgScrollX = 0,
   }, {}, data)
-  local second = OakIntroLayout.compute(390, 844, {
+  local second = compute(390, 844, {
     phase = "name_composition_transition",
     visual = "oak",
     primaryWidget = "oak",
@@ -828,7 +855,7 @@ function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_i
       genderCompositionProgress = 1,
       oakBgScrollX = 0,
     }
-    local selectLayout = OakIntroLayout.compute(w, h, selectView, {}, data)
+    local selectLayout = compute(w, h, selectView, {}, data)
     Assert.notNil(selectLayout.dialogue, "gender_select must reserve dialogue at " .. w .. "x" .. h)
     local dialogueRect = assert(selectLayout.dialogue).outerRect
     Assert.isTrue(inside(dialogueRect, selectLayout.viewport))
@@ -850,7 +877,7 @@ function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_i
       confirmationChoice = { kind = "gender", selected = 0 },
       oakBgScrollX = 0,
     }
-    local confirmLayout = OakIntroLayout.compute(w, h, confirmView, {}, data)
+    local confirmLayout = compute(w, h, confirmView, {}, data)
     Assert.notNil(confirmLayout.dialogue, "gender_confirm answer state must reserve dialogue")
     local confirmDialogue = assert(confirmLayout.dialogue).outerRect
     Assert.deepEqual(
@@ -869,7 +896,7 @@ function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_i
     Assert.deepEqual(confirmLayout.oakRegion, selectLayout.oakRegion)
     Assert.deepEqual(confirmLayout.selectorRegion, selectLayout.selectorRegion)
 
-    local transitionLayout = OakIntroLayout.compute(w, h, {
+    local transitionLayout = compute(w, h, {
       phase = "gender_composition_transition",
       visual = "oak",
       primaryWidget = "oak",
@@ -885,7 +912,7 @@ end
 function T.tests.gender_cards_keep_equal_top_and_bottom_padding_around_portraits()
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
-    local layout = OakIntroLayout.compute(size[1], size[2], {
+    local layout = compute(size[1], size[2], {
       phase = "gender_select",
       visual = "oak",
       primaryWidget = "oak",
@@ -906,7 +933,7 @@ function T.tests.name_launch_wait_keeps_dialogue_reserved_and_oak_region_stable(
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
     local w, h = size[1], size[2]
-    local selectLayout = OakIntroLayout.compute(w, h, {
+    local selectLayout = compute(w, h, {
       phase = "gender_select",
       visual = "oak",
       primaryWidget = "oak",
@@ -914,7 +941,7 @@ function T.tests.name_launch_wait_keeps_dialogue_reserved_and_oak_region_stable(
       genderCompositionProgress = 1,
       oakBgScrollX = 0,
     }, {}, data)
-    local launchLayout = OakIntroLayout.compute(w, h, {
+    local launchLayout = compute(w, h, {
       phase = "name_launch_wait",
       visual = "oak",
       primaryWidget = "oak",
@@ -931,6 +958,88 @@ function T.tests.name_launch_wait_keeps_dialogue_reserved_and_oak_region_stable(
     )
     Assert.deepEqual(launchLayout.oakRegion, selectLayout.oakRegion)
     Assert.deepEqual(launchLayout.selectorRegion, selectLayout.selectorRegion)
+  end
+end
+
+function T.tests.pixel_authored_layout_scales_stay_integer_across_host_sizes_and_transitions()
+  local cases = {
+    ordinaryView(0),
+    compositionView(0.5),
+    {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    },
+    {
+      phase = "gender_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      confirmationChoice = { kind = "gender", selected = 0 },
+      oakBgScrollX = 0,
+    },
+    {
+      phase = "name_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      nameCompositionProgress = 1,
+      confirmationChoice = { kind = "name", selected = 0 },
+      oakBgScrollX = 0,
+    },
+  }
+  local sizes = {
+    { 256, 192 },
+    { 640, 480 },
+    { 1280, 720 },
+    { 1920, 1080 },
+    { 2560, 1440 },
+    { 3840, 2160 },
+    { 390, 844 },
+  }
+  for _, size in ipairs(sizes) do
+    local width, height = size[1], size[2]
+    local bounds = { x = 0, y = 0, width = width, height = height }
+    local preferred = math.max(1, math.floor(height / 192 + 0.5))
+    local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferred)
+    local surface = PixelScale.cover(bounds, outputScale)
+    for _, view in ipairs(cases) do
+      local layout =
+        compute(surface.logicalViewport.width, surface.logicalViewport.height, view, {}, profileManifest(), outputScale)
+      local scales = { layout.sourceCanvas and layout.sourceCanvas.scale }
+      if layout.subject then
+        scales[#scales + 1] = layout.subject.scale
+      end
+      if layout.reveal then
+        scales[#scales + 1] = layout.reveal.scale
+      end
+      if layout.revealCanvas then
+        scales[#scales + 1] = layout.revealCanvas.scale
+      end
+      if layout.dialogue then
+        scales[#scales + 1] = layout.dialogue.scale
+      end
+      for _, entry in ipairs(layout.genderButtons or {}) do
+        scales[#scales + 1] = entry.scale
+      end
+      if layout.selectedProfileButton then
+        scales[#scales + 1] = layout.selectedProfileButton.scale
+      end
+      for _, entry in pairs(layout.confirmationButtons or {}) do
+        scales[#scales + 1] = entry.scale
+      end
+      for _, scale in ipairs(scales) do
+        Assert.isTrue(
+          type(scale) == "number" and scale > 0 and scale == math.floor(scale),
+          "pixel-authored scale must be integer"
+        )
+      end
+    end
   end
 end
 

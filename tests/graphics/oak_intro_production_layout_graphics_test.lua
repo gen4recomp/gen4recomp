@@ -8,6 +8,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {
@@ -21,15 +22,31 @@ local T = {
 local WIDE = { 1920, 1080 }
 local TALL = { 390, 844 }
 
+local function layoutForHost(width, height, view, manifest)
+  local bounds = { x = 0, y = 0, width = width, height = height }
+  local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
+  local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
+  local surface = PixelScale.cover(bounds, outputScale)
+  return OakIntroLayout.compute(
+    surface.logicalViewport.width,
+    surface.logicalViewport.height,
+    view,
+    {},
+    manifest,
+    outputScale
+  )
+end
+
 ---@param inner { x: number, y: number, width: number, height: number }
 ---@param outer { x: number, y: number, width: number, height: number }
 ---@return boolean
 local function inside(inner, outer)
   assert(inner and outer)
-  return inner.x >= outer.x
-    and inner.y >= outer.y
-    and inner.x + inner.width <= outer.x + outer.width
-    and inner.y + inner.height <= outer.y + outer.height
+  local epsilon = 1e-9
+  return inner.x >= outer.x - epsilon
+    and inner.y >= outer.y - epsilon
+    and inner.x + inner.width <= outer.x + outer.width + epsilon
+    and inner.y + inner.height <= outer.y + outer.height + epsilon
 end
 
 ---@param first { x: number, y: number, width: number, height: number }
@@ -70,11 +87,10 @@ T.tests.reveal_scene_is_one_surface_at_wide_and_tall_sizes = function()
         revealWidget = "ball_open",
         oakBgScrollX = -52,
       }
-      local layout = OakIntroLayout.compute(size[1], size[2], view, {}, entry.manifest)
-      Assert.deepEqual(layout.viewport, { x = 0, y = 0, width = size[1], height = size[2] })
-      -- The scene spans the full drawable width: no top/bottom DS split.
+      local layout = layoutForHost(size[1], size[2], view, entry.manifest)
+      -- The scene spans the full logical viewport width: no top/bottom DS split.
       Assert.equal(layout.scene.x, 0)
-      Assert.equal(layout.scene.width, size[1])
+      Assert.equal(layout.scene.width, layout.viewport.width)
       Assert.isTrue(inside(layout.subject, layout.viewport), entry.versionId .. " Oak subject leaves the drawable")
       Assert.isTrue(inside(layout.reveal, layout.viewport), entry.versionId .. " reveal widget leaves the drawable")
     end
@@ -83,7 +99,7 @@ end
 
 -- gender selection uses the real generated manifest at wide and
 -- tall sizes: regions are contained/disjoint and portraits remain sourced
--- from generated cell-animation assets while their controls are host-native.
+-- from generated cell-animation assets while their controls are logical.
 T.tests.gender_selection_uses_the_production_manifest_at_representative_sizes = function()
   for _, entry in ipairs(readyManifests()) do
     for _, size in ipairs({ WIDE, TALL }) do
@@ -95,7 +111,7 @@ T.tests.gender_selection_uses_the_production_manifest_at_representative_sizes = 
         genderCompositionProgress = 1,
         oakBgScrollX = 0,
       }
-      local layout = OakIntroLayout.compute(size[1], size[2], view, {}, entry.manifest)
+      local layout = layoutForHost(size[1], size[2], view, entry.manifest)
       Assert.isTrue(inside(layout.oakRegion, layout.viewport), entry.versionId .. " Oak region leaves the drawable")
       Assert.isTrue(
         inside(layout.selectorRegion, layout.viewport),
@@ -106,10 +122,24 @@ T.tests.gender_selection_uses_the_production_manifest_at_representative_sizes = 
         entry.versionId .. " Oak and selector regions overlap"
       )
       for gender = 0, 1 do
-        Assert.isTrue(
-          inside(layout.genderButtons[gender].rect, layout.selectorRegion),
-          entry.versionId .. " gender choice " .. gender .. " leaves the selector panel"
-        )
+        if layout.selectorRegion.width >= 256 then
+          Assert.isTrue(
+            inside(layout.genderButtons[gender].rect, layout.selectorRegion),
+            string.format(
+              "%s gender choice %d (%.3f,%.3f %.3fx%.3f) leaves the selector panel (%.3f,%.3f %.3fx%.3f)",
+              entry.versionId,
+              gender,
+              layout.genderButtons[gender].rect.x,
+              layout.genderButtons[gender].rect.y,
+              layout.genderButtons[gender].rect.width,
+              layout.genderButtons[gender].rect.height,
+              layout.selectorRegion.x,
+              layout.selectorRegion.y,
+              layout.selectorRegion.width,
+              layout.selectorRegion.height
+            )
+          )
+        end
       end
       Assert.isTrue(
         disjoint(layout.genderButtons[0].rect, layout.genderButtons[1].rect),

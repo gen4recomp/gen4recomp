@@ -7,6 +7,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = {}
 
@@ -37,7 +38,7 @@ local function genderButtons()
       rect = { x = 10, y = 10, width = 60, height = 80 },
       scale = 1,
       portraitId = "gender_male",
-      portraitRect = { x = 20, y = 20, width = 40, height = 60 },
+      portraitRect = { x = 20, y = 20, width = 40, height = 60, scale = 1 },
       button = ImageButton.resolve({ rect = { x = 10, y = 10, width = 60, height = 80 }, scale = 1 }),
     },
     [1] = {
@@ -45,7 +46,7 @@ local function genderButtons()
       rect = { x = 90, y = 10, width = 60, height = 80 },
       scale = 1,
       portraitId = "gender_female",
-      portraitRect = { x = 100, y = 20, width = 40, height = 60 },
+      portraitRect = { x = 100, y = 20, width = 40, height = 60, scale = 1 },
       button = ImageButton.resolve({ rect = { x = 90, y = 10, width = 60, height = 80 }, scale = 1 }),
     },
   }
@@ -111,11 +112,12 @@ local function view()
     name = "",
     layout = {
       viewport = { x = 0, y = 0, width = 160, height = 120 },
-      subject = { x = 20, y = 10, width = 80, height = 80 },
+      subject = { x = 20, y = 10, width = 80, height = 80, scale = 1 },
       message = { x = 0, y = 0, width = 1, height = 1 },
       nameGrid = {},
       nameKeys = {},
     },
+    pixelSurface = PixelScale.cover({ x = 0, y = 0, width = 160, height = 120 }, 1),
   }
 end
 
@@ -196,7 +198,7 @@ T.responsive_renderer_uses_declared_sampling_and_identity_tint = function()
   flash.sceneBrightness = 1
   renderer:draw(flash)
 
-  Assert.equal(#graphics.draws, 4, "each frame draws background and Oak exactly once")
+  Assert.equal(#graphics.draws, 6, "each frame draws background, Oak, and one composite")
   for _, draw in ipairs(graphics.draws) do
     Assert.deepEqual(draw.color, { 1, 1, 1, 1 }, "image draws must use identity tint")
   end
@@ -302,10 +304,11 @@ T.background_only_view_draws_the_gradient_once_without_a_subject = function()
   local controller = backgroundOnlyController()
   local background = controller:view() --[[@as table]]
   background.layout = view().layout
+  background.pixelSurface = view().pixelSurface
 
   renderer:draw(background)
 
-  Assert.equal(#graphics.draws, 1, "background-only phases draw one image")
+  Assert.equal(#graphics.draws, 2, "background-only phases draw one image and one composite")
   Assert.equal(graphics.draws[1].image.path, "background.png")
   Assert.equal(graphics.draws[1].sx, 160)
   Assert.equal(graphics.draws[1].sy, 120 / 192)
@@ -586,7 +589,7 @@ function T.nonzero_atlas_frame_is_drawn_with_a_reusable_quad(_)
     choiceText = choiceTextRenderer(),
   })
   renderer:draw(view())
-  Assert.equal(#graphics.draws, 2)
+  Assert.equal(#graphics.draws, 3)
   Assert.equal(graphics.draws[2].quad.y, 4)
   Assert.equal(graphics.draws[2].x, 20)
   renderer:dispose()
@@ -664,7 +667,7 @@ function T.animated_frames_use_distinct_images_and_release_unique_paths()
   renderer:draw(second)
 
   Assert.equal(graphics.draws[2].image.path, "oak-frame-1.png")
-  Assert.equal(graphics.draws[4].image.path, "oak-frame-2.png")
+  Assert.equal(graphics.draws[5].image.path, "oak-frame-2.png")
   local loaded = {}
   for _, image in ipairs(graphics.images) do
     loaded[image.path] = (loaded[image.path] or 0) + 1
@@ -759,6 +762,69 @@ T.constructor_rejects_missing_confirmation_widget = function()
     })
   end)
   Assert.isTrue(ok, "renderer must not require confirmation widgets after migration")
+end
+
+function T.logical_surface_uses_the_resolution_matrix_and_reuses_stable_canvases()
+  local graphics = FakeGraphics.new({
+    imageSizes = { { 1, 192 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 } },
+  })
+  local renderer = OakIntroRenderer.new({
+    manifest = manifest(),
+    graphics = graphics,
+    imageLoader = function(path)
+      local image = graphics.newImage()
+      image.path = path
+      return image
+    end,
+    text = textRenderer(),
+    choiceText = choiceTextRenderer(),
+  })
+  local sizes = {
+    { 256, 192 },
+    { 640, 480 },
+    { 1280, 720 },
+    { 1920, 1080 },
+    { 2560, 1440 },
+    { 3840, 2160 },
+    { 390, 844 },
+  }
+  local expectedCanvasCount = 0
+  local previousWidth, previousHeight
+  for _, size in ipairs(sizes) do
+    local width, height = size[1], size[2]
+    local bounds = { x = 0, y = 0, width = width, height = height }
+    local preferred = math.max(1, math.floor(height / 192 + 0.5))
+    local scale = PixelScale.fitPreferred(bounds, 256, 192, preferred)
+    local surface = PixelScale.cover(bounds, scale)
+    local frame = view()
+    frame.pixelSurface = surface
+    frame.layout.viewport = surface.logicalViewport
+    renderer:draw(frame)
+
+    if surface.logicalWidth ~= previousWidth or surface.logicalHeight ~= previousHeight then
+      expectedCanvasCount = expectedCanvasCount + 1
+    end
+    Assert.equal(#graphics.canvases, expectedCanvasCount, width .. "x" .. height .. " Canvas allocation count")
+    local canvas = assert(graphics.canvases[#graphics.canvases])
+    Assert.equal(canvas.width, surface.logicalWidth)
+    Assert.equal(canvas.height, surface.logicalHeight)
+    Assert.deepEqual(canvas.filters[#canvas.filters], { min = "nearest", mag = "nearest" })
+
+    local final = assert(graphics.draws[#graphics.draws])
+    Assert.equal(final.image, canvas)
+    Assert.equal(final.x, surface.physicalFrame.x)
+    Assert.equal(final.y, surface.physicalFrame.y)
+    Assert.equal(final.sx, scale)
+    Assert.equal(final.sy, scale)
+
+    previousWidth, previousHeight = surface.logicalWidth, surface.logicalHeight
+    local stableFrame = view()
+    stableFrame.pixelSurface = surface
+    stableFrame.layout.viewport = surface.logicalViewport
+    renderer:draw(stableFrame)
+    Assert.equal(#graphics.canvases, expectedCanvasCount, width .. "x" .. height .. " stable Canvas allocation count")
+  end
+  renderer:dispose()
 end
 
 return GraphicsSmoke.suite(T)

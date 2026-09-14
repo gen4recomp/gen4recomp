@@ -4,6 +4,7 @@
 
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
+local PixelScale = require("libs.ui.src.PixelScale")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 
@@ -20,7 +21,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dispose fun(self: OakIntroStateController)
 
 ---@class OakIntroStateRenderer
----@field draw fun(self: OakIntroStateRenderer, view: OakIntroStateView)
+---@field draw fun(self: OakIntroStateRenderer, view: OakIntroStateView, overlay: (fun())?)
 ---@field dispose fun(self: OakIntroStateRenderer)
 
 ---@class OakIntroStateTextInputHost
@@ -74,6 +75,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field nameInputEnabled boolean
 ---@field choiceLabels table<integer, string>?
 ---@field layout OakIntroStateLayout?
+---@field pixelSurface { scale: integer, logicalWidth: integer, logicalHeight: integer, logicalViewport: OakIntroStateRectangle, physicalFrame: OakIntroStateRectangle }?
 
 ---@class OakIntroStateLayoutView: OakIntroStateView
 ---@field layout OakIntroStateLayout
@@ -183,6 +185,13 @@ local DEFAULT_GLYPHS = {
   "Y",
   "Z",
 }
+
+local function resolvePixelSurface(width, height)
+  local bounds = { x = 0, y = 0, width = width, height = height }
+  local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
+  local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
+  return PixelScale.cover(bounds, outputScale), outputScale
+end
 
 local function glyphList(value)
   local result = {}
@@ -466,7 +475,16 @@ end
 function OakIntroState:view()
   local view = self.controller:view()
   ---@cast view OakIntroStateView
-  view.layout = OakIntroLayout.compute(self.width, self.height, view, self.glyphs, self.manifest)
+  local surface, preferredScale = resolvePixelSurface(self.width, self.height)
+  view.pixelSurface = surface
+  view.layout = OakIntroLayout.compute(
+    surface.logicalViewport.width,
+    surface.logicalViewport.height,
+    view,
+    self.glyphs,
+    self.manifest,
+    preferredScale
+  )
   if self.dialogueController then
     view.dialogueStatus = self.dialogueController:status()
     view.dialoguePresentation = view.layout.dialogue
@@ -483,14 +501,21 @@ end
 
 function OakIntroState:draw()
   local view = self:view()
-  self.renderer:draw(view)
+  local overlay
   if self.dialogueController and self.dialogueRenderer then
     if self.dialogueController:isModal() then
-      self.dialogueRenderer:draw(self.dialogueController, view.dialoguePresentation)
+      local function drawModalDialogue()
+        self.dialogueRenderer:draw(self.dialogueController, view.dialoguePresentation)
+      end
+      overlay = drawModalDialogue
     elseif self._frozenAdapter and view.dialoguePresentation and retainsCompletedQuestion(view) then
-      self.dialogueRenderer:draw(self._frozenAdapter, view.dialoguePresentation)
+      local function drawFrozenDialogue()
+        self.dialogueRenderer:draw(self._frozenAdapter, view.dialoguePresentation)
+      end
+      overlay = drawFrozenDialogue
     end
   end
+  self.renderer:draw(view, overlay)
   -- Only a successful draw of the waiting full-black frame unlocks the
   -- handoff; a failed draw raises above and records nothing. Completion
   -- itself happens on a later update, never here.
@@ -556,13 +581,19 @@ end
 function OakIntroState:_pointer(x, y)
   local view = self:view()
   local layout = view.layout
+  local surface = assert(view.pixelSurface)
+  if not OakIntroLayout.contains(surface.physicalFrame, x, y) then
+    self:_sync()
+    return
+  end
+  local logicalX, logicalY = PixelScale.hostToLogical(surface, x, y)
   if self.dialogueController and self.dialogueController:isModal() then
     self:_sync()
     return
   elseif layout.confirmationButtons then
     for choice = 0, 1 do
       local entry = layout.confirmationButtons[choice]
-      if entry and OakIntroLayout.contains(entry.rect, x, y) then
+      if entry and OakIntroLayout.contains(entry.rect, logicalX, logicalY) then
         self.controller:press(entry.key)
         self:_sync()
         return
@@ -571,7 +602,7 @@ function OakIntroState:_pointer(x, y)
   elseif layout.genderButtons then
     for gender = 0, 1 do
       local entry = layout.genderButtons[gender]
-      if entry and OakIntroLayout.contains(entry.rect, x, y) then
+      if entry and OakIntroLayout.contains(entry.rect, logicalX, logicalY) then
         self.controller:press(entry.key)
         self:_sync()
         return
@@ -579,7 +610,7 @@ function OakIntroState:_pointer(x, y)
     end
   elseif view.phase == "name_edit" then
     for _, entry in pairs(layout.nameKeys or layout.nameGrid) do
-      if OakIntroLayout.contains(entry.rect, x, y) then
+      if OakIntroLayout.contains(entry.rect, logicalX, logicalY) then
         if entry.kind == "glyph" then
           self.controller:inputText(assert(entry.glyph))
         elseif entry.kind == "delete" then

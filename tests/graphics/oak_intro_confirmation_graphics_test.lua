@@ -8,9 +8,15 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
+local PixelScale = require("libs.ui.src.PixelScale")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
+
+local function layoutFor(view, manifest)
+  view.pixelSurface = PixelScale.cover({ x = 0, y = 0, width = 800, height = 600 }, 1)
+  return OakIntroLayout.compute(800, 600, view, {}, manifest, 1)
+end
 
 local function readyManifests()
   local result = {}
@@ -86,7 +92,7 @@ local function confirmationView(kind, selected)
 end
 
 local function render(scope, renderer, view, manifest)
-  view.layout = OakIntroLayout.compute(800, 600, view, {}, manifest)
+  view.layout = layoutFor(view, manifest)
   local canvas = scope:own(love.graphics.newCanvas(800, 600))
   love.graphics.setCanvas(canvas)
   renderer:draw(view)
@@ -107,10 +113,8 @@ function T.source_backing_window_fill_font4_and_selected_focus_are_visible(scope
     Assert.equal(font4.fontDef.fontId, 4)
     local selectedYes = render(scope, renderer, confirmationView("gender", 0), entry.manifest)
     local selectedNo = render(scope, renderer, confirmationView("gender", 1), entry.manifest)
-    local yes =
-      OakIntroLayout.compute(800, 600, confirmationView("gender", 0), {}, entry.manifest).confirmationButtons[0]
-    local no =
-      OakIntroLayout.compute(800, 600, confirmationView("gender", 0), {}, entry.manifest).confirmationButtons[1]
+    local yes = layoutFor(confirmationView("gender", 0), entry.manifest).confirmationButtons[0]
+    local no = layoutFor(confirmationView("gender", 0), entry.manifest).confirmationButtons[1]
     -- New TextButton path: verify focus colors are present via shared button.
     local function hasFocusColors(image, rect)
       local hasWhite, hasRed = false, false

@@ -7,6 +7,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
+local PixelScale = require("libs.ui.src.PixelScale")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
@@ -87,7 +88,8 @@ local function selectorView(manifest, width, height, focus, delta)
     genderCompositionProgress = 1,
     focusBlinkDelta = delta or 0,
   }
-  view.layout = OakIntroLayout.compute(width, height, view, {}, manifest)
+  view.pixelSurface = PixelScale.cover({ x = 0, y = 0, width = width, height = height }, 1)
+  view.layout = OakIntroLayout.compute(width, height, view, {}, manifest, 1)
   return view
 end
 
@@ -138,7 +140,7 @@ function T.card_interiors_use_opaque_source_tone_and_pulse(scope)
     local focusedImagePulse = render(scope, renderer, focusedPulse)
     local backgroundView = selectorView(entry.manifest, 256, 192)
     backgroundView.phase = "background"
-    backgroundView.layout = OakIntroLayout.compute(256, 192, backgroundView, {}, entry.manifest)
+    backgroundView.layout = OakIntroLayout.compute(256, 192, backgroundView, {}, entry.manifest, 1)
     local backgroundImage = render(scope, renderer, backgroundView)
     for gender = 0, 1 do
       local cardEntry = focusedZero.layout.genderButtons[gender]
@@ -224,8 +226,12 @@ function T.selected_frame_changes_without_recoloring_portraits(scope)
     Assert.isTrue(changed, "focused card rim must differ from its unfocused rendering")
     for gender = 0, 1 do
       local portrait = focusedView.layout.genderButtons[gender].portraitRect
-      for y = math.floor(portrait.y), math.ceil(portrait.y + portrait.height) - 1 do
-        for x = math.floor(portrait.x), math.ceil(portrait.x + portrait.width) - 1 do
+      local yStart = math.max(0, math.floor(portrait.y))
+      local yEnd = math.min(focused:getHeight() - 1, math.ceil(portrait.y + portrait.height) - 1)
+      local xStart = math.max(0, math.floor(portrait.x))
+      local xEnd = math.min(focused:getWidth() - 1, math.ceil(portrait.x + portrait.width) - 1)
+      for y = yStart, yEnd do
+        for x = xStart, xEnd do
           local fr, fg, fb = focused:getPixel(x, y)
           local ur, ug, ub = unfocused:getPixel(x, y)
           Assert.equal(quantize(fr), quantize(ur), "focus must not recolor portrait red channel")
@@ -244,7 +250,7 @@ function T.both_source_gender_portraits_remain_visible_inside_cards(scope)
     local actual = render(scope, renderer, view)
     local backgroundView = selectorView(entry.manifest, 256, 192)
     backgroundView.phase = "background"
-    backgroundView.layout = OakIntroLayout.compute(256, 192, backgroundView, {}, entry.manifest)
+    backgroundView.layout = OakIntroLayout.compute(256, 192, backgroundView, {}, entry.manifest, 1)
     local background = render(scope, renderer, backgroundView)
     for gender = 0, 1 do
       local entryLayout = view.layout.genderButtons[gender]

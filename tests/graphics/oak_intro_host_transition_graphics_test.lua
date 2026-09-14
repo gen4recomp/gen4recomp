@@ -362,6 +362,11 @@ local function bootCoveredField(scope)
       viewport = viewport,
       camera = camera,
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 2
+        end,
+      },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }

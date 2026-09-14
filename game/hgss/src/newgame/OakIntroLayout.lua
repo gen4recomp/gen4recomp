@@ -3,6 +3,8 @@
 
 local OakProfileLayout = require("game.hgss.src.newgame.OakProfileLayout")
 local OakSceneLayout = require("game.hgss.src.newgame.OakSceneLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
+local TextButton = require("libs.ui.src.TextButton")
 
 local OakIntroLayout = {}
 
@@ -24,9 +26,10 @@ end
 
 ---@param region { x: number, y: number, width: number, height: number }
 ---@param reference { width: number, height: number }
+---@param preferredScale integer
 ---@return { scale: number, origin: { x: number, y: number }, [string]: unknown }
-local function canvasForRegion(region, reference)
-  local scale = math.min(region.width / reference.width, region.height / reference.height)
+local function canvasForRegion(region, reference, preferredScale)
+  local scale = PixelScale.fitPreferred(region, reference.width, reference.height, assert(preferredScale))
   local origin = {
     x = region.x + (region.width - reference.width * scale) / 2,
     y = region.y + (region.height - reference.height * scale) / 2,
@@ -123,9 +126,10 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
     nameStage, nameOakRegion, nameChoiceRegion = OakSceneLayout.nameStageAndRegions(sceneContent, assert(dialogue), gap)
     local nameOakRect = OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), nameOakRegion, 1)
     if isNameForward then
-      selectedSubject = OakSceneLayout.interpolateSubjectRect(genderOakRect, nameOakRect, assert(nameProgress))
+      selectedSubject = OakSceneLayout.interpolateSubjectRect(genderOakRect, nameOakRect, assert(nameProgress), true)
     elseif isNameReturn then
-      selectedSubject = OakSceneLayout.interpolateSubjectRect(nameOakRect, genderOakRect, 1 - assert(nameProgress))
+      selectedSubject =
+        OakSceneLayout.interpolateSubjectRect(nameOakRect, genderOakRect, 1 - assert(nameProgress), true)
     else
       selectedSubject = nameOakRect
     end
@@ -144,6 +148,29 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   return selectedSubject, oakRegion, selectorRegion, nameStage, nameChoiceRegion, selectorActive
 end
 
+local function integerConfirmationEntries(region, preferredScale)
+  local stackWidth = TextButton.REFERENCE_WIDTH
+  local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
+  local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
+  local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
+  local x = region.x + (region.width - width) / 2
+  local y = region.y + (region.height - (height * 2 + 8 * scale)) / 2
+  return {
+    [0] = {
+      key = "yes",
+      rect = rect(x, y, width, height),
+      scale = scale,
+      button = TextButton.resolve({ rect = rect(x, y, width, height), scale = scale }),
+    },
+    [1] = {
+      key = "no",
+      rect = rect(x, y + height + 8 * scale, width, height),
+      scale = scale,
+      button = TextButton.resolve({ rect = rect(x, y + height + 8 * scale, width, height), scale = scale }),
+    },
+  }
+end
+
 local function profileLayout(
   result,
   view,
@@ -153,11 +180,12 @@ local function profileLayout(
   manifest,
   sceneContent,
   gap,
-  nameStage,
-  nameChoiceRegion
+  _,
+  nameChoiceRegion,
+  preferredScale
 )
   if selectorActive then
-    local selectorCanvas = canvasForRegion(assert(selectorRegion), reference)
+    local selectorCanvas = canvasForRegion(assert(selectorRegion), reference, preferredScale)
     local genderSlots = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
     if view.phase == "gender_select" then
       result.genderButtons = genderSlots
@@ -167,12 +195,12 @@ local function profileLayout(
       local opposite = assert(genderSlots[1 - focus])
       result.selectedProfileButton = selected
       if view.confirmationChoice then
-        result.confirmationButtons = OakProfileLayout.genderConfirmationChoices(opposite.rect)
+        result.confirmationButtons = integerConfirmationEntries(opposite.rect, assert(preferredScale))
       end
     end
   end
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
-    result.confirmationButtons = OakProfileLayout.nameConfirmationEntries(assert(nameStage), assert(nameChoiceRegion))
+    result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale))
   end
   if view.phase == "name_edit" then
     result.nameKeys, result.namePreview = OakProfileLayout.nameEditor(sceneContent, gap, view, clamp)
@@ -185,11 +213,16 @@ end
 ---@param view table<string, unknown>
 ---@param glyphs string[]
 ---@param manifest table<string, unknown>
+---@param preferredScale integer
 ---@return OakIntroStateLayout
-function OakIntroLayout.compute(width, height, view, glyphs, manifest)
+function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferredScale)
   assert(type(width) == "number" and width == width and width > 0, "Oak viewport width is invalid")
   assert(type(height) == "number" and height == height and height > 0, "Oak viewport height is invalid")
   assert(type(view) == "table" and type(glyphs) == "table", "Oak layout requires view and glyphs")
+  assert(
+    type(preferredScale) == "number" and preferredScale > 0 and preferredScale == math.floor(preferredScale),
+    "Oak preferred scale must be a positive integer"
+  )
   assert(
     type(manifest) == "table" and type(manifest.sourceReference) == "table",
     "Oak layout requires source reference"
@@ -201,7 +234,7 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest)
   local safeFrame = rect(inset, inset, width - inset * 2, height - inset * 2)
   local gap = math.min(8, math.max(0, math.floor(minimum * 0.02 + 0.5)))
   local mode = OakSceneLayout.mode(view)
-  local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue)
+  local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue, preferredScale)
   local scene, sceneContent = OakSceneLayout.sceneRegions(width, safeFrame)
   local result ---@type OakIntroStateLayout
   result = {
@@ -220,7 +253,7 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest)
   if subjectId == nil and view.visual ~= "background" then
     subjectId = view.visual
   end
-  local canvas = OakSceneLayout.sourceCanvas(scene, reference)
+  local canvas = OakSceneLayout.sourceCanvas(scene, reference, preferredScale)
   result.sourceCanvas = canvas
   local subjectWidget
   local ordinarySubject
@@ -249,7 +282,8 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest)
     sceneContent,
     gap,
     nameStage,
-    nameChoiceRegion
+    nameChoiceRegion,
+    preferredScale
   )
   return result
 end

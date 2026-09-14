@@ -1,5 +1,7 @@
 -- Pure common scene, dialogue, and Oak placement geometry for Oak intro.
 
+local PixelScale = require("libs.ui.src.PixelScale")
+
 local OakSceneLayout = {}
 
 local function rect(x, y, width, height)
@@ -7,8 +9,8 @@ local function rect(x, y, width, height)
   return { x = x, y = y, width = width, height = height }
 end
 
-local function canvasForRegion(region, reference)
-  local scale = math.min(region.width / reference.width, region.height / reference.height)
+local function canvasForRegion(region, reference, preferredScale)
+  local scale = PixelScale.fitPreferred(region, reference.width, reference.height, assert(preferredScale))
   local origin = {
     x = region.x + (region.width - reference.width * scale) / 2,
     y = region.y + (region.height - reference.height * scale) / 2,
@@ -17,8 +19,8 @@ local function canvasForRegion(region, reference)
   return { scale = scale, origin = origin }
 end
 
-function OakSceneLayout.sourceCanvas(scene, reference)
-  local canvas = canvasForRegion(scene, reference)
+function OakSceneLayout.sourceCanvas(scene, reference, preferredScale)
+  local canvas = canvasForRegion(scene, reference, preferredScale)
   canvas.scene = scene
   canvas.reference = reference
   return canvas
@@ -78,11 +80,17 @@ function OakSceneLayout.sourceCenteredWidget(widget, canvas)
   }
 end
 
-function OakSceneLayout.dialogue(safeFrame, reservesDialogue)
+function OakSceneLayout.dialogue(safeFrame, reservesDialogue, preferredScale)
   if not reservesDialogue then
     return nil
   end
-  local scale = math.min(safeFrame.width / 256, safeFrame.height * 0.28 / 48, 5)
+  local bounds = {
+    x = safeFrame.x,
+    y = safeFrame.y,
+    width = safeFrame.width,
+    height = safeFrame.height * 0.28,
+  }
+  local scale = PixelScale.fitPreferred(bounds, 256, 48, math.min(assert(preferredScale), 5))
   local outerWidth, outerHeight = 256 * scale, 48 * scale
   return {
     outerRect = rect(
@@ -164,11 +172,11 @@ function OakSceneLayout.selectorRegions(safeFrame, gap)
 end
 
 function OakSceneLayout.composedOakRect(startRect, oak, oakRegion, progress)
-  local targetScale = math.min(startRect.scale, oakRegion.width / oak.width, oakRegion.height / oak.height)
+  local targetScale = PixelScale.fitPreferred(oakRegion, oak.width, oak.height, startRect.scale)
   local targetWidth, targetHeight = oak.width * targetScale, oak.height * targetScale
   local targetX = oakRegion.x + (oakRegion.width - targetWidth) / 2
   local targetY = oakRegion.y + (oakRegion.height - targetHeight) / 2
-  local scale = startRect.scale + (targetScale - startRect.scale) * progress
+  local scale = progress < 0.5 and startRect.scale or targetScale
   return {
     x = startRect.x + (targetX - startRect.x) * progress,
     y = startRect.y + (targetY - startRect.y) * progress,
@@ -178,7 +186,7 @@ function OakSceneLayout.composedOakRect(startRect, oak, oakRegion, progress)
   }
 end
 
-function OakSceneLayout.interpolateSubjectRect(from, to, progress)
+function OakSceneLayout.interpolateSubjectRect(from, to, progress, integerScale)
   assert(
     type(progress) == "number"
       and progress == progress
@@ -189,12 +197,14 @@ function OakSceneLayout.interpolateSubjectRect(from, to, progress)
     "Oak subject interpolation progress is invalid"
   )
   assert(from.scale > 0 and to.scale > 0, "Oak subject interpolation scale is invalid")
+  local scale = integerScale and (progress < 0.5 and from.scale or to.scale)
+    or from.scale + (to.scale - from.scale) * progress
   return {
     x = from.x + (to.x - from.x) * progress,
     y = from.y + (to.y - from.y) * progress,
-    width = from.width + (to.width - from.width) * progress,
-    height = from.height + (to.height - from.height) * progress,
-    scale = from.scale + (to.scale - from.scale) * progress,
+    width = from.width / from.scale * scale,
+    height = from.height / from.scale * scale,
+    scale = scale,
   }
 end
 

@@ -9,6 +9,7 @@ local NewGame = require("game.hgss.src.newgame.NewGame")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = {}
 local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
@@ -38,7 +39,7 @@ local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
 ---@class OakIntroStateTest.Renderer: OakIntroStateRenderer
 ---@field draws integer
 ---@field disposed integer
----@field draw fun(self: OakIntroStateTest.Renderer, view: table)
+---@field draw fun(self: OakIntroStateTest.Renderer, view: table, overlay: function?)
 ---@field dispose fun(self: OakIntroStateTest.Renderer)
 
 local INTRO_MANIFEST = {
@@ -174,8 +175,11 @@ local function stateHarness()
   end
   local renderer = { draws = 0, disposed = 0 }
   ---@cast renderer OakIntroStateTest.Renderer
-  function renderer:draw()
+  function renderer:draw(_, overlay)
     self.draws = self.draws + 1
+    if overlay then
+      overlay()
+    end
   end
   function renderer:dispose()
     self.disposed = self.disposed + 1
@@ -226,33 +230,75 @@ function T.pointer_hits_the_same_drawn_virtual_key_geometry()
   local state, controller = stateHarness()
   local layout = state:view().layout
   local key = layout.nameGrid[3].rect
-  state:mousepressed(key.x + 1, key.y + 1, 1)
+  local x, y = PixelScale.logicalToHost(assert(state:view().pixelSurface), key.x + 1, key.y + 1)
+  state:mousepressed(x, y, 1)
   Assert.deepEqual(controller.text, { "é" })
+end
+
+function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls()
+  local state, controller = stateHarness()
+  state:resize(641, 481)
+  local nameView = state:view()
+  local surface = assert(nameView.pixelSurface)
+  Assert.equal(surface.scale, 2)
+  Assert.equal(surface.logicalViewport.width, 320.5)
+  Assert.equal(surface.logicalViewport.height, 240.5)
+  Assert.equal(nameView.layout.viewport.width, surface.logicalViewport.width)
+  Assert.equal(nameView.layout.viewport.height, surface.logicalViewport.height)
+
+  local key = assert(nameView.layout.nameGrid[3])
+  local keyX, keyY = PixelScale.logicalToHost(surface, key.rect.x + 1, key.rect.y + 1)
+  state:mousepressed(keyX, keyY, 1)
+  Assert.deepEqual(controller.text, { "é" })
+
+  controller.phase = "gender_select"
+  local genderView = state:view()
+  local gender = assert(genderView.layout.genderButtons[1])
+  local genderX = gender.rect.x + gender.rect.width / 2
+  local genderY = gender.rect.y + gender.rect.height / 2
+  local hostX, hostY = PixelScale.logicalToHost(surface, genderX, genderY)
+  state:mousepressed(hostX, hostY, 1)
+  Assert.deepEqual(controller.pressed, { "female" })
+
+  state:mousepressed(surface.physicalFrame.x + surface.physicalFrame.width + 1, hostY, 1)
+  Assert.deepEqual(controller.pressed, { "female" }, "physical points outside the frame must not activate controls")
 end
 
 function T.pointer_hits_the_same_button_geometry_used_by_presentation()
   local state, controller = stateHarness()
   controller.phase = "gender_select"
   local genderLayout = state:view().layout
-  state:mousepressed(
+  local genderX, genderY = PixelScale.logicalToHost(
+    assert(state:view().pixelSurface),
     genderLayout.genderButtons[1].rect.x + genderLayout.genderButtons[1].rect.width / 2,
-    genderLayout.genderButtons[1].rect.y + genderLayout.genderButtons[1].rect.height / 2,
-    1
+    genderLayout.genderButtons[1].rect.y + genderLayout.genderButtons[1].rect.height / 2
   )
+  state:mousepressed(genderX, genderY, 1)
   Assert.deepEqual(controller.pressed, { "female" })
 
   controller.phase = "gender_confirm"
   controller.choice = { kind = "gender", selected = 0 }
   local layout = state:view().layout
   Assert.isNil(layout.genderButtons)
-  state:mousepressed(
+  local profileX, profileY = PixelScale.logicalToHost(
+    assert(state:view().pixelSurface),
     layout.selectedProfileButton.rect.x + layout.selectedProfileButton.rect.width / 2,
-    layout.selectedProfileButton.rect.y + layout.selectedProfileButton.rect.height / 2,
-    1
+    layout.selectedProfileButton.rect.y + layout.selectedProfileButton.rect.height / 2
   )
+  state:mousepressed(profileX, profileY, 1)
   Assert.deepEqual(controller.pressed, { "female" })
-  state:mousepressed(layout.confirmationButtons[0].rect.x + 1, layout.confirmationButtons[0].rect.y + 1, 1)
-  state:mousepressed(layout.confirmationButtons[1].rect.x + 1, layout.confirmationButtons[1].rect.y + 1, 1)
+  local yesX, yesY = PixelScale.logicalToHost(
+    assert(state:view().pixelSurface),
+    layout.confirmationButtons[0].rect.x + 1,
+    layout.confirmationButtons[0].rect.y + 1
+  )
+  local noX, noY = PixelScale.logicalToHost(
+    assert(state:view().pixelSurface),
+    layout.confirmationButtons[1].rect.x + 1,
+    layout.confirmationButtons[1].rect.y + 1
+  )
+  state:mousepressed(yesX, yesY, 1)
+  state:mousepressed(noX, noY, 1)
   Assert.deepEqual(controller.pressed, { "female", "yes", "no" })
 end
 
@@ -1063,7 +1109,14 @@ function T.completed_name_question_stays_visible_through_real_close_sequence()
     manifest = INTRO_MANIFEST,
     textRenderer = {},
     choiceText = { release = function() end },
-    renderer = { draw = function() end, dispose = function() end },
+    renderer = {
+      draw = function(_, _, overlay)
+        if overlay then
+          overlay()
+        end
+      end,
+      dispose = function() end,
+    },
     textInputHost = { setTextInput = function() end },
     dialogueController = dialogue,
     dialogueRenderer = renderer,
@@ -1222,7 +1275,14 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
     manifest = INTRO_MANIFEST,
     textRenderer = {},
     choiceText = { release = function() end },
-    renderer = { draw = function() end, dispose = function() end },
+    renderer = {
+      draw = function(_, _, overlay)
+        if overlay then
+          overlay()
+        end
+      end,
+      dispose = function() end,
+    },
     textInputHost = { setTextInput = function() end },
     dialogueController = dialogue,
     dialogueRenderer = renderer,

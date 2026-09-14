@@ -10,6 +10,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
+local PixelScale = require("libs.ui.src.PixelScale")
 local RomImporter = require("romdump.src.source.RomImporter")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 
@@ -187,11 +188,15 @@ local function assertSubjectPixelsUseSourceBounds(scope, state, view, widgetId, 
   local widget = assert(state.manifest.widgets[widgetId])
   local layout = assert(view.layout)
   local canvas = assert(layout.sourceCanvas)
+  local surface = assert(view.pixelSurface)
+  local logicalX = PixelScale.snapLogical(canvas.origin.x + widget.sourceBounds.x * canvas.scale)
+  local logicalY = PixelScale.snapLogical(canvas.origin.y + widget.sourceBounds.y * canvas.scale)
+  local expectedX, expectedY = PixelScale.logicalToHost(surface, logicalX, logicalY)
   local expected = {
-    x = canvas.origin.x + widget.sourceBounds.x * canvas.scale,
-    y = canvas.origin.y + widget.sourceBounds.y * canvas.scale,
-    width = widget.width * canvas.scale,
-    height = widget.height * canvas.scale,
+    x = expectedX,
+    y = expectedY,
+    width = widget.width * canvas.scale * surface.scale,
+    height = widget.height * canvas.scale * surface.scale,
   }
   local background = renderWithoutSubject(scope, state, view)
   local subject = renderWithSubject(scope, state, view)
@@ -261,6 +266,7 @@ function T.marill_pixels_remain_visible_above_the_dialogue_at_host_sizes(scope)
           state:resize(size.width, size.height)
           local view = state:view()
           local layout = assert(view.layout)
+          local surface = assert(view.pixelSurface)
           local reveal = assert(layout.reveal, size.name .. " reveal layout missing")
           local dialogue = assert(layout.dialogue, size.name .. " dialogue layout missing")
 
@@ -297,23 +303,36 @@ function T.marill_pixels_remain_visible_above_the_dialogue_at_host_sizes(scope)
             + (intro.sourceCenter.x - intro.anchor.x) * layout.revealCanvas.scale
           local fixedRevealY = layout.revealCanvas.origin.y
             + (intro.sourceCenter.y - intro.anchor.y) * layout.revealCanvas.scale
-          local xStart = math.max(0, math.floor(reveal.x))
-          local yStart = math.max(0, math.floor(reveal.y))
-          local xEnd = math.min(size.width - 1, math.ceil(reveal.x + reveal.width) - 1)
-          local yEnd = math.min(size.height - 1, math.ceil(reveal.y + reveal.height) - 1)
+          local revealX, revealY =
+            PixelScale.logicalToHost(surface, PixelScale.snapLogical(reveal.x), PixelScale.snapLogical(reveal.y))
+          local revealWidth = reveal.width * surface.scale
+          local revealHeight = reveal.height * surface.scale
+          local dialogueX, dialogueY = PixelScale.logicalToHost(surface, dialogue.outerRect.x, dialogue.outerRect.y)
+          local dialogueWidth = dialogue.outerRect.width * surface.scale
+          local dialogueHeight = dialogue.outerRect.height * surface.scale
+          local xStart = math.max(0, math.floor(revealX))
+          local yStart = math.max(0, math.floor(revealY))
+          local xEnd = math.min(size.width - 1, math.ceil(revealX + revealWidth) - 1)
+          local yEnd = math.min(size.height - 1, math.ceil(revealY + revealHeight) - 1)
           local changedOutsideDialogue, survivedOutsideDialogue = 0, 0
           local expectedPixels, expectedSurvived = 0, 0
-          local expectedXStart = math.max(0, math.floor(fixedRevealX + minX * reveal.scale))
-          local expectedYStart = math.max(0, math.floor(fixedRevealY + minY * reveal.scale))
-          local expectedXEnd = math.min(size.width - 1, math.ceil(fixedRevealX + (maxX + 1) * reveal.scale) - 1)
-          local expectedYEnd = math.min(size.height - 1, math.ceil(fixedRevealY + (maxY + 1) * reveal.scale) - 1)
+          local fixedHostX, fixedHostY = PixelScale.logicalToHost(
+            surface,
+            PixelScale.snapLogical(fixedRevealX),
+            PixelScale.snapLogical(fixedRevealY)
+          )
+          local sourcePixelScale = reveal.scale * surface.scale
+          local expectedXStart = math.max(0, math.floor(fixedHostX + minX * sourcePixelScale))
+          local expectedYStart = math.max(0, math.floor(fixedHostY + minY * sourcePixelScale))
+          local expectedXEnd = math.min(size.width - 1, math.ceil(fixedHostX + (maxX + 1) * sourcePixelScale) - 1)
+          local expectedYEnd = math.min(size.height - 1, math.ceil(fixedHostY + (maxY + 1) * sourcePixelScale) - 1)
           for y = yStart, yEnd do
             for x = xStart, xEnd do
               local centerX, centerY = x + 0.5, y + 0.5
-              local inDialogue = centerX >= dialogue.outerRect.x
-                and centerX < dialogue.outerRect.x + dialogue.outerRect.width
-                and centerY >= dialogue.outerRect.y
-                and centerY < dialogue.outerRect.y + dialogue.outerRect.height
+              local inDialogue = centerX >= dialogueX
+                and centerX < dialogueX + dialogueWidth
+                and centerY >= dialogueY
+                and centerY < dialogueY + dialogueHeight
               if not inDialogue and differs(background, revealOnly, x, y) then
                 changedOutsideDialogue = changedOutsideDialogue + 1
                 if not differs(revealOnly, final, x, y) then
@@ -396,6 +415,73 @@ function T.profile_and_shrink_pixels_follow_their_generated_source_bounds(scope)
           end
         end)
       end
+    end
+  end
+  Assert.isTrue(readyCount > 0, "derived-cache capability promised a ready game version")
+end
+
+function T.dialogue_shares_the_logical_grid_while_the_background_keeps_linear_sampling(scope)
+  local readyCount = 0
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      readyCount = readyCount + 1
+      withProductionState(versionId, function(state)
+        state:resize(640, 480)
+        driveToMarillDialogue(state)
+
+        local hostCanvas = scope:own(love.graphics.newCanvas(640, 480))
+        local dialogueCanvas
+        local dialogueDraw = state.dialogueRenderer.draw
+        state.dialogueRenderer.draw = function(renderer, ...)
+          dialogueCanvas = love.graphics.getCanvas()
+          return dialogueDraw(renderer, ...)
+        end
+        local ok, failure = xpcall(function()
+          love.graphics.setCanvas(hostCanvas)
+          love.graphics.clear(0, 0, 0, 0)
+          state:draw()
+          love.graphics.setCanvas()
+        end, debug.traceback)
+        state.dialogueRenderer.draw = dialogueDraw
+        if not ok then
+          error(failure, 0)
+        end
+
+        Assert.notNil(dialogueCanvas, versionId .. " dialogue must be drawn during the scene pass")
+        Assert.isTrue(dialogueCanvas ~= hostCanvas, versionId .. " dialogue must not be a physical post-pass")
+        Assert.equal(dialogueCanvas:getWidth(), 320, versionId .. " logical dialogue width")
+        Assert.equal(dialogueCanvas:getHeight(), 240, versionId .. " logical dialogue height")
+
+        local background = assert(state.renderer.images[state.manifest.background.image])
+        local minimum, magnification = background:getFilter()
+        Assert.equal(minimum, "linear", versionId .. " background minification filter")
+        Assert.equal(magnification, "linear", versionId .. " background magnification filter")
+
+        local final = scope:own(hostCanvas:newImageData())
+        for y = 0, 478, 2 do
+          for x = 0, 638, 2 do
+            local r, g, b, a = final:getPixel(x, y)
+            local r2, g2, b2, a2 = final:getPixel(x + 1, y)
+            local r3, g3, b3, a3 = final:getPixel(x, y + 1)
+            local r4, g4, b4, a4 = final:getPixel(x + 1, y + 1)
+            Assert.deepEqual(
+              { r2, g2, b2, a2 },
+              { r, g, b, a },
+              versionId .. " final composite must repeat each logical pixel horizontally"
+            )
+            Assert.deepEqual(
+              { r3, g3, b3, a3 },
+              { r, g, b, a },
+              versionId .. " final composite must repeat each logical pixel vertically"
+            )
+            Assert.deepEqual(
+              { r4, g4, b4, a4 },
+              { r, g, b, a },
+              versionId .. " final composite must repeat each logical pixel in both axes"
+            )
+          end
+        end
+      end)
     end
   end
   Assert.isTrue(readyCount > 0, "derived-cache capability promised a ready game version")
