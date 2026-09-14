@@ -1,6 +1,6 @@
--- Behavior: fractional field UI scaling produces no internal wayfinding seams.
--- The earlier tiled path drew 24 quads (192x8 strip) which can show white gaps
--- at fractional scales; the precomposed surface draws one rect per graphic.
+-- Behavior: integer field UI scaling produces no internal wayfinding seams.
+-- The precomposed surface draws one rect per graphic, preserving its source
+-- boundaries under the integer presentation transform.
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -32,7 +32,7 @@ local function manifestWithBaselineWayfinding()
   return FieldUiFixture.manifest()
 end
 
-local function renderAndCheckSeam(scope, viewportW, viewportH, zoom)
+local function renderAndCheckSeam(scope, viewportW, viewportH, presentationScale)
   local cache = cacheWithSolidWayfinding()
   local manifest = manifestWithBaselineWayfinding()
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cache }))
@@ -44,18 +44,16 @@ local function renderAndCheckSeam(scope, viewportW, viewportH, zoom)
   }))
   local controller = FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 0, map = 0, offset = 0 })
   local viewport = FieldViewport.new(viewportW, viewportH, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(zoom)
-
   local lg = love.graphics
   local canvas = scope:own(lg.newCanvas(viewportW, viewportH))
   lg.setCanvas(canvas)
   lg.clear(1, 1, 1, 1)
-  renderer:draw(controller, viewport, 1, fieldScale)
+  renderer:draw(controller, viewport, 1, presentationScale)
   lg.setCanvas()
   local data = scope:own(canvas:newImageData())
 
   local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local layout = FieldDialogueTheme.layout(viewport.referenceFrame, fieldScale)
+  local layout = FieldDialogueTheme.layout(viewport.referenceFrame, presentationScale)
   local graphicRegion = { x = 16, y = 152, width = 56, height = 32 }
   local hostX0 = layout.origin.x + graphicRegion.x * layout.scale
   local hostY0 = layout.origin.y + graphicRegion.y * layout.scale
@@ -133,26 +131,22 @@ local function renderAndCheckSeam(scope, viewportW, viewportH, zoom)
       hostY0 = hostY0,
       hostW = hostW,
       hostH = hostH,
-      fieldScale = fieldScale,
+      presentationScale = presentationScale,
       layout = layout,
     }
 end
 
-function T.fractional_scale_has_no_internal_horizontal_seam(scope)
-  -- Fractional candidate: 768x500 zoom 1 gives fieldScale = 500/192 ≈ 2.604 (8*scale non-integer).
-  -- Also satisfies viewport 512x500-style fractional intent (expanded height 500 with non-integer scale).
-  -- Single-draw (48x32) has no internal seams by construction, so this asserts absence of white gaps.
-  local viewportW, viewportH, zoom = 768, 500, 1
-  local hasSeam, seamInfo, dbg = renderAndCheckSeam(scope, viewportW, viewportH, zoom)
+function T.integer_scale_has_no_internal_horizontal_seam(scope)
+  local viewportW, viewportH, presentationScale = 768, 500, 2
+  local hasSeam, seamInfo, dbg = renderAndCheckSeam(scope, viewportW, viewportH, presentationScale)
   Assert.isFalse(
     hasSeam,
     seamInfo
       or string.format(
-        "unexpected white seam at fractional scale %.4f host %dx%d zoom %.2f",
-        dbg.fieldScale,
+        "unexpected white seam at integer scale %d host %dx%d",
+        dbg.presentationScale,
         viewportW,
-        viewportH,
-        zoom
+        viewportH
       )
   )
 end

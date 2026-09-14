@@ -41,7 +41,7 @@ function T.dialogue_uses_bottom_centered_translate_and_single_scale(_)
   })
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
   local viewport = FieldViewport.new(768, 576, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(1)
+  local fieldScale = 3
   local ref = viewport.referenceFrame
   local expectedScale = fieldScale
   local expectedX = ref.x + (ref.width - 256 * expectedScale) / 2
@@ -49,7 +49,7 @@ function T.dialogue_uses_bottom_centered_translate_and_single_scale(_)
   renderer:draw(
     controller,
     DialoguePresentationLayout.compute(ref, {
-      maxScale = fieldScale,
+      scale = fieldScale,
       cursorPlacement = CURSOR_PLACEMENT,
     })
   )
@@ -64,7 +64,7 @@ function T.dialogue_uses_bottom_centered_translate_and_single_scale(_)
   text:release()
 end
 
-function T.dialogue_shrinks_from_bottom_center_at_reduced_zoom(_)
+function T.dialogue_uses_the_supplied_integer_scale(_)
   local lg = fakeGraphicsFromSupport()
   local text = FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames(), graphics = lg })
   local manifest = FieldUiFixture.manifest()
@@ -76,21 +76,21 @@ function T.dialogue_shrinks_from_bottom_center_at_reduced_zoom(_)
   })
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
   local viewport = FieldViewport.new(768, 576, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(0.5)
+  local fieldScale = 2
   local ref = viewport.referenceFrame
   local expectedX = ref.x + (ref.width - 256 * fieldScale) / 2
   local expectedY = ref.y + ref.height - 48 * fieldScale
   renderer:draw(
     controller,
     DialoguePresentationLayout.compute(ref, {
-      maxScale = fieldScale,
+      scale = fieldScale,
       cursorPlacement = CURSOR_PLACEMENT,
     })
   )
   Assert.equal(#lg.transforms, 2, "exactly one translate and one scale")
   Assert.near(lg.transforms[1][2], expectedX, 1e-6, "bottom-centered X at 0.5x")
   Assert.near(lg.transforms[1][3], expectedY, 1e-6, "bottom-anchored Y at 0.5x")
-  Assert.near(lg.transforms[2][2], fieldScale, 1e-6, "scale follows zoom at 0.5x")
+  Assert.near(lg.transforms[2][2], fieldScale, 1e-6, "scale follows the supplied integer")
   renderer:release()
   text:release()
 end
@@ -108,7 +108,7 @@ function T.signpost_uses_same_bottom_centered_transform(_)
   })
   local controller = FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 2, offset = 0 })
   local viewport = FieldViewport.new(768, 576, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(1)
+  local fieldScale = 3
   local ref = viewport.referenceFrame
   local expectedX = ref.x + (ref.width - 256 * fieldScale) / 2
   local expectedY = ref.y + ref.height - 192 * fieldScale
@@ -121,7 +121,7 @@ function T.signpost_uses_same_bottom_centered_transform(_)
   text:release()
 end
 
-function T.signpost_shrinks_from_bottom_center_at_reduced_zoom(_)
+function T.signpost_uses_the_supplied_integer_scale(_)
   local lg = fakeGraphicsFromSupport()
   local text = FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames(), graphics = lg })
   local manifest = FieldUiFixture.manifest()
@@ -134,7 +134,7 @@ function T.signpost_shrinks_from_bottom_center_at_reduced_zoom(_)
   })
   local controller = FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 2, offset = 0 })
   local viewport = FieldViewport.new(768, 576, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(0.5)
+  local fieldScale = 2
   local ref = viewport.referenceFrame
   local expectedX = ref.x + (ref.width - 256 * fieldScale) / 2
   local expectedY = ref.y + ref.height - 192 * fieldScale

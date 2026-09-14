@@ -61,10 +61,9 @@ local function canonicalRender(scope, frameIndex)
   local controller = FieldDialogueFixture.openDialogue("AB", frameIndex)
   settleDialogue(controller)
   local viewport = FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(1)
   local presentation = DialoguePresentationLayout.compute(
     { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
-    { maxScale = fieldScale, cursorPlacement = CURSOR_PLACEMENT }
+    { scale = 1, cursorPlacement = CURSOR_PLACEMENT }
   )
   local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
   lg.setCanvas(canvas)
@@ -87,7 +86,7 @@ local function goldenReference(frameIndex)
   local presentation = DialoguePresentationLayout.compute(
     { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
     {
-      maxScale = FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" }):logicalPixelScale(1),
+      scale = 1,
       cursorPlacement = CURSOR_PLACEMENT,
     }
   )
@@ -223,7 +222,7 @@ function T.restores_graphics_state_after_draw(scope)
   dialogue:draw(
     controller,
     DialoguePresentationLayout.compute(viewport.referenceFrame, {
-      maxScale = viewport:logicalPixelScale(1),
+      scale = 1,
       cursorPlacement = CURSOR_PLACEMENT,
     })
   )
@@ -246,7 +245,7 @@ function T.a_closed_controller_draws_nothing_and_changes_no_state(scope)
   dialogue:draw(
     controller,
     DialoguePresentationLayout.compute(viewport.referenceFrame, {
-      maxScale = viewport:logicalPixelScale(1),
+      scale = 1,
       cursorPlacement = CURSOR_PLACEMENT,
     })
   )
@@ -262,7 +261,7 @@ function T.draws_inside_the_reference_frame_at_every_host_aspect(scope)
     local controller = FieldDialogueFixture.openDialogue("AB", 0)
     local viewport = FieldViewport.new(size[1], size[2], { mode = "expanded" })
     local presentation = DialoguePresentationLayout.compute(viewport.referenceFrame, {
-      maxScale = viewport:logicalPixelScale(1),
+      scale = 1,
       cursorPlacement = CURSOR_PLACEMENT,
     })
     dialogue:draw(controller, presentation)

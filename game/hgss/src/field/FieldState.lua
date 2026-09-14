@@ -4,6 +4,7 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
@@ -367,7 +368,12 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   if hostStatus.menu or hostStatus.application then
     return
   end
-  local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
+  local dialogueModal = self.runtime.dialogue:isModal()
+  local signpostModal = self.runtime.signpost:isModal()
+  local fieldScale
+  if dialogueModal or signpostModal then
+    fieldScale = self.runtime.fieldPixelScale:resolvedScale()
+  end
   local bounds = self.runtime.viewport.worldViewport
   if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
     bounds = self.runtime.viewport.referenceFrame
@@ -380,16 +386,18 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
       height = assert(self.runtime.viewport.height),
     }
   end
-  if self.runtime.dialogue:isModal() then
+  if dialogueModal then
     local manifestPlacement = assert(self.runtime.uiManifest).dialogueFrames.continueCursor.placement
+    local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, assert(fieldScale))
     local presentation = DialoguePresentationLayout.compute(bounds, {
-      maxScale = fieldScale,
+      scale = dialogueScale,
       cursorPlacement = manifestPlacement,
     })
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)
   end
-  if self.runtime.signpost:isModal() then
-    resources.signpostRenderer:draw(self.runtime.signpost, self.runtime.viewport, alpha, fieldScale)
+  if signpostModal then
+    local signpostScale = PixelScale.fitPreferred(bounds, 256, 192, assert(fieldScale))
+    resources.signpostRenderer:draw(self.runtime.signpost, self.runtime.viewport, alpha, signpostScale)
   end
 end
 

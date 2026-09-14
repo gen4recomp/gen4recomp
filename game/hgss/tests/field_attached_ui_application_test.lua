@@ -35,14 +35,8 @@ end
 
 function T.trainer_card_draw_placement_identical_across_zooms()
   local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-  -- TrainerCardRenderer uses FieldDialogueTheme.layout(referenceFrame, scale)
-  -- in future; currently it uses FieldDialogueTheme.layout(referenceFrame) width/256.
-  -- This test asserts it does NOT vary with zoom when we check current behavior:
-  -- we capture layout at two field scales and expect them to differ AFTER fix,
-  -- but application surfaces must NOT. Instead we prove TrainerCardRenderer does
-  -- not receive zoom by checking its draw does not change with a mocked zoom.
-  -- For now, assert the failure: if production incorrectly plumbs zoom to
-  -- StartMenu/TrainerCard, this would diverge; we expect no divergence.
+  -- Application surfaces receive their own integer-fit scale and do not
+  -- consume the field camera zoom.
   local FieldUiFixture = require("tests.support.FieldUiFixture")
   local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
   local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
@@ -62,8 +56,8 @@ function T.trainer_card_draw_placement_identical_across_zooms()
     money = 0,
     playTimeSeconds = 0,
   }
-  rA:draw(presentation, viewport)
-  rB:draw(presentation, viewport)
+  rA:draw(presentation, viewport, 2)
+  rB:draw(presentation, viewport, 2)
   Assert.deepEqual(
     lgA.transforms,
     lgB.transforms,

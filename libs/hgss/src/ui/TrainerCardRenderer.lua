@@ -133,7 +133,8 @@ end
 
 ---@param presentation table<string, unknown>?
 ---@param viewport { referenceFrame: FieldDialogueTheme.Rect }
-function TrainerCardRenderer:draw(presentation, viewport)
+---@param presentationScale number positive integer scale selected for this surface
+function TrainerCardRenderer:draw(presentation, viewport, presentationScale)
   if not presentation or not self._cardImage then
     return
   end
@@ -142,12 +143,21 @@ function TrainerCardRenderer:draw(presentation, viewport)
   assert(type(presentation.visibleTrainerId) == "number", "the card presentation requires the visible trainer id")
   assert(type(presentation.money) == "number", "the card presentation requires money")
   assert(type(presentation.playTimeSeconds) == "number", "the card presentation requires play time")
+  assert(
+    type(presentationScale) == "number"
+      and presentationScale > 0
+      and presentationScale == presentationScale
+      and presentationScale ~= math.huge
+      and presentationScale ~= -math.huge
+      and presentationScale == math.floor(presentationScale),
+    "TrainerCardRenderer:draw requires a positive integer presentation scale"
+  )
   FieldDrawState.protectedDraw(lg, function()
     -- Trainer Card is an application surface, not field-attached: it keeps
-    -- the existing placement contract (scale from the reference frame itself,
+    -- the existing placement contract (scale from the caller's integer fit,
     -- no camera zoom) so it stays independent of field zoom.
     local ref = viewport.referenceFrame
-    local appScale = ref.width / FieldDialogueTheme.referenceWidth
+    local appScale = presentationScale
     local layout = {
       scale = appScale,
       origin = {

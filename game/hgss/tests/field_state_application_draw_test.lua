@@ -127,6 +127,11 @@ local function drawableState(options)
     end,
     acknowledgeDestinationPresentation = function() end,
     viewport = viewport,
+    fieldPixelScale = {
+      resolvedScale = function()
+        return 3
+      end,
+    },
     camera = { zoom = 1 },
     transition = { fadeAlpha = 0 },
     fieldEntranceIndicator = {

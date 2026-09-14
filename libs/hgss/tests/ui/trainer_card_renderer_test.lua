@@ -196,10 +196,31 @@ function T.draw_is_a_noop_without_a_presentation()
   renderer:draw(nil, CANONICAL, 1)
 end
 
+function T.draw_uses_the_supplied_integer_scale_for_a_640_by_480_reference_frame()
+  local graphics = renderedGraphics()
+  local renderer = cardRenderer(graphics)
+  local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
+
+  renderer:draw(presentation(), viewport, 2)
+
+  Assert.deepEqual(graphics.transforms, {
+    { "translate", 64, 96 },
+    { "scale", 2, 2 },
+  }, "the card uses the caller's fitted integer scale")
+end
+
+function T.draw_rejects_a_fractional_active_scale()
+  local renderer = cardRenderer(renderedGraphics())
+  local err = Assert.throws(function()
+    renderer:draw(presentation(), CANONICAL, 1.5)
+  end)
+  Assert.isTrue(tostring(err):find("positive integer", 1, true) ~= nil, "fractional card scales are rejected")
+end
+
 function T.draw_presents_the_card_art_then_the_audited_labels_and_values()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation(), CANONICAL)
+  renderer:draw(presentation(), CANONICAL, 1)
 
   local firstDraw = nil ---@type any
   for _, draw in ipairs(graphics.draws) do
@@ -229,7 +250,7 @@ end
 function T.draw_right_aligns_the_name_and_the_five_digit_trainer_id()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation({ name = "GOLD", visibleTrainerId = 12345 }), CANONICAL)
+  renderer:draw(presentation({ name = "GOLD", visibleTrainerId = 12345 }), CANONICAL, 1)
 
   -- The six audited labels precede the values in draw order; the fixture
   -- glyphs advance 8px each.
@@ -248,7 +269,7 @@ function T.draw_right_aligns_a_multibyte_name_through_the_shared_text_path()
   local graphics = renderedGraphics()
   local multibyte = FieldUiFixture.cardFontDefWithMultibyte()
   local renderer = cardRenderer(graphics, FieldUiFixture.trainerCardCache(multibyte))
-  renderer:draw(presentation({ name = "\195\137lise", visibleTrainerId = 12345 }), CANONICAL)
+  renderer:draw(presentation({ name = "\195\137lise", visibleTrainerId = 12345 }), CANONICAL, 1)
 
   local labelGlyphs = 6 + 4 + 5 + 5 + 4 + 17
   -- É advances 6px; l/i/s/e advance 8px each, so the name is 38px wide.
@@ -263,7 +284,7 @@ end
 function T.draw_zero_pads_the_trainer_id_to_five_digits()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation({ visibleTrainerId = 0 }), CANONICAL)
+  renderer:draw(presentation({ visibleTrainerId = 0 }), CANONICAL, 1)
   drawnGlyphs(graphics, "00000", 112 - 5 * 8, 24, 6 + 4 + 5 + 5 + 4 + 17 + 4 + 1 + 4)
 end
 
@@ -273,7 +294,7 @@ end
 function T.draw_renders_the_authentic_blank_for_unimplemented_value_rows()
   local graphics = renderedGraphics()
   local renderer = cardRenderer(graphics)
-  renderer:draw(presentation(), CANONICAL)
+  renderer:draw(presentation(), CANONICAL, 1)
 
   local glyphDraws = {}
   for _, draw in ipairs(graphics.draws) do
@@ -325,7 +346,7 @@ function T.draw_restores_every_graphics_state_it_touches()
     scissor = { 4, 8, 32, 16 },
   })
   local renderer = cardRenderer(lg)
-  renderer:draw(presentation(), FieldViewport.new(1280, 720, { mode = "expanded" }))
+  renderer:draw(presentation(), FieldViewport.new(1280, 720, { mode = "expanded" }), 3)
   Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced")
   Assert.equal(lg.getCanvas(), "canvas")
   Assert.equal(lg.getShader(), "shader")
@@ -353,7 +374,7 @@ function T.draw_error_balances_the_transform_stack()
   local graphics = renderedGraphics({ failOnDrawCall = 1 })
   local renderer = cardRenderer(graphics)
   local ok = pcall(function()
-    renderer:draw(presentation(), CANONICAL)
+    renderer:draw(presentation(), CANONICAL, 1)
   end)
   Assert.isFalse(ok, "the draw failure must propagate")
   Assert.equal(graphics.pushDepth(), 0, "a draw error must not leave the transform stack unbalanced")

@@ -24,9 +24,6 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
     height = windowHeight,
     worldViewport = worldViewport,
     referenceFrame = worldViewport,
-    logicalPixelScale = function()
-      return 1
-    end,
   }
   local runtime = {
     errorText = nil,

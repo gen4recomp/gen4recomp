@@ -18,6 +18,7 @@ local FieldSignpostFixture = require("tests.support.FieldSignpostFixture")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = {}
 
@@ -923,27 +924,43 @@ function T.constrained_signpost_shrinks_to_fit_the_real_world_viewport()
   local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 8 }, { 48, 128 } } })
   local r = renderer(lg)
   local viewport = FieldViewport.new(1280, 600, { mode = "expanded" })
-  local fieldScale = (viewport.referenceFrame.height / 192) * 1.25
+  local preferredScale = 3
   local bounds = { x = 5, y = 7, width = 200, height = 40 }
   viewport.worldViewport = { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height }
+  local expectedScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
   r:draw(
     FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 2, offset = 0 }),
     viewport,
     1,
-    fieldScale
+    expectedScale
   )
-  local expectedScale = math.min(fieldScale, bounds.width / 256, bounds.height / 192)
-  Assert.isTrue(expectedScale < fieldScale, "the fixture host must be too small for the field scale")
+  Assert.equal(expectedScale, 1, "the tiny host falls back to the minimum integer scale")
   Assert.equal(#lg.transforms, 2, "exactly one translate and one scale")
   Assert.near(lg.transforms[2][2], expectedScale, 1e-6, "the shrunken signpost fits the real bounds")
   Assert.near(lg.transforms[2][3], expectedScale, 1e-6, "the shrunken signpost fits the real bounds")
   local originX, originY = lg.transforms[1][2], lg.transforms[1][3]
   Assert.near(originX, bounds.x + (bounds.width - 256 * expectedScale) / 2, 1e-6, "horizontally centered")
   Assert.near(originY, bounds.y + bounds.height - 192 * expectedScale, 1e-6, "bottom-aligned")
-  Assert.isTrue(originX >= bounds.x - 1e-6, "the fitted surface stays inside the host horizontally")
-  Assert.isTrue(originX + 256 * expectedScale <= bounds.x + bounds.width + 1e-6, "the fitted surface stays inside")
-  Assert.isTrue(originY >= bounds.y - 1e-6, "the fitted surface stays inside the host vertically")
-  Assert.isTrue(originY + 192 * expectedScale <= bounds.y + bounds.height + 1e-6, "the fitted surface stays inside")
+  Assert.isTrue(originX < bounds.x, "the minimum scale may clip a narrower host horizontally")
+  Assert.isTrue(originX + 256 * expectedScale > bounds.x + bounds.width, "the minimum scale may clip a narrower host")
+  Assert.isTrue(originY < bounds.y, "the minimum scale may clip a shorter host vertically")
+  Assert.isTrue(
+    originY + 192 * expectedScale >= bounds.y + bounds.height - 1e-6,
+    "the minimum scale remains bottom-aligned when the host is shorter"
+  )
+  r:release()
+end
+
+function T.active_draw_rejects_non_integer_scales()
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 8 }, { 48, 128 } } })
+  local r = renderer(lg)
+  local controller = FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 2 })
+  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
+  for _, scale in ipairs({ 0, 1.5, 0 / 0 }) do
+    Assert.throws(function()
+      r:draw(controller, viewport, nil, scale)
+    end, "invalid signpost scales are rejected")
+  end
   r:release()
 end
 

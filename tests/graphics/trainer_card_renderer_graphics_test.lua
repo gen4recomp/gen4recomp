@@ -58,7 +58,7 @@ local function canonicalRender(scope, cacheFs, manifest, presentation)
   local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
-  renderer:draw(presentation, canonicalViewport())
+  renderer:draw(presentation, canonicalViewport(), 1)
   lg.setCanvas()
   return scope:own(canvas:newImageData())
 end
@@ -323,7 +323,7 @@ function T.restores_graphics_state_after_draw(scope)
   lg.setColor(0.2, 0.4, 0.6, 0.8)
   lg.setScissor(4, 8, 32, 16)
 
-  renderer:draw(demoPresentation(), FieldViewport.new(1280, 720, { mode = "expanded" }))
+  renderer:draw(demoPresentation(), FieldViewport.new(1280, 720, { mode = "expanded" }), 3)
 
   local function assertRestored(canvasExpected, shaderExpected)
     Assert.equal(lg.getCanvas(), canvasExpected)

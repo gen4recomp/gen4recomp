@@ -8,6 +8,7 @@ local FieldPresentation = require("data.manifests.field_presentation")
 local FieldState = require("game.hgss.src.field.FieldState")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = {}
 
@@ -46,6 +47,7 @@ local function drawState(topologyProvider, pollTopology)
       referenceFrame = { height = 600 },
       fieldPixelScale = FieldPixelScale.new(FieldPresentation.fieldScale),
     },
+    fieldPixelScale = FieldPixelScale.new(FieldPresentation.fieldScale),
     applicationHost = {
       status = function()
         return { fadeAlpha = 0 }
@@ -219,30 +221,25 @@ local function effectiveScaleAtHeight(height)
   return scale:resolvedScale(), scale:cameraZoom(), viewport
 end
 
-function T.ui_scale_equals_logical_pixel_scale_at_two_heights()
+function T.field_scale_preserves_the_resize_curve_and_camera_projection()
   local scaleA, zoomA = effectiveScaleAtHeight(600)
   local scaleB, zoomB = effectiveScaleAtHeight(720)
   -- With resizeCompensation 0.7, zoom changes with height
   Assert.isTrue(zoomA ~= zoomB, "resize must change effective zoom per field_presentation.lua")
-  local expectedA = (600 / 192) * zoomA
-  local expectedB = (720 / 192) * zoomB
-  Assert.near(scaleA, expectedA, 1e-9)
-  Assert.near(scaleB, expectedB, 1e-9)
-  -- Not simply proportional to host height: scaleB/scaleA != 720/600
-  local hostRatio = 720 / 600
-  local scaleRatio = scaleB / scaleA
-  Assert.isTrue(
-    math.abs(scaleRatio - hostRatio) > 0.01,
-    "scale ratio must not equal host-height ratio when compensation active"
-  )
+  Assert.equal(scaleA % 1, 0, "the resolved scale at the reference height is integral")
+  Assert.equal(scaleB % 1, 0, "the resolved scale after resize is integral")
+  Assert.near(scaleA, (600 / 192) * zoomA, 1e-9)
+  Assert.near(scaleB, (720 / 192) * zoomB, 1e-9)
 end
 
 -- Field dialogue shares one resolved presentation contract with Oak: the host
 -- supplies real bounds plus the resolved field pixel scale as a cap, and the
 -- renderer draws exactly the resulting presentation. The signpost keeps its
 -- existing exact-scale contract.
-local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
-  local viewport = FieldViewport.new(1280, 600, { mode = "expanded" })
+local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth, viewportHeight)
+  viewportWidth = viewportWidth or 1280
+  viewportHeight = viewportHeight or 600
+  local viewport = FieldViewport.new(viewportWidth, viewportHeight, { mode = "expanded" })
   local scale = FieldPixelScale.new(FieldPresentation.fieldScale)
   scale:resize(viewport.referenceFrame.height)
   local fieldScale = scale:resolvedScale()
@@ -260,6 +257,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
   local state = setmetatable({
     runtime = {
       viewport = viewport,
+      fieldPixelScale = scale,
       uiManifest = FieldUiFixture.manifest(),
       camera = { zoom = cameraZoom },
       runtimeMap = fakeRuntimeMap,
@@ -310,7 +308,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
     topologyProvider = function()
       return ScreenTopology.oneDisplay({
         id = "main",
-        rect = { x = 0, y = 0, width = 1280, height = 600 },
+        rect = { x = 0, y = 0, width = viewportWidth, height = viewportHeight },
         touch = false,
         role = "world",
       })
@@ -327,7 +325,13 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
     worldParts = {},
     worldActorItems = {},
     spriteItems = {},
-    _lastGeometrySignature = "1280:600:main:world:0:0:1280:600",
+    _lastGeometrySignature = string.format(
+      "%d:%d:main:world:0:0:%d:%d",
+      viewportWidth,
+      viewportHeight,
+      viewportWidth,
+      viewportHeight
+    ),
   }, FieldState)
   state._worldParts = function()
     return {}
@@ -351,7 +355,7 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
   }
   local oldGetDimensions = love.graphics.getDimensions
   rawset(love.graphics, "getDimensions", function()
-    return 1280, 600
+    return viewportWidth, viewportHeight
   end)
   local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
   local savedProtected = FieldDrawState.protectedDraw
@@ -395,6 +399,7 @@ function T.constrained_dialogue_shrinks_to_fit_the_real_world_viewport()
   )
   local expectedScale = PixelScale.fitPreferred(realBounds, 256, 48, fieldScale)
   Assert.isTrue(expectedScale < fieldScale, "the fixture host must be too small for the field scale")
+  Assert.equal(expectedScale % 1, 0, "a constrained dialogue must use an integer scale")
   Assert.near(presentation.scale, expectedScale, 1e-9)
   Assert.near(presentation.outerRect.width, 256 * expectedScale, 1e-9)
   Assert.near(presentation.outerRect.height, 48 * expectedScale, 1e-9)
@@ -446,7 +451,7 @@ function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()
   Assert.isNil(call.fourth, "dialogue renders from one resolved presentation, not a four-argument call")
   local presentation = call.second
   Assert.deepEqual(presentation.bounds, realBounds, "field passes its real bounds unchanged")
-  Assert.near(presentation.scale, fieldScale, 1e-9, "a roomy host keeps the exact field logical pixel scale")
+  Assert.near(presentation.scale, PixelScale.fitPreferred(realBounds, 256, 48, fieldScale), 1e-9)
   assertOuterRectInsideBounds(presentation.outerRect, realBounds)
   Assert.near(
     presentation.outerRect.x,
@@ -461,7 +466,7 @@ function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()
     "dialogue stays bottom-aligned"
   )
   Assert.equal(#signpostScales, 1, "the signpost still draws in the same frame")
-  Assert.near(signpostScales[1], fieldScale, 1e-9, "the signpost keeps the exact field logical pixel scale")
+  Assert.equal(signpostScales[1], PixelScale.fitPreferred(realBounds, 256, 192, fieldScale))
 end
 
 return { tests = T }

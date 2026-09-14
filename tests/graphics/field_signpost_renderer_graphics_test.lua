@@ -57,11 +57,10 @@ local function canonicalRender(scope, sourceType, wipeOffset)
     offset = wipeOffset,
   })
   local viewport = FieldViewport.new(CANONICAL_WIDTH, CANONICAL_HEIGHT, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(1)
   local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
-  signpost:draw(controller, viewport, nil, fieldScale)
+  signpost:draw(controller, viewport, nil, 1)
   lg.setCanvas()
   return scope:own(canvas:newImageData())
 end
@@ -269,7 +268,6 @@ function T.restores_graphics_state_after_draw(scope)
   local signpost = renderer(scope)
   local controller = FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 0 })
   local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(1)
 
   local canvas = scope:own(lg.newCanvas(64, 64))
   local shader = lg.getShader()
@@ -281,7 +279,7 @@ function T.restores_graphics_state_after_draw(scope)
   lg.setColor(0.2, 0.4, 0.6, 0.8)
   lg.setScissor(4, 8, 32, 16)
 
-  signpost:draw(controller, viewport, nil, fieldScale)
+  signpost:draw(controller, viewport, nil, 3)
 
   FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
 end
@@ -298,7 +296,7 @@ function T.an_inactive_controller_draws_nothing_and_changes_no_state(scope)
   lg.setColor(0.1, 0.2, 0.3, 0.4)
   do
     local viewport = FieldViewport.new(960, 720, { mode = "expanded" })
-    signpost:draw(controller, viewport, nil, viewport:logicalPixelScale(1))
+    signpost:draw(controller, viewport, nil, 1)
   end
 
   Assert.near(lg.getColor(), 0.1, 1e-6)
