@@ -230,7 +230,45 @@ local function bagManifest()
       pocketTabs = {
         rects = tabs,
         normal = tabNormals,
-        highlight = bagImageRef("test/bag/tab-highlight.png"),
+      },
+      focus = {
+        tabs = {
+          visual = { image = "test/bag/focus-tabs.png", width = 32, height = 32 },
+          targets = {
+            { x = 16, y = 16 },
+            { x = 48, y = 16 },
+            { x = 80, y = 16 },
+            { x = 112, y = 16 },
+            { x = 144, y = 16 },
+            { x = 176, y = 16 },
+            { x = 208, y = 16 },
+            { x = 240, y = 16 },
+          },
+        },
+        items = {
+          visual = { image = "test/bag/focus-items.png", width = 96, height = 40 },
+          targets = {
+            { x = 16, y = 48 },
+            { x = 144, y = 48 },
+            { x = 16, y = 88 },
+            { x = 144, y = 88 },
+            { x = 16, y = 128 },
+            { x = 144, y = 128 },
+          },
+        },
+        cancel = {
+          visual = { image = "test/bag/focus-cancel.png", width = 64, height = 24 },
+          target = { x = 224, y = 176 },
+        },
+        actions = {
+          visual = { image = "test/bag/focus-actions.png", width = 96, height = 24 },
+          targets = {
+            { x = 48, y = 144 },
+            { x = 144, y = 144 },
+            { x = 48, y = 176 },
+            { x = 144, y = 176 },
+          },
+        },
       },
       itemSlots = {
         slots = slots,
@@ -335,7 +373,10 @@ function FieldStatePresentationFixture.cache()
   for index = 1, 8 do
     cache:write("test/bag/tab-normal-" .. index .. ".png", solidPng(32, 32))
   end
-  cache:write("test/bag/tab-highlight.png", solidPng(32, 32))
+  cache:write("test/bag/focus-tabs.png", solidPng(32, 32))
+  cache:write("test/bag/focus-items.png", solidPng(32, 32))
+  cache:write("test/bag/focus-cancel.png", solidPng(32, 32))
+  cache:write("test/bag/focus-actions.png", solidPng(32, 32))
   cache:write("test/bag/registration-slot-1.png", solidPng(40, 16))
   cache:write("test/bag/registration-slot-2.png", solidPng(40, 16))
   cache:write(

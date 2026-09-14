@@ -4,9 +4,8 @@
 -- description frame, and the state-specific contextual text in the
 -- source font; the interactive pane composites the semantic state background,
 -- source tabs, six-cell item grid with icons, names, quantities, and
--- registration markers, the selected-tab highlight beneath its icon, the
--- shared item focus outline, the derived page, and the
--- generated cancel label. Empty cells paint no icons, so the source cell art
+-- registration markers, source focus visuals at their generated targets, the
+-- derived page, and the generated cancel label. Empty cells paint no icons, so the source cell art
 -- stays authentic. The constrained description
 -- overlay fills the canonical fallback frame with the selected icon, name,
 -- description, and back hint; the same fallback surface carries the
@@ -19,7 +18,6 @@
 -- state it touches.
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
-local FocusOutline = require("libs.ui.src.FocusOutline")
 local BagSave = require("libs.hgss.src.save.BagSave")
 
 ---@class BagRenderer
@@ -238,7 +236,11 @@ function BagRenderer.new(opts)
     for index, visual in ipairs(interactive.pocketTabs.normal) do
       acquire("tabNormal:" .. index, visual)
     end
-    acquire("tabHighlight", interactive.pocketTabs.highlight)
+    local focus = assert(interactive.focus, "the bag manifest must carry its focus visuals")
+    acquire("focus:tabs", assert(focus.tabs.visual, "the bag manifest carries its tab focus"))
+    acquire("focus:items", assert(focus.items.visual, "the bag manifest carries its item focus"))
+    acquire("focus:cancel", assert(focus.cancel.visual, "the bag manifest carries its cancel focus"))
+    acquire("focus:actions", assert(focus.actions.visual, "the bag manifest carries its action focus"))
     local registration =
       assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
     local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
@@ -379,11 +381,122 @@ function BagRenderer:_drawStateBackground(state, pocket)
   drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
 end
 
--- Item selection reuses the shared button focus outline over the full item
--- control rect at pane scale. Only item cells ever carry this treatment.
----@param rect table<string, number>
-function BagRenderer:_drawFocus(rect)
-  FocusOutline.draw(self._graphics, rect, { scale = 1 })
+-- Resolves the one-based pocket index of the current pocket. Pocket identity
+-- alone never implies focus; callers draw the tab visual only while tabs
+-- are semantically focused.
+---@param presentation table<string, unknown>
+---@return integer
+local function currentPocketIndex(presentation)
+  local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
+  local pockets = assert(presentation.pockets, "the bag presentation lists its pockets")
+  for index, tab in ipairs(pockets) do
+    if tab.pocket == pocket then
+      return index
+    end
+  end
+  error("the current pocket has no generated tab", 0)
+end
+
+-- Draws the generated item focus visual at a one-based visible cell.
+---@param cell integer
+function BagRenderer:_drawItemFocusCell(cell)
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local itemFocus = assert(focus.items, "the bag manifest carries its item focus")
+  local targets = assert(itemFocus.targets, "the item focus carries its targets")
+  assert(type(targets) == "table" and #targets == 6, "the item focus targets its six visible cells")
+  local target = assert(targets[cell], "the visible cell resolves a focus target")
+  drawVisual(self._graphics, assert(self._visuals["focus:items"]), target.x, target.y)
+end
+
+-- Draws the item focus for the selected occupied cell. Selection outside
+-- the six-cell window is an invalid presentation invariant and fails
+-- instead of guessing a target.
+---@param presentation table<string, unknown>
+function BagRenderer:_drawSelectedItemFocus(presentation)
+  local absolute = assert(presentation.selectedAbsoluteIndex, "the presentation carries its selection index")
+  local start = assert(presentation.visibleStart, "the presentation carries its window start")
+  assert(type(absolute) == "number" and type(start) == "number", "selection indexes are numbers")
+  local visibleIndex = absolute - start + 1
+  assert(visibleIndex >= 1 and visibleIndex <= 6, "selected item must be in the visible Bag window")
+  local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
+  local focused = visibleSlots[visibleIndex]
+  if focused ~= nil and focused.empty ~= true then
+    self:_drawItemFocusCell(visibleIndex)
+  end
+end
+
+-- Draws the applicable source focus visual for the active control/state in
+-- source sprite order: above the state background and normal tab art, but
+-- beneath item icons, names, quantities, registration markers, and labels,
+-- which retail keeps visible over the movable cursor. Tab focus has no
+-- overlapping content and stays directly above the normal tab row. The
+-- action-menu focus draws beneath the action labels for the same reason.
+-- Nothing is drawn for a control that is not semantically focused.
+---@param presentation table<string, unknown>
+function BagRenderer:_drawCellFocus(presentation)
+  local state = assert(presentation.state, "the bag presentation names its state")
+  if state ~= "action_menu" and state ~= "move_select" then
+    if presentation.focus == "items" and presentation.selected ~= nil then
+      self:_drawSelectedItemFocus(presentation)
+    end
+    return
+  end
+  if state == "move_select" then
+    local moveTarget = assert(presentation.moveTarget, "move selection carries its target")
+    local start = assert(presentation.visibleStart, "the presentation carries its window start")
+    assert(type(moveTarget) == "number" and type(start) == "number", "move target indexes are numbers")
+    local cell = moveTarget - start + 1
+    if cell < 1 or cell > 6 then
+      return
+    end
+    self:_drawItemFocusCell(cell)
+  end
+end
+
+-- Draws the tab or Cancel focus visual above the item grid. Neither target
+-- overlaps item content, so these stay above the cell art while remaining
+-- beneath the text labels drawn later.
+---@param presentation table<string, unknown>
+function BagRenderer:_drawChromeFocus(presentation)
+  local state = assert(presentation.state, "the bag presentation names its state")
+  if state == "action_menu" or state == "move_select" then
+    return
+  end
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local semantic = presentation.focus
+  if semantic == "tabs" then
+    local pocketIndex = currentPocketIndex(presentation)
+    local tabFocus = assert(focus.tabs, "the bag manifest carries its tab focus")
+    local targets = assert(tabFocus.targets, "the tab focus carries its targets")
+    assert(type(targets) == "table" and #targets == 8, "the tab focus targets its eight pockets")
+    local target = assert(targets[pocketIndex], "the current pocket resolves a focus target")
+    drawVisual(self._graphics, assert(self._visuals["focus:tabs"]), target.x, target.y)
+  elseif semantic == "cancel" then
+    local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
+    local target = assert(cancelFocus.target, "the cancel focus carries its target")
+    drawVisual(self._graphics, assert(self._visuals["focus:cancel"]), target.x, target.y)
+  end
+end
+
+-- Draws the action-menu focus visual beneath the action labels at the
+-- selected action's generated target. A selection outside the offered
+-- actions or the generated targets is a composition error, never clamped.
+---@param presentation table<string, unknown>
+function BagRenderer:_drawActionFocus(presentation)
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local actions = assert(presentation.actions, "the action menu carries its actions")
+  assert(type(actions) == "table" and #actions >= 1, "the action menu carries its actions")
+  local selectedAction = assert(presentation.selectedAction, "the action menu carries its selection")
+  assert(
+    type(selectedAction) == "number" and selectedAction == math.floor(selectedAction) and selectedAction >= 0,
+    "the selected action is a valid index"
+  )
+  assert(selectedAction < #actions, "the selected action stays inside the offered actions")
+  local actionFocus = assert(focus.actions, "the bag manifest carries its action focus")
+  local targets = assert(actionFocus.targets, "the action focus carries its targets")
+  assert(type(targets) == "table" and #targets == 4, "the action focus targets its four buttons")
+  local target = assert(targets[selectedAction + 1], "the selected action maps to a generated target")
+  drawVisual(self._graphics, assert(self._visuals["focus:actions"]), target.x, target.y)
 end
 
 ---@param presentation table<string, unknown>
@@ -398,23 +511,8 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
   self:_drawStateBackground(state, pocket)
   local tabs = interactive.pocketTabs.rects
-  local selectedTab = nil
-  for index, tab in ipairs(presentation.pockets) do
-    if tab.pocket == pocket then
-      selectedTab = assert(tabs[index], "each pocket has a generated tab rectangle")
-    end
-  end
-  if selectedTab == nil then
-    error("the current pocket has no generated tab", 0)
-  end
-  -- The highlight draws beneath the icons: highlight first, then every
-  -- normal icon including the selected pocket's own.
-  drawVisual(
-    graphics,
-    assert(self._visuals.tabHighlight),
-    selectedTab.x + selectedTab.width / 2,
-    selectedTab.y + selectedTab.height / 2
-  )
+  -- Every normal tab visual draws at its anchor; tab focus is a separate
+  -- movable visual drawn only while tabs are semantically focused.
   for index = 1, 8 do
     local rect = assert(tabs[index], "each pocket has a generated tab rectangle")
     drawVisual(
@@ -424,6 +522,9 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
       rect.y + rect.height / 2
     )
   end
+  -- The movable item cursor draws beneath the cell content it frames, so
+  -- icons, names, quantities, and registration markers stay visible above it.
+  self:_drawCellFocus(presentation)
   local slots = interactive.itemSlots.slots
   local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
   assert(type(visibleSlots) == "table" and #visibleSlots == 6, "the presentation carries six visible cells")
@@ -437,6 +538,16 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
     local slot = assert(slots[index], "the presentation carries six generated cells")
     local rect = assert(slot.rect, "every cell needs its control rectangle")
     if cell ~= nil and cell.empty ~= true then
+      local iconKey = assert(cell.icon, "occupied cells carry an icon key")
+      local quad = icons:quadFor(iconKey)
+      local dims = icons:dimensions(iconKey)
+      local center = assert(slot.iconCenter, "every cell needs its icon center")
+      setColor(graphics, WHITE)
+      graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+      setColor(graphics, WHITE)
+      -- The registration badge composites above the icon it overlaps under
+      -- the corrected icon anchor, so the slot distinction stays visible;
+      -- cell text still prints above the badge.
       local registrationSlot = cell.registrationSlot
       if registrationSlot ~= nil then
         assert(
@@ -451,13 +562,6 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
           rect.y + registrationOffset.y
         )
       end
-      local iconKey = assert(cell.icon, "occupied cells carry an icon key")
-      local quad = icons:quadFor(iconKey)
-      local dims = icons:dimensions(iconKey)
-      local center = assert(slot.iconCenter, "every cell needs its icon center")
-      setColor(graphics, WHITE)
-      graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
-      setColor(graphics, WHITE)
       -- Item strings come from the text window and its explicit anchors,
       -- never from the control rect.
       local textRect = assert(slot.textRect, "every cell needs its text window")
@@ -474,19 +578,9 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
       )
     end
   end
-  local focus = presentation.focus
-  if focus == "items" and presentation.selected ~= nil then
-    local absolute = assert(presentation.selectedAbsoluteIndex, "the presentation carries its selection index")
-    local start = assert(presentation.visibleStart, "the presentation carries its window start")
-    assert(type(absolute) == "number" and type(start) == "number", "selection indexes are numbers")
-    local cell = absolute - start + 1
-    if cell >= 1 and cell <= 6 then
-      local focused = visibleSlots[cell]
-      if focused ~= nil and focused.empty ~= true then
-        self:_drawFocus(assert(slots[cell].rect, "every cell needs its control rectangle"))
-      end
-    end
-  end
+  -- Tab and Cancel focus sit above the grid art they frame; neither target
+  -- overlaps item content.
+  self:_drawChromeFocus(presentation)
   local page = assert(presentation.page, "the bag presentation derives its page")
   setColor(graphics, WHITE)
   self:_drawCenteredWithPalette(page.current .. "/" .. page.count, interactive.pageIndicator.rect, palettes.count)
@@ -497,6 +591,7 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   if presentation.state == "description_overlay" and layout.mode == "interactive_only" then
     self:_drawDescriptionOverlay(presentation, icons, iconImage)
   elseif presentation.state == "action_menu" then
+    self:_drawActionFocus(presentation)
     self:_drawActionMenu(presentation)
   elseif presentation.state == "toss_quantity" then
     self:_drawQuantityState(presentation)
