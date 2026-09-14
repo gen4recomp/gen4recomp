@@ -1,9 +1,9 @@
--- Resize coupling: UI scale follows camera.zoom via logicalPixelScale, not
--- host height proportion.
+-- Resize coupling: UI scale follows the field pixel-scale controller, not host
+-- height proportion.
 
 local Assert = require("tests.support.Assert")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
-local FieldZoom = require("libs.hgss.src.presentation.FieldZoom")
+local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldPresentation = require("data.manifests.field_presentation")
 local FieldState = require("game.hgss.src.field.FieldState")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
@@ -43,9 +43,8 @@ local function drawState(topologyProvider, pollTopology)
       width = 800,
       height = 600,
       worldViewport = {},
-      logicalPixelScale = function()
-        return 1
-      end,
+      referenceFrame = { height = 600 },
+      fieldPixelScale = FieldPixelScale.new(FieldPresentation.fieldScale),
     },
     applicationHost = {
       status = function()
@@ -215,10 +214,9 @@ end
 
 local function effectiveScaleAtHeight(height)
   local viewport = FieldViewport.new(1280, height, { mode = "expanded" })
-  local zoom = FieldZoom.new(FieldPresentation.zoom)
-  zoom:resize(viewport.worldViewport.height)
-  local effective = zoom:effectiveZoom()
-  return viewport:logicalPixelScale(effective), effective, viewport
+  local scale = FieldPixelScale.new(FieldPresentation.fieldScale)
+  scale:resize(viewport.referenceFrame.height)
+  return scale:resolvedScale(), scale:cameraZoom(), viewport
 end
 
 function T.ui_scale_equals_logical_pixel_scale_at_two_heights()
@@ -240,12 +238,14 @@ function T.ui_scale_equals_logical_pixel_scale_at_two_heights()
 end
 
 -- Field dialogue shares one resolved presentation contract with Oak: the host
--- supplies real bounds plus the field logical pixel scale as a cap, and the
+-- supplies real bounds plus the resolved field pixel scale as a cap, and the
 -- renderer draws exactly the resulting presentation. The signpost keeps its
 -- existing exact-scale contract.
 local function fieldStateWithCapturedUi(worldViewport, cameraZoom)
   local viewport = FieldViewport.new(1280, 600, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(cameraZoom)
+  local scale = FieldPixelScale.new(FieldPresentation.fieldScale)
+  scale:resize(viewport.referenceFrame.height)
+  local fieldScale = scale:resolvedScale()
   viewport.worldViewport = {
     x = worldViewport.x,
     y = worldViewport.y,
@@ -381,7 +381,7 @@ local function assertOuterRectInsideBounds(outerRect, bounds)
 end
 
 function T.constrained_dialogue_shrinks_to_fit_the_real_world_viewport()
-  local realBounds = { x = 5, y = 7, width = 200, height = 40 }
+  local realBounds = { x = 5, y = 7, width = 256, height = 48 }
   local fieldScale, dialogueCalls, signpostScales = fieldStateWithCapturedUi(realBounds, 1.25)
   Assert.equal(#dialogueCalls, 1, "field dialogue draws once per frame")
   local call = dialogueCalls[1]
@@ -393,7 +393,7 @@ function T.constrained_dialogue_shrinks_to_fit_the_real_world_viewport()
     realBounds,
     "field passes its real bounds unchanged: no inflated stand-in width or height"
   )
-  local expectedScale = math.min(fieldScale, realBounds.width / 256, realBounds.height / 48)
+  local expectedScale = PixelScale.fitPreferred(realBounds, 256, 48, fieldScale)
   Assert.isTrue(expectedScale < fieldScale, "the fixture host must be too small for the field scale")
   Assert.near(presentation.scale, expectedScale, 1e-9)
   Assert.near(presentation.outerRect.width, 256 * expectedScale, 1e-9)
@@ -412,7 +412,23 @@ function T.constrained_dialogue_shrinks_to_fit_the_real_world_viewport()
     "the shrunken dialogue stays bottom-aligned"
   )
   Assert.equal(#signpostScales, 1, "the signpost still draws in the same frame")
-  Assert.near(signpostScales[1], fieldScale, 1e-9, "the signpost keeps the exact field logical pixel scale")
+  local expectedSignpostScale = PixelScale.fitPreferred(realBounds, 256, 192, fieldScale)
+  Assert.equal(signpostScales[1], expectedSignpostScale, "the signpost uses its own integer fit")
+end
+
+function T.dialogue_and_signpost_fit_the_640_by_480_field_view()
+  local fieldScale, dialogueCalls, signpostScales =
+    fieldStateWithCapturedUi({ x = 0, y = 0, width = 640, height = 480 }, 0.25, 640, 480)
+  local dialogue = dialogueCalls[1].second
+  local expectedDialogueScale = PixelScale.fitPreferred(dialogue.bounds, 256, 48, fieldScale)
+  local expectedSignpostScale =
+    PixelScale.fitPreferred({ x = 0, y = 0, width = 640, height = 480 }, 256, 192, fieldScale)
+  Assert.equal(expectedDialogueScale, 2, "the 640x480 dialogue uses the greatest fitting integer")
+  Assert.equal(expectedSignpostScale, 2, "the 640x480 signpost uses the greatest fitting integer")
+  Assert.equal(dialogue.scale, expectedDialogueScale, "FieldState publishes the fitted dialogue scale")
+  Assert.equal(signpostScales[1], expectedSignpostScale, "FieldState publishes the fitted signpost scale")
+  Assert.equal(dialogue.scale % 1, 0, "the dialogue scale is integral")
+  Assert.equal(signpostScales[1] % 1, 0, "the signpost scale is integral")
 end
 
 function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()

@@ -66,7 +66,7 @@ local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntrance
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local FieldPresentation = require("data.manifests.field_presentation")
-local FieldZoom = require("libs.hgss.src.presentation.FieldZoom")
+local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
@@ -92,7 +92,7 @@ local function composeStarterBalls(runtime)
 end
 
 ---@class FieldRuntimeOptions
----@field zoomConfig table<string, unknown>?
+---@field fieldScaleConfig table<string, unknown>?
 ---@field viewportWidth integer?
 ---@field viewportHeight integer?
 ---@field screenTopology ScreenTopology?
@@ -126,7 +126,7 @@ end
 ---@field viewportHeight integer
 ---@field screenTopology ScreenTopology?
 ---@field errorText string?
----@field zoom FieldZoom
+---@field fieldPixelScale FieldPixelScale
 ---@field saveStatus string?
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 ---@field saveValidation GameSaveValidation? shared semantic GameSave validator
@@ -556,7 +556,7 @@ function FieldRuntime.new(game, options)
     localClock = options.localClock or LocalClock.system(),
     weatherClock = options.weatherClock,
     errorText = nil,
-    zoom = FieldZoom.new(options.zoomConfig or FieldPresentation.zoom),
+    fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
   }, FieldRuntime)
   self.saveCoordinator = FieldSaveCoordinator.new(self)
   self.worldSwapCoordinator = FieldWorldSwapCoordinator.new(self)
@@ -1728,13 +1728,13 @@ function FieldRuntime:acknowledgeDestinationPresentation()
 end
 
 function FieldRuntime:_updateCameraProjection()
-  self.zoom:resize(self.viewport.worldViewport.height)
+  self.fieldPixelScale:resize(self.viewport.referenceFrame.height)
   self.camera:setProjectionAspect(self.viewport:worldAspect())
-  self.camera:setZoom(self.zoom:effectiveZoom())
+  self.camera:setZoom(self.fieldPixelScale:cameraZoom())
 end
 
--- Re-apply the user's zoom change to the camera projection.
-function FieldRuntime:applyZoomChange()
+-- Re-apply the user's field-scale change to the camera projection.
+function FieldRuntime:applyFieldPixelScaleChange()
   self:_updateCameraProjection()
 end
 

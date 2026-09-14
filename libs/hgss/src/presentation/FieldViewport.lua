@@ -61,28 +61,4 @@ function FieldViewport:worldAspect()
   return self.worldViewport.width / self.worldViewport.height
 end
 
--- The one field-pixel scale calculation shared by the renderer (edge
--- radius) and the field-attached UI: one canonical 256x192 field pixel
--- occupies (referenceFrame.height / 192) host pixels at zoom 1, scaled
--- linearly by the effective camera zoom. The result is the exact non-rounded
--- product -- callers round only when they need an integer quantity (the edge
--- renderer, for example, rounds to its integer neighbor distance). The
--- reference frame is the 4:3 logical field surface (in expanded mode the
--- centered height-spanning rectangle; in strict/fitted mode the fitted 4:3
--- rectangle), so the scale follows the fitted height, not the raw host
--- height.
----@param effectiveZoom number
----@return number
-function FieldViewport:logicalPixelScale(effectiveZoom)
-  assert(
-    type(effectiveZoom) == "number"
-      and effectiveZoom > 0
-      and effectiveZoom == effectiveZoom
-      and effectiveZoom ~= math.huge
-      and effectiveZoom ~= -math.huge,
-    "effective zoom must be finite and > 0, got " .. tostring(effectiveZoom)
-  )
-  return (self.referenceFrame.height / 192) * effectiveZoom
-end
-
 return FieldViewport

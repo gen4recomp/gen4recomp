@@ -19,7 +19,6 @@ local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
-local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 
 local T = {}
@@ -184,8 +183,7 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
     graphics = lg,
   })
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
-  local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-  local fieldScale = viewport:logicalPixelScale(1)
+  local fieldScale = 1
   local err = Assert.throws(function()
     renderer:draw(controller, presentationAtFieldScale(fieldScale))
   end)
@@ -210,7 +208,7 @@ function T.no_nine_slice_assets_are_built()
   Assert.equal(#lg.images, 5, "the font atlases, frame strip, and continuation cursor are created")
 
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
-  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
   Assert.equal(#lg.images, 5, "drawing creates no slice image")
   renderer:release()
@@ -229,7 +227,7 @@ function T.frame_index_resolves_the_manifest_strip_tiles()
       graphics = lg,
     })
     local controller = FieldDialogueFixture.openDialogue("AB", frameIndex)
-    local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+    local fieldScale = 1
     renderer:draw(controller, presentationAtFieldScale(fieldScale))
     renderer:release()
     return lg.draws
@@ -275,7 +273,7 @@ function T.request_without_a_frame_index_draws_no_frame_tiles()
     graphics = lg,
   })
   local controller = FieldDialogueFixture.openDialogue("AB")
-  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
   for _, call in ipairs(lg.draws) do
     Assert.equal(call.quad.imgW, 16, "only font-atlas quads are drawn without a frame index")
@@ -305,7 +303,7 @@ function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
   end
   local status = controller:status()
   Assert.isTrue(status.waiting, "the dialogue must be waiting at its continuation boundary")
-  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
   local first = lg.draws[#lg.draws]
   Assert.equal(first.image, lg.images[5], "the continuation uses the generated cursor atlas")
@@ -394,7 +392,7 @@ function T.dialogue_content_uses_the_source_background_palette_slot()
     graphics = lg,
   })
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
-  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  local fieldScale = 1
   local presentation = presentationAtFieldScale(fieldScale)
   renderer:draw(controller, presentation)
   Assert.equal(#lg.rectangles, 1, "the content rectangle is explicitly filled")
@@ -453,7 +451,7 @@ function T.focus_indicator_not_reached_by_reveal_is_not_drawn()
   local controller = openedWithTokens({ glyphToken(1), glyphToken(2), focusToken(0) }, { printerDelay = 2 })
   controller:step({}) -- opening and two source updates reveal one glyph
   Assert.equal(controller:status().revealedGlyphs, 1, "the reveal cursor has not reached the trailing control")
-  local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+  local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
   Assert.equal(#focusDraws(lg), 0, "a not-yet-visible indicator is never drawn")
   renderer:release()
@@ -473,8 +471,7 @@ function T.reached_focus_indicator_draws_at_the_content_window_right_edge()
     text = withTextRenderer(uiCache(), lg),
     graphics = lg,
   })
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  local presentation = presentationAtFieldScale(viewport:logicalPixelScale(1))
+  local presentation = presentationAtFieldScale(1)
   local controller = openedWithTokens({ glyphToken(1), glyphToken(2), focusToken(0) })
   controller:step({ actionPressed = true }) -- full reveal; eos page waits
   for _ = 1, 30 do
@@ -513,8 +510,7 @@ function T.the_last_visible_focus_field_wins()
     text = withTextRenderer(uiCache(), lg),
     graphics = lg,
   })
-  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
-  local presentation = presentationAtFieldScale(viewport:logicalPixelScale(1))
+  local presentation = presentationAtFieldScale(1)
   local controller = openedWithTokens({ glyphToken(1), focusToken(0), focusToken(3) })
   controller:step({ actionPressed = true })
   renderer:draw(controller, presentation)
@@ -562,7 +558,7 @@ function T.focus_indicator_visibility_follows_renderer_policy()
     })
     local controller = openedWithTokens({ glyphToken(1), focusToken(0) })
     controller:step({ actionPressed = true })
-    local fieldScale = FieldViewport.new(256, 192, { mode = "expanded" }):logicalPixelScale(1)
+    local fieldScale = 1
     renderer:draw(controller, presentationAtFieldScale(fieldScale))
     renderer:release()
     return focusCalls, lineCalls

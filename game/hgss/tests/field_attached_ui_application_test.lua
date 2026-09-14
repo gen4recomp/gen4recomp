@@ -27,8 +27,8 @@ function T.start_menu_placement_identical_across_zooms()
   -- Prove that StartMenuLayout never consumes a scale/zoom argument
   Assert.isTrue(p1.scale ~= nil)
   -- Different zooms would have different field scales, but placement is same
-  local scale1 = viewport:logicalPixelScale(0.5)
-  local scale2 = viewport:logicalPixelScale(1.5)
+  local scale1 = 1
+  local scale2 = 3
   Assert.isTrue(scale1 ~= scale2)
   Assert.deepEqual(p1.frame, p2.frame)
 end

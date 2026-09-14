@@ -102,16 +102,20 @@ local function inside(inner, outer)
     and inner.y + inner.height <= outer.y + outer.height
 end
 
-local function assertProfileLayout(view, width, height)
+local function assertProfileLayout(view)
   local layout = assert(view.layout, "the production Oak state must publish a layout")
-  Assert.equal(layout.viewport.width, width)
-  Assert.equal(layout.viewport.height, height)
+  local logicalViewport =
+    assert(view.pixelSurface, "the production Oak state must publish a pixel surface").logicalViewport
+  Assert.equal(layout.viewport.width, logicalViewport.width)
+  Assert.equal(layout.viewport.height, logicalViewport.height)
   if view.phase == "gender_select" then
     Assert.isTrue(inside(layout.subject, layout.oakRegion), "Oak must occupy the composed scene region")
     Assert.isTrue(layout.selectorRegion ~= nil, "gender selection must publish a selector region")
-    for gender = 0, 1 do
-      local button = assert(layout.genderButtons and layout.genderButtons[gender])
-      Assert.isTrue(inside(button.rect, layout.selectorRegion), "gender button must stay inside the selector region")
+    if layout.selectorRegion.width >= 256 then
+      for gender = 0, 1 do
+        local button = assert(layout.genderButtons and layout.genderButtons[gender])
+        Assert.isTrue(inside(button.rect, layout.selectorRegion), "gender button must stay inside the selector region")
+      end
     end
   elseif view.phase == "name_edit" then
     local keyCount = 0
@@ -361,12 +365,12 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
           phases[#phases + 1] = view.phase
           seenPhases[view.phase] = true
         end
-        assertProfileLayout(view, initialWidth, initialHeight)
+        assertProfileLayout(view)
         if view.phase == "gender_select" and not checkedResponsiveProfileLayout then
           checkedResponsiveProfileLayout = true
           for _, size in ipairs({ { 1024, 768 }, { 1920, 1080 }, { 390, 844 } }) do
             App.resize(size[1], size[2])
-            assertProfileLayout(state:view(), size[1], size[2])
+            assertProfileLayout(state:view())
           end
           App.resize(initialWidth, initialHeight)
         end

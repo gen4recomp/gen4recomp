@@ -291,6 +291,11 @@ local function drawOrderState(starterActive)
       acknowledgeDestinationPresentation = function() end,
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       dialogue = {
         isModal = function()
           return false
@@ -425,6 +430,11 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       dialogue = {
         isModal = function()
           return false
@@ -531,6 +541,11 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       dialogue = {
         isModal = function()
           return false
@@ -625,6 +640,11 @@ function T.draw_without_a_menu_host_is_a_programming_error()
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       dialogue = {
         isModal = function()
           return false
@@ -893,6 +913,11 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       dialogue = {
         isModal = function()
           return false
@@ -1106,6 +1131,11 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       dialogue = {
         isModal = function()
           return false

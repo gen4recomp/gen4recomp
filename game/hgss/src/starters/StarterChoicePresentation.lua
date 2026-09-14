@@ -1630,7 +1630,8 @@ function StarterChoicePresentation:draw(snapshot, view, text)
     { self:_drawItems(snapshot) },
     nil,
     { worldViewport = machine, referenceFrame = machine },
-    1
+    1,
+    FieldPresentationConfig.WORLD_3D_RASTER_SCALE
   )
   local messages = self._manifest.messages
   local infoText, promptText

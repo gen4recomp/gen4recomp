@@ -58,7 +58,7 @@ function T.canonical_indicator_preserves_bright_background(scope, context)
   local target = scope:own(love.graphics.newCanvas(256, 192))
   love.graphics.setCanvas(target)
   love.graphics.clear(0.2, 0.7, 0.9, 1)
-  renderer:draw(runtime(), fieldCamera, { items }, nil, FieldViewport.new(256, 192, { mode = "strict" }), nil)
+  renderer:draw(runtime(), fieldCamera, { items }, nil, FieldViewport.new(256, 192, { mode = "strict" }), nil, 3)
   love.graphics.setCanvas()
 
   local image = target:newImageData()

@@ -46,6 +46,11 @@ local function drawableState(development)
       viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
       camera = { zoom = 1 },
       transition = { fadeAlpha = 0 },
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
+      },
       fieldEntranceIndicator = {
         status = function()
           return { visible = false }
@@ -203,7 +208,7 @@ function T.product_mode_keeps_the_documented_zoom_controls()
       actionKeys = {},
       cancelKeys = {},
       menuKeys = {},
-      zoom = {
+      fieldPixelScale = {
         zoomOut = function()
           zooms[#zooms + 1] = "out"
         end,
@@ -214,7 +219,7 @@ function T.product_mode_keeps_the_documented_zoom_controls()
           zooms[#zooms + 1] = "reset"
         end,
       },
-      applyZoomChange = function()
+      applyFieldPixelScaleChange = function()
         changes = changes + 1
       end,
     },

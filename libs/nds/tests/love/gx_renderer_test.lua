@@ -207,6 +207,9 @@ local function fakeGraphics(opts)
     setFailOnNewCanvas = function(value)
       opts.failOnNewCanvas = value
     end,
+    setFailOnScissor = function(value)
+      opts.failOnScissor = value
+    end,
     getDrawCalls = function()
       return drawCalls
     end,
@@ -726,9 +729,146 @@ function T.presentation_sprites_use_direct_replace_with_depth_writes()
   Assert.equal(spriteDraw.blendAlpha, "premultiplied")
   Assert.equal(spriteDraw.depthMode, "less")
   Assert.equal(spriteDraw.depthWrite, true)
+  Assert.notNil(renderer._spriteColor, "presentation sprites rasterize into the logical color layer")
+  local compositeDraw
+  for _, draw in ipairs(lg.calls.draw) do
+    if draw.mesh == renderer._spriteColor then
+      compositeDraw = draw
+      break
+    end
+  end
+  Assert.notNil(compositeDraw, "the logical sprite layer is composited once after world resolve")
+  Assert.isNil(compositeDraw.depthMode, "the final sprite composite does not use host depth")
   assertRestoredState(lg, canvas, shader)
   renderer:release()
-  assertResourcesReleased(lg, renderer, 1)
+  assertResourcesReleased(lg, renderer, 2)
+end
+
+local function headlessSpriteItem()
+  return {
+    mesh = { setTexture = function() end },
+    material = { texMatrix = Matrix4.identity() },
+    transform = Matrix4.identity(),
+    modelNormal = Matrix3.identity(),
+    billboardProjection = true,
+    alphaClass = "opaque",
+    cullMode = "back",
+    polygonAlpha = 1,
+    polygonMode = "modulation",
+    polygonId = 0,
+    lightMask = 0,
+    alphaCutoff = 0.5 / 255,
+    center = { 0, 0, 0 },
+  }
+end
+
+function T.logical_sprite_targets_are_persistent_and_transactional()
+  local lg = fakeGraphics()
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = headlessSpriteItem()
+  local viewport = { worldViewport = { x = 0, y = 0, width = 640, height = 480 } }
+
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+  Assert.equal(renderer._spriteW, 214)
+  Assert.equal(renderer._spriteH, 160)
+  Assert.notNil(renderer._spriteColor, "the logical color layer is published")
+  Assert.notNil(renderer._spriteCoverage, "coverage is a separate layer")
+  Assert.notNil(renderer._spriteDepth, "sprite ordering uses a logical depth layer")
+  local spriteColor = renderer._spriteColor --[[@as GxRendererTest.Canvas]]
+  local spriteCoverage = renderer._spriteCoverage --[[@as GxRendererTest.Canvas]]
+  Assert.deepEqual(spriteColor.filter, { "nearest", "nearest" })
+  Assert.deepEqual(spriteCoverage.filter, { "nearest", "nearest" })
+  local firstTargets = renderer._spriteTargets
+  local firstCanvasCount = #lg.canvases
+
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+  Assert.equal(#lg.canvases, firstCanvasCount, "steady sprite frames allocate no new targets")
+  Assert.equal(renderer._spriteTargets, firstTargets, "steady sprite frames reuse one target generation")
+
+  lg.setFailOnNewCanvas(#lg.canvases + 2)
+  local failed = Assert.throws(function()
+    render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 4)
+  end)
+  Assert.isTrue(tostring(failed):find("injected canvas failure", 1, true) ~= nil)
+  Assert.equal(renderer._spriteTargets, firstTargets, "failed replacement keeps the live target generation")
+  Assert.equal(renderer._spriteW, 214)
+  Assert.equal(renderer._spriteH, 160)
+  for index = firstCanvasCount + 1, #lg.canvases do
+    Assert.equal(lg.canvases[index].releaseCount, 1, "every partial sprite target is released")
+  end
+
+  lg.setFailOnNewCanvas(nil)
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 4)
+  Assert.equal(renderer._spriteW, 160)
+  Assert.equal(renderer._spriteH, 120)
+  Assert.notNil(renderer._spriteTargets)
+  for _, canvas in ipairs(lg.canvases) do
+    if canvas ~= renderer._spriteColor and canvas ~= renderer._spriteCoverage and canvas ~= renderer._spriteDepth then
+      Assert.isTrue(canvas.releaseCount <= 1, "retired world or sprite targets release at most once")
+    end
+  end
+  renderer:release()
+  for _, releasedShader in ipairs(lg.shaders) do
+    Assert.equal(releasedShader.releaseCount, 1, "release disposes every shader exactly once")
+  end
+  for _, canvas in ipairs(lg.canvases) do
+    Assert.equal(canvas.releaseCount, 1, "release disposes every canvas exactly once")
+  end
+end
+
+function T.logical_sprite_composite_restores_exact_caller_state_and_scissor_on_failure()
+  local canvas, shader = {}, {}
+  canvas.getWidth = function()
+    return 256
+  end
+  canvas.getHeight = function()
+    return 192
+  end
+  local lg = fakeGraphics({
+    canvas = canvas,
+    shader = shader,
+    blendMode = "add",
+    blendAlpha = "alphamultiply",
+    depthMode = "lequal",
+    depthWrite = true,
+    wireframe = false,
+    cullMode = "back",
+    color = { 0.2, 0.4, 0.6, 0.8 },
+    scissor = { 17, 19, 200, 150 },
+  })
+  local renderer = GxRenderer.new({ graphics = lg })
+  local scene = emptySceneCamera()
+  local item = headlessSpriteItem()
+  local viewport = { worldViewport = { x = 0, y = 0, width = 120, height = 90 } }
+
+  render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+  assertRestoredState(lg, canvas, shader)
+  local sx, sy, sw, sh = lg.getScissor()
+  Assert.equal(sx, 17)
+  Assert.equal(sy, 19)
+  Assert.equal(sw, 200)
+  Assert.equal(sh, 150)
+  Assert.isTrue(#lg.calls.scissor >= 2, "the sprite composite temporarily applies and then restores clipping")
+
+  lg.setFailOnScissor(#lg.calls.scissor + 1)
+  local failed = Assert.throws(function()
+    render(renderer, scene.runtime, scene.camera, nil, { item }, viewport, 0, nil, 3)
+  end)
+  Assert.isTrue(tostring(failed):find("injected scissor failure", 1, true) ~= nil)
+  assertRestoredState(lg, canvas, shader)
+  sx, sy, sw, sh = lg.getScissor()
+  Assert.equal(sx, 17)
+  Assert.equal(sy, 19)
+  Assert.equal(sw, 200)
+  Assert.equal(sh, 150)
+  renderer:release()
+  for _, releasedShader in ipairs(lg.shaders) do
+    Assert.equal(releasedShader.releaseCount, 1, "release disposes every shader exactly once")
+  end
+  for _, ownedCanvas in ipairs(lg.canvases) do
+    Assert.equal(ownedCanvas.releaseCount, 1, "release disposes every canvas exactly once")
+  end
 end
 
 -- libs/nds must not import a game-level config, so the game's background

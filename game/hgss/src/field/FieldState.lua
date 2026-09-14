@@ -12,7 +12,7 @@ local KEY_DIRECTIONS =
 local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", dpright = "east" }
 
 ---@class FieldStateOptions
----@field zoomConfig table<string, unknown>? runtime zoom configuration (runtime contract)
+---@field fieldScaleConfig table<string, unknown>? runtime field-scale configuration
 ---@field development boolean? product mode (the default) hides the playtest HUD
 ---@field initialFadeIn boolean? one-shot covered entry: first frame fully black, then reveal
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)?
@@ -68,7 +68,7 @@ function FieldState.new(game, options)
   -- or loaded game is the runtime's save authority, while state-only options
   -- such as topologyProvider must never become runtime options.
   local runtimeOptions = {
-    zoomConfig = options.zoomConfig,
+    fieldScaleConfig = options.fieldScaleConfig,
     presentation = true,
     saveStore = options.saveStore,
     saveValidation = options.saveValidation,
@@ -367,7 +367,7 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   if hostStatus.menu or hostStatus.application then
     return
   end
-  local fieldScale = self.runtime.viewport:logicalPixelScale(self.runtime.camera.zoom)
+  local fieldScale = self.runtime.fieldPixelScale:resolvedScale()
   local bounds = self.runtime.viewport.worldViewport
   if type(bounds) ~= "table" or type(bounds.width) ~= "number" or type(bounds.height) ~= "number" then
     bounds = self.runtime.viewport.referenceFrame
@@ -736,18 +736,18 @@ function FieldState:keypressed(key, _, _)
     return
   end
   if key == "-" or key == "kp-" then
-    self.runtime.zoom:zoomOut()
-    self.runtime:applyZoomChange()
+    self.runtime.fieldPixelScale:zoomOut()
+    self.runtime:applyFieldPixelScaleChange()
     return
   end
   if key == "=" or key == "+" or key == "kp+" then
-    self.runtime.zoom:zoomIn()
-    self.runtime:applyZoomChange()
+    self.runtime.fieldPixelScale:zoomIn()
+    self.runtime:applyFieldPixelScaleChange()
     return
   end
   if key == "0" or key == "kp0" then
-    self.runtime.zoom:reset()
-    self.runtime:applyZoomChange()
+    self.runtime.fieldPixelScale:reset()
+    self.runtime:applyFieldPixelScaleChange()
     return
   end
   if self:_starterPresentationHolding() then

@@ -83,7 +83,7 @@ local function runVersion(scope, versionId)
     Assert.isTrue(#items > 0, phase .. " must produce a real draw item from generated resources")
     Assert.equal(items[1].transitionPart, part, phase .. " must draw its own source part")
     love.graphics.setCanvas(target)
-    fieldRenderer:draw(sceneRuntime(), camera, { items }, nil, viewport, 0)
+    fieldRenderer:draw(sceneRuntime(), camera, { items }, nil, viewport, 0, 3)
     love.graphics.setCanvas()
     Assert.isTrue(fieldRenderer.stats.drawCalls > 0, phase .. " must reach a real graphics draw")
   end

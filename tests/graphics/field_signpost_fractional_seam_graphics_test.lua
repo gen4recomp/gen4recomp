@@ -128,7 +128,14 @@ local function renderAndCheckSeam(scope, viewportW, viewportH, zoom)
 
   return hasSeam,
     seamInfo,
-    { hostX0 = hostX0, hostY0 = hostY0, hostW = hostW, hostH = hostH, fieldScale = fieldScale, layout = layout }
+    {
+      hostX0 = hostX0,
+      hostY0 = hostY0,
+      hostW = hostW,
+      hostH = hostH,
+      fieldScale = fieldScale,
+      layout = layout,
+    }
 end
 
 function T.fractional_scale_has_no_internal_horizontal_seam(scope)

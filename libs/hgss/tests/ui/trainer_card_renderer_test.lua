@@ -193,7 +193,7 @@ end
 
 function T.draw_is_a_noop_without_a_presentation()
   local renderer = cardRenderer(renderedGraphics())
-  renderer:draw(nil, CANONICAL)
+  renderer:draw(nil, CANONICAL, 1)
 end
 
 function T.draw_presents_the_card_art_then_the_audited_labels_and_values()

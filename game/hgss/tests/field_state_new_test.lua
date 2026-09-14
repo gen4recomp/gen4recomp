@@ -121,11 +121,11 @@ function T.only_documented_runtime_options_reach_the_runtime()
     end,
   })
   options.saveValidation = saveValidation
-  options.zoomConfig = { mode = "test" }
+  options.fieldScaleConfig = { mode = "test" }
   options.development = true
   local state, captured, game = bootWithCapturedRuntimeOptions(options)
   Assert.deepEqual(captured.options, {
-    zoomConfig = { mode = "test" },
+    fieldScaleConfig = { mode = "test" },
     presentation = true,
     saveValidation = saveValidation,
   })

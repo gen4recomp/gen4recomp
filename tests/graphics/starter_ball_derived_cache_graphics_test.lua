@@ -171,7 +171,7 @@ function T.starter_balls_render_on_the_machine_in_the_real_lab_frame(scope)
           lighting = runtime.lighting,
           edgeColors = runtime.edgeColors,
           fog = runtime.fog,
-        }, camera, worldParts, nil, viewport, 0)
+        }, camera, worldParts, nil, viewport, 0, 3)
         love.graphics.setCanvas()
         return scope:own(canvas:newImageData())
       end

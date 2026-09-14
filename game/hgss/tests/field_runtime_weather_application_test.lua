@@ -117,8 +117,8 @@ local function runtimeWithClock(catalog, calls, currentMap)
         return 4 / 3
       end,
     },
-    zoom = {
-      effectiveZoom = function()
+    fieldPixelScale = {
+      cameraZoom = function()
         return 1
       end,
     },

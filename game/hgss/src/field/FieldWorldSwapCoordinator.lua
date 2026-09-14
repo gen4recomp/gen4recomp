@@ -90,7 +90,7 @@ function FieldWorldSwapCoordinator:prepare(resolution, facing)
   )
   local camera = FieldCamera.new(profile, { initialTarget = player:renderPosition() })
   camera:setProjectionAspect(runtime.viewport:worldAspect())
-  camera:setZoom(runtime.zoom:effectiveZoom())
+  camera:setZoom(runtime.fieldPixelScale:cameraZoom())
   local playerVisual = FieldPlayerVisual.new({
     player = player,
     spriteId = assert(runtime.playerAvatar, "field runtime has no avatar transition owner"):currentSpriteId(),

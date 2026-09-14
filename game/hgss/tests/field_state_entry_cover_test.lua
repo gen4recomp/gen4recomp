@@ -148,12 +148,15 @@ local function boot(withCover)
       actionKeys = {},
       cancelKeys = {},
       menuKeys = { m = true },
-      zoom = {
+      fieldPixelScale = {
+        resolvedScale = function()
+          return 3
+        end,
         zoomOut = function() end,
         zoomIn = function() end,
         reset = function() end,
       },
-      applyZoomChange = function() end,
+      applyFieldPixelScaleChange = function() end,
     }, FieldRuntime)
   end
   local game = { saveId = "save-00000001", versionId = "heartgold" }

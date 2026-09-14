@@ -232,14 +232,14 @@ function T.frame_clear_color_is_wrapper_local_when_sharing_one_backend()
   }
   local viewport = { worldViewport = { x = 0, y = 0, width = 1, height = 1 } }
 
-  first:draw(sceneRuntime, camera, nil, nil, viewport, 0)
-  second:draw(sceneRuntime, camera, nil, nil, viewport, 0)
+  first:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
+  second:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
 
   Assert.equal(frames[1].clearColor, firstColor, "the first wrapper submits its own clear color on its frame")
   Assert.equal(frames[2].clearColor, secondColor, "the second wrapper submits its own clear color on its frame")
 
   second:release()
-  first:draw(sceneRuntime, camera, nil, nil, viewport, 0)
+  first:draw(sceneRuntime, camera, nil, nil, viewport, 0, 3)
   Assert.equal(
     frames[3].clearColor,
     firstColor,

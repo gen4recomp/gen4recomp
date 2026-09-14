@@ -108,7 +108,7 @@ local function runVersion(scope, versionId)
       },
     })
     camera:setProjectionAspect(viewport:worldAspect())
-    fieldRenderer:draw(sceneRuntime, camera, { runtime.mapDraws }, nil, viewport, 0)
+    fieldRenderer:draw(sceneRuntime, camera, { runtime.mapDraws }, nil, viewport, 0, 3)
     local stateImg = fieldRenderer.renderState:newImageData()
     local holes = countEnclosedRear(stateImg, fieldRenderer.gxRenderer.stateW, fieldRenderer.gxRenderer.stateH)
     total = total + holes

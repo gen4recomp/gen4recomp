@@ -97,8 +97,8 @@ function FieldDialogueTheme.frameTilePlacements(box)
 end
 
 -- Reference-to-screen mapping for one viewport. The canonical 256x192
--- surface is scaled by the field logical pixel scale — the same
--- FieldViewport:logicalPixelScale(camera.zoom) used for world presentation —
+-- surface is scaled by the resolved field pixel scale used for world
+-- presentation —
 -- and bottom-centered in the 4:3 referenceFrame, so zoom and resize
 -- compensation affect world and field-attached UI together and wide hosts
 -- keep the UI inside the canonical frame. All geometry is returned in
@@ -107,7 +107,7 @@ end
 -- double mapping pushes the box off-screen.
 
 ---@param referenceFrame unknown
----@param fieldScale number field logical pixel scale (viewport:logicalPixelScale(camera.zoom)), must be finite > 0
+---@param fieldScale number resolved field pixel scale, must be finite > 0
 ---@param cursorPlacement? FieldDialogueTheme.Rect generated source cursor placement for dialogue rendering
 ---@return FieldDialogueTheme.Layout
 function FieldDialogueTheme.layout(referenceFrame, fieldScale, cursorPlacement)

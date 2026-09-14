@@ -389,7 +389,7 @@ local function fieldComposition(starter, queue, backend)
     menuKeys = {},
     input = input,
     session = { tick = 0 },
-    zoom = {
+    fieldPixelScale = {
       zoomIn = function()
         zoomCalls.zoomIn = zoomCalls.zoomIn + 1
       end,
@@ -400,7 +400,7 @@ local function fieldComposition(starter, queue, backend)
         zoomCalls.reset = zoomCalls.reset + 1
       end,
     },
-    applyZoomChange = function()
+    applyFieldPixelScaleChange = function()
       zoomCalls.applied = zoomCalls.applied + 1
     end,
     update = function() end,
@@ -433,7 +433,7 @@ local function fieldCompositionWithRealInput(starter, queue, backend, input)
     menuKeys = {},
     input = input,
     session = { tick = 0 },
-    zoom = {
+    fieldPixelScale = {
       zoomIn = function()
         zoomCalls.zoomIn = zoomCalls.zoomIn + 1
       end,
@@ -444,7 +444,7 @@ local function fieldCompositionWithRealInput(starter, queue, backend, input)
         zoomCalls.reset = zoomCalls.reset + 1
       end,
     },
-    applyZoomChange = function()
+    applyFieldPixelScaleChange = function()
       zoomCalls.applied = zoomCalls.applied + 1
     end,
     update = function() end,

@@ -54,6 +54,11 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
     viewport = viewport,
     camera = { zoom = 1 },
     transition = { fadeAlpha = 0 },
+    fieldPixelScale = {
+      resolvedScale = function()
+        return 3
+      end,
+    },
     fieldEntranceIndicator = {
       status = function()
         return { visible = false }

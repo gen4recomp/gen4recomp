@@ -107,7 +107,7 @@ local function runVersion(scope, versionId)
     Assert.equal(heldItems[1].material.image, heldImage, kind .. " must hold its final material")
 
     love.graphics.setCanvas(target)
-    fieldRenderer:draw(sceneRuntime(), camera, { heldItems }, nil, viewport, 0)
+    fieldRenderer:draw(sceneRuntime(), camera, { heldItems }, nil, viewport, 0, 3)
     love.graphics.setCanvas()
     Assert.isTrue(fieldRenderer.stats.drawCalls > 0, kind .. " must reach a real graphics draw")
   end

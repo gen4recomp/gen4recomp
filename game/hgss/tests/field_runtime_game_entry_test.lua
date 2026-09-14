@@ -455,7 +455,7 @@ function T.constructor_applies_defaults_and_keeps_injected_identities()
     Assert.notNil(defaulted.overrideFs)
     Assert.notNil(defaulted.saveValidation)
     Assert.notNil(defaulted.localClock)
-    Assert.notNil(defaulted.zoom)
+    Assert.notNil(defaulted.fieldPixelScale)
     Assert.notNil(defaulted.saveCoordinator)
     Assert.notNil(defaulted.worldSwapCoordinator)
     Assert.equal(

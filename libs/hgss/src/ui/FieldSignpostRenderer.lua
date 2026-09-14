@@ -301,7 +301,7 @@ end
 ---@param controller FieldSignpostController
 ---@param viewport { referenceFrame: FieldDialogueTheme.Rect, worldViewport?: FieldDialogueTheme.Rect }
 ---@param alpha number? session render interpolation factor, clamped into [0, 1]
----@param fieldScale number field logical pixel scale (viewport:logicalPixelScale(camera.zoom))
+---@param fieldScale number resolved field pixel scale
 function FieldSignpostRenderer:draw(controller, viewport, alpha, fieldScale)
   if not controller or not self._tilesImage then
     return
