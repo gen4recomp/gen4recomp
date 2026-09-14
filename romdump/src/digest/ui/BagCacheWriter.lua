@@ -98,6 +98,23 @@ local function stageBundle(tx, bundle, cacheFs)
   stage:write(BagCache.markerPath(), bundle.marker)
 end
 
+---@param artifact table<string, unknown>
+---@param bundle table<string, unknown>
+---@return string
+function BagCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "bag staging requires a PreparedArtifact")
+  validateBundle(bundle)
+  artifact:addOwnedRoot(BagCache.assetDir())
+  artifact:addOwnedRoot(BagCache.dir())
+  for _, path in ipairs(BagCache.referencedPaths(bundle.manifest)) do
+    if path:sub(1, #BagCache.assetDir()) ~= BagCache.assetDir() then
+      artifact:addSharedFile(path)
+    end
+  end
+  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:cacheFs())
+  return bundle.marker
+end
+
 ---@param cacheFs CacheFs
 ---@param bundle table<string, unknown>
 ---@return boolean

@@ -14,6 +14,11 @@ local CompilerWorker = {}
 
 local function wallSeconds()
   local host = rawget(_G, "love")
+  if host ~= nil and host.timer == nil then
+    -- Worker Lua states start without love.timer preloaded; require it on
+    -- demand so job timings stay wall time rather than CPU time.
+    pcall(require, "love.timer")
+  end
   assert(host and host.timer and type(host.timer.getTime) == "function", "worker wall clock is required")
   return host.timer.getTime()
 end

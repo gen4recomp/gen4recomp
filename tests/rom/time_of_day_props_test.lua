@@ -12,6 +12,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
@@ -21,7 +22,26 @@ local T = {}
 local function compileInto(romFs, symbol)
   local c = CacheFs.forVersion(romFs:version(), FakeCache.new())
   local bundle = assert(MapAssetCompiler.compile(romFs, symbol))
-  MapCacheWriter.write(c, bundle)
+  local mapId = assert(bundle.mapId, "map bundle needs its map identity")
+  local key = tostring(mapId)
+  local prepared = PreparedArtifact.new({
+    cacheFs = c,
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = "map-" .. key,
+  })
+  MapCacheWriter.stage(prepared, bundle)
+  prepared:finishSuccess({ marker = bundle.marker })
+  prepared:publish({
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+  })
   return c, bundle
 end
 

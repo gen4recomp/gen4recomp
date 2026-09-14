@@ -96,6 +96,8 @@ function T.every_family_maps_to_its_fixed_size_class()
     intro = "normal",
     ["new-game-init"] = "normal",
     ["starter-choice"] = "normal",
+    items = "normal",
+    bag = "normal",
     ["mon-icon-page"] = "normal",
     ["mon-portrait-page"] = "normal",
     ["map-data"] = "normal",
@@ -173,8 +175,10 @@ function T.bootstrap_membership_is_the_fixed_set_plus_audio_closures()
         and kind ~= "mon-portrait-page"
         and kind ~= "mon-summary"
         and kind ~= "actors"
-        and kind ~= "starter-choice",
-      "bootstrap never pulls geometry, records, scripts, pages, or actors: " .. kind
+        and kind ~= "starter-choice"
+        and kind ~= "items"
+        and kind ~= "bag",
+      "bootstrap never pulls geometry, records, scripts, pages, actors, or inventory: " .. kind
     )
   end
 end
@@ -195,6 +199,8 @@ function T.field_core_contains_bootstrap_without_geometry_or_portraits()
   for _, name in ipairs({
     "actors:global",
     "starter-choice:global",
+    "items:global",
+    "bag:global",
     "message-bank:219",
     "message-bank:220",
     "message-summary:global",
@@ -259,6 +265,8 @@ function T.dependencies_resolve_through_the_fixed_table()
   Assert.deepEqual(dependencySet("field-cell", "12-5"), { ["field-cell-index:global"] = true })
   Assert.deepEqual(dependencySet("actors", "global"), {})
   Assert.deepEqual(dependencySet("intro", "global"), {})
+  Assert.deepEqual(dependencySet("items", "global"), {})
+  Assert.deepEqual(dependencySet("bag", "global"), {})
   Assert.throws(function()
     ArtifactJobs.dependencies("world", "global", syntheticPlans())
   end)

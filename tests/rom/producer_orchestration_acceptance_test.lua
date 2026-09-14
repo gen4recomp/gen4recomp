@@ -6,7 +6,6 @@ local Assert = require("tests.support.Assert")
 local CacheBuilder = require("romdump.src.CacheBuilder")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local Errors = require("libs.errors.src.Errors")
-local FieldCameraCompiler = require("romdump.src.digest.field.FieldCameraCompiler")
 local IntroAssetCompiler = require("romdump.src.digest.newgame.IntroAssetCompiler")
 local RomFs = require("romdump.src.source.RomFs")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -33,8 +32,12 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   local originalOpen = RomFs.open
   local originalMatches = DerivedCacheState.matches
   local originalPublish = DerivedCacheState.publish
-  local originalCompile = FieldCameraCompiler.compile
+  local opens = 0
   RomFs.open = function(...)
+    opens = opens + 1
+    if opens >= 2 then
+      return nil, Errors.new("ROMFS_LOAD_FAILED", "acceptance-injected source failure", {})
+    end
     local openedRomFs, openErr = originalOpen(...)
     if openedRomFs ~= nil then
       local originalClose = openedRomFs.close
@@ -52,19 +55,18 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
     statePublished = true
     return originalPublish(...)
   end
-  local function failCamera()
-    return nil, Errors.new("DUMP_FAILURE", "acceptance-injected camera failure")
-  end
   rawset(DerivedCacheState, "matches", forceMismatch)
   rawset(DerivedCacheState, "publish", recordPublish)
-  rawset(FieldCameraCompiler, "compile", failCamera)
+  -- Compiler work runs in worker threads that never observe main-state
+  -- compiler monkeypatching, so the failure is injected at the session
+  -- source seam instead: the generation session cannot borrow the ROM while
+  -- the identity probe already closed its own handle.
   local ok, report, err = pcall(function()
     return CacheBuilder.buildVersions({ versionId }, { log = log })
   end)
   RomFs.open = originalOpen
   rawset(DerivedCacheState, "matches", originalMatches)
   rawset(DerivedCacheState, "publish", originalPublish)
-  rawset(FieldCameraCompiler, "compile", originalCompile)
 
   Assert.isTrue(ok, tostring(report))
   Assert.isNil(report)

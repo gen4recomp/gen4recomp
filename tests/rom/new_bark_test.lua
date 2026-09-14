@@ -17,6 +17,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGrid = require("libs.hgss.src.world.CollisionGrid")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
@@ -346,7 +347,26 @@ end
 function T.central_cell_scene(romFs, version)
   local c = CacheFs.forVersion(version, FakeCache.new())
   local bundle = assert(MapAssetCompiler.compile(romFs, "MAP_NEW_BARK"))
-  MapCacheWriter.write(c, bundle)
+  local mapId = assert(bundle.mapId, "map bundle needs its map identity")
+  local key = tostring(mapId)
+  local prepared = PreparedArtifact.new({
+    cacheFs = c,
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = "map-" .. key,
+  })
+  MapCacheWriter.stage(prepared, bundle)
+  prepared:finishSuccess({ marker = bundle.marker })
+  prepared:publish({
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+  })
   local scene = bundle.scene
 
   local m = scene.matrix

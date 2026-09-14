@@ -449,7 +449,9 @@ function T.failed_import_exits_nonzero_without_running_the_build_pipeline()
 end
 
 -- The development flag reaches the builder explicitly, defaulting to the
--- release identity when neither the call options nor the CLI selected it.
+-- release identity when neither the call options nor the CLI selected it. A
+-- development build also carries the checkout root its digest resolves
+-- against; a release build carries none and reads no producer sources.
 function T.dev_flag_reaches_the_builder_with_release_default()
   local realIsReady, realQuit = RomImporter.isReady, love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
@@ -483,7 +485,13 @@ function T.dev_flag_reaches_the_builder_with_release_default()
   Assert.deepEqual(exitCodes, { 0, 0 })
   Assert.equal(#received, 2)
   Assert.isTrue(received[1].dev, "the CLI development flag must reach the builder")
+  Assert.equal(
+    received[1].developmentRepositoryRoot,
+    love.filesystem.getSourceBaseDirectory(),
+    "a development build must resolve sources against the repository root the process runs from"
+  )
   Assert.isFalse(received[2].dev, "the builder defaults to the release identity")
+  Assert.isNil(received[2].developmentRepositoryRoot, "a release build carries no source root")
 end
 
 -- A missing command is a usage fault: nothing dispatches and the process
