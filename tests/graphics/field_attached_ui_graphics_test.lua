@@ -7,6 +7,7 @@ local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldSignpostRenderer = require("libs.hgss.src.ui.FieldSignpostRenderer")
+local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local FieldSignpostFixture = require("tests.support.FieldSignpostFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
@@ -144,6 +145,63 @@ function T.signpost_uses_the_supplied_integer_scale(_)
   Assert.near(lg.transforms[2][2], fieldScale, 1e-6)
   renderer:release()
   text:release()
+end
+
+function T.odd_width_field_surfaces_start_on_whole_host_pixels(_)
+  local viewport = FieldViewport.new(641, 480, { mode = "expanded" })
+  local controller = FieldDialogueFixture.openDialogue("AB", 0)
+  local signpostController = FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 2, offset = 0 })
+
+  local dialogueGraphics = fakeGraphicsFromSupport()
+  local dialogueText =
+    FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames(), graphics = dialogueGraphics })
+  local dialogue = FieldDialogueRenderer.new({
+    cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+    manifest = FieldUiFixture.manifest(),
+    text = dialogueText,
+    graphics = dialogueGraphics,
+  })
+  dialogue:draw(
+    controller,
+    DialoguePresentationLayout.compute(viewport.referenceFrame, {
+      scale = 2,
+      cursorPlacement = CURSOR_PLACEMENT,
+    })
+  )
+  Assert.equal(dialogueGraphics.transforms[1][2], 65, "dialogue origin is the nearest host pixel")
+  Assert.equal(dialogueGraphics.transforms[2][2], 2, "dialogue keeps its integer scale")
+  dialogue:release()
+  dialogueText:release()
+
+  local signpostGraphics = fakeGraphicsFromSupport()
+  local signpostText =
+    FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames(), graphics = signpostGraphics })
+  local signpost = FieldSignpostRenderer.new({
+    cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+    manifest = FieldUiFixture.manifest(),
+    text = signpostText,
+    graphics = signpostGraphics,
+    windowStyles = FieldSignpostFixture.styles(),
+  })
+  signpost:draw(signpostController, viewport, 1, 2)
+  Assert.equal(signpostGraphics.transforms[1][2], 65, "signpost origin is the nearest host pixel")
+  Assert.equal(signpostGraphics.transforms[2][2], 2, "signpost keeps its integer scale")
+  signpost:release()
+  signpostText:release()
+
+  local cardGraphics = fakeGraphicsFromSupport()
+  local cardText = FieldTextRenderer.new({ cacheFs = FieldUiFixture.trainerCardCache(), graphics = cardGraphics })
+  local card = TrainerCardRenderer.new({
+    cacheFs = FieldUiFixture.trainerCardCache(),
+    manifest = FieldUiFixture.manifest(),
+    text = cardText,
+    graphics = cardGraphics,
+  })
+  card:draw({ name = "GOLD", visibleTrainerId = 0, money = 0, playTimeSeconds = 0 }, viewport, 2)
+  Assert.equal(cardGraphics.transforms[1][2], 65, "trainer card origin is the nearest host pixel")
+  Assert.equal(cardGraphics.transforms[2][2], 2, "trainer card keeps its integer scale")
+  card:release()
+  cardText:release()
 end
 
 return GraphicsSmoke.suite(T)

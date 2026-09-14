@@ -101,8 +101,8 @@ function Layout.compute(bounds, options)
     "dialogue presentation scale does not fit its bounds"
   )
   local origin = {
-    x = bounds.x + (bounds.width - WIDTH * scale) / 2,
-    y = bounds.y + bounds.height - HEIGHT * scale,
+    x = math.floor(bounds.x + (bounds.width - WIDTH * scale) / 2 + 0.5),
+    y = math.floor(bounds.y + bounds.height - HEIGHT * scale + 0.5),
   }
   local cursorPlacement = assert(options.cursorPlacement, "dialogue presentation requires generated cursor placement")
   validateCursorPlacement(cursorPlacement)

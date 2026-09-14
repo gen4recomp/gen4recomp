@@ -32,8 +32,15 @@ end
 
 function T.narrow_expanded_falls_back_to_strict_fit()
   local viewport = FieldViewport.new(900, 900, { mode = "expanded" })
-  Assert.deepEqual(viewport.worldViewport, { x = 0, y = 112.5, width = 900, height = 675 })
+  Assert.deepEqual(viewport.worldViewport, { x = 0, y = 113, width = 900, height = 675 })
   Assert.deepEqual(viewport.referenceFrame, viewport.worldViewport)
+end
+
+function T.strict_odd_host_keeps_its_exact_extent_and_snaps_its_origin()
+  local viewport = FieldViewport.new(601, 480, { mode = "strict" })
+  Assert.deepEqual(viewport.worldViewport, { x = 0, y = 15, width = 601, height = 450.75 })
+  Assert.deepEqual(viewport.referenceFrame, viewport.worldViewport)
+  Assert.isTrue(approx(viewport:worldAspect(), 4 / 3))
 end
 
 function T.resize_recomputes_rectangles_without_replacing_the_object()

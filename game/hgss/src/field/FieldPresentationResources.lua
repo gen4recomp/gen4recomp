@@ -22,6 +22,7 @@ local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
@@ -77,9 +78,17 @@ local function buildPresenters(owner)
     )
   end
   local function drawTrainerCard(presentation, runtime)
+    local fieldRuntime = assert(runtime, "the card application requires field runtime")
+    local viewport = assert(fieldRuntime.viewport, "the card application requires the runtime viewport")
     assert(owner.trainerCardRenderer, "trainer card renderer is unavailable"):draw(
       presentation,
-      assert(runtime and runtime.viewport, "the card application requires the runtime viewport")
+      viewport,
+      PixelScale.fitPreferred(
+        viewport.referenceFrame,
+        256,
+        192,
+        assert(fieldRuntime.fieldPixelScale, "the card application requires the field pixel scale"):resolvedScale()
+      )
     )
   end
   local function drawBag(presentation, _)

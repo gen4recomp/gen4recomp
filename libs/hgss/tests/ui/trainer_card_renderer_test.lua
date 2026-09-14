@@ -405,7 +405,7 @@ function T.clips_the_card_to_the_reference_frame_without_changing_placement()
     },
   }, "trainer card clips to the reference frame and caller scissor")
   Assert.deepEqual(graphics.transforms, {
-    { "translate", 30.5, 18 },
+    { "translate", 31, 18 },
     { "scale", 1, 1 },
   }, "trainer card keeps its bottom-centered one-x placement")
   local sx, sy, sw, sh = graphics.getScissor()

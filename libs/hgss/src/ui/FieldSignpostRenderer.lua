@@ -337,8 +337,8 @@ function FieldSignpostRenderer:draw(controller, viewport, alpha, presentationSca
     local layout = {
       scale = scale,
       origin = {
-        x = bounds.x + (bounds.width - 256 * scale) / 2,
-        y = bounds.y + bounds.height - 192 * scale,
+        x = math.floor(bounds.x + (bounds.width - 256 * scale) / 2 + 0.5),
+        y = math.floor(bounds.y + bounds.height - 192 * scale + 0.5),
       },
     }
     lg.intersectScissor(bounds.x, bounds.y, bounds.width, bounds.height)

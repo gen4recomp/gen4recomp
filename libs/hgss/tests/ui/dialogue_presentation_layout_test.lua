@@ -12,10 +12,7 @@ function T.computes_centered_bottom_aligned_local_geometry()
     { cursorPlacement = CURSOR_PLACEMENT }
   )
   Assert.near(presentation.scale, 900 / 256, 1e-9)
-  Assert.deepEqual(
-    presentation.origin,
-    { x = 37 + (900 - 256 * presentation.scale) / 2, y = 11 + 420 - 48 * presentation.scale }
-  )
+  Assert.deepEqual(presentation.origin, { x = 37 + (900 - 256 * presentation.scale) / 2, y = 262 })
   Assert.deepEqual(presentation.box, { x = 16, y = 8, width = 216, height = 32 })
   Assert.deepEqual(presentation.text, { x = 16, y = 8, width = 216, height = 32 })
   Assert.equal(
@@ -118,8 +115,8 @@ function T.capped_scale_shrinks_to_fit_constrained_bounds()
   )
   Assert.isTrue(presentation.outerRect.y >= bounds.y - 1e-9, "the fitted window stays inside the host vertically")
   Assert.isTrue(
-    presentation.outerRect.y + presentation.outerRect.height <= bounds.y + bounds.height + 1e-9,
-    "the fitted window stays inside the host vertically"
+    presentation.outerRect.y + presentation.outerRect.height <= bounds.y + bounds.height + 0.5 + 1e-9,
+    "the snapped fitted window stays within the host raster boundary"
   )
 end
 

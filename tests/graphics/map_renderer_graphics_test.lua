@@ -4905,6 +4905,36 @@ function T.logical_billboard_output_uses_exact_integer_blocks(scope)
   end
 end
 
+function T.strict_odd_viewport_composites_logical_blocks_from_a_whole_host_origin(scope)
+  local width, height, presentationPixelScale = 601, 480, 3
+  local viewport = FieldViewport.new(width, height, { mode = "strict" })
+  Assert.equal(viewport.worldViewport.x, 0)
+  Assert.equal(viewport.worldViewport.y, 15)
+  Assert.equal(viewport.worldViewport.width, width)
+  Assert.equal(viewport.worldViewport.height, 450.75)
+
+  local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))
+  local target, color = presentationTarget(scope, width, height)
+  local sprite = presentationSprite(scope, presentationQuadMesh(scope, 0), stripedImage(scope, 16))
+  sprite.billboardScale = { 0.35, 0.35, 1 }
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  render(renderer, emptyRuntime(), fixedCamera(), {}, { sprite }, viewport, presentationPixelScale)
+  love.graphics.setCanvas()
+
+  local image = color:newImageData()
+  local visible = 0
+  for y = 150, 329 do
+    for x = 180, 420 do
+      local r, _, b = image:getPixel(x, y)
+      if r > 0.75 or b > 0.75 then
+        visible = visible + 1
+      end
+    end
+  end
+  Assert.isTrue(visible > 100, "the strict logical composite remains visible")
+end
+
 function T.logical_billboard_sweep_changes_only_at_logical_boundaries(scope)
   local width, height, presentationPixelScale = 640, 480, 4
   local renderer = scope:own(GxRenderer.new({ worldRasterScale = 2 }))

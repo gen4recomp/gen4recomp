@@ -161,8 +161,8 @@ function TrainerCardRenderer:draw(presentation, viewport, presentationScale)
     local layout = {
       scale = appScale,
       origin = {
-        x = ref.x + (ref.width - FieldDialogueTheme.referenceWidth * appScale) / 2,
-        y = ref.y + ref.height - FieldDialogueTheme.referenceHeight * appScale,
+        x = math.floor(ref.x + (ref.width - FieldDialogueTheme.referenceWidth * appScale) / 2 + 0.5),
+        y = math.floor(ref.y + ref.height - FieldDialogueTheme.referenceHeight * appScale + 0.5),
       },
     }
     lg.intersectScissor(ref.x, ref.y, ref.width, ref.height)

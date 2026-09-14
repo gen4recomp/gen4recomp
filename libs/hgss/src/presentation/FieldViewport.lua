@@ -17,10 +17,10 @@ end
 local function strictRectangle(x, y, width, height, aspect)
   if width / height >= aspect then
     local fittedWidth = height * aspect
-    return { x = x + (width - fittedWidth) / 2, y = y, width = fittedWidth, height = height }
+    return { x = math.floor(x + (width - fittedWidth) / 2 + 0.5), y = y, width = fittedWidth, height = height }
   end
   local fittedHeight = width / aspect
-  return { x = x, y = y + (height - fittedHeight) / 2, width = width, height = fittedHeight }
+  return { x = x, y = math.floor(y + (height - fittedHeight) / 2 + 0.5), width = width, height = fittedHeight }
 end
 
 function FieldViewport.new(width, height, options)

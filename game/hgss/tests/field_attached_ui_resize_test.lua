@@ -477,8 +477,8 @@ function T.undersized_dialogue_width_keeps_one_x_and_exposes_only_the_overflow()
   local presentation = dialogueCalls[1].second
   Assert.equal(presentation.scale, 1, "the minimum presentation scale remains integer 1")
   Assert.deepEqual(presentation.bounds, bounds, "field passes the real undersized bounds")
-  Assert.deepEqual(presentation.outerRect, { x = -0.5, y = 0, width = 256, height = 48 })
-  Assert.equal(presentation.origin.x, -0.5, "the one-pixel width overflow stays horizontally centered")
+  Assert.deepEqual(presentation.outerRect, { x = 0, y = 0, width = 256, height = 48 })
+  Assert.equal(presentation.origin.x, 0, "the one-pixel width overflow starts on the host pixel lattice")
 end
 
 function T.undersized_dialogue_height_keeps_one_x_and_bottom_anchors_the_overflow()
@@ -499,7 +499,7 @@ function T.undersized_dialogue_on_both_axes_keeps_one_x_and_real_bounds()
   local presentation = dialogueCalls[1].second
   Assert.equal(presentation.scale, 1)
   Assert.deepEqual(presentation.bounds, bounds)
-  Assert.deepEqual(presentation.outerRect, { x = 6.5, y = 8, width = 256, height = 48 })
+  Assert.deepEqual(presentation.outerRect, { x = 7, y = 8, width = 256, height = 48 })
 end
 
 return { tests = T }

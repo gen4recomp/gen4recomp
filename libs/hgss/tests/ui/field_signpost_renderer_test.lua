@@ -695,7 +695,7 @@ function T.clips_the_surface_to_the_resolved_world_bounds_without_changing_place
     },
   }, "signpost clips to the resolved world bounds and caller scissor")
   Assert.deepEqual(lg.transforms, {
-    { "translate", 22.5, 16 },
+    { "translate", 23, 16 },
     { "scale", 1, 1 },
   }, "signpost keeps its bottom-centered one-x placement")
   local sx, sy, sw, sh = lg.getScissor()
