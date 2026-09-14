@@ -391,6 +391,7 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
     local dialogueScale = PixelScale.fitPreferred(bounds, 256, 48, assert(fieldScale))
     local presentation = DialoguePresentationLayout.compute(bounds, {
       scale = dialogueScale,
+      allowClipping = true,
       cursorPlacement = manifestPlacement,
     })
     resources.dialogueRenderer:draw(self.runtime.dialogue, presentation)

@@ -11,6 +11,7 @@
 -- suites assert exactly the record shapes this helper produces; the real
 -- love.graphics object is never touched.
 
+---@alias FakeGraphics.ScissorRect { [1]: number, [2]: number, [3]: number, [4]: number }
 ---@class FakeGraphics: love.graphics
 ---@field images table[]
 ---@field canvases table[]
@@ -21,6 +22,7 @@
 ---@field shaders table[]
 ---@field canvases table[]
 ---@field blendModes table[]
+---@field scissorIntersections table[]
 ---@field pushDepth fun(): integer
 ---@field newImage fun(data?: table): table
 ---@field getLineWidth fun(): number
@@ -31,7 +33,7 @@ local FakeGraphics = {}
 -- verify exact restoration after a draw. The returned table is structurally
 -- a love.graphics subset plus the recording fields; call sites pass it as
 -- the renderers' injectable graphics namespace.
----@param opts? { canvas?: any, shader?: any, blendMode?: any, blendAlpha?: any, depthMode?: any, depthWrite?: boolean, wireframe?: boolean, cullMode?: any, color?: number[], scissor?: number[], lineWidth?: number, imageSizes?: table[], failOnCanvasCall?: integer, failOnQuadCall?: integer, failOnDrawCall?: integer, failOnImageCall?: integer, failOnShaderCall?: integer, shaderReturnsNil?: boolean }
+---@param opts? { canvas?: any, shader?: any, blendMode?: any, blendAlpha?: any, depthMode?: any, depthWrite?: boolean, wireframe?: boolean, cullMode?: any, color?: number[], scissor?: FakeGraphics.ScissorRect, lineWidth?: number, imageSizes?: table[], failOnCanvasCall?: integer, failOnQuadCall?: integer, failOnDrawCall?: integer, failOnImageCall?: integer, failOnShaderCall?: integer, shaderReturnsNil?: boolean }
 ---@return FakeGraphics
 function FakeGraphics.new(opts)
   opts = opts or {}
@@ -45,6 +47,7 @@ function FakeGraphics.new(opts)
   local transforms = {}
   local primitives = {}
   local rectangles = {}
+  local scissorIntersections = {}
   local state = {
     canvas = opts.canvas,
     shader = opts.shader,
@@ -67,6 +70,7 @@ function FakeGraphics.new(opts)
     transforms = transforms,
     primitives = primitives,
     rectangles = rectangles,
+    scissorIntersections = scissorIntersections,
     pushDepth = function()
       return pushDepth
     end,
@@ -278,6 +282,28 @@ function FakeGraphics.new(opts)
       else
         state.scissor = { x, y, w, h }
       end
+    end,
+    intersectScissor = function(x, y, w, h)
+      local effective = { x, y, w, h }
+      if state.scissor then
+        local current = state.scissor
+        ---@cast current FakeGraphics.ScissorRect
+        local currentX = current[1]
+        local currentY = current[2]
+        local right = math.min(currentX + current[3], x + w)
+        local bottom = math.min(currentY + current[4], y + h)
+        effective = {
+          math.max(currentX, x),
+          math.max(currentY, y),
+          math.max(0, right - math.max(currentX, x)),
+          math.max(0, bottom - math.max(currentY, y)),
+        }
+      end
+      scissorIntersections[#scissorIntersections + 1] = {
+        requested = { x, y, w, h },
+        effective = effective,
+      }
+      state.scissor = effective
     end,
   }
 end

@@ -341,6 +341,7 @@ function FieldSignpostRenderer:draw(controller, viewport, alpha, presentationSca
         y = bounds.y + bounds.height - 192 * scale,
       },
     }
+    lg.intersectScissor(bounds.x, bounds.y, bounds.width, bounds.height)
     lg.translate(layout.origin.x, layout.origin.y)
     lg.scale(layout.scale, layout.scale)
     local wipe = self:_wipeY(status, alpha)

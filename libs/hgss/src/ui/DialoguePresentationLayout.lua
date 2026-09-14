@@ -82,7 +82,7 @@ local function validateCursorPlacement(placement)
 end
 
 ---@param bounds { x: number, y: number, width: number, height: number }
----@param options { scale?: number, maxScale?: number, cursorPlacement: { x: number, y: number, width: number, height: number } }?
+---@param options { scale?: number, maxScale?: number, allowClipping?: boolean, cursorPlacement: { x: number, y: number, width: number, height: number } }?
 ---@return DialoguePresentationLayout.Presentation
 function Layout.compute(bounds, options)
   validateBounds(bounds)
@@ -95,8 +95,9 @@ function Layout.compute(bounds, options)
   end
   local scale = options.scale or math.min(bounds.width / WIDTH, bounds.height / HEIGHT, options.maxScale or math.huge)
   assert(scale > 0, "dialogue presentation does not fit its bounds")
+  local fits = WIDTH * scale <= bounds.width + EPSILON and HEIGHT * scale <= bounds.height + EPSILON
   assert(
-    WIDTH * scale <= bounds.width + EPSILON and HEIGHT * scale <= bounds.height + EPSILON,
+    fits or (options.scale ~= nil and options.allowClipping == true and scale == 1),
     "dialogue presentation scale does not fit its bounds"
   )
   local origin = {

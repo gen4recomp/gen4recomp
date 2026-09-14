@@ -52,6 +52,35 @@ function T.exact_scale_and_cap_are_validated()
   end))
 end
 
+function T.one_x_clipping_is_explicit_and_narrow()
+  local undersized = { x = 0, y = 0, width = 255, height = 48 }
+  Assert.isFalse(
+    pcall(function()
+      DialoguePresentationLayout.compute(undersized, { scale = 1, cursorPlacement = CURSOR_PLACEMENT })
+    end),
+    "one-x overflow remains strict without the explicit clipping policy"
+  )
+
+  local clipped = DialoguePresentationLayout.compute(undersized, {
+    scale = 1,
+    allowClipping = true,
+    cursorPlacement = CURSOR_PLACEMENT,
+  })
+  Assert.equal(clipped.scale, 1)
+  Assert.equal(clipped.outerRect.width, 256)
+
+  Assert.isFalse(
+    pcall(function()
+      DialoguePresentationLayout.compute({ x = 0, y = 0, width = 511, height = 95 }, {
+        scale = 2,
+        allowClipping = true,
+        cursorPlacement = CURSOR_PLACEMENT,
+      })
+    end),
+    "the clipping policy cannot authorize a non-fitting scale above one"
+  )
+end
+
 function T.generated_cursor_placement_maps_to_the_local_strip_without_a_fallback()
   local placement = FieldUiFixture.manifest().dialogueFrames.continueCursor.placement
   for _, bounds in ipairs({

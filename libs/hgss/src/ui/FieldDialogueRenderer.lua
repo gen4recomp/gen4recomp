@@ -224,6 +224,7 @@ function FieldDialogueRenderer:draw(controller, presentation)
   local lg = assert(self._graphics)
   local status = controller:status()
   FieldDrawState.protectedDraw(lg, function()
+    lg.intersectScissor(layout.bounds.x, layout.bounds.y, layout.bounds.width, layout.bounds.height)
     -- Everything draws in reference-canvas coordinates under one
     -- translate(origin) + scale transform; the theme never returns
     -- screen-mapped rects, so nothing is scaled twice.

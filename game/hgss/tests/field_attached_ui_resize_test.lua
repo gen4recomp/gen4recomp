@@ -469,4 +469,37 @@ function T.roomy_dialogue_keeps_the_field_scale_bottom_centered()
   Assert.equal(signpostScales[1], PixelScale.fitPreferred(realBounds, 256, 192, fieldScale))
 end
 
+function T.undersized_dialogue_width_keeps_one_x_and_exposes_only_the_overflow()
+  local bounds = { x = 0, y = 0, width = 255, height = 48 }
+  local _, dialogueCalls = fieldStateWithCapturedUi(bounds, 1.25)
+  Assert.equal(#dialogueCalls, 1, "field dialogue draws once at the undersized width")
+
+  local presentation = dialogueCalls[1].second
+  Assert.equal(presentation.scale, 1, "the minimum presentation scale remains integer 1")
+  Assert.deepEqual(presentation.bounds, bounds, "field passes the real undersized bounds")
+  Assert.deepEqual(presentation.outerRect, { x = -0.5, y = 0, width = 256, height = 48 })
+  Assert.equal(presentation.origin.x, -0.5, "the one-pixel width overflow stays horizontally centered")
+end
+
+function T.undersized_dialogue_height_keeps_one_x_and_bottom_anchors_the_overflow()
+  local bounds = { x = 11, y = 13, width = 256, height = 47 }
+  local _, dialogueCalls = fieldStateWithCapturedUi(bounds, 1.25)
+  Assert.equal(#dialogueCalls, 1, "field dialogue draws once at the undersized height")
+
+  local presentation = dialogueCalls[1].second
+  Assert.equal(presentation.scale, 1, "the minimum presentation scale remains integer 1")
+  Assert.deepEqual(presentation.bounds, bounds, "field passes the real undersized bounds")
+  Assert.deepEqual(presentation.outerRect, { x = 11, y = 12, width = 256, height = 48 })
+  Assert.equal(presentation.origin.y, 12, "the one-pixel height overflow stays bottom anchored")
+end
+
+function T.undersized_dialogue_on_both_axes_keeps_one_x_and_real_bounds()
+  local bounds = { x = 7, y = 9, width = 255, height = 47 }
+  local _, dialogueCalls = fieldStateWithCapturedUi(bounds, 1.25)
+  local presentation = dialogueCalls[1].second
+  Assert.equal(presentation.scale, 1)
+  Assert.deepEqual(presentation.bounds, bounds)
+  Assert.deepEqual(presentation.outerRect, { x = 6.5, y = 8, width = 256, height = 48 })
+end
+
 return { tests = T }

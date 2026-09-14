@@ -165,6 +165,7 @@ function TrainerCardRenderer:draw(presentation, viewport, presentationScale)
         y = ref.y + ref.height - FieldDialogueTheme.referenceHeight * appScale,
       },
     }
+    lg.intersectScissor(ref.x, ref.y, ref.width, ref.height)
     lg.translate(layout.origin.x, layout.origin.y)
     lg.scale(layout.scale, layout.scale)
     lg.setColor(1, 1, 1, 1)

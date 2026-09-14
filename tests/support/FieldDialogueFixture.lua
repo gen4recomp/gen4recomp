@@ -212,7 +212,8 @@ end
 ---@param lg table love.graphics-shaped namespace
 ---@param canvas table
 ---@param shader table|love.Shader|nil
-function FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
+---@param expectedScissor number[]? caller scissor expected after the draw
+function FieldDialogueFixture.assertRestoredState(lg, canvas, shader, expectedScissor)
   Assert.equal(lg.getCanvas(), canvas)
   Assert.equal(lg.getShader(), shader)
   local blend, alpha = lg.getBlendMode()
@@ -228,11 +229,12 @@ function FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
   Assert.near(g, 0.4, 1e-6)
   Assert.near(b, 0.6, 1e-6)
   Assert.near(a, 0.8, 1e-6)
+  local expected = expectedScissor or { 4, 8, 32, 16 }
   local sx, sy, sw, sh = lg.getScissor()
-  Assert.equal(sx, 4)
-  Assert.equal(sy, 8)
-  Assert.equal(sw, 32)
-  Assert.equal(sh, 16)
+  Assert.equal(sx, expected[1])
+  Assert.equal(sy, expected[2])
+  Assert.equal(sw, expected[3])
+  Assert.equal(sh, expected[4])
 end
 
 return FieldDialogueFixture

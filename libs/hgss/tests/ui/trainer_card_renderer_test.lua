@@ -380,4 +380,40 @@ function T.draw_error_balances_the_transform_stack()
   Assert.equal(graphics.pushDepth(), 0, "a draw error must not leave the transform stack unbalanced")
 end
 
+function T.clips_the_card_to_the_reference_frame_without_changing_placement()
+  local graphics = renderedGraphics({
+    canvas = "canvas",
+    shader = "shader",
+    blendMode = "add",
+    blendAlpha = "alphamultiply",
+    depthMode = "lequal",
+    depthWrite = true,
+    wireframe = true,
+    cullMode = "back",
+    color = { 0.2, 0.4, 0.6, 0.8 },
+    scissor = { 4, 8, 32, 16 },
+  })
+  local renderer = cardRenderer(graphics)
+  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
+  viewport.referenceFrame = { x = 31, y = 19, width = 255, height = 191 }
+  renderer:draw(presentation(), viewport, 1)
+
+  Assert.deepEqual(graphics.scissorIntersections, {
+    {
+      requested = { 31, 19, 255, 191 },
+      effective = { 31, 19, 5, 5 },
+    },
+  }, "trainer card clips to the reference frame and caller scissor")
+  Assert.deepEqual(graphics.transforms, {
+    { "translate", 30.5, 18 },
+    { "scale", 1, 1 },
+  }, "trainer card keeps its bottom-centered one-x placement")
+  local sx, sy, sw, sh = graphics.getScissor()
+  Assert.equal(sx, 4)
+  Assert.equal(sy, 8)
+  Assert.equal(sw, 32)
+  Assert.equal(sh, 16)
+  renderer:release()
+end
+
 return { tests = T }

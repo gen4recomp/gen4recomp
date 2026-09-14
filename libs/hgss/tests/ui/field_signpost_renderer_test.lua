@@ -669,6 +669,43 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
   r:release()
 end
 
+function T.clips_the_surface_to_the_resolved_world_bounds_without_changing_placement()
+  local lg = fakeGraphics({
+    canvas = "canvas",
+    shader = "shader",
+    blendMode = "add",
+    blendAlpha = "alphamultiply",
+    depthMode = "lequal",
+    depthWrite = true,
+    wireframe = true,
+    cullMode = "back",
+    color = { 0.2, 0.4, 0.6, 0.8 },
+    scissor = { 4, 8, 32, 16 },
+    imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 8 }, { 48, 128 } },
+  })
+  local r = renderer(lg)
+  local viewport = FieldViewport.new(256, 192, { mode = "expanded" })
+  viewport.worldViewport = { x = 23, y = 17, width = 255, height = 191 }
+  r:draw(FieldSignpostFixture.shown(FieldSignpostFixture.textLines(), { type = 0 }), viewport, nil, 1)
+
+  Assert.deepEqual(lg.scissorIntersections, {
+    {
+      requested = { 23, 17, 255, 191 },
+      effective = { 23, 17, 13, 7 },
+    },
+  }, "signpost clips to the resolved world bounds and caller scissor")
+  Assert.deepEqual(lg.transforms, {
+    { "translate", 22.5, 16 },
+    { "scale", 1, 1 },
+  }, "signpost keeps its bottom-centered one-x placement")
+  local sx, sy, sw, sh = lg.getScissor()
+  Assert.equal(sx, 4)
+  Assert.equal(sy, 8)
+  Assert.equal(sw, 32)
+  Assert.equal(sh, 16)
+  r:release()
+end
+
 -- Release frees every owned image; a later draw is a no-op.
 function T.release_frees_all_owned_images_and_noops_drawing()
   local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 8 }, { 48, 128 } } })

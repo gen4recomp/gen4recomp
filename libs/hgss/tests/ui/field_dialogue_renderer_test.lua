@@ -194,6 +194,63 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
   renderer:release()
 end
 
+function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
+  local canvas, shader = {}, {}
+  local function graphics(options)
+    return fakeGraphics({
+      canvas = canvas,
+      shader = shader,
+      blendMode = "add",
+      blendAlpha = "alphamultiply",
+      depthMode = "lequal",
+      depthWrite = true,
+      wireframe = true,
+      cullMode = "back",
+      color = { 0.2, 0.4, 0.6, 0.8 },
+      scissor = { 40, 5, 20, 20 },
+      imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } },
+      failOnDrawCall = options and options.failOnDrawCall,
+    })
+  end
+  local function clippedPresentation()
+    local presentation = presentationAtFieldScale(1)
+    presentation.bounds = { x = 37, y = 11, width = 255, height = 47 }
+    return presentation
+  end
+
+  local lg = graphics()
+  local renderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), lg),
+    graphics = lg,
+  })
+  renderer:draw(FieldDialogueFixture.openDialogue("AB", 0), clippedPresentation())
+  Assert.deepEqual(lg.scissorIntersections, {
+    {
+      requested = { 37, 11, 255, 47 },
+      effective = { 40, 11, 20, 14 },
+    },
+  }, "dialogue clips against both its host bounds and the caller scissor")
+  FieldDialogueFixture.assertRestoredState(lg, canvas, shader, { 40, 5, 20, 20 })
+  renderer:release()
+
+  local failing = graphics({ failOnDrawCall = 1 })
+  local failingRenderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), failing),
+    graphics = failing,
+  })
+  local err = Assert.throws(function()
+    failingRenderer:draw(FieldDialogueFixture.openDialogue("AB", 0), clippedPresentation())
+  end)
+  Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil)
+  Assert.equal(#failing.scissorIntersections, 1, "the failed draw clips before emitting pixels")
+  FieldDialogueFixture.assertRestoredState(failing, canvas, shader, { 40, 5, 20, 20 })
+  failingRenderer:release()
+end
+
 -- The former nine-slice window is gone: the renderer owns only the frame
 -- strip, creates no third slice source image, and draws the frame from the
 -- generated strip tiles.
