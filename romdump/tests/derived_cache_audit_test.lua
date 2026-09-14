@@ -43,7 +43,7 @@ local function publishedCache()
     FieldEffectAssetCache.markerPath(),
     FieldEmoteAssetCache.markerPath(),
     NewGameInitCache.markerPath(),
-    FieldCellCache.markerPath(),
+    FieldCellCache.indexMarkerPath(),
     MonCache.markerPath(),
     ItemCache.markerPath(),
     BagCache.markerPath(),
@@ -97,6 +97,53 @@ function T.availability_ignores_producer_version_metadata()
   local available, reason = DerivedCacheAudit.isAvailable(cache)
 
   Assert.isTrue(available, reason)
+end
+
+-- The generation-aware proof never consults the attestation file itself
+-- (it is published only after the audit passes): with a stale attestation
+-- on disk, the failure names the missing receipt instead.
+function T.generation_proof_ignores_a_stale_attestation_file()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local cache = publishedCache()
+  cache:writeLua(DerivedCacheState.path, {
+    schema = DerivedCacheState.schema,
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    mode = "development",
+    producerId = "d" .. string.rep("1", 64),
+    assetRevision = 11,
+    scriptApi = 1,
+    generationId = "stale-generation",
+  })
+
+  local available, reason = DerivedCacheAudit.isAvailable(cache, "current-generation")
+
+  Assert.isFalse(available)
+  assert(reason, "a refused proof names its cause")
+  Assert.isTrue(reason:find("mon-summary", 1, true) ~= nil, tostring(reason))
+end
+
+-- The generation-aware proof requires current summary receipts; a missing
+-- mon summary fails before any family validator runs.
+function T.generation_proof_requires_current_summary_receipts()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local cache = publishedCache()
+  cache:writeLua(DerivedCacheState.path, {
+    schema = DerivedCacheState.schema,
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    mode = "development",
+    producerId = "d" .. string.rep("1", 64),
+    assetRevision = 11,
+    scriptApi = 1,
+    generationId = "current-generation",
+  })
+
+  local available, reason = DerivedCacheAudit.isAvailable(cache, "current-generation")
+
+  Assert.isFalse(available)
+  assert(reason, "a refused proof names its cause")
+  Assert.isTrue(reason:find("mon-summary", 1, true) ~= nil, tostring(reason))
 end
 
 return { tests = T }

@@ -126,6 +126,20 @@ local function persist(tx, bundle, iconPng)
   return bundle.marker
 end
 
+---@param artifact table<string, unknown>
+---@param bundle table<string, unknown>
+---@return string
+function ItemCacheWriter.stage(artifact, bundle)
+  assert(artifact and artifact.stageFs, "item staging requires a PreparedArtifact")
+  local iconPng = checkBundle(bundle)
+  artifact:addOwnedRoot(ItemCache.assetDir())
+  artifact:addOwnedRoot(ItemCache.dir())
+  return persist({ stage = artifact:stageFs() }, bundle, iconPng)
+end
+
+---@param cacheFs CacheFs
+---@param bundle table<string, unknown>
+---@return string
 function ItemCacheWriter.write(cacheFs, bundle)
   local iconPng = checkBundle(bundle)
   local tx = ArtifactPublisher.begin(cacheFs, "items", {

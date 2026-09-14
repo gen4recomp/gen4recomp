@@ -43,6 +43,11 @@ ArtifactState.KINDS = {
   ["mon-icon-page"] = true,
   ["mon-portrait-page"] = true,
   ["mon-summary"] = true,
+  -- One staged item/bag artifact per job: the source-independent item
+  -- catalog (definitions, pockets, icon atlas with manifest) and the
+  -- field-bag presentation each own their payload and marker.
+  items = true,
+  bag = true,
   -- One staged message bank (or the family summary) per job: each bank owns
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,

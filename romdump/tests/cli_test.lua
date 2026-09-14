@@ -155,4 +155,85 @@ function T.forcedump_only_applies_to_import_or_build_cache()
   end)
 end
 
+function T.probe_rom_selects_a_probe_command_with_its_path()
+  local o = Cli.parse({ "--probe-rom", "/tmp/hg.nds" })
+  Assert.equal(o.command, "probe-rom")
+  Assert.equal(o.romPath, "/tmp/hg.nds")
+end
+
+function T.probe_rom_requires_a_path()
+  Assert.throws(function()
+    Cli.parse({ "--probe-rom" })
+  end)
+end
+
+function T.prepare_cache_requires_a_version_and_at_least_one_requirement()
+  local o = Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+  Assert.equal(o.command, "prepare-cache")
+  Assert.equal(o.version, "heartgold")
+  Assert.deepEqual(o.requirements, { "bootstrap" })
+  Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--require", "bootstrap" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--version", "heartgold" })
+  end)
+end
+
+function T.prepare_cache_accepts_repeated_requirements_and_observation_flags()
+  local o = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "bootstrap",
+    "--require",
+    "map:7",
+    "--dev",
+    "--profile",
+    "/tmp/cache-profile.jsonl",
+  })
+  Assert.equal(o.command, "prepare-cache")
+  Assert.deepEqual(o.requirements, { "bootstrap", "map:7" })
+  Assert.isTrue(o.dev)
+  Assert.equal(o.profile, "/tmp/cache-profile.jsonl")
+  local rebuild = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "map:7",
+    "--rebuild",
+    "map:7",
+    "--dev",
+  })
+  Assert.deepEqual(rebuild.rebuild, { "map:7" })
+end
+
+function T.probe_and_prepare_conflict_with_other_commands()
+  Assert.throws(function()
+    Cli.parse({ "--build-cache", "--probe-rom", "/tmp/hg.nds" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--check-dump", "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+  end)
+end
+
+function T.prepare_cache_rejects_malformed_requirements_and_paths()
+  for _, argv in ipairs({
+    { "--prepare-cache", "--version", "heartgold", "--require", "maps/7/complete" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "plan.lua" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "map: 7" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "fused:7" },
+    { "--prepare-cache", "--version", "heartgold", "--require", "bootstrap", "--rebuild", "map:7" },
+  }) do
+    Assert.throws(function()
+      Cli.parse(argv)
+    end)
+  end
+end
+
 return { tests = T }
