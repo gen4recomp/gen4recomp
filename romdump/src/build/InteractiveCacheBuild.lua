@@ -304,8 +304,32 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
   elseif priority < entry.priority then
     entry.urgency = urgency
     entry.priority = priority
+    self:_promoteQueued(entry)
   end
   return entry
+end
+
+---@param entry InteractiveCacheBuild.Interest
+function InteractiveCacheBuild:_promoteQueued(entry)
+  if self.retired then
+    return
+  end
+  if self.pool:status(entry.jobKey) ~= "queued" then
+    return
+  end
+  -- The pool owns the heap, so a stronger urgency must reach the queued
+  -- record under its canonical identity; the heap keeps its FIFO sequence.
+  self.pool:request({
+    versionId = self.versionId,
+    generationId = self.generationId,
+    epoch = self.epoch,
+    kind = entry.kind,
+    key = entry.key,
+    jobKey = entry.jobKey,
+    priority = entry.priority,
+    sizeClass = ArtifactJobs.sizeClass(entry.kind),
+    payload = self:_payload(entry.kind, entry.key),
+  })
 end
 
 ---@param kind string
@@ -439,11 +463,40 @@ function InteractiveCacheBuild:_sweepBound()
 end
 
 ---@param entry InteractiveCacheBuild.Interest
-function InteractiveCacheBuild:_ensure(entry)
-  local deps = ArtifactJobs.dependencies(entry.kind, entry.key, self:_plans())
+---@param trail table<string, boolean>|nil canonical identities on the current descent
+function InteractiveCacheBuild:_ensure(entry, trail)
+  trail = trail or {}
+  if trail[entry.jobKey] then
+    if entry.failure == nil then
+      entry.failure = self.generationId
+        .. " "
+        .. entry.kind
+        .. " "
+        .. entry.key
+        .. ": dependency cycle involves "
+        .. entry.jobKey
+    end
+    return
+  end
+  trail[entry.jobKey] = true
+  local plansOk, depsOrCause = pcall(ArtifactJobs.dependencies, entry.kind, entry.key, self:_plans())
+  if not plansOk then
+    if entry.failure == nil then
+      entry.failure = self.generationId
+        .. " "
+        .. entry.kind
+        .. " "
+        .. entry.key
+        .. ": dependency plan failed: "
+        .. tostring(depsOrCause)
+    end
+    trail[entry.jobKey] = nil
+    return
+  end
+  local deps = depsOrCause
   for _, dep in ipairs(deps) do
     local depEntry = self:_register(dep.kind, dep.key, entry.urgency)
-    self:_ensure(depEntry)
+    self:_ensure(depEntry, trail)
     if depEntry.failure ~= nil and entry.failure == nil then
       entry.failure = self.generationId
         .. " "
@@ -454,6 +507,7 @@ function InteractiveCacheBuild:_ensure(entry)
         .. depEntry.jobKey
         .. " failed: "
         .. depEntry.failure
+      trail[entry.jobKey] = nil
       return
     end
   end
@@ -461,11 +515,29 @@ function InteractiveCacheBuild:_ensure(entry)
   -- summary and map workers read published children, so dispatch waits until
   -- every dependency is ready. The next update re-drives pending parents.
   for _, dep in ipairs(deps) do
-    local depEntry = assert(self.byKey[dep.kind .. ":" .. dep.key], "registered dependency is missing")
+    local depEntry = self.byKey[dep.kind .. ":" .. dep.key]
+    if depEntry == nil then
+      if entry.failure == nil then
+        entry.failure = self.generationId
+          .. " "
+          .. entry.kind
+          .. " "
+          .. entry.key
+          .. ": prerequisite "
+          .. dep.kind
+          .. ":"
+          .. dep.key
+          .. " is missing"
+      end
+      trail[entry.jobKey] = nil
+      return
+    end
     if not depEntry.ready then
+      trail[entry.jobKey] = nil
       return
     end
   end
+  trail[entry.jobKey] = nil
   self:_submit(entry)
 end
 
@@ -775,18 +847,65 @@ end
 function InteractiveCacheBuild:retry(kind, key, urgency)
   assert(not self.retired, "generation session is retired")
   ArtifactJobs.jobKey(kind, key)
-  ArtifactJobs.priorityFor(urgency)
+  local priority = ArtifactJobs.priorityFor(urgency)
   local entry = self.byKey[kind .. ":" .. key]
   if entry == nil or entry.failure == nil then
     error("only failed session jobs can be retried: " .. kind .. ":" .. key, 0)
   end
-  self.pool:retry(entry.jobKey, ArtifactJobs.priorityFor(urgency))
-  entry.failure = nil
-  entry.ready = false
-  entry.validated = false
-  entry.submitted = true
-  entry.urgency = urgency
-  entry.priority = ArtifactJobs.priorityFor(urgency)
+  -- A blocked parent was never submitted, so only its failed leaves go back
+  -- to the pool; the blocked annotations clear and healthy siblings stay put.
+  local leaves = {}
+  local blocked = {}
+  local seen = {}
+  local function collect(target)
+    if seen[target.jobKey] then
+      return
+    end
+    seen[target.jobKey] = true
+    if target.failure == nil then
+      return
+    end
+    local plansOk, depsOrCause = pcall(ArtifactJobs.dependencies, target.kind, target.key, self:_plans())
+    if not plansOk then
+      leaves[#leaves + 1] = target
+      return
+    end
+    local failedChild = false
+    for _, dep in ipairs(depsOrCause) do
+      local depEntry = self.byKey[dep.kind .. ":" .. dep.key]
+      if depEntry ~= nil and depEntry.failure ~= nil then
+        failedChild = true
+        collect(depEntry)
+      elseif depEntry == nil then
+        failedChild = true
+      end
+    end
+    if failedChild then
+      blocked[#blocked + 1] = target
+    else
+      leaves[#leaves + 1] = target
+    end
+  end
+  collect(entry)
+  for _, leaf in ipairs(leaves) do
+    if self.pool:status(leaf.jobKey) == "failed" then
+      self.pool:retry(leaf.jobKey, priority)
+      leaf.submitted = true
+    end
+    leaf.failure = nil
+    leaf.ready = false
+    leaf.validated = false
+    leaf.urgency = urgency
+    leaf.priority = priority
+  end
+  for _, parent in ipairs(blocked) do
+    parent.failure = nil
+    if priority < parent.priority then
+      parent.urgency = urgency
+      parent.priority = priority
+      self:_promoteQueued(parent)
+    end
+  end
   return self:_answer(entry)
 end
 
@@ -824,35 +943,44 @@ end
 ---@return boolean
 function InteractiveCacheBuild:_blockOn(kind, key)
   local jobKey = kind .. ":" .. key
-  if type(self.pool.wait) == "function" then
-    local state, details = self.pool:wait(jobKey)
-    if state == "ready" then
-      if ArtifactJobs.validate(self.cacheFs, self.generationId, kind, key, self:_plans()) then
-        local entry = self.byKey[jobKey]
-        if entry ~= nil then
-          entry.ready = true
-          entry.submitted = true
-        end
-        return true
-      end
-    end
-    error((details and details.error) or (jobKey .. ": publication failed"), 0)
-  end
   local rounds = 0
   while rounds < 10000 do
     rounds = rounds + 1
+    if self.retired then
+      error("generation session is retired: " .. jobKey, 0)
+    end
     self:update()
     local entry = self.byKey[jobKey]
-    if entry ~= nil then
-      if entry.ready then
+    if entry == nil then
+      error(jobKey .. ": blocking wait has no registered interest", 0)
+    end
+    if entry.ready then
+      return true
+    end
+    if entry.failure ~= nil then
+      error(entry.failure, 0)
+    end
+    if not self:_awaitingPoolWork() then
+      error(jobKey .. ": blocking wait made no progress", 0)
+    end
+    -- The parent itself is never named to the pool here: the wait only
+    -- advances already-dispatched dependency work until it publishes.
+    self.pool:waitForProgress()
+  end
+  error(jobKey .. ": blocking wait timed out", 0)
+end
+
+---@return boolean
+function InteractiveCacheBuild:_awaitingPoolWork()
+  for _, entry in ipairs(self.interest) do
+    if not entry.ready and entry.failure == nil and entry.submitted then
+      local state = self.pool:status(entry.jobKey)
+      if state == "queued" or state == "running" or state == "prepared" then
         return true
-      end
-      if entry.failure ~= nil then
-        error(entry.failure, 0)
       end
     end
   end
-  error(jobKey .. ": blocking wait timed out", 0)
+  return false
 end
 
 ---@return boolean
@@ -984,6 +1112,10 @@ function InteractiveCacheBuild:retire()
     return
   end
   self.retired = true
+  -- Logical interest ends here; executing physical slots stay charged to the
+  -- pool until their terminal reply or joined exit. Late old-epoch output
+  -- can no longer publish through this session.
+  self.pool:retireSelection(self.epoch)
   self.interest = {}
   self.byKey = {}
   if self.romFs ~= nil then

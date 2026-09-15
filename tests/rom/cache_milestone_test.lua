@@ -58,6 +58,15 @@ local function FakePool()
   local pool = { records = {}, order = {}, selected = nil, peakSweep = 0 }
   function pool:selectGeneration(identity, epoch)
     self.selected = { identity = identity, epoch = epoch }
+    self.retired = false
+  end
+  function pool:retireSelection(epoch)
+    assert(type(epoch) == "number" and epoch % 1 == 0, "pool epoch must be an integer")
+    if self.retired then
+      return false
+    end
+    self.retired = true
+    return true
   end
   function pool:request(job)
     assert(type(job) == "table", "pool job must be a table")
