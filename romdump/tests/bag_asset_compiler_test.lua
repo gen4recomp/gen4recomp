@@ -1144,4 +1144,81 @@ function T.corrupt_tab_state_palette_fails_with_the_protocol_error()
   )
 end
 
+-- Selected-pocket strips replay the full retained bank range: the base
+-- realization copies state banks 8..15 over destination banks 0..7, then the
+-- active pocket bank overrides its own destination. The synthetic base
+-- palette stays black while every state bank carries a distinct entry color,
+-- so each tab region identifies the source bank that produced it. Strip bytes
+-- are captured from the image writer because the synthetic archive stops at
+-- the hero stage after the tab strips have already been realized.
+function T.selected_pocket_strips_replay_the_full_base_range_with_override()
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local PngReader = require("tests.support.PngReader")
+  local PngWriter = require("libs.assets.src.PngWriter")
+  local BagSources = require("romdump.src.config.BagSources")
+  local stateWords = {}
+  for index = 1, 256 do
+    stateWords[index] = 0
+  end
+  for bank = 0, 15 do
+    local r5 = (bank * 4 + 5) % 31 + 1
+    local g5 = (bank * 7 + 9) % 31 + 1
+    local b5 = (bank * 11 + 13) % 31 + 1
+    stateWords[bank * 16 + 2] = r5 + g5 * 32 + b5 * 1024
+  end
+  local baseWords = {}
+  for index = 1, 256 do
+    baseWords[index] = 0
+  end
+  local romFs = fixture({
+    tamper = function(members)
+      members[BagSources.sprites.tabs.palette + 1] = paletteData(baseWords)
+      members[BagSources.palettes.tabState + 1] = paletteData(stateWords)
+      return members
+    end,
+  })
+  local originalEncode = PngWriter.encode
+  local captured = {}
+  PngWriter.encode = function(width, height, pixels)
+    local png = originalEncode(width, height, pixels)
+    captured[#captured + 1] = png
+    return png
+  end
+  local ok, bundle, err = pcall(BagAssetCompiler.compile, romFs)
+  PngWriter.encode = originalEncode
+  Assert.isTrue(ok, "compilation must not raise an unexpected error")
+  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
+  local typed = assert(err, "compilation past the tab strips must reach the hero stage")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("hero"),
+    "the tab strips must compile before the hero stage, got: " .. tostring(typed.message)
+  )
+  local strips = {}
+  for _, png in ipairs(captured) do
+    local width, height = PngReader.rgba(png)
+    if width == 256 and height == 32 then
+      strips[#strips + 1] = png
+    end
+  end
+  Assert.equal(#strips, 8, "compilation must emit one strip per pocket before the hero stage")
+  local pocketOrder = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+  for pocketIndex, pocket in ipairs(pocketOrder) do
+    local selected = pocketIndex - 1
+    local _, _, rgba = PngReader.rgba(strips[pocketIndex])
+    for destBank = 0, 7 do
+      local sourceBank = destBank
+      if destBank ~= selected then
+        sourceBank = 8 + destBank
+      end
+      local expected = Rgb555.decode(stateWords[sourceBank * 16 + 2])
+      local r, g, b, a = PngReader.pixel(rgba, 256, destBank * 32 + 16, 16)
+      Assert.equal(a, 255, pocket .. " tab " .. destBank .. " carries icon pixels")
+      Assert.equal(r, expected.r, pocket .. " tab " .. destBank .. " replays its source bank red")
+      Assert.equal(g, expected.g, pocket .. " tab " .. destBank .. " replays its source bank green")
+      Assert.equal(b, expected.b, pocket .. " tab " .. destBank .. " replays its source bank blue")
+    end
+  end
+end
+
 return { tests = T }

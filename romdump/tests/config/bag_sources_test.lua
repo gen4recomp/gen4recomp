@@ -318,19 +318,20 @@ function T.tab_state_palette_and_ordered_bank_writes_are_audited()
     BagSources.palettes.tabState ~= BagSources.sprites.tabs.palette,
     "the state palette member must stay distinct from the base sprite palette member"
   )
-  local state = assert(BagSources.tabPaletteState, "the producer must publish the pocket-dependent palette write order")
+  local state =
+    assert(BagSources.tabPaletteState, "the producer must publish the pocket-dependent palette transfer order")
   Assert.equal(state.bankSize, 16, "each OBJ palette bank carries sixteen colors")
-  local writes = assert(state.writes, "the palette state must carry its ordered bank writes")
-  Assert.equal(#writes, 2, "initialization and pocket changes replay exactly two bank writes")
+  local transfers = assert(state.transfers, "the palette state must carry its ordered bank transfers")
+  Assert.equal(#transfers, 2, "initialization and pocket changes replay exactly two bank transfers")
   Assert.deepEqual(
-    writes[1],
-    { sourceBank = 8, destBank = 0 },
-    "the first write copies the retained bank into the destination base bank"
+    transfers[1],
+    { sourceBank = 8, destBank = 0, bankCount = 8 },
+    "the first transfer copies the retained banks into the destination base banks"
   )
   Assert.deepEqual(
-    writes[2],
-    { sourceBank = "pocket", destBank = "pocket" },
-    "the second write copies the active pocket bank onto itself in source order"
+    transfers[2],
+    { sourceBank = "pocket", destBank = "pocket", bankCount = 1 },
+    "the second transfer copies the active pocket bank onto itself in source order"
   )
 end
 

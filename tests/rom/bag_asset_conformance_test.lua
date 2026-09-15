@@ -527,10 +527,11 @@ function T.browse_count_variants_start_from_independent_source_copies(romFs, ver
 end
 
 -- The pocket strip replays the retained pocket-state palette: the effective
--- palette starts from the base tab palette, copies the retained bank 8 over
--- destination bank 0, then copies the active pocket bank over itself, in that
--- order. This replay is written independently of the compiler's own helper;
--- only the audited member selection, selectors, and geometry are shared.
+-- palette starts from the base tab palette, copies state banks 8..15 over
+-- destination banks 0..7, then copies the active pocket bank over itself, in
+-- that order. This replay is written independently of the compiler's own
+-- helper; only the audited member selection, selectors, and geometry are
+-- shared.
 local function replayEffectivePalette(baseColors, stateColors, pocketIndex)
   local bankSize = 16
   local effective = {}
@@ -542,9 +543,11 @@ local function replayEffectivePalette(baseColors, stateColors, pocketIndex)
       effective[toBank * bankSize + entry + 1] = stateColors[fromBank * bankSize + entry + 1]
     end
   end
-  Assert.isTrue(#stateColors >= 9 * bankSize, "the retained palette must carry banks 0..8")
+  Assert.isTrue(#stateColors >= 16 * bankSize, "the retained palette must carry banks 0..15")
   Assert.isTrue(#effective >= 8 * bankSize, "the effective palette must carry banks 0..7")
-  copyBank(8, 0)
+  for destBank = 0, 7 do
+    copyBank(8 + destBank, destBank)
+  end
   copyBank(pocketIndex, pocketIndex)
   return { colors = effective }
 end
@@ -631,8 +634,32 @@ function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local animation = decoded("decodeAnimation", group.anim, "tab animation")
   local selectors = assert(BagSources.spriteStates.tabs.normal, "normal tab selectors must be audited")
   Assert.equal(#selectors, 8, "eight normal tab selectors are required")
+  local selection = assert(bundle.dependencies.selection, "the bundle must carry its dependency selection")
+  local paletteFacts = assert(selection.tabPaletteState, "the selection must carry the tab palette facts")
+  Assert.equal(paletteFacts.bankSize, 16, "the tab palette facts keep the sixteen-color bank size")
+  local transfers = assert(paletteFacts.transfers, "the tab palette facts must carry ordered transfers")
+  Assert.equal(#transfers, 2, "the tab palette replay carries its base and selected transfers")
+  Assert.deepEqual(
+    transfers[1],
+    { sourceBank = 8, destBank = 0, bankCount = 8 },
+    "the base transfer covers eight banks"
+  )
+  Assert.deepEqual(
+    transfers[2],
+    { sourceBank = "pocket", destBank = "pocket", bankCount = 1 },
+    "the selected transfer overrides one bank"
+  )
   local realized = {}
-  for _, case in ipairs({ { pocket = "items", index = 0 }, { pocket = "balls", index = 2 } }) do
+  for _, case in ipairs({
+    { pocket = "items", index = 0 },
+    { pocket = "medicine", index = 1 },
+    { pocket = "balls", index = 2 },
+    { pocket = "tmhm", index = 3 },
+    { pocket = "berries", index = 4 },
+    { pocket = "mail", index = 5 },
+    { pocket = "battle_items", index = 6 },
+    { pocket = "key_items", index = 7 },
+  }) do
     local effective = replayEffectivePalette(basePalette.colors, statePalette.colors, case.index)
     local frames = {}
     for position, selector in ipairs(selectors) do

@@ -159,18 +159,20 @@ BagSources.palettes = {
   tabState = 48,
 }
 
--- Pocket-relative OBJ bank writes replaying the retail tab palette mutation
+-- Pocket-relative OBJ bank transfers replaying the retail tab palette mutation
 -- (ov15_02200030): for zero-based active pocket p the producer first copies
--- source bank 8 over destination bank 0, then copies source bank p over
--- destination bank p. The writes execute in this order, so the second write
--- wins when the active pocket is index 0. Each bank holds bankSize colors;
--- the runtime manifest carries only the realized strip pixels, never these
--- operations.
+-- eight consecutive banks from state source bank 8 to effective destination
+-- bank 0 (the retail 0x100-byte base transfer), then copies one bank from
+-- state source bank p over effective destination bank p (the retail 0x20-byte
+-- selected-pocket override). The transfers execute in this order, so the
+-- second transfer wins when the active pocket bank was covered by the base
+-- transfer. Each bank holds bankSize colors; the runtime manifest carries
+-- only the realized strip pixels, never these operations.
 BagSources.tabPaletteState = {
   bankSize = 16,
-  writes = {
-    { sourceBank = 8, destBank = 0 },
-    { sourceBank = "pocket", destBank = "pocket" },
+  transfers = {
+    { sourceBank = 8, destBank = 0, bankCount = 8 },
+    { sourceBank = "pocket", destBank = "pocket", bankCount = 1 },
   },
 }
 

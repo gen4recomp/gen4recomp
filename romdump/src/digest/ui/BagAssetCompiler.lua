@@ -222,7 +222,7 @@ local function compileVisual(spriteData, selector, role, assets)
 end
 
 -- Derive one active pocket's effective tab palette: clone the base sprite
--- palette, then replay the audited OBJ bank writes in source order. Bank
+-- palette, then replay the audited OBJ bank transfers in source order. Bank
 -- availability is validated before any copy; a short palette fails instead
 -- of wrapping or borrowing another bank.
 ---@param baseColors { r: integer, g: integer, b: integer }[]
@@ -235,41 +235,52 @@ local function effectiveTabPalette(baseColors, stateColors, pocketIndex)
     sourceError("tab palette state carries no positive integer bank size", { pocket = pocketIndex })
   end
   local bankSize = facts.bankSize
-  if type(facts.writes) ~= "table" or #facts.writes ~= 2 then
-    sourceError("tab palette state carries no ordered two-write replay", { pocket = pocketIndex })
+  if type(facts.transfers) ~= "table" or #facts.transfers ~= 2 then
+    sourceError("tab palette state carries no ordered two-transfer replay", { pocket = pocketIndex })
+  end
+  local resolved = {}
+  for position, transfer in ipairs(facts.transfers) do
+    if type(transfer) ~= "table" then
+      sourceError("tab palette state carries a malformed bank transfer", { pocket = pocketIndex, transfer = position })
+    end
+    local sourceFirst = transfer.sourceBank == "pocket" and pocketIndex or transfer.sourceBank
+    local destFirst = transfer.destBank == "pocket" and pocketIndex or transfer.destBank
+    if type(sourceFirst) ~= "number" or sourceFirst % 1 ~= 0 or sourceFirst < 0 then
+      sourceError("tab palette state names no source bank", { pocket = pocketIndex, transfer = position })
+    end
+    if type(destFirst) ~= "number" or destFirst % 1 ~= 0 or destFirst < 0 then
+      sourceError("tab palette state names no destination bank", { pocket = pocketIndex, transfer = position })
+    end
+    if type(transfer.bankCount) ~= "number" or transfer.bankCount % 1 ~= 0 or transfer.bankCount <= 0 then
+      sourceError("tab palette state names no positive bank count", { pocket = pocketIndex, transfer = position })
+    end
+    if #stateColors < (sourceFirst + transfer.bankCount) * bankSize then
+      sourceError("tab state palette carries no source bank for the pocket realization", {
+        pocket = pocketIndex,
+        bank = sourceFirst + transfer.bankCount - 1,
+        available = #stateColors,
+      })
+    end
+    if #baseColors < (destFirst + transfer.bankCount) * bankSize then
+      sourceError("tab base palette carries no destination bank for the pocket realization", {
+        pocket = pocketIndex,
+        bank = destFirst + transfer.bankCount - 1,
+        available = #baseColors,
+      })
+    end
+    resolved[position] = { sourceFirst = sourceFirst, destFirst = destFirst, bankCount = transfer.bankCount }
   end
   local effective = {}
   for index, color in ipairs(baseColors) do
     effective[index] = color
   end
-  for position, write in ipairs(facts.writes) do
-    if type(write) ~= "table" then
-      sourceError("tab palette state carries a malformed bank write", { pocket = pocketIndex, write = position })
-    end
-    local sourceBank = write.sourceBank == "pocket" and pocketIndex or write.sourceBank
-    local destBank = write.destBank == "pocket" and pocketIndex or write.destBank
-    if type(sourceBank) ~= "number" or sourceBank % 1 ~= 0 or sourceBank < 0 then
-      sourceError("tab palette state names no source bank", { pocket = pocketIndex, write = position })
-    end
-    if type(destBank) ~= "number" or destBank % 1 ~= 0 or destBank < 0 then
-      sourceError("tab palette state names no destination bank", { pocket = pocketIndex, write = position })
-    end
-    if #stateColors < (sourceBank + 1) * bankSize then
-      sourceError("tab state palette carries no source bank for the pocket realization", {
-        pocket = pocketIndex,
-        bank = sourceBank,
-        available = #stateColors,
-      })
-    end
-    if #effective < (destBank + 1) * bankSize then
-      sourceError("tab base palette carries no destination bank for the pocket realization", {
-        pocket = pocketIndex,
-        bank = destBank,
-        available = #effective,
-      })
-    end
-    for entry = 0, bankSize - 1 do
-      effective[destBank * bankSize + entry + 1] = stateColors[sourceBank * bankSize + entry + 1]
+  for _, transfer in ipairs(resolved) do
+    for bankOffset = 0, transfer.bankCount - 1 do
+      local sourceBank = transfer.sourceFirst + bankOffset
+      local destBank = transfer.destFirst + bankOffset
+      for entry = 0, bankSize - 1 do
+        effective[destBank * bankSize + entry + 1] = stateColors[sourceBank * bankSize + entry + 1]
+      end
     end
   end
   return { colors = effective }
