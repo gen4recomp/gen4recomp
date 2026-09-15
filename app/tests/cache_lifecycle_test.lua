@@ -10,6 +10,7 @@ local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
@@ -21,7 +22,7 @@ local VERSION = "heartgold"
 
 local function record(saveId, overrides)
   local value = {
-    schema = "g4-game-save-v2",
+    schema = GameSave.SCHEMA,
     saveId = saveId,
     versionId = VERSION,
     playTimeSeconds = 61,
@@ -38,6 +39,7 @@ local function record(saveId, overrides)
     },
     world = { flags = {}, variables = {}, objects = {}, rng = { state = 1, calls = 0 } },
     scripts = {},
+    bag = BagSave.empty(),
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
