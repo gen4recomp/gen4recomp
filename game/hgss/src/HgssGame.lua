@@ -9,6 +9,8 @@ local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local FieldState = require("game.hgss.src.field.FieldState")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
+local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local RepoFs = require("game.src.RepoFs")
@@ -101,11 +103,18 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   end
 
   local width, height = love.graphics.getDimensions()
+  local menuText = FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
+  local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText })
+  if not rendererOk then
+    menuText:release()
+    error(menuRendererOrError, 0)
+  end
   game:setState(MainMenuState.new({
     saveStore = saveStore,
     readyVersions = { versionId },
     width = width,
     height = height,
+    renderer = assert(menuRendererOrError),
     onResult = onMenuResult,
   }))
 end
