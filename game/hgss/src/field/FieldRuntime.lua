@@ -1753,10 +1753,10 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self.viewport:resize(width, height)
   self.menuHost:resize(width, height)
   self.menuHost:setScreenTopology(screenTopology)
+  self:_updateCameraProjection()
   self.startMenuPlacement =
     StartMenuLayout.resolve(screenTopology, self.viewport.referenceFrame, self.fieldPixelScale:resolvedScale())
   self.applicationHost:setMenuPlacement(self.startMenuPlacement)
-  self:_updateCameraProjection()
 end
 
 -- The one teardown path shared by reset and dispose: release every owned
