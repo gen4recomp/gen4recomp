@@ -943,7 +943,8 @@ function FieldRuntime:_load()
     -- mapper consume this exact record.
     self.startMenuPlacement = nil
     if self.screenTopology ~= nil then
-      self.startMenuPlacement = StartMenuLayout.resolve(self.screenTopology, self.viewport.referenceFrame)
+      self.startMenuPlacement =
+        StartMenuLayout.resolve(self.screenTopology, self.viewport.referenceFrame, self.fieldPixelScale:resolvedScale())
       self.applicationHost:setMenuPlacement(self.startMenuPlacement)
     end
 
@@ -1752,7 +1753,8 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self.viewport:resize(width, height)
   self.menuHost:resize(width, height)
   self.menuHost:setScreenTopology(screenTopology)
-  self.startMenuPlacement = StartMenuLayout.resolve(screenTopology, self.viewport.referenceFrame)
+  self.startMenuPlacement =
+    StartMenuLayout.resolve(screenTopology, self.viewport.referenceFrame, self.fieldPixelScale:resolvedScale())
   self.applicationHost:setMenuPlacement(self.startMenuPlacement)
   self:_updateCameraProjection()
 end

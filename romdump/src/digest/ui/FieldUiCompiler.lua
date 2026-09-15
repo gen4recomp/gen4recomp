@@ -203,8 +203,8 @@ end
 -- Render a screen (BG tilemap with flips) into a PNG. Generic decoded-tile
 -- raster mechanics live in G2dRasterizer; this wrapper only feeds its pixels
 -- into the existing PNG/publication path unchanged.
-local function renderScreen(charData, palette, screen, source)
-  local image = G2dRasterizer.renderScreen(charData, { colors = palette }, screen, source)
+local function renderScreen(charData, palette, screen, source, options)
+  local image = G2dRasterizer.renderScreen(charData, { colors = palette }, screen, source, options)
   return PngWriter.encode(image.width, image.height, image.pixels)
 end
 
@@ -292,7 +292,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   assets[backgroundPath] = renderScreen(charData, pal.colors, screen, {
     asset = "start menu background",
     member = cfg.backgroundScreenMember,
-  })
+  }, { transparentZero = false })
   manifestAssets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND] = {
     image = backgroundPath,
     width = screen.width,

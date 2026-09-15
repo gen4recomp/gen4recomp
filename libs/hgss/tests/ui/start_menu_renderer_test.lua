@@ -50,7 +50,8 @@ local function canonicalPlacement()
       touch = false,
       role = "world",
     }),
-    { x = 0, y = 0, width = 256, height = 192 }
+    { x = 0, y = 0, width = 256, height = 192 },
+    1
   )
 end
 
@@ -298,8 +299,8 @@ function T.draw_consumes_the_placement_record_transform()
   local renderer = StartMenuRenderer.new({ cacheFs = menuCache(), manifest = MANIFEST, graphics = lg })
   renderer:draw({ cursorSlotId = 2, cursorFrameIndex = 0 }, {
     surfaceId = "main",
-    frame = { x = 1440, y = 360, width = 480, height = 360 },
-    scale = 1.875,
+    frame = { x = 1440, y = 360, width = 512, height = 384 },
+    scale = 2,
     logicalWidth = 256,
     logicalHeight = 192,
   })
@@ -307,7 +308,7 @@ function T.draw_consumes_the_placement_record_transform()
 
   Assert.deepEqual(lg.transforms, {
     { "translate", 1440, 360 },
-    { "scale", 1.875, 1.875 },
+    { "scale", 2, 2 },
   }, "the placement record drives the render transform")
   Assert.equal(#lg.draws, 2)
   local backgroundDraw = lg.draws[1]
