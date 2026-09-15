@@ -103,8 +103,11 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
       break
     end
     if job.kind == "close-context" then
+      -- The barrier token is echoed only after the owned source context is
+      -- closed. A failed close propagates with its original text and emits
+      -- no acknowledgement, so the controller never mistakes it for closure.
       closeContext(context)
-      resultChannel:push({ workerId = workerId, kind = "close-ack" })
+      resultChannel:push({ workerId = workerId, status = "context-closed", closeToken = job.closeToken })
     else
       local jobKey = assert(job.jobKey or job.key)
       local startedAt = wallSeconds()

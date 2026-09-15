@@ -555,4 +555,62 @@ function T.plain_worker_failures_keep_their_message()
   pool:shutdown()
 end
 
+function T.dispatched_stages_skip_names_left_by_an_earlier_process()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(4)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local nonce = pool.nonce
+  Assert.equal(type(nonce), "number", "the pool carries its process-local allocation identity")
+  local generation = "orphan-stage-generation"
+  local occupied = {}
+  withLove(host.love, function()
+    for suffix = 1, 8 do
+      local name = string.format("run%d-w1-j%d", nonce, suffix)
+      occupied[#occupied + 1] = name
+      CacheFs.forArtifactStage("heartgold", name):write("orphan", "busy")
+    end
+    CacheFs.forVersion("heartgold"):write("maps/61/complete", "live")
+  end)
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request({
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = "61",
+      jobKey = "map:61",
+      priority = 10,
+      sizeClass = "normal",
+      payload = { mapId = 61 },
+    })
+    pool:update()
+  end)
+  local dispatched = host.channels[2]:pop()
+  Assert.notNil(dispatched, "the pool dispatched the job to the first worker")
+  assert(type(dispatched) == "table", "a dispatched job is a record")
+  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  withLove(host.love, function()
+    Assert.isNil(
+      CacheFs.forArtifactStage("heartgold", stageName):read("orphan"),
+      "the dispatched stage is absent from the version staging namespace"
+    )
+    for _, name in ipairs(occupied) do
+      Assert.equal(
+        CacheFs.forArtifactStage("heartgold", name):read("orphan"),
+        "busy",
+        "an earlier stage is left untouched: " .. name
+      )
+    end
+    Assert.equal(
+      CacheFs.forVersion("heartgold"):read("maps/61/complete"),
+      "live",
+      "live bytes stay untouched until a valid publication"
+    )
+  end)
+  pool:shutdown()
+end
+
 return { tests = T }
