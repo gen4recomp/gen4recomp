@@ -20,6 +20,7 @@
 -- the canonical result is topology-independent by construction.
 local Assert = require("tests.support.Assert")
 local BagAssetCompiler = require("romdump.src.digest.ui.BagAssetCompiler")
+local BagHeroPresenter = require("libs.hgss.src.presentation.BagHeroPresenter")
 local BagHeroRenderer = require("libs.hgss.src.presentation.BagHeroRenderer")
 local BagSources = require("romdump.src.config.BagSources")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
@@ -278,8 +279,49 @@ local function poseCorners(bundle, gender, pocket, frame)
   return { definition = definition, instance = instance, dummyMeshes = dummyMeshes, cornersByMesh = cornersByMesh }
 end
 
--- Collect pure per-mesh pose draw matrices under an identity base: the dummy
--- render meshes are distinct per id, so each returned draw item maps back to
+---@param presenter BagHeroPresenter
+---@return { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number }
+local function settledFraming(presenter)
+  local status = presenter:status()
+  return assert(status.framing, "the settled hero status carries its interpolated framing")
+end
+
+---@param actual { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number }
+---@param expected { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number }
+---@param what string
+local function assertFramingNear(actual, expected, what)
+  Assert.near(actual.angleXDegrees, expected.angleXDegrees, 1e-9, what .. " pitch matches its source record")
+  Assert.near(actual.angleYDegrees, expected.angleYDegrees, 1e-9, what .. " yaw matches its source record")
+  Assert.near(actual.distance, expected.distance, 1e-9, what .. " distance matches its source record")
+  Assert.near(actual.modelY, expected.modelY, 1e-9, what .. " model height matches its source record")
+end
+
+-- Oracle eye from one settled framing record: the same retail eye math the
+-- static oracle uses, parameterized by the interpolated framing values the
+-- presenter publishes instead of the static camera facts.
+---@param record { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number }
+---@return number[]
+local function viewFromFraming(record)
+  local pitch = math.rad(record.angleXDegrees)
+  local yaw = math.rad(record.angleYDegrees)
+  local horizontal = record.distance * math.cos(pitch)
+  return retailView({
+    math.sin(yaw) * horizontal,
+    math.sin(-pitch) * record.distance,
+    math.cos(yaw) * horizontal,
+  }, { 0, 0, 0 })
+end
+
+-- Oracle base from one settled framing record: the same pure model-height
+-- translation the static oracle uses, parameterized by the interpolated
+-- model height instead of the static base value.
+---@param record { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number }
+---@return number[]
+local function modelFromFraming(record)
+  return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, record.modelY, 0, 1 }
+end
+
+-- Collect pure per-mesh pose draw matrices under an identity base: the dummy-- render meshes are distinct per id, so each returned draw item maps back to
 -- its mesh without reading production internals. Base, view, and projection
 -- stay caller-owned, so one shared pose feeds both the oracle and the
 -- runtime comparison.
@@ -569,6 +611,78 @@ function T.compiled_framing_matches_the_pinned_source_records(romFs)
       )
     end
   end
+end
+
+-- Settling two pockets reframes the hero: the presenter opens at the neutral
+-- baseline, resolves each settled pocket to its own source framing record
+-- over seven fixed ticks while the static projection facts stay untouched,
+-- and the two settled framings project the posed hero to different
+-- canonical bounds, so the model moves with the active pocket.
+function T.settled_pockets_reframe_the_hero_from_source_records(romFs)
+  local bundle = compileBundle(romFs)
+  local manifest = assert(bundle.manifest)
+  Assert.equal(manifest.schema, "g4-bag-assets-v7", "the reframe comparison uses the current hero contract")
+  local states = assert(assert(manifest.hero).animations.states, "the bundle carries hero pocket states")
+  Assert.isTrue(#states >= 2, "the reframe needs two pocket states")
+  local pocketA, pocketB = states[1].pocket, states[2].pocket
+  Assert.isTrue(pocketA ~= pocketB, "the reframe needs two distinct pockets")
+  local framing = assert(assert(manifest.hero).presentation.framing, "the bundle carries the pocket-aware hero framing")
+  Assert.equal(framing.transitionTicks, 7, "the reframe keeps its fixed-tick duration")
+  local records = assert(framing.byGender.male, "the bundle carries the male pocket framing")
+  local recordA = assert(records[pocketA], "the bundle carries the " .. pocketA .. " framing record")
+  local recordB = assert(records[pocketB], "the bundle carries the " .. pocketB .. " framing record")
+  local separation = math.abs(recordA.angleXDegrees - recordB.angleXDegrees)
+    + math.abs(recordA.angleYDegrees - recordB.angleYDegrees)
+    + math.abs(recordA.distance - recordB.distance)
+    + math.abs(recordA.modelY - recordB.modelY)
+  Assert.isTrue(separation > 1e-6, "the two settled pockets carry distinct source framing")
+
+  local presenter = BagHeroPresenter.new({ manifest = manifest, gender = "male" })
+  assertFramingNear(
+    settledFraming(presenter),
+    assert(framing.baseline.male, "the bundle carries the male baseline"),
+    "construction opens at the neutral baseline"
+  )
+  for _ = 1, 7 do
+    presenter:updateFixed()
+  end
+  assertFramingNear(settledFraming(presenter), recordA, "the settled opening pocket matches its source record")
+  presenter:selectPocket(pocketB)
+  for _ = 1, 7 do
+    presenter:updateFixed()
+  end
+  assertFramingNear(settledFraming(presenter), recordB, "the settled switched pocket matches its source record")
+
+  local presentation = assert(assert(manifest.hero).presentation, "the bundle keeps its presentation facts")
+  local camera = assert(presentation.camera, "the reframe keeps the static camera facts")
+  Assert.equal(camera.perspectiveType, 0, "the reframe keeps the perspective projection")
+  Assert.isTrue(type(presentation.transform) == "table", "the reframe keeps the static base transform facts")
+
+  local expectedProjection = retailProjection()
+  local posedA = poseCorners(bundle, "male", pocketA, 7)
+  local settledA = projectBounds(
+    viewFromFraming(recordA),
+    expectedProjection,
+    modelFromFraming(recordA),
+    posedA.cornersByMesh,
+    collectPose(posedA)
+  )
+  local posedB = poseCorners(bundle, "male", pocketB, 7)
+  local settledB = projectBounds(
+    viewFromFraming(recordB),
+    expectedProjection,
+    modelFromFraming(recordB),
+    posedB.cornersByMesh,
+    collectPose(posedB)
+  )
+  local moved = math.abs(settledA.minX - settledB.minX)
+    + math.abs(settledA.minY - settledB.minY)
+    + math.abs(settledA.maxX - settledB.maxX)
+    + math.abs(settledA.maxY - settledB.maxY)
+  Assert.isTrue(
+    moved > PIXEL_TOLERANCE,
+    "settling the second pocket moves the projected hero bounds, got total displacement " .. moved
+  )
 end
 
 local suite = RomSuite.fromFacts(T)

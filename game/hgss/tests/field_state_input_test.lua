@@ -222,6 +222,17 @@ function T.open_bag_stays_controllable_across_window_blur()
   end
   local cursor = BagCursor.new()
   cursor:setPocket("balls")
+  local function framingRecord(angleXDegrees, angleYDegrees, distance, modelY)
+    return { angleXDegrees = angleXDegrees, angleYDegrees = angleYDegrees, distance = distance, modelY = modelY }
+  end
+  local framingByGender = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = {}
+    for index, pocket in ipairs(pockets) do
+      records[pocket] = framingRecord(index, 2 * index, 100 + 10 * index, 5 + index)
+    end
+    framingByGender[gender] = records
+  end
   local screen = BagScreenState.new({
     service = bag,
     cursor = cursor,
@@ -230,6 +241,13 @@ function T.open_bag_stays_controllable_across_window_blur()
         animations = {
           states = heroStates,
           material = { male = "bag.male.material", female = "bag.female.material" },
+        },
+        presentation = {
+          framing = {
+            transitionTicks = 7,
+            baseline = { male = framingRecord(0, 0, 100, 5), female = framingRecord(1, 1, 110, 6) },
+            byGender = framingByGender,
+          },
         },
       },
       interactive = {

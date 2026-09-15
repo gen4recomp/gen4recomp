@@ -159,8 +159,8 @@ end
 
 -- One BagHeroPresenter per pocket path, advanced a fixed number of semantic
 -- ticks: the status records carry production pocket/pose/pattern/frame facts.
-local function heroStatusAt(manifest, pocket, ticks)
-  local presenter = BagHeroPresenter.new({ manifest = manifest })
+local function heroStatusAt(manifest, pocket, ticks, gender)
+  local presenter = BagHeroPresenter.new({ manifest = manifest, gender = gender or "male" })
   presenter:selectPocket(pocket)
   for _ = 1, ticks do
     presenter:updateFixed()
@@ -515,7 +515,7 @@ function T.hero_pane_renders_the_model_and_tracks_the_pocket(scope, context)
       versionId .. " switching pockets moves hero-model pixels outside the description"
     )
 
-    local femaleStatus = heroStatusAt(manifest, pocketA, 40)
+    local femaleStatus = heroStatusAt(manifest, pocketA, 40, "female")
     local female =
       render(scope, owned, presentation(firstIcon, secondIcon, femaleStatus, { heroGender = "female" }), layout)
 

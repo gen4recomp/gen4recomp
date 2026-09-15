@@ -33,6 +33,9 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field _manifest table<string, unknown>
 ---@field _graphics unknown?
 ---@field _modelCanvas unknown?
+---@field _cameraFacts table<string, unknown>
+---@field _transformFacts table<string, unknown>
+---@field _logicalSize table<string, unknown>?
 ---@field _view number[]
 ---@field _projection number[]
 ---@field _modelTransform number[]
@@ -262,14 +265,18 @@ function BagHeroRenderer.new(opts)
   local lightFacts = assert(presentation.lights, "the hero presentation must carry its lights")
   local materialFacts = assert(presentation.materials, "the hero presentation must carry its material registers")
   local camera = buildCamera(cameraFacts, manifest.logicalSize)
+  local transform = buildModelTransform(transformFacts)
   return setmetatable({
     _cacheFs = cacheFs,
     _manifest = manifest,
     _graphics = opts.graphics,
     _modelCanvas = nil,
+    _cameraFacts = cameraFacts,
+    _transformFacts = transformFacts,
+    _logicalSize = manifest.logicalSize,
     _view = camera.view,
     _projection = camera.projection,
-    _modelTransform = buildModelTransform(transformFacts),
+    _modelTransform = transform,
     _sceneRuntime = buildSceneRuntime(lightFacts, materialFacts),
     _cameraFar = camera.far,
     _pool = nil,
@@ -507,9 +514,12 @@ end
 -- Draws the gender hero for one presenter status inside one hero placement.
 -- The status record is only read: draws never advance the semantic frame or
 -- reselect the pocket. The placement frame is in host coordinates; the model
--- itself always renders at canonical size before that frame scales it.
+-- itself always renders at canonical size before that frame scales it. The
+-- interpolated framing selects the per-draw camera distance/angles and the
+-- model base height; the static target, perspective, clip, base X/Z,
+-- rotation, and scale stay from the manifest.
 ---@param gender string
----@param heroStatus { pocket: string, pose: string, pattern: string, frame: integer }
+---@param heroStatus { pocket: string, pose: string, pattern: string, frame: integer, framing: { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number } }
 ---@param heroPlacement table<string, unknown>
 function BagHeroRenderer:draw(gender, heroStatus, heroPlacement)
   assert(not self._released, "the bag hero renderer is released")
@@ -523,6 +533,12 @@ function BagHeroRenderer:draw(gender, heroStatus, heroPlacement)
   assert(type(pattern) == "string" and pattern ~= "", "the hero status names its pattern clip")
   local frame = heroStatus.frame
   assert(type(frame) == "number" and frame % 1 == 0 and frame >= 0, "the hero status carries its frame")
+  local framing = assert(heroStatus.framing, "the hero status carries its interpolated framing")
+  local angleX = finiteNumber(framing.angleXDegrees, "the hero framing pitch must be finite")
+  local angleY = finiteNumber(framing.angleYDegrees, "the hero framing yaw must be finite")
+  local distance = finiteNumber(framing.distance, "the hero framing distance must be finite")
+  assert(distance > 0, "the hero framing distance must be positive")
+  local modelY = finiteNumber(framing.modelY, "the hero framing model height must be finite")
   assert(type(heroPlacement) == "table", "the hero draw requires its placement")
   local viewport = assert(heroPlacement.frame, "the hero placement carries its frame")
   assert(
@@ -537,6 +553,33 @@ function BagHeroRenderer:draw(gender, heroStatus, heroPlacement)
   self:_ensureGender(gender)
   ensureModelCanvas(self)
   local realized = assert(self._realized[gender], "the hero model is realized before drawing")
+  local cameraFacts = self._cameraFacts --[[@as table<string, unknown>]]
+  local camera = buildCamera({
+    target = cameraFacts.target,
+    distance = distance,
+    angleXDegrees = angleX,
+    angleYDegrees = angleY,
+    perspectiveType = cameraFacts.perspectiveType,
+    perspectiveAngle = cameraFacts.perspectiveAngle,
+    clipNear = cameraFacts.clipNear,
+    clipFar = cameraFacts.clipFar,
+  }, self._logicalSize)
+  self._view = camera.view
+  self._projection = camera.projection
+  self._cameraFar = camera.far
+  local transformFacts = self._transformFacts --[[@as table<string, unknown>]]
+  local staticTranslation = assert(transformFacts.translation, "the hero transform must carry its translation")
+  local translation = staticTranslation --[[@as table<string, unknown>]]
+  self._modelTransform = buildModelTransform({
+    translation = {
+      x = assert(translation.x, "the hero transform must carry its translation x"),
+      y = modelY,
+      z = assert(translation.z, "the hero transform must carry its translation z"),
+    },
+    rotation = transformFacts.rotation,
+    scale = transformFacts.scale,
+  })
+  realized.instance.transform = self._modelTransform
   local hero = self._manifest.hero
   local materialId = hero.animations.material[gender]
   assert(type(materialId) == "string" and materialId ~= "", "the hero carries its gender material binding")

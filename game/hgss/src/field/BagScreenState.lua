@@ -67,7 +67,7 @@ function BagScreenState.new(opts)
     _tickLayout = nil,
     _lastMapping = nil,
   }, BagScreenState)
-  self._hero = BagHeroPresenter.new({ manifest = manifest })
+  self._hero = BagHeroPresenter.new({ manifest = manifest, gender = heroGender })
   local function refreshModel()
     return BagModel.build(service, cursor)
   end

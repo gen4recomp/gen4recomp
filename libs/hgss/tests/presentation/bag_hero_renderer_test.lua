@@ -271,13 +271,15 @@ end
 
 ---@param pocket string
 ---@param frame integer
----@return { pocket: string, pose: string, pattern: string, frame: integer }
-local function heroStatus(pocket, frame)
+---@param framing { angleXDegrees: number, angleYDegrees: number, distance: number, modelY: number }?
+---@return { pocket: string, pose: string, pattern: string, frame: integer, framing: table }
+local function heroStatus(pocket, frame, framing)
   return {
     pocket = pocket,
     pose = "pocket." .. pocket .. ".pose",
     pattern = "pocket." .. pocket .. ".pattern",
     frame = frame,
+    framing = framing or { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 339.9, modelY = -45 },
   }
 end
 
@@ -626,11 +628,13 @@ function T.semantic_clips_resolve_to_descriptor_clips_and_reject_unknown_state()
     Assert.isTrue(playedIds["male.pattern.balls"] == true, "the pocket pattern resolves by semantic name")
     Assert.isTrue(playedIds["male.material"] == true, "the gender material resolves by clip id")
     Assert.throws(function()
-      renderer:draw(
-        "male",
-        { pocket = "balls", pose = "pocket.bogus.pose", pattern = "pocket.balls.pattern", frame = 0 },
-        heroPlacement()
-      )
+      renderer:draw("male", {
+        pocket = "balls",
+        pose = "pocket.bogus.pose",
+        pattern = "pocket.balls.pattern",
+        frame = 0,
+        framing = { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 339.9, modelY = -45 },
+      }, heroPlacement())
     end, "an unresolvable pose clip fails loudly")
     Assert.throws(function()
       renderer:draw("other", heroStatus("balls", 0), heroPlacement())
@@ -863,6 +867,55 @@ function T.renders_through_a_reused_private_canonical_target()
     Assert.equal(#rec.draws, 2, "GX is invoked once per semantic draw")
     renderer:release()
     Assert.equal(target.releaseCount, 1, "release disposes the private target once")
+  end)
+end
+
+-- Changing only the interpolated framing rebuilds the camera view and
+-- the model base height while the projection and the canonical
+-- composition path stay untouched: the same pocket, clips, frame, and
+-- host placement render through a moved camera over the same projection.
+function T.framing_only_change_moves_the_view_and_base_height()
+  withDoubles(function()
+    local Hero = requireHero()
+    local renderer = Hero.new({ cacheFs = stubCache(), manifest = validManifest(), graphics = FakeGraphics({}) })
+    local placement = heroPlacement()
+    local firstFraming = { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 339.9, modelY = -45 }
+    local secondFraming = { angleXDegrees = 10, angleYDegrees = 350, distance = 200, modelY = 5 }
+    renderer:draw("male", heroStatus("items", 0, firstFraming), placement)
+    local function copy(matrix)
+      local out = {}
+      for index = 1, 16 do
+        out[index] = matrix[index]
+      end
+      return out
+    end
+    local firstView, firstProjection, firstModel =
+      copy(renderer._view), copy(renderer._projection), copy(renderer._modelTransform)
+    renderer:draw("male", heroStatus("items", 0, secondFraming), placement)
+    local function differs(first, second)
+      for index = 1, 16 do
+        if math.abs(first[index] - second[index]) > 1e-9 then
+          return true
+        end
+      end
+      return false
+    end
+    local function identical(first, second)
+      return not differs(first, second)
+    end
+    Assert.isTrue(differs(firstView, renderer._view), "the reframed camera moves the composed view")
+    Assert.isTrue(differs(firstModel, renderer._modelTransform), "the reframed height moves the model transform")
+    Assert.isTrue(identical(firstProjection, renderer._projection), "the reframed camera keeps the static projection")
+    renderer:draw("male", heroStatus("items", 0, secondFraming), placement)
+    Assert.isTrue(identical(firstProjection, renderer._projection), "a repeated framing holds the projection")
+    Assert.throws(function()
+      renderer:draw(
+        "male",
+        { pocket = "items", pose = "pocket.items.pose", pattern = "pocket.items.pattern", frame = 0 },
+        placement
+      )
+    end, "a status without framing fails instead of reusing the static camera")
+    renderer:release()
   end)
 end
 

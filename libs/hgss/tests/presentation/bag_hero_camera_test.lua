@@ -110,7 +110,13 @@ local function manifest(overrides)
 end
 
 local function status()
-  return { pocket = "items", pose = "pocket.items.pose", pattern = "pocket.items.pattern", frame = 0 }
+  return {
+    pocket = "items",
+    pose = "pocket.items.pose",
+    pattern = "pocket.items.pattern",
+    frame = 0,
+    framing = { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.24375, modelY = -45 },
+  }
 end
 
 local function placement()
@@ -295,11 +301,10 @@ function T.camera_matches_the_generated_clip_planes_and_honors_both_angles()
     Assert.equal(#camera:projection(), 16, "the camera carries a projection matrix")
     Assert.equal(#camera:view(1), 16, "the camera carries a view matrix")
     local firstView = camera:view(1)
-    renderer:release()
 
-    local tilted = manifest({ angleYDegrees = 48.3 })
-    local second = newHero(Hero, tilted)
-    second:draw("male", status(), placement())
+    local tilted = status()
+    tilted.framing.angleYDegrees = 48.3
+    renderer:draw("male", tilted, placement())
     Assert.equal(#rec.draws, 2, "the tilted draw reaches the shared renderer")
     local secondView = rec.draws[2][2]:view(1)
     local moved = false
@@ -309,11 +314,12 @@ function T.camera_matches_the_generated_clip_planes_and_honors_both_angles()
       end
     end
     Assert.isTrue(moved, "the yaw angle participates in the view")
-    second:release()
+    renderer:release()
 
-    local pitched = manifest({ angleXDegrees = 318.4 })
-    local third = newHero(Hero, pitched)
-    third:draw("male", status(), placement())
+    local second = newHero(Hero, manifest())
+    local pitched = status()
+    pitched.framing.angleXDegrees = 318.4
+    second:draw("male", pitched, placement())
     local thirdView = rec.draws[3][2]:view(1)
     moved = false
     for index = 1, 16 do
@@ -322,7 +328,7 @@ function T.camera_matches_the_generated_clip_planes_and_honors_both_angles()
       end
     end
     Assert.isTrue(moved, "the pitch angle participates in the view")
-    third:release()
+    second:release()
     Assert.isTrue(sceneRuntime.lighting ~= nil, "the draw carries a lighting record")
   end)
 end

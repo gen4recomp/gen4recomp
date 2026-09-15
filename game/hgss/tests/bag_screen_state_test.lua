@@ -42,11 +42,28 @@ local function manifest()
     states[#states + 1] =
       { pocket = pocket, pose = "pocket." .. pocket .. ".pose", pattern = "pocket." .. pocket .. ".pattern" }
   end
+  local function framingRecord(angleXDegrees, angleYDegrees, distance, modelY)
+    return { angleXDegrees = angleXDegrees, angleYDegrees = angleYDegrees, distance = distance, modelY = modelY }
+  end
+  local function pocketRecords(base)
+    local records = {}
+    for index, pocket in ipairs(POCKETS) do
+      records[pocket] = framingRecord(base + index, base + 2 * index, 100 + 10 * index, 5 + index)
+    end
+    return records
+  end
   return {
     hero = {
       animations = {
         states = states,
         material = { male = "bag.male.material", female = "bag.female.material" },
+      },
+      presentation = {
+        framing = {
+          transitionTicks = 7,
+          baseline = { male = framingRecord(0, 0, 100, 5), female = framingRecord(1, 1, 110, 6) },
+          byGender = { male = pocketRecords(10), female = pocketRecords(20) },
+        },
       },
     },
     interactive = {
@@ -745,6 +762,29 @@ function T.missing_capabilities_fail_at_construction()
       ---@diagnostic disable-next-line: param-type-mismatch -- the removed capability is the invalid input under test
       BagScreenState.new(broken)
     end, "a bag launch without " .. key .. " is a construction error")
+  end
+end
+
+-- The application composition supplies the profile gender to the hero
+-- presenter: each gender settles its own framing table after seven ticks.
+function T.hero_framing_settles_to_the_profile_gender_record()
+  for _, gender in ipairs({ "male", "female" }) do
+    local options = composition({ heroGender = gender })
+    local state = BagScreenState.new(options)
+    for _ = 1, 7 do
+      state:updateFixed({})
+    end
+    local hero = state:status().hero
+    local framing = assert(hero.framing, "the composed hero status carries its interpolated framing")
+    local expected = assert(
+      options.manifest.hero.presentation.framing.byGender[gender].items,
+      "the fixture carries the " .. gender .. " items framing"
+    )
+    Assert.near(framing.angleXDegrees, expected.angleXDegrees, 1e-9, gender .. " settles its own pitch")
+    Assert.near(framing.angleYDegrees, expected.angleYDegrees, 1e-9, gender .. " settles its own yaw")
+    Assert.near(framing.distance, expected.distance, 1e-9, gender .. " settles its own distance")
+    Assert.near(framing.modelY, expected.modelY, 1e-9, gender .. " settles its own model height")
+    state:dispose()
   end
 end
 
