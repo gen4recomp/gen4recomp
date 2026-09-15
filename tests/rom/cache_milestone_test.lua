@@ -457,7 +457,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     local status = targeted:status()
     Assert.keySet(
       status,
-      "bootstrap,complete,enumerated,epoch,failed,failures,fieldCore,generationId,queued,ready,running"
+      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,fieldCore,generationId,queued,ready,running"
     )
     Assert.equal(status.generationId, generationId)
     Assert.isFalse(status.complete, "an untouched session completes nothing")
@@ -467,6 +467,14 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     checkPending(first, second, "bootstrap")
   end
   settle(targeted, pool)
+  -- The persisted source inventory is a heavy worker job like any other:
+  -- complete it through the real worker path so the session plans the
+  -- census from published data rather than controller compilation. A reused
+  -- root adopts the already-published inventory without resubmitting it.
+  if pool.records["source-plan:global"] ~= nil and pool.records["source-plan:global"].state == "queued" then
+    complete("source-plan:global")
+    settle(targeted, pool)
+  end
   local targetedSet
   do
     local requested = pool:requestSet()
@@ -490,7 +498,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       end
     end
     for _, identityKey in ipairs(sortedKeys(requested)) do
-      if expectedSet[identityKey] == nil then
+      if expectedSet[identityKey] == nil and identityKey ~= "source-plan:global" then
         unexpected[#unexpected + 1] = identityKey
       end
     end

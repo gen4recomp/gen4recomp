@@ -40,6 +40,7 @@ local CLOSED_KINDS = {
   "map-data",
   "field-cell",
   "map",
+  "source-plan",
 }
 
 local CANONICAL_KEYS = {

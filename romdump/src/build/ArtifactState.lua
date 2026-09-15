@@ -68,6 +68,10 @@ ArtifactState.KINDS = {
   ["map-data"] = true,
   ["field-cell"] = true,
   map = true,
+  -- The single producer-private planning job: the worker-compiled source
+  -- inventory every generation session and audit schedules against. It owns
+  -- no gameplay payload and never reaches runtime code.
+  ["source-plan"] = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"

@@ -20,14 +20,17 @@ local ArtifactState = require("romdump.src.build.ArtifactState")
 ---@class ArtifactJobs.Plans
 ---@field indexBundle table<string, unknown>|nil FieldCellCompiler.compileIndex bundle
 ---@field scriptPlan table<string, unknown>|nil ScriptCompiler.plan bundle
+---@field audioPlan table<string, unknown>|nil AudioCompiler.plan index and bank closures
 ---@field presentation table<string, unknown>|nil MonPresentationCompiler.plan bundle
 ---@field messageBankIds integer[]|nil required message bank ids
 ---@field audioBankIds integer[]|nil planned audio bank ids
 ---@field scriptMemberIds integer[]|nil nonempty script member ids
 ---@field iconPageIds integer[]|nil planned icon page ids
 ---@field portraitPageIds integer[]|nil planned portrait page ids
+---@field mapDataIds integer[]|nil supported field record ids
+---@field mapIds integer[]|nil loadable world map ids
 ---@field mapCellKeys table<integer, string[]>|nil mapId to canonical cell keys
----@field resolveMapPlan ((fun(mapId: integer): table<string, unknown>|nil))|nil cached map planner
+---@field world table<string, unknown>|nil WorldManifest.compileCatalog bundle
 
 local ArtifactJobs = {}
 
@@ -57,6 +60,7 @@ local SIZE_CLASS = {
   ["map-data"] = "normal",
   ["message-summary"] = "normal",
   ["mon-summary"] = "normal",
+  ["source-plan"] = "heavy",
   ["field-font"] = "heavy",
   actors = "heavy",
   ["mon-catalog"] = "heavy",
@@ -741,12 +745,30 @@ local function executeMap(artifact, context, mapId, producer)
 end
 
 ---@param artifact table<string, unknown>
+---@param context table<string, unknown>
+---@param job { generationId: string, producerFingerprint: string|nil }
+---@return string compiler marker for the receipt
+local function executeSourcePlan(artifact, context, job)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local romFs = assert(context.romFs, "source inventory jobs require a source reader")
+  local versionId = assert(context.versionId, "source inventory jobs require a version")
+  local plan = SourcePlan.compile(romFs, {
+    versionId = versionId,
+    generationId = assert(job.generationId, "source inventory jobs require a generation"),
+    producerId = assert(job.producerFingerprint, "source inventory jobs require a producer"),
+  })
+  return SourcePlan.stage(artifact, plan)
+end
+
+---@param artifact table<string, unknown>
 ---@param job ArtifactJobs.Job
 ---@param context table<string, unknown>
 ---@return string compiler marker for the receipt
 local function dispatchExecute(artifact, job, context)
   local payload = job.payload or {}
-  if job.kind == "world-catalog" then
+  if job.kind == "source-plan" then
+    return executeSourcePlan(artifact, context, job)
+  elseif job.kind == "world-catalog" then
     return executeWorldCatalog(artifact, context)
   elseif job.kind == "field-cell-index" then
     return executeCellIndex(artifact, context, assert(job.producerFingerprint, "index jobs require a producer"))
@@ -1100,13 +1122,10 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
       end
       return FieldCellCache.isCellReady(cacheFs, descriptor, marker)
     elseif kind == "map" then
-      local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
-      local resolve = assert(plans.resolveMapPlan, "maps need the cached map planner")
-      local mapPlan = resolve(canonicalKeyId(key, "map key"))
-      if mapPlan == nil then
-        return false
-      end
-      return MapCompilePlan.isReady(cacheFs, mapPlan)
+      local MapAssetCache = require("libs.assets.src.MapAssetCache")
+      return MapAssetCache.isReady(cacheFs, canonicalKeyId(key, "map key"), marker)
+    elseif kind == "source-plan" then
+      return true
     end
     return false
   end)
@@ -1114,6 +1133,173 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
     return false
   end
   return ready == true
+end
+
+---@param cacheFs CacheFs
+---@param identity { versionId: string, generationId: string, producerId: string }
+---@return ArtifactJobs.Plans|nil
+---@return string|nil
+function ArtifactJobs.publishedPlans(cacheFs, identity)
+  assert(cacheFs and cacheFs.read and cacheFs.loadLua, "published plans require a cache filesystem")
+  assert(type(identity) == "table", "published plans require the generation identity")
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local plan, planReason = SourcePlan.read(cacheFs, identity)
+  if plan == nil then
+    return nil, planReason
+  end
+  local MonCache = require("libs.assets.src.MonCache")
+  local catalogOk, catalog = pcall(MonCache.loadCatalog, cacheFs)
+  if not catalogOk or type(catalog) ~= "table" then
+    return nil, "mon catalog is not published"
+  end
+  local layoutMarker = cacheFs:read(MonCache.layoutMarkerPath())
+  if type(layoutMarker) ~= "string" or layoutMarker == "" then
+    return nil, "mon layout is not published"
+  end
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local layoutReady, layoutReason = MonCacheWriter.isLayoutSourceReady(
+    cacheFs,
+    assert(identity.generationId, "published plans need a generation"),
+    layoutMarker
+  )
+  if not layoutReady then
+    return nil, layoutReason
+  end
+  local index = cacheFs:loadLua(MonCacheWriter.sourcePlanIndexPath())
+  if type(index) ~= "table" then
+    return nil, "mon page membership is not published"
+  end
+  local icons = cacheFs:loadLua(MonCache.iconManifestPath())
+  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  if type(icons) ~= "table" or type(portraits) ~= "table" then
+    return nil, "mon manifests are not published"
+  end
+  local audioBankIds = {}
+  ---@cast plan table<string, unknown>
+  local audioPlan = assert(plan.audioPlan, "published plans need the audio membership")
+  ---@cast audioPlan table<string, unknown>
+  local audioBankPlans = audioPlan.bankPlans
+  ---@cast audioBankPlans table[]
+  for _, bankPlan in ipairs(audioBankPlans) do
+    audioBankIds[#audioBankIds + 1] = assert(bankPlan.bankId, "published plans need the audio bank identity")
+  end
+  table.sort(audioBankIds)
+  local scriptMemberIds = {}
+  local scriptPlan = assert(plan.scriptPlan, "published plans need the script membership")
+  ---@cast scriptPlan table<string, unknown>
+  local scriptMembers = scriptPlan.members
+  ---@cast scriptMembers table[]
+  for _, member in ipairs(scriptMembers) do
+    scriptMemberIds[#scriptMemberIds + 1] = assert(member.memberId, "published plans need the script member identity")
+  end
+  table.sort(scriptMemberIds)
+  local mapIds = {}
+  local world = assert(plan.world, "published plans need the world membership")
+  ---@cast world table<string, unknown>
+  local worldMaps = world.maps
+  ---@cast worldMaps table[]
+  for _, record in ipairs(worldMaps) do
+    mapIds[#mapIds + 1] = assert(record.id, "published plans need the world map identity")
+  end
+  table.sort(mapIds)
+  return {
+    indexBundle = plan.fieldCellIndexBundle,
+    scriptPlan = plan.scriptPlan,
+    audioPlan = plan.audioPlan,
+    messageBankIds = plan.messageBankIds,
+    audioBankIds = audioBankIds,
+    scriptMemberIds = scriptMemberIds,
+    iconPageIds = assert(index.iconPageIds, "published plans need the icon pages"),
+    portraitPageIds = assert(index.portraitPageIds, "published plans need the portrait pages"),
+    mapDataIds = plan.mapDataIds,
+    mapIds = mapIds,
+    mapCellKeys = plan.mapCellKeys,
+    world = plan.world,
+    presentation = { icons = icons, portraits = portraits },
+  }
+end
+
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string, jobKey: string }[]
+function ArtifactJobs.completeJobs(plans)
+  assert(type(plans) == "table", "complete inventory requires its published plans")
+  local jobs = {}
+  local seen = {}
+  local function add(kind, key)
+    local jobKey = ArtifactJobs.jobKey(kind, key)
+    if not seen[jobKey] then
+      seen[jobKey] = true
+      jobs[#jobs + 1] = { kind = kind, key = key, jobKey = jobKey }
+    end
+  end
+  add("source-plan", "global")
+  for _, kind in ipairs({
+    "world-catalog",
+    "field-cell-index",
+    "field-camera",
+    "field-weather",
+    "field-effects",
+    "field-emotes",
+    "field-ui",
+    "field-font",
+    "intro",
+    "new-game-init",
+    "actors",
+    "starter-choice",
+    "items",
+    "bag",
+    "mon-catalog",
+    "mon-layout",
+    "mon-summary",
+    "message-summary",
+    "audio-summary",
+    "script-summary",
+  }) do
+    add(kind, "global")
+  end
+  for _, bankId in ipairs(assert(plans.messageBankIds, "complete inventory needs the message banks")) do
+    add("message-bank", tostring(bankId))
+  end
+  for _, bankId in ipairs(assert(plans.audioBankIds, "complete inventory needs the audio banks")) do
+    add("audio-bank", tostring(bankId))
+  end
+  for _, memberId in ipairs(assert(plans.scriptMemberIds, "complete inventory needs the script members")) do
+    add("script-member", tostring(memberId))
+  end
+  for _, pageId in ipairs(assert(plans.iconPageIds, "complete inventory needs the icon pages")) do
+    add("mon-icon-page", tostring(pageId))
+  end
+  for _, pageId in ipairs(assert(plans.portraitPageIds, "complete inventory needs the portrait pages")) do
+    add("mon-portrait-page", tostring(pageId))
+  end
+  for _, mapId in ipairs(assert(plans.mapDataIds, "complete inventory needs the field records")) do
+    add("map-data", tostring(mapId))
+  end
+  local indexBundle = assert(plans.indexBundle, "complete inventory needs the canonical cell index")
+  ---@cast indexBundle table<string, unknown>
+  local cellIndex = assert(indexBundle.index, "complete inventory needs the canonical cell index")
+  ---@cast cellIndex table<string, unknown>
+  local matrices = cellIndex.matrices
+  ---@cast matrices table[]
+  for _, matrix in ipairs(matrices) do
+    for _, descriptor in ipairs(matrix.cells) do
+      add("field-cell", descriptor.matrixMemberId .. "-" .. descriptor.index)
+    end
+  end
+  for _, mapId in ipairs(assert(plans.mapIds, "complete inventory needs the world maps")) do
+    add("map", tostring(mapId))
+  end
+  table.sort(jobs, function(left, right)
+    if left.kind == right.kind then
+      local leftId, rightId = tonumber(left.key), tonumber(right.key)
+      if leftId ~= nil and rightId ~= nil then
+        return leftId < rightId
+      end
+      return left.key < right.key
+    end
+    return left.kind < right.kind
+  end)
+  return jobs
 end
 
 ---@param catalog table<string, unknown> mon semantic catalog with species/forms

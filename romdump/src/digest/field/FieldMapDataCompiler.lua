@@ -79,6 +79,25 @@ local NON_FIELD_MAP_SYMBOLS = {
   MAP_UNDERGROUND = true,
 }
 
+-- The source-defined eligibility for lightweight field records: every map
+-- header except the two placeholder symbols carries field data. Pure catalog
+-- membership, no source reads and no compilation, so controllers can decide
+-- membership without opening the dump. Direct compilation of an unsupported
+-- header stays strict; only aggregate enumeration skips them.
+---@return integer[] ascending unique supported map ids
+function FieldMapDataCompiler.supportedMapIds()
+  local ids = {}
+  local seen = {}
+  for map in MapCatalog.all() do
+    if not NON_FIELD_MAP_SYMBOLS[map.symbol] and not seen[map.id] then
+      seen[map.id] = true
+      ids[#ids + 1] = map.id
+    end
+  end
+  table.sort(ids)
+  return ids
+end
+
 local TRANSITION_ENVIRONMENT_BY_MAP_TYPE = {
   CAVE = "cave",
   CITY_TOWN = "outdoors",
@@ -455,10 +474,8 @@ function FieldMapDataCompiler.compileAll(romFs, sha1hex, hashLua)
   local ok, result = pcall(function()
     session = FieldMapDataCompiler.newSession(romFs, sha1hex, hashLua)
     local bundles = {}
-    for map in MapCatalog.all() do
-      if not NON_FIELD_MAP_SYMBOLS[map.symbol] then
-        bundles[#bundles + 1] = assert(session:compile(map.id))
-      end
+    for _, mapId in ipairs(FieldMapDataCompiler.supportedMapIds()) do
+      bundles[#bundles + 1] = assert(session:compile(mapId))
     end
     return bundles
   end)
