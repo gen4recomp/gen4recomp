@@ -315,6 +315,7 @@ function MainMenuState:_pointer(x, y)
     if
       save.saveId
       and card
+      and card.overflow
       and MainMenuLayout.contains(layout.saves.viewport, x, y)
       and MainMenuLayout.contains(card.overflow, x, y)
     then
@@ -359,6 +360,7 @@ function MainMenuState:hitTest(x, y)
     if
       save.saveId
       and card
+      and card.overflow
       and MainMenuLayout.contains(layout.saves.viewport, x, y)
       and MainMenuLayout.contains(card.overflow, x, y)
     then

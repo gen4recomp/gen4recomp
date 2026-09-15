@@ -44,6 +44,10 @@ local function itemAt(items, id)
   return index and items[index] or nil
 end
 
+local function canDelete(item)
+  return item ~= nil and item.canDelete == true and item.saveId ~= nil
+end
+
 local function focusForSave(saveId, lane)
   assert(lane == "body" or lane == "overflow", "unknown Main Menu save lane")
   return { region = "saves", saveId = saveId, lane = lane }
@@ -132,15 +136,13 @@ function MainMenuController:setCatalog(globalActions, saves)
   end
 end
 
-local function adjacentSave(saves, saveId, delta, wrap)
+local function adjacentSave(saves, saveId, delta)
   local index = indexOf(saves, saveId)
   if not index then
     return nil
   end
   local nextIndex = index + delta
-  if wrap then
-    nextIndex = ((nextIndex - 1) % #saves) + 1
-  elseif nextIndex < 1 or nextIndex > #saves then
+  if nextIndex < 1 or nextIndex > #saves then
     return nil
   end
   local save = saves[nextIndex]
@@ -168,11 +170,11 @@ function MainMenuController:move(direction)
   if self.focus.lane == "body" then
     if direction == "left" then
       self:focusGlobal(self.globalActions[1].id)
-    elseif direction == "right" then
+    elseif direction == "right" and canDelete(self:focusedItem()) then
       self:focusSave(self.focus.saveId, "overflow")
     elseif direction == "up" or direction == "down" then
       local delta = direction == "up" and -1 or 1
-      local saveId = adjacentSave(self.saves, self.focus.saveId, delta, false)
+      local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
       if saveId then
         self:focusSave(saveId, "body")
       end
@@ -182,7 +184,7 @@ function MainMenuController:move(direction)
       self.focus = focusForSave(self.focus.saveId, "body")
     elseif direction == "up" or direction == "down" then
       local delta = direction == "up" and -1 or 1
-      local saveId = adjacentSave(self.saves, self.focus.saveId, delta, false)
+      local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
       if saveId then
         self:focusSave(saveId, "overflow")
       end
@@ -191,8 +193,12 @@ function MainMenuController:move(direction)
 end
 
 function MainMenuController:openOverflow(saveId)
+  if not canDelete(itemAt(self.saves, saveId)) then
+    return false
+  end
   self:focusSave(saveId, "overflow")
   self.popup = { saveId = saveId, focusedAction = "delete" }
+  return true
 end
 
 function MainMenuController:closePopup()
@@ -209,8 +215,7 @@ end
 
 function MainMenuController:requestDelete()
   if self.focus.region == "saves" then
-    self:openOverflow(self.focus.saveId)
-    return true
+    return self:openOverflow(self.focus.saveId)
   end
   return false
 end
@@ -233,8 +238,12 @@ function MainMenuController:activate()
     return { kind = "new_game" }
   end
   if self.focus.lane == "overflow" then
-    self.popup = { saveId = self.focus.saveId, focusedAction = "delete" }
-    return nil
+    if canDelete(self:focusedItem()) then
+      self.popup = { saveId = self.focus.saveId, focusedAction = "delete" }
+      return nil
+    end
+    self.focus = focusForSave(self.focus.saveId, "body")
+    return { kind = "continue", saveId = self.focus.saveId }
   end
   return { kind = "continue", saveId = self.focus.saveId }
 end
