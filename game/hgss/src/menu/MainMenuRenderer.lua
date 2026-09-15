@@ -1,112 +1,144 @@
--- Responsive renderer for the product Main Menu. It consumes the state view
--- and its precomputed rectangles; it never performs hit testing or persistence.
+-- HGSS-inspired Main Menu presentation using the generated field font.
 
+---@class MainMenuGraphics
+---@field setColor fun(red: number, green: number, blue: number, alpha: number)
+---@field clear fun(...)
+---@field rectangle fun(mode: string, x: number, y: number, width: number, height: number)
+---@field setLineWidth fun(width: number)
+---@field getScissor fun(): number?, number?, number?, number?
+---@field setScissor fun(x?: number, y?: number, width?: number, height?: number)
 ---@class MainMenuRenderer
----@field new fun(): MainMenuRenderer
----@field draw fun(self: MainMenuRenderer, view: table<string, unknown>)
----@field dispose? fun(self: MainMenuRenderer)
+---@field text table<string, function>
+---@field graphics MainMenuGraphics
 local MainMenuRenderer = {}
 MainMenuRenderer.__index = MainMenuRenderer
 
-local function cardTitle(item)
+local function setColor(graphics, color)
+  graphics.setColor(color[1], color[2], color[3], color[4] or 1)
+end
+
+local function drawPanel(graphics, rect, focused)
+  graphics.setColor(0.93, 0.94, 0.88, 1)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  graphics.setColor(focused and 0.45 or 0.68, focused and 0.2 or 0.72, focused and 0.2 or 0.72, 1)
+  graphics.setLineWidth(3)
+  graphics.rectangle("line", rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2)
+  graphics.setColor(0.7, 0.6, 0.4, 1)
+  graphics.setLineWidth(1)
+  graphics.rectangle("line", rect.x + 5, rect.y + 5, rect.width - 10, rect.height - 10)
+end
+
+local function title(item)
   if item.id == "new-game" then
     return "New Game"
   end
   return item.playerName or "Save unavailable"
 end
 
-function MainMenuRenderer.new()
-  return setmetatable({}, MainMenuRenderer)
+local function subtitle(item)
+  if item.id == "new-game" then
+    return "Start a new adventure"
+  end
+  if item.canContinue then
+    return item.playTimeLabel or "0:00"
+  end
+  return item.errorSummary or "Save unavailable"
+end
+
+---@param options { text: table<string, function>, graphics?: MainMenuGraphics }
+---@return MainMenuRenderer
+function MainMenuRenderer.new(options)
+  assert(type(options) == "table" and options.text, "Main Menu renderer requires FieldTextRenderer")
+  local graphics = options.graphics or love.graphics
+  ---@cast graphics MainMenuGraphics
+  assert(graphics, "Main Menu renderer requires graphics")
+  assert(type(options.text.drawText) == "function", "Main Menu renderer requires generated text drawing")
+  return setmetatable({ text = options.text, graphics = graphics }, MainMenuRenderer)
 end
 
 ---@param view table<string, unknown>
 function MainMenuRenderer:draw(view)
-  local lg = love.graphics
-  local layout = view.layout
-  lg.setColor(0.08, 0.1, 0.15, 1)
-  lg.clear(0.08, 0.1, 0.15, 1)
+  local graphics = self.graphics
+  local layout = assert(view.layout)
+  local text = self.text
+  graphics.setColor(0.08, 0.1, 0.15, 1)
+  graphics.clear(0.08, 0.1, 0.15, 1)
+  setColor(graphics, { 0.95, 0.9, 0.65, 1 })
+  text:drawText("g4recomp", layout.viewport.x + 16, 16)
 
-  lg.setColor(1, 1, 1, 1)
-  lg.print("g4recomp", layout.viewport.x, 16)
-
-  local oldX, oldY, oldWidth, oldHeight = lg.getScissor()
-  lg.setScissor(layout.content.x, layout.content.y, layout.content.width, layout.content.height)
-  local cardsOk, cardsError = xpcall(function()
+  local oldX, oldY, oldWidth, oldHeight = graphics.getScissor()
+  local saves = assert(layout.saves)
+  graphics.setScissor(saves.viewport.x, saves.viewport.y, saves.viewport.width, saves.viewport.height)
+  local ok, err = xpcall(function()
     if view.catalogError and view.catalogError ~= "" then
-      local errorRect = assert(layout.catalogErrorRect, "catalog error needs visible layout geometry")
-      lg.setColor(1, 0.65, 0.65, 1)
-      lg.setScissor(errorRect.x, errorRect.y, errorRect.width, errorRect.height)
-      lg.printf(
-        "Save catalog unavailable: " .. tostring(view.catalogError),
-        errorRect.x + 8,
-        errorRect.y + 4,
-        math.max(1, errorRect.width - 16),
-        "left"
-      )
-      lg.setScissor(layout.content.x, layout.content.y, layout.content.width, layout.content.height)
+      local errorRect = assert(layout.catalogErrorRect)
+      setColor(graphics, { 1, 0.35, 0.35, 1 })
+      text:drawText("Save catalog unavailable", errorRect.x + 8, errorRect.y + 4)
     end
-    for _, item in ipairs(view.items) do
-      local card = layout.cards[item.id]
+    for _, item in ipairs(assert(view.saves)) do
+      local card = saves.cards[item.id]
       if card then
-        local focused = item.id == view.focusedId
-        local enabled = item.id == "new-game" or item.canContinue
-        lg.setColor(focused and 0.25 or 0.16, focused and 0.4 or 0.19, focused and 0.6 or 0.25, 1)
-        lg.rectangle("fill", card.body.x, card.body.y, card.body.width, card.body.height)
-        if focused then
-          lg.setColor(0.7, 0.9, 1, 1)
-          lg.setLineWidth(2)
-          lg.rectangle("line", card.body.x, card.body.y, card.body.width, card.body.height)
-        end
-
-        lg.setColor(enabled and 1 or 0.75, enabled and 1 or 0.75, enabled and 1 or 0.8, 1)
-        lg.print(cardTitle(item), card.body.x + 12, card.body.y + 7)
-        if item.id == "new-game" then
-          lg.setColor(0.7, 0.75, 0.82, 1)
-          lg.print("Start a new adventure", card.body.x + 12, card.body.y + 25)
-        elseif item.canContinue then
-          lg.setColor(0.7, 0.75, 0.82, 1)
-          lg.print(item.playTimeLabel, card.body.x + 12, card.body.y + 25)
-        else
-          lg.setColor(1, 0.65, 0.65, 1)
-          lg.print(item.errorSummary or "Save unavailable", card.body.x + 12, card.body.y + 25)
-        end
-
-        if card.delete then
-          lg.setColor(0.28, 0.18, 0.22, 1)
-          lg.rectangle("fill", card.delete.x, card.delete.y, card.delete.width, card.delete.height)
-          lg.setColor(1, 0.8, 0.8, 1)
-          lg.printf("Delete", card.delete.x, card.delete.y + 14, card.delete.width, "center")
-        end
+        local focus = assert(view.focus)
+        local bodyFocused = focus.region == "saves" and focus.saveId == item.id and focus.lane == "body"
+        local overflowFocused = focus.region == "saves" and focus.saveId == item.id and focus.lane == "overflow"
+        drawPanel(graphics, card.frame, bodyFocused)
+        setColor(graphics, item.canContinue and { 0.12, 0.18, 0.25, 1 } or { 0.45, 0.18, 0.18, 1 })
+        text:drawText(title(item), card.body.x + 12, card.body.y + 12)
+        setColor(graphics, item.canContinue and { 0.3, 0.38, 0.42, 1 } or { 0.65, 0.22, 0.22, 1 })
+        text:drawText(subtitle(item), card.body.x + 12, card.body.y + 36)
+        graphics.setColor(overflowFocused and 0.65 or 0.78, overflowFocused and 0.2 or 0.72, 0.25, 1)
+        graphics.rectangle("fill", card.overflow.x, card.overflow.y, card.overflow.width, card.overflow.height)
+        setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+        text:drawText("...", card.overflow.x + 10, card.overflow.y + 8)
       end
     end
   end, debug.traceback)
   if oldX ~= nil then
-    lg.setScissor(oldX, oldY, oldWidth, oldHeight)
+    graphics.setScissor(oldX, oldY, oldWidth, oldHeight)
   else
-    lg.setScissor()
+    graphics.setScissor()
   end
-  if not cardsOk then
-    error(cardsError, 0)
+  if not ok then
+    error(err, 0)
   end
 
-  if view.dialog then
-    local dialog = layout.dialog
-    lg.setColor(0, 0, 0, 0.72)
-    lg.rectangle("fill", 0, 0, love.graphics.getWidth(), love.graphics.getHeight())
-    lg.setColor(0.12, 0.15, 0.22, 1)
-    lg.rectangle("fill", dialog.box.x, dialog.box.y, dialog.box.width, dialog.box.height)
-    lg.setColor(1, 1, 1, 1)
-    lg.printf("Delete this save?", dialog.box.x + 12, dialog.box.y + 14, dialog.box.width - 24, "center")
-    lg.setColor(0.75, 0.8, 0.88, 1)
-    lg.printf("" .. tostring(view.dialog.saveId), dialog.box.x + 12, dialog.box.y + 38, dialog.box.width - 24, "center")
-    lg.setColor(view.dialog.focusedAction == "cancel" and 0.3 or 0.2, 0.35, 0.45, 1)
-    lg.rectangle("fill", dialog.cancel.x, dialog.cancel.y, dialog.cancel.width, dialog.cancel.height)
-    lg.setColor(view.dialog.focusedAction == "delete" and 0.55 or 0.3, 0.2, 0.25, 1)
-    lg.rectangle("fill", dialog.delete.x, dialog.delete.y, dialog.delete.width, dialog.delete.height)
-    lg.setColor(1, 1, 1, 1)
-    lg.printf("Cancel", dialog.cancel.x, dialog.cancel.y + 10, dialog.cancel.width, "center")
-    lg.printf("Delete", dialog.delete.x, dialog.delete.y + 10, dialog.delete.width, "center")
+  local globalFocus = view.focus.region == "global"
+  local global = assert(layout.global)
+  local newGame = assert(global.actions["new-game"])
+  drawPanel(graphics, newGame, globalFocus)
+  setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+  text:drawText("New Game", newGame.x + 12, newGame.y + 16)
+
+  if view.popup then
+    local popup = assert(layout.popup)
+    graphics.setColor(0, 0, 0, 0.45)
+    graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
+    drawPanel(graphics, popup.box, true)
+    setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+    text:drawText("Delete", popup.actions.delete.x + 12, popup.actions.delete.y + 8)
   end
+  if view.confirmation then
+    local confirmation = assert(layout.confirmation)
+    graphics.setColor(0, 0, 0, 0.62)
+    graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
+    drawPanel(graphics, confirmation.box, true)
+    setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+    text:drawText("Delete this save?", confirmation.box.x + 16, confirmation.box.y + 16)
+    local cancelFocus = view.confirmation.focusedAction == "cancel"
+    local deleteFocus = view.confirmation.focusedAction == "delete"
+    drawPanel(graphics, confirmation.cancel, cancelFocus)
+    drawPanel(graphics, confirmation.delete, deleteFocus)
+    setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+    text:drawText("Cancel", confirmation.cancel.x + 10, confirmation.cancel.y + 10)
+    text:drawText("Delete", confirmation.delete.x + 10, confirmation.delete.y + 10)
+  end
+end
+
+function MainMenuRenderer:dispose()
+  if self.text and self.text.release then
+    self.text:release()
+  end
+  self.text = nil
 end
 
 return MainMenuRenderer

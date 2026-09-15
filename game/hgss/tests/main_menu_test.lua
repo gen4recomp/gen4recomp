@@ -1,5 +1,4 @@
--- Lower-layer contracts for the product Main Menu's pure formatting, focus,
--- layout, and catalog-error behavior.
+-- Lower-layer contracts for Main Menu focus, catalog state, layout, and failures.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -9,360 +8,340 @@ local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 
 local T = {}
 
-local function item(id, canContinue)
+local function globalActions()
+  return { { id = "new-game", kind = "new_game" } }
+end
+
+local function save(id, canContinue)
   return {
     id = id,
-    saveId = id == "new-game" and nil or id,
+    saveId = id,
     playerName = id,
     playTimeLabel = "0:00",
-    canContinue = canContinue,
-    canDelete = id ~= "new-game",
+    canContinue = canContinue ~= false,
+    canDelete = true,
   }
 end
 
-local function items(ids)
+local function saves(ids)
   local result = {}
   for _, id in ipairs(ids) do
-    result[#result + 1] = item(id, true)
+    result[#result + 1] = save(id)
   end
   return result
 end
 
-function T.formats_capped_play_time_as_hours_and_minutes()
-  Assert.equal(MainMenuState.formatPlayTime(0), "0:00")
-  Assert.equal(MainMenuState.formatPlayTime(59 * 60 + 59), "0:59")
-  Assert.equal(MainMenuState.formatPlayTime(60 * 60), "1:00")
-  Assert.equal(MainMenuState.formatPlayTime(999 * 60 * 60 + 59 * 60 + 59), "999:59")
+local function fakeRenderer()
+  return { draw = function() end, dispose = function() end }
 end
 
-function T.delete_focus_uses_the_replacement_item_at_each_boundary()
-  local cases = {
-    { target = "one", expected = "two", ids = { "new-game", "one", "two" } },
-    {
-      target = "two",
-      expected = "three",
-      ids = { "new-game", "one", "two", "three" },
-    },
-    {
-      target = "three",
-      expected = "two",
-      ids = { "new-game", "one", "two", "three" },
-    },
+local function state(options)
+  options = options or {}
+  options.saveStore = options.saveStore or {
+    list = function()
+      return {}
+    end,
   }
-  for _, case in ipairs(cases) do
-    local controller = MainMenuController.new(items(case.ids))
-    controller:setFocusedId(case.target)
-    Assert.isTrue(controller:requestDelete())
-    controller:chooseDialogAction("delete")
-    Assert.equal(controller:confirmDelete(), case.target)
-    controller:setItems({ item("new-game", true), item("one", true), item("two", true), item("three", true) })
-    local remaining = {}
-    for _, candidate in ipairs(controller.items) do
-      if candidate.id ~= case.target then
-        remaining[#remaining + 1] = candidate
-      end
-    end
-    controller:setItems(remaining)
-    Assert.equal(controller:focusedId(), case.expected)
-  end
-
-  local only = MainMenuController.new(items({ "new-game", "only" }))
-  only:setFocusedId("only")
-  Assert.isTrue(only:requestDelete())
-  only:chooseDialogAction("delete")
-  Assert.equal(only:confirmDelete(), "only")
-  only:setItems({ item("new-game", true) })
-  Assert.equal(only:focusedId(), "new-game")
+  options.readyVersions = options.readyVersions or { "heartgold" }
+  options.width = options.width or 640
+  options.height = options.height or 480
+  options.renderer = options.renderer or fakeRenderer()
+  return MainMenuState.new(options)
 end
 
-function T.layout_keeps_card_body_and_delete_hit_regions_exclusive()
-  local layoutItems = { item("new-game", true), item("save-1", true) }
-  local layout = MainMenuLayout.compute(layoutItems, 2, 240, 160, 0, nil)
-  local card = layout.cards["save-1"]
-  Assert.isTrue(card.body.width > 0 and card.delete.width > 0)
-  Assert.isTrue(MainMenuLayout.contains(card.body, card.body.x + 1, card.body.y + 1))
-  Assert.isTrue(MainMenuLayout.contains(card.delete, card.delete.x + 1, card.delete.y + 1))
-  Assert.isFalse(MainMenuLayout.contains(card.body, card.delete.x + 1, card.delete.y + 1))
+function T.controller_defaults_to_existing_save_and_reaches_global_action()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "body" })
+  controller:move("right")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "overflow" })
+  Assert.isNil(controller:snapshot().popup)
+  controller:move("left")
+  controller:move("left")
+  Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
+  controller:move("right")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "body" })
 end
 
-function T.layout_clamps_previous_offset_after_resize()
-  local menuItems = items({
-    "new-game",
-    "save-1",
-    "save-2",
-    "save-3",
-    "save-4",
-    "save-5",
-    "save-6",
-    "save-7",
-    "save-8",
+function T.controller_back_closes_confirmation_then_popup_without_quitting()
+  local controller = MainMenuController.new(globalActions(), saves({ "one" }))
+  controller:focusSave("one", "overflow")
+  Assert.isTrue(controller:activate() == nil)
+  Assert.isTrue(controller:activate() == nil)
+  Assert.isTrue(controller:back())
+  Assert.isNil(controller:snapshot().confirmation)
+  Assert.notNil(controller:snapshot().popup)
+  Assert.isTrue(controller:back())
+  Assert.isNil(controller:snapshot().popup)
+  Assert.isFalse(controller:back())
+end
+
+function T.controller_navigation_is_explicit_and_modal_state_captures_input()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
+  controller:move("down")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "two", lane = "body" })
+  controller:move("right")
+  Assert.isTrue(controller:activate() == nil)
+  Assert.deepEqual(controller:snapshot().popup, { saveId = "two", focusedAction = "delete" })
+  controller:move("down")
+  Assert.isTrue(controller:activate() == nil)
+  Assert.deepEqual(controller:snapshot().confirmation, { saveId = "two", focusedAction = "cancel" })
+  controller:move("down")
+  Assert.deepEqual(controller:snapshot().confirmation, { saveId = "two", focusedAction = "delete" })
+  Assert.deepEqual(controller:activate(), { kind = "delete", saveId = "two" })
+  Assert.isNil(controller:snapshot().popup)
+  Assert.isNil(controller:snapshot().confirmation)
+end
+
+function T.controller_preserves_semantic_focus_and_selects_a_neighbor_after_removal()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two", "three" }))
+  controller:focusSave("two", "overflow")
+  controller:setCatalog(globalActions(), saves({ "one", "three" }))
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "three", lane = "overflow" })
+  Assert.isNil(controller:snapshot().popup)
+  controller:focusSave("one", "body")
+  controller:setCatalog(globalActions(), {})
+  Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
+end
+
+function T.controller_keeps_overflow_at_the_list_edges()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
+  controller:focusSave("one", "overflow")
+  controller:move("up")
+  Assert.equal(controller:focusedId(), "one")
+  controller:focusSave("two", "overflow")
+  controller:move("down")
+  Assert.equal(controller:focusedId(), "two")
+end
+
+function T.layout_separates_global_and_scrollable_save_regions()
+  local layout = MainMenuLayout.compute(
+    globalActions(),
+    saves({ "one", "two", "three", "four", "five" }),
+    { region = "saves", saveId = "five", lane = "overflow" },
+    320,
+    180,
+    0,
+    nil,
+    nil,
+    false
+  )
+  Assert.notNil(layout.global.actions["new-game"])
+  Assert.notNil(layout.saves.viewport)
+  Assert.isTrue(layout.saves.offset > 0)
+  local globalY = layout.global.actions["new-game"].y
+  local resized = MainMenuLayout.compute(
+    globalActions(),
+    saves({ "one", "two", "three", "four", "five" }),
+    { region = "global", actionId = "new-game" },
+    640,
+    240,
+    layout.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  Assert.equal(resized.global.actions["new-game"].y, globalY)
+  Assert.isTrue(resized.saves.offset >= 0)
+end
+
+function T.layout_focuses_popup_inside_the_viewport_and_keeps_hit_regions_disjoint()
+  local layout = MainMenuLayout.compute(
+    globalActions(),
+    { save("one") },
+    { region = "saves", saveId = "one", lane = "overflow" },
+    240,
+    160,
+    0,
+    { saveId = "one", focusedAction = "delete" },
+    nil,
+    false
+  )
+  local card = assert(layout.saves.cards.one)
+  Assert.isFalse(MainMenuLayout.contains(card.body, card.overflow.x + 1, card.overflow.y + 1))
+  Assert.isTrue(layout.popup.box.x >= 0 and layout.popup.box.y >= 0)
+  Assert.isTrue(layout.popup.box.x + layout.popup.box.width <= 240)
+  Assert.isTrue(layout.popup.box.y + layout.popup.box.height <= 160)
+end
+
+function T.pointer_overflow_focuses_the_lane_without_continuing()
+  local results = {}
+  local menu = state({
+    saveStore = {
+      list = function()
+        return {
+          {
+            saveId = "save-00000001",
+            versionId = "heartgold",
+            playerData = { profile = { name = "PLAYER" } },
+            playTimeSeconds = 0,
+          },
+        }
+      end,
+      load = function()
+        error("overflow must not load a save")
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
   })
-  local narrow = MainMenuLayout.compute(menuItems, 9, 320, 180, 0, nil)
-  local layout = MainMenuLayout.compute(menuItems, 9, 320, 400, narrow.offset, nil)
-
-  Assert.equal(layout.offset, 124)
+  local card = assert(menu:view().layout.saves.cards["save-00000001"])
+  menu:mousepressed(card.overflow.x + 1, card.overflow.y + 1, 1)
+  Assert.deepEqual(results, {})
+  Assert.deepEqual(menu:view().focus, { region = "saves", saveId = "save-00000001", lane = "overflow" })
+  Assert.deepEqual(menu:hitTest(card.overflow.x + 1, card.overflow.y + 1), {
+    region = "saves",
+    saveId = "save-00000001",
+    lane = "overflow",
+  })
 end
 
-function T.content_hit_testing_uses_half_open_boundaries()
-  local content = { x = 16, y = 48, width = 128, height = 64 }
-  Assert.isTrue(MainMenuLayout.contains(content, 16, 48))
-  Assert.isTrue(MainMenuLayout.contains(content, 143, 111))
-  Assert.isFalse(MainMenuLayout.contains(content, 144, 111))
-  Assert.isFalse(MainMenuLayout.contains(content, 143, 112))
-end
-
-function T.layout_caps_and_centers_content_with_floor_rounding()
-  local menuItems = { item("new-game", true) }
-  local atCap = MainMenuLayout.compute(menuItems, 1, 992, 480, 0, nil, false)
-  local evenWide = MainMenuLayout.compute(menuItems, 1, 1600, 480, 0, nil, false)
-  local oddWide = MainMenuLayout.compute(menuItems, 1, 1601, 480, 0, nil, false)
-
-  Assert.equal(atCap.content.width, 960)
-  Assert.equal(atCap.content.x, 16)
-  Assert.equal(evenWide.content.width, 960)
-  Assert.equal(evenWide.content.x, 320)
-  Assert.equal(oddWide.content.width, 960)
-  Assert.equal(oddWide.content.x, 320)
-end
-
-function T.layout_places_catalog_error_inside_content_and_shifts_cards()
-  local menuItems = { item("new-game", true), item("save-1", true) }
-  local withoutError = MainMenuLayout.compute(menuItems, 1, 640, 480, 0, nil, false)
-  local withError = MainMenuLayout.compute(menuItems, 1, 640, 480, 0, nil, true)
-  local errorRect = assert(withError.catalogErrorRect)
-
-  Assert.isNil(withoutError.catalogErrorRect)
-  Assert.equal(withError.cards["new-game"].body.y, withoutError.cards["new-game"].body.y + 32)
-  Assert.equal(withError.cards["save-1"].body.y, withoutError.cards["save-1"].body.y + 32)
-  Assert.equal(errorRect.x, withError.content.x)
-  Assert.equal(errorRect.y, withError.content.y)
-  Assert.equal(errorRect.width, withError.content.width)
-  Assert.equal(errorRect.height, 24)
-  Assert.equal(withError.totalContentHeight, withError.totalCardsHeight + 32)
-end
-
-function T.long_menu_keeps_the_last_focused_card_inside_the_content_viewport()
+function T.clipped_save_cards_cannot_be_pointer_activated()
   local entries = {}
-  for index = 1, 8 do
+  for index = 1, 5 do
     entries[#entries + 1] = {
       saveId = string.format("save-%08d", index),
       versionId = "heartgold",
-      playerData = { profile = { name = "P" .. index } },
-      playTimeSeconds = index * 60,
+      playerData = { profile = { name = "PLAYER" } },
+      playTimeSeconds = 0,
     }
   end
-  local menu = MainMenuState.new({
+  local results = {}
+  local menu = state({
     saveStore = {
       list = function()
         return entries
       end,
-    },
-    readyVersions = { "heartgold" },
-    width = 320,
-    height = 180,
-  })
-
-  for _ = 1, 40 do
-    menu:keypressed("down")
-  end
-
-  local view = menu:view()
-  local content = assert(view.layout.content)
-  local card = assert(view.layout.cards["save-00000008"])
-  Assert.equal(view.focusedId, "save-00000008")
-  Assert.isTrue(view.layout.offset > 0)
-  Assert.isTrue(card.body.y >= content.y)
-  Assert.isTrue(card.body.y + card.body.height <= content.y + content.height)
-end
-
-function T.pointer_outside_the_content_viewport_does_not_activate_a_clipped_card()
-  local results = {}
-  local menu = MainMenuState.new({
-    saveStore = {
-      list = function()
-        return {}
+      load = function(_, saveId)
+        return entries[tonumber(saveId:sub(-1))]
       end,
     },
-    readyVersions = { "heartgold" },
+    width = 320,
+    height = 180,
     onResult = function(result)
       results[#results + 1] = result
     end,
-    width = 320,
-    height = 80,
+  })
+  menu:keypressed("down")
+  menu:keypressed("down")
+  menu:keypressed("down")
+  menu:keypressed("down")
+  local layout = menu:view().layout
+  local clipped = assert(layout.saves.cards["save-00000001"])
+  Assert.isTrue(clipped.body.y < layout.saves.viewport.y)
+  menu:mousepressed(clipped.body.x + 1, clipped.body.y + 1, 1)
+  Assert.deepEqual(results, {})
+  Assert.isNil(menu:hitTest(clipped.body.x + 1, clipped.body.y + 1).saveId)
+end
+
+function T.state_publishes_separate_catalogs_and_preserves_initial_save_focus()
+  local menu = state({
+    saveStore = {
+      list = function()
+        return {
+          {
+            saveId = "save-00000001",
+            versionId = "heartgold",
+            playerData = { profile = { name = "PLAYER" } },
+            playTimeSeconds = 60,
+          },
+        }
+      end,
+    },
   })
   local view = menu:view()
-  local content = assert(view.layout.content)
-  local card = assert(view.layout.cards["new-game"])
-  Assert.isTrue(card.body.y < card.body.y + card.body.height)
-  Assert.isTrue(card.body.y + card.body.height > content.y + content.height)
+  Assert.equal(view.focusedId, "save-00000001")
+  Assert.equal(#view.globalActions, 1)
+  Assert.equal(#view.saves, 1)
+  Assert.isNil(view.items)
+end
 
-  menu:mousepressed(card.body.x + 1, content.y + content.height, 1)
-  menu:touchpressed("finger-1", card.body.x + 1, content.y + content.height)
+function T.state_translates_catalog_and_load_failures_to_recoverable_state()
+  local catalogFailure = Errors.new("GAME_SAVE_CATALOG_INVALID", "catalog unreadable")
+  local menu = state({ saveStore = {
+    list = function()
+      error(catalogFailure)
+    end,
+  } })
+  Assert.equal(menu:view().catalogError, "catalog unreadable")
+  Assert.equal(menu:view().focusedId, "new-game")
 
-  Assert.deepEqual(menu:hitTest(card.body.x + 1, content.y + content.height), { primary = nil, delete = nil })
-  Assert.deepEqual(results, {})
+  local loadFailure = Errors.new("GAME_SAVE_LOAD_FAILED", "save could not be loaded")
+  local loadMenu = state({
+    saveStore = {
+      list = function()
+        return {
+          {
+            saveId = "save-00000001",
+            versionId = "heartgold",
+            playerData = { profile = { name = "PLAYER" } },
+            playTimeSeconds = 0,
+          },
+        }
+      end,
+      load = function()
+        error(loadFailure)
+      end,
+    },
+  })
+  loadMenu:keypressed("return")
+  local failed = loadMenu:view()
+  Assert.equal(failed.saves[1].errorSummary, "save could not be loaded")
+  Assert.isFalse(failed.saves[1].canContinue)
+end
+
+function T.state_deletes_unavailable_save_only_after_confirmation()
+  local entries = {
+    { saveId = "save-00000001", playerData = {}, versionId = "heartgold", playTimeSeconds = 0 },
+  }
+  local deleted = 0
+  local menu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+      delete = function(_, saveId)
+        Assert.equal(saveId, "save-00000001")
+        deleted = deleted + 1
+        entries = {}
+        return true
+      end,
+    },
+  })
+  menu:keypressed("right")
+  menu:keypressed("return")
+  Assert.equal(deleted, 0)
+  menu:keypressed("return")
+  Assert.equal(deleted, 0)
+  menu:keypressed("down")
+  menu:keypressed("return")
+  Assert.equal(deleted, 1)
   Assert.equal(menu:view().focusedId, "new-game")
 end
 
-function T.refresh_preserves_focus_by_stable_save_identity()
-  local controller = MainMenuController.new({ item("new-game", true), item("one", true), item("two", true) })
-  controller:setFocusedId("two")
-  controller:setItems({ item("new-game", true), item("one", true), item("two", true), item("three", true) })
-  Assert.equal(controller:focusedId(), "two")
-  controller:setItems({ item("new-game", true), item("one", true), item("three", true) })
-  Assert.equal(controller:focusedId(), "three")
-end
-
-function T.catalog_error_is_not_represented_as_an_empty_catalog()
-  local catalogError = Errors.new("GAME_SAVE_CATALOG_INVALID", "catalog unreadable")
-  local store = {
-    list = function()
-      error(catalogError)
-    end,
+function T.state_keeps_delete_failure_visible_and_save_available_for_retry()
+  local failure = Errors.new("GAME_SAVE_DELETE_FAILED", "save could not be deleted")
+  local entries = {
+    { saveId = "save-00000001", playerData = {}, versionId = "heartgold", playTimeSeconds = 0 },
   }
-  local menu = MainMenuState.new({ saveStore = store, readyVersions = { "heartgold" }, width = 640, height = 480 })
+  local menu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+      delete = function()
+        error(failure)
+      end,
+    },
+  })
+  menu:keypressed("delete")
+  menu:keypressed("return")
+  menu:keypressed("down")
+  menu:keypressed("return")
   local view = menu:view()
-  Assert.notNil(view.catalogError)
-  Assert.equal(#view.items, 1)
-  Assert.equal(view.items[1].id, "new-game")
-end
-
-function T.failed_delete_preserves_its_error_after_catalog_refresh()
-  local deleteFailure = Errors.new("GAME_SAVE_DELETE_FAILED", "save could not be deleted")
-  local entries = {
-    {
-      saveId = "save-00000001",
-      versionId = "heartgold",
-      playerData = { profile = { name = "PLAYER" } },
-      playTimeSeconds = 60,
-    },
-  }
-  local calls = { list = 0, delete = 0 }
-  local store = {}
-  function store:list()
-    calls.list = calls.list + 1
-    return entries
-  end
-  function store:delete(saveId)
-    Assert.equal(saveId, "save-00000001")
-    calls.delete = calls.delete + 1
-    error(deleteFailure)
-  end
-
-  local menu = MainMenuState.new({
-    saveStore = store,
-    readyVersions = { "heartgold" },
-    width = 640,
-    height = 480,
-  })
-  menu:keypressed("down")
-  menu:keypressed("delete")
-  menu:keypressed("down")
-  menu:keypressed("return")
-
-  local failed = menu:view()
-  Assert.equal(calls.list, 2)
-  Assert.equal(calls.delete, 1)
-  Assert.isNil(failed.dialog)
-  Assert.equal(failed.focusedId, "save-00000001")
-  Assert.equal(failed.items[2].saveId, "save-00000001")
-  Assert.equal(failed.catalogError, "save could not be deleted")
-
-  menu:refresh()
-  Assert.isNil(menu:view().catalogError)
-end
-
-function T.successful_delete_refreshes_the_catalog_without_an_error()
-  local entries = {
-    {
-      saveId = "save-00000001",
-      versionId = "heartgold",
-      playerData = { profile = { name = "PLAYER" } },
-      playTimeSeconds = 60,
-    },
-  }
-  local calls = { list = 0, delete = 0 }
-  local store = {}
-  function store:list()
-    calls.list = calls.list + 1
-    return entries
-  end
-  function store:delete(saveId)
-    Assert.equal(saveId, "save-00000001")
-    calls.delete = calls.delete + 1
-    entries = {}
-    return true
-  end
-
-  local menu = MainMenuState.new({
-    saveStore = store,
-    readyVersions = { "heartgold" },
-    width = 640,
-    height = 480,
-  })
-  menu:keypressed("down")
-  menu:keypressed("delete")
-  menu:keypressed("down")
-  menu:keypressed("return")
-
-  local deleted = menu:view()
-  Assert.equal(calls.list, 2)
-  Assert.equal(calls.delete, 1)
-  Assert.isNil(deleted.catalogError)
-  Assert.equal(#deleted.items, 1)
-  Assert.equal(deleted.items[1].id, "new-game")
-  Assert.equal(deleted.focusedId, "new-game")
-end
-
-function T.malformed_save_metadata_is_an_unavailable_deletable_card()
-  local menu = MainMenuState.new({
-    saveStore = {
-      list = function()
-        return { { saveId = "save-00000001", playerData = {} } }
-      end,
-    },
-    readyVersions = { "heartgold" },
-    width = 640,
-    height = 480,
-  })
-  local card = menu:view().items[2]
-  Assert.equal(card.id, "save-00000001")
-  Assert.isFalse(card.canContinue)
-  Assert.isTrue(card.canDelete)
-  Assert.notNil(card.errorSummary)
-end
-
-function T.continue_emits_the_loaded_canonical_record_without_another_read()
-  local loaded = {
-    saveId = "save-00000001",
-    versionId = "heartgold",
-    playerData = { profile = { name = "GOLD" } },
-    playTimeSeconds = 0,
-  }
-  local loads = 0
-  local results = {}
-  local menu = MainMenuState.new({
-    saveStore = {
-      list = function()
-        return { loaded }
-      end,
-      load = function(_, saveId)
-        loads = loads + 1
-        Assert.equal(saveId, loaded.saveId)
-        return loaded
-      end,
-    },
-    readyVersions = { "heartgold" },
-    onResult = function(result)
-      results[#results + 1] = result
-    end,
-    width = 640,
-    height = 480,
-  })
-  menu:keypressed("down")
-  menu:keypressed("return")
-  Assert.equal(loads, 1)
-  Assert.deepEqual(results, { { kind = "continue", game = loaded } })
+  Assert.equal(view.catalogError, "save could not be deleted")
+  Assert.equal(view.focusedId, "save-00000001")
+  Assert.notNil(view.layout.saves.cards["save-00000001"])
 end
 
 return { tests = T }
