@@ -711,10 +711,13 @@ function T.partial_page_sets_report_staged_readiness_levels()
   local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
   local layoutMarker = MonCache.marker("synthetic-rom-sha", Hashing.hashLua({ planned.icons, planned.portraits }))
   local layoutStage = newArtifact(cache, generation, "mon-layout", "global", "mon-layout-partial")
-  local stagedLayout = MonCacheWriter.stageLayout(
-    layoutStage,
-    { icons = planned.icons, portraits = planned.portraits, marker = layoutMarker }
-  )
+  local stagedLayout = MonCacheWriter.stageLayout(layoutStage, {
+    icons = planned.icons,
+    portraits = planned.portraits,
+    marker = layoutMarker,
+    pagePlans = { iconPages = planned.iconPages, portraitPages = planned.portraitPages },
+    generationId = generation,
+  })
   if type(stagedLayout) ~= "string" then
     stagedLayout = layoutMarker
   end
