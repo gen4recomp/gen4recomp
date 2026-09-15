@@ -92,4 +92,34 @@ function T.failed_rebuild_preserves_the_previous_artifact()
   Assert.isNil(backend:getInfo("staging/heartgold/items"), "the stage is cleaned on failure")
 end
 
+-- The session worker path stages through a caller-owned prepared artifact:
+-- staging alone never reads ready, and publication makes the class ready
+-- with the marker last.
+function T.stages_through_a_prepared_artifact_without_touching_live_before_publish()
+  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local ItemCache, ItemCacheWriter = contracts()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = ItemCache.marker("abc", "dep")
+  local artifact = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "items",
+    key = "global",
+    jobKey = "items:global",
+    stageName = "items-stage-test",
+  })
+  Assert.equal(ItemCacheWriter.stage(artifact, bundle(marker)), marker)
+  Assert.isFalse(ItemCache.isReady(cache, marker), "staging alone never reads ready before publication")
+  artifact:finishSuccess({ marker = marker })
+  artifact:publish({
+    generationId = "test-generation",
+    epoch = 1,
+    kind = "items",
+    key = "global",
+    jobKey = "items:global",
+  })
+  Assert.isTrue(ItemCache.isReady(cache, marker), "the published class reads ready")
+end
+
 return { tests = T }
