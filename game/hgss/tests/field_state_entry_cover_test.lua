@@ -42,7 +42,7 @@ local function boot(withCover)
     touch = false,
     role = "world",
   })
-  local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight })
+  local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight }, 1)
   local cache = FieldStatePresentationFixture.cache()
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
   local originalNew = FieldRuntime.new

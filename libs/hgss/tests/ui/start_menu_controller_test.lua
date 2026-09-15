@@ -187,24 +187,60 @@ function T.selection_falls_back_to_the_first_action_when_the_remembered_id_is_ab
   Assert.equal(controller:status().cursorSlotId, 2, "an absent remembered id falls back to the first action")
 end
 
-function T.directional_navigation_moves_and_wraps_across_visible_positions()
-  local controller = newController()
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(controller:status().cursorSlotId, 3, "down moves to the next display position")
+function T.directional_navigation_follows_the_source_two_column_topology()
+  local controller = newController({
+    entries = {
+      {
+        id = "vanilla.trainer_card",
+        targetApplication = "trainer_card",
+        actionKind = "application",
+        displayPosition = 0,
+        enabled = false,
+      },
+      {
+        id = "vanilla.running_shoes",
+        targetApplication = "running_shoes",
+        actionKind = "application",
+        displayPosition = 1,
+      },
+      { id = "vanilla.bag", targetApplication = "bag", actionKind = "application", displayPosition = 2 },
+      {
+        id = "vanilla.special_9",
+        targetApplication = "pokegear",
+        actionKind = "application",
+        displayPosition = 7,
+        enabled = false,
+      },
+      { id = "vanilla.special_10", targetApplication = "pokegear", actionKind = "application", displayPosition = 8 },
+    },
+  })
+  Assert.equal(controller:status().cursorSlotId, 2, "the first visible action starts in the right column")
+
   controller:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller:status().cursorSlotId, 4, "right moves along the display order")
-  controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(controller:status().cursorSlotId, 3, "up moves back along the display order")
-  controller:updateFixed({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller:status().cursorSlotId, 2, "left moves back along the display order")
-  for _ = 1, 8 do
-    controller:updateFixed({ { type = "navigate", direction = "down" } })
-  end
-  Assert.equal(controller:status().cursorSlotId, 10, "the last visible position occupies the last display slot")
+  Assert.equal(controller:status().cursorSlotId, 2, "right stays when the same row has no other visible action")
+
   controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(controller:status().cursorSlotId, 2, "navigation wraps from the last visible position to the first")
+  Assert.equal(controller:status().cursorSlotId, 4, "down scans the same column and skips the missing left slot")
+
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().cursorSlotId, 3, "left selects the visible action in the same row")
+
   controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(controller:status().cursorSlotId, 10, "navigation wraps backward to the last visible position")
+  Assert.equal(controller:status().cursorSlotId, 9, "up wraps through the same column to the last visible row")
+
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().cursorSlotId, 3, "down wraps through the same column to the first visible row")
+
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(controller:status().cursorSlotId, 4, "right selects the visible action in the same row")
+
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().cursorSlotId, 10, "down scans and wraps in the right column")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().cursorSlotId, 9, "left selects the visible disabled action in the same row")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isNil(controller:takeResult(), "a visible disabled action remains selectable but cannot activate")
+  Assert.equal(controller:status().open, true, "a disabled activation leaves the menu open")
 end
 
 function T.navigation_skips_holes_in_the_display_array()
@@ -218,7 +254,7 @@ function T.navigation_skips_holes_in_the_display_array()
     },
   })
   -- positions 0,1,2,7,8 are filled; 3..6 are holes.
-  for _ = 1, 4 do
+  for _ = 1, 2 do
     controller:updateFixed({ { type = "navigate", direction = "down" } })
   end
   Assert.equal(controller:status().cursorSlotId, 10, "navigation must skip empty display positions")
@@ -226,14 +262,11 @@ end
 
 function T.confirm_launches_the_selected_application()
   local controller = newController()
-  for _ = 1, 4 do
-    controller:updateFixed({ { type = "navigate", direction = "down" } })
-  end
   controller:updateFixed({ { type = "confirm" } })
   Assert.deepEqual(controller:takeResult(), {
     kind = "launch",
-    applicationId = "trainer_card",
-    actionId = "vanilla.trainer_card",
+    applicationId = "pokedex",
+    actionId = "vanilla.pokedex",
   })
   Assert.equal(controller:status().open, false, "a taken result ends the menu lifetime")
 end
@@ -456,8 +489,8 @@ end
 function T.disabled_entries_are_visible_and_selectable()
   local mixed = {
     { id = "vanilla.trainer_card", targetApplication = "trainer_card", displayPosition = 0, enabled = true },
-    { id = "vanilla.save", targetApplication = "save", displayPosition = 1, enabled = false },
-    { id = "vanilla.options", targetApplication = "options", displayPosition = 2, enabled = true },
+    { id = "vanilla.save", targetApplication = "save", displayPosition = 2, enabled = false },
+    { id = "vanilla.options", targetApplication = "options", displayPosition = 3, enabled = true },
   }
   local controller = newController({ entries = mixed })
   local status = controller:status()
@@ -470,7 +503,7 @@ end
 function T.confirming_disabled_entry_is_noop()
   local mixed = {
     { id = "vanilla.trainer_card", targetApplication = "trainer_card", displayPosition = 0, enabled = true },
-    { id = "vanilla.save", targetApplication = "save", displayPosition = 1, enabled = false },
+    { id = "vanilla.save", targetApplication = "save", displayPosition = 2, enabled = false },
   }
   local controller = newController({ entries = mixed })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
@@ -488,7 +521,7 @@ function T.pointer_tap_on_disabled_entry_is_noop()
     { id = "vanilla.save", targetApplication = "save", displayPosition = 1, enabled = false },
   }
   local controller = newController({ entries = mixed })
-  local x, y = slotCenter(7) -- slot 7 is the disabled save action
+  local x, y = slotCenter(3) -- slot 3 is the disabled save action
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
   Assert.isNil(controller:takeResult(), "tap on disabled entry produces no result")

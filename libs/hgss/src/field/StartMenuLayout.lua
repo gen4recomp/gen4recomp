@@ -17,20 +17,12 @@
 -- rectangles. Pure: no LÖVE, no I/O.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local StartMenuLayout = {}
 
 local CANONICAL_WIDTH = 256
 local CANONICAL_HEIGHT = 192
-
--- Minimum usable region sizes: the landscape side panel must be at least
--- half the canonical width, and a portrait partition must leave both the
--- world reference frame and the lower panel at least half the canonical
--- height. Below those floors the layout falls back to the centered uniform
--- fit.
-local MIN_SIDE_PANEL_WIDTH = CANONICAL_WIDTH / 2
-local MIN_PANEL_HEIGHT = CANONICAL_HEIGHT / 2
-local MIN_WORLD_HEIGHT = CANONICAL_HEIGHT / 2
 
 ---@param value unknown
 ---@param name string
@@ -78,25 +70,54 @@ function StartMenuLayout.selectSurface(topology)
   return topology.surfaces[1]
 end
 
--- The uniform centered fit inside the safe rectangle delegates to the
--- shared geometry helper: the canonical surface scaled by
--- min(safeWidth/256, safeHeight/192) and centered, with only the origin
--- snapped at the host boundary so the exact frame stays inside safe bounds.
----@param safe ScreenTopology.Rectangle
----@return number scale
----@return number width
----@return number height
----@return integer x
----@return integer y
-local function centeredFit(safe)
-  local placement = LayoutGeometry.centeredFit(safe, CANONICAL_WIDTH, CANONICAL_HEIGHT, { integer = "floor" })
-  local scale = placement.scale
-  local frame = placement.frame
-  local width = frame.width
-  local height = frame.height
-  local x = frame.x --[[@as integer]]
-  local y = frame.y --[[@as integer]]
+-- The uniform fit inside a usable region chooses an integer scale bounded by
+-- the field authority and centers the exact canonical extent. A region below
+-- the 1x floor is not a valid partition candidate.
+---@param region ScreenTopology.Rectangle
+---@param preferredScale integer
+---@return integer? scale
+---@return integer? width
+---@return integer? height
+---@return integer? x
+---@return integer? y
+local function integerFit(region, preferredScale)
+  if region.width < CANONICAL_WIDTH or region.height < CANONICAL_HEIGHT then
+    return nil
+  end
+  local scale = PixelScale.fitPreferred(region, CANONICAL_WIDTH, CANONICAL_HEIGHT, preferredScale)
+  local width = CANONICAL_WIDTH * scale
+  local height = CANONICAL_HEIGHT * scale
+  local x = math.floor(region.x + (region.width - width) / 2)
+  local y = math.floor(region.y + (region.height - height) / 2)
+  x = math.max(math.ceil(region.x), math.min(x, math.floor(region.x + region.width - width)))
+  y = math.max(math.ceil(region.y), math.min(y, math.floor(region.y + region.height - height)))
   return scale, width, height, x, y
+end
+
+-- The centered fallback uses the whole safe rectangle and therefore remains
+-- valid only on hosts that can present the canonical surface at 1x.
+---@param safe ScreenTopology.Rectangle
+---@param preferredScale integer
+---@return integer? scale
+---@return integer? width
+---@return integer? height
+---@return integer? x
+---@return integer? y
+local function centeredFit(safe, preferredScale)
+  return integerFit(safe, preferredScale)
+end
+
+---@param safe ScreenTopology.Rectangle
+---@param preferredScale integer
+---@return integer scale
+---@return integer width
+---@return integer height
+---@return integer? x
+---@return integer? y
+local function requireFit(safe, preferredScale)
+  local scale, width, height, x, y = centeredFit(safe, preferredScale)
+  assert(scale ~= nil, "the safe surface cannot contain the Start Menu at 1x")
+  return assert(scale), assert(width), assert(height), assert(x), assert(y)
 end
 
 -- The landscape side panel: the actual right gutter -- the world reference
@@ -105,30 +126,16 @@ end
 -- usable.
 ---@param safe ScreenTopology.Rectangle
 ---@param referenceFrame ScreenTopology.Rectangle
----@return number? scale
----@return number? width
----@return number? height
+---@param preferredScale integer
+---@return integer? scale
+---@return integer? width
+---@return integer? height
 ---@return integer? x
 ---@return integer? y
-local function sidePanel(safe, referenceFrame)
+local function sidePanel(safe, referenceFrame, preferredScale)
   local gutterStart = referenceFrame.x + referenceFrame.width
   local panelWidth = safe.x + safe.width - gutterStart
-  if panelWidth < MIN_SIDE_PANEL_WIDTH then
-    return nil
-  end
-  local placement = LayoutGeometry.centeredFit(
-    { x = gutterStart, y = safe.y, width = panelWidth, height = safe.height },
-    CANONICAL_WIDTH,
-    CANONICAL_HEIGHT,
-    { integer = "floor" }
-  )
-  local panelScale = placement.scale
-  local panelFrame = placement.frame
-  local width = panelFrame.width
-  local height = panelFrame.height
-  local x = panelFrame.x --[[@as integer]]
-  local y = panelFrame.y --[[@as integer]]
-  return panelScale, width, height, x, y
+  return integerFit({ x = gutterStart, y = safe.y, width = panelWidth, height = safe.height }, preferredScale)
 end
 
 -- The portrait lower panel: the region below the world reference frame
@@ -136,36 +143,16 @@ end
 -- drop below its minimum usable size.
 ---@param safe ScreenTopology.Rectangle
 ---@param referenceFrame ScreenTopology.Rectangle
----@return number? scale
----@return number? width
----@return number? height
+---@param preferredScale integer
+---@return integer? scale
+---@return integer? width
+---@return integer? height
 ---@return integer? x
 ---@return integer? y
-local function bottomPanel(safe, referenceFrame)
+local function bottomPanel(safe, referenceFrame, preferredScale)
   local panelTop = math.floor(referenceFrame.y + referenceFrame.height)
   local panelHeight = safe.y + safe.height - panelTop
-  if referenceFrame.height < MIN_WORLD_HEIGHT then
-    return nil
-  end
-  if panelHeight <= 0 then
-    return nil
-  end
-  local placement = LayoutGeometry.centeredFit(
-    { x = safe.x, y = panelTop, width = safe.width, height = panelHeight },
-    CANONICAL_WIDTH,
-    CANONICAL_HEIGHT,
-    { integer = "floor" }
-  )
-  local frame = placement.frame
-  if frame.height < MIN_PANEL_HEIGHT then
-    return nil
-  end
-  local scale = placement.scale
-  local width = frame.width
-  local height = frame.height
-  local x = frame.x --[[@as integer]]
-  local y = frame.y --[[@as integer]]
-  return scale, width, height, x, y
+  return integerFit({ x = safe.x, y = panelTop, width = safe.width, height = panelHeight }, preferredScale)
 end
 
 ---@class StartMenuLayout.Frame
@@ -177,7 +164,7 @@ end
 ---@class StartMenuLayout.Placement
 ---@field surfaceId string
 ---@field frame StartMenuLayout.Frame
----@field scale number
+---@field scale integer
 ---@field logicalWidth integer
 ---@field logicalHeight integer
 
@@ -186,20 +173,21 @@ end
 -- return multiple values, so they must not flow through `or`, which would
 -- collapse them to one.
 
----@param builder fun(safe: ScreenTopology.Rectangle, referenceFrame: ScreenTopology.Rectangle): number?, number?, number?, integer?, integer?
+---@param builder fun(safe: ScreenTopology.Rectangle, referenceFrame: ScreenTopology.Rectangle, preferredScale: integer): integer?, integer?, integer?, integer?, integer?
 ---@param safe ScreenTopology.Rectangle
 ---@param referenceFrame ScreenTopology.Rectangle
----@return number scale
----@return number width
----@return number height
----@return integer x
----@return integer y
-local function panelOrCentered(builder, safe, referenceFrame)
-  local scale, width, height, x, y = builder(safe, referenceFrame)
+---@param preferredScale integer
+---@return integer scale
+---@return integer width
+---@return integer height
+---@return integer? x
+---@return integer? y
+local function panelOrCentered(builder, safe, referenceFrame, preferredScale)
+  local scale, width, height, x, y = builder(safe, referenceFrame, preferredScale)
   if scale == nil then
-    return centeredFit(safe)
+    return requireFit(safe, preferredScale)
   end
-  return scale, assert(width), assert(height), assert(x), assert(y)
+  return assert(scale), assert(width), assert(height), assert(x), assert(y)
 end
 
 -- Resolves the complete placement record for the canonical 256x192 Start
@@ -209,8 +197,9 @@ end
 
 ---@param topology ScreenTopology
 ---@param referenceFrame ScreenTopology.Rectangle the world reference frame
+---@param preferredScale integer the field presentation scale cap
 ---@return StartMenuLayout.Placement
-function StartMenuLayout.resolve(topology, referenceFrame)
+function StartMenuLayout.resolve(topology, referenceFrame, preferredScale)
   assert(
     type(referenceFrame) == "table"
       and type(referenceFrame.x) == "number"
@@ -219,15 +208,19 @@ function StartMenuLayout.resolve(topology, referenceFrame)
       and type(referenceFrame.height) == "number",
     "StartMenuLayout requires the world reference frame"
   )
+  assert(
+    type(preferredScale) == "number" and preferredScale > 0 and preferredScale % 1 == 0,
+    "StartMenuLayout requires a positive integer preferred scale"
+  )
   local surface = StartMenuLayout.selectSurface(topology)
   local safe = assertSafeRect(surface)
   local scale, width, height, x, y
   if surface.role == "auxiliary" then
-    scale, width, height, x, y = centeredFit(safe)
+    scale, width, height, x, y = requireFit(safe, preferredScale)
   elseif safe.width < safe.height then
-    scale, width, height, x, y = panelOrCentered(bottomPanel, safe, referenceFrame)
+    scale, width, height, x, y = panelOrCentered(bottomPanel, safe, referenceFrame, preferredScale)
   else
-    scale, width, height, x, y = panelOrCentered(sidePanel, safe, referenceFrame)
+    scale, width, height, x, y = panelOrCentered(sidePanel, safe, referenceFrame, preferredScale)
   end
   return {
     surfaceId = surface.id,

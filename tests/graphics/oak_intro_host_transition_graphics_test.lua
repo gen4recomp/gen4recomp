@@ -261,7 +261,7 @@ local function bootCoveredField(scope)
     touch = false,
     role = "world",
   })
-  local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight })
+  local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight }, 1)
   local cache = FieldStatePresentationFixture.cache()
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
   -- The draw path renders through the real field renderer, which needs a

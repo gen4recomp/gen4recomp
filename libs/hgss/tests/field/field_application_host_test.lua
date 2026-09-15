@@ -199,7 +199,8 @@ local function canonicalPlacement()
       role = "world",
       touch = false,
     }),
-    { x = 0, y = 0, width = 256, height = 192 }
+    { x = 0, y = 0, width = 256, height = 192 },
+    1
   )
 end
 
