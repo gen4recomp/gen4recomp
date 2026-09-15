@@ -547,14 +547,18 @@ end
 
 -- Closing a modal UI drops its queued physical events and pointer capture
 -- without releasing the field's held movement controls.
+local function clearTransientUi(input)
+  input.uiPressedDirection = nil
+  input.uiRepeatStartedAt = nil
+  input.uiRepeatLastAt = nil
+  input.uiConfirmPressed = nil
+  input.uiCancelPressed = nil
+  input.uiPointerEvents = {}
+  input.uiPointers = {}
+end
+
 function FieldInput:clearUi()
-  self.uiPressedDirection = nil
-  self.uiRepeatStartedAt = nil
-  self.uiRepeatLastAt = nil
-  self.uiConfirmPressed = nil
-  self.uiCancelPressed = nil
-  self.uiPointerEvents = {}
-  self.uiPointers = {}
+  clearTransientUi(self)
   self.uiActive = false
 end
 
@@ -597,10 +601,13 @@ function FieldInput:clearEdges()
   self.menuPressed = nil
 end
 
--- Focus loss clears held and edge state entirely, including every physical
--- button source so a stray release after refocus cannot mutate a cleared
--- button.
+-- Focus loss clears held, edge, and queued UI state entirely, including every
+-- physical button source so a stray release after refocus cannot mutate a
+-- cleared button. Clearing never starts or stops a modal lifetime: the
+-- pre-call activation is restored so an open modal keeps accepting fresh
+-- input while an inactive channel stays inactive.
 function FieldInput:clearAll()
+  local uiWasActive = self.uiActive
   self:clearEdges()
   self.directions = {}
   self.directionSources = {}
@@ -611,9 +618,10 @@ function FieldInput:clearAll()
   self.menuSources = {}
   self.menuDown = false
   self.uiDirections = {}
-  self:clearUi()
+  clearTransientUi(self)
   self.stickDirections = {}
   self.stickAxes = {}
+  self.uiActive = uiWasActive
 end
 
 -- One fixed-tick snapshot: held directions/buttons plus the consumed edges.

@@ -140,9 +140,9 @@ local function bagManifest()
   for i = 0, 7 do
     tabs[#tabs + 1] = bagRect(i * 32, 0, 32, 32)
   end
-  local tabNormals = {}
-  for i = 1, 8 do
-    tabNormals[#tabNormals + 1] = bagImageRef("test/bag/tab-normal-" .. i .. ".png")
+  local tabStrips = {}
+  for _, pocket in ipairs(BAG_POCKETS) do
+    tabStrips[pocket] = { image = "test/bag/tabs-" .. pocket .. ".png", width = 256, height = 32 }
   end
   local slotShapes = {
     { rect = { 0, 32, 128, 42 }, text = { 32, 40, 88, 32 }, center = { 48, 56 } },
@@ -163,12 +163,34 @@ local function bagManifest()
     }
   end
   local backgrounds = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = {}
     for _, pocket in ipairs(BAG_POCKETS) do
       pockets[pocket] = bagImageRef("test/bag/background-" .. state .. "-" .. pocket .. ".png")
     end
     backgrounds[state] = pockets
+  end
+  do
+    local browse = {}
+    for _, pocket in ipairs(BAG_POCKETS) do
+      local variants = {}
+      for count = 0, 6 do
+        variants[#variants + 1] = bagImageRef("test/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+      end
+      browse[pocket] = variants
+    end
+    backgrounds.browse = browse
+  end
+  local function framingRecord()
+    return { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.2, modelY = -2.8 }
+  end
+  local framingByGender = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = {}
+    for _, pocket in ipairs(BAG_POCKETS) do
+      records[pocket] = framingRecord()
+    end
+    framingByGender[gender] = records
   end
   return {
     schema = BagAssetSchema.SCHEMA,
@@ -223,14 +245,67 @@ local function bagManifest()
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
         },
+        framing = {
+          transitionTicks = 7,
+          baseline = { male = framingRecord(), female = framingRecord() },
+          byGender = framingByGender,
+        },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+        },
       },
     },
     interactive = {
       backgrounds = backgrounds,
       pocketTabs = {
         rects = tabs,
-        normal = tabNormals,
-        highlight = bagImageRef("test/bag/tab-highlight.png"),
+        strips = tabStrips,
+      },
+      focus = {
+        tabs = {
+          visual = { image = "test/bag/focus-tabs.png", width = 32, height = 32 },
+          targets = {
+            { x = 16, y = 16 },
+            { x = 48, y = 16 },
+            { x = 80, y = 16 },
+            { x = 112, y = 16 },
+            { x = 144, y = 16 },
+            { x = 176, y = 16 },
+            { x = 208, y = 16 },
+            { x = 240, y = 16 },
+          },
+        },
+        items = {
+          visual = { image = "test/bag/focus-items.png", width = 96, height = 40 },
+          targets = {
+            { x = 16, y = 48 },
+            { x = 144, y = 48 },
+            { x = 16, y = 88 },
+            { x = 144, y = 88 },
+            { x = 16, y = 128 },
+            { x = 144, y = 128 },
+          },
+        },
+        cancel = {
+          visual = { image = "test/bag/focus-cancel.png", width = 64, height = 24 },
+          target = { x = 224, y = 176 },
+        },
+        actions = {
+          visual = { image = "test/bag/focus-actions.png", width = 96, height = 24 },
+          targets = {
+            { x = 48, y = 144 },
+            { x = 144, y = 144 },
+            { x = 48, y = 176 },
+            { x = 144, y = 176 },
+          },
+        },
       },
       itemSlots = {
         slots = slots,
@@ -244,6 +319,7 @@ local function bagManifest()
       cancel = {
         rect = bagRect(192, 168, 64, 24),
         textRect = bagRect(192, 168, 56, 16),
+        labelRect = bagRect(200, 168, 48, 16),
       },
       text = {
         actions = {
@@ -326,16 +402,24 @@ function FieldStatePresentationFixture.cache()
   cache:write("test/bag/hero-male.png", solidPng(32, 32))
   cache:write("test/bag/hero-female.png", solidPng(32, 32))
   cache:write("test/bag/description-frame.png", solidPng(32, 32))
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs(BAG_POCKETS) do
       cache:write("test/bag/background-" .. state .. "-" .. pocket .. ".png", solidPng(32, 32))
     end
   end
-  cache:write("test/bag/description-frame-alt.png", solidPng(32, 32))
-  for index = 1, 8 do
-    cache:write("test/bag/tab-normal-" .. index .. ".png", solidPng(32, 32))
+  for _, pocket in ipairs(BAG_POCKETS) do
+    for count = 0, 6 do
+      cache:write("test/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png", solidPng(32, 32))
+    end
   end
-  cache:write("test/bag/tab-highlight.png", solidPng(32, 32))
+  cache:write("test/bag/description-frame-alt.png", solidPng(32, 32))
+  for _, pocket in ipairs(BAG_POCKETS) do
+    cache:write("test/bag/tabs-" .. pocket .. ".png", solidPng(256, 32))
+  end
+  cache:write("test/bag/focus-tabs.png", solidPng(32, 32))
+  cache:write("test/bag/focus-items.png", solidPng(32, 32))
+  cache:write("test/bag/focus-cancel.png", solidPng(32, 32))
+  cache:write("test/bag/focus-actions.png", solidPng(32, 32))
   cache:write("test/bag/registration-slot-1.png", solidPng(40, 16))
   cache:write("test/bag/registration-slot-2.png", solidPng(40, 16))
   cache:write(

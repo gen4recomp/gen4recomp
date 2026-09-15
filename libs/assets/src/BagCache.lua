@@ -69,15 +69,23 @@ function BagCache.referencedPaths(manifest)
     end
   end
   local interactive = manifest.interactive
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       addVisual(interactive.backgrounds[state][pocket])
     end
   end
-  for _, visual in ipairs(interactive.pocketTabs.normal) do
-    addVisual(visual)
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    for _, visual in ipairs(interactive.backgrounds.browse[pocket]) do
+      addVisual(visual)
+    end
   end
-  addVisual(interactive.pocketTabs.highlight)
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    addVisual(interactive.pocketTabs.strips[pocket])
+  end
+  addVisual(interactive.focus.tabs.visual)
+  addVisual(interactive.focus.items.visual)
+  addVisual(interactive.focus.cancel.visual)
+  addVisual(interactive.focus.actions.visual)
   addImage(interactive.itemSlots.registration.slot1)
   addImage(interactive.itemSlots.registration.slot2)
   return paths

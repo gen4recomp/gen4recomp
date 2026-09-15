@@ -191,6 +191,14 @@ function BagPresentationCompiler.compileGeometry(config)
   for index, tab in ipairs(geometry.tabs) do
     tabs[index] = checkRect(tab, "pocket tab " .. index)
   end
+  local placements = config.itemIconCenters
+  if type(placements) ~= "table" or #placements ~= 6 then
+    Errors.raise(
+      BagPresentationCompiler.ERROR.GEOMETRY_INVALID,
+      "bag source config must carry exactly six item-icon placements",
+      {}
+    )
+  end
   local slots = {}
   for index, slot in ipairs(geometry.slots) do
     if type(slot) ~= "table" then
@@ -213,7 +221,7 @@ function BagPresentationCompiler.compileGeometry(config)
     slots[index] = {
       rect = full,
       textRect = window,
-      iconCenter = checkPoint(slot.iconCenter, "item slot " .. index .. " icon center"),
+      iconCenter = checkPoint(placements[index], "item slot " .. index .. " icon center"),
       nameAt = checkPoint(slot.nameAt, "item slot " .. index .. " name anchor"),
       quantityAt = checkPoint(slot.quantityAt, "item slot " .. index .. " quantity anchor"),
     }
@@ -270,10 +278,53 @@ function BagPresentationCompiler.compileGeometry(config)
   then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel text window escapes its button rect", {})
   end
+  if type(cancelSource.labelRect) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel label area", {})
+  end
+  local cancelLabel = checkRect(cancelSource.labelRect, "cancel label area")
+  if
+    cancelLabel.x < cancelRect.x
+    or cancelLabel.y < cancelRect.y
+    or cancelLabel.x + cancelLabel.width > cancelRect.x + cancelRect.width
+    or cancelLabel.y + cancelLabel.height > cancelRect.y + cancelRect.height
+  then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel label area escapes its button rect", {})
+  end
+  local focusSource = config.focusTargets
+  if type(focusSource) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag source config carries no focus targets", {})
+  end
+  if type(focusSource.tabs) ~= "table" or #focusSource.tabs ~= 8 then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "focus targets must carry exactly eight tabs", {})
+  end
+  if type(focusSource.items) ~= "table" or #focusSource.items ~= 6 then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "focus targets must carry exactly six items", {})
+  end
+  if type(focusSource.actions) ~= "table" or #focusSource.actions ~= 4 then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "focus targets must carry exactly four actions", {})
+  end
+  local focusTabs = {}
+  for index, target in ipairs(focusSource.tabs) do
+    focusTabs[index] = checkPoint(target, "tab focus target " .. index)
+  end
+  local focusItems = {}
+  for index, target in ipairs(focusSource.items) do
+    focusItems[index] = checkPoint(target, "item focus target " .. index)
+  end
+  local focusActions = {}
+  for index, target in ipairs(focusSource.actions) do
+    focusActions[index] = checkPoint(target, "action focus target " .. index)
+  end
+  local focus = {
+    tabs = focusTabs,
+    items = focusItems,
+    cancel = checkPoint(focusSource.cancel, "cancel focus target"),
+    actions = focusActions,
+  }
   return {
     tabs = tabs,
-    highlight = { animIndex = geometry.highlight.animIndex, paletteSlot = geometry.highlight.paletteSlot },
     slots = slots,
+    focus = focus,
     cursor = {
       size = cursor.size,
       anchorY = cursor.y,
@@ -286,7 +337,7 @@ function BagPresentationCompiler.compileGeometry(config)
       rect = checkRect(countReadout.rect, "count readout"),
       textAt = checkPoint(countReadout.textAt, "count readout text"),
     },
-    cancel = { rect = cancelRect, textRect = cancelText },
+    cancel = { rect = cancelRect, textRect = cancelText, labelRect = cancelLabel },
     descriptionFrame = checkRect(geometry.descriptionFrame, "description frame"),
     descriptionText = checkRect(geometry.descriptionText, "description text"),
     actionButtons = actionButtons,

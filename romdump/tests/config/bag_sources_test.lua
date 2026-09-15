@@ -142,7 +142,7 @@ function T.lower_palette_names_the_pocket_dependent_member_and_remap()
     { bankSize = 16, offsets = { 0, 0, 1, 0 } },
     "destination banks copy the audited pocket-relative source banks"
   )
-  Assert.deepEqual(BagSources.spriteStates.tabs.highlight, { animation = 8, palette = 9 })
+  Assert.deepEqual(BagSources.spriteStates.focus.tabs, { animation = 8, palette = 9 })
 end
 
 function T.presentation_facts_are_finite_source_independent_values()
@@ -208,6 +208,140 @@ function T.registration_facts_name_the_audited_bitmap_and_crops()
   Assert.isTrue(registration.slot1X + registration.markerWidth <= registration.bitmapWidth)
   Assert.isTrue(registration.slot2X + registration.markerWidth <= registration.bitmapWidth)
   Assert.deepEqual(registration.offset, { x = 0, y = 16 })
+end
+
+-- The movable focus table drives one managed sprite through four semantic
+-- target groups: eight tab positions, six item positions, one Cancel
+-- position, and four action positions. These canonical points are focus
+-- targets, never item-icon geometry.
+function T.movable_focus_targets_name_four_semantic_classes()
+  local BagSources = sources()
+  local focus = assert(BagSources.focusTargets, "the producer must publish the movable focus target groups")
+  local expectedTabs = {}
+  for k = 0, 7 do
+    expectedTabs[#expectedTabs + 1] = { x = 16 + 32 * k, y = 16 }
+  end
+  Assert.deepEqual(focus.tabs, expectedTabs, "tab focus targets follow the audited placement table")
+  Assert.deepEqual(focus.items, {
+    { x = 48, y = 56 },
+    { x = 176, y = 56 },
+    { x = 48, y = 96 },
+    { x = 176, y = 96 },
+    { x = 48, y = 136 },
+    { x = 176, y = 136 },
+  }, "item focus targets follow the audited placement table")
+  Assert.deepEqual(focus.cancel, { x = 224, y = 176 }, "Cancel focus target follows the audited placement table")
+  local seen = {}
+  Assert.equal(#focus.actions, 4, "action focus targets carry four positions")
+  for _, target in ipairs(focus.actions) do
+    Assert.isTrue(
+      (target.x == 48 or target.x == 144) and (target.y == 144 or target.y == 176),
+      "action focus target must sit on the audited action grid"
+    )
+    local key = target.x .. "," .. target.y
+    Assert.isNil(seen[key], "action focus targets must not repeat")
+    seen[key] = true
+  end
+  for _, group in ipairs({ focus.tabs, focus.items, focus.actions }) do
+    for index, target in ipairs(group) do
+      Assert.isTrue(target.x <= 256 and target.y <= 192, "focus target " .. index .. " must fit the canonical pane")
+    end
+  end
+  Assert.isTrue(focus.cancel.x <= 256 and focus.cancel.y <= 192, "the Cancel focus target must fit the pane")
+end
+
+-- Item icon anchors come from the six actual item-icon sprite placements,
+-- audited separately from the movable focus records above. The producer
+-- keeps one record per role so a focus coordinate can never silently stand
+-- in for an icon placement again.
+function T.item_icon_anchors_come_from_the_item_sprite_records()
+  local BagSources = sources()
+  local placements =
+    assert(BagSources.itemIconCenters, "the producer must publish item-icon placements apart from focus targets")
+  Assert.equal(#placements, 6, "six item-icon placements are required")
+  local slots = assert(BagSources.geometry, "geometry must exist").slots
+  for index = 1, 6 do
+    local center = assert(placements[index], "item-icon placement " .. index .. " must be published")
+    Assert.isTrue(center.x >= 0 and center.y >= 0, "item-icon placement " .. index .. " must be a pane point")
+    Assert.isTrue(center.x <= 256 and center.y <= 192, "item-icon placement " .. index .. " must fit the pane")
+    local cell = assert(slots[index], "slot " .. index .. " must exist").rect
+    Assert.isTrue(
+      center.x >= cell.x and center.x <= cell.x + cell.width and center.y >= cell.y and center.y <= cell.y + cell.height,
+      "item-icon placement " .. index .. " must sit inside its slot touch rect"
+    )
+  end
+end
+
+-- The item-icon placements are the audited template centers of the six
+-- item-icon sprites, recorded apart from the focus table above.
+function T.item_icon_placements_match_the_audited_template_records()
+  local BagSources = sources()
+  local placements = assert(BagSources.itemIconCenters, "the producer must publish item-icon placements")
+  Assert.deepEqual(placements, {
+    { x = 22, y = 59 },
+    { x = 152, y = 59 },
+    { x = 22, y = 100 },
+    { x = 152, y = 100 },
+    { x = 22, y = 139 },
+    { x = 152, y = 139 },
+  }, "item-icon placements follow the audited item-sprite template records")
+  local focus = assert(BagSources.focusTargets, "the producer must publish the movable focus target groups")
+  for index = 1, 6 do
+    Assert.isFalse(
+      placements[index].x == focus.items[index].x and placements[index].y == focus.items[index].y,
+      "item-icon placement " .. index .. " must not copy its focus target"
+    )
+  end
+end
+
+-- The four action focus targets follow the audited table order: row-major
+-- over the action-button grid.
+function T.action_focus_targets_follow_the_audited_table_order()
+  local BagSources = sources()
+  local focus = assert(BagSources.focusTargets, "the producer must publish the movable focus target groups")
+  Assert.deepEqual(focus.actions, {
+    { x = 48, y = 144 },
+    { x = 144, y = 144 },
+    { x = 48, y = 176 },
+    { x = 144, y = 176 },
+  }, "action focus targets follow the audited placement table order")
+end
+
+function T.tab_state_palette_and_ordered_bank_writes_are_audited()
+  local BagSources = sources()
+  Assert.equal(
+    BagSources.palettes.tabState,
+    48,
+    "the pocket-state OBJ palette is the retained member apart from the sprite palette 47"
+  )
+  Assert.isTrue(
+    BagSources.palettes.tabState ~= BagSources.sprites.tabs.palette,
+    "the state palette member must stay distinct from the base sprite palette member"
+  )
+  local state =
+    assert(BagSources.tabPaletteState, "the producer must publish the pocket-dependent palette transfer order")
+  Assert.equal(state.bankSize, 16, "each OBJ palette bank carries sixteen colors")
+  local transfers = assert(state.transfers, "the palette state must carry its ordered bank transfers")
+  Assert.equal(#transfers, 2, "initialization and pocket changes replay exactly two bank transfers")
+  Assert.deepEqual(
+    transfers[1],
+    { sourceBank = 8, destBank = 0, bankCount = 8 },
+    "the first transfer copies the retained banks into the destination base banks"
+  )
+  Assert.deepEqual(
+    transfers[2],
+    { sourceBank = "pocket", destBank = "pocket", bankCount = 1 },
+    "the second transfer copies the active pocket bank onto itself in source order"
+  )
+end
+
+function T.hero_edge_table_carries_the_retail_values()
+  local BagSources = sources()
+  Assert.deepEqual(
+    assert(BagSources.presentation.edgeColors, "the producer must publish the hero edge-color table"),
+    { 0x294A, 0x112F, 0x5294, 0, 0, 0, 0, 0 },
+    "the edge table keeps the audited retail entries verbatim"
+  )
 end
 
 return { tests = T }

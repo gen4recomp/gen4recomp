@@ -42,11 +42,28 @@ local function manifest()
     states[#states + 1] =
       { pocket = pocket, pose = "pocket." .. pocket .. ".pose", pattern = "pocket." .. pocket .. ".pattern" }
   end
+  local function framingRecord(angleXDegrees, angleYDegrees, distance, modelY)
+    return { angleXDegrees = angleXDegrees, angleYDegrees = angleYDegrees, distance = distance, modelY = modelY }
+  end
+  local function pocketRecords(base)
+    local records = {}
+    for index, pocket in ipairs(POCKETS) do
+      records[pocket] = framingRecord(base + index, base + 2 * index, 100 + 10 * index, 5 + index)
+    end
+    return records
+  end
   return {
     hero = {
       animations = {
         states = states,
         material = { male = "bag.male.material", female = "bag.female.material" },
+      },
+      presentation = {
+        framing = {
+          transitionTicks = 7,
+          baseline = { male = framingRecord(0, 0, 100, 5), female = framingRecord(1, 1, 110, 6) },
+          byGender = { male = pocketRecords(10), female = pocketRecords(20) },
+        },
       },
     },
     interactive = {
@@ -56,6 +73,7 @@ local function manifest()
       cancel = {
         rect = { x = 192, y = 168, width = 64, height = 24 },
         textRect = { x = 192, y = 168, width = 56, height = 16 },
+        labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
       overlays = {
         descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
@@ -412,12 +430,11 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FakeGraphics = require("tests.support.FakeGraphics").new
 
-local V5_POCKETS = POCKETS
-
--- Production-composition manifest in the generated v5 shape: the layout
--- fields above plus pocket-aware backgrounds and highlight tabs for the
--- composed draw. No production wiring changes.
-local function v5manifest()
+-- Production-composition manifest in the generated presentation shape: the
+-- layout fields above plus pocket-aware backgrounds, normal tabs, and the
+-- generated focus visuals/targets for the composed draw. No production
+-- wiring changes.
+local function composedManifest()
   local manifested = manifest()
   manifested.hero.background = {
     male = { image = "test/bag/hero-male.png", width = 256, height = 192 },
@@ -432,9 +449,9 @@ local function v5manifest()
     textRect = { x = 20, y = 144, width = 228, height = 40 },
   }
   local backgrounds = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = {}
-    for _, pocket in ipairs(V5_POCKETS) do
+    for _, pocket in ipairs(POCKETS) do
       pockets[pocket] = {
         image = "test/bag/background-" .. state .. "-" .. pocket .. ".png",
         width = 256,
@@ -443,24 +460,77 @@ local function v5manifest()
     end
     backgrounds[state] = pockets
   end
+  do
+    local browse = {}
+    for _, pocket in ipairs(POCKETS) do
+      local variants = {}
+      for count = 0, 6 do
+        variants[count + 1] = {
+          image = "test/bag/background-browse-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      browse[pocket] = variants
+    end
+    backgrounds.browse = browse
+  end
   manifested.interactive.backgrounds = backgrounds
   local tabs = {}
-  local normals = {}
+  local strips = {}
   for index = 0, 7 do
     tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
-    normals[index + 1] = {
-      image = "test/bag/tab-normal-" .. (index + 1) .. ".png",
-      width = 16,
-      height = 16,
-      offset = { x = 3, y = -2 },
+  end
+  for _, pocket in ipairs(POCKETS) do
+    strips[pocket] = {
+      image = "test/bag/tabs-" .. pocket .. ".png",
+      width = 256,
+      height = 32,
     }
   end
   manifested.interactive.pocketTabs = {
     rects = tabs,
-    normal = normals,
-    highlight = { image = "test/bag/tab-highlight.png", width = 24, height = 24, offset = { x = -4, y = 4 } },
+    strips = strips,
   }
-  manifested.interactive.itemSlots.focus = nil
+  manifested.interactive.focus = {
+    tabs = {
+      visual = { image = "test/bag/focus-tabs.png", width = 32, height = 32, offset = { x = -16, y = -16 } },
+      targets = {
+        { x = 16, y = 16 },
+        { x = 48, y = 16 },
+        { x = 80, y = 16 },
+        { x = 112, y = 16 },
+        { x = 144, y = 16 },
+        { x = 176, y = 16 },
+        { x = 208, y = 16 },
+        { x = 240, y = 16 },
+      },
+    },
+    items = {
+      visual = { image = "test/bag/focus-items.png", width = 96, height = 40, offset = { x = -48, y = -20 } },
+      targets = {
+        { x = 16, y = 48 },
+        { x = 144, y = 48 },
+        { x = 16, y = 88 },
+        { x = 144, y = 88 },
+        { x = 16, y = 128 },
+        { x = 144, y = 128 },
+      },
+    },
+    cancel = {
+      visual = { image = "test/bag/focus-cancel.png", width = 64, height = 24, offset = { x = -32, y = -12 } },
+      target = { x = 224, y = 176 },
+    },
+    actions = {
+      visual = { image = "test/bag/focus-actions.png", width = 96, height = 24, offset = { x = -48, y = -12 } },
+      targets = {
+        { x = 48, y = 144 },
+        { x = 144, y = 144 },
+        { x = 48, y = 176 },
+        { x = 144, y = 176 },
+      },
+    },
+  }
   manifested.interactive.itemSlots.registration = {
     slot1 = { image = "test/bag/registration-slot-1.png", width = 40, height = 16 },
     slot2 = { image = "test/bag/registration-slot-2.png", width = 40, height = 16 },
@@ -508,7 +578,7 @@ local function v5manifest()
   return manifested
 end
 
-local function seedV5Cache()
+local function seedComposedCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   local function put(path)
     cache:write(path, "png-bytes")
@@ -516,15 +586,23 @@ local function seedV5Cache()
   put("test/bag/hero-male.png")
   put("test/bag/hero-female.png")
   put("test/bag/description.png")
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
-    for _, pocket in ipairs(V5_POCKETS) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
+    for _, pocket in ipairs(POCKETS) do
       put("test/bag/background-" .. state .. "-" .. pocket .. ".png")
     end
   end
-  for index = 1, 8 do
-    put("test/bag/tab-normal-" .. index .. ".png")
+  for _, pocket in ipairs(POCKETS) do
+    for count = 0, 6 do
+      put("test/bag/background-browse-" .. pocket .. "-" .. count .. ".png")
+    end
   end
-  put("test/bag/tab-highlight.png")
+  for _, pocket in ipairs(POCKETS) do
+    put("test/bag/tabs-" .. pocket .. ".png")
+  end
+  put("test/bag/focus-tabs.png")
+  put("test/bag/focus-items.png")
+  put("test/bag/focus-cancel.png")
+  put("test/bag/focus-actions.png")
   put("test/bag/registration-slot-1.png")
   put("test/bag/registration-slot-2.png")
   return cache
@@ -583,8 +661,17 @@ local function wasDrawn(graphics, image)
   return false
 end
 
+local function staticDrawnAt(graphics, x, y)
+  for _, entry in ipairs(graphics.draws) do
+    if entry.quad == nil and entry.x == x and entry.y == y then
+      return true
+    end
+  end
+  return false
+end
+
 function T.production_bag_draws_pocket_specific_presentation()
-  local manifested = v5manifest()
+  local manifested = composedManifest()
   local options = composition({ manifest = manifested })
   options.cursor:setPocket("balls")
   local state = BagScreenState.new(options)
@@ -596,7 +683,7 @@ function T.production_bag_draws_pocket_specific_presentation()
   local content = composedText()
   local hero = composedHeroSpy()
   local draw = BagRenderer.new({
-    cacheFs = seedV5Cache(),
+    cacheFs = seedComposedCache(),
     manifest = manifested,
     text = content,
     graphics = graphics,
@@ -604,12 +691,41 @@ function T.production_bag_draws_pocket_specific_presentation()
   })
   local icons = composedIcons()
   draw:draw(view, assert(view.layout, "the composed status carries its resolved layout"), { icons = icons })
-  local ballsBackground = draw._images["background:browse:balls"]
-  local medicineBackground = draw._images["background:browse:medicine"]
+  local ballsBackground = draw._images["background:browse:balls:2"]
+  local medicineBackground = draw._images["background:browse:medicine:1"]
   Assert.notNil(ballsBackground, "the balls background is bound")
   Assert.isTrue(wasDrawn(graphics, ballsBackground), "the open bag draws its pocket background")
   Assert.isFalse(wasDrawn(graphics, medicineBackground), "the open bag never borrows another pocket")
   Assert.equal(hero.draws, 1, "the composed draw delegates exactly one hero model draw")
+  local itemFocus = manifested.interactive.focus.items
+  local absolute = assert(tonumber(view.selectedAbsoluteIndex), "the composed status carries its selection index")
+  local windowStart = assert(tonumber(view.visibleStart), "the composed status carries its window start")
+  local cell = absolute - windowStart + 1
+  local itemTarget = assert(itemFocus.targets[cell], "the composed selection resolves a visible target")
+  local itemOffset = itemFocus.visual.offset or { x = 0, y = 0 }
+  Assert.isTrue(
+    staticDrawnAt(graphics, itemTarget.x + itemOffset.x, itemTarget.y + itemOffset.y),
+    "the composed draw focuses the live selected cell"
+  )
+  Assert.equal(#graphics.rectangles, 0, "the composed draw emits no primitive focus")
+  -- Confirming the selected item opens the live action menu; the redraw
+  -- carries the generated action focus at the controller-selected target.
+  state:updateFixed({ { type = "confirm" } })
+  local menu = state:status()
+  Assert.equal(menu.state, "action_menu", "confirming the composed selection opens the action menu")
+  for key in pairs(graphics.draws) do
+    graphics.draws[key] = nil
+  end
+  draw:draw(menu, assert(menu.layout, "the menu status carries its layout"), { icons = icons })
+  local actionFocus = manifested.interactive.focus.actions
+  local selectedAction = assert(tonumber(menu.selectedAction), "the menu status carries its selected action")
+  local actionTarget = assert(actionFocus.targets[selectedAction + 1], "the menu selection resolves a target")
+  local actionOffset = actionFocus.visual.offset or { x = 0, y = 0 }
+  Assert.isTrue(
+    staticDrawnAt(graphics, actionTarget.x + actionOffset.x, actionTarget.y + actionOffset.y),
+    "the composed menu focuses the live selected action"
+  )
+  Assert.equal(#graphics.rectangles, 0, "the composed menu emits no primitive focus")
   -- Switching pockets through the live cursor re-resolves production status
   -- and the redraw follows with no missing-background fallback.
   options.cursor:setPocket("medicine")
@@ -647,6 +763,29 @@ function T.missing_capabilities_fail_at_construction()
       ---@diagnostic disable-next-line: param-type-mismatch -- the removed capability is the invalid input under test
       BagScreenState.new(broken)
     end, "a bag launch without " .. key .. " is a construction error")
+  end
+end
+
+-- The application composition supplies the profile gender to the hero
+-- presenter: each gender settles its own framing table after seven ticks.
+function T.hero_framing_settles_to_the_profile_gender_record()
+  for _, gender in ipairs({ "male", "female" }) do
+    local options = composition({ heroGender = gender })
+    local state = BagScreenState.new(options)
+    for _ = 1, 7 do
+      state:updateFixed({})
+    end
+    local hero = state:status().hero
+    local framing = assert(hero.framing, "the composed hero status carries its interpolated framing")
+    local expected = assert(
+      options.manifest.hero.presentation.framing.byGender[gender].items,
+      "the fixture carries the " .. gender .. " items framing"
+    )
+    Assert.near(framing.angleXDegrees, expected.angleXDegrees, 1e-9, gender .. " settles its own pitch")
+    Assert.near(framing.angleYDegrees, expected.angleYDegrees, 1e-9, gender .. " settles its own yaw")
+    Assert.near(framing.distance, expected.distance, 1e-9, gender .. " settles its own distance")
+    Assert.near(framing.modelY, expected.modelY, 1e-9, gender .. " settles its own model height")
+    state:dispose()
   end
 end
 

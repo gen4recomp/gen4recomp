@@ -19,10 +19,10 @@ function T.geometry_preserves_the_audited_rectangles()
   Assert.equal(geometry.slots[1].rect.y, 32)
   Assert.equal(geometry.slots[1].textRect.x, 32)
   Assert.equal(geometry.slots[1].textRect.y, 40)
-  Assert.equal(geometry.slots[1].iconCenter.x, 48)
+  Assert.equal(geometry.slots[1].iconCenter.x, 22)
   Assert.equal(geometry.slots[6].rect.x, 128)
   Assert.equal(geometry.slots[6].rect.y, 118)
-  Assert.equal(geometry.slots[6].iconCenter.y, 136)
+  Assert.equal(geometry.slots[6].iconCenter.y, 139)
   Assert.equal(geometry.cursor.size, 16)
   Assert.equal(geometry.cursor.anchorY, 177)
   Assert.equal(geometry.pageIndicator.rect.x, 80)
@@ -142,12 +142,12 @@ function T.slots_publish_full_touch_rects_with_separate_text_windows()
     { x = 160, y = 120, width = 88, height = 32 },
   }
   local iconCenters = {
-    { x = 48, y = 56 },
-    { x = 176, y = 56 },
-    { x = 48, y = 96 },
-    { x = 176, y = 96 },
-    { x = 48, y = 136 },
-    { x = 176, y = 136 },
+    { x = 22, y = 59 },
+    { x = 152, y = 59 },
+    { x = 22, y = 100 },
+    { x = 152, y = 100 },
+    { x = 22, y = 139 },
+    { x = 152, y = 139 },
   }
   Assert.equal(#geometry.slots, 6)
   for index = 1, 6 do
@@ -180,6 +180,60 @@ function T.cancel_publishes_the_full_button_rect_with_its_text_window()
     { x = 192, y = 168, width = 56, height = 16 },
     "cancel carries the separate text window"
   )
+end
+
+-- Focus targets reach the manifest from the producer's semantic focus
+-- record, never from control rectangles or renamed icon geometry: eight
+-- tab points, six item points, one Cancel point, four action points.
+function T.geometry_publishes_semantic_focus_targets()
+  local geometry = BagPresentationCompiler.compileGeometry(BagSources)
+  local focus = assert(geometry.focus, "compiled geometry must publish the semantic focus targets")
+  local sources = assert(BagSources.focusTargets, "the producer must publish the movable focus target groups")
+  Assert.deepEqual(focus.tabs, sources.tabs, "compiled tab targets follow the producer focus record")
+  Assert.deepEqual(focus.items, sources.items, "compiled item targets follow the producer focus record")
+  Assert.deepEqual(focus.cancel, sources.cancel, "the compiled Cancel target follows the producer focus record")
+  Assert.deepEqual(focus.actions, sources.actions, "compiled action targets follow the producer focus record")
+  Assert.equal(#focus.tabs, 8, "eight tab targets are required")
+  Assert.equal(#focus.items, 6, "six item targets are required")
+  Assert.equal(#focus.actions, 4, "four action targets are required")
+end
+
+-- Slot icon centers follow the item-icon placement record, never the
+-- focus targets: moving the icon record moves the compiled geometry while
+-- the focus record stays untouched.
+function T.slot_icon_centers_follow_the_item_icon_record()
+  local edited = {
+    focusTargets = BagSources.focusTargets,
+    itemIconCenters = {
+      { x = 23, y = 59 },
+      { x = 152, y = 59 },
+      { x = 22, y = 100 },
+      { x = 152, y = 100 },
+      { x = 22, y = 139 },
+      { x = 152, y = 139 },
+    },
+    geometry = BagSources.geometry,
+  }
+  local geometry = BagPresentationCompiler.compileGeometry(edited)
+  Assert.deepEqual(geometry.slots[1].iconCenter, { x = 23, y = 59 }, "compiled icons track the icon record")
+  Assert.deepEqual(
+    geometry.focus.items,
+    BagSources.focusTargets.items,
+    "compiled focus targets still track the focus record"
+  )
+end
+
+-- Compiled geometry without either producer record fails instead of
+-- falling back to the other role's coordinates.
+function T.geometry_without_separate_role_records_fails()
+  local missingFocus = { itemIconCenters = BagSources.itemIconCenters, geometry = BagSources.geometry }
+  local okFocus, errFocus = pcall(BagPresentationCompiler.compileGeometry, missingFocus)
+  Assert.isFalse(okFocus, "missing focus targets must fail")
+  Assert.notNil(tostring(errFocus):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
+  local missingIcons = { focusTargets = BagSources.focusTargets, geometry = BagSources.geometry }
+  local okIcons, errIcons = pcall(BagPresentationCompiler.compileGeometry, missingIcons)
+  Assert.isFalse(okIcons, "missing icon placements must fail")
+  Assert.notNil(tostring(errIcons):find("BAG_GEOMETRY_INVALID"), "the failure must carry the protocol code")
 end
 
 return { tests = T }

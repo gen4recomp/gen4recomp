@@ -203,6 +203,35 @@ function T.entry_counts_that_contradict_the_dimensions_are_typed_errors()
   Assert.equal(failure.code, module.ERROR.SOURCE_INVALID)
 end
 
+function T.lower_oam_index_paints_in_front_where_objects_overlap()
+  local module = rasterizer()
+  local chars = charData({ solidTile4(1), solidTile4(2) })
+  local palette = paletteData(16)
+  -- OBJ 0 (front) at (0, 0) partially overlaps OBJ 1 (back) at (4, 0), so
+  -- the shared columns prove precedence while the back-only columns prove
+  -- the earlier object still paints instead of being skipped.
+  local result = module.renderCell(chars, palette, {
+    objs = {
+      { x = 0, y = 0, tile = 0, palette = 0, width = 8, height = 8, flipH = false, flipV = false },
+      { x = 4, y = 0, tile = 1, palette = 0, width = 8, height = 8, flipH = false, flipV = false },
+    },
+  })
+  Assert.equal(result.width, 12)
+  Assert.equal(result.height, 8)
+  local front = palette.colors[2]
+  local back = palette.colors[3]
+  local r, g, b, a = pixelAt(result.pixels, 12, 6, 4)
+  Assert.equal(r, front.r)
+  Assert.equal(g, front.g)
+  Assert.equal(b, front.b)
+  Assert.equal(a, 255)
+  local br, bg, bb, ba = pixelAt(result.pixels, 12, 10, 4)
+  Assert.equal(br, back.r)
+  Assert.equal(bg, back.g)
+  Assert.equal(bb, back.b)
+  Assert.equal(ba, 255)
+end
+
 function T.animation_frame_selects_its_cell_instead_of_the_sequence_position()
   local module = rasterizer()
   local result = module.renderAnimationFrame(

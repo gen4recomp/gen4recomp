@@ -23,13 +23,30 @@
 --
 -- Sprites: the 39-entry ManagedSpriteTemplate table at ov15_02200B0C binds
 -- the live bag resource groups. Tabs use char 51 + palette 47 + cell 49 +
--- anim 50 (tab sprites sit at centers 16+32k, y 16 with anim and
--- palette slot equal to the pocket index; the highlight reuses anim 8 and
--- palette slot 9). The selection cursor uses char 6 + cell 5 + palette 47
--- + anim 4 (four sequences for the four cursor cells). Item icons resolve
--- through archive 18 (GetItemIndexMapping/GetItemIconCell/GetItemIconAnim)
--- and are never compiled here. NANR 21 loads with no static template
--- binding and is recorded but not compiled.
+-- anim 50: template entries 9..16 carry the eight pocket tabs at centers
+-- 16+32k, y 16 with animation and palette slot equal to the pocket index,
+-- and entry 19 carries the unselected Cancel face at (224, 176) with
+-- animation 16 and palette slot 8. The movable focus sprite is template
+-- entry 20 (animation 8, palette slot 9 at creation); ov15_021FFECC drives
+-- that single sprite through the 21-record position/state table at
+-- ov15_02200AB8, applying one record's X, Y, animation, and palette
+-- override per call (records 0..7 tab targets, 8..13 item targets, 14..15
+-- the lower-left pair, 16 Cancel, 17..20 action targets). The item-row loop
+-- at ov15_02200140 instead positions template entries 1..6 -- the six item
+-- icon sprites whose per-slot char/palette tags ov15_021FF8F0 rebinds to the
+-- item graphics -- at their own template X/Y centers (22/152,
+-- 59/100/139); those placements never pass through the focus table.
+-- The tab strip additionally depends on the retained palette member 48:
+-- ov15_02200030 replays two OBJ bank copies per active pocket over the base
+-- member-47 realization (see BagSources.tabPaletteState), so the persistent
+-- selected-pocket treatment is palette state, not the movable focus sprite.
+-- Entries 28..31 sit at the four action-button centers with animation 22;
+-- entries 32..37 are the quantity-screen widgets driven with the tables at
+-- ov15_02200A58 and ov15_02200A88; the remaining entries are auxiliary
+-- states. Item icons resolve through archive 18
+-- (GetItemIndexMapping/GetItemIconCell/GetItemIconAnim) and are never
+-- compiled here. NANR 21 loads with no static template binding and is
+-- recorded but not compiled.
 --
 -- The top strip (template entry 0: char 26 + palette 15 + cell 25 +
 -- anim 24, sprite center (177, 14)) is intentionally uncompiled: the
@@ -47,10 +64,10 @@
 -- Geometry: window tiles convert at 8 pixels per tile. Item slots pair the
 -- six touch bounds at ov15_02200684 with the six 88x32 window rectangles
 -- from the twelve-entry window table at ov15_02200908 (two layers sharing
--- six grid positions); tab centers from the per-pocket placement table at
--- ov15_02200AB8 (sprite centers, matching the template row); icon centers
--- from the same table's slot entries; the cursor anchor from the sprite
--- position update (y 177, x stepping 16 from 16); the count readout and
+-- six grid positions); tab rects tile the top strip row; icon centers are
+-- the six item-icon template placements (entries 1..6, positioned by the
+-- item-row loop), never the focus table's item targets; the cursor anchor
+-- from the sprite position update (y 177, x stepping 16 from 16); the count readout and
 -- Cancel windows from the lower-screen window setup; the description window
 -- and its text origin from the upper-screen window setup and the
 -- description printer; action buttons and quantity digits from their window
@@ -131,10 +148,32 @@ BagSources.chars = {
 -- Palette (NCLR) members used for rasterization by semantic role. The lower
 -- member feeds the pocket-dependent realization: destination banks 0..3
 -- copy source banks p, p, p+1, p (16 colors each) for zero-based pocket p,
--- matching the retail lower-BG palette switch.
+-- matching the retail lower-BG palette switch. The tab-state member is the
+-- retained OBJ palette the retail tab path mutates at initialization and on
+-- pocket changes; the base tab sprite resources above keep their own member
+-- and the movable focus sprite keeps its own selector, so neither carries
+-- the persistent selected-pocket treatment.
 BagSources.palettes = {
   upper = 8,
   lower = 41,
+  tabState = 48,
+}
+
+-- Pocket-relative OBJ bank transfers replaying the retail tab palette mutation
+-- (ov15_02200030): for zero-based active pocket p the producer first copies
+-- eight consecutive banks from state source bank 8 to effective destination
+-- bank 0 (the retail 0x100-byte base transfer), then copies one bank from
+-- state source bank p over effective destination bank p (the retail 0x20-byte
+-- selected-pocket override). The transfers execute in this order, so the
+-- second transfer wins when the active pocket bank was covered by the base
+-- transfer. Each bank holds bankSize colors; the runtime manifest carries
+-- only the realized strip pixels, never these operations.
+BagSources.tabPaletteState = {
+  bankSize = 16,
+  transfers = {
+    { sourceBank = 8, destBank = 0, bankCount = 8 },
+    { sourceBank = "pocket", destBank = "pocket", bankCount = 1 },
+  },
 }
 
 -- Pocket-relative source bank offsets for the lower background realization.
@@ -153,6 +192,9 @@ BagSources.sprites = {
 
 -- Source-selected sprite states. Animation and palette numbers stay in this
 -- producer-only audit; generated visuals contain only the realized pixels.
+-- The focus states select frames of the tab resource group for the movable
+-- focus sprite (template entry 20); the Cancel face selects the unselected
+-- Cancel artwork for finalized-background composition.
 BagSources.spriteStates = {
   tabs = {
     normal = {
@@ -165,8 +207,14 @@ BagSources.spriteStates = {
       { animation = 6, palette = 6 },
       { animation = 7, palette = 7 },
     },
-    highlight = { animation = 8, palette = 9 },
   },
+  focus = {
+    tabs = { animation = 8, palette = 9 },
+    items = { animation = 10, palette = 9 },
+    cancel = { animation = 17, palette = 9 },
+    actions = { animation = 23, palette = 9 },
+  },
+  cancelFace = { animation = 16, palette = 8 },
   cursor = { animations = { 0, 1, 2, 3 } },
 }
 
@@ -177,6 +225,53 @@ BagSources.lowerLayers = {
   action = { "actionWash", "actionSlots" },
   quantity = { "quantity", "quantityAlt" },
   confirmation = { "confirmation" },
+}
+
+-- Browse count replay facts from ov15_021FD43C over the ov15_022013A8 table:
+-- six visible-count blocks of four tilemap operations for counts 0..5.
+-- Count 6 performs no mutation (the source early-returns on count 6), so it
+-- carries no block. Coordinates are tile-grid positions in the decoded
+-- browse screen: `copy` duplicates a source rectangle onto a destination
+-- rectangle of the same screen, `fill` clears a rectangle to the blank tile,
+-- and `nop` replays nothing. The runtime manifest carries only the realized
+-- pixels, never these operations.
+BagSources.browseCountBlocks = {
+  {
+    { kind = "nop" },
+    { kind = "fill", x = 0, y = 4, width = 32, height = 16 },
+    { kind = "nop" },
+    { kind = "nop" },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 9, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 10, width = 16, height = 10 },
+    { kind = "nop" },
+    { kind = "fill", x = 16, y = 4, width = 16, height = 16 },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 9, width = 16, height = 1 },
+    { kind = "nop" },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 9, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 10, width = 32, height = 10 },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 14, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 15, width = 16, height = 5 },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 9, width = 16, height = 1 },
+    { kind = "fill", x = 16, y = 10, width = 16, height = 10 },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 14, width = 16, height = 1 },
+    { kind = "nop" },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 14, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 15, width = 32, height = 5 },
+  },
+  {
+    { kind = "nop" },
+    { kind = "nop" },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 14, width = 16, height = 1 },
+    { kind = "fill", x = 16, y = 15, width = 16, height = 5 },
+  },
 }
 
 -- Audited but uncompiled: NANR 21 loads with no static template binding, so
@@ -207,8 +302,12 @@ BagSources.messages = {
   },
 }
 
--- No compiled widget namespace: the only template entry outside the live
--- tab/cursor groups is the permanently hidden top strip noted above.
+-- Template-entry inventory beyond the tab/cursor groups: entry 0 is the
+-- permanently hidden top strip; entries 1..6 are the item icons, entry 19
+-- the Cancel face, entry 20 the movable focus sprite, entries 28..31 the
+-- action-button faces, and entries 7..8, 17..18, 21..27, 32..38 auxiliary
+-- row/quantity states. Only the entries named by the geometry/focus records
+-- below select compiled visuals.
 
 -- Spare hero pattern members the model init never reads.
 BagSources.sparePatternMembers = { 56, 75 }
@@ -249,47 +348,46 @@ BagSources.geometry = {
     rect(192, 0, 32, 32),
     rect(224, 0, 32, 32),
   },
-  highlight = { animIndex = 8, paletteSlot = 9 },
   slots = {
     {
       rect = rect(0, 32, 128, 42),
       textRect = rect(32, 40, 88, 32),
-      iconCenter = { x = 48, y = 56 },
+      iconCenter = { x = 22, y = 59 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(128, 32, 128, 42),
       textRect = rect(160, 40, 88, 32),
-      iconCenter = { x = 176, y = 56 },
+      iconCenter = { x = 152, y = 59 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(0, 74, 128, 44),
       textRect = rect(32, 80, 88, 32),
-      iconCenter = { x = 48, y = 96 },
+      iconCenter = { x = 22, y = 100 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(128, 74, 128, 44),
       textRect = rect(160, 80, 88, 32),
-      iconCenter = { x = 176, y = 96 },
+      iconCenter = { x = 152, y = 100 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(0, 118, 128, 36),
       textRect = rect(32, 120, 88, 32),
-      iconCenter = { x = 48, y = 136 },
+      iconCenter = { x = 22, y = 139 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
     {
       rect = rect(128, 118, 128, 36),
       textRect = rect(160, 120, 88, 32),
-      iconCenter = { x = 176, y = 136 },
+      iconCenter = { x = 152, y = 139 },
       nameAt = { x = 0, y = 0 },
       quantityAt = { x = 48, y = 16 },
     },
@@ -299,6 +397,10 @@ BagSources.geometry = {
   cancel = {
     rect = rect(192, 168, 64, 24),
     textRect = rect(192, 168, 56, 16),
+    -- The CANCEL label span: retail centers the label with
+    -- 8 + (48 - textWidth)/2, so the semantic label area is the 48px span
+    -- centered at canonical X=224 rather than the 56px text window.
+    labelRect = rect(200, 168, 48, 16),
   },
   descriptionFrame = rect(0, 144, 256, 48),
   descriptionText = rect(20, 144, 236, 48),
@@ -313,6 +415,53 @@ BagSources.geometry = {
     rect(160, 112, 16, 24),
     rect(192, 112, 16, 24),
   },
+}
+
+-- Movable focus targets in canonical pane pixels: the position records the
+-- focus-table update applies to the single managed focus sprite, grouped by
+-- semantic class. Eight tab targets tile the strip row, six item targets
+-- mark the item rows, one Cancel target marks the Cancel face, and four
+-- action targets sit on the action-button grid. These are focus anchors,
+-- never item-icon geometry.
+BagSources.focusTargets = {
+  tabs = {
+    { x = 16, y = 16 },
+    { x = 48, y = 16 },
+    { x = 80, y = 16 },
+    { x = 112, y = 16 },
+    { x = 144, y = 16 },
+    { x = 176, y = 16 },
+    { x = 208, y = 16 },
+    { x = 240, y = 16 },
+  },
+  items = {
+    { x = 48, y = 56 },
+    { x = 176, y = 56 },
+    { x = 48, y = 96 },
+    { x = 176, y = 96 },
+    { x = 48, y = 136 },
+    { x = 176, y = 136 },
+  },
+  cancel = { x = 224, y = 176 },
+  actions = {
+    { x = 48, y = 144 },
+    { x = 144, y = 144 },
+    { x = 48, y = 176 },
+    { x = 144, y = 176 },
+  },
+}
+
+-- Item-icon placements in canonical pane pixels: the template X/Y centers
+-- of the six item-icon sprites, positioned by the item-row loop. Kept apart
+-- from the focus records above so a focus coordinate can never silently
+-- stand in for an icon placement again.
+BagSources.itemIconCenters = {
+  { x = 22, y = 59 },
+  { x = 152, y = 59 },
+  { x = 22, y = 100 },
+  { x = 152, y = 100 },
+  { x = 22, y = 139 },
+  { x = 152, y = 139 },
 }
 
 -- Registration marker source facts. The retail registration path loads Bag
@@ -338,6 +487,15 @@ BagSources.registration = {
 -- followed by an alignment pad at +13, so the audited static bytes
 -- 01 0A at +14/+15 are 0x0A01 (2561), converted by the runtime through
 -- the pinned sine/cosine perspective convention.
+--
+-- The `camera`/`transform` records below are the static setup facts the
+-- per-frame path starts from. The per-pocket `framing` records are the
+-- dynamic ov15_02200790 table states the pocket switch transitions between
+-- over seven fixed ticks: two gender groups of nine raw records each
+-- (record 0 is the neutral baseline, records 1..8 follow the canonical
+-- pocket order). Each record carries u16 X/Y angles, a fixed-point camera
+-- distance, and a fixed-point model height; the compiler normalizes them
+-- into manifest values and no raw record reaches runtime.
 BagSources.presentation = {
   camera = {
     target = { x = 0, y = 0, z = 0 },
@@ -371,6 +529,36 @@ BagSources.presentation = {
     ambient = 0x294A,
     specular = 0x3DEF,
     emission = 0x3DEF,
+  },
+  -- Hero edge-marking colors as raw RGB555 words from the retail edge table
+  -- (ov15_02201304), installed while edge marking stays enabled; the
+  -- compiler normalizes them to semantic channel records. Trailing black
+  -- entries are source data, not missing data.
+  edgeColors = { 0x294A, 0x112F, 0x5294, 0, 0, 0, 0, 0 },
+  framing = {
+    transitionTicks = 7,
+    male = {
+      { angleX = 59778, angleY = 5152, distance = 1391441, modelY = -163840 },
+      { angleX = 61058, angleY = 26393, distance = 1391445, modelY = -151552 },
+      { angleX = 57479, angleY = 18472, distance = 932689, modelY = -188416 },
+      { angleX = 61567, angleY = 30742, distance = 1370963, modelY = -196606 },
+      { angleX = 885, angleY = 22050, distance = 744270, modelY = -282623 },
+      { angleX = 59265, angleY = 29991, distance = 830296, modelY = -245754 },
+      { angleX = 59518, angleY = 29722, distance = 1215311, modelY = -221186 },
+      { angleX = 60288, angleY = 37403, distance = 858962, modelY = -286720 },
+      { angleX = 1415, angleY = 35871, distance = 1391441, modelY = -131073 },
+    },
+    female = {
+      { angleX = 59778, angleY = 5152, distance = 1391441, modelY = -163840 },
+      { angleX = 60546, angleY = 14368, distance = 1203027, modelY = -184320 },
+      { angleX = 59778, angleY = 7968, distance = 1096529, modelY = -163840 },
+      { angleX = 59778, angleY = 24088, distance = 867155, modelY = -196607 },
+      { angleX = 61820, angleY = 6686, distance = 1391441, modelY = -163840 },
+      { angleX = 384, angleY = 12834, distance = 809809, modelY = -208896 },
+      { angleX = 60539, angleY = 33046, distance = 817993, modelY = -249855 },
+      { angleX = 61821, angleY = 29215, distance = 875345, modelY = -172032 },
+      { angleX = 1415, angleY = 20509, distance = 1391441, modelY = -131072 },
+    },
   },
 }
 

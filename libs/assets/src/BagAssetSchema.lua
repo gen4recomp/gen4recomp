@@ -1,11 +1,16 @@
 -- Authoritative validation for the generated field-bag presentation class.
 -- The manifest carries the upper-pane hero (gender backdrops, description
 -- frame, gender hero models with pocket-indexed animation states, normalized
--- camera/transform/light facts) plus the lower-pane controls (eight pocket
--- tabs with a highlight visual, six item slots pairing full touch rects with
--- text windows and explicit text anchors plus registration markers, the count
--- readout, Cancel with its text window, pocket-aware state backgrounds,
--- semantic action text/templates, and the action/quantity/
+-- camera/transform/light facts, the eight-entry edge-color table) plus the
+-- lower-pane controls (eight pocket
+-- tabs with one 256x32 strip visual per active pocket, six item slots pairing
+-- full touch rects with
+-- text windows and explicit text anchors plus registration markers, the
+-- semantic focus visuals with their canonical target points, the count
+-- readout, Cancel with its text window and source-centered label area,
+-- pocket-aware browse count backgrounds (seven realized variants per
+-- pocket), pocket-aware hero framing records, semantic action
+-- text/templates, and the action/quantity/
 -- confirmation overlays). Every loader, producer
 -- writer, and test calls these validators, so no second interpretation of
 -- the shapes exists. Unknown fields, wrong pane sizes, out-of-bounds
@@ -19,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v5"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v8"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -483,6 +488,68 @@ local function checkMaterials(materials, context)
   end
 end
 
+-- The retail hero edge-color table: exactly eight semantic 5-bit channel
+-- records feeding the shared DS edge-marking renderer. Trailing black
+-- entries are valid source data, not missing data.
+local function checkEdgeColors(edgeColors, context)
+  if not Validate.isArray(edgeColors) or #edgeColors ~= 8 then
+    fail("hero.presentation.edgeColors must carry exactly eight edge-color records", context)
+  end
+  for index, record in ipairs(edgeColors) do
+    checkMaterialRegister(record, context, "hero.presentation.edgeColors[" .. index .. "]")
+  end
+end
+
+local function checkFramingRecord(record, context, what)
+  if type(record) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(record, { angleXDegrees = true, angleYDegrees = true, distance = true, modelY = true }, context, what)
+  checkFinite(record.angleXDegrees, context, what .. ".angleXDegrees")
+  checkFinite(record.angleYDegrees, context, what .. ".angleYDegrees")
+  checkFinite(record.distance, context, what .. ".distance")
+  checkFinite(record.modelY, context, what .. ".modelY")
+end
+
+-- Pocket-aware hero framing: the fixed seven-tick transition duration, one
+-- neutral baseline record per gender, and one record per canonical pocket
+-- per gender. Transition progress stays runtime-owned; only these immutable
+-- facts reach the manifest.
+local function checkFraming(framing, context)
+  if type(framing) ~= "table" then
+    fail("hero.presentation.framing must be a record", context)
+  end
+  checkKeys(framing, { transitionTicks = true, baseline = true, byGender = true }, context, "hero.presentation.framing")
+  if framing.transitionTicks ~= 7 then
+    fail("hero.presentation.framing.transitionTicks must be exactly seven", context)
+  end
+  local baseline = framing.baseline
+  if type(baseline) ~= "table" then
+    fail("hero.presentation.framing.baseline must be a record", context)
+  end
+  checkKeys(baseline, { male = true, female = true }, context, "hero.presentation.framing.baseline")
+  local byGender = framing.byGender
+  if type(byGender) ~= "table" then
+    fail("hero.presentation.framing.byGender must be a record", context)
+  end
+  checkKeys(byGender, { male = true, female = true }, context, "hero.presentation.framing.byGender")
+  local allowed = {}
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    allowed[pocket] = true
+  end
+  for _, gender in ipairs({ "male", "female" }) do
+    checkFramingRecord(baseline[gender], context, "hero.presentation.framing.baseline." .. gender)
+    local pockets = byGender[gender]
+    if type(pockets) ~= "table" then
+      fail("hero.presentation.framing.byGender." .. gender .. " must be a pocket record", context)
+    end
+    checkKeys(pockets, allowed, context, "hero.presentation.framing.byGender." .. gender)
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      checkFramingRecord(pockets[pocket], context, "hero.presentation.framing.byGender." .. gender .. "." .. pocket)
+    end
+  end
+end
+
 local function checkHero(hero, context)
   if type(hero) ~= "table" then
     fail("hero must be a record", context)
@@ -531,7 +598,7 @@ local function checkHero(hero, context)
   end
   checkKeys(
     presentation,
-    { camera = true, transform = true, lights = true, materials = true },
+    { camera = true, transform = true, lights = true, materials = true, framing = true, edgeColors = true },
     context,
     "hero.presentation"
   )
@@ -539,6 +606,8 @@ local function checkHero(hero, context)
   checkTransform(presentation.transform, context)
   checkLights(presentation.lights, context)
   checkMaterials(presentation.materials, context)
+  checkFraming(presentation.framing, context)
+  checkEdgeColors(presentation.edgeColors, context)
 end
 
 local function checkLocalPoint(value, bounds, context, what)
@@ -570,6 +639,45 @@ local function checkContained(inner, outer, context, what)
   end
 end
 
+-- Semantic focus: one static source-derived visual per focus class with the
+-- canonical target points the visual is drawn at. Tab/item/action classes
+-- carry target arrays of exact cardinality; Cancel carries one target
+-- point. No animation timeline or source identity reaches the manifest.
+local function checkFocusTargets(targets, expected, context, what)
+  if not Validate.isArray(targets) or #targets ~= expected then
+    fail(what .. " must carry exactly " .. expected .. " target points", context)
+  end
+  for index, target in ipairs(targets) do
+    checkPoint(target, context, what .. "[" .. index .. "]")
+  end
+end
+
+local function checkFocusClass(class, expected, context, what)
+  if type(class) ~= "table" then
+    fail(what .. " must be a record", context)
+  end
+  checkKeys(class, { visual = true, targets = true }, context, what)
+  checkVisual(class.visual, context, what .. ".visual")
+  checkFocusTargets(class.targets, expected, context, what .. ".targets")
+end
+
+local function checkFocus(focus, context)
+  if type(focus) ~= "table" then
+    fail("interactive.focus must be a record", context)
+  end
+  checkKeys(focus, { tabs = true, items = true, cancel = true, actions = true }, context, "interactive.focus")
+  checkFocusClass(focus.tabs, BagAssetSchema.TAB_COUNT, context, "interactive.focus.tabs")
+  checkFocusClass(focus.items, BagAssetSchema.SLOT_COUNT, context, "interactive.focus.items")
+  local cancel = focus.cancel
+  if type(cancel) ~= "table" then
+    fail("interactive.focus.cancel must be a record", context)
+  end
+  checkKeys(cancel, { visual = true, target = true }, context, "interactive.focus.cancel")
+  checkVisual(cancel.visual, context, "interactive.focus.cancel.visual")
+  checkPoint(cancel.target, context, "interactive.focus.cancel.target")
+  checkFocusClass(focus.actions, 4, context, "interactive.focus.actions")
+end
+
 local function checkInteractive(interactive, context)
   if type(interactive) ~= "table" then
     fail("interactive must be a record", context)
@@ -578,6 +686,7 @@ local function checkInteractive(interactive, context)
     backgrounds = true,
     pocketTabs = true,
     itemSlots = true,
+    focus = true,
     pageIndicator = true,
     cancel = true,
     text = true,
@@ -593,7 +702,7 @@ local function checkInteractive(interactive, context)
     context,
     "interactive.backgrounds"
   )
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = backgrounds[state]
     if type(pockets) ~= "table" then
       fail("interactive.backgrounds." .. state .. " must be a pocket record", context)
@@ -612,24 +721,60 @@ local function checkInteractive(interactive, context)
       end
     end
   end
+  do
+    local browse = backgrounds.browse
+    if type(browse) ~= "table" then
+      fail("interactive.backgrounds.browse must be a pocket record", context)
+    end
+    local allowed = {}
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      allowed[pocket] = true
+    end
+    checkKeys(browse, allowed, context, "interactive.backgrounds.browse")
+    for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+      local what = "interactive.backgrounds.browse." .. pocket
+      local variants = browse[pocket]
+      if not Validate.isArray(variants) or #variants ~= 7 then
+        fail(what .. " must carry exactly seven count visuals", context)
+      end
+      for index, visual in ipairs(variants) do
+        checkVisual(visual, context, what .. "[" .. index .. "]")
+        if visual.width ~= BagAssetSchema.PANE_WIDTH or visual.height ~= BagAssetSchema.PANE_HEIGHT then
+          fail(what .. "[" .. index .. "] must use the canonical pane size", context)
+        end
+      end
+    end
+  end
   local pocketTabs = interactive.pocketTabs
   if type(pocketTabs) ~= "table" then
     fail("interactive.pocketTabs must be a record", context)
   end
-  checkKeys(pocketTabs, { rects = true, normal = true, highlight = true }, context, "interactive.pocketTabs")
+  checkKeys(pocketTabs, { rects = true, strips = true }, context, "interactive.pocketTabs")
   if not Validate.isArray(pocketTabs.rects) or #pocketTabs.rects ~= BagAssetSchema.TAB_COUNT then
     fail("interactive.pocketTabs.rects must carry exactly eight tab rectangles", context)
   end
   for index, tab in ipairs(pocketTabs.rects) do
     checkRect(tab, context, "interactive.pocketTabs.rects[" .. index .. "]")
   end
-  if not Validate.isArray(pocketTabs.normal) or #pocketTabs.normal ~= BagAssetSchema.TAB_COUNT then
-    fail("interactive.pocketTabs.normal must carry exactly eight semantic visuals", context)
+  -- One final 256x32 strip visual per active pocket, carrying the persistent
+  -- selected-pocket treatment independently of transient focus. Exactly the
+  -- eight canonical pocket keys, no extras.
+  if type(pocketTabs.strips) ~= "table" then
+    fail("interactive.pocketTabs.strips must be a pocket record", context)
   end
-  for index, visual in ipairs(pocketTabs.normal) do
-    checkVisual(visual, context, "interactive.pocketTabs.normal[" .. index .. "]")
+  local allowed = {}
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    allowed[pocket] = true
   end
-  checkVisual(pocketTabs.highlight, context, "interactive.pocketTabs.highlight")
+  checkKeys(pocketTabs.strips, allowed, context, "interactive.pocketTabs.strips")
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    local visual = pocketTabs.strips[pocket]
+    local what = "interactive.pocketTabs.strips." .. pocket
+    checkVisual(visual, context, what)
+    if visual.width ~= 256 or visual.height ~= 32 then
+      fail(what .. " must be exactly 256x32", context)
+    end
+  end
   local itemSlots = interactive.itemSlots
   if type(itemSlots) ~= "table" then
     fail("interactive.itemSlots must be a record", context)
@@ -656,6 +801,7 @@ local function checkInteractive(interactive, context)
     checkLocalPoint(slot.nameAt, slot.textRect, context, what .. ".nameAt")
     checkLocalPoint(slot.quantityAt, slot.textRect, context, what .. ".quantityAt")
   end
+  checkFocus(interactive.focus, context)
   local pageIndicator = interactive.pageIndicator
   if type(pageIndicator) ~= "table" then
     fail("interactive.pageIndicator must be a record", context)
@@ -667,10 +813,15 @@ local function checkInteractive(interactive, context)
   if type(cancel) ~= "table" then
     fail("interactive.cancel must be a record", context)
   end
-  checkKeys(cancel, { rect = true, textRect = true }, context, "interactive.cancel")
+  checkKeys(cancel, { rect = true, textRect = true, labelRect = true }, context, "interactive.cancel")
   checkRect(cancel.rect, context, "interactive.cancel.rect")
   checkRect(cancel.textRect, context, "interactive.cancel.textRect")
   checkContained(cancel.textRect, cancel.rect, context, "interactive.cancel.textRect")
+  checkRect(cancel.labelRect, context, "interactive.cancel.labelRect")
+  checkContained(cancel.labelRect, cancel.rect, context, "interactive.cancel.labelRect")
+  if cancel.labelRect.x * 2 + cancel.labelRect.width ~= cancel.rect.x * 2 + cancel.rect.width then
+    fail("interactive.cancel.labelRect must be horizontally centered on the cancel control", context)
+  end
   checkText(interactive.text, context)
   checkRegistration(itemSlots.registration, itemSlots.slots, context)
   local overlays = interactive.overlays

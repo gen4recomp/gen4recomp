@@ -46,7 +46,7 @@ end
 
 local function manifest(overrides)
   local record = {
-    schema = "g4-bag-assets-v5",
+    schema = "g4-bag-assets-v8",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -100,6 +100,16 @@ local function manifest(overrides)
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
         },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+        },
       },
     },
   }
@@ -110,7 +120,13 @@ local function manifest(overrides)
 end
 
 local function status()
-  return { pocket = "items", pose = "pocket.items.pose", pattern = "pocket.items.pattern", frame = 0 }
+  return {
+    pocket = "items",
+    pose = "pocket.items.pose",
+    pattern = "pocket.items.pattern",
+    frame = 0,
+    framing = { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.24375, modelY = -45 },
+  }
 end
 
 local function placement()
@@ -295,11 +311,10 @@ function T.camera_matches_the_generated_clip_planes_and_honors_both_angles()
     Assert.equal(#camera:projection(), 16, "the camera carries a projection matrix")
     Assert.equal(#camera:view(1), 16, "the camera carries a view matrix")
     local firstView = camera:view(1)
-    renderer:release()
 
-    local tilted = manifest({ angleYDegrees = 48.3 })
-    local second = newHero(Hero, tilted)
-    second:draw("male", status(), placement())
+    local tilted = status()
+    tilted.framing.angleYDegrees = 48.3
+    renderer:draw("male", tilted, placement())
     Assert.equal(#rec.draws, 2, "the tilted draw reaches the shared renderer")
     local secondView = rec.draws[2][2]:view(1)
     local moved = false
@@ -309,11 +324,12 @@ function T.camera_matches_the_generated_clip_planes_and_honors_both_angles()
       end
     end
     Assert.isTrue(moved, "the yaw angle participates in the view")
-    second:release()
+    renderer:release()
 
-    local pitched = manifest({ angleXDegrees = 318.4 })
-    local third = newHero(Hero, pitched)
-    third:draw("male", status(), placement())
+    local second = newHero(Hero, manifest())
+    local pitched = status()
+    pitched.framing.angleXDegrees = 318.4
+    second:draw("male", pitched, placement())
     local thirdView = rec.draws[3][2]:view(1)
     moved = false
     for index = 1, 16 do
@@ -322,7 +338,7 @@ function T.camera_matches_the_generated_clip_planes_and_honors_both_angles()
       end
     end
     Assert.isTrue(moved, "the pitch angle participates in the view")
-    third:release()
+    second:release()
     Assert.isTrue(sceneRuntime.lighting ~= nil, "the draw carries a lighting record")
   end)
 end
@@ -378,6 +394,39 @@ function T.draw_stays_inside_the_hero_placement()
     Assert.equal(viewport.worldViewport.width, 256, "the viewport stays at canonical width")
     Assert.equal(viewport.worldViewport.height, 192, "the viewport stays at canonical height")
     Assert.equal(viewport.worldViewport.x, 0, "the viewport matches the hero placement origin")
+    renderer:release()
+  end)
+end
+
+-- The canonical camera stage is host-independent: two different host frames
+-- for one semantic draw share the exact view/projection and keep the
+-- canonical 256x192 world viewport, so responsive placement only ever scales
+-- the corrected canonical target.
+function T.canonical_camera_stage_ignores_the_host_placement()
+  withDoubles(function(rec)
+    local Hero = requireHero()
+    local renderer = newHero(Hero, manifest())
+    local first = placement()
+    first.frame = { x = 0, y = 0, width = 256, height = 192 }
+    renderer:draw("male", status(), first)
+    local second = placement()
+    second.frame = { x = 40, y = 8, width = 512, height = 384 }
+    renderer:draw("male", status(), second)
+    Assert.equal(#rec.draws, 2, "both host placements reach the shared renderer")
+    local firstCamera, secondCamera = rec.draws[1][2], rec.draws[2][2]
+    Assert.deepEqual(
+      firstCamera:projection(),
+      secondCamera:projection(),
+      "the canonical projection ignores the host placement"
+    )
+    Assert.deepEqual(firstCamera:view(1), secondCamera:view(1), "the canonical view ignores the host placement")
+    for index = 1, 2 do
+      local viewport = rec.draws[index][5]
+      Assert.equal(viewport.worldViewport.width, 256, "draw " .. index .. " keeps the canonical width")
+      Assert.equal(viewport.worldViewport.height, 192, "draw " .. index .. " keeps the canonical height")
+      Assert.equal(viewport.worldViewport.x, 0, "draw " .. index .. " keeps the canonical origin")
+      Assert.equal(viewport.worldViewport.y, 0, "draw " .. index .. " keeps the canonical origin")
+    end
     renderer:release()
   end)
 end

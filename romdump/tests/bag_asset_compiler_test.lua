@@ -247,13 +247,16 @@ local function fixture(opts)
     members[memberId + 1] = screenData()
   end
   local tabCells = {}
-  for _ = 1, 8 do
-    tabCells[#tabCells + 1] = { { x = 0, y = 0, tile = 0, size = 2 } }
+  for _ = 1, 24 do
+    -- Center-anchored objects like the retail tab cells, so composed sprite
+    -- placements stay inside the canonical pane.
+    tabCells[#tabCells + 1] = { { x = -16, y = -16, tile = 0, size = 2 } }
   end
   members[BagSources.sprites.tabs.char + 1] = charData(200)
   members[BagSources.sprites.tabs.cell + 1] = cellData(tabCells)
   members[BagSources.sprites.tabs.palette + 1] = palette256()
-  members[BagSources.sprites.tabs.anim + 1] = animData(9)
+  members[BagSources.sprites.tabs.anim + 1] = animData(24)
+  members[BagSources.palettes.tabState + 1] = palette256()
   local cursorCells = {}
   for _ = 1, 4 do
     cursorCells[#cursorCells + 1] = { { x = 0, y = 0, tile = 0, size = 1 } }
@@ -520,7 +523,13 @@ function T.producer_declares_the_audited_message_selection()
     { animation = 6, palette = 6 },
     { animation = 7, palette = 7 },
   })
-  Assert.deepEqual(BagSources.spriteStates.tabs.highlight, { animation = 8, palette = 9 })
+  Assert.deepEqual(BagSources.spriteStates.focus, {
+    tabs = { animation = 8, palette = 9 },
+    items = { animation = 10, palette = 9 },
+    cancel = { animation = 17, palette = 9 },
+    actions = { animation = 23, palette = 9 },
+  })
+  Assert.deepEqual(BagSources.spriteStates.cancelFace, { animation = 16, palette = 8 })
   Assert.deepEqual(BagSources.lowerLayers, {
     browse = { "listWash", "listSlots" },
     action = { "actionWash", "actionSlots" },
@@ -619,10 +628,38 @@ end
 local function pocketBackgrounds(state)
   local pockets = {}
   for _, pocket in ipairs(POCKETS) do
-    pockets[pocket] =
-      { image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png", width = 256, height = 192 }
+    if state == "browse" then
+      local variants = {}
+      for count = 0, 6 do
+        variants[#variants + 1] = {
+          image = "assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      pockets[pocket] = variants
+    else
+      pockets[pocket] =
+        { image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png", width = 256, height = 192 }
+    end
   end
   return pockets
+end
+
+local function framingRecord()
+  return { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.2, modelY = -2.8 }
+end
+
+local function framingByGender()
+  local byGender = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = {}
+    for _, pocket in ipairs(POCKETS) do
+      records[pocket] = framingRecord()
+    end
+    byGender[gender] = records
+  end
+  return byGender
 end
 
 local function syntheticBundle(marker)
@@ -639,7 +676,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v5",
+    schema = "g4-bag-assets-v8",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -691,6 +728,21 @@ local function syntheticBundle(marker)
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
         },
+        framing = {
+          transitionTicks = 7,
+          baseline = { male = framingRecord(), female = framingRecord() },
+          byGender = framingByGender(),
+        },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+        },
       },
     },
     interactive = {
@@ -702,59 +754,58 @@ local function syntheticBundle(marker)
       },
       pocketTabs = {
         rects = tabs,
-        normal = {
-          { image = "assets/generated/bag/tab-normal-1.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-2.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-3.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-4.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-5.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-6.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-7.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-8.png", width = 16, height = 16 },
+        strips = {
+          items = { image = "assets/generated/bag/tabs-items.png", width = 256, height = 32 },
+          medicine = { image = "assets/generated/bag/tabs-medicine.png", width = 256, height = 32 },
+          balls = { image = "assets/generated/bag/tabs-balls.png", width = 256, height = 32 },
+          tmhm = { image = "assets/generated/bag/tabs-tmhm.png", width = 256, height = 32 },
+          berries = { image = "assets/generated/bag/tabs-berries.png", width = 256, height = 32 },
+          mail = { image = "assets/generated/bag/tabs-mail.png", width = 256, height = 32 },
+          battle_items = { image = "assets/generated/bag/tabs-battle_items.png", width = 256, height = 32 },
+          key_items = { image = "assets/generated/bag/tabs-key_items.png", width = 256, height = 32 },
         },
-        highlight = { image = "assets/generated/bag/tab-highlight-frame-1.png", width = 16, height = 16 },
       },
       itemSlots = {
         slots = {
           {
             rect = { x = 0, y = 32, width = 128, height = 42 },
             textRect = { x = 32, y = 40, width = 88, height = 32 },
-            iconCenter = { x = 48, y = 56 },
+            iconCenter = { x = 22, y = 59 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 128, y = 32, width = 128, height = 42 },
             textRect = { x = 160, y = 40, width = 88, height = 32 },
-            iconCenter = { x = 176, y = 56 },
+            iconCenter = { x = 152, y = 59 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 0, y = 74, width = 128, height = 44 },
             textRect = { x = 32, y = 80, width = 88, height = 32 },
-            iconCenter = { x = 48, y = 96 },
+            iconCenter = { x = 22, y = 100 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 128, y = 74, width = 128, height = 44 },
             textRect = { x = 160, y = 80, width = 88, height = 32 },
-            iconCenter = { x = 176, y = 96 },
+            iconCenter = { x = 152, y = 100 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 0, y = 118, width = 128, height = 36 },
             textRect = { x = 32, y = 120, width = 88, height = 32 },
-            iconCenter = { x = 48, y = 136 },
+            iconCenter = { x = 22, y = 139 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
           {
             rect = { x = 128, y = 118, width = 128, height = 36 },
             textRect = { x = 160, y = 120, width = 88, height = 32 },
-            iconCenter = { x = 176, y = 136 },
+            iconCenter = { x = 152, y = 139 },
             nameAt = { x = 0, y = 0 },
             quantityAt = { x = 48, y = 16 },
           },
@@ -766,9 +817,49 @@ local function syntheticBundle(marker)
         },
       },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
+      focus = {
+        tabs = {
+          visual = { image = "assets/generated/bag/focus-tabs-frame-1.png", width = 16, height = 16 },
+          targets = {
+            { x = 16, y = 16 },
+            { x = 48, y = 16 },
+            { x = 80, y = 16 },
+            { x = 112, y = 16 },
+            { x = 144, y = 16 },
+            { x = 176, y = 16 },
+            { x = 208, y = 16 },
+            { x = 240, y = 16 },
+          },
+        },
+        items = {
+          visual = { image = "assets/generated/bag/focus-items-frame-1.png", width = 16, height = 16 },
+          targets = {
+            { x = 48, y = 56 },
+            { x = 176, y = 56 },
+            { x = 48, y = 96 },
+            { x = 176, y = 96 },
+            { x = 48, y = 136 },
+            { x = 176, y = 136 },
+          },
+        },
+        cancel = {
+          visual = { image = "assets/generated/bag/focus-cancel-frame-1.png", width = 16, height = 16 },
+          target = { x = 224, y = 176 },
+        },
+        actions = {
+          visual = { image = "assets/generated/bag/focus-actions-frame-1.png", width = 16, height = 16 },
+          targets = {
+            { x = 48, y = 144 },
+            { x = 144, y = 144 },
+            { x = 48, y = 176 },
+            { x = 144, y = 176 },
+          },
+        },
+      },
       cancel = {
         rect = { x = 192, y = 168, width = 64, height = 24 },
         textRect = { x = 192, y = 168, width = 56, height = 16 },
+        labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
       text = {
         actions = {
@@ -836,7 +927,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v5")
+  Assert.equal(loaded.schema, "g4-bag-assets-v8")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)
@@ -882,7 +973,7 @@ function T.writer_rejects_a_bundle_missing_a_referenced_asset()
   local first = syntheticBundle(BagCache.marker("rom", "deps"))
   Assert.isTrue(BagCacheWriter.write(cacheFs, first))
   local second = syntheticBundle(BagCache.marker("rom", "deps2"))
-  second.assets["assets/generated/bag/tab-normal-1.png"] = nil
+  second.assets["assets/generated/bag/tabs-items.png"] = nil
   local ok, err = pcall(BagCacheWriter.write, cacheFs, second)
   Assert.isFalse(ok, "a bundle missing a referenced asset must not publish")
   Assert.isTrue(Errors.is(err), "the failure must be structured")
@@ -960,6 +1051,174 @@ function T.cleanup_failure_after_success_reports_the_live_artifact()
   Assert.equal(cacheFs:read(BagCache.markerPath()), second.marker, "the new marker is live despite the cleanup failure")
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, second.marker), "the new class is ready despite the cleanup failure")
   Assert.notNil(backend:getInfo("staging/heartgold/bag"), "stage cleanup remains incomplete")
+end
+
+function T.producer_declares_the_browse_and_framing_source_facts()
+  local BagSources = require("romdump.src.config.BagSources")
+  local blocks = assert(BagSources.browseCountBlocks, "the producer must declare its browse count replay facts")
+  Assert.equal(#blocks, 6, "visible counts 0..5 each carry one mutation block; count 6 replays no mutation")
+  for count = 0, 5 do
+    local entries = assert(blocks[count + 1], "count " .. count .. " must carry its mutation block")
+    Assert.equal(#entries, 4, "count " .. count .. " replays exactly four tilemap operations")
+    for index, op in ipairs(entries) do
+      Assert.isTrue(
+        op.kind == "copy" or op.kind == "fill" or op.kind == "nop",
+        "count " .. count .. " operation " .. index .. " must be a copy, fill, or no-op"
+      )
+      if op.kind == "copy" then
+        for _, field in ipairs({ "srcX", "srcY", "destX", "destY", "width", "height" }) do
+          Assert.isTrue(
+            type(op[field]) == "number" and op[field] % 1 == 0 and op[field] >= 0,
+            "count " .. count .. " copy " .. field .. " must be a non-negative integer"
+          )
+        end
+      elseif op.kind == "fill" then
+        for _, field in ipairs({ "x", "y", "width", "height" }) do
+          Assert.isTrue(
+            type(op[field]) == "number" and op[field] % 1 == 0 and op[field] >= 0,
+            "count " .. count .. " fill " .. field .. " must be a non-negative integer"
+          )
+        end
+      end
+    end
+  end
+  local framing = assert(BagSources.presentation.framing, "the producer must declare its hero framing facts")
+  Assert.equal(framing.transitionTicks, 7, "the framing transition keeps its seven-tick duration")
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = assert(framing[gender], gender .. " must carry its nine framing records")
+    ---@cast records table
+    Assert.equal(#records, 9, gender .. " carries its baseline plus eight pocket records")
+    for index, record in ipairs(records) do
+      for _, field in ipairs({ "angleX", "angleY", "distance", "modelY" }) do
+        Assert.isTrue(
+          type(record[field]) == "number" and record[field] % 1 == 0,
+          gender .. " record " .. index .. " " .. field .. " must be a source integer"
+        )
+      end
+    end
+  end
+  local cancel = assert(BagSources.geometry.cancel, "the producer must declare its cancel geometry")
+  Assert.deepEqual(
+    cancel.labelRect,
+    { x = 200, y = 168, width = 48, height = 16 },
+    "the cancel label area keeps the source centering span"
+  )
+end
+
+-- The retained tab-state palette must carry banks 0..8: without the bank
+-- the first source write copies from, compilation fails instead of reusing
+-- the base palette.
+function T.tab_state_palette_without_its_source_bank_fails()
+  local romFs = fixture({
+    tamper = function(members)
+      local BagSources = require("romdump.src.config.BagSources")
+      members[BagSources.palettes.tabState + 1] = paletteWithBanks(8)
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a state palette without bank 8 must not compile")
+  local typed = assert(err, "a missing state bank must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("palette") or tostring(typed.message):find("bank"),
+    "a missing state bank must fail at palette composition, got: " .. tostring(typed.message)
+  )
+end
+
+function T.corrupt_tab_state_palette_fails_with_the_protocol_error()
+  local romFs = fixture({
+    tamper = function(members)
+      local BagSources = require("romdump.src.config.BagSources")
+      members[BagSources.palettes.tabState + 1] = "not-a-palette-container"
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a corrupt state palette member must not compile")
+  local typed = assert(err, "a corrupt state palette member must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("tabs%-state%-palette"),
+    "a corrupt state palette must fail at the state-palette decode, got: " .. tostring(typed.message)
+  )
+end
+
+-- Selected-pocket strips replay the full retained bank range: the base
+-- realization copies state banks 8..15 over destination banks 0..7, then the
+-- active pocket bank overrides its own destination. The synthetic base
+-- palette stays black while every state bank carries a distinct entry color,
+-- so each tab region identifies the source bank that produced it. Strip bytes
+-- are captured from the image writer because the synthetic archive stops at
+-- the hero stage after the tab strips have already been realized.
+function T.selected_pocket_strips_replay_the_full_base_range_with_override()
+  local Rgb555 = require("libs.codec.src.Rgb555")
+  local PngReader = require("tests.support.PngReader")
+  local PngWriter = require("libs.assets.src.PngWriter")
+  local BagSources = require("romdump.src.config.BagSources")
+  local stateWords = {}
+  for index = 1, 256 do
+    stateWords[index] = 0
+  end
+  for bank = 0, 15 do
+    local r5 = (bank * 4 + 5) % 31 + 1
+    local g5 = (bank * 7 + 9) % 31 + 1
+    local b5 = (bank * 11 + 13) % 31 + 1
+    stateWords[bank * 16 + 2] = r5 + g5 * 32 + b5 * 1024
+  end
+  local baseWords = {}
+  for index = 1, 256 do
+    baseWords[index] = 0
+  end
+  local romFs = fixture({
+    tamper = function(members)
+      members[BagSources.sprites.tabs.palette + 1] = paletteData(baseWords)
+      members[BagSources.palettes.tabState + 1] = paletteData(stateWords)
+      return members
+    end,
+  })
+  local originalEncode = PngWriter.encode
+  local captured = {}
+  PngWriter.encode = function(width, height, pixels)
+    local png = originalEncode(width, height, pixels)
+    captured[#captured + 1] = png
+    return png
+  end
+  local ok, bundle, err = pcall(BagAssetCompiler.compile, romFs)
+  PngWriter.encode = originalEncode
+  Assert.isTrue(ok, "compilation must not raise an unexpected error")
+  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
+  local typed = assert(err, "compilation past the tab strips must reach the hero stage")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("hero"),
+    "the tab strips must compile before the hero stage, got: " .. tostring(typed.message)
+  )
+  local strips = {}
+  for _, png in ipairs(captured) do
+    local width, height = PngReader.rgba(png)
+    if width == 256 and height == 32 then
+      strips[#strips + 1] = png
+    end
+  end
+  Assert.equal(#strips, 8, "compilation must emit one strip per pocket before the hero stage")
+  local pocketOrder = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+  for pocketIndex, pocket in ipairs(pocketOrder) do
+    local selected = pocketIndex - 1
+    local _, _, rgba = PngReader.rgba(strips[pocketIndex])
+    for destBank = 0, 7 do
+      local sourceBank = destBank
+      if destBank ~= selected then
+        sourceBank = 8 + destBank
+      end
+      local expected = Rgb555.decode(stateWords[sourceBank * 16 + 2])
+      local r, g, b, a = PngReader.pixel(rgba, 256, destBank * 32 + 16, 16)
+      Assert.equal(a, 255, pocket .. " tab " .. destBank .. " carries icon pixels")
+      Assert.equal(r, expected.r, pocket .. " tab " .. destBank .. " replays its source bank red")
+      Assert.equal(g, expected.g, pocket .. " tab " .. destBank .. " replays its source bank green")
+      Assert.equal(b, expected.b, pocket .. " tab " .. destBank .. " replays its source bank blue")
+    end
+  end
 end
 
 return { tests = T }
