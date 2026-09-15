@@ -64,14 +64,15 @@ end
 
 ---@param tx table<string, unknown>
 ---@param bundle table<string, unknown>
+---@param sharedFs table<string, unknown> destination for shared content-addressed blobs
 ---@param cacheFs CacheFs
-local function stageBundle(tx, bundle, cacheFs)
+local function stageBundle(tx, bundle, sharedFs, cacheFs)
   local stage = tx.stage
   for _, path in ipairs(BagCache.referencedPaths(bundle.manifest)) do
     if path:sub(1, #BagCache.assetDir()) == BagCache.assetDir() then
       stage:write(path, bundle.assets[path])
     else
-      cacheFs:write(path, bundle.assets[path])
+      sharedFs:write(path, bundle.assets[path])
     end
   end
   stage:writeLua(BagCache.provenancePath(), bundle.dependencies)
@@ -111,7 +112,7 @@ function BagCacheWriter.stage(artifact, bundle)
       artifact:addSharedFile(path)
     end
   end
-  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:cacheFs())
+  stageBundle({ stage = artifact:stageFs() }, bundle, artifact:stageFs(), artifact:cacheFs())
   return bundle.marker
 end
 
@@ -122,7 +123,7 @@ function BagCacheWriter.write(cacheFs, bundle)
   assert(cacheFs and bundle, "bag publication requires a cache and a bundle")
   validateBundle(bundle)
   local tx = ArtifactPublisher.begin(cacheFs, "bag", { BagCache.assetDir(), BagCache.dir() })
-  local ok, err = pcall(stageBundle, tx, bundle, cacheFs)
+  local ok, err = pcall(stageBundle, tx, bundle, cacheFs, cacheFs)
   if not ok then
     tx:abort()
     error(err, 0)
