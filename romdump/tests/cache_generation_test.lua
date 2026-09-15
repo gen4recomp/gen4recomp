@@ -257,8 +257,8 @@ function T.generation_differs_while_semantic_fingerprints_still_match()
     "identical script content must keep the save-compatibility fingerprint"
   )
 
-  local leftCatalog = MonCatalog.new(CatalogFixture.buildAssetRoot())
-  local rightCatalog = MonCatalog.new(CatalogFixture.buildAssetRoot())
+  local leftCatalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), CatalogFixture.makeItemCatalog())
+  local rightCatalog = MonCatalog.new(CatalogFixture.buildAssetRoot(), CatalogFixture.makeItemCatalog())
   Assert.equal(
     leftCatalog:fingerprint(),
     rightCatalog:fingerprint(),
