@@ -21,8 +21,10 @@ local CHARMAP = {
   D = 4,
   E = 5,
   G = 6,
+  K = 17,
   O = 7,
   L = 8,
+  U = 18,
   [" "] = 9,
   ["é"] = 10,
   a = 11,
@@ -209,8 +211,8 @@ end
 
 -- Reaches name_edit without navigating the confirmation-choice UI (matching
 -- the other controller-only tests in this suite); an optional female flag
--- selects gender focus before the name editor opens, and the virtual
--- keyboard focus starts on the first glyph key, matching production.
+-- selects gender focus before the name editor opens, and the naming cursor
+-- starts on the first glyph key, matching production.
 local function advanceToNameEdit(options, female)
   local state = controller(options)
   state:start()
@@ -238,9 +240,8 @@ local function advanceToNameEdit(options, female)
   return state
 end
 
--- The Confirm virtual key is last in focus order (glyphs, then Delete, then
--- Confirm); one left-navigation step from the initial glyph focus wraps
--- directly onto it.
+-- The naming control row places OK after the Back span; submit is exposed as
+-- a semantic action so tests do not depend on repeated control cells.
 local function focusConfirmKey(state)
   state:press("submit")
 end
@@ -1253,7 +1254,7 @@ function T.naming_screen_back_and_ok_controls_reach_the_existing_name_flow()
   Assert.equal(state:view().name, "Ethan")
 end
 
-function T.profile_flow_uses_a_naming_screen_without_virtual_keyboard_configuration()
+function T.profile_flow_uses_a_naming_screen_configuration()
   local flow = OakProfileFlow.new({
     candidate = candidate(),
     audio = audio(),
@@ -1271,10 +1272,13 @@ function T.naming_screen_navigation_uses_the_retail_page_topology()
   Assert.equal(state:view().phase, "name_edit")
   local naming = assert(state:view().namingScreen)
   Assert.equal(naming.page, "upper")
+  Assert.equal(naming.cursor.row, 2)
+  Assert.equal(naming.cursor.column, 1)
   state:press("down")
-  Assert.equal(state:view().namingScreen.cursor.controlId, "upper")
+  Assert.equal(state:view().namingScreen.cursor.row, 3)
+  Assert.equal(state:view().namingScreen.grid[3][1].glyph, "K")
   state:press("up")
-  Assert.equal(state:view().namingScreen.cursor.row, 1)
+  Assert.equal(state:view().namingScreen.cursor.row, 2)
 end
 
 function T.source_scroll_endpoint_survives_non_slide_phases_and_reverse_starts_there()

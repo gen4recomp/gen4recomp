@@ -94,6 +94,24 @@ function T.catalog_errors_are_drawn_inside_the_returned_error_rectangle(scope)
   Assert.isTrue(foundErrorPixel, "catalog error text must draw inside its returned rectangle")
 end
 
+function T.unavailable_catalog_rows_without_delete_actions_are_renderable(scope)
+  local content = { x = 16, y = 80, width = 128, height = 40 }
+  local current = view(content)
+  current.saves = {
+    { id = "unavailable-save-1", canContinue = false, errorSummary = "Save data unavailable" },
+  }
+  current.focus = { region = "saves", saveId = "unavailable-save-1", lane = "body" }
+  current.focusedId = "unavailable-save-1"
+  current.layout.saves.cards = {
+    ["unavailable-save-1"] = {
+      frame = { x = 16, y = 80, width = 128, height = 40 },
+      body = { x = 16, y = 80, width = 128, height = 40 },
+    },
+  }
+  local menuRenderer = renderer(scope)
+  menuRenderer:draw(current)
+end
+
 function T.focus_lanes_have_distinct_visual_regions(scope)
   local content = { x = 16, y = 80, width = 128, height = 40 }
   local current = view(content)

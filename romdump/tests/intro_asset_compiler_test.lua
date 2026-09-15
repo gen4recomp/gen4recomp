@@ -162,11 +162,11 @@ local function syntheticCompilerSource(animationFrames, objectPalette, charDepth
     end
     return { depth = charDepth or 3, tiles = table.concat(tiles) }
   end)
-  -- Six 16-color banks so every configured selector (male=0, female=1,
-  -- ball/Marill=4) resolves within the decoded palette resource.
+  -- Six 16-color banks so every configured intro and naming asset resolves
+  -- within the decoded palette resource.
   rawset(decoder, "decodePalette", function()
     local colors = {}
-    for index = 1, 96 do
+    for index = 1, 160 do
       colors[index] = { r = index % 256, g = (index + 1) % 256, b = (index + 2) % 256 }
     end
     return { colors = colors }
@@ -208,7 +208,11 @@ local function syntheticCompilerSource(animationFrames, objectPalette, charDepth
       loopStartFrameIdx = 0,
       frames = animationFrames or { { cell = 0, duration = 2 }, { cell = 1, duration = 3 } },
     }
-    return { anims = { selected, selected, selected, selected } }
+    local anims = {}
+    for index = 1, 50 do
+      anims[index] = selected
+    end
+    return { anims = anims }
   end)
 
   local archive
@@ -506,7 +510,15 @@ local function fixtureBundle(cache, marker)
     elseif id == "gender_female" then
       widgets[id].sourceCenter = { x = 192, y = 104 }
     end
-    if id == "ball_open" or id == "marill_appear" or id == "marill" or id == "gender_male" or id == "gender_female" then
+    if
+      id == "ball_open"
+      or id == "marill_appear"
+      or id == "marill"
+      or id == "gender_male"
+      or id == "gender_female"
+      or id == "naming_male"
+      or id == "naming_female"
+    then
       widgets[id].playMode = id == "marill" and "forward_loop" or "forward"
       widgets[id].loopStartFrameIdx = 0
     end
@@ -525,7 +537,7 @@ local function fixtureBundle(cache, marker)
   return {
     marker = marker,
     manifest = {
-      schemaVersion = 12,
+      schemaVersion = 13,
       variant = "heartgold",
       sourceReference = { width = 256, height = 192 },
       background = {
@@ -604,7 +616,7 @@ function T.v9_bundle_publishes_without_profile_control_files()
   local CacheWriter = writer()
   local backend = FakeCache.new()
   local live = CacheFs.forVersion("heartgold", backend)
-  local bundle = fixtureBundle(cache, "intro-cache-v12:fixture:ready")
+  local bundle = fixtureBundle(cache, "intro-cache-v13:fixture:ready")
 
   Assert.notNil(bundle.manifest.genderSelector)
   Assert.isNil(bundle.manifest.profileConfirmation)
@@ -613,7 +625,7 @@ function T.v9_bundle_publishes_without_profile_control_files()
   Assert.isTrue(CacheWriter.write(live, bundle))
   Assert.isTrue(cache.isReady(live, bundle.marker), "retained files are sufficient for readiness")
 
-  local missing = fixtureBundle(cache, "intro-cache-v12:fixture:missing")
+  local missing = fixtureBundle(cache, "intro-cache-v13:fixture:missing")
   missing.assets[missing.manifest.genderSelector.buttons.male.baseImage] = nil
   Assert.isFalse(pcall(CacheWriter.write, live, missing), "missing selector role files reject publication")
 end
@@ -623,7 +635,7 @@ function T.predecessor_manifest_is_stale_and_does_not_publish()
   local CacheWriter = writer()
   local backend = FakeCache.new()
   local live = CacheFs.forVersion("heartgold", backend)
-  local bundle = fixtureBundle(cache, "intro-cache-v12:fixture:predecessor")
+  local bundle = fixtureBundle(cache, "intro-cache-v13:fixture:predecessor")
   bundle.manifest.schemaVersion = 10
   bundle.marker = "intro-cache-v10:fixture:predecessor"
   local valid, err = cache.validateManifest(bundle.manifest)
@@ -679,7 +691,7 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   live:write(cache.markerPath(), stale.marker)
   Assert.isFalse(cache.isReady(live, stale.marker), "schema-8 intro output is stale")
 
-  local old = fixtureBundle(cache, "intro-cache-v12:old:dependencies")
+  local old = fixtureBundle(cache, "intro-cache-v13:old:dependencies")
   CacheWriter.write(live, old)
   local oldMarker = live:read(cache.markerPath())
   local oldManifest = live:read(cache.manifestPath())
@@ -697,7 +709,7 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   }, { __index = backend })
   live = CacheFs.forVersion("heartgold", failingBackend)
 
-  local replacement = fixtureBundle(cache, "intro-cache-v12:new:dependencies")
+  local replacement = fixtureBundle(cache, "intro-cache-v13:new:dependencies")
   local published, publishErr = pcall(CacheWriter.write, live, replacement)
   Assert.isFalse(published, "a replacement failure must reach the caller")
   Assert.isTrue(tostring(publishErr):find("publication", 1, true) ~= nil)

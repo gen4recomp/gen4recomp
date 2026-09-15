@@ -147,9 +147,18 @@ local function assertWideHostMetrics(view, width, height)
   Assert.equal(surface.placement.frame.height, height)
   Assert.equal(layout.safeFrame.x * scale, roundedLogicalMetric(12, scale))
   Assert.equal(layout.stageContent.width * scale, roundedLogicalMetric(1120, scale))
-  local oakRegion = assert(layout.oakRegion)
-  local selectorRegion = assert(layout.selectorRegion)
-  Assert.equal((selectorRegion.x - (oakRegion.x + oakRegion.width)) * scale, roundedLogicalMetric(8, scale))
+  if layout.oakRegion then
+    local selectorRegion = assert(layout.selectorRegion)
+    Assert.equal(
+      (selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width)) * scale,
+      roundedLogicalMetric(8, scale)
+    )
+  else
+    local selectorRegion = assert(layout.selectorRegion)
+    local genderButtons = assert(layout.genderButtons)
+    Assert.isTrue(inside(genderButtons[0].rect, selectorRegion))
+    Assert.isTrue(inside(genderButtons[1].rect, selectorRegion))
+  end
 end
 
 local function assertOneToOneHostMetrics(view, width, height)
@@ -171,14 +180,23 @@ local function assertProfileLayout(view)
   Assert.equal(layout.viewport.height, logicalViewport.height)
   assertReservedDialogueIsClear(layout)
   if view.phase == "gender_select" then
-    Assert.isTrue(inside(layout.subject, layout.oakRegion), "Oak must occupy the composed scene region")
-    Assert.isTrue(layout.selectorRegion ~= nil, "gender selection must publish a selector region")
-    if layout.selectorRegion.width >= 256 then
-      for gender = 0, 1 do
-        local button = assert(layout.genderButtons and layout.genderButtons[gender])
-        Assert.isTrue(inside(button.rect, layout.selectorRegion), "gender button must stay inside the selector region")
-        Assert.deepEqual(button.button.rect, button.rect)
+    if layout.subject then
+      Assert.isTrue(inside(layout.subject, assert(layout.oakRegion)), "Oak must occupy the composed scene region")
+      Assert.isTrue(layout.selectorRegion ~= nil, "gender selection must publish a selector region")
+      if layout.selectorRegion.width >= 256 then
+        for gender = 0, 1 do
+          local button = assert(layout.genderButtons and layout.genderButtons[gender])
+          Assert.isTrue(
+            inside(button.rect, layout.selectorRegion),
+            "gender button must stay inside the selector region"
+          )
+          Assert.isNil(button.button, "production selector must not retain synthetic button geometry")
+        end
       end
+    else
+      Assert.isNil(layout.oakRegion)
+      Assert.isTrue(inside(layout.genderButtons[0].rect, assert(layout.selectorRegion)))
+      Assert.isTrue(inside(layout.genderButtons[1].rect, assert(layout.selectorRegion)))
     end
   elseif view.phase == "name_edit" then
     local naming = assert(layout.namingScreen, "name editing must publish the Naming Screen")

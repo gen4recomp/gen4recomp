@@ -411,6 +411,35 @@ local function compileShrink(archive, dependencies, manifest, assets, id, spec)
   )
 end
 
+local function compileNamingSubject(archive, dependencies, manifest, assets, id, spec)
+  local archiveName = assert(spec.archive)
+  local char, palette = loadCharPalette(archive, dependencies, spec, id:gsub("_", "-"))
+  if char.depth ~= 3 then
+    sourceError("naming subject graphics do not support 8bpp source tiles", { asset = id, depth = char.depth })
+  end
+  local paletteColors = IntroObjPaletteResolver.slice(palette.colors, char.depth, assert(spec.paletteNumber))
+  local cellBytes = decodeMember(archive, spec.cell, id .. " cell", archiveName)
+  local animationBytes = decodeMember(archive, spec.animation, id .. " animation", archiveName)
+  addDependency(dependencies, archiveName, spec.cell, cellBytes, id:gsub("_", "-") .. ":cell")
+  addDependency(dependencies, archiveName, spec.animation, animationBytes, id:gsub("_", "-") .. ":animation")
+  local cells = decode("decodeCell", cellBytes, id .. " cell", spec.cell, archiveName)
+  local animation = decode("decodeAnimation", animationBytes, id .. " animation", spec.animation, archiveName)
+  local image, frames, playback =
+    IntroRasterizer.renderAnimations(char, paletteColors, cells, animation, assert(spec.animationIndex))
+  addAsset(
+    manifest,
+    assets,
+    id,
+    image,
+    frames,
+    image.sourceBounds,
+    image.anchor,
+    { animationSequence = spec.animationIndex, paletteMember = spec.palette, rule = "naming-source-animation" },
+    nil,
+    playback
+  )
+end
+
 -- OakSpeech_BlinkHighlightedGenderFrame (pinned source) changes palette
 -- entries 12/13 for the male card and 14/15 for the female card on the
 -- gender-selector background. The generated records below retain the source
@@ -550,7 +579,7 @@ function IntroAssetCompiler.compile(romFs)
   )
   local paletteLayout = buildPaletteLayout(paletteOrder)
   local manifest = {
-    schemaVersion = 12,
+    schemaVersion = 13,
     variant = variant,
     sourceReference = { width = 256, height = 192 },
     genderSelector = nil,
@@ -599,6 +628,16 @@ function IntroAssetCompiler.compile(romFs)
   end
   compileShrink(archive, dependencies, manifest, assets, "shrink_male", config.shrink.male)
   compileShrink(archive, dependencies, manifest, assets, "shrink_female", config.shrink.female)
+
+  local namingArchive = sourceArchive(romFs, config.naming.archive)
+  for _, gender in ipairs({ "male", "female" }) do
+    local spec = {}
+    for key, value in pairs(config.naming) do
+      spec[key] = value
+    end
+    spec.animationIndex = config.naming.animationIndexes[gender]
+    compileNamingSubject(namingArchive, dependencies, manifest, assets, "naming_" .. gender, spec)
+  end
 
   local ballArchive = sourceArchive(romFs, config.ball_open.archive)
   for _, id in ipairs({ "ball_open", "marill_appear", "marill" }) do

@@ -86,10 +86,12 @@ function MainMenuRenderer:draw(view)
         text:drawText(title(item), card.body.x + 12, card.body.y + 12)
         setColor(graphics, item.canContinue and { 0.3, 0.38, 0.42, 1 } or { 0.65, 0.22, 0.22, 1 })
         text:drawText(subtitle(item), card.body.x + 12, card.body.y + 36)
-        graphics.setColor(overflowFocused and 0.65 or 0.78, overflowFocused and 0.2 or 0.72, 0.25, 1)
-        graphics.rectangle("fill", card.overflow.x, card.overflow.y, card.overflow.width, card.overflow.height)
-        setColor(graphics, { 0.12, 0.18, 0.25, 1 })
-        text:drawText("...", card.overflow.x + 10, card.overflow.y + 8)
+        if card.overflow then
+          graphics.setColor(overflowFocused and 0.65 or 0.78, overflowFocused and 0.2 or 0.72, 0.25, 1)
+          graphics.rectangle("fill", card.overflow.x, card.overflow.y, card.overflow.width, card.overflow.height)
+          setColor(graphics, { 0.12, 0.18, 0.25, 1 })
+          text:drawText("...", card.overflow.x + 10, card.overflow.y + 8)
+        end
       end
     end
   end, debug.traceback)

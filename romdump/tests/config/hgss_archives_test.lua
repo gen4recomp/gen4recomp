@@ -89,7 +89,7 @@ end
 
 function T.alias_list_is_complete_and_deterministic()
   local list = HgssArchives.aliasList()
-  Assert.equal(#list, 41)
+  Assert.equal(#list, 42)
   -- Sorted ascending by narcId, with deterministic alias ordering for shared roles.
   for i = 2, #list do
     local previous = list[i - 1]
