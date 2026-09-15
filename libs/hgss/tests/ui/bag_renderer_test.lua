@@ -28,12 +28,11 @@ local function manifest()
     tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
   end
   local normals = {}
-  for index = 0, 7 do
-    normals[index + 1] = {
-      image = "bag/tab-normal-" .. (index + 1) .. ".png",
-      width = 16,
-      height = 16,
-      offset = { x = 3, y = -2 },
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    normals[pocket] = {
+      image = "bag/strip-" .. pocket .. ".png",
+      width = 256,
+      height = 32,
     }
   end
   local pockets = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
@@ -97,7 +96,7 @@ local function manifest()
       backgrounds = backgrounds,
       pocketTabs = {
         rects = tabs,
-        normal = normals,
+        strips = normals,
       },
       focus = {
         tabs = {
@@ -219,8 +218,8 @@ local function seedCache()
       paths[#paths + 1] = "bag/background-browse-" .. pocket .. "-" .. count .. ".png"
     end
   end
-  for index = 1, 8 do
-    paths[#paths + 1] = "bag/tab-normal-" .. index .. ".png"
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    paths[#paths + 1] = "bag/strip-" .. pocket .. ".png"
   end
   paths[#paths + 1] = "bag/focus-tabs.png"
   paths[#paths + 1] = "bag/focus-items.png"
@@ -481,7 +480,7 @@ function T.two_pane_mode_draws_hero_and_interactive_content()
     heroRenderer = heroSpy(nil),
   })
   draw:draw(status(), layout("horizontal"), { icons = icons() })
-  Assert.isTrue(#graphics.draws >= 8, "both panes compose backgrounds, tabs, icons, and cursors")
+  Assert.isTrue(#graphics.draws >= 6, "both panes compose backgrounds, strip, icons, and cursors")
   Assert.isTrue(printedText(content, "POTION"), "occupied cells print their item name")
   Assert.isTrue(printedText(content, "x5"), "occupied cells print their quantity")
   Assert.isTrue(printedText(content, "BACK OUT"), "the generated cancel affordance prints its label")
@@ -538,8 +537,13 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
   )
   Assert.equal(#readPathsContaining(reads, "highlight"), 0, "no retired tab highlight is ever acquired")
   draw:draw(status(), layout("horizontal"), { icons = icons(calls) })
-  for index = 1, 8 do
-    Assert.isTrue(wasDrawn(graphics, draw._images["tabNormal:" .. index]), "every normal tab visual is drawn")
+  local ballsStrip = assert(draw._images["strip:balls"], "the current pocket strip is bound")
+  Assert.isTrue(wasDrawn(graphics, ballsStrip), "browse draws its pocket-specific strip")
+  for _, pocket in ipairs({ "items", "medicine", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    Assert.isFalse(
+      wasDrawn(graphics, draw._images["strip:" .. pocket]),
+      "browse never borrows the " .. pocket .. " strip"
+    )
   end
   Assert.isTrue(
     wasDrawn(graphics, draw._images["background:browse:balls:2"]),
@@ -583,9 +587,7 @@ function T.browse_keeps_generated_chrome()
     heroRenderer = heroSpy(nil),
   })
   draw:draw(status(), layout("horizontal"), { icons = icons() })
-  for index = 1, 8 do
-    Assert.isTrue(wasDrawn(graphics, draw._images["tabNormal:" .. index]), "every normal tab visual is drawn")
-  end
+  Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "browse draws its pocket-specific strip")
   Assert.equal(#readPathsContaining(reads, "highlight"), 0, "the selected pocket carries no synthetic highlight")
   Assert.isTrue(
     wasDrawn(graphics, draw._images["background:browse:balls:2"]),
@@ -1443,35 +1445,25 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   record.selected = nil
   draw:draw(record, singlePane(), { icons = icons() })
   -- Single-pane draws without selection: background, then the one tab focus
-  -- visual, then the eight normal icons. No item focus may appear.
+  -- visual, then the active pocket strip. No item focus may appear.
   local visuals = {}
   for _, entry in ipairs(graphics.draws) do
     if type(entry.quad) ~= "table" then
       visuals[#visuals + 1] = entry
     end
   end
-  Assert.equal(#visuals, 10, "one background, one tab focus, and eight normal tab icons are drawn")
+  Assert.equal(#visuals, 3, "one background, one tab focus, and the pocket strip are drawn")
   local tabFocus = manifested.interactive.focus.tabs
   local focusOffset = tabFocus.visual.offset or { x = 0, y = 0 }
   local target = tabFocus.targets[3]
   Assert.equal(visuals[2].quad, target.x + focusOffset.x, "the tab focus applies its horizontal offset once")
   Assert.equal(visuals[2].x, target.y + focusOffset.y, "the tab focus applies its vertical offset once")
-  for index = 1, 8 do
-    local rect = manifested.interactive.pocketTabs.rects[index]
-    local normal = manifested.interactive.pocketTabs.normal[index]
-    local offset = normal.offset or { x = 0, y = 0 }
-    local entry = visuals[2 + index]
-    Assert.equal(
-      entry.quad,
-      rect.x + rect.width / 2 + offset.x,
-      "normal tab " .. index .. " draws at its anchor plus offset"
-    )
-    Assert.equal(
-      entry.x,
-      rect.y + rect.height / 2 + offset.y,
-      "normal tab " .. index .. " draws at its vertical anchor plus offset"
-    )
-  end
+  local strip = assert(manifested.interactive.pocketTabs.strips.balls, "the balls strip is generated")
+  Assert.isTrue(visuals[3].image == draw._images["strip:balls"], "the pocket strip draws at the strip origin")
+  Assert.equal(visuals[3].quad, 0, "the pocket strip draws at the canonical strip origin")
+  Assert.equal(visuals[3].x, 0, "the pocket strip keeps the canonical strip height origin")
+  Assert.equal(strip.width, 256, "the generated strip keeps the canonical strip width")
+  Assert.equal(strip.height, 32, "the generated strip keeps the canonical strip height")
   Assert.equal(#graphics.rectangles, 0, "tab selection never uses a primitive outline")
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
@@ -1479,7 +1471,8 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local unfocused = status({ pocket = "balls", focus = "items" })
   unfocused.selected = nil
   draw:draw(unfocused, singlePane(), { icons = icons() })
-  Assert.equal(staticDrawCount(graphics), 9, "item focus leaves the tab row without its focus visual")
+  Assert.equal(staticDrawCount(graphics), 2, "item focus leaves the tab row without its focus visual")
+  Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "item focus keeps the active pocket strip")
   Assert.isFalse(
     staticDrawnAt(graphics, target.x + focusOffset.x, target.y + focusOffset.y),
     "the tab focus follows semantic focus, not pocket identity"
@@ -1709,10 +1702,8 @@ function T.tab_focus_composites_beneath_every_normal_tab()
     return nil
   end
   local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
-  for index = 1, 8 do
-    local normalAt = assert(drawIndex(draw._images["tabNormal:" .. index]), "normal tab " .. index .. " draws")
-    Assert.isTrue(focusAt < normalAt, "the focus fill stays beneath normal tab " .. index)
-  end
+  local stripAt = assert(drawIndex(draw._images["strip:balls"]), "the pocket strip draws while tabs are focused")
+  Assert.isTrue(focusAt < stripAt, "the focus fill stays beneath the pocket strip")
   Assert.equal(#graphics.rectangles, 0, "tab focus never falls back to primitive outlines")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
@@ -1795,7 +1786,7 @@ function T.normal_tab_draws_match_with_and_without_focus()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  local function normalDraws(focus)
+  local function stripDraws(focus)
     for key in pairs(graphics.draws) do
       graphics.draws[key] = nil
     end
@@ -1804,22 +1795,18 @@ function T.normal_tab_draws_match_with_and_without_focus()
     draw:draw(record, singlePane(), { icons = icons() })
     local found = {}
     for _, entry in ipairs(graphics.draws) do
-      for index = 1, 8 do
-        if entry.image == draw._images["tabNormal:" .. index] then
-          found[#found + 1] = { quad = entry.quad, x = entry.x }
-        end
+      if entry.image == draw._images["strip:balls"] then
+        found[#found + 1] = { quad = entry.quad, x = entry.x }
       end
     end
     return found
   end
-  local focused = normalDraws("tabs")
-  local unfocused = normalDraws("items")
-  Assert.equal(#focused, 8, "the focused render draws every normal tab")
-  Assert.equal(#unfocused, 8, "the unfocused render draws every normal tab")
-  for index = 1, 8 do
-    Assert.equal(focused[index].quad, unfocused[index].quad, "normal tab " .. index .. " keeps its draw position")
-    Assert.equal(focused[index].x, unfocused[index].x, "normal tab " .. index .. " keeps its draw height")
-  end
+  local focused = stripDraws("tabs")
+  local unfocused = stripDraws("items")
+  Assert.equal(#focused, 1, "the focused render draws the pocket strip once")
+  Assert.equal(#unfocused, 1, "the unfocused render draws the pocket strip once")
+  Assert.equal(focused[1].quad, unfocused[1].quad, "the pocket strip keeps its draw position")
+  Assert.equal(focused[1].x, unfocused[1].x, "the pocket strip keeps its draw height")
   Assert.equal(#graphics.rectangles, 0, "tab focus never falls back to primitive outlines")
   draw:release()
 end
@@ -1843,12 +1830,122 @@ function T.cancel_focus_draws_after_the_normal_tab_row()
     return nil
   end
   local cancelAt = assert(drawIndex(draw._images["focus:cancel"]), "Cancel focus draws while cancel is focused")
-  for index = 1, 8 do
-    local normalAt = assert(drawIndex(draw._images["tabNormal:" .. index]), "normal tab " .. index .. " draws")
-    Assert.isTrue(normalAt < cancelAt, "Cancel focus stays above normal tab " .. index)
-  end
+  local stripAt = assert(drawIndex(draw._images["strip:items"]), "the pocket strip draws while cancel is focused")
+  Assert.isTrue(stripAt < cancelAt, "Cancel focus stays above the pocket strip")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
+end
+
+local STRIP_POCKETS = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+
+local function stripManifest()
+  local manifested = manifest()
+  local strips = {}
+  for _, pocket in ipairs(STRIP_POCKETS) do
+    strips[pocket] = { image = "bag/strip-" .. pocket .. ".png", width = 256, height = 32 }
+  end
+  manifested.interactive.pocketTabs = { rects = manifested.interactive.pocketTabs.rects, strips = strips }
+  return manifested
+end
+
+local function seedStripCache()
+  local cache = seedCache()
+  for _, pocket in ipairs(STRIP_POCKETS) do
+    cache:write("bag/strip-" .. pocket .. ".png", "png-bytes")
+  end
+  return cache
+end
+
+local function trackingStripCache(reads)
+  local cache = seedStripCache()
+  local wrapped = {}
+  function wrapped:read(path)
+    reads[#reads + 1] = path
+    return cache:read(path)
+  end
+  function wrapped:write(path, data)
+    return cache:write(path, data)
+  end
+  return wrapped
+end
+
+local function drawCount(graphics, image)
+  local count = 0
+  for _, entry in ipairs(graphics.draws) do
+    if entry.image == image then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+function T.browse_draws_the_current_pocket_strip_over_tab_focus()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local reads = {}
+  local manifested = stripManifest()
+  local draw = BagRenderer.new({
+    cacheFs = trackingStripCache(reads),
+    manifest = manifested,
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local stripReads = readPathsContaining(reads, "strip-")
+  table.sort(stripReads)
+  local expectedStrips = {}
+  for _, pocket in ipairs(STRIP_POCKETS) do
+    expectedStrips[#expectedStrips + 1] = "bag/strip-" .. pocket .. ".png"
+  end
+  table.sort(expectedStrips)
+  Assert.deepEqual(stripReads, expectedStrips, "construction binds every pocket strip exactly once")
+  Assert.equal(#readPathsContaining(reads, "tab-normal-"), 0, "no retired per-tab normal visual is ever acquired")
+  for key in pairs(draw._images) do
+    Assert.isNil(key:find("tabNormal:", 1, true), "no retired per-tab normal binding survives: " .. key)
+  end
+  local function drawIndex(image)
+    for position, entry in ipairs(graphics.draws) do
+      if entry.image == image then
+        return position
+      end
+    end
+    return nil
+  end
+  local unfocused = status({ pocket = "balls", focus = "items" })
+  unfocused.selected = nil
+  draw:draw(unfocused, singlePane(), { icons = icons() })
+  local ballsStrip = assert(draw._images["strip:balls"], "the balls strip is bound")
+  Assert.equal(drawCount(graphics, ballsStrip), 1, "the current pocket strip draws exactly once per frame")
+  Assert.isNil(drawIndex(draw._images["focus:tabs"]), "item focus draws no tab focus visual")
+  for _, pocket in ipairs(STRIP_POCKETS) do
+    if pocket ~= "balls" then
+      Assert.isNil(drawIndex(draw._images["strip:" .. pocket]), "the unfocused pocket strip never draws")
+    end
+  end
+  for key in pairs(graphics.draws) do
+    graphics.draws[key] = nil
+  end
+  local focused = status({ pocket = "balls", focus = "tabs" })
+  focused.selected = nil
+  draw:draw(focused, singlePane(), { icons = icons() })
+  local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
+  local stripAt = assert(drawIndex(ballsStrip), "the current pocket strip draws while tabs are focused")
+  Assert.isTrue(focusAt < stripAt, "the focus fill stays beneath the pocket strip")
+  Assert.equal(drawCount(graphics, ballsStrip), 1, "the focused frame still draws the strip exactly once")
+  for key in pairs(graphics.draws) do
+    graphics.draws[key] = nil
+  end
+  local switched = status({ pocket = "medicine", focus = "items" })
+  switched.selected = nil
+  draw:draw(switched, singlePane(), { icons = icons() })
+  local medicineStrip = assert(draw._images["strip:medicine"], "the medicine strip is bound")
+  Assert.equal(drawCount(graphics, medicineStrip), 1, "the switched pocket draws its own strip")
+  Assert.isNil(drawIndex(ballsStrip), "the switched pocket never borrows the previous strip")
+  Assert.equal(#graphics.rectangles, 0, "strip composition never falls back to primitive outlines")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+  for _, image in ipairs(graphics.images) do
+    Assert.equal(image.releaseCount, 1, "every owned image releases exactly once")
+  end
 end
 
 return { tests = T }

@@ -307,4 +307,40 @@ function T.action_focus_targets_follow_the_audited_table_order()
   }, "action focus targets follow the audited placement table order")
 end
 
+function T.tab_state_palette_and_ordered_bank_writes_are_audited()
+  local BagSources = sources()
+  Assert.equal(
+    BagSources.palettes.tabState,
+    48,
+    "the pocket-state OBJ palette is the retained member apart from the sprite palette 47"
+  )
+  Assert.isTrue(
+    BagSources.palettes.tabState ~= BagSources.sprites.tabs.palette,
+    "the state palette member must stay distinct from the base sprite palette member"
+  )
+  local state = assert(BagSources.tabPaletteState, "the producer must publish the pocket-dependent palette write order")
+  Assert.equal(state.bankSize, 16, "each OBJ palette bank carries sixteen colors")
+  local writes = assert(state.writes, "the palette state must carry its ordered bank writes")
+  Assert.equal(#writes, 2, "initialization and pocket changes replay exactly two bank writes")
+  Assert.deepEqual(
+    writes[1],
+    { sourceBank = 8, destBank = 0 },
+    "the first write copies the retained bank into the destination base bank"
+  )
+  Assert.deepEqual(
+    writes[2],
+    { sourceBank = "pocket", destBank = "pocket" },
+    "the second write copies the active pocket bank onto itself in source order"
+  )
+end
+
+function T.hero_edge_table_carries_the_retail_values()
+  local BagSources = sources()
+  Assert.deepEqual(
+    assert(BagSources.presentation.edgeColors, "the producer must publish the hero edge-color table"),
+    { 0x294A, 0x112F, 0x5294, 0, 0, 0, 0, 0 },
+    "the edge table keeps the audited retail entries verbatim"
+  )
+end
+
 return { tests = T }

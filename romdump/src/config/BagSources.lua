@@ -36,6 +36,10 @@
 -- icon sprites whose per-slot char/palette tags ov15_021FF8F0 rebinds to the
 -- item graphics -- at their own template X/Y centers (22/152,
 -- 59/100/139); those placements never pass through the focus table.
+-- The tab strip additionally depends on the retained palette member 48:
+-- ov15_02200030 replays two OBJ bank copies per active pocket over the base
+-- member-47 realization (see BagSources.tabPaletteState), so the persistent
+-- selected-pocket treatment is palette state, not the movable focus sprite.
 -- Entries 28..31 sit at the four action-button centers with animation 22;
 -- entries 32..37 are the quantity-screen widgets driven with the tables at
 -- ov15_02200A58 and ov15_02200A88; the remaining entries are auxiliary
@@ -144,10 +148,30 @@ BagSources.chars = {
 -- Palette (NCLR) members used for rasterization by semantic role. The lower
 -- member feeds the pocket-dependent realization: destination banks 0..3
 -- copy source banks p, p, p+1, p (16 colors each) for zero-based pocket p,
--- matching the retail lower-BG palette switch.
+-- matching the retail lower-BG palette switch. The tab-state member is the
+-- retained OBJ palette the retail tab path mutates at initialization and on
+-- pocket changes; the base tab sprite resources above keep their own member
+-- and the movable focus sprite keeps its own selector, so neither carries
+-- the persistent selected-pocket treatment.
 BagSources.palettes = {
   upper = 8,
   lower = 41,
+  tabState = 48,
+}
+
+-- Pocket-relative OBJ bank writes replaying the retail tab palette mutation
+-- (ov15_02200030): for zero-based active pocket p the producer first copies
+-- source bank 8 over destination bank 0, then copies source bank p over
+-- destination bank p. The writes execute in this order, so the second write
+-- wins when the active pocket is index 0. Each bank holds bankSize colors;
+-- the runtime manifest carries only the realized strip pixels, never these
+-- operations.
+BagSources.tabPaletteState = {
+  bankSize = 16,
+  writes = {
+    { sourceBank = 8, destBank = 0 },
+    { sourceBank = "pocket", destBank = "pocket" },
+  },
 }
 
 -- Pocket-relative source bank offsets for the lower background realization.
@@ -504,6 +528,11 @@ BagSources.presentation = {
     specular = 0x3DEF,
     emission = 0x3DEF,
   },
+  -- Hero edge-marking colors as raw RGB555 words from the retail edge table
+  -- (ov15_02201304), installed while edge marking stays enabled; the
+  -- compiler normalizes them to semantic channel records. Trailing black
+  -- entries are source data, not missing data.
+  edgeColors = { 0x294A, 0x112F, 0x5294, 0, 0, 0, 0, 0 },
   framing = {
     transitionTicks = 7,
     male = {

@@ -256,6 +256,7 @@ local function fixture(opts)
   members[BagSources.sprites.tabs.cell + 1] = cellData(tabCells)
   members[BagSources.sprites.tabs.palette + 1] = palette256()
   members[BagSources.sprites.tabs.anim + 1] = animData(24)
+  members[BagSources.palettes.tabState + 1] = palette256()
   local cursorCells = {}
   for _ = 1, 4 do
     cursorCells[#cursorCells + 1] = { { x = 0, y = 0, tile = 0, size = 1 } }
@@ -675,7 +676,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v7",
+    schema = "g4-bag-assets-v8",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -732,6 +733,16 @@ local function syntheticBundle(marker)
           baseline = { male = framingRecord(), female = framingRecord() },
           byGender = framingByGender(),
         },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+        },
       },
     },
     interactive = {
@@ -743,15 +754,15 @@ local function syntheticBundle(marker)
       },
       pocketTabs = {
         rects = tabs,
-        normal = {
-          { image = "assets/generated/bag/tab-normal-1.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-2.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-3.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-4.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-5.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-6.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-7.png", width = 16, height = 16 },
-          { image = "assets/generated/bag/tab-normal-8.png", width = 16, height = 16 },
+        strips = {
+          items = { image = "assets/generated/bag/tabs-items.png", width = 256, height = 32 },
+          medicine = { image = "assets/generated/bag/tabs-medicine.png", width = 256, height = 32 },
+          balls = { image = "assets/generated/bag/tabs-balls.png", width = 256, height = 32 },
+          tmhm = { image = "assets/generated/bag/tabs-tmhm.png", width = 256, height = 32 },
+          berries = { image = "assets/generated/bag/tabs-berries.png", width = 256, height = 32 },
+          mail = { image = "assets/generated/bag/tabs-mail.png", width = 256, height = 32 },
+          battle_items = { image = "assets/generated/bag/tabs-battle_items.png", width = 256, height = 32 },
+          key_items = { image = "assets/generated/bag/tabs-key_items.png", width = 256, height = 32 },
         },
       },
       itemSlots = {
@@ -916,7 +927,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v7")
+  Assert.equal(loaded.schema, "g4-bag-assets-v8")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)
@@ -962,7 +973,7 @@ function T.writer_rejects_a_bundle_missing_a_referenced_asset()
   local first = syntheticBundle(BagCache.marker("rom", "deps"))
   Assert.isTrue(BagCacheWriter.write(cacheFs, first))
   local second = syntheticBundle(BagCache.marker("rom", "deps2"))
-  second.assets["assets/generated/bag/tab-normal-1.png"] = nil
+  second.assets["assets/generated/bag/tabs-items.png"] = nil
   local ok, err = pcall(BagCacheWriter.write, cacheFs, second)
   Assert.isFalse(ok, "a bundle missing a referenced asset must not publish")
   Assert.isTrue(Errors.is(err), "the failure must be structured")
@@ -1091,6 +1102,45 @@ function T.producer_declares_the_browse_and_framing_source_facts()
     cancel.labelRect,
     { x = 200, y = 168, width = 48, height = 16 },
     "the cancel label area keeps the source centering span"
+  )
+end
+
+-- The retained tab-state palette must carry banks 0..8: without the bank
+-- the first source write copies from, compilation fails instead of reusing
+-- the base palette.
+function T.tab_state_palette_without_its_source_bank_fails()
+  local romFs = fixture({
+    tamper = function(members)
+      local BagSources = require("romdump.src.config.BagSources")
+      members[BagSources.palettes.tabState + 1] = paletteWithBanks(8)
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a state palette without bank 8 must not compile")
+  local typed = assert(err, "a missing state bank must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("palette") or tostring(typed.message):find("bank"),
+    "a missing state bank must fail at palette composition, got: " .. tostring(typed.message)
+  )
+end
+
+function T.corrupt_tab_state_palette_fails_with_the_protocol_error()
+  local romFs = fixture({
+    tamper = function(members)
+      local BagSources = require("romdump.src.config.BagSources")
+      members[BagSources.palettes.tabState + 1] = "not-a-palette-container"
+      return members
+    end,
+  })
+  local bundle, err = BagAssetCompiler.compile(romFs)
+  Assert.isNil(bundle, "a corrupt state palette member must not compile")
+  local typed = assert(err, "a corrupt state palette member must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  Assert.notNil(
+    tostring(typed.message):find("tabs%-state%-palette"),
+    "a corrupt state palette must fail at the state-palette decode, got: " .. tostring(typed.message)
   )
 end
 

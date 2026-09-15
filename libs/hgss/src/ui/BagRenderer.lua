@@ -3,7 +3,8 @@
 -- backdrop, the borrowed 3D hero model clipped to the hero placement, the
 -- description frame, and the state-specific contextual text in the
 -- source font; the interactive pane composites the semantic state background,
--- source tabs, six-cell item grid with icons, names, quantities, and
+-- the active pocket strip with its persistent selected-pocket treatment,
+-- six-cell item grid with icons, names, quantities, and
 -- registration markers, source focus visuals at their generated targets, the
 -- derived page, and the generated cancel label. Empty cells paint no icons, so the source cell art
 -- stays authentic. The constrained description
@@ -234,8 +235,8 @@ function BagRenderer.new(opts)
         if state == "browse" then
           -- Seven realized count variants per pocket: bind each variant
           -- under its count so the visible-count selection can resolve it.
-          -- The v7 contract carries only this array shape; anything else
-          -- fails at the count lookup below instead of borrowing another shape.
+          -- Anything else fails at the count lookup below instead of
+          -- borrowing another shape.
           for count = 0, 6 do
             acquire(
               "background:browse:" .. pocket .. ":" .. count,
@@ -247,8 +248,12 @@ function BagRenderer.new(opts)
         end
       end
     end
-    for index, visual in ipairs(interactive.pocketTabs.normal) do
-      acquire("tabNormal:" .. index, visual)
+    -- One realized strip per active pocket, carrying the persistent
+    -- selected-pocket treatment; the transient tab focus stays a separate
+    -- visual drawn beneath the strip.
+    local strips = assert(interactive.pocketTabs.strips, "the bag manifest carries its pocket strips")
+    for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+      acquire("strip:" .. pocket, assert(strips[pocket], "the bag manifest carries the " .. pocket .. " strip"))
     end
     local focus = assert(interactive.focus, "the bag manifest must carry its focus visuals")
     acquire("focus:tabs", assert(focus.tabs.visual, "the bag manifest carries its tab focus"))
@@ -504,9 +509,9 @@ function BagRenderer:_drawCellFocus(presentation)
   end
 end
 
--- Draws the tab focus visual beneath the normal tab row. The fill composites
--- first so every normal tab icon stays visible above it. Nothing is drawn
--- unless the tab strip is semantically focused.
+-- Draws the tab focus visual beneath the active pocket strip. The fill
+-- composites first so the selected tab icon stays visible above it. Nothing
+-- is drawn unless the tab strip is semantically focused.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawTabFocus(presentation)
   local state = assert(presentation.state, "the bag presentation names its state")
@@ -575,21 +580,13 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local state = assert(presentation.state, "the bag presentation names its state")
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
   self:_drawStateBackground(state, pocket, presentation)
-  -- The tab focus fill composites beneath the normal tab row so the focused
-  -- icon stays visible above it.
+  -- The tab focus fill composites beneath the active-pocket strip so the
+  -- selected icon stays visible above it; the strip carries the persistent
+  -- selected-pocket treatment independently of this transient focus.
   self:_drawTabFocus(presentation)
-  local tabs = interactive.pocketTabs.rects
-  -- Every normal tab visual draws at its anchor; tab focus is a separate
-  -- movable visual drawn only while tabs are semantically focused.
-  for index = 1, 8 do
-    local rect = assert(tabs[index], "each pocket has a generated tab rectangle")
-    drawVisual(
-      graphics,
-      assert(self._visuals["tabNormal:" .. index]),
-      rect.x + rect.width / 2,
-      rect.y + rect.height / 2
-    )
-  end
+  -- The active pocket's realized strip draws once at the canonical top-strip
+  -- origin; an unknown pocket fails through the image lookup below.
+  drawVisual(graphics, assert(self._visuals["strip:" .. pocket], "the bag presentation names its pocket"), 0, 0)
   -- The movable item cursor draws beneath the cell content it frames, so
   -- icons, names, quantities, and registration markers stay visible above it.
   self:_drawCellFocus(presentation)

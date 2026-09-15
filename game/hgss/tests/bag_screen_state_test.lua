@@ -477,19 +477,20 @@ local function composedManifest()
   end
   manifested.interactive.backgrounds = backgrounds
   local tabs = {}
-  local normals = {}
+  local strips = {}
   for index = 0, 7 do
     tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
-    normals[index + 1] = {
-      image = "test/bag/tab-normal-" .. (index + 1) .. ".png",
-      width = 16,
-      height = 16,
-      offset = { x = 3, y = -2 },
+  end
+  for _, pocket in ipairs(POCKETS) do
+    strips[pocket] = {
+      image = "test/bag/tabs-" .. pocket .. ".png",
+      width = 256,
+      height = 32,
     }
   end
   manifested.interactive.pocketTabs = {
     rects = tabs,
-    normal = normals,
+    strips = strips,
   }
   manifested.interactive.focus = {
     tabs = {
@@ -595,8 +596,8 @@ local function seedComposedCache()
       put("test/bag/background-browse-" .. pocket .. "-" .. count .. ".png")
     end
   end
-  for index = 1, 8 do
-    put("test/bag/tab-normal-" .. index .. ".png")
+  for _, pocket in ipairs(POCKETS) do
+    put("test/bag/tabs-" .. pocket .. ".png")
   end
   put("test/bag/focus-tabs.png")
   put("test/bag/focus-items.png")

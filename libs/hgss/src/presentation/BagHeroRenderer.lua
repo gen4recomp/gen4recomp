@@ -193,8 +193,9 @@ end
 
 ---@param lights table<string, unknown>
 ---@param materials table<string, unknown>
+---@param edgeFacts table<string, unknown>
 ---@return table<string, unknown>
-local function buildSceneRuntime(lights, materials)
+local function buildSceneRuntime(lights, materials, edgeFacts)
   local count = assert(lights.count, "the hero presentation must carry its light count")
   assert(count == 4, "the hero light count must be exactly four")
   local color = assert(lights.color, "the hero presentation must carry its light color")
@@ -221,6 +222,13 @@ local function buildSceneRuntime(lights, materials)
   for index = 1, 32 do
     fogTable[index] = 0
   end
+  -- The generated edge records feed the shared edge-marking pass unchanged:
+  -- each record packs to RGB555 at its zero-based scene index.
+  assert(type(edgeFacts) == "table" and #edgeFacts == 8, "the hero presentation must carry eight edge colors")
+  local edgeColors = {}
+  for index = 1, 8 do
+    edgeColors[index - 1] = toRgb555(edgeFacts[index], "the hero edge color")
+  end
   return {
     lighting = {
       records = {
@@ -234,7 +242,7 @@ local function buildSceneRuntime(lights, materials)
         },
       },
     },
-    edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
+    edgeColors = edgeColors,
     fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable },
   }
 end
@@ -251,7 +259,7 @@ function BagHeroRenderer.new(opts)
   local cacheFs = assert(opts.cacheFs, "the bag hero renderer requires the asset filesystem")
   assert(type(cacheFs.read) == "function", "the bag hero renderer requires a readable asset filesystem")
   local manifest = assert(opts.manifest, "the bag hero renderer requires the bag manifest")
-  assert(manifest.schema == "g4-bag-assets-v7", "the bag hero renderer requires the v7 bag manifest")
+  assert(manifest.schema == "g4-bag-assets-v8", "the bag hero renderer requires the v8 bag manifest")
   local hero = assert(manifest.hero, "the bag manifest must carry its hero pane")
   local model = assert(hero.model, "the hero pane must carry its gender models")
   assert(type(model.male) == "table", "the hero pane must carry its male model")
@@ -264,6 +272,7 @@ function BagHeroRenderer.new(opts)
   local transformFacts = assert(presentation.transform, "the hero presentation must carry its transform")
   local lightFacts = assert(presentation.lights, "the hero presentation must carry its lights")
   local materialFacts = assert(presentation.materials, "the hero presentation must carry its material registers")
+  local edgeFacts = assert(presentation.edgeColors, "the hero presentation must carry its edge colors")
   local camera = buildCamera(cameraFacts, manifest.logicalSize)
   local transform = buildModelTransform(transformFacts)
   return setmetatable({
@@ -277,7 +286,7 @@ function BagHeroRenderer.new(opts)
     _view = camera.view,
     _projection = camera.projection,
     _modelTransform = transform,
-    _sceneRuntime = buildSceneRuntime(lightFacts, materialFacts),
+    _sceneRuntime = buildSceneRuntime(lightFacts, materialFacts, edgeFacts),
     _cameraFar = camera.far,
     _pool = nil,
     _renderer = nil,

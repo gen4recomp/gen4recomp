@@ -77,8 +77,8 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v7", "the rebuilt Bag cache must publish the count-variant contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v7", "the loader must require the count-variant contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v8", "the rebuilt Bag cache must publish the strip contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8", "the loader must require the strip contract")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
   for _, stale in ipairs({
     "g4-bag-assets-v2",
@@ -97,13 +97,13 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local interactive = assert(manifest.interactive)
   local tabs = assert(interactive.pocketTabs)
   Assert.isNil(tabs.highlight, "the retired tab highlight must not be published")
+  Assert.isNil(tabs.normal, "the retired per-tab normal array must not be published")
   local tabKeys = {}
   for key in pairs(tabs) do
     tabKeys[#tabKeys + 1] = key
   end
   table.sort(tabKeys)
-  Assert.deepEqual(tabKeys, { "normal", "rects" }, "pocket tabs carry only rects and normal art")
-  Assert.equal(#assert(tabs.normal), 8, "all eight normal pocket tabs must be generated")
+  Assert.deepEqual(tabKeys, { "rects", "strips" }, "pocket tabs carry only rects and strips")
 
   local focus = assert(interactive.focus, "the rebuilt manifest must publish semantic focus")
   local focusKeys = {}
@@ -140,15 +140,21 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   }) do
     assertNoTimelineOrSourceIdentity(entry.visual, entry.label)
   end
-  local normalBytes = {}
-  for index, tab in ipairs(tabs.normal) do
-    normalBytes[index] = assertImage(bundle, tab, "normal pocket tab " .. index)
-    assertNoTimelineOrSourceIdentity(tab, "normal pocket tab " .. index)
+  local stripBytes = {}
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    local strip = assert(tabs.strips[pocket], pocket .. " must publish its active-pocket strip")
+    Assert.equal(strip.width, 256, pocket .. " strip keeps the canonical strip width")
+    Assert.equal(strip.height, 32, pocket .. " strip keeps the canonical strip height")
+    stripBytes[pocket] = assertImage(bundle, strip, pocket .. " pocket strip")
+    assertNoTimelineOrSourceIdentity(strip, pocket .. " pocket strip")
   end
-  for index, bytes in ipairs(normalBytes) do
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
     Assert.isTrue(
-      bytes ~= tabFocusBytes and bytes ~= itemFocusBytes and bytes ~= cancelFocusBytes and bytes ~= actionFocusBytes,
-      "normal tab " .. index .. " must not reuse a focus visual"
+      stripBytes[pocket] ~= tabFocusBytes
+        and stripBytes[pocket] ~= itemFocusBytes
+        and stripBytes[pocket] ~= cancelFocusBytes
+        and stripBytes[pocket] ~= actionFocusBytes,
+      pocket .. " strip must not reuse a focus visual"
     )
   end
 

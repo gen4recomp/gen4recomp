@@ -79,8 +79,8 @@ function BagCache.referencedPaths(manifest)
       addVisual(visual)
     end
   end
-  for _, visual in ipairs(interactive.pocketTabs.normal) do
-    addVisual(visual)
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    addVisual(interactive.pocketTabs.strips[pocket])
   end
   addVisual(interactive.focus.tabs.visual)
   addVisual(interactive.focus.items.visual)

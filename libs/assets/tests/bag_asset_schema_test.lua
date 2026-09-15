@@ -375,9 +375,26 @@ local function framingByGender()
   return byGender
 end
 
+local function stripVisual(pocket)
+  return { image = "assets/generated/bag/tabs-" .. pocket .. ".png", width = 256, height = 32 }
+end
+
+local function retailEdgeColors()
+  return {
+    { r = 10, g = 10, b = 10 },
+    { r = 15, g = 9, b = 4 },
+    { r = 20, g = 20, b = 20 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+  }
+end
+
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v7"
+  manifest.schema = "g4-bag-assets-v8"
   manifest.interactive.backgrounds.browse = countVariantBackgrounds()
   manifest.interactive.cancel = {
     rect = rect(192, 168, 64, 24),
@@ -389,9 +406,14 @@ local function validFocusManifest()
     baseline = { male = framingRecord(), female = framingRecord() },
     byGender = framingByGender(),
   }
+  manifest.hero.presentation.edgeColors = retailEdgeColors()
+  local strips = {}
+  for _, pocket in ipairs(POCKETS) do
+    strips[pocket] = stripVisual(pocket)
+  end
   manifest.interactive.pocketTabs = {
     rects = manifest.interactive.pocketTabs.rects,
-    normal = manifest.interactive.pocketTabs.normal,
+    strips = strips,
   }
   local targets = focusTargets()
   manifest.interactive.focus = {
@@ -409,7 +431,7 @@ function T.previous_manifest_fails_schema_and_cache_contract()
   Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v7")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -473,7 +495,7 @@ function T.cache_reports_ready_only_with_every_referenced_file()
   cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
   cacheFs:write(BagCache.markerPath(), marker)
   Assert.isTrue(BagCache.isReady(cacheFs, marker))
-  cacheFs:remove("assets/generated/bag/tab-normal-1.png")
+  cacheFs:remove("assets/generated/bag/tabs-mail.png")
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing tab image is not ready")
 end
 
@@ -494,9 +516,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v7")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v7")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v7")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v8")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -521,6 +543,12 @@ function T.previous_bag_contract_is_rejected()
   Assert.isFalse(
     BagAssetSchema.isValidManifest(singleBrowse),
     "the single-browse-visual Bag contract must not validate as current"
+  )
+  local perTabNormal = validFocusManifest()
+  perTabNormal.schema = "g4-bag-assets-v7"
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(perTabNormal),
+    "the per-tab-normal Bag contract must not validate once strips are current"
   )
 end
 
@@ -727,13 +755,13 @@ function T.schema_rejects_animated_visual_timelines()
     "a background frame timeline must fail; the current contract publishes static realizations"
   )
   local tabTimeline = validFocusManifest()
-  tabTimeline.interactive.pocketTabs.normal[1] = {
-    frames = {
-      { image = "assets/generated/bag/tab-normal-1-frame-1.png", width = 16, height = 16, duration = 2 },
-      { image = "assets/generated/bag/tab-normal-1-frame-2.png", width = 16, height = 16, duration = 2 },
-    },
+  tabTimeline.interactive.pocketTabs.strips.items = {
+    image = "assets/generated/bag/tabs-items.png",
+    width = 256,
+    height = 32,
+    duration = 2,
   }
-  assertInvalid(tabTimeline, "a tab frame timeline must fail; the current contract publishes static realizations")
+  assertInvalid(tabTimeline, "a duration on a strip visual must fail")
   local durationOnStatic = validFocusManifest()
   durationOnStatic.interactive.itemSlots.focus = {
     image = "assets/generated/bag/focus-frame-1.png",
@@ -768,9 +796,9 @@ function T.cache_references_only_live_assets()
     seen[path] = true
   end
   Assert.isTrue(seen["assets/generated/bag/registration-slot-1.png"], "slot 1 marker must be referenced")
-  Assert.isTrue(seen["assets/generated/bag/tab-normal-1.png"], "tab visuals must be referenced")
+  Assert.isTrue(seen["assets/generated/bag/tabs-items.png"], "pocket strips must be referenced")
   for _, path in ipairs(paths) do
-    Assert.isNil(path:find("strip", 1, true), "no referenced path may belong to the retired strip asset")
+    Assert.isNil(path:find("tab-normal-", 1, true), "no referenced path may belong to the retired per-tab art")
   end
 end
 
@@ -778,7 +806,7 @@ function T.semantic_focus_contract_validates_with_exact_target_counts()
   local manifest = validFocusManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the focus manifest must pass the schema")
   Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the focus manifest")
-  Assert.keySet(manifest.interactive.pocketTabs, "normal,rects", "pocket tabs carry only rects and normal art")
+  Assert.keySet(manifest.interactive.pocketTabs, "rects,strips", "pocket tabs carry only rects and strips")
   Assert.keySet(manifest.interactive.focus, "actions,cancel,items,tabs", "focus carries exactly four classes")
   Assert.equal(#manifest.interactive.focus.tabs.targets, 8, "eight tab targets are required")
   Assert.equal(#manifest.interactive.focus.items.targets, 6, "six item targets are required")
@@ -786,9 +814,9 @@ function T.semantic_focus_contract_validates_with_exact_target_counts()
 end
 
 function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v7", "the schema carries the count-variant contract")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v7", "the central contract carries the count schema")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v7", "the loader requires the count schema")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v8", "the schema carries the strip contract")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8", "the central contract carries the strip schema")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8", "the loader requires the strip schema")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
   Assert.isFalse(
     BagAssetSchema.isValidManifest(validManifest()),
@@ -1072,6 +1100,132 @@ function T.cache_readiness_requires_every_browse_variant()
   Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete seven-variant class is ready")
   cacheFs:remove("assets/generated/bag/background-browse-mail-count-3.png")
   Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing browse count variant is not ready")
+end
+
+-- The strip contract is the current focus-manifest shape above.
+local function validStripManifest()
+  return validFocusManifest()
+end
+
+function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v8")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v8")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v8")
+  Assert.equal(BagCache.FORMAT, "bag-cache-v2")
+  local manifest = validStripManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")
+  Assert.isTrue(BagCache.validateManifest(manifest), "the cache validator must accept the pocket-strip manifest")
+  Assert.keySet(manifest.interactive.pocketTabs, "rects,strips", "pocket tabs carry only rects and strips")
+  local retired = validFocusManifest()
+  retired.schema = "g4-bag-assets-v7"
+  retired.interactive.pocketTabs = {
+    rects = retired.interactive.pocketTabs.rects,
+    normal = {
+      stripVisual("items"),
+      stripVisual("medicine"),
+      stripVisual("balls"),
+      stripVisual("tmhm"),
+      stripVisual("berries"),
+      stripVisual("mail"),
+      stripVisual("battle_items"),
+      stripVisual("key_items"),
+    },
+  }
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(retired),
+    "the previous per-tab normal manifest must not validate once strips are current"
+  )
+end
+
+function T.previous_normal_tab_shape_is_rejected()
+  local withNormal = validStripManifest()
+  withNormal.interactive.pocketTabs.normal = withNormal.interactive.pocketTabs.strips.items
+  withNormal.interactive.pocketTabs.strips = nil
+  assertInvalid(withNormal, "a v7-style normal tab array must fail once strips are current")
+  local both = validStripManifest()
+  both.interactive.pocketTabs.normal = {
+    stripVisual("items"),
+    stripVisual("medicine"),
+    stripVisual("balls"),
+    stripVisual("tmhm"),
+    stripVisual("berries"),
+    stripVisual("mail"),
+    stripVisual("battle_items"),
+    stripVisual("key_items"),
+  }
+  assertInvalid(both, "normal art alongside strips must fail; generated data is rebuildable")
+end
+
+function T.strip_pockets_and_dimensions_are_exact()
+  local missing = validStripManifest()
+  missing.interactive.pocketTabs.strips.mail = nil
+  assertInvalid(missing, "a strip record without all eight pockets must fail")
+  local extra = validStripManifest()
+  extra.interactive.pocketTabs.strips.extra = stripVisual("items")
+  assertInvalid(extra, "a strip record with an extra pocket must fail")
+  local narrow = validStripManifest()
+  narrow.interactive.pocketTabs.strips.items =
+    { image = "assets/generated/bag/tabs-items.png", width = 128, height = 32 }
+  assertInvalid(narrow, "a strip narrower than the canonical strip must fail")
+  local short = validStripManifest()
+  short.interactive.pocketTabs.strips.items =
+    { image = "assets/generated/bag/tabs-items.png", width = 256, height = 16 }
+  assertInvalid(short, "a strip shorter than the canonical strip must fail")
+  local timeline = validStripManifest()
+  timeline.interactive.pocketTabs.strips.items = {
+    image = "assets/generated/bag/tabs-items.png",
+    width = 256,
+    height = 32,
+    duration = 2,
+  }
+  assertInvalid(timeline, "a duration on a strip visual must fail")
+end
+
+function T.hero_edge_colors_are_a_required_eight_record_table()
+  local missing = validStripManifest()
+  missing.hero.presentation.edgeColors = nil
+  assertInvalid(missing, "a hero presentation without edge colors must fail")
+  local short = validStripManifest()
+  short.hero.presentation.edgeColors[8] = nil
+  assertInvalid(short, "seven edge colors must fail")
+  local long = validStripManifest()
+  long.hero.presentation.edgeColors[9] = { r = 0, g = 0, b = 0 }
+  assertInvalid(long, "nine edge colors must fail")
+  local overflow = validStripManifest()
+  overflow.hero.presentation.edgeColors[1] = { r = 32, g = 10, b = 10 }
+  assertInvalid(overflow, "an edge channel past 31 must fail")
+  local ragged = validStripManifest()
+  ragged.hero.presentation.edgeColors[2] = { r = 15, g = 9 }
+  assertInvalid(ragged, "an edge record without blue must fail")
+  local extra = validStripManifest()
+  extra.hero.presentation.edgeColors[3] = { r = 20, g = 20, b = 20, memberId = 37 }
+  assertInvalid(extra, "a source identity inside an edge record must fail")
+end
+
+function T.cache_readiness_requires_every_pocket_strip()
+  local manifest = validStripManifest()
+  local marker = BagCache.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(BagCache.manifestPath(), manifest)
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the strip manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  local counts = {}
+  for _, path in ipairs(paths) do
+    counts[path] = (counts[path] or 0) + 1
+  end
+  for _, pocket in ipairs(POCKETS) do
+    Assert.equal(counts["assets/generated/bag/tabs-" .. pocket .. ".png"], 1, pocket .. " strip is referenced once")
+  end
+  for _, path in ipairs(paths) do
+    Assert.isNil(path:find("tab-normal-", 1, true), "no retired per-tab normal path may remain referenced")
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
+  cacheFs:write(BagCache.markerPath(), marker)
+  Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete strip class is ready")
+  cacheFs:remove("assets/generated/bag/tabs-mail.png")
+  Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing pocket strip is not ready")
 end
 
 return { tests = T }

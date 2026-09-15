@@ -140,9 +140,9 @@ local function bagManifest()
   for i = 0, 7 do
     tabs[#tabs + 1] = bagRect(i * 32, 0, 32, 32)
   end
-  local tabNormals = {}
-  for i = 1, 8 do
-    tabNormals[#tabNormals + 1] = bagImageRef("test/bag/tab-normal-" .. i .. ".png")
+  local tabStrips = {}
+  for _, pocket in ipairs(BAG_POCKETS) do
+    tabStrips[pocket] = { image = "test/bag/tabs-" .. pocket .. ".png", width = 256, height = 32 }
   end
   local slotShapes = {
     { rect = { 0, 32, 128, 42 }, text = { 32, 40, 88, 32 }, center = { 48, 56 } },
@@ -250,13 +250,23 @@ local function bagManifest()
           baseline = { male = framingRecord(), female = framingRecord() },
           byGender = framingByGender,
         },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+        },
       },
     },
     interactive = {
       backgrounds = backgrounds,
       pocketTabs = {
         rects = tabs,
-        normal = tabNormals,
+        strips = tabStrips,
       },
       focus = {
         tabs = {
@@ -403,8 +413,8 @@ function FieldStatePresentationFixture.cache()
     end
   end
   cache:write("test/bag/description-frame-alt.png", solidPng(32, 32))
-  for index = 1, 8 do
-    cache:write("test/bag/tab-normal-" .. index .. ".png", solidPng(32, 32))
+  for _, pocket in ipairs(BAG_POCKETS) do
+    cache:write("test/bag/tabs-" .. pocket .. ".png", solidPng(256, 32))
   end
   cache:write("test/bag/focus-tabs.png", solidPng(32, 32))
   cache:write("test/bag/focus-items.png", solidPng(32, 32))

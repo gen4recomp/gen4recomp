@@ -1,8 +1,10 @@
 -- Authoritative validation for the generated field-bag presentation class.
 -- The manifest carries the upper-pane hero (gender backdrops, description
 -- frame, gender hero models with pocket-indexed animation states, normalized
--- camera/transform/light facts) plus the lower-pane controls (eight pocket
--- tabs with normal visuals, six item slots pairing full touch rects with
+-- camera/transform/light facts, the eight-entry edge-color table) plus the
+-- lower-pane controls (eight pocket
+-- tabs with one 256x32 strip visual per active pocket, six item slots pairing
+-- full touch rects with
 -- text windows and explicit text anchors plus registration markers, the
 -- semantic focus visuals with their canonical target points, the count
 -- readout, Cancel with its text window and source-centered label area,
@@ -22,7 +24,7 @@ local ModelAsset = require("libs.assets.src.model.ModelAsset")
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v7"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v8"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -486,6 +488,18 @@ local function checkMaterials(materials, context)
   end
 end
 
+-- The retail hero edge-color table: exactly eight semantic 5-bit channel
+-- records feeding the shared DS edge-marking renderer. Trailing black
+-- entries are valid source data, not missing data.
+local function checkEdgeColors(edgeColors, context)
+  if not Validate.isArray(edgeColors) or #edgeColors ~= 8 then
+    fail("hero.presentation.edgeColors must carry exactly eight edge-color records", context)
+  end
+  for index, record in ipairs(edgeColors) do
+    checkMaterialRegister(record, context, "hero.presentation.edgeColors[" .. index .. "]")
+  end
+end
+
 local function checkFramingRecord(record, context, what)
   if type(record) ~= "table" then
     fail(what .. " must be a record", context)
@@ -584,7 +598,7 @@ local function checkHero(hero, context)
   end
   checkKeys(
     presentation,
-    { camera = true, transform = true, lights = true, materials = true, framing = true },
+    { camera = true, transform = true, lights = true, materials = true, framing = true, edgeColors = true },
     context,
     "hero.presentation"
   )
@@ -593,6 +607,7 @@ local function checkHero(hero, context)
   checkLights(presentation.lights, context)
   checkMaterials(presentation.materials, context)
   checkFraming(presentation.framing, context)
+  checkEdgeColors(presentation.edgeColors, context)
 end
 
 local function checkLocalPoint(value, bounds, context, what)
@@ -734,18 +749,31 @@ local function checkInteractive(interactive, context)
   if type(pocketTabs) ~= "table" then
     fail("interactive.pocketTabs must be a record", context)
   end
-  checkKeys(pocketTabs, { rects = true, normal = true }, context, "interactive.pocketTabs")
+  checkKeys(pocketTabs, { rects = true, strips = true }, context, "interactive.pocketTabs")
   if not Validate.isArray(pocketTabs.rects) or #pocketTabs.rects ~= BagAssetSchema.TAB_COUNT then
     fail("interactive.pocketTabs.rects must carry exactly eight tab rectangles", context)
   end
   for index, tab in ipairs(pocketTabs.rects) do
     checkRect(tab, context, "interactive.pocketTabs.rects[" .. index .. "]")
   end
-  if not Validate.isArray(pocketTabs.normal) or #pocketTabs.normal ~= BagAssetSchema.TAB_COUNT then
-    fail("interactive.pocketTabs.normal must carry exactly eight semantic visuals", context)
+  -- One final 256x32 strip visual per active pocket, carrying the persistent
+  -- selected-pocket treatment independently of transient focus. Exactly the
+  -- eight canonical pocket keys, no extras.
+  if type(pocketTabs.strips) ~= "table" then
+    fail("interactive.pocketTabs.strips must be a pocket record", context)
   end
-  for index, visual in ipairs(pocketTabs.normal) do
-    checkVisual(visual, context, "interactive.pocketTabs.normal[" .. index .. "]")
+  local allowed = {}
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    allowed[pocket] = true
+  end
+  checkKeys(pocketTabs.strips, allowed, context, "interactive.pocketTabs.strips")
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    local visual = pocketTabs.strips[pocket]
+    local what = "interactive.pocketTabs.strips." .. pocket
+    checkVisual(visual, context, what)
+    if visual.width ~= 256 or visual.height ~= 32 then
+      fail(what .. " must be exactly 256x32", context)
+    end
   end
   local itemSlots = interactive.itemSlots
   if type(itemSlots) ~= "table" then

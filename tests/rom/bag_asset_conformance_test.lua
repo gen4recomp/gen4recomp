@@ -363,63 +363,6 @@ function T.runtime_manifest_carries_no_source_identities(romFs, versionId)
   check(manifest, "manifest")
 end
 
--- Each published normal tab must realize its own audited pocket artwork:
--- the generated pixels equal the frame the shared rasterizer derives
--- independently from the decoded tab source members under the producer's
--- normal selector, and every tab carries opaque content of its own.
-function T.normal_tabs_match_their_audited_source_realizations(romFs, versionId)
-  local bundle = bundleFor(romFs, versionId)
-  local archive = assert(romFs:openNarc("bag_ui"))
-  local function decoded(kind, memberId, what)
-    local bytes = assert(archive:readMember(memberId), "bag member " .. memberId .. " must exist")
-    local record, err = G2dDecoder[kind](bytes, { label = what })
-    Assert.notNil(record, what .. " must decode: " .. (err and err.message or "?"))
-    return assert(record)
-  end
-  local group = BagSources.sprites.tabs
-  local charData = decoded("decodeChar", group.char, "tab char")
-  local paletteData = decoded("decodePalette", group.palette, "tab palette")
-  local cellData = decoded("decodeCell", group.cell, "tab cell")
-  local animation = decoded("decodeAnimation", group.anim, "tab animation")
-  local manifest = bundle.manifest
-  for index, selector in ipairs(assert(BagSources.spriteStates.tabs.normal, "normal tab selectors must be audited")) do
-    local sequence = assert(animation.anims[selector.animation + 1], "normal tab " .. index .. " selects a sequence")
-    local expected = G2dRasterizer.renderAnimationFrame(
-      charData,
-      paletteData,
-      cellData,
-      sequence,
-      1,
-      { role = "conformance-tab-" .. index, animation = selector.animation, frame = 0 },
-      selector.palette
-    )
-    local visual = assert(manifest.interactive.pocketTabs.normal[index], "normal tab " .. index .. " must be published")
-    local png = assert(bundle.assets[visual.image], "normal tab " .. index .. " bytes must be compiled")
-    local width, height, rgba = PngReader.rgba(png)
-    Assert.equal(width, expected.width, "normal tab " .. index .. " width matches its source realization")
-    Assert.equal(height, expected.height, "normal tab " .. index .. " height matches its source realization")
-    Assert.equal(rgba, expected.pixels, "normal tab " .. index .. " pixels match its source realization")
-    local expectedOffset = nil
-    if expected.offset.x ~= 0 or expected.offset.y ~= 0 then
-      expectedOffset = { x = expected.offset.x, y = expected.offset.y }
-    end
-    Assert.deepEqual(visual.offset, expectedOffset, "normal tab " .. index .. " offset matches its source realization")
-    local opaque = 0
-    for i = 4, #rgba, 4 do
-      if string.byte(rgba, i) ~= 0 then
-        opaque = opaque + 1
-      end
-    end
-    Assert.isTrue(opaque > 0, "normal tab " .. index .. " carries visible source content")
-  end
-  local seen = {}
-  for index, tab in ipairs(manifest.interactive.pocketTabs.normal) do
-    local bytes = assert(bundle.assets[tab.image], "normal tab " .. index .. " bytes must be compiled")
-    Assert.isNil(seen[bytes], "normal tabs must not repeat one shared image")
-    seen[bytes] = true
-  end
-end
-
 -- The finalized state backgrounds visibly contain the static Cancel
 -- face/chrome before runtime draws any text: the canonical Cancel rect
 -- carries richer opaque content than a same-size plain wash strip from the
@@ -581,6 +524,173 @@ function T.browse_count_variants_start_from_independent_source_copies(romFs, ver
     slotRegion(emptyRgba) ~= expected,
     "the count 0 variant must mutate the slot region, proving the comparison is sensitive"
   )
+end
+
+-- The pocket strip replays the retained pocket-state palette: the effective
+-- palette starts from the base tab palette, copies the retained bank 8 over
+-- destination bank 0, then copies the active pocket bank over itself, in that
+-- order. This replay is written independently of the compiler's own helper;
+-- only the audited member selection, selectors, and geometry are shared.
+local function replayEffectivePalette(baseColors, stateColors, pocketIndex)
+  local bankSize = 16
+  local effective = {}
+  for index, color in ipairs(baseColors) do
+    effective[index] = color
+  end
+  local function copyBank(fromBank, toBank)
+    for entry = 0, bankSize - 1 do
+      effective[toBank * bankSize + entry + 1] = stateColors[fromBank * bankSize + entry + 1]
+    end
+  end
+  Assert.isTrue(#stateColors >= 9 * bankSize, "the retained palette must carry banks 0..8")
+  Assert.isTrue(#effective >= 8 * bankSize, "the effective palette must carry banks 0..7")
+  copyBank(8, 0)
+  copyBank(pocketIndex, pocketIndex)
+  return { colors = effective }
+end
+
+local function packBytes(buffer)
+  local out = {}
+  for i = 1, #buffer, 4096 do
+    out[#out + 1] = string.char(unpack(buffer, i, math.min(i + 4095, #buffer)))
+  end
+  return table.concat(out)
+end
+
+-- Composite the eight realized normal frames into one transparent 256x32
+-- strip at the canonical tab anchors: each frame draws at its tab-rect
+-- center plus its own raster offset, in pocket order, with alpha-zero
+-- pixels preserving the strip beneath.
+local function compositeStrip(frames, rects)
+  local width, height = 256, 32
+  local buffer = {}
+  for i = 1, width * height * 4 do
+    buffer[i] = 0
+  end
+  for index, frame in ipairs(frames) do
+    local rect = assert(rects[index], "tab rectangle " .. index .. " must be audited")
+    local destX = rect.x + rect.width / 2 + frame.offset.x
+    local destY = rect.y + rect.height / 2 + frame.offset.y
+    Assert.isTrue(
+      destX >= 0 and destY >= 0 and destX + frame.width <= width and destY + frame.height <= height,
+      "normal tab " .. index .. " placement must fit the canonical strip"
+    )
+    for y = 0, frame.height - 1 do
+      for x = 0, frame.width - 1 do
+        local sourceOffset = (y * frame.width + x) * 4 + 1
+        if string.byte(frame.pixels, sourceOffset + 3) ~= 0 then
+          local targetOffset = ((destY + y) * width + (destX + x)) * 4
+          local r, g, b = string.byte(frame.pixels, sourceOffset, sourceOffset + 2)
+          buffer[targetOffset + 1], buffer[targetOffset + 2], buffer[targetOffset + 3], buffer[targetOffset + 4] =
+            r, g, b, 255
+        end
+      end
+    end
+  end
+  return packBytes(buffer)
+end
+
+-- Each published pocket strip must equal the independently replayed retail
+-- palette realization for its active pocket: the base tab members plus the
+-- retained pocket-state writes, rasterized and composited without calling
+-- the compiler's palette helper or reading the manifest output.
+function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  Assert.equal(manifest.schema, "g4-bag-assets-v8", "the rebuilt bag cache must publish the strip contract")
+  local strips =
+    assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
+  local keys = {}
+  for key in pairs(strips) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  Assert.deepEqual(keys, {
+    "balls",
+    "battle_items",
+    "berries",
+    "items",
+    "key_items",
+    "mail",
+    "medicine",
+    "tmhm",
+  }, "strips carry exactly the eight canonical pockets")
+  Assert.isNil(manifest.interactive.pocketTabs.normal, "no pocket-independent normal array may survive")
+  local archive = assert(romFs:openNarc("bag_ui"))
+  local function decoded(kind, memberId, what)
+    local bytes = assert(archive:readMember(memberId), "bag member " .. memberId .. " must exist")
+    local record, err = G2dDecoder[kind](bytes, { label = what })
+    Assert.notNil(record, what .. " must decode: " .. (err and err.message or "?"))
+    return assert(record)
+  end
+  local group = BagSources.sprites.tabs
+  local charData = decoded("decodeChar", group.char, "tab char")
+  local basePalette = decoded("decodePalette", group.palette, "tab base palette")
+  local statePalette = decoded("decodePalette", BagSources.palettes.tabState, "tab state palette")
+  local cellData = decoded("decodeCell", group.cell, "tab cell")
+  local animation = decoded("decodeAnimation", group.anim, "tab animation")
+  local selectors = assert(BagSources.spriteStates.tabs.normal, "normal tab selectors must be audited")
+  Assert.equal(#selectors, 8, "eight normal tab selectors are required")
+  local realized = {}
+  for _, case in ipairs({ { pocket = "items", index = 0 }, { pocket = "balls", index = 2 } }) do
+    local effective = replayEffectivePalette(basePalette.colors, statePalette.colors, case.index)
+    local frames = {}
+    for position, selector in ipairs(selectors) do
+      local sequence =
+        assert(animation.anims[selector.animation + 1], "normal tab " .. position .. " selects a sequence")
+      Assert.equal(#sequence.frames, 1, "normal tab " .. position .. " realizes one static frame")
+      frames[position] = G2dRasterizer.renderAnimationFrame(
+        charData,
+        effective,
+        cellData,
+        sequence,
+        1,
+        { role = "conformance-strip-" .. case.pocket .. "-" .. position },
+        selector.palette
+      )
+    end
+    local expected = compositeStrip(frames, BagSources.geometry.tabs)
+    local visual = assert(strips[case.pocket], case.pocket .. " must publish its active-pocket strip")
+    Assert.equal(visual.width, 256, case.pocket .. " strip keeps the canonical strip width")
+    Assert.equal(visual.height, 32, case.pocket .. " strip keeps the canonical strip height")
+    local width, height, rgba =
+      PngReader.rgba(assert(bundle.assets[visual.image], case.pocket .. " bytes must compile"))
+    Assert.equal(width, 256, case.pocket .. " strip image is 256 pixels wide")
+    Assert.equal(height, 32, case.pocket .. " strip image is 32 pixels tall")
+    Assert.equal(rgba, expected, case.pocket .. " strip pixels match the independent palette replay")
+    for region = 0, 7 do
+      local opaque = 0
+      for y = 0, 31 do
+        for x = region * 32, region * 32 + 31 do
+          if string.byte(rgba, (y * 256 + x) * 4 + 4) ~= 0 then
+            opaque = opaque + 1
+          end
+        end
+      end
+      Assert.isTrue(opaque > 0, case.pocket .. " strip icon region " .. region .. " carries source content")
+    end
+    realized[case.pocket] = rgba
+  end
+  Assert.isTrue(realized.items ~= realized.balls, "the items and balls pocket states must differ")
+end
+
+-- The compiled hero presentation must carry the retail edge-color table as
+-- semantic channel records: three chromatic entries followed by five black
+-- entries, never a fabricated all-black table.
+function T.hero_edge_colors_carry_the_retail_table(romFs, versionId)
+  local manifest = bundleFor(romFs, versionId).manifest
+  local edgeColors =
+    assert(manifest.hero.presentation.edgeColors, "the rebuilt manifest must publish its hero edge colors")
+  Assert.deepEqual(edgeColors, {
+    { r = 10, g = 10, b = 10 },
+    { r = 15, g = 9, b = 4 },
+    { r = 20, g = 20, b = 20 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+    { r = 0, g = 0, b = 0 },
+  }, "the compiled edge records match the retail table")
 end
 
 local suite = RomSuite.fromFacts(T)

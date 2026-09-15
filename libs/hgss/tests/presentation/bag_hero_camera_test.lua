@@ -46,7 +46,7 @@ end
 
 local function manifest(overrides)
   local record = {
-    schema = "g4-bag-assets-v7",
+    schema = "g4-bag-assets-v8",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -99,6 +99,16 @@ local function manifest(overrides)
           ambient = { r = 10, g = 10, b = 10 },
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
+        },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
         },
       },
     },

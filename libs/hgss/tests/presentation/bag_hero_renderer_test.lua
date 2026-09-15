@@ -132,7 +132,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v7",
+    schema = "g4-bag-assets-v8",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -183,6 +183,16 @@ local function validManifest()
           ambient = { r = 10, g = 10, b = 10 },
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
+        },
+        edgeColors = {
+          { r = 10, g = 10, b = 10 },
+          { r = 15, g = 9, b = 4 },
+          { r = 20, g = 20, b = 20 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
+          { r = 0, g = 0, b = 0 },
         },
       },
     },
@@ -916,6 +926,43 @@ function T.framing_only_change_moves_the_view_and_base_height()
       )
     end, "a status without framing fails instead of reusing the static camera")
     renderer:release()
+  end)
+end
+
+function T.scene_edge_colors_come_from_the_generated_records()
+  withDoubles(function()
+    local Hero = requireHero()
+    local manifest = validManifest()
+    manifest.schema = "g4-bag-assets-v8"
+    manifest.hero.presentation.edgeColors = {
+      { r = 10, g = 10, b = 10 },
+      { r = 15, g = 9, b = 4 },
+      { r = 20, g = 20, b = 20 },
+      { r = 0, g = 0, b = 0 },
+      { r = 0, g = 0, b = 0 },
+      { r = 0, g = 0, b = 0 },
+      { r = 0, g = 0, b = 0 },
+      { r = 0, g = 0, b = 0 },
+    }
+    local renderer = Hero.new({ cacheFs = stubCache(), manifest = manifest, graphics = FakeGraphics({}) })
+    local edgeColors = assert(renderer._sceneRuntime.edgeColors, "the scene carries its edge table")
+    local records = assert(manifest.hero.presentation.edgeColors, "the manifest carries its edge records")
+    for index = 0, 7 do
+      local record = assert(records[index + 1], "edge record " .. index .. " is generated")
+      Assert.equal(
+        edgeColors[index],
+        record.r + 32 * record.g + 1024 * record.b,
+        "edge entry " .. index .. " packs its generated record"
+      )
+    end
+    Assert.isNil(edgeColors[8], "the edge table carries no ninth entry")
+    renderer:release()
+    local missing = validManifest()
+    missing.schema = "g4-bag-assets-v8"
+    missing.hero.presentation.edgeColors = nil
+    Assert.throws(function()
+      Hero.new({ cacheFs = stubCache(), manifest = missing, graphics = FakeGraphics({}) })
+    end, "construction without generated edge colors fails instead of rendering unlit edges")
   end)
 end
 
