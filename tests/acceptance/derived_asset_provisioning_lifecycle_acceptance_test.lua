@@ -75,6 +75,10 @@ local function withApp(fn)
     return {
       update = function() end,
       dispose = function() end,
+      retire = function() end,
+      requestMilestone = function()
+        return true
+      end,
       requestField = function()
         return true
       end,
@@ -86,6 +90,9 @@ local function withApp(fn)
       end,
       ensureCell = function()
         return true
+      end,
+      status = function()
+        return { bootstrap = "ready" }
       end,
     }
   end
@@ -144,6 +151,7 @@ T.tests["producer progress runs before the running game update"] = function()
       build = unusedBuildState(),
       closed = false,
       session = unusedSession(),
+      pool = {},
       retired = false,
       host = nil,
       update = function()
@@ -175,6 +183,7 @@ T.tests["game disposal precedes producer disposal"] = function()
       build = unusedBuildState(),
       closed = false,
       session = unusedSession(),
+      pool = {},
       retired = false,
       host = nil,
       dispose = function()
