@@ -111,17 +111,6 @@ local function quantize(value)
 end
 
 function T.card_selection_pulses_without_recoloring_portraits(scope)
-  local function clamp(value)
-    return math.max(0, math.min(1, value))
-  end
-  local function expectedTone(manifest, delta)
-    local tone = assert(manifest.genderSelector and manifest.genderSelector.defaultTone)
-    return {
-      r = quantize(clamp(tone.r / 255 + delta / 31)),
-      g = quantize(clamp(tone.g / 255 + delta / 31)),
-      b = quantize(clamp(tone.b / 255 + delta / 31)),
-    }
-  end
   for _, entry in ipairs(readyManifests()) do
     local renderer = rendererFor(scope, entry.cache, entry.manifest)
     local focusedZero = selectorView(entry.manifest, 256, 192, 0, 0)
@@ -176,12 +165,12 @@ function T.selected_frame_changes_without_recoloring_portraits(scope)
     Assert.isTrue(changed, "focused card rim must differ from its unfocused rendering")
     for gender = 0, 1 do
       local portrait = focusedView.layout.genderButtons[gender].portraitRect
-      local yStart = math.max(0, math.floor(portrait.y))
-      local yEnd = math.min(focused:getHeight() - 1, math.ceil(portrait.y + portrait.height) - 1)
-      local xStart = math.max(0, math.floor(portrait.x))
-      local xEnd = math.min(focused:getWidth() - 1, math.ceil(portrait.x + portrait.width) - 1)
-      for y = yStart, yEnd do
-        for x = xStart, xEnd do
+      local portraitYStart = math.max(0, math.floor(portrait.y))
+      local portraitYEnd = math.min(focused:getHeight() - 1, math.ceil(portrait.y + portrait.height) - 1)
+      local portraitXStart = math.max(0, math.floor(portrait.x))
+      local portraitXEnd = math.min(focused:getWidth() - 1, math.ceil(portrait.x + portrait.width) - 1)
+      for y = portraitYStart, portraitYEnd do
+        for x = portraitXStart, portraitXEnd do
           local fr, fg, fb = focused:getPixel(x, y)
           local ur, ug, ub = unfocused:getPixel(x, y)
           Assert.equal(quantize(fr), quantize(ur), "focus must not recolor portrait red channel")
