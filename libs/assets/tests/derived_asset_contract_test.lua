@@ -95,8 +95,8 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-field-ui-v7",
     },
     intro = {
-      cacheFormat = "intro-cache-v12",
-      schema = "g4-intro-assets-v12",
+      cacheFormat = "intro-cache-v13",
+      schema = "g4-intro-assets-v13",
       provenanceSchema = "g4-intro-provenance-v1",
     },
     starterChoice = {

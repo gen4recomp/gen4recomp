@@ -85,7 +85,7 @@ local function assertBallSource(bundle)
 end
 
 local function assertVariant(bundle, versionId, paletteMember)
-  Assert.equal(bundle.manifest.schemaVersion, 12)
+  Assert.equal(bundle.manifest.schemaVersion, 13)
   Assert.equal(bundle.manifest.variant, versionId)
   Assert.equal(sourceMember(bundle, "background:char"), 0)
   Assert.equal(sourceMember(bundle, "background:screen"), 3)
@@ -117,6 +117,23 @@ local function assertVariant(bundle, versionId, paletteMember)
       end
     end
     Assert.isTrue(visible, versionId .. " Marill frame " .. index .. " must contain decoded OAM pixels")
+  end
+end
+
+local function assertNamingSource(bundle)
+  for _, expected in ipairs({ { id = "naming_male", sequence = 48 }, { id = "naming_female", sequence = 49 } }) do
+    local widget = assert(bundle.manifest.widgets[expected.id])
+    local role = expected.id:gsub("_", "-")
+    Assert.isTrue(#widget.frames > 0, expected.id .. " has visible frames")
+    Assert.equal(widget.provenance.animationSequence, expected.sequence)
+    Assert.equal(sourceArchive(bundle, role .. ":char"), "naming_screen")
+    Assert.equal(sourceArchive(bundle, role .. ":palette"), "naming_screen")
+    Assert.equal(sourceArchive(bundle, role .. ":cell"), "naming_screen")
+    Assert.equal(sourceArchive(bundle, role .. ":animation"), "naming_screen")
+    Assert.equal(sourceMember(bundle, role .. ":char"), 10)
+    Assert.equal(sourceMember(bundle, role .. ":palette"), 1)
+    Assert.equal(sourceMember(bundle, role .. ":cell"), 12)
+    Assert.equal(sourceMember(bundle, role .. ":animation"), 14)
   end
 end
 
@@ -167,6 +184,7 @@ function T.both_variants_compile_the_correct_gradient(romFs, versionId)
   local second = assert(compiler().compile(romFs))
   assertVariant(first, versionId, versionId == "heartgold" and 1 or 2)
   assertGenderSource(first)
+  assertNamingSource(first)
   assertConfirmationSource(first, versionId)
   assertBallSource(first)
   Assert.equal(first.manifest.widgets.ball_open.sourceCenter.x, 160)
@@ -181,7 +199,7 @@ function T.compiled_visuals_are_stable_semantic_widgets(romFs)
   local bundle = assert(compiler().compile(romFs))
   Assert.keySet(
     bundle.manifest.widgets,
-    "ball_open,female,gender_female,gender_male,male,marill,marill_appear,oak,shrink_female,shrink_male"
+    "ball_open,female,gender_female,gender_male,male,marill,marill_appear,naming_female,naming_male,oak,shrink_female,shrink_male"
   )
   for id, widget in pairs(bundle.manifest.widgets) do
     Assert.equal(widget.sampling, "nearest", id .. " uses nearest sampling")

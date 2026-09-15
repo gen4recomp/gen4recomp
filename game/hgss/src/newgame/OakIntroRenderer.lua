@@ -30,6 +30,8 @@ local REQUIRED_ASSETS = {
   "ball_open",
   "gender_male",
   "gender_female",
+  "naming_male",
+  "naming_female",
 }
 
 local OakIntroRenderer = {}
@@ -235,7 +237,10 @@ function OakIntroRenderer.new(options)
     namingScreen = NamingScreenRenderer.new({
       graphics = graphics,
       text = text,
-      subjectImages = { male = images[assert(assets.male.image)], female = images[assert(assets.female.image)] },
+      subjectImages = {
+        male = images[assert(assets.naming_male.image)],
+        female = images[assert(assets.naming_female.image)],
+      },
     }),
     images = images,
     bindings = bindings,

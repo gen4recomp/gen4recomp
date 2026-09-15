@@ -7,7 +7,7 @@ local NamingScreenLayout = {}
 local WIDTH, HEIGHT = 256, 192
 local ROWS, COLUMNS = 6, 13
 local KEYBOARD = { x = 8, y = 58, width = 240, height = 106 }
-local CONTROL_SPANS = { upper = { 1, 3 }, lower = { 4, 6 }, symbols = { 7, 9 }, back = { 10, 11 }, ok = { 12, 13 } }
+local CONTROL_SPANS = { upper = { 1, 2 }, lower = { 3, 4 }, symbols = { 5, 6 }, back = { 9, 11 }, ok = { 12, 13 } }
 
 ---@class NamingScreenLayoutResult
 ---@field placement table<string, unknown>
@@ -71,7 +71,7 @@ function NamingScreenLayout.compute(bounds, preferredScale)
   for id, span in pairs(CONTROL_SPANS) do
     controls[id] = rect(
       KEYBOARD.x + (span[1] - 1) * KEYBOARD.width / COLUMNS,
-      KEYBOARD.y + 5 * KEYBOARD.height / ROWS,
+      KEYBOARD.y,
       (span[2] - span[1] + 1) * KEYBOARD.width / COLUMNS,
       KEYBOARD.height / ROWS
     )

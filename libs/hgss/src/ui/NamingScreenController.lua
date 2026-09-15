@@ -36,9 +36,52 @@ NamingScreenController.__index = NamingScreenController
 
 local ROWS, COLUMNS = 6, 13
 local PAGES = { "upper", "lower", "symbols" }
-local PAGE_TEXT =
-  { upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ", lower = "abcdefghijklmnopqrstuvwxyz", symbols = "0123456789 -.'" }
-local SPANS = { upper = { 1, 3 }, lower = { 4, 6 }, symbols = { 7, 9 }, back = { 10, 11 }, ok = { 12, 13 } }
+local SPANS = { upper = { 1, 2 }, lower = { 3, 4 }, symbols = { 5, 6 }, back = { 9, 11 }, ok = { 12, 13 } }
+
+local function sourceRow(text)
+  local result = {}
+  for glyph in Utf8Glyphs.iter(text) do
+    result[#result + 1] = glyph
+  end
+  assert(#result == COLUMNS, "naming source row must contain thirteen cells")
+  return result
+end
+
+local PAGE_ROWS = {
+  upper = {
+    sourceRow("ABCDEFGHIJ ,."),
+    sourceRow("KLMNOPQRST '-"),
+    sourceRow("UVWXYZ     ♂♀"),
+    sourceRow("             "),
+    sourceRow("0123456789   "),
+  },
+  lower = {
+    sourceRow("abcdefghij ,."),
+    sourceRow("klmnopqrst '-"),
+    sourceRow("uvwxyz     ♂♀"),
+    sourceRow("             "),
+    sourceRow("0123456789   "),
+  },
+  symbols = {
+    sourceRow(",.:;!?   ♂♀  "),
+    sourceRow("“”‘’()       "),
+    sourceRow("…·~@#%+-*/=  "),
+    sourceRow("⊙○□△◇♠♥♦♣★♪  "),
+    sourceRow("☀𝄞☂☃☺😆😧😠😴↑↓  "),
+  },
+}
+
+local function homeCell(column)
+  if column == 7 or column == 8 then
+    return { kind = "blank" }
+  end
+  for id, span in pairs(SPANS) do
+    if column >= span[1] and column <= span[2] then
+      return { kind = "control", controlId = id }
+    end
+  end
+  error("naming control row has no cell", 2)
+end
 
 local function count(text)
   local n = 0
@@ -75,17 +118,11 @@ local function validateSubject(kind, subject)
 end
 
 local function pageCell(page, row, column)
-  if row == ROWS then
-    for id, span in pairs(SPANS) do
-      if column >= span[1] and column <= span[2] then
-        return { kind = "control", controlId = id }
-      end
-    end
-    error("naming control row has no cell", 2)
+  if row == 1 then
+    return homeCell(column)
   end
-  local index = (row - 1) * COLUMNS + column
-  local glyph = PAGE_TEXT[page]:sub(index, index)
-  return glyph == "" and { kind = "blank" } or { kind = "glyph", glyph = glyph }
+  local glyph = PAGE_ROWS[page][row - 1][column]
+  return { kind = "glyph", glyph = glyph }
 end
 
 local function makeGrid(page, charmap)
@@ -103,15 +140,8 @@ local function makeGrid(page, charmap)
   return grid
 end
 
-local function firstCell(grid)
-  for row = 1, ROWS do
-    for column = 1, COLUMNS do
-      if grid[row][column].kind ~= "blank" then
-        return { row = row, column = column }
-      end
-    end
-  end
-  error("naming keyboard has no selectable cell", 2)
+local function sameCell(first, second)
+  return first.kind == second.kind and first.glyph == second.glyph and first.controlId == second.controlId
 end
 
 ---@param options { kind: "player"|"pokemon", maxLength: integer, initialText: string, charmap: table<string, integer>, subject: table<string, unknown> }
@@ -141,7 +171,8 @@ function NamingScreenController.new(options)
     _subject = subjectCopy(options.subject),
     _page = "upper",
     _grids = grids,
-    _cursor = firstCell(grids.upper),
+    _cursor = { row = 2, column = 1 },
+    _deltaColumn = 0,
     _text = options.initialText,
     _result = nil,
   }, NamingScreenController)
@@ -152,20 +183,27 @@ function NamingScreenController:_cell()
 end
 
 function NamingScreenController:_move(direction)
+  local previousRow = self._cursor.row
   local row, column = self._cursor.row, self._cursor.column
   local dr = direction == "up" and -1 or direction == "down" and 1 or 0
   local dc = direction == "left" and -1 or direction == "right" and 1 or 0
   local start = self:_cell()
+  row = (row - 1 + dr) % ROWS + 1
+  column = (column - 1 + dc) % COLUMNS + 1
   for _ = 1, ROWS * COLUMNS do
-    row = (row - 1 + dr) % ROWS + 1
-    column = (column - 1 + dc) % COLUMNS + 1
     local cell = self._grids[self._page][row][column]
-    if
-      cell.kind ~= "blank"
-      and (cell.kind ~= start.kind or cell.glyph ~= start.glyph or cell.controlId ~= start.controlId)
-    then
+    if cell.kind ~= "blank" and not (cell.kind == "control" and sameCell(cell, start)) then
       self._cursor = { row = row, column = column }
+      if dc ~= 0 then
+        self._deltaColumn = dc
+      end
       return true
+    end
+    if previousRow == 1 and cell.kind == "blank" and dr ~= 0 then
+      column = (column - 1 + self._deltaColumn) % COLUMNS + 1
+    else
+      row = (row - 1 + dr) % ROWS + 1
+      column = (column - 1 + dc) % COLUMNS + 1
     end
   end
   return false
@@ -229,7 +267,6 @@ function NamingScreenController:activateControl(id)
   end
   if id == "upper" or id == "lower" or id == "symbols" then
     self._page = id
-    self._cursor = firstCell(self._grids[id])
     return true
   elseif id:sub(1, 6) == "glyph:" then
     return self:_insert(id:sub(7))
@@ -304,7 +341,7 @@ function NamingScreenController:snapshot()
         or id == "symbols" and "Symbols"
         or id == "back" and "Back"
         or "OK",
-      row = ROWS,
+      row = 1,
       firstColumn = span[1],
       lastColumn = span[2],
     }

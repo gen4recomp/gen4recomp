@@ -47,6 +47,7 @@ local ALIAS_TO_SYMBOL = {
   start_menu = "NARC_a_0_1_4",
   bag_ui = "NARC_a_0_1_5",
   intro = "NARC_demo_intro_intro",
+  naming_screen = "NARC_data_namein",
   dialogue_frames = "NARC_a_0_3_8",
   signpost_graphics = "NARC_a_0_3_6",
   trainer_card_graphics = "NARC_a_0_4_9",

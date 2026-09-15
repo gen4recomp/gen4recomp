@@ -6,7 +6,7 @@ local Contract = require("libs.assets.src.DerivedAssetContract")
 local M = {
   FORMAT = Contract.intro.cacheFormat,
   SCHEMA = Contract.intro.schema,
-  SCHEMA_VERSION = 12,
+  SCHEMA_VERSION = 13,
   PROVENANCE_SCHEMA = Contract.intro.provenanceSchema,
   MANIFEST_ERROR = "INTRO_MANIFEST_INVALID",
   PROVENANCE_ERROR = "INTRO_PROVENANCE_INVALID",
@@ -24,6 +24,8 @@ M.REQUIRED_ASSETS = {
   "ball_open",
   "gender_male",
   "gender_female",
+  "naming_male",
+  "naming_female",
 }
 local REQUIRED = {}
 for _, id in ipairs(M.REQUIRED_ASSETS) do
@@ -103,8 +105,15 @@ local function frame(id, widget, value, index)
   then
     return invalid("widget " .. id .. " frame anchor is invalid", { widget = id, frame = index })
   end
-  local animatedSet =
-    { ball_open = true, marill_appear = true, marill = true, gender_male = true, gender_female = true }
+  local animatedSet = {
+    ball_open = true,
+    marill_appear = true,
+    marill = true,
+    gender_male = true,
+    gender_female = true,
+    naming_male = true,
+    naming_female = true,
+  }
   local function finiteField(name)
     return finite(value[name])
   end
@@ -183,8 +192,15 @@ local function widget(id, value)
       return invalid("widget " .. id .. " frames are not dense", { widget = id })
     end
   end
-  local playbackSet =
-    { ball_open = true, marill_appear = true, marill = true, gender_male = true, gender_female = true }
+  local playbackSet = {
+    ball_open = true,
+    marill_appear = true,
+    marill = true,
+    gender_male = true,
+    gender_female = true,
+    naming_male = true,
+    naming_female = true,
+  }
   if playbackSet[id] then
     if
       value.playMode ~= "forward"

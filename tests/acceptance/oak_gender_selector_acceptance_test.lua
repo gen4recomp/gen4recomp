@@ -8,6 +8,7 @@ local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {
   metadata = {
@@ -162,6 +163,19 @@ local function advanceToNaming(versionId)
   return state
 end
 
+local function clickNamingCell(state, row, column)
+  local view = state:view()
+  local surface = assert(view.pixelSurface)
+  local naming = assert(view.layout.namingScreen)
+  local cell = assert(naming.cells[row][column])
+  local x, y = LayoutGeometry.logicalToHost(
+    surface.placement,
+    naming.placement.frame.x + cell.x + 1,
+    naming.placement.frame.y + cell.y + 1
+  )
+  state:mousepressed(x, y, 1)
+end
+
 T.tests.production_oak_name_entry_uses_the_retail_naming_surface = function()
   local state = advanceToNaming(AcceptanceHarness.defaultVersion())
   local view = state:view()
@@ -176,8 +190,14 @@ T.tests.production_oak_name_entry_routes_pointer_keyboard_and_gamepad_to_one_res
   state:keypressed("backspace")
   Assert.equal(state:view().name, "GOL", "physical input and Back must share naming semantics")
   state:gamepadpressed(nil, "dpdown")
-  state:touchpressed(nil, 0, 0)
-  Assert.equal(state:view().name, "GOL", "directional and pointer input must not bypass text semantics")
+  clickNamingCell(state, 2, 1)
+  Assert.equal(state:view().name, "GOLA", "pointer glyph activation must share naming semantics")
+  clickNamingCell(state, 1, 10)
+  Assert.equal(state:view().name, "GOL", "pointer Back must share naming semantics")
+  clickNamingCell(state, 1, 12)
+  state:tick(26)
+  Assert.equal(state:view().phase, "name_confirm", "pointer OK must publish the same naming result")
+  Assert.equal(state:view().name, "GOL")
   state:dispose()
 end
 
