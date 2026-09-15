@@ -2,7 +2,6 @@
 -- intro manifest; semantic timing and transition decisions remain in the
 -- engine controller.
 
-local ImageButton = require("libs.ui.src.ImageButton")
 local TextButton = require("libs.ui.src.TextButton")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -44,32 +43,26 @@ local REVEAL_SHADER = [[
   }
 ]]
 
-local PROFILE_CARD = {
-  border = { 58, 58, 58 },
-  selectedRim = { 255, 58, 58 },
-  unselectedRim = { 222, 230, 230 },
-}
-
 local function clamp(value)
   return math.max(0, math.min(1, value))
 end
 
-local function referenceColor(value)
-  return { value[1] / 255, value[2] / 255, value[3] / 255 }
+local function semanticColor(value)
+  return { value.r / 255, value.g / 255, value.b / 255 }
 end
 
 local function profilePalette(manifest, selected, focusBlinkDelta)
-  local tone = assert(manifest.genderSelector and manifest.genderSelector.defaultTone)
+  local selector = assert(manifest.genderSelector)
+  local tone = assert(selector.defaultTone)
   local delta = selected and (focusBlinkDelta or 0) / 31 or 0
   local fill = {
     clamp(tone.r / 255 + delta),
     clamp(tone.g / 255 + delta),
     clamp(tone.b / 255 + delta),
   }
+  local rim = selected and selector.selectedRim or selector.unselectedRim
   return {
-    border = referenceColor(PROFILE_CARD.border),
-    rim = referenceColor(selected and PROFILE_CARD.selectedRim or PROFILE_CARD.unselectedRim),
-    selectedRim = referenceColor(PROFILE_CARD.selectedRim),
+    rim = semanticColor(rim),
     face = fill,
   }
 end
@@ -86,6 +79,43 @@ end
 
 local function defaultImageLoader(path)
   return love.graphics.newImage(path, { linear = false, mipmaps = false })
+end
+
+local function selectorAssetId(gender, kind)
+  return "gender-selector-" .. gender .. "-" .. kind
+end
+
+local function selectorRect(entry)
+  return {
+    x = entry.rect.x,
+    y = entry.rect.y,
+    width = entry.rect.width,
+    height = entry.rect.height,
+    scale = assert(entry.scale),
+  }
+end
+
+local function selectorAssets(selector)
+  local assets = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(selector.buttons[gender])
+    for _, kind in ipairs({ "base", "fillMask", "rimMask" }) do
+      local field = kind == "base" and "baseImage" or kind .. "Image"
+      local path = assert(button[field])
+      local bounds = assert(button.bounds)
+      local id = selectorAssetId(gender, kind)
+      assets[id] = {
+        image = path,
+        width = bounds.width,
+        height = bounds.height,
+        sampling = "nearest",
+        frames = {
+          { image = path, width = bounds.width, height = bounds.height, duration = 1 },
+        },
+      }
+    end
+  end
+  return assets
 end
 
 local function releaseAll(resources)
@@ -121,6 +151,9 @@ local function loadResources(manifest, graphics, imageLoader)
         },
       },
     }
+    for assetId, asset in pairs(selectorAssets(manifest.genderSelector)) do
+      assets[assetId] = asset
+    end
     for assetId, asset in pairs(assets) do
       bindings[assetId] = {}
       for frameIndex, frame in ipairs(asset.frames) do
@@ -157,6 +190,12 @@ function OakIntroRenderer.new(options)
   assert(type(options.manifest.background) == "table", "Oak renderer requires a generated intro background")
   local assets = options.manifest.widgets
   assert(options.manifest.background, "Oak renderer requires a generated background")
+  local selector = assert(options.manifest.genderSelector, "Oak renderer requires a generated gender selector")
+  assert(selector.defaultTone and selector.unselectedRim and selector.selectedRim)
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(selector.buttons and selector.buttons[gender])
+    assert(button.baseImage and button.fillMaskImage and button.rimMaskImage)
+  end
   for _, assetId in ipairs(REQUIRED_ASSETS) do
     assert(assets[assetId], "Oak renderer requires generated asset " .. assetId)
   end
@@ -296,9 +335,9 @@ function OakIntroRenderer:_draw(view)
   local layout = view.layout
   graphics.clear(0.04, 0.05, 0.09, 1)
   drawBackground(self, layout.viewport)
-  if view.primaryWidget ~= nil then
+  if view.primaryWidget ~= nil and layout.subject ~= nil then
     drawAsset(self, view.primaryWidget, view.visualFrameIndex, layout.subject)
-  elseif view.visual ~= "background" then
+  elseif view.primaryWidget == nil and view.visual ~= "background" and layout.subject ~= nil then
     drawAsset(self, view.visual, view.visualFrameIndex, layout.subject)
   end
   if view.revealWidget ~= nil and layout.reveal ~= nil then
@@ -319,42 +358,23 @@ function OakIntroRenderer:_draw(view)
       for gender = 0, 1 do
         local entry = assert(layout.genderButtons and layout.genderButtons[gender])
         local selected = view.genderFocus == gender
+        local key = assert(entry.key)
         local palette = profilePalette(self.manifest, selected, selected and view.focusBlinkDelta or 0)
-        local colors = {
-          face = { palette.face[1], palette.face[2], palette.face[3], 1 },
-          border = { palette.border[1], palette.border[2], palette.border[3], 1 },
-          rim = { palette.rim[1], palette.rim[2], palette.rim[3], 1 },
-          selectedRim = { palette.selectedRim[1], palette.selectedRim[2], palette.selectedRim[3], 1 },
-          innerBorder = { palette.face[1], palette.face[2], palette.face[3], 1 },
-        }
-        local function drawGenderPortrait(rect)
-          drawAsset(self, entry.portraitId, 1, rect)
-        end
-        ImageButton.draw(graphics, entry.button, {
-          selected = selected,
-          colors = colors,
-          imageRect = entry.portraitRect,
-          drawImage = drawGenderPortrait,
-        })
+        local cardRect = selectorRect(entry)
+        drawAsset(self, selectorAssetId(key, "base"), 1, cardRect)
+        drawAsset(self, selectorAssetId(key, "fillMask"), 1, cardRect, 1, nil, palette.face)
+        drawAsset(self, selectorAssetId(key, "rimMask"), 1, cardRect, 1, nil, palette.rim)
+        drawAsset(self, entry.portraitId, 1, entry.portraitRect)
       end
     elseif layout.selectedProfileButton then
       local entry = layout.selectedProfileButton
       local palette = profilePalette(self.manifest, true, view.focusBlinkDelta or 0)
-      local colors = {
-        face = { palette.face[1], palette.face[2], palette.face[3], 1 },
-        border = { palette.border[1], palette.border[2], palette.border[3], 1 },
-        rim = { palette.rim[1], palette.rim[2], palette.rim[3], 1 },
-        selectedRim = { palette.selectedRim[1], palette.selectedRim[2], palette.selectedRim[3], 1 },
-      }
-      local function drawSelectedProfilePortrait(rect)
-        drawAsset(self, entry.portraitId, 1, rect)
-      end
-      ImageButton.draw(graphics, entry.button, {
-        selected = true,
-        colors = colors,
-        imageRect = entry.portraitRect,
-        drawImage = drawSelectedProfilePortrait,
-      })
+      local key = assert(entry.key)
+      local cardRect = selectorRect(entry)
+      drawAsset(self, selectorAssetId(key, "base"), 1, cardRect)
+      drawAsset(self, selectorAssetId(key, "fillMask"), 1, cardRect, 1, nil, palette.face)
+      drawAsset(self, selectorAssetId(key, "rimMask"), 1, cardRect, 1, nil, palette.rim)
+      drawAsset(self, entry.portraitId, 1, entry.portraitRect)
     end
   end
   if layout.confirmationButtons then

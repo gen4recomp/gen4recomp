@@ -67,12 +67,20 @@ local function manifestWithWidth(sourceWidth)
   data.widgets.confirmation_no.contentRect = { x = 8, y = 16, width = 104, height = 24 }
   data.genderSelector = {
     defaultTone = { r = 100, g = 101, b = 102 },
+    unselectedRim = { r = 222, g = 230, b = 230 },
+    selectedRim = { r = 255, g = 58, b = 58 },
     buttons = {
       male = {
         bounds = { x = 18, y = 25, width = 93, height = 148 },
+        baseImage = "assets/generated/intro/gender-selector-male-base.png",
+        fillMaskImage = "assets/generated/intro/gender-selector-male-fill-mask.png",
+        rimMaskImage = "assets/generated/intro/gender-selector-male-rim-mask.png",
       },
       female = {
         bounds = { x = 144, y = 25, width = 95, height = 148 },
+        baseImage = "assets/generated/intro/gender-selector-female-base.png",
+        fillMaskImage = "assets/generated/intro/gender-selector-female-fill-mask.png",
+        rimMaskImage = "assets/generated/intro/gender-selector-female-rim-mask.png",
       },
     },
   }
@@ -432,7 +440,7 @@ function T.tests.profile_controls_emit_final_rectangles_without_generic_button_g
   Assert.notNil(profile.portraitRect, "selected profile presentation must retain portrait geometry")
   Assert.notNil(yes.rect, "YES presentation must expose its final rectangle")
   Assert.notNil(no.rect, "NO presentation must expose its final rectangle")
-  Assert.notNil(profile.button, "selected profile presentation must expose shared image button geometry")
+  Assert.isNil(profile.button, "selected profile presentation must not expose generic button geometry")
   Assert.notNil(yes.button, "YES presentation must expose shared text button geometry")
   Assert.notNil(no.button, "NO presentation must expose shared text button geometry")
   Assert.isTrue(inside(profile.rect, layout.selectorRegion))
@@ -440,7 +448,6 @@ function T.tests.profile_controls_emit_final_rectangles_without_generic_button_g
   Assert.isTrue(inside(no.rect, layout.selectorRegion))
   Assert.isTrue(OakIntroLayout.contains(yes.rect, yes.rect.x + yes.rect.width / 2, yes.rect.y + yes.rect.height / 2))
   Assert.isFalse(OakIntroLayout.contains(yes.rect, yes.rect.x + yes.rect.width, yes.rect.y + yes.rect.height / 2))
-  Assert.equal(profile.button.rect.x, profile.rect.x)
   Assert.equal(yes.button.rect.x, yes.rect.x)
 end
 
@@ -735,7 +742,7 @@ function T.tests.name_confirmation_scale_is_independent_of_gender()
   end
 end
 
-function T.tests.gender_cards_expose_image_button_geometry()
+function T.tests.gender_cards_expose_source_geometry_without_widget_state()
   local data = manifest()
   local layout = compute(800, 600, {
     phase = "gender_select",
@@ -747,9 +754,9 @@ function T.tests.gender_cards_expose_image_button_geometry()
   }, {}, data)
   for gender = 0, 1 do
     local entry = assert(layout.genderButtons[gender])
-    Assert.notNil(entry.button)
-    Assert.equal(entry.button.rect.x, entry.rect.x)
-    Assert.equal(entry.button.rect.width, entry.rect.width)
+    Assert.isNil(entry.button)
+    Assert.equal(entry.rect.width, data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds.width)
+    Assert.equal(entry.rect.height, data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds.height)
     Assert.notNil(entry.portraitRect)
     Assert.isTrue(entry.portraitRect.x >= entry.rect.x)
     Assert.isTrue(entry.portraitRect.y >= entry.rect.y)
@@ -969,7 +976,7 @@ function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_i
   end
 end
 
-function T.tests.gender_cards_keep_equal_top_and_bottom_padding_around_portraits()
+function T.tests.gender_cards_preserve_source_card_geometry()
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
     local layout = compute(size[1], size[2], {
@@ -982,9 +989,9 @@ function T.tests.gender_cards_keep_equal_top_and_bottom_padding_around_portraits
     }, {}, data)
     for gender = 0, 1 do
       local entry = assert(layout.genderButtons[gender])
-      local top = entry.portraitRect.y - entry.rect.y
-      local bottom = (entry.rect.y + entry.rect.height) - (entry.portraitRect.y + entry.portraitRect.height)
-      Assert.near(top, bottom, 1e-6)
+      local source = data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds
+      Assert.equal(entry.rect.width / entry.scale, source.width)
+      Assert.equal(entry.rect.height / entry.scale, source.height)
     end
   end
 end
