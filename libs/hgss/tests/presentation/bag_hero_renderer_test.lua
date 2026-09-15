@@ -132,7 +132,7 @@ local function validManifest()
     }
   end
   return {
-    schema = "g4-bag-assets-v6",
+    schema = "g4-bag-assets-v7",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {

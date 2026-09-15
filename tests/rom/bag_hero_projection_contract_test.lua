@@ -363,7 +363,7 @@ end
 function T.canonical_hero_matches_the_independent_retail_projection(romFs)
   local bundle = compileBundle(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v6", "the oracle compares against the current hero contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v7", "the oracle compares against the current hero contract")
   local states = assert(assert(manifest.hero).animations.states, "the bundle carries hero pocket states")
   Assert.isTrue(#states >= 2, "the oracle needs two pocket states")
   local pockets = { states[1].pocket, states[2].pocket }
@@ -458,6 +458,115 @@ function T.canonical_hero_matches_the_independent_retail_projection(romFs)
         Assert.near(actual.maxX, expected.maxX, PIXEL_TOLERANCE, label .. " matches the retail right bound")
         Assert.near(actual.maxY, expected.maxY, PIXEL_TOLERANCE, label .. " matches the retail bottom bound")
       end
+    end
+  end
+end
+
+-- Source-faithful hero framing: the compiled hero presentation carries the
+-- pocket-aware framing records (baseline plus one per canonical pocket for
+-- both genders) with the fixed-tick transition duration, normalized to
+-- finite semantic values.
+--
+-- Authority: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
+-- asm/overlay_15.s (ov15_02200790 framing table, ov15_021FDAF4 transition
+-- duration).
+function T.compiled_hero_carries_pocket_framing_for_both_genders(romFs)
+  local bundle = compileBundle(romFs)
+  local manifest = assert(bundle.manifest)
+  local presentation = assert(assert(manifest.hero).presentation, "the bundle carries the hero presentation")
+  local framing = assert(presentation.framing, "the bundle carries the pocket-aware hero framing")
+  Assert.equal(framing.transitionTicks, 7, "the framing transition keeps its fixed-tick duration")
+  for _, gender in ipairs({ "male", "female" }) do
+    local baseline = assert(framing.baseline[gender], gender .. " publishes its baseline framing record")
+    local pockets = assert(framing.byGender[gender], gender .. " publishes its pocket framing records")
+    local seen = 0
+    for _, pocket in ipairs({
+      "items",
+      "medicine",
+      "balls",
+      "tmhm",
+      "berries",
+      "mail",
+      "battle_items",
+      "key_items",
+    }) do
+      local record = assert(pockets[pocket], gender .. " publishes the " .. pocket .. " framing record")
+      seen = seen + 1
+      for _, field in ipairs({ "angleXDegrees", "angleYDegrees", "distance", "modelY" }) do
+        local value = record[field]
+        Assert.isTrue(
+          type(value) == "number" and value == value and value < math.huge and value > -math.huge,
+          gender .. " " .. pocket .. " framing " .. field .. " must be a finite number"
+        )
+      end
+    end
+    Assert.equal(seen, 8, gender .. " publishes all eight pocket framing records")
+    for _, field in ipairs({ "angleXDegrees", "angleYDegrees", "distance", "modelY" }) do
+      local value = baseline[field]
+      Assert.isTrue(
+        type(value) == "number" and value == value and value < math.huge and value > -math.huge,
+        gender .. " baseline framing " .. field .. " must be a finite number"
+      )
+    end
+  end
+end
+
+-- The normalized framing values reproduce the pinned source table:
+-- baseline plus two pocket records per gender convert fixed-point
+-- lengths at 1/4096 into tile units and u16 angles over the full circle.
+--
+-- Authority: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
+-- asm/overlay_15.s (ov15_02200790 sixteen-byte records: u16 X/Y angles,
+-- fixed-point distance, fixed-point model Y; record 0 baseline, records
+-- 1..8 canonical pockets, two gender groups of nine).
+function T.compiled_framing_matches_the_pinned_source_records(romFs)
+  local bundle = compileBundle(romFs)
+  local manifest = assert(bundle.manifest)
+  local framing = assert(assert(manifest.hero).presentation.framing, "the bundle carries the pocket-aware hero framing")
+  local pinned = {
+    male = {
+      baseline = { angleX = 59778, angleY = 5152, distance = 1391441, modelY = -163840 },
+      items = { angleX = 61058, angleY = 26393, distance = 1391445, modelY = -151552 },
+      medicine = { angleX = 57479, angleY = 18472, distance = 932689, modelY = -188416 },
+    },
+    female = {
+      baseline = { angleX = 59778, angleY = 5152, distance = 1391441, modelY = -163840 },
+      items = { angleX = 60546, angleY = 14368, distance = 1203027, modelY = -184320 },
+      medicine = { angleX = 59778, angleY = 7968, distance = 1096529, modelY = -163840 },
+    },
+  }
+  for _, gender in ipairs({ "male", "female" }) do
+    local expected = pinned[gender]
+    local records = { baseline = assert(framing.baseline[gender]) }
+    for _, pocket in ipairs({ "items", "medicine" }) do
+      records[pocket] = assert(framing.byGender[gender][pocket])
+    end
+    for label, record in pairs(records) do
+      local raw = assert(expected[label], gender .. " " .. label .. " carries a pinned source record")
+      Assert.near(
+        record.angleXDegrees,
+        raw.angleX * 360 / 65536,
+        1e-9,
+        gender .. " " .. label .. " pitch matches its u16 source angle"
+      )
+      Assert.near(
+        record.angleYDegrees,
+        raw.angleY * 360 / 65536,
+        1e-9,
+        gender .. " " .. label .. " yaw matches its u16 source angle"
+      )
+      Assert.near(
+        record.distance,
+        (raw.distance / 4096) / TILE,
+        1e-9,
+        gender .. " " .. label .. " distance matches its fixed-point source length in tiles"
+      )
+      Assert.near(
+        record.modelY,
+        (raw.modelY / 4096) / TILE,
+        1e-9,
+        gender .. " " .. label .. " model height matches its fixed-point source length in tiles"
+      )
     end
   end
 end

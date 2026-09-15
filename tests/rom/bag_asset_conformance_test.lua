@@ -450,17 +450,137 @@ function T.finalized_backgrounds_carry_static_cancel_chrome(romFs, versionId)
   end
   for _, state in ipairs({ "browse", "action" }) do
     for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
-      local background = bundle.manifest.interactive.backgrounds[state][pocket]
-      local _, _, rgba =
-        PngReader.rgba(assert(bundle.assets[background.image], state .. "/" .. pocket .. " must compile"))
-      local chrome = distinctOpaqueColors(rgba, 256, cancel.rect)
-      local wash = distinctOpaqueColors(rgba, 256, { x = 0, y = 168, width = 64, height = 24 })
-      Assert.isTrue(
-        chrome > wash,
-        state .. "/" .. pocket .. " Cancel chrome must enrich the Cancel rect beyond plain wash"
-      )
+      local published = bundle.manifest.interactive.backgrounds[state][pocket]
+      local variants = published
+      if state ~= "browse" then
+        variants = { published }
+      end
+      for _, background in ipairs(variants) do
+        local _, _, rgba =
+          PngReader.rgba(assert(bundle.assets[background.image], state .. "/" .. pocket .. " must compile"))
+        local chrome = distinctOpaqueColors(rgba, 256, cancel.rect)
+        local wash = distinctOpaqueColors(rgba, 256, { x = 0, y = 168, width = 64, height = 24 })
+        Assert.isTrue(
+          chrome > wash,
+          state .. "/" .. pocket .. " Cancel chrome must enrich the Cancel rect beyond plain wash"
+        )
+      end
     end
   end
+end
+
+-- The compiled lower pane publishes one realized browse background per
+-- pocket and visible occupied-item count 0..6: an empty row and a full row
+-- resolve distinct compiled chrome instead of one static image.
+function T.compiled_browse_backgrounds_carry_seven_count_variants_per_pocket(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    local variants =
+      assert(manifest.interactive.backgrounds.browse[pocket], pocket .. " must publish its browse count variants")
+    Assert.equal(#variants, 7, pocket .. " publishes one browse visual per visible count 0..6")
+    for count = 0, 6 do
+      local visual = assert(variants[count + 1], pocket .. " publishes its count " .. count .. " visual")
+      Assert.isTrue(type(visual.image) == "string", pocket .. " count " .. count .. " publishes one realized image")
+      Assert.equal(visual.width, 256, pocket .. " count " .. count .. " keeps the pane width")
+      Assert.equal(visual.height, 192, pocket .. " count " .. count .. " keeps the pane height")
+      Assert.notNil(bundle.assets[visual.image], pocket .. " count " .. count .. " image bytes must be compiled")
+    end
+  end
+  local emptyImage = assert(
+    manifest.interactive.backgrounds.browse.items[1].image,
+    "the empty items browse variant must publish its image"
+  )
+  local fullImage = assert(
+    manifest.interactive.backgrounds.browse.items[7].image,
+    "the full items browse variant must publish its image"
+  )
+  Assert.isTrue(
+    assetBytes(assert(bundle.assets[emptyImage], "the empty browse bytes must be compiled"))
+      ~= assetBytes(assert(bundle.assets[fullImage], "the full browse bytes must be compiled")),
+    "the empty and full browse variants must carry distinct slot chrome"
+  )
+end
+
+-- The compiled Cancel control publishes the source label area centered on
+-- the Cancel face: the narrower label span, not the full button bound.
+function T.compiled_cancel_carries_the_centered_label_area(romFs, versionId)
+  local manifest = bundleFor(romFs, versionId).manifest
+  local cancel = assert(manifest.interactive.cancel, "the compiled manifest must publish cancel geometry")
+  Assert.deepEqual(
+    cancel.labelRect,
+    { x = 200, y = 168, width = 48, height = 16 },
+    "the cancel label area keeps the source centering span"
+  )
+  Assert.equal(
+    cancel.labelRect.x + cancel.labelRect.width / 2,
+    224,
+    "the label area centers on the middle of the cancel face"
+  )
+  Assert.isTrue(
+    cancel.labelRect.x >= cancel.rect.x
+      and cancel.labelRect.y >= cancel.rect.y
+      and cancel.labelRect.x + cancel.labelRect.width <= cancel.rect.x + cancel.rect.width
+      and cancel.labelRect.y + cancel.labelRect.height <= cancel.rect.y + cancel.rect.height,
+    "the label area stays inside the cancel control"
+  )
+end
+
+-- Each browse count variant replays from an independent copy of the decoded
+-- source screen: the full-count variant must match the pristine source
+-- composition exactly over the mutation footprint, so earlier count
+-- mutations cannot leak across variants through a shared mutable screen.
+function T.browse_count_variants_start_from_independent_source_copies(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local archive = assert(romFs:openNarc("bag_ui"))
+  local function decoded(kind, memberId, what)
+    local bytes = assert(archive:readMember(memberId), "bag member " .. memberId .. " must exist")
+    local record, err = G2dDecoder[kind](bytes, { label = what })
+    Assert.notNil(record, what .. " must decode: " .. (err and err.message or "?"))
+    return assert(record)
+  end
+  local charData = decoded("decodeChar", BagSources.chars.lower, "lower char")
+  local palette = decoded("decodePalette", BagSources.palettes.lower, "lower palette")
+  local remap = assert(BagSources.lowerPaletteBanks, "the producer must declare its lower palette banks")
+  local effective = {}
+  for index, color in ipairs(palette.colors) do
+    effective[index] = color
+  end
+  for destination = 0, 3 do
+    local sourceBank = remap.offsets[destination + 1]
+    for entry = 0, remap.bankSize - 1 do
+      effective[destination * remap.bankSize + entry + 1] = palette.colors[sourceBank * remap.bankSize + entry + 1]
+    end
+  end
+  local wash = decoded("decodeScreen", BagSources.screens.listWash, "list wash")
+  local slots = decoded("decodeScreen", BagSources.screens.listSlots, "list slots")
+  local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCompiler")
+  local layers = {
+    G2dRasterizer.renderScreen(charData, { colors = effective }, wash, { role = "conformance-list-wash" }),
+    G2dRasterizer.renderScreen(charData, { colors = effective }, slots, { role = "conformance-list-slots" }),
+  }
+  local pristine = BagPresentationCompiler.cropImage(
+    BagPresentationCompiler.composeImages(layers, "conformance browse"),
+    256,
+    192,
+    "conformance browse"
+  )
+  local function slotRegion(rgba)
+    local rows = {}
+    for y = 32, 159 do
+      rows[#rows + 1] = rgba:sub(y * 256 * 4 + 1, (y + 1) * 256 * 4)
+    end
+    return table.concat(rows)
+  end
+  local expected = slotRegion(pristine.pixels)
+  local variants = assert(bundle.manifest.interactive.backgrounds.browse.items, "items must publish its count variants")
+  local _, _, fullRgba = PngReader.rgba(assert(bundle.assets[variants[7].image], "the count 6 bytes must be compiled"))
+  Assert.equal(slotRegion(fullRgba), expected, "the count 6 variant must carry the unmutated source screen")
+  local _, _, emptyRgba = PngReader.rgba(assert(bundle.assets[variants[1].image], "the count 0 bytes must be compiled"))
+  Assert.isTrue(
+    slotRegion(emptyRgba) ~= expected,
+    "the count 0 variant must mutate the slot region, proving the comparison is sensitive"
+  )
 end
 
 local suite = RomSuite.fromFacts(T)

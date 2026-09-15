@@ -149,13 +149,23 @@ end
 
 local function backgrounds()
   local out = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = {}
     for _, pocket in ipairs(POCKETS) do
       pockets[pocket] = imageRef("assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png")
     end
     out[state] = pockets
   end
+  local browse = {}
+  for _, pocket in ipairs(POCKETS) do
+    local variants = {}
+    for count = 0, 6 do
+      variants[#variants + 1] =
+        imageRef("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+    end
+    browse[pocket] = variants
+  end
+  out.browse = browse
   return out
 end
 
@@ -333,9 +343,52 @@ local function focusTargets()
   }
 end
 
+local function countVariantImage(pocket, count)
+  return imageRef("assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+end
+
+local function countVariantBackgrounds()
+  local pockets = {}
+  for _, pocket in ipairs(POCKETS) do
+    local variants = {}
+    for count = 0, 6 do
+      variants[#variants + 1] = countVariantImage(pocket, count)
+    end
+    pockets[pocket] = variants
+  end
+  return pockets
+end
+
+local function framingRecord()
+  return { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.2, modelY = -2.8 }
+end
+
+local function framingByGender()
+  local byGender = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = {}
+    for _, pocket in ipairs(POCKETS) do
+      records[pocket] = framingRecord()
+    end
+    byGender[gender] = records
+  end
+  return byGender
+end
+
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v6"
+  manifest.schema = "g4-bag-assets-v7"
+  manifest.interactive.backgrounds.browse = countVariantBackgrounds()
+  manifest.interactive.cancel = {
+    rect = rect(192, 168, 64, 24),
+    textRect = rect(192, 168, 56, 16),
+    labelRect = rect(200, 168, 48, 16),
+  }
+  manifest.hero.presentation.framing = {
+    transitionTicks = 7,
+    baseline = { male = framingRecord(), female = framingRecord() },
+    byGender = framingByGender(),
+  }
   manifest.interactive.pocketTabs = {
     rects = manifest.interactive.pocketTabs.rects,
     normal = manifest.interactive.pocketTabs.normal,
@@ -356,7 +409,7 @@ function T.previous_manifest_fails_schema_and_cache_contract()
   Assert.isFalse(pcall(BagCache.validateManifest, manifest), "the cache validator must reject the stale fixture")
   Assert.isNil(manifest.interactive.widgets, "the stale manifest carries no dead widget namespace")
   Assert.equal(BagCache.manifestPath(), "data/generated/bag/manifest.lua")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v6")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v7")
 end
 
 function T.schema_rejects_wrong_logical_size()
@@ -441,9 +494,9 @@ local function assertInvalid(manifest, why)
 end
 
 function T.schema_identity_is_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v6")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v6")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v6")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v7")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v7")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v7")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
 end
 
@@ -462,6 +515,12 @@ function T.previous_bag_contract_is_rejected()
   Assert.isFalse(
     BagAssetSchema.isValidManifest(stale),
     "the highlight-shaped Bag contract must not validate as current"
+  )
+  local singleBrowse = validFocusManifest()
+  singleBrowse.schema = "g4-bag-assets-v6"
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(singleBrowse),
+    "the single-browse-visual Bag contract must not validate as current"
   )
 end
 
@@ -727,9 +786,9 @@ function T.semantic_focus_contract_validates_with_exact_target_counts()
 end
 
 function T.stale_previous_manifest_fails_once_the_focus_contract_is_current()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v6", "the schema carries the focus contract")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v6", "the central contract carries the focus schema")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v6", "the loader requires the focus schema")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v7", "the schema carries the count-variant contract")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v7", "the central contract carries the count schema")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v7", "the loader requires the count schema")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing is unchanged")
   Assert.isFalse(
     BagAssetSchema.isValidManifest(validManifest()),
@@ -803,6 +862,216 @@ function T.cache_readiness_owns_every_focus_visual()
     Assert.equal(counts[path], 1, path .. " must be referenced exactly once")
   end
   Assert.isNil(counts["assets/generated/bag/tab-highlight-frame-1.png"], "no retired highlight path may survive")
+end
+
+local function validDynamicManifest()
+  local manifest = validFocusManifest()
+  return manifest
+end
+
+function T.browse_backgrounds_carry_seven_count_variants_per_pocket()
+  local manifest = validDynamicManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the seven-variant browse presentation must validate")
+  for _, pocket in ipairs(POCKETS) do
+    local variants = assert(
+      manifest.interactive.backgrounds.browse[pocket],
+      "pocket " .. pocket .. " must publish its browse count variants"
+    )
+    Assert.equal(#variants, 7, "pocket " .. pocket .. " publishes one browse visual per visible count 0..6")
+    for count = 0, 6 do
+      local visual = assert(variants[count + 1], "pocket " .. pocket .. " publishes its count " .. count .. " visual")
+      Assert.equal(visual.width, 256, "pocket " .. pocket .. " count " .. count .. " keeps the pane width")
+      Assert.equal(visual.height, 192, "pocket " .. pocket .. " count " .. count .. " keeps the pane height")
+    end
+  end
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the seven-variant manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  local counts = {}
+  for _, path in ipairs(paths) do
+    counts[path] = (counts[path] or 0) + 1
+  end
+  local browsePaths = 0
+  for _, path in ipairs(paths) do
+    if path:find("background-browse-", 1, true) ~= nil then
+      browsePaths = browsePaths + 1
+    end
+  end
+  Assert.equal(browsePaths, 56, "all seven variants of all eight pockets participate in readiness")
+  for _, pocket in ipairs(POCKETS) do
+    for count = 0, 6 do
+      local path = "assets/generated/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png"
+      Assert.equal(counts[path], 1, path .. " must be referenced exactly once")
+    end
+  end
+end
+
+function T.cancel_label_area_is_centered_on_the_cancel_face()
+  local manifest = validDynamicManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the centered cancel label area must validate")
+  local cancel = assert(manifest.interactive.cancel, "the manifest must publish cancel geometry")
+  Assert.deepEqual(
+    cancel.labelRect,
+    { x = 200, y = 168, width = 48, height = 16 },
+    "the cancel label area keeps the source centering span"
+  )
+  Assert.equal(
+    cancel.labelRect.x + cancel.labelRect.width / 2,
+    224,
+    "the label area centers on the middle of the cancel face"
+  )
+  Assert.isTrue(
+    cancel.labelRect.x >= cancel.rect.x
+      and cancel.labelRect.y >= cancel.rect.y
+      and cancel.labelRect.x + cancel.labelRect.width <= cancel.rect.x + cancel.rect.width
+      and cancel.labelRect.y + cancel.labelRect.height <= cancel.rect.y + cancel.rect.height,
+    "the label area stays inside the cancel control"
+  )
+end
+
+function T.hero_framing_carries_baseline_and_pocket_records_for_both_genders()
+  local manifest = validDynamicManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-aware hero framing must validate")
+  local framing = assert(manifest.hero.presentation.framing, "the hero presentation must publish its pocket framing")
+  Assert.equal(framing.transitionTicks, 7, "the framing transition keeps its fixed-tick duration")
+  for _, gender in ipairs({ "male", "female" }) do
+    local baseline = assert(framing.baseline[gender], gender .. " publishes its baseline framing record")
+    local pockets = assert(framing.byGender[gender], gender .. " publishes its pocket framing records")
+    local seen = 0
+    for _, pocket in ipairs(POCKETS) do
+      local record = assert(pockets[pocket], gender .. " publishes the " .. pocket .. " framing record")
+      seen = seen + 1
+      for _, field in ipairs({ "angleXDegrees", "angleYDegrees", "distance", "modelY" }) do
+        local value = record[field]
+        Assert.isTrue(
+          type(value) == "number" and value == value and value < math.huge and value > -math.huge,
+          gender .. " " .. pocket .. " framing " .. field .. " must be a finite number"
+        )
+      end
+    end
+    Assert.equal(seen, 8, gender .. " publishes all eight pocket framing records")
+    for _, field in ipairs({ "angleXDegrees", "angleYDegrees", "distance", "modelY" }) do
+      local value = baseline[field]
+      Assert.isTrue(
+        type(value) == "number" and value == value and value < math.huge and value > -math.huge,
+        gender .. " baseline framing " .. field .. " must be a finite number"
+      )
+    end
+  end
+end
+
+function T.browse_variant_arrays_reject_any_count_but_seven()
+  local manifest = validDynamicManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the seven-variant manifest must validate")
+  local short = validDynamicManifest()
+  short.interactive.backgrounds.browse.items[7] = nil
+  Assert.isFalse(BagAssetSchema.isValidManifest(short), "six browse variants must fail")
+  local long = validDynamicManifest()
+  long.interactive.backgrounds.browse.items[8] = countVariantImage("items", 7)
+  Assert.isFalse(BagAssetSchema.isValidManifest(long), "eight browse variants must fail")
+  local missing = validDynamicManifest()
+  missing.interactive.backgrounds.browse.mail = nil
+  Assert.isFalse(BagAssetSchema.isValidManifest(missing), "a pocket without browse variants must fail")
+  local single = validDynamicManifest()
+  single.interactive.backgrounds.browse.items = countVariantImage("items", 6)
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(single),
+    "a single browse visual must fail; every pocket carries seven count variants"
+  )
+end
+
+function T.cancel_label_area_rejects_missing_and_misplaced_spans()
+  local manifest = validDynamicManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the centered cancel label area must validate")
+  local missing = validDynamicManifest()
+  missing.interactive.cancel.labelRect = nil
+  Assert.isFalse(BagAssetSchema.isValidManifest(missing), "a cancel control without a label area must fail")
+  local stale = validDynamicManifest()
+  stale.interactive.cancel = {
+    rect = rect(192, 168, 64, 24),
+    textRect = rect(192, 168, 56, 16),
+  }
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(stale),
+    "the previous text-window-only cancel shape must fail once the label area is current"
+  )
+  local offCenter = validDynamicManifest()
+  offCenter.interactive.cancel.labelRect = rect(192, 168, 48, 16)
+  Assert.isFalse(BagAssetSchema.isValidManifest(offCenter), "a label area off the face center must fail")
+  local escaping = validDynamicManifest()
+  escaping.interactive.cancel.labelRect = rect(208, 168, 48, 16)
+  Assert.isFalse(BagAssetSchema.isValidManifest(escaping), "a label area escaping the cancel control must fail")
+end
+
+function T.hero_framing_rejects_incomplete_and_nonfinite_records()
+  local manifest = validDynamicManifest()
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-aware hero framing must validate")
+  local missingGender = validDynamicManifest()
+  missingGender.hero.presentation.framing.byGender.female = nil
+  Assert.isFalse(BagAssetSchema.isValidManifest(missingGender), "framing without both genders must fail")
+  local missingPocket = validDynamicManifest()
+  missingPocket.hero.presentation.framing.byGender.male.mail = nil
+  Assert.isFalse(BagAssetSchema.isValidManifest(missingPocket), "framing without all eight pockets must fail")
+  local missingBaseline = validDynamicManifest()
+  missingBaseline.hero.presentation.framing.baseline.male = nil
+  Assert.isFalse(BagAssetSchema.isValidManifest(missingBaseline), "framing without a baseline record must fail")
+  local infinite = validDynamicManifest()
+  infinite.hero.presentation.framing.byGender.female.items.distance = math.huge
+  Assert.isFalse(BagAssetSchema.isValidManifest(infinite), "a non-finite framing distance must fail")
+  local notANumber = validDynamicManifest()
+  notANumber.hero.presentation.framing.baseline.female.angleXDegrees = 0 / 0
+  Assert.isFalse(BagAssetSchema.isValidManifest(notANumber), "a non-numeric framing angle must fail")
+  local wrongDuration = validDynamicManifest()
+  wrongDuration.hero.presentation.framing.transitionTicks = 8
+  Assert.isFalse(BagAssetSchema.isValidManifest(wrongDuration), "a transition duration past seven ticks must fail")
+  local staticOnly = validDynamicManifest()
+  staticOnly.hero.presentation.framing = nil
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(staticOnly),
+    "a hero presentation without pocket framing must fail once framing is current"
+  )
+end
+
+function T.previous_browse_contract_is_rejected()
+  local stale = validDynamicManifest()
+  stale.schema = "g4-bag-assets-v6"
+  stale.interactive.backgrounds.browse = {
+    items = countVariantImage("items", 6),
+    medicine = countVariantImage("medicine", 6),
+    balls = countVariantImage("balls", 6),
+    tmhm = countVariantImage("tmhm", 6),
+    berries = countVariantImage("berries", 6),
+    mail = countVariantImage("mail", 6),
+    battle_items = countVariantImage("battle_items", 6),
+    key_items = countVariantImage("key_items", 6),
+  }
+  stale.interactive.cancel = {
+    rect = rect(192, 168, 64, 24),
+    textRect = rect(192, 168, 56, 16),
+  }
+  stale.hero.presentation.framing = nil
+  Assert.isFalse(
+    BagAssetSchema.isValidManifest(stale),
+    "the single-browse-visual manifest must not validate once count variants are current"
+  )
+end
+
+function T.cache_readiness_requires_every_browse_variant()
+  local manifest = validDynamicManifest()
+  local marker = BagCache.marker("deadbeef", "feedface")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(BagCache.manifestPath(), manifest)
+  local ok, paths = pcall(BagCache.referencedPaths, manifest)
+  Assert.isTrue(ok, "the cache must resolve the seven-variant manifest")
+  assert(paths ~= nil, "a resolvable manifest must list its paths")
+  for _, path in ipairs(paths) do
+    cacheFs:write(path, "payload")
+  end
+  cacheFs:writeLua(BagCache.provenancePath(), { cacheFormat = BagCache.FORMAT, schema = BagCache.SCHEMA })
+  cacheFs:write(BagCache.markerPath(), marker)
+  Assert.isTrue(BagCache.isReady(cacheFs, marker), "the complete seven-variant class is ready")
+  cacheFs:remove("assets/generated/bag/background-browse-mail-count-3.png")
+  Assert.isFalse(BagCache.isReady(cacheFs, marker), "a missing browse count variant is not ready")
 end
 
 return { tests = T }

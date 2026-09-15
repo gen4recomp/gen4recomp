@@ -278,6 +278,18 @@ function BagPresentationCompiler.compileGeometry(config)
   then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel text window escapes its button rect", {})
   end
+  if type(cancelSource.labelRect) ~= "table" then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag geometry carries no cancel label area", {})
+  end
+  local cancelLabel = checkRect(cancelSource.labelRect, "cancel label area")
+  if
+    cancelLabel.x < cancelRect.x
+    or cancelLabel.y < cancelRect.y
+    or cancelLabel.x + cancelLabel.width > cancelRect.x + cancelRect.width
+    or cancelLabel.y + cancelLabel.height > cancelRect.y + cancelRect.height
+  then
+    Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "cancel label area escapes its button rect", {})
+  end
   local focusSource = config.focusTargets
   if type(focusSource) ~= "table" then
     Errors.raise(BagPresentationCompiler.ERROR.GEOMETRY_INVALID, "bag source config carries no focus targets", {})
@@ -325,7 +337,7 @@ function BagPresentationCompiler.compileGeometry(config)
       rect = checkRect(countReadout.rect, "count readout"),
       textAt = checkPoint(countReadout.textAt, "count readout text"),
     },
-    cancel = { rect = cancelRect, textRect = cancelText },
+    cancel = { rect = cancelRect, textRect = cancelText, labelRect = cancelLabel },
     descriptionFrame = checkRect(geometry.descriptionFrame, "description frame"),
     descriptionText = checkRect(geometry.descriptionText, "description text"),
     actionButtons = actionButtons,

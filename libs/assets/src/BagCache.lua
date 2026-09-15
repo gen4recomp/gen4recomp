@@ -69,9 +69,14 @@ function BagCache.referencedPaths(manifest)
     end
   end
   local interactive = manifest.interactive
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs(BagAssetSchema.POCKETS) do
       addVisual(interactive.backgrounds[state][pocket])
+    end
+  end
+  for _, pocket in ipairs(BagAssetSchema.POCKETS) do
+    for _, visual in ipairs(interactive.backgrounds.browse[pocket]) do
+      addVisual(visual)
     end
   end
   for _, visual in ipairs(interactive.pocketTabs.normal) do

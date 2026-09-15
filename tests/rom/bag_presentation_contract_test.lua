@@ -77,10 +77,16 @@ function T.rebuilt_bundle_publishes_the_semantic_focus_contract(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
 
-  Assert.equal(manifest.schema, "g4-bag-assets-v6", "the rebuilt Bag cache must publish the focus contract")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v6", "the loader must require the focus contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v7", "the rebuilt Bag cache must publish the count-variant contract")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v7", "the loader must require the count-variant contract")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2", "the cache framing must not change with the semantic migration")
-  for _, stale in ipairs({ "g4-bag-assets-v2", "g4-bag-assets-v3", "g4-bag-assets-v4", "g4-bag-assets-v5" }) do
+  for _, stale in ipairs({
+    "g4-bag-assets-v2",
+    "g4-bag-assets-v3",
+    "g4-bag-assets-v4",
+    "g4-bag-assets-v5",
+    "g4-bag-assets-v6",
+  }) do
     Assert.isFalse(
       BagAssetSchema.isValidManifest({ schema = stale }),
       "a " .. stale .. " manifest must not validate through the current loader"

@@ -222,14 +222,16 @@ DerivedAssetContract.items = {
 
 -- The bag class carries the source-independent field-bag presentation: the
 -- upper-pane hero (gender backdrops, description frame, hero models with
--- pocket-indexed animation states, camera/transform facts) plus the lower-
--- pane controls (pocket tabs, six item slots, count readout, Cancel, the
--- action/quantity/confirmation overlays, semantic action text/templates, and
--- the two registration-slot markers). Item icons stay in the item
+-- pocket-indexed animation states, camera/transform facts, pocket framing
+-- records with the fixed transition duration) plus the lower-
+-- pane controls (pocket tabs, six item slots, count readout, Cancel with
+-- its source-centered label area, the browse count-variant backgrounds,
+-- the action/quantity/confirmation overlays, semantic action text/templates,
+-- and the two registration-slot markers). Item icons stay in the item
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v6",
+  schema = "g4-bag-assets-v7",
 }
 
 DerivedAssetContract.audio = {

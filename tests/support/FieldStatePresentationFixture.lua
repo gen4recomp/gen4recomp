@@ -163,12 +163,34 @@ local function bagManifest()
     }
   end
   local backgrounds = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = {}
     for _, pocket in ipairs(BAG_POCKETS) do
       pockets[pocket] = bagImageRef("test/bag/background-" .. state .. "-" .. pocket .. ".png")
     end
     backgrounds[state] = pockets
+  end
+  do
+    local browse = {}
+    for _, pocket in ipairs(BAG_POCKETS) do
+      local variants = {}
+      for count = 0, 6 do
+        variants[#variants + 1] = bagImageRef("test/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png")
+      end
+      browse[pocket] = variants
+    end
+    backgrounds.browse = browse
+  end
+  local function framingRecord()
+    return { angleXDegrees = 328.4, angleYDegrees = 28.3, distance = 21.2, modelY = -2.8 }
+  end
+  local framingByGender = {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = {}
+    for _, pocket in ipairs(BAG_POCKETS) do
+      records[pocket] = framingRecord()
+    end
+    framingByGender[gender] = records
   end
   return {
     schema = BagAssetSchema.SCHEMA,
@@ -222,6 +244,11 @@ local function bagManifest()
           ambient = { r = 10, g = 10, b = 10 },
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
+        },
+        framing = {
+          transitionTicks = 7,
+          baseline = { male = framingRecord(), female = framingRecord() },
+          byGender = framingByGender,
         },
       },
     },
@@ -282,6 +309,7 @@ local function bagManifest()
       cancel = {
         rect = bagRect(192, 168, 64, 24),
         textRect = bagRect(192, 168, 56, 16),
+        labelRect = bagRect(200, 168, 48, 16),
       },
       text = {
         actions = {
@@ -364,9 +392,14 @@ function FieldStatePresentationFixture.cache()
   cache:write("test/bag/hero-male.png", solidPng(32, 32))
   cache:write("test/bag/hero-female.png", solidPng(32, 32))
   cache:write("test/bag/description-frame.png", solidPng(32, 32))
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs(BAG_POCKETS) do
       cache:write("test/bag/background-" .. state .. "-" .. pocket .. ".png", solidPng(32, 32))
+    end
+  end
+  for _, pocket in ipairs(BAG_POCKETS) do
+    for count = 0, 6 do
+      cache:write("test/bag/background-browse-" .. pocket .. "-count-" .. count .. ".png", solidPng(32, 32))
     end
   end
   cache:write("test/bag/description-frame-alt.png", solidPng(32, 32))

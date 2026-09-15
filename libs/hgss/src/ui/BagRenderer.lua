@@ -230,7 +230,21 @@ function BagRenderer.new(opts)
     for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
       local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
       for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-        acquire("background:" .. state .. ":" .. pocket, assert(pockets[pocket], state .. " carries " .. pocket))
+        local published = assert(pockets[pocket], state .. " carries " .. pocket)
+        if state == "browse" then
+          -- Seven realized count variants per pocket: bind each variant
+          -- under its count so the visible-count selection can resolve it.
+          -- The v7 contract carries only this array shape; anything else
+          -- fails at the count lookup below instead of borrowing another shape.
+          for count = 0, 6 do
+            acquire(
+              "background:browse:" .. pocket .. ":" .. count,
+              assert(published[count + 1], "browse carries " .. pocket .. " count " .. count)
+            )
+          end
+        else
+          acquire("background:" .. state .. ":" .. pocket, published)
+        end
       end
     end
     for index, visual in ipairs(interactive.pocketTabs.normal) do

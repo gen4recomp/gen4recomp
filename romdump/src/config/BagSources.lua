@@ -201,6 +201,53 @@ BagSources.lowerLayers = {
   confirmation = { "confirmation" },
 }
 
+-- Browse count replay facts from ov15_021FD43C over the ov15_022013A8 table:
+-- six visible-count blocks of four tilemap operations for counts 0..5.
+-- Count 6 performs no mutation (the source early-returns on count 6), so it
+-- carries no block. Coordinates are tile-grid positions in the decoded
+-- browse screen: `copy` duplicates a source rectangle onto a destination
+-- rectangle of the same screen, `fill` clears a rectangle to the blank tile,
+-- and `nop` replays nothing. The runtime manifest carries only the realized
+-- pixels, never these operations.
+BagSources.browseCountBlocks = {
+  {
+    { kind = "nop" },
+    { kind = "fill", x = 0, y = 4, width = 32, height = 16 },
+    { kind = "nop" },
+    { kind = "nop" },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 9, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 10, width = 16, height = 10 },
+    { kind = "nop" },
+    { kind = "fill", x = 16, y = 4, width = 16, height = 16 },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 9, width = 16, height = 1 },
+    { kind = "nop" },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 9, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 10, width = 32, height = 10 },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 14, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 15, width = 16, height = 5 },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 9, width = 16, height = 1 },
+    { kind = "fill", x = 16, y = 10, width = 16, height = 10 },
+  },
+  {
+    { kind = "copy", srcX = 0, srcY = 19, destX = 0, destY = 14, width = 16, height = 1 },
+    { kind = "nop" },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 14, width = 16, height = 1 },
+    { kind = "fill", x = 0, y = 15, width = 32, height = 5 },
+  },
+  {
+    { kind = "nop" },
+    { kind = "nop" },
+    { kind = "copy", srcX = 16, srcY = 19, destX = 16, destY = 14, width = 16, height = 1 },
+    { kind = "fill", x = 16, y = 15, width = 16, height = 5 },
+  },
+}
+
 -- Audited but uncompiled: NANR 21 loads with no static template binding, so
 -- no compiled selection references it.
 BagSources.unboundAnimations = { 21 }
@@ -324,6 +371,10 @@ BagSources.geometry = {
   cancel = {
     rect = rect(192, 168, 64, 24),
     textRect = rect(192, 168, 56, 16),
+    -- The CANCEL label span: retail centers the label with
+    -- 8 + (48 - textWidth)/2, so the semantic label area is the 48px span
+    -- centered at canonical X=224 rather than the 56px text window.
+    labelRect = rect(200, 168, 48, 16),
   },
   descriptionFrame = rect(0, 144, 256, 48),
   descriptionText = rect(20, 144, 236, 48),
@@ -410,6 +461,15 @@ BagSources.registration = {
 -- followed by an alignment pad at +13, so the audited static bytes
 -- 01 0A at +14/+15 are 0x0A01 (2561), converted by the runtime through
 -- the pinned sine/cosine perspective convention.
+--
+-- The `camera`/`transform` records below are the static setup facts the
+-- per-frame path starts from. The per-pocket `framing` records are the
+-- dynamic ov15_02200790 table states the pocket switch transitions between
+-- over seven fixed ticks: two gender groups of nine raw records each
+-- (record 0 is the neutral baseline, records 1..8 follow the canonical
+-- pocket order). Each record carries u16 X/Y angles, a fixed-point camera
+-- distance, and a fixed-point model height; the compiler normalizes them
+-- into manifest values and no raw record reaches runtime.
 BagSources.presentation = {
   camera = {
     target = { x = 0, y = 0, z = 0 },
@@ -443,6 +503,31 @@ BagSources.presentation = {
     ambient = 0x294A,
     specular = 0x3DEF,
     emission = 0x3DEF,
+  },
+  framing = {
+    transitionTicks = 7,
+    male = {
+      { angleX = 59778, angleY = 5152, distance = 1391441, modelY = -163840 },
+      { angleX = 61058, angleY = 26393, distance = 1391445, modelY = -151552 },
+      { angleX = 57479, angleY = 18472, distance = 932689, modelY = -188416 },
+      { angleX = 61567, angleY = 30742, distance = 1370963, modelY = -196606 },
+      { angleX = 885, angleY = 22050, distance = 744270, modelY = -282623 },
+      { angleX = 59265, angleY = 29991, distance = 830296, modelY = -245754 },
+      { angleX = 59518, angleY = 29722, distance = 1215311, modelY = -221186 },
+      { angleX = 60288, angleY = 37403, distance = 858962, modelY = -286720 },
+      { angleX = 1415, angleY = 35871, distance = 1391441, modelY = -131073 },
+    },
+    female = {
+      { angleX = 59778, angleY = 5152, distance = 1391441, modelY = -163840 },
+      { angleX = 60546, angleY = 14368, distance = 1203027, modelY = -184320 },
+      { angleX = 59778, angleY = 7968, distance = 1096529, modelY = -163840 },
+      { angleX = 59778, angleY = 24088, distance = 867155, modelY = -196607 },
+      { angleX = 61820, angleY = 6686, distance = 1391441, modelY = -163840 },
+      { angleX = 384, angleY = 12834, distance = 809809, modelY = -208896 },
+      { angleX = 60539, angleY = 33046, distance = 817993, modelY = -249855 },
+      { angleX = 61821, angleY = 29215, distance = 875345, modelY = -172032 },
+      { angleX = 1415, angleY = 20509, distance = 1391441, modelY = -131072 },
+    },
   },
 }
 

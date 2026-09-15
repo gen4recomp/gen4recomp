@@ -275,63 +275,150 @@ local function effectiveLowerPalette(sourceColors, pocketIndex)
   return { colors = effective }
 end
 
-local function compileLowerBackgrounds(lower, cancelFace, assets)
-  local screenRoles = {
-    listWash = "list-wash",
-    listSlots = "list-slots",
-    actionWash = "action-wash",
-    actionSlots = "action-slots",
-    quantity = "quantity",
-    quantityAlt = "quantity-alt",
-    confirmation = "confirmation",
-  }
-  -- The unselected Cancel face is a sprite in retail, so the finalized
-  -- browse/action backgrounds carry its static pixels composited at the
-  -- audited Cancel anchor; runtime never replays the sprite.
+-- Copy one decoded screen's entries so count-specific tilemap replay starts
+-- from the pristine decode for every count and pocket. Later count variants
+-- must never observe an earlier variant's mutations.
+local function copyScreenEntries(screen)
+  local entries = {}
+  for index, entry in ipairs(screen.entries) do
+    entries[index] = { tile = entry.tile, flipH = entry.flipH, flipV = entry.flipV, palette = entry.palette }
+  end
+  return { width = screen.width, height = screen.height, entries = entries }
+end
+
+local function checkTileField(value, what, context)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 then
+    sourceError("browse " .. what .. " is not a non-negative tile integer", context)
+  end
+end
+
+-- Replay one audited count block against mutable tile entries in place.
+-- Coordinates are tile-grid positions; fills clear to the blank entry and
+-- copies duplicate a source rectangle through a snapshot so overlapping
+-- regions keep copy (rather than move) semantics.
+local function applyBrowseCountBlock(screen, block, count)
+  if type(block) ~= "table" or #block ~= 4 then
+    sourceError("browse count carries no complete four-operation mutation block", { count = count })
+  end
+  local columns = screen.width / 8
+  local rows = screen.height / 8
+  local context = { count = count }
+  for _, op in ipairs(block) do
+    if type(op) ~= "table" then
+      sourceError("browse count carries a malformed tilemap operation", context)
+    end
+    if op.kind == "nop" then
+      -- No replay for this slot.
+    elseif op.kind == "fill" then
+      checkTileField(op.x, "fill x", context)
+      checkTileField(op.y, "fill y", context)
+      checkTileField(op.width, "fill width", context)
+      checkTileField(op.height, "fill height", context)
+      if op.x + op.width > columns or op.y + op.height > rows then
+        sourceError("browse fill escapes the decoded browse screen", context)
+      end
+      for ty = 0, op.height - 1 do
+        for tx = 0, op.width - 1 do
+          screen.entries[(op.y + ty) * columns + (op.x + tx) + 1] =
+            { tile = 0, flipH = false, flipV = false, palette = 0 }
+        end
+      end
+    elseif op.kind == "copy" then
+      checkTileField(op.srcX, "copy srcX", context)
+      checkTileField(op.srcY, "copy srcY", context)
+      checkTileField(op.destX, "copy destX", context)
+      checkTileField(op.destY, "copy destY", context)
+      checkTileField(op.width, "copy width", context)
+      checkTileField(op.height, "copy height", context)
+      if op.srcX + op.width > columns or op.srcY + op.height > rows then
+        sourceError("browse copy source escapes the decoded browse screen", context)
+      end
+      if op.destX + op.width > columns or op.destY + op.height > rows then
+        sourceError("browse copy destination escapes the decoded browse screen", context)
+      end
+      local snapshot = {}
+      for ty = 0, op.height - 1 do
+        for tx = 0, op.width - 1 do
+          local entry = screen.entries[(op.srcY + ty) * columns + (op.srcX + tx) + 1]
+          snapshot[ty * op.width + tx + 1] =
+            { tile = entry.tile, flipH = entry.flipH, flipV = entry.flipV, palette = entry.palette }
+        end
+      end
+      for ty = 0, op.height - 1 do
+        for tx = 0, op.width - 1 do
+          screen.entries[(op.destY + ty) * columns + (op.destX + tx) + 1] = snapshot[ty * op.width + tx + 1]
+        end
+      end
+    else
+      sourceError("browse count carries an unknown tilemap operation " .. tostring(op.kind), context)
+    end
+  end
+end
+
+-- Realize the browse slot screen for one visible occupied-item count from
+-- an independent copy of the decoded source. Count 6 replays no mutation;
+-- any other count outside 0..6 is invalid producer data.
+local function browseScreenForCount(slots, count)
+  if count == 6 then
+    return copyScreenEntries(slots)
+  end
+  if type(count) ~= "number" or count % 1 ~= 0 or count < 0 or count > 5 then
+    sourceError("browse count is outside the replayed 0..6 range", { count = count })
+  end
+  local screen = copyScreenEntries(slots)
+  applyBrowseCountBlock(screen, BagSources.browseCountBlocks[count + 1], count)
+  return screen
+end
+
+-- The unselected Cancel face is a sprite in retail, so finalized browse and
+-- action backgrounds carry its static pixels composited at the audited
+-- Cancel anchor; runtime never replays the sprite.
+local function compositeCancelChrome(image, cancelFace)
   local cancelAnchor = BagSources.focusTargets.cancel
   local faceX = cancelAnchor.x + cancelFace.offset.x
   local faceY = cancelAnchor.y + cancelFace.offset.y
   if faceX < 0 or faceY < 0 or faceX + cancelFace.width > 256 or faceY + cancelFace.height > 192 then
     sourceError("cancel face placement escapes the canonical pane", { x = faceX, y = faceY })
   end
-  local function compositeCancelChrome(image)
-    local spans = {}
-    local cursor = 1
-    for row = 0, cancelFace.height - 1 do
-      local targetOffset = ((faceY + row) * image.width + faceX) * 4 + 1
-      spans[#spans + 1] = image.pixels:sub(cursor, targetOffset - 1)
-      local blended = {}
-      for col = 0, cancelFace.width - 1 do
-        local sourceOffset = (row * cancelFace.width + col) * 4 + 1
-        local sourceA = string.byte(cancelFace.pixels, sourceOffset + 3)
-        if sourceA == 0 then
-          blended[#blended + 1] = image.pixels:sub(targetOffset, targetOffset + 3)
+  local spans = {}
+  local cursor = 1
+  for row = 0, cancelFace.height - 1 do
+    local targetOffset = ((faceY + row) * image.width + faceX) * 4 + 1
+    spans[#spans + 1] = image.pixels:sub(cursor, targetOffset - 1)
+    local blended = {}
+    for col = 0, cancelFace.width - 1 do
+      local sourceOffset = (row * cancelFace.width + col) * 4 + 1
+      local sourceA = string.byte(cancelFace.pixels, sourceOffset + 3)
+      if sourceA == 0 then
+        blended[#blended + 1] = image.pixels:sub(targetOffset, targetOffset + 3)
+      else
+        local sourceR, sourceG, sourceB = string.byte(cancelFace.pixels, sourceOffset, sourceOffset + 2)
+        if sourceA == 255 then
+          blended[#blended + 1] = string.char(sourceR, sourceG, sourceB, 255)
         else
-          local sourceR, sourceG, sourceB = string.byte(cancelFace.pixels, sourceOffset, sourceOffset + 2)
-          if sourceA == 255 then
-            blended[#blended + 1] = string.char(sourceR, sourceG, sourceB, 255)
-          else
-            local destinationR, destinationG, destinationB, destinationA =
-              string.byte(image.pixels, targetOffset, targetOffset + 3)
-            local outputA = sourceA + math.floor(destinationA * (255 - sourceA) / 255 + 0.5)
-            blended[#blended + 1] = string.char(
-              math.floor((sourceR * sourceA + destinationR * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
-              math.floor((sourceG * sourceA + destinationG * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
-              math.floor((sourceB * sourceA + destinationB * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
-              outputA
-            )
-          end
+          local destinationR, destinationG, destinationB, destinationA =
+            string.byte(image.pixels, targetOffset, targetOffset + 3)
+          local outputA = sourceA + math.floor(destinationA * (255 - sourceA) / 255 + 0.5)
+          blended[#blended + 1] = string.char(
+            math.floor((sourceR * sourceA + destinationR * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
+            math.floor((sourceG * sourceA + destinationG * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
+            math.floor((sourceB * sourceA + destinationB * destinationA * (255 - sourceA) / 255) / outputA + 0.5),
+            outputA
+          )
         end
-        targetOffset = targetOffset + 4
       end
-      spans[#spans + 1] = table.concat(blended)
-      cursor = targetOffset
+      targetOffset = targetOffset + 4
     end
-    spans[#spans + 1] = image.pixels:sub(cursor)
-    return { width = image.width, height = image.height, pixels = table.concat(spans) }
+    spans[#spans + 1] = table.concat(blended)
+    cursor = targetOffset
   end
+  spans[#spans + 1] = image.pixels:sub(cursor)
+  return { width = image.width, height = image.height, pixels = table.concat(spans) }
+end
+
+local function compileFixedBackgrounds(lower, screenRoles, cancelFace, assets)
   local backgrounds = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = {}
     for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
       local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
@@ -343,8 +430,8 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
       end
       local image = BagPresentationCompiler.composeImages(layers, "interactive background " .. state)
       image = BagPresentationCompiler.cropImage(image, 256, 192, "interactive background " .. state)
-      if state == "browse" or state == "action" then
-        image = compositeCancelChrome(image)
+      if state == "action" then
+        image = compositeCancelChrome(image, cancelFace)
       end
       local path = BagCache.assetDir() .. "/background-" .. state .. "-" .. pocketState.pocket .. ".png"
       assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
@@ -352,6 +439,48 @@ local function compileLowerBackgrounds(lower, cancelFace, assets)
     end
     backgrounds[state] = pockets
   end
+  return backgrounds
+end
+
+-- Browse backgrounds carry one realized variant per pocket and visible
+-- occupied-item count 0..6: each variant replays its audited tilemap block
+-- against an independent copy of the decoded slot screen before
+-- rasterization and Cancel composition.
+local function compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
+  local washRole = assert(screenRoles.listWash, "audited Bag browse wash has no semantic role")
+  local slotsRole = assert(screenRoles.listSlots, "audited Bag browse slots have no semantic role")
+  local pockets = {}
+  for pocketIndex, pocketState in ipairs(BagSources.hero.states) do
+    local palette = effectiveLowerPalette(lower.colors, pocketIndex - 1)
+    local wash = rasterizeScreen(lower.charData, palette.colors, assert(lower.screens[washRole]), washRole)
+    local variants = {}
+    for count = 0, 6 do
+      local slots = browseScreenForCount(assert(lower.screens[slotsRole]), count)
+      local slotLayer = rasterizeScreen(lower.charData, palette.colors, slots, slotsRole)
+      local image = BagPresentationCompiler.composeImages({ wash, slotLayer }, "interactive background browse")
+      image = BagPresentationCompiler.cropImage(image, 256, 192, "interactive background browse")
+      image = compositeCancelChrome(image, cancelFace)
+      local path = BagCache.assetDir() .. "/background-browse-" .. pocketState.pocket .. "-count-" .. count .. ".png"
+      assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
+      variants[count + 1] = { image = path, width = image.width, height = image.height }
+    end
+    pockets[pocketState.pocket] = variants
+  end
+  return pockets
+end
+
+local function compileLowerBackgrounds(lower, cancelFace, assets)
+  local screenRoles = {
+    listWash = "list-wash",
+    listSlots = "list-slots",
+    actionWash = "action-wash",
+    actionSlots = "action-slots",
+    quantity = "quantity",
+    quantityAlt = "quantity-alt",
+    confirmation = "confirmation",
+  }
+  local backgrounds = compileFixedBackgrounds(lower, screenRoles, cancelFace, assets)
+  backgrounds.browse = compileBrowseBackgrounds(lower, screenRoles, cancelFace, assets)
   return backgrounds
 end
 
@@ -675,6 +804,58 @@ local function compileHero(archive, gender, dependencies, textures, meshes)
   return descriptor
 end
 
+-- Normalize one raw framing record into manifest values: u16 angles convert
+-- over the full circle while fixed-point lengths normalize once into the
+-- tile unit shared with compiled geometry and the static camera.
+local function normalizeFramingRecord(raw, gender, label)
+  local context = { gender = gender, pocket = label }
+  for _, field in ipairs({ "angleX", "angleY", "distance", "modelY" }) do
+    if type(raw[field]) ~= "number" or raw[field] % 1 ~= 0 then
+      sourceError("hero framing record carries no integer source " .. field, context)
+    end
+  end
+  return {
+    angleXDegrees = raw.angleX / 65536 * 360,
+    angleYDegrees = raw.angleY / 65536 * 360,
+    distance = modelUnits(raw.distance / 4096),
+    modelY = modelUnits(raw.modelY / 4096),
+  }
+end
+
+-- Publish the pocket framing contract: the neutral baseline plus one record
+-- per canonical pocket for both genders with the fixed-tick transition
+-- duration. Missing or incomplete source records fail compilation.
+local function compileFraming()
+  local facts = BagSources.presentation.framing
+  if type(facts) ~= "table" then
+    sourceError("hero framing facts are missing", {})
+  end
+  assert(type(facts) == "table", "missing framing facts fail above")
+  if facts.transitionTicks ~= 7 then
+    sourceError("hero framing transition duration is not the audited seven ticks", {
+      transitionTicks = facts.transitionTicks,
+    })
+  end
+  local baseline, byGender = {}, {}
+  for _, gender in ipairs({ "male", "female" }) do
+    local records = facts[gender]
+    if type(records) ~= "table" or #records ~= 9 then
+      sourceError("hero framing carries incomplete gender records", { gender = gender })
+    end
+    baseline[gender] = normalizeFramingRecord(records[1], gender, "baseline")
+    local pockets = {}
+    for index, state in ipairs(BagSources.hero.states) do
+      local raw = records[index + 1]
+      if raw == nil then
+        sourceError("hero framing is missing a pocket record", { gender = gender, pocket = state.pocket })
+      end
+      pockets[state.pocket] = normalizeFramingRecord(raw, gender, state.pocket)
+    end
+    byGender[gender] = pockets
+  end
+  return { transitionTicks = 7, baseline = baseline, byGender = byGender }
+end
+
 local function _compile(romFs)
   assert(
     romFs and type(romFs.metadata) == "function" and type(romFs.openNarc) == "function",
@@ -742,6 +923,7 @@ local function _compile(romFs)
   local geometry = BagPresentationCompiler.compileGeometry(BagSources)
   local states = BagPresentationCompiler.compileStates(BagSources)
   local materials = BagPresentationCompiler.compileMaterials(BagSources)
+  local framing = compileFraming()
   local presentation = BagSources.presentation
   local manifest = {
     schema = BagCache.SCHEMA,
@@ -833,6 +1015,7 @@ local function _compile(romFs)
           },
         },
         materials = materials,
+        framing = framing,
       },
     },
     interactive = {
@@ -888,6 +1071,7 @@ local function _compile(romFs)
       focusTargets = BagSources.focusTargets,
       itemIconCenters = BagSources.itemIconCenters,
       lowerLayers = BagSources.lowerLayers,
+      browseCountBlocks = BagSources.browseCountBlocks,
       hero = BagSources.hero,
       messages = BagSources.messages,
       registration = BagSources.registration,
