@@ -2,15 +2,12 @@
 -- placement relationships, never a fixed render surface.
 
 local OakProfileLayout = require("game.hgss.src.newgame.OakProfileLayout")
+local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local OakSceneLayout = require("game.hgss.src.newgame.OakSceneLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 local TextButton = require("libs.ui.src.TextButton")
 
 local OakIntroLayout = {}
-
-local function clamp(value, low, high)
-  return math.max(low, math.min(high, value))
-end
 
 local function logicalHostMetric(physicalPixels, presentationScale)
   return math.floor(physicalPixels / presentationScale + 0.5)
@@ -263,7 +260,7 @@ local function profileLayout(
   reference,
   manifest,
   sceneContent,
-  gap,
+  _,
   _,
   nameChoiceRegion,
   preferredScale,
@@ -288,8 +285,7 @@ local function profileLayout(
     result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale))
   end
   if view.phase == "name_edit" then
-    result.nameKeys, result.namePreview = OakProfileLayout.nameEditor(sceneContent, gap, view, clamp)
-    result.nameGrid = result.nameKeys
+    result.namingScreen = NamingScreenLayout.compute(sceneContent, preferredScale)
   end
 end
 
@@ -335,8 +331,6 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     stageContent = sceneContent,
     dialogue = dialogue,
     message = dialogue and dialogue.outerRect or scene,
-    nameGrid = {},
-    nameKeys = {},
     genderFocus = view.genderFocus,
   }
   local subjectId = view.primaryWidget

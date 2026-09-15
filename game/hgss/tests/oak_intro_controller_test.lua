@@ -8,6 +8,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakGreetingPolicy = require("game.hgss.src.newgame.OakGreetingPolicy")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
+local OakProfileFlow = require("game.hgss.src.newgame.OakProfileFlow")
 
 local T = {}
 
@@ -140,7 +141,6 @@ local function controller(options)
       marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
       ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
     },
-    virtualGlyphs = { "A", "B", "C", "D", "E", "F", "G", "O", "L", "é" },
     playerDataContext = PLAYER_DATA_CONTEXT,
     randomU32 = function()
       return 0x12345678
@@ -242,7 +242,7 @@ end
 -- Confirm); one left-navigation step from the initial glyph focus wraps
 -- directly onto it.
 local function focusConfirmKey(state)
-  state:press("left")
+  state:press("submit")
 end
 
 local function genderConfirmation(selectFemale, options)
@@ -1244,28 +1244,37 @@ function T.shrink_animation_uses_each_generated_frame_duration()
   Assert.equal(state:view().phase, "complete")
 end
 
-function T.virtual_keyboard_focus_reaches_delete_and_confirm_actions()
+function T.naming_screen_back_and_ok_controls_reach_the_existing_name_flow()
   local state = advanceToNameEdit()
-  state:press("confirm")
-  for _ = 1, 10 do
-    state:press("right")
-  end
-  state:press("confirm")
+  Assert.isTrue(state:inputText("A"))
+  state:press("back")
   Assert.equal(state:view().name, "")
-  state:press("right")
-  state:press("confirm")
+  state:press("submit")
   Assert.equal(state:view().name, "Ethan")
 end
 
-function T.name_editor_vertical_navigation_uses_the_configured_column_count()
+function T.profile_flow_uses_a_naming_screen_without_virtual_keyboard_configuration()
+  local flow = OakProfileFlow.new({
+    candidate = candidate(),
+    audio = audio(),
+    playerDataContext = PLAYER_DATA_CONTEXT,
+    randomU32 = function()
+      return 0x12345678
+    end,
+  })
+  flow:enterNameEditor()
+  Assert.notNil(flow:snapshot().namingScreen)
+end
+
+function T.naming_screen_navigation_uses_the_retail_page_topology()
   local state = advanceToNameEdit()
   Assert.equal(state:view().phase, "name_edit")
-  Assert.equal(state:view().virtualKeyColumns, 10)
-  Assert.equal(state:view().virtualGlyphFocus, 1)
+  local naming = assert(state:view().namingScreen)
+  Assert.equal(naming.page, "upper")
   state:press("down")
-  Assert.equal(state:view().virtualGlyphFocus, 11)
+  Assert.equal(state:view().namingScreen.cursor.controlId, "upper")
   state:press("up")
-  Assert.equal(state:view().virtualGlyphFocus, 1)
+  Assert.equal(state:view().namingScreen.cursor.row, 1)
 end
 
 function T.source_scroll_endpoint_survives_non_slide_phases_and_reverse_starts_there()

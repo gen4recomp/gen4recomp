@@ -2,14 +2,13 @@
 
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 
 ---@class OakProfileFlowOptions
 ---@field candidate table<string, unknown>
 ---@field audio GameSound
 ---@field playerDataContext { charmap: table<string, integer>, frameIndexes: table<integer, boolean> }
 ---@field randomU32 fun(): number
----@field virtualGlyphs string[]
----@field virtualKeyColumns integer?
 
 ---@class OakProfileFlow
 ---@field new fun(options: OakProfileFlowOptions): OakProfileFlow
@@ -17,9 +16,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field private _audio GameSound
 ---@field private _playerDataContext { charmap: table<string, integer>, frameIndexes: table<integer, boolean> }
 ---@field private _randomU32 fun(): number
----@field private _virtualGlyphs string[]
----@field private _virtualKeyColumns integer
----@field private _virtualFocus integer
+---@field private _naming NamingScreenController?
 ---@field private _genderSelection integer
 ---@field private _name string
 ---@field private _confirmationChoice { kind: string, selected: integer }?
@@ -72,18 +69,12 @@ function OakProfileFlow.new(options)
     "Oak intro requires a generated font charmap"
   )
   assert(type(options.randomU32) == "function", "Oak intro requires a trainer ID provider")
-  assert(
-    type(options.virtualGlyphs) == "table" and #options.virtualGlyphs > 0,
-    "Oak intro requires virtual keyboard glyphs"
-  )
   return setmetatable({
     _candidate = options.candidate,
     _audio = options.audio,
     _playerDataContext = options.playerDataContext,
     _randomU32 = options.randomU32,
-    _virtualGlyphs = options.virtualGlyphs,
-    _virtualKeyColumns = math.max(1, math.min(10, options.virtualKeyColumns or 10)),
-    _virtualFocus = 1,
+    _naming = nil,
     _genderSelection = 0,
     _name = "",
     _confirmationChoice = nil,
@@ -93,16 +84,6 @@ end
 
 function OakProfileFlow:_playSelectionEffect()
   self._audio:play("SEQ_SE_DP_SELECT")
-end
-
-function OakProfileFlow:_virtualKeys()
-  local keys = {}
-  for _, glyph in ipairs(self._virtualGlyphs) do
-    keys[#keys + 1] = { kind = "glyph", glyph = glyph }
-  end
-  keys[#keys + 1] = { kind = "delete" }
-  keys[#keys + 1] = { kind = "confirm" }
-  return keys
 end
 
 function OakProfileFlow:gender()
@@ -179,30 +160,43 @@ end
 
 function OakProfileFlow:enterNameEditor()
   self._name = ""
-  self._virtualFocus = 1
+  self._naming = NamingScreenController.new({
+    kind = "player",
+    maxLength = 7,
+    initialText = "",
+    charmap = self._playerDataContext.charmap,
+    subject = { kind = "player", gender = self._genderSelection },
+  })
+end
+
+function OakProfileFlow:activateNameCell(row, column)
+  assert(self._naming ~= nil, "Oak naming screen is not active")
+  local accepted = self._naming:activateAt(row, column)
+  self._name = self._naming:text()
+  local result = self._naming:result()
+  if result and result.kind == "submit" then
+    accepted = self:submitName()
+  end
+  return accepted
+end
+
+function OakProfileFlow:namingResult()
+  return self._naming and self._naming:result() or nil
 end
 
 function OakProfileFlow:inputText(text)
   assert(type(text) == "string", "Oak text input must be a string")
-  local incoming = appendGlyphs(text)
-  for _, glyph in ipairs(incoming) do
-    if self._playerDataContext.charmap[glyph] == nil then
-      return false
-    end
-  end
-  local current = appendGlyphs(self._name)
-  if #current + #incoming > 7 then
-    return false
-  end
-  self._name = self._name .. text
-  return true
+  assert(self._naming ~= nil, "Oak naming screen is not active")
+  local accepted = self._naming:inputText(text)
+  self._name = self._naming:text()
+  return accepted
 end
 
 function OakProfileFlow:deleteGlyph()
-  local glyphs = appendGlyphs(self._name)
-  glyphs[#glyphs] = nil
-  self._name = table.concat(glyphs)
-  return true
+  assert(self._naming ~= nil, "Oak naming screen is not active")
+  local accepted = self._naming:deleteGlyph()
+  self._name = self._naming:text()
+  return accepted
 end
 
 function OakProfileFlow:submitName()
@@ -216,27 +210,20 @@ function OakProfileFlow:submitName()
 end
 
 function OakProfileFlow:pressName(action)
-  if action == "left" or action == "right" or action == "up" or action == "down" then
-    local count = #self._virtualGlyphs + 2
-    local columns = self._virtualKeyColumns
-    local step = action == "left" and -1 or action == "right" and 1 or action == "up" and -columns or columns
-    self._virtualFocus = ((self._virtualFocus - 1 + step) % count) + 1
-    self._audio:play("SEQ_SE_DP_SELECT")
-    return true
-  elseif action == "confirm" then
-    local key = self:_virtualKeys()[self._virtualFocus]
-    if key.kind == "glyph" then
-      return self:inputText(key.glyph)
-    elseif key.kind == "delete" then
-      return self:deleteGlyph()
-    end
-    local accepted = self:submitName()
-    return accepted, accepted and "submit" or nil
-  elseif action == "submit" or action == "yes" then
-    local accepted = self:submitName()
-    return accepted, accepted and "submit" or nil
+  assert(self._naming ~= nil, "Oak naming screen is not active")
+  if action == "cancel" or action == "escape" or action == "b" then
+    return false
   end
-  return false
+  local accepted = self._naming:press(action)
+  self._name = self._naming:text()
+  if action == "confirm" or action == "submit" or action == "yes" then
+    local result = self._naming:result()
+    if result and result.kind == "submit" then
+      accepted = self:submitName()
+      return accepted, accepted and "submit" or nil
+    end
+  end
+  return accepted
 end
 
 function OakProfileFlow:finalize()
@@ -253,16 +240,14 @@ function OakProfileFlow:finalize()
 end
 
 function OakProfileFlow:inputFocus()
-  return self._virtualFocus
+  return self._naming and self._naming:snapshot().cursor or nil
 end
 
 function OakProfileFlow:snapshot()
   return {
     genderFocus = self._genderSelection,
     name = self._name,
-    virtualGlyphFocus = self._virtualFocus,
-    virtualKeys = self:_virtualKeys(),
-    virtualKeyColumns = self._virtualKeyColumns,
+    namingScreen = self._naming and self._naming:snapshot() or nil,
     confirmationChoice = self:confirmationChoice(),
   }
 end

@@ -69,29 +69,6 @@ function OakIntroComposition.randomU32(mathHost)
   return randomValue
 end
 
-local function virtualGlyphs(charmap)
-  local glyphs = {}
-  local pages = {
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "abcdefghijklmnopqrstuvwxyz",
-    "0123456789 -.'",
-  }
-  for _, page in ipairs(pages) do
-    for glyph in page:gmatch(".") do
-      if charmap[glyph] ~= nil then
-        glyphs[#glyphs + 1] = glyph
-      end
-    end
-  end
-  local upper, lower = false, false
-  for _, glyph in ipairs(glyphs) do
-    upper = upper or glyph:match("^[A-Z]$") ~= nil
-    lower = lower or glyph:match("^[a-z]$") ~= nil
-  end
-  assert(upper and lower, "generated field font lacks an uppercase or lowercase name-key page")
-  return glyphs
-end
-
 local function generatedImageLoader(cacheFs, graphics)
   local function loadImage(path)
     local bytes = assert(cacheFs:read(path), "missing generated Oak image " .. path)
@@ -196,7 +173,6 @@ function OakIntroComposition.compose(options)
       assets = introManifest,
       playerDataContext = playerDataContext,
       randomU32 = options.randomU32 or OakIntroComposition.randomU32(),
-      virtualGlyphs = virtualGlyphs(fontDef.charmap),
     })
     return OakIntroState.new({
       controller = controller --[[@as unknown]],

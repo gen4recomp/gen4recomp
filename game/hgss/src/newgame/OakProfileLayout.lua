@@ -95,37 +95,4 @@ function OakProfileLayout.nameConfirmationEntries(nameStage, choiceRegion)
   return textButtonEntries(origin, scale, 8 * scale)
 end
 
-function OakProfileLayout.nameEditor(sceneContent, gap, view, clamp)
-  local previewHeight = math.min(220, math.max(48, math.floor(sceneContent.height * 0.28)))
-  previewHeight = math.min(previewHeight, math.floor(sceneContent.height * 0.40))
-  local keyboard = rect(
-    sceneContent.x,
-    sceneContent.y + previewHeight + gap,
-    sceneContent.width,
-    sceneContent.height - previewHeight - gap
-  )
-  local keys, columns = view.virtualKeys or {}, math.min(10, math.max(1, view.virtualKeyColumns or 10))
-  local keyGap = clamp(math.floor(math.min(keyboard.width, keyboard.height) * 0.015 + 0.5), 4, 10)
-  local rows = math.max(1, math.ceil(#keys / columns))
-  local keyHeight = (keyboard.height - keyGap * (rows - 1)) / rows
-  local entries = {}
-  for index, key in ipairs(keys) do
-    local row, column = math.floor((index - 1) / columns), (index - 1) % columns
-    local count = math.min(columns, #keys - row * columns)
-    local keyWidth = (keyboard.width - keyGap * (count - 1)) / count
-    entries[index] = {
-      rect = rect(
-        keyboard.x + column * (keyWidth + keyGap),
-        keyboard.y + row * (keyHeight + keyGap),
-        keyWidth,
-        keyHeight
-      ),
-      kind = key.kind,
-      glyph = key.glyph,
-      label = key.kind == "glyph" and key.glyph or key.kind == "delete" and "Delete" or "Confirm",
-    }
-  end
-  return entries, rect(sceneContent.x, sceneContent.y, sceneContent.width, previewHeight)
-end
-
 return OakProfileLayout
