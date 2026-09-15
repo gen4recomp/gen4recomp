@@ -1,92 +1,254 @@
--- Pure Main Menu interaction state. It owns semantic focus, primary actions,
--- and the separate delete confirmation without knowing about storage or LÖVE.
+-- Pure Main Menu interaction state for global actions, save lanes, and modals.
+
+---@class MainMenuGlobalFocus
+---@field region "global"
+---@field actionId string
+---@class MainMenuSaveFocus
+---@field region "saves"
+---@field saveId string
+---@field lane "body"|"overflow"
+---@alias MainMenuFocus MainMenuGlobalFocus|MainMenuSaveFocus
 
 ---@class MainMenuController
+---@field globalActions table[]
+---@field saves table[]
+---@field focus MainMenuFocus
+---@field rememberedSaveId string?
+---@field popup table<string, string>?
+---@field confirmation table<string, string>?
 local MainMenuController = {}
 MainMenuController.__index = MainMenuController
 
+local function copy(value)
+  if value == nil then
+    return nil
+  end
+  local result = {}
+  for key, entry in pairs(value) do
+    result[key] = entry
+  end
+  return result
+end
+
 local function indexOf(items, id)
   for index, item in ipairs(items) do
-    if item.id == id then
+    if item.id == id or item.saveId == id then
       return index
     end
   end
   return nil
 end
 
-local function canDelete(item)
-  return item ~= nil and item.canDelete == true and item.saveId ~= nil
+local function itemAt(items, id)
+  local index = indexOf(items, id)
+  return index and items[index] or nil
 end
 
----@param items table[]
+local function focusForSave(saveId, lane)
+  assert(lane == "body" or lane == "overflow", "unknown Main Menu save lane")
+  return { region = "saves", saveId = saveId, lane = lane }
+end
+
+local function firstSave(saves)
+  local save = saves[1]
+  return save and focusForSave(save.saveId or save.id, "body") or { region = "global", actionId = "new-game" }
+end
+
+---@param globalActions table[]
+---@param saves table[]
 ---@return MainMenuController
-function MainMenuController.new(items)
-  assert(type(items) == "table" and #items > 0, "the Main Menu needs at least New Game")
-  return setmetatable({ items = items, focusIndex = 1, dialog = nil }, MainMenuController)
+function MainMenuController.new(globalActions, saves)
+  assert(type(globalActions) == "table" and #globalActions > 0, "the Main Menu needs a global action")
+  assert(type(saves) == "table", "Main Menu saves must be an array")
+  local self =
+    setmetatable({ globalActions = globalActions, saves = saves, rememberedSaveId = nil }, MainMenuController)
+  self.focus = firstSave(saves)
+  if self.focus.region == "saves" then
+    self.rememberedSaveId = self.focus.saveId
+  end
+  self.popup = nil
+  self.confirmation = nil
+  return self
 end
 
-function MainMenuController:setItems(items)
-  assert(type(items) == "table" and #items > 0, "the Main Menu needs at least New Game")
-  local oldIndex = self.focusIndex
-  local oldId = self:focusedId()
-  local preserved = indexOf(items, oldId)
-  self.items = items
-  self.focusIndex = preserved or math.min(oldIndex, #items)
-end
-
-function MainMenuController:setFocusedId(id)
-  local index = assert(indexOf(self.items, id), "cannot focus an unknown Main Menu item")
-  self.focusIndex = index
+function MainMenuController:snapshot()
+  return { focus = copy(self.focus), popup = copy(self.popup), confirmation = copy(self.confirmation) }
 end
 
 function MainMenuController:focusedId()
-  return self.items[self.focusIndex].id
+  return self.focus.region == "global" and self.focus.actionId or self.focus.saveId
 end
 
 function MainMenuController:focusedItem()
-  return self.items[self.focusIndex]
+  if self.focus.region == "global" then
+    return assert(itemAt(self.globalActions, self.focus.actionId))
+  end
+  return assert(itemAt(self.saves, self.focus.saveId))
+end
+
+function MainMenuController:focusSave(saveId, lane)
+  assert(itemAt(self.saves, saveId), "cannot focus an unknown Main Menu save")
+  self.focus = focusForSave(saveId, lane)
+  self.rememberedSaveId = saveId
+  self.popup = nil
+  self.confirmation = nil
+end
+
+function MainMenuController:focusGlobal(actionId)
+  assert(itemAt(self.globalActions, actionId), "cannot focus an unknown Main Menu action")
+  self.focus = { region = "global", actionId = actionId }
+  self.popup = nil
+  self.confirmation = nil
+end
+
+---@param globalActions table[]
+---@param saves table[]
+function MainMenuController:setCatalog(globalActions, saves)
+  assert(type(globalActions) == "table" and #globalActions > 0, "the Main Menu needs a global action")
+  assert(type(saves) == "table", "Main Menu saves must be an array")
+  local oldFocus = self.focus
+  local hadSaves = #self.saves > 0
+  local oldSaveIndex = oldFocus.region == "saves" and indexOf(self.saves, oldFocus.saveId) or nil
+  self.globalActions, self.saves = globalActions, saves
+  self.popup, self.confirmation = nil, nil
+
+  if oldFocus.region == "global" and not hadSaves and #saves > 0 then
+    self.focus = firstSave(saves)
+    self.rememberedSaveId = self.focus.saveId
+  elseif oldFocus.region == "global" and itemAt(globalActions, oldFocus.actionId) then
+    self.focus = { region = "global", actionId = oldFocus.actionId }
+  elseif oldFocus.region == "saves" and itemAt(saves, oldFocus.saveId) then
+    self.focus = focusForSave(oldFocus.saveId, oldFocus.lane)
+    self.rememberedSaveId = oldFocus.saveId
+  elseif #saves > 0 then
+    local replacementIndex = math.min(oldSaveIndex or 1, #saves)
+    local replacement = assert(saves[replacementIndex])
+    local lane = oldFocus.region == "saves" and oldFocus.lane or "body"
+    self.focus = focusForSave(replacement.saveId or replacement.id, lane)
+    self.rememberedSaveId = self.focus.saveId
+  else
+    self.focus = { region = "global", actionId = assert(globalActions[1]).id }
+    self.rememberedSaveId = nil
+  end
+end
+
+local function adjacentSave(saves, saveId, delta, wrap)
+  local index = indexOf(saves, saveId)
+  if not index then
+    return nil
+  end
+  local nextIndex = index + delta
+  if wrap then
+    nextIndex = ((nextIndex - 1) % #saves) + 1
+  elseif nextIndex < 1 or nextIndex > #saves then
+    return nil
+  end
+  local save = saves[nextIndex]
+  return save and (save.saveId or save.id) or nil
 end
 
 function MainMenuController:move(direction)
-  assert(direction == "up" or direction == "down", "unknown Main Menu direction")
-  local delta = direction == "up" and -1 or 1
-  self.focusIndex = math.max(1, math.min(#self.items, self.focusIndex + delta))
+  assert(direction == "up" or direction == "down" or direction == "left" or direction == "right")
+  if self.confirmation then
+    if direction == "up" or direction == "down" then
+      self.confirmation.focusedAction = self.confirmation.focusedAction == "cancel" and "delete" or "cancel"
+    end
+    return
+  end
+  if self.popup then
+    return
+  end
+  if self.focus.region == "global" then
+    if direction == "right" and #self.saves > 0 then
+      local saveId = itemAt(self.saves, self.rememberedSaveId) and self.rememberedSaveId or self.saves[1].saveId
+      self:focusSave(saveId, "body")
+    end
+    return
+  end
+  if self.focus.lane == "body" then
+    if direction == "left" then
+      self:focusGlobal(self.globalActions[1].id)
+    elseif direction == "right" then
+      self:focusSave(self.focus.saveId, "overflow")
+    elseif direction == "up" or direction == "down" then
+      local delta = direction == "up" and -1 or 1
+      local saveId = adjacentSave(self.saves, self.focus.saveId, delta, false)
+      if saveId then
+        self:focusSave(saveId, "body")
+      end
+    end
+  elseif self.focus.lane == "overflow" then
+    if direction == "left" then
+      self.focus = focusForSave(self.focus.saveId, "body")
+    elseif direction == "up" or direction == "down" then
+      local delta = direction == "up" and -1 or 1
+      local saveId = adjacentSave(self.saves, self.focus.saveId, delta, false)
+      if saveId then
+        self:focusSave(saveId, "overflow")
+      end
+    end
+  end
+end
+
+function MainMenuController:openOverflow(saveId)
+  self:focusSave(saveId, "overflow")
+  self.popup = { saveId = saveId, focusedAction = "delete" }
+end
+
+function MainMenuController:closePopup()
+  if self.popup then
+    local saveId = self.popup.saveId
+    self.popup = nil
+    self.confirmation = nil
+    if itemAt(self.saves, saveId) then
+      self.focus = focusForSave(saveId, "overflow")
+      self.rememberedSaveId = saveId
+    end
+  end
 end
 
 function MainMenuController:requestDelete()
-  local item = self:focusedItem()
-  if not canDelete(item) then
-    return false
+  if self.focus.region == "saves" then
+    self:openOverflow(self.focus.saveId)
+    return true
   end
-  self.dialog = { kind = "delete", saveId = item.saveId, focusedAction = "cancel" }
-  return true
+  return false
 end
 
-function MainMenuController:toggleDialogAction()
-  if self.dialog then
-    self.dialog.focusedAction = self.dialog.focusedAction == "cancel" and "delete" or "cancel"
-  end
-end
-
-function MainMenuController:chooseDialogAction(action)
-  assert(action == "cancel" or action == "delete", "unknown delete dialog action")
-  if self.dialog then
-    self.dialog.focusedAction = action
-  end
-end
-
-function MainMenuController:cancelDelete()
-  self.dialog = nil
-end
-
----@return string|nil saveId
-function MainMenuController:confirmDelete()
-  if not self.dialog or self.dialog.focusedAction ~= "delete" then
+function MainMenuController:activate()
+  if self.confirmation then
+    if self.confirmation.focusedAction == "delete" then
+      local saveId = self.confirmation.saveId
+      self.confirmation, self.popup = nil, nil
+      return { kind = "delete", saveId = saveId }
+    end
+    self.confirmation = nil
     return nil
   end
-  local saveId = self.dialog.saveId
-  self.dialog = nil
-  return saveId
+  if self.popup then
+    self.confirmation = { saveId = self.popup.saveId, focusedAction = "cancel" }
+    return nil
+  end
+  if self.focus.region == "global" then
+    return { kind = "new_game" }
+  end
+  if self.focus.lane == "overflow" then
+    self.popup = { saveId = self.focus.saveId, focusedAction = "delete" }
+    return nil
+  end
+  return { kind = "continue", saveId = self.focus.saveId }
+end
+
+function MainMenuController:back()
+  if self.confirmation then
+    self.confirmation = nil
+    return true
+  end
+  if self.popup then
+    self:closePopup()
+    return true
+  end
+  return false
 end
 
 return MainMenuController
