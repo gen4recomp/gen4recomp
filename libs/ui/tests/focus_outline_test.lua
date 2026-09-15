@@ -135,6 +135,7 @@ function T.rejects_bad_scale()
   end
   local g, calls = recordingGraphics()
   Assert.throws(function()
+    ---@diagnostic disable-next-line: param-type-mismatch -- intentional: a nil spec must raise
     FocusOutline.draw(g, rect(0, 0, 120, 56), nil)
   end, "missing spec must fail")
   Assert.equal(drawCount(calls), 0)

@@ -565,7 +565,7 @@ end
 
 local function composedHeroSpy()
   local spy = { draws = 0, releaseCount = 0 }
-  function spy:draw(_gender, _heroStatus, _heroPlacement)
+  function spy:draw(_, _, _)
     self.draws = self.draws + 1
   end
   function spy:release()

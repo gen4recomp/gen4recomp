@@ -1354,7 +1354,7 @@ function T.item_rows_use_split_text_geometry_with_unchanged_icons()
       iconDraw = entry
     end
   end
-  Assert.notNil(iconDraw, "the occupied cell draws its icon")
+  iconDraw = assert(iconDraw, "the occupied cell draws its icon")
   Assert.equal(iconDraw.x, first.iconCenter.x - 16, "the icon stays centered at its source center")
   Assert.equal(iconDraw.y, first.iconCenter.y - 16, "the icon keeps its vertical source center")
   local name = assert(palettedAt(content, "POTION"), "the item name prints through the palette path")
