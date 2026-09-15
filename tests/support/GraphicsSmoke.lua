@@ -98,14 +98,18 @@ end
 -- `context:skip`); these suites need no capability probing of their own,
 -- because the declared capability already gates them.
 ---@param tests table<string, fun(scope: GraphicsScope, context: table?)>
+---@param options { capabilities: string[], tags: string[] }?
 ---@return table suite
-function GraphicsSmoke.suite(tests)
+function GraphicsSmoke.suite(tests, options)
+  options = options or {}
+  local capabilities = options.capabilities or { "graphics" }
+  local tags = options.tags or {}
   local wrapped = {}
   for name, body in pairs(tests) do
     wrapped[name] = wrap(body)
   end
   return {
-    metadata = { capabilities = { "graphics" } },
+    metadata = { capabilities = capabilities, tags = tags },
     tests = wrapped,
   }
 end

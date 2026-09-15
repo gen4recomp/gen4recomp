@@ -22,6 +22,7 @@ G2dRasterizer.ERROR = {
 ---@alias G2dRasterizer.PaletteData { colors: { r: integer, g: integer, b: integer }[] }
 ---@alias G2dRasterizer.ScreenData { width: integer, height: integer, entries: { tile: integer, flipH: boolean, flipV: boolean, palette: integer }[] }
 ---@alias G2dRasterizer.SourceContext { asset: string|nil, member: integer|nil, role: string|nil }
+---@alias G2dRasterizer.ScreenOptions { transparentZero?: boolean }
 ---@alias G2dRasterizer.CellOptions { paletteOverride: integer|nil }
 
 local function concatChars(chars)
@@ -49,7 +50,20 @@ end
 -- or a palette entry the decoded palette cannot cover, is malformed source,
 -- never silent transparency. `source` names the asset/member/cell/obj that
 -- produced the reference for the typed error context.
-local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, palIndex, colors, flipH, flipV, source)
+local function blitTile(
+  rgba,
+  atlasWidth,
+  destX,
+  destY,
+  charData,
+  tileIndex,
+  palIndex,
+  colors,
+  flipH,
+  flipV,
+  source,
+  transparentZero
+)
   local depth = charData.depth
   local tileBytes = depth == 3 and 32 or 64
   local tileCount = math.floor(#charData.tiles / tileBytes)
@@ -62,7 +76,7 @@ local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, pal
   end
   local palBase = depth == 3 and palIndex * 16 or palIndex * 256
   local function put(x, y, v)
-    if v == 0 then
+    if v == 0 and transparentZero ~= false then
       return
     end
     local c = colors[palBase + v + 1]
@@ -108,8 +122,9 @@ end
 ---@param paletteData G2dRasterizer.PaletteData
 ---@param screenData G2dRasterizer.ScreenData
 ---@param source G2dRasterizer.SourceContext|nil diagnostic context forwarded into failures
+---@param options G2dRasterizer.ScreenOptions|nil
 ---@return { width: integer, height: integer, pixels: string }
-function G2dRasterizer.renderScreen(charData, paletteData, screenData, source)
+function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, options)
   assert(charData ~= nil and paletteData ~= nil and screenData ~= nil, "rasterization requires decoded records")
   local width = screenData.width
   local height = screenData.height
@@ -129,6 +144,7 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source)
     )
   end
   local rgba = newRgba(width, height)
+  local transparentZero = not (options and options.transparentZero == false)
   for row = 0, rows - 1 do
     for col = 0, columns - 1 do
       local entry = screenData.entries[row * columns + col + 1]
@@ -143,7 +159,8 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source)
         paletteData.colors,
         entry.flipH,
         entry.flipV,
-        source
+        source,
+        transparentZero
       )
     end
   end

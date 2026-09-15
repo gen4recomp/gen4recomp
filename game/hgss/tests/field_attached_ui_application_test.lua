@@ -8,7 +8,7 @@ local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local T = {}
 
 local function placement(referenceFrame, topology)
-  return StartMenuLayout.resolve(topology, referenceFrame)
+  return StartMenuLayout.resolve(topology, referenceFrame, 2)
 end
 
 function T.start_menu_placement_identical_across_zooms()

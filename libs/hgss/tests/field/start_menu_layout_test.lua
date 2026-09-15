@@ -42,11 +42,15 @@ local function referenceFor(width, height)
   return FieldViewport.new(width, height, { mode = "expanded" }).referenceFrame
 end
 
+local function resolve(topology, referenceFrame, preferredScale)
+  return StartMenuLayout.resolve(topology, referenceFrame, preferredScale or 4)
+end
+
 -- The placement record exactly per the layout contract: the chosen surface
 -- id, the host-space frame (snapped origin, exact scale-derived extent), the uniform scale, and the fixed logical
 -- dimensions. No extra keys, so hit testing and rendering share one record.
 function T.placement_record_has_exactly_the_pinned_shape()
-  local record = StartMenuLayout.resolve(oneDisplay(256, 192), referenceFor(256, 192))
+  local record = resolve(oneDisplay(256, 192), referenceFor(256, 192))
   Assert.deepEqual(record, {
     surfaceId = "main",
     frame = { x = 0, y = 0, width = 256, height = 192 },
@@ -72,37 +76,37 @@ function T.responsive_matrix_places_every_topology_as_a_whole_surface()
       name = "1280x960 4:3",
       topology = oneDisplay(1280, 960),
       host = { 1280, 960 },
-      expected = { surfaceId = "main", frame = { 0, 0, 1280, 960 }, scale = 5 },
+      expected = { surfaceId = "main", frame = { 128, 96, 1024, 768 }, scale = 4 },
     },
     {
       name = "1920x1080 16:9",
       topology = oneDisplay(1920, 1080),
       host = { 1920, 1080 },
-      expected = { surfaceId = "main", frame = { 1680, 450, 240, 180 }, scale = 0.9375 },
+      expected = { surfaceId = "main", frame = { 448, 156, 1024, 768 }, scale = 4 },
     },
     {
       name = "2560x1080 ultrawide",
       topology = oneDisplay(2560, 1080),
       host = { 2560, 1080 },
-      expected = { surfaceId = "main", frame = { 2000, 330, 560, 420 }, scale = 2.1875 },
+      expected = { surfaceId = "main", frame = { 2024, 348, 512, 384 }, scale = 2 },
     },
     {
       name = "1080x1920 portrait",
       topology = oneDisplay(1080, 1920),
       host = { 1080, 1920 },
-      expected = { surfaceId = "main", frame = { 170, 1365, 740, 555 }, scale = 2.890625 },
+      expected = { surfaceId = "main", frame = { 284, 1450, 512, 384 }, scale = 2 },
     },
     {
       name = "390x844 phone portrait",
       topology = oneDisplay(390, 844),
       host = { 390, 844 },
-      expected = { surfaceId = "main", frame = { 11, 568, 368, 276 }, scale = 1.4375 },
+      expected = { surfaceId = "main", frame = { 67, 610, 256, 192 }, scale = 1 },
     },
     {
       name = "844x390 phone landscape",
       topology = oneDisplay(844, 390),
       host = { 844, 390 },
-      expected = { surfaceId = "main", frame = { 682, 134, 162, 121.5 }, scale = 0.6328125 },
+      expected = { surfaceId = "main", frame = { 166, 3, 512, 384 }, scale = 2 },
     },
     {
       name = "dual 256x192-style surfaces",
@@ -112,7 +116,7 @@ function T.responsive_matrix_places_every_topology_as_a_whole_surface()
   }
   for _, row in ipairs(matrix) do
     local reference = row.host and referenceFor(row.host[1], row.host[2]) or rect(0, 0, 256, 192)
-    local record = StartMenuLayout.resolve(row.topology, reference)
+    local record = resolve(row.topology, reference)
     Assert.deepEqual(record, {
       surfaceId = row.expected.surfaceId,
       frame = {
@@ -147,12 +151,11 @@ end
 -- whole surface fills a 4:3 auxiliary at its own origin.
 function T.dual_display_places_the_menu_on_the_auxiliary_surface()
   local auxiliary = display("bottom", 256, 192, { rect = rect(256, 240, 256, 192), role = "auxiliary" })
-  local record =
-    StartMenuLayout.resolve(ScreenTopology.dualDisplay(display("top", 256, 192), auxiliary), rect(0, 0, 256, 192))
+  local record = resolve(ScreenTopology.dualDisplay(display("top", 256, 192), auxiliary), rect(0, 0, 256, 192))
   Assert.equal(record.surfaceId, "bottom")
   Assert.deepEqual(record.frame, { x = 256, y = 240, width = 256, height = 192 })
 
-  local large = StartMenuLayout.resolve(
+  local large = resolve(
     ScreenTopology.dualDisplay(display("world", 256, 192), display("aux", 512, 384, { role = "auxiliary" })),
     rect(0, 0, 256, 192)
   )
@@ -161,18 +164,17 @@ function T.dual_display_places_the_menu_on_the_auxiliary_surface()
   Assert.equal(large.scale, 2)
 end
 
--- Wide landscape: the menu is a side panel in the actual right gutter --
--- the real world reference frame's right edge to the safe right -- scaled
--- to fit, still 4:3 internally.
+-- A landscape host whose right gutter is below the 1x floor falls back to the
+-- centered safe surface instead of using a fractional side-panel scale.
 function T.wide_landscape_uses_the_real_right_gutter_of_the_world_frame()
-  local record = StartMenuLayout.resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
+  local record = resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
   local reference = referenceFor(1920, 1080)
   Assert.deepEqual(reference, { x = 240, y = 0, width = 1440, height = 1080 })
-  Assert.deepEqual(record.frame, { x = 1680, y = 450, width = 240, height = 180 })
-  Assert.equal(record.scale, 0.9375)
+  Assert.deepEqual(record.frame, { x = 448, y = 156, width = 1024, height = 768 })
+  Assert.equal(record.scale, 4)
   Assert.isTrue(
-    record.frame.x >= reference.x + reference.width,
-    "the menu must sit in the right gutter, clear of the reference frame"
+    record.frame.x < reference.x + reference.width,
+    "the undersized side panel must fall back into the safe surface"
   )
   Assert.equal(record.frame.height / record.frame.width, 3 / 4, "the surface must stay 4:3 internally")
 end
@@ -180,9 +182,9 @@ end
 -- Ultrawide uses the same model: the menu never stretches across the unused
 -- horizontal space and never overlaps the canonical frame.
 function T.ultrawide_keeps_the_menu_panel_without_horizontal_stretch()
-  local record = StartMenuLayout.resolve(oneDisplay(2560, 1080), referenceFor(2560, 1080))
+  local record = resolve(oneDisplay(2560, 1080), referenceFor(2560, 1080))
   local reference = referenceFor(2560, 1080)
-  Assert.deepEqual(record.frame, { x = 2000, y = 330, width = 560, height = 420 })
+  Assert.deepEqual(record.frame, { x = 2024, y = 348, width = 512, height = 384 })
   Assert.isTrue(record.frame.width < 2560, "the menu must not stretch across the host width")
   Assert.isTrue(record.frame.x >= reference.x + reference.width, "the panel must stay right of the reference frame")
   Assert.equal(record.frame.height / record.frame.width, 3 / 4)
@@ -191,45 +193,44 @@ end
 -- A gutter wide enough for the full height: the scale binds to the gutter
 -- width and the menu is centered in the gutter.
 function T.side_panel_scales_to_the_available_height_when_the_panel_is_tall()
-  local record = StartMenuLayout.resolve(oneDisplay(4000, 1080), referenceFor(4000, 1080))
-  Assert.equal(record.scale, 5)
-  Assert.deepEqual(record.frame, { x = 2720, y = 60, width = 1280, height = 960 })
-  Assert.equal(record.frame.height, 960, "the menu scales to the available panel height")
+  local record = resolve(oneDisplay(4000, 1080), referenceFor(4000, 1080))
+  Assert.equal(record.scale, 4)
+  Assert.deepEqual(record.frame, { x = 2848, y = 156, width = 1024, height = 768 })
+  Assert.equal(record.frame.height, 768, "the menu remains bounded by the preferred scale")
 end
 
 -- Single 4:3 host: the surface is a modal overlay that fills the host.
 function T.single_four_by_three_host_is_a_full_surface_overlay()
-  local record = StartMenuLayout.resolve(oneDisplay(1280, 960), referenceFor(1280, 960))
-  Assert.deepEqual(record.frame, { x = 0, y = 0, width = 1280, height = 960 })
-  Assert.equal(record.scale, 5)
+  local record = resolve(oneDisplay(1280, 960), referenceFor(1280, 960))
+  Assert.deepEqual(record.frame, { x = 128, y = 96, width = 1024, height = 768 })
+  Assert.equal(record.scale, 4)
 end
 
 -- Portrait partitions vertically relative to the real reference geometry:
 -- the menu is a full-width lower panel below the reference frame's bottom
 -- edge.
 function T.portrait_partitions_vertically_into_a_lower_panel()
-  local record = StartMenuLayout.resolve(oneDisplay(1080, 1920), referenceFor(1080, 1920))
+  local record = resolve(oneDisplay(1080, 1920), referenceFor(1080, 1920))
   local reference = referenceFor(1080, 1920)
-  Assert.deepEqual(record.frame, { x = 170, y = 1365, width = 740, height = 555 })
-  Assert.equal(record.frame.y, math.floor(reference.y + reference.height), "the panel starts at the reference bottom")
-  Assert.equal(
-    record.frame.y + record.frame.height,
-    1920,
-    "the lower panel must sit at the bottom of the safe rectangle"
+  Assert.deepEqual(record.frame, { x = 284, y = 1450, width = 512, height = 384 })
+  Assert.isTrue(
+    record.frame.y >= math.floor(reference.y + reference.height),
+    "the menu stays below the reference frame"
   )
+  Assert.equal(record.frame.y + record.frame.height, 1834, "the centered menu must stay inside the lower panel")
 end
 
 -- The portrait partition is subject to minimum usable sizes: when the world
 -- region or the panel would become unusable, the layout falls back to the
 -- centered uniform fit so the whole surface is still placed inside bounds.
 function T.portrait_partition_falls_back_when_a_region_is_too_small()
-  local record = StartMenuLayout.resolve(oneDisplay(390, 370), referenceFor(390, 370))
-  Assert.deepEqual(record.frame, { x = 0, y = 38, width = 390, height = 292.5 })
-  Assert.equal(record.scale, 1.5234375)
+  local record = resolve(oneDisplay(390, 370), referenceFor(390, 370))
+  Assert.deepEqual(record.frame, { x = 67, y = 89, width = 256, height = 192 })
+  Assert.equal(record.scale, 1)
 
-  local tiny = StartMenuLayout.resolve(oneDisplay(100, 300), referenceFor(100, 300))
-  Assert.deepEqual(tiny.frame, { x = 0, y = 112, width = 100, height = 75 })
-  Assert.equal(tiny.scale, 0.390625)
+  Assert.throws(function()
+    resolve(oneDisplay(100, 300), referenceFor(100, 300))
+  end, "a host below the canonical 1x floor is rejected")
 end
 
 -- Safe areas: the whole canonical surface is scaled and placed inside the
@@ -237,9 +238,9 @@ end
 -- the intersection of the reference frame's right edge with the safe rect.
 function T.safe_areas_keep_the_whole_surface_inside_the_safe_rectangle()
   local offset = oneDisplay(1920, 1080, { safeRect = rect(100, 100, 1600, 900) })
-  local record = StartMenuLayout.resolve(offset, referenceFor(1920, 1080))
-  Assert.deepEqual(record.frame, { x = 300, y = 100, width = 1200, height = 900 })
-  Assert.equal(record.scale, 4.6875)
+  local record = resolve(offset, referenceFor(1920, 1080))
+  Assert.deepEqual(record.frame, { x = 388, y = 166, width = 1024, height = 768 })
+  Assert.equal(record.scale, 4)
   local safe = offset.surfaces[1].safeRect
   Assert.isTrue(
     record.frame.x >= safe.x
@@ -250,19 +251,18 @@ function T.safe_areas_keep_the_whole_surface_inside_the_safe_rectangle()
   )
 
   local fractional = oneDisplay(1920, 1080, { safeRect = rect(0, 80, 1920, 920) })
-  local fractionalRecord = StartMenuLayout.resolve(fractional, referenceFor(1920, 1080))
-  Assert.deepEqual(fractionalRecord.frame, { x = 1680, y = 450, width = 240, height = 180 })
+  local fractionalRecord = resolve(fractional, referenceFor(1920, 1080))
+  Assert.deepEqual(fractionalRecord.frame, { x = 448, y = 156, width = 1024, height = 768 })
 end
 
 -- A same-size safe-rect change moves the placement even though the window
 -- dimensions did not: the layout is derived from the safe geometry and the
 -- reference frame, never from the window size alone.
 function T.a_safe_rect_change_recomputes_the_placement_at_the_same_dimensions()
-  local full = StartMenuLayout.resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
-  Assert.deepEqual(full.frame, { x = 1680, y = 450, width = 240, height = 180 })
-  local narrowed =
-    StartMenuLayout.resolve(oneDisplay(1920, 1080, { safeRect = rect(0, 0, 1600, 1080) }), referenceFor(1920, 1080))
-  Assert.deepEqual(narrowed.frame, { x = 80, y = 0, width = 1440, height = 1080 })
+  local full = resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
+  Assert.deepEqual(full.frame, { x = 448, y = 156, width = 1024, height = 768 })
+  local narrowed = resolve(oneDisplay(1920, 1080, { safeRect = rect(0, 0, 1600, 1080) }), referenceFor(1920, 1080))
+  Assert.deepEqual(narrowed.frame, { x = 288, y = 156, width = 1024, height = 768 })
   Assert.isTrue(
     narrowed.frame.x ~= full.frame.x or narrowed.frame.width ~= full.frame.width,
     "the safe-rect change must move the placement"
@@ -274,19 +274,19 @@ end
 -- the same record.
 function T.placement_is_deterministic_and_rounds_at_the_host_boundary()
   local odd = oneDisplay(999, 800)
-  local first = StartMenuLayout.resolve(odd, referenceFor(999, 800))
-  local second = StartMenuLayout.resolve(odd, referenceFor(999, 800))
+  local first = resolve(odd, referenceFor(999, 800))
+  local second = resolve(odd, referenceFor(999, 800))
   Assert.deepEqual(first, second)
-  Assert.deepEqual(first.frame, { x = 0, y = 25, width = 999, height = 749.25 })
-  Assert.equal(first.scale, 999 / 256)
+  Assert.deepEqual(first.frame, { x = 115, y = 112, width = 768, height = 576 })
+  Assert.equal(first.scale, 3)
 end
 
 -- A landscape host too narrow for a usable side panel falls back to the
 -- centered overlay instead of shrinking the menu next to the world frame.
 function T.narrow_side_panels_fall_back_to_the_centered_overlay()
-  local record = StartMenuLayout.resolve(oneDisplay(1280, 900), referenceFor(1280, 900))
-  Assert.deepEqual(record.frame, { x = 40, y = 0, width = 1200, height = 900 })
-  Assert.equal(record.scale, 4.6875)
+  local record = resolve(oneDisplay(1280, 900), referenceFor(1280, 900))
+  Assert.deepEqual(record.frame, { x = 128, y = 66, width = 1024, height = 768 })
+  Assert.equal(record.scale, 4)
 end
 
 -- Surface selection follows the sibling MenuLayout shape: auxiliary first,
@@ -300,17 +300,17 @@ function T.selection_prefers_the_auxiliary_surface_and_falls_back_to_the_first()
     },
   })
   Assert.equal(StartMenuLayout.selectSurface(three).id, "bottom")
-  Assert.equal(StartMenuLayout.resolve(three, rect(0, 0, 256, 192)).surfaceId, "bottom")
+  Assert.equal(resolve(three, rect(0, 0, 256, 192)).surfaceId, "bottom")
 
   local worlds = ScreenTopology.new({ surfaces = { display("world-a", 256, 192), display("world-b", 256, 192) } })
   Assert.equal(StartMenuLayout.selectSurface(worlds).id, "world-a")
-  Assert.equal(StartMenuLayout.resolve(worlds, rect(0, 0, 256, 192)).surfaceId, "world-a")
+  Assert.equal(resolve(worlds, rect(0, 0, 256, 192)).surfaceId, "world-a")
 end
 
 -- The pointer transform: hit testing rejects every point outside the frame,
 -- then maps inside points back to canonical 0..255 x 0..191 logical space.
 function T.host_to_logical_rejects_outside_the_frame_and_maps_inside_points()
-  local record = StartMenuLayout.resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
+  local record = resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
   local outside = {
     { 100, 100 },
     { 1500, 100 },
@@ -324,7 +324,7 @@ function T.host_to_logical_rejects_outside_the_frame_and_maps_inside_points()
   for _, point in ipairs(outside) do
     Assert.isNil(StartMenuLayout.hostToLogical(record, point[1], point[2]), "points outside the frame must be rejected")
   end
-  local canonicalX, canonicalY = StartMenuLayout.hostToLogical(record, 1680, 540)
+  local canonicalX, canonicalY = StartMenuLayout.hostToLogical(record, 448, 540)
   Assert.equal(canonicalX, 0)
   Assert.equal(canonicalY, 96)
 end
@@ -334,7 +334,7 @@ end
 -- the exact inverse of that placement -- slot rects live only in canonical
 -- space and are never scaled into a second set of host rectangles.
 function T.hit_testing_and_rendering_share_one_record_with_an_exact_round_trip()
-  local record = StartMenuLayout.resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
+  local record = resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
   local points = {}
   for slotId = 1, 10 do
     local slot = FieldUiFixture.START_MENU_SLOTS[slotId]
@@ -357,7 +357,7 @@ end
 -- The rendered surface spans exactly the frame: the canonical edge maps to
 -- the frame's far corner, which the transform rejects (the half-open frame).
 function T.the_canonical_edge_maps_to_the_rejected_frame_boundary()
-  local record = StartMenuLayout.resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
+  local record = resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080))
   local cornerX = record.frame.x + 256 * record.scale
   local cornerY = record.frame.y + 192 * record.scale
   Assert.near(cornerX, record.frame.x + record.frame.width, 1e-9)
@@ -365,17 +365,41 @@ function T.the_canonical_edge_maps_to_the_rejected_frame_boundary()
   Assert.isNil(StartMenuLayout.hostToLogical(record, cornerX, cornerY), "the frame's far edge is outside the surface")
 end
 
--- Fractional placements keep the exact render extent: the frame is the
--- logical surface times the uniform scale with only the origin snapped, so
--- the renderer's translate(origin) + scale transform lands exactly on the
--- hit-test frame and the far edge is the half-open rejection boundary.
-function T.fractional_placements_keep_the_exact_render_extent_for_hit_testing()
+-- The field presentation cap is an integer scale authority. A side gutter
+-- that cannot contain the canonical surface at 1x must use the whole-safe
+-- fallback rather than accepting a fractional panel fit.
+function T.preferred_scale_keeps_the_canonical_frame_integer_and_bounded()
+  local cases = {
+    { width = 640, height = 480 },
+    { width = 1920, height = 1080 },
+    { width = 2560, height = 1440 },
+    { width = 1080, height = 1920 },
+  }
+  for _, size in ipairs(cases) do
+    local record = resolve(oneDisplay(size.width, size.height), referenceFor(size.width, size.height), 4)
+    local label = size.width .. "x" .. size.height
+    Assert.isTrue(record.scale > 0, label .. " scale is positive")
+    Assert.equal(record.scale, math.floor(record.scale), label .. " scale is integer")
+    Assert.isTrue(record.scale <= 4, label .. " scale is bounded by the preferred scale")
+    Assert.equal(record.frame.width, 256 * record.scale, label .. " frame width is canonical")
+    Assert.equal(record.frame.height, 192 * record.scale, label .. " frame height is canonical")
+    if size.width == 1920 and size.height == 1080 then
+      local reference = referenceFor(size.width, size.height)
+      Assert.isTrue(record.frame.x < reference.x + reference.width, label .. " must reject its undersized side panel")
+    end
+  end
+end
+
+-- Integer placements keep the exact render extent: the frame is the logical
+-- surface times the field-bounded scale, so the renderer's translate(origin)
+-- plus scale transform lands exactly on the hit-test frame.
+function T.integer_placements_keep_the_exact_render_extent_for_hit_testing()
   local cases = {
     { width = 999, height = 800 },
     { width = 844, height = 390 },
   }
   for _, size in ipairs(cases) do
-    local record = StartMenuLayout.resolve(oneDisplay(size.width, size.height), referenceFor(size.width, size.height))
+    local record = resolve(oneDisplay(size.width, size.height), referenceFor(size.width, size.height))
     local label = size.width .. "x" .. size.height
     Assert.equal(record.frame.x, math.floor(record.frame.x), label .. " origin x stays snapped")
     Assert.equal(record.frame.y, math.floor(record.frame.y), label .. " origin y stays snapped")
@@ -403,16 +427,20 @@ end
 function T.rejects_malformed_inputs()
   local nothing = nil ---@type any
   Assert.throws(function()
-    StartMenuLayout.resolve(nothing, rect(0, 0, 256, 192))
+    resolve(nothing, rect(0, 0, 256, 192))
   end, "resolve requires a topology")
   Assert.throws(function()
-    StartMenuLayout.resolve({ surfaces = {} }, rect(0, 0, 256, 192))
+    resolve({ surfaces = {} }, rect(0, 0, 256, 192))
   end, "resolve requires at least one surface")
   Assert.throws(function()
-    StartMenuLayout.resolve(oneDisplay(100, 100), nothing)
+    resolve(oneDisplay(100, 100), nothing)
   end, "resolve requires the world reference frame")
   Assert.throws(function()
-    StartMenuLayout.resolve(oneDisplay(100, 100, { safeRect = rect(0.5, 0, 100, 100) }), rect(0, 0, 100, 100))
+    local missingScale = nil ---@type integer
+    StartMenuLayout.resolve(oneDisplay(256, 192), rect(0, 0, 256, 192), missingScale)
+  end, "resolve requires the field preferred scale")
+  Assert.throws(function()
+    resolve(oneDisplay(100, 100, { safeRect = rect(0.5, 0, 100, 100) }), rect(0, 0, 100, 100))
   end, "fractional safe rectangles are unsupported")
   Assert.throws(function()
     StartMenuLayout.selectSurface(nothing)
@@ -423,7 +451,7 @@ function T.rejects_malformed_inputs()
   end, "hostToLogical requires a placement record")
   local text = "10" ---@type any
   Assert.throws(function()
-    StartMenuLayout.hostToLogical(StartMenuLayout.resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080)), text, 10)
+    StartMenuLayout.hostToLogical(resolve(oneDisplay(1920, 1080), referenceFor(1920, 1080)), text, 10)
   end, "host coordinates must be numbers")
 end
 

@@ -105,6 +105,22 @@ function T.palette_index_zero_stays_transparent()
   Assert.equal(a, 0)
 end
 
+function T.screen_options_can_keep_palette_zero_opaque()
+  local result = rasterizer().renderScreen(
+    charData({ solidTile4(0) }),
+    paletteData(16),
+    screenData(8, 8, { entry(0, 0) }),
+    nil,
+    { transparentZero = false }
+  )
+  local expected = paletteData(16).colors[1]
+  local r, g, b, a = pixelAt(result.pixels, 8, 0, 0)
+  Assert.equal(r, expected.r)
+  Assert.equal(g, expected.g)
+  Assert.equal(b, expected.b)
+  Assert.equal(a, 255)
+end
+
 function T.horizontal_flip_mirrors_tile_columns()
   local module = rasterizer()
   local tiles = charData({ gradientTile4() })

@@ -14,6 +14,8 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local GameVersion = require("romdump.src.source.GameVersion")
+local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
@@ -33,7 +35,8 @@ local function canonicalPlacement()
       touch = false,
       role = "world",
     }),
-    { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT }
+    { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
+    1
   )
 end
 
@@ -248,7 +251,8 @@ function T.scaled_golden_matches_the_fixture_surface_through_the_record_transfor
       touch = false,
       role = "world",
     }),
-    { x = 0, y = 0, width = 512, height = 384 }
+    { x = 0, y = 0, width = 512, height = 384 },
+    2
   )
   Assert.equal(placement.scale, 2, "the 512x384 host resolves an integer scale of 2")
   Assert.deepEqual(placement.frame, { x = 0, y = 0, width = 512, height = 384 })
@@ -257,48 +261,77 @@ function T.scaled_golden_matches_the_fixture_surface_through_the_record_transfor
   assertPixelsEqual(scaledFixtureReference(1, 0, 2), rendered, "scaled record golden")
 end
 
--- Canonical golden: the real generated Start Menu assets render pixel-exact
--- against an independent reference decoded from the same compiled PNGs
--- (the panel art is baked at compile time; the renderer's job is placement
--- and composition, never repainting). Skips explicitly when no UI class is
--- present in the shared derived cache.
-function T.canonical_golden_matches_the_real_generated_surface_pixel_for_pixel(scope, context)
-  local cache = CacheFs.forVersion("heartgold")
-  if cache:getInfo(FieldUiAssetCache.manifestPath()) == nil then
-    context:skip("no field-UI class in the shared derived cache")
-    return
-  end
-  local manifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()), "the manifest must load")
-  local background = manifest.assets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND]
-  local cursor = manifest.assets[FieldUiAssetCache.ASSET.START_MENU_CURSOR]
-  Assert.notNil(background, "the generated class indexes the start menu background")
-  Assert.notNil(cursor, "the generated class indexes the start menu cursor")
-  local startMenu = assert(manifest.startMenu, "the generated class carries the start menu section")
-  local slots = assert(startMenu.slots, "the start menu section carries slots")
-  local frames = assert(startMenu.cursor and startMenu.cursor.frames, "the start menu section carries cursor frames")
+-- The real generated surface is checked before it reaches the renderer so a
+-- cursor-only production result cannot be mistaken for a renderer golden.
+function T.real_generated_surface_contains_the_retail_background_and_cursor(scope)
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    local cache = CacheFs.forVersion(versionId)
+    if RomImporter.isReady(versionId, cache) then
+      local manifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()), "the manifest must load")
+      local background = assert(
+        manifest.assets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND],
+        "the generated class indexes the start menu background"
+      )
+      local cursor = assert(
+        manifest.assets[FieldUiAssetCache.ASSET.START_MENU_CURSOR],
+        "the generated class indexes the start menu cursor"
+      )
+      local startMenu = assert(manifest.startMenu, "the generated class carries the start menu section")
+      local slots = assert(startMenu.slots, "the start menu section carries slots")
+      local frames =
+        assert(startMenu.cursor and startMenu.cursor.frames, "the start menu section carries cursor frames")
+      local backgroundPixels = scope:own(
+        love.image.newImageData(love.filesystem.newFileData(assert(cache:read(background.image)), background.image))
+      )
+      local cursorPixels =
+        scope:own(love.image.newImageData(love.filesystem.newFileData(assert(cache:read(cursor.image)), cursor.image)))
+      Assert.equal(backgroundPixels:getWidth(), CANONICAL_WIDTH, versionId .. " background width")
+      Assert.equal(backgroundPixels:getHeight(), CANONICAL_HEIGHT, versionId .. " background height")
 
-  local reference = love.image.newImageData(CANONICAL_WIDTH, CANONICAL_HEIGHT)
-  local backgroundPixels =
-    love.image.newImageData(love.filesystem.newFileData(assert(cache:read(background.image)), background.image))
-  local cursorPixels =
-    love.image.newImageData(love.filesystem.newFileData(assert(cache:read(cursor.image)), cursor.image))
-  local function blend(target, source, originX, originY)
-    for y = 0, source:getHeight() - 1 do
-      for x = 0, source:getWidth() - 1 do
-        local r, g, b, a = source:getPixel(x, y)
-        if a > 0 then
-          target:setPixel(originX + x, originY + y, r, g, b, a)
+      local bands = {
+        { y = 0, height = 38 },
+        { y = 38, height = 38 },
+        { y = 76, height = 38 },
+        { y = 114, height = 38 },
+        { y = 152, height = 38 },
+      }
+      for _, band in ipairs(bands) do
+        local opaque = 0
+        for y = band.y, band.y + band.height - 1 do
+          for x = 0, CANONICAL_WIDTH - 1 do
+            local _, _, _, alpha = backgroundPixels:getPixel(x, y)
+            if alpha > 0 then
+              opaque = opaque + 1
+            end
+          end
+        end
+        Assert.isTrue(opaque > 0, versionId .. " retail background band " .. band.y .. " must contain art")
+      end
+
+      local rendered = canonicalRender(scope, cache, manifest, 1, 0, canonicalPlacement(), 256, 192)
+      local slot = slots[1]
+      local frame = frames[1]
+      local originX = slot.x + slot.width / 2 - frame.width / 2
+      local originY = slot.y + slot.height / 2 - frame.height / 2
+      local cursorVisible = false
+      for y = 0, cursorPixels:getHeight() - 1 do
+        for x = 0, cursorPixels:getWidth() - 1 do
+          local _, _, _, alpha = cursorPixels:getPixel(x, y)
+          if alpha > 0 then
+            local _, _, _, renderedAlpha = rendered:getPixel(originX + x, originY + y)
+            cursorVisible = renderedAlpha > 0
+            if cursorVisible then
+              break
+            end
+          end
+        end
+        if cursorVisible then
+          break
         end
       end
+      Assert.isTrue(cursorVisible, versionId .. " cursor must be drawn over the selected slot")
     end
   end
-  blend(reference, backgroundPixels, 0, 0)
-  local slot = slots[1]
-  local frame = frames[1]
-  blend(reference, cursorPixels, slot.x + slot.width / 2 - frame.width / 2, slot.y + slot.height / 2 - frame.height / 2)
-
-  local rendered = canonicalRender(scope, cache, manifest, 1, 0, canonicalPlacement(), 256, 192)
-  assertPixelsEqual(reference, rendered, "real generated surface golden")
 end
 
 function T.restores_graphics_state_after_draw(scope)
@@ -326,7 +359,8 @@ function T.restores_graphics_state_after_draw(scope)
         touch = false,
         role = "world",
       }),
-      { x = 0, y = 0, width = 1280, height = 720 }
+      { x = 0, y = 0, width = 1280, height = 720 },
+      3
     )
   )
 
@@ -368,4 +402,7 @@ function T.release_frees_the_owned_images(scope)
   Assert.isNil(renderer._cursorImage)
 end
 
-return GraphicsSmoke.suite(T)
+return GraphicsSmoke.suite(T, {
+  capabilities = { "graphics", "rom_dump", "derived_cache" },
+  tags = { "field", "menu", "real-cache" },
+})

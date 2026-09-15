@@ -83,21 +83,9 @@ local function composeDisplay(entries, slotCount)
   return display, ordered
 end
 
----@param ordered integer[]
----@param position integer
----@return integer orderedIndex
-local function orderedIndexAt(ordered, position)
-  for index, candidate in ipairs(ordered) do
-    if candidate == position then
-      return index
-    end
-  end
-  error("selection position is not in the visible action list", 2)
-end
-
 -- Restores the remembered selection by action id; falls back to the first
 -- action when the remembered id is no longer interactive.
----@param ordered table[]
+---@param ordered StartMenuController.Action[]
 ---@param rememberedActionId string?
 ---@return integer position
 local function initialPosition(ordered, rememberedActionId)
@@ -215,15 +203,50 @@ function StartMenuController:_selectPosition(position)
   self._selectedPosition = position
 end
 
+---@param position integer
+---@return integer row
+---@return integer column
+local function sourceCoordinates(position)
+  local slotId = position + StartMenuController.CANCEL_SLOT_ID + 1
+  return math.floor((slotId - 1) / 2), (slotId - 1) % 2
+end
+
+---@param row integer
+---@param column integer
+---@return integer? position
+local function sourcePosition(row, column)
+  local position = row * 2 + column - 1
+  if position < 0 then
+    return nil
+  end
+  return position
+end
+
 function StartMenuController:_moveSelection(direction)
   assert(
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
     "unknown UI direction"
   )
-  local ordered = self._orderedPositions
-  local current = orderedIndexAt(ordered, self._selectedPosition)
-  local delta = (direction == "up" or direction == "left") and -1 or 1
-  self:_selectPosition(ordered[((current - 1 + delta) % #ordered) + 1])
+  local row, column = sourceCoordinates(self._selectedPosition)
+  if direction == "left" or direction == "right" then
+    local targetColumn = 1 - column
+    local targetPosition = sourcePosition(row, targetColumn)
+    if targetPosition ~= nil and self._visibleActions[targetPosition] ~= nil then
+      self:_selectPosition(targetPosition)
+    end
+    return
+  end
+
+  local rowCount = math.floor(#self._slots / 2)
+  local step = direction == "up" and -1 or 1
+  for distance = 1, rowCount - 1 do
+    local targetRow = (row + step * distance) % rowCount
+    local targetPosition = sourcePosition(targetRow, column)
+    if targetPosition ~= nil and self._visibleActions[targetPosition] ~= nil then
+      self:_selectPosition(targetPosition)
+      return
+    end
+  end
 end
 
 -- Activation of the selected action. Disabled entries (enabled=false) are

@@ -441,6 +441,22 @@ function T.atlas_pixels_and_dimensions_follow_the_source_mapping()
   Assert.deepEqual({ rB, gB, bB }, { 181, 206, 8 })
 end
 
+function T.start_menu_background_renders_palette_zero_as_opaque_source_art()
+  local romFs, sha1, hashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "start_menu" then
+        members[13] = lz10Wrap(charDataWithTiles({ string.rep("\0", 32) }))
+      end
+      return members
+    end,
+  })
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local path = bundle.manifest.assets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND].image
+  local width, _, rgba = PngReader.rgba(bundle.assets[path])
+  local _, _, _, alpha = PngReader.pixel(rgba, width, 0, 0)
+  Assert.equal(alpha, 255, "the background's palette-zero pixels remain visible")
+end
+
 function T.dialogue_cursor_phases_compose_frame_backing_and_payload()
   local cursorTiles = {}
   for phase = 0, 2 do

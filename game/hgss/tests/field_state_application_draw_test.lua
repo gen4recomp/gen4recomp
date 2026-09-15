@@ -93,7 +93,7 @@ local function drawableState(options)
   local worldViewport = options.worldViewport or { x = 0, y = 0, width = 640, height = 480 }
   -- The runtime owns the one Start Menu placement record the draw path
   -- consumes; the fake supplies it exactly like the production runtime does.
-  local placement = StartMenuLayout.resolve(topology, { x = 0, y = 0, width = 640, height = 480 })
+  local placement = StartMenuLayout.resolve(topology, { x = 0, y = 0, width = 640, height = 480 }, 2)
   local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
   viewport.worldViewport = worldViewport
   local runtime = {
@@ -312,11 +312,11 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_the_placement_re
   Assert.deepEqual(labels(sink), { "world", "menu" })
   local menuCall = sink[2]
   Assert.equal(menuCall[2], menuStatus, "the start menu renderer receives the host's menu presentation")
-  local expectedLayout = StartMenuLayout.resolve(worldTopology(), { x = 0, y = 0, width = 640, height = 480 })
+  local expectedLayout = StartMenuLayout.resolve(worldTopology(), { x = 0, y = 0, width = 640, height = 480 }, 2)
   Assert.deepEqual(menuCall[3], expectedLayout, "the menu draws through the runtime's placement record")
   Assert.equal(menuCall[3].surfaceId, "main")
-  Assert.deepEqual(menuCall[3].frame, { x = 0, y = 0, width = 640, height = 480 })
-  Assert.equal(menuCall[3].scale, 2.5)
+  Assert.deepEqual(menuCall[3].frame, { x = 64, y = 48, width = 512, height = 384 })
+  Assert.equal(menuCall[3].scale, 2)
 end
 
 -- Application phase: the world stays fully faded (fadeAlpha 1) and only the
