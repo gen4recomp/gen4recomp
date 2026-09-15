@@ -44,6 +44,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field closeSent boolean
 ---@field closeAcked boolean
 ---@field closeAfter boolean
+---@field closeToken integer?
 ---@class CompilerPool.Completion
 ---@field record CompilerPool.Job
 ---@field workerId integer
@@ -65,6 +66,8 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field nonce integer
 ---@field closed boolean
 ---@field quiescing boolean
+---@field closeToken integer?
+---@field retired boolean
 ---@field fatalError string|Errors.Error?
 ---@field recentTimings table<string, unknown>[]
 local CompilerPool = {}
@@ -233,6 +236,43 @@ local function cleanupWorkers(workers)
   end
 end
 
+---@param resultChannel table<string, function>
+---@param workerId integer
+---@param developmentRepositoryRoot string?
+---@return CompilerPool.Worker
+local function startWorker(resultChannel, workerId, developmentRepositoryRoot)
+  local host = rawget(_G, "love")
+  local threadApi = host and host.thread
+  assert(type(threadApi) == "table", "unsupported compiler pool capability: love.thread is required")
+  requireFunction(threadApi.newThread, "love.thread.newThread")
+  requireFunction(threadApi.newChannel, "love.thread.newChannel")
+  local input = threadApi.newChannel()
+  validateChannel(input, "worker input channel")
+  local thread = threadApi.newThread(BOOTSTRAP)
+  requireFunction(thread.start, "Thread:start")
+  requireFunction(thread.wait, "Thread:wait")
+  requireFunction(thread.getError, "Thread:getError")
+  if thread.isRunning ~= nil then
+    requireFunction(thread.isRunning, "Thread:isRunning")
+  end
+  local worker = {
+    id = workerId,
+    thread = thread,
+    input = input,
+    slot = nil,
+    retiring = false,
+    started = false,
+    joined = false,
+    closeSent = false,
+    closeAcked = false,
+    closeAfter = false,
+    closeToken = nil,
+  }
+  thread:start(developmentRepositoryRoot, workerId, input, resultChannel)
+  worker.started = true
+  return worker
+end
+
 ---@param options table<string, unknown>
 ---@return CompilerPool
 local function newPool(options)
@@ -266,36 +306,15 @@ local function newPool(options)
     nonce = nextNonce,
     closed = false,
     quiescing = false,
+    closeToken = nil,
+    retired = false,
     fatalError = nil,
     recentTimings = {},
   }, CompilerPool)
 
   local ok, failure = pcall(function()
     for workerId = 1, workerCount(options.mode) do
-      local input = threadApi.newChannel()
-      validateChannel(input, "worker input channel")
-      local thread = threadApi.newThread(BOOTSTRAP)
-      requireFunction(thread.start, "Thread:start")
-      requireFunction(thread.wait, "Thread:wait")
-      requireFunction(thread.getError, "Thread:getError")
-      if thread.isRunning ~= nil then
-        requireFunction(thread.isRunning, "Thread:isRunning")
-      end
-      local worker = {
-        id = workerId,
-        thread = thread,
-        input = input,
-        slot = nil,
-        retiring = false,
-        started = false,
-        joined = false,
-        closeSent = false,
-        closeAcked = false,
-        closeAfter = false,
-      }
-      pool.workers[#pool.workers + 1] = worker
-      thread:start(options.developmentRepositoryRoot, workerId, input, resultChannel)
-      worker.started = true
+      pool.workers[#pool.workers + 1] = startWorker(resultChannel, workerId, options.developmentRepositoryRoot)
     end
   end)
   if not ok then
@@ -329,6 +348,9 @@ function CompilerPool:selectGeneration(identity, epoch)
   then
     return
   end
+  if self.quiescing and not self:isQuiescent() then
+    error("compiler pool quiescence barrier is incomplete", 0)
+  end
   for _, node in ipairs(self.heap) do
     local record = self.jobs[node.key]
     if record then
@@ -356,11 +378,59 @@ function CompilerPool:selectGeneration(identity, epoch)
   self.selected = { versionId = identity.versionId, generationId = identity.generationId, epoch = epoch }
   self.selectedCacheFs = CacheFs.forVersion(identity.versionId)
   self.quiescing = false
+  self.retired = false
   for _, worker in ipairs(self.workers) do
     worker.closeSent = false
     worker.closeAcked = false
     worker.closeAfter = false
+    worker.closeToken = nil
   end
+  -- A completed barrier may have joined exiting workers without restarting
+  -- them; recreate that capacity for the new owner.
+  for _, worker in ipairs(self.workers) do
+    if worker.joined then
+      local ok, replacement = pcall(startWorker, self.resultChannel, worker.id, self.developmentRepositoryRoot)
+      if not ok then
+        self.fatalError = restoreError(replacement)
+        error(replacement, 0)
+      end
+      self.workers[worker.id] = replacement
+    end
+  end
+end
+
+---@param epoch integer
+---@return boolean
+function CompilerPool:retireSelection(epoch)
+  assert(not self.closed, "compiler pool is shut down")
+  local selected = self.selected
+  if selected == nil or self.retired then
+    return false
+  end
+  assert(type(epoch) == "number" and epoch % 1 == 0, "compiler pool epoch must be an integer")
+  if epoch ~= selected.epoch then
+    return false
+  end
+  -- Logical interest is cancelled; executing physical slots stay charged
+  -- under their old identity until their terminal reply or joined exit.
+  self.retired = true
+  for _, node in ipairs(self.heap) do
+    local record = self.jobs[node.key]
+    if record then
+      record.state = "cancelled"
+      record.node = nil
+    end
+  end
+  self.heap = {}
+  for _, completion in ipairs(self.completions) do
+    self:_abortStage(completion.record)
+    if self.jobs[completion.record.jobKey] == completion.record then
+      completion.record.state = "cancelled"
+    end
+    self:_freeSlot(completion.record, completion.workerId)
+  end
+  self.completions = {}
+  return true
 end
 
 local function assertJobShape(job, selected)
@@ -417,6 +487,7 @@ function CompilerPool:request(job)
     error(self.fatalError, 0)
   end
   assert(not self.quiescing, "compiler pool is quiescing")
+  assert(not self.retired, "compiler pool selection is retired")
   local selected = assert(self.selected, "compiler pool has no selected generation")
   assertJobShape(job, selected)
   local existing = self.jobs[job.jobKey]
@@ -464,6 +535,7 @@ function CompilerPool:retry(jobKey, priority)
     error(self.fatalError, 0)
   end
   assert(not self.quiescing, "compiler pool is quiescing")
+  assert(not self.retired, "compiler pool selection is retired")
   local record = assert(self.jobs[jobKey], "unknown compiler job: " .. tostring(jobKey))
   assert(record.state == "failed", "only failed compiler jobs can be retried")
   assert(
@@ -719,6 +791,28 @@ function CompilerPool:_idleWorkerFor(record)
   return nil
 end
 
+---@param versionId string
+---@param workerId integer
+---@param sequence integer
+---@return string
+function CompilerPool:_allocateStageName(versionId, workerId, sequence)
+  -- The process-local run/worker/job counter can collide with a stage left
+  -- behind by an interrupted earlier process. Advance a private allocation
+  -- suffix past existing names without touching the logical FIFO sequence
+  -- and without removing, adopting, or overwriting the old stage.
+  local suffix = 0
+  while true do
+    local name = string.format("run%d-w%d-j%d", self.nonce, workerId, sequence)
+    if suffix > 0 then
+      name = name .. "-s" .. tostring(suffix)
+    end
+    if not CacheFs.forArtifactStage(versionId, name):exists("") then
+      return name
+    end
+    suffix = suffix + 1
+  end
+end
+
 function CompilerPool:_dispatch()
   while true do
     local record = self:_eligibleRecord()
@@ -733,7 +827,7 @@ function CompilerPool:_dispatch()
     removeHeapAt(self.heap, record.node.index)
     record.node = nil
     self.sequence = self.sequence + 1
-    local stageName = string.format("run%d-w%d-j%d", self.nonce, worker.id, self.sequence)
+    local stageName = self:_allocateStageName(record.versionId, worker.id, self.sequence)
     record.state = "running"
     record.stageName = stageName
     record.workerId = worker.id
@@ -838,23 +932,35 @@ local function messageIdentity(message)
   }
 end
 
-function CompilerPool:_collectResults()
+---@param message table<string, unknown>
+function CompilerPool:_acceptMessage(message)
+  if type(message) == "table" and message.status == "context-closed" then
+    local worker = self.workers[message.workerId]
+    -- Only a matching barrier token proves source closure. Stale tokens
+    -- from an earlier barrier and unknown senders are ignored, never
+    -- mistaken for closure of the current barrier.
+    if worker ~= nil and worker.closeSent and message.closeToken == worker.closeToken then
+      worker.closeAcked = true
+    end
+  elseif type(message) == "table" and (message.status == "prepared" or message.status == "failed") then
+    self:_acceptCompletion(message)
+  else
+    self:_stopWithProtocolFailure(message, "unknown worker message")
+  end
+end
+
+function CompilerPool:_drainAvailable()
   while true do
     local message = self.resultChannel:pop()
     if message == nil then
       break
     end
-    if type(message) == "table" and message.kind == "close-ack" then
-      local worker = self.workers[message.workerId]
-      if worker then
-        worker.closeAcked = true
-      end
-    elseif type(message) == "table" and (message.status == "prepared" or message.status == "failed") then
-      self:_acceptCompletion(message)
-    else
-      self:_stopWithProtocolFailure(message, "unknown worker message")
-    end
+    self:_acceptMessage(message)
   end
+end
+
+function CompilerPool:_collectResults()
+  self:_drainAvailable()
   -- Reaping retired workers cannot wait for unrelated message traffic: once
   -- every other job settles, no further completion arrives to trigger the
   -- check above, and jumbo work would stall behind the unreaped worker.
@@ -894,7 +1000,7 @@ function CompilerPool:_acceptCompletion(message)
   local current = selected and self.jobs[slot.jobKey]
   local obsolete = current ~= slot
   if not obsolete then
-    if selected == nil then
+    if selected == nil or self.retired then
       obsolete = true
     else
       obsolete = slot.generationId ~= selected.generationId
@@ -973,50 +1079,46 @@ function CompilerPool:_sendCloseContext(worker)
   if worker.closeSent or not worker.started or worker.joined then
     return
   end
-  local ok = pcall(worker.input.push, worker.input, { kind = "close-context" })
-  if ok then
-    worker.closeSent = true
+  assert(self.closeToken ~= nil, "compiler pool close barrier identity is required")
+  local token = self.closeToken
+  local ok, sendError = pcall(worker.input.push, worker.input, { kind = "close-context", closeToken = token })
+  if not ok then
+    self.fatalError = sendError
+    error(sendError, 0)
   end
+  worker.closeSent = true
+  worker.closeToken = token
 end
 
 function CompilerPool:_replaceRetiredWorkers()
-  local host = rawget(_G, "love")
-  local threadApi = host and host.thread
   for _, worker in ipairs(self.workers) do
     if worker.retiring and not worker.joined then
       local threadError = worker.thread:getError()
       local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
       if threadError or dead then
-        pcall(worker.thread.wait, worker.thread)
+        -- Join exactly once. A failed join is terminal infrastructure
+        -- failure, reported like any other replacement failure below.
+        local joinOk, joinError = pcall(worker.thread.wait, worker.thread)
         worker.joined = true
-        if not self.closed and type(threadApi) == "table" then
-          local created, replacement = pcall(function()
-            local input = threadApi.newChannel()
-            validateChannel(input, "worker input channel")
-            local thread = threadApi.newThread(BOOTSTRAP)
-            requireFunction(thread.start, "Thread:start")
-            requireFunction(thread.wait, "Thread:wait")
-            requireFunction(thread.getError, "Thread:getError")
-            if thread.isRunning ~= nil then
-              requireFunction(thread.isRunning, "Thread:isRunning")
-            end
-            thread:start(self.developmentRepositoryRoot, worker.id, input, self.resultChannel)
-            return {
-              id = worker.id,
-              thread = thread,
-              input = input,
-              slot = nil,
-              retiring = false,
-              started = true,
-              joined = false,
-              closeSent = false,
-              closeAcked = false,
-              closeAfter = false,
-            }
-          end)
-          if created and replacement then
-            self.workers[worker.id] = replacement
+        if not joinOk then
+          self.fatalError = joinError
+          error(joinError, 0)
+        end
+        -- Never restart while quiescing, shut down, terminally failed, or
+        -- without a live selected owner that could use the capacity.
+        if
+          not self.closed
+          and not self.quiescing
+          and self.fatalError == nil
+          and not self.retired
+          and self.selected ~= nil
+        then
+          local created, replacement = pcall(startWorker, self.resultChannel, worker.id, self.developmentRepositoryRoot)
+          if not created then
+            self.fatalError = restoreError(replacement)
+            error(replacement, 0)
           end
+          self.workers[worker.id] = replacement
         end
       end
     end
@@ -1024,18 +1126,57 @@ function CompilerPool:_replaceRetiredWorkers()
 end
 
 function CompilerPool:_pollWorkerFailures()
+  local slotSuspects = {}
+  local idleSuspects = {}
   for _, worker in ipairs(self.workers) do
-    if worker.retiring then
-      -- An exiting jumbo worker reports before it stops; its termination is
-      -- joined during replacement, never treated as a worker death.
-    elseif worker.slot ~= nil then
+    if not worker.retiring and not worker.joined and worker.started then
       local errorText = worker.thread:getError()
       local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
       if errorText or dead then
-        local record = worker.slot
-        self:_settleFailure(record, worker.id, errorText or "compiler worker stopped unexpectedly")
+        if worker.slot ~= nil then
+          slotSuspects[#slotSuspects + 1] = { worker = worker, slot = worker.slot }
+        else
+          idleSuspects[#idleSuspects + 1] = worker
+        end
+      end
+    end
+  end
+  if #slotSuspects == 0 and #idleSuspects == 0 then
+    return
+  end
+  -- A terminal reply queued ahead of its sender's exit is accepted here,
+  -- before any dead observation below may classify that sender.
+  self:_drainAvailable()
+  for _, suspect in ipairs(slotSuspects) do
+    local worker = suspect.worker
+    -- Recheck the original physical slot: a later replacement or job must
+    -- never inherit this dead observation.
+    if self.workers[worker.id] == worker and worker.slot == suspect.slot and suspect.slot.state == "running" then
+      local errorText = worker.thread:getError()
+      local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
+      if errorText or dead then
+        local record = suspect.slot
+        local failure = errorText or "compiler worker stopped unexpectedly"
+        self:_settleFailure(record, worker.id, failure)
         worker.slot = nil
-        self.fatalError = errorText or "compiler worker stopped unexpectedly"
+        self.fatalError = failure
+      end
+    end
+  end
+  for _, worker in ipairs(idleSuspects) do
+    if self.workers[worker.id] == worker and worker.slot == nil and not worker.joined then
+      local errorText = worker.thread:getError()
+      local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
+      if errorText or dead then
+        local failure
+        if worker.closeSent and not worker.closeAcked then
+          failure = "compiler source close failed: " .. tostring(errorText or "compiler worker stopped unexpectedly")
+        else
+          failure = errorText or "compiler worker stopped unexpectedly"
+        end
+        pcall(worker.thread.wait, worker.thread)
+        worker.joined = true
+        self.fatalError = failure
       end
     end
   end
@@ -1109,14 +1250,14 @@ function CompilerPool:_freeSlot(record, workerId)
   local worker = self.workers[workerId]
   if worker and worker.slot == record then
     worker.slot = nil
-    if worker.closeAfter then
+    if worker.closeAfter and not worker.retiring then
       self:_sendCloseContext(worker)
     end
   else
     for _, other in ipairs(self.workers) do
       if other.slot == record then
         other.slot = nil
-        if other.closeAfter then
+        if other.closeAfter and not other.retiring then
           self:_sendCloseContext(other)
         end
         break
@@ -1171,17 +1312,19 @@ function CompilerPool:_hasUnsettled()
 end
 
 function CompilerPool:_waitForResult()
-  self:_pollWorkerFailures()
+  self:_drainAvailable()
   if self.fatalError then
     error(self.fatalError, 0)
   end
+  -- A reply returned by the bounded wait is accepted through the same
+  -- validator as nonblocking collection, never pushed back onto the queue.
   local message = self.resultChannel:demand(WAIT_TIMEOUT_SECONDS)
+  if message ~= nil then
+    self:_acceptMessage(message)
+  end
   self:_pollWorkerFailures()
   if self.fatalError then
     error(self.fatalError, 0)
-  end
-  if message ~= nil then
-    self.resultChannel:push(message)
   end
 end
 
@@ -1191,16 +1334,34 @@ end
 function CompilerPool:wait(jobKey)
   assert(not self.closed, "compiler pool is shut down")
   local record = assert(self.jobs[jobKey], "unknown compiler job: " .. tostring(jobKey))
-  while record.state ~= "ready" and record.state ~= "failed" do
+  while record.state ~= "ready" and record.state ~= "failed" and record.state ~= "cancelled" do
     if self.fatalError then
       error(self.fatalError, 0)
     end
     self:update(math.huge)
-    if record.state ~= "ready" and record.state ~= "failed" then
+    if record.state ~= "ready" and record.state ~= "failed" and record.state ~= "cancelled" then
       self:_waitForResult()
     end
   end
   return record.state, record.details
+end
+
+function CompilerPool:waitForProgress()
+  assert(not self.closed, "compiler pool is shut down")
+  self:_waitForResult()
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
+  -- Bounded publication only: never dispatch new work here, and never admit
+  -- after retirement or quiescence. Synchronous session callers use this to
+  -- drive dependency progress without naming a submitted parent.
+  local remaining = PUBLICATION_BUDGET
+  while remaining > 0 and self:_publishOne() do
+    remaining = remaining - 1
+  end
+  if self.fatalError then
+    error(self.fatalError, 0)
+  end
 end
 
 function CompilerPool:drain()
@@ -1217,7 +1378,11 @@ end
 
 function CompilerPool:quiesce()
   assert(not self.closed, "compiler pool is shut down")
+  if self.quiescing and self:isQuiescent() then
+    return
+  end
   self.quiescing = true
+  self.closeToken = (self.closeToken or 0) + 1
   for _, node in ipairs(self.heap) do
     local record = self.jobs[node.key]
     if record then
@@ -1227,7 +1392,12 @@ function CompilerPool:quiesce()
   end
   self.heap = {}
   for _, worker in ipairs(self.workers) do
-    if worker.slot == nil and not worker.retiring then
+    if worker.joined then
+      -- An exited, joined worker needs no acknowledgement: its exit proves
+      -- its source context is closed.
+    elseif worker.slot == nil and not worker.retiring then
+      worker.closeSent = false
+      worker.closeAcked = false
       self:_sendCloseContext(worker)
     else
       worker.closeAfter = true
@@ -1240,6 +1410,9 @@ function CompilerPool:isQuiescent()
   if not self.quiescing then
     return false
   end
+  if self.fatalError ~= nil then
+    return false
+  end
   if #self.heap > 0 or #self.completions > 0 then
     return false
   end
@@ -1249,10 +1422,11 @@ function CompilerPool:isQuiescent()
     end
   end
   for _, worker in ipairs(self.workers) do
-    if worker.slot ~= nil or worker.retiring then
+    if worker.joined then
+      -- Joined exit satisfies closure without an acknowledgement.
+    elseif worker.slot ~= nil or worker.retiring then
       return false
-    end
-    if not worker.closeAcked then
+    elseif not worker.closeAcked then
       return false
     end
   end
