@@ -6,6 +6,7 @@ local Contract = require("libs.assets.src.DerivedAssetContract")
 local M = {
   FORMAT = Contract.intro.cacheFormat,
   SCHEMA = Contract.intro.schema,
+  SCHEMA_VERSION = 12,
   PROVENANCE_SCHEMA = Contract.intro.provenanceSchema,
   MANIFEST_ERROR = "INTRO_MANIFEST_INVALID",
   PROVENANCE_ERROR = "INTRO_PROVENANCE_INVALID",
@@ -267,8 +268,19 @@ local function rgbColor(label, value)
   return true
 end
 
+local function selectorImage(label, value)
+  if type(value) ~= "string" or value == "" or value:sub(1, #ASSET_DIR + 1) ~= ASSET_DIR .. "/" then
+    return invalid(label .. " is invalid")
+  end
+  return true
+end
+
 local function genderSelector(reference, value)
-  local recordOk, recordErr = closedRecord("manifest genderSelector", value, { defaultTone = true, buttons = true })
+  local recordOk, recordErr = closedRecord(
+    "manifest genderSelector",
+    value,
+    { defaultTone = true, unselectedRim = true, selectedRim = true, buttons = true }
+  )
   if not recordOk then
     return false, recordErr
   end
@@ -276,20 +288,35 @@ local function genderSelector(reference, value)
   if not toneOk then
     return false, toneErr
   end
+  for _, rim in ipairs({ "unselectedRim", "selectedRim" }) do
+    local rimOk, rimErr = rgbColor("manifest genderSelector " .. rim, value[rim])
+    if not rimOk then
+      return false, rimErr
+    end
+  end
   local buttons = value.buttons
   if type(buttons) ~= "table" then
     return invalid("manifest genderSelector buttons are required")
   end
   for _, gender in ipairs({ "male", "female" }) do
     local button = buttons[gender]
-    local buttonOk, buttonErr =
-      closedRecord("manifest genderSelector " .. gender .. " button", button, { bounds = true })
+    local buttonOk, buttonErr = closedRecord(
+      "manifest genderSelector " .. gender .. " button",
+      button,
+      { bounds = true, baseImage = true, fillMaskImage = true, rimMaskImage = true }
+    )
     if not buttonOk then
       return false, buttonErr
     end
     local boundsOk, boundsErr = sourceRect("gender selector " .. gender .. " button", reference, button.bounds)
     if not boundsOk then
       return false, boundsErr
+    end
+    for _, image in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
+      local imageOk, imageErr = selectorImage("manifest genderSelector " .. gender .. " " .. image, button[image])
+      if not imageOk then
+        return false, imageErr
+      end
     end
   end
   for gender in pairs(buttons) do
@@ -301,8 +328,11 @@ local function genderSelector(reference, value)
 end
 
 function M.validateManifest(manifest)
-  if type(manifest) ~= "table" or manifest.schemaVersion ~= 11 then
-    return invalid("manifest schema mismatch", { expected = 11, actual = manifest and manifest.schemaVersion })
+  if type(manifest) ~= "table" or manifest.schemaVersion ~= M.SCHEMA_VERSION then
+    return invalid("manifest schema mismatch", {
+      expected = M.SCHEMA_VERSION,
+      actual = manifest and manifest.schemaVersion,
+    })
   end
   local recordOk, recordErr = closedRecord("manifest", manifest, {
     schemaVersion = true,
@@ -402,6 +432,14 @@ function M.isReady(cacheFs, expectedMarker)
     end
     for _, item in ipairs(value.frames) do
       if not cacheFs:exists(item.image, "file") then
+        return false
+      end
+    end
+  end
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = manifest.genderSelector.buttons[gender]
+    for _, image in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
+      if not cacheFs:exists(button[image], "file") then
         return false
       end
     end

@@ -47,6 +47,17 @@ local function stageBundle(tx, bundle)
       end
     end
   end
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = manifest.genderSelector.buttons[gender]
+    for _, image in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
+      if not stage:exists(button[image], "file") then
+        Errors.raise("INTRO_CACHE_READBACK_FAILED", "intro selector role missing after stage", {
+          gender = gender,
+          image = button[image],
+        })
+      end
+    end
+  end
   stage:write(IntroAssetCache.markerPath(), bundle.marker)
 end
 
@@ -55,7 +66,7 @@ end
 ---@return boolean
 function IntroAssetCacheWriter.write(cacheFs, bundle)
   assert(cacheFs and bundle and bundle.marker and bundle.manifest and bundle.dependencies and bundle.assets)
-  assert(bundle.manifest.schemaVersion == 11, "intro manifest schema mismatch")
+  assert(bundle.manifest.schemaVersion == IntroAssetCache.SCHEMA_VERSION, "intro manifest schema mismatch")
   local tx = ArtifactPublisher.begin(cacheFs, "intro", { IntroAssetCache.assetDir(), IntroAssetCache.dir() })
   local ok, err = pcall(stageBundle, tx, bundle)
   if not ok then

@@ -171,13 +171,21 @@ local function syntheticCompilerSource(animationFrames, objectPalette, charDepth
     end
     return { colors = colors }
   end)
-  rawset(decoder, "decodeScreen", function()
+  rawset(decoder, "decodeScreen", function(_, opts)
+    local selector = opts and opts.label == "gender selector screen"
     local entries = {}
     for row = 0, 23 do
       for column = 0, 31 do
+        local inMale = selector and column >= 2 and column <= 13
+        local inFemale = selector and column >= 18 and column <= 29
+        local inCard = selector and row >= 3 and row <= 21 and (inMale or inFemale)
+        local tile = (row * 32 + column) % 24
+        if inCard and column % 3 ~= 0 then
+          tile = inMale and (column % 2 == 0 and 11 or 12) or (column % 2 == 0 and 13 or 14)
+        end
         entries[#entries + 1] = {
-          tile = (row * 32 + column) % 24,
-          palette = row == 0 and 3 or 0,
+          tile = tile,
+          palette = inCard and 0 or 3,
           flipH = false,
           flipV = false,
         }
@@ -268,6 +276,37 @@ function T.gender_selectors_compile_their_configured_cell_animations()
   Assert.equal(roles["gender-female:palette"], 11)
   Assert.equal(roles["gender-female:cell"], 55)
   Assert.equal(roles["gender-female:animation"], 56)
+end
+
+function T.gender_selector_cards_publish_nonempty_source_role_artifacts()
+  local Compiler = compiler()
+  local source, restore = syntheticCompilerSource()
+  local ok, result = xpcall(function()
+    return Compiler.compile(source)
+  end, debug.traceback)
+  restore()
+  if not ok then
+    error(result, 0)
+  end
+
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(result.manifest.genderSelector.buttons[gender])
+    for _, field in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
+      local width, height, rgba = PngReader.rgba(assert(result.assets[button[field]]))
+      Assert.equal(width, button.bounds.width, gender .. " " .. field .. " width")
+      Assert.equal(height, button.bounds.height, gender .. " " .. field .. " height")
+      local visible = false
+      for offset = 4, #rgba, 4 do
+        if string.byte(rgba, offset) > 0 then
+          visible = true
+          break
+        end
+      end
+      Assert.isTrue(visible, gender .. " " .. field .. " has source pixels")
+    end
+  end
+  Assert.equal(result.manifest.genderSelector.unselectedRim.r, 222)
+  Assert.equal(result.manifest.genderSelector.selectedRim.r, 255)
 end
 
 function T.cell_animation_frames_preserve_one_source_origin()
@@ -473,10 +512,20 @@ local function fixtureBundle(cache, marker)
     end
     assets[image] = "png"
   end
+  for _, path in ipairs({
+    cache.assetDir() .. "/gender-selector-male-base.png",
+    cache.assetDir() .. "/gender-selector-male-fill-mask.png",
+    cache.assetDir() .. "/gender-selector-male-rim-mask.png",
+    cache.assetDir() .. "/gender-selector-female-base.png",
+    cache.assetDir() .. "/gender-selector-female-fill-mask.png",
+    cache.assetDir() .. "/gender-selector-female-rim-mask.png",
+  }) do
+    assets[path] = "png"
+  end
   return {
     marker = marker,
     manifest = {
-      schemaVersion = 11,
+      schemaVersion = 12,
       variant = "heartgold",
       sourceReference = { width = 256, height = 192 },
       background = {
@@ -488,12 +537,20 @@ local function fixtureBundle(cache, marker)
       },
       genderSelector = {
         defaultTone = { r = 1, g = 2, b = 3 },
+        unselectedRim = { r = 222, g = 230, b = 230 },
+        selectedRim = { r = 255, g = 58, b = 58 },
         buttons = {
           male = {
             bounds = { x = 18, y = 25, width = 93, height = 148 },
+            baseImage = cache.assetDir() .. "/gender-selector-male-base.png",
+            fillMaskImage = cache.assetDir() .. "/gender-selector-male-fill-mask.png",
+            rimMaskImage = cache.assetDir() .. "/gender-selector-male-rim-mask.png",
           },
           female = {
             bounds = { x = 144, y = 25, width = 95, height = 148 },
+            baseImage = cache.assetDir() .. "/gender-selector-female-base.png",
+            fillMaskImage = cache.assetDir() .. "/gender-selector-female-fill-mask.png",
+            rimMaskImage = cache.assetDir() .. "/gender-selector-female-rim-mask.png",
           },
         },
       },
@@ -547,7 +604,7 @@ function T.v9_bundle_publishes_without_profile_control_files()
   local CacheWriter = writer()
   local backend = FakeCache.new()
   local live = CacheFs.forVersion("heartgold", backend)
-  local bundle = fixtureBundle(cache, "intro-cache-v11:fixture:ready")
+  local bundle = fixtureBundle(cache, "intro-cache-v12:fixture:ready")
 
   Assert.notNil(bundle.manifest.genderSelector)
   Assert.isNil(bundle.manifest.profileConfirmation)
@@ -556,9 +613,9 @@ function T.v9_bundle_publishes_without_profile_control_files()
   Assert.isTrue(CacheWriter.write(live, bundle))
   Assert.isTrue(cache.isReady(live, bundle.marker), "retained files are sufficient for readiness")
 
-  local missing = fixtureBundle(cache, "intro-cache-v11:fixture:missing")
-  missing.assets[missing.manifest.widgets.oak.frames[1].image] = nil
-  Assert.isFalse(pcall(CacheWriter.write, live, missing), "missing retained widget files reject publication")
+  local missing = fixtureBundle(cache, "intro-cache-v12:fixture:missing")
+  missing.assets[missing.manifest.genderSelector.buttons.male.baseImage] = nil
+  Assert.isFalse(pcall(CacheWriter.write, live, missing), "missing selector role files reject publication")
 end
 
 function T.predecessor_manifest_is_stale_and_does_not_publish()
@@ -566,7 +623,7 @@ function T.predecessor_manifest_is_stale_and_does_not_publish()
   local CacheWriter = writer()
   local backend = FakeCache.new()
   local live = CacheFs.forVersion("heartgold", backend)
-  local bundle = fixtureBundle(cache, "intro-cache-v11:fixture:predecessor")
+  local bundle = fixtureBundle(cache, "intro-cache-v12:fixture:predecessor")
   bundle.manifest.schemaVersion = 10
   bundle.marker = "intro-cache-v10:fixture:predecessor"
   local valid, err = cache.validateManifest(bundle.manifest)
@@ -622,7 +679,7 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   live:write(cache.markerPath(), stale.marker)
   Assert.isFalse(cache.isReady(live, stale.marker), "schema-8 intro output is stale")
 
-  local old = fixtureBundle(cache, "intro-cache-v11:old:dependencies")
+  local old = fixtureBundle(cache, "intro-cache-v12:old:dependencies")
   CacheWriter.write(live, old)
   local oldMarker = live:read(cache.markerPath())
   local oldManifest = live:read(cache.manifestPath())
@@ -640,7 +697,7 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   }, { __index = backend })
   live = CacheFs.forVersion("heartgold", failingBackend)
 
-  local replacement = fixtureBundle(cache, "intro-cache-v11:new:dependencies")
+  local replacement = fixtureBundle(cache, "intro-cache-v12:new:dependencies")
   local published, publishErr = pcall(CacheWriter.write, live, replacement)
   Assert.isFalse(published, "a replacement failure must reach the caller")
   Assert.isTrue(tostring(publishErr):find("publication", 1, true) ~= nil)

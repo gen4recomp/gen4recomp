@@ -21,6 +21,13 @@ local T = {
 
 local WIDE = { 1920, 1080 }
 local TALL = { 390, 844 }
+local REQUIRED_HOSTS = {
+  { 640, 480 },
+  { 1280, 720 },
+  { 1920, 1080 },
+  { 2560, 1440 },
+  { 512, 768 },
+}
 
 local function layoutForHost(width, height, view, manifest)
   local bounds = { x = 0, y = 0, width = width, height = height }
@@ -112,15 +119,20 @@ T.tests.gender_selection_uses_the_production_manifest_at_representative_sizes = 
         oakBgScrollX = 0,
       }
       local layout = layoutForHost(size[1], size[2], view, entry.manifest)
-      Assert.isTrue(inside(layout.oakRegion, layout.viewport), entry.versionId .. " Oak region leaves the drawable")
       Assert.isTrue(
         inside(layout.selectorRegion, layout.viewport),
         entry.versionId .. " selector region leaves the drawable"
       )
-      Assert.isTrue(
-        disjoint(layout.oakRegion, layout.selectorRegion),
-        entry.versionId .. " Oak and selector regions overlap"
-      )
+      if layout.oakRegion ~= nil then
+        Assert.isTrue(inside(layout.oakRegion, layout.viewport), entry.versionId .. " Oak region leaves the drawable")
+        Assert.isTrue(
+          disjoint(layout.oakRegion, layout.selectorRegion),
+          entry.versionId .. " Oak and selector regions overlap"
+        )
+      else
+        Assert.equal(layout.selectorRegion.x, layout.scene.x)
+        Assert.equal(layout.selectorRegion.width, layout.scene.width)
+      end
       for gender = 0, 1 do
         if layout.selectorRegion.width >= 256 then
           Assert.isTrue(
@@ -151,6 +163,41 @@ T.tests.gender_selection_uses_the_production_manifest_at_representative_sizes = 
       local female = entry.manifest.widgets.gender_female
       Assert.equal(male.provenance.rule, "stable-oam-origin")
       Assert.equal(female.provenance.rule, "stable-oam-origin")
+    end
+  end
+end
+
+T.tests.gender_selection_contains_both_cards_and_hit_regions_at_supported_hosts = function()
+  for _, entry in ipairs(readyManifests()) do
+    for _, size in ipairs(REQUIRED_HOSTS) do
+      local view = {
+        phase = "gender_select",
+        visual = "oak",
+        primaryWidget = "oak",
+        genderFocus = 0,
+        genderCompositionProgress = 1,
+        oakBgScrollX = 0,
+      }
+      local layout = layoutForHost(size[1], size[2], view, entry.manifest)
+      local viewport = assert(layout.viewport)
+      local selector = assert(layout.selectorRegion)
+      ---@type { scale: number, rect: { x: number, y: number, width: number, height: number }, portraitRect: { x: number, y: number, width: number, height: number } }
+      local first = assert(layout.genderButtons and layout.genderButtons[0])
+      ---@type { scale: number, rect: { x: number, y: number, width: number, height: number }, portraitRect: { x: number, y: number, width: number, height: number } }
+      local second = assert(layout.genderButtons and layout.genderButtons[1])
+      Assert.isTrue(first.scale > 0 and first.scale == math.floor(first.scale), "selector scale must be integral")
+      Assert.equal(second.scale, first.scale, "gender cards must share one selector scale")
+      for _, card in ipairs({ first, second }) do
+        local label = string.format("%s at %dx%d", entry.versionId, size[1], size[2])
+        Assert.isTrue(inside(card.rect, viewport), label .. " gender card must stay inside the logical viewport")
+        Assert.isTrue(inside(card.rect, selector), label .. " gender card hit region must stay inside selector region")
+        Assert.isTrue(
+          inside(card.portraitRect, viewport),
+          label .. " gender portrait must stay inside the logical viewport"
+        )
+        Assert.isTrue(inside(card.portraitRect, card.rect), label .. " gender portrait must stay inside its card")
+      end
+      Assert.isTrue(disjoint(first.rect, second.rect), "gender card hit regions must remain disjoint")
     end
   end
 end
