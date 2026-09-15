@@ -494,15 +494,21 @@ local function executeMonCatalog(artifact, context)
   })
 end
 
-local function executeMonLayout(artifact, context)
+local function executeMonLayout(artifact, context, generationId)
+  local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
   local romFs = assert(context.romFs, "mon layout jobs require a source reader")
-  local presentation = planPresentation(romFs, compileCatalog(romFs))
+  local cacheFs = assert(context.cacheFs, "mon layout jobs require a cache filesystem")
+  assert(type(generationId) == "string" and generationId ~= "", "mon layout jobs require a generation")
+  local catalog = MonCache.loadCatalog(cacheFs)
+  local presentation = planPresentation(romFs, catalog)
   local romSha1 = romFs:metadata().sha1
   return MonCacheWriter.stageLayout(artifact, {
     icons = presentation.icons,
     portraits = presentation.portraits,
     marker = MonCacheWriter.layoutMarker(romSha1, presentation.icons, presentation.portraits),
+    pagePlans = { iconPages = presentation.iconPages, portraitPages = presentation.portraitPages },
+    generationId = generationId,
   })
 end
 
@@ -510,17 +516,39 @@ end
 ---@param context table<string, unknown>
 ---@param pageKind "icons"|"portraits"
 ---@param pageId integer
+---@param generationId string
 ---@return string
-local function executeMonPage(artifact, context, pageKind, pageId)
+local function executeMonPage(artifact, context, pageKind, pageId, generationId)
+  local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
   local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
   local romFs = assert(context.romFs, "mon page jobs require a source reader")
-  local presentation = planPresentation(romFs, compileCatalog(romFs))
-  local manifest = pageKind == "icons" and presentation.icons or presentation.portraits
-  local pagePlans = pageKind == "icons" and presentation.iconPages or presentation.portraitPages
-  local pagePlan = pagePlans[pageId]
+  local cacheFs = assert(context.cacheFs, "mon page jobs require a cache filesystem")
+  assert(type(generationId) == "string" and generationId ~= "", "mon page jobs require a generation")
+  local layoutMarker = cacheFs:read(MonCache.layoutMarkerPath())
+  if type(layoutMarker) ~= "string" or layoutMarker == "" then
+    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no published layout", 0)
+  end
+  local pagePlan, planReason = MonCacheWriter.loadPagePlan(cacheFs, generationId, pageKind, pageId, layoutMarker)
   if pagePlan == nil then
-    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no source plan", 0)
+    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no source plan: " .. tostring(planReason), 0)
+  end
+  local manifestPath = pageKind == "icons" and MonCache.iconManifestPath() or MonCache.portraitManifestPath()
+  local manifestOk, manifest = pcall(cacheFs.loadLua, cacheFs, manifestPath)
+  if not manifestOk or type(manifest) ~= "table" then
+    error("mon page " .. pageKind .. "/" .. tostring(pageId) .. " has no published manifest", 0)
+  end
+  if pageKind == "icons" then
+    local valid, schemaErr = pcall(MonAssetSchema.assertIconManifest, manifest)
+    if not valid then
+      error(schemaErr, 0)
+    end
+  else
+    local valid, schemaErr = pcall(MonAssetSchema.assertPortraitManifest, manifest)
+    if not valid then
+      error(schemaErr, 0)
+    end
   end
   local page, pageErr = MonPresentationCompiler.compilePage(romFs, pageKind, pagePlan)
   if page == nil then
@@ -542,19 +570,24 @@ local function executeMonSummary(artifact, context)
   local MonSources = require("romdump.src.config.MonSources")
   local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
   local romFs = assert(context.romFs, "mon summary jobs require a source reader")
   local cacheFs = assert(context.cacheFs, "mon summary jobs require a cache filesystem")
-  local catalog = compileCatalog(romFs)
-  local presentation = planPresentation(romFs, catalog)
+  local catalog = MonCache.loadCatalog(cacheFs)
+  local icons = cacheFs:loadLua(MonCache.iconManifestPath())
+  MonAssetSchema.assertIconManifest(icons)
+  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
+  MonAssetSchema.assertPortraitManifest(portraits)
+  assert(icons ~= nil and portraits ~= nil, "mon summary requires its published manifests")
   local iconMarkers, portraitMarkers = {}, {}
-  for _, pageId in ipairs(presentation.icons.pageIds) do
+  for _, pageId in ipairs(icons.pageIds) do
     local marker = cacheFs:read(MonCache.pageMarkerPath("icons", pageId))
     if type(marker) ~= "string" or marker == "" then
       error("mon summary misses the staged icon page " .. tostring(pageId), 0)
     end
     iconMarkers[#iconMarkers + 1] = marker
   end
-  for _, pageId in ipairs(presentation.portraits.pageIds) do
+  for _, pageId in ipairs(portraits.pageIds) do
     local marker = cacheFs:read(MonCache.pageMarkerPath("portraits", pageId))
     if type(marker) ~= "string" or marker == "" then
       error("mon summary misses the staged portrait page " .. tostring(pageId), 0)
@@ -744,11 +777,23 @@ local function dispatchExecute(artifact, job, context)
   elseif job.kind == "mon-catalog" then
     return executeMonCatalog(artifact, context)
   elseif job.kind == "mon-layout" then
-    return executeMonLayout(artifact, context)
+    return executeMonLayout(artifact, context, assert(job.generationId, "mon layout jobs require a generation"))
   elseif job.kind == "mon-icon-page" then
-    return executeMonPage(artifact, context, "icons", canonicalKeyId(job.key, "page key"))
+    return executeMonPage(
+      artifact,
+      context,
+      "icons",
+      canonicalKeyId(job.key, "page key"),
+      assert(job.generationId, "mon page jobs require a generation")
+    )
   elseif job.kind == "mon-portrait-page" then
-    return executeMonPage(artifact, context, "portraits", canonicalKeyId(job.key, "page key"))
+    return executeMonPage(
+      artifact,
+      context,
+      "portraits",
+      canonicalKeyId(job.key, "page key"),
+      assert(job.generationId, "mon page jobs require a generation")
+    )
   elseif job.kind == "mon-summary" then
     return executeMonSummary(artifact, context)
   elseif job.kind == "message-bank" then
@@ -824,6 +869,7 @@ function ArtifactJobs.execute(job, context)
   local normalized = {
     kind = job.kind,
     key = job.key,
+    generationId = job.generationId,
     producerFingerprint = select.producerFingerprint,
     payload = select,
   }
@@ -934,7 +980,12 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
       return MonCache.isCatalogReady(cacheFs, marker)
     elseif kind == "mon-layout" then
       local MonCache = require("libs.assets.src.MonCache")
-      return MonCache.isLayoutReady(cacheFs, marker)
+      if not MonCache.isLayoutReady(cacheFs, marker) then
+        return false
+      end
+      local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+      local ready, _ = MonCacheWriter.isLayoutSourceReady(cacheFs, generationId, marker)
+      return ready == true
     elseif kind == "mon-icon-page" then
       local MonCache = require("libs.assets.src.MonCache")
       return MonCache.isPageReady(cacheFs, "icons", canonicalKeyId(key, "page key"), marker)

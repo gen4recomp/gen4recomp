@@ -69,6 +69,33 @@ local function portraits()
   return manifestFor(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80)
 end
 
+local function pagePlans()
+  return {
+    iconPages = {
+      [0] = {
+        pageId = 0,
+        width = 256,
+        height = 128,
+        cell = 32,
+        combos = { { naix = 1, palette = 2, selectors = { "K/f0" } } },
+        representative = {},
+      },
+    },
+    portraitPages = {
+      [0] = {
+        pageId = 0,
+        width = 640,
+        height = 320,
+        cell = 80,
+        combos = {
+          { narc = "pokemon_graphics", charMemberId = 3, palMemberId = 4, selectors = { "K/f0/male/plain" } },
+        },
+        representative = {},
+      },
+    },
+  }
+end
+
 local function pageBundle(kind, pageId, width, height, marker)
   return {
     kind = kind,
@@ -114,7 +141,10 @@ function T.writes_each_stage_and_reports_staged_readiness()
   Assert.isTrue(MonCache.isCatalogReady(cache, catalogMarker), "catalog reads ready after its own stage")
   Assert.isFalse(MonCache.isLayoutReady(cache, "no-layout"), "layout stays unread before its own stage")
   local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
-  Assert.equal(MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker), layoutMarker)
+  Assert.equal(
+    MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker, pagePlans(), "test-generation"),
+    layoutMarker
+  )
   Assert.isTrue(MonCache.isLayoutReady(cache, layoutMarker), "layout reads ready after its own stage")
   local iconMarker = MonCacheWriter.pageMarker("abc", "icons", 0, icons())
   Assert.equal(MonCacheWriter.writePage(cache, pageBundle("icons", 0, 256, 128, iconMarker)), iconMarker)
@@ -149,7 +179,13 @@ function T.stages_through_prepared_artifacts_without_touching_live_before_publis
   local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
   local layoutStage = newArtifact(cache, "mon-layout", "global", "mon-layout-stage")
   Assert.equal(
-    MonCacheWriter.stageLayout(layoutStage, { icons = icons(), portraits = portraits(), marker = layoutMarker }),
+    MonCacheWriter.stageLayout(layoutStage, {
+      icons = icons(),
+      portraits = portraits(),
+      marker = layoutMarker,
+      pagePlans = pagePlans(),
+      generationId = "test-generation",
+    }),
     layoutMarker
   )
   publishArtifact(layoutStage, "mon-layout", "global", layoutMarker)
@@ -236,6 +272,75 @@ function T.summary_refuses_incomplete_page_coverage()
   Assert.isTrue(Errors.is(summaryErr), "the refusal stays diagnosable")
   complete:abort()
   Assert.isFalse(MonCache.isReady(cache, "no-summary"), "a refused summary never reads ready")
+end
+
+function T.private_handoff_paths_use_canonical_page_filenames()
+  Assert.equal(
+    MonCacheWriter.sourcePlanIndexPath(),
+    "data/generated/producer/mon-layout/index.lua",
+    "the private index has a fixed path"
+  )
+  Assert.equal(
+    MonCacheWriter.sourcePagePlanPath("icons", 0),
+    "data/generated/producer/mon-layout/icons/0.lua",
+    "page zero keeps its unpadded filename"
+  )
+  Assert.equal(
+    MonCacheWriter.sourcePagePlanPath("portraits", 17),
+    "data/generated/producer/mon-layout/portraits/17.lua",
+    "page seventeen keeps its unpadded filename"
+  )
+  Assert.throws(function()
+    local kinds = { "sprites" }
+    MonCacheWriter.sourcePagePlanPath(kinds[1] --[[@as "icons"|"portraits"]], 0)
+  end)
+  Assert.throws(function()
+    MonCacheWriter.sourcePagePlanPath("icons", -1)
+  end)
+end
+
+function T.layout_staging_round_trips_its_private_handoff()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
+  MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker, pagePlans(), "test-generation")
+  local ready, reason = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", layoutMarker)
+  Assert.isTrue(ready, "the staged handoff reads ready: " .. tostring(reason))
+  local plan, loadReason = MonCacheWriter.loadPagePlan(cache, "test-generation", "icons", 0, layoutMarker)
+  Assert.notNil(plan, "the staged icon record loads: " .. tostring(loadReason))
+  assert(plan ~= nil, "the icon record is available")
+  Assert.equal(plan.pageId, 0, "the loaded record keeps its page identity")
+  Assert.equal(#plan.combos, 1, "the loaded record keeps its bounded visuals")
+  local portrait, portraitReason = MonCacheWriter.loadPagePlan(cache, "test-generation", "portraits", 0, layoutMarker)
+  Assert.notNil(portrait, "the staged portrait record loads: " .. tostring(portraitReason))
+end
+
+function T.private_handoff_rejects_foreign_generation_and_layout()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local layoutMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
+  MonCacheWriter.writeLayout(cache, icons(), portraits(), layoutMarker, pagePlans(), "test-generation")
+  local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, "other-generation", layoutMarker)
+  Assert.isFalse(ready, "a foreign generation never reads ready")
+  local readyMarker, _ = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", "other-marker")
+  Assert.isFalse(readyMarker, "a foreign layout marker never reads ready")
+  local plan, _ = MonCacheWriter.loadPagePlan(cache, "other-generation", "icons", 0, layoutMarker)
+  Assert.isNil(plan, "a foreign generation never authorizes a page")
+  local missing, _ = MonCacheWriter.loadPagePlan(cache, "test-generation", "icons", 7, layoutMarker)
+  Assert.isNil(missing, "an unpublished page has no record")
+end
+
+function T.failed_layout_handoff_preserves_the_previous_layout()
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local firstMarker = MonCacheWriter.layoutMarker("abc", icons(), portraits())
+  MonCacheWriter.writeLayout(cache, icons(), portraits(), firstMarker, pagePlans(), "test-generation")
+  local bad = pagePlans()
+  bad.iconPages[0].combos = {}
+  local ok, stageErr =
+    pcall(MonCacheWriter.writeLayout, cache, icons(), portraits(), firstMarker, bad, "test-generation")
+  Assert.isFalse(ok, "an empty page record must not stage: " .. tostring(stageErr))
+  Assert.isTrue(MonCache.isLayoutReady(cache, firstMarker), "the previous layout remains ready")
+  local ready, _ = MonCacheWriter.isLayoutSourceReady(cache, "test-generation", firstMarker)
+  Assert.isTrue(ready, "the previous handoff remains ready")
 end
 
 return { tests = T }

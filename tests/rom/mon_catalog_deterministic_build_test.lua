@@ -36,7 +36,14 @@ local function buildClass(romFs, versionId, backend)
   MonCacheWriter.writeCatalog(cache, catalog, catalogMarker)
   local planned = assert(MonPresentationCompiler.plan(romFs, catalog))
   local layoutMarker = MonCacheWriter.layoutMarker(romSha1, planned.icons, planned.portraits)
-  MonCacheWriter.writeLayout(cache, planned.icons, planned.portraits, layoutMarker)
+  MonCacheWriter.writeLayout(
+    cache,
+    planned.icons,
+    planned.portraits,
+    layoutMarker,
+    { iconPages = planned.iconPages, portraitPages = planned.portraitPages },
+    "deterministic-build"
+  )
   local iconMarkers, portraitMarkers = {}, {}
   for _, pageId in ipairs(planned.icons.pageIds) do
     local marker = MonCacheWriter.pageMarker(romSha1, "icons", pageId, planned.icons)
