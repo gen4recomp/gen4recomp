@@ -155,6 +155,8 @@ end
 -- object origins shift the pixels rather than clipping them. Tiles lay out
 -- row-major from each object's base tile and the whole-object flips mirror
 -- the tile grid as well as each tile, matching OAM 1D-mapping presentation.
+-- Overlapping objects composite back-to-front: the lower OAM index has
+-- precedence for equal-priority sprites, so object 0 paints last.
 ---@param charData G2dRasterizer.CharData
 ---@param paletteData G2dRasterizer.PaletteData
 ---@param cell { objs: table[] }
@@ -190,7 +192,8 @@ function G2dRasterizer.renderCell(charData, paletteData, cell, source, options)
       source = source,
     })
   end
-  for index, obj in ipairs(cell.objs) do
+  for index = #cell.objs, 1, -1 do
+    local obj = cell.objs[index]
     local tilesPerRow = obj.width / 8
     local rowsPerObj = obj.height / 8
     if tilesPerRow % 1 ~= 0 or rowsPerObj % 1 ~= 0 or tilesPerRow <= 0 or rowsPerObj <= 0 then

@@ -701,6 +701,133 @@ function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   Assert.isTrue(realized.items ~= realized.balls, "the items and balls pocket states must differ")
 end
 
+-- The items tab region of the items strip must carry the pouch icon over the
+-- common tab face, not the face alone. The probe reads source 4bpp tile
+-- values and the replayed pocket palette by hand (never through
+-- G2dRasterizer), finds an icon pixel that overlaps the face with a different
+-- realized color while the balls icon differs there, then asserts the
+-- compiled strip pixel matches the icon color. With forward compositing the
+-- face would win and the assertion would see the face color instead.
+function T.tab_strips_preserve_pouch_icon_over_the_common_face(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local strips = assert(
+    bundle.manifest.interactive.pocketTabs.strips,
+    "the rebuilt manifest must publish one strip per active pocket"
+  )
+  local archive = assert(romFs:openNarc("bag_ui"))
+  local function decoded(kind, memberId, what)
+    local bytes = assert(archive:readMember(memberId), "bag member " .. memberId .. " must exist")
+    local record, err = G2dDecoder[kind](bytes, { label = what })
+    Assert.notNil(record, what .. " must decode: " .. (err and err.message or "?"))
+    return assert(record)
+  end
+  local group = BagSources.sprites.tabs
+  local chars = decoded("decodeChar", group.char, "tab char")
+  Assert.equal(chars.depth, 3, "tab character data stays 4bpp")
+  local basePalette = decoded("decodePalette", group.palette, "tab base palette")
+  local statePalette = decoded("decodePalette", BagSources.palettes.tabState, "tab state palette")
+  local cellData = decoded("decodeCell", group.cell, "tab cell")
+  local animation = decoded("decodeAnimation", group.anim, "tab animation")
+  local selectors = assert(BagSources.spriteStates.tabs.normal, "normal tab selectors must be audited")
+  -- Normal positions follow the canonical pocket order, so position 1 is the
+  -- items pouch under test and position 3 is the balls pouch it must differ
+  -- from.
+  local itemSelector = assert(selectors[1], "the items tab selector must be audited")
+  local ballsSelector = assert(selectors[3], "the balls tab selector must be audited")
+  local function staticCell(selector, what)
+    local sequence = assert(animation.anims[selector.animation + 1], what .. " selects a sequence")
+    Assert.equal(#sequence.frames, 1, what .. " realizes one static frame")
+    local frame = sequence.frames[1]
+    Assert.equal(frame.element, "none", what .. " carries no transform")
+    return assert(cellData.cells[frame.cell + 1], what .. " resolves its cell")
+  end
+  local itemCell = staticCell(itemSelector, "items tab")
+  local ballsCell = staticCell(ballsSelector, "balls tab")
+  Assert.isTrue(#itemCell.objs >= 2, "the items cell carries icon pieces before the common face")
+  local face = itemCell.objs[#itemCell.objs]
+  Assert.equal(face.width, 32, "the common tab face stays 32 pixels wide")
+  Assert.equal(face.height, 32, "the common tab face stays 32 pixels tall")
+  Assert.isFalse(face.flipH, "the face probe path stays unflipped")
+  Assert.isFalse(face.flipV, "the face probe path stays unflipped")
+  local ballsIcon = ballsCell.objs[1]
+  local itemIcon = itemCell.objs[1]
+  for _, field in ipairs({ "x", "y", "width", "height" }) do
+    Assert.equal(ballsIcon[field], itemIcon[field], "the balls icon shares the items icon placement")
+  end
+  Assert.isFalse(ballsIcon.flipH, "the balls probe path stays unflipped")
+  Assert.isFalse(ballsIcon.flipV, "the balls probe path stays unflipped")
+  local effective = replayEffectivePalette(basePalette.colors, statePalette.colors, 0)
+  local bank = itemSelector.palette
+  Assert.equal(type(bank), "number", "the items tab selector names its palette bank")
+  local function charValue(tileIndex, px, py)
+    local byte = string.byte(chars.tiles, tileIndex * 32 + py * 4 + math.floor(px / 2) + 1)
+    Assert.notNil(byte, "the probed tile must exist in the decoded char data")
+    assert(byte ~= nil, "probed tiles exist above")
+    if px % 2 == 0 then
+      return byte % 16
+    end
+    return math.floor(byte / 16)
+  end
+  local function realized(value)
+    local color = effective.colors[bank * 16 + value + 1]
+    Assert.notNil(color, "the probed value must resolve in the replayed pocket palette")
+    return assert(color)
+  end
+  local faceCols = face.width / 8
+  local found = nil
+  for iconIndex = 1, #itemCell.objs - 1 do
+    local icon = itemCell.objs[iconIndex]
+    if icon.flipH == false and icon.flipV == false and found == nil then
+      local iconCols = icon.width / 8
+      for py = 0, icon.height - 1 do
+        for px = 0, icon.width - 1 do
+          local iconTile = icon.tile + math.floor(py / 8) * iconCols + math.floor(px / 8)
+          local iconValue = charValue(iconTile, px % 8, py % 8)
+          local fx, fy = (icon.x + px) - face.x, (icon.y + py) - face.y
+          if fx >= 0 and fy >= 0 and fx < face.width and fy < face.height and found == nil then
+            local faceTile = face.tile + math.floor(fy / 8) * faceCols + math.floor(fx / 8)
+            local faceValue = charValue(faceTile, fx % 8, fy % 8)
+            local ballsTile = ballsIcon.tile + math.floor(py / 8) * iconCols + math.floor(px / 8)
+            local ballsValue = charValue(ballsTile, px % 8, py % 8)
+            if iconValue ~= 0 and faceValue ~= 0 and ballsValue ~= iconValue then
+              local iconColor, faceColor = realized(iconValue), realized(faceValue)
+              local distinct = iconColor.r ~= faceColor.r or iconColor.g ~= faceColor.g or iconColor.b ~= faceColor.b
+              if distinct then
+                found = { icon = icon, px = px, py = py, iconColor = iconColor, faceColor = faceColor }
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  Assert.notNil(found, "the items icon must overlap the face with a pouch-specific color")
+  found = assert(found, "overlapping icon pixels exist above")
+  local minX, minY = itemCell.objs[1].x, itemCell.objs[1].y
+  for i = 2, #itemCell.objs do
+    minX = math.min(minX, itemCell.objs[i].x)
+    minY = math.min(minY, itemCell.objs[i].y)
+  end
+  local rect = assert(BagSources.geometry.tabs[1], "the items tab rectangle must be audited")
+  local destX, destY = rect.x + rect.width / 2 + minX, rect.y + rect.height / 2 + minY
+  Assert.equal(destX % 1, 0, "the items frame placement stays pixel-aligned")
+  Assert.equal(destY % 1, 0, "the items frame placement stays pixel-aligned")
+  local stripX, stripY = destX + (found.icon.x - minX + found.px), destY + (found.icon.y - minY + found.py)
+  local visual = assert(strips["items"], "items must publish its active-pocket strip")
+  Assert.equal(visual.width, 256, "items strip keeps the canonical strip width")
+  Assert.equal(visual.height, 32, "items strip keeps the canonical strip height")
+  local width, height, rgba = PngReader.rgba(assert(bundle.assets[visual.image], "items bytes must compile"))
+  Assert.equal(width, 256, "items strip image is 256 pixels wide")
+  Assert.equal(height, 32, "items strip image is 32 pixels tall")
+  Assert.isTrue(stripX >= 0 and stripY >= 0 and stripX < width and stripY < height, "the probe must land in the strip")
+  local offset = (stripY * width + stripX) * 4 + 1
+  local r, g, b, a = string.byte(rgba, offset, offset + 3)
+  Assert.equal(a, 255, "the probed icon pixel stays opaque")
+  Assert.equal(r, found.iconColor.r, "the items strip preserves the pouch icon red over the face")
+  Assert.equal(g, found.iconColor.g, "the items strip preserves the pouch icon green over the face")
+  Assert.equal(b, found.iconColor.b, "the items strip preserves the pouch icon blue over the face")
+end
+
 -- The compiled hero presentation must carry the retail edge-color table as
 -- semantic channel records: three chromatic entries followed by five black
 -- entries, never a fabricated all-black table.
