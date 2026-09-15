@@ -113,14 +113,18 @@ function MainMenuLayout.compute(
     local id = saveId(save)
     local y = firstCardY + (index - 1) * (CARD_HEIGHT + CARD_GAP)
     local frame = { x = saveViewport.x, y = y, width = saveViewport.width, height = CARD_HEIGHT }
-    local overflow = {
-      x = frame.x + frame.width - OVERFLOW_WIDTH - 8,
-      y = frame.y + 8,
-      width = OVERFLOW_WIDTH,
-      height = OVERFLOW_HEIGHT,
-    }
-    local body =
-      { x = frame.x, y = frame.y, width = math.max(1, frame.width - OVERFLOW_WIDTH - 16), height = frame.height }
+    local overflow
+    local bodyWidth = frame.width
+    if save.canDelete ~= false then
+      overflow = {
+        x = frame.x + frame.width - OVERFLOW_WIDTH - 8,
+        y = frame.y + 8,
+        width = OVERFLOW_WIDTH,
+        height = OVERFLOW_HEIGHT,
+      }
+      bodyWidth = frame.width - OVERFLOW_WIDTH - 16
+    end
+    local body = { x = frame.x, y = frame.y, width = math.max(1, bodyWidth), height = frame.height }
     cards[id] = { frame = frame, body = body, overflow = overflow }
   end
 
