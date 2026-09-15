@@ -125,7 +125,7 @@ local function assertReservedDialogueIsClear(layout)
     layout.reveal,
     layout.oakRegion,
     layout.selectorRegion,
-    layout.namePreview,
+    layout.namingScreen and layout.namingScreen.nameSlots,
   }) do
     if item ~= nil then
       Assert.isTrue(disjoint(item, dialogue), "Oak content must not enter reserved dialogue")
@@ -181,13 +181,17 @@ local function assertProfileLayout(view)
       end
     end
   elseif view.phase == "name_edit" then
-    local keyCount = 0
-    for _, key in pairs(layout.nameKeys or {}) do
-      keyCount = keyCount + 1
-      Assert.isTrue(inside(key.rect, layout.viewport), "name key must stay inside the viewport")
+    local naming = assert(layout.namingScreen, "name editing must publish the Naming Screen")
+    Assert.isTrue(inside(naming.placement.frame, layout.viewport), "Naming Screen must stay inside the viewport")
+    Assert.isTrue(inside(naming.nameSlots, naming.surface), "name slots must stay inside the canonical surface")
+    for row = 1, 6 do
+      for column = 1, 13 do
+        Assert.isTrue(
+          inside(naming.cells[row][column], naming.surface),
+          "Naming Screen cell must stay inside the canonical surface"
+        )
+      end
     end
-    Assert.isTrue(keyCount > 0, "name editing must publish virtual keyboard geometry")
-    Assert.isTrue(inside(layout.namePreview, layout.viewport), "name editing must publish an in-viewport preview")
   end
 end
 

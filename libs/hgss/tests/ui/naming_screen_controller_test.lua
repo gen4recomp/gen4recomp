@@ -1,0 +1,125 @@
+-- Lower-layer contracts for the reusable HGSS Naming Screen.
+
+local Assert = require("tests.support.Assert")
+local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
+local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
+
+local T = { tests = {} }
+local CHARMAP = {}
+for code = string.byte(" "), string.byte("~") do
+  CHARMAP[string.char(code)] = code
+end
+
+local function player(options)
+  options = options or {}
+  return NamingScreenController.new({
+    kind = "player",
+    maxLength = options.maxLength or 7,
+    initialText = options.initialText or "",
+    charmap = CHARMAP,
+    subject = { kind = "player", gender = options.gender or 0 },
+  })
+end
+
+function T.tests.snapshot_exposes_retail_pages_controls_and_source_surface()
+  local view = player():snapshot()
+  Assert.equal(view.page, "upper")
+  Assert.equal(view.cursor.row, 1)
+  Assert.equal(view.cursor.column, 1)
+  Assert.equal(view.grid[1][1].glyph, "A")
+  Assert.equal(view.grid[2][1].glyph, "N")
+  Assert.equal(view.grid[6][1].controlId, "upper")
+  Assert.equal(view.grid[6][13].controlId, "ok")
+  Assert.equal(#view.controls, 5)
+end
+
+function T.tests.directional_navigation_skips_blanks_wraps_and_resolves_wide_controls()
+  local controller = player()
+  controller:press("left")
+  Assert.equal(controller:snapshot().cursor.row, 1)
+  Assert.equal(controller:snapshot().cursor.column, 13)
+  Assert.equal(controller:snapshot().grid[1][13].glyph, "M")
+  controller:press("down")
+  Assert.equal(controller:snapshot().cursor.row, 2)
+  controller:press("up")
+  Assert.equal(controller:snapshot().cursor.row, 1)
+  controller:activateAt(1, 1)
+  for _ = 1, 5 do
+    controller:press("down")
+  end
+  Assert.equal(controller:snapshot().cursor.controlId, "upper")
+  controller:press("right")
+  Assert.equal(controller:snapshot().cursor.controlId, "lower")
+end
+
+function T.tests.pages_back_ok_and_physical_input_share_one_mutation_path()
+  local controller = player({ maxLength = 3 })
+  Assert.isTrue(controller:inputText("AB"))
+  Assert.isFalse(controller:inputText("CDE"))
+  Assert.isTrue(controller:deleteGlyph())
+  Assert.equal(controller:text(), "A")
+  Assert.isTrue(controller:activateAt(1, 2))
+  Assert.equal(controller:text(), "AB")
+  Assert.isTrue(controller:activateControl("lower"))
+  Assert.equal(controller:snapshot().page, "lower")
+  Assert.isTrue(controller:activateControl("back"))
+  Assert.equal(controller:text(), "A")
+  Assert.isTrue(controller:activateControl("ok"))
+  Assert.deepEqual(controller:result(), { kind = "submit", text = "A" })
+end
+
+function T.tests.pointer_and_gamepad_cancel_and_submit_are_semantic_results()
+  local controller = player()
+  Assert.isTrue(controller:activateAt(1, 1))
+  Assert.equal(controller:text(), "A")
+  Assert.isTrue(controller:press("cancel"))
+  Assert.deepEqual(controller:result(), { kind = "cancel" })
+end
+
+function T.tests.player_and_pokemon_subject_contracts_are_strict()
+  local pokemon = NamingScreenController.new({
+    kind = "pokemon",
+    maxLength = 12,
+    initialText = "",
+    charmap = CHARMAP,
+    subject = { kind = "pokemon", species = 25, form = 0 },
+  })
+  Assert.equal(pokemon:snapshot().subject.species, 25)
+  Assert.throws(function()
+    NamingScreenController.new({
+      kind = "player",
+      maxLength = 7,
+      initialText = "",
+      charmap = CHARMAP,
+      subject = { kind = "pokemon", species = 25 },
+    })
+  end)
+  Assert.throws(function()
+    NamingScreenController.new({
+      kind = "pokemon",
+      maxLength = 7,
+      initialText = "",
+      charmap = CHARMAP,
+      subject = { kind = "pokemon" },
+    })
+  end)
+end
+
+function T.tests.layout_keeps_controls_inside_canonical_surface_at_integer_scale()
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 768, height = 576 }, 3)
+  Assert.equal(layout.placement.scale, 3)
+  for id, region in pairs(layout.controls) do
+    Assert.isTrue(
+      region.x >= 0 and region.y >= 0 and region.x + region.width <= 256 and region.y + region.height <= 192,
+      id .. " is outside surface"
+    )
+  end
+  for row = 1, 6 do
+    for column = 1, 13 do
+      local region = layout.cells[row][column]
+      Assert.isTrue(region.x + region.width <= 256 and region.y + region.height <= 192)
+    end
+  end
+end
+
+return T

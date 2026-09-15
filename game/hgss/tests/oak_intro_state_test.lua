@@ -114,6 +114,7 @@ local function fakeController()
     phase = "name_edit",
     pressed = {},
     text = {},
+    activated = {},
     deleted = 0,
     started = 0,
     disposed = 0,
@@ -136,6 +137,13 @@ local function fakeController()
   function controller:deleteGlyph()
     self.deleted = self.deleted + 1
   end
+  function controller:activateNameCell(row, column)
+    self.activated[#self.activated + 1] = { row = row, column = column }
+    if row == 1 and column == 3 then
+      self.text[#self.text + 1] = "é"
+    end
+    return true
+  end
   function controller:result()
     return nil
   end
@@ -152,14 +160,20 @@ local function fakeController()
       message = "generated.message",
       visual = "background",
       finalFadeAlpha = 0,
-      virtualKeys = {
-        { kind = "glyph", glyph = "A" },
-        { kind = "glyph", glyph = "B" },
-        { kind = "glyph", glyph = "é" },
-        { kind = "delete" },
-        { kind = "confirm" },
+      namingScreen = {
+        page = "upper",
+        text = "A",
+        cursor = { row = 1, column = 1 },
+        grid = {
+          { { kind = "glyph", glyph = "A" }, { kind = "glyph", glyph = "B" }, { kind = "glyph", glyph = "é" } },
+          {},
+          {},
+          {},
+          {},
+          {},
+        },
+        subject = { kind = "player", gender = 0 },
       },
-      virtualKeyColumns = 3,
       confirmationChoice = self.choice,
     }
   end
@@ -229,8 +243,12 @@ end
 function T.pointer_hits_the_same_drawn_virtual_key_geometry()
   local state, controller = stateHarness()
   local layout = state:view().layout
-  local key = layout.nameGrid[3].rect
-  local x, y = LayoutGeometry.logicalToHost(assert(state:view().pixelSurface).placement, key.x + 1, key.y + 1)
+  local key = layout.namingScreen.cells[1][3]
+  local x, y = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
+    layout.namingScreen.placement.frame.x + key.x + 1,
+    layout.namingScreen.placement.frame.y + key.y + 1
+  )
   state:mousepressed(x, y, 1)
   Assert.deepEqual(controller.text, { "é" })
 end
@@ -246,8 +264,12 @@ function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls
   Assert.equal(nameView.layout.viewport.width, surface.logicalViewport.width)
   Assert.equal(nameView.layout.viewport.height, surface.logicalViewport.height)
 
-  local key = assert(nameView.layout.nameGrid[3])
-  local keyX, keyY = LayoutGeometry.logicalToHost(surface.placement, key.rect.x + 1, key.rect.y + 1)
+  local key = assert(nameView.layout.namingScreen.cells[1][3])
+  local keyX, keyY = LayoutGeometry.logicalToHost(
+    surface.placement,
+    nameView.layout.namingScreen.placement.frame.x + key.x + 1,
+    nameView.layout.namingScreen.placement.frame.y + key.y + 1
+  )
   state:mousepressed(keyX, keyY, 1)
   Assert.deepEqual(controller.text, { "é" })
 
@@ -353,8 +375,8 @@ function T.confirm_capable_keys_activate_the_focused_virtual_key_like_gamepad_a(
   state:gamepadpressed(nil, "a")
   Assert.deepEqual(
     controller.pressed,
-    { "confirm", "confirm", "confirm", "confirm" },
-    "keyboard Enter/KPEnter/Space must send the same focused-key action as gamepad A, never a direct submit"
+    { "submit", "submit", "submit", "confirm" },
+    "keyboard Enter/KPEnter/Space must send the Naming Screen OK action; gamepad A keeps focused-key activation"
   )
 end
 
@@ -365,7 +387,7 @@ function T.a_held_confirm_key_does_not_repeat_activation()
   state:keypressed("return", "return", true)
   Assert.deepEqual(
     controller.pressed,
-    { "confirm" },
+    { "submit" },
     "a held physical key must not activate the focused virtual key more than once"
   )
 end
@@ -435,7 +457,6 @@ function T.shared_dialogue_stack_is_advanced_and_drawn_by_the_state()
       nameInputEnabled = false,
       genderFocus = 0,
       visual = "background",
-      virtualKeys = {},
     }
   end
   state:_sync()
@@ -564,7 +585,6 @@ local function stateAtFreshFullArtHold(frameDuration, frameCount)
       male = { frames = { { duration = 1 } } },
       shrink_male = shrinkFrames(frameDuration, frameCount),
     },
-    virtualGlyphs = { "A", "B", "C", "D", "E", "F", "G", "O", "L" },
     playerDataContext = SHRINK_PLAYER_DATA_CONTEXT,
     randomU32 = function()
       return 0x12345678
@@ -949,7 +969,6 @@ function T.dialogue_completion_edge_does_not_enter_the_new_choice()
       nameInputEnabled = false,
       genderFocus = 0,
       visual = "background",
-      virtualKeys = {},
     }
   end
   controller.messageCompleted = function(_, key)
@@ -1004,7 +1023,6 @@ function T.frozen_is_not_activated_while_still_waiting_close_without_action()
       genderFocus = 0,
       visual = "oak",
       primaryWidget = "oak",
-      virtualKeys = {},
       oakBgScrollX = 0,
     }
   end
@@ -1098,7 +1116,6 @@ function T.completed_name_question_stays_visible_through_real_close_sequence()
       genderFocus = 0,
       visual = "oak",
       primaryWidget = "oak",
-      virtualKeys = {},
       oakBgScrollX = 0,
     }
   end
@@ -1255,7 +1272,6 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
       nameInputEnabled = false,
       genderFocus = 0,
       visual = "background",
-      virtualKeys = {},
     }
   end
   semantic.messageCompleted = function(_, key)

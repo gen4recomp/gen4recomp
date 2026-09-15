@@ -357,7 +357,6 @@ local function buildHandoffOak(timeline, candidate)
       male = { frames = { { duration = 1 } } },
       shrink_male = handoffShrinkFrames(9, 4),
     },
-    virtualGlyphs = { "A", "B", "C", "D", "E", "F", "G", "O", "L" },
     playerDataContext = HANDOFF_PLAYER_DATA_CONTEXT,
     randomU32 = function()
       return 0x12345678
