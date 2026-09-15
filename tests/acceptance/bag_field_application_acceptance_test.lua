@@ -214,9 +214,11 @@ local function tapDirection(game, state, key)
 end
 
 -- Patrol across pockets through the supported path until the predicate
--- observes the wanted browse state: climb to the tab strip, switch pockets
--- with horizontal input, then drop back to the grid. Grid edges never change
--- pockets, so reaching another pocket must travel through tab focus.
+-- observes the wanted browse state: climb to the tab strip, move the tab
+-- candidate with horizontal input, then commit it with confirm. Confirm keeps
+-- tab focus, so reaching the pocket accepts either tab or item focus. Grid
+-- edges never change pockets, so reaching another pocket must travel through
+-- tab focus.
 local function driveUntil(game, state, label, maxSteps, predicate)
   for _ = 1, maxSteps do
     local view = bagView(game)
@@ -225,12 +227,14 @@ local function driveUntil(game, state, label, maxSteps, predicate)
       focus == "items" or focus == "tabs" or focus == "cancel",
       "the bag status must expose its focus region"
     )
-    if predicate() and focus == "items" then
+    if predicate() then
       return
     end
     if focus == "tabs" then
-      if predicate() then
-        tapDirection(game, state, "s")
+      local candidate = view.tabFocusPocket
+      Assert.isTrue(type(candidate) == "string" and candidate ~= "", "the bag status must name its focused tab")
+      if candidate ~= viewPocket(view) then
+        confirm(game)
       else
         tapDirection(game, state, "d")
       end

@@ -393,6 +393,7 @@ local function status(overrides)
     state = "browsing",
     focus = "items",
     pocket = "balls",
+    tabFocusPocket = "balls",
     pocketName = "Balls",
     pockets = pockets(),
     slots = { slot("POTION", 5), slot("POKE_BALL", 3) },
@@ -406,6 +407,9 @@ local function status(overrides)
   }
   for key, value in pairs(overrides or {}) do
     record[key] = value
+  end
+  if record.tabFocusPocket == nil then
+    record.tabFocusPocket = record.pocket
   end
   return record
 end
@@ -1444,24 +1448,24 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local record = status({ pocket = "balls", focus = "tabs" })
   record.selected = nil
   draw:draw(record, singlePane(), { icons = icons() })
-  -- Single-pane draws without selection: background, then the one tab focus
-  -- visual, then the active pocket strip. No item focus may appear.
+  -- Single-pane draws without selection: background, then the pocket strip,
+  -- then the one tab focus visual. No item focus may appear.
   local visuals = {}
   for _, entry in ipairs(graphics.draws) do
     if type(entry.quad) ~= "table" then
       visuals[#visuals + 1] = entry
     end
   end
-  Assert.equal(#visuals, 3, "one background, one tab focus, and the pocket strip are drawn")
+  Assert.equal(#visuals, 3, "one background, the pocket strip, and one tab focus are drawn")
   local tabFocus = manifested.interactive.focus.tabs
   local focusOffset = tabFocus.visual.offset or { x = 0, y = 0 }
   local target = tabFocus.targets[3]
-  Assert.equal(visuals[2].quad, target.x + focusOffset.x, "the tab focus applies its horizontal offset once")
-  Assert.equal(visuals[2].x, target.y + focusOffset.y, "the tab focus applies its vertical offset once")
+  Assert.equal(visuals[3].quad, target.x + focusOffset.x, "the tab focus applies its horizontal offset once")
+  Assert.equal(visuals[3].x, target.y + focusOffset.y, "the tab focus applies its vertical offset once")
   local strip = assert(manifested.interactive.pocketTabs.strips.balls, "the balls strip is generated")
-  Assert.isTrue(visuals[3].image == draw._images["strip:balls"], "the pocket strip draws at the strip origin")
-  Assert.equal(visuals[3].quad, 0, "the pocket strip draws at the canonical strip origin")
-  Assert.equal(visuals[3].x, 0, "the pocket strip keeps the canonical strip height origin")
+  Assert.isTrue(visuals[2].image == draw._images["strip:balls"], "the pocket strip draws at the strip origin")
+  Assert.equal(visuals[2].quad, 0, "the pocket strip draws at the canonical strip origin")
+  Assert.equal(visuals[2].x, 0, "the pocket strip keeps the canonical strip height origin")
   Assert.equal(strip.width, 256, "the generated strip keeps the canonical strip width")
   Assert.equal(strip.height, 32, "the generated strip keeps the canonical strip height")
   Assert.equal(#graphics.rectangles, 0, "tab selection never uses a primitive outline")
@@ -1680,7 +1684,7 @@ function T.browse_background_follows_the_visible_occupied_count()
   draw:release()
 end
 
-function T.tab_focus_composites_beneath_every_normal_tab()
+function T.tab_focus_draws_after_the_selected_strip()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local manifested = manifest()
   local draw = BagRenderer.new({
@@ -1703,7 +1707,7 @@ function T.tab_focus_composites_beneath_every_normal_tab()
   end
   local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
   local stripAt = assert(drawIndex(draw._images["strip:balls"]), "the pocket strip draws while tabs are focused")
-  Assert.isTrue(focusAt < stripAt, "the focus fill stays beneath the pocket strip")
+  Assert.isTrue(stripAt < focusAt, "the foreground cursor draws after the pocket strip")
   Assert.equal(#graphics.rectangles, 0, "tab focus never falls back to primitive outlines")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
@@ -1879,7 +1883,7 @@ local function drawCount(graphics, image)
   return count
 end
 
-function T.browse_draws_the_current_pocket_strip_over_tab_focus()
+function T.browse_draws_the_committed_strip_before_tab_focus()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local reads = {}
   local manifested = stripManifest()
@@ -1929,7 +1933,7 @@ function T.browse_draws_the_current_pocket_strip_over_tab_focus()
   draw:draw(focused, singlePane(), { icons = icons() })
   local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
   local stripAt = assert(drawIndex(ballsStrip), "the current pocket strip draws while tabs are focused")
-  Assert.isTrue(focusAt < stripAt, "the focus fill stays beneath the pocket strip")
+  Assert.isTrue(stripAt < focusAt, "the foreground cursor draws after the pocket strip")
   Assert.equal(drawCount(graphics, ballsStrip), 1, "the focused frame still draws the strip exactly once")
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
@@ -1946,6 +1950,49 @@ function T.browse_draws_the_current_pocket_strip_over_tab_focus()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every owned image releases exactly once")
   end
+end
+
+function T.tabbed_strip_and_focus_resolve_from_separate_pockets()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local manifested = manifest()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local record = status({ pocket = "balls", focus = "tabs", tabFocusPocket = "medicine" })
+  draw:draw(record, singlePane(), { icons = icons() })
+  local ballsStrip = assert(draw._images["strip:balls"], "the committed pocket strip is bound")
+  Assert.isTrue(wasDrawn(graphics, ballsStrip), "the committed pocket draws its own strip")
+  for _, pocket in ipairs({ "items", "medicine", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    Assert.isFalse(
+      wasDrawn(graphics, draw._images["strip:" .. pocket]),
+      "the committed strip never borrows the " .. pocket .. " strip"
+    )
+  end
+  local tabFocus = manifested.interactive.focus.tabs
+  local offset = tabFocus.visual.offset or { x = 0, y = 0 }
+  local medicineTarget = assert(tabFocus.targets[2], "the candidate resolves its generated target")
+  local ballsTarget = assert(tabFocus.targets[3], "the committed pocket resolves its generated target")
+  local medicineX, medicineY = medicineTarget.x + offset.x, medicineTarget.y + offset.y
+  local ballsX, ballsY = ballsTarget.x + offset.x, ballsTarget.y + offset.y
+  Assert.isTrue(staticDrawnAt(graphics, medicineX, medicineY), "the tab focus follows the candidate target")
+  Assert.isFalse(staticDrawnAt(graphics, ballsX, ballsY), "the tab focus never aliases the committed pocket")
+  local function drawIndex(image)
+    for position, entry in ipairs(graphics.draws) do
+      if entry.image == image then
+        return position
+      end
+    end
+    return nil
+  end
+  local stripAt = assert(drawIndex(ballsStrip), "the committed strip draws while tabs are focused")
+  local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
+  Assert.isTrue(stripAt < focusAt, "the foreground cursor draws after the pocket strip")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
 end
 
 return { tests = T }

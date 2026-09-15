@@ -250,7 +250,7 @@ function BagRenderer.new(opts)
     end
     -- One realized strip per active pocket, carrying the persistent
     -- selected-pocket treatment; the transient tab focus stays a separate
-    -- visual drawn beneath the strip.
+    -- visual drawn after the strip.
     local strips = assert(interactive.pocketTabs.strips, "the bag manifest carries its pocket strips")
     for _, pocket in ipairs(BagSave.POCKET_ORDER) do
       acquire("strip:" .. pocket, assert(strips[pocket], "the bag manifest carries the " .. pocket .. " strip"))
@@ -441,20 +441,21 @@ function BagRenderer:_drawStateBackground(state, pocket, presentation)
   drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
 end
 
--- Resolves the one-based pocket index of the current pocket. Pocket identity
--- alone never implies focus; callers draw the tab visual only while tabs
--- are semantically focused.
+-- Resolves the one-based pocket index of a supplied pocket key. Pocket
+-- identity alone never implies focus; callers draw the tab visual only
+-- while tabs are semantically focused.
 ---@param presentation table<string, unknown>
+---@param pocketKey string
 ---@return integer
-local function currentPocketIndex(presentation)
-  local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
+local function pocketIndex(presentation, pocketKey)
+  assert(type(pocketKey) == "string", "the bag presentation names its tab focus pocket")
   local pockets = assert(presentation.pockets, "the bag presentation lists its pockets")
   for index, tab in ipairs(pockets) do
-    if tab.pocket == pocket then
+    if tab.pocket == pocketKey then
       return index
     end
   end
-  error("the current pocket has no generated tab", 0)
+  error("the pocket has no generated tab", 0)
 end
 
 -- Draws the generated item focus visual at a one-based visible cell.
@@ -509,9 +510,10 @@ function BagRenderer:_drawCellFocus(presentation)
   end
 end
 
--- Draws the tab focus visual beneath the active pocket strip. The fill
--- composites first so the selected tab icon stays visible above it. Nothing
--- is drawn unless the tab strip is semantically focused.
+-- Draws the transient tab focus visual after the persistent selected
+-- strip, at the candidate pocket target. The strip carries the committed
+-- selection independently of this movable cursor. Nothing is drawn unless
+-- the tab strip is semantically focused.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawTabFocus(presentation)
   local state = assert(presentation.state, "the bag presentation names its state")
@@ -522,11 +524,12 @@ function BagRenderer:_drawTabFocus(presentation)
     return
   end
   local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
-  local pocketIndex = currentPocketIndex(presentation)
+  local candidate = assert(presentation.tabFocusPocket, "the bag presentation names its tab focus pocket")
+  local targetIndex = pocketIndex(presentation, candidate)
   local tabFocus = assert(focus.tabs, "the bag manifest carries its tab focus")
   local targets = assert(tabFocus.targets, "the tab focus carries its targets")
   assert(type(targets) == "table" and #targets == 8, "the tab focus targets its eight pockets")
-  local target = assert(targets[pocketIndex], "the current pocket resolves a focus target")
+  local target = assert(targets[targetIndex], "the focused pocket resolves a focus target")
   drawVisual(self._graphics, assert(self._visuals["focus:tabs"]), target.x, target.y)
 end
 
@@ -580,13 +583,8 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local state = assert(presentation.state, "the bag presentation names its state")
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
   self:_drawStateBackground(state, pocket, presentation)
-  -- The tab focus fill composites beneath the active-pocket strip so the
-  -- selected icon stays visible above it; the strip carries the persistent
-  -- selected-pocket treatment independently of this transient focus.
+  drawVisual(graphics, assert(self._visuals["strip:" .. pocket]), 0, 0)
   self:_drawTabFocus(presentation)
-  -- The active pocket's realized strip draws once at the canonical top-strip
-  -- origin; an unknown pocket fails through the image lookup below.
-  drawVisual(graphics, assert(self._visuals["strip:" .. pocket], "the bag presentation names its pocket"), 0, 0)
   -- The movable item cursor draws beneath the cell content it frames, so
   -- icons, names, quantities, and registration markers stay visible above it.
   self:_drawCellFocus(presentation)

@@ -31,6 +31,7 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 ---@field _view table<string, unknown>
 ---@field _observedRevision integer
 ---@field _focus "items"|"tabs"|"cancel"
+---@field _tabFocusPocket string
 ---@field _overlay boolean
 ---@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"move_select"
 ---@field _actions table<string, unknown>[]
@@ -105,6 +106,7 @@ function BagController.new(opts)
   }, BagController)
   self._view = self:_refresh()
   self:_reconcile()
+  self._tabFocusPocket = self:_pocket()
   return self
 end
 
@@ -188,22 +190,23 @@ function BagController:_enterPocket(pocketKey)
   self._cursor:setPocket(pocketKey)
   self:_refresh()
   self:_reconcile()
+  self._tabFocusPocket = pocketKey
   -- Focus is caller-owned; do not mutate self._focus here.
 end
 
 ---@param direction integer -1 for previous, 1 for next
-function BagController:_switchPocket(direction)
+function BagController:_moveTabFocus(direction)
+  local candidate = assert(self._tabFocusPocket, "tab focus carries a pocket")
   local order = BagSave.POCKET_ORDER
-  local current = self._cursor:currentPocket()
-  local index = 1
+  local index = nil
   for position, pocketKey in ipairs(order) do
-    if pocketKey == current then
+    if pocketKey == candidate then
       index = position
       break
     end
   end
-  local next = order[((index - 1 + direction) % #order) + 1]
-  self:_enterPocket(next)
+  assert(index ~= nil, "tab focus carries a pocket")
+  self._tabFocusPocket = order[((index - 1 + direction) % #order) + 1]
 end
 
 ---@param absolute integer
@@ -225,16 +228,16 @@ function BagController:_move(direction)
   local cursor = self._cursor
   if self._focus == "tabs" then
     if direction == "left" then
-      self:_switchPocket(-1)
+      self:_moveTabFocus(-1)
     elseif direction == "right" then
-      self:_switchPocket(1)
+      self:_moveTabFocus(1)
     else
       self._focus = "items"
     end
     return
   end
   -- Cancel is a single bottom button with no horizontal neighbor: only up
-  -- returns to the grid. Pocket switching lives on the tab strip, so
+  -- returns to the grid. Tab focus movement lives on the tab strip, so
   -- horizontal input on Cancel stays where it is.
   if self._focus == "cancel" then
     if direction == "up" then
@@ -257,6 +260,7 @@ function BagController:_move(direction)
     if count > 0 and selected - 2 >= 0 then
       self:_select(selected - 2)
     else
+      self._tabFocusPocket = self:_pocket()
       self._focus = "tabs"
     end
   else
@@ -601,7 +605,11 @@ function BagController:_confirm()
     self._result = { kind = "closed" }
     self._closed = true
   elseif self._focus == "tabs" then
-    self._focus = "items"
+    local candidate = assert(self._tabFocusPocket, "tab focus carries a pocket")
+    if candidate ~= self:_pocket() then
+      self:_enterPocket(candidate)
+    end
+    -- Keep tab focus. A commits selection; it does not return to the item grid.
   else
     self:_openActionMenu()
   end
@@ -907,12 +915,22 @@ function BagController:status()
     return { open = false }
   end
   local view = self._view
+  local candidate = assert(self._tabFocusPocket, "tab focus carries a pocket")
+  local found = false
+  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+    if pocketKey == candidate then
+      found = true
+      break
+    end
+  end
+  assert(found, "tab focus carries a pocket")
   local record = {
     open = true,
     state = self:_visibleState(),
     focus = self._focus,
     revision = view.revision,
     pocket = view.pocket,
+    tabFocusPocket = candidate,
     pocketNativeId = view.pocketNativeId,
     pocketName = view.pocketName,
     pockets = view.pockets,

@@ -154,6 +154,9 @@ local function presentation(firstIcon, secondIcon, heroStatus, overrides)
       end
     end
   end
+  if record.tabFocusPocket == nil then
+    record.tabFocusPocket = record.pocket
+  end
   return record
 end
 
@@ -1009,10 +1012,11 @@ function T.mixed_occupancy_uses_its_own_count_chrome(scope, context)
   end
 end
 
--- Tab focus never covers normal tab icon pixels: every opaque pixel of the
--- decoded normal artwork is identical between the focused and unfocused
--- renders for all eight pockets.
-function T.focused_tabs_keep_their_icons_above_the_fill(scope, context)
+-- The movable tab cursor composites in front of the selected strip at its
+-- own candidate target: every opaque pixel of the decoded focus visual
+-- survives final composition, while the committed strip still follows the
+-- committed pocket rather than the candidate.
+function T.foreground_tab_cursor_covers_the_strip_at_its_own_target(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
     context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
@@ -1023,36 +1027,71 @@ function T.focused_tabs_keep_their_icons_above_the_fill(scope, context)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
     local owned = owners(cacheFs, manifest, scope)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
-    local tabs = assert(interactive.pocketTabs, versionId .. " carries the pocket tabs")
     local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
-    for _, pocket in ipairs(pockets()) do
-      local status = heroStatusAt(manifest, pocket.pocket, 0)
-      local focused = render(scope, owned, presentation(firstIcon, secondIcon, status, { focus = "tabs" }), layout)
-      local unfocused = render(scope, owned, presentation(firstIcon, secondIcon, status, { focus = "items" }), layout)
-      local strip = assert(
-        assert(tabs.strips, versionId .. " carries one strip per active pocket")[pocket.pocket],
-        versionId .. " carries the " .. pocket.pocket .. " strip"
-      )
-      local decoded = decodeImage(scope, cacheFs, strip.image, versionId .. " " .. pocket.pocket .. " strip")
-      local compared = 0
-      for y = 0, 31 do
-        for x = 0, 255 do
-          local _, _, _, alpha = decoded:getPixel(x, y)
-          if alpha > 0.5 then
-            local hostX = interactiveFrame.x + x
-            local hostY = interactiveFrame.y + y
-            local r1, g1, b1, a1 = focused:getPixel(hostX, hostY)
-            local r2, g2, b2, a2 = unfocused:getPixel(hostX, hostY)
-            Assert.equal(quantize(r1), quantize(r2), versionId .. " " .. pocket.pocket .. " keeps its icon red")
-            Assert.equal(quantize(g1), quantize(g2), versionId .. " " .. pocket.pocket .. " keeps its icon green")
-            Assert.equal(quantize(b1), quantize(b2), versionId .. " " .. pocket.pocket .. " keeps its icon blue")
-            Assert.equal(quantize(a1), quantize(a2), versionId .. " " .. pocket.pocket .. " keeps its icon alpha")
-            compared = compared + 1
-          end
+    local tabFocus = assert(
+      assert(interactive.focus, versionId .. " carries its generated focus").tabs,
+      versionId .. " carries its tab focus"
+    )
+    Assert.equal(
+      #assert(tabFocus.targets, versionId .. " targets its tab pockets"),
+      8,
+      versionId .. " targets one tab per pocket"
+    )
+    local sourceFocus = decodeImage(
+      scope,
+      cacheFs,
+      assert(tabFocus.visual.image, versionId .. " carries tab focus art"),
+      versionId .. " tab focus"
+    )
+    Assert.isTrue(hasOccupiedPixel(sourceFocus), versionId .. " tab focus has source occupancy")
+    local medicineIndex = nil
+    for index, pocket in ipairs(pockets()) do
+      if pocket.pocket == "medicine" then
+        medicineIndex = index
+      end
+    end
+    local target = assert(
+      tabFocus.targets[assert(medicineIndex, versionId .. " resolves the candidate index")],
+      versionId .. " targets the candidate"
+    )
+    local offset = tabFocus.visual.offset or { x = 0, y = 0 }
+    local heroStatus = heroStatusAt(manifest, "balls", 0)
+    local focused = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, { focus = "tabs", tabFocusPocket = "medicine" }),
+      layout
+    )
+    local checked = 0
+    for sourceY = 0, sourceFocus:getHeight() - 1 do
+      for sourceX = 0, sourceFocus:getWidth() - 1 do
+        local sourceR, sourceG, sourceB, sourceA = sourceFocus:getPixel(sourceX, sourceY)
+        if sourceA > 0.5 then
+          checked = checked + 1
+          local hostX = interactiveFrame.x + target.x + offset.x + sourceX
+          local hostY = interactiveFrame.y + target.y + offset.y + sourceY
+          local finalR, finalG, finalB, finalA = focused:getPixel(hostX, hostY)
+          Assert.equal(quantize(finalR), quantize(sourceR), versionId .. " keeps the focus red")
+          Assert.equal(quantize(finalG), quantize(sourceG), versionId .. " keeps the focus green")
+          Assert.equal(quantize(finalB), quantize(sourceB), versionId .. " keeps the focus blue")
+          Assert.equal(quantize(finalA), quantize(sourceA), versionId .. " keeps the focus alpha")
         end
       end
-      Assert.isTrue(compared > 0, versionId .. " " .. pocket.pocket .. " strip carries opaque icon pixels")
     end
+    Assert.isTrue(checked > 0, versionId .. " the focus visual carries opaque source pixels")
+    local otherStatus = heroStatusAt(manifest, "medicine", 0)
+    local other = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, otherStatus, { focus = "tabs", tabFocusPocket = "medicine" }),
+      layout
+    )
+    Assert.isTrue(regionDistance(focused, other, {
+      x = interactiveFrame.x,
+      y = interactiveFrame.y,
+      width = 256,
+      height = 32,
+    }, 1) > 0, versionId .. " distinct committed pockets carry distinct selected strips under one candidate")
   end
 end
 
@@ -1546,10 +1585,10 @@ function T.graphics_rejects_fake_non_four_light_manifests(_, context)
 end
 
 -- The active pocket keeps its selected strip treatment independently of
--- keyboard focus: the item-focused and tab-focused renders of a non-default
--- pocket carry the same selected strip pixels, and the tab-focused render
--- additionally carries the movable focus beneath the strip icon without
--- erasing it.
+-- keyboard focus: the item-focused render of a non-default pocket carries
+-- the selected strip pixels, and the tab-focused render keeps those strip
+-- pixels outside the movable focus footprint while the generated focus
+-- visual paints in front of the strip inside its own footprint.
 function T.active_pocket_strip_survives_item_focus(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
@@ -1581,30 +1620,76 @@ function T.active_pocket_strip_survives_item_focus(scope, context)
         local sr, sg, sb, sa = stripImage:getPixel(x, y)
         if sa > 0.5 then
           compared = compared + 1
-          for _, capture in ipairs({
-            { data = itemFocused, label = "item focus" },
-            { data = tabFocused, label = "tab focus" },
-          }) do
-            local cr, cg, cb, ca = capture.data:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
-            Assert.equal(quantize(cr), quantize(sr), versionId .. " keeps the strip red under " .. capture.label)
-            Assert.equal(quantize(cg), quantize(sg), versionId .. " keeps the strip green under " .. capture.label)
-            Assert.equal(quantize(cb), quantize(sb), versionId .. " keeps the strip blue under " .. capture.label)
-            Assert.equal(quantize(ca), quantize(sa), versionId .. " keeps the strip alpha under " .. capture.label)
-          end
+          local cr, cg, cb, ca = itemFocused:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+          Assert.equal(quantize(cr), quantize(sr), versionId .. " keeps the strip red under item focus")
+          Assert.equal(quantize(cg), quantize(sg), versionId .. " keeps the strip green under item focus")
+          Assert.equal(quantize(cb), quantize(sb), versionId .. " keeps the strip blue under item focus")
+          Assert.equal(quantize(ca), quantize(sa), versionId .. " keeps the strip alpha under item focus")
         end
       end
     end
     Assert.isTrue(compared > 0, versionId .. " the selected strip carries opaque treatment pixels")
     local tabFocus =
       assert(assert(interactive.focus, versionId .. " carries its focus").tabs, versionId .. " carries tab focus")
+    local sourceFocus = decodeImage(
+      scope,
+      cacheFs,
+      assert(tabFocus.visual.image, versionId .. " carries tab focus art"),
+      versionId .. " tab focus"
+    )
+    Assert.isTrue(hasOccupiedPixel(sourceFocus), versionId .. " tab focus has source occupancy")
+    local pocketIndex = nil
+    for index, record in ipairs(pockets()) do
+      if record.pocket == pocket then
+        pocketIndex = index
+      end
+    end
+    local target = assert(
+      tabFocus.targets[assert(pocketIndex, versionId .. " resolves the pocket target")],
+      versionId .. " targets the non-default pocket"
+    )
     local offset = tabFocus.visual.offset or { x = 0, y = 0 }
-    local target = assert(tabFocus.targets[2], versionId .. " targets the non-default pocket")
+    local stripKept, focusKept = 0, 0
+    for y = 0, 31 do
+      for x = 0, 255 do
+        local sr, sg, sb, sa = stripImage:getPixel(x, y)
+        if sa > 0.5 then
+          local sx = x - (target.x + offset.x)
+          local sy = y - (target.y + offset.y)
+          local covered = false
+          local fr, fg, fb, fa = 0, 0, 0, 0
+          if sx >= 0 and sy >= 0 and sx < sourceFocus:getWidth() and sy < sourceFocus:getHeight() then
+            local qr, qg, qb, qa = sourceFocus:getPixel(sx, sy)
+            if qa > 0.5 then
+              covered = true
+              fr, fg, fb, fa = qr, qg, qb, qa
+            end
+          end
+          local cr, cg, cb, ca = tabFocused:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+          if covered then
+            focusKept = focusKept + 1
+            Assert.equal(quantize(cr), quantize(fr), versionId .. " keeps the focus red under tab focus")
+            Assert.equal(quantize(cg), quantize(fg), versionId .. " keeps the focus green under tab focus")
+            Assert.equal(quantize(cb), quantize(fb), versionId .. " keeps the focus blue under tab focus")
+            Assert.equal(quantize(ca), quantize(fa), versionId .. " keeps the focus alpha under tab focus")
+          else
+            stripKept = stripKept + 1
+            Assert.equal(quantize(cr), quantize(sr), versionId .. " keeps the strip red under tab focus")
+            Assert.equal(quantize(cg), quantize(sg), versionId .. " keeps the strip green under tab focus")
+            Assert.equal(quantize(cb), quantize(sb), versionId .. " keeps the strip blue under tab focus")
+            Assert.equal(quantize(ca), quantize(sa), versionId .. " keeps the strip alpha under tab focus")
+          end
+        end
+      end
+    end
+    Assert.isTrue(stripKept > 0, versionId .. " the selected strip survives outside the focus footprint")
+    Assert.isTrue(focusKept > 0, versionId .. " the focus visual covers the strip inside its footprint")
     Assert.isTrue(regionDistance(itemFocused, tabFocused, {
       x = interactiveFrame.x + target.x + offset.x,
       y = interactiveFrame.y + target.y + offset.y,
       width = tabFocus.visual.width,
       height = tabFocus.visual.height,
-    }, 1) > 0, versionId .. " tab focus paints beneath the selected strip")
+    }, 1) > 0, versionId .. " tab focus paints in front of the selected strip")
     local otherPocket = assert(states[1].pocket, versionId .. " names the default pocket")
     local otherStatus = heroStatusAt(manifest, otherPocket, 6)
     local other = render(scope, owned, presentation(firstIcon, secondIcon, otherStatus, { focus = "items" }), layout)

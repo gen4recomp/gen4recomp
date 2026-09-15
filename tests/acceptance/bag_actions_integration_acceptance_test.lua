@@ -250,7 +250,8 @@ end
 
 -- Patrol in-pocket selection until the predicate observes the wanted browse
 -- state. Grid edges never change pockets, so a patrol that strays onto the
--- tab strip or cancel steps straight back to the grid.
+-- tab strip or cancel steps straight back to the grid. A tab-strip
+-- observation steps back to the grid first, then the patrol continues.
 local function driveUntil(game, state, label, maxSteps, predicate)
   local keys = { "d", "s", "a", "w" }
   for step = 1, maxSteps do
@@ -259,8 +260,15 @@ local function driveUntil(game, state, label, maxSteps, predicate)
     end
     local focus = bagFocus(bagView(game))
     if focus == "tabs" then
-      tapDirection(game, state, "s")
-    elseif focus == "cancel" then
+      tapDirection(game, state, "w")
+      if predicate() then
+        return
+      end
+      focus = bagFocus(bagView(game))
+    end
+    if focus == "cancel" then
+      tapDirection(game, state, "w")
+    elseif focus == "tabs" then
       tapDirection(game, state, "w")
     else
       tapDirection(game, state, keys[((step - 1) % #keys) + 1])
@@ -270,17 +278,21 @@ local function driveUntil(game, state, label, maxSteps, predicate)
 end
 
 -- Patrol across pockets through the supported path: climb to the tab strip,
--- switch pockets with horizontal input, then drop back to the grid.
+-- move the tab candidate with horizontal input, then commit it with confirm.
+-- Confirm keeps tab focus, so reaching the pocket accepts either tab or item
+-- focus.
 local function gotoPocketState(game, state, label, maxSteps, predicate)
   for _ = 1, maxSteps do
     local view = bagView(game)
-    if predicate() and bagFocus(view) == "items" then
+    if predicate() then
       return
     end
     local focus = bagFocus(view)
     if focus == "tabs" then
-      if predicate() then
-        tapDirection(game, state, "s")
+      local candidate = view.tabFocusPocket
+      Assert.isTrue(type(candidate) == "string" and candidate ~= "", "the bag status must name its focused tab")
+      if candidate ~= viewPocket(view) then
+        confirm(game)
       else
         tapDirection(game, state, "d")
       end
@@ -310,8 +322,12 @@ local function cursorPocket(cursor)
 end
 
 -- Confirming the selected item must open the action menu listing the
--- inventory-local actions for that item.
-local function openActionMenu(game)
+-- inventory-local actions for that item. A tab-strip observation steps back
+-- to the grid first, then confirming opens the menu.
+local function openActionMenu(game, state)
+  if bagFocus(bagView(game)) == "tabs" then
+    tapDirection(game, state, "w")
+  end
   confirm(game)
   game:step()
   game:step()
@@ -546,13 +562,13 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
 
     -- Cancelling the action menu returns to browsing with no mutation.
     revision = bag:revision()
-    openActionMenu(game)
+    openActionMenu(game, state)
     backToBrowsing(game)
     Assert.equal(bag:revision(), revision, "cancelling the action menu must not mutate the inventory")
     Assert.equal(bag:quantity(SECOND_KEY), 5, "cancelling the action menu must not change quantities")
 
     -- Manual reorder of the two items through the move state.
-    view = openActionMenu(game)
+    view = openActionMenu(game, state)
     Assert.isTrue(hasAction(view, "move"), "a manual pocket with two items must offer to move")
     view = chooseAction(game, state, "move")
     Assert.equal(view.state, "move_select", "choosing move must enter target selection")
@@ -574,7 +590,7 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     driveUntil(game, state, "the stocked item", 60, function()
       return selectedKey(bagView(game)) == SECOND_KEY
     end)
-    view = openActionMenu(game)
+    view = openActionMenu(game, state)
     Assert.isTrue(hasAction(view, "toss"), "a tossable item must offer to toss")
     view = chooseAction(game, state, "toss")
     Assert.equal(view.state, "toss_quantity", "choosing toss must enter the quantity picker")
@@ -707,7 +723,7 @@ function T.tests.registration_lifecycle_persists_and_clears()
       return selectedKey(bagView(game)) == FIRST_REGISTER_KEY
     end)
 
-    view = openActionMenu(game)
+    view = openActionMenu(game, state)
     Assert.isTrue(hasAction(view, "register"), "an unregistered registerable item must offer to register")
     Assert.isFalse(hasAction(view, "unregister"), "an unregistered item must not offer to unregister")
     chooseAction(game, state, "register")
@@ -717,7 +733,7 @@ function T.tests.registration_lifecycle_persists_and_clears()
     driveUntil(game, state, "the second key item", 60, function()
       return selectedKey(bagView(game)) == SECOND_REGISTER_KEY
     end)
-    view = openActionMenu(game)
+    view = openActionMenu(game, state)
     chooseAction(game, state, "register")
     backToBrowsing(game)
     Assert.deepEqual(
@@ -732,7 +748,7 @@ function T.tests.registration_lifecycle_persists_and_clears()
     Assert.equal(selectedKey(bagView(game)), SECOND_REGISTER_KEY, "registering keeps the registered item selected")
     tapDirection(game, state, "a")
     Assert.equal(selectedKey(bagView(game)), FIRST_REGISTER_KEY, "one west step returns to the first key item")
-    view = openActionMenu(game)
+    view = openActionMenu(game, state)
     Assert.isTrue(hasAction(view, "unregister"), "a registered item must offer to unregister")
     Assert.isFalse(hasAction(view, "register"), "a registered item must not offer to register again")
     chooseAction(game, state, "unregister")
