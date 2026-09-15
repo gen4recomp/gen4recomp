@@ -54,8 +54,17 @@ end
 local function manifestFor(versionId)
   local cacheFs = CacheFs.forVersion(versionId)
   local manifest = BagCache.loadManifest(cacheFs)
-  Assert.equal(manifest.schema, "g4-bag-assets-v6", versionId .. " renders the v6 bag manifest")
+  Assert.equal(manifest.schema, "g4-bag-assets-v7", versionId .. " renders the v7 bag manifest")
   return cacheFs, manifest
+end
+
+-- The realized browse background for one pocket and visible occupied count:
+-- seven count variants where index `occupiedCount + 1` covers counts 0..6.
+local function browseVariant(manifest, pocket, occupiedCount, versionId)
+  local browse = assert(manifest.interactive.backgrounds.browse, versionId .. " carries its browse backgrounds")
+  local variants = assert(browse[pocket], versionId .. " carries the " .. pocket .. " browse variants")
+  Assert.equal(#variants, 7, versionId .. " carries seven count variants for " .. pocket)
+  return assert(variants[occupiedCount + 1], versionId .. " carries count " .. occupiedCount .. " for " .. pocket)
 end
 
 -- The single-surface horizontal composition: two 256x192 panes side by side
@@ -673,7 +682,6 @@ function T.all_pocket_tabs_render_the_source_focus_visual_at_their_targets(scope
     Assert.isTrue(hasOccupiedPixel(sourceFocus), versionId .. " tab focus has source occupancy")
     Assert.equal(#tabFocus.targets, 8, versionId .. " targets one tab focus per pocket")
     local pocketRecords = pockets()
-    local browseVariants = assert(interactive.backgrounds.browse, versionId .. " carries its browse backgrounds")
     for index, pocket in ipairs(pocketRecords) do
       local status = heroStatusAt(manifest, pocket.pocket, 0)
       local focused = render(scope, owned, presentation(firstIcon, secondIcon, status, { focus = "tabs" }), layout)
@@ -690,7 +698,7 @@ function T.all_pocket_tabs_render_the_source_focus_visual_at_their_targets(scope
         regionDistance(focused, unfocused, footprint, 1) > 0,
         versionId .. " tab focus paints inside the " .. pocket.pocket .. " footprint"
       )
-      local browse = assert(browseVariants[pocket.pocket], versionId .. " carries the pocket browse background")
+      local browse = browseVariant(manifest, pocket.pocket, 2, versionId)
       local backdrop = decodeImage(scope, cacheFs, browse.image, versionId .. " browse background")
       local normalRect = visualRect(tabs.rects[index], tabs.normal[index])
       local normalRegion = {
@@ -763,8 +771,7 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     local composed = render(scope, owned, record, layout)
     local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
 
-    local browseVariants = assert(interactive.backgrounds.browse, versionId .. " carries its browse backgrounds")
-    local browse = assert(browseVariants[record.pocket], versionId .. " carries the pocket browse background")
+    local browse = browseVariant(manifest, record.pocket, 2, versionId)
     local backdrop = decodeImage(scope, cacheFs, browse.image, versionId .. " browse background")
     local backdropOffset = browse.offset or { x = 0, y = 0 }
     local function backdropPixel(hostX, hostY)
@@ -924,6 +931,221 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
       width = cancelFocus.visual.width,
       height = cancelFocus.visual.height,
     }, 1) > 0, versionId .. " cancel focus paints inside its generated footprint")
+  end
+end
+
+-- A partially filled page exposes the dashed empty chrome of its own count
+-- variant: trailing empty cells match the decoded count-3 background
+-- pixel-for-pixel, while a full page paints populated chrome over the same
+-- region. Every background comes from the generated manifest.
+function T.mixed_occupancy_uses_its_own_count_chrome(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local slots = assert(interactive.itemSlots.slots, versionId .. " carries item slot rectangles")
+    local focus = assert(interactive.focus, versionId .. " carries its generated focus")
+    local itemFocus = assert(focus.items, versionId .. " carries its item focus")
+    local itemOffset = itemFocus.visual.offset or { x = 0, y = 0 }
+    local firstTarget = assert(itemFocus.targets[1], versionId .. " targets its first item cell")
+    local focusFootprint = {
+      x = firstTarget.x + itemOffset.x,
+      y = firstTarget.y + itemOffset.y,
+      width = itemFocus.visual.width,
+      height = itemFocus.visual.height,
+    }
+    local function inFocusFootprint(x, y)
+      return x >= focusFootprint.x
+        and y >= focusFootprint.y
+        and x < focusFootprint.x + focusFootprint.width
+        and y < focusFootprint.y + focusFootprint.height
+    end
+
+    local partial = {
+      makeSlot("SMOKE_ITEM_A", "Smoke A", firstIcon, 5, nil),
+      makeSlot("SMOKE_ITEM_B", "Smoke B", secondIcon, 3, nil),
+      makeSlot("SMOKE_ITEM_C", "Smoke C", firstIcon, 1, nil),
+      emptyCell(4),
+      emptyCell(5),
+      emptyCell(6),
+    }
+    local partialRecord =
+      presentation(firstIcon, secondIcon, heroStatus, { visibleSlots = partial, selected = partial[1] })
+    local partialRender = render(scope, owned, partialRecord, layout)
+    local variant = browseVariant(manifest, partialRecord.pocket, 3, versionId)
+    local backdrop = decodeImage(scope, cacheFs, variant.image, versionId .. " count-3 browse background")
+    local backdropOffset = variant.offset or { x = 0, y = 0 }
+    local matched = 0
+    for index = 4, 6 do
+      local rect = assert(slots[index].rect, versionId .. " carries cell rectangle " .. index)
+      for y = rect.y, rect.y + rect.height - 1 do
+        for x = rect.x, rect.x + rect.width - 1 do
+          if not inFocusFootprint(x, y) then
+            local bx, by = x - backdropOffset.x, y - backdropOffset.y
+            if bx >= 0 and by >= 0 and bx < backdrop:getWidth() and by < backdrop:getHeight() then
+              local r1, g1, b1, a1 = partialRender:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+              local r2, g2, b2, a2 = backdrop:getPixel(bx, by)
+              Assert.equal(quantize(r1), quantize(r2), versionId .. " partial cell keeps the count-3 red")
+              Assert.equal(quantize(g1), quantize(g2), versionId .. " partial cell keeps the count-3 green")
+              Assert.equal(quantize(b1), quantize(b2), versionId .. " partial cell keeps the count-3 blue")
+              Assert.equal(quantize(a1), quantize(a2), versionId .. " partial cell keeps the count-3 alpha")
+              matched = matched + 1
+            end
+          end
+        end
+      end
+    end
+    Assert.isTrue(matched > 0, versionId .. " samples dashed empty-cell background pixels")
+
+    local full = {
+      makeSlot("SMOKE_ITEM_A", "Smoke A", firstIcon, 5, nil),
+      makeSlot("SMOKE_ITEM_B", "Smoke B", secondIcon, 3, nil),
+      makeSlot("SMOKE_ITEM_C", "Smoke C", firstIcon, 1, nil),
+      makeSlot("SMOKE_ITEM_D", "Smoke D", secondIcon, 2, nil),
+      makeSlot("SMOKE_ITEM_E", "Smoke E", firstIcon, 4, nil),
+      makeSlot("SMOKE_ITEM_F", "Smoke F", secondIcon, 1, nil),
+    }
+    local fullRecord = presentation(firstIcon, secondIcon, heroStatus, { visibleSlots = full, selected = full[1] })
+    local fullRender = render(scope, owned, fullRecord, layout)
+    local left, top, right, bottom = nil, nil, nil, nil
+    for index = 4, 6 do
+      local rect = assert(slots[index].rect, versionId .. " carries cell rectangle " .. index)
+      left = left and math.min(left, rect.x) or rect.x
+      top = top and math.min(top, rect.y) or rect.y
+      right = right and math.max(right, rect.x + rect.width) or rect.x + rect.width
+      bottom = bottom and math.max(bottom, rect.y + rect.height) or rect.y + rect.height
+    end
+    Assert.isTrue(regionDistance(partialRender, fullRender, {
+      x = interactiveFrame.x + left,
+      y = interactiveFrame.y + top,
+      width = right - left,
+      height = bottom - top,
+    }, 1) > 0, versionId .. " the full page paints populated chrome over the dashed cells")
+  end
+end
+
+-- Tab focus never covers normal tab icon pixels: every opaque pixel of the
+-- decoded normal artwork is identical between the focused and unfocused
+-- renders for all eight pockets.
+function T.focused_tabs_keep_their_icons_above_the_fill(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
+    local tabs = assert(interactive.pocketTabs, versionId .. " carries the pocket tabs")
+    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    for index, pocket in ipairs(pockets()) do
+      local status = heroStatusAt(manifest, pocket.pocket, 0)
+      local focused = render(scope, owned, presentation(firstIcon, secondIcon, status, { focus = "tabs" }), layout)
+      local unfocused = render(scope, owned, presentation(firstIcon, secondIcon, status, { focus = "items" }), layout)
+      local normalRect = visualRect(tabs.rects[index], tabs.normal[index])
+      local normal = decodeImage(scope, cacheFs, tabs.normal[index].image, versionId .. " normal tab " .. index)
+      local compared = 0
+      for y = 0, normalRect.height - 1 do
+        for x = 0, normalRect.width - 1 do
+          if x < normal:getWidth() and y < normal:getHeight() then
+            local _, _, _, alpha = normal:getPixel(x, y)
+            if alpha > 0.5 then
+              local hostX = interactiveFrame.x + math.floor(normalRect.x + x)
+              local hostY = interactiveFrame.y + math.floor(normalRect.y + y)
+              local r1, g1, b1, a1 = focused:getPixel(hostX, hostY)
+              local r2, g2, b2, a2 = unfocused:getPixel(hostX, hostY)
+              Assert.equal(quantize(r1), quantize(r2), versionId .. " tab " .. index .. " keeps its icon red")
+              Assert.equal(quantize(g1), quantize(g2), versionId .. " tab " .. index .. " keeps its icon green")
+              Assert.equal(quantize(b1), quantize(b2), versionId .. " tab " .. index .. " keeps its icon blue")
+              Assert.equal(quantize(a1), quantize(a2), versionId .. " tab " .. index .. " keeps its icon alpha")
+              compared = compared + 1
+            end
+          end
+        end
+      end
+      Assert.isTrue(compared > 0, versionId .. " normal tab " .. index .. " carries opaque icon pixels")
+    end
+  end
+end
+
+-- The Cancel label paints centered on its source label area: the label area
+-- centers on X=224, the label inks inside the measured advance box at the
+-- source text-window top, and the label actually paints.
+function T.cancel_label_paints_centered_on_its_source_label_area(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local cancelGeometry = assert(interactive.cancel, versionId .. " carries its cancel geometry")
+    local labelRect = assert(cancelGeometry.labelRect, versionId .. " carries its cancel label area")
+    Assert.equal(labelRect.x * 2 + labelRect.width, 448, versionId .. " centers its Cancel label area on X=224")
+    local label = assert(
+      interactive.text and interactive.text.actions and interactive.text.actions.cancel,
+      versionId .. " carries its generated cancel label"
+    )
+    local content = label:gsub("{[^}]*}", "")
+    local width = owned.text:textWidth(content)
+    local penX = labelRect.x + (labelRect.width - width) / 2
+    local record = presentation(firstIcon, secondIcon, heroStatus)
+    local composed = render(scope, owned, record, layout)
+    local variant = browseVariant(manifest, record.pocket, 2, versionId)
+    local backdrop = decodeImage(scope, cacheFs, variant.image, versionId .. " count-2 browse background")
+    local backdropOffset = variant.offset or { x = 0, y = 0 }
+    local cancelRect = assert(cancelGeometry.rect, versionId .. " carries its cancel control rectangle")
+    local left, top, right, bottom, changed = nil, nil, nil, nil, 0
+    for y = cancelRect.y, cancelRect.y + cancelRect.height - 1 do
+      for x = cancelRect.x, cancelRect.x + cancelRect.width - 1 do
+        local bx, by = x - backdropOffset.x, y - backdropOffset.y
+        if bx >= 0 and by >= 0 and bx < backdrop:getWidth() and by < backdrop:getHeight() then
+          local r1, g1, b1 = composed:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+          local r2, g2, b2 = backdrop:getPixel(bx, by)
+          if quantize(r1) ~= quantize(r2) or quantize(g1) ~= quantize(g2) or quantize(b1) ~= quantize(b2) then
+            left = left and math.min(left, x) or x
+            top = top and math.min(top, y) or y
+            right = right and math.max(right, x) or x
+            bottom = bottom and math.max(bottom, y) or y
+            changed = changed + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(changed > 0, versionId .. " paints the Cancel label inside its control")
+    Assert.isTrue(
+      assert(left, versionId .. " finds the label ink") >= math.floor(penX) - 1,
+      versionId .. " starts the label ink at its measured advance"
+    )
+    Assert.isTrue(
+      assert(right, versionId .. " finds the label ink") <= math.ceil(penX + width) + 1,
+      versionId .. " ends the label ink at its measured advance"
+    )
+    Assert.isTrue(
+      assert(top, versionId .. " finds the label ink") >= labelRect.y,
+      versionId .. " keeps the label ink below the source text-window top"
+    )
+    Assert.isTrue(
+      assert(bottom, versionId .. " finds the label ink") < labelRect.y + labelRect.height,
+      versionId .. " keeps the label ink inside the source label area"
+    )
   end
 end
 

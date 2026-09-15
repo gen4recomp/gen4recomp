@@ -38,7 +38,7 @@ local function manifest()
   end
   local pockets = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
   local backgrounds = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local variants = {}
     for _, pocket in ipairs(pockets) do
       variants[pocket] = {
@@ -48,6 +48,21 @@ local function manifest()
       }
     end
     backgrounds[state] = variants
+  end
+  do
+    local browse = {}
+    for _, pocket in ipairs(pockets) do
+      local variants = {}
+      for count = 0, 6 do
+        variants[count + 1] = {
+          image = "bag/background-browse-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      browse[pocket] = variants
+    end
+    backgrounds.browse = browse
   end
   local slots = {}
   local shapes = {
@@ -135,6 +150,7 @@ local function manifest()
       cancel = {
         rect = { x = 192, y = 168, width = 64, height = 24 },
         textRect = { x = 192, y = 168, width = 56, height = 16 },
+        labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
       text = {
         actions = {
@@ -193,9 +209,14 @@ local function seedCache()
     "bag/hero-female.png",
     "bag/description.png",
   }
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
       paths[#paths + 1] = "bag/background-" .. state .. "-" .. pocket .. ".png"
+    end
+  end
+  for _, pocket in ipairs({ "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
+    for count = 0, 6 do
+      paths[#paths + 1] = "bag/background-browse-" .. pocket .. "-" .. count .. ".png"
     end
   end
   for index = 1, 8 do
@@ -521,7 +542,7 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
     Assert.isTrue(wasDrawn(graphics, draw._images["tabNormal:" .. index]), "every normal tab visual is drawn")
   end
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:browse:balls"]),
+    wasDrawn(graphics, draw._images["background:browse:balls:2"]),
     "browse uses the pocket-specific background"
   )
   Assert.equal(#graphics.rectangles, 0, "item focus never falls back to primitive outlines")
@@ -541,14 +562,11 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
       record.selectedAction = 0
     end
     draw:draw(record, layout("horizontal"), { icons = icons() })
-    local key = state == "action_menu" and "action"
-      or state == "toss_quantity" and "quantity"
-      or state == "toss_confirm" and "confirmation"
-      or "browse"
-    Assert.isTrue(
-      wasDrawn(graphics, draw._images["background:" .. key .. ":balls"]),
-      state .. " selects its pocket-specific background"
-    )
+    local key = state == "action_menu" and "background:action:balls"
+      or state == "toss_quantity" and "background:quantity:balls"
+      or state == "toss_confirm" and "background:confirmation:balls"
+      or "background:browse:balls:2"
+    Assert.isTrue(wasDrawn(graphics, draw._images[key]), state .. " selects its pocket-specific background")
   end
   draw:release()
 end
@@ -570,7 +588,7 @@ function T.browse_keeps_generated_chrome()
   end
   Assert.equal(#readPathsContaining(reads, "highlight"), 0, "the selected pocket carries no synthetic highlight")
   Assert.isTrue(
-    wasDrawn(graphics, draw._images["background:browse:balls"]),
+    wasDrawn(graphics, draw._images["background:browse:balls:2"]),
     "browse uses its pocket-specific background"
   )
   Assert.isTrue(printedText(content, "BACK OUT"), "the generated cancel affordance prints its label")
@@ -1104,7 +1122,7 @@ end
 function T.release_frees_images_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 49, "the renderer acquires every generated state, tab, focus, and marker image")
+  Assert.equal(#graphics.images, 97, "the renderer acquires every generated state, tab, focus, and marker image")
   draw:release()
   for _, image in ipairs(graphics.images) do
     Assert.equal(image.releaseCount, 1, "every image releases exactly once")
@@ -1211,7 +1229,7 @@ function T.acquisition_failure_releases_every_image_acquired_before_it()
   local bound = renderer(probe)
   local total = #probe.images
   bound:release()
-  Assert.equal(total, 49, "setup binds every generated state, tab, focus, and marker image")
+  Assert.equal(total, 97, "setup binds every generated state, tab, focus, and marker image")
   for _, failCall in ipairs({ 1, total }) do
     local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
     Assert.throws(function()
@@ -1392,8 +1410,8 @@ end
 function T.browse_selects_the_background_of_the_current_pocket()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw, manifested = composedRenderer(graphics, text(), nil)
-  local itemsBackground = draw._images["background:browse:items"]
-  local medicineBackground = draw._images["background:browse:medicine"]
+  local itemsBackground = draw._images["background:browse:items:2"]
+  local medicineBackground = draw._images["background:browse:medicine:2"]
   Assert.notNil(itemsBackground, "the items browse background is bound")
   Assert.notNil(medicineBackground, "the medicine browse background is bound")
   Assert.isTrue(itemsBackground ~= medicineBackground, "pocket variants are distinct bindings")
@@ -1406,7 +1424,7 @@ function T.browse_selects_the_background_of_the_current_pocket()
   draw:draw(status({ pocket = "medicine" }), singlePane(), { icons = icons() })
   Assert.isTrue(wasDrawn(graphics, medicineBackground), "the medicine pocket draws its own background")
   Assert.isFalse(wasDrawn(graphics, itemsBackground), "the medicine pocket never falls back to items")
-  Assert.equal(manifested.interactive.backgrounds.browse.items.width, 256, "the pocket variant keeps pane size")
+  Assert.equal(manifested.interactive.backgrounds.browse.items[3].width, 256, "the pocket variant keeps pane size")
   draw:release()
 end
 
@@ -1424,25 +1442,25 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local record = status({ pocket = "balls", focus = "tabs" })
   record.selected = nil
   draw:draw(record, singlePane(), { icons = icons() })
-  -- Single-pane draws without selection: background, then the eight normal
-  -- icons, then the one tab focus visual. No item focus may appear.
+  -- Single-pane draws without selection: background, then the one tab focus
+  -- visual, then the eight normal icons. No item focus may appear.
   local visuals = {}
   for _, entry in ipairs(graphics.draws) do
     if type(entry.quad) ~= "table" then
       visuals[#visuals + 1] = entry
     end
   end
-  Assert.equal(#visuals, 10, "one background, eight normal tab icons, and one tab focus are drawn")
+  Assert.equal(#visuals, 10, "one background, one tab focus, and eight normal tab icons are drawn")
   local tabFocus = manifested.interactive.focus.tabs
   local focusOffset = tabFocus.visual.offset or { x = 0, y = 0 }
   local target = tabFocus.targets[3]
-  Assert.equal(visuals[10].quad, target.x + focusOffset.x, "the tab focus applies its horizontal offset once")
-  Assert.equal(visuals[10].x, target.y + focusOffset.y, "the tab focus applies its vertical offset once")
+  Assert.equal(visuals[2].quad, target.x + focusOffset.x, "the tab focus applies its horizontal offset once")
+  Assert.equal(visuals[2].x, target.y + focusOffset.y, "the tab focus applies its vertical offset once")
   for index = 1, 8 do
     local rect = manifested.interactive.pocketTabs.rects[index]
     local normal = manifested.interactive.pocketTabs.normal[index]
     local offset = normal.offset or { x = 0, y = 0 }
-    local entry = visuals[1 + index]
+    local entry = visuals[2 + index]
     Assert.equal(
       entry.quad,
       rect.x + rect.width / 2 + offset.x,
@@ -1605,14 +1623,230 @@ function T.cancel_uses_background_chrome_and_its_text_window()
   local width = content:textWidth("BACK OUT")
   Assert.equal(
     label.x,
-    cancel.textRect.x + (cancel.textRect.width - width) / 2,
-    "the Cancel label centers inside its text window"
+    cancel.labelRect.x + (cancel.labelRect.width - width) / 2,
+    "the Cancel label centers inside its source label area"
   )
-  Assert.equal(label.y, cancel.textRect.y + 2, "the Cancel label keeps the text window top")
-  Assert.isTrue(
-    label.x ~= cancel.rect.x + (cancel.rect.width - width) / 2,
-    "the full control rect never places the label"
-  )
+  Assert.equal(label.y, cancel.labelRect.y, "the Cancel label keeps the source text-window top")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- Six visible cells with a contiguous occupied prefix of the given length;
+-- retail Bag rows never interleave empty cells between occupied ones.
+local function occupiedCells(count)
+  local cells = {}
+  for index = 1, 6 do
+    if index <= count then
+      cells[index] = slot("ITEM_" .. index, 1)
+    else
+      cells[index] = { empty = true, visibleIndex = index - 1 }
+    end
+  end
+  return cells
+end
+
+function T.browse_background_follows_the_visible_occupied_count()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  for _, count in ipairs({ 0, 3, 6 }) do
+    for key in pairs(graphics.draws) do
+      graphics.draws[key] = nil
+    end
+    local record = status({ pocket = "items", visibleSlots = occupiedCells(count) })
+    if count == 0 then
+      record.selected = nil
+    else
+      record.selected = record.visibleSlots[1]
+    end
+    draw:draw(record, layout("horizontal"), { icons = icons() })
+    local expected = draw._images["background:browse:items:" .. count]
+    Assert.notNil(expected, "the count " .. count .. " browse variant is bound")
+    Assert.isTrue(wasDrawn(graphics, expected), "the visible count " .. count .. " draws its own background")
+    for _, other in ipairs({ 0, 1, 2, 3, 4, 5, 6 }) do
+      if other ~= count then
+        Assert.isFalse(
+          wasDrawn(graphics, draw._images["background:browse:items:" .. other]),
+          "the visible count " .. count .. " never borrows count " .. other
+        )
+      end
+    end
+  end
+  local mixed = occupiedCells(3)
+  mixed[2] = { empty = true, visibleIndex = 1 }
+  mixed[3] = slot("ITEM_3", 1)
+  Assert.throws(function()
+    draw:draw(status({ pocket = "items", visibleSlots = mixed }), layout("horizontal"), { icons = icons() })
+  end, "a non-contiguous visible window fails instead of guessing a count")
+  Assert.equal(#graphics.rectangles, 0, "count chrome never falls back to primitive outlines")
+  draw:release()
+end
+
+function T.tab_focus_composites_beneath_every_normal_tab()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local manifested = manifest()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local record = status({ pocket = "balls", focus = "tabs" })
+  record.selected = nil
+  draw:draw(record, singlePane(), { icons = icons() })
+  local function drawIndex(image)
+    for position, entry in ipairs(graphics.draws) do
+      if entry.image == image then
+        return position
+      end
+    end
+    return nil
+  end
+  local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
+  for index = 1, 8 do
+    local normalAt = assert(drawIndex(draw._images["tabNormal:" .. index]), "normal tab " .. index .. " draws")
+    Assert.isTrue(focusAt < normalAt, "the focus fill stays beneath normal tab " .. index)
+  end
+  Assert.equal(#graphics.rectangles, 0, "tab focus never falls back to primitive outlines")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+function T.cancel_label_centers_inside_its_source_label_area()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local manifested = manifest()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  draw:draw(status({ pocket = "items" }), layout("horizontal"), { icons = icons() })
+  local label = assert(palettedAt(content, "BACK OUT"), "Cancel prints through the palette path")
+  local width = content:textWidth("BACK OUT")
+  local area = manifested.interactive.cancel.labelRect
+  Assert.equal(label.x, area.x + (area.width - width) / 2, "the Cancel label centers inside its source label area")
+  Assert.equal(label.y, area.y, "the Cancel label keeps the source text-window top")
+  Assert.deepEqual(label.palette, paletteRecord(content, 15, 14), "Cancel uses the description window roles")
+  Assert.equal(#graphics.rectangles, 0, "Cancel emits no primitive button face")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+function T.browse_background_selects_each_partial_count()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  for _, count in ipairs({ 1, 2, 4, 5 }) do
+    for key in pairs(graphics.draws) do
+      graphics.draws[key] = nil
+    end
+    local record = status({ pocket = "balls", visibleSlots = occupiedCells(count) })
+    record.selected = record.visibleSlots[1]
+    draw:draw(record, layout("horizontal"), { icons = icons() })
+    local expected = draw._images["background:browse:balls:" .. count]
+    Assert.notNil(expected, "the count " .. count .. " browse variant is bound")
+    Assert.isTrue(wasDrawn(graphics, expected), "the visible count " .. count .. " draws its own background")
+    Assert.isFalse(
+      wasDrawn(graphics, draw._images["background:browse:balls:" .. (count + 1)]),
+      "the visible count " .. count .. " never borrows its neighbor variant"
+    )
+  end
+  Assert.equal(#graphics.rectangles, 0, "count chrome never falls back to primitive outlines")
+  draw:release()
+end
+
+function T.leading_empty_cell_fails_the_visible_count()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local cells = occupiedCells(0)
+  cells[2] = slot("ITEM_2", 1)
+  Assert.throws(function()
+    draw:draw(status({ pocket = "items", visibleSlots = cells }), layout("horizontal"), { icons = icons() })
+  end, "an empty first cell with occupied cells behind it fails instead of guessing a count")
+  draw:release()
+end
+
+function T.normal_tab_draws_match_with_and_without_focus()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local function normalDraws(focus)
+    for key in pairs(graphics.draws) do
+      graphics.draws[key] = nil
+    end
+    local record = status({ pocket = "balls", focus = focus })
+    record.selected = nil
+    draw:draw(record, singlePane(), { icons = icons() })
+    local found = {}
+    for _, entry in ipairs(graphics.draws) do
+      for index = 1, 8 do
+        if entry.image == draw._images["tabNormal:" .. index] then
+          found[#found + 1] = { quad = entry.quad, x = entry.x }
+        end
+      end
+    end
+    return found
+  end
+  local focused = normalDraws("tabs")
+  local unfocused = normalDraws("items")
+  Assert.equal(#focused, 8, "the focused render draws every normal tab")
+  Assert.equal(#unfocused, 8, "the unfocused render draws every normal tab")
+  for index = 1, 8 do
+    Assert.equal(focused[index].quad, unfocused[index].quad, "normal tab " .. index .. " keeps its draw position")
+    Assert.equal(focused[index].x, unfocused[index].x, "normal tab " .. index .. " keeps its draw height")
+  end
+  Assert.equal(#graphics.rectangles, 0, "tab focus never falls back to primitive outlines")
+  draw:release()
+end
+
+function T.cancel_focus_draws_after_the_normal_tab_row()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  draw:draw(status({ pocket = "items", focus = "cancel" }), singlePane(), { icons = icons() })
+  local function drawIndex(image)
+    for position, entry in ipairs(graphics.draws) do
+      if entry.image == image then
+        return position
+      end
+    end
+    return nil
+  end
+  local cancelAt = assert(drawIndex(draw._images["focus:cancel"]), "Cancel focus draws while cancel is focused")
+  for index = 1, 8 do
+    local normalAt = assert(drawIndex(draw._images["tabNormal:" .. index]), "normal tab " .. index .. " draws")
+    Assert.isTrue(normalAt < cancelAt, "Cancel focus stays above normal tab " .. index)
+  end
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
 end

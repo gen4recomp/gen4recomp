@@ -326,6 +326,18 @@ function BagRenderer:_drawCenteredWithPalette(text, rect, palette)
   self._text:drawTextWithPalette(content, rect.x + (rect.width - width) / 2, rect.y + 2, palette)
 end
 
+-- Prints the Cancel label centered inside its source label area at the
+-- source text-window top, through the description window colors. The label
+-- area is narrower than the control face and carries no generic offset.
+---@param label string
+---@param labelRect table<string, number>
+---@param palette { foreground: { r: number, g: number, b: number }, shadow: { r: number, g: number, b: number }, background: { r: number, g: number, b: number, a: number } }
+function BagRenderer:_drawCancelLabel(label, labelRect, palette)
+  local content = plainText(label)
+  local width = self._text:textWidth(content)
+  self._text:drawTextWithPalette(content, labelRect.x + (labelRect.width - width) / 2, labelRect.y, palette)
+end
+
 -- The three field-font slot triples the Bag uses: item rows, the count
 -- readout, and the description window (whose colors Cancel shares). The
 -- background role stays transparent so generated pixels remain visible
@@ -376,12 +388,34 @@ function BagRenderer:_drawHeroForeground(presentation, descriptionPalette)
   end
 end
 
+-- Counts the occupied cells in the six-cell visible window. Bag rows are
+-- contiguous, so the count is the occupied prefix length; an occupied cell
+-- behind an empty one fails instead of guessing a count mapping.
+---@param visibleSlots table<integer, table<string, unknown>>
+---@return integer
+local function visibleOccupiedCount(visibleSlots)
+  assert(type(visibleSlots) == "table" and #visibleSlots == 6, "the presentation carries six visible cells")
+  local count = 0
+  for index = 1, 6 do
+    local cell = visibleSlots[index]
+    if cell ~= nil and cell.empty ~= true then
+      assert(count == index - 1, "visible Bag cells stay contiguously occupied")
+      count = index
+    end
+  end
+  assert(count >= 0 and count <= 6, "the visible occupied count fits its six cells")
+  return count
+end
+
 -- Draws the one generated lower-pane background for the current state and
--- pocket. Every image is asserted at construction, so an unknown
--- state/pocket fails instead of borrowing another pocket's screen.
+-- pocket. Browse states resolve the realized count variant from the visible
+-- occupied prefix; every other state keeps its fixed pocket background.
+-- Every image is asserted at construction, so an unknown state/pocket fails
+-- instead of borrowing another pocket's screen.
 ---@param state string
 ---@param pocket string
-function BagRenderer:_drawStateBackground(state, pocket)
+---@param presentation table<string, unknown>
+function BagRenderer:_drawStateBackground(state, pocket, presentation)
   local backgroundByState = {
     browsing = "browse",
     description_overlay = "browse",
@@ -391,6 +425,13 @@ function BagRenderer:_drawStateBackground(state, pocket)
     toss_confirm = "confirmation",
   }
   local background = assert(backgroundByState[state], "the bag renderer draws a known lower-pane state")
+  if background == "browse" then
+    local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
+    local count = visibleOccupiedCount(visibleSlots)
+    local key = "background:browse:" .. pocket .. ":" .. count
+    drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
+    return
+  end
   local key = "background:" .. background .. ":" .. pocket
   drawVisual(self._graphics, assert(self._visuals[key], "the bag presentation names its pocket"), 0, 0)
 end
@@ -439,13 +480,9 @@ function BagRenderer:_drawSelectedItemFocus(presentation)
   end
 end
 
--- Draws the applicable source focus visual for the active control/state in
--- source sprite order: above the state background and normal tab art, but
--- beneath item icons, names, quantities, registration markers, and labels,
--- which retail keeps visible over the movable cursor. Tab focus has no
--- overlapping content and stays directly above the normal tab row. The
--- action-menu focus draws beneath the action labels for the same reason.
--- Nothing is drawn for a control that is not semantically focused.
+-- Draws the item focus visual beneath the cell content it frames, so icons,
+-- names, quantities, and registration markers stay visible above the movable
+-- cursor. Nothing is drawn for a control that is not semantically focused.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawCellFocus(presentation)
   local state = assert(presentation.state, "the bag presentation names its state")
@@ -467,8 +504,29 @@ function BagRenderer:_drawCellFocus(presentation)
   end
 end
 
--- Draws the tab or Cancel focus visual above the item grid. Neither target
--- overlaps item content, so these stay above the cell art while remaining
+-- Draws the tab focus visual beneath the normal tab row. The fill composites
+-- first so every normal tab icon stays visible above it. Nothing is drawn
+-- unless the tab strip is semantically focused.
+---@param presentation table<string, unknown>
+function BagRenderer:_drawTabFocus(presentation)
+  local state = assert(presentation.state, "the bag presentation names its state")
+  if state == "action_menu" or state == "move_select" then
+    return
+  end
+  if presentation.focus ~= "tabs" then
+    return
+  end
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local pocketIndex = currentPocketIndex(presentation)
+  local tabFocus = assert(focus.tabs, "the bag manifest carries its tab focus")
+  local targets = assert(tabFocus.targets, "the tab focus carries its targets")
+  assert(type(targets) == "table" and #targets == 8, "the tab focus targets its eight pockets")
+  local target = assert(targets[pocketIndex], "the current pocket resolves a focus target")
+  drawVisual(self._graphics, assert(self._visuals["focus:tabs"]), target.x, target.y)
+end
+
+-- Draws the Cancel focus visual above the item grid. Its target never
+-- overlaps item content, so it stays above the cell art while remaining
 -- beneath the text labels drawn later.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawChromeFocus(presentation)
@@ -476,20 +534,13 @@ function BagRenderer:_drawChromeFocus(presentation)
   if state == "action_menu" or state == "move_select" then
     return
   end
-  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
-  local semantic = presentation.focus
-  if semantic == "tabs" then
-    local pocketIndex = currentPocketIndex(presentation)
-    local tabFocus = assert(focus.tabs, "the bag manifest carries its tab focus")
-    local targets = assert(tabFocus.targets, "the tab focus carries its targets")
-    assert(type(targets) == "table" and #targets == 8, "the tab focus targets its eight pockets")
-    local target = assert(targets[pocketIndex], "the current pocket resolves a focus target")
-    drawVisual(self._graphics, assert(self._visuals["focus:tabs"]), target.x, target.y)
-  elseif semantic == "cancel" then
-    local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
-    local target = assert(cancelFocus.target, "the cancel focus carries its target")
-    drawVisual(self._graphics, assert(self._visuals["focus:cancel"]), target.x, target.y)
+  if presentation.focus ~= "cancel" then
+    return
   end
+  local focus = assert(self._manifest.interactive.focus, "the bag manifest must carry its focus visuals")
+  local cancelFocus = assert(focus.cancel, "the bag manifest carries its cancel focus")
+  local target = assert(cancelFocus.target, "the cancel focus carries its target")
+  drawVisual(self._graphics, assert(self._visuals["focus:cancel"]), target.x, target.y)
 end
 
 -- Draws the action-menu focus visual beneath the action labels at the
@@ -523,7 +574,10 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local interactive = manifest.interactive
   local state = assert(presentation.state, "the bag presentation names its state")
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
-  self:_drawStateBackground(state, pocket)
+  self:_drawStateBackground(state, pocket, presentation)
+  -- The tab focus fill composites beneath the normal tab row so the focused
+  -- icon stays visible above it.
+  self:_drawTabFocus(presentation)
   local tabs = interactive.pocketTabs.rects
   -- Every normal tab visual draws at its anchor; tab focus is a separate
   -- movable visual drawn only while tabs are semantically focused.
@@ -592,7 +646,7 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
       )
     end
   end
-  -- Tab and Cancel focus sit above the grid art they frame; neither target
+  -- Cancel focus sits above the grid art it frames; its target never
   -- overlaps item content.
   self:_drawChromeFocus(presentation)
   local page = assert(presentation.page, "the bag presentation derives its page")
@@ -601,7 +655,9 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local cancelLabel = assert(interactive.text.actions.cancel, "the bag manifest carries its cancel label")
   -- Cancel chrome lives in the selected background pixels; only the label
   -- prints, placed by the label window rather than the control rect.
-  self:_drawCenteredWithPalette(cancelLabel, interactive.cancel.textRect, palettes.description)
+  local cancelGeometry = assert(interactive.cancel, "the bag manifest must carry its cancel geometry")
+  local labelRect = assert(cancelGeometry.labelRect, "the bag manifest carries its cancel label area")
+  self:_drawCancelLabel(cancelLabel, labelRect, palettes.description)
   if presentation.state == "description_overlay" and layout.mode == "interactive_only" then
     self:_drawDescriptionOverlay(presentation, icons, iconImage)
   elseif presentation.state == "action_menu" then

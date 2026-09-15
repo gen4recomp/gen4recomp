@@ -56,6 +56,7 @@ local function manifest()
       cancel = {
         rect = { x = 192, y = 168, width = 64, height = 24 },
         textRect = { x = 192, y = 168, width = 56, height = 16 },
+        labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
       overlays = {
         descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
@@ -431,7 +432,7 @@ local function composedManifest()
     textRect = { x = 20, y = 144, width = 228, height = 40 },
   }
   local backgrounds = {}
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     local pockets = {}
     for _, pocket in ipairs(POCKETS) do
       pockets[pocket] = {
@@ -441,6 +442,21 @@ local function composedManifest()
       }
     end
     backgrounds[state] = pockets
+  end
+  do
+    local browse = {}
+    for _, pocket in ipairs(POCKETS) do
+      local variants = {}
+      for count = 0, 6 do
+        variants[count + 1] = {
+          image = "test/bag/background-browse-" .. pocket .. "-" .. count .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      browse[pocket] = variants
+    end
+    backgrounds.browse = browse
   end
   manifested.interactive.backgrounds = backgrounds
   local tabs = {}
@@ -552,9 +568,14 @@ local function seedComposedCache()
   put("test/bag/hero-male.png")
   put("test/bag/hero-female.png")
   put("test/bag/description.png")
-  for _, state in ipairs({ "browse", "action", "quantity", "confirmation" }) do
+  for _, state in ipairs({ "action", "quantity", "confirmation" }) do
     for _, pocket in ipairs(POCKETS) do
       put("test/bag/background-" .. state .. "-" .. pocket .. ".png")
+    end
+  end
+  for _, pocket in ipairs(POCKETS) do
+    for count = 0, 6 do
+      put("test/bag/background-browse-" .. pocket .. "-" .. count .. ".png")
     end
   end
   for index = 1, 8 do
@@ -652,8 +673,8 @@ function T.production_bag_draws_pocket_specific_presentation()
   })
   local icons = composedIcons()
   draw:draw(view, assert(view.layout, "the composed status carries its resolved layout"), { icons = icons })
-  local ballsBackground = draw._images["background:browse:balls"]
-  local medicineBackground = draw._images["background:browse:medicine"]
+  local ballsBackground = draw._images["background:browse:balls:2"]
+  local medicineBackground = draw._images["background:browse:medicine:1"]
   Assert.notNil(ballsBackground, "the balls background is bound")
   Assert.isTrue(wasDrawn(graphics, ballsBackground), "the open bag draws its pocket background")
   Assert.isFalse(wasDrawn(graphics, medicineBackground), "the open bag never borrows another pocket")
