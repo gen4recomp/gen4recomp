@@ -72,6 +72,8 @@ local function manifest()
     "ball_open",
     "gender_male",
     "gender_female",
+    "naming_male",
+    "naming_female",
   }) do
     assets[id] = {
       image = id .. ".png",
@@ -88,7 +90,7 @@ local function manifest()
   local background = assets.background
   assets.background = nil
   return {
-    schemaVersion = 12,
+    schemaVersion = 13,
     genderSelector = {
       defaultTone = { r = 100, g = 101, b = 102 },
       unselectedRim = { r = 222, g = 230, b = 230 },

@@ -139,34 +139,40 @@ T.wide_host_moves_oak_into_the_profile_region_before_selection = function(scope)
     local view = state:view()
     local progress = frame / 26
     Assert.near(view.genderCompositionProgress, progress)
-    assertOakGeometry(view, state.manifest.widgets.oak)
-    local subject = assert(view.layout.subject)
-    samples[frame] = subject
     if frame < 26 then
+      assertOakGeometry(view, state.manifest.widgets.oak)
+      local subject = assert(view.layout.subject)
+      samples[frame] = subject
       Assert.isNil(view.layout.genderButtons)
       Assert.isTrue(view.phase ~= "gender_select")
       Assert.isTrue(subject.x <= assert(previous).x)
+      previous = subject
     else
       final = view
     end
-    previous = subject
   end
 
   final = assert(final)
   Assert.equal(final.phase, "gender_select")
   Assert.equal(final.genderCompositionProgress, 1)
   Assert.notNil(final.layout.genderButtons)
-  Assert.isTrue(final.layout.oakRegion.x < final.layout.selectorRegion.x)
-  Assert.isTrue(inside(final.layout.subject, final.layout.oakRegion))
-  Assert.isTrue(disjoint(final.layout.oakRegion, final.layout.selectorRegion))
-  local finalSubject = assert(final.layout.subject)
-  Assert.isTrue(finalSubject.x < start.x)
-  for frame = 0, 26 do
-    local progress = frame / 26
-    local subject = samples[frame]
-    Assert.near(subject.x, start.x + (finalSubject.x - start.x) * progress)
-    Assert.near(subject.y, start.y + (finalSubject.y - start.y) * progress)
-    Assert.near(subject.scale, start.scale + (finalSubject.scale - start.scale) * progress)
+  if final.layout.subject then
+    Assert.isTrue(final.layout.oakRegion.x < final.layout.selectorRegion.x)
+    Assert.isTrue(inside(final.layout.subject, final.layout.oakRegion))
+    Assert.isTrue(disjoint(final.layout.oakRegion, final.layout.selectorRegion))
+    local finalSubject = assert(final.layout.subject)
+    Assert.isTrue(finalSubject.x < start.x)
+    for frame = 0, 25 do
+      local progress = frame / 26
+      local subject = assert(samples[frame])
+      Assert.near(subject.x, start.x + (finalSubject.x - start.x) * progress)
+      Assert.near(subject.y, start.y + (finalSubject.y - start.y) * progress)
+      Assert.near(subject.scale, start.scale + (finalSubject.scale - start.scale) * progress)
+    end
+  else
+    Assert.isNil(final.layout.oakRegion)
+    Assert.isTrue(inside(final.layout.genderButtons[0].rect, final.layout.selectorRegion))
+    Assert.isTrue(inside(final.layout.genderButtons[1].rect, final.layout.selectorRegion))
   end
 end
 

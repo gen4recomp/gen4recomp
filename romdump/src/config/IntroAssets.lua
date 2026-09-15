@@ -21,6 +21,7 @@ local IntroAssets = {
     sources = {
       "src/oaks_speech.c",
       "src/oaks_speech_obj.c",
+      "src/naming_screen.c",
       "files/demo/intro/intro.mk",
     },
   },
@@ -75,6 +76,15 @@ local IntroAssets = {
       sourceCenter = { x = 192, y = 104 },
       resourceResolution = resourceResolution,
     },
+  },
+  naming = {
+    archive = "naming_screen",
+    char = 10,
+    palette = 1,
+    paletteNumber = 9,
+    cell = 12,
+    animation = 14,
+    animationIndexes = { male = 48, female = 49 },
   },
   shrink = {
     male = { palette = 16, chars = { 22, 23, 24, 25 }, screen = 9 },

@@ -14,6 +14,8 @@ local WIDGETS = {
   "male",
   "marill",
   "marill_appear",
+  "naming_female",
+  "naming_male",
   "oak",
   "shrink_female",
   "shrink_male",
@@ -61,10 +63,14 @@ local function validManifest()
     widgets[id].playMode = id == "marill" and "forward_loop" or "forward"
     widgets[id].loopStartFrameIdx = 0
   end
+  for _, id in ipairs({ "naming_male", "naming_female" }) do
+    widgets[id].playMode = "forward"
+    widgets[id].loopStartFrameIdx = 0
+  end
   widgets.gender_male.sourceCenter = { x = 64, y = 104 }
   widgets.gender_female.sourceCenter = { x = 192, y = 104 }
   return {
-    schemaVersion = 12,
+    schemaVersion = 13,
     variant = "heartgold",
     sourceReference = { width = 256, height = 192 },
     background = {
@@ -107,14 +113,14 @@ end
 
 function T.complete_schema_manifest_loads_and_declares_closed_inventory()
   local cache = require("libs.assets.src.newgame.IntroAssetCache")
-  Assert.equal(cache.SCHEMA, "g4-intro-assets-v12")
-  Assert.equal(cache.FORMAT, "intro-cache-v12")
+  Assert.equal(cache.SCHEMA, "g4-intro-assets-v13")
+  Assert.equal(cache.FORMAT, "intro-cache-v13")
   Assert.equal(cache.FORMAT, DerivedAssetContract.intro.cacheFormat)
   local manifest = validManifest()
   Assert.isTrue(cache.validateManifest(manifest))
   Assert.keySet(
     manifest.widgets,
-    "ball_open,female,gender_female,gender_male,male,marill,marill_appear,oak,shrink_female,shrink_male"
+    "ball_open,female,gender_female,gender_male,male,marill,marill_appear,naming_female,naming_male,oak,shrink_female,shrink_male"
   )
   Assert.deepEqual(manifest.widgets.gender_male.sourceCenter, { x = 64, y = 104 })
   Assert.deepEqual(manifest.widgets.gender_female.sourceCenter, { x = 192, y = 104 })
@@ -234,7 +240,7 @@ function T.predecessor_marker_and_manifest_are_not_ready()
   local cache = require("libs.assets.src.newgame.IntroAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
-  Assert.equal(cache.marker("sha", "hash"), "intro-cache-v12:sha:hash")
+  Assert.equal(cache.marker("sha", "hash"), "intro-cache-v13:sha:hash")
   local predecessor = validManifest()
   predecessor.schemaVersion = 10
   local ok, err = cache.validateManifest(predecessor)
@@ -254,7 +260,7 @@ function T.predecessor_marker_and_manifest_are_not_ready()
     return path:find("assets/generated/intro/", 1, true) == 1
   end
   Assert.isFalse(
-    cache.isReady(cacheFs, "intro-cache-v12:sha:hash"),
+    cache.isReady(cacheFs, "intro-cache-v13:sha:hash"),
     "a predecessor completion marker never reads ready under the current marker"
   )
 end
