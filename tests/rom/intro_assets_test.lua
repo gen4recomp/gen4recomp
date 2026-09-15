@@ -85,7 +85,7 @@ local function assertBallSource(bundle)
 end
 
 local function assertVariant(bundle, versionId, paletteMember)
-  Assert.equal(bundle.manifest.schemaVersion, 11)
+  Assert.equal(bundle.manifest.schemaVersion, 12)
   Assert.equal(bundle.manifest.variant, versionId)
   Assert.equal(sourceMember(bundle, "background:char"), 0)
   Assert.equal(sourceMember(bundle, "background:screen"), 3)
@@ -134,6 +134,16 @@ local function assertGenderSource(bundle)
     width = 93,
     height = 148,
   })
+  Assert.equal(sourceMember(bundle, "gender-selector:char"), 32)
+  Assert.equal(sourceMember(bundle, "gender-selector:screen"), 51)
+  Assert.equal(sourceMember(bundle, "gender-selector:palette"), bundle.manifest.variant == "heartgold" and 30 or 31)
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(bundle.manifest.genderSelector.buttons[gender])
+    for _, field in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
+      Assert.notNil(button[field], gender .. " " .. field .. " is generated")
+      Assert.notNil(bundle.assets[button[field]], gender .. " " .. field .. " has payload")
+    end
+  end
   Assert.isNil(bundle.manifest.profileConfirmation, "screen-space confirmation records are not published")
   Assert.isNil(bundle.manifest.genderSelector.buttons.male.hitBounds, "touch hit bounds are not published")
   for _, id in ipairs({ "gender_male", "gender_female" }) do

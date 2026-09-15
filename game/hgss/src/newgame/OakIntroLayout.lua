@@ -42,6 +42,51 @@ local function canvasForRegion(region, reference, preferredScale)
   return { scale = scale, origin = origin }
 end
 
+local function inside(inner, outer)
+  return inner.x >= outer.x
+    and inner.y >= outer.y
+    and inner.x + inner.width <= outer.x + outer.width
+    and inner.y + inner.height <= outer.y + outer.height
+end
+
+local function selectorGroupBounds(manifest)
+  local first = assert(manifest.genderSelector.buttons.male.bounds)
+  local second = assert(manifest.genderSelector.buttons.female.bounds)
+  local left = math.min(first.x, second.x)
+  local top = math.min(first.y, second.y)
+  local right = math.max(first.x + first.width, second.x + second.width)
+  local bottom = math.max(first.y + first.height, second.y + second.height)
+  return { x = left, y = top, width = right - left, height = bottom - top }
+end
+
+local function groupCanvas(region, group, preferredScale)
+  local scale = PixelScale.fitPreferred(region, group.width, group.height, preferredScale)
+  return {
+    scale = scale,
+    origin = {
+      x = region.x + (region.width - group.width * scale) / 2 - group.x * scale,
+      y = region.y + (region.height - group.height * scale) / 2 - group.y * scale,
+    },
+  }
+end
+
+local function selectorCanvasForRegion(region, manifest, reference, preferredScale, fallbackRegion)
+  local normal = canvasForRegion(region, reference, preferredScale)
+  local normalEntries = OakProfileLayout.genderSelectionEntries(normal, manifest)
+  local normalFits = true
+  for _, entry in pairs(normalEntries) do
+    if not inside(entry.rect, region) or not inside(entry.portraitRect, region) then
+      normalFits = false
+      break
+    end
+  end
+  if normalFits then
+    return region, normal, false
+  end
+  local promoted = groupCanvas(fallbackRegion, selectorGroupBounds(manifest), preferredScale)
+  return fallbackRegion, promoted, true
+end
+
 local function assertFiniteProgress(value, message)
   assert(
     type(value) == "number"
@@ -221,10 +266,11 @@ local function profileLayout(
   gap,
   _,
   nameChoiceRegion,
-  preferredScale
+  preferredScale,
+  selectorCanvasOverride
 )
   if selectorActive then
-    local selectorCanvas = canvasForRegion(assert(selectorRegion), reference, preferredScale)
+    local selectorCanvas = selectorCanvasOverride or canvasForRegion(assert(selectorRegion), reference, preferredScale)
     local genderSlots = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
     if view.phase == "gender_select" then
       result.genderButtons = genderSlots
@@ -314,6 +360,17 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     translateSourceGroupAboveDialogue(scene, dialogue, gap, ordinarySubject, ordinaryReveal)
   local selectedSubject, oakRegion, selectorRegion, nameStage, nameChoiceRegion, selectorActive =
     subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
+  local selectorCanvas
+  if selectorActive then
+    local fallbackRegion = OakSceneLayout.aboveDialogue(scene, assert(dialogue), gap)
+    local promoted
+    selectorRegion, selectorCanvas, promoted =
+      selectorCanvasForRegion(assert(selectorRegion), manifest, reference, preferredScale, fallbackRegion)
+    if promoted then
+      selectedSubject = nil
+      oakRegion = nil
+    end
+  end
   result.subject = selectedSubject
   result.oakRegion = oakRegion
   result.selectorRegion = selectorRegion
@@ -332,7 +389,8 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     gap,
     nameStage,
     nameChoiceRegion,
-    preferredScale
+    preferredScale,
+    selectorCanvas
   )
   return result
 end
