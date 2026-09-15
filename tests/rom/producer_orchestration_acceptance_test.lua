@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local CacheBuilder = require("romdump.src.CacheBuilder")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local Errors = require("libs.errors.src.Errors")
+local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local IntroAssetCompiler = require("romdump.src.digest.newgame.IntroAssetCompiler")
 local RomFs = require("romdump.src.source.RomFs")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -32,12 +33,8 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   local originalOpen = RomFs.open
   local originalMatches = DerivedCacheState.matches
   local originalPublish = DerivedCacheState.publish
-  local opens = 0
+  local originalSessionNew = InteractiveCacheBuild.new
   RomFs.open = function(...)
-    opens = opens + 1
-    if opens >= 2 then
-      return nil, Errors.new("ROMFS_LOAD_FAILED", "acceptance-injected source failure", {})
-    end
     local openedRomFs, openErr = originalOpen(...)
     if openedRomFs ~= nil then
       local originalClose = openedRomFs.close
@@ -58,13 +55,23 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   rawset(DerivedCacheState, "matches", forceMismatch)
   rawset(DerivedCacheState, "publish", recordPublish)
   -- Compiler work runs in worker threads that never observe main-state
-  -- compiler monkeypatching, so the failure is injected at the session
-  -- source seam instead: the generation session cannot borrow the ROM while
-  -- the identity probe already closed its own handle.
+  -- module patching, and the session constructor performs no ROM work, so
+  -- the failure is injected where the main-state pipeline actually pumps
+  -- the session: the generation session cannot borrow the ROM while the
+  -- identity probe already closed its own handle.
+  rawset(InteractiveCacheBuild, "new", function(options)
+    ---@cast options table<string, unknown>
+    local session = originalSessionNew(options)
+    rawset(session, "update", function()
+      error(Errors.new("ROMFS_LOAD_FAILED", "acceptance-injected source failure", {}), 0)
+    end)
+    return session
+  end)
   local ok, report, err = pcall(function()
     return CacheBuilder.buildVersions({ versionId }, { log = log })
   end)
   RomFs.open = originalOpen
+  rawset(InteractiveCacheBuild, "new", originalSessionNew)
   rawset(DerivedCacheState, "matches", originalMatches)
   rawset(DerivedCacheState, "publish", originalPublish)
 

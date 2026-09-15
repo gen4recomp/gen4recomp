@@ -118,6 +118,7 @@ function T.every_family_maps_to_its_fixed_size_class()
     ["message-bank"] = "heavy",
     ["field-cell"] = "jumbo",
     map = "jumbo",
+    ["source-plan"] = "heavy",
   }
   local count = 0
   for kind, size in pairs(expected) do
@@ -337,12 +338,25 @@ local function summarySession(pool, cacheFs, bankIds)
     scriptMemberIds = {},
     iconPageIds = {},
     portraitPageIds = {},
+    mapDataIds = {},
+    mapIds = {},
     mapCellKeys = {},
     interest = {},
     byKey = {},
     milestones = {},
     recorded = {},
     retired = false,
+    sourceLoaded = true,
+    pagesKnown = true,
+    adopted = nil,
+    dirty = {},
+    edges = {},
+    parked = {},
+    depMemo = {},
+    pendingFillDone = false,
+    loadedFillDone = false,
+    followerChecked = false,
+    followerMemo = nil,
   }, InteractiveCacheBuild)
 end
 
@@ -591,11 +605,23 @@ local function openLiveSession(options)
     portraitPageIds = {},
     mapCellKeys = {},
     mapDataIds = {},
+    mapIds = {},
     interest = {},
     byKey = {},
     milestones = {},
     recorded = {},
     retired = false,
+    sourceLoaded = true,
+    pagesKnown = true,
+    adopted = nil,
+    dirty = {},
+    edges = {},
+    parked = {},
+    depMemo = {},
+    pendingFillDone = false,
+    loadedFillDone = false,
+    followerChecked = false,
+    followerMemo = nil,
   }, InteractiveCacheBuild)
   return { host = host, realFs = realFs, prefix = prefix, cacheFs = cacheFs, pool = pool, session = session }
 end
