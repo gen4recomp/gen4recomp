@@ -4,6 +4,11 @@
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
+local BagCursor = require("libs.hgss.src.items.BagCursor")
+local BagScreenState = require("game.hgss.src.field.BagScreenState")
+local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
@@ -169,6 +174,113 @@ function T.focus_loss_does_not_leave_a_keyboard_direction_stuck_after_refocus()
     { heldDirection = nil, pressedDirection = "east", actionDown = false, cancelDown = false, menuDown = false }
   )
   Assert.deepEqual(input:snapshot(), { heldDirection = nil, actionDown = false, cancelDown = false, menuDown = false })
+end
+
+function T.open_bag_stays_controllable_across_window_blur()
+  local input = FieldInput.new()
+  local state =
+    setmetatable({ runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = {} } }, FieldState)
+
+  local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
+  Assert.isTrue(bag:add("POTION", 5))
+  Assert.isTrue(bag:add("POKE_BALL", 3))
+  Assert.isTrue(bag:add("GREAT_BALL", 2))
+  local box = {
+    width = 512,
+    height = 384,
+    topologyObject = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 512, height = 384 },
+      touch = false,
+      role = "world",
+    }),
+  }
+  local tabs = {}
+  for index = 0, 7 do
+    tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
+  end
+  local slots = {}
+  local shapes = {
+    { { 0, 32, 128, 42 }, { 48, 56 } },
+    { { 128, 32, 128, 42 }, { 176, 56 } },
+    { { 0, 74, 128, 44 }, { 48, 96 } },
+    { { 128, 74, 128, 44 }, { 176, 96 } },
+    { { 0, 118, 128, 36 }, { 48, 136 } },
+    { { 128, 118, 128, 36 }, { 176, 136 } },
+  }
+  for index, shape in ipairs(shapes) do
+    slots[index] = {
+      rect = { x = shape[1][1], y = shape[1][2], width = shape[1][3], height = shape[1][4] },
+      iconCenter = { x = shape[2][1], y = shape[2][2] },
+    }
+  end
+  local pockets = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
+  local heroStates = {}
+  for _, pocket in ipairs(pockets) do
+    heroStates[#heroStates + 1] =
+      { pocket = pocket, pose = "pocket." .. pocket .. ".pose", pattern = "pocket." .. pocket .. ".pattern" }
+  end
+  local cursor = BagCursor.new()
+  cursor:setPocket("balls")
+  local screen = BagScreenState.new({
+    service = bag,
+    cursor = cursor,
+    manifest = {
+      hero = {
+        animations = {
+          states = heroStates,
+          material = { male = "bag.male.material", female = "bag.female.material" },
+        },
+      },
+      interactive = {
+        pocketTabs = { rects = tabs },
+        itemSlots = { slots = slots },
+        pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
+        cancel = {
+          rect = { x = 192, y = 168, width = 64, height = 24 },
+          textRect = { x = 192, y = 168, width = 56, height = 16 },
+        },
+        overlays = {
+          descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
+          actionMenu = {
+            buttons = {
+              { x = 8, y = 136, width = 80, height = 16 },
+              { x = 104, y = 136, width = 80, height = 16 },
+              { x = 8, y = 168, width = 80, height = 16 },
+              { x = 104, y = 168, width = 80, height = 16 },
+            },
+          },
+        },
+      },
+    },
+    heroGender = "male",
+    measureViewport = function()
+      return box.width, box.height
+    end,
+    measureTopology = function()
+      return { topology = box.topologyObject }
+    end,
+  })
+  screen:updateFixed({})
+  Assert.equal(screen:status().selected.item, "POKE_BALL", "setup browses the stocked pocket")
+
+  input:beginUi(0)
+  state:keypressed("down")
+  state:focus(false)
+  state:focus(true)
+  Assert.deepEqual(input:uiSnapshot(1), {}, "stale pre-blur input must not replay after blur")
+  Assert.deepEqual(
+    input:snapshot(),
+    { heldDirection = nil, actionDown = false, cancelDown = false, menuDown = false },
+    "blur clears the stale held direction"
+  )
+  state:keypressed("right")
+  local events = input:uiSnapshot(2)
+  Assert.deepEqual(events, { { type = "navigate", direction = "right" } }, "fresh input reaches the open bag")
+  screen:updateFixed(events)
+  Assert.equal(screen:status().selected.item, "GREAT_BALL", "the open bag answers fresh navigation after blur")
+  state:keyreleased("right")
+  screen:dispose()
 end
 
 function T.gamepad_dpad_and_left_stick_drive_normal_field_movement()

@@ -608,6 +608,35 @@ function T.menu_begin_ui_flushes_the_pending_edge_but_keeps_held_state()
   Assert.equal(input:snapshot().menuPressed, true, "a fresh press inside the modal lifetime produces a new edge")
 end
 
+function T.transient_reset_keeps_the_active_modal_lifetime_for_fresh_input()
+  local input = FieldInput.new()
+  input:beginUi(0)
+  input:pressDirection("north", "key:up")
+  input:pressAction("key:z")
+  input:pointerDown("touch:1", 10, 10)
+  input:clearAll()
+  Assert.deepEqual(input:uiSnapshot(1), {}, "stale modal edges must not survive the transient reset")
+  Assert.deepEqual(
+    input:snapshot(),
+    { heldDirection = nil, actionDown = false, cancelDown = false, menuDown = false },
+    "the transient reset clears stale held physical sources"
+  )
+  input:pointerUp("touch:1", 10, 10)
+  Assert.deepEqual(input:uiSnapshot(2), {}, "a stale release after capture reset emits nothing")
+  input:pressDirection("south", "key:down")
+  input:pressAction("key:enter")
+  Assert.deepEqual(input:uiSnapshot(3), {
+    { type = "navigate", direction = "down" },
+    { type = "confirm" },
+  }, "fresh input after the reset reaches the still-active modal lifetime")
+
+  local idle = FieldInput.new()
+  idle:clearAll()
+  idle:pressDirection("south", "key:down")
+  idle:pressAction("key:z")
+  Assert.deepEqual(idle:uiSnapshot(4), {}, "the reset must not invent a modal lifetime")
+end
+
 function T.menu_rejects_missing_sources()
   local input = FieldInput.new()
   Assert.throws(function()
