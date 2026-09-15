@@ -213,16 +213,32 @@ local function tapDirection(game, state, key)
   state:keyreleased(key)
 end
 
--- Patrol normal directional input until the predicate observes the wanted
--- browse state. Pocket switching and item selection must both stay reachable
--- through ordinary directions; no shoulder or device-specific key is used.
+-- Patrol across pockets through the supported path until the predicate
+-- observes the wanted browse state: climb to the tab strip, switch pockets
+-- with horizontal input, then drop back to the grid. Grid edges never change
+-- pockets, so reaching another pocket must travel through tab focus.
 local function driveUntil(game, state, label, maxSteps, predicate)
-  local keys = { "d", "s", "a", "w" }
-  for step = 1, maxSteps do
-    if predicate() then
+  for _ = 1, maxSteps do
+    local view = bagView(game)
+    local focus = view.focus
+    Assert.isTrue(
+      focus == "items" or focus == "tabs" or focus == "cancel",
+      "the bag status must expose its focus region"
+    )
+    if predicate() and focus == "items" then
       return
     end
-    tapDirection(game, state, keys[((step - 1) % #keys) + 1])
+    if focus == "tabs" then
+      if predicate() then
+        tapDirection(game, state, "s")
+      else
+        tapDirection(game, state, "d")
+      end
+    elseif focus == "cancel" then
+      tapDirection(game, state, "w")
+    else
+      tapDirection(game, state, "w")
+    end
   end
   error("bag browse never reaches " .. label .. " through directional input", 0)
 end

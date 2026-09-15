@@ -240,15 +240,55 @@ local function closeBagToMenu(game)
   end, 120)
 end
 
--- Patrol normal directional input until the predicate observes the wanted
--- browse state.
+-- The browse status names the focused region: grid movement stays in items
+-- while pocket switching lives on the tab strip.
+local function bagFocus(view)
+  local focus = view.focus
+  Assert.isTrue(focus == "items" or focus == "tabs" or focus == "cancel", "the bag status must expose its focus region")
+  return focus
+end
+
+-- Patrol in-pocket selection until the predicate observes the wanted browse
+-- state. Grid edges never change pockets, so a patrol that strays onto the
+-- tab strip or cancel steps straight back to the grid.
 local function driveUntil(game, state, label, maxSteps, predicate)
   local keys = { "d", "s", "a", "w" }
   for step = 1, maxSteps do
     if predicate() then
       return
     end
-    tapDirection(game, state, keys[((step - 1) % #keys) + 1])
+    local focus = bagFocus(bagView(game))
+    if focus == "tabs" then
+      tapDirection(game, state, "s")
+    elseif focus == "cancel" then
+      tapDirection(game, state, "w")
+    else
+      tapDirection(game, state, keys[((step - 1) % #keys) + 1])
+    end
+  end
+  error("bag browse never reaches " .. label .. " through directional input", 0)
+end
+
+-- Patrol across pockets through the supported path: climb to the tab strip,
+-- switch pockets with horizontal input, then drop back to the grid.
+local function gotoPocketState(game, state, label, maxSteps, predicate)
+  for _ = 1, maxSteps do
+    local view = bagView(game)
+    if predicate() and bagFocus(view) == "items" then
+      return
+    end
+    local focus = bagFocus(view)
+    if focus == "tabs" then
+      if predicate() then
+        tapDirection(game, state, "s")
+      else
+        tapDirection(game, state, "d")
+      end
+    elseif focus == "cancel" then
+      tapDirection(game, state, "w")
+    else
+      tapDirection(game, state, "w")
+    end
   end
   error("bag browse never reaches " .. label .. " through directional input", 0)
 end
@@ -473,7 +513,7 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     Assert.equal(bag:revision(), revision + 1, "the grant must mutate the live service exactly once")
 
     local view = openBag(game, state)
-    driveUntil(game, state, "the stocked medicine pocket", 160, function()
+    gotoPocketState(game, state, "the stocked medicine pocket", 160, function()
       return viewPocket(bagView(game)) == bag:pocketOf(GRANTED_KEY)
     end)
     view = bagView(game)
@@ -496,10 +536,10 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     driveUntil(game, state, "the granted item", 60, function()
       return selectedKey(bagView(game)) == GRANTED_KEY
     end)
-    driveUntil(game, state, "another pocket", 120, function()
+    gotoPocketState(game, state, "another pocket", 120, function()
       return viewPocket(bagView(game)) ~= bag:pocketOf(GRANTED_KEY)
     end)
-    driveUntil(game, state, "the medicine pocket again", 160, function()
+    gotoPocketState(game, state, "the medicine pocket again", 160, function()
       return viewPocket(bagView(game)) == bag:pocketOf(GRANTED_KEY)
     end)
     Assert.equal(selectedKey(bagView(game)), GRANTED_KEY, "returning must restore the remembered selection")
@@ -585,7 +625,7 @@ function T.tests.obtain_browse_mutate_save_reload_round_trip()
     -- Reopen the Bag and prove the persisted model is what browsing shows.
     state = hostCallbacks(game)
     view = openBag(game, state)
-    driveUntil(game, state, "the stocked medicine pocket after reload", 160, function()
+    gotoPocketState(game, state, "the stocked medicine pocket after reload", 160, function()
       return viewPocket(bagView(game)) == reloaded:pocketOf(GRANTED_KEY)
     end)
     view = bagView(game)
@@ -660,7 +700,7 @@ function T.tests.registration_lifecycle_persists_and_clears()
     Assert.isTrue(bag:add(SECOND_REGISTER_KEY, 1), "stocking the second key item must succeed")
 
     local view = openBag(game, state)
-    driveUntil(game, state, "the key items pocket", 160, function()
+    gotoPocketState(game, state, "the key items pocket", 160, function()
       return viewPocket(bagView(game)) == "key_items"
     end)
     driveUntil(game, state, "the first key item", 60, function()
@@ -735,7 +775,7 @@ function T.tests.registration_lifecycle_persists_and_clears()
 
     state = hostCallbacks(game)
     view = openBag(game, state)
-    driveUntil(game, state, "the key items pocket after reload", 160, function()
+    gotoPocketState(game, state, "the key items pocket after reload", 160, function()
       return viewPocket(bagView(game)) == "key_items"
     end)
     Assert.equal(selectedKey(bagView(game)), FIRST_REGISTER_KEY, "the pocket must show only the remaining key item")

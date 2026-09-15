@@ -180,13 +180,15 @@ function BagController:_ensureVisible()
 end
 
 -- Enters a pocket through the cursor API: the stored per-pocket offsets
--- return, clamped to whatever the pocket holds now, with grid focus.
+-- return, clamped to whatever the pocket holds now. Focus stays with the
+-- caller, so keyboard tab travel keeps tab focus while pointer activation
+-- moves to the grid explicitly at its own call site.
 ---@param pocketKey string
 function BagController:_enterPocket(pocketKey)
   self._cursor:setPocket(pocketKey)
   self:_refresh()
   self:_reconcile()
-  self._focus = "items"
+  -- Focus is caller-owned; do not mutate self._focus here.
 end
 
 ---@param direction integer -1 for previous, 1 for next
@@ -232,9 +234,8 @@ function BagController:_move(direction)
     return
   end
   -- Cancel is a single bottom button with no horizontal neighbor: only up
-  -- returns to the grid. Pocket switching lives on the grid edges and the
-  -- tab strip, so horizontal input on Cancel must not walk the pocket back
-  -- to where the browse came from.
+  -- returns to the grid. Pocket switching lives on the tab strip, so
+  -- horizontal input on Cancel stays where it is.
   if self._focus == "cancel" then
     if direction == "up" then
       self._focus = "items"
@@ -242,17 +243,15 @@ function BagController:_move(direction)
     return
   end
   local selected = count == 0 and 0 or cursor:position(pocket)
+  -- Horizontal grid edges are inert: without a valid same-row sibling the
+  -- grid keeps its pocket, focus, and selection.
   if direction == "left" then
     if count > 0 and selected % 2 == 1 then
       self:_select(selected - 1)
-    else
-      self:_switchPocket(-1)
     end
   elseif direction == "right" then
     if count > 0 and selected % 2 == 0 and selected + 1 < count then
       self:_select(selected + 1)
-    else
-      self:_switchPocket(1)
     end
   elseif direction == "up" then
     if count > 0 and selected - 2 >= 0 then
@@ -760,9 +759,8 @@ function BagController:_activate(target)
     assert(type(target.pocket) == "string", "pocket targets name their pocket")
     if target.pocket ~= self:_pocket() then
       self:_enterPocket(target.pocket)
-    else
-      self._focus = "items"
     end
+    self._focus = "items"
     return
   end
   if target.kind == "item" then
