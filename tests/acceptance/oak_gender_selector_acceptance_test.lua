@@ -148,4 +148,37 @@ T.tests.production_oak_selector_uses_retail_assets_and_preserves_gender_confirma
   exerciseGender(versionId, 1)
 end
 
+local function advanceToNaming(versionId)
+  local state = compose(versionId)
+  advanceUntil(state, "profile.gender_question")
+  finishDialogue(state)
+  state:keypressed("return")
+  advanceUntilPhase(state, "gender_select")
+  state:keypressed("return")
+  finishDialogue(state)
+  state:keypressed("return")
+  finishDialogue(state)
+  advanceUntilPhase(state, "name_edit")
+  return state
+end
+
+T.tests.production_oak_name_entry_uses_the_retail_naming_surface = function()
+  local state = advanceToNaming(AcceptanceHarness.defaultVersion())
+  local view = state:view()
+  Assert.notNil(view.namingScreen, "Oak name entry must expose the HGSS Naming Screen snapshot")
+  state:dispose()
+end
+
+T.tests.production_oak_name_entry_routes_pointer_keyboard_and_gamepad_to_one_result = function()
+  local state = advanceToNaming(AcceptanceHarness.defaultVersion())
+  Assert.notNil(state:view().namingScreen, "all naming input paths require the Naming Screen boundary")
+  state:textinput("GOLD")
+  state:keypressed("backspace")
+  Assert.equal(state:view().name, "GOL", "physical input and Back must share naming semantics")
+  state:gamepadpressed(nil, "dpdown")
+  state:touchpressed(nil, 0, 0)
+  Assert.equal(state:view().name, "GOL", "directional and pointer input must not bypass text semantics")
+  state:dispose()
+end
+
 return T

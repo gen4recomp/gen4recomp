@@ -11,8 +11,6 @@ local OakProfileFlow = require("game.hgss.src.newgame.OakProfileFlow")
 ---@field assets table<string, unknown>?
 ---@field playerDataContext { charmap: table<string, integer>, frameIndexes: table<integer, boolean> }
 ---@field randomU32 fun(): number
----@field virtualGlyphs string[]
----@field virtualKeyColumns integer?
 
 ---@class OakIntroEvent
 ---@field kind string
@@ -41,9 +39,7 @@ local OakProfileFlow = require("game.hgss.src.newgame.OakProfileFlow")
 ---@field focusTimer integer
 ---@field focusBlinkDelta number
 ---@field name string
----@field virtualGlyphFocus integer
----@field virtualKeys table<integer, { kind: string, glyph: string? }>
----@field virtualKeyColumns integer
+---@field namingScreen table<string, unknown>?
 ---@field nameInputEnabled boolean
 ---@field sourceFrames integer
 ---@field events OakIntroEvent[]
@@ -191,6 +187,17 @@ function OakIntroController:press(action)
   return false
 end
 
+function OakIntroController:activateNameCell(row, column)
+  if self._disposed or self._timeline:phase() ~= "name_edit" then
+    return false
+  end
+  local accepted = self._profile:activateNameCell(row, column)
+  if accepted and self._profile:namingResult() and self._profile:namingResult().kind == "submit" then
+    self._timeline:beginNameComposition()
+  end
+  return accepted
+end
+
 function OakIntroController:inputText(text)
   assert(type(text) == "string", "Oak text input must be a string")
   if self._disposed or self._timeline:phase() ~= "name_edit" then
@@ -230,9 +237,7 @@ function OakIntroController:view()
     focusTimer = timeline.focusTimer,
     focusBlinkDelta = timeline.focusBlinkDelta,
     name = profile.name,
-    virtualGlyphFocus = profile.virtualGlyphFocus,
-    virtualKeys = profile.virtualKeys,
-    virtualKeyColumns = profile.virtualKeyColumns,
+    namingScreen = profile.namingScreen,
     nameInputEnabled = timeline.phase == "name_edit",
     sourceFrames = timeline.sourceFrames,
     events = timeline.events,

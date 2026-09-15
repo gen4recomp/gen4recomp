@@ -5,6 +5,7 @@
 local TextButton = require("libs.ui.src.TextButton")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local PixelScale = require("libs.ui.src.PixelScale")
+local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
 ---@class OakIntroRenderer
 ---@field graphics table<string, unknown>
@@ -231,6 +232,11 @@ function OakIntroRenderer.new(options)
     graphics = graphics,
     text = text,
     choiceText = choiceText,
+    namingScreen = NamingScreenRenderer.new({
+      graphics = graphics,
+      text = text,
+      subjectImages = { male = images[assert(assets.male.image)], female = images[assert(assets.female.image)] },
+    }),
     images = images,
     bindings = bindings,
     revealShader = revealShader,
@@ -408,33 +414,8 @@ function OakIntroRenderer:_draw(view)
     end
   end
   graphics.setColor(1, 1, 1, 1)
-  if view.phase == "name_edit" and view.name ~= "" then
-    local preview = assert(layout.namePreview, "Oak name preview is missing")
-    local textWidth = self.text.textWidth and self.text:textWidth(view.name) or 0
-    self.text:drawText(
-      view.name,
-      PixelScale.snapLogical(preview.x + (preview.width - textWidth) / 2),
-      PixelScale.snapLogical(preview.y + (preview.height - 16) / 2)
-    )
-  end
   if view.phase == "name_edit" then
-    for _, entry in ipairs(layout.nameKeys or layout.nameGrid) do
-      local width = self.text.textWidth and self.text:textWidth(entry.label) or 0
-      self.text:drawText(
-        entry.label,
-        PixelScale.snapLogical(entry.rect.x + (entry.rect.width - width) / 2),
-        PixelScale.snapLogical(entry.rect.y + 6)
-      )
-    end
-    local focused = assert(layout.nameKeys[view.virtualGlyphFocus], "Oak virtual focus is invalid")
-    graphics.setColor(0.8, 0.9, 1, 1)
-    graphics.rectangle(
-      "line",
-      PixelScale.snapLogical(focused.rect.x),
-      PixelScale.snapLogical(focused.rect.y),
-      PixelScale.snapLogical(focused.rect.width),
-      PixelScale.snapLogical(focused.rect.height)
-    )
+    self.namingScreen:draw(assert(view.namingScreen), assert(layout.namingScreen))
   end
 end
 
@@ -476,6 +457,10 @@ function OakIntroRenderer:dispose()
   releaseAll(resources)
   self.images = {}
   self.bindings = {}
+  if self.namingScreen then
+    self.namingScreen:dispose()
+    self.namingScreen = nil
+  end
   if self.logicalCanvas and self.logicalCanvas.release then
     self.logicalCanvas:release()
   end

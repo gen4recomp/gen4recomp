@@ -127,8 +127,6 @@ local function view()
       viewport = { x = 0, y = 0, width = 160, height = 120 },
       subject = { x = 20, y = 10, width = 80, height = 80, scale = 1 },
       message = { x = 0, y = 0, width = 1, height = 1 },
-      nameGrid = {},
-      nameKeys = {},
     },
     pixelSurface = PixelScale.cover({ x = 0, y = 0, width = 160, height = 120 }, 1),
   }
@@ -177,7 +175,6 @@ local function backgroundOnlyController()
       marill_appear = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
       ball_open = { playMode = "forward", loopStartFrameIdx = 0, frames = { { duration = 1 } } },
     },
-    virtualGlyphs = { "A" },
     playerDataContext = { charmap = { A = 1 }, frameIndexes = { [0] = true } },
     randomU32 = function()
       return 0x12345678

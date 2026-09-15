@@ -6,8 +6,8 @@ local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
+local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 
 ---@class OakIntroStateController: OakIntroController
 ---@field start fun(self: OakIntroStateController): boolean
@@ -43,9 +43,7 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@class OakIntroStateLayout
 ---@field viewport OakIntroStateRectangle
 ---@field message OakIntroStateRectangle
----@field nameGrid table<integer, { rect: OakIntroStateRectangle, kind: string, glyph: string? }>
----@field nameKeys table<integer, { rect: OakIntroStateRectangle, kind: string, glyph: string?, label: string? }>
----@field namePreview OakIntroStateRectangle?
+---@field namingScreen table<string, unknown>?
 ---@field stageContent OakIntroStateRectangle
 ---@field dialogue { outerRect: OakIntroStateRectangle, scale: number }?
 ---@field sourceCanvas { scale: number, origin: { x: number, y: number } }?
@@ -55,7 +53,6 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field genderButtons table<string, unknown>?
 ---@field confirmationButtons table<string, unknown>?
 ---@field selectedProfileButton table<string, unknown>?
----@field virtualKeyColumns integer?
 ---@field genderFocus integer
 ---@field subject OakIntroStateSubjectRectangle?
 ---@field safeFrame OakIntroStateRectangle
@@ -158,54 +155,11 @@ local SOURCE_FRAME_HZ = 30
 local SOURCE_FRAME_DURATION = 1 / SOURCE_FRAME_HZ
 local SOURCE_FRAME_EPSILON = 1e-14
 
-local DEFAULT_GLYPHS = {
-  "A",
-  "B",
-  "C",
-  "D",
-  "E",
-  "F",
-  "G",
-  "H",
-  "I",
-  "J",
-  "K",
-  "L",
-  "M",
-  "N",
-  "O",
-  "P",
-  "Q",
-  "R",
-  "S",
-  "T",
-  "U",
-  "V",
-  "W",
-  "X",
-  "Y",
-  "Z",
-}
-
 local function resolvePixelSurface(width, height)
   local bounds = { x = 0, y = 0, width = width, height = height }
   local preferredScale = math.max(1, math.floor(height / 192 + 0.5))
   local outputScale = PixelScale.fitPreferred(bounds, 256, 192, preferredScale)
   return PixelScale.cover(bounds, outputScale)
-end
-
-local function glyphList(value)
-  local result = {}
-  for _, glyph in ipairs(value or DEFAULT_GLYPHS) do
-    assert(type(glyph) == "string", "Oak virtual keyboard glyphs must be strings")
-    local count = 0
-    for _ in Utf8Glyphs.iter(glyph) do
-      count = count + 1
-    end
-    assert(count == 1, "Oak virtual keyboard entries must be one UTF-8 glyph")
-    result[#result + 1] = glyph
-  end
-  return result
 end
 
 local function textInputHost(host)
@@ -290,7 +244,7 @@ function OakIntroState.new(options)
       manifest = options.manifest,
       renderer = renderer --[[@as OakIntroStateRenderer]],
       inputHost = textInputHost(options.textInputHost),
-      glyphs = glyphList(options.glyphs),
+      glyphs = {},
       width = width,
       height = height,
       accumulator = 0,
@@ -482,7 +436,7 @@ function OakIntroState:view()
     surface.logicalViewport.width,
     surface.logicalViewport.height,
     view,
-    self.glyphs,
+    {},
     self.manifest,
     surface.placement.scale --[[@as integer]]
   )
@@ -547,7 +501,11 @@ function OakIntroState:keypressed(key, _, isrepeat)
       self:_sync()
       return
     end
-    self.controller:press(action)
+    if self.controller:view().phase == "name_edit" and CONFIRM_KEYS[key] then
+      self.controller:press("submit")
+    else
+      self.controller:press(action)
+    end
   elseif key == "backspace" then
     self.controller:deleteGlyph()
   end
@@ -581,7 +539,7 @@ end
 
 function OakIntroState:_pointer(x, y)
   local view = self:view()
-  local layout = view.layout
+  local layout = assert(view.layout)
   local surface = assert(view.pixelSurface)
   local logicalX, logicalY = LayoutGeometry.hostToLogical(surface.placement, x, y)
   if logicalX == nil or logicalY == nil then
@@ -610,16 +568,17 @@ function OakIntroState:_pointer(x, y)
       end
     end
   elseif view.phase == "name_edit" then
-    for _, entry in pairs(layout.nameKeys or layout.nameGrid) do
-      if OakIntroLayout.contains(entry.rect, logicalX, logicalY) then
-        if entry.kind == "glyph" then
-          self.controller:inputText(assert(entry.glyph))
-        elseif entry.kind == "delete" then
-          self.controller:deleteGlyph()
-        elseif entry.kind == "confirm" then
-          self.controller:press("submit")
+    local naming = assert(layout.namingScreen, "Oak naming layout is missing")
+    for row = 1, 6 do
+      for column = 1, 13 do
+        local placement = assert(naming.placement)
+        local namingX = (logicalX - placement.frame.x) / placement.scale
+        local namingY = (logicalY - placement.frame.y) / placement.scale
+        if NamingScreenLayout.contains(naming.cells[row][column], namingX, namingY) then
+          self.controller:activateNameCell(row, column)
+          self:_sync()
+          return
         end
-        return
       end
     end
   end
