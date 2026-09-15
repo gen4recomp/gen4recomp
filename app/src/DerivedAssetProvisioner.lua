@@ -18,7 +18,9 @@ local Errors = require("libs.errors.src.Errors")
 
 ---@class DerivedAssetProvisioner
 ---@field session InteractiveCacheBuild
+---@field pool table<string, function> process-owned compiler pool, borrowed
 ---@field retired boolean
+---@field failure unknown|nil first latched infrastructure failure; stops further advancement
 ---@field host table<string, function>?
 local DerivedAssetProvisioner = {}
 DerivedAssetProvisioner.__index = DerivedAssetProvisioner
@@ -56,34 +58,56 @@ function DerivedAssetProvisioner.new(options)
     pool = options.pool,
     sweepEnabled = true,
   })
-  local self = setmetatable({ session = session, retired = false, host = nil }, DerivedAssetProvisioner)
+  local self = setmetatable(
+    { session = session, pool = options.pool, retired = false, failure = nil, host = nil },
+    DerivedAssetProvisioner
+  )
   local function guard()
     if self.retired then
       Errors.raise("DERIVED_ASSETS_RETIRED", "derived-asset provisioner is retired", {})
     end
     return assert(self.session, "derived-asset session is unavailable")
   end
+  local function checkFailure()
+    if self.failure ~= nil then
+      error(self.failure, 0)
+    end
+  end
   self.host = {
     requestMilestone = function(name, urgency)
-      return guard():requestMilestone(name, urgency)
+      local active = guard()
+      checkFailure()
+      return active:requestMilestone(name, urgency)
     end,
     requestField = function(mapId, urgency)
-      return guard():requestField(mapId, urgency)
+      local active = guard()
+      checkFailure()
+      return active:requestField(mapId, urgency)
     end,
     ensureField = function(mapId)
-      return guard():ensureField(mapId)
+      local active = guard()
+      checkFailure()
+      return active:ensureField(mapId)
     end,
     requestCell = function(descriptor, urgency)
-      return guard():requestCell(descriptor, urgency)
+      local active = guard()
+      checkFailure()
+      return active:requestCell(descriptor, urgency)
     end,
     ensureCell = function(descriptor)
-      return guard():ensureCell(descriptor)
+      local active = guard()
+      checkFailure()
+      return active:ensureCell(descriptor)
     end,
     requestMonPortraitPage = function(pageId, urgency)
-      return guard():requestMonPortraitPage(pageId, urgency)
+      local active = guard()
+      checkFailure()
+      return active:requestMonPortraitPage(pageId, urgency)
     end,
     status = function()
-      return guard():status()
+      local active = guard()
+      checkFailure()
+      return active:status()
     end,
   }
   return self
@@ -96,9 +120,27 @@ function DerivedAssetProvisioner:gameHost()
 end
 
 function DerivedAssetProvisioner:update()
-  if not self.retired then
-    self.session:update()
+  if self.retired or self.failure ~= nil then
+    return
   end
+  local ok, err = pcall(function()
+    self.session:update()
+  end)
+  if ok then
+    return
+  end
+  -- A recorded pool infrastructure failure latches for the preparation view
+  -- and stops further advancement. Anything else is a programming error and
+  -- keeps propagating instead of becoming visible state.
+  local pool = assert(self.pool, "derived-asset pool is unavailable")
+  if type(pool.diagnostics) == "function" then
+    local diagOk, diagnostics = pcall(pool.diagnostics, pool)
+    if diagOk and type(diagnostics) == "table" and diagnostics.error ~= nil then
+      self.failure = diagnostics.error
+      return
+    end
+  end
+  error(err, 0)
 end
 
 function DerivedAssetProvisioner:dispose()

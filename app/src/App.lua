@@ -105,41 +105,6 @@ function App._retireSelection()
   end
 end
 
-local function launchHgss(versionId)
-  local function onExit(result)
-    if result and result.kind == "quit" then
-      love.event.quit(0)
-    end
-  end
-  local provisioner
-  local ok, result = pcall(function()
-    provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
-    return HgssGame.new({
-      versionId = versionId,
-      onExit = onExit,
-      development = App.opts.dev,
-      derivedAssets = provisioner:gameHost(),
-    })
-  end)
-  if not ok then
-    if provisioner then
-      provisioner:dispose()
-    end
-    error(result, 0)
-  end
-  -- Retire old source interest before disposing old game consumers, then
-  -- hand the new session to the running game. Failures leave the previous
-  -- selection untouched.
-  App._retireSelection()
-  App.provisioner = assert(provisioner)
-  local stateOk, stateError = pcall(App.setState, result)
-  if not stateOk then
-    App.provisioner = nil
-    provisioner:dispose()
-    error(stateError, 0)
-  end
-end
-
 -- Launches the menu on the current provisioner without touching source
 -- ownership: menu/Oak/field transitions within one selection never rotate
 -- the epoch or restart the sweep.
@@ -248,7 +213,7 @@ end
 
 function App._bootMainMenu(versions)
   assert(type(versions) == "table" and #versions == 1, "Main Menu needs exactly one selected version")
-  launchHgss(versions[1])
+  App._selectVersion(versions[1])
 end
 
 function App._bootExisting()
@@ -276,6 +241,21 @@ function App.update(dt)
   end
   if App.provisioner then
     App.provisioner:update()
+  elseif App.pool then
+    -- No session is attached (selector, waiting view, cancelled preparation):
+    -- keep the process pool's physical lifecycle moving exactly once so old
+    -- work settles and the source-close barrier progresses. A recorded
+    -- infrastructure failure stays for the waiting view to display instead
+    -- of raising here; anything else keeps propagating.
+    local ok, err = pcall(function()
+      App.pool:update()
+    end)
+    if not ok then
+      local diagOk, diagnostics = pcall(App.pool.diagnostics, App.pool)
+      if not (diagOk and type(diagnostics) == "table" and diagnostics.error ~= nil) then
+        error(err, 0)
+      end
+    end
   end
   if App.state and App.state.update then
     App.state:update(dt)
@@ -318,29 +298,29 @@ function App.filedropped(file)
   if App.importer and App.importer:isBusy() then
     return
   end
-  if App.provisioner ~= nil then
-    -- A selected source may still hold raw readers in its workers: quiesce
-    -- the pool and wait visibly before the importer mutates the dump.
+  local waiting = App.state
+  if waiting ~= nil and getmetatable(waiting) == CachePreparationState and waiting.kind == "quiescence" then
+    -- A replacement dropped while waiting stays queued behind quiescence;
+    -- reentering import here would retire the selection under the wait.
+    return
+  end
+  if App.pool ~= nil then
+    -- Retire selected interest before the barrier so no new admission can
+    -- enter the quiescing pool, then wait visibly for actual source closure.
+    -- The import starts exactly once from successful barrier completion, on
+    -- every raw path including the selector with no attached provisioner.
     -- Progress and input keep pumping while the readers drain.
-    if App.pool ~= nil then
-      App.pool:quiesce()
-    end
+    App._retireSelection()
+    App.pool:quiesce()
     local epoch = App.epoch or 0
     App.setState(CachePreparationState.new({
       kind = "quiescence",
       epoch = epoch,
-      current = function()
-        return App.provisioner
-      end,
       pool = App.pool,
-      retire = function()
-        App._retireSelection()
-      end,
       isCurrent = function(selected)
         return App.epoch == selected
       end,
       onReady = function()
-        App._retireSelection()
         App._startImport()
         if App.importer then
           App.importer:filedropped(file)

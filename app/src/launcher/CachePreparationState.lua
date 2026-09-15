@@ -8,9 +8,7 @@
 ---@field kind "bootstrap"|"quiescence"
 ---@field epoch integer selected source epoch guarded against stale completion
 ---@field provisioner? table<string, function> bootstrap only: the borrowed selected session host
----@field current? fun(): table<string, unknown> quiescence only: reads the owner's live provisioner
 ---@field pool table<string, unknown>? quiescence only: the borrowed process pool, required
----@field retire? fun() quiescence only: retires the owner's drained selection
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
 ---@field onReady fun() exactly-once transfer on readiness
 ---@field onCancel fun() return to the owning selection
@@ -19,10 +17,7 @@
 ---@field kind string
 ---@field epoch integer
 ---@field provisioner table<string, function>?
----@field entry table<string, unknown>?
----@field current fun(): table<string, unknown>?
 ---@field pool table<string, unknown>?
----@field retire fun()?
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onReady fun()
 ---@field onCancel fun()
@@ -30,7 +25,6 @@
 ---@field fired boolean
 ---@field dead boolean
 ---@field error unknown?
----@field retireTick integer?
 local CachePreparationState = {}
 CachePreparationState.__index = CachePreparationState
 
@@ -49,19 +43,14 @@ function CachePreparationState.new(options)
   if options.kind == "bootstrap" then
     assert(type(options.provisioner) == "table", "bootstrap preparation requires the selected session host")
   else
-    assert(type(options.current) == "function", "quiescence preparation reads the live provisioner")
     assert(type(options.pool) == "table", "quiescence preparation requires the process pool")
     assert(type(options.pool.isQuiescent) == "function", "quiescence preparation requires pool quiescence")
-    assert(type(options.retire) == "function", "quiescence preparation retires the drained selection")
   end
   return setmetatable({
     kind = options.kind,
     epoch = options.epoch,
     provisioner = options.provisioner,
-    entry = options.kind == "quiescence" and options.current() or options.provisioner,
-    current = options.current,
     pool = options.pool,
-    retire = options.retire,
     isCurrent = options.isCurrent,
     onReady = options.onReady,
     onCancel = options.onCancel,
@@ -69,7 +58,6 @@ function CachePreparationState.new(options)
     fired = false,
     dead = false,
     error = nil,
-    retireTick = nil,
   }, CachePreparationState)
 end
 
@@ -92,34 +80,38 @@ function CachePreparationState:_pollBootstrap()
     self.error = failure
     return
   end
+  -- A latched producer failure surfaces even when the milestone probe stays
+  -- pending: the public host observation carries the recorded cause.
+  local statusOk, statusErr = pcall(host.status)
+  if not statusOk then
+    self.error = statusErr
+    return
+  end
   if ready then
     self:_fire()
   end
 end
 
 function CachePreparationState:_pollQuiescence()
-  assert(self.current, "quiescence preparation reads the live provisioner")
-  local current = self.current()
-  if current ~= self.entry then
-    -- The selection was cleared or rotated externally (a cleared source is
-    -- quiescent), or retired by this state on an earlier tick. Our own
-    -- retirement settles one tick before transfer so pumping observes the
-    -- wait instead of skipping it.
-    if self.retireTick == nil or self.tick > self.retireTick then
-      self:_fire()
-    end
-    return
-  end
   local pool = assert(self.pool, "quiescence preparation requires the process pool")
-  if self.entry ~= nil then
-    local isQuiescent = assert(pool.isQuiescent, "quiescence preparation requires pool quiescence")
-    -- The pool reports quiescence through a plain dot-called operation.
-    local quiescentOk, quiescent = pcall(isQuiescent, pool)
-    if quiescentOk and quiescent then
-      assert(self.retire, "quiescence preparation retires the drained selection")
-      self.retire()
-      self.retireTick = self.tick
+  -- A recorded infrastructure failure stays visible instead of waiting out a
+  -- barrier that can never complete; raw import never starts past it.
+  local diagnosticsFn = pool.diagnostics
+  if type(diagnosticsFn) == "function" then
+    local diagOk, diagnostics = pcall(diagnosticsFn, pool)
+    if diagOk and type(diagnostics) == "table" and diagnostics.error ~= nil then
+      self.error = diagnostics.error
+      return
     end
+  end
+  local isQuiescent = assert(pool.isQuiescent, "quiescence preparation requires pool quiescence")
+  -- The pool reports quiescence through a plain dot-called operation.
+  local quiescentOk, quiescent = pcall(isQuiescent, pool)
+  if not quiescentOk then
+    error(quiescent, 0)
+  end
+  if quiescent then
+    self:_fire()
   end
 end
 

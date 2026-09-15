@@ -495,11 +495,12 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     App.opts = {
       test = false,
       actors = false,
-      dev = false,
+      dev = true,
     }
     -- `love app/` mounts only app/ as its product VFS root. The repository
     -- source tree stands in for the packaged producer tree in this source-run
-    -- acceptance, while App remains on its product (no checkout metadata) path.
+    -- acceptance, and the boot selects the development generation the runner
+    -- prepared, so the single selection flow launches the menu synchronously.
     ProducerFingerprint.appBackend = function()
       return ProducerFingerprint.checkoutBackend(love.filesystem.getSourceBaseDirectory())
     end
