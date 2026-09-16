@@ -434,6 +434,57 @@ function T.check_rejects_a_foreign_generation_without_mutation()
   end)
 end
 
+-- A present report without requested readiness still fails the command: the
+-- runner maps actual scope satisfaction to its exit status instead of
+-- treating any report table as success.
+function T.prepare_without_requested_readiness_fails_instead_of_succeeding()
+  withRunnerHarness(function(quitCode)
+    RomImporter.isReady = function()
+      return true
+    end
+    package.loaded["romdump.src.source.RomFs"] = {
+      open = function()
+        return {
+          metadata = function()
+            return { sha1 = string.rep("b", 40) }
+          end,
+          close = function() end,
+        }
+      end,
+    }
+    package.loaded["romdump.src.ProducerFingerprint"] = {
+      checkoutBackend = function()
+        return {}
+      end,
+      appBackend = function()
+        return {}
+      end,
+      compute = function()
+        return "d" .. string.rep("1", 64)
+      end,
+    }
+    package.loaded["romdump.src.CacheBuilder"] = {
+      prepareVersion = function()
+        return {
+          complete = false,
+          requestedReady = false,
+          exclusions = {},
+          failures = { "map:99999: unknown canonical target" },
+          counts = { planned = 1, successful = 0, failed = 1, cancelled = 0, excluded = 0 },
+        }
+      end,
+    }
+    Runner.load({
+      command = "prepare-cache",
+      version = "heartgold",
+      requirements = { "map:99999" },
+      rebuild = {},
+      dev = true,
+    })
+    Assert.equal(quitCode(), 1, "an unreadied scope fails even when a report table exists")
+  end)
+end
+
 return {
   beforeAll = captureOutput,
   afterAll = restoreOutput,

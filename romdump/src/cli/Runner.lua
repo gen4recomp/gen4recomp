@@ -360,6 +360,40 @@ function Runner._runPrepareCache()
     print("prepare-cache: " .. version .. " failed: " .. Errors.format(err))
     return love.event.quit(1)
   end
+  if report.requestedReady ~= true then
+    print(
+      string.format(
+        "prepare-cache: %s not ready (requestedReady=%s complete=%s planned=%d successful=%d failed=%d cancelled=%d excluded=%d)",
+        version,
+        tostring(report.requestedReady),
+        tostring(report.complete),
+        report.counts.planned,
+        report.counts.successful,
+        report.counts.failed,
+        report.counts.cancelled,
+        report.counts.excluded
+      )
+    )
+    return love.event.quit(1)
+  end
+  for _, requirement in ipairs(requirements) do
+    if requirement == "complete" and report.complete ~= true then
+      print(
+        string.format(
+          "prepare-cache: %s ready=%s complete=%s planned=%d successful=%d failed=%d cancelled=%d excluded=%d",
+          version,
+          tostring(report.requestedReady),
+          tostring(report.complete),
+          report.counts.planned,
+          report.counts.successful,
+          report.counts.failed,
+          report.counts.cancelled,
+          report.counts.excluded
+        )
+      )
+      return love.event.quit(1)
+    end
+  end
   print(
     string.format(
       "prepare-cache: %s ready=%s complete=%s planned=%d successful=%d failed=%d cancelled=%d excluded=%d",

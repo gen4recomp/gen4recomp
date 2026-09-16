@@ -26,6 +26,7 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field ready boolean
 ---@field validated boolean
 ---@field failure string|nil
+---@field causeJobKey string|nil blocking leaf identity when a dependency failed
 ---@field poolState string|nil last observed pool state
 
 ---@class InteractiveCacheBuild
@@ -327,6 +328,7 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       ready = false,
       validated = false,
       failure = nil,
+      causeJobKey = nil,
       poolState = nil,
     }
     self.byKey[jobKey] = entry
@@ -605,6 +607,7 @@ function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
         .. depEntry.jobKey
         .. " failed: "
         .. depEntry.failure
+      entry.causeJobKey = depEntry.jobKey
       trail[entry.jobKey] = nil
       return "settled"
     end
@@ -626,6 +629,7 @@ function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
           .. ":"
           .. dep.key
           .. " is missing"
+        entry.causeJobKey = dep.kind .. ":" .. dep.key
       end
       trail[entry.jobKey] = nil
       return "settled"
@@ -1151,6 +1155,7 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
       leaf.submitted = true
     end
     leaf.failure = nil
+    leaf.causeJobKey = nil
     leaf.ready = false
     leaf.validated = false
     leaf.poolState = nil
@@ -1159,6 +1164,7 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
   end
   for _, parent in ipairs(blocked) do
     parent.failure = nil
+    parent.causeJobKey = nil
     if priority < parent.priority then
       parent.urgency = urgency
       parent.priority = priority
@@ -1509,6 +1515,34 @@ function InteractiveCacheBuild:update()
   end
   self:_publishMilestone("bootstrap")
   self:_publishMilestone("field-core")
+end
+
+---@return { kind: string, key: string, jobKey: string, state: string, reused: boolean, error: string|nil, causeJobKey: string|nil }[]
+function InteractiveCacheBuild:outcomes()
+  local list = {}
+  for _, entry in ipairs(self.interest) do
+    local state
+    if entry.failure ~= nil then
+      state = "failed"
+    elseif entry.ready then
+      state = "successful"
+    else
+      state = "pending"
+    end
+    list[#list + 1] = {
+      kind = entry.kind,
+      key = entry.key,
+      jobKey = entry.jobKey,
+      state = state,
+      reused = entry.ready and not entry.submitted,
+      error = entry.failure,
+      causeJobKey = entry.causeJobKey,
+    }
+  end
+  table.sort(list, function(left, right)
+    return left.jobKey < right.jobKey
+  end)
+  return list
 end
 
 ---@return table<string, unknown>

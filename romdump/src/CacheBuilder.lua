@@ -31,7 +31,7 @@ local SCOPES = {
   complete = true,
 }
 
-local PROFILE_SCHEMA = "g4-cache-execution-v1"
+local PROFILE_SCHEMA = "g4-cache-execution-v2"
 
 local epochCounter = 0
 
@@ -139,10 +139,21 @@ local function jsonString(value)
     .. '"'
 end
 
+-- Explicit JSON null for profile rows: Lua tables cannot hold nil, so
+-- missing measurements use this marker to encode as null instead of being
+-- omitted. Report outcomes (Lua tables) keep plain nil.
+local function jsonNullToString()
+  return "null"
+end
+
+local JSON_NULL = setmetatable({}, {
+  __tostring = jsonNullToString,
+})
+
 ---@param value unknown
 ---@return string
 local function jsonValue(value)
-  if value == nil then
+  if value == nil or value == JSON_NULL then
     return "null"
   end
   local kind = type(value)
@@ -284,33 +295,72 @@ local function profileHeader(identity, command, requirements, epoch)
   }
 end
 
--- Resolve per-job observation timings from the pool's published diagnostics
--- when the pool exposes them; otherwise every timing is null with a reason,
--- never zero masquerading as a measurement.
+-- Resolve per-job observation timings from the pool's exact outcome
+-- snapshot when it exposes one; otherwise every timing is null with a
+-- reason, never zero masquerading as a measurement. The bounded diagnostic
+-- ring is never profiling authority.
 ---@param pool CompilerPool
 ---@param jobKey string
 ---@param observed table<string, table<string, unknown>> timings accumulated across drain rounds
 ---@return table<string, unknown>
 local function observeTimings(pool, jobKey, observed)
-  local known = observed[jobKey]
-  if known ~= nil then
+  local function fromOutcome(outcome)
+    if type(outcome) ~= "table" then
+      return nil
+    end
     return {
-      compileSeconds = known.compileSeconds,
-      compileSecondsReason = known.compileSeconds == nil and "streaming input/output cannot be separated reliably"
-        or nil,
-      stageSeconds = known.stageSeconds,
-      stageSecondsReason = known.stageSeconds == nil and "streaming input/output cannot be separated reliably" or nil,
+      compileSeconds = outcome.compileSeconds,
+      compileSecondsReason = outcome.compileSeconds == nil and "timing is unavailable for this job" or nil,
+      stageSeconds = outcome.stageSeconds,
+      stageSecondsReason = outcome.stageSeconds == nil and "timing is unavailable for this job" or nil,
       publicationSeconds = nil,
       publicationSecondsReason = "publication time is not separated from worker reports",
-      workSeconds = known.workSeconds,
-      workSecondsReason = known.workSeconds == nil and "timing is unavailable for this job" or nil,
-      stagedBytes = known.stagedBytes,
-      stagedBytesReason = known.stagedBytes == nil and "timing is unavailable for this job" or nil,
-      timingReason = nil,
-      timingReasonReason = "per-job timing detail is not published by the pool",
-      workerId = known.workerId,
-      workerIdReason = known.workerId == nil and "the job did not execute through the compiler pool" or nil,
+      workSeconds = outcome.workSeconds,
+      workSecondsReason = outcome.workSeconds == nil and "timing is unavailable for this job" or nil,
+      stagedBytes = outcome.stagedBytes,
+      stagedBytesReason = outcome.stagedBytes == nil and "timing is unavailable for this job" or nil,
+      timingReason = outcome.timingReason,
+      timingReasonReason = outcome.timingReason == nil and "per-job timing detail is not published by the pool" or nil,
+      workerId = outcome.workerId,
+      workerIdReason = outcome.workerId == nil and "the job did not execute through the compiler pool" or nil,
     }
+  end
+  if type(pool.jobOutcome) == "function" then
+    local ok, outcome = pcall(pool.jobOutcome, pool, jobKey)
+    if ok and type(outcome) == "table" then
+      local timings = fromOutcome(outcome)
+      if timings ~= nil then
+        return timings
+      end
+    end
+    local known = observed[jobKey]
+    if known ~= nil then
+      local timings = fromOutcome(known)
+      if timings ~= nil then
+        return timings
+      end
+    end
+  else
+    local known = observed[jobKey]
+    if known ~= nil then
+      return {
+        compileSeconds = known.compileSeconds,
+        compileSecondsReason = known.compileSeconds == nil and "streaming input/output cannot be separated reliably"
+          or nil,
+        stageSeconds = known.stageSeconds,
+        stageSecondsReason = known.stageSeconds == nil and "streaming input/output cannot be separated reliably" or nil,
+        publicationSeconds = nil,
+        publicationSecondsReason = "publication time is not separated from worker reports",
+        workSeconds = known.workSeconds,
+        workSecondsReason = known.workSeconds == nil and "timing is unavailable for this job" or nil,
+        stagedBytes = known.stagedBytes,
+        stagedBytesReason = known.stagedBytes == nil and "timing is unavailable for this job" or nil,
+        timingReason = nil,
+        timingReasonReason = "per-job timing detail is not published by the pool",
+        workerId = known.workerId,
+        workerIdReason = known.workerId == nil and "the job did not execute through the compiler pool" or nil,
+      }
+    end
   end
   local empty = {
     compileSeconds = nil,
@@ -370,8 +420,11 @@ local function writeProfileLine(handle, record)
   if not ok then
     return Errors.new("PROFILE_ENCODE_FAILED", "execution evidence cannot be encoded", {})
   end
-  local writeOk, writeErr = pcall(handle.write, handle, encoded .. "\n")
-  if not writeOk then
+  local callOk, result, writeErr = pcall(handle.write, handle, encoded .. "\n")
+  if not callOk then
+    return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be written: " .. tostring(result), {})
+  end
+  if result == nil then
     return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be written: " .. tostring(writeErr), {})
   end
   return nil
@@ -433,6 +486,7 @@ local function checkRebuild(rebuild, parsed, ordered, dev)
     end
   end
   local jobs = {}
+  local seenRebuild = {}
   for _, text in ipairs(rebuild) do
     local entry, err = CacheBuilder.parseRequirement(text)
     if entry == nil then
@@ -447,7 +501,10 @@ local function checkRebuild(rebuild, parsed, ordered, dev)
     if not exhaustive and not required[jobKey] then
       return nil, Errors.new("INVALID_REBUILD", "rebuild job is not in the requested scope: " .. text, { job = text })
     end
-    jobs[#jobs + 1] = { kind = kind, key = key, jobKey = jobKey }
+    if not seenRebuild[jobKey] then
+      seenRebuild[jobKey] = true
+      jobs[#jobs + 1] = { kind = kind, key = key, jobKey = jobKey }
+    end
   end
   return jobs
 end
@@ -469,9 +526,27 @@ end
 local function drainSession(pool, session, versionId, log, observed)
   local rounds = 0
   local lastReady, lastFailed = -1, -1
-  -- The pool keeps only recent timings; accumulate every published job so
-  -- the opt-in execution log covers the whole scope, not a trailing sample.
+  -- Exact outcome snapshots stay available until the generation is retired,
+  -- so accumulate every terminal fact by canonical key instead of sampling
+  -- the bounded diagnostic ring.
   local function accumulate()
+    if type(pool.jobOutcome) == "function" and type(session.outcomes) == "function" then
+      local okOutcomes, list = pcall(session.outcomes, session)
+      if okOutcomes and type(list) == "table" then
+        for _, item in ipairs(list) do
+          if type(item) == "table" and type(item.jobKey) == "string" and observed[item.jobKey] == nil then
+            local okOutcome, snapshot = pcall(pool.jobOutcome, pool, item.jobKey)
+            if okOutcome and type(snapshot) == "table" then
+              observed[item.jobKey] = snapshot
+            end
+          end
+        end
+      end
+      return
+    end
+    if type(pool.jobOutcome) == "function" then
+      return
+    end
     if type(pool.diagnostics) ~= "function" then
       return
     end
@@ -536,7 +611,11 @@ local function drainSession(pool, session, versionId, log, observed)
       accumulate()
       return status
     end
-    pool:drain()
+    if type(pool.waitForProgress) == "function" then
+      pool:waitForProgress()
+    else
+      pool:drain()
+    end
     accumulate()
   end
 end
@@ -598,8 +677,11 @@ local function runScopedVersion(versionId, options, command)
         schema = PROFILE_SCHEMA,
         versionId = versionId,
         generationId = identity.generationId,
-        complete = true,
+        enumerationComplete = true,
         requestedReady = true,
+        complete = true,
+        auditPassed = true,
+        attestationPublished = false,
         planned = 0,
         successful = 0,
         failed = 0,
@@ -616,10 +698,15 @@ local function runScopedVersion(versionId, options, command)
         end
       end
       return {
+        enumerationComplete = true,
         complete = true,
         requestedReady = true,
+        auditPassed = true,
+        attestationPublished = false,
         exclusions = {},
+        sourceExclusions = {},
         failures = {},
+        outcomes = {},
         counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
       }
     end
@@ -642,9 +729,17 @@ local function runScopedVersion(versionId, options, command)
   end
   local function closeProfile()
     if ownsProfile and profileHandle ~= nil then
-      pcall(profileHandle.close, profileHandle)
+      local handle = profileHandle
       profileHandle = nil
+      local ok, result, closeErr = pcall(handle.close, handle)
+      if not ok then
+        return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be closed: " .. tostring(result), {})
+      end
+      if result == nil then
+        return Errors.new("PROFILE_WRITE_FAILED", "execution evidence cannot be closed: " .. tostring(closeErr), {})
+      end
     end
+    return nil
   end
 
   epochCounter = epochCounter + 1
@@ -739,6 +834,44 @@ local function runScopedVersion(versionId, options, command)
   assert(status ~= nil, "a settled session reports its status")
   assert(session ~= nil and pool ~= nil, "a settled scope owns its pool and session")
 
+  -- Snapshot exact pool facts for every known job before retiring the owner
+  -- that retains them. The bounded diagnostic ring never decides evidence.
+  if type(pool.jobOutcome) == "function" then
+    for _, jobKey in ipairs(requestedJobs) do
+      if observedTimings[jobKey] == nil then
+        local okOutcome, snapshot = pcall(pool.jobOutcome, pool, jobKey)
+        if okOutcome and type(snapshot) == "table" then
+          observedTimings[jobKey] = snapshot
+        end
+      end
+    end
+  end
+  local sessionOutcomes = nil
+  local sessionByKey = {}
+  if type(session.outcomes) == "function" then
+    local okOutcomes, list = pcall(session.outcomes, session)
+    if okOutcomes and type(list) == "table" then
+      sessionOutcomes = list
+      for _, item in ipairs(list) do
+        if type(item) == "table" and type(item.jobKey) == "string" then
+          sessionByKey[item.jobKey] = item
+          if type(pool.jobOutcome) == "function" and observedTimings[item.jobKey] == nil then
+            local okOutcome, snapshot = pcall(pool.jobOutcome, pool, item.jobKey)
+            if okOutcome and type(snapshot) == "table" then
+              observedTimings[item.jobKey] = snapshot
+            end
+          end
+        end
+      end
+    end
+  end
+  local enumerationComplete = status.enumerationComplete
+  if enumerationComplete == nil then
+    enumerationComplete = true
+  else
+    enumerationComplete = enumerationComplete == true
+  end
+
   -- Split session failures into source-planned exclusions, accepted map
   -- compile exclusions, and genuine failures. Only map compile failures are
   -- ever accepted by the exclusion option; other families always fail.
@@ -766,6 +899,46 @@ local function runScopedVersion(versionId, options, command)
         noteExclusion(message)
       else
         failures[#failures + 1] = message
+      end
+    end
+  end
+  -- Exact session dispositions classify their own failures without substring
+  -- matching: a failed disposition whose error is a source exclusion (or an
+  -- accepted map compile exclusion) is an exclusion, otherwise a failure.
+  -- Doubles without an outcome inventory keep the string-matching behavior
+  -- below.
+  if sessionOutcomes ~= nil then
+    for _, item in ipairs(sessionOutcomes) do
+      if item.state == "failed" and type(item.error) == "string" then
+        local message = item.error
+        assert(type(message) == "string", "failed dispositions carry an error string")
+        local already = false
+        for _, existing in ipairs(failures) do
+          if existing == message then
+            already = true
+            break
+          end
+        end
+        if not already then
+          for _, existing in ipairs(exclusions) do
+            if existing == message then
+              already = true
+              break
+            end
+          end
+        end
+        if not already then
+          if isSourceExclusion(message) then
+            noteExclusion(message)
+          else
+            local kind = attributeKind(message, requestedJobs)
+            if kind == "map" and options.allowCompileExclusions then
+              noteExclusion(message)
+            else
+              failures[#failures + 1] = message
+            end
+          end
+        end
       end
     end
   end
@@ -820,139 +993,348 @@ local function runScopedVersion(versionId, options, command)
     noteExclusion(reason)
   end
 
-  local ready = status.ready or 0
-  local failed = #failures
-  local excluded = #exclusions
-  local planned = status.enumerated or (ready + failed + excluded)
-  local successful = ready
-  if successful < 0 then
-    successful = 0
-  end
-  local cancelled = planned - successful - failed - excluded
-  if cancelled < 0 then
-    cancelled = 0
+  -- Refresh the exact inventory after the readiness re-query: re-querying
+  -- can register new interests (milestone members, dependencies).
+  if type(session.outcomes) == "function" then
+    local okOutcomes, list = pcall(session.outcomes, session)
+    if okOutcomes and type(list) == "table" then
+      sessionOutcomes = list
+      sessionByKey = {}
+      for _, item in ipairs(list) do
+        if type(item) == "table" and type(item.jobKey) == "string" then
+          sessionByKey[item.jobKey] = item
+          if type(pool.jobOutcome) == "function" and observedTimings[item.jobKey] == nil then
+            local okOutcome, snapshot = pcall(pool.jobOutcome, pool, item.jobKey)
+            if okOutcome and type(snapshot) == "table" then
+              observedTimings[item.jobKey] = snapshot
+            end
+          end
+        end
+      end
+    end
   end
 
-  -- Observation rows cover the explicitly requested canonical jobs, every
-  -- attributed failure or exclusion, and every job the pool published while
-  -- draining. Observation never changes job identity and carries no payloads.
+  -- One canonical ledger: every planned key appears exactly once. Sources are
+  -- the requested closure, the exact session inventory, observed pool facts,
+  -- and attributed failure/exclusion identities. Cancellation is explicit
+  -- for work that never reached a terminal disposition, never a residual
+  -- count subtraction.
+  local plannedSet = {}
+  local function notePlanned(jobKey)
+    if type(jobKey) == "string" and jobKey ~= "" then
+      plannedSet[jobKey] = true
+    end
+  end
+  for _, jobKey in ipairs(requestedJobs) do
+    notePlanned(jobKey)
+  end
+  for jobKey in pairs(sessionByKey) do
+    notePlanned(jobKey)
+  end
+  for jobKey in pairs(observedTimings) do
+    notePlanned(jobKey)
+  end
+  local failedByKey, excludedByKey = {}, {}
+  local function mapMessageToPlanned(message, target)
+    for jobKey in pairs(plannedSet) do
+      if message:find(jobKey, 1, true) ~= nil then
+        target[jobKey] = message
+      end
+    end
+    for _, jobKey in ipairs(requestedJobs) do
+      if message:find(jobKey, 1, true) ~= nil then
+        target[jobKey] = message
+      end
+    end
+  end
+  for _, message in ipairs(failures) do
+    mapMessageToPlanned(message, failedByKey)
+  end
+  for _, message in ipairs(exclusions) do
+    local kind = message:match("^([%w%-]+):")
+    local key = kind ~= nil and message:sub(#kind + 2):match("^([^:]+)") or nil
+    local mapped = false
+    if kind ~= nil and key ~= nil and ArtifactState.KINDS[kind] then
+      local jobKey = kind .. ":" .. key
+      if plannedSet[jobKey] or sessionByKey[jobKey] ~= nil then
+        excludedByKey[jobKey] = message
+        mapped = true
+      end
+    end
+    if not mapped then
+      mapMessageToPlanned(message, excludedByKey)
+    end
+  end
+  -- Exact dispositions win over substring matching whenever they exist.
+  for jobKey, item in pairs(sessionByKey) do
+    if item.state == "failed" and type(item.error) == "string" then
+      if excludedByKey[jobKey] == nil and failedByKey[jobKey] == nil then
+        if isSourceExclusion(item.error) then
+          excludedByKey[jobKey] = item.error
+        else
+          local kind = attributeKind(item.error, requestedJobs)
+          if kind == "map" and options.allowCompileExclusions then
+            excludedByKey[jobKey] = item.error
+          else
+            failedByKey[jobKey] = item.error
+          end
+        end
+      end
+    end
+  end
+  for jobKey in pairs(plannedSet) do
+    notePlanned(jobKey)
+  end
+  for jobKey in pairs(failedByKey) do
+    notePlanned(jobKey)
+  end
+  for jobKey in pairs(excludedByKey) do
+    notePlanned(jobKey)
+  end
+
+  local dispositions = {}
+  for jobKey in pairs(plannedSet) do
+    local kind, key = jobKey:match("^([^:]+):(.+)$")
+    if kind ~= nil and key ~= nil then
+      local state, reused, err, causeJobKey = nil, false, nil, nil
+      if failedByKey[jobKey] ~= nil then
+        state = "failed"
+        err = failedByKey[jobKey]
+      elseif excludedByKey[jobKey] ~= nil then
+        state = "excluded"
+        err = excludedByKey[jobKey]
+      else
+        local sessionItem = sessionByKey[jobKey]
+        if sessionItem ~= nil then
+          if sessionItem.state == "failed" then
+            state = "failed"
+            err = sessionItem.error
+          elseif sessionItem.state == "successful" then
+            state = "successful"
+            reused = sessionItem.reused == true
+          else
+            state = "cancelled"
+            causeJobKey = sessionItem.causeJobKey
+          end
+          if sessionItem.causeJobKey ~= nil then
+            causeJobKey = sessionItem.causeJobKey
+          end
+        elseif observedTimings[jobKey] ~= nil then
+          local snapshot = observedTimings[jobKey]
+          if type(snapshot) == "table" and snapshot.state == "failed" then
+            state = "failed"
+            err = snapshot.error ~= nil and tostring(snapshot.error) or (jobKey .. ": compiler job failed")
+          else
+            state = "successful"
+            reused = false
+          end
+        else
+          state = "cancelled"
+        end
+      end
+      -- A reused valid job never fabricates pool timing: reuse is set when
+      -- the session reports success without pool execution.
+      if state == "successful" and reused == false then
+        local sessionItem = sessionByKey[jobKey]
+        if sessionItem ~= nil and sessionItem.reused == true then
+          reused = true
+        elseif type(pool.jobOutcome) == "function" then
+          local okOutcome, snapshot = pcall(pool.jobOutcome, pool, jobKey)
+          if not (okOutcome and type(snapshot) == "table") then
+            reused = true
+          end
+        elseif observedTimings[jobKey] == nil then
+          reused = true
+        end
+      end
+      dispositions[jobKey] = {
+        kind = kind,
+        key = key,
+        jobKey = jobKey,
+        state = state,
+        reused = reused,
+        error = err,
+        causeJobKey = causeJobKey,
+      }
+    end
+  end
+
+  local planned, successful, failed, cancelled, excluded = 0, 0, 0, 0, 0
+  for _, item in pairs(dispositions) do
+    planned = planned + 1
+    if item.state == "successful" then
+      successful = successful + 1
+    elseif item.state == "failed" then
+      failed = failed + 1
+    elseif item.state == "cancelled" then
+      cancelled = cancelled + 1
+    elseif item.state == "excluded" then
+      excluded = excluded + 1
+    end
+  end
+
+  -- Observation rows cover every ledger disposition exactly once, ordered
+  -- by canonical job key. Observation never changes job identity and
+  -- carries no payloads. Unmeasured metrics stay null with reasons.
   local rows = {}
   local rowKeys = {}
-  local function addRow(kind, key, outcome, cause)
-    local jobKey = kind .. ":" .. key
+  local function addRow(item)
+    local jobKey = item.jobKey
     if rowKeys[jobKey] then
       return
     end
     rowKeys[jobKey] = true
     local timings = observeTimings(pool, jobKey, observedTimings)
+    local cause = item.error
+    local function null(value)
+      if value == nil then
+        return JSON_NULL
+      end
+      return value
+    end
     rows[#rows + 1] = {
       type = "job",
       schema = PROFILE_SCHEMA,
       versionId = versionId,
       generationId = identity.generationId,
       epoch = epoch,
-      kind = kind,
-      key = key,
-      outcome = outcome,
-      cause = cause,
-      compileSeconds = timings.compileSeconds,
-      compileSecondsReason = timings.compileSecondsReason,
-      stageSeconds = timings.stageSeconds,
-      stageSecondsReason = timings.stageSecondsReason,
-      publicationSeconds = timings.publicationSeconds,
-      publicationSecondsReason = timings.publicationSecondsReason,
-      workSeconds = timings.workSeconds,
-      workSecondsReason = timings.workSecondsReason,
-      stagedBytes = timings.stagedBytes,
-      stagedBytesReason = timings.stagedBytesReason,
-      timingReason = timings.timingReason,
-      timingReasonReason = timings.timingReasonReason,
-      workerId = timings.workerId,
-      workerIdReason = timings.workerIdReason,
+      kind = item.kind,
+      key = item.key,
+      jobKey = jobKey,
+      state = item.state,
+      outcome = item.state,
+      reused = item.reused,
+      workerId = null(timings.workerId),
+      workerIdReason = null(timings.workerIdReason),
+      error = null(item.error),
+      cause = null(cause),
+      causeJobKey = null(item.causeJobKey),
+      compileSeconds = null(timings.compileSeconds),
+      compileSecondsReason = null(timings.compileSecondsReason),
+      stageSeconds = null(timings.stageSeconds),
+      stageSecondsReason = null(timings.stageSecondsReason),
+      publicationSeconds = null(timings.publicationSeconds),
+      publicationSecondsReason = null(timings.publicationSecondsReason),
+      workSeconds = null(timings.workSeconds),
+      workSecondsReason = null(timings.workSecondsReason),
+      stagedBytes = null(timings.stagedBytes),
+      stagedBytesReason = null(timings.stagedBytesReason),
+      timingReason = null(timings.timingReason),
+      timingReasonReason = null(timings.timingReasonReason),
     }
   end
-  local failedByKey, excludedByKey = {}, {}
-  for _, message in ipairs(failures) do
-    for _, jobKey in ipairs(requestedJobs) do
-      if message:find(jobKey, 1, true) ~= nil then
-        failedByKey[jobKey] = message
-      end
-    end
+  local orderedDispositions = {}
+  for _, item in pairs(dispositions) do
+    orderedDispositions[#orderedDispositions + 1] = item
   end
-  for _, message in ipairs(exclusions) do
-    local kind = message:match("^([%w%-]+):")
-    local key = kind ~= nil and message:sub(#kind + 2):match("^([^:]+)") or nil
-    if kind ~= nil and key ~= nil and ArtifactState.KINDS[kind] then
-      excludedByKey[kind .. ":" .. key] = message
-    end
-  end
-  for _, jobKey in ipairs(requestedJobs) do
-    local kind, key = jobKey:match("^([^:]+):(.+)$")
-    assert(kind ~= nil and key ~= nil, "requested jobs are canonical")
-    if failedByKey[jobKey] ~= nil then
-      addRow(kind, key, "failed", failedByKey[jobKey])
-    elseif excludedByKey[jobKey] ~= nil then
-      addRow(kind, key, "excluded", excludedByKey[jobKey])
-    else
-      addRow(kind, key, "successful", nil)
-    end
-  end
-  for jobKey, message in pairs(failedByKey) do
-    local kind, key = jobKey:match("^([^:]+):(.+)$")
-    if kind ~= nil and key ~= nil and not rowKeys[jobKey] then
-      addRow(kind, key, "failed", message)
-    end
-  end
-  for jobKey, message in pairs(excludedByKey) do
-    local kind, key = jobKey:match("^([^:]+):(.+)$")
-    if kind ~= nil and key ~= nil and not rowKeys[jobKey] then
-      addRow(kind, key, "excluded", message)
-    end
-  end
-  for jobKey in pairs(observedTimings) do
-    local kind, key = jobKey:match("^([^:]+):(.+)$")
-    if kind ~= nil and key ~= nil and not rowKeys[jobKey] then
-      addRow(kind, key, "successful", nil)
-    end
-  end
-  table.sort(rows, function(left, right)
-    if left.kind == right.kind then
-      return left.key < right.key
-    end
-    return left.kind < right.kind
+  table.sort(orderedDispositions, function(left, right)
+    return left.jobKey < right.jobKey
   end)
+  for _, item in ipairs(orderedDispositions) do
+    addRow(item)
+  end
 
-  local complete = exhaustive and requestedReady and failed == 0 and excluded == 0
-  local footer = {
-    type = "footer",
-    schema = PROFILE_SCHEMA,
-    versionId = versionId,
-    generationId = identity.generationId,
-    complete = complete,
-    requestedReady = requestedReady,
-    planned = planned,
-    successful = successful,
-    failed = failed,
-    cancelled = cancelled,
-    excluded = excluded,
-  }
-
-  local profileErr
-  if profileHandle ~= nil then
-    for _, row in ipairs(rows) do
-      profileErr = writeProfileLine(profileHandle, row)
-      if profileErr ~= nil then
-        break
-      end
-    end
-    if profileErr == nil then
-      profileErr = writeProfileLine(profileHandle, footer)
+  local sourceExclusions = {}
+  for _, message in ipairs(exclusions) do
+    if isSourceExclusion(message) then
+      sourceExclusions[#sourceExclusions + 1] = message
     end
   end
 
-  pcall(session.retire, session)
-  pcall(pool.shutdown, pool)
-  closeProfile()
+  local reportOutcomes = {}
+  for _, item in ipairs(orderedDispositions) do
+    local timings = observeTimings(pool, item.jobKey, observedTimings)
+    reportOutcomes[#reportOutcomes + 1] = {
+      kind = item.kind,
+      key = item.key,
+      jobKey = item.jobKey,
+      state = item.state,
+      reused = item.reused,
+      workerId = timings.workerId,
+      error = item.error,
+      causeJobKey = item.causeJobKey,
+      timing = {
+        compileSeconds = timings.compileSeconds,
+        stageSeconds = timings.stageSeconds,
+        workSeconds = timings.workSeconds,
+        stagedBytes = timings.stagedBytes,
+        timingReason = timings.timingReason,
+      },
+    }
+  end
+
+  local function makeReport(auditPassed, attestationPublished, complete)
+    return {
+      enumerationComplete = enumerationComplete,
+      requestedReady = requestedReady,
+      complete = complete,
+      auditPassed = auditPassed,
+      attestationPublished = attestationPublished,
+      exclusions = exclusions,
+      sourceExclusions = sourceExclusions,
+      failures = failures,
+      outcomes = reportOutcomes,
+      counts = {
+        planned = planned,
+        successful = successful,
+        failed = failed,
+        cancelled = cancelled,
+        excluded = excluded,
+      },
+    }
+  end
+
+  local function makeFooter(auditPassed, attestationPublished, complete)
+    return {
+      type = "footer",
+      schema = PROFILE_SCHEMA,
+      versionId = versionId,
+      generationId = identity.generationId,
+      enumerationComplete = enumerationComplete,
+      requestedReady = requestedReady,
+      complete = complete,
+      auditPassed = auditPassed,
+      attestationPublished = attestationPublished,
+      planned = planned,
+      successful = successful,
+      failed = failed,
+      cancelled = cancelled,
+      excluded = excluded,
+    }
+  end
+
+  local function writeEvidence(footer)
+    if profileHandle == nil then
+      return nil
+    end
+    for _, row in ipairs(rows) do
+      local err = writeProfileLine(profileHandle, row)
+      if err ~= nil then
+        return err
+      end
+    end
+    return writeProfileLine(profileHandle, footer)
+  end
+
+  local function finish(profileErr, report, logLine, err)
+    pcall(session.retire, session)
+    pcall(pool.shutdown, pool)
+    local closeErr = closeProfile()
+    if profileErr ~= nil then
+      -- No success claim accompanies observation failures.
+      return nil, profileErr
+    end
+    if closeErr ~= nil then
+      return nil, closeErr
+    end
+    if err ~= nil then
+      return nil, err
+    end
+    if logLine ~= nil then
+      log(logLine)
+    end
+    return report
+  end
 
   for _, message in ipairs(exclusions) do
     log(string.format("build-cache: %s excluded %s", versionId, message))
@@ -962,21 +1344,23 @@ local function runScopedVersion(versionId, options, command)
   end
 
   if #failures > 0 then
-    if profileErr ~= nil then
-      return nil, profileErr
-    end
-    return nil,
+    local footer = makeFooter(false, false, false)
+    local profileErr = writeEvidence(footer)
+    local err =
       Errors.new("CACHE_PREPARATION_FAILED", "cache preparation failed", { versionId = versionId, failures = failures })
-  end
-  if profileErr ~= nil then
-    return nil, profileErr
+    if profileErr ~= nil then
+      return finish(profileErr, nil, nil, nil)
+    end
+    return finish(nil, nil, nil, err)
   end
 
-  if complete then
+  local needsAttestation = exhaustive and failed == 0 and cancelled == 0 and excluded == 0
+  if needsAttestation then
     -- Full attestation only after exhaustive strict validation: the
     -- published inventory must exist for this exact generation and every
     -- expected receipt must validate with a usable payload. A damaged cache
-    -- fails here and is never reattested.
+    -- fails here and is never reattested. The successful footer follows the
+    -- audit and the attestation, never precedes them.
     local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
     local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
     local available, reason
@@ -986,38 +1370,63 @@ local function runScopedVersion(versionId, options, command)
       available, reason = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
     end
     if not available then
-      return nil,
-        Errors.new(
-          "CACHE_PREPARATION_FAILED",
-          "cache preparation failed: " .. tostring(reason),
-          { versionId = versionId }
-        )
+      local footer = makeFooter(false, false, false)
+      local profileErr = writeEvidence(footer)
+      local err = Errors.new(
+        "CACHE_PREPARATION_FAILED",
+        "cache preparation failed: " .. tostring(reason),
+        { versionId = versionId }
+      )
+      if profileErr ~= nil then
+        return finish(profileErr, nil, nil, nil)
+      end
+      return finish(nil, nil, nil, err)
     end
     if command.pending ~= nil then
       command.pending[#command.pending + 1] = { cacheFs = cacheFs, identity = identity }
     else
-      DerivedCacheState.publish(cacheFs, identity)
+      local publishOk, publishErr = pcall(DerivedCacheState.publish, cacheFs, identity)
+      if not publishOk then
+        local footer = makeFooter(true, false, false)
+        local profileErr = writeEvidence(footer)
+        local err
+        if Errors.is(publishErr) then
+          err = publishErr --[[@as Errors.Error]]
+        else
+          err = Errors.new(
+            "CACHE_PREPARATION_FAILED",
+            "cache preparation failed: " .. tostring(publishErr),
+            { versionId = versionId }
+          )
+        end
+        if profileErr ~= nil then
+          return finish(profileErr, nil, nil, nil)
+        end
+        return finish(nil, nil, nil, err)
+      end
     end
-    log(string.format("build-cache: %s complete (%d jobs)", versionId, successful))
-  elseif exhaustive then
-    log(string.format("build-cache: %s partial (%d jobs, %d excluded)", versionId, successful, excluded))
-  else
-    log(string.format("build-cache: %s prepared (%d jobs)", versionId, successful))
+    local footer = makeFooter(true, true, true)
+    local profileErr = writeEvidence(footer)
+    if profileErr ~= nil then
+      return finish(profileErr, nil, nil, nil)
+    end
+    local report = makeReport(true, true, true)
+    return finish(nil, report, string.format("build-cache: %s complete (%d jobs)", versionId, successful), nil)
   end
 
-  return {
-    complete = complete,
-    requestedReady = requestedReady,
-    exclusions = exclusions,
-    failures = failures,
-    counts = {
-      planned = planned,
-      successful = successful,
-      failed = failed,
-      cancelled = cancelled,
-      excluded = excluded,
-    },
-  }
+  local footer = makeFooter(false, false, false)
+  local profileErr = writeEvidence(footer)
+  if profileErr ~= nil then
+    return finish(profileErr, nil, nil, nil)
+  end
+  local report = makeReport(false, false, false)
+  local logLine
+  if exhaustive then
+    logLine = string.format("build-cache: %s partial (%d jobs, %d excluded)", versionId, successful, excluded)
+  else
+    logLine = string.format("build-cache: %s prepared (%d jobs)", versionId, successful)
+  end
+  return finish(nil, report, logLine, nil)
 end
 
 ---@param versionId string

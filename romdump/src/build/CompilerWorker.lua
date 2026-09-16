@@ -144,7 +144,7 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
           compileSeconds = nil,
           stageSeconds = nil,
           workSeconds = workSeconds,
-          stagedBytes = 0,
+          stagedBytes = nil,
           timingReason = "interleaved",
           retiring = retiring,
         })
@@ -161,7 +161,7 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
           compileSeconds = nil,
           stageSeconds = nil,
           workSeconds = workSeconds,
-          stagedBytes = 0,
+          stagedBytes = nil,
           timingReason = "interleaved",
           retiring = retiring,
         })
