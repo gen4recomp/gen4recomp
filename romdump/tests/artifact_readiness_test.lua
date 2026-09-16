@@ -402,6 +402,7 @@ local function publishAudioFamily(cache, marker)
 end
 
 local function publishMonFamily(cache, marker)
+  local PngWriter = require("libs.assets.src.PngWriter")
   local function manifestFor(schema, pageImage, pageWidth, pageHeight, cell)
     return {
       schema = schema,
@@ -427,8 +428,12 @@ local function publishMonFamily(cache, marker)
   local portraits = manifestFor(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80)
   cache:writeLua(MonCache.iconManifestPath(), icons)
   cache:writeLua(MonCache.portraitManifestPath(), portraits)
-  cache:write(MonCache.iconPagePath(0), "icon-pixels")
-  cache:write(MonCache.portraitPagePath(0), "portrait-pixels")
+  local iconPixels = string.rep("\0", 256 * 128 * 4)
+  local portraitPixels = string.rep("\0", 640 * 320 * 4)
+  local iconPng = PngWriter.encode(256, 128, iconPixels)
+  local portraitPng = PngWriter.encode(640, 320, portraitPixels)
+  cache:write(MonCache.iconPagePath(0), iconPng)
+  cache:write(MonCache.portraitPagePath(0), portraitPng)
   local Contract = require("libs.assets.src.DerivedAssetContract")
   local iconMarker = MonCache.marker("test-rom", "icons-0")
   local portraitMarker = MonCache.marker("test-rom", "portraits-0")
@@ -451,6 +456,19 @@ local function publishMonFamily(cache, marker)
   writeReceipt(cache, "mon-layout", "global", MonCache.marker("test-rom", "layout"))
   writeReceipt(cache, "mon-icon-page", "0", iconMarker)
   writeReceipt(cache, "mon-portrait-page", "0", portraitMarker)
+  return {
+    marker = marker,
+    iconMarker = iconMarker,
+    portraitMarker = portraitMarker,
+    iconWidth = 256,
+    iconHeight = 128,
+    portraitWidth = 640,
+    portraitHeight = 320,
+    iconPixels = iconPixels,
+    portraitPixels = portraitPixels,
+    iconPng = iconPng,
+    portraitPng = portraitPng,
+  }
 end
 
 local function publishMapDataRecord(cache, mapId, marker)
@@ -1538,6 +1556,279 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   Assert.isTrue(
     reason ~= nil and reason:find("map-data:" .. missing, 1, true) ~= nil,
     "the failure names the exact map-data key, got: " .. tostring(reason)
+  )
+end
+
+-- Mon page byte damage: the page boundary and the dispatcher boundary share
+-- one structural guard, so empty and truncated PNG bodies are unusable even
+-- with exact markers and current receipts. Offsets below follow the encoder's
+-- single-IHDR/single-IDAT/IEND layout: an 8-byte signature, a 25-byte IHDR
+-- chunk, then the IDAT length word.
+local function pngU32(png, position)
+  local a, b, c, d = string.byte(png, position, position + 3)
+  assert(a ~= nil and d ~= nil, "the synthetic PNG must carry its chunk header")
+  return ((a * 256 + b) * 256 + c) * 256 + d
+end
+
+-- Empty, header-only, mid-IDAT-truncated, and missing-IEND damage over one
+-- valid page. Markers and receipts stay intact; only the bytes change.
+local function pngDamageVariants(png)
+  local idatLength = pngU32(png, 34)
+  return {
+    { name = "empty", bytes = "" },
+    { name = "header-only", bytes = png:sub(1, 33) },
+    { name = "mid-idat-truncated", bytes = png:sub(1, 42 + math.floor(idatLength / 2)) },
+    { name = "missing-iend", bytes = png:sub(1, #png - 12) },
+  }
+end
+
+local function packU32(value)
+  return string.char(
+    math.floor(value / 16777216) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 256) % 256,
+    value % 256
+  )
+end
+
+local function pngCrc32(bytes)
+  local bit = require("bit")
+  local table_ = {}
+  for n = 0, 255 do
+    local c = n
+    for _ = 1, 8 do
+      if bit.band(c, 1) == 1 then
+        c = bit.bxor(0xEDB88320, bit.rshift(c, 1))
+      else
+        c = bit.rshift(c, 1)
+      end
+    end
+    table_[n] = c
+  end
+  local crc = bit.bnot(0)
+  for i = 1, #bytes do
+    crc = bit.bxor(bit.rshift(crc, 8), table_[bit.band(bit.bxor(crc, string.byte(bytes, i)), 0xFF)])
+  end
+  return bit.bnot(crc) % 4294967296
+end
+
+local function pngChunk(chunkType, data)
+  return packU32(#data) .. chunkType .. data .. packU32(pngCrc32(chunkType .. data))
+end
+
+-- A structurally valid envelope with split IDAT chunks and one ancillary
+-- chunk, built from a valid page by reusing its IHDR and IEND chunks
+-- verbatim. Returns the rebuilt bytes plus the offset where the first IDAT
+-- chunk ends, so truncation can land exactly on a chunk boundary.
+local function splitIdatWithAncillary(png)
+  local signature = png:sub(1, 8)
+  local ihdr = png:sub(9, 33)
+  local idatLength = pngU32(png, 34)
+  local idatData = png:sub(42, 42 + idatLength - 1)
+  local iend = png:sub(42 + idatLength + 4)
+  assert(iend:sub(5, 8) == "IEND", "the synthetic PNG must end with its IEND chunk")
+  local half = math.floor(#idatData / 2)
+  local prefix = signature .. ihdr .. pngChunk("tEXt", "Title\0synthetic")
+  local first = pngChunk("IDAT", idatData:sub(1, half))
+  local second = pngChunk("IDAT", idatData:sub(half + 1))
+  return prefix .. first .. second .. iend, #prefix + #first
+end
+
+-- A valid synthetic page with its receipt and exact marker reads ready, but
+-- only the intact bytes do: every damage variant is rejected at both the page
+-- boundary and the dispatcher boundary while the untouched sibling stays ready.
+function T.truncated_mon_page_images_are_not_ready()
+  local cache = newCache()
+  local family = publishMonFamily(cache, MonCache.marker("test-rom", "test-dep"))
+  local plans = {}
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the valid icon page reads ready")
+  Assert.isTrue(
+    MonCache.isPageReady(cache, "portraits", 0, family.portraitMarker),
+    "the valid portrait page reads ready"
+  )
+  Assert.isTrue(ArtifactJobs.validate(cache, GENERATION, "mon-icon-page", "0", plans), "the valid icon job validates")
+  Assert.isTrue(
+    ArtifactJobs.validate(cache, GENERATION, "mon-portrait-page", "0", plans),
+    "the valid portrait job validates"
+  )
+  local pages = {
+    { kind = "icons", jobKind = "mon-icon-page", marker = family.iconMarker, png = family.iconPng },
+    { kind = "portraits", jobKind = "mon-portrait-page", marker = family.portraitMarker, png = family.portraitPng },
+  }
+  for _, page in ipairs(pages) do
+    for _, variant in ipairs(pngDamageVariants(page.png)) do
+      cache:write(MonCache.pageImagePath(page.kind, 0), variant.bytes)
+      Assert.isFalse(
+        MonCache.isPageReady(cache, page.kind, 0, page.marker),
+        "a " .. variant.name .. " " .. page.kind .. " page must not read ready"
+      )
+      Assert.isFalse(
+        ArtifactJobs.validate(cache, GENERATION, page.jobKind, "0", plans),
+        "a " .. variant.name .. " " .. page.kind .. " job must not validate"
+      )
+    end
+    cache:write(MonCache.pageImagePath(page.kind, 0), page.png)
+    Assert.isTrue(
+      MonCache.isPageReady(cache, page.kind, 0, page.marker),
+      "the restored " .. page.kind .. " page reads ready"
+    )
+  end
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the icon page survives portrait damage")
+  Assert.isTrue(
+    MonCache.isPageReady(cache, "portraits", 0, family.portraitMarker),
+    "the portrait page survives icon damage"
+  )
+end
+
+-- Truncation exactly at a chunk boundary is still unusable, while a valid
+-- split-IDAT envelope with an ancillary chunk stays usable: the guard is
+-- structural, not an encoder fingerprint.
+function T.mon_page_chunk_boundary_truncation_is_cold_but_split_idat_stays_ready()
+  local cache = newCache()
+  local family = publishMonFamily(cache, MonCache.marker("test-rom", "test-dep"))
+  local split, firstChunkEnd = splitIdatWithAncillary(family.iconPng)
+  cache:write(MonCache.iconPagePath(0), split)
+  Assert.isTrue(
+    MonCache.isPageReady(cache, "icons", 0, family.iconMarker),
+    "a split-IDAT page with an ancillary chunk reads ready"
+  )
+  cache:write(MonCache.iconPagePath(0), split:sub(1, firstChunkEnd))
+  Assert.isFalse(
+    MonCache.isPageReady(cache, "icons", 0, family.iconMarker),
+    "a page ending exactly at a chunk boundary without its IEND must not read ready"
+  )
+  cache:write(MonCache.iconPagePath(0), split:sub(1, firstChunkEnd + 5))
+  Assert.isFalse(
+    MonCache.isPageReady(cache, "icons", 0, family.iconMarker),
+    "a page with a partial chunk header must not read ready"
+  )
+  cache:write(MonCache.iconPagePath(0), family.iconPng)
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the restored page reads ready")
+end
+
+-- One damaged page rejects the summary and the controlled audit with its exact
+-- key, and the real page writer restores exactly that leaf: the controlled
+-- audit passes again with the sibling bytes and receipts untouched. The
+-- controlled inventory proves audit delegation and read-only rejection, not
+-- full-corpus completeness.
+function T.damaged_mon_page_fails_controlled_audit_until_the_leaf_is_restored()
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local summaryMarker = MonCache.marker("test-rom", "test-dep")
+  local family = publishMonFamily(cache, summaryMarker)
+  local plans = {
+    messageBankIds = {},
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = { 0 },
+    portraitPageIds = { 0 },
+    mapDataIds = {},
+    indexBundle = { index = { matrices = {} } },
+    mapIds = {},
+  }
+  local seen = {}
+  for _, job in ipairs(ArtifactJobs.completeJobs(plans)) do
+    seen[job.jobKey] = true
+  end
+  Assert.isTrue(seen["mon-icon-page:0"], "the canonical inventory covers the icon page")
+  Assert.isTrue(seen["mon-portrait-page:0"], "the canonical inventory covers the portrait page")
+  Assert.isTrue(seen["mon-summary:global"], "the canonical inventory covers the mon summary")
+  Assert.isTrue(MonCache.isReady(cache, summaryMarker), "the intact family reads ready before damage")
+  Assert.isTrue(
+    ArtifactJobs.validate(cache, GENERATION, "mon-summary", "global", plans),
+    "the intact summary validates before damage"
+  )
+
+  local siblingBytes = cache:read(MonCache.portraitPagePath(0))
+  local iconReceipt = cache:read(ArtifactState.path("mon-icon-page", "0"))
+  local portraitReceipt = cache:read(ArtifactState.path("mon-portrait-page", "0"))
+  local summaryReceipt = cache:read(ArtifactState.path("mon-summary", "global"))
+
+  local limitedJobs = {
+    { kind = "mon-icon-page", key = "0", jobKey = "mon-icon-page:0" },
+    { kind = "mon-portrait-page", key = "0", jobKey = "mon-portrait-page:0" },
+    { kind = "mon-summary", key = "global", jobKey = "mon-summary:global" },
+  }
+  local identity = { versionId = "heartgold", generationId = GENERATION, producerId = "readiness-producer" }
+  local function controlledAudit()
+    local realCompleteJobs = ArtifactJobs.completeJobs
+    ArtifactJobs.completeJobs = function(_)
+      return limitedJobs
+    end
+    local ok, available, reason = pcall(DerivedCacheAudit.isAvailable, cache, identity, plans)
+    ArtifactJobs.completeJobs = realCompleteJobs
+    assert(ok, "the controlled audit must run to a boolean verdict")
+    return available, reason
+  end
+
+  local availableBefore, reasonBefore = controlledAudit()
+  Assert.isTrue(availableBefore, "the controlled audit passes before damage, got: " .. tostring(reasonBefore))
+
+  cache:write(MonCache.iconPagePath(0), "")
+  Assert.isFalse(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the emptied page must not read ready")
+  Assert.isFalse(MonCache.isReady(cache, summaryMarker), "the summary must not stay ready over an emptied page")
+  Assert.isFalse(
+    ArtifactJobs.validate(cache, GENERATION, "mon-summary", "global", plans),
+    "the damaged summary must not validate"
+  )
+  local availableDamaged, reasonDamaged = controlledAudit()
+  Assert.isFalse(availableDamaged, "the controlled audit must reject the damaged page")
+  Assert.isTrue(
+    reasonDamaged ~= nil and reasonDamaged:find("mon-icon-page:0", 1, true) ~= nil,
+    "the audit names the exact damaged page, got: " .. tostring(reasonDamaged)
+  )
+
+  local leaf = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = GENERATION,
+    epoch = 1,
+    kind = "mon-icon-page",
+    key = "0",
+    jobKey = "mon-icon-page:0",
+    stageName = "restore-icon-page",
+  })
+  local restoredMarker = MonCacheWriter.stagePage(leaf, {
+    kind = "icons",
+    pageId = 0,
+    width = family.iconWidth,
+    height = family.iconHeight,
+    pixels = family.iconPixels,
+    marker = family.iconMarker,
+  })
+  Assert.equal(restoredMarker, family.iconMarker, "restoration keeps the staged page identity")
+  leaf:finishSuccess({ marker = restoredMarker })
+  Assert.isTrue(
+    leaf:publish({
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "mon-icon-page",
+      key = "0",
+      jobKey = "mon-icon-page:0",
+    }),
+    "the restored leaf publishes"
+  )
+
+  Assert.equal(cache:read(MonCache.iconPagePath(0)), family.iconPng, "the restored bytes match the staged image")
+  Assert.isTrue(MonCache.isPageReady(cache, "icons", 0, family.iconMarker), "the restored page reads ready")
+  Assert.isTrue(MonCache.isReady(cache, summaryMarker), "the family reads ready after the leaf repair")
+  local availableAfter, reasonAfter = controlledAudit()
+  Assert.isTrue(availableAfter, "the controlled audit passes after the leaf repair, got: " .. tostring(reasonAfter))
+  Assert.equal(cache:read(MonCache.portraitPagePath(0)), siblingBytes, "the sibling bytes survive the leaf repair")
+  Assert.equal(
+    cache:read(ArtifactState.path("mon-icon-page", "0")),
+    iconReceipt,
+    "the icon receipt survives the leaf repair"
+  )
+  Assert.equal(
+    cache:read(ArtifactState.path("mon-portrait-page", "0")),
+    portraitReceipt,
+    "the sibling receipt survives the leaf repair"
+  )
+  Assert.equal(
+    cache:read(ArtifactState.path("mon-summary", "global")),
+    summaryReceipt,
+    "the summary receipt survives the leaf repair"
   )
 end
 
