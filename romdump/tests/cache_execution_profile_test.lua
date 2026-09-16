@@ -47,6 +47,7 @@ local function newEnv()
     pendingKeys = {},
     excludedKeys = {},
     reusedKeys = {},
+    causeKeys = {},
     publishFails = false,
     milestones = {
       bootstrap = { "field-camera:global" },
@@ -172,25 +173,24 @@ local function makeSession(pool, identity, sweepEnabled)
       failures = failures,
       enumerated = #self.requested,
       enumerationComplete = true,
+      settled = true,
+      planningPending = false,
     }
   end
   function session:outcomes()
     local list = {}
     for _, jobKey in ipairs(self.requested) do
       local kind, key = splitJobKey(jobKey)
-      local state, err, cause = nil, nil, nil
+      local state, err, cause, failureClass = nil, nil, nil, nil
       if env.failKeys[jobKey] ~= nil then
         state = "failed"
         err = jobKey .. ": " .. env.failKeys[jobKey]
-        for _, other in ipairs(self.requested) do
-          if other ~= jobKey and err:find(other, 1, true) ~= nil then
-            cause = other
-            break
-          end
-        end
+        cause = env.causeKeys ~= nil and env.causeKeys[jobKey] or nil
+        failureClass = "job"
       elseif env.excludedKeys[jobKey] then
         state = "failed"
         err = jobKey .. ": source-planned exclusion"
+        failureClass = "source-exclusion"
       elseif env.pendingKeys[jobKey] then
         state = "pending"
       elseif self.completed[jobKey] then
@@ -206,6 +206,7 @@ local function makeSession(pool, identity, sweepEnabled)
         reused = state == "successful" and env.reusedKeys[jobKey] ~= nil,
         error = err,
         causeJobKey = cause,
+        failureClass = failureClass,
       }
     end
     table.sort(list, function(left, right)
@@ -510,6 +511,7 @@ function T.failure_keeps_completed_outcomes_and_marks_unrun_work_cancelled()
   env = newEnv()
   env.failKeys["map:1"] = "WORKER_FAILED: injected leaf failure"
   env.failKeys["map:2"] = "blocked by map:1: WORKER_FAILED: injected leaf failure"
+  env.causeKeys["map:2"] = "map:1"
   env.pendingKeys["map:3"] = true
   local profilePath = os.tmpname()
   local report, err = CacheBuilder.prepareVersion(

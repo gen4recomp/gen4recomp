@@ -4,6 +4,7 @@
 -- runtime registration surface that could let producers diverge.
 
 local Assert = require("tests.support.Assert")
+local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 
 local T = {}
@@ -129,6 +130,44 @@ function T.vocabulary_has_no_runtime_registration_surface()
   Assert.isNil(vocabulary.register)
   Assert.isNil(vocabulary.extend)
   Assert.isNil(vocabulary.addKind)
+end
+
+-- Unknown dynamic membership is incomplete, never an empty final list;
+-- known-empty lists are complete. Callers may record and wake from
+-- incomplete edges but never dispatch a parent from them.
+function T.dependencies_report_completeness_for_unknown_and_known_empty_membership()
+  local mapOk, mapDeps, mapComplete = pcall(ArtifactJobs.dependencies, "map", "7", {})
+  Assert.isTrue(mapOk, "unknown map membership reports instead of raising")
+  Assert.isFalse(mapComplete, "unknown map membership is incomplete")
+  Assert.isTrue(type(mapDeps) == "table", "incomplete planning still reports its known edges")
+  local mapSet = {}
+  for _, dep in ipairs(assert(mapDeps, "incomplete planning reports known edges")) do
+    mapSet[dep.kind .. ":" .. dep.key] = true
+  end
+  Assert.isTrue(mapSet["world-catalog:global"] == true, "incomplete map planning keeps its catalog edge")
+  Assert.isTrue(mapSet["field-cell-index:global"] == true, "incomplete map planning keeps its index edge")
+
+  local summaryDeps, summaryComplete =
+    ArtifactJobs.dependencies("mon-summary", "global", { iconPageIds = {}, portraitPageIds = {} })
+  Assert.isTrue(summaryComplete, "known-empty page membership is complete")
+  local summarySet = {}
+  for _, dep in ipairs(assert(summaryDeps, "complete planning reports its edges")) do
+    summarySet[dep.kind .. ":" .. dep.key] = true
+  end
+  Assert.isTrue(summarySet["mon-catalog:global"] == true, "the complete summary keeps its catalog edge")
+  Assert.isTrue(summarySet["mon-layout:global"] == true, "the complete summary keeps its layout edge")
+
+  local messageDeps, messageComplete = ArtifactJobs.dependencies("message-summary", "global", { messageBankIds = {} })
+  Assert.isTrue(messageComplete, "a known-empty bank closure is complete")
+  Assert.deepEqual(messageDeps, {}, "a known-empty closure carries no child edges")
+
+  local scriptOk, _, scriptComplete = pcall(ArtifactJobs.dependencies, "script-summary", "global", {})
+  Assert.isTrue(scriptOk, "unknown script membership reports instead of raising")
+  Assert.isFalse(scriptComplete, "unknown script membership is incomplete")
+
+  local audioOk, _, audioComplete = pcall(ArtifactJobs.dependencies, "audio-summary", "global", {})
+  Assert.isTrue(audioOk, "unknown audio membership reports instead of raising")
+  Assert.isFalse(audioComplete, "unknown audio membership is incomplete")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

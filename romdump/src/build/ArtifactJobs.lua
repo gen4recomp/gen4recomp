@@ -178,48 +178,88 @@ end
 ---@param kind string
 ---@param key string
 ---@param plans ArtifactJobs.Plans
----@return { kind: string, key: string }[]
+---@return { kind: string, key: string }[] currently known prerequisites
+---@return boolean complete true once planning prerequisites are adopted and the list is final
 function ArtifactJobs.dependencies(kind, key, plans)
   ArtifactState.path(kind, key)
   assert(type(plans) == "table", "dependency edges require the session plans")
   local deps = {}
-  if kind == "mon-layout" then
+  -- False until the planning prerequisites behind this list are satisfied
+  -- and adopted. Callers may record and wake from incomplete edges but must
+  -- never dispatch a parent from them, and must never read nil membership
+  -- as a known-empty final list.
+  local complete = true
+  local function awaitMembership()
+    complete = false
+  end
+  if kind == "source-plan" then
+    -- The worker inventory plans no prerequisite.
+  elseif kind == "mon-layout" then
     deps[#deps + 1] = { kind = "mon-catalog", key = "global" }
   elseif kind == "mon-icon-page" or kind == "mon-portrait-page" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
     deps[#deps + 1] = { kind = "mon-layout", key = "global" }
+    local pages = kind == "mon-icon-page" and plans.iconPageIds or plans.portraitPageIds
+    if pages == nil then
+      awaitMembership()
+    end
   elseif kind == "mon-summary" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
     deps[#deps + 1] = { kind = "mon-catalog", key = "global" }
     deps[#deps + 1] = { kind = "mon-layout", key = "global" }
-    for _, pageId in ipairs(assert(plans.iconPageIds, "mon summary needs the icon pages")) do
-      deps[#deps + 1] = { kind = "mon-icon-page", key = tostring(pageId) }
-    end
-    for _, pageId in ipairs(assert(plans.portraitPageIds, "mon summary needs the portrait pages")) do
-      deps[#deps + 1] = { kind = "mon-portrait-page", key = tostring(pageId) }
+    if plans.iconPageIds == nil or plans.portraitPageIds == nil then
+      awaitMembership()
+    else
+      for _, pageId in ipairs(plans.iconPageIds) do
+        deps[#deps + 1] = { kind = "mon-icon-page", key = tostring(pageId) }
+      end
+      for _, pageId in ipairs(plans.portraitPageIds) do
+        deps[#deps + 1] = { kind = "mon-portrait-page", key = tostring(pageId) }
+      end
     end
   elseif kind == "message-summary" then
     for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
       deps[#deps + 1] = { kind = "message-bank", key = tostring(bankId) }
     end
   elseif kind == "audio-summary" then
-    for _, bankId in ipairs(assert(plans.audioBankIds, "audio summary needs the bank closures")) do
-      deps[#deps + 1] = { kind = "audio-bank", key = tostring(bankId) }
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
+    if plans.audioBankIds == nil then
+      awaitMembership()
+    else
+      for _, bankId in ipairs(plans.audioBankIds) do
+        deps[#deps + 1] = { kind = "audio-bank", key = tostring(bankId) }
+      end
     end
   elseif kind == "script-summary" then
-    for _, memberId in ipairs(assert(plans.scriptMemberIds, "script summary needs the nonempty members")) do
-      deps[#deps + 1] = { kind = "script-member", key = tostring(memberId) }
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
+    if plans.scriptMemberIds == nil then
+      awaitMembership()
+    else
+      for _, memberId in ipairs(plans.scriptMemberIds) do
+        deps[#deps + 1] = { kind = "script-member", key = tostring(memberId) }
+      end
     end
+  elseif kind == "script-member" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
+  elseif kind == "audio-bank" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
   elseif kind == "map" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
     deps[#deps + 1] = { kind = "world-catalog", key = "global" }
     deps[#deps + 1] = { kind = "field-cell-index", key = "global" }
     local cellKeys = plans.mapCellKeys and plans.mapCellKeys[tonumber(key)]
-    assert(cellKeys ~= nil, "map dependencies require the resolved cell plans for map " .. key)
-    for _, cellKey in ipairs(cellKeys) do
-      deps[#deps + 1] = { kind = "field-cell", key = cellKey }
+    if cellKeys == nil then
+      awaitMembership()
+    else
+      for _, cellKey in ipairs(cellKeys) do
+        deps[#deps + 1] = { kind = "field-cell", key = cellKey }
+      end
     end
   elseif kind == "field-cell" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
     deps[#deps + 1] = { kind = "field-cell-index", key = "global" }
   end
-  return deps
+  return deps, complete
 end
 
 local function failArtifact(artifact, failure, traceback)
@@ -946,9 +986,26 @@ end
 ---@param kind string
 ---@param key string
 ---@param plans ArtifactJobs.Plans
+---@param identity { versionId: string, generationId: string, producerId: string }|nil expected source identity, mandatory for source-plan
 ---@return boolean
-function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
-  local ok, ready = pcall(function()
+---@return table<string, unknown>|nil validated source plan on source-plan success for immediate adoption
+function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity)
+  if kind == "source-plan" then
+    assert(type(identity) == "table", "source-plan validation requires its expected identity")
+    assert(
+      type(identity.versionId) == "string" and identity.versionId ~= "",
+      "source-plan validation requires the expected version"
+    )
+    assert(
+      type(identity.generationId) == "string" and identity.generationId ~= "",
+      "source-plan validation requires the expected generation"
+    )
+    assert(
+      type(identity.producerId) == "string" and identity.producerId ~= "",
+      "source-plan validation requires the expected producer"
+    )
+  end
+  local ok, ready, validatedPlan = pcall(function()
     ArtifactState.path(kind, key)
     assert(type(plans) == "table", "readiness validation requires the session plans")
     local marker = receiptMarker(cacheFs, generationId, kind, key)
@@ -1138,19 +1195,25 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
       if marker ~= SourcePlan.marker(generationId) then
         return false
       end
-      local planOk, staged = pcall(cacheFs.loadLua, cacheFs, SourcePlan.PATH)
-      if not planOk or type(staged) ~= "table" then
+      -- The expected identity always comes from the caller, never from the
+      -- record being validated. The full reader is the single authority:
+      -- any record it rejects is not ready, exactly once.
+      local expected = assert(identity, "source-plan validation requires its expected identity")
+      local plan, _ = SourcePlan.read(cacheFs, expected)
+      if plan == nil then
         return false
       end
-      ---@cast staged table<string, unknown>
-      return staged.schema == SourcePlan.SCHEMA and staged.generationId == generationId
+      return true, plan
     end
     return false
   end)
   if not ok then
     return false
   end
-  return ready == true
+  if ready ~= true then
+    return false
+  end
+  return true, validatedPlan
 end
 
 ---@param cacheFs CacheFs

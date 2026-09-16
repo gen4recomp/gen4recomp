@@ -249,8 +249,9 @@ function T.index_marker_without_its_index_payload_is_cold()
     "an index marker without its index payload must not read ready"
   )
   local dependencies = ArtifactJobs.dependencies("field-cell", "12-5", {})
-  Assert.equal(#dependencies, 1, "a cell resolves exactly its index prerequisite")
-  Assert.equal(dependencies[1].kind, "field-cell-index", "the cell waits on the index first")
+  Assert.equal(#dependencies, 2, "a cell resolves its planning prerequisites")
+  Assert.equal(dependencies[1].kind, "source-plan", "the cell waits on the source inventory first")
+  Assert.equal(dependencies[2].kind, "field-cell-index", "the cell waits on the index next")
 end
 
 -- A member whose script body is gone is cold even with its markers intact,
@@ -1426,21 +1427,73 @@ function T.layout_without_private_source_plans_is_cold()
   )
 end
 
--- A staged source inventory under the current marker is usable; a receipt
--- alone without the staged record is cold.
+-- A staged source inventory under the current marker is usable only when
+-- the full record validates against the caller-supplied identity; a
+-- receipt alone or a schema-only record is cold.
 function T.staged_source_inventory_with_current_marker_is_usable()
   local SourcePlan = require("romdump.src.build.SourcePlan")
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local producerId = "d" .. string.rep("1", 64)
+  local identity = { versionId = "heartgold", generationId = GENERATION, producerId = producerId }
   local cache = newCache()
   writeReceipt(cache, "source-plan", "global", SourcePlan.marker(GENERATION))
   Assert.isFalse(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}),
+    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
     "a source-plan receipt without its staged record must not read ready"
   )
   cache:writeLua(SourcePlan.PATH, { schema = SourcePlan.SCHEMA, generationId = GENERATION })
+  Assert.isFalse(
+    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
+    "a schema-only staged record must not read ready"
+  )
+  cache:writeLua(SourcePlan.PATH, {
+    schema = SourcePlan.SCHEMA,
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    generationId = GENERATION,
+    producerId = producerId,
+    world = { maps = {}, analysis = { excluded = {} } },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+    scriptPlan = { members = {}, generationKey = "synthetic-generation" },
+    audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapCellKeys = {},
+  })
   Assert.isTrue(
-    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}),
+    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, identity),
     "the staged source inventory under its current marker reads ready"
   )
+end
+
+-- Direct source-plan validation carries its expected identity: a staged
+-- record that disagrees with the caller-supplied identity is not ready,
+-- and a missing required identity is a programming error, never a silent
+-- pass. The expected identity always comes from the caller, never from
+-- the record being validated.
+function T.source_plan_validation_requires_its_expected_identity()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local producerId = "d" .. string.rep("1", 64)
+  local cache = newCache()
+  writeReceipt(cache, "source-plan", "global", SourcePlan.marker(GENERATION))
+  cache:writeLua(SourcePlan.PATH, {
+    schema = SourcePlan.SCHEMA,
+    generationId = GENERATION,
+    producerId = producerId,
+  })
+  local matching = { versionId = "heartgold", generationId = GENERATION, producerId = producerId }
+  Assert.isFalse(
+    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, matching),
+    "a schema-only record is not ready even with a matching identity"
+  )
+  local foreign = { versionId = "heartgold", generationId = GENERATION, producerId = "d" .. string.rep("2", 64) }
+  Assert.isFalse(
+    ArtifactJobs.validate(cache, GENERATION, "source-plan", "global", {}, foreign),
+    "a record disagreeing with the expected identity is not ready"
+  )
+  local missingOk = pcall(ArtifactJobs.validate, cache, GENERATION, "source-plan", "global", {})
+  Assert.isFalse(missingOk, "a missing required source identity fails instead of silently passing")
 end
 
 -- The audit premise: every family the walk reaches before map-data is
@@ -1877,7 +1930,17 @@ local module = {
           for _ in pairs(self.completed) do
             ready = ready + 1
           end
-          return { ready = ready, queued = 0, running = 0, failed = 0, failures = {}, enumerated = #self.requested }
+          return {
+            ready = ready,
+            queued = 0,
+            running = 0,
+            failed = 0,
+            failures = {},
+            enumerated = #self.requested,
+            enumerationComplete = true,
+            settled = true,
+            planningPending = false,
+          }
         end
         function session:retire()
           self.retired = true

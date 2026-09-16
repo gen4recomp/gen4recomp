@@ -517,6 +517,8 @@ end
 ---@field failed integer|nil
 ---@field failures string[]|nil
 ---@field enumerated integer|nil
+---@field settled boolean|nil
+---@field planningPending boolean|nil
 
 ---@param pool CompilerPool
 ---@param session InteractiveCacheBuild
@@ -594,6 +596,9 @@ local function drainSession(pool, session, versionId, log, observed)
     assert(rounds <= 100000, "preparation did not settle")
     session:update()
     local status = session:status() --[[@as CacheBuilder.SessionStatus]]
+    if type(status.settled) ~= "boolean" or type(status.planningPending) ~= "boolean" then
+      error("generation session reports no settled/planningPending progress facts", 0)
+    end
     local failed = #(status.failures or {})
     if (status.ready or 0) ~= lastReady or failed ~= lastFailed then
       lastReady, lastFailed = status.ready or 0, failed
@@ -608,14 +613,22 @@ local function drainSession(pool, session, versionId, log, observed)
         )
       )
     end
-    if (status.queued or 0) == 0 and (status.running or 0) == 0 then
+    if status.settled then
       accumulate()
       return status
     end
-    if type(pool.waitForProgress) == "function" then
-      pool:waitForProgress()
-    else
-      pool:drain()
+    -- Runnable local planning repumps at once: an idle pool never blocks
+    -- deferred planning work and never earns a physical wait.
+    if not status.planningPending then
+      if (status.queued or 0) > 0 or (status.running or 0) > 0 then
+        if type(pool.waitForProgress) == "function" then
+          pool:waitForProgress()
+        else
+          pool:drain()
+        end
+      else
+        error("preparation is unfinished with no runnable planning or physical work", 0)
+      end
     end
     accumulate()
   end

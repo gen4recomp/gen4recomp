@@ -46,6 +46,8 @@ local function newEnv()
     invalidations = 0,
     publishes = 0,
     publishedIdentity = nil,
+    waitCalls = 0,
+    localRounds = nil,
   }
 end
 
@@ -107,10 +109,22 @@ local function makeSession(pool, identity, sweepEnabled)
   function session:update()
     assert(not self.retired, "generation session is retired")
     self.completed = self.completed or {}
-    for _, jobKey in ipairs(self.requested) do
-      if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil then
-        self.completed[jobKey] = true
+    local function completeAll()
+      for _, jobKey in ipairs(self.requested) do
+        if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil then
+          self.completed[jobKey] = true
+        end
       end
+    end
+    if env.localRounds ~= nil then
+      if env.localRounds > 0 then
+        env.localRounds = env.localRounds - 1
+      end
+      if env.localRounds == 0 then
+        completeAll()
+      end
+    else
+      completeAll()
     end
   end
   function session:status()
@@ -128,12 +142,29 @@ local function makeSession(pool, identity, sweepEnabled)
         ready = ready + 1
       end
     end
+    local localPending = env.localRounds ~= nil and env.localRounds > 0
+    local settled = true
+    for _, jobKey in ipairs(self.requested) do
+      if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil then
+        if not (self.completed[jobKey] or env.readyKeys[jobKey]) then
+          settled = false
+          break
+        end
+      end
+    end
+    if localPending then
+      settled = false
+    end
     return {
       ready = ready,
       failed = failed,
       failures = failures,
       enumerated = #self.requested,
       enumerationComplete = true,
+      queued = 0,
+      running = 0,
+      settled = settled,
+      planningPending = localPending,
     }
   end
   function session:outcomes()
@@ -162,6 +193,14 @@ local function makeSession(pool, identity, sweepEnabled)
           end
         end
       end
+      local failureClass = nil
+      if state == "failed" then
+        if env.excludedKeys[jobKey] then
+          failureClass = "source-exclusion"
+        else
+          failureClass = "job"
+        end
+      end
       list[#list + 1] = {
         kind = kind,
         key = key,
@@ -170,6 +209,7 @@ local function makeSession(pool, identity, sweepEnabled)
         reused = false,
         error = err,
         causeJobKey = cause,
+        failureClass = failureClass,
       }
     end
     table.sort(list, function(left, right)
@@ -249,6 +289,12 @@ local function makeFakes()
         self.selected = { identity = identity, epoch = epoch }
       end
       function pool:update() end
+      function pool:waitForProgress()
+        env.waitCalls = (env.waitCalls or 0) + 1
+      end
+      function pool:drain()
+        env.waitCalls = (env.waitCalls or 0) + 1
+      end
       function pool:shutdown() end
       env.pools[#env.pools + 1] = pool
       return pool
@@ -624,6 +670,37 @@ function T.failed_scope_issues_no_receipt()
     handle:close()
   end
   os.remove(recordPath)
+end
+
+-- Deferred planning is local progress, not physical waiting: the drain
+-- repumps a session with runnable planning work while its pool is idle,
+-- never waits on nonexistent work, terminates an ordinary producer
+-- failure with its actual cause, and retires the session so no further
+-- work is accepted.
+function T.drain_distinguishes_local_planning_from_physical_waiting()
+  env = newEnv()
+  env.localRounds = 3
+  requireScopedPreparation()
+  local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "map:7" } }))
+  Assert.isNil(err)
+  assert(report, "local planning must drain to a report")
+  Assert.isTrue(report.requestedReady, "deferred planning repumps until the session settles")
+  Assert.equal(env.waitCalls, 0, "the drain never waits on nonexistent physical work")
+  Assert.isTrue(env.sessions[1].retired, "the drained session retires")
+  local requestOk = pcall(function()
+    env.sessions[1]:requestJob("map", "7", "required")
+  end)
+  Assert.isFalse(requestOk, "a retired session accepts no further work")
+
+  env = newEnv()
+  env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
+  requireScopedPreparation()
+  local badReport, badErr = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "map:5" } }))
+  Assert.isNil(badReport)
+  Assert.isTrue(
+    tostring(badErr):find("map:5", 1, true) ~= nil,
+    "an ordinary producer failure terminates with its actual cause"
+  )
 end
 
 return module
