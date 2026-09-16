@@ -584,37 +584,45 @@ local function runScopedVersion(versionId, options, command)
 
   local cacheFs = CacheFs.forVersion(versionId)
   local stored = cacheFs:loadLua(DerivedCacheState.path)
-  if exhaustive and DerivedCacheState.matches(stored, identity) and DerivedCacheAudit.isAvailable(cacheFs) then
-    log(string.format("build-cache: %s current", versionId))
-    local footer = {
-      type = "footer",
-      schema = PROFILE_SCHEMA,
-      versionId = versionId,
-      generationId = identity.generationId,
-      complete = true,
-      requestedReady = true,
-      planned = 0,
-      successful = 0,
-      failed = 0,
-      cancelled = 0,
-      excluded = 0,
-    }
-    if command.profileHandle ~= nil then
-      local headerErr = writeProfileLine(command.profileHandle, profileHeader(identity, "prepare", ordered, 0))
-      if headerErr == nil then
-        headerErr = writeProfileLine(command.profileHandle, footer)
+  if exhaustive and #rebuildJobs == 0 and DerivedCacheState.matches(stored, identity) then
+    -- The current shortcut still proves usability: an identity match plus
+    -- the exhaustive generation audit over the published inventory. Missing
+    -- planning metadata or any invalid payload falls through to repair
+    -- instead of reporting current.
+    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+    local plans = ArtifactJobs.publishedPlans(cacheFs, identity)
+    if plans ~= nil and DerivedCacheAudit.isAvailable(cacheFs, identity, plans) then
+      log(string.format("build-cache: %s current", versionId))
+      local footer = {
+        type = "footer",
+        schema = PROFILE_SCHEMA,
+        versionId = versionId,
+        generationId = identity.generationId,
+        complete = true,
+        requestedReady = true,
+        planned = 0,
+        successful = 0,
+        failed = 0,
+        cancelled = 0,
+        excluded = 0,
+      }
+      if command.profileHandle ~= nil then
+        local headerErr = writeProfileLine(command.profileHandle, profileHeader(identity, "prepare", ordered, 0))
+        if headerErr == nil then
+          headerErr = writeProfileLine(command.profileHandle, footer)
+        end
+        if headerErr ~= nil then
+          return nil, headerErr
+        end
       end
-      if headerErr ~= nil then
-        return nil, headerErr
-      end
+      return {
+        complete = true,
+        requestedReady = true,
+        exclusions = {},
+        failures = {},
+        counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
+      }
     end
-    return {
-      complete = true,
-      requestedReady = true,
-      exclusions = {},
-      failures = {},
-      counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
-    }
   end
 
   local profileHandle = command.profileHandle
@@ -965,9 +973,18 @@ local function runScopedVersion(versionId, options, command)
   end
 
   if complete then
-    -- Full attestation only after exhaustive strict validation: every
-    -- expected receipt validates and the generation-aware audit passes.
-    local available, reason = DerivedCacheAudit.isAvailable(cacheFs, identity.generationId)
+    -- Full attestation only after exhaustive strict validation: the
+    -- published inventory must exist for this exact generation and every
+    -- expected receipt must validate with a usable payload. A damaged cache
+    -- fails here and is never reattested.
+    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+    local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
+    local available, reason
+    if plans == nil then
+      available, reason = false, plansReason
+    else
+      available, reason = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
+    end
     if not available then
       return nil,
         Errors.new(

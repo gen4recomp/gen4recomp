@@ -960,7 +960,14 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
       return MapAssetCache.isStructuralWorld(cacheFs:loadLua(MapAssetCache.worldPath()))
     elseif kind == "field-cell-index" then
       local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
-      return cacheFs:read(FieldCellCache.indexMarkerPath()) == marker
+      if cacheFs:read(FieldCellCache.indexMarkerPath()) ~= marker then
+        return false
+      end
+      local indexOk, index = pcall(cacheFs.loadLua, cacheFs, FieldCellCache.indexPath())
+      if not indexOk or not FieldCellCache.validateIndex(index) then
+        return false
+      end
+      return true
     elseif kind == "field-camera" then
       local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
       return FieldCameraCache.isReady(cacheFs, marker)
@@ -1077,22 +1084,24 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
       end
       return true
     elseif kind == "script-member" then
-      local ScriptCache = require("libs.assets.src.ScriptCache")
+      local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
       local scriptPlan = assert(plans.scriptPlan, "script members need the generation plan")
-      local memberId = assert(tonumber(key), "member key is not canonical")
-      return cacheFs:read(ScriptCache.memberMarkerPath(scriptPlan.generationKey, memberId)) == marker
+      local memberId = canonicalKeyId(key, "member key")
+      local ready, _ = ScriptCacheWriter.isMemberReady(cacheFs, scriptPlan, memberId)
+      return ready == true
     elseif kind == "script-summary" then
       local ScriptCache = require("libs.assets.src.ScriptCache")
       if not ScriptCache.isReady(cacheFs, marker) then
         return false
       end
+      local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
       local scriptPlan = assert(plans.scriptPlan, "script summary needs the generation plan")
       for _, memberId in ipairs(assert(plans.scriptMemberIds, "script summary needs the nonempty members")) do
-        local childMarker = receiptMarker(cacheFs, generationId, "script-member", tostring(memberId))
-        if
-          childMarker == nil
-          or cacheFs:read(ScriptCache.memberMarkerPath(scriptPlan.generationKey, memberId)) ~= childMarker
-        then
+        if receiptMarker(cacheFs, generationId, "script-member", tostring(memberId)) == nil then
+          return false
+        end
+        local ready, _ = ScriptCacheWriter.isMemberReady(cacheFs, scriptPlan, memberId)
+        if not ready then
           return false
         end
       end
@@ -1125,7 +1134,16 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans)
       local MapAssetCache = require("libs.assets.src.MapAssetCache")
       return MapAssetCache.isReady(cacheFs, canonicalKeyId(key, "map key"), marker)
     elseif kind == "source-plan" then
-      return true
+      local SourcePlan = require("romdump.src.build.SourcePlan")
+      if marker ~= SourcePlan.marker(generationId) then
+        return false
+      end
+      local planOk, staged = pcall(cacheFs.loadLua, cacheFs, SourcePlan.PATH)
+      if not planOk or type(staged) ~= "table" then
+        return false
+      end
+      ---@cast staged table<string, unknown>
+      return staged.schema == SourcePlan.SCHEMA and staged.generationId == generationId
     end
     return false
   end)

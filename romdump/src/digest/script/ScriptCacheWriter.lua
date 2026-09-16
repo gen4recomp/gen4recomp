@@ -359,21 +359,46 @@ local function checkPlan(plan)
 end
 
 local function memberIsComplete(liveFs, plan, member)
-  local ok, complete = pcall(function()
-    if liveFs:read(ScriptCache.memberMarkerPath(plan.generationKey, member.memberId)) ~= member.marker then
-      return false
+  return ScriptCacheWriter.isMemberReady(liveFs, plan, member.memberId) == true
+end
+
+-- Proves one planned member is usable in the live cache under its planned
+-- marker: the exact marker, the expected resource identities and the coverage
+-- metadata, all read back with the current generation identity. This is the
+-- same proof the generation summary demands of every member before staging,
+-- exposed so readiness checks cannot drift from it.
+---@param cacheFs CacheFs
+---@param plan { generationKey: string, members: unknown[], resources: unknown[] }
+---@param memberId integer|string
+---@return boolean
+---@return string|nil
+function ScriptCacheWriter.isMemberReady(cacheFs, plan, memberId)
+  assert(cacheFs and cacheFs.read and cacheFs.loadLua, "script member readiness requires a cache filesystem")
+  assert(type(plan) == "table", "script member readiness requires the generation plan")
+  local id = assert(tonumber(memberId), "script member readiness requires a member identity")
+  local found, member = pcall(memberFor, plan, id)
+  if not found or type(member) ~= "table" then
+    return false, "unknown planned script member: " .. tostring(memberId)
+  end
+  ---@cast member { marker: string, memberId: integer }
+  if cacheFs:read(ScriptCache.memberMarkerPath(plan.generationKey, id)) ~= member.marker then
+    return false, "script member " .. tostring(id) .. " has no current marker"
+  end
+  local coverageOk, coverage = pcall(cacheFs.loadLua, cacheFs, ScriptCache.memberCoveragePath(plan.generationKey, id))
+  if not coverageOk or type(coverage) ~= "table" then
+    return false, "script member " .. tostring(id) .. " has no usable coverage"
+  end
+  local coverageValid, coverageErr = pcall(validateCoverage, plan, id, coverage)
+  if not coverageValid then
+    return false, "script member " .. tostring(id) .. " coverage is not usable: " .. tostring(coverageErr)
+  end
+  for _, entry in ipairs(memberResourceIndex(plan, id)) do
+    local readOk, readErr = pcall(readbackResource, cacheFs, plan, entry)
+    if not readOk then
+      return false, "script member " .. tostring(id) .. " resource is not usable: " .. tostring(readErr)
     end
-    validateCoverage(
-      plan,
-      member.memberId,
-      assert(liveFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
-    )
-    for _, entry in ipairs(memberResourceIndex(plan, member.memberId)) do
-      readbackResource(liveFs, plan, entry)
-    end
-    return true
-  end)
-  return ok and complete == true
+  end
+  return true
 end
 
 local function aggregateCoverage(records, plan)

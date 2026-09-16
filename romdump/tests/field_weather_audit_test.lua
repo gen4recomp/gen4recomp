@@ -52,12 +52,25 @@ function T.audit_with_stale_weather_marker_requires_a_build()
     presets = {},
     rules = {},
   })
-  -- With a present but stale or empty catalog, the audit's freshness is
-  -- owned by the builder's state gate; availability alone requires the marker
-  -- to exist, so a missing marker is the stale signal.
+  -- Markers without current receipts and payloads never read as usable:
+  -- the audit walks the complete inventory, so a marker-only cache is
+  -- unavailable with or without the weather marker.
   cache:remove(FieldWeatherCache.markerPath())
-  local available = DerivedCacheAudit.isAvailable(cache)
-  Assert.isFalse(available, "a missing weather marker must make the cache unavailable")
+  local identity = { versionId = "heartgold", generationId = "current-generation", producerId = "weather-producer" }
+  local plans = {
+    indexBundle = { index = { matrices = {} } },
+    scriptPlan = { generationKey = string.rep("e", 40), members = {}, resources = {} },
+    messageBankIds = {},
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = {},
+    portraitPageIds = {},
+    mapDataIds = {},
+    mapIds = {},
+  }
+  local available, reason = DerivedCacheAudit.isAvailable(cache, identity, plans)
+  Assert.isFalse(available, "a marker-only cache must make the cache unavailable")
+  Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
 
 function T.common_session_compiles_field_weather_through_the_single_dispatcher()

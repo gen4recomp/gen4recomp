@@ -48,7 +48,10 @@ function T.exhaustive_scope_publishes_a_complete_attestation_that_passes_audit(r
   )
   Assert.isTrue(counts.planned > 0, "the exhaustive census covers the real corpus")
   Assert.equal(counts.failed, 0, "a strict run has no failed jobs")
-  local ok, reason = DerivedCacheAudit.isAvailable(CacheFs.forVersion(versionId))
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local plans, plansReason = ArtifactJobs.publishedPlans(CacheFs.forVersion(versionId), identity)
+  assert(plans ~= nil, "the prepared corpus publishes its inventory: " .. tostring(plansReason))
+  local ok, reason = DerivedCacheAudit.isAvailable(CacheFs.forVersion(versionId), identity, plans)
   Assert.isTrue(ok, "the published corpus passes the generation-aware audit: " .. tostring(reason))
   local stored = CacheFs.forVersion(versionId):loadLua(DerivedCacheState.path)
   Assert.isTrue(

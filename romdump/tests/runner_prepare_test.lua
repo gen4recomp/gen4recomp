@@ -327,6 +327,113 @@ function T.request_grammar_matches_the_command_boundary()
   package.loaded["romdump.src.CacheBuilder"] = saved
 end
 
+-- A read-only cache check must reject a foreign generation instead of
+-- passing on intact markers: with all completion markers present but a
+-- foreign receipt generation and no current planning data, the check exits
+-- nonzero with its failure named and mutates nothing.
+function T.check_rejects_a_foreign_generation_without_mutation()
+  withRunnerHarness(function(quitCode)
+    local CacheFs = require("libs.storage.src.CacheFs")
+    local FakeCache = require("tests.support.FakeCache")
+    local ArtifactState = require("romdump.src.build.ArtifactState")
+    local AudioCache = require("libs.assets.src.audio.AudioCache")
+    local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+    local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+    local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+    local MapAssetCache = require("libs.assets.src.MapAssetCache")
+    local ScriptCache = require("libs.assets.src.ScriptCache")
+    local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
+    local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+    local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
+    local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+    local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+    local FieldEmoteAssetCache = require("libs.assets.src.field.FieldEmoteAssetCache")
+    local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
+    local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
+    local MonCache = require("libs.assets.src.MonCache")
+    local ItemCache = require("libs.assets.src.ItemCache")
+    local BagCache = require("libs.assets.src.BagCache")
+    local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
+    local realCacheFs = package.loaded["libs.storage.src.CacheFs"]
+    local backend = FakeCache.new()
+    local checkCacheFs = {
+      forVersion = function(versionId)
+        return CacheFs.forVersion(versionId, backend)
+      end,
+    }
+    package.loaded["libs.storage.src.CacheFs"] = checkCacheFs
+    local code, output
+    local ok, err = pcall(function()
+      RomImporter.isReady = function(versionId)
+        return versionId == "heartgold"
+      end
+      -- The read-only check resolves the expected generation from the
+      -- published dump exactly like preparation does; the foreign receipt
+      -- below must disagree with whatever generation that resolves to.
+      package.loaded["romdump.src.source.RomFs"] = {
+        open = function(versionId)
+          Assert.equal(versionId, "heartgold")
+          return {
+            metadata = function()
+              return { sha1 = string.rep("a", 40) }
+            end,
+            close = function() end,
+          }
+        end,
+      }
+      local cache = CacheFs.forVersion("heartgold", backend)
+      for _, path in ipairs({
+        FieldActorCache.markerPath(),
+        FieldCameraCache.markerPath(),
+        FieldFontCache.markerPath(),
+        FieldMessageCache.markerPath(),
+        FieldUiAssetCache.markerPath(),
+        IntroAssetCache.markerPath(),
+        StarterChoiceAssetCache.markerPath(),
+        FieldWeatherCache.markerPath(),
+        FieldEffectAssetCache.markerPath(),
+        FieldEmoteAssetCache.markerPath(),
+        NewGameInitCache.markerPath(),
+        FieldCellCache.indexMarkerPath(),
+        MonCache.markerPath(),
+        ItemCache.markerPath(),
+        BagCache.markerPath(),
+        ScriptCache.markerPath(),
+        AudioCache.markerPath(),
+      }) do
+        cache:write(path, "complete")
+      end
+      cache:writeLua(MapAssetCache.worldPath(), { maps = {} })
+      cache:writeLua(ArtifactState.path("field-camera", "global"), {
+        schema = ArtifactState.RECEIPT_SCHEMA,
+        generationId = "foreign-generation",
+        kind = "field-camera",
+        key = "global",
+        marker = "complete",
+      })
+      local before = {}
+      for path, data in pairs(backend.files) do
+        before[path] = data
+      end
+      capturedOutput = {}
+      Runner.load({ command = "check-derived-cache" })
+      code = quitCode()
+      output = table.concat(capturedOutput, "\n")
+      local after = {}
+      for path, data in pairs(backend.files) do
+        after[path] = data
+      end
+      Assert.deepEqual(after, before, "a read-only check performs no writes")
+    end)
+    package.loaded["libs.storage.src.CacheFs"] = realCacheFs
+    if not ok then
+      error(err, 0)
+    end
+    Assert.isTrue(code ~= 0, "a foreign generation must fail the read-only check")
+    Assert.isTrue(output:find("FAIL", 1, true) ~= nil, "the check names its failure, got: " .. tostring(output))
+  end)
+end
+
 return {
   beforeAll = captureOutput,
   afterAll = restoreOutput,
