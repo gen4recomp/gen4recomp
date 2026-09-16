@@ -569,6 +569,42 @@ function CompilerPool:status(jobKey)
   return record.state, record.details
 end
 
+---@param jobKey string
+---@return table<string, unknown>|nil
+function CompilerPool:jobOutcome(jobKey)
+  local record = self.jobs[jobKey]
+  if record == nil then
+    return nil
+  end
+  local workerId = record.workerId
+  if workerId == nil and type(record.details) == "table" then
+    local detailWorker = record.details.workerId
+    if type(detailWorker) == "number" then
+      workerId = detailWorker
+    end
+  end
+  local snapshot = {
+    jobKey = record.jobKey,
+    generationId = record.generationId,
+    epoch = record.epoch,
+    state = record.state,
+  }
+  if workerId ~= nil then
+    snapshot.workerId = workerId
+  end
+  if record.state == "failed" and type(record.details) == "table" and record.details.error ~= nil then
+    snapshot.error = record.details.error
+  end
+  if type(record.timing) == "table" then
+    snapshot.compileSeconds = record.timing.compileSeconds
+    snapshot.stageSeconds = record.timing.stageSeconds
+    snapshot.workSeconds = record.timing.workSeconds
+    snapshot.stagedBytes = record.timing.stagedBytes
+    snapshot.timingReason = record.timing.timingReason
+  end
+  return snapshot
+end
+
 ---@param record CompilerPool.Job
 ---@return string?
 function CompilerPool:_admissionBlockReason(record)
@@ -1235,6 +1271,7 @@ function CompilerPool:_publishOne()
       stageSeconds = record.timing and record.timing.stageSeconds,
       workSeconds = record.timing and record.timing.workSeconds,
       stagedBytes = record.timing and record.timing.stagedBytes,
+      timingReason = record.timing and record.timing.timingReason,
     }
     if #self.recentTimings > MAX_RECENT_TIMINGS then
       table.remove(self.recentTimings, 1)

@@ -149,7 +149,54 @@ local function makeSession(pool, identity, sweepEnabled)
         ready = ready + 1
       end
     end
-    return { ready = ready, failed = failed, failures = failures, enumerated = #self.requested }
+    return {
+      ready = ready,
+      failed = failed,
+      failures = failures,
+      enumerated = #self.requested,
+      enumerationComplete = true,
+    }
+  end
+  function session:outcomes()
+    local list = {}
+    self.completed = self.completed or {}
+    for _, jobKey in ipairs(self.requested) do
+      local kind, key = splitJobKey(jobKey)
+      local state, err, cause = nil, nil, nil
+      if env.failKeys[jobKey] ~= nil then
+        state = "failed"
+        err = jobKey .. ": " .. env.failKeys[jobKey]
+      elseif env.excludedKeys[jobKey] then
+        state = "failed"
+        err = jobKey .. ": source-planned exclusion"
+      elseif self.completed[jobKey] or env.readyKeys[jobKey] then
+        state = "successful"
+      else
+        state = "pending"
+      end
+      if state == "failed" then
+        assert(type(err) == "string", "failed dispositions carry an error string")
+        for _, other in ipairs(self.requested) do
+          if other ~= jobKey and err:find(other, 1, true) ~= nil then
+            cause = other
+            break
+          end
+        end
+      end
+      list[#list + 1] = {
+        kind = kind,
+        key = key,
+        jobKey = jobKey,
+        state = state,
+        reused = false,
+        error = err,
+        causeJobKey = cause,
+      }
+    end
+    table.sort(list, function(left, right)
+      return left.jobKey < right.jobKey
+    end)
+    return list
   end
   function session:retire()
     self.retired = true
