@@ -485,6 +485,106 @@ function T.prepare_without_requested_readiness_fails_instead_of_succeeding()
   end)
 end
 
+-- The invocation receipt request reaches preparation with the actual save
+-- identity: the runner forwards the output path instead of writing its own
+-- receipt, and a receipt write failure fails the command.
+function T.prepare_forwards_the_invocation_receipt_with_the_actual_save_identity()
+  withRunnerHarness(function(quitCode)
+    RomImporter.isReady = function()
+      return true
+    end
+    package.loaded["romdump.src.source.RomFs"] = {
+      open = function()
+        return {
+          metadata = function()
+            return { sha1 = string.rep("b", 40) }
+          end,
+          close = function() end,
+        }
+      end,
+    }
+    package.loaded["romdump.src.ProducerFingerprint"] = {
+      checkoutBackend = function()
+        return {}
+      end,
+      appBackend = function()
+        return {}
+      end,
+      compute = function()
+        return "d" .. string.rep("1", 64)
+      end,
+    }
+    local received
+    package.loaded["romdump.src.CacheBuilder"] = {
+      prepareVersion = function(version, options)
+        received = { version = version, options = options }
+        return {
+          complete = false,
+          requestedReady = true,
+          exclusions = {},
+          failures = {},
+          counts = { planned = 1, successful = 1, failed = 0, cancelled = 0, excluded = 0 },
+        }
+      end,
+    }
+    capturedOutput = {}
+    Runner.load({
+      command = "prepare-cache",
+      version = "heartgold",
+      requirements = { "map:7" },
+      rebuild = {},
+      dev = true,
+      preparationRecord = "/tmp/invocation-preparation.lua",
+    })
+    Assert.equal(quitCode(), 0)
+    Assert.equal(received.options.preparationRecord, "/tmp/invocation-preparation.lua")
+    Assert.equal(received.options.saveDirectory, love.filesystem.getSaveDirectory())
+  end)
+end
+
+function T.prepare_receipt_write_failure_fails_the_command()
+  withRunnerHarness(function(quitCode)
+    RomImporter.isReady = function()
+      return true
+    end
+    package.loaded["romdump.src.source.RomFs"] = {
+      open = function()
+        return {
+          metadata = function()
+            return { sha1 = string.rep("b", 40) }
+          end,
+          close = function() end,
+        }
+      end,
+    }
+    package.loaded["romdump.src.ProducerFingerprint"] = {
+      checkoutBackend = function()
+        return {}
+      end,
+      appBackend = function()
+        return {}
+      end,
+      compute = function()
+        return "d" .. string.rep("1", 64)
+      end,
+    }
+    package.loaded["romdump.src.CacheBuilder"] = {
+      prepareVersion = function()
+        return nil, Errors.new("PREPARATION_RECORD_FAILED", "the invocation proof cannot be opened", {})
+      end,
+    }
+    Runner.load({
+      command = "prepare-cache",
+      version = "heartgold",
+      requirements = { "map:7" },
+      rebuild = {},
+      dev = true,
+      preparationRecord = "/nonexistent-dir-xyz/preparation.lua",
+    })
+    Assert.equal(quitCode(), 1, "a receipt write failure fails the command without an independent runner receipt")
+  end)
+end
+
 return {
   beforeAll = captureOutput,
   afterAll = restoreOutput,

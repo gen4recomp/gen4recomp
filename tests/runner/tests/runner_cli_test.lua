@@ -36,6 +36,9 @@ function T.test_entrypoint_runs_the_incremental_builder_for_real_dependency_fres
   handle:close()
 
   contains(script, "love romdump/ --build-cache", "test entrypoint")
+  contains(script, "love romdump/ --prepare-cache", "test entrypoint")
+  contains(script, "--preparation-record", "test entrypoint")
+  contains(script, "--dev", "test entrypoint")
   Assert.isNil(script:find("--check-derived-cache", 1, true))
 end
 
@@ -818,7 +821,8 @@ function T.unfiltered_strict_run_with_no_executed_graphics_test_still_fails()
 end
 
 -- Raw field-message/font facts need no prepared cache, while the
--- cache-backed message sibling and the dialogue suite still prepare it.
+-- cache-backed message sibling and the dialogue suite prepare the complete
+-- corpus their historical capability name is granted from.
 function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_facts_prepare_it()
   local files = {
     ["fake/rom/field_messages_test.lua"] = require("tests.rom.field_messages_test"),
@@ -850,8 +854,8 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
         TestRunner.selectedRequirements(dialogueListing)
       )
     ),
-    "assets",
-    "a cache-backed dialogue focus prepares the cache"
+    "complete",
+    "a cache-backed dialogue focus prepares the complete corpus it claims"
   )
 
   files["fake/rom/field_message_cache_test.lua"] = require("tests.rom.field_message_cache_test")
@@ -869,8 +873,8 @@ function T.raw_message_focus_skips_cache_preparation_while_cache_backed_message_
     prepareOf(
       Cli.renderPlan(cachePlan, selectedCapabilities(cacheListing), 1, TestRunner.selectedRequirements(cacheListing))
     ),
-    "assets",
-    "a cache-backed message focus prepares the cache"
+    "complete",
+    "a cache-backed message focus prepares the complete corpus it claims"
   )
 end
 
@@ -972,6 +976,25 @@ function T.selected_suites_carry_their_declared_derived_requirements()
   end
   Assert.isTrue(union["map:7"] == true, "the full union keeps the map closure")
   Assert.isTrue(union["complete"] == true, "the full union keeps the complete request")
+end
+
+-- A selection that still uses the historical cache capability name requires
+-- the complete corpus explicitly: the historical capability is only ever
+-- granted as an alias of the verified complete proof, so planning must be
+-- truthful about what it prepares.
+function T.historical_cache_capability_selection_requires_the_complete_scope()
+  local plan = parse({ "--filter", "cache case" })
+  local caps = { rom_dump = true, derived_cache = true }
+  local lines = Cli.renderPlan(plan, caps, 1, { "map:7" })
+  local requires = {}
+  for _, line in ipairs(lines) do
+    local key, value = line:match("^([^=]+)=(.*)$")
+    if key == "require" then
+      requires[#requires + 1] = value
+    end
+  end
+  Assert.deepEqual(requires, { "complete", "map:7" }, "the historical name is planned as the complete scope")
+  Assert.equal(prepareOf(lines), "complete", "the historical name prepares the complete scope")
 end
 
 -- The requirement union is deduplicated and sorted so repeated runs of the

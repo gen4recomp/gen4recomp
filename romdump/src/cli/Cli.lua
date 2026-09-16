@@ -20,7 +20,7 @@ Cli.EXIT_USAGE = 2
 
 Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--build-cache [path]]"
   .. " [--check-dump] [--check-derived-cache] [--probe-rom <path>]"
-  .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--profile <path>] [--rebuild <job> ...]]"
+  .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--profile <path>] [--preparation-record <path>] [--rebuild <job> ...]]"
   .. " [--allow-compile-exclusions] [--dev]"
 
 -- Every command flag maps to the command it selects; --import-rom,
@@ -91,7 +91,7 @@ end
 
 -- argv: the array LÖVE passes to love.load.
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, version: string|nil, requirements: string[], rebuild: string[], profile: string|nil }
+---@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, version: string|nil, requirements: string[], rebuild: string[], profile: string|nil, preparationRecord: string|nil }
 function Cli.parse(argv)
   argv = argv or {}
 
@@ -105,6 +105,7 @@ function Cli.parse(argv)
     requirements = {},
     rebuild = {},
     profile = nil,
+    preparationRecord = nil,
   }
   local commandFlag = nil
 
@@ -164,6 +165,12 @@ function Cli.parse(argv)
         error("duplicate --profile: " .. opts.profile .. "\n" .. Cli.USAGE)
       end
       opts.profile = takeValue(argv, i, token)
+      i = i + 1
+    elseif token == "--preparation-record" then
+      if opts.preparationRecord then
+        error("duplicate --preparation-record: " .. opts.preparationRecord .. "\n" .. Cli.USAGE)
+      end
+      opts.preparationRecord = takeValue(argv, i, token)
       i = i + 1
     elseif token == "--allow-compile-exclusions" then
       opts.allowCompileExclusions = true
@@ -232,6 +239,9 @@ function Cli.parse(argv)
     end
     if #opts.rebuild > 0 then
       error("--rebuild only applies to --prepare-cache\n" .. Cli.USAGE)
+    end
+    if opts.preparationRecord ~= nil then
+      error("--preparation-record only applies to --prepare-cache\n" .. Cli.USAGE)
     end
     if opts.profile ~= nil and opts.command ~= "build-cache" then
       error("--profile only applies to --build-cache or --prepare-cache\n" .. Cli.USAGE)

@@ -236,4 +236,48 @@ function T.prepare_cache_rejects_malformed_requirements_and_paths()
   end
 end
 
+function T.prepare_cache_accepts_an_invocation_receipt_output()
+  local o = Cli.parse({
+    "--prepare-cache",
+    "--version",
+    "heartgold",
+    "--require",
+    "map:7",
+    "--dev",
+    "--preparation-record",
+    "/tmp/preparation.lua",
+  })
+  Assert.equal(o.command, "prepare-cache")
+  Assert.equal(o.preparationRecord, "/tmp/preparation.lua")
+  Assert.isNil(Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "map:7" }).preparationRecord)
+end
+
+function T.preparation_record_is_rejected_outside_preparation()
+  Assert.throws(function()
+    Cli.parse({ "--build-cache", "--preparation-record", "/tmp/preparation.lua" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--preparation-record", "/tmp/preparation.lua" })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--preparation-record", "/tmp/preparation.lua" })
+  end)
+  Assert.throws(function()
+    Cli.parse({
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "map:7",
+      "--preparation-record",
+      "/tmp/one.lua",
+      "--preparation-record",
+      "/tmp/two.lua",
+    })
+  end)
+  Assert.throws(function()
+    Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "map:7", "--preparation-record" })
+  end)
+end
+
 return { tests = T }

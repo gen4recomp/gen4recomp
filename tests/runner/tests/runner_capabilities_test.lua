@@ -94,15 +94,31 @@ function T.a_ready_dump_without_preparation_is_not_a_derived_cache()
   Assert.deepEqual(versions, { "heartgold" })
 end
 
-function T.a_prepared_ready_dump_offers_both_capabilities_and_names_versions()
+function T.a_ready_dump_with_only_an_inherited_flag_is_not_a_derived_cache()
   local capabilities, versions = detect(
     { heartgold = true, soulsilver = true },
     { [Capabilities.DERIVED_CACHE_ENV] = "1" }
   )
 
   Assert.isTrue(capabilities.rom_dump)
-  Assert.isTrue(capabilities.derived_cache)
+  Assert.isNil(capabilities.derived_cache, "a bare flag must not prove the historical cache capability")
   Assert.deepEqual(versions, { "heartgold", "soulsilver" }, "versions follow the declared order")
+end
+
+-- The historical cache name survives only as an alias of a verified
+-- complete receipt: a partial receipt proves the partial closure without
+-- the historical name, and the complete receipt grants both.
+function T.a_verified_complete_preparation_grants_the_historical_cache_alias()
+  local partial, _ = detectWithReceipt({ heartgold = true }, {}, preparation())
+
+  Assert.isTrue(partial.derived_assets, "a verified receipt proves the requested closure")
+  Assert.isNil(partial.derived_cache, "a partial receipt must not prove the historical cache capability")
+
+  local complete, _ = detectWithReceipt({ heartgold = true }, {}, preparation({ complete = true }))
+
+  Assert.isTrue(complete.derived_assets, "a complete corpus contains every partial closure")
+  Assert.isTrue(complete.complete_derived_cache, "an exhaustive receipt proves the complete corpus")
+  Assert.isTrue(complete.derived_cache, "the historical name follows the verified complete corpus")
 end
 
 -- The old single environment flag is not invocation proof: without a
@@ -150,6 +166,54 @@ function T.a_failed_or_generation_mismatched_preparation_grants_neither_capabili
   Assert.isNil(stale.derived_assets, "a receipt for another generation proves no partial closure")
   Assert.isNil(stale.complete_derived_cache, "a receipt for another generation proves no complete corpus")
   Assert.isTrue(stale.rom_dump, "the ready dump still offers its raw capability")
+end
+
+-- Generations are strict nonempty tokens on both sides: two absent
+-- generations must never satisfy each other through an empty comparison, two
+-- empty tokens prove nothing either, and a one-sided generation is equally
+-- unproven. Only two present generations that match can authorize a closure.
+function T.absent_or_empty_generations_grant_no_derived_capability()
+  local sourceless = { versionId = "heartgold", romSha1 = ROM_SHA }
+  local recordless = {
+    versionId = "heartgold",
+    romSha1 = ROM_SHA,
+    requested = { "map:7" },
+    requestedReady = true,
+    complete = false,
+  }
+  local absent, _ = detectWithReceipt({ heartgold = true }, {}, recordless, sourceless)
+
+  Assert.isNil(absent.derived_assets, "two absent generations must not prove a partial closure")
+  Assert.isNil(absent.complete_derived_cache, "two absent generations must not prove a complete corpus")
+
+  local emptySource = { versionId = "heartgold", romSha1 = ROM_SHA, generationId = "" }
+  local empty, _ = detectWithReceipt({ heartgold = true }, {}, preparation({ generationId = "" }), emptySource)
+
+  Assert.isNil(empty.derived_assets, "two empty generations must not prove a partial closure")
+  Assert.isNil(empty.complete_derived_cache, "two empty generations must not prove a complete corpus")
+
+  local halfSource = { versionId = "heartgold", romSha1 = ROM_SHA, generationId = GENERATION }
+  local half, _ = detectWithReceipt({ heartgold = true }, {}, recordless, halfSource)
+
+  Assert.isNil(half.derived_assets, "a one-sided generation must not prove a partial closure")
+  Assert.isNil(half.complete_derived_cache, "a one-sided generation must not prove a complete corpus")
+  Assert.isTrue(half.rom_dump, "the ready dump still offers its raw capability")
+end
+
+-- A ready receipt for another version or other ROM bytes proves nothing for
+-- this selection, even when its requested closure is ready.
+function T.a_receipt_for_another_version_or_rom_grants_no_derived_capability()
+  local versioned, _ = detectWithReceipt({ heartgold = true }, {}, preparation({ versionId = "soulsilver" }))
+
+  Assert.isNil(versioned.derived_assets, "a receipt for another version proves no partial closure")
+  Assert.isNil(versioned.complete_derived_cache, "a receipt for another version proves no complete corpus")
+  Assert.isTrue(versioned.rom_dump, "the ready dump still offers its raw capability")
+
+  local romed, _ = detectWithReceipt({ heartgold = true }, {}, preparation({ romSha1 = string.rep("b", 40) }))
+
+  Assert.isNil(romed.derived_assets, "a receipt for another ROM proves no partial closure")
+  Assert.isNil(romed.complete_derived_cache, "a receipt for another ROM proves no complete corpus")
+  Assert.isTrue(romed.rom_dump, "the ready dump still offers its raw capability")
 end
 
 return { tests = T }

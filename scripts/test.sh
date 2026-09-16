@@ -20,6 +20,10 @@
 # selected private cache, and --fresh performs a real cold import into an
 # owned temporary root that is removed after its children exit. The product
 # cache and personal saves are never touched by test preparation.
+# Readiness always comes from the common scoped builder (`love romdump/
+# --prepare-cache --dev`), which alone issues the invocation receipt the test
+# children validate; reused scope text from an earlier invocation never
+# authorizes the current run.
 # G4RECOMP_REQUIRE_ROM_TESTS=1 makes a missing dump fatal.
 # Exit status: 0 green, 1 failures or a missing required capability, 2 usage.
 set -euo pipefail
@@ -36,8 +40,8 @@ trap cleanup EXIT
 
 # No inherited worker token, stale preparation record, or stale readiness
 # claim may leak into planning, cache preparation, or serial execution; only
-# a worker subshell below exports one, and readiness is published only for
-# preparation this invocation established.
+# a worker subshell below exports one, and the invocation receipt below is
+# exported only for preparation this invocation established.
 unset G4RECOMP_TEST_ACCEPTANCE_NAMESPACE
 unset G4RECOMP_TEST_PREPARATION
 unset G4RECOMP_DERIVED_CACHE_READY
@@ -145,88 +149,12 @@ probe_source() {
   fi
 }
 
-# Whether the prepared manifest of one private root already covers the exact
-# requirement union of this selection. A complete corpus implies every
-# partial closure it contains.
-manifest_covers() {
-  local manifest="$1/prepared"
-  [ -f "$manifest" ] || return 1
-  if grep -qx 'complete' -- "$manifest" 2>/dev/null; then
-    return 0
-  fi
-  if [ "${#requires[@]}" -eq 0 ]; then
-    return 0
-  fi
-  local requirement=""
-  for requirement in "${requires[@]}"; do
-    grep -qxF -- "$requirement" "$manifest" 2>/dev/null || return 1
-  done
-  return 0
-}
-
-# Merge one successful preparation into the persistent manifest. A complete
-# scope subsumes every partial requirement.
-merge_manifest() {
-  local manifest="$1/prepared"
-  if [ "$2" = 1 ]; then
-    printf 'complete\n' >"$manifest"
-    return 0
-  fi
-  if [ "${#requires[@]}" -eq 0 ]; then
-    return 0
-  fi
-  {
-    if [ -f "$manifest" ]; then
-      cat -- "$manifest"
-    fi
-    printf '%s\n' "${requires[@]}"
-  } | LC_ALL=C sort -u >"$manifest.tmp"
-  mv -- "$manifest.tmp" "$manifest"
-}
-
-# Escape one value for embedding in a double-quoted Lua string. Callers only
-# pass values that already passed the strict shape checks above; newlines and
-# control characters are rejected rather than escaped.
-lua_quote() {
-  local value="$1"
-  if [[ "$value" == *$'\n'* ]]; then
-    echo "test: refusing to serialize a multiline value" >&2
-    exit 1
-  fi
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  printf '"%s"' "$value"
-}
-
-# Publish the invocation preparation record the test workers validate: the
-# canonical private data home, the selected source, and the exact closure
-# this invocation established. Workers grant scoped capabilities only from
-# this record, never from an inherited environment boolean.
-write_receipt() {
-  local data_home="$1" version="$2" sha="$3" complete="$4"
-  local receipt="$data_home/preparation.lua"
-  {
-    printf 'return {\n  schema = "g4-test-preparation-v1",\n  data_home = %s,\n' "$(lua_quote "$data_home")"
-    printf '  source = { version_id = %s, rom_sha1 = %s },\n' "$(lua_quote "$version")" "$(lua_quote "$sha")"
-    printf '  preparation = { version_id = %s, rom_sha1 = %s, requested = {' "$(lua_quote "$version")" "$(lua_quote "$sha")"
-    local requirement=""
-    if [ "${#requires[@]}" -gt 0 ]; then
-      for requirement in "${requires[@]}"; do
-        printf ' %s,' "$(lua_quote "$requirement")"
-      done
-    fi
-    printf ' }, requested_ready = true, complete = %s },\n}\n' "$complete"
-  } >"$receipt.tmp"
-  mv -- "$receipt.tmp" "$receipt"
-  export G4RECOMP_TEST_PREPARATION="$receipt"
-}
-
 # Run the cache builder's scoped preparation for the exact requirement union
-# and merge the success into the persistent manifest. Returns the complete
-# flag (0/1) in prepare_complete. Any failure exits without touching the
-# last valid selection or the persistent manifest.
+# under the working-tree development identity and require the builder-issued
+# invocation receipt. Any failure exits without touching the last valid
+# selection, and no test child starts without the newly written receipt.
 run_scoped_prepare() {
-  local version="$1" rom_dir="$2"
+  local version="$1" receipt="$2"
   local prepare_args=()
   local requirement=""
   for requirement in "${requires[@]}"; do
@@ -234,23 +162,32 @@ run_scoped_prepare() {
   done
   local prepare_out=""
   local prepare_status=0
-  prepare_out="$(love romdump/ --prepare-cache --version "$version" "${prepare_args[@]}")" || prepare_status=$?
+  prepare_out="$(love romdump/ --prepare-cache --dev --version "$version" "${prepare_args[@]}" --preparation-record "$receipt")" || prepare_status=$?
   printf '%s\n' "$prepare_out"
   if [ "$prepare_status" -ne 0 ]; then
     echo "test: scoped cache preparation failed (exit $prepare_status)" >&2
     exit "$prepare_status"
   fi
-  prepare_complete=0
-  case "$prepare_out" in
-    *complete=true*) prepare_complete=1 ;;
-  esac
   case "$prepare_out" in
     *ready=false*)
       echo "test: scoped cache preparation left requirements unready" >&2
       exit 1
       ;;
   esac
-  merge_manifest "$rom_dir" "$prepare_complete"
+  if [ ! -f "$receipt" ]; then
+    echo "test: scoped cache preparation issued no receipt" >&2
+    exit 1
+  fi
+}
+
+# An invocation-owned receipt directory for the builder-issued proof beneath
+# the private test root. The receipt file inside is created only by a
+# successful preparation below; the directory is removed with the other owned
+# evidence after every child has been reaped. Sets $receipt_dir in the
+# caller (a command substitution would lose the cleanup registration).
+new_receipt_dir() {
+  receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"
+  temp_dirs+=("$receipt_dir")
 }
 
 # The runner's plan answer: the preparation scope the actual selection
@@ -330,9 +267,8 @@ if [ "$fresh" = 1 ]; then
   love romdump/ --import-rom "$rom_source"
   if [ "$prepare" != "none" ]; then
     probe_source "$rom_source"
-    run_scoped_prepare "$probe_version" "$fresh_root"
-    write_receipt "$fresh_root" "$probe_version" "$probe_sha" "$([ "$prepare_complete" = 1 ] && echo true || echo false)"
-    export G4RECOMP_DERIVED_CACHE_READY=1
+    run_scoped_prepare "$probe_version" "$fresh_root/preparation.lua"
+    export G4RECOMP_TEST_PREPARATION="$fresh_root/preparation.lua"
   else
     rm -f -- "$fresh_root/preparation.lua"
   fi
@@ -365,7 +301,7 @@ elif [ -n "$rom_source" ]; then
     temp_dirs+=("$BUILD_LOG_DIR")
     BUILD_LOG="$BUILD_LOG_DIR/buildcache.log"
     build_status=0
-    love romdump/ --build-cache "$rom_source" >"$BUILD_LOG" 2>&1 || build_status=$?
+    love romdump/ --build-cache --dev "$rom_source" >"$BUILD_LOG" 2>&1 || build_status=$?
     if [ "$build_status" -ne 0 ]; then
       tail -n 20 -- "$BUILD_LOG" >&2
       echo "test: private cache import failed (exit $build_status); see $BUILD_LOG" >&2
@@ -385,39 +321,34 @@ elif [ -n "$rom_source" ]; then
     if [ -n "$version" ]; then
       printf 'version=%s\nrom_sha1=%s\n' "$version" "$sha" >"$rom_dir/rom-ready"
     fi
-    printf 'complete\n' >"$rom_dir/prepared"
-  elif [ "$prepare" != "none" ] && ! manifest_covers "$rom_dir"; then
-    if [ -z "$version" ]; then
-      version="$(sed -n 's/^version=//p' -- "$rom_dir/rom-ready" | head -n 1)"
+  fi
+  # Stale scope text and predecessor receipts inside the owned root never
+  # authorize reuse; only the builder-issued receipt below does.
+  rm -f -- "$rom_dir/prepared" "$data_home/preparation.lua"
+  if [ -z "$version" ] && [ "$prepare" != "none" ]; then
+    version="$(sed -n 's/^version=//p' -- "$rom_dir/rom-ready" | head -n 1)"
+  fi
+  if [ "$prepare" != "none" ] && ! is_version_name "${version:-}"; then
+    probe_source "$rom_source"
+    if [ "$probe_sha" != "$sha" ]; then
+      echo "test: private cache identity changed; refusing to mix roots" >&2
+      exit 1
     fi
-    if ! is_version_name "$version"; then
-      probe_source "$rom_source"
-      if [ "$probe_sha" != "$sha" ]; then
-        echo "test: private cache identity changed; refusing to mix roots" >&2
-        exit 1
-      fi
-      version="$probe_version"
-    fi
-    echo "== prepare ${requires[*]} for $version in $data_home =="
-    run_scoped_prepare "$version" "$rom_dir"
+    version="$probe_version"
   fi
   if [ -n "$version" ]; then
     write_selection "$version" "$sha"
     echo "== private ROM test cache: $version $sha in $data_home =="
   fi
-  if [ "$prepare" != "none" ] && manifest_covers "$rom_dir"; then
-    if [ -n "$version" ]; then
-      if grep -qx 'complete' -- "$rom_dir/prepared" 2>/dev/null; then
-        complete_value=true
-      else
-        complete_value=false
-      fi
-      write_receipt "$data_home" "$version" "$sha" "$complete_value"
+  if [ "$prepare" != "none" ]; then
+    if [ -z "$version" ]; then
+      echo "test: scoped cache preparation needs a version for $sha" >&2
+      exit 1
     fi
-    export G4RECOMP_DERIVED_CACHE_READY=1
-  else
-    rm -f -- "$data_home/preparation.lua"
-    unset G4RECOMP_DERIVED_CACHE_READY
+    echo "== prepare ${requires[*]} for $version in $data_home =="
+    new_receipt_dir
+    run_scoped_prepare "$version" "$receipt_dir/preparation.lua"
+    export G4RECOMP_TEST_PREPARATION="$receipt_dir/preparation.lua"
   fi
 elif [ "$prepare" != "none" ]; then
   # A plain run: reuse the last successfully selected private cache when it
@@ -433,23 +364,13 @@ elif [ "$prepare" != "none" ]; then
     export XDG_DATA_HOME="$data_home"
     unset G4RECOMP_SAVE_DIR
     version="$select_version"
-    if ! manifest_covers "$rom_dir"; then
-      echo "== prepare ${requires[*]} for $version in $data_home =="
-      run_scoped_prepare "$version" "$rom_dir"
-    fi
+    rm -f -- "$rom_dir/prepared" "$data_home/preparation.lua"
     echo "== private ROM test cache: $version $select_sha in $data_home =="
-    if grep -qx 'complete' -- "$rom_dir/prepared" 2>/dev/null; then
-      complete_value=true
-    else
-      complete_value=false
-    fi
-    write_receipt "$data_home" "$version" "$select_sha" "$complete_value"
-    export G4RECOMP_DERIVED_CACHE_READY=1
-  else
-    unset G4RECOMP_DERIVED_CACHE_READY
+    echo "== prepare ${requires[*]} for $version in $data_home =="
+    new_receipt_dir
+    run_scoped_prepare "$version" "$receipt_dir/preparation.lua"
+    export G4RECOMP_TEST_PREPARATION="$receipt_dir/preparation.lua"
   fi
-else
-  unset G4RECOMP_DERIVED_CACHE_READY
 fi
 
 # Not `exec`: the isolated save roots above are removed by the EXIT trap,

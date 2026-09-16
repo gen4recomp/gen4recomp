@@ -11,6 +11,8 @@ local Parallel = require("tests.runner.Parallel")
 local RepoFiles = require("tests.runner.RepoFiles")
 local Report = require("tests.runner.Report")
 local TestRunner = require("tests.runner.TestRunner")
+local GameVersion = require("romdump.src.source.GameVersion")
+local RomImporter = require("romdump.src.source.RomImporter")
 
 -- The process environment, read lazily. Passed explicitly into the pure command
 -- modules so their behavior never depends on an ambient lookup.
@@ -64,11 +66,95 @@ end
 
 -- The invocation preparation receipt the shell entrypoint verified for this
 -- run, or nil when no private preparation backs the run. The file is a
--- data-only Lua table the shell wrote inside the private test root; it is
--- read back in an empty environment and schema-checked, never executed as
--- code with ambient privileges.
-local PREPARATION_SCHEMA = "g4-test-preparation-v1"
+-- data-only Lua table the common builder wrote after its scoped preparation
+-- succeeded; it is read back in an empty environment and strictly validated,
+-- never executed as code with ambient privileges. Every predecessor schema
+-- is rejected rather than adapted.
+local PREPARATION_SCHEMA = "g4-test-preparation-v2"
 local PREPARATION_ENV = "G4RECOMP_TEST_PREPARATION"
+
+local PREPARATION_FIELDS = {
+  schema = true,
+  saveDirectory = true,
+  versionId = true,
+  romSha1 = true,
+  generationId = true,
+  requested = true,
+  requestedReady = true,
+  complete = true,
+}
+
+---@param value unknown
+---@return boolean
+local function isNonEmptyString(value)
+  return type(value) == "string" and value ~= ""
+end
+
+---@param record table
+---@return string|nil failure
+local function checkPreparationShape(record)
+  if record.schema ~= PREPARATION_SCHEMA then
+    return "preparation record schema mismatch"
+  end
+  for key in pairs(record) do
+    if PREPARATION_FIELDS[key] ~= true then
+      return "preparation record carries an unknown field '" .. tostring(key) .. "'"
+    end
+  end
+  for _, key in ipairs({
+    "saveDirectory",
+    "versionId",
+    "romSha1",
+    "generationId",
+    "requested",
+    "requestedReady",
+    "complete",
+  }) do
+    if record[key] == nil then
+      return "preparation record carries no " .. key
+    end
+  end
+  if not isNonEmptyString(record.saveDirectory) then
+    return "preparation record carries no private save directory"
+  end
+  if not isNonEmptyString(record.versionId) then
+    return "preparation record names no version"
+  end
+  if type(record.romSha1) ~= "string" or #record.romSha1 ~= 40 or record.romSha1:find("[^0-9a-f]") ~= nil then
+    return "preparation record names no ROM identity"
+  end
+  if not isNonEmptyString(record.generationId) then
+    return "preparation record carries no generation"
+  end
+  if type(record.requested) ~= "table" then
+    return "preparation record names no prepared closure"
+  end
+  local count = 0
+  for key in pairs(record.requested) do
+    if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+      return "preparation record names no prepared closure"
+    end
+    count = count + 1
+  end
+  local previous = nil
+  for index = 1, count do
+    local requirement = record.requested[index]
+    if not isNonEmptyString(requirement) then
+      return "preparation record names no prepared closure"
+    end
+    if previous ~= nil and requirement <= previous then
+      return "preparation record closure is not a sorted unique list"
+    end
+    previous = requirement
+  end
+  if type(record.requestedReady) ~= "boolean" then
+    return "preparation record names no prepared closure"
+  end
+  if type(record.complete) ~= "boolean" then
+    return "preparation record names no exhaustive result"
+  end
+  return nil
+end
 
 ---@param path string
 ---@return table|nil, string|nil
@@ -79,6 +165,9 @@ local function readPreparationRecord(path)
   end
   local source = handle:read("*a")
   handle:close()
+  if type(source) ~= "string" then
+    return nil, "cannot read preparation record: " .. path
+  end
   local chunk, loadError
   if loadstring ~= nil then
     chunk, loadError = loadstring(source, "@" .. path)
@@ -95,64 +184,95 @@ local function readPreparationRecord(path)
   if not ok or type(record) ~= "table" then
     return nil, "preparation record is not a data table"
   end
-  if record.schema ~= PREPARATION_SCHEMA then
-    return nil, "preparation record schema mismatch"
-  end
-  if type(record.data_home) ~= "string" or record.data_home == "" then
-    return nil, "preparation record carries no private data home"
-  end
-  for _, section in ipairs({ "source", "preparation" }) do
-    local entry = record[section]
-    if type(entry) ~= "table" then
-      return nil, "preparation record carries no " .. section
-    end
-    if type(entry.version_id) ~= "string" or type(entry.rom_sha1) ~= "string" then
-      return nil, "preparation record " .. section .. " names no source identity"
-    end
-  end
-  local preparation = record.preparation
-  if type(preparation.requested) ~= "table" or type(preparation.requested_ready) ~= "boolean" then
-    return nil, "preparation record names no prepared closure"
+  local shapeError = checkPreparationShape(record)
+  if shapeError ~= nil then
+    return nil, shapeError
   end
   return record, nil
 end
 
--- The capability context for one executing process: the private source the
--- shell selected and the exact closure it prepared, validated against the
--- record the shell verified for this invocation. A corrupt record is an
--- explicit failure, never a silent downgrade into skips.
----@return table, string|nil
-local function preparationContext()
-  local context = {}
-  local path = ENV[PREPARATION_ENV]
-  if type(path) ~= "string" or path == "" then
-    return context, nil
+-- The deduplicated union of derived-cache requirements declared by the
+-- suites this process will execute. A narrower shard consumes the
+-- invocation union but can never widen it: every selected requirement must
+-- appear in the verified receipt.
+---@param plan table
+---@param shard table|nil
+---@return string[]|nil, string|nil
+local function selectedRequirements(plan, shard)
+  local ok, listing = pcall(list, {
+    layer = plan.layer,
+    filter = plan.filter,
+    tag = plan.tag,
+    slow = plan.slow,
+    shard = shard,
+  })
+  if not ok then
+    return nil, "cannot list the selected suites: " .. tostring(listing)
   end
-  local record, reason = readPreparationRecord(path)
-  if record == nil then
-    return context, tostring(reason) .. ": " .. path
+  return TestRunner.selectedRequirements(listing), nil
+end
+
+-- Whether the verified receipt covers every requirement the selection
+-- promises. A receipt for a narrower closure never authorizes a wider run.
+---@param record table
+---@param required string[]
+---@return string|nil failure
+local function checkRequestedScope(record, required)
+  local satisfied = {}
+  for _, requirement in ipairs(record.requested) do
+    satisfied[requirement] = true
   end
-  context.dataHome = record.data_home
-  context.source = {
-    versionId = record.source.version_id,
-    romSha1 = record.source.rom_sha1,
-    generationId = record.source.generation_id,
-  }
-  local requested = {}
-  for _, requirement in ipairs(record.preparation.requested) do
-    if type(requirement) == "string" then
-      requested[#requested + 1] = requirement
+  for _, requirement in ipairs(required) do
+    if satisfied[requirement] ~= true then
+      return "the preparation record does not cover the selected requirement '" .. requirement .. "'"
     end
   end
-  context.preparation = {
-    versionId = record.preparation.version_id,
-    romSha1 = record.preparation.rom_sha1,
-    generationId = record.preparation.generation_id,
-    requested = requested,
-    requestedReady = record.preparation.requested_ready,
-    complete = record.preparation.complete == true,
-  }
-  return context, nil
+  if record.requestedReady ~= true then
+    return "the preparation left its requested closure unready"
+  end
+  return nil
+end
+
+-- The expected development identity for the recorded version, derived
+-- independently from the current checkout and the published dump: the
+-- working-tree digest through the producer owner plus the strict selection
+-- identity. Nothing is copied from the alleged proof except the version it
+-- claims, which the ready dump must then confirm.
+---@param versionId string
+---@return table|nil, string|nil
+local function expectedDevelopmentIdentity(versionId)
+  if GameVersion.VERSIONS[versionId] == nil then
+    return nil, "unsupported version '" .. tostring(versionId) .. "'"
+  end
+  if not RomImporter.isReady(versionId) then
+    return nil, "no ready dump for '" .. tostring(versionId) .. "'"
+  end
+  local RomFs = require("romdump.src.source.RomFs")
+  local opened, openErr = RomFs.open(versionId)
+  if opened == nil then
+    return nil, "cannot open the dump of '" .. tostring(versionId) .. "': " .. tostring(openErr)
+  end
+  local sha1 = opened:metadata().sha1
+  opened:close()
+  local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local sourceBase = love.filesystem.getSourceBaseDirectory()
+  local digestOk, producerId = pcall(function()
+    return ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(sourceBase))
+  end)
+  if not digestOk then
+    return nil, "cannot digest the working tree: " .. tostring(producerId)
+  end
+  local identityOk, identity = pcall(DerivedCacheState.currentForSelection, {
+    versionId = versionId,
+    romSha1 = sha1,
+    producerId = producerId,
+    developmentRepositoryRoot = sourceBase,
+  })
+  if not identityOk then
+    return nil, "cannot identify the current development generation: " .. tostring(identity)
+  end
+  return identity, nil
 end
 
 -- Fails before any test setup or mutable fixture when the process save
@@ -169,6 +289,63 @@ local function checkDataHome(dataHome)
     return nil
   end
   return "the save directory " .. tostring(saveDirectory) .. " escaped the private test root " .. tostring(dataHome)
+end
+
+-- The capability context for one executing process: the private source the
+-- shell prepared and the exact closure it proved, validated against the
+-- current checkout, the published dump, the actual save directory, and the
+-- selected requirement union before any suite setup. A corrupt or stale
+-- record is an explicit failure, never a silent downgrade into skips.
+---@param plan table
+---@param shard table|nil
+---@return table, string|nil
+local function preparationContext(plan, shard)
+  local context = {}
+  local path = ENV[PREPARATION_ENV]
+  if type(path) ~= "string" or path == "" then
+    return context, nil
+  end
+  local record, reason = readPreparationRecord(path)
+  if record == nil then
+    return context, tostring(reason) .. ": " .. path
+  end
+  local homeError = checkDataHome(record.saveDirectory)
+  if homeError ~= nil then
+    return context, homeError .. ": " .. path
+  end
+  local required, listError = selectedRequirements(plan, shard)
+  if required == nil then
+    return context, tostring(listError)
+  end
+  local scopeError = checkRequestedScope(record, required)
+  if scopeError ~= nil then
+    return context, scopeError .. ": " .. path
+  end
+  local identity, identityError = expectedDevelopmentIdentity(record.versionId)
+  if identity == nil then
+    return context, tostring(identityError) .. ": " .. path
+  end
+  if record.romSha1 ~= identity.romSha1 then
+    return context, "the preparation record names another ROM source: " .. path
+  end
+  if record.generationId ~= identity.generationId then
+    return context, "the preparation record names a stale generation: " .. path
+  end
+  context.dataHome = record.saveDirectory
+  context.source = {
+    versionId = record.versionId,
+    romSha1 = identity.romSha1,
+    generationId = identity.generationId,
+  }
+  context.preparation = {
+    versionId = record.versionId,
+    romSha1 = record.romSha1,
+    generationId = record.generationId,
+    requested = record.requested,
+    requestedReady = record.requestedReady,
+    complete = record.complete,
+  }
+  return context, nil
 end
 
 -- The whole command: parse, detect capabilities, run or list, report, and
@@ -212,10 +389,13 @@ local function main(argv)
     return 0
   end
 
-  local preparation, preparationError = preparationContext()
+  local shard = nil
+  if context.kind == "worker" then
+    shard = { index = context.index, count = context.count }
+  end
+  local preparation, preparationError = preparationContext(plan, shard)
   local function detect()
     local capabilities, versions = Capabilities.detect({
-      env = ENV,
       source = preparation.source,
       preparation = preparation.preparation,
     })

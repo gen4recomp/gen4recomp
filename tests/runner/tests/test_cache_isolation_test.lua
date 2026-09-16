@@ -167,6 +167,18 @@ if [ "$target" = "romdump/" ]; then
     printf 'version=%s\n' "${FAKE_PROBE_VERSION:-heartgold}"
     printf 'rom_sha1=%s\n' "$sha"
   fi
+  if [ "${2:-}" = "--build-cache" ]; then
+    printf 'import complete: %s\n' "${FAKE_PROBE_VERSION:-heartgold}"
+  fi
+  # A successful scoped preparation issues its invocation receipt the way
+  # the common builder does; a failed one leaves no successful receipt.
+  if [ "${FAKE_PREPARATION_STATUS:-0}" = "0" ]; then
+    previous=""
+    for arg in "$@"; do
+      if [ "$previous" = "--preparation-record" ]; then : > "$arg"; fi
+      previous="$arg"
+    done
+  fi
   if [ "${FAKE_SLOW_PREPARATION:-0}" != "0" ]; then sleep "$FAKE_SLOW_PREPARATION"; fi
   printf 'end=%s\n' "$(date +%s.%N)" >> "$invocation"
   exit "${FAKE_PREPARATION_STATUS:-0}"
@@ -402,7 +414,11 @@ function T.same_bytes_under_a_different_path_or_container_share_one_private_root
     for _, invocation in ipairs(preparationInvocations(record2)) do
       invocations[#invocations + 1] = invocation
     end
-    Assert.equal(#invocations, 1, "identical bytes must be prepared exactly once across spellings")
+    Assert.equal(
+      countImports(invocations, "--build-cache") + countImports(invocations, "--import-rom"),
+      1,
+      "identical bytes must be imported exactly once across spellings"
+    )
   end)
 end
 
@@ -482,9 +498,10 @@ function T.a_fresh_run_is_cold_temporary_and_leaves_the_persistent_cache_alone()
 end
 
 -- The machine-readable plan scopes preparation to the actual selection: a
--- cache-backed focus reports a partial scope with its requirements, while a
--- narrow requirement-free focus reports no scope and no requirements.
-function T.a_narrow_selection_prepares_a_partial_scope_not_a_complete_build()
+-- cache-backed focus using the historical cache capability prepares the
+-- complete scope it is granted from, while a narrow requirement-free focus
+-- reports no scope and no requirements.
+function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
   local loveBin = shellQuote(realLove())
 
   local cacheBacked = popen(loveBin .. " app/ --test --plan --filter field_dialogue_test 2>&1")
@@ -508,19 +525,16 @@ function T.a_narrow_selection_prepares_a_partial_scope_not_a_complete_build()
   -- A nested plan call that dies under parallel load prints no prepare line;
   -- surface its captured output so the failure names the nested cause.
   local planEvidence = "nested plan output: [" .. table.concat(cacheLines, " | ") .. "]"
-  Assert.isTrue(
-    prepare == "none" or prepare == "assets" or prepare == "complete",
-    "the plan must scope preparation, got: " .. tostring(prepare) .. "; " .. planEvidence
-  )
-  Assert.isTrue(
-    prepare == "assets" or prepare == "complete",
-    "a cache-backed focus must request preparation, got: " .. tostring(prepare)
-  )
+  Assert.equal(prepare, "complete", "a historical-cache focus prepares the complete scope; " .. planEvidence)
   Assert.isTrue(#requires >= 1, "a cache-backed focus must name its requirements")
+  local hasComplete = false
   for _, requirement in ipairs(requires) do
     Assert.isTrue(requirement ~= nil and requirement ~= "", "every requirement names a closed request")
-    Assert.isTrue(requirement ~= "complete", "a partial focus must not request the complete corpus")
+    if requirement == "complete" then
+      hasComplete = true
+    end
   end
+  Assert.isTrue(hasComplete, "a historical-cache focus explicitly requires the complete corpus")
   Assert.isTrue(
     tostring(jobs):match("^[1-9][0-9]*$") ~= nil,
     "the plan still answers a positive worker count, got: " .. tostring(jobs)
@@ -812,6 +826,368 @@ function T.cancellation_reaps_children_before_releasing_roots_and_keeps_sources_
   if serialFallback then
     context:skip("the unfocused selection ran serially, so worker cancellation is unobservable here")
   end
+end
+
+-- Readiness always comes from the common builder under the working-tree
+-- development identity: a repeat run against a ready private root must still
+-- invoke scoped preparation (reused scope text alone never authorizes the
+-- run), and every such invocation tests the development identity so an
+-- uncommitted producer edit invalidates the previous preparation.
+function T.repeat_runs_reprepare_through_the_common_builder_under_the_development_identity()
+  withTempDirectory(function(root)
+    local fakeLoveDir = installFakeLove(root)
+    local source = root .. "/fixture.nds"
+    writeFile(source, "fixture rom bytes for builder-issued preparation")
+    local args = "--rom-source " .. shellQuote(source) .. " --filter field_dialogue_test"
+
+    local seed = root .. "/seed"
+    local _, _, seedStatus = runTestCommand(root, fakeLoveDir, args, { recordDir = seed, runTag = "seed" })
+    Assert.equal(exitStatus(seedStatus), "0", "the seeding run must succeed")
+
+    local repeatDir = root .. "/repeat"
+    local _, repeatLog, repeatStatus =
+      runTestCommand(root, fakeLoveDir, args, { recordDir = repeatDir, runTag = "repeat" })
+    Assert.equal(exitStatus(repeatStatus), "0", "the repeat run must succeed: " .. tostring(readFile(repeatLog)))
+
+    local prepared = {}
+    for _, invocation in ipairs(preparationInvocations(repeatDir)) do
+      if (invocation.argv or ""):find("--prepare-cache", 1, true) ~= nil then
+        prepared[#prepared + 1] = invocation
+      end
+    end
+    Assert.isTrue(
+      #prepared >= 1,
+      "a repeat run must re-establish readiness through the common builder, not reused scope text"
+    )
+    for _, invocation in ipairs(prepared) do
+      Assert.isTrue(
+        (invocation.argv or ""):find("--dev", 1, true) ~= nil,
+        "builder preparation tests the working-tree development identity, got: " .. tostring(invocation.argv)
+      )
+      Assert.isTrue(
+        (invocation.argv or ""):find("--preparation-record", 1, true) ~= nil,
+        "builder preparation issues the invocation receipt, got: " .. tostring(invocation.argv)
+      )
+    end
+  end)
+end
+
+-- The generation half of the same contract, pinned without any shell: with
+-- the release counter held fixed, changing one producer byte through a
+-- controlled checkout backend moves the development generation while the
+-- release generation stays put.
+function T.a_working_tree_producer_edit_moves_only_the_development_generation()
+  local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local romSha1 = string.rep("c", 40)
+
+  local function backendFor(bytes)
+    return {
+      list = function(_)
+        return { "producer.lua" }
+      end,
+      read = function(_, _)
+        return bytes
+      end,
+      getInfo = function(_)
+        return { type = "file" }
+      end,
+    }
+  end
+
+  local before = ProducerFingerprint.compute(backendFor("producer bytes v1"), "producer")
+  local after = ProducerFingerprint.compute(backendFor("producer bytes v2"), "producer")
+  Assert.isTrue(before ~= after, "an uncommitted producer edit must change the development fingerprint")
+
+  local function developmentGeneration(producerId)
+    local identity = DerivedCacheState.currentForSelection({
+      versionId = "heartgold",
+      romSha1 = romSha1,
+      producerId = producerId,
+      developmentRepositoryRoot = "/checkout",
+    })
+    return assert(identity.generationId, "the selection identity carries its generation")
+  end
+  Assert.isTrue(
+    developmentGeneration(before) ~= developmentGeneration(after),
+    "an uncommitted producer edit must invalidate test preparation"
+  )
+
+  local function releaseGeneration()
+    local identity = DerivedCacheState.currentForSelection({
+      versionId = "heartgold",
+      romSha1 = romSha1,
+      producerId = "r7",
+    })
+    return assert(identity.generationId, "the release identity carries its generation")
+  end
+  Assert.equal(releaseGeneration(), releaseGeneration(), "the release counter stays fixed across working-tree edits")
+end
+
+-- Only the common builder can produce ready evidence: once the persistent
+-- scope text survives a seeding run, a builder failure on the next run must
+-- still fail the invocation, start no test child, and leave no successful
+-- receipt behind.
+function T.a_failed_builder_preparation_stops_the_run_without_fabricating_a_receipt()
+  withTempDirectory(function(root)
+    local fakeLoveDir = installFakeLove(root)
+    local source = root .. "/fixture.nds"
+    writeFile(source, "fixture rom bytes for builder failure")
+    local args = "--rom-source " .. shellQuote(source) .. " --filter field_dialogue_test"
+
+    local seed = root .. "/seed"
+    local _, _, seedStatus = runTestCommand(root, fakeLoveDir, args, { recordDir = seed, runTag = "seed" })
+    Assert.equal(exitStatus(seedStatus), "0", "the seeding run must succeed")
+
+    local failed = root .. "/failed"
+    local _, failedLog, failedStatus =
+      runTestCommand(root, fakeLoveDir, args, { recordDir = failed, runTag = "failed", FAKE_PREPARATION_STATUS = "1" })
+    Assert.isTrue(
+      exitStatus(failedStatus) ~= "0",
+      "a failed builder preparation must fail the run even when scope text survives: " .. tostring(readFile(failedLog))
+    )
+    Assert.isFalse(fileExists(failed .. "/serial.txt"), "no test child starts after a failed preparation")
+
+    local shaHandle = popen("sha1sum -- " .. shellQuote(source))
+    local sha = trim((shaHandle:read("*l") or ""):match("^%S+") or "")
+    shaHandle:close()
+    Assert.equal(#sha, 40, "the fixture source has a content identity")
+    Assert.isFalse(
+      fileExists(root .. "/cache/g4recomp/rom-tests/" .. sha .. "/data-home/preparation.lua"),
+      "a failed preparation leaves no successful receipt behind"
+    )
+  end)
+end
+
+-- Direct entrypoint children (bypassing the shell wrapper) for pre-setup
+-- authorization: the child shares this process's save directory, so a crafted
+-- record either authorizes on its own source merits or fails before setup.
+local function writePreparationRecord(path, dataHome, versionId, romSha1)
+  writeFile(
+    path,
+    table.concat({
+      "return {",
+      '  schema = "g4-test-preparation-v1",',
+      "  data_home = " .. string.format("%q", dataHome) .. ",",
+      "  source = { version_id = "
+        .. string.format("%q", versionId)
+        .. ", rom_sha1 = "
+        .. string.format("%q", romSha1)
+        .. " },",
+      "  preparation = { version_id = " .. string.format("%q", versionId) .. ", rom_sha1 = " .. string.format(
+        "%q",
+        romSha1
+      ) .. ', requested = { "map:7", }, requested_ready = true, complete = false },',
+      "}",
+      "",
+    }, "\n")
+  )
+end
+
+local function runEntryChild(root, name, args, exports)
+  local logFile = root .. "/" .. name .. ".log"
+  local statusFile = root .. "/" .. name .. ".status"
+  local parts = { SANITIZE_ENV }
+  for _, export in ipairs(exports or {}) do
+    parts[#parts + 1] = export .. " "
+  end
+  parts[#parts + 1] = shellQuote(realLove()) .. " app/ --test " .. args .. " >" .. shellQuote(logFile) .. " 2>&1;"
+  parts[#parts + 1] = "echo $? > " .. shellQuote(statusFile) .. ";"
+  local handle = popen(table.concat(parts, " "))
+  local _ = handle:read("*a")
+  handle:close()
+  return exitStatus(statusFile), readFile(logFile) or ""
+end
+
+local UNIT_FOCUS = "--filter the_plan_mode_is_part_of_the_command_surface"
+
+-- Strict revision helpers for the builder-issued receipt: the exact field
+-- shape the entrypoint authorizes, with per-test overrides.
+local function writeStrictPreparationRecord(path, overrides)
+  local fields = {
+    schema = "g4-test-preparation-v2",
+    saveDirectory = love.filesystem.getSaveDirectory(),
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    generationId = "g4:heartgold:" .. string.rep("a", 40) .. ":d" .. string.rep("1", 64) .. ":a1:s1",
+    requested = { "bootstrap" },
+    requestedReady = true,
+    complete = false,
+  }
+  for key, value in pairs(overrides or {}) do
+    fields[key] = value
+  end
+  local parts = { "return {" }
+  parts[#parts + 1] = '  schema = "' .. fields.schema .. '",'
+  parts[#parts + 1] = '  saveDirectory = "' .. fields.saveDirectory .. '",'
+  parts[#parts + 1] = '  versionId = "' .. fields.versionId .. '",'
+  parts[#parts + 1] = '  romSha1 = "' .. fields.romSha1 .. '",'
+  parts[#parts + 1] = '  generationId = "' .. fields.generationId .. '",'
+  local requested = {}
+  for _, requirement in ipairs(fields.requested) do
+    requested[#requested + 1] = string.format("%q", requirement)
+  end
+  parts[#parts + 1] = "  requested = { " .. table.concat(requested, ", ") .. " },"
+  parts[#parts + 1] = "  requestedReady = " .. tostring(fields.requestedReady) .. ","
+  parts[#parts + 1] = "  complete = " .. tostring(fields.complete) .. ","
+  parts[#parts + 1] = "}"
+  writeFile(path, table.concat(parts, "\n") .. "\n")
+end
+
+-- A receipt for a narrower closure never authorizes a wider selection: the
+-- dialogue focus requires its field core, so a bootstrap-only receipt fails
+-- before any setup without needing a dump to prove the mismatch.
+function T.a_preparation_record_for_a_narrower_closure_fails_before_any_setup()
+  withTempDirectory(function(root)
+    local receipt = root .. "/narrow-preparation.lua"
+    writeStrictPreparationRecord(receipt, { requested = { "bootstrap" } })
+
+    local status, output = runEntryChild(root, "serial-narrow", "--filter field_dialogue_test", {
+      "export G4RECOMP_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
+    })
+    Assert.isTrue(status ~= "0", "a narrower receipt must fail before setup, got: " .. output)
+    Assert.isNil(
+      output:find("1 passed", 1, true),
+      "no test may execute against a narrower preparation, got: " .. output
+    )
+    contains(output, "field-core", "the failure names the uncovered requirement")
+  end)
+end
+
+-- A strict receipt without a generation proves nothing: the empty token is
+-- rejected during record validation, before any setup.
+function T.a_strict_preparation_record_without_a_generation_fails_before_any_setup()
+  withTempDirectory(function(root)
+    local receipt = root .. "/generationless-preparation.lua"
+    writeStrictPreparationRecord(receipt, { generationId = "" })
+
+    local status, output = runEntryChild(root, "serial-generationless", UNIT_FOCUS, {
+      "export G4RECOMP_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
+    })
+    Assert.isTrue(status ~= "0", "a generationless receipt must fail before setup, got: " .. output)
+    Assert.isNil(
+      output:find("1 passed", 1, true),
+      "no test may execute against a generationless preparation, got: " .. output
+    )
+  end)
+end
+
+-- A well-formed record for another source must fail before mutable setup,
+-- never downgrade into skips against product data.
+function T.a_preparation_record_for_another_source_fails_before_any_setup()
+  withTempDirectory(function(root)
+    local saveDirectory = love.filesystem.getSaveDirectory()
+    Assert.isTrue(saveDirectory ~= nil and saveDirectory ~= "", "the child shares this process's save directory")
+    local receipt = root .. "/foreign-preparation.lua"
+    writePreparationRecord(receipt, saveDirectory, "heartgold", string.rep("f", 40))
+
+    local status, output = runEntryChild(root, "serial-foreign", UNIT_FOCUS, {
+      "export G4RECOMP_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
+    })
+    Assert.isTrue(status ~= "0", "a record for another source must fail before setup, got: " .. output)
+    Assert.isNil(output:find("1 passed", 1, true), "no test may execute against a foreign preparation, got: " .. output)
+  end)
+end
+
+-- The parallel worker entry path applies the same authorization: a foreign
+-- record fails the worker before it runs or reports anything.
+function T.a_parallel_worker_rejects_a_preparation_record_for_another_source()
+  withTempDirectory(function(root)
+    local saveDirectory = love.filesystem.getSaveDirectory()
+    Assert.isTrue(saveDirectory ~= nil and saveDirectory ~= "", "the child shares this process's save directory")
+    local receipt = root .. "/foreign-preparation.lua"
+    writePreparationRecord(receipt, saveDirectory, "heartgold", string.rep("f", 40))
+    local runDir = root .. "/run-dir"
+    mkdir(runDir)
+
+    local status, output = runEntryChild(root, "worker-foreign", UNIT_FOCUS, {
+      "export G4RECOMP_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
+      "export G4RECOMP_TEST_RUN_DIR=" .. shellQuote(runDir) .. ";",
+      "export G4RECOMP_TEST_WORKERS=1;",
+      "export G4RECOMP_TEST_WORKER=1;",
+    })
+    Assert.isTrue(status ~= "0", "a worker must reject a record for another source, got: " .. output)
+  end)
+end
+
+-- A record for another data home already fails before setup today; this pins
+-- the behavior while source authorization is repaired beside it.
+function T.a_preparation_record_for_another_data_home_fails_before_any_setup()
+  withTempDirectory(function(root)
+    local receipt = root .. "/elsewhere-preparation.lua"
+    writePreparationRecord(receipt, root .. "/elsewhere", "heartgold", string.rep("e", 40))
+
+    local status, output = runEntryChild(root, "serial-elsewhere", UNIT_FOCUS, {
+      "export G4RECOMP_TEST_PREPARATION=" .. shellQuote(receipt) .. ";",
+    })
+    Assert.isTrue(status ~= "0", "a record for another data home must fail before setup, got: " .. output)
+  end)
+end
+
+-- A unit-only focus without any preparation record keeps running: absent ROM
+-- evidence is only fatal when a selected scope was promised one.
+function T.a_unit_focus_without_any_preparation_record_stays_green()
+  withTempDirectory(function(root)
+    local status, output = runEntryChild(root, "serial-plain", UNIT_FOCUS, {})
+    Assert.equal(status, "0", "a unit focus without preparation must stay green, got: " .. output)
+  end)
+end
+
+-- The exhaustive corpus check consumes a proven complete preparation instead
+-- of publishing one: it declares the complete capability with the complete
+-- closure and never prepares anything itself.
+function T.the_exhaustive_corpus_suite_consumes_only_a_proven_complete_preparation()
+  local suite = require("tests.rom.derived_cache_corpus_test")
+  local metadata = assert(suite.metadata, "the corpus suite declares its contract")
+  local found = false
+  for _, name in ipairs(metadata.capabilities or {}) do
+    if name == "complete_derived_cache" then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "the read-only corpus check requires the proven complete corpus")
+  Assert.deepEqual(
+    metadata.derivedAssets,
+    { "complete" },
+    "the corpus check authorizes from the complete closure instead of preparing it"
+  )
+end
+
+-- Producer census suites keep their raw-dump contract: they claim no prepared
+-- closure, so selection never prepares the shared cache on their behalf.
+function T.producer_census_suites_keep_a_raw_dump_contract_without_claiming_a_prepared_closure()
+  local suite = require("tests.rom.cache_milestone_test")
+  local metadata = assert(suite.metadata, "the census suite declares its contract")
+  for _, name in ipairs(metadata.capabilities or {}) do
+    Assert.isTrue(
+      name ~= "derived_cache" and name ~= "derived_assets" and name ~= "complete_derived_cache",
+      "a self-driven census must not claim a prepared closure, got: " .. name
+    )
+  end
+  local derivedAssets = metadata.derivedAssets or {}
+  Assert.deepEqual(derivedAssets, {}, "a self-driven census prepares no shared closure")
+end
+
+-- The isolation mechanism the writer fixtures rely on: two cache handles for
+-- one version over separate backends never observe each other's writes, so a
+-- private writer backend cannot rewrite the shared fixture.
+function T.private_writer_backends_never_leak_into_the_shared_fixture()
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  local shared = FakeCache.new()
+  local private = FakeCache.new()
+  local sharedFs = CacheFs.forVersion("heartgold", shared)
+  local privateFs = CacheFs.forVersion("heartgold", private)
+
+  sharedFs:write("data/generated/probe.lua", "shared")
+  privateFs:write("data/generated/probe.lua", "writer")
+
+  Assert.equal(
+    sharedFs:read("data/generated/probe.lua"),
+    "shared",
+    "shared readers never observe private writer output"
+  )
+  Assert.equal(privateFs:read("data/generated/probe.lua"), "writer", "private writers keep their own output")
 end
 
 return { tests = T }

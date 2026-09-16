@@ -5,8 +5,8 @@ local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local CacheFs = require("libs.storage.src.CacheFs")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
-local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
+local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -22,14 +22,16 @@ function T.independent_map_jobs_serialize_on_the_exclusive_jumbo_worker(romFs, v
   -- Jobs cross the pool boundary under an explicit generation: select it
   -- first and tag every job, exactly as the production session does.
   local sha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
-  -- The runner prepares the declared map scope under the release identity,
-  -- so the jobs below use the same release generation to consume the
-  -- prepared cells (mirrors App.opts.dev=false in the acceptance layer).
-  local producerId = "r" .. tostring(assert(DerivedCacheVersions[versionId], "release counter is required"))
+  -- The runner prepares the declared map scope under the current
+  -- development generation, so the jobs below use that same generation to
+  -- consume the prepared cells.
+  local sourceBase = love.filesystem.getSourceBaseDirectory()
+  local producerId = ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(sourceBase))
   local identity = DerivedCacheState.currentForSelection({
     versionId = versionId,
     romSha1 = sha1,
     producerId = producerId,
+    developmentRepositoryRoot = sourceBase,
   })
   local generationId = assert(identity.generationId, "generation identity is required")
   local pool = CompilerPool.new({

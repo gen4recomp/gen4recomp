@@ -20,6 +20,7 @@ local ArtifactState = require("romdump.src.build.ArtifactState")
 local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local CompilerPool = require("romdump.src.build.CompilerPool")
 local Schema = require("libs.script.src.Schema")
+local LuaWriter = require("libs.codec.src.LuaWriter")
 
 local CacheBuilder = {}
 
@@ -629,6 +630,8 @@ end
 ---@field log fun(line: string)|nil progress sink
 ---@field developmentRepositoryRoot string|nil worker source root for compiler threads
 ---@field profile string|nil opt-in execution evidence path
+---@field preparationRecord string|nil invocation-owned path for the builder-issued proof, written only from a satisfied closure
+---@field saveDirectory string|nil actual save directory recorded in the proof; resolved from the host when absent
 
 ---@param versionId string
 ---@param options CacheBuilder.VersionOptions
@@ -1429,16 +1432,190 @@ local function runScopedVersion(versionId, options, command)
   return finish(nil, report, logLine, nil)
 end
 
+-- The private invocation-proof schema. Consumers validate it strictly and
+-- reject every predecessor; it is never a runtime or mod-facing contract.
+CacheBuilder.PREPARATION_SCHEMA = "g4-test-preparation-v2"
+
+---@param requirements string[]
+---@return string[]
+local function sortedUniqueRequirements(requirements)
+  assert(type(requirements) == "table", "the invocation proof requires its satisfied closure")
+  local seen, ordered = {}, {}
+  for _, requirement in ipairs(requirements) do
+    assert(
+      type(requirement) == "string" and requirement ~= "",
+      "the invocation proof requirements must be non-empty strings"
+    )
+    if not seen[requirement] then
+      seen[requirement] = true
+      ordered[#ordered + 1] = requirement
+    end
+  end
+  table.sort(ordered)
+  return ordered
+end
+
+---@param saveDirectory string|nil
+---@return string
+local function invocationSaveDirectory(saveDirectory)
+  if type(saveDirectory) == "string" and saveDirectory ~= "" then
+    return saveDirectory
+  end
+  local host = rawget(_G, "love")
+  if host ~= nil and host.filesystem ~= nil and type(host.filesystem.getSaveDirectory) == "function" then
+    local directory = host.filesystem.getSaveDirectory()
+    assert(type(directory) == "string" and directory ~= "", "the invocation proof requires the actual save directory")
+    return directory
+  end
+  error("the invocation proof requires the actual save directory", 0)
+end
+
+---@param encoded string
+---@return table<string, unknown>|nil record
+local function decodePreparationRecord(encoded)
+  local chunk = load(encoded, "@preparation-record", "t", {})
+  if chunk == nil then
+    return nil
+  end
+  local ok, record = pcall(chunk)
+  if not ok or type(record) ~= "table" then
+    return nil
+  end
+  return record
+end
+
+-- Atomically issue the invocation proof for one successful scoped
+-- preparation. The record carries the actual save directory and the current
+-- generation, never an inherited claim; only a satisfied closure is ever
+-- recorded. The proof is encoded with the shared deterministic writer,
+-- staged to a temporary sibling, read back for its schema and generation,
+-- and atomically renamed over the requested output. Any I/O failure is a
+-- structured error that fails the command without forging readiness or
+-- deleting valid cache output.
+---@param path string invocation-owned output path
+---@param params { versionId: string, romSha1: string, generationId: string, requested: string[], complete: boolean, saveDirectory: string|nil }
+---@return boolean|nil ok
+---@return Errors.Error|string|nil err
+function CacheBuilder.writePreparationRecord(path, params)
+  assert(type(path) == "string" and path ~= "", "the invocation proof requires its output path")
+  assert(type(params) == "table", "the invocation proof requires its preparation facts")
+  assert(type(params.versionId) == "string" and params.versionId ~= "", "the invocation proof requires its version")
+  assert(type(params.romSha1) == "string" and #params.romSha1 == 40, "the invocation proof requires its ROM identity")
+  assert(
+    type(params.generationId) == "string" and params.generationId ~= "",
+    "the invocation proof requires its generation"
+  )
+  assert(type(params.complete) == "boolean", "the invocation proof requires its exhaustive result")
+  local record = {
+    schema = CacheBuilder.PREPARATION_SCHEMA,
+    saveDirectory = invocationSaveDirectory(params.saveDirectory),
+    versionId = params.versionId,
+    romSha1 = params.romSha1,
+    generationId = params.generationId,
+    requested = sortedUniqueRequirements(params.requested),
+    requestedReady = true,
+    complete = params.complete,
+  }
+  local encodeOk, encoded = pcall(LuaWriter.encode, record)
+  if not encodeOk then
+    return nil, Errors.new("PREPARATION_RECORD_FAILED", "the invocation proof cannot be encoded", { path = path })
+  end
+  local staging = path .. ".tmp"
+  local handle, openErr = io.open(staging, "w")
+  if handle == nil then
+    return nil,
+      Errors.new(
+        "PREPARATION_RECORD_FAILED",
+        "the invocation proof cannot be opened: " .. tostring(openErr),
+        { path = path }
+      )
+  end
+  assert(type(encoded) == "string", "the invocation proof encoding is required")
+  local _, writeErr = handle:write(encoded)
+  if writeErr ~= nil then
+    handle:close()
+    os.remove(staging)
+    return nil,
+      Errors.new(
+        "PREPARATION_RECORD_FAILED",
+        "the invocation proof cannot be written: " .. tostring(writeErr),
+        { path = path }
+      )
+  end
+  local _, closeErr = handle:close()
+  if closeErr ~= nil then
+    os.remove(staging)
+    return nil,
+      Errors.new(
+        "PREPARATION_RECORD_FAILED",
+        "the invocation proof cannot be closed: " .. tostring(closeErr),
+        { path = path }
+      )
+  end
+  local staged, readErr = io.open(staging, "r")
+  if staged == nil then
+    os.remove(staging)
+    return nil,
+      Errors.new(
+        "PREPARATION_RECORD_FAILED",
+        "the invocation proof cannot be read back: " .. tostring(readErr),
+        { path = path }
+      )
+  end
+  local stagedSource = staged:read("*a")
+  staged:close()
+  local stagedRecord = type(stagedSource) == "string" and decodePreparationRecord(stagedSource) or nil
+  if
+    stagedRecord == nil
+    or stagedRecord.schema ~= record.schema
+    or stagedRecord.generationId ~= record.generationId
+  then
+    os.remove(staging)
+    return nil,
+      Errors.new("PREPARATION_RECORD_FAILED", "the invocation proof failed its read-back check", { path = path })
+  end
+  local _, renameErr = os.rename(staging, path)
+  if renameErr ~= nil then
+    os.remove(staging)
+    return nil,
+      Errors.new(
+        "PREPARATION_RECORD_FAILED",
+        "the invocation proof cannot be published: " .. tostring(renameErr),
+        { path = path }
+      )
+  end
+  return true
+end
+
 ---@param versionId string
 ---@param options CacheBuilder.VersionOptions
 ---@return table<string, unknown>|nil report
 ---@return Errors.Error|string|nil err
 function CacheBuilder.prepareVersion(versionId, options)
-  return runScopedVersion(
-    versionId,
-    options or {},
-    { pending = nil, profileHandle = nil, profilePath = (options or {}).profile }
-  )
+  options = options or {}
+  local report, err =
+    runScopedVersion(versionId, options, { pending = nil, profileHandle = nil, profilePath = options.profile })
+  if report == nil then
+    return nil, err
+  end
+  -- The invocation proof is issued only from a satisfied closure: a failed
+  -- or unreadied scope leaves no successful receipt behind, and a receipt
+  -- I/O failure fails the command without touching valid cache output.
+  if options.preparationRecord ~= nil and report.requestedReady == true then
+    local identity = assert(options.identity, "preparation proof requires its generation identity")
+    local _, recordErr = CacheBuilder.writePreparationRecord(options.preparationRecord, {
+      versionId = versionId,
+      romSha1 = identity.romSha1,
+      generationId = identity.generationId,
+      requested = options.requirements,
+      complete = report.complete == true,
+      saveDirectory = options.saveDirectory,
+    })
+    if recordErr ~= nil then
+      return nil, recordErr
+    end
+  end
+  return report
 end
 
 ---@param versionId string
