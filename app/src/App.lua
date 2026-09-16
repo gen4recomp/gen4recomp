@@ -145,6 +145,28 @@ end
 -- through a visible preparation state otherwise. A ready bootstrap never
 -- recompiles; field core and sweep warm while the menu shows.
 function App._selectVersion(versionId)
+  local pool = App.pool
+  if pool ~= nil then
+    local diagnostics = pool:diagnostics()
+    if diagnostics.quiescing and not pool:isQuiescent() then
+      local pendingEpoch = App.epoch or 0
+      App.setState(CachePreparationState.new({
+        kind = "quiescence",
+        epoch = pendingEpoch,
+        pool = pool,
+        isCurrent = function(selected)
+          return App.epoch == selected
+        end,
+        onReady = function()
+          App._selectVersion(versionId)
+        end,
+        onCancel = function()
+          App._showVersionSelector()
+        end,
+      }))
+      return
+    end
+  end
   App._retireSelection()
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
