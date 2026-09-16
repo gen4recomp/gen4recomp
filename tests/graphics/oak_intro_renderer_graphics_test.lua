@@ -30,21 +30,27 @@ local function choiceTextRenderer()
   return text
 end
 
+local ImageButton = require("libs.ui.src.ImageButton")
+
 local function genderButtons()
+  local maleRect = { x = 10, y = 10, width = 60, height = 80 }
+  local femaleRect = { x = 90, y = 10, width = 60, height = 80 }
   return {
     [0] = {
       key = "male",
-      rect = { x = 10, y = 10, width = 60, height = 80 },
+      rect = maleRect,
       scale = 1,
       portraitId = "gender_male",
       portraitRect = { x = 20, y = 20, width = 40, height = 60, scale = 1 },
+      button = ImageButton.resolve({ rect = maleRect, scale = 1 }),
     },
     [1] = {
       key = "female",
-      rect = { x = 90, y = 10, width = 60, height = 80 },
+      rect = femaleRect,
       scale = 1,
       portraitId = "gender_female",
       portraitRect = { x = 100, y = 20, width = 40, height = 60, scale = 1 },
+      button = ImageButton.resolve({ rect = femaleRect, scale = 1 }),
     },
   }
 end
@@ -90,23 +96,15 @@ local function manifest()
   local background = assets.background
   assets.background = nil
   return {
-    schemaVersion = 13,
+    schemaVersion = 14,
     genderSelector = {
       defaultTone = { r = 100, g = 101, b = 102 },
-      unselectedRim = { r = 222, g = 230, b = 230 },
-      selectedRim = { r = 255, g = 58, b = 58 },
       buttons = {
         male = {
           bounds = { x = 18, y = 25, width = 93, height = 148 },
-          baseImage = "gender_male.png",
-          fillMaskImage = "gender_male.png",
-          rimMaskImage = "gender_male.png",
         },
         female = {
           bounds = { x = 144, y = 25, width = 95, height = 148 },
-          baseImage = "gender_female.png",
-          fillMaskImage = "gender_female.png",
-          rimMaskImage = "gender_female.png",
         },
       },
     },

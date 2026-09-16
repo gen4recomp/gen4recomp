@@ -116,9 +116,7 @@ local function reachFinalFullArtHold(state, female)
   end
   Assert.equal(state:view().messageKey, "profile.gender_question")
   finishDialogueBoundary(state)
-  if state:view().phase == "gender_composition_transition" then
-    state:tick(26)
-  end
+  Assert.equal(state:view().phase, "gender_select")
   if female then
     state:keypressed("right")
   end

@@ -47,17 +47,6 @@ local function stageBundle(tx, bundle)
       end
     end
   end
-  for _, gender in ipairs({ "male", "female" }) do
-    local button = manifest.genderSelector.buttons[gender]
-    for _, image in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
-      if not stage:exists(button[image], "file") then
-        Errors.raise("INTRO_CACHE_READBACK_FAILED", "intro selector role missing after stage", {
-          gender = gender,
-          image = button[image],
-        })
-      end
-    end
-  end
   stage:write(IntroAssetCache.markerPath(), bundle.marker)
 end
 

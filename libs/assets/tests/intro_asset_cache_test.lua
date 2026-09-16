@@ -70,7 +70,7 @@ local function validManifest()
   widgets.gender_male.sourceCenter = { x = 64, y = 104 }
   widgets.gender_female.sourceCenter = { x = 192, y = 104 }
   return {
-    schemaVersion = 13,
+    schemaVersion = 14,
     variant = "heartgold",
     sourceReference = { width = 256, height = 192 },
     background = {
@@ -82,20 +82,12 @@ local function validManifest()
     },
     genderSelector = {
       defaultTone = { r = 123, g = 45, b = 67 },
-      unselectedRim = { r = 222, g = 230, b = 230 },
-      selectedRim = { r = 255, g = 58, b = 58 },
       buttons = {
         male = {
           bounds = { x = 18, y = 25, width = 93, height = 148 },
-          baseImage = "assets/generated/intro/male-base.png",
-          fillMaskImage = "assets/generated/intro/male-fill.png",
-          rimMaskImage = "assets/generated/intro/male-rim.png",
         },
         female = {
           bounds = { x = 144, y = 25, width = 95, height = 148 },
-          baseImage = "assets/generated/intro/female-base.png",
-          fillMaskImage = "assets/generated/intro/female-fill.png",
-          rimMaskImage = "assets/generated/intro/female-rim.png",
         },
       },
     },
@@ -113,8 +105,8 @@ end
 
 function T.complete_schema_manifest_loads_and_declares_closed_inventory()
   local cache = require("libs.assets.src.newgame.IntroAssetCache")
-  Assert.equal(cache.SCHEMA, "g4-intro-assets-v13")
-  Assert.equal(cache.FORMAT, "intro-cache-v13")
+  Assert.equal(cache.SCHEMA, "g4-intro-assets-v14")
+  Assert.equal(cache.FORMAT, "intro-cache-v14")
   Assert.equal(cache.FORMAT, DerivedAssetContract.intro.cacheFormat)
   local manifest = validManifest()
   Assert.isTrue(cache.validateManifest(manifest))
@@ -125,7 +117,9 @@ function T.complete_schema_manifest_loads_and_declares_closed_inventory()
   Assert.deepEqual(manifest.widgets.gender_male.sourceCenter, { x = 64, y = 104 })
   Assert.deepEqual(manifest.widgets.gender_female.sourceCenter, { x = 192, y = 104 })
   Assert.deepEqual(manifest.genderSelector.buttons.male.bounds, { x = 18, y = 25, width = 93, height = 148 })
-  Assert.equal(manifest.genderSelector.buttons.male.baseImage, "assets/generated/intro/male-base.png")
+  Assert.isNil(manifest.genderSelector.unselectedRim)
+  Assert.isNil(manifest.genderSelector.selectedRim)
+  Assert.isNil(manifest.genderSelector.buttons.male.baseImage)
   Assert.isNil(manifest.genderSelector.buttons.male.hitBounds)
   Assert.isNil(manifest.profileConfirmation)
 end
@@ -171,6 +165,9 @@ function T.stale_and_malformed_manifests_fail_before_composition()
     manifest.schemaVersion = 9
   end, "stale v9 schema")
   reject(cache, function(manifest)
+    manifest.schemaVersion = 13
+  end, "stale v13 mask schema")
+  reject(cache, function(manifest)
     manifest.widgets.gender_male.sourceCenter = nil
   end, "missing male selector source center")
   reject(cache, function(manifest)
@@ -180,8 +177,8 @@ function T.stale_and_malformed_manifests_fail_before_composition()
     manifest.genderSelector.defaultTone.r = 256
   end, "invalid selector default tone")
   reject(cache, function(manifest)
-    manifest.genderSelector.buttons.male.baseImage = nil
-  end, "missing selector base image")
+    manifest.genderSelector.buttons.male.fillMaskImage = "assets/generated/intro/male-fill.png"
+  end, "mask-shaped selector field")
   reject(cache, function(manifest)
     manifest.genderSelector.buttons.male.unknown = true
   end, "unknown selector field")
@@ -240,7 +237,7 @@ function T.predecessor_marker_and_manifest_are_not_ready()
   local cache = require("libs.assets.src.newgame.IntroAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
   local FakeCache = require("tests.support.FakeCache")
-  Assert.equal(cache.marker("sha", "hash"), "intro-cache-v13:sha:hash")
+  Assert.equal(cache.marker("sha", "hash"), "intro-cache-v14:sha:hash")
   local predecessor = validManifest()
   predecessor.schemaVersion = 10
   local ok, err = cache.validateManifest(predecessor)
@@ -260,7 +257,7 @@ function T.predecessor_marker_and_manifest_are_not_ready()
     return path:find("assets/generated/intro/", 1, true) == 1
   end
   Assert.isFalse(
-    cache.isReady(cacheFs, "intro-cache-v13:sha:hash"),
+    cache.isReady(cacheFs, "intro-cache-v14:sha:hash"),
     "a predecessor completion marker never reads ready under the current marker"
   )
 end
@@ -284,9 +281,9 @@ function T.semantic_records_do_not_add_files_to_cache_readiness()
   end
   Assert.isTrue(cache.isReady(cacheFs, "ready"), "semantic geometry does not require persisted files")
   cacheFs.exists = function(_, path)
-    return path ~= "assets/generated/intro/male-base.png"
+    return path ~= "assets/generated/intro/ball_open.png"
   end
-  Assert.isFalse(cache.isReady(cacheFs, "ready"), "missing selector role files are not ready")
+  Assert.isFalse(cache.isReady(cacheFs, "ready"), "missing widget files are not ready")
 end
 
 function T.intro_contract_revision_requires_the_new_obj_geometry()

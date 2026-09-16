@@ -39,51 +39,6 @@ local function canvasForRegion(region, reference, preferredScale)
   return { scale = scale, origin = origin }
 end
 
-local function inside(inner, outer)
-  return inner.x >= outer.x
-    and inner.y >= outer.y
-    and inner.x + inner.width <= outer.x + outer.width
-    and inner.y + inner.height <= outer.y + outer.height
-end
-
-local function selectorGroupBounds(manifest)
-  local first = assert(manifest.genderSelector.buttons.male.bounds)
-  local second = assert(manifest.genderSelector.buttons.female.bounds)
-  local left = math.min(first.x, second.x)
-  local top = math.min(first.y, second.y)
-  local right = math.max(first.x + first.width, second.x + second.width)
-  local bottom = math.max(first.y + first.height, second.y + second.height)
-  return { x = left, y = top, width = right - left, height = bottom - top }
-end
-
-local function groupCanvas(region, group, preferredScale)
-  local scale = PixelScale.fitPreferred(region, group.width, group.height, preferredScale)
-  return {
-    scale = scale,
-    origin = {
-      x = region.x + (region.width - group.width * scale) / 2 - group.x * scale,
-      y = region.y + (region.height - group.height * scale) / 2 - group.y * scale,
-    },
-  }
-end
-
-local function selectorCanvasForRegion(region, manifest, reference, preferredScale, fallbackRegion)
-  local normal = canvasForRegion(region, reference, preferredScale)
-  local normalEntries = OakProfileLayout.genderSelectionEntries(normal, manifest)
-  local normalFits = true
-  for _, entry in pairs(normalEntries) do
-    if not inside(entry.rect, region) or not inside(entry.portraitRect, region) then
-      normalFits = false
-      break
-    end
-  end
-  if normalFits then
-    return region, normal, false
-  end
-  local promoted = groupCanvas(fallbackRegion, selectorGroupBounds(manifest), preferredScale)
-  return fallbackRegion, promoted, true
-end
-
 local function assertFiniteProgress(value, message)
   assert(
     type(value) == "number"
@@ -175,7 +130,6 @@ local function translateSourceGroupAboveDialogue(scene, dialogue, gap, subject, 
 end
 
 local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
-  local compositionProgress = view.genderCompositionProgress
   local nameProgress = view.nameCompositionProgress
   validateSubjectState(view, dialogue, subjectId, subjectWidget, ordinarySubject)
   local isNameForward = view.phase == "name_composition_transition"
@@ -184,14 +138,8 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   local isFinalDialogue = view.phase == "final_dialogue"
   local isGenderQuestion = view.phase == "gender_question"
   local selectorActive = view.phase == "gender_select" or view.phase == "gender_confirm"
-  local compositionActive = selectorActive
-    or view.phase == "gender_composition_transition"
-    or compositionProgress ~= nil and compositionProgress > 0
-  if compositionActive then
-    assertFiniteProgress(compositionProgress, "Oak gender composition progress is invalid")
-  end
   local oakRegion, selectorRegion
-  local nameStage, nameOakRegion, nameChoiceRegion
+  local nameOakRegion, nameChoiceRegion
   local selectedSubject = ordinarySubject
   local needsNameEndpoint = isNameForward
     or isNameReturn
@@ -204,7 +152,9 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
     local genderOakRegion = genderRegion
     local genderOakRect =
       OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), genderOakRegion, 1)
-    nameStage, nameOakRegion, nameChoiceRegion = OakSceneLayout.nameStageAndRegions(sceneContent, assert(dialogue), gap)
+    local _, nameOakRegionInner, nameChoiceRegionInner =
+      OakSceneLayout.nameStageAndRegions(sceneContent, assert(dialogue), gap)
+    nameOakRegion, nameChoiceRegion = nameOakRegionInner, nameChoiceRegionInner
     local nameOakRect = OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), nameOakRegion, 1)
     if isNameForward then
       selectedSubject = OakSceneLayout.interpolateSubjectRect(genderOakRect, nameOakRect, assert(nameProgress), true)
@@ -215,18 +165,23 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
       selectedSubject = nameOakRect
     end
     oakRegion, selectorRegion = nameOakRegion, nameChoiceRegion
-  elseif compositionActive then
-    local compositionHost = scene
+  elseif selectorActive then
+    -- The interactive selector hides Oak, so the cards own the full
+    -- above the dialogue instead of the Oak-visible cards half. Fitting
+    -- the 256x192 reference into the half leaves cards hanging off the
+    -- logical viewport on representative hosts such as 640x480. The host
+    -- runs to the dialogue edge: the centered canvas already keeps its
+    -- content clear of the box, and reserving the gap on top would push
+    -- cards half a pixel past the region on tall-scale hosts such as
+    -- 2560x1440.
+    local selectorHost = scene
     if dialogue ~= nil then
-      compositionHost = OakSceneLayout.aboveDialogue(scene, dialogue, gap)
+      selectorHost = rect(scene.x, scene.y, scene.width, dialogue.outerRect.y - scene.y)
     end
-    oakRegion, selectorRegion = OakSceneLayout.selectorRegions(compositionHost, gap)
-    if subjectId == "oak" and ordinarySubject and subjectWidget then
-      selectedSubject =
-        OakSceneLayout.composedOakRect(ordinarySubject, subjectWidget, oakRegion, assert(compositionProgress))
-    end
+    oakRegion, selectorRegion = nil, selectorHost
+    selectedSubject = nil
   end
-  return selectedSubject, oakRegion, selectorRegion, nameStage, nameChoiceRegion, selectorActive
+  return selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive
 end
 
 local function integerConfirmationEntries(region, preferredScale)
@@ -234,8 +189,11 @@ local function integerConfirmationEntries(region, preferredScale)
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
   local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
   local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
-  local x = region.x + (region.width - width) / 2
-  local y = region.y + (region.height - (height * 2 + 8 * scale)) / 2
+  -- Snap the stack origin to the logical pixel grid: fractional button
+  -- edges rasterize the 1px shared rings onto pixel centers, where the
+  -- later face fill wins the tie and erases the ring pixel.
+  local x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
+  local y = PixelScale.snapLogical(region.y + (region.height - (height * 2 + 8 * scale)) / 2)
   return {
     [0] = {
       key = "yes",
@@ -259,15 +217,11 @@ local function profileLayout(
   selectorRegion,
   reference,
   manifest,
-  sceneContent,
-  _,
-  _,
   nameChoiceRegion,
-  preferredScale,
-  selectorCanvasOverride
+  preferredScale
 )
   if selectorActive then
-    local selectorCanvas = selectorCanvasOverride or canvasForRegion(assert(selectorRegion), reference, preferredScale)
+    local selectorCanvas = canvasForRegion(assert(selectorRegion), reference, preferredScale)
     local genderSlots = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
     if view.phase == "gender_select" then
       result.genderButtons = genderSlots
@@ -285,7 +239,7 @@ local function profileLayout(
     result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale))
   end
   if view.phase == "name_edit" then
-    result.namingScreen = NamingScreenLayout.compute(sceneContent, preferredScale)
+    result.namingScreen = NamingScreenLayout.compute(result.viewport)
   end
 end
 
@@ -352,19 +306,8 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   end
   ordinarySubject, ordinaryReveal =
     translateSourceGroupAboveDialogue(scene, dialogue, gap, ordinarySubject, ordinaryReveal)
-  local selectedSubject, oakRegion, selectorRegion, nameStage, nameChoiceRegion, selectorActive =
+  local selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive =
     subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
-  local selectorCanvas
-  if selectorActive then
-    local fallbackRegion = OakSceneLayout.aboveDialogue(scene, assert(dialogue), gap)
-    local promoted
-    selectorRegion, selectorCanvas, promoted =
-      selectorCanvasForRegion(assert(selectorRegion), manifest, reference, preferredScale, fallbackRegion)
-    if promoted then
-      selectedSubject = nil
-      oakRegion = nil
-    end
-  end
   result.subject = selectedSubject
   result.oakRegion = oakRegion
   result.selectorRegion = selectorRegion
@@ -372,20 +315,7 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     result.revealCanvas = canvas
     result.reveal = ordinaryReveal
   end
-  profileLayout(
-    result,
-    view,
-    selectorActive,
-    selectorRegion,
-    reference,
-    manifest,
-    sceneContent,
-    gap,
-    nameStage,
-    nameChoiceRegion,
-    preferredScale,
-    selectorCanvas
-  )
+  profileLayout(result, view, selectorActive, selectorRegion, reference, manifest, nameChoiceRegion, preferredScale)
   return result
 end
 

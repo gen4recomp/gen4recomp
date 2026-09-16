@@ -1,4 +1,6 @@
 -- HGSS naming surface renderer using geometric controls and shared field text.
+-- Subject art stays host-owned: the host injects drawSubject and the
+-- renderer only brackets the call with balanced graphics state.
 
 local PixelScale = require("libs.ui.src.PixelScale")
 
@@ -7,7 +9,7 @@ local NamingScreenRenderer = {}
 ---@class NamingScreenRendererOptions
 ---@field graphics table<string, function>
 ---@field text table<string, function>
----@field subjectImages table<string, unknown>?
+---@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>)
 
 ---@class NamingScreenRenderer
 ---@field new fun(options: NamingScreenRendererOptions): NamingScreenRenderer
@@ -15,14 +17,15 @@ local NamingScreenRenderer = {}
 ---@field dispose fun(self: NamingScreenRenderer)
 NamingScreenRenderer.__index = NamingScreenRenderer
 
----@param options { graphics: table<string, function>, text: table<string, function>, subjectImages?: table<string, unknown> }
+---@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>) }
 ---@return NamingScreenRenderer
 function NamingScreenRenderer.new(options)
   assert(type(options) == "table" and options.graphics and options.text, "naming renderer requires graphics and text")
   assert(type(options.text.drawText) == "function", "naming renderer requires FieldTextRenderer.drawText")
+  assert(type(options.drawSubject) == "function", "naming renderer requires a host drawSubject callback")
   ---@type NamingScreenRenderer
   local renderer = setmetatable(
-    { graphics = options.graphics, text = options.text, subjectImages = options.subjectImages or {}, released = false },
+    { graphics = options.graphics, text = options.text, drawSubject = options.drawSubject, released = false },
     NamingScreenRenderer
   )
   return renderer
@@ -35,15 +38,11 @@ end
 function NamingScreenRenderer:draw(view, layout)
   assert(not self.released, "naming renderer is released")
   assert(type(view) == "table" and type(layout) == "table", "naming draw requires view and layout")
+  assert(type(view.subject) == "table", "naming draw requires a semantic subject")
+  assert(type(layout.surface) == "table", "naming draw requires a canonical surface")
   local g = self.graphics
-  local placement = assert(layout.placement, "naming layout placement is required")
-  assert(
-    placement.scale > 0 and placement.scale == math.floor(placement.scale),
-    "naming placement scale must be a positive integer"
-  )
   g.push()
-  g.translate(placement.frame.x, placement.frame.y)
-  g.scale(placement.scale, placement.scale)
+  g.translate(layout.surface.x, layout.surface.y)
   g.setColor(0.10, 0.14, 0.25, 1)
   g.rectangle("fill", 0, 0, 256, 192)
   g.setColor(0.80, 0.88, 0.98, 1)
@@ -58,12 +57,9 @@ function NamingScreenRenderer:draw(view, layout)
     end),
     layout.nameSlots.y + 4
   )
-  local subject = view.subject or {}
-  local image = self.subjectImages[subject.gender == 1 and "female" or "male"]
-  if image and g.draw then
-    g.setColor(1, 1, 1, 1)
-    g.draw(image, layout.subject.x, layout.subject.y)
-  end
+  g.push()
+  self.drawSubject(g, view.subject, layout.subject)
+  g.pop()
   g.setColor(0.16, 0.22, 0.36, 1)
   g.rectangle("fill", layout.keyboard.x, layout.keyboard.y, layout.keyboard.width, layout.keyboard.height)
   for row = 1, 6 do
@@ -95,7 +91,7 @@ function NamingScreenRenderer:dispose()
     return
   end
   self.released = true
-  self.subjectImages = {}
+  self.drawSubject = nil
 end
 
 NamingScreenRenderer.release = NamingScreenRenderer.dispose

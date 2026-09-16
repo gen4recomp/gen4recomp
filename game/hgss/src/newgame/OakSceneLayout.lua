@@ -143,7 +143,6 @@ function OakSceneLayout.mode(view)
       or phase == "name_launch_wait"
       or phase == "final_dialogue"
       or (phase == "gender_question" and view.nameCompositionProgress ~= nil and view.nameCompositionProgress > 0)
-      or phase == "gender_composition_transition"
       or phase == "gender_select"
       or phase == "gender_confirm"
       or phase == "greeting"

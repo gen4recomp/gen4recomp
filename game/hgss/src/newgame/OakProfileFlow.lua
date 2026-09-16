@@ -180,6 +180,17 @@ function OakProfileFlow:activateNameCell(row, column)
   return accepted
 end
 
+function OakProfileFlow:activateNameControl(id)
+  assert(self._naming ~= nil, "Oak naming screen is not active")
+  local accepted = self._naming:activateControl(id)
+  self._name = self._naming:text()
+  local result = self._naming:result()
+  if result and result.kind == "submit" then
+    accepted = self:submitName()
+  end
+  return accepted
+end
+
 function OakProfileFlow:namingResult()
   return self._naming and self._naming:result() or nil
 end
