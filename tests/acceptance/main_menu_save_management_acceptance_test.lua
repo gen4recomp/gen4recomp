@@ -284,7 +284,7 @@ function T.tests.many_saves_scroll_without_moving_the_fixed_new_game_action()
   end
 
   withMenu(8, 320, 180, nil, function(menu, saveIds)
-    for _ = 1, #saveIds do
+    for _ = 1, #saveIds - 1 do
       menu:keypressed("down")
     end
     local scrolled = view(menu)
@@ -299,12 +299,16 @@ function T.tests.many_saves_scroll_without_moving_the_fixed_new_game_action()
     )
     local globalAction = assert(scrolled.layout.global.actions["new-game"])
     menu:keypressed("left")
+    Assert.equal(view(menu).focusedId, saveIds[1], "Left from a save body must not cross to New Game")
+    menu:keypressed("down")
     local globalFocus = view(menu)
-    Assert.equal(globalFocus.focusedId, "new-game", "Left must reach New Game directly")
+    Assert.equal(globalFocus.focusedId, "new-game", "Down from the final save must reach New Game")
     Assert.equal(globalFocus.layout.global.actions["new-game"].y, globalAction.y)
     Assert.equal(globalFocus.layout.global.actions["new-game"].x, globalAction.x)
     menu:keypressed("right")
-    Assert.equal(view(menu).focusedId, saveIds[1], "Right must return to the remembered save")
+    Assert.equal(view(menu).focusedId, "new-game", "Right from New Game must not cross to the saves")
+    menu:keypressed("up")
+    Assert.equal(view(menu).focusedId, saveIds[1], "Up from New Game must return to the final save")
     menu:resize(640, 240)
     menu:keypressed("up")
     Assert.equal(view(menu).focusedId, saveIds[2], "semantic navigation must survive resize")
@@ -356,6 +360,30 @@ function T.tests.overflow_delete_confirmation_is_input_independent_and_never_con
     menu:keypressed("down")
     menu:keypressed("return")
     Assert.isNil(view(menu).layout.saves.cards[saveIds[3]])
+  end)
+end
+
+function T.tests.keyboard_focused_delete_action_activates_by_pointer_click()
+  local versionId = AcceptanceHarness.defaultVersion()
+  if templateRecord == nil then
+    templateRecord = freshRecord(versionId)
+  end
+
+  withMenu(1, 640, 480, nil, function(menu, saveIds, results)
+    menu:keypressed("right")
+    menu:keypressed("return")
+    menu:keypressed("return")
+    Assert.equal(view(menu).confirmation.focusedAction, "cancel")
+    menu:keypressed("down")
+    Assert.equal(view(menu).confirmation.focusedAction, "delete")
+    local deleteRect = assert(view(menu).layout.confirmation).delete
+    menu:mousepressed(deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2, 1)
+    Assert.deepEqual(results, {}, "pointer confirmation must not publish Continue")
+    Assert.isNil(
+      view(menu).layout.saves.cards[saveIds[1]],
+      "clicking the keyboard-focused Delete action must delete the save"
+    )
+    Assert.equal(view(menu).focusedId, "new-game")
   end)
 end
 

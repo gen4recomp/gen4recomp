@@ -2,8 +2,10 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local MainMenuController = require("game.hgss.src.menu.MainMenuController")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
+local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 
 local T = {}
@@ -56,10 +58,23 @@ function T.controller_defaults_to_existing_save_and_reaches_global_action()
   Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "overflow" })
   Assert.isNil(controller:snapshot().popup)
   controller:move("left")
-  controller:move("left")
-  Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
-  controller:move("right")
   Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "body" })
+  controller:move("left")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "body" },
+    "left from a save body must not cross into New Game"
+  )
+  controller:move("down")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "two", lane = "body" })
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "down from the final save must reach New Game"
+  )
+  controller:move("up")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "two", lane = "body" })
 end
 
 function T.controller_back_closes_confirmation_then_popup_without_quitting()
@@ -103,6 +118,37 @@ function T.controller_preserves_semantic_focus_and_selects_a_neighbor_after_remo
   Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
 end
 
+function T.controller_catalog_replacement_clamps_overflow_focus_to_body_without_delete()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two", "three" }))
+  controller:focusSave("two", "overflow")
+  local replacements = saves({ "one", "three" })
+  replacements[2].canDelete = false
+  controller:setCatalog(globalActions(), replacements)
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "body" },
+    "replacing an overflow-focused save with one without overflow must resolve to its body"
+  )
+  local layout =
+    MainMenuLayout.compute(globalActions(), replacements, controller:snapshot().focus, 320, 180, 0, nil, nil, false)
+  local card = assert(layout.saves.cards["three"], "the focused save needs card geometry")
+  Assert.isTrue(
+    card.body.y >= layout.saves.viewport.y
+      and card.body.y + card.body.height <= layout.saves.viewport.y + layout.saves.viewport.height,
+    "the clamped body focus must stay visible"
+  )
+  local refreshed = MainMenuController.new(globalActions(), saves({ "one" }))
+  refreshed:focusSave("one", "overflow")
+  local locked = saves({ "one" })
+  locked[1].canDelete = false
+  refreshed:setCatalog(globalActions(), locked)
+  Assert.deepEqual(
+    refreshed:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "body" },
+    "a catalog refresh that revokes delete must resolve overflow focus to the body"
+  )
+end
+
 function T.controller_keeps_overflow_at_the_list_edges()
   local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
   controller:focusSave("one", "overflow")
@@ -114,9 +160,10 @@ function T.controller_keeps_overflow_at_the_list_edges()
 end
 
 function T.layout_separates_global_and_scrollable_save_regions()
+  local list = saves({ "one", "two", "three", "four", "five" })
   local layout = MainMenuLayout.compute(
     globalActions(),
-    saves({ "one", "two", "three", "four", "five" }),
+    list,
     { region = "saves", saveId = "five", lane = "overflow" },
     320,
     180,
@@ -128,20 +175,24 @@ function T.layout_separates_global_and_scrollable_save_regions()
   Assert.notNil(layout.global.actions["new-game"])
   Assert.notNil(layout.saves.viewport)
   Assert.isTrue(layout.saves.offset > 0)
-  local globalY = layout.global.actions["new-game"].y
-  local resized = MainMenuLayout.compute(
+  local newGame = layout.global.actions["new-game"]
+  Assert.isTrue(
+    newGame.y >= layout.saves.viewport.y + layout.saves.viewport.height,
+    "New Game must sit below the scrollable save viewport"
+  )
+  local rescrolled = MainMenuLayout.compute(
     globalActions(),
-    saves({ "one", "two", "three", "four", "five" }),
+    list,
     { region = "global", actionId = "new-game" },
-    640,
-    240,
+    320,
+    180,
     layout.saves.offset,
     nil,
     nil,
     false
   )
-  Assert.equal(resized.global.actions["new-game"].y, globalY)
-  Assert.isTrue(resized.saves.offset >= 0)
+  Assert.equal(rescrolled.global.actions["new-game"].y, newGame.y)
+  Assert.equal(rescrolled.saves.offset, layout.saves.offset)
 end
 
 function T.layout_focuses_popup_inside_the_viewport_and_keeps_hit_regions_disjoint()
@@ -342,6 +393,696 @@ function T.state_keeps_delete_failure_visible_and_save_available_for_retry()
   Assert.equal(view.catalogError, "save could not be deleted")
   Assert.equal(view.focusedId, "save-00000001")
   Assert.notNil(view.layout.saves.cards["save-00000001"])
+end
+
+function T.overflow_vertical_movement_falls_back_to_body_without_overflow_control()
+  local list = saves({ "one", "two", "three" })
+  list[2].canDelete = false
+  local controller = MainMenuController.new(globalActions(), list)
+  controller:focusSave("one", "overflow")
+  controller:move("down")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "two", lane = "body" })
+  controller:focusSave("three", "overflow")
+  controller:move("up")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "two", lane = "body" })
+  controller:focusSave("three", "body")
+  controller:move("left")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "body" },
+    "left from a save body must stay instead of crossing to New Game"
+  )
+  controller:focusGlobal("new-game")
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "right from New Game must stay instead of crossing to the saves"
+  )
+end
+
+function T.deep_saves_scroll_while_new_game_stays_fixed_and_direct()
+  local ids = {}
+  for index = 1, 12 do
+    ids[#ids + 1] = string.format("save-%02d", index)
+  end
+  local list = saves(ids)
+  local controller = MainMenuController.new(globalActions(), list)
+  controller:focusSave("save-12", "body")
+  local layout =
+    MainMenuLayout.compute(globalActions(), list, controller:snapshot().focus, 640, 480, 0, nil, nil, false)
+  Assert.equal(layout.uiScale, 2)
+  local newGame = layout.global.actions["new-game"]
+  Assert.isTrue(newGame.y >= layout.saves.viewport.y + layout.saves.viewport.height)
+  Assert.notNil(layout.saves.scrollIndicators)
+  Assert.notNil(layout.saves.scrollIndicators.up)
+  Assert.isNil(layout.saves.scrollIndicators.down)
+  local card = assert(layout.saves.cards["save-12"])
+  Assert.isTrue(card.frame.y + card.frame.height <= layout.saves.viewport.y + layout.saves.viewport.height)
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "down from the final save body must reach New Game"
+  )
+  controller:move("up")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "save-12", lane = "body" },
+    "up from New Game must return to the final save body"
+  )
+  local relaid = MainMenuLayout.compute(
+    globalActions(),
+    list,
+    controller:snapshot().focus,
+    640,
+    480,
+    layout.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  Assert.equal(relaid.global.actions["new-game"].y, newGame.y)
+  Assert.notNil(relaid.saves.scrollIndicators.up)
+end
+
+function T.pointer_confirmation_click_activates_the_clicked_action()
+  local entries = {
+    {
+      saveId = "save-00000001",
+      versionId = "heartgold",
+      playerData = { profile = { name = "PLAYER" } },
+      playTimeSeconds = 0,
+    },
+  }
+  local deleted = 0
+  local menu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+      delete = function(_, saveId)
+        Assert.equal(saveId, "save-00000001")
+        deleted = deleted + 1
+        entries = {}
+        return true
+      end,
+    },
+  })
+  menu:keypressed("right")
+  menu:keypressed("return")
+  menu:keypressed("return")
+  menu:keypressed("down")
+  Assert.equal(menu.controller.confirmation.focusedAction, "delete")
+  local confirmation = assert(menu:layout().confirmation)
+  menu:mousepressed(
+    confirmation.delete.x + confirmation.delete.width / 2,
+    confirmation.delete.y + confirmation.delete.height / 2,
+    1
+  )
+  Assert.equal(deleted, 1)
+  Assert.isNil(menu.controller.confirmation)
+  Assert.isNil(menu.controller.popup)
+
+  entries = {
+    {
+      saveId = "save-00000001",
+      versionId = "heartgold",
+      playerData = { profile = { name = "PLAYER" } },
+      playTimeSeconds = 0,
+    },
+  }
+  local cancelMenu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+      delete = function()
+        error("cancel click must not delete")
+      end,
+    },
+  })
+  cancelMenu:keypressed("right")
+  cancelMenu:keypressed("return")
+  cancelMenu:keypressed("return")
+  cancelMenu:keypressed("down")
+  Assert.equal(cancelMenu.controller.confirmation.focusedAction, "delete")
+  local cancelBox = assert(cancelMenu:layout().confirmation)
+  cancelMenu:mousepressed(
+    cancelBox.cancel.x + cancelBox.cancel.width / 2,
+    cancelBox.cancel.y + cancelBox.cancel.height / 2,
+    1
+  )
+  Assert.isNil(cancelMenu.controller.confirmation)
+  Assert.notNil(cancelMenu.controller.popup)
+end
+
+function T.vertical_moves_travel_between_final_save_and_new_game_without_wrapping()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two", "three" }))
+  controller:focusSave("two", "body")
+  controller:move("down")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "three", lane = "body" })
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "down from the final save body must reach New Game"
+  )
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "down from New Game must not wrap to the first save"
+  )
+  controller:move("up")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "body" },
+    "up from New Game must return to the final save body"
+  )
+  controller:move("up")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "two", lane = "body" })
+  controller:focusSave("one", "body")
+  controller:move("up")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "body" },
+    "up from the first save must not wrap"
+  )
+end
+
+function T.horizontal_moves_never_cross_between_new_game_and_saves()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
+  controller:focusSave("two", "body")
+  controller:move("left")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "two", lane = "body" },
+    "left from a save body must not reach New Game"
+  )
+  controller:focusGlobal("new-game")
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "right from New Game must not reach the saves"
+  )
+  controller:focusSave("one", "body")
+  controller:move("right")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "overflow" })
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "overflow" },
+    "right from overflow must not cross regions"
+  )
+  controller:move("left")
+  Assert.deepEqual(controller:snapshot().focus, { region = "saves", saveId = "one", lane = "body" })
+  controller:move("left")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "body" },
+    "left from a save body must stay without traversal"
+  )
+  controller:focusGlobal("new-game")
+  controller:move("left")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "left from New Game must stay"
+  )
+end
+
+function T.overflow_lane_vertical_move_falls_back_to_body_without_overflow()
+  local entries = {
+    save("one"),
+    { id = "two", saveId = "two", playerName = "two", playTimeLabel = "0:00", canContinue = true, canDelete = false },
+  }
+  local controller = MainMenuController.new(globalActions(), entries)
+  controller:focusSave("one", "overflow")
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "two", lane = "body" },
+    "moving down the overflow lane onto a save without overflow must resolve to its body"
+  )
+end
+
+function T.confirmation_supports_direct_semantic_selection()
+  local controller = MainMenuController.new(globalActions(), saves({ "one" }))
+  Assert.isTrue(
+    type(controller.focusConfirmation) == "function",
+    "confirmation needs a direct semantic selection operation instead of simulated movement"
+  )
+  controller:focusSave("one", "overflow")
+  controller:activate()
+  controller:activate()
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "cancel")
+  controller:focusConfirmation("delete")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "delete")
+  Assert.deepEqual(controller:snapshot().popup, { saveId = "one", focusedAction = "delete" })
+  controller:focusConfirmation("cancel")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "cancel")
+  Assert.throws(function()
+    controller:focusConfirmation("remove")
+  end, "unknown confirmation actions must fail loudly")
+end
+
+local function catalogEntry(saveId, name, playTimeSeconds)
+  return {
+    saveId = saveId,
+    versionId = "heartgold",
+    playerData = { profile = { name = name } },
+    playTimeSeconds = playTimeSeconds,
+  }
+end
+
+function T.pointer_click_on_focused_delete_action_confirms_deletion()
+  local entries = { catalogEntry("save-00000001", "PLAYER", 60) }
+  local deleted = 0
+  local results = {}
+  local menu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+      delete = function(_, saveId)
+        Assert.equal(saveId, "save-00000001")
+        deleted = deleted + 1
+        entries = {}
+        return true
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  menu:keypressed("right")
+  menu:keypressed("return")
+  menu:keypressed("return")
+  Assert.equal(menu:view().confirmation.focusedAction, "cancel")
+  menu:keypressed("down")
+  Assert.equal(menu:view().confirmation.focusedAction, "delete")
+  local confirmation = assert(menu:view().layout.confirmation, "confirmation needs hit geometry")
+  local deleteRect = confirmation.delete
+  menu:mousepressed(deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2, 1)
+  Assert.equal(deleted, 1, "clicking the focused Delete action must delete without toggling selection")
+  Assert.deepEqual(results, {}, "deletion must not publish Continue")
+  Assert.isNil(menu:view().layout.saves.cards["save-00000001"])
+  Assert.equal(menu:view().focusedId, "new-game")
+end
+
+function T.single_save_places_tall_continue_above_a_short_fixed_new_game()
+  local layout = MainMenuLayout.compute(
+    globalActions(),
+    saves({ "one" }),
+    { region = "saves", saveId = "one", lane = "body" },
+    640,
+    480,
+    0,
+    nil,
+    nil,
+    false
+  )
+  local card = assert(layout.saves.cards.one, "the single save needs card geometry")
+  local newGame = assert(layout.global.actions["new-game"], "New Game needs global geometry")
+  Assert.isTrue(
+    card.frame.y + card.frame.height <= newGame.y,
+    "the Continue card must sit above New Game, not below it"
+  )
+  Assert.isTrue(card.frame.height > newGame.height, "the Continue card must be taller than New Game")
+  Assert.isTrue(
+    layout.saves.viewport.y + layout.saves.viewport.height <= newGame.y,
+    "New Game must sit below the save region instead of sharing its top edge"
+  )
+end
+
+function T.scroll_state_pins_new_game_and_reports_edge_availability()
+  local ids = {}
+  for index = 1, 8 do
+    ids[#ids + 1] = string.format("save-%d", index)
+  end
+  local top = MainMenuLayout.compute(
+    globalActions(),
+    saves(ids),
+    { region = "saves", saveId = "save-1", lane = "body" },
+    320,
+    180,
+    0,
+    nil,
+    nil,
+    false
+  )
+  Assert.equal(top.saves.offset, 0)
+  Assert.isNil(top.saves.canScrollUp, "edge availability has a single shape")
+  Assert.isNil(top.saves.canScrollDown, "edge availability has a single shape")
+  Assert.isNil(top.saves.scrollIndicators.up, "nothing above the top viewport edge needs an indicator")
+  Assert.notNil(top.saves.scrollIndicators.down, "content below the top viewport edge needs an indicator")
+  local bottom = MainMenuLayout.compute(
+    globalActions(),
+    saves(ids),
+    { region = "saves", saveId = "save-8", lane = "body" },
+    320,
+    180,
+    top.saves.offset,
+    nil,
+    nil,
+    false
+  )
+  Assert.isTrue(bottom.saves.offset > 0, "many saves must scroll their save viewport")
+  local focusedCard = assert(bottom.saves.cards["save-8"], "the focused save needs card geometry")
+  Assert.isTrue(
+    focusedCard.body.y >= bottom.saves.viewport.y
+      and focusedCard.body.y + focusedCard.body.height <= bottom.saves.viewport.y + bottom.saves.viewport.height,
+    "scrolling must keep the focused save card visible"
+  )
+  Assert.equal(bottom.saves.canScrollUp, nil, "edge availability has a single shape")
+  Assert.equal(bottom.saves.canScrollDown, nil, "edge availability has a single shape")
+  Assert.notNil(bottom.saves.scrollIndicators.up, "content above the bottom viewport edge needs an indicator")
+  Assert.isNil(bottom.saves.scrollIndicators.down, "nothing below the bottom viewport edge needs an indicator")
+  local topNewGame = assert(top.global.actions["new-game"])
+  local bottomNewGame = assert(bottom.global.actions["new-game"])
+  Assert.equal(bottomNewGame.x, topNewGame.x)
+  Assert.equal(bottomNewGame.y, topNewGame.y)
+  local visible = MainMenuLayout.compute(
+    globalActions(),
+    saves({ "one" }),
+    { region = "saves", saveId = "one", lane = "body" },
+    640,
+    480,
+    0,
+    nil,
+    nil,
+    false
+  )
+  Assert.isNil(visible.saves.scrollIndicators.up)
+  Assert.isNil(visible.saves.scrollIndicators.down)
+end
+
+local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
+local NEUTRAL_RIM = { 222 / 255, 230 / 255, 230 / 255 }
+
+local function nearColor(recorded, expected)
+  for index = 1, 3 do
+    if math.abs(recorded[index] - expected[index]) > 0.02 then
+      return false
+    end
+  end
+  return true
+end
+
+local function recordedRectangles(graphics)
+  return graphics.rectangles
+end
+
+local function hasRimColor(rectangles, expected)
+  for _, record in ipairs(rectangles) do
+    if nearColor(record.color, expected) then
+      return true
+    end
+  end
+  return false
+end
+
+local function overlaps(record, rect)
+  return record.x < rect.x + rect.width
+    and rect.x < record.x + record.w
+    and record.y < rect.y + rect.height
+    and rect.y < record.y + record.h
+end
+
+local function hasRimColorOverlapping(rectangles, expected, rect)
+  for _, record in ipairs(rectangles) do
+    if nearColor(record.color, expected) and overlaps(record, rect) then
+      return true
+    end
+  end
+  return false
+end
+
+local function recordingText(calls)
+  return {
+    drawText = function(_, text, x, y)
+      calls[#calls + 1] = { text = text, x = x, y = y }
+    end,
+  }
+end
+
+local function drawnMenu(entries, width, height, setup)
+  local graphics = FakeGraphics.new()
+  local calls = {}
+  local renderer = MainMenuRenderer.new({ text = recordingText(calls), graphics = graphics })
+  local menu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+    },
+    width = width,
+    height = height,
+    renderer = { draw = function() end, dispose = function() end },
+  })
+  if setup then
+    setup(menu)
+  end
+  local current = menu:view()
+  renderer:draw(current)
+  return { graphics = graphics, calls = calls, view = current, menu = menu }
+end
+
+function T.focused_continue_uses_selected_rim_while_other_cards_stay_neutral()
+  local drawn =
+    drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60), catalogEntry("save-00000002", "OTHER", 120) }, 640, 480)
+  local rectangles = recordedRectangles(drawn.graphics)
+  Assert.isTrue(hasRimColor(rectangles, SELECTED_RIM), "the focused Continue card must use the selected rim color")
+  Assert.isTrue(hasRimColor(rectangles, NEUTRAL_RIM), "unfocused cards must keep the neutral rim color")
+  local focusedCard = assert(drawn.view.layout.saves.cards["save-00000001"])
+  Assert.isFalse(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, assert(focusedCard.overflow)),
+    "body focus must not leave the nested overflow control looking selected"
+  )
+end
+
+function T.overflow_focus_marks_only_the_overflow_control()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480, function(menu)
+    menu:keypressed("right")
+  end)
+  Assert.deepEqual(drawn.view.focus, { region = "saves", saveId = "save-00000001", lane = "overflow" })
+  local rectangles = recordedRectangles(drawn.graphics)
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  Assert.isTrue(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, assert(card.overflow)),
+    "the overflow control needs its own unmistakable selected rim"
+  )
+  Assert.isFalse(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, card.body),
+    "overflow focus must return the Continue body to its neutral rim"
+  )
+end
+
+function T.new_game_focus_uses_the_selected_rim_grammar()
+  local drawn = drawnMenu({}, 640, 480)
+  Assert.deepEqual(drawn.view.focus, { region = "global", actionId = "new-game" })
+  local rectangles = recordedRectangles(drawn.graphics)
+  local newGame = assert(drawn.view.layout.global.actions["new-game"])
+  Assert.isTrue(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, newGame),
+    "the focused New Game panel must use the selected rim color"
+  )
+end
+
+function T.confirmation_focus_marks_only_the_active_action()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480, function(menu)
+    menu:keypressed("right")
+    menu:keypressed("return")
+    menu:keypressed("return")
+    menu:keypressed("down")
+  end)
+  Assert.equal(drawn.view.confirmation.focusedAction, "delete")
+  local rectangles = recordedRectangles(drawn.graphics)
+  local confirmation = assert(drawn.view.layout.confirmation, "confirmation needs hit geometry")
+  Assert.isTrue(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, confirmation.delete),
+    "the focused confirmation action must use the selected rim color"
+  )
+  Assert.isFalse(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, confirmation.cancel),
+    "the unfocused confirmation action must not look selected"
+  )
+end
+
+function T.principal_copy_renders_at_an_integer_scale_and_restores_transforms()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local foundDouble = false
+  for _, transform in ipairs(drawn.graphics.transforms) do
+    if transform[1] == "scale" then
+      Assert.isTrue(
+        transform[2] == math.floor(transform[2]) and transform[3] == math.floor(transform[3]),
+        "menu text scaling must never be fractional"
+      )
+      if transform[2] == 2 and transform[3] == 2 then
+        foundDouble = true
+      end
+    end
+  end
+  Assert.isTrue(foundDouble, "principal menu copy at the desktop baseline must render at twice the generated font size")
+  Assert.equal(drawn.graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
+  Assert.isTrue(#drawn.calls > 0, "the menu must draw principal copy")
+end
+
+function T.continue_card_announces_heading_facts_and_hides_brand_text()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local seenHeading, seenName, seenPlayTime, seenBrand = false, false, false, false
+  local expectedPlayTime = assert(drawn.view.saves[1].playTimeLabel)
+  for _, call in ipairs(drawn.calls) do
+    if call.text == "CONTINUE" then
+      seenHeading = true
+    end
+    if call.text == "PLAYER" then
+      seenName = true
+    end
+    if call.text == expectedPlayTime then
+      seenPlayTime = true
+    end
+    if call.text == "g4recomp" then
+      seenBrand = true
+    end
+  end
+  Assert.isTrue(seenHeading, "the Continue card must announce its CONTINUE heading")
+  Assert.isTrue(seenName, "the Continue card must show the player name")
+  Assert.isTrue(seenPlayTime, "the Continue card must show the play time")
+  Assert.isFalse(seenBrand, "the save screen must not displace its hierarchy with brand text")
+end
+
+local function rectListSnapshot(rectangles)
+  local snapshot = {}
+  for _, record in ipairs(rectangles) do
+    snapshot[#snapshot + 1] = string.format(
+      "%s|%s|%s|%s|%s|%s|%s|%s|%s",
+      record.mode,
+      record.x,
+      record.y,
+      record.w,
+      record.h,
+      record.color[1],
+      record.color[2],
+      record.color[3],
+      record.color[4]
+    )
+  end
+  return snapshot
+end
+
+function T.scroll_indicators_track_viewport_edge_availability()
+  local entries = {}
+  for index = 1, 8 do
+    entries[#entries + 1] = catalogEntry(string.format("save-%08d", index), "PLAYER", 60)
+  end
+  local scrolled = drawnMenu(entries, 320, 180, function(menu)
+    for _ = 1, 7 do
+      menu:keypressed("down")
+    end
+  end)
+  Assert.isTrue(scrolled.view.layout.saves.offset > 0, "the scroll setup must overflow the save viewport")
+  local viewport = scrolled.view.layout.saves.viewport
+  local marks = assert(scrolled.view.layout.saves.scrollIndicators)
+  Assert.notNil(marks.up, "content above the viewport needs an indicator")
+  local function drawWithMarks(up, down)
+    local graphics = FakeGraphics.new()
+    local renderer = MainMenuRenderer.new({ text = recordingText({}), graphics = graphics })
+    local shaped = scrolled.view
+    shaped.layout.saves.scrollIndicators = { up = up, down = down }
+    renderer:draw(shaped)
+    return recordedRectangles(graphics)
+  end
+  local indicated = rectListSnapshot(drawWithMarks(marks.up, marks.down))
+  local suppressed = rectListSnapshot(drawWithMarks(nil, nil))
+  local differs = #indicated ~= #suppressed
+  if not differs then
+    for index, signature in ipairs(indicated) do
+      if suppressed[index] ~= signature then
+        differs = true
+        break
+      end
+    end
+  end
+  Assert.isTrue(differs, "scroll indicators must respond to edge availability")
+  local edgeBand = { x = viewport.x + viewport.width - 32, y = viewport.y, width = 32, height = viewport.height }
+  local cards = scrolled.view.layout.saves.cards
+  local marked = drawWithMarks(marks.up, marks.down)
+  local foundEdgeMark = false
+  for _, record in ipairs(marked) do
+    if overlaps(record, edgeBand) then
+      local insideCard = false
+      for _, card in pairs(cards) do
+        if overlaps(record, card.frame) then
+          insideCard = true
+          break
+        end
+      end
+      if not insideCard then
+        foundEdgeMark = true
+        break
+      end
+    end
+  end
+  Assert.isTrue(foundEdgeMark, "the scroll mark must sit near the save viewport right edge")
+end
+
+function T.layout_reports_integer_scale_and_full_scroll_availability()
+  local one = saves({ "one" })
+  local body = { region = "saves", saveId = "one", lane = "body" }
+  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 320, 240, 0, nil, nil, false).uiScale, 1)
+  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 640, 480, 0, nil, nil, false).uiScale, 2)
+  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 1280, 720, 0, nil, nil, false).uiScale, 3)
+  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 2560, 1440, 0, nil, nil, false).uiScale, 3)
+
+  local fitted = MainMenuLayout.compute(globalActions(), one, body, 640, 480, 0, nil, nil, false)
+  Assert.isNil(fitted.saves.canScrollUp, "edge availability has a single shape")
+  Assert.isNil(fitted.saves.canScrollDown, "edge availability has a single shape")
+  Assert.isNil(fitted.saves.scrollIndicators.up)
+  Assert.isNil(fitted.saves.scrollIndicators.down)
+
+  local ids = {}
+  for index = 1, 12 do
+    ids[#ids + 1] = string.format("mid-%02d", index)
+  end
+  local many = saves(ids)
+  local middle = MainMenuLayout.compute(
+    globalActions(),
+    many,
+    { region = "saves", saveId = "mid-06", lane = "body" },
+    640,
+    480,
+    500,
+    nil,
+    nil,
+    false
+  )
+  Assert.isTrue(middle.saves.offset > 0, "a middle save must scroll content above the viewport")
+  Assert.isNil(middle.saves.canScrollUp, "edge availability has a single shape")
+  Assert.isNil(middle.saves.canScrollDown, "edge availability has a single shape")
+  local up = assert(middle.saves.scrollIndicators.up, "content above needs an indicator")
+  local down = assert(middle.saves.scrollIndicators.down, "content below needs an indicator")
+  local viewport = middle.saves.viewport
+  for _, mark in ipairs({ up, down }) do
+    Assert.isTrue(mark.x >= viewport.x and mark.x + mark.width <= viewport.x + viewport.width)
+    Assert.isTrue(mark.y >= viewport.y and mark.y + mark.height <= viewport.y + viewport.height)
+    for _, card in pairs(middle.saves.cards) do
+      Assert.isTrue(
+        mark.x >= card.frame.x + card.frame.width,
+        "scroll marks must sit beside the save cards instead of overlapping them"
+      )
+    end
+  end
+end
+
+function T.confirmation_selection_is_inert_without_an_active_confirmation()
+  local controller = MainMenuController.new(globalActions(), saves({ "one" }))
+  Assert.isFalse(controller:focusConfirmation("cancel"))
+  Assert.isFalse(controller:focusConfirmation("delete"))
+  Assert.isNil(controller:snapshot().confirmation)
+  Assert.isNil(controller:snapshot().popup)
 end
 
 return { tests = T }
