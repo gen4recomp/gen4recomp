@@ -2,8 +2,10 @@
 
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
 
 local T = {}
@@ -138,6 +140,197 @@ function T.focus_lanes_have_distinct_visual_regions(scope)
   lg.setCanvas()
   local overflowFocused = scope:own(canvas:newImageData()):getPixel(100, 92)
   Assert.isTrue(bodyFocused ~= overflowFocused, "body and overflow focus must render differently")
+end
+
+function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(scope)
+  local globals = { { id = "new-game", kind = "new_game" } }
+  local one = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    },
+  }
+  local bodyFocus = { region = "saves", saveId = "save-1", lane = "body" }
+  local layout = MainMenuLayout.compute(globals, one, bodyFocus, 640, 480, 0, nil, nil, false)
+  Assert.equal(layout.uiScale, 2)
+  Assert.equal(MainMenuLayout.compute(globals, one, bodyFocus, 320, 240, 0, nil, nil, false).uiScale, 1)
+  Assert.equal(MainMenuLayout.compute(globals, one, bodyFocus, 1280, 720, 0, nil, nil, false).uiScale, 3)
+  Assert.equal(MainMenuLayout.compute(globals, one, bodyFocus, 2560, 1440, 0, nil, nil, false).uiScale, 3)
+  local card = assert(layout.saves.cards["save-1"])
+  Assert.equal(card.frame.height, 72 * layout.uiScale)
+  local newGame = layout.global.actions["new-game"]
+  Assert.equal(newGame.height, 36 * layout.uiScale)
+  Assert.isTrue(newGame.y >= layout.saves.viewport.y + layout.saves.viewport.height)
+
+  local many = {}
+  for index = 1, 8 do
+    many[#many + 1] = {
+      id = "save-" .. index,
+      saveId = "save-" .. index,
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    }
+  end
+  local bottom = MainMenuLayout.compute(
+    globals,
+    many,
+    { region = "saves", saveId = "save-8", lane = "body" },
+    640,
+    480,
+    0,
+    nil,
+    nil,
+    false
+  )
+  Assert.notNil(bottom.saves.scrollIndicators)
+  Assert.notNil(bottom.saves.scrollIndicators.up)
+  Assert.isNil(bottom.saves.scrollIndicators.down)
+  local top = MainMenuLayout.compute(
+    globals,
+    many,
+    { region = "saves", saveId = "save-1", lane = "body" },
+    640,
+    480,
+    0,
+    nil,
+    nil,
+    false
+  )
+  Assert.notNil(top.saves.scrollIndicators.down)
+  Assert.isNil(top.saves.scrollIndicators.up)
+
+  local function composed(targetLayout, targetFocus, targetSaves)
+    return {
+      focusedId = targetFocus.saveId or targetFocus.actionId,
+      focus = targetFocus,
+      globalActions = globals,
+      saves = targetSaves,
+      catalogError = nil,
+      layout = targetLayout,
+    }
+  end
+
+  local function isBackground(r, g, b)
+    return math.abs(r - 0.08) < 0.05 and math.abs(g - 0.1) < 0.05 and math.abs(b - 0.15) < 0.05
+  end
+
+  local function isSelectedRed(r, g, b)
+    return r > 0.9 and (r - g) > 0.5 and (r - b) > 0.5
+  end
+
+  local lg = love.graphics
+  local emptyLayout = MainMenuLayout.compute(
+    globals,
+    {},
+    { region = "global", actionId = "new-game" },
+    640,
+    480,
+    0,
+    nil,
+    nil,
+    false
+  )
+  local emptyCanvas = scope:own(lg.newCanvas(640, 480))
+  lg.setCanvas(emptyCanvas)
+  lg.clear(0, 0, 0, 0)
+  local menuRenderer, _ = renderer(scope)
+  menuRenderer:draw(composed(emptyLayout, { region = "global", actionId = "new-game" }, {}))
+  lg.setCanvas()
+  local emptyPixels = scope:own(emptyCanvas:newImageData())
+  local viewport = emptyLayout.saves.viewport
+  for y = viewport.y, math.min(viewport.y + 24, viewport.y + viewport.height - 1) do
+    for x = viewport.x, math.min(viewport.x + 120, viewport.x + viewport.width - 1) do
+      local r, g, b = emptyPixels:getPixel(x, y)
+      Assert.isTrue(isBackground(r, g, b), "empty save viewport must not carry header copy at " .. x .. "," .. y)
+    end
+  end
+
+  local canvas = scope:own(lg.newCanvas(640, 480))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  menuRenderer:draw(composed(layout, bodyFocus, one))
+  lg.setCanvas()
+  local bodyPixels = scope:own(canvas:newImageData())
+  local bodyRimX = card.frame.x + math.floor(card.frame.width / 2)
+  local bodyRimY = card.frame.y + 5
+  local overflow = assert(card.overflow)
+  local overflowX = overflow.x + math.floor(overflow.width / 2)
+  local overflowY = overflow.y + 5
+  local r, g, b = bodyPixels:getPixel(bodyRimX, bodyRimY)
+  Assert.isTrue(isSelectedRed(r, g, b), "focused save body must carry the selected red rim")
+  local or_, og, ob = bodyPixels:getPixel(overflowX, overflowY)
+  Assert.isFalse(isSelectedRed(or_, og, ob), "unfocused overflow must stay neutral while the body is focused")
+
+  local overflowFocus = { region = "saves", saveId = "save-1", lane = "overflow" }
+  local overflowLayout = MainMenuLayout.compute(globals, one, overflowFocus, 640, 480, 0, nil, nil, false)
+  local overflowCard = assert(overflowLayout.saves.cards["save-1"])
+  local overflowControl = assert(overflowCard.overflow)
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  menuRenderer:draw(composed(overflowLayout, overflowFocus, one))
+  lg.setCanvas()
+  local overflowPixels = scope:own(canvas:newImageData())
+  local br, bg, bb =
+    overflowPixels:getPixel(overflowCard.frame.x + math.floor(overflowCard.frame.width / 2), overflowCard.frame.y + 5)
+  Assert.isFalse(isSelectedRed(br, bg, bb), "save body must return to neutral while overflow is focused")
+  local cr, cg, cb =
+    overflowPixels:getPixel(overflowControl.x + math.floor(overflowControl.width / 2), overflowControl.y + 5)
+  Assert.isTrue(isSelectedRed(cr, cg, cb), "focused overflow must carry its own selected red rim")
+end
+
+function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  local textDraws = 0
+  local textProxy = {
+    drawText = function(_, value, x, y)
+      textDraws = textDraws + 1
+      return text:drawText(value, x, y)
+    end,
+  }
+  local graphics = FakeGraphics.new()
+  local globals = { { id = "new-game", kind = "new_game" } }
+  local items = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    },
+  }
+  local focus = { region = "saves", saveId = "save-1", lane = "body" }
+  local layout = MainMenuLayout.compute(globals, items, focus, 640, 480, 0, nil, nil, false)
+  local menuRenderer = MainMenuRenderer.new({ text = textProxy, graphics = graphics })
+  menuRenderer:draw({
+    focusedId = "save-1",
+    focus = focus,
+    globalActions = globals,
+    saves = items,
+    catalogError = nil,
+    layout = layout,
+  })
+  local foundDouble = false
+  for _, transform in ipairs(graphics.transforms) do
+    if transform[1] == "scale" then
+      Assert.isTrue(
+        transform[2] == math.floor(transform[2]) and transform[3] == math.floor(transform[3]),
+        "menu text scaling must never be fractional"
+      )
+      if transform[2] == 2 and transform[3] == 2 then
+        foundDouble = true
+      end
+    end
+  end
+  Assert.isTrue(textDraws > 0, "the menu must draw principal copy through the generated font atlas")
+  Assert.isTrue(foundDouble, "principal menu copy at the desktop baseline must render at twice the generated font size")
+  Assert.equal(graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
 end
 
 return GraphicsSmoke.suite(T)

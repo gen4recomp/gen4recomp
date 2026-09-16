@@ -13,7 +13,6 @@
 ---@field globalActions table[]
 ---@field saves table[]
 ---@field focus MainMenuFocus
----@field rememberedSaveId string?
 ---@field popup table<string, string>?
 ---@field confirmation table<string, string>?
 local MainMenuController = {}
@@ -64,12 +63,8 @@ end
 function MainMenuController.new(globalActions, saves)
   assert(type(globalActions) == "table" and #globalActions > 0, "the Main Menu needs a global action")
   assert(type(saves) == "table", "Main Menu saves must be an array")
-  local self =
-    setmetatable({ globalActions = globalActions, saves = saves, rememberedSaveId = nil }, MainMenuController)
+  local self = setmetatable({ globalActions = globalActions, saves = saves }, MainMenuController)
   self.focus = firstSave(saves)
-  if self.focus.region == "saves" then
-    self.rememberedSaveId = self.focus.saveId
-  end
   self.popup = nil
   self.confirmation = nil
   return self
@@ -93,7 +88,6 @@ end
 function MainMenuController:focusSave(saveId, lane)
   assert(itemAt(self.saves, saveId), "cannot focus an unknown Main Menu save")
   self.focus = focusForSave(saveId, lane)
-  self.rememberedSaveId = saveId
   self.popup = nil
   self.confirmation = nil
 end
@@ -118,21 +112,25 @@ function MainMenuController:setCatalog(globalActions, saves)
 
   if oldFocus.region == "global" and not hadSaves and #saves > 0 then
     self.focus = firstSave(saves)
-    self.rememberedSaveId = self.focus.saveId
   elseif oldFocus.region == "global" and itemAt(globalActions, oldFocus.actionId) then
     self.focus = { region = "global", actionId = oldFocus.actionId }
   elseif oldFocus.region == "saves" and itemAt(saves, oldFocus.saveId) then
-    self.focus = focusForSave(oldFocus.saveId, oldFocus.lane)
-    self.rememberedSaveId = oldFocus.saveId
+    local kept = assert(itemAt(saves, oldFocus.saveId))
+    local lane = oldFocus.lane
+    if lane == "overflow" and not canDelete(kept) then
+      lane = "body"
+    end
+    self.focus = focusForSave(oldFocus.saveId, lane)
   elseif #saves > 0 then
     local replacementIndex = math.min(oldSaveIndex or 1, #saves)
     local replacement = assert(saves[replacementIndex])
     local lane = oldFocus.region == "saves" and oldFocus.lane or "body"
+    if lane == "overflow" and not canDelete(replacement) then
+      lane = "body"
+    end
     self.focus = focusForSave(replacement.saveId or replacement.id, lane)
-    self.rememberedSaveId = self.focus.saveId
   else
     self.focus = { region = "global", actionId = assert(globalActions[1]).id }
-    self.rememberedSaveId = nil
   end
 end
 
@@ -161,22 +159,22 @@ function MainMenuController:move(direction)
     return
   end
   if self.focus.region == "global" then
-    if direction == "right" and #self.saves > 0 then
-      local saveId = itemAt(self.saves, self.rememberedSaveId) and self.rememberedSaveId or self.saves[1].saveId
-      self:focusSave(saveId, "body")
+    if direction == "up" and #self.saves > 0 then
+      local final = assert(self.saves[#self.saves])
+      self:focusSave(final.saveId or final.id, "body")
     end
     return
   end
   if self.focus.lane == "body" then
-    if direction == "left" then
-      self:focusGlobal(self.globalActions[1].id)
-    elseif direction == "right" and canDelete(self:focusedItem()) then
+    if direction == "right" and canDelete(self:focusedItem()) then
       self:focusSave(self.focus.saveId, "overflow")
     elseif direction == "up" or direction == "down" then
       local delta = direction == "up" and -1 or 1
       local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
       if saveId then
         self:focusSave(saveId, "body")
+      elseif direction == "down" then
+        self:focusGlobal(self.globalActions[1].id)
       end
     end
   elseif self.focus.lane == "overflow" then
@@ -186,10 +184,20 @@ function MainMenuController:move(direction)
       local delta = direction == "up" and -1 or 1
       local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
       if saveId then
-        self:focusSave(saveId, "overflow")
+        local adjacent = itemAt(self.saves, saveId)
+        self:focusSave(saveId, canDelete(adjacent) and "overflow" or "body")
       end
     end
   end
+end
+
+function MainMenuController:focusConfirmation(action)
+  assert(action == "cancel" or action == "delete", "unknown Main Menu confirmation action")
+  if not self.confirmation then
+    return false
+  end
+  self.confirmation.focusedAction = action
+  return true
 end
 
 function MainMenuController:openOverflow(saveId)
@@ -208,7 +216,6 @@ function MainMenuController:closePopup()
     self.confirmation = nil
     if itemAt(self.saves, saveId) then
       self.focus = focusForSave(saveId, "overflow")
-      self.rememberedSaveId = saveId
     end
   end
 end

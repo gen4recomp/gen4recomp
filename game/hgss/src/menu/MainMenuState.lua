@@ -287,9 +287,10 @@ function MainMenuState:_pointer(x, y)
   local layout = self:layout()
   if self.controller.confirmation then
     if layout.confirmation and MainMenuLayout.contains(layout.confirmation.cancel, x, y) then
+      self.controller:focusConfirmation("cancel")
       self.controller:back()
     elseif layout.confirmation and MainMenuLayout.contains(layout.confirmation.delete, x, y) then
-      self.controller:move("down")
+      self.controller:focusConfirmation("delete")
       self:_activate()
     end
     return
