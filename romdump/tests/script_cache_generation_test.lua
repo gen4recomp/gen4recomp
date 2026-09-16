@@ -328,7 +328,7 @@ function T.member_with_no_resources_stages_without_a_fake_job()
     marker = GENERATION_A .. ":member:7",
     sourceHash = SOURCE_HASH,
     coverage = {
-      source = { repository = "g4recomp", romSha1 = GENERATION_A },
+      source = { repository = "portemon", romSha1 = GENERATION_A },
       totals = {
         members = 1,
         scripts = 0,

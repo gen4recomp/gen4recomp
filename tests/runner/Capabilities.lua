@@ -3,8 +3,9 @@
 --   graphics                a preflight really built and released a Shader, Canvas, Mesh,
 --                           and Image against the host's graphics namespace
 --   rom_dump                at least one GameVersion is ready through RomImporter.isReady
---   derived_cache           the incremental cache builder ran successfully for that dump,
---                           reported through the shell entrypoint's environment claim
+--   derived_cache           the historical cache name, granted only as an alias of a
+--                           verified complete_derived_cache below, never by a bare
+--                           environment flag
 --   derived_assets          an invocation preparation receipt proves the requested
 --                           closure ready for the selected source and generation
 --   complete_derived_cache  the receipt additionally proves an exhaustive current
@@ -15,18 +16,21 @@
 -- resource is an infrastructure failure and raises: silently downgrading it to
 -- "skip everything" is how graphics coverage disappears unnoticed.
 --
--- Readiness of the derived cache is not re-derived from markers: preparation is
--- the shell entrypoint's step (`scripts/test.sh` runs `love romdump/
--- --build-cache` before the ROM-gated layers) and it reports the outcome through
--- PORTEMON_DERIVED_CACHE_READY. A ready raw dump alone therefore never claims a
--- current derived cache. The scoped capabilities never follow that bare flag:
--- only a verified invocation receipt establishes them.
+-- Readiness of the derived cache is never re-derived from markers or from a
+-- bare environment flag: preparation is the shell entrypoint's step
+-- (`scripts/test.sh` runs the common scoped builder before the ROM-gated
+-- layers) and only a verified invocation receipt establishes the scoped
+-- capabilities.
 
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local Capabilities = {}
 
+-- Historical environment name that once carried the shell's readiness claim.
+-- It is retained so the shell and older tooling agree on the name to clear;
+-- detection never consults it. Only a verified invocation receipt grants
+-- scoped cache capabilities.
 Capabilities.DERIVED_CACHE_ENV = "PORTEMON_DERIVED_CACHE_READY"
 
 -- The smallest shader that still goes through the real GLSL compiler.
@@ -82,7 +86,6 @@ end
 ---@field complete boolean whether an exhaustive current audit proved the corpus
 
 ---@class CapabilityOptions
----@field env table<string, string>|nil
 ---@field isReady (fun(versionId: string): boolean)|nil
 ---@field versions string[]|nil
 ---@field graphics table|false|nil love.graphics-shaped namespace; false means absent
@@ -92,9 +95,11 @@ end
 
 -- Whether an invocation preparation receipt proves the requested closure
 -- for exactly the selected source: the closure must be ready, name at least
--- one requirement, and match the selection on version, content hash, and
--- generation. A failed preparation or a receipt for another generation
--- proves nothing and must never downgrade into an optional skip.
+-- one requirement, and match the selection on version, content hash, and a
+-- strict nonempty generation token on both sides. Two absent generations
+-- never satisfy each other through an empty comparison. A failed
+-- preparation or a receipt for another generation proves nothing and must
+-- never downgrade into an optional skip.
 ---@param source CapabilitySource|nil
 ---@param preparation CapabilityPreparation|nil
 ---@return boolean
@@ -114,20 +119,24 @@ local function verifiesClosure(source, preparation)
   if preparation.romSha1 ~= source.romSha1 then
     return false
   end
+  if type(source.generationId) ~= "string" or source.generationId == "" then
+    return false
+  end
+  if type(preparation.generationId) ~= "string" or preparation.generationId == "" then
+    return false
+  end
   if preparation.generationId ~= source.generationId then
     return false
   end
   return true
 end
 
--- `options.env` is supplied by the caller (see `tests/run.lua`) so detection
--- never depends on the ambient environment; `isReady`/`versions` are injected by
--- this module's own tests.
+-- Detection never reads the ambient environment; `isReady`/`versions` are
+-- injected by this module's own tests.
 ---@param options CapabilityOptions|nil
 ---@return table<string, boolean> capabilities, string[] readyVersions
 function Capabilities.detect(options)
   options = options or {}
-  local env = options.env or {}
   local isReady = options.isReady or RomImporter.isReady
   local versions = options.versions or GameVersion.ORDER
 
@@ -154,15 +163,13 @@ function Capabilities.detect(options)
   end
   if #ready > 0 then
     capabilities.rom_dump = true
-    if env[Capabilities.DERIVED_CACHE_ENV] == "1" then
-      capabilities.derived_cache = true
-    end
   end
   if verifiesClosure(options.source, options.preparation) then
     capabilities.derived_assets = true
     local preparation = assert(options.preparation, "a verified closure carries its receipt")
     if preparation.complete == true then
       capabilities.complete_derived_cache = true
+      capabilities.derived_cache = true
     end
   end
   return capabilities, ready

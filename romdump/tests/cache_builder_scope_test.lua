@@ -26,6 +26,7 @@ local function newEnv()
   return {
     identity = {
       versionId = "heartgold",
+      romSha1 = string.rep("b", 40),
       generationId = "test-generation",
       producerId = "d" .. string.rep("1", 64),
     },
@@ -518,6 +519,111 @@ function T.malformed_requests_fail_before_any_cache_mutation()
   Assert.equal(#env.sessions, 0, "no malformed request may open a generation session")
   Assert.deepEqual(env.cacheWrites, {}, "no malformed request may mutate cache state")
   Assert.equal(env.publishes, 0, "no malformed request may publish attestation")
+end
+
+-- A successful targeted scope issues the invocation receipt from the actual
+-- report: the exact revision shape names the real save directory, version,
+-- source hash, current generation, and the sorted satisfied closure.
+function T.successful_scope_issues_an_invocation_receipt_from_its_report()
+  env = newEnv()
+  requireScopedPreparation()
+  local recordPath = os.tmpname()
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:7", "bootstrap" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(err)
+  assert(report, "a successful preparation returns its report")
+  local handle = assert(io.open(recordPath, "r"), "a successful scope must issue its receipt")
+  local source = handle:read("*a")
+  handle:close()
+  os.remove(recordPath)
+  local chunk = assert(load(source, "@receipt", "t", {}))
+  local record = chunk()
+  Assert.equal(record.schema, "g4-test-preparation-v2")
+  Assert.equal(record.saveDirectory, "/private/test-root")
+  Assert.equal(record.versionId, "heartgold")
+  Assert.equal(record.romSha1, env.identity.romSha1)
+  Assert.equal(record.generationId, env.identity.generationId)
+  Assert.deepEqual(record.requested, { "bootstrap", "map:7" })
+  Assert.isTrue(report.requestedReady)
+  Assert.equal(record.requestedReady, true)
+  Assert.equal(record.complete, false)
+end
+
+-- The warm shortcut still issues proof: reuse is decided by the strong
+-- check, and the receipt records the complete corpus it verified.
+function T.warm_reuse_issues_an_invocation_receipt_without_recompiling()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  requireScopedPreparation()
+  local recordPath = os.tmpname()
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(err)
+  assert(report, "a warm preparation returns its report")
+  Assert.equal(#env.sessions, 0, "the fast path must not open a generation session")
+  local handle = assert(io.open(recordPath, "r"), "warm reuse must still issue its receipt")
+  handle:close()
+  os.remove(recordPath)
+end
+
+-- A receipt that cannot be written fails the command: no readiness is
+-- forged and the failure is structured.
+function T.unwritable_receipt_fails_the_command_without_forging_readiness()
+  env = newEnv()
+  requireScopedPreparation()
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:7" },
+      preparationRecord = "/nonexistent-dir-xyz/preparation.lua",
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(report)
+  Assert.notNil(err)
+  local Errors = require("libs.errors.src.Errors")
+  Assert.isTrue(Errors.is(err), "receipt failures are structured")
+end
+
+-- A failed scope issues no receipt: only a satisfied closure proves
+-- readiness.
+function T.failed_scope_issues_no_receipt()
+  env = newEnv()
+  env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
+  requireScopedPreparation()
+  local recordPath = os.tmpname()
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:5" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(report)
+  Assert.notNil(err)
+  local handle = io.open(recordPath, "r")
+  Assert.isNil(handle, "a failed scope must leave no successful receipt behind")
+  if handle ~= nil then
+    handle:close()
+  end
+  os.remove(recordPath)
 end
 
 return module

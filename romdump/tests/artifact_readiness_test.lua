@@ -91,7 +91,7 @@ end
 -- real writer so summary readiness reflects genuine member bodies.
 local function scriptCoverage(memberId, id, scriptIndex)
   return {
-    source = { repository = "g4recomp", romSha1 = "rom-sha" },
+    source = { repository = "portemon", romSha1 = "rom-sha" },
     totals = {
       members = 1,
       scripts = 1,

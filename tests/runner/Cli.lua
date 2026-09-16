@@ -221,11 +221,11 @@ end
 -- nothing), the repeated closed requirements of the selection, and the
 -- effective worker count.
 ---@param plan TestPlan
----@param _ table<string, boolean>|nil retained union of declared capabilities; scope comes from requirements
+---@param capabilities table<string, boolean>|nil union of declared capabilities of suites with selected tests
 ---@param effectiveJobs integer|nil effective worker count
 ---@param selectedRequirements string[]|nil deduplicated union of derived requirements of suites with selected tests
 ---@return string[]
-function Cli.renderPlan(plan, _, effectiveJobs, selectedRequirements)
+function Cli.renderPlan(plan, capabilities, effectiveJobs, selectedRequirements)
   if effectiveJobs == nil then
     effectiveJobs = 1
   end
@@ -243,6 +243,14 @@ function Cli.renderPlan(plan, _, effectiveJobs, selectedRequirements)
       seen[requirement] = true
       requirements[#requirements + 1] = requirement
     end
+  end
+  -- Suites still declare the historical cache capability name, which is only
+  -- ever granted as an alias of the verified complete proof: such a
+  -- selection explicitly requires the complete corpus so the planned scope
+  -- stays truthful.
+  if capabilities ~= nil and capabilities.derived_cache == true and not seen.complete then
+    seen.complete = true
+    requirements[#requirements + 1] = "complete"
   end
   table.sort(requirements)
   -- A listing executes nothing, so it prepares nothing even when the listed

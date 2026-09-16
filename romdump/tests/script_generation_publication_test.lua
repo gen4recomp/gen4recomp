@@ -33,7 +33,7 @@ local OUTER_GENERATION_B = "outer-generation-b"
 
 local function coverageFor(memberId, id)
   return {
-    source = { repository = "g4recomp", romSha1 = ROM_SHA },
+    source = { repository = "portemon", romSha1 = ROM_SHA },
     totals = {
       members = 1,
       scripts = 1,

@@ -355,6 +355,8 @@ function Runner._runPrepareCache()
     profile = opts.profile,
     allowCompileExclusions = opts.allowCompileExclusions,
     dev = opts.dev == true,
+    preparationRecord = opts.preparationRecord,
+    saveDirectory = love.filesystem.getSaveDirectory(),
   })
   if report == nil then
     print("prepare-cache: " .. version .. " failed: " .. Errors.format(err))

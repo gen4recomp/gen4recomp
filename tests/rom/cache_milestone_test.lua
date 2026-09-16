@@ -12,12 +12,12 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local CompilerWorker = require("romdump.src.build.CompilerWorker")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
+local FakeCache = require("tests.support.FakeCache")
 local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
 local GxGeometryBuffer = require("libs.nds.src.gx.GxGeometryBuffer")
-local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
@@ -28,6 +28,9 @@ local Schema = require("libs.script.src.Schema")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 
 local T = {}
+
+local activeBackend = nil
+local savedCacheFs = nil
 
 local PRODUCER_BODY = string.rep("1", 64)
 
@@ -166,7 +169,10 @@ local function FakePool()
 end
 
 local function openSession(identity, epoch, pool, sweepEnabled)
-  local ok, session = pcall(InteractiveCacheBuild.new, {
+  -- Resolved at call time so the suite hooks' filesystem routing applies to
+  -- the session's internally built owner.
+  local SessionBuild = require("romdump.src.build.InteractiveCacheBuild")
+  local ok, session = pcall(SessionBuild.new, {
     identity = identity,
     epoch = epoch,
     pool = pool,
@@ -192,17 +198,28 @@ local function drive(session, rounds)
 end
 
 local function settle(session, pool, cap)
+  -- Bounded planning converges over pool-silent rounds: entries sorted late
+  -- still need their slice after worker completions land, so quiescence is
+  -- pool order AND session progress (ready/failed counts) holding still,
+  -- not pool order alone. The quiet threshold spans a full post-adoption
+  -- re-drive: adopting the worker inventory resets dependency memoization,
+  -- so re-planning one several-hundred-child parent (message banks here,
+  -- frozen game data) takes a dozen silent passes before it resubmits.
   local lastCount = #pool.order
+  local status = session:status()
+  local lastReady, lastFailed = status.ready, status.failed
   local calm = 0
   for _ = 1, cap or 200 do
     drive(session, 1)
-    if #pool.order == lastCount then
+    status = session:status()
+    if #pool.order == lastCount and status.ready == lastReady and status.failed == lastFailed then
       calm = calm + 1
-      if calm >= 3 then
+      if calm >= 25 then
         return
       end
     else
       lastCount = #pool.order
+      lastReady, lastFailed = status.ready, status.failed
       calm = 0
     end
   end
@@ -272,9 +289,9 @@ local function failuresText(status)
   return table.concat(parts, "\n")
 end
 
-local function workerContextFor(romFs, versionId)
+local function workerContextFor(romFs, versionId, cacheFs)
   local context = {
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = cacheFs,
     romFs = romFs,
     versionId = versionId,
     terrainScratch = {},
@@ -334,16 +351,21 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
 end
 
 function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
-  local cache = CacheFs.forVersion(versionId)
+  -- Writer isolation: the census borrows the real dump read-only while every
+  -- receipt, milestone, and publication lands in the owned backend the suite
+  -- hooks installed, so the shared prepared fixture never changes under
+  -- parallel readers.
+  assert(activeBackend ~= nil, "the census owns its backend for the run")
+  local cache = CacheFs.forVersion(versionId, activeBackend)
+  local liveCache = CacheFs.forVersion(versionId)
+  local rawBefore = liveCache:read(RawDumpContract.MARKER_PATH)
   local romSha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
   local identity = identityFor(versionId, romSha1)
   local generationId = assert(identity.generationId, "generation identity is required")
   local pool = FakePool()
-  local context = workerContextFor(romFs, versionId)
-  -- Milestone files are shared live-cache state: another suite may have
-  -- recorded bootstrap on this root. Snapshot before the census so the
-  -- assertion below proves this session records nothing, whatever the
-  -- root carried.
+  local context = workerContextFor(romFs, versionId, cache)
+  -- Milestone files live in the private backend: the snapshot below proves
+  -- this session records nothing while audio banks stay cold.
   local bootstrapBefore = cache:read("data/generated/bootstrap.lua")
   local bound = processorBound()
   local stageSeq = 0
@@ -414,11 +436,10 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
 
   -- Targeted client: bootstrap plans its exact set with sweep disabled.
   local targeted = openSession(identity, 1, pool, false)
-  -- Readiness the session observes is live-cache state, so a reused root
-  -- plans fewer jobs: ready members are never resubmitted. Snapshot
-  -- current-generation receipts for the whole field-core membership before
-  -- the session runs so expectations below stay exact on cold roots and
-  -- honest on warm ones.
+  -- Readiness the session observes is the owned backend's state, so work the
+  -- session itself completes is never resubmitted. Snapshot current-generation
+  -- receipts for the whole field-core membership before the session runs so
+  -- expectations below stay exact.
   local preReady = {}
   do
     local membership = expectedBootstrapSet(audioBankIds)
@@ -661,8 +682,8 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   completeKind("message-bank")
   settle(session, pool)
   do
-    -- On a reused root the summary is already published: only a cold
-    -- session plans it once its banks complete.
+    -- The summary is planned once its banks complete; a published summary
+    -- answers ready instead.
     if ArtifactState.read(cache, generationId, "message-summary", "global") == nil then
       local summaries = pool:recordsForKind("message-summary")
       Assert.isTrue(#summaries >= 1, "the message summary is planned once its banks can complete")
@@ -760,7 +781,11 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       local receipt = ArtifactState.read(cache, generationId, "script-member", tostring(memberId))
       Assert.notNil(receipt, "completed script members stay published across restart")
     end
-    Assert.notNil(cache:read(RawDumpContract.MARKER_PATH), "resume never re-imports or deletes raw source")
+    Assert.equal(
+      liveCache:read(RawDumpContract.MARKER_PATH),
+      rawBefore,
+      "resume never re-imports or deletes the borrowed raw source"
+    )
     Assert.equal(
       cache:read("data/generated/bootstrap.lua"),
       bootstrapBefore,
@@ -983,9 +1008,45 @@ end
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
 -- Self-driven census: every job is planned and completed through the
 -- in-process session against the raw dump, so the suite consumes no
--- prepared scope -- only the imported dump it reads and the live roots it
--- publishes itself.
+-- prepared scope -- only the imported dump it borrows read-only. The
+-- generation session resolves its filesystem through the owned backend
+-- installed below, so receipts, milestones, and publications never touch
+-- the shared prepared fixture while parallel readers run.
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.derivedAssets = {}
 suite.metadata.tags = { "producer", "cache", "census" }
+
+-- The session builds its filesystem owner internally instead of accepting
+-- one, so the suite routes that single resolution at the owned backend for
+-- the duration of the run. Installation precedes the first session require
+-- and removal follows the last, keeping later suites on the real owner.
+local suiteBeforeAll, suiteAfterAll = suite.beforeAll, suite.afterAll
+function suite.beforeAll(context)
+  activeBackend = FakeCache.new()
+  savedCacheFs = assert(package.loaded["libs.storage.src.CacheFs"], "the cache owner is required")
+  local routed = {
+    forVersion = function(versionId, backendOverride)
+      return savedCacheFs.forVersion(versionId, backendOverride or activeBackend)
+    end,
+  }
+  package.loaded["libs.storage.src.CacheFs"] = routed
+  package.loaded["romdump.src.build.InteractiveCacheBuild"] = nil
+  if suiteBeforeAll ~= nil then
+    suiteBeforeAll(context)
+  end
+end
+function suite.afterAll(context)
+  local ok, err = pcall(function()
+    if suiteAfterAll ~= nil then
+      suiteAfterAll(context)
+    end
+  end)
+  package.loaded["libs.storage.src.CacheFs"] = savedCacheFs
+  package.loaded["romdump.src.build.InteractiveCacheBuild"] = nil
+  activeBackend = nil
+  savedCacheFs = nil
+  if not ok then
+    error(err, 0)
+  end
+end
 return suite
