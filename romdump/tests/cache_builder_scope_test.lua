@@ -11,6 +11,7 @@ local FAKE_PATHS = {
   "libs.storage.src.CacheFs",
   "romdump.src.DerivedCacheState",
   "romdump.src.DerivedCacheAudit",
+  "romdump.src.build.ArtifactJobs",
   "romdump.src.ProducerFingerprint",
   "romdump.src.build.InteractiveCacheBuild",
   "romdump.src.build.CompilerPool",
@@ -40,6 +41,7 @@ local function newEnv()
     cacheWrites = {},
     stateMatches = false,
     auditAvailable = false,
+    plansAvailable = true,
     invalidations = 0,
     publishes = 0,
     publishedIdentity = nil,
@@ -171,8 +173,17 @@ local function makeFakes()
     end,
   }
   fakes.DerivedCacheAudit = {
-    isAvailable = function()
+    isAvailable = function(_, identity, plans)
+      assert(identity ~= nil and plans ~= nil, "the generation audit requires identity and inventory")
       return env.auditAvailable
+    end,
+  }
+  fakes.ArtifactJobs = {
+    publishedPlans = function()
+      if env.plansAvailable == false then
+        return nil, "no published source inventory"
+      end
+      return { stubInventory = true }
     end,
   }
   fakes.ProducerFingerprint = {
@@ -357,6 +368,22 @@ function T.warm_matching_attestation_compiles_nothing()
   Assert.equal(#env.sessions, 0, "the fast path must not open a generation session")
   Assert.equal(env.invalidations, 0, "a current cache must not be invalidated")
   Assert.equal(env.publishes, 0, "a current cache must not be republished")
+end
+
+-- Missing planning metadata bypasses the warm shortcut: the command drains
+-- its session instead of reporting current, and the strict gate still
+-- refuses attestation without an inventory.
+function T.missing_planning_metadata_bypasses_the_warm_shortcut()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.plansAvailable = false
+  requireScopedPreparation()
+  local report, err = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
+  Assert.isNil(report)
+  Assert.notNil(err)
+  Assert.equal(#env.sessions, 1, "missing plans run the normal session")
+  Assert.equal(env.publishes, 0, "no inventory means no attestation")
 end
 
 -- Opt-in profiling records every failed job with its cause and closes with a

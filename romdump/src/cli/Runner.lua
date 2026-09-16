@@ -122,11 +122,54 @@ function Runner._runBuildCache()
   return love.event.quit(Cli.EXIT_USAGE)
 end
 
--- Check that the current published derived artifacts can be used by the test
--- runner without recompiling. This intentionally does not recalculate source
--- dependency hashes; an explicit cache build owns freshness.
+-- Resolve the expected generation for a version through the same
+-- development/release policy the prepare command uses: the validated ROM
+-- hash from the published dump plus the working-tree digest in development
+-- mode or the explicit per-game counter otherwise. Read-only apart from
+-- closing the source handle it opens.
+---@param version string
+---@return table<string, unknown>|nil identity
+---@return Errors.Error|string|nil err
+local function selectionIdentity(version)
+  local RomFs = require("romdump.src.source.RomFs")
+  local opened, openErr = RomFs.open(version)
+  if opened == nil then
+    return nil, openErr --[[@as Errors.Error]]
+  end
+  local sha1 = opened:metadata().sha1
+  opened:close()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
+  -- Development selection hashes the producer working tree resolved against
+  -- the repository root this process runs from: none of the default source
+  -- roots resolve under the packaged VFS root, so the VFS backend would hash
+  -- the empty manifest. Release selection uses the explicit per-game counter
+  -- and reads no producer sources.
+  local dev = Runner.opts ~= nil and Runner.opts.dev == true
+  local sourceBase = love.filesystem.getSourceBaseDirectory()
+  local producerId
+  if dev then
+    producerId = ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(sourceBase))
+  else
+    producerId = "r" .. tostring(assert(DerivedCacheVersions[version], "release counter is required"))
+  end
+  return DerivedCacheState.currentForSelection({
+    versionId = version,
+    romSha1 = sha1,
+    producerId = producerId,
+    developmentRepositoryRoot = dev and sourceBase or nil,
+  })
+end
+
+-- Check that the current published derived artifacts are usable without
+-- recompiling: the expected generation must resolve and the exhaustive
+-- generation audit over the published inventory must pass. A foreign or
+-- absent generation, missing planning metadata, or any damaged payload
+-- fails. Read-only: performs no repair and no writes.
 function Runner._runCheckDerivedCache()
   local DerivedCacheAudit = require("romdump.src.DerivedCacheAudit")
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
   local CacheFs = require("libs.storage.src.CacheFs")
   local targets = readyVersions()
   if #targets == 0 then
@@ -135,11 +178,23 @@ function Runner._runCheckDerivedCache()
   end
   local allOk = true
   for _, version in ipairs(targets) do
-    local ok, reason = DerivedCacheAudit.isAvailable(CacheFs.forVersion(version))
+    local cacheFs = CacheFs.forVersion(version)
+    local identity, identityErr = selectionIdentity(version)
+    local ok, reason
+    if identity == nil then
+      ok, reason = false, "no current generation identity: " .. Errors.format(identityErr)
+    else
+      local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
+      if plans == nil then
+        ok, reason = false, plansReason
+      else
+        ok, reason = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
+      end
+    end
     print("derived cache: " .. version .. " -> " .. (ok and "PASS" or "FAIL"))
     if not ok then
       allOk = false
-      print("  " .. reason)
+      print("  " .. tostring(reason))
     end
   end
   love.event.quit(allOk and 0 or 1)
@@ -287,35 +342,11 @@ function Runner._runPrepareCache()
     print("prepare-cache: no ready dump for " .. version .. "; import a ROM first")
     return love.event.quit(Cli.EXIT_USAGE)
   end
-  local RomFs = require("romdump.src.source.RomFs")
-  local opened, openErr = RomFs.open(version)
-  if opened == nil then
-    print("prepare-cache: " .. version .. " failed: " .. Errors.format(openErr))
+  local identity, identityErr = selectionIdentity(version)
+  if identity == nil then
+    print("prepare-cache: " .. version .. " failed: " .. Errors.format(identityErr))
     return love.event.quit(1)
   end
-  local sha1 = opened:metadata().sha1
-  opened:close()
-  local DerivedCacheState = require("romdump.src.DerivedCacheState")
-  local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
-  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
-  -- Development selection hashes the producer working tree resolved against
-  -- the repository root this process runs from: none of the default source
-  -- roots resolve under the packaged VFS root, so the VFS backend would hash
-  -- the empty manifest. Release selection uses the explicit per-game counter
-  -- and reads no producer sources.
-  local sourceBase = love.filesystem.getSourceBaseDirectory()
-  local producerId
-  if opts.dev == true then
-    producerId = ProducerFingerprint.compute(ProducerFingerprint.checkoutBackend(sourceBase))
-  else
-    producerId = "r" .. tostring(assert(DerivedCacheVersions[version], "release counter is required"))
-  end
-  local identity = DerivedCacheState.currentForSelection({
-    versionId = version,
-    romSha1 = sha1,
-    producerId = producerId,
-    developmentRepositoryRoot = opts.dev == true and sourceBase or nil,
-  })
   local CacheBuilder = require("romdump.src.CacheBuilder")
   local report, err = CacheBuilder.prepareVersion(version, {
     identity = identity,

@@ -18,6 +18,7 @@ local FAKE_PATHS = {
   "romdump.src.DerivedCacheState",
   "romdump.src.ProducerFingerprint",
   "romdump.src.DerivedCacheAudit",
+  "romdump.src.build.ArtifactJobs",
   "romdump.src.build.InteractiveCacheBuild",
   "romdump.src.build.CompilerPool",
 }
@@ -54,6 +55,8 @@ local function newEnv()
     stateMatches = false,
     auditAvailable = false,
     auditCalls = {},
+    plansAvailable = true,
+    planCalls = {},
     invalidatedVersions = {},
     publishes = {},
     updateRaise = nil,
@@ -217,15 +220,25 @@ local function makeFakes()
     end,
   }
   fakes.DerivedCacheAudit = {
-    isAvailable = function(_, generationId)
-      env.auditCalls[#env.auditCalls + 1] = generationId
-      -- The legacy probe reflects the pre-build cache state; a generation
-      -- proof after a successful strict drain always passes because the
-      -- session validated every requested job.
-      if generationId ~= nil then
+    isAvailable = function(_, identity, plans)
+      env.auditCalls[#env.auditCalls + 1] = identity ~= nil and identity.generationId or nil
+      -- The probe reflects the pre-build cache state; once the session has
+      -- drained, every requested job was rebuilt, so the strict gate passes.
+      -- Later probes therefore always pass: repair fixed the damage.
+      if #env.auditCalls > 1 then
         return true
       end
+      assert(plans ~= nil, "the generation audit requires the published inventory")
       return env.auditAvailable
+    end,
+  }
+  fakes.ArtifactJobs = {
+    publishedPlans = function(_, identity)
+      env.planCalls[#env.planCalls + 1] = identity ~= nil and identity.generationId or nil
+      if env.plansAvailable == false then
+        return nil, "no published source inventory"
+      end
+      return { stubInventoryFor = identity ~= nil and identity.generationId or nil }
     end,
   }
   fakes.CompilerPool = {
@@ -375,6 +388,25 @@ function T.damaged_cache_invalidates_before_repair_and_republishes()
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
   Assert.deepEqual(env.invalidatedVersions, { "heartgold" })
   Assert.equal(#env.publishes, 1, "a strict repair republishes the attestation")
+end
+
+-- Missing planning metadata bypasses the current shortcut even with a
+-- matching attestation: the command drains its session, and with no
+-- inventory the strict gate still refuses attestation.
+function T.missing_planning_metadata_bypasses_the_current_shortcut()
+  env = newEnv()
+  env.stateStored = { schema = 2, generationId = "test-generation" }
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.plansAvailable = false
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold" },
+    { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
+  )
+  Assert.isNil(report)
+  Assert.notNil(err)
+  Assert.equal(#env.sessions, 1, "missing plans request their normal dependency jobs")
+  Assert.equal(#env.publishes, 0, "no inventory means no attestation")
 end
 
 -- Map compile failures fail the batch by default; with explicitly accepted

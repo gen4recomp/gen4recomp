@@ -114,7 +114,19 @@ T.tests["complete-corpus attestation remains strict"] = function()
     local corpusMarker =
       assert(cacheFs:read(FieldCellCache.markerPath()), "the generated corpus has a completion marker")
     Assert.isTrue(FieldCellCache.isReady(cacheFs, corpusMarker), "the complete-corpus marker attests every cell")
-    Assert.isTrue(DerivedCacheAudit.isAvailable(cacheFs), "the derived-cache audit remains available")
+    -- This harness prepares a targeted slice, not the whole corpus: the
+    -- exhaustive audit walks the canonical inventory for this exact
+    -- generation and must refuse it rather than pass on markers.
+    local SourcePlan = require("romdump.src.build.SourcePlan")
+    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+    local staged = assert(cacheFs:loadLua(SourcePlan.PATH), "the prepared cache publishes its source inventory")
+    staged = staged --[[@as { versionId: string, generationId: string, producerId: string }]]
+    local identity =
+      { versionId = staged.versionId, generationId = staged.generationId, producerId = staged.producerId }
+    local plans, plansReason = ArtifactJobs.publishedPlans(cacheFs, identity)
+    assert(plans ~= nil, "the prepared cache publishes its complete inventory: " .. tostring(plansReason))
+    local available, reason = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
+    Assert.isFalse(available, "the exhaustive audit must refuse a targeted cache: " .. tostring(reason))
     Assert.equal(type(FieldCellCache.isCellReady), "function", "granular readiness does not replace corpus readiness")
   end)
 end

@@ -295,4 +295,29 @@ T["publish failure keeps recovery material for the journal"] = function()
   )
 end
 
+-- 6. Member readiness proves the live member under its planned marker: a
+-- published member reads ready, while a missing body, an unknown member, a
+-- foreign generation marker, or corrupt coverage does not.
+T["member readiness proves the live member body"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "member-ready", "outer-a")
+  Assert.isTrue(ScriptCacheWriter.isMemberReady(cache, currentPlan, 3))
+  Assert.isTrue(ScriptCacheWriter.isMemberReady(cache, currentPlan, "843"))
+  cache:remove(ScriptCache.scriptPath(GENERATION_A, 843, "new_bark.lab_sign"))
+  local damaged, damagedReason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 843)
+  Assert.isFalse(damaged, "a member with a missing script body is not ready")
+  Assert.isTrue(type(damagedReason) == "string" and damagedReason ~= "", "the refusal names its cause")
+  local unknown, unknownReason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 999)
+  Assert.isFalse(unknown, "an unplanned member is not ready")
+  Assert.isTrue(type(unknownReason) == "string" and unknownReason ~= "", "the refusal names its cause")
+  local foreignPlan = plan(GENERATION_B, "script-cache-v5:rom-sha:other-dep-sha")
+  Assert.isFalse(
+    ScriptCacheWriter.isMemberReady(cache, foreignPlan, 3),
+    "a foreign generation marker is not ready in this cache"
+  )
+  cache:write(ScriptCache.memberCoveragePath(GENERATION_A, 3), "not a lua coverage{{{")
+  Assert.isFalse(ScriptCacheWriter.isMemberReady(cache, currentPlan, 3), "a member with corrupt coverage is not ready")
+end
+
 return { tests = T }
