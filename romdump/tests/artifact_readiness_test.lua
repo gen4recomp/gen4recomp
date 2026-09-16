@@ -726,10 +726,6 @@ local function publishBagFamily(cache)
   for i = 0, 7 do
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
-  local normals = {}
-  for i = 1, 8 do
-    normals[#normals + 1] = { image = "assets/generated/bag/tab-normal-" .. i .. ".png", width = 16, height = 16 }
-  end
   local function pocketBackgrounds(state)
     local pockets = {}
     for _, pocket in ipairs(BagSchema.POCKETS) do
@@ -737,6 +733,49 @@ local function publishBagFamily(cache)
         { image = "assets/generated/bag/background-" .. state .. "-" .. pocket .. ".png", width = 256, height = 192 }
     end
     return pockets
+  end
+  local function framingRecord(angleXDegrees, angleYDegrees, distance, modelY)
+    return { angleXDegrees = angleXDegrees, angleYDegrees = angleYDegrees, distance = distance, modelY = modelY }
+  end
+  local function framingPockets(baseAngle)
+    local pockets = {}
+    for index, pocket in ipairs(BagSchema.POCKETS) do
+      pockets[pocket] = framingRecord(baseAngle + index, baseAngle - index, 339.9, -48 + index)
+    end
+    return pockets
+  end
+  local function browseBackgrounds()
+    local pockets = {}
+    for _, pocket in ipairs(BagSchema.POCKETS) do
+      local variants = {}
+      for i = 1, 7 do
+        variants[i] = {
+          image = "assets/generated/bag/background-browse-" .. pocket .. "-" .. i .. ".png",
+          width = 256,
+          height = 192,
+        }
+      end
+      pockets[pocket] = variants
+    end
+    return pockets
+  end
+  local function tabStrips()
+    local strips = {}
+    for _, pocket in ipairs(BagSchema.POCKETS) do
+      strips[pocket] = { image = "assets/generated/bag/tab-strip-" .. pocket .. ".png", width = 256, height = 32 }
+    end
+    return strips
+  end
+  local function focusTargets(count, y)
+    local targets = {}
+    for i = 1, count do
+      targets[i] = { x = i * 8, y = y }
+    end
+    return targets
+  end
+  local edgeColors = {}
+  for i = 1, 8 do
+    edgeColors[i] = { r = i - 1, g = (i * 3) % 32, b = (i * 7) % 32 }
   end
   local slots = {
     {
@@ -832,19 +871,24 @@ local function publishBagFamily(cache)
           specular = { r = 15, g = 15, b = 15 },
           emission = { r = 15, g = 15, b = 15 },
         },
+        framing = {
+          transitionTicks = 7,
+          baseline = { male = framingRecord(328.4, 28.3, 339.9, -48), female = framingRecord(328.4, 28.3, 339.9, -48) },
+          byGender = { male = framingPockets(328.4), female = framingPockets(328.4) },
+        },
+        edgeColors = edgeColors,
       },
     },
     interactive = {
       backgrounds = {
-        browse = pocketBackgrounds("browse"),
+        browse = browseBackgrounds(),
         action = pocketBackgrounds("action"),
         quantity = pocketBackgrounds("quantity"),
         confirmation = pocketBackgrounds("confirmation"),
       },
       pocketTabs = {
         rects = tabs,
-        normal = normals,
-        highlight = { image = "assets/generated/bag/tab-highlight-frame-1.png", width = 16, height = 16 },
+        strips = tabStrips(),
       },
       itemSlots = {
         slots = slots,
@@ -855,9 +899,28 @@ local function publishBagFamily(cache)
         },
       },
       pageIndicator = { rect = { x = 80, y = 168, width = 56, height = 16 }, textAt = { x = 0, y = 0 } },
+      focus = {
+        tabs = {
+          visual = { image = "assets/generated/bag/focus-tabs.png", width = 16, height = 16 },
+          targets = focusTargets(8, 16),
+        },
+        items = {
+          visual = { image = "assets/generated/bag/focus-items.png", width = 16, height = 16 },
+          targets = focusTargets(6, 64),
+        },
+        cancel = {
+          visual = { image = "assets/generated/bag/focus-cancel.png", width = 16, height = 16 },
+          target = { x = 224, y = 180 },
+        },
+        actions = {
+          visual = { image = "assets/generated/bag/focus-actions.png", width = 16, height = 16 },
+          targets = focusTargets(4, 144),
+        },
+      },
       cancel = {
         rect = { x = 192, y = 168, width = 64, height = 24 },
         textRect = { x = 192, y = 168, width = 56, height = 16 },
+        labelRect = { x = 196, y = 168, width = 56, height = 16 },
       },
       text = {
         actions = {
@@ -908,6 +971,7 @@ local function publishBagFamily(cache)
     },
   }
   local marker = BagCache.marker("test-rom", "test-dep")
+  BagSchema.assertManifest(manifest)
   local assets = {}
   for _, path in ipairs(BagCache.referencedPaths(manifest)) do
     assets[path] = "payload:" .. path
