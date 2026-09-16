@@ -34,7 +34,6 @@ local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 ---@field _revealWidget string|nil
 ---@field _oakBgScrollX number
 ---@field _genderCompositionProgress number
----@field _genderCompositionTimer integer
 ---@field _nameCompositionProgress number
 ---@field _nameCompositionTimer integer
 ---@field _focusTimer integer
@@ -55,7 +54,7 @@ local NAME_LAUNCH_WAIT = 40
 local FINAL_FULL_ART_HOLD = 30
 local FINAL_FADE_FRAMES = 1
 local OAK_BG_SCROLL_END_X = -52
-local GENDER_COMPOSITION_FRAMES = 26
+local NAME_COMPOSITION_FRAMES = 26
 local REVEAL_ANIMATION_UNITS_PER_SOURCE_FRAME = 2
 
 local function requireMessage(messages, key)
@@ -118,7 +117,6 @@ function OakIntroTimeline.new(options)
     _revealWidget = nil,
     _oakBgScrollX = 0,
     _genderCompositionProgress = 0,
-    _genderCompositionTimer = 0,
     _nameCompositionProgress = 0,
     _nameCompositionTimer = 0,
     _focusTimer = 0,
@@ -284,14 +282,16 @@ function OakIntroTimeline:beginGenderQuestion()
   self:_setMessage("profile.gender_question")
 end
 
-function OakIntroTimeline:beginGenderComposition()
-  self._phase = "gender_composition_transition"
-  self._genderCompositionTimer = GENDER_COMPOSITION_FRAMES
+function OakIntroTimeline:beginGenderSelection()
+  self._genderCompositionProgress = 1
+  self._phase = "gender_select"
+  self._focusTimer = 0
+  self._focusBlinkDelta = 0
 end
 
 function OakIntroTimeline:beginNameComposition()
   self._phase = "name_composition_transition"
-  self._nameCompositionTimer = GENDER_COMPOSITION_FRAMES
+  self._nameCompositionTimer = NAME_COMPOSITION_FRAMES
   self._nameCompositionProgress = 0
   self:_setVisual("oak")
 end
@@ -381,16 +381,12 @@ function OakIntroTimeline:press(action, profile)
   elseif self._phase == "oak_tell_about_yourself" then
     self:beginGenderQuestion()
   elseif self._phase == "gender_question" then
-    local genderProgress, nameProgress = self:profileComposition()
+    local _, nameProgress = self:profileComposition()
     if nameProgress > 0 then
       self._phase = "name_composition_return"
-      self._nameCompositionTimer = GENDER_COMPOSITION_FRAMES
-    elseif genderProgress < 1 then
-      self:beginGenderComposition()
+      self._nameCompositionTimer = NAME_COMPOSITION_FRAMES
     else
-      self._phase = "gender_select"
-      self._focusTimer = 0
-      self._focusBlinkDelta = 0
+      self:beginGenderSelection()
     end
   elseif self._phase == "name_prompt" then
     self:beginNameLaunch()
@@ -406,20 +402,9 @@ end
 ---@param gender integer
 ---@return boolean
 local function stepComposition(self, gender)
-  if self._phase == "gender_composition_transition" then
-    self._genderCompositionTimer = self._genderCompositionTimer - 1
-    self._genderCompositionProgress = (GENDER_COMPOSITION_FRAMES - self._genderCompositionTimer)
-      / GENDER_COMPOSITION_FRAMES
-    if self._genderCompositionTimer == 0 then
-      self._genderCompositionProgress = 1
-      self._phase = "gender_select"
-      self._focusTimer = 0
-      self._focusBlinkDelta = 0
-    end
-    return true
-  elseif self._phase == "name_composition_transition" then
+  if self._phase == "name_composition_transition" then
     self._nameCompositionTimer = self._nameCompositionTimer - 1
-    self._nameCompositionProgress = (GENDER_COMPOSITION_FRAMES - self._nameCompositionTimer) / GENDER_COMPOSITION_FRAMES
+    self._nameCompositionProgress = (NAME_COMPOSITION_FRAMES - self._nameCompositionTimer) / NAME_COMPOSITION_FRAMES
     if self._nameCompositionTimer == 0 then
       self._nameCompositionProgress = 1
       self._phase = "name_confirm"
@@ -429,7 +414,7 @@ local function stepComposition(self, gender)
     return true
   elseif self._phase == "name_composition_return" then
     self._nameCompositionTimer = self._nameCompositionTimer - 1
-    self._nameCompositionProgress = self._nameCompositionTimer / GENDER_COMPOSITION_FRAMES
+    self._nameCompositionProgress = self._nameCompositionTimer / NAME_COMPOSITION_FRAMES
     if self._nameCompositionTimer == 0 then
       self._nameCompositionProgress = 0
       self._phase = "gender_select"

@@ -172,22 +172,6 @@ local function assetPath(id)
   return IntroAssetCache.assetDir() .. "/" .. id:gsub("%.", "-") .. ".png"
 end
 
-local function rgbaSurface(width, height)
-  local rgba = {}
-  for index = 1, width * height * 4 do
-    rgba[index] = 0
-  end
-  return rgba
-end
-
-local function rgbaString(rgba)
-  local bytes = {}
-  for index = 1, #rgba, 4096 do
-    bytes[#bytes + 1] = string.char(unpack(rgba, index, math.min(index + 4095, #rgba)))
-  end
-  return table.concat(bytes)
-end
-
 local function addAsset(manifest, assets, id, image, frames, sourceBounds, anchor, provenance, sourceCenter, playback)
   sourceBounds = sourceBounds or { x = 0, y = 0, width = image.width, height = image.height }
   anchor = anchor or { x = image.width / 2, y = image.height }
@@ -442,93 +426,19 @@ end
 
 -- OakSpeech_BlinkHighlightedGenderFrame (pinned source) changes palette
 -- entries 12/13 for the male card and 14/15 for the female card on the
--- gender-selector background. The generated records below retain the source
--- chrome while exposing those four roles as runtime-tinted masks.
-local SELECTOR_ROLES = {
-  male = { fill = 12, rim = 13 },
-  female = { fill = 14, rim = 15 },
-}
+-- gender-selector background. The runtime reuses the shared image-button
+-- widget for that chrome, so only the fill tone is published.
 
-local function selectorPixelIndex(char, screen, x, y)
-  local columns = screen.width / 8
-  local entry = screen.entries[math.floor(y / 8) * columns + math.floor(x / 8) + 1]
-  assert(entry, "gender selector screen entry is missing")
-  local tileBytes = assert(char.depth == 3 and 32 or char.depth == 4 and 64)
-  local tileCount = #char.tiles / tileBytes
-  if entry.tile < 0 or entry.tile >= tileCount then
-    sourceError("gender selector screen references a missing tile", { tile = entry.tile })
-  end
-  local localX, localY = x % 8, y % 8
-  if entry.flipH then
-    localX = 7 - localX
-  end
-  if entry.flipV then
-    localY = 7 - localY
-  end
-  local offset = entry.tile * tileBytes
-  if char.depth == 3 then
-    local byte = string.byte(char.tiles, offset + localY * 4 + math.floor(localX / 2) + 1)
-    return localX % 2 == 0 and byte % 16 or math.floor(byte / 16), entry.palette
-  end
-  return string.byte(char.tiles, offset + localY * 8 + localX + 1), entry.palette
-end
-
-local function expandRgb555(color)
-  local function expand(value)
-    return math.floor((value * 255 + 15) / 31)
-  end
-  return { r = expand(color.r), g = expand(color.g), b = expand(color.b) }
-end
-
-local function compileGenderSelector(archive, dependencies, assets, spec)
-  local char, palette = loadCharPalette(archive, dependencies, spec, "gender-selector")
-  if char.depth ~= 3 then
-    sourceError("gender selector background does not support 8bpp source tiles", { depth = char.depth })
-  end
-  local screenBytes = decodeMember(archive, spec.screen, "gender selector screen", spec.archive)
-  addDependency(dependencies, spec.archive, spec.screen, screenBytes, "gender-selector:screen")
-  local screen = decode("decodeScreen", screenBytes, "gender selector screen", spec.screen, spec.archive)
-  local rendered = IntroRasterizer.renderScreen(char, palette.colors, screen)
+-- The gender selector publishes compact card metadata only: the source button
+-- bounds plus the card fill tone sampled from the selector palette. Card
+-- chrome itself is primitive-rendered by the shared image-button widget.
+local function compileGenderSelector(archive, dependencies, spec)
+  local _, palette = loadCharPalette(archive, dependencies, spec, "gender-selector")
   local buttons = {}
   for _, gender in ipairs({ "male", "female" }) do
     local bounds = assert(config.genderSelector.buttons[gender].bounds)
-    local base, fill, rim =
-      rgbaSurface(bounds.width, bounds.height),
-      rgbaSurface(bounds.width, bounds.height),
-      rgbaSurface(bounds.width, bounds.height)
-    local roles = SELECTOR_ROLES[gender]
-    for y = 0, bounds.height - 1 do
-      for x = 0, bounds.width - 1 do
-        local sourceX, sourceY = bounds.x + x, bounds.y + y
-        local value, bank = selectorPixelIndex(char, screen, sourceX, sourceY)
-        local sourceOffset = (sourceY * rendered.width + sourceX) * 4
-        local offset = (y * bounds.width + x) * 4
-        local role = bank == 0 and (value == roles.fill and "fill" or value == roles.rim and "rim" or nil) or nil
-        if role == "fill" then
-          fill[offset + 1], fill[offset + 2], fill[offset + 3], fill[offset + 4] = 255, 255, 255, 255
-        elseif role == "rim" then
-          rim[offset + 1], rim[offset + 2], rim[offset + 3], rim[offset + 4] = 255, 255, 255, 255
-        else
-          base[offset + 1] = string.byte(rendered.rgba, sourceOffset + 1)
-          base[offset + 2] = string.byte(rendered.rgba, sourceOffset + 2)
-          base[offset + 3] = string.byte(rendered.rgba, sourceOffset + 3)
-          base[offset + 4] = string.byte(rendered.rgba, sourceOffset + 4)
-        end
-      end
-    end
-    local paths = {
-      base = assetPath("gender-selector-" .. gender .. "-base"),
-      fill = assetPath("gender-selector-" .. gender .. "-fill-mask"),
-      rim = assetPath("gender-selector-" .. gender .. "-rim-mask"),
-    }
-    assets[paths.base] = PngWriter.encode(bounds.width, bounds.height, rgbaString(base))
-    assets[paths.fill] = PngWriter.encode(bounds.width, bounds.height, rgbaString(fill))
-    assets[paths.rim] = PngWriter.encode(bounds.width, bounds.height, rgbaString(rim))
     buttons[gender] = {
-      bounds = bounds,
-      baseImage = paths.base,
-      fillMaskImage = paths.fill,
-      rimMaskImage = paths.rim,
+      bounds = { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height },
     }
   end
   local defaultTone = palette.colors[config.genderSelector.defaultToneEntry + 1]
@@ -540,8 +450,6 @@ local function compileGenderSelector(archive, dependencies, assets, spec)
   end
   return {
     defaultTone = { r = defaultTone.r, g = defaultTone.g, b = defaultTone.b },
-    unselectedRim = expandRgb555(assert(spec.rimColors.unselected)),
-    selectedRim = expandRgb555(assert(spec.rimColors.selected)),
     buttons = buttons,
   }
 end
@@ -579,7 +487,7 @@ function IntroAssetCompiler.compile(romFs)
   )
   local paletteLayout = buildPaletteLayout(paletteOrder)
   local manifest = {
-    schemaVersion = 13,
+    schemaVersion = 14,
     variant = variant,
     sourceReference = { width = 256, height = 192 },
     genderSelector = nil,
@@ -607,12 +515,10 @@ function IntroAssetCompiler.compile(romFs)
   compileSingle(archive, dependencies, manifest, assets, "oak", config.oak)
   compileSingle(archive, dependencies, manifest, assets, "male", config.gender.male)
   compileSingle(archive, dependencies, manifest, assets, "female", config.gender.female)
-  manifest.genderSelector = compileGenderSelector(archive, dependencies, assets, {
+  manifest.genderSelector = compileGenderSelector(archive, dependencies, {
     archive = config.archive,
     char = config.genderBackground.char,
     palette = config.genderBackground.palettes[variant],
-    screen = config.genderBackground.screen,
-    rimColors = config.genderBackground.rimColors,
   })
   for _, id in ipairs({ "gender_male", "gender_female" }) do
     local spec = config.genderSelectors[id:gsub("gender_", "")]

@@ -198,6 +198,17 @@ function OakIntroController:activateNameCell(row, column)
   return accepted
 end
 
+function OakIntroController:activateNameControl(id)
+  if self._disposed or self._timeline:phase() ~= "name_edit" then
+    return false
+  end
+  local accepted = self._profile:activateNameControl(id)
+  if accepted and self._profile:namingResult() and self._profile:namingResult().kind == "submit" then
+    self._timeline:beginNameComposition()
+  end
+  return accepted
+end
+
 function OakIntroController:inputText(text)
   assert(type(text) == "string", "Oak text input must be a string")
   if self._disposed or self._timeline:phase() ~= "name_edit" then

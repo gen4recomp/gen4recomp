@@ -18,6 +18,7 @@ local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
 ---@field phase string
 ---@field pressed string[]
 ---@field text string[]
+---@field activated table[]
 ---@field deleted integer
 ---@field started integer
 ---@field disposed integer
@@ -27,6 +28,8 @@ local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
 ---@field tick fun(self: OakIntroStateTest.Controller, frames: number)
 ---@field confirmHandoffPresented fun(self: OakIntroStateTest.Controller): boolean
 ---@field press fun(self: OakIntroStateTest.Controller, action: string)
+---@field activateNameCell fun(self: OakIntroStateTest.Controller, row: integer, column: integer): boolean
+---@field activateNameControl fun(self: OakIntroStateTest.Controller, id: string): boolean
 ---@field inputText fun(self: OakIntroStateTest.Controller, text: string)
 ---@field deleteGlyph fun(self: OakIntroStateTest.Controller)
 ---@field result fun(self: OakIntroStateTest.Controller): table?
@@ -144,6 +147,10 @@ local function fakeController()
     end
     return true
   end
+  function controller:activateNameControl(id)
+    self.activated[#self.activated + 1] = { control = id }
+    return true
+  end
   function controller:result()
     return nil
   end
@@ -243,14 +250,23 @@ end
 function T.pointer_hits_the_same_drawn_virtual_key_geometry()
   local state, controller = stateHarness()
   local layout = state:view().layout
-  local key = layout.namingScreen.cells[1][3]
+  local surface = assert(layout.namingScreen.surface)
+  local key = layout.namingScreen.cells[2][1]
   local x, y = LayoutGeometry.logicalToHost(
     assert(state:view().pixelSurface).placement,
-    layout.namingScreen.placement.frame.x + key.x + 1,
-    layout.namingScreen.placement.frame.y + key.y + 1
+    surface.x + key.x + 1,
+    surface.y + key.y + 1
   )
   state:mousepressed(x, y, 1)
-  Assert.deepEqual(controller.text, { "é" })
+  Assert.deepEqual(controller.activated, { { row = 2, column = 1 } })
+  local control = layout.namingScreen.controls.upper
+  local cx, cy = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
+    surface.x + control.x + 1,
+    surface.y + control.y + 1
+  )
+  state:mousepressed(cx, cy, 1)
+  Assert.deepEqual(controller.activated, { { row = 2, column = 1 }, { control = "upper" } })
 end
 
 function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls()
@@ -264,14 +280,13 @@ function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls
   Assert.equal(nameView.layout.viewport.width, surface.logicalViewport.width)
   Assert.equal(nameView.layout.viewport.height, surface.logicalViewport.height)
 
-  local key = assert(nameView.layout.namingScreen.cells[1][3])
-  local keyX, keyY = LayoutGeometry.logicalToHost(
-    surface.placement,
-    nameView.layout.namingScreen.placement.frame.x + key.x + 1,
-    nameView.layout.namingScreen.placement.frame.y + key.y + 1
-  )
+  local naming = assert(nameView.layout.namingScreen)
+  local namingSurface = assert(naming.surface)
+  local key = assert(naming.cells[2][1])
+  local keyX, keyY =
+    LayoutGeometry.logicalToHost(surface.placement, namingSurface.x + key.x + 1, namingSurface.y + key.y + 1)
   state:mousepressed(keyX, keyY, 1)
-  Assert.deepEqual(controller.text, { "é" })
+  Assert.deepEqual(controller.activated, { { row = 2, column = 1 } })
 
   controller.phase = "gender_select"
   local genderView = state:view()
@@ -296,7 +311,9 @@ function T.wide_host_view_keeps_responsive_metrics_on_the_physical_grid()
   Assert.equal(surface.placement.scale, 4)
   Assert.equal(layout.safeFrame.x * surface.placement.scale, 12)
   Assert.equal(layout.stageContent.width * surface.placement.scale, 1120)
-  Assert.equal((layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width)) * surface.placement.scale, 8)
+  Assert.isNil(layout.subject, "Oak must be absent while the selector is shown")
+  Assert.isNil(layout.oakRegion, "Oak must be absent while the selector is shown")
+  Assert.notNil(layout.selectorRegion, "gender selection must publish a selector region")
 end
 
 function T.pointer_hits_the_same_button_geometry_used_by_presentation()
@@ -339,8 +356,7 @@ end
 
 function T.pointer_cannot_activate_gender_selection_during_host_composition()
   local state, controller = stateHarness()
-  controller.phase = "gender_composition_transition"
-  controller.compositionProgress = 0
+  controller.phase = "name_launch_wait"
   local layout = state:view().layout
   Assert.isNil(layout.genderButtons)
   state:mousepressed(320, 240, 1)
@@ -1278,8 +1294,8 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
     Assert.equal(key, liveKey)
     liveActive = false
     if liveKey == "profile.gender_question" then
-      semantic.phase = "gender_composition_transition"
-      semantic.compositionProgress = 0
+      semantic.phase = "gender_select"
+      semantic.compositionProgress = 1
     else
       choiceActive = true
     end
@@ -1353,7 +1369,7 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
   state:tick(1)
   Assert.equal(dialogue:status().state, "CLOSED")
   Assert.isFalse(dialogue:isModal())
-  Assert.equal(semantic.phase, "gender_composition_transition")
+  Assert.equal(semantic.phase, "gender_select")
   local held = frozenDraw()
   Assert.isTrue(held.controller ~= dialogue, "held snapshot must be presentation-only")
   Assert.equal(held.status.waiting, false, "held dialogue never carries the continuation cursor")

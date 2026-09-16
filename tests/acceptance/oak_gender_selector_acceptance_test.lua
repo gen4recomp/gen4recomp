@@ -37,7 +37,7 @@ local function candidate(versionId)
   })
 end
 
-local function compose(versionId)
+local function compose(versionId, width, height)
   local audio = FakeAudioOutput.new()
   return OakIntroComposition.compose({
     candidate = candidate(versionId),
@@ -52,8 +52,8 @@ local function compose(versionId)
     randomU32 = function()
       return 0x12345678
     end,
-    width = 640,
-    height = 480,
+    width = width or 640,
+    height = height or 480,
     textInputHost = { setTextInput = function() end },
   })
 end
@@ -102,64 +102,213 @@ local function advanceUntilPhase(state, phase)
   error("Oak did not reach phase " .. phase)
 end
 
-local function assertSelectorAssets(state, cache)
-  local layout = assert(state:view().layout)
-  local buttons = assert(layout.genderButtons)
-  for gender = 0, 1 do
-    local entry = assert(buttons[gender])
-    Assert.isNil(entry.button, "production selector must not retain synthetic ImageButton geometry")
-    local source = assert(state.manifest.genderSelector.buttons[gender == 0 and "male" or "female"])
-    for _, field in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
-      local path = assert(source[field], "generated selector contract is missing " .. field)
-      Assert.isTrue(cache:exists(path, "file"), "generated selector asset is missing " .. path)
-    end
-  end
-end
-
-local function exerciseGender(versionId, focus)
-  local state = compose(versionId)
-  local cache = CacheFs.forVersion(versionId)
-  local ok, err = xpcall(function()
-    advanceUntil(state, "profile.gender_question")
-    finishDialogue(state)
-    state:keypressed("return")
-    advanceUntilPhase(state, "gender_select")
-    local selected = state:view()
-    Assert.equal(selected.phase, "gender_select")
-    if focus == 1 then
-      state:keypressed("right")
-      selected = state:view()
-    end
-    Assert.equal(selected.genderFocus, focus)
-    assertSelectorAssets(state, cache)
-
-    state:keypressed("return")
-    finishDialogue(state)
-    Assert.equal(state:view().phase, "gender_confirm")
-  end, debug.traceback)
+local function withComposed(versionId, width, height, fn)
+  local state = compose(versionId, width, height)
+  local ok, err = xpcall(fn, debug.traceback, state)
   state:dispose()
   if not ok then
     error(err, 0)
   end
 end
 
-T.tests.production_oak_selector_uses_retail_assets_and_preserves_gender_confirmation = function()
-  local versionId = AcceptanceHarness.defaultVersion()
-  exerciseGender(versionId, 0)
-  exerciseGender(versionId, 1)
+local function inside(inner, outer)
+  return inner.x >= outer.x
+    and inner.y >= outer.y
+    and inner.x + inner.width <= outer.x + outer.width
+    and inner.y + inner.height <= outer.y + outer.height
 end
 
-local function advanceToNaming(versionId)
-  local state = compose(versionId)
+local function driveToGenderSelect(state)
   advanceUntil(state, "profile.gender_question")
   finishDialogue(state)
-  state:keypressed("return")
   advanceUntilPhase(state, "gender_select")
+end
+
+local function driveToNameEdit(state)
+  driveToGenderSelect(state)
   state:keypressed("return")
   finishDialogue(state)
   state:keypressed("return")
   finishDialogue(state)
   advanceUntilPhase(state, "name_edit")
+end
+
+local function clickGenderCard(state, gender)
+  local view = state:view()
+  local surface = assert(view.pixelSurface)
+  local entry = assert(assert(view.layout.genderButtons)[gender])
+  local x, y = LayoutGeometry.logicalToHost(
+    surface.placement,
+    entry.rect.x + entry.rect.width / 2,
+    entry.rect.y + entry.rect.height / 2
+  )
+  state:mousepressed(x, y, 1)
+end
+
+T.tests.production_oak_selector_enters_immediately_without_a_slide_and_hides_oak = function()
+  withComposed(AcceptanceHarness.defaultVersion(), 640, 480, function(state)
+    advanceUntil(state, "profile.gender_question")
+    finishDialogue(state)
+    local entered = state:view()
+    Assert.equal(entered.phase, "gender_select")
+    Assert.equal(entered.genderCompositionProgress, 1)
+    Assert.isTrue(entered.focusTimer <= 1, "selection focus timing must restart on entry")
+    Assert.isNil(entered.layout.subject, "Oak must be absent while the selector is shown")
+    Assert.isNil(entered.layout.oakRegion, "Oak must be absent while the selector is shown")
+    local selectorRegion = assert(entered.layout.selectorRegion)
+    local before = {}
+    for gender = 0, 1 do
+      local entry = assert(entered.layout.genderButtons[gender])
+      Assert.isTrue(inside(entry.rect, selectorRegion), "gender card must stay inside the selector region")
+      local button = assert(entry.button, "gender card must resolve shared button geometry")
+      Assert.deepEqual(button.rect, entry.rect)
+      Assert.equal(button.scale, entry.scale)
+      before[gender] = entry.rect
+    end
+    state:tick(30)
+    local settled = state:view()
+    Assert.equal(settled.phase, "gender_select")
+    for gender = 0, 1 do
+      Assert.deepEqual(settled.layout.genderButtons[gender].rect, before[gender])
+    end
+  end)
+end
+
+T.tests.production_oak_selector_treats_keyboard_gamepad_and_pointer_alike = function()
+  local versionId = AcceptanceHarness.defaultVersion()
+  withComposed(versionId, 640, 480, function(state)
+    driveToGenderSelect(state)
+    state:keypressed("right")
+    Assert.equal(state:view().genderFocus, 1)
+    state:keypressed("return")
+    Assert.equal(state:view().phase, "gender_confirm")
+    Assert.equal(state:view().messageKey, "profile.gender_confirm.female")
+    finishDialogue(state)
+    Assert.deepEqual(state:view().confirmationChoice, { kind = "gender", selected = 0 })
+  end)
+  withComposed(versionId, 640, 480, function(state)
+    driveToGenderSelect(state)
+    state:gamepadpressed(nil, "dpright")
+    Assert.equal(state:view().genderFocus, 1)
+    state:gamepadpressed(nil, "a")
+    Assert.equal(state:view().phase, "gender_confirm")
+    Assert.equal(state:view().messageKey, "profile.gender_confirm.female")
+    finishDialogue(state)
+    Assert.deepEqual(state:view().confirmationChoice, { kind = "gender", selected = 0 })
+  end)
+  withComposed(versionId, 640, 480, function(state)
+    driveToGenderSelect(state)
+    clickGenderCard(state, 1)
+    Assert.equal(state:view().phase, "gender_confirm")
+    Assert.equal(state:view().messageKey, "profile.gender_confirm.female")
+    Assert.equal(state:view().genderFocus, 1)
+  end)
+end
+
+T.tests.production_oak_selector_back_confirmation_and_name_flows_return_to_a_valid_selector = function()
+  withComposed(AcceptanceHarness.defaultVersion(), 640, 480, function(state)
+    driveToGenderSelect(state)
+    state:keypressed("right")
+    state:keypressed("return")
+    finishDialogue(state)
+    state:keypressed("escape")
+    Assert.equal(state:view().phase, "gender_question")
+    finishDialogue(state)
+    advanceUntilPhase(state, "gender_select")
+    Assert.equal(state:view().genderFocus, 1)
+    state:keypressed("return")
+    Assert.equal(state:view().phase, "gender_confirm")
+    Assert.equal(state:view().messageKey, "profile.gender_confirm.female")
+    finishDialogue(state)
+    state:keypressed("return")
+    Assert.equal(state:view().messageKey, "profile.name_prompt")
+    finishDialogue(state)
+    advanceUntilPhase(state, "name_edit")
+    Assert.notNil(state:view().namingScreen)
+    state:textinput("GOLD")
+    Assert.equal(state:view().name, "GOLD")
+    state:keypressed("return")
+    state:tick(26)
+    Assert.equal(state:view().phase, "name_confirm")
+    Assert.equal(state:view().name, "GOLD")
+    Assert.equal(state:view().messageKey, "profile.name_confirm.female")
+    finishDialogue(state)
+    state:keypressed("escape")
+    Assert.equal(state:view().phase, "gender_question")
+    finishDialogue(state)
+    advanceUntilPhase(state, "gender_select")
+    state:keypressed("left")
+    Assert.equal(state:view().genderFocus, 0)
+    state:keypressed("return")
+    Assert.equal(state:view().phase, "gender_confirm")
+    Assert.equal(state:view().messageKey, "profile.gender_confirm.male")
+  end)
+end
+
+T.tests.production_intro_cache_publishes_no_selector_masks_and_retains_naming_subjects = function()
+  local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+  local versionId = AcceptanceHarness.defaultVersion()
+  local cache = CacheFs.forVersion(versionId)
+  local manifest = assert(cache:loadLua(IntroAssetCache.manifestPath()))
+  Assert.isTrue(IntroAssetCache.validateManifest(manifest))
+  local selector = assert(manifest.genderSelector)
+  Assert.notNil(selector.defaultTone)
+  Assert.isNil(selector.unselectedRim, "selector rim fields must not survive the compact contract")
+  Assert.isNil(selector.selectedRim, "selector rim fields must not survive the compact contract")
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(selector.buttons[gender])
+    Assert.notNil(button.bounds)
+    Assert.isNil(button.baseImage, gender .. " card publishes no base image")
+    Assert.isNil(button.fillMaskImage, gender .. " card publishes no fill mask")
+    Assert.isNil(button.rimMaskImage, gender .. " card publishes no rim mask")
+  end
+  for _, id in ipairs({ "naming_male", "naming_female" }) do
+    local widget = assert(manifest.widgets[id], id .. " naming subject is retained")
+    local image = assert(widget.frames[1].image)
+    Assert.isTrue(cache:exists(image, "file"), id .. " naming subject payload is missing " .. image)
+  end
+end
+
+T.tests.production_oak_name_editor_opens_on_a_small_host_without_a_nested_fit_gate = function()
+  withComposed(AcceptanceHarness.defaultVersion(), 256, 192, function(state)
+    driveToNameEdit(state)
+    local view = state:view()
+    Assert.equal(view.phase, "name_edit")
+    local naming = assert(view.layout.namingScreen)
+    Assert.equal(naming.surface.width, 256)
+    Assert.equal(naming.surface.height, 192)
+    Assert.notNil(view.namingScreen)
+  end)
+end
+
+T.tests.production_oak_name_editor_keeps_canonical_integer_geometry_at_outer_scales = function()
+  local versionId = AcceptanceHarness.defaultVersion()
+  for _, host in ipairs({ { 640, 480 }, { 960, 720 } }) do
+    withComposed(versionId, host[1], host[2], function(state)
+      driveToNameEdit(state)
+      local naming = assert(state:view().layout.namingScreen)
+      Assert.equal(naming.surface.width, 256)
+      Assert.equal(naming.surface.height, 192)
+      local function assertIntegerRect(rect, label)
+        for _, field in ipairs({ "x", "y", "width", "height" }) do
+          Assert.equal(rect[field], math.floor(rect[field]), label .. "." .. field .. " must be an integer")
+        end
+      end
+      for row = 1, 6 do
+        for column = 1, 13 do
+          assertIntegerRect(naming.cells[row][column], "cells[" .. row .. "][" .. column .. "]")
+        end
+      end
+      for id, region in pairs(naming.controls) do
+        assertIntegerRect(region, "controls." .. id)
+      end
+    end)
+  end
+end
+
+local function advanceToNaming(versionId)
+  local state = compose(versionId)
+  driveToNameEdit(state)
   return state
 end
 
@@ -167,12 +316,9 @@ local function clickNamingCell(state, row, column)
   local view = state:view()
   local surface = assert(view.pixelSurface)
   local naming = assert(view.layout.namingScreen)
+  local origin = assert(naming.surface)
   local cell = assert(naming.cells[row][column])
-  local x, y = LayoutGeometry.logicalToHost(
-    surface.placement,
-    naming.placement.frame.x + cell.x + 1,
-    naming.placement.frame.y + cell.y + 1
-  )
+  local x, y = LayoutGeometry.logicalToHost(surface.placement, origin.x + cell.x + 1, origin.y + cell.y + 1)
   state:mousepressed(x, y, 1)
 end
 

@@ -67,20 +67,12 @@ local function manifestWithWidth(sourceWidth)
   data.widgets.confirmation_no.contentRect = { x = 8, y = 16, width = 104, height = 24 }
   data.genderSelector = {
     defaultTone = { r = 100, g = 101, b = 102 },
-    unselectedRim = { r = 222, g = 230, b = 230 },
-    selectedRim = { r = 255, g = 58, b = 58 },
     buttons = {
       male = {
         bounds = { x = 18, y = 25, width = 93, height = 148 },
-        baseImage = "assets/generated/intro/gender-selector-male-base.png",
-        fillMaskImage = "assets/generated/intro/gender-selector-male-fill-mask.png",
-        rimMaskImage = "assets/generated/intro/gender-selector-male-rim-mask.png",
       },
       female = {
         bounds = { x = 144, y = 25, width = 95, height = 148 },
-        baseImage = "assets/generated/intro/gender-selector-female-base.png",
-        fillMaskImage = "assets/generated/intro/gender-selector-female-fill-mask.png",
-        rimMaskImage = "assets/generated/intro/gender-selector-female-rim-mask.png",
       },
     },
   }
@@ -113,7 +105,7 @@ end
 
 local function compositionView(progress, phase)
   return {
-    phase = phase or "gender_composition_transition",
+    phase = phase or "gender_select",
     visual = "oak",
     primaryWidget = "oak",
     genderFocus = 0,
@@ -171,7 +163,15 @@ function T.tests.wide_host_metrics_stay_in_physical_pixel_policy_after_logical_c
   local scale = surface.placement.scale
   Assert.equal(layout.safeFrame.x, logicalHostMetric(12, scale))
   Assert.equal(layout.stageContent.width, logicalHostMetric(1120, scale))
-  Assert.equal(layout.selectorRegion.x - (layout.oakRegion.x + layout.oakRegion.width), logicalHostMetric(8, scale))
+  Assert.isNil(layout.subject, "Oak must be absent while the selector is shown")
+  Assert.isNil(layout.oakRegion, "Oak must be absent while the selector is shown")
+  local selectorRegion = assert(layout.selectorRegion)
+  local dialogueRect = assert(layout.dialogue).outerRect
+  Assert.isTrue(disjoint(selectorRegion, dialogueRect))
+  for gender = 0, 1 do
+    local card = assert(layout.genderButtons[gender])
+    Assert.isTrue(disjoint(card.rect, dialogueRect))
+  end
 end
 
 function T.tests.odd_logical_viewport_places_dialogue_on_its_pixel_grid()
@@ -293,9 +293,9 @@ function T.tests.gender_selection_maps_source_geometry_and_centers_portraits()
       oakBgScrollX = 0,
     }, {}, data)
     Assert.deepEqual(layout.viewport, { x = 0, y = 0, width = size[1], height = size[2] })
-    Assert.isTrue(inside(layout.oakRegion, layout.viewport))
+    Assert.isNil(layout.subject, "Oak must be absent while the selector is shown")
+    Assert.isNil(layout.oakRegion, "Oak must be absent while the selector is shown")
     Assert.isTrue(inside(layout.selectorRegion, layout.viewport))
-    Assert.isTrue(disjoint(layout.oakRegion, layout.selectorRegion))
     for gender = 0, 1 do
       local id = gender == 0 and "gender_male" or "gender_female"
       local item = assert(layout.genderButtons[gender])
@@ -440,7 +440,7 @@ function T.tests.profile_controls_emit_final_rectangles_without_generic_button_g
   Assert.notNil(profile.portraitRect, "selected profile presentation must retain portrait geometry")
   Assert.notNil(yes.rect, "YES presentation must expose its final rectangle")
   Assert.notNil(no.rect, "NO presentation must expose its final rectangle")
-  Assert.isNil(profile.button, "selected profile presentation must not expose generic button geometry")
+  Assert.notNil(profile.button, "selected profile presentation must expose shared image button geometry")
   Assert.notNil(yes.button, "YES presentation must expose shared text button geometry")
   Assert.notNil(no.button, "NO presentation must expose shared text button geometry")
   Assert.isTrue(inside(profile.rect, layout.selectorRegion))
@@ -448,6 +448,7 @@ function T.tests.profile_controls_emit_final_rectangles_without_generic_button_g
   Assert.isTrue(inside(no.rect, layout.selectorRegion))
   Assert.isTrue(OakIntroLayout.contains(yes.rect, yes.rect.x + yes.rect.width / 2, yes.rect.y + yes.rect.height / 2))
   Assert.isFalse(OakIntroLayout.contains(yes.rect, yes.rect.x + yes.rect.width, yes.rect.y + yes.rect.height / 2))
+  Assert.equal(profile.button.rect.x, profile.rect.x)
   Assert.equal(yes.button.rect.x, yes.rect.x)
 end
 
@@ -621,36 +622,6 @@ function T.tests.name_composition_rejects_invalid_progress_state()
   end
 end
 
-function T.tests.gender_composition_interpolates_oak_into_the_contained_region()
-  local data = manifest()
-  local start = compute(1920, 1080, compositionView(0), {}, data)
-  local middle = compute(1920, 1080, compositionView(0.5), {}, data)
-  local final = compute(1920, 1080, compositionView(1, "gender_select"), {}, data)
-
-  Assert.isTrue(inside(final.subject, final.oakRegion))
-  Assert.isTrue(disjoint(final.oakRegion, final.selectorRegion))
-  Assert.near(middle.subject.x, (start.subject.x + final.subject.x) / 2)
-  Assert.near(middle.subject.y, (start.subject.y + final.subject.y) / 2)
-  Assert.equal(middle.subject.scale, final.subject.scale)
-  Assert.near(middle.subject.width, data.widgets.oak.width * middle.subject.scale)
-  Assert.near(middle.subject.height, data.widgets.oak.height * middle.subject.scale)
-end
-
-function T.tests.gender_composition_uniformly_shrinks_oak_when_the_region_is_small()
-  local data = manifest()
-  data.widgets.oak.width = 400
-  data.widgets.oak.height = 500
-  local start = compute(390, 844, compositionView(0), {}, data)
-  local final = compute(390, 844, compositionView(1, "gender_select"), {}, data)
-
-  Assert.isTrue(final.subject.scale <= start.subject.scale)
-  Assert.equal(final.subject.scale, 1, "small logical regions keep the minimum integer scale")
-  Assert.near(final.subject.width, data.widgets.oak.width * final.subject.scale)
-  Assert.near(final.subject.height, data.widgets.oak.height * final.subject.scale)
-  Assert.near(final.subject.x + final.subject.width / 2, final.oakRegion.x + final.oakRegion.width / 2)
-  Assert.near(final.subject.y + final.subject.height / 2, final.oakRegion.y + final.oakRegion.height / 2)
-end
-
 -- Full source scroll must inverse-transform to exactly the pinned -52 source
 -- pixels under the uniform source-canvas scale, on every viewport shape --
 -- not merely ones where the safe frame happens to be 4:3.
@@ -742,7 +713,7 @@ function T.tests.name_confirmation_scale_is_independent_of_gender()
   end
 end
 
-function T.tests.gender_cards_expose_source_geometry_without_widget_state()
+function T.tests.gender_cards_expose_image_button_geometry()
   local data = manifest()
   local layout = compute(800, 600, {
     phase = "gender_select",
@@ -754,9 +725,9 @@ function T.tests.gender_cards_expose_source_geometry_without_widget_state()
   }, {}, data)
   for gender = 0, 1 do
     local entry = assert(layout.genderButtons[gender])
-    Assert.isNil(entry.button)
-    Assert.equal(entry.rect.width, data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds.width)
-    Assert.equal(entry.rect.height, data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds.height)
+    Assert.notNil(entry.button)
+    Assert.equal(entry.button.rect.x, entry.rect.x)
+    Assert.equal(entry.button.rect.width, entry.rect.width)
     Assert.notNil(entry.portraitRect)
     Assert.isTrue(entry.portraitRect.x >= entry.rect.x)
     Assert.isTrue(entry.portraitRect.y >= entry.rect.y)
@@ -768,7 +739,7 @@ function T.tests.name_forward_transition_interpolates_directly_between_gender_an
   for _, size in ipairs({ { 640, 480 }, { 390, 844 } }) do
     local w, h = size[1], size[2]
     local genderEndpoint = compute(w, h, {
-      phase = "gender_select",
+      phase = "name_composition_transition",
       visual = "oak",
       primaryWidget = "oak",
       genderFocus = 0,
@@ -819,7 +790,7 @@ function T.tests.rejected_name_return_interpolates_back_to_gender_endpoint()
       oakBgScrollX = 0,
     }, {}, data)
     local genderEndpoint = compute(w, h, {
-      phase = "gender_select",
+      phase = "name_composition_return",
       visual = "oak",
       primaryWidget = "oak",
       genderFocus = 0,
@@ -851,7 +822,7 @@ function T.tests.resize_recomputes_transition_endpoints_at_current_progress()
   for _, viewport in ipairs({ { 640, 480 }, { 390, 844 } }) do
     local w, h = viewport[1], viewport[2]
     local genderEndpoint = compute(w, h, {
-      phase = "gender_select",
+      phase = "name_composition_transition",
       visual = "oak",
       primaryWidget = "oak",
       genderFocus = 0,
@@ -926,14 +897,14 @@ function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_i
     Assert.notNil(selectLayout.dialogue, "gender_select must reserve dialogue at " .. w .. "x" .. h)
     local dialogueRect = assert(selectLayout.dialogue).outerRect
     Assert.isTrue(inside(dialogueRect, selectLayout.viewport))
-    Assert.isTrue(disjoint(assert(selectLayout.oakRegion), dialogueRect))
+    Assert.isNil(selectLayout.subject, "Oak must be absent while the selector is shown")
+    Assert.isNil(selectLayout.oakRegion, "Oak must be absent while the selector is shown")
     Assert.isTrue(disjoint(assert(selectLayout.selectorRegion), dialogueRect))
     for gender = 0, 1 do
       local card = assert(selectLayout.genderButtons[gender])
       Assert.isTrue(disjoint(card.rect, dialogueRect))
       Assert.isTrue(inside(card.rect, selectLayout.viewport))
     end
-    Assert.isTrue(inside(assert(selectLayout.subject), selectLayout.viewport))
 
     local confirmView = {
       phase = "gender_confirm",
@@ -962,21 +933,10 @@ function T.tests.gender_answer_phases_reserve_dialogue_and_keep_controls_above_i
     Assert.isTrue(inside(choices[1].rect, confirmLayout.viewport))
     Assert.deepEqual(confirmLayout.oakRegion, selectLayout.oakRegion)
     Assert.deepEqual(confirmLayout.selectorRegion, selectLayout.selectorRegion)
-
-    local transitionLayout = compute(w, h, {
-      phase = "gender_composition_transition",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 0.5,
-      oakBgScrollX = 0,
-    }, {}, data)
-    Assert.notNil(transitionLayout.dialogue, "gender composition must reserve dialogue")
-    Assert.isTrue(disjoint(assert(transitionLayout.oakRegion), assert(transitionLayout.dialogue).outerRect))
   end
 end
 
-function T.tests.gender_cards_preserve_source_card_geometry()
+function T.tests.gender_cards_keep_equal_top_and_bottom_padding_around_portraits()
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
     local layout = compute(size[1], size[2], {
@@ -989,9 +949,9 @@ function T.tests.gender_cards_preserve_source_card_geometry()
     }, {}, data)
     for gender = 0, 1 do
       local entry = assert(layout.genderButtons[gender])
-      local source = data.genderSelector.buttons[gender == 0 and "male" or "female"].bounds
-      Assert.equal(entry.rect.width / entry.scale, source.width)
-      Assert.equal(entry.rect.height / entry.scale, source.height)
+      local top = entry.portraitRect.y - entry.rect.y
+      local bottom = (entry.rect.y + entry.rect.height) - (entry.portraitRect.y + entry.portraitRect.height)
+      Assert.near(top, bottom, 1e-6)
     end
   end
 end
@@ -1023,8 +983,8 @@ function T.tests.name_launch_wait_keeps_dialogue_reserved_and_oak_region_stable(
       assert(selectLayout.dialogue).outerRect,
       "dialogue geometry must be stable into name launch wait"
     )
-    Assert.deepEqual(launchLayout.oakRegion, selectLayout.oakRegion)
-    Assert.deepEqual(launchLayout.selectorRegion, selectLayout.selectorRegion)
+    Assert.notNil(launchLayout.subject, "Oak returns for the name launch wait")
+    Assert.isTrue(inside(assert(launchLayout.subject), launchLayout.viewport))
   end
 end
 
@@ -1107,6 +1067,45 @@ function T.tests.pixel_authored_layout_scales_stay_integer_across_host_sizes_and
         )
       end
     end
+  end
+end
+
+function T.tests.gender_selection_hides_oak_and_keeps_both_cards_in_the_selector_region()
+  local data = manifest()
+  local layout = computeForHost(1710, 895, {
+    phase = "gender_select",
+    visual = "oak",
+    primaryWidget = "oak",
+    genderFocus = 0,
+    genderCompositionProgress = 1,
+    oakBgScrollX = 0,
+  }, {}, data)
+  Assert.isNil(layout.subject, "Oak must be absent while the selector is shown")
+  Assert.isNil(layout.oakRegion, "Oak must be absent while the selector is shown")
+  local selectorRegion = assert(layout.selectorRegion, "gender selection must publish a selector region")
+  for gender = 0, 1 do
+    local entry = assert(layout.genderButtons and layout.genderButtons[gender])
+    Assert.isTrue(inside(entry.rect, selectorRegion), "gender card must stay inside the selector region")
+    Assert.isTrue(inside(entry.portraitRect, entry.rect), "portrait must stay inside its card")
+  end
+  Assert.isTrue(disjoint(layout.genderButtons[0].rect, layout.genderButtons[1].rect))
+end
+
+function T.tests.gender_cards_resolve_the_shared_image_button_primitive()
+  local ok, ImageButton = pcall(require, "libs.ui.src.ImageButton")
+  Assert.isTrue(ok, "gender cards require the shared image button primitive: " .. tostring(ImageButton))
+  local layout = compute(800, 600, {
+    phase = "gender_select",
+    visual = "oak",
+    primaryWidget = "oak",
+    genderFocus = 0,
+    genderCompositionProgress = 1,
+    oakBgScrollX = 0,
+  }, {}, manifest())
+  for gender = 0, 1 do
+    local entry = assert(layout.genderButtons and layout.genderButtons[gender])
+    local button = assert(entry.button, "gender card must resolve shared button geometry")
+    Assert.deepEqual(button, ImageButton.resolve({ rect = entry.rect, scale = entry.scale }))
   end
 end
 

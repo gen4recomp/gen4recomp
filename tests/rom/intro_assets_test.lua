@@ -85,7 +85,7 @@ local function assertBallSource(bundle)
 end
 
 local function assertVariant(bundle, versionId, paletteMember)
-  Assert.equal(bundle.manifest.schemaVersion, 13)
+  Assert.equal(bundle.manifest.schemaVersion, 14)
   Assert.equal(bundle.manifest.variant, versionId)
   Assert.equal(sourceMember(bundle, "background:char"), 0)
   Assert.equal(sourceMember(bundle, "background:screen"), 3)
@@ -152,14 +152,13 @@ local function assertGenderSource(bundle)
     height = 148,
   })
   Assert.equal(sourceMember(bundle, "gender-selector:char"), 32)
-  Assert.equal(sourceMember(bundle, "gender-selector:screen"), 51)
   Assert.equal(sourceMember(bundle, "gender-selector:palette"), bundle.manifest.variant == "heartgold" and 30 or 31)
   for _, gender in ipairs({ "male", "female" }) do
     local button = assert(bundle.manifest.genderSelector.buttons[gender])
-    for _, field in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
-      Assert.notNil(button[field], gender .. " " .. field .. " is generated")
-      Assert.notNil(bundle.assets[button[field]], gender .. " " .. field .. " has payload")
-    end
+    Assert.notNil(button.bounds, gender .. " card keeps its source bounds")
+    Assert.isNil(button.baseImage, gender .. " card publishes no base image")
+    Assert.isNil(button.fillMaskImage, gender .. " card publishes no fill mask")
+    Assert.isNil(button.rimMaskImage, gender .. " card publishes no rim mask")
   end
   Assert.isNil(bundle.manifest.profileConfirmation, "screen-space confirmation records are not published")
   Assert.isNil(bundle.manifest.genderSelector.buttons.male.hitBounds, "touch hit bounds are not published")
@@ -285,6 +284,32 @@ function T.compiled_reveal_animations_carry_their_source_playback_policy(romFs)
     IntroAssetCache.validateManifest(withMarillPlayback(bundle.manifest, "forward_loop", #marill.frames))
   Assert.isFalse(outOfRange, "a loop start outside the frame table must be rejected")
   Assert.equal(assert(outOfRangeErr).code, "INTRO_MANIFEST_INVALID")
+end
+
+function T.compiled_selector_keeps_compact_bounds_and_naming_subjects(romFs, versionId)
+  local bundle = assert(compiler().compile(romFs))
+  Assert.equal(bundle.manifest.schemaVersion, 14)
+  local selector = assert(bundle.manifest.genderSelector)
+  Assert.notNil(selector.defaultTone, versionId .. " compact selector keeps its default tone")
+  Assert.isNil(selector.unselectedRim, versionId .. " compact selector has no unselected rim field")
+  Assert.isNil(selector.selectedRim, versionId .. " compact selector has no selected rim field")
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(selector.buttons[gender])
+    Assert.deepEqual(
+      button.bounds,
+      gender == "male" and { x = 18, y = 25, width = 93, height = 148 } or { x = 144, y = 25, width = 95, height = 148 },
+      versionId .. " " .. gender .. " card keeps its source bounds"
+    )
+    Assert.isNil(button.baseImage, versionId .. " " .. gender .. " card publishes no base image")
+    Assert.isNil(button.fillMaskImage, versionId .. " " .. gender .. " card publishes no fill mask")
+    Assert.isNil(button.rimMaskImage, versionId .. " " .. gender .. " card publishes no rim mask")
+  end
+  for _, expected in ipairs({ { id = "naming_male", sequence = 48 }, { id = "naming_female", sequence = 49 } }) do
+    local widget = assert(bundle.manifest.widgets[expected.id], versionId .. " " .. expected.id .. " is retained")
+    Assert.notNil(bundle.assets[widget.frames[1].image], versionId .. " " .. expected.id .. " keeps its payload")
+  end
+  Assert.deepEqual(bundle.manifest.widgets.gender_male.sourceCenter, { x = 64, y = 104 })
+  Assert.deepEqual(bundle.manifest.widgets.gender_female.sourceCenter, { x = 192, y = 104 })
 end
 
 return RomSuite.fromFacts(T)

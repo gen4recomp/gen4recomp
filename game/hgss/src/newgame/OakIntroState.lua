@@ -16,6 +16,8 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field view fun(self: OakIntroStateController): OakIntroControllerView
 ---@field result fun(self: OakIntroStateController): table<string, unknown>?
 ---@field press fun(self: OakIntroStateController, action: string): boolean
+---@field activateNameCell fun(self: OakIntroStateController, row: integer, column: integer): boolean
+---@field activateNameControl fun(self: OakIntroStateController, id: string): boolean
 ---@field deleteGlyph fun(self: OakIntroStateController): boolean
 ---@field inputText fun(self: OakIntroStateController, text: string): boolean
 ---@field messageCompleted fun(self: OakIntroStateController, key: string): boolean
@@ -50,9 +52,9 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field revealCanvas { scale: number, origin: { x: number, y: number } }?
 ---@field reveal OakIntroStateSubjectRectangle?
 ---@field stage OakIntroStateRectangle
----@field genderButtons table<string, unknown>?
+---@field genderButtons table<integer, OakGenderCardEntry>?
 ---@field confirmationButtons table<string, unknown>?
----@field selectedProfileButton table<string, unknown>?
+---@field selectedProfileButton OakGenderCardEntry?
 ---@field genderFocus integer
 ---@field subject OakIntroStateSubjectRectangle?
 ---@field safeFrame OakIntroStateRectangle
@@ -207,7 +209,7 @@ end
 ---@param view table<string, unknown>
 ---@return boolean
 local function retainsCompletedQuestion(view)
-  if view.phase == "gender_composition_transition" or view.phase == "gender_select" then
+  if view.phase == "gender_select" then
     return true
   end
   local choice = view.confirmationChoice
@@ -395,7 +397,7 @@ function OakIntroState:update(dt)
     end
     local phaseAfterDialogue = self.controller:view().phase
     local compositionStarted = phaseBeforeDialogue == "gender_question"
-      and (phaseAfterDialogue == "gender_composition_transition" or phaseAfterDialogue == "name_composition_return")
+      and phaseAfterDialogue == "name_composition_return"
     if not compositionStarted then
       self.controller:tick(1)
     end
@@ -419,7 +421,7 @@ function OakIntroState:tick(frames)
     end
     local phaseAfterDialogue = self.controller:view().phase
     local compositionStarted = phaseBeforeDialogue == "gender_question"
-      and (phaseAfterDialogue == "gender_composition_transition" or phaseAfterDialogue == "name_composition_return")
+      and phaseAfterDialogue == "name_composition_return"
     if not compositionStarted then
       self.controller:tick(1)
     end
@@ -569,11 +571,17 @@ function OakIntroState:_pointer(x, y)
     end
   elseif view.phase == "name_edit" then
     local naming = assert(layout.namingScreen, "Oak naming layout is missing")
+    local origin = assert(naming.surface, "Oak naming surface is missing")
+    local namingX, namingY = logicalX - origin.x, logicalY - origin.y
+    for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+      if NamingScreenLayout.contains(naming.controls[id], namingX, namingY) then
+        self.controller:activateNameControl(id)
+        self:_sync()
+        return
+      end
+    end
     for row = 1, 6 do
       for column = 1, 13 do
-        local placement = assert(naming.placement)
-        local namingX = (logicalX - placement.frame.x) / placement.scale
-        local namingY = (logicalY - placement.frame.y) / placement.scale
         if NamingScreenLayout.contains(naming.cells[row][column], namingX, namingY) then
           self.controller:activateNameCell(row, column)
           self:_sync()

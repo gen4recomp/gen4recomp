@@ -182,6 +182,10 @@ function NamingScreenController:_cell()
   return self._grids[self._page][self._cursor.row][self._cursor.column]
 end
 
+-- Retail cursor motion from pinned `NamingScreen_MoveKeyboardCursor`: one
+-- wrapped step per press, skipping blank cells and repeated columns of the
+-- same home-row control, with a remembered horizontal escape when moving
+-- vertically out of a skipped home-row region.
 function NamingScreenController:_move(direction)
   local previousRow = self._cursor.row
   local row, column = self._cursor.row, self._cursor.column
@@ -192,14 +196,15 @@ function NamingScreenController:_move(direction)
   column = (column - 1 + dc) % COLUMNS + 1
   for _ = 1, ROWS * COLUMNS do
     local cell = self._grids[self._page][row][column]
-    if cell.kind ~= "blank" and not (cell.kind == "control" and sameCell(cell, start)) then
+    local repeated = cell.kind == "control" and sameCell(cell, start)
+    if cell.kind ~= "blank" and not repeated then
       self._cursor = { row = row, column = column }
       if dc ~= 0 then
         self._deltaColumn = dc
       end
       return true
     end
-    if previousRow == 1 and cell.kind == "blank" and dr ~= 0 then
+    if previousRow == 1 and cell.kind == "blank" and dr ~= 0 and self._deltaColumn ~= 0 then
       column = (column - 1 + self._deltaColumn) % COLUMNS + 1
     else
       row = (row - 1 + dr) % ROWS + 1

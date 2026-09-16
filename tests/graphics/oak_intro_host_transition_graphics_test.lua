@@ -90,10 +90,9 @@ local function advanceUntilMessage(state, messageKey)
   error("Oak dialogue did not open: " .. messageKey)
 end
 
-local function beginGenderComposition(state)
+local function beginGenderSelection(state)
   advanceUntilMessage(state, "profile.gender_question")
   finishDialogue(state)
-  state:keypressed("return")
   return state:view()
 end
 
@@ -107,94 +106,48 @@ local function inside(inner, outer)
     and inner.y + inner.height <= outer.y + outer.height
 end
 
----@param first OakIntroStateRectangle
----@param second OakIntroStateRectangle
----@return boolean
-local function disjoint(first, second)
-  return first.x + first.width <= second.x
-    or second.x + second.width <= first.x
-    or first.y + first.height <= second.y
-    or second.y + second.height <= first.y
-end
-
-local function assertOakGeometry(view, oak)
-  Assert.near(view.layout.subject.width, oak.width * view.layout.subject.scale)
-  Assert.near(view.layout.subject.height, oak.height * view.layout.subject.scale)
-end
-
-T.wide_host_moves_oak_into_the_profile_region_before_selection = function(scope)
+T.wide_host_enters_selection_immediately_with_oak_hidden = function(scope)
   local state = compose(scope, AcceptanceHarness.defaultVersion(), 1920, 1080)
-  local first = beginGenderComposition(state)
-  Assert.equal(first.genderCompositionProgress, 0)
-  Assert.isNil(first.layout.genderButtons)
-
-  local start = assert(first.layout.subject)
-  local previous = start
-  local samples = {}
-  local final
-  for frame = 0, 26 do
-    if frame > 0 then
-      state:tick(1)
-    end
-    local view = state:view()
-    local progress = frame / 26
-    Assert.near(view.genderCompositionProgress, progress)
-    if frame < 26 then
-      assertOakGeometry(view, state.manifest.widgets.oak)
-      local subject = assert(view.layout.subject)
-      samples[frame] = subject
-      Assert.isNil(view.layout.genderButtons)
-      Assert.isTrue(view.phase ~= "gender_select")
-      Assert.isTrue(subject.x <= assert(previous).x)
-      previous = subject
-    else
-      final = view
-    end
+  local entered = beginGenderSelection(state)
+  Assert.equal(entered.phase, "gender_select")
+  Assert.equal(entered.genderCompositionProgress, 1)
+  Assert.isNil(entered.layout.subject, "Oak must be absent while the selector is shown")
+  Assert.isNil(entered.layout.oakRegion, "Oak must be absent while the selector is shown")
+  local selectorRegion = assert(entered.layout.selectorRegion)
+  local before = {}
+  for gender = 0, 1 do
+    local entry = assert(entered.layout.genderButtons[gender])
+    Assert.isTrue(inside(entry.rect, selectorRegion), "gender card must stay inside the selector region")
+    before[gender] = entry.rect
   end
 
-  final = assert(final)
-  Assert.equal(final.phase, "gender_select")
-  Assert.equal(final.genderCompositionProgress, 1)
-  Assert.notNil(final.layout.genderButtons)
-  if final.layout.subject then
-    Assert.isTrue(final.layout.oakRegion.x < final.layout.selectorRegion.x)
-    Assert.isTrue(inside(final.layout.subject, final.layout.oakRegion))
-    Assert.isTrue(disjoint(final.layout.oakRegion, final.layout.selectorRegion))
-    local finalSubject = assert(final.layout.subject)
-    Assert.isTrue(finalSubject.x < start.x)
-    for frame = 0, 25 do
-      local progress = frame / 26
-      local subject = assert(samples[frame])
-      Assert.near(subject.x, start.x + (finalSubject.x - start.x) * progress)
-      Assert.near(subject.y, start.y + (finalSubject.y - start.y) * progress)
-      Assert.near(subject.scale, start.scale + (finalSubject.scale - start.scale) * progress)
-    end
-  else
-    Assert.isNil(final.layout.oakRegion)
-    Assert.isTrue(inside(final.layout.genderButtons[0].rect, final.layout.selectorRegion))
-    Assert.isTrue(inside(final.layout.genderButtons[1].rect, final.layout.selectorRegion))
+  for _ = 1, 26 do
+    state:tick(1)
+    local view = state:view()
+    Assert.equal(view.phase, "gender_select")
+    Assert.equal(view.genderCompositionProgress, 1)
+    Assert.isNil(view.layout.subject)
+  end
+  local settled = state:view()
+  for gender = 0, 1 do
+    Assert.deepEqual(settled.layout.genderButtons[gender].rect, before[gender], "cards must not drift without a slide")
   end
 end
 
-T.resized_tall_host_keeps_the_completed_profile_composition = function(scope)
+T.resized_tall_host_keeps_selection_geometry_stable = function(scope)
   local state = compose(scope, AcceptanceHarness.defaultVersion(), 390, 844)
-  local first = beginGenderComposition(state)
-  Assert.equal(first.genderCompositionProgress, 0)
-  state:tick(13)
-  local middle = state:view()
-  Assert.near(middle.genderCompositionProgress, 0.5)
+  local entered = beginGenderSelection(state)
+  Assert.equal(entered.phase, "gender_select")
+  Assert.isNil(entered.layout.subject)
 
   state:resize(430, 900)
   local resized = state:view()
-  Assert.near(resized.genderCompositionProgress, 0.5)
-  Assert.equal(resized.layout.oakRegion.y, resized.layout.safeFrame.y)
-
-  state:tick(13)
-  local completed = state:view()
-  Assert.equal(completed.genderCompositionProgress, 1)
-  Assert.equal(completed.phase, "gender_select")
-  Assert.notNil(completed.layout.genderButtons)
-  Assert.isTrue(inside(completed.layout.subject, completed.layout.oakRegion))
+  Assert.equal(resized.phase, "gender_select")
+  local selectorRegion = assert(resized.layout.selectorRegion)
+  for gender = 0, 1 do
+    local entry = assert(resized.layout.genderButtons[gender])
+    Assert.isTrue(inside(entry.rect, selectorRegion), "resized cards must stay inside the selector region")
+  end
 
   state:keypressed("return")
   finishDialogue(state)
@@ -203,10 +156,6 @@ T.resized_tall_host_keeps_the_completed_profile_composition = function(scope)
   local question = state:view()
   Assert.equal(question.phase, "gender_question")
   Assert.equal(question.genderCompositionProgress, 1)
-  Assert.isTrue(inside(question.layout.subject, question.layout.oakRegion))
-  Assert.near(question.layout.subject.x, completed.layout.subject.x)
-  Assert.near(question.layout.subject.y, completed.layout.subject.y)
-  Assert.near(question.layout.subject.scale, completed.layout.subject.scale)
 
   finishDialogue(state)
   local reentered = state:view()

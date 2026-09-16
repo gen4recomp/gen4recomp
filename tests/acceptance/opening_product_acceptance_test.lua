@@ -167,6 +167,13 @@ local function assertOneToOneHostMetrics(view, width, height)
   Assert.equal(surface.placement.scale, 1)
   local minimum = math.min(width, height)
   Assert.equal(layout.safeFrame.x, math.min(12, math.floor(minimum * 0.035 + 0.5)))
+  if layout.oakRegion == nil then
+    local selectorRegion = assert(layout.selectorRegion)
+    local genderButtons = assert(layout.genderButtons)
+    Assert.isTrue(inside(genderButtons[0].rect, selectorRegion))
+    Assert.isTrue(inside(genderButtons[1].rect, selectorRegion))
+    return
+  end
   local oakRegion = assert(layout.oakRegion)
   local selectorRegion = assert(layout.selectorRegion)
   Assert.equal(selectorRegion.y - (oakRegion.y + oakRegion.height), math.min(8, math.floor(minimum * 0.02 + 0.5)))
@@ -180,32 +187,35 @@ local function assertProfileLayout(view)
   Assert.equal(layout.viewport.height, logicalViewport.height)
   assertReservedDialogueIsClear(layout)
   if view.phase == "gender_select" then
-    if layout.subject then
-      Assert.isTrue(inside(layout.subject, assert(layout.oakRegion)), "Oak must occupy the composed scene region")
-      Assert.isTrue(layout.selectorRegion ~= nil, "gender selection must publish a selector region")
-      if layout.selectorRegion.width >= 256 then
-        for gender = 0, 1 do
-          local button = assert(layout.genderButtons and layout.genderButtons[gender])
-          Assert.isTrue(
-            inside(button.rect, layout.selectorRegion),
-            "gender button must stay inside the selector region"
-          )
-          Assert.isNil(button.button, "production selector must not retain synthetic button geometry")
-        end
-      end
-    else
-      Assert.isNil(layout.oakRegion)
-      Assert.isTrue(inside(layout.genderButtons[0].rect, assert(layout.selectorRegion)))
-      Assert.isTrue(inside(layout.genderButtons[1].rect, assert(layout.selectorRegion)))
+    Assert.isNil(layout.subject, "Oak must be absent while the selector is shown")
+    Assert.isNil(layout.oakRegion, "Oak must be absent while the selector is shown")
+    local selectorRegion = assert(layout.selectorRegion, "gender selection must publish a selector region")
+    for gender = 0, 1 do
+      local button = assert(layout.genderButtons and layout.genderButtons[gender])
+      Assert.isTrue(inside(button.rect, selectorRegion), "gender button must stay inside the selector region")
+      Assert.notNil(button.button, "gender card must resolve shared button geometry")
     end
   elseif view.phase == "name_edit" then
     local naming = assert(layout.namingScreen, "name editing must publish the Naming Screen")
-    Assert.isTrue(inside(naming.placement.frame, layout.viewport), "Naming Screen must stay inside the viewport")
-    Assert.isTrue(inside(naming.nameSlots, naming.surface), "name slots must stay inside the canonical surface")
+    Assert.isNil(naming.placement, "the Oak-hosted Naming Screen must not carry a child placement")
+    Assert.isNil(naming.scale, "the Oak-hosted Naming Screen must not carry a child scale")
+    Assert.deepEqual(
+      { width = naming.surface.width, height = naming.surface.height },
+      { width = 256, height = 192 },
+      "the Naming Screen surface must be canonical logical geometry"
+    )
+    Assert.isTrue(inside(naming.surface, layout.viewport), "Naming Screen must stay inside the viewport")
+    local function insideSurface(region)
+      return region.x >= 0
+        and region.y >= 0
+        and region.x + region.width <= naming.surface.width
+        and region.y + region.height <= naming.surface.height
+    end
+    Assert.isTrue(insideSurface(naming.nameSlots), "name slots must stay inside the canonical surface")
     for row = 1, 6 do
       for column = 1, 13 do
         Assert.isTrue(
-          inside(naming.cells[row][column], naming.surface),
+          insideSurface(naming.cells[row][column]),
           "Naming Screen cell must stay inside the canonical surface"
         )
       end
@@ -486,7 +496,6 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
       "oak_live_alongside",
       "oak_tell_about_yourself",
       "gender_question",
-      "gender_composition_transition",
       "gender_select",
       "gender_confirm",
       "name_prompt",

@@ -35,10 +35,6 @@ local IntroAssets = {
     char = 32,
     screen = 51,
     palettes = { heartgold = 30, soulsilver = 31 },
-    rimColors = {
-      unselected = { r = 27, g = 28, b = 28 },
-      selected = { r = 31, g = 7, b = 7 },
-    },
   },
   genderSelector = {
     paletteMembers = { heartgold = 30, soulsilver = 31 },

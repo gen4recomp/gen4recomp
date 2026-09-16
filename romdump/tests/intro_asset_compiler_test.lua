@@ -282,7 +282,7 @@ function T.gender_selectors_compile_their_configured_cell_animations()
   Assert.equal(roles["gender-female:animation"], 56)
 end
 
-function T.gender_selector_cards_publish_nonempty_source_role_artifacts()
+function T.gender_selector_cards_publish_compact_metadata_without_source_pixels()
   local Compiler = compiler()
   local source, restore = syntheticCompilerSource()
   local ok, result = xpcall(function()
@@ -295,22 +295,15 @@ function T.gender_selector_cards_publish_nonempty_source_role_artifacts()
 
   for _, gender in ipairs({ "male", "female" }) do
     local button = assert(result.manifest.genderSelector.buttons[gender])
-    for _, field in ipairs({ "baseImage", "fillMaskImage", "rimMaskImage" }) do
-      local width, height, rgba = PngReader.rgba(assert(result.assets[button[field]]))
-      Assert.equal(width, button.bounds.width, gender .. " " .. field .. " width")
-      Assert.equal(height, button.bounds.height, gender .. " " .. field .. " height")
-      local visible = false
-      for offset = 4, #rgba, 4 do
-        if string.byte(rgba, offset) > 0 then
-          visible = true
-          break
-        end
-      end
-      Assert.isTrue(visible, gender .. " " .. field .. " has source pixels")
-    end
+    Assert.notNil(button.bounds, gender .. " card keeps its source bounds")
   end
-  Assert.equal(result.manifest.genderSelector.unselectedRim.r, 222)
-  Assert.equal(result.manifest.genderSelector.selectedRim.r, 255)
+  Assert.notNil(result.manifest.genderSelector.defaultTone, "the compact selector keeps its default tone")
+  for path in pairs(result.assets) do
+    Assert.isNil(
+      path:find("gender-selector", 1, true),
+      "the compact selector emits no source-pixel artifacts: " .. path
+    )
+  end
 end
 
 function T.cell_animation_frames_preserve_one_source_origin()
@@ -524,20 +517,10 @@ local function fixtureBundle(cache, marker)
     end
     assets[image] = "png"
   end
-  for _, path in ipairs({
-    cache.assetDir() .. "/gender-selector-male-base.png",
-    cache.assetDir() .. "/gender-selector-male-fill-mask.png",
-    cache.assetDir() .. "/gender-selector-male-rim-mask.png",
-    cache.assetDir() .. "/gender-selector-female-base.png",
-    cache.assetDir() .. "/gender-selector-female-fill-mask.png",
-    cache.assetDir() .. "/gender-selector-female-rim-mask.png",
-  }) do
-    assets[path] = "png"
-  end
   return {
     marker = marker,
     manifest = {
-      schemaVersion = 13,
+      schemaVersion = 14,
       variant = "heartgold",
       sourceReference = { width = 256, height = 192 },
       background = {
@@ -549,20 +532,12 @@ local function fixtureBundle(cache, marker)
       },
       genderSelector = {
         defaultTone = { r = 1, g = 2, b = 3 },
-        unselectedRim = { r = 222, g = 230, b = 230 },
-        selectedRim = { r = 255, g = 58, b = 58 },
         buttons = {
           male = {
             bounds = { x = 18, y = 25, width = 93, height = 148 },
-            baseImage = cache.assetDir() .. "/gender-selector-male-base.png",
-            fillMaskImage = cache.assetDir() .. "/gender-selector-male-fill-mask.png",
-            rimMaskImage = cache.assetDir() .. "/gender-selector-male-rim-mask.png",
           },
           female = {
             bounds = { x = 144, y = 25, width = 95, height = 148 },
-            baseImage = cache.assetDir() .. "/gender-selector-female-base.png",
-            fillMaskImage = cache.assetDir() .. "/gender-selector-female-fill-mask.png",
-            rimMaskImage = cache.assetDir() .. "/gender-selector-female-rim-mask.png",
           },
         },
       },
@@ -616,7 +591,7 @@ function T.v9_bundle_publishes_without_profile_control_files()
   local CacheWriter = writer()
   local backend = FakeCache.new()
   local live = CacheFs.forVersion("heartgold", backend)
-  local bundle = fixtureBundle(cache, "intro-cache-v13:fixture:ready")
+  local bundle = fixtureBundle(cache, "intro-cache-v14:fixture:ready")
 
   Assert.notNil(bundle.manifest.genderSelector)
   Assert.isNil(bundle.manifest.profileConfirmation)
@@ -625,9 +600,9 @@ function T.v9_bundle_publishes_without_profile_control_files()
   Assert.isTrue(CacheWriter.write(live, bundle))
   Assert.isTrue(cache.isReady(live, bundle.marker), "retained files are sufficient for readiness")
 
-  local missing = fixtureBundle(cache, "intro-cache-v13:fixture:missing")
-  missing.assets[missing.manifest.genderSelector.buttons.male.baseImage] = nil
-  Assert.isFalse(pcall(CacheWriter.write, live, missing), "missing selector role files reject publication")
+  local missing = fixtureBundle(cache, "intro-cache-v14:fixture:missing")
+  missing.assets[missing.manifest.widgets.ball_open.image] = nil
+  Assert.isFalse(pcall(CacheWriter.write, live, missing), "missing widget files reject publication")
 end
 
 function T.predecessor_manifest_is_stale_and_does_not_publish()
@@ -635,7 +610,7 @@ function T.predecessor_manifest_is_stale_and_does_not_publish()
   local CacheWriter = writer()
   local backend = FakeCache.new()
   local live = CacheFs.forVersion("heartgold", backend)
-  local bundle = fixtureBundle(cache, "intro-cache-v13:fixture:predecessor")
+  local bundle = fixtureBundle(cache, "intro-cache-v14:fixture:predecessor")
   bundle.manifest.schemaVersion = 10
   bundle.marker = "intro-cache-v10:fixture:predecessor"
   local valid, err = cache.validateManifest(bundle.manifest)
@@ -691,7 +666,7 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   live:write(cache.markerPath(), stale.marker)
   Assert.isFalse(cache.isReady(live, stale.marker), "schema-8 intro output is stale")
 
-  local old = fixtureBundle(cache, "intro-cache-v13:old:dependencies")
+  local old = fixtureBundle(cache, "intro-cache-v14:old:dependencies")
   CacheWriter.write(live, old)
   local oldMarker = live:read(cache.markerPath())
   local oldManifest = live:read(cache.manifestPath())
@@ -709,13 +684,44 @@ function T.failed_replacement_preserves_the_previous_ready_class()
   }, { __index = backend })
   live = CacheFs.forVersion("heartgold", failingBackend)
 
-  local replacement = fixtureBundle(cache, "intro-cache-v13:new:dependencies")
+  local replacement = fixtureBundle(cache, "intro-cache-v14:new:dependencies")
   local published, publishErr = pcall(CacheWriter.write, live, replacement)
   Assert.isFalse(published, "a replacement failure must reach the caller")
   Assert.isTrue(tostring(publishErr):find("publication", 1, true) ~= nil)
   Assert.equal(live:read(cache.markerPath()), oldMarker)
   Assert.equal(live:read(cache.manifestPath()), oldManifest)
   Assert.isTrue(cache.isReady(live, oldMarker), "the previous class remains ready")
+end
+
+function T.compiled_selector_publishes_compact_bounds_without_mask_artifacts()
+  local Compiler = compiler()
+  local source, restore = syntheticCompilerSource()
+  local ok, result = xpcall(function()
+    return Compiler.compile(source)
+  end, debug.traceback)
+  restore()
+  if not ok then
+    error(result, 0)
+  end
+  Assert.equal(result.manifest.schemaVersion, 14)
+  local selector = assert(result.manifest.genderSelector)
+  Assert.notNil(selector.defaultTone, "the compact selector keeps its default tone")
+  Assert.isNil(selector.unselectedRim, "the compact selector has no unselected rim field")
+  Assert.isNil(selector.selectedRim, "the compact selector has no selected rim field")
+  for _, gender in ipairs({ "male", "female" }) do
+    local button = assert(selector.buttons[gender])
+    Assert.notNil(button.bounds, gender .. " card keeps its source bounds")
+    Assert.isNil(button.baseImage, gender .. " card publishes no base image")
+    Assert.isNil(button.fillMaskImage, gender .. " card publishes no fill mask")
+    Assert.isNil(button.rimMaskImage, gender .. " card publishes no rim mask")
+  end
+  for _, id in ipairs({ "naming_male", "naming_female" }) do
+    local widget = assert(result.manifest.widgets[id], id .. " naming subject is retained")
+    Assert.notNil(result.assets[widget.frames[1].image], id .. " naming subject keeps its payload")
+  end
+  for path in pairs(result.assets) do
+    Assert.isNil(path:find("gender-selector-", 1, true), "no selector mask payload remains: " .. path)
+  end
 end
 
 return { tests = T }

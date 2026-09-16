@@ -1,6 +1,15 @@
 -- Pure profile selector, confirmation, and name-editor geometry for Oak intro.
 
+local ImageButton = require("libs.ui.src.ImageButton")
 local TextButton = require("libs.ui.src.TextButton")
+
+---@class OakGenderCardEntry
+---@field key string
+---@field rect table<string, number>
+---@field scale number
+---@field portraitId string
+---@field portraitRect table<string, number>
+---@field button table<string, unknown>
 
 local OakProfileLayout = {}
 
@@ -30,6 +39,9 @@ local function textButtonEntries(origin, scale, gap)
   }
 end
 
+---@param selectorCanvas { scale: number, origin: { x: number, y: number } }
+---@param manifest table<string, unknown>
+---@return table<integer, OakGenderCardEntry>
 function OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
   local entries = {}
   for index, sourceGender in ipairs({ "male", "female" }) do
@@ -49,14 +61,19 @@ function OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
       height = widget.height * selectorCanvas.scale,
       scale = selectorCanvas.scale,
     }
-    assert(portrait.x >= cardRect.x and portrait.x + portrait.width <= cardRect.x + cardRect.width)
-    assert(portrait.y >= cardRect.y and portrait.y + portrait.height <= cardRect.y + cardRect.height)
+    -- The source card is taller above the portrait than below it; keep the
+    -- correct bottom edge fixed and lift the top so both paddings match.
+    local bottomPad = (cardRect.y + cardRect.height) - (portrait.y + portrait.height)
+    assert(bottomPad >= 0, "Oak gender portrait must fit inside its card")
+    local cardTop = portrait.y - bottomPad
+    cardRect = rect(cardRect.x, cardTop, cardRect.width, (cardRect.y + cardRect.height) - cardTop)
     entries[index - 1] = {
       key = sourceGender,
       rect = cardRect,
       scale = selectorCanvas.scale,
       portraitId = "gender_" .. sourceGender,
       portraitRect = portrait,
+      button = ImageButton.resolve({ rect = cardRect, scale = selectorCanvas.scale }),
     }
   end
   return entries

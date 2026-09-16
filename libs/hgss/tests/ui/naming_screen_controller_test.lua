@@ -107,9 +107,24 @@ function T.tests.player_and_pokemon_subject_contracts_are_strict()
   end)
 end
 
+function T.tests.vertical_motion_out_of_a_skipped_home_region_uses_the_remembered_horizontal_delta()
+  local controller = player()
+  Assert.isTrue(controller:activateControl("symbols"))
+  controller:press("right")
+  Assert.isTrue(controller:activateAt(1, 10))
+  Assert.equal(controller:snapshot().cursor.controlId, "back")
+  controller:press("down")
+  Assert.deepEqual(
+    { controller:snapshot().cursor.row, controller:snapshot().cursor.column },
+    { 2, 12 },
+    "a vertical step from the home row skips blank glyphs sideways instead of dropping through them"
+  )
+end
+
 function T.tests.layout_keeps_controls_inside_canonical_surface_at_integer_scale()
-  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 768, height = 576 }, 3)
-  Assert.equal(layout.placement.scale, 3)
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 768, height = 576 })
+  Assert.deepEqual(layout.surface, { x = 256, y = 192, width = 256, height = 192 })
+  Assert.isNil(layout.placement, "the naming child must not own a placement")
   for id, region in pairs(layout.controls) do
     Assert.isTrue(
       region.x >= 0 and region.y >= 0 and region.x + region.width <= 256 and region.y + region.height <= 192,

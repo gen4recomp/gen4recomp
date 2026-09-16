@@ -779,7 +779,7 @@ function T.chooser_text_color_records_are_strict()
 end
 
 function T.unrelated_derived_families_keep_their_identities()
-  Assert.equal(DerivedAssetContract.intro.cacheFormat, "intro-cache-v13")
+  Assert.equal(DerivedAssetContract.intro.cacheFormat, "intro-cache-v14")
   Assert.equal(DerivedAssetContract.mons.portraitManifestSchema, "g4-mon-portrait-manifest-v1")
 end
 
