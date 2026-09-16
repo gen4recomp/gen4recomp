@@ -258,6 +258,7 @@ local function expectedBootstrapSet(audioBankIds)
     "field-font:global",
     "intro:global",
     "new-game-init:global",
+    "items:global",
     "mon-catalog:global",
     "mon-layout:global",
     "message-bank:219",

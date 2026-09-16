@@ -159,6 +159,7 @@ function T.bootstrap_membership_is_the_fixed_set_plus_audio_closures()
     "new-game-init:global",
     "mon-catalog:global",
     "mon-layout:global",
+    "items:global",
     "message-bank:219",
     "audio-summary:global",
     "audio-bank:7",
@@ -166,7 +167,14 @@ function T.bootstrap_membership_is_the_fixed_set_plus_audio_closures()
   }) do
     Assert.isTrue(set[name] == true, "bootstrap carries " .. name)
   end
-  Assert.equal(#jobs, 16, "bootstrap carries nothing else")
+  Assert.equal(#jobs, 17, "bootstrap carries nothing else")
+  local itemsCount = 0
+  for _, job in ipairs(jobs) do
+    if job.kind == "items" and job.key == "global" then
+      itemsCount = itemsCount + 1
+    end
+  end
+  Assert.equal(itemsCount, 1, "bootstrap carries exactly one canonical items job")
   for _, job in ipairs(jobs) do
     local kind = job.kind
     Assert.isTrue(
@@ -181,9 +189,8 @@ function T.bootstrap_membership_is_the_fixed_set_plus_audio_closures()
         and kind ~= "mon-summary"
         and kind ~= "actors"
         and kind ~= "starter-choice"
-        and kind ~= "items"
         and kind ~= "bag",
-      "bootstrap never pulls geometry, records, scripts, pages, actors, or inventory: " .. kind
+      "bootstrap never pulls geometry, records, scripts, pages, actors, or bag: " .. kind
     )
   end
 end
@@ -196,11 +203,19 @@ function T.field_core_contains_bootstrap_without_geometry_or_portraits()
     iconPageIds = { 3 },
     mapDataIds = { 7 },
   }
-  local core = jobSet(ArtifactJobs.fieldCoreJobs(lists))
+  local coreJobs = ArtifactJobs.fieldCoreJobs(lists)
+  local core = jobSet(coreJobs)
   local bootstrap = ArtifactJobs.bootstrapJobs(lists.audioBankIds)
   for _, job in ipairs(bootstrap) do
     Assert.isTrue(core[job.kind .. ":" .. job.key] == true, "core keeps bootstrap work")
   end
+  local coreItemsCount = 0
+  for _, job in ipairs(coreJobs) do
+    if job.kind == "items" and job.key == "global" then
+      coreItemsCount = coreItemsCount + 1
+    end
+  end
+  Assert.equal(coreItemsCount, 1, "field core carries exactly one canonical items job")
   for _, name in ipairs({
     "actors:global",
     "starter-choice:global",

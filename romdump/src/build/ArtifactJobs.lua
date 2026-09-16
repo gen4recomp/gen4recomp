@@ -111,6 +111,7 @@ local BOOTSTRAP_COARSE = {
   "new-game-init",
   "mon-catalog",
   "mon-layout",
+  "items",
   "message-bank:219",
   "audio-summary",
 }
@@ -156,7 +157,6 @@ function ArtifactJobs.fieldCoreJobs(lists)
   local mapDataIds = assert(lists.mapDataIds, "field-core needs the supported field records")
   jobs[#jobs + 1] = { kind = "actors", key = "global" }
   jobs[#jobs + 1] = { kind = "starter-choice", key = "global" }
-  jobs[#jobs + 1] = { kind = "items", key = "global" }
   jobs[#jobs + 1] = { kind = "bag", key = "global" }
   jobs[#jobs + 1] = { kind = "message-summary", key = "global" }
   jobs[#jobs + 1] = { kind = "script-summary", key = "global" }
