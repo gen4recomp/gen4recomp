@@ -1,12 +1,15 @@
 -- One generation session for bootstrap, field core and exhaustive warmup.
 -- Construction performs no source work: it validates its identity, recovers
 -- publication, selects the epoch and starts from empty retained state plus
--- the two source-static membership lists. One worker-compiled inventory,
--- adopted once published, supplies every source-derived membership; mon page
--- membership follows once the layout publishes. Until then requests needing
--- those families stay pending, fixed roots and statically known families
--- answer immediately, and each update advances at most a small bounded
--- amount of retained dependency work with required demand first.
+-- the two source-static membership lists. Public requests only register
+-- canonical interest and report retained answers; only update advances
+-- planning, validation, adoption, enrollment and submission under one
+-- shared 32-node/2ms pump, required demand first. One worker-compiled
+-- inventory, adopted once published, supplies every source-derived
+-- membership; mon page membership follows once the layout publishes. Until
+-- then requests needing those families stay pending, failed prerequisites
+-- settle their blocked demand with their causal identity, and status and
+-- outcomes observe retained facts without cache IO or validation.
 
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
@@ -15,6 +18,19 @@ local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local SourcePlan = require("romdump.src.build.SourcePlan")
+
+---@class InteractiveCacheBuild.DependencyCursor
+---@field deps { kind: string, key: string }[]
+---@field complete boolean
+---@field index integer
+
+---@class InteractiveCacheBuild.EnrollCursor
+---@field pending { kind: string, key: string, urgency: string }[]
+---@field index integer
+
+---@class InteractiveCacheBuild.SweepCursor
+---@field jobs { kind: string, key: string }[]
+---@field index integer
 
 ---@class InteractiveCacheBuild.Interest
 ---@field kind string
@@ -25,9 +41,12 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field submitted boolean
 ---@field ready boolean
 ---@field validated boolean
+---@field validationPending boolean pool reports ready, family validation queued under the pump budget
 ---@field failure string|nil
----@field causeJobKey string|nil blocking leaf identity when a dependency failed
+---@field failureClass string|nil source-exclusion, dependency, job, validation or planning on failed rows
+---@field causeJobKey string|nil deepest failed leaf identity when a dependency failed
 ---@field poolState string|nil last observed pool state
+---@field cursor InteractiveCacheBuild.DependencyCursor|nil private resume position for bounded dependency traversal
 
 ---@class InteractiveCacheBuild
 ---@field versionId string
@@ -56,12 +75,14 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field dirty table<string, boolean> canonical identities needing planning
 ---@field edges table<string, table<string, boolean>> dependency to parent identities
 ---@field parked table<string, boolean> sweep identities paused by the planning budget or admission
----@field depMemo table<string, { kind: string, key: string }[]> retained dependency edges
+---@field depMemo table<string, { kind: string, key: string }[]> retained final dependency edges
 ---@field pendingFillDone boolean
 ---@field loadedFillDone boolean
+---@field enrollCursor InteractiveCacheBuild.EnrollCursor|nil private incremental membership enrollment after adoption
+---@field sweepCursor InteractiveCacheBuild.SweepCursor|nil private incremental sweep enumeration after adoption
+---@field planningPending boolean runnable local planning remains from the last pump
 ---@field followerMemo string|nil retained follower diagnostic
 ---@field followerChecked boolean
----@field layoutMarkerSeen string|nil last layout marker probed for page adoption
 local InteractiveCacheBuild = {}
 InteractiveCacheBuild.__index = InteractiveCacheBuild
 
@@ -69,6 +90,7 @@ InteractiveCacheBuild.__index = InteractiveCacheBuild
 ---@field used integer
 ---@field start number|nil slice starts at the first planning node
 ---@field exhausted boolean
+---@field worked boolean an admitted planning node ran during this pump
 
 local MILESTONE_FILES = {
   bootstrap = "data/generated/bootstrap.lua",
@@ -119,15 +141,6 @@ end
 ---@return boolean
 local function needsPageMembership(kind)
   return kind == "mon-icon-page" or kind == "mon-portrait-page" or kind == "mon-summary"
-end
-
--- Families whose planning call would raise or misfire without its data.
--- Script members and audio banks plan safely against an empty inventory
--- (their calls simply report not-ready), so only these skip until adoption.
----@param kind string
----@return boolean
-local function planningWaitsForSource(kind)
-  return kind == "map" or kind == "field-cell" or kind == "script-summary" or kind == "audio-summary"
 end
 
 ---@param options table<string, unknown>
@@ -189,9 +202,11 @@ function InteractiveCacheBuild.new(options)
     depMemo = {},
     pendingFillDone = false,
     loadedFillDone = false,
+    enrollCursor = nil,
+    sweepCursor = nil,
+    planningPending = false,
     followerMemo = nil,
     followerChecked = false,
-    layoutMarkerSeen = nil,
   }, InteractiveCacheBuild)
 end
 
@@ -205,16 +220,25 @@ function InteractiveCacheBuild:_plans()
   if self.adopted ~= nil then
     return self.adopted
   end
-  return {
+  -- Unknown dynamic membership is absent, never an empty final list.
+  -- Source-static selections are always known; source-derived selections
+  -- appear once the worker inventory is adopted and page selections once
+  -- the layout is adopted. Known-empty lists stay present empty arrays.
+  local plans = {
     messageBankIds = self.messageBankIds,
-    audioBankIds = self.audioBankIds,
-    scriptMemberIds = self.scriptMemberIds,
-    iconPageIds = self.iconPageIds,
-    portraitPageIds = self.portraitPageIds,
     mapDataIds = self.mapDataIds,
-    mapIds = self.mapIds,
-    mapCellKeys = self.mapCellKeys,
   }
+  if self.sourceLoaded then
+    plans.audioBankIds = self.audioBankIds
+    plans.scriptMemberIds = self.scriptMemberIds
+    plans.mapIds = self.mapIds
+    plans.mapCellKeys = self.mapCellKeys
+  end
+  if self.pagesKnown then
+    plans.iconPageIds = self.iconPageIds
+    plans.portraitPageIds = self.portraitPageIds
+  end
+  return plans
 end
 
 ---@param budget InteractiveCacheBuild.Budget|nil
@@ -237,6 +261,7 @@ function InteractiveCacheBuild:_spendNode(budget)
     return false
   end
   budget.used = budget.used + 1
+  budget.worked = true
   return true
 end
 
@@ -245,24 +270,24 @@ end
 ---@param plans ArtifactJobs.Plans
 ---@param budget InteractiveCacheBuild.Budget|nil
 ---@return { kind: string, key: string }[]|nil
----@return string|nil status
+---@return string|nil status settled, paused or the planning failure
+---@return boolean|nil complete final only when settled
 function InteractiveCacheBuild:_dependencies(kind, key, plans, budget)
-  -- Retained edges cost no planning work to re-read: charging the per-pass
-  -- budget for a memo hit lets a large pending family shadow every entry
-  -- sorted after it, starving ready parents indefinitely. Only uncached
-  -- planning calls consume the slice.
+  -- Retained final edges cost no planning work to re-read: charging the
+  -- per-pass budget for a memo hit lets a large pending family shadow every
+  -- entry sorted after it, starving ready parents indefinitely. Only
+  -- uncached planning calls consume the slice.
   local cached = self.depMemo[kind .. ":" .. key]
   if cached ~= nil then
-    return cached, "settled"
+    return cached, "settled", true
   end
   if not self:_spendNode(budget) then
-    return nil, "paused"
+    return nil, "paused", nil
   end
-  local plansOk, depsOrCause = pcall(ArtifactJobs.dependencies, kind, key, plans)
+  local plansOk, depsOrCause, complete = pcall(ArtifactJobs.dependencies, kind, key, plans)
   if not plansOk then
-    return nil, tostring(depsOrCause)
+    return nil, tostring(depsOrCause), nil
   end
-  self.depMemo[kind .. ":" .. key] = depsOrCause
   for _, dep in ipairs(depsOrCause) do
     local parents = self.edges[dep.kind .. ":" .. dep.key]
     if parents == nil then
@@ -271,18 +296,25 @@ function InteractiveCacheBuild:_dependencies(kind, key, plans, budget)
     end
     parents[kind .. ":" .. key] = true
   end
-  return depsOrCause, "settled"
+  -- Only a final list is memoized: incomplete edges still wake their
+  -- parents through the reverse map above, but the list is recomputed
+  -- once adoption can complete it.
+  if complete then
+    self.depMemo[kind .. ":" .. key] = depsOrCause
+  end
+  return depsOrCause, "settled", complete ~= false
 end
 
 ---@param kind string
 ---@param key string
 ---@param budget InteractiveCacheBuild.Budget|nil
----@return boolean
+---@return boolean|nil valid nil when the pump budget denies the call
+---@return table<string, unknown>|nil validated source plan for immediate adoption
 function InteractiveCacheBuild:_validate(kind, key, budget)
   if not self:_spendNode(budget) then
-    return false
+    return nil, nil
   end
-  return ArtifactJobs.validate(self.cacheFs, self.generationId, kind, key, self:_plans())
+  return ArtifactJobs.validate(self.cacheFs, self.generationId, kind, key, self:_plans(), self:_identity())
 end
 
 ---@param kind string
@@ -327,9 +359,12 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       submitted = false,
       ready = false,
       validated = false,
+      validationPending = false,
       failure = nil,
+      failureClass = nil,
       causeJobKey = nil,
       poolState = nil,
+      cursor = nil,
     }
     self.byKey[jobKey] = entry
     self.interest[#self.interest + 1] = entry
@@ -430,28 +465,60 @@ end
 ---@param entry InteractiveCacheBuild.Interest
 ---@param budget InteractiveCacheBuild.Budget|nil
 ---@param ledger { bound: integer, outstanding: integer }|nil per-pass sweep admission account
----@return string outcome
+---@return string outcome terminal, waiting, parked or paused
 function InteractiveCacheBuild:_submit(entry, budget, ledger)
   if entry.ready or entry.failure ~= nil then
-    return "settled"
+    return "terminal"
   end
-  if not entry.validated then
-    entry.validated = true
-    if self:_validate(entry.kind, entry.key, budget) then
-      entry.ready = true
-      return "settled"
-    end
-    if budget ~= nil and budget.exhausted then
-      entry.validated = false
+  -- A pool-reported ready mark never settles here: the scheduled family
+  -- validator runs under the shared pump budget and only its success marks
+  -- readiness. A rejection after execution is a validation failure.
+  if entry.validationPending then
+    local valid, plan = self:_validate(entry.kind, entry.key, budget)
+    if valid == nil then
       return "paused"
     end
+    entry.validationPending = false
+    entry.validated = true
+    if valid then
+      entry.ready = true
+      if plan ~= nil then
+        self:_adoptValidated(plan)
+      end
+      self:_dirtyParents(entry.jobKey)
+      return "terminal"
+    end
+    entry.failure = self.generationId
+      .. " "
+      .. entry.kind
+      .. " "
+      .. entry.key
+      .. ": published output fails its family validator"
+    entry.failureClass = "validation"
+    entry.causeJobKey = nil
+    self:_dirtyParents(entry.jobKey)
+    return "terminal"
   end
-  local payload = self:_payload(entry.kind, entry.key)
-  if payload == nil then
-    return "parked"
+  if not entry.validated then
+    local valid, plan = self:_validate(entry.kind, entry.key, budget)
+    if valid == nil then
+      return "paused"
+    end
+    entry.validated = true
+    if valid then
+      entry.ready = true
+      if plan ~= nil then
+        self:_adoptValidated(plan)
+      end
+      self:_dirtyParents(entry.jobKey)
+      return "terminal"
+    end
   end
-  local state = self.pool:status(entry.jobKey)
-  if state == "unknown" and not entry.submitted then
+  if not entry.submitted then
+    local payload = self:_payload(entry.kind, entry.key)
+    if payload == nil then
+      return "parked"
+    end
     if entry.priority == 100 then
       local bound, outstanding = self:_sweepBound(), self:_outstandingSweep()
       if ledger ~= nil then
@@ -460,6 +527,9 @@ function InteractiveCacheBuild:_submit(entry, budget, ledger)
       if outstanding >= bound then
         return "parked"
       end
+    end
+    if not self:_spendNode(budget) then
+      return "paused"
     end
     local requestState, requestDetails = self.pool:request({
       versionId = self.versionId,
@@ -480,30 +550,28 @@ function InteractiveCacheBuild:_submit(entry, budget, ledger)
     if requestState == "failed" then
       local message = requestDetails and requestDetails.error or "compiler job failed"
       entry.failure = entry.jobKey .. ": " .. tostring(message)
+      entry.failureClass = "job"
+      entry.causeJobKey = nil
+      self:_dirtyParents(entry.jobKey)
+      return "terminal"
     end
-    return "settled"
+    return "waiting"
   end
-  entry.submitted = true
+  local state, details = self.pool:status(entry.jobKey)
+  entry.poolState = state
   if state == "ready" then
-    if self:_validate(entry.kind, entry.key, budget) then
-      entry.ready = true
-    else
-      if budget ~= nil and budget.exhausted then
-        return "paused"
-      end
-      entry.failure = self.generationId
-        .. " "
-        .. entry.kind
-        .. " "
-        .. entry.key
-        .. ": published output fails its family validator"
-    end
+    entry.validationPending = true
+    self.dirty[entry.jobKey] = true
+    return "waiting"
   elseif state == "failed" then
-    local _, details = self.pool:status(entry.jobKey)
     local message = details and details.error or "compiler job failed"
     entry.failure = entry.jobKey .. ": " .. tostring(message)
+    entry.failureClass = "job"
+    entry.causeJobKey = nil
+    self:_dirtyParents(entry.jobKey)
+    return "terminal"
   end
-  return "settled"
+  return "waiting"
 end
 
 ---@return integer
@@ -548,16 +616,10 @@ end
 ---@param trail table<string, boolean>|nil canonical identities on the current descent
 ---@param budget InteractiveCacheBuild.Budget|nil
 ---@param ledger { bound: integer, outstanding: integer }|nil per-pass sweep admission account
----@return string outcome
+---@return string outcome terminal, waiting, parked or paused
 function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
   if entry.ready or entry.failure ~= nil then
-    return "settled"
-  end
-  if planningWaitsForSource(entry.kind) and not self.sourceLoaded then
-    return "deferred"
-  end
-  if needsPageMembership(entry.kind) and not self.pagesKnown then
-    return "deferred"
+    return "terminal"
   end
   trail = trail or {}
   if trail[entry.jobKey] then
@@ -569,35 +631,52 @@ function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
         .. entry.key
         .. ": dependency cycle involves "
         .. entry.jobKey
+      entry.failureClass = "planning"
+      entry.causeJobKey = nil
+      self:_dirtyParents(entry.jobKey)
     end
-    return "settled"
+    return "terminal"
   end
   trail[entry.jobKey] = true
-  local deps, depsStatus = self:_dependencies(entry.kind, entry.key, self:_plans(), budget)
-  if deps == nil then
-    trail[entry.jobKey] = nil
-    if depsStatus == "paused" then
-      return "paused"
+  local cursor = entry.cursor
+  if cursor == nil then
+    local deps, depsStatus, complete = self:_dependencies(entry.kind, entry.key, self:_plans(), budget)
+    if deps == nil then
+      trail[entry.jobKey] = nil
+      if depsStatus == "paused" then
+        return "paused"
+      end
+      if entry.failure == nil then
+        entry.failure = self.generationId
+          .. " "
+          .. entry.kind
+          .. " "
+          .. entry.key
+          .. ": dependency plan failed: "
+          .. tostring(depsStatus)
+        entry.failureClass = "planning"
+        entry.causeJobKey = nil
+        self:_dirtyParents(entry.jobKey)
+      end
+      return "terminal"
     end
-    if entry.failure == nil then
-      entry.failure = self.generationId
-        .. " "
-        .. entry.kind
-        .. " "
-        .. entry.key
-        .. ": dependency plan failed: "
-        .. tostring(depsStatus)
-    end
-    return "settled"
+    assert(complete ~= nil, "settled dependencies carry their completeness")
+    cursor = { deps = deps, complete = complete, index = 1 }
+    entry.cursor = cursor
   end
-  for _, dep in ipairs(deps) do
+  while cursor.index <= #cursor.deps do
+    local dep = cursor.deps[cursor.index]
     local depEntry = self:_register(dep.kind, dep.key, entry.urgency)
+    if not depEntry.ready and depEntry.failure == nil then
+      self.dirty[depEntry.jobKey] = true
+    end
     local child = self:_ensure(depEntry, trail, budget, ledger)
     if child == "paused" then
       trail[entry.jobKey] = nil
       return "paused"
     end
     if depEntry.failure ~= nil and entry.failure == nil then
+      entry.cursor = nil
       entry.failure = self.generationId
         .. " "
         .. entry.kind
@@ -607,15 +686,71 @@ function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
         .. depEntry.jobKey
         .. " failed: "
         .. depEntry.failure
-      entry.causeJobKey = depEntry.jobKey
+      entry.failureClass = "dependency"
+      entry.causeJobKey = depEntry.causeJobKey or depEntry.jobKey
+      self:_dirtyParents(entry.jobKey)
       trail[entry.jobKey] = nil
-      return "settled"
+      return "terminal"
+    end
+    cursor.index = cursor.index + 1
+  end
+  -- A resumed traversal restarts past settled children, so re-scan for
+  -- failures recorded while this entry waited: the deepest causal leaf
+  -- settles the blocked parent with a dependency disposition.
+  for _, dep in ipairs(cursor.deps) do
+    local depEntry = self.byKey[dep.kind .. ":" .. dep.key]
+    if depEntry ~= nil and depEntry.failure ~= nil and entry.failure == nil then
+      entry.cursor = nil
+      entry.failure = self.generationId
+        .. " "
+        .. entry.kind
+        .. " "
+        .. entry.key
+        .. ": prerequisite "
+        .. depEntry.jobKey
+        .. " failed: "
+        .. depEntry.failure
+      entry.failureClass = "dependency"
+      entry.causeJobKey = depEntry.causeJobKey or depEntry.jobKey
+      self:_dirtyParents(entry.jobKey)
+      trail[entry.jobKey] = nil
+      return "terminal"
     end
   end
+  -- Warm reuse never occupies a worker: an entry whose family validator
+  -- already accepts its published output settles ready without dispatch,
+  -- even while planning prerequisites are still incomplete. Validation
+  -- failure simply continues to the completeness and dispatch gates below.
+  if not entry.validated and not entry.validationPending then
+    local valid, plan = self:_validate(entry.kind, entry.key, budget)
+    if valid == nil then
+      trail[entry.jobKey] = nil
+      return "paused"
+    end
+    entry.validated = true
+    if valid then
+      entry.cursor = nil
+      entry.ready = true
+      if plan ~= nil then
+        self:_adoptValidated(plan)
+      end
+      self:_dirtyParents(entry.jobKey)
+      trail[entry.jobKey] = nil
+      return "terminal"
+    end
+  end
+  -- An incomplete list never dispatches its parent: the entry waits until
+  -- adoption completes the membership and the reverse edges wake it.
+  if not cursor.complete then
+    trail[entry.jobKey] = nil
+    return "waiting"
+  end
+  entry.cursor = nil
   -- A parent never occupies a worker while its children are still pending:
   -- summary and map workers read published children, so dispatch waits until
-  -- every dependency is ready. The next update re-drives pending parents.
-  for _, dep in ipairs(deps) do
+  -- every dependency is ready. Settled children wake the parent through the
+  -- reverse edges; the next update re-drives pending parents.
+  for _, dep in ipairs(cursor.deps) do
     local depEntry = self.byKey[dep.kind .. ":" .. dep.key]
     if depEntry == nil then
       if entry.failure == nil then
@@ -629,44 +764,28 @@ function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
           .. ":"
           .. dep.key
           .. " is missing"
+        entry.failureClass = "planning"
         entry.causeJobKey = dep.kind .. ":" .. dep.key
+        self:_dirtyParents(entry.jobKey)
       end
       trail[entry.jobKey] = nil
-      return "settled"
+      return "terminal"
     end
     if not depEntry.ready then
       trail[entry.jobKey] = nil
-      return "settled"
+      return "waiting"
     end
   end
   trail[entry.jobKey] = nil
-  local outcome = self:_submit(entry, budget, ledger)
-  if outcome == "paused" then
-    return "paused"
-  end
-  if outcome == "parked" then
-    return "parked"
-  end
-  return "settled"
+  return self:_submit(entry, budget, ledger)
 end
 
 ---@param entry InteractiveCacheBuild.Interest
 ---@return boolean
 ---@return string|nil
 function InteractiveCacheBuild:_answer(entry)
-  if entry.failure ~= nil then
-    return false, entry.failure
-  end
-  if entry.ready then
-    return true, nil
-  end
-  if planningWaitsForSource(entry.kind) and not self.sourceLoaded then
-    return false, nil
-  end
-  if needsPageMembership(entry.kind) and not self.pagesKnown then
-    return false, nil
-  end
-  self:_ensure(entry)
+  -- Retained observation only: registration reports pending until the pump
+  -- establishes ready or failure. No cache IO, planning or validation here.
   if entry.failure ~= nil then
     return false, entry.failure
   end
@@ -676,74 +795,68 @@ function InteractiveCacheBuild:_answer(entry)
   return false, nil
 end
 
--- Schedules the worker inventory the first time source membership is
--- needed and submits it immediately so workers start while the caller
--- keeps its pending answer. Once the inventory is adopted there is nothing
--- left to schedule.
----@param urgency string
-function InteractiveCacheBuild:_needInventory(urgency)
-  if self.sourceLoaded then
-    return
-  end
-  local entry = self:_register("source-plan", "global", urgency)
-  if not entry.submitted and entry.failure == nil and not entry.ready then
-    self:_answer(entry)
-  end
-end
-
--- Schedules the mon layout the first time page membership is needed. Page
--- jobs wait on the layout, so demand for pages must pull it even when the
--- caller never named it. Registration answers idempotently.
----@param urgency string
-function InteractiveCacheBuild:_needLayout(urgency)
-  self:_answer(self:_register("mon-layout", "global", urgency))
-end
-
 ---@param kind string
----@return boolean answerable now
-function InteractiveCacheBuild:_answerable(kind)
-  if needsSourceInventory(kind) and not self.sourceLoaded then
-    return false
+---@param urgency string
+function InteractiveCacheBuild:_pullPrerequisites(kind, urgency)
+  -- Registration only: demand for an unadopted family pulls its planning
+  -- prerequisite into the pump so worker inventory and layout work starts
+  -- while the caller keeps its pending answer. Idempotent, no IO.
+  if kind ~= "source-plan" and not self.sourceLoaded then
+    self:_request("source-plan", "global", urgency)
   end
   if needsPageMembership(kind) and not self.pagesKnown then
-    return false
+    self:_request("mon-layout", "global", urgency)
   end
-  return true
 end
 
 ---@param kind string
 ---@param key string
 ---@param urgency string
 ---@return InteractiveCacheBuild.Interest entry
----@return boolean deferred
 function InteractiveCacheBuild:_request(kind, key, urgency)
+  -- Registration only: record canonical interest for the pump. Planning
+  -- prerequisites are expressed as dependency edges and pulled by the pump
+  -- itself, so no inventory, layout, validation or worker work happens here.
   local entry = self:_register(kind, key, urgency)
-  if not self:_answerable(kind) then
+  if not entry.ready and entry.failure == nil then
     self.dirty[entry.jobKey] = true
-    self:_needInventory(urgency)
-    return entry, true
   end
-  return entry, false
+  return entry
 end
 
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
 function InteractiveCacheBuild:_milestoneAnswer(members)
-  local failure = nil
+  -- Terminal failure takes precedence over pending siblings: every member
+  -- is inspected for a failure before a pending aggregate is claimed, and
+  -- readiness additionally requires complete enrollment and membership.
+  -- Broken build work outranks absent membership in the aggregate; the
+  -- per-member answer still carries its own exact exclusion.
+  local failure, exclusion = nil, nil
   for _, member in ipairs(members) do
     local entry = self.byKey[member.kind .. ":" .. member.key]
-    local ready = entry ~= nil and entry.ready
-    local failed = entry ~= nil and entry.failure
-    if not ready and failed == nil then
-      return false, nil
-    end
-    if failed ~= nil and failure == nil then
-      failure = failed
+    if entry ~= nil and entry.failure ~= nil then
+      if entry.failureClass == "source-exclusion" then
+        if exclusion == nil then
+          exclusion = entry.failure
+        end
+      elseif failure == nil then
+        failure = entry.failure
+      end
     end
   end
   if failure ~= nil then
     return false, failure
+  end
+  if exclusion ~= nil then
+    return false, exclusion
+  end
+  for _, member in ipairs(members) do
+    local entry = self.byKey[member.kind .. ":" .. member.key]
+    if entry == nil or not entry.ready then
+      return false, nil
+    end
   end
   return true, nil
 end
@@ -810,6 +923,8 @@ function InteractiveCacheBuild:_publishMilestone(name)
       local entry = self.byKey["actors:global"]
       if entry ~= nil then
         entry.failure = self.generationId .. " actors global: " .. tostring(followersErr)
+        entry.failureClass = "validation"
+        entry.causeJobKey = nil
       end
       return
     end
@@ -837,6 +952,19 @@ function InteractiveCacheBuild:_publishMilestone(name)
   self.recorded[name] = true
 end
 
+---@param entry InteractiveCacheBuild.Interest
+---@param message string
+---@return boolean
+---@return string
+function InteractiveCacheBuild:_exclude(entry, message)
+  -- A syntactically valid but unsupported member keeps its retained
+  -- interest and settles at once with a source-exclusion disposition.
+  entry.failure = message
+  entry.failureClass = "source-exclusion"
+  entry.causeJobKey = nil
+  return false, message
+end
+
 ---@param name string
 ---@param urgency string
 ---@return boolean
@@ -845,37 +973,24 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   assert(not self.retired, "generation session is retired")
   assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
   ArtifactJobs.priorityFor(urgency)
-  self:_ensureInventoryLoaded()
   local current = self.milestones[name]
   if current == nil or ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(current) then
     self.milestones[name] = urgency
   end
+  -- Record the milestone urgency and enroll currently known members for
+  -- the pump. Newly adopted membership enrolls through the same bounded
+  -- path in update; nothing is validated or submitted here.
   local members = self:_milestoneMembers(name)
   for _, member in ipairs(members) do
-    local entry, deferred = self:_request(member.kind, member.key, self.milestones[name])
-    if deferred then
-      if needsPageMembership(member.kind) then
-        self:_needLayout(self.milestones[name])
-      end
-    else
-      self:_answer(entry)
-    end
+    self:_request(member.kind, member.key, self.milestones[name])
+  end
+  if not self.sourceLoaded then
+    self:_request("source-plan", "global", urgency)
+  end
+  if not self.pagesKnown then
+    self:_request("mon-layout", "global", urgency)
   end
   local ready, failure = self:_milestoneAnswer(members)
-  if not ready and failure == nil and not self.sourceLoaded then
-    self:_needInventory(urgency)
-  end
-  if ready and name == "field-core" then
-    local followersErr = self:_followerError()
-    if followersErr ~= nil then
-      local actorsEntry = self.byKey["actors:global"]
-      local diagnostic = self.generationId .. " actors global: " .. tostring(followersErr)
-      if actorsEntry ~= nil then
-        actorsEntry.failure = diagnostic
-      end
-      return false, diagnostic
-    end
-  end
   if ready then
     self:_publishMilestone(name)
   end
@@ -901,18 +1016,20 @@ function InteractiveCacheBuild:requestField(mapId, urgency)
   assert(not self.retired, "generation session is retired")
   assert(isInteger(mapId) and mapId >= 0, "map ID must be a non-negative integer")
   ArtifactJobs.priorityFor(urgency)
-  self:_ensureInventoryLoaded()
+  self:_pullPrerequisites("map", urgency)
   if not self.sourceLoaded then
-    self:_request("map", tostring(mapId), urgency)
-    return false, nil
+    return self:_answer(self:_request("map", tostring(mapId), urgency))
   end
   if not self:_knownMap(mapId) then
-    return false, self.generationId .. " map " .. tostring(mapId) .. ": source has no supported map"
+    return self:_exclude(
+      self:_request("map", tostring(mapId), urgency),
+      self.generationId .. " map " .. tostring(mapId) .. ": source has no supported map"
+    )
   end
   for _, cellKey in ipairs(self.mapCellKeys[mapId]) do
-    self:_answer(self:_register("field-cell", cellKey, urgency))
+    self:_request("field-cell", cellKey, urgency)
   end
-  return self:_answer(self:_register("map", tostring(mapId), urgency))
+  return self:_answer(self:_request("map", tostring(mapId), urgency))
 end
 
 ---@param descriptor table<string, unknown>
@@ -923,14 +1040,13 @@ function InteractiveCacheBuild:requestCell(descriptor, urgency)
   assert(not self.retired, "generation session is retired")
   assert(type(descriptor) == "table", "field cell descriptor is required")
   ArtifactJobs.priorityFor(urgency)
-  self:_ensureInventoryLoaded()
+  self:_pullPrerequisites("field-cell", urgency)
   if not self.sourceLoaded then
     if not (isInteger(descriptor.matrixMemberId) and isInteger(descriptor.index)) then
       error("field cell descriptor needs its canonical matrix and index", 0)
     end
     local key = descriptor.matrixMemberId .. "-" .. descriptor.index
-    self:_request("field-cell", key, urgency)
-    return false, nil
+    return self:_answer(self:_request("field-cell", key, urgency))
   end
   assert(
     isInteger(descriptor.matrixMemberId) and isInteger(descriptor.index),
@@ -939,9 +1055,12 @@ function InteractiveCacheBuild:requestCell(descriptor, urgency)
   local key = descriptor.matrixMemberId .. "-" .. descriptor.index
   local authoritative, failure = self:_cellDescriptor("field-cell", key)
   if authoritative == nil then
-    return false, self.generationId .. " field-cell " .. key .. ": " .. tostring(failure)
+    return self:_exclude(
+      self:_request("field-cell", key, urgency),
+      self.generationId .. " field-cell " .. key .. ": " .. tostring(failure)
+    )
   end
-  return self:_answer(self:_register("field-cell", key, urgency))
+  return self:_answer(self:_request("field-cell", key, urgency))
 end
 
 ---@param pageId integer
@@ -952,11 +1071,9 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
   assert(not self.retired, "generation session is retired")
   assert(isInteger(pageId) and pageId >= 0, "portrait page ID must be a non-negative integer")
   ArtifactJobs.priorityFor(urgency)
-  self:_ensureInventoryLoaded()
+  self:_pullPrerequisites("mon-portrait-page", urgency)
   if not self.pagesKnown then
-    self:_request("mon-portrait-page", tostring(pageId), urgency)
-    self:_needLayout(urgency)
-    return false, nil
+    return self:_answer(self:_request("mon-portrait-page", tostring(pageId), urgency))
   end
   local supported = false
   for _, candidate in ipairs(self.portraitPageIds) do
@@ -966,9 +1083,12 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
     end
   end
   if not supported then
-    return false, self.generationId .. " mon-portrait-page " .. tostring(pageId) .. ": source has no such page"
+    return self:_exclude(
+      self:_request("mon-portrait-page", tostring(pageId), urgency),
+      self.generationId .. " mon-portrait-page " .. tostring(pageId) .. ": source has no such page"
+    )
   end
-  return self:_answer(self:_register("mon-portrait-page", tostring(pageId), urgency))
+  return self:_answer(self:_request("mon-portrait-page", tostring(pageId), urgency))
 end
 
 ---@param kind string
@@ -1047,26 +1167,30 @@ function InteractiveCacheBuild:requestJob(kind, key, urgency)
   assert(not self.retired, "generation session is retired")
   ArtifactJobs.jobKey(kind, key)
   ArtifactJobs.priorityFor(urgency)
-  self:_ensureInventoryLoaded()
+  self:_pullPrerequisites(kind, urgency)
   if kind == "map" then
     local mapId = canonicalMapId(key)
     if not self.sourceLoaded then
-      self:_request(kind, key, urgency)
-      return false, nil
+      return self:_answer(self:_request(kind, key, urgency))
     end
     if not self:_knownMap(mapId) then
-      return false, self.generationId .. " map " .. key .. ": source has no supported map"
+      return self:_exclude(
+        self:_request(kind, key, urgency),
+        self.generationId .. " map " .. key .. ": source has no supported map"
+      )
     end
   elseif kind == "field-cell" then
     if not self.sourceLoaded then
       if key:match("^[0-9]+-[0-9]+$") == nil then
         error("field-cell key is not canonical: " .. key, 0)
       end
-      self:_request(kind, key, urgency)
-      return false, nil
+      return self:_answer(self:_request(kind, key, urgency))
     end
     if self:_cellDescriptor(kind, key) == nil then
-      return false, self.generationId .. " field-cell " .. key .. ": canonical index has no such cell"
+      return self:_exclude(
+        self:_request(kind, key, urgency),
+        self.generationId .. " field-cell " .. key .. ": canonical index has no such cell"
+      )
     end
   elseif
     kind == "message-bank"
@@ -1076,29 +1200,24 @@ function InteractiveCacheBuild:requestJob(kind, key, urgency)
     or kind == "mon-icon-page"
     or kind == "mon-portrait-page"
   then
-    if not self:_answerable(kind) then
-      self:_request(kind, key, urgency)
-      if needsPageMembership(kind) then
-        self:_needLayout(urgency)
-      end
-      return false, nil
+    local membershipKnown = true
+    if needsSourceInventory(kind) and not self.sourceLoaded then
+      membershipKnown = false
+    end
+    if needsPageMembership(kind) and not self.pagesKnown then
+      membershipKnown = false
+    end
+    if not membershipKnown then
+      return self:_answer(self:_request(kind, key, urgency))
     end
     if not self:_knownMember(kind, key) then
-      return false, assert(self:_unsupported(kind, key), "member rejection needs its cause")
+      return self:_exclude(
+        self:_request(kind, key, urgency),
+        assert(self:_unsupported(kind, key), "member rejection needs its cause")
+      )
     end
   end
-  local entry, deferred = self:_request(kind, key, urgency)
-  if deferred then
-    if needsPageMembership(kind) then
-      self:_needLayout(urgency)
-    end
-    return false, nil
-  end
-  local ready, failure = self:_answer(entry)
-  if not ready and failure == nil and not self.sourceLoaded then
-    self:_needInventory(urgency)
-  end
-  return ready, failure
+  return self:_answer(self:_request(kind, key, urgency))
 end
 
 ---@param kind string
@@ -1114,8 +1233,10 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
   if entry == nil or entry.failure == nil then
     error("only failed session jobs can be retried: " .. kind .. ":" .. key, 0)
   end
-  -- A blocked parent was never submitted, so only its failed leaves go back
-  -- to the pool; the blocked annotations clear and healthy siblings stay put.
+  -- A blocked parent was never submitted, so only actually failed producer
+  -- leaves go back to the pool; the blocked annotations clear and healthy
+  -- siblings stay put. A permanent unsupported-member rejection stays
+  -- explicit unless a failed producer leaf can be retried.
   local leaves = {}
   local blocked = {}
   local seen = {}
@@ -1149,30 +1270,49 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
     end
   end
   collect(entry)
+  local repaired = 0
   for _, leaf in ipairs(leaves) do
-    if self.pool:status(leaf.jobKey) == "failed" then
+    local poolFailed = self.pool:status(leaf.jobKey) == "failed"
+    if poolFailed then
       self.pool:retry(leaf.jobKey, priority)
       leaf.submitted = true
     end
-    leaf.failure = nil
-    leaf.causeJobKey = nil
-    leaf.ready = false
-    leaf.validated = false
-    leaf.poolState = nil
-    leaf.urgency = urgency
-    leaf.priority = priority
-  end
-  for _, parent in ipairs(blocked) do
-    parent.failure = nil
-    parent.causeJobKey = nil
-    if priority < parent.priority then
-      parent.urgency = urgency
-      parent.priority = priority
-      self:_promoteQueued(parent)
+    if poolFailed or leaf.failureClass ~= "source-exclusion" then
+      -- Failed producer leaves go back to the pool; other derived
+      -- failures requeue for pump revalidation. A permanent
+      -- unsupported-member rejection stays explicit.
+      leaf.failure = nil
+      leaf.failureClass = nil
+      leaf.causeJobKey = nil
+      leaf.ready = false
+      leaf.validated = false
+      leaf.validationPending = false
+      leaf.poolState = nil
+      leaf.cursor = nil
+      leaf.urgency = urgency
+      leaf.priority = priority
+      self.dirty[leaf.jobKey] = true
+      repaired = repaired + 1
     end
   end
-  self.followerChecked = false
-  self.followerMemo = nil
+  if repaired > 0 then
+    for _, parent in ipairs(blocked) do
+      parent.failure = nil
+      parent.failureClass = nil
+      parent.causeJobKey = nil
+      parent.cursor = nil
+      if priority < parent.priority then
+        parent.urgency = urgency
+        parent.priority = priority
+        self:_promoteQueued(parent)
+      end
+      if not parent.ready then
+        self.dirty[parent.jobKey] = true
+      end
+    end
+    self.followerChecked = false
+    self.followerMemo = nil
+  end
   return self:_answer(entry)
 end
 
@@ -1227,12 +1367,19 @@ function InteractiveCacheBuild:_blockOn(kind, key)
     if entry.failure ~= nil then
       error(entry.failure, 0)
     end
-    if not self:_awaitingPoolWork() then
+    -- Local planning with an idle pool is progress still available: repump
+    -- instead of waiting on nonexistent physical work. Only unfinished
+    -- physical work earns a bounded wait; anything else is diagnosable.
+    local status = self:status()
+    if status.planningPending then
+      -- Repump: the next update advances the remaining local work.
+    elseif self:_awaitingPoolWork() then
+      -- The parent itself is never named to the pool here: the wait only
+      -- advances already-dispatched dependency work until it publishes.
+      self.pool:waitForProgress()
+    else
       error(jobKey .. ": blocking wait made no progress", 0)
     end
-    -- The parent itself is never named to the pool here: the wait only
-    -- advances already-dispatched dependency work until it publishes.
-    self.pool:waitForProgress()
   end
   error(jobKey .. ": blocking wait timed out", 0)
 end
@@ -1258,29 +1405,77 @@ function InteractiveCacheBuild:_bootstrapReady()
 end
 
 -- Reads the published inventory into retained state. The source leg needs
--- only the staged inventory; the page leg additionally needs a ready layout
--- so page membership is exact. Adoption dirties unsubmitted work once; later
--- updates reuse the retained record instead of re-reading it.
-function InteractiveCacheBuild:_ensureInventoryLoaded()
+-- only the staged inventory; the page leg additionally needs the published
+-- layout plans. Adoption dirties unsubmitted work once; later updates reuse
+-- the retained record instead of re-reading it.
+---@param budget InteractiveCacheBuild.Budget|nil
+function InteractiveCacheBuild:_ensureInventoryLoaded(budget)
   if not self.sourceLoaded then
+    -- A fast empty read is fixed overhead and never consumes the slice;
+    -- only an adoption that transfers data admits a planning node.
     local plan, _ = SourcePlan.read(self.cacheFs, self:_identity())
     if plan ~= nil then
+      if not self:_spendNode(budget) then
+        return
+      end
       self:_adoptSource(plan)
     end
   end
   if self.sourceLoaded and not self.pagesKnown then
-    -- Page membership is exact only once the layout publishes; the receipt
-    -- marker gates the attempt so the full inventory is not revalidated on
-    -- every update while layout work is still running.
-    local receipt = ArtifactState.read(self.cacheFs, self.generationId, "mon-layout", "global")
-    local marker = type(receipt) == "table" and receipt.marker or nil
-    if marker ~= nil and marker ~= self._layoutMarkerSeen then
-      self._layoutMarkerSeen = marker
-      local plans, _ = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
-      if plans ~= nil then
-        self:_adoptPublished(plans)
-      end
+    local layoutEntry = self.byKey["mon-layout:global"]
+    if layoutEntry ~= nil and layoutEntry.failure ~= nil then
+      return
     end
+    if layoutEntry ~= nil and layoutEntry.ready then
+      -- The layout validated but its plans still do not adopt: an explicit
+      -- planning failure, never an eternal pending state.
+      local plans, reason = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
+      if plans ~= nil then
+        if not self:_spendNode(budget) then
+          return
+        end
+        self:_adoptPublished(plans)
+      else
+        layoutEntry.failure = self.generationId
+          .. " mon-layout global: adopted layout has no usable page plans: "
+          .. tostring(reason)
+        layoutEntry.failureClass = "planning"
+        layoutEntry.causeJobKey = nil
+        self:_dirtyParents(layoutEntry.jobKey)
+      end
+      return
+    end
+    -- No repeated rereads while layout work is still physically pending;
+    -- the attempt stays eligible under its unchanged deterministic marker.
+    local pending = false
+    if layoutEntry ~= nil and layoutEntry.submitted then
+      local state = self.pool:status(layoutEntry.jobKey)
+      pending = state == "queued" or state == "running" or state == "prepared"
+    end
+    if pending then
+      return
+    end
+    local plans, _ = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
+    if plans ~= nil then
+      if not self:_spendNode(budget) then
+        return
+      end
+      self:_adoptPublished(plans)
+    elseif layoutEntry ~= nil and not layoutEntry.submitted and layoutEntry.validated then
+      -- A rejected pre-repair layout validation schedules ordinary repair
+      -- through the normal pump: the entry stays dirty for submission.
+      self.dirty[layoutEntry.jobKey] = true
+    end
+  end
+end
+
+---@param plan table<string, unknown>
+function InteractiveCacheBuild:_adoptValidated(plan)
+  -- Immediate adoption of a just-validated source record. Published plans
+  -- already carry page membership and must never be overwritten by the
+  -- source leg.
+  if not self.sourceLoaded then
+    self:_adoptSource(plan)
   end
 end
 
@@ -1322,6 +1517,9 @@ function InteractiveCacheBuild:_adoptSource(plan)
   }
   self.sourceLoaded = true
   self.depMemo = {}
+  for _, entry in ipairs(self.interest) do
+    entry.cursor = nil
+  end
   self:_replanUnsubmitted()
 end
 
@@ -1346,80 +1544,99 @@ function InteractiveCacheBuild:_adoptPublished(plans)
   self.sourceLoaded = true
   self.pagesKnown = true
   self.depMemo = {}
+  for _, entry in ipairs(self.interest) do
+    entry.cursor = nil
+  end
   self:_replanUnsubmitted()
 end
 
 -- Newly adopted membership can only add answers, so unsubmitted work plans
 -- again from scratch while submitted work keeps its pool lifecycle.
--- Milestone members that were unknowable before adoption register now under
--- their recorded urgency and join the same bounded planning.
+-- Milestone members that were unknowable before adoption enroll
+-- incrementally under the pump budget instead of one unbounded loop.
 function InteractiveCacheBuild:_replanUnsubmitted()
   for _, entry in ipairs(self.interest) do
     if not entry.ready and entry.failure == nil and not entry.submitted then
       entry.validated = false
+      entry.cursor = nil
       self.dirty[entry.jobKey] = true
     end
   end
+  local pending = {}
   for name, urgency in pairs(self.milestones) do
     for _, member in ipairs(self:_milestoneMembers(name)) do
-      local entry = self:_register(member.kind, member.key, urgency)
-      if not entry.ready and entry.failure == nil and not entry.submitted then
-        self.dirty[entry.jobKey] = true
-      end
+      pending[#pending + 1] = { kind = member.kind, key = member.key, urgency = urgency }
+    end
+  end
+  if #pending > 0 then
+    local cursor = self.enrollCursor
+    if cursor == nil then
+      cursor = { pending = {}, index = 1 }
+      self.enrollCursor = cursor
+    end
+    for _, item in ipairs(pending) do
+      cursor.pending[#cursor.pending + 1] = item
     end
   end
   self.parked = {}
+  self.sweepCursor = nil
+  self.pendingFillDone = false
+  self.loadedFillDone = false
   self.followerChecked = false
   self.followerMemo = nil
 end
 
--- Observes already-submitted work for terminal transitions outside the
--- planning budget: transitions are worker-driven facts, naturally bounded
--- per update by physical completions, while the budget paces planning.
--- A ready transition validates immediately; a failed one records its cause.
--- Either dirties the affected parents and reopens parked sweep work.
+---@param budget InteractiveCacheBuild.Budget|nil
+function InteractiveCacheBuild:_drainEnroll(budget)
+  local cursor = self.enrollCursor
+  if cursor == nil then
+    return
+  end
+  while cursor.index <= #cursor.pending do
+    if not self:_spendNode(budget) then
+      return
+    end
+    local item = cursor.pending[cursor.index]
+    cursor.index = cursor.index + 1
+    local entry = self:_register(item.kind, item.key, item.urgency)
+    if not entry.ready and entry.failure == nil then
+      self.dirty[entry.jobKey] = true
+    end
+  end
+  self.enrollCursor = nil
+end
+
+-- Observes already-submitted work for terminal transitions: transitions are
+-- worker-driven facts, naturally bounded per update by physical
+-- completions, while the budget paces planning. A ready transition only
+-- queues family validation under the shared pump budget; a failed one
+-- records its cause at once. Either wakes the affected parents.
 function InteractiveCacheBuild:_pollSubmitted()
-  local progress = false
   for _, entry in ipairs(self.interest) do
-    if not entry.ready and entry.failure == nil and entry.submitted then
+    if not entry.ready and entry.failure == nil and entry.submitted and not entry.validationPending then
       local state, details = self.pool:status(entry.jobKey)
       if state ~= entry.poolState then
         entry.poolState = state
         if state == "ready" then
-          progress = true
-          if ArtifactJobs.validate(self.cacheFs, self.generationId, entry.kind, entry.key, self:_plans()) then
-            entry.ready = true
-          else
-            entry.failure = self.generationId
-              .. " "
-              .. entry.kind
-              .. " "
-              .. entry.key
-              .. ": published output fails its family validator"
-          end
-          self:_dirtyParents(entry.jobKey)
+          entry.validationPending = true
+          self.dirty[entry.jobKey] = true
         elseif state == "failed" then
-          progress = true
           local message = details and details.error or "compiler job failed"
           entry.failure = entry.jobKey .. ": " .. tostring(message)
+          entry.failureClass = "job"
+          entry.causeJobKey = nil
           self:_dirtyParents(entry.jobKey)
         end
       end
     end
   end
-  if progress then
-    for jobKey in pairs(self.parked) do
-      self.dirty[jobKey] = true
-    end
-    self.parked = {}
-  end
-  return progress
 end
 
 ---@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_processDirty(budget)
-  -- A budget pause lasts exactly one pass, so parked sweep work rejoins
-  -- planning on the next pass even when workers report no new progress.
+---@param allowSweep boolean
+function InteractiveCacheBuild:_pumpPlanning(budget, allowSweep)
+  -- A budget pause lasts exactly one pass, so paused sweep work rejoins
+  -- planning on the next pump even when workers report no new progress.
   -- Entries that still cannot run re-park; adoption and pool progress keep
   -- their existing reopen paths.
   for jobKey in pairs(self.parked) do
@@ -1427,46 +1644,72 @@ function InteractiveCacheBuild:_processDirty(budget)
   end
   self.parked = {}
   local ledger = { bound = self:_sweepBound(), outstanding = self:_outstandingSweep() }
-  local pending = {}
-  for jobKey in pairs(self.dirty) do
-    local entry = self.byKey[jobKey]
-    if entry ~= nil and not entry.ready and entry.failure == nil then
-      pending[#pending + 1] = entry
+  while true do
+    if budget ~= nil and budget.exhausted then
+      return
     end
-  end
-  table.sort(pending, function(left, right)
-    if left.priority == right.priority then
-      return left.jobKey < right.jobKey
+    local pending = {}
+    for jobKey in pairs(self.dirty) do
+      local entry = self.byKey[jobKey]
+      if entry ~= nil and not entry.ready and entry.failure == nil then
+        pending[#pending + 1] = entry
+      else
+        self.dirty[jobKey] = nil
+      end
     end
-    return left.priority < right.priority
-  end)
-  local paused = false
-  for _, entry in ipairs(pending) do
-    if paused or (budget ~= nil and budget.exhausted) then
-      paused = true
-      if entry.priority == 100 then
-        self.parked[entry.jobKey] = true
-        self.dirty[entry.jobKey] = nil
+    if #pending == 0 then
+      local before = 0
+      for _ in pairs(self.dirty) do
+        before = before + 1
+      end
+      if self.enrollCursor ~= nil then
+        self:_drainEnroll(budget)
+      elseif allowSweep then
+        self:_fillSweepStep(budget)
+      else
+        return
+      end
+      local after = 0
+      for _ in pairs(self.dirty) do
+        after = after + 1
+      end
+      if after == before then
+        return
       end
     else
-      local outcome = self:_ensure(entry, nil, budget, ledger)
-      if outcome == "settled" then
-        self.dirty[entry.jobKey] = nil
-      elseif outcome == "parked" then
-        self.parked[entry.jobKey] = true
-        self.dirty[entry.jobKey] = nil
-      elseif outcome == "paused" then
-        paused = true
-        if entry.priority == 100 then
-          self.parked[entry.jobKey] = true
-          self.dirty[entry.jobKey] = nil
+      table.sort(pending, function(left, right)
+        if left.priority == right.priority then
+          return left.jobKey < right.jobKey
+        end
+        return left.priority < right.priority
+      end)
+      for _, entry in ipairs(pending) do
+        if budget ~= nil and budget.exhausted then
+          if entry.priority == 100 then
+            self.parked[entry.jobKey] = true
+            self.dirty[entry.jobKey] = nil
+          end
+        else
+          local outcome = self:_ensure(entry, nil, budget, ledger)
+          if outcome == "terminal" or outcome == "waiting" then
+            self.dirty[entry.jobKey] = nil
+          elseif outcome == "parked" then
+            self.parked[entry.jobKey] = true
+            self.dirty[entry.jobKey] = nil
+          elseif outcome == "paused" then
+            if entry.priority == 100 then
+              self.parked[entry.jobKey] = true
+              self.dirty[entry.jobKey] = nil
+            end
+          end
         end
       end
     end
   end
 end
 
-function InteractiveCacheBuild:_fillSweep()
+---@param budget InteractiveCacheBuild.Budget|nil
+function InteractiveCacheBuild:_fillSweepStep(budget)
   if not self.sourceLoaded then
     if self.pendingFillDone then
       return
@@ -1474,51 +1717,90 @@ function InteractiveCacheBuild:_fillSweep()
     self.pendingFillDone = true
     -- Page, cell and map membership is still unknown, so only the fixed
     -- global families join the sweep until the inventory publishes.
-    for _, kind in ipairs({ "items", "bag", "message-summary", "script-summary", "audio-summary", "mon-summary" }) do
-      local entry = self:_register(kind, "global", "sweep")
-      if not entry.ready and entry.failure == nil then
-        self.dirty[entry.jobKey] = true
+    self.sweepCursor = {
+      jobs = {
+        { kind = "items", key = "global" },
+        { kind = "bag", key = "global" },
+        { kind = "message-summary", key = "global" },
+        { kind = "script-summary", key = "global" },
+        { kind = "audio-summary", key = "global" },
+        { kind = "mon-summary", key = "global" },
+      },
+      index = 1,
+    }
+  else
+    if not self.loadedFillDone then
+      self.loadedFillDone = true
+      local jobs = ArtifactJobs.completeJobs(assert(self.adopted, "sweep needs its adopted inventory"))
+      local enums = {}
+      for _, job in ipairs(jobs) do
+        enums[#enums + 1] = { kind = job.kind, key = job.key }
       end
+      self.sweepCursor = { jobs = enums, index = 1 }
     end
-    return
+    if self.sweepCursor == nil then
+      return
+    end
+    -- Required demand outranks sweep enrollment: the corpus drains only
+    -- while no planning remains.
+    if next(self.dirty) ~= nil then
+      return
+    end
   end
-  if self.loadedFillDone then
-    return
-  end
-  self.loadedFillDone = true
-  for _, job in ipairs(ArtifactJobs.completeJobs(assert(self.adopted, "sweep needs its adopted inventory"))) do
+  local cursor = assert(self.sweepCursor, "sweep enrollment needs its cursor")
+  while cursor.index <= #cursor.jobs do
+    if not self:_spendNode(budget) then
+      return
+    end
+    local job = cursor.jobs[cursor.index]
+    cursor.index = cursor.index + 1
     local entry = self:_register(job.kind, job.key, "sweep")
     if not entry.ready and entry.failure == nil then
       self.dirty[entry.jobKey] = true
     end
   end
+  self.sweepCursor = nil
 end
 
 function InteractiveCacheBuild:update()
   assert(not self.retired, "generation session is retired")
-  self.pool:update()
-  self:_ensureInventoryLoaded()
-  local budget = { used = 0, start = nil, exhausted = false }
+  -- One shared pump budget covers request-originated and
+  -- completion-originated work: planning, warm validation, submitted-result
+  -- validation, adoption, enrollment and submission. The pool's separately
+  -- bounded publication operation is not charged here.
+  local budget = { used = 0, start = nil, exhausted = false, worked = false }
+  self:_ensureInventoryLoaded(budget)
   self:_pollSubmitted()
-  self:_processDirty(budget)
+  -- Sweep enrollment precedes validation-heavy planning so fixed
+  -- membership work is not starved by one-time validator load costs; the
+  -- pump still processes required demand first under the same budget.
+  local allowSweep = false
   if self.sweepEnabled and self:_bootstrapReady() then
     if self.milestones["field-core"] == nil then
       self.milestones["field-core"] = "near"
     end
     for _, member in ipairs(self:_milestoneMembers("field-core")) do
-      local entry, deferred = self:_request(member.kind, member.key, self.milestones["field-core"])
-      if not deferred then
-        self.dirty[entry.jobKey] = true
-      end
+      self:_request(member.kind, member.key, self.milestones["field-core"])
     end
-    self:_fillSweep()
+    self:_fillSweepStep(budget)
+    allowSweep = true
   end
+  -- New submissions precede the single pool lifecycle tick so dispatched
+  -- work is observable in the same update; completions observed below are
+  -- validated and adopted under the remaining same budget.
+  self:_pumpPlanning(budget, allowSweep)
+  self.pool:update()
+  self:_pollSubmitted()
+  self:_pumpPlanning(budget, allowSweep)
   self:_publishMilestone("bootstrap")
   self:_publishMilestone("field-core")
+  self.planningPending = budget.worked
 end
 
----@return { kind: string, key: string, jobKey: string, state: string, reused: boolean, error: string|nil, causeJobKey: string|nil }[]
+---@return { kind: string, key: string, jobKey: string, state: string, reused: boolean, error: string|nil, causeJobKey: string|nil, failureClass: string|nil }[]
 function InteractiveCacheBuild:outcomes()
+  -- Read-only retained snapshot: scalar copies for command finalization,
+  -- never persisted metadata. No cache IO or validation here.
   local list = {}
   for _, entry in ipairs(self.interest) do
     local state
@@ -1537,6 +1819,7 @@ function InteractiveCacheBuild:outcomes()
       reused = entry.ready and not entry.submitted,
       error = entry.failure,
       causeJobKey = entry.causeJobKey,
+      failureClass = entry.failureClass,
     }
   end
   table.sort(list, function(left, right)
@@ -1547,46 +1830,31 @@ end
 
 ---@return table<string, unknown>
 function InteractiveCacheBuild:status()
+  -- Read-only retained observation: no cache IO, no validation, no pool
+  -- polling. Queued and running follow the last pump-observed pool states;
+  -- settled and planningPending carry the exact readiness contract.
   local ready, queued, running = 0, 0, 0
   local failures = {}
+  local settled = true
   for _, entry in ipairs(self.interest) do
     if entry.failure ~= nil then
       failures[#failures + 1] = entry.failure
     elseif entry.ready then
       ready = ready + 1
-    elseif entry.submitted then
-      local state = self.pool:status(entry.jobKey)
-      if state == "ready" then
-        if ArtifactJobs.validate(self.cacheFs, self.generationId, entry.kind, entry.key, self:_plans()) then
-          entry.ready = true
-          -- A ready mark must wake waiting parents no matter which path
-          -- observes it first; the poller below maintains the same rule, so
-          -- an observation here cannot silently strand them instead.
-          self:_dirtyParents(entry.jobKey)
-          ready = ready + 1
-        else
-          entry.failure = self.generationId
-            .. " "
-            .. entry.kind
-            .. " "
-            .. entry.key
-            .. ": published output fails its family validator"
-          self:_dirtyParents(entry.jobKey)
-          failures[#failures + 1] = entry.failure
-        end
-      elseif state == "failed" then
-        local _, details = self.pool:status(entry.jobKey)
-        entry.failure = entry.jobKey .. ": " .. tostring(details and details.error or "compiler job failed")
-        self:_dirtyParents(entry.jobKey)
-        failures[#failures + 1] = entry.failure
-      elseif state == "running" or state == "prepared" then
+    else
+      settled = false
+      if entry.submitted and (entry.poolState == "running" or entry.poolState == "prepared") then
         running = running + 1
       else
         queued = queued + 1
       end
-    else
-      queued = queued + 1
     end
+  end
+  if next(self.dirty) ~= nil or next(self.parked) ~= nil then
+    settled = false
+  end
+  if self.enrollCursor ~= nil or self.sweepCursor ~= nil then
+    settled = false
   end
   table.sort(failures)
   local bootstrapState, fieldCoreState = "pending", "pending"
@@ -1626,6 +1894,8 @@ function InteractiveCacheBuild:status()
     failures = failures,
     complete = complete,
     enumerationComplete = self.sourceLoaded and self.pagesKnown or false,
+    settled = settled,
+    planningPending = self.planningPending,
   }
 end
 
@@ -1656,7 +1926,9 @@ function InteractiveCacheBuild:retire()
   self.mapCellKeys = {}
   self.followerChecked = false
   self.followerMemo = nil
-  self.layoutMarkerSeen = nil
+  self.enrollCursor = nil
+  self.sweepCursor = nil
+  self.planningPending = false
 end
 
 return InteractiveCacheBuild

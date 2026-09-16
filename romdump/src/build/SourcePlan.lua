@@ -176,6 +176,9 @@ function SourcePlan.validate(plan, identity)
     return nil, reason
   end
   local world = plan.world --[[@as table<string, unknown>]]
+  if type(world) ~= "table" then
+    return nil, "source inventory carries no world membership"
+  end
   local worldMaps = world.maps --[[@as table[] ]]
   if type(worldMaps) ~= "table" then
     return nil, "source inventory carries no world membership"
@@ -236,6 +239,9 @@ function SourcePlan.validate(plan, identity)
     end
   end
   local scriptPlan = plan.scriptPlan --[[@as table<string, unknown>]]
+  if type(scriptPlan) ~= "table" then
+    return nil, "source inventory carries no script membership"
+  end
   local scriptMembers = scriptPlan.members --[[@as table[] ]]
   if type(scriptMembers) ~= "table" then
     return nil, "source inventory carries no script membership"
@@ -256,6 +262,9 @@ function SourcePlan.validate(plan, identity)
     end
   end
   local audioPlan = plan.audioPlan --[[@as table<string, unknown>]]
+  if type(audioPlan) ~= "table" then
+    return nil, "source inventory carries no audio membership"
+  end
   local audioBankPlans = audioPlan.bankPlans --[[@as table[] ]]
   if type(audioPlan) ~= "table" or type(audioPlan.index) ~= "table" or type(audioBankPlans) ~= "table" then
     return nil, "source inventory carries no audio membership"

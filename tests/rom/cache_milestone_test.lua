@@ -201,7 +201,8 @@ local function settle(session, pool, cap)
   -- Bounded planning converges over pool-silent rounds: entries sorted late
   -- still need their slice after worker completions land, so quiescence is
   -- pool order AND session progress (ready/failed counts) holding still,
-  -- not pool order alone. The quiet threshold spans a full post-adoption
+  -- not pool order alone, and the pump must report no runnable local
+  -- planning remains. The quiet threshold spans a full post-adoption
   -- re-drive: adopting the worker inventory resets dependency memoization,
   -- so re-planning one several-hundred-child parent (message banks here,
   -- frozen game data) takes a dozen silent passes before it resubmits.
@@ -209,10 +210,15 @@ local function settle(session, pool, cap)
   local status = session:status()
   local lastReady, lastFailed = status.ready, status.failed
   local calm = 0
-  for _ = 1, cap or 200 do
+  for _ = 1, cap or 2000 do
     drive(session, 1)
     status = session:status()
-    if #pool.order == lastCount and status.ready == lastReady and status.failed == lastFailed then
+    if
+      #pool.order == lastCount
+      and status.ready == lastReady
+      and status.failed == lastFailed
+      and not status.planningPending
+    then
       calm = calm + 1
       if calm >= 25 then
         return
@@ -479,7 +485,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     local status = targeted:status()
     Assert.keySet(
       status,
-      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,fieldCore,generationId,queued,ready,running"
+      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,fieldCore,generationId,planningPending,queued,ready,running,settled"
     )
     Assert.equal(status.generationId, generationId)
     Assert.isFalse(status.complete, "an untouched session completes nothing")
@@ -894,6 +900,60 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     end
   end
   do
+    -- Registration-only planning submits nothing by itself: required cells
+    -- and maps drain first (ungated) while sweep parks behind the backlog
+    -- under the session's own frontier, so pump until the sweep frontier
+    -- has carried every portrait page into the pool, completing queued
+    -- sweep through the real worker path to keep the frontier bounded.
+    -- Portraits are the completion proxy, not the full canonical list:
+    -- required cells submit ungated ahead of sweep, pool-known icons and
+    -- audio were skipped at registration, cold map-data was skipped, and
+    -- gated maps resolve through the re-request tracking fallback below,
+    -- while portraits sort last among the newly submitted sweep families,
+    -- so portrait-union coverage implies the rest have submitted. The
+    -- per-iteration coverage check stays a cheap in-memory lookup against
+    -- the pool union; no per-key filesystem probes in the hot loop.
+    local function drainSweepRoom()
+      while sweepQueuedCount() >= bound do
+        local oldest
+        for _, jobKey in ipairs(pool.order) do
+          local record = pool.records[jobKey]
+          if record.priority == 100 and record.state == "queued" and jobKey ~= shelteredPortrait then
+            oldest = jobKey
+            break
+          end
+        end
+        Assert.notNil(oldest, "bounded sweep drain must keep advancing held descriptors")
+        complete(oldest)
+        Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
+      end
+    end
+    local function unionCovered()
+      local union = pool:requestSet()
+      local missingPortraits, missingCells = 0, 0
+      for _, pageId in ipairs(portraitPageIds) do
+        if union["mon-portrait-page:" .. tostring(pageId)] == nil then
+          missingPortraits = missingPortraits + 1
+        end
+      end
+      for _, key in ipairs(cellKeys) do
+        if union["field-cell:" .. key] == nil then
+          missingCells = missingCells + 1
+        end
+      end
+      return missingPortraits == 0 and missingCells == 0
+    end
+    local done = unionCovered()
+    local iter = 0
+    while not done and iter < 3000 do
+      iter = iter + 1
+      drive(storm, 1)
+      drainSweepRoom()
+      done = unionCovered()
+    end
+    Assert.isTrue(done, "the sweep frontier carries every portrait page into the pool")
+  end
+  do
     Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
     local union = pool:requestSet()
     -- Accounted for means planned this run or published by an earlier
@@ -975,6 +1035,9 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       checkPending(first, second, "promoted portrait")
     end
     Assert.equal(pool.records[portraitKey].priority, 0, "demand promotes the sweep parent")
+    -- The promoted entry only submits on the next pump, so run it before
+    -- failing the pool record below; an unsubmitted failure cannot be observed.
+    drive(storm, 10)
   end
 
   -- A failed portrait stays visible while unrelated work continues.

@@ -71,6 +71,35 @@ local function tick(frames)
   end
 end
 
+local function waitForMainMenu()
+  -- The boot can install a preparation state while the selected session
+  -- validates its first demand; each update moves that work forward, so a
+  -- fixed frame budget reaches the menu without waiting on the clock.
+  for _ = 1, 600 do
+    local game = App.state
+    local inner = game and game.state or nil
+    local view = inner and inner.view and inner:view() or nil
+    if view ~= nil and view.kind == "main_menu" then
+      return
+    end
+    App.update(1 / 60)
+  end
+end
+
+local function waitForField()
+  -- Continue validates its field demand through the same per-update work as
+  -- the boot; a fixed frame budget reaches the field without wall-clock
+  -- waiting.
+  for _ = 1, 1200 do
+    local game = App.state
+    local inner = game and game.state or nil
+    if inner ~= nil and inner.runtime ~= nil then
+      return
+    end
+    App.update(1 / 60)
+  end
+end
+
 local function withDrawRecorder(trace, fn)
   local originalDraw = love.graphics.draw
   rawset(love.graphics, "draw", function(image, _)
@@ -510,6 +539,7 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     end
     App.state = nil
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
+    waitForMainMenu()
     Assert.equal(App.state.state:view().kind, "main_menu")
     Assert.equal(#saveStore:list(), 0)
     press("a")
@@ -624,11 +654,13 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     local savedMap = checkpoint.mapId
     App.setState(nil)
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
+    waitForMainMenu()
     local restoredView = App.state.state:view()
     Assert.equal(#restoredView.saves + #restoredView.globalActions, 2)
     -- A fresh boot focuses the first save body, so activating continues
     -- directly: moving down would leave the saves for the global action.
     press("a")
+    waitForField()
     tick(4)
     local continuedRuntime = assert(App.state.state.runtime, "Continue must enter the real FieldState")
     Assert.equal(continuedRuntime.runtimeMap.mapId, savedMap)

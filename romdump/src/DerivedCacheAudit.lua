@@ -52,7 +52,7 @@ function DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
     if receipt == nil then
       return false, job.kind .. ":" .. job.key .. " has no current receipt: " .. tostring(receiptReason)
     end
-    if not ArtifactJobs.validate(cacheFs, generationId, job.kind, job.key, plans) then
+    if not ArtifactJobs.validate(cacheFs, generationId, job.kind, job.key, plans, identity) then
       return false, job.kind .. ":" .. job.key .. " fails its family validator"
     end
   end

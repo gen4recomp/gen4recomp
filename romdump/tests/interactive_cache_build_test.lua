@@ -253,7 +253,9 @@ end
 
 local function dependencySet(kind, key, plans)
   local set = {}
-  for _, dep in ipairs(ArtifactJobs.dependencies(kind, key, plans or syntheticPlans())) do
+  local deps, complete = ArtifactJobs.dependencies(kind, key, plans or syntheticPlans())
+  Assert.isTrue(complete, "the fixed planning table is complete for " .. kind .. ":" .. key)
+  for _, dep in ipairs(assert(deps, "complete planning reports its edges")) do
     set[dep.kind .. ":" .. dep.key] = true
   end
   return set
@@ -261,10 +263,14 @@ end
 
 function T.dependencies_resolve_through_the_fixed_table()
   Assert.deepEqual(dependencySet("mon-layout", "global"), { ["mon-catalog:global"] = true })
-  Assert.deepEqual(dependencySet("mon-icon-page", "3"), { ["mon-layout:global"] = true })
-  Assert.deepEqual(dependencySet("mon-portrait-page", "12"), { ["mon-layout:global"] = true })
+  Assert.deepEqual(dependencySet("mon-icon-page", "3"), { ["source-plan:global"] = true, ["mon-layout:global"] = true })
+  Assert.deepEqual(
+    dependencySet("mon-portrait-page", "12"),
+    { ["source-plan:global"] = true, ["mon-layout:global"] = true }
+  )
   local summary = dependencySet("mon-summary", "global")
   for _, name in ipairs({
+    "source-plan:global",
     "mon-catalog:global",
     "mon-layout:global",
     "mon-icon-page:0",
@@ -276,13 +282,25 @@ function T.dependencies_resolve_through_the_fixed_table()
     Assert.isTrue(summary[name] == true, "mon summary pulls " .. name)
   end
   Assert.deepEqual(dependencySet("message-summary", "global"), { ["message-bank:219"] = true })
-  Assert.deepEqual(dependencySet("audio-summary", "global"), { ["audio-bank:7"] = true })
-  Assert.deepEqual(dependencySet("script-summary", "global"), { ["script-member:149"] = true })
+  Assert.deepEqual(dependencySet("audio-summary", "global"), { ["source-plan:global"] = true, ["audio-bank:7"] = true })
+  Assert.deepEqual(
+    dependencySet("script-summary", "global"),
+    { ["source-plan:global"] = true, ["script-member:149"] = true }
+  )
   local map = dependencySet("map", "7")
-  for _, name in ipairs({ "world-catalog:global", "field-cell-index:global", "field-cell:12-5", "field-cell:12-6" }) do
+  for _, name in ipairs({
+    "source-plan:global",
+    "world-catalog:global",
+    "field-cell-index:global",
+    "field-cell:12-5",
+    "field-cell:12-6",
+  }) do
     Assert.isTrue(map[name] == true, "map pulls " .. name)
   end
-  Assert.deepEqual(dependencySet("field-cell", "12-5"), { ["field-cell-index:global"] = true })
+  Assert.deepEqual(
+    dependencySet("field-cell", "12-5"),
+    { ["source-plan:global"] = true, ["field-cell-index:global"] = true }
+  )
   Assert.deepEqual(dependencySet("actors", "global"), {})
   Assert.deepEqual(dependencySet("intro", "global"), {})
   Assert.deepEqual(dependencySet("items", "global"), {})
@@ -370,6 +388,9 @@ local function summarySession(pool, cacheFs, bankIds)
     depMemo = {},
     pendingFillDone = false,
     loadedFillDone = false,
+    enrollCursor = nil,
+    sweepCursor = nil,
+    planningPending = false,
     followerChecked = false,
     followerMemo = nil,
   }, InteractiveCacheBuild)
@@ -405,6 +426,7 @@ function T.summary_dispatch_waits_for_bank_publication()
   local ready, failure = session:requestJob("message-summary", "global", "required")
   Assert.isFalse(ready, "the summary is pending while its banks are cold")
   Assert.isNil(failure, "no failure is reported while the summary waits for its banks")
+  session:update()
   local submitted = submittedSet(pool)
   Assert.isTrue(submitted["message-bank:3"] == true, "a cold bank dispatches")
   Assert.isTrue(submitted["message-bank:5"] == true, "a cold bank dispatches")
@@ -414,6 +436,8 @@ function T.summary_dispatch_waits_for_bank_publication()
   pool.states["message-bank:5"] = "ready"
   publishMessageBank(cacheFs, 3, "bank-marker-3")
   publishMessageBank(cacheFs, 5, "bank-marker-5")
+  session:update()
+  session:update()
   local again, againFailure = session:requestJob("message-summary", "global", "required")
   Assert.isFalse(again, "the unpublished summary stays pending once its banks publish")
   Assert.isNil(againFailure, "no failure is reported once the banks publish")
@@ -439,8 +463,19 @@ function T.warm_summary_answers_without_dispatch()
     bankIds = { 3, 5 },
   })
   local session = summarySession(pool, cacheFs, { 3, 5 })
+  local cold, coldFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(cold, "a newly registered warm interest answers pending until the pump validates it")
+  Assert.isNil(coldFailure, "registration reports no failure")
+  session:update()
   local ready, failure = session:requestJob("message-summary", "global", "required")
-  Assert.isTrue(ready, "a published summary answers ready")
+  for _ = 1, 9 do
+    if ready then
+      break
+    end
+    session:update()
+    ready, failure = session:requestJob("message-summary", "global", "required")
+  end
+  Assert.isTrue(ready, "a published summary answers ready once the pump establishes it")
   Assert.isNil(failure, "a published summary reports no failure")
   Assert.equal(#pool.submitted, 0, "warm readiness dispatches nothing")
 end
@@ -454,6 +489,377 @@ end
 -- publication runs for real without touching the product cache.
 -- No ROM bytes are involved.
 local PRODUCER_ID = "d" .. string.rep("3", 64)
+
+local function retryCapablePool()
+  local pool = { submitted = {}, states = {}, retried = {}, selects = 0 }
+  function pool:selectGeneration(_, _)
+    self.selects = self.selects + 1
+  end
+  function pool:update() end
+  function pool:status(jobKey)
+    local state = self.states[jobKey]
+    if type(state) == "table" then
+      return state.state, state.details
+    end
+    return state or "unknown", nil
+  end
+  function pool:request(job)
+    self.submitted[#self.submitted + 1] = job.jobKey
+    return self:status(job.jobKey)
+  end
+  function pool:retry(jobKey, _)
+    self.retried[#self.retried + 1] = jobKey
+    self.states[jobKey] = "queued"
+    return "queued", nil
+  end
+  return pool
+end
+
+local function isolatedSession(generation, pool, backend)
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  CacheFs.forVersion = function(versionId)
+    assert(versionId == "heartgold", "session fixture stays on heartgold")
+    return cacheFs
+  end
+  local session
+  local ok, err = pcall(function()
+    session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = generation, producerId = PRODUCER_ID },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+  end)
+  CacheFs.forVersion = realForVersion
+  if not ok then
+    error(err, 0)
+  end
+  return session, cacheFs
+end
+
+local function publishWarmBank(cacheFs, generation, bankId)
+  local marker = "synthetic-warm-marker-" .. tostring(bankId)
+  cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "message-bank",
+    key = tostring(bankId),
+    marker = marker,
+  })
+  cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
+  cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = bankId,
+  })
+end
+
+local function submissionCount(pool, jobKey)
+  local count = 0
+  for _, submitted in ipairs(pool.submitted) do
+    if submitted == jobKey then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+-- The nonblocking surface registers interest and reports retained state:
+-- repeated requests, readiness polls and outcome snapshots perform no
+-- cache reads and no family validation. A newly registered warm interest
+-- answers pending until the update pump validates it; once the pump
+-- establishes ready, later polls answer ready without further work.
+function T.public_observations_register_without_cache_or_validation_io()
+  local backend = FakeCache.new()
+  local cacheReads = 0
+  local realBackendRead = backend.read
+  function backend.read(self, path)
+    cacheReads = cacheReads + 1
+    return realBackendRead(self, path)
+  end
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  local calls = { validate = 0, dependencies = 0, planRead = 0, publishedPlans = 0 }
+  local realValidate = ArtifactJobs.validate
+  local realDependencies = ArtifactJobs.dependencies
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local realPlanRead = SourcePlan.read
+  local realPublishedPlans = ArtifactJobs.publishedPlans
+  CacheFs.forVersion = function(versionId)
+    assert(versionId == "heartgold", "session fixture stays on heartgold")
+    return cacheFs
+  end
+  ArtifactJobs.validate = function(...)
+    calls.validate = calls.validate + 1
+    return realValidate(...)
+  end
+  ArtifactJobs.dependencies = function(...)
+    calls.dependencies = calls.dependencies + 1
+    return realDependencies(...)
+  end
+  SourcePlan.read = function(...)
+    calls.planRead = calls.planRead + 1
+    return realPlanRead(...)
+  end
+  ArtifactJobs.publishedPlans = function(...)
+    calls.publishedPlans = calls.publishedPlans + 1
+    return realPublishedPlans(...)
+  end
+  local ok, failure = pcall(function()
+    local generation = "public-no-io-generation"
+    local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+    local bankIds = FieldMessageCompiler.requiredBankIds()
+    Assert.isTrue(#bankIds > 0, "the warm fixture needs required banks")
+    for _, bankId in ipairs(bankIds) do
+      local marker = "synthetic-warm-marker-" .. tostring(bankId)
+      cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
+        schema = ArtifactState.RECEIPT_SCHEMA,
+        generationId = generation,
+        kind = "message-bank",
+        key = tostring(bankId),
+        marker = marker,
+      })
+      cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
+      cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
+        schema = FieldMessageCache.SCHEMA,
+        bankId = bankId,
+      })
+    end
+    local pool = retryCapablePool()
+    local session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = generation, producerId = PRODUCER_ID },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+    cacheReads = 0
+    calls.validate, calls.dependencies, calls.planRead, calls.publishedPlans = 0, 0, 0, 0
+    for _, bankId in ipairs(bankIds) do
+      local ready, err = session:requestJob("message-bank", tostring(bankId), "required")
+      Assert.isFalse(ready, "a newly registered warm interest answers pending until the pump validates it")
+      Assert.isNil(err, "registration reports no failure")
+    end
+    local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(milestoneReady, "the milestone stays pending until the pump runs")
+    Assert.isNil(milestoneFailure, "the milestone reports no failure while pending")
+    session:status()
+    session:outcomes()
+    session:status()
+    Assert.equal(cacheReads, 0, "public observations perform no cache reads")
+    Assert.equal(calls.validate, 0, "public observations run no family validation")
+    Assert.equal(calls.dependencies, 0, "public observations expand no dependencies")
+    Assert.equal(calls.planRead, 0, "public observations read no source inventory")
+    Assert.equal(calls.publishedPlans, 0, "public observations adopt no published plans")
+    Assert.equal(#pool.submitted, 0, "registration submits no worker jobs")
+    -- The update pump establishes warm banks within a bounded per-update
+    -- budget, so poll until every bank answers ready.
+    local established = false
+    for _ = 1, 100 do
+      session:update()
+      established = true
+      for _, bankId in ipairs(bankIds) do
+        local ready = session:requestJob("message-bank", tostring(bankId), "required")
+        if not ready then
+          established = false
+          break
+        end
+      end
+      if established then
+        break
+      end
+    end
+    Assert.isTrue(established, "the pump establishes every warm bank")
+    for _, bankId in ipairs(bankIds) do
+      local ready, err = session:requestJob("message-bank", tostring(bankId), "required")
+      Assert.isTrue(ready, "the pump-established warm answer is immediate")
+      Assert.isNil(err, "the established answer reports no failure")
+    end
+    local settled = {
+      validate = calls.validate,
+      dependencies = calls.dependencies,
+      reads = cacheReads,
+    }
+    session:status()
+    session:outcomes()
+    for _, bankId in ipairs(bankIds) do
+      session:requestJob("message-bank", tostring(bankId), "required")
+    end
+    Assert.equal(calls.validate, settled.validate, "retained answers revalidate nothing")
+    Assert.equal(calls.dependencies, settled.dependencies, "retained answers re-expand nothing")
+    Assert.equal(cacheReads, settled.reads, "retained observations reread nothing")
+  end)
+  CacheFs.forVersion = realForVersion
+  ArtifactJobs.validate = realValidate
+  ArtifactJobs.dependencies = realDependencies
+  SourcePlan.read = realPlanRead
+  ArtifactJobs.publishedPlans = realPublishedPlans
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- Deferred source and layout work carries real failure edges: a failed
+-- source inventory settles audio demand with its causal identity, a failed
+-- mon layout settles portrait demand, a milestone reports its failed member
+-- instead of pending forever, and an explicit retry repairs only the failed
+-- leaf while healthy siblings are never resubmitted.
+function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+
+  -- A failed source inventory settles deferred audio demand with its cause.
+  do
+    local backend = FakeCache.new()
+    local pool = retryCapablePool()
+    local session = isolatedSession("deferred-source-generation", pool, backend)
+    local ready, failure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(ready, "bootstrap stays pending while the inventory is cold")
+    Assert.isNil(failure, "bootstrap reports no failure while the inventory is pending")
+    session:update()
+    Assert.isTrue(
+      submissionCount(pool, "source-plan:global") >= 1,
+      "bootstrap demand schedules the source inventory job"
+    )
+    pool.states["source-plan:global"] = "failed"
+    for _ = 1, 3 do
+      session:update()
+    end
+    local audioReady, audioFailure = session:requestJob("audio-summary", "global", "required")
+    Assert.isFalse(audioReady, "audio demand never answers ready behind a failed inventory")
+    Assert.notNil(audioFailure, "audio demand carries its failed prerequisite")
+    Assert.isTrue(
+      tostring(audioFailure):find("source-plan:global", 1, true) ~= nil,
+      "audio demand names its failed inventory: " .. tostring(audioFailure)
+    )
+  end
+
+  -- A failed mon layout settles deferred portrait demand with its cause.
+  do
+    local backend = FakeCache.new()
+    local pool = retryCapablePool()
+    local session, cacheFs = isolatedSession("deferred-layout-generation", pool, backend)
+    local generation = "deferred-layout-generation"
+    local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+    local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+    cacheFs:writeLua(SourcePlan.PATH, {
+      schema = SourcePlan.SCHEMA,
+      versionId = "heartgold",
+      romSha1 = string.rep("a", 40),
+      generationId = generation,
+      producerId = PRODUCER_ID,
+      world = { maps = { { id = 7 }, { id = 9 } }, analysis = { excluded = { { id = 3, reason = "placeholder" } } } },
+      fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+      scriptPlan = { members = {}, generationKey = "synthetic-generation" },
+      audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+      messageBankIds = FieldMessageCompiler.requiredBankIds(),
+      mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+      mapCellKeys = { [7] = {}, [9] = {} },
+    })
+    local catalogMarker = "synthetic-catalog-marker"
+    cacheFs:write(MonCache.catalogMarkerPath(), catalogMarker)
+    cacheFs:write(MonCache.catalogPath(), "synthetic-catalog")
+    cacheFs:writeLua(ArtifactState.path("mon-catalog", "global"), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generation,
+      kind = "mon-catalog",
+      key = "global",
+      marker = catalogMarker,
+    })
+    local ready, failure = session:requestJob("mon-portrait-page", "0", "required")
+    Assert.isFalse(ready, "the portrait stays pending while its layout is cold")
+    Assert.isNil(failure, "the portrait reports no failure while its layout is pending")
+    session:update()
+    Assert.isTrue(session.sourceLoaded, "the staged inventory is adopted before layout work")
+    pool.states["mon-layout:global"] = "failed"
+    for _ = 1, 3 do
+      session:update()
+    end
+    local again, againFailure = session:requestJob("mon-portrait-page", "0", "required")
+    Assert.isFalse(again, "the portrait never answers ready behind a failed layout")
+    Assert.notNil(againFailure, "the portrait carries its failed prerequisite")
+    Assert.isTrue(
+      tostring(againFailure):find("mon-layout:global", 1, true) ~= nil,
+      "the portrait names its failed layout: " .. tostring(againFailure)
+    )
+  end
+
+  -- A milestone failure wins over a pending sibling, and an explicit retry
+  -- repairs only the failed leaf while healthy siblings are never rerun.
+  do
+    local backend = FakeCache.new()
+    local pool = retryCapablePool()
+    local generation = "deferred-retry-generation"
+    local session, cacheFs = isolatedSession(generation, pool, backend)
+    session.messageBankIds = { 3, 5 }
+    publishWarmBank(cacheFs, generation, 3)
+    local ready, failure = session:requestJob("message-summary", "global", "required")
+    Assert.isFalse(ready, "the summary stays pending while one bank is cold")
+    Assert.isNil(failure, "the summary reports no failure while its banks are pending")
+    session:update()
+    Assert.equal(submissionCount(pool, "message-bank:5"), 1, "only the cold bank dispatches")
+    Assert.equal(submissionCount(pool, "message-bank:3"), 0, "the warm bank never dispatches")
+    pool.states["message-bank:5"] = "failed"
+    for _ = 1, 2 do
+      session:update()
+    end
+    local blocked, blockedFailure = session:requestJob("message-summary", "global", "required")
+    Assert.isFalse(blocked, "the summary stays blocked behind its failed bank")
+    Assert.isTrue(
+      tostring(blockedFailure):find("message-bank:5", 1, true) ~= nil,
+      "the summary names its failed bank: " .. tostring(blockedFailure)
+    )
+    local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(milestoneReady, "the milestone never answers ready while its members are pending")
+    Assert.isNil(milestoneFailure, "an unrelated bank failure never poisons the milestone")
+    pool.states["message-bank:219"] = "failed"
+    for _ = 1, 3 do
+      session:update()
+    end
+    local failedReady, failedFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(failedReady, "the milestone never answers ready behind a failed member")
+    Assert.isTrue(
+      tostring(failedFailure):find("message-bank:219", 1, true) ~= nil,
+      "the milestone failure wins over pending siblings: " .. tostring(failedFailure)
+    )
+    local retried = session:retry("message-summary", "global", "required")
+    Assert.isFalse(retried, "the retry stays pending until the leaf republishes")
+    Assert.deepEqual(pool.retried, { "message-bank:5" }, "exactly the failed leaf retries once")
+    Assert.equal(submissionCount(pool, "message-bank:3"), 0, "retry never rebuilds the healthy sibling")
+    publishWarmBank(cacheFs, generation, 5)
+    pool.states["message-bank:5"] = "ready"
+    for _ = 1, 2 do
+      session:update()
+    end
+    Assert.equal(submissionCount(pool, "message-summary:global"), 1, "the parent dispatches once its bank heals")
+    local repaired, repairedFailure = session:requestJob("message-summary", "global", "required")
+    Assert.isFalse(repaired, "the unpublished parent stays pending after its banks heal")
+    Assert.isNil(repairedFailure, "the healing parent reports no failure")
+  end
+end
+
+-- Warm parents wake their dependents without resubmission: published banks
+-- answer through reuse, and the summary dispatches exactly once while its
+-- healthy prerequisites never occupy a worker.
+function T.reused_prerequisites_wake_their_parent_without_resubmission()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local generation = "reuse-wake-generation"
+  local session, cacheFs = isolatedSession(generation, pool, backend)
+  session.messageBankIds = { 3, 5 }
+  publishWarmBank(cacheFs, generation, 3)
+  publishWarmBank(cacheFs, generation, 5)
+  for _ = 1, 2 do
+    session:update()
+  end
+  local summaryReady, summaryFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(summaryReady, "the unpublished summary stays pending while its banks are reused")
+  Assert.isNil(summaryFailure, "reused prerequisites report no failure")
+  for _ = 1, 2 do
+    session:update()
+  end
+  Assert.equal(submissionCount(pool, "message-bank:3"), 0, "a reused bank never occupies a worker")
+  Assert.equal(submissionCount(pool, "message-bank:5"), 0, "a reused bank never occupies a worker")
+  Assert.equal(submissionCount(pool, "message-summary:global"), 1, "the woken parent dispatches exactly once")
+end
 
 local function withHost(host, fn)
   local previous = rawget(_G, "love")
@@ -635,9 +1041,32 @@ local function openLiveSession(options)
     depMemo = {},
     pendingFillDone = false,
     loadedFillDone = false,
+    enrollCursor = nil,
+    sweepCursor = nil,
+    planningPending = false,
     followerChecked = false,
     followerMemo = nil,
   }, InteractiveCacheBuild)
+  -- The fixture models a post-adoption session: the source inventory reads
+  -- ready without worker work, so page and summary prerequisites proceed.
+  local sourcePlanEntry = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "sweep",
+    priority = 100,
+    submitted = false,
+    ready = true,
+    validated = true,
+    validationPending = false,
+    failure = nil,
+    failureClass = nil,
+    causeJobKey = nil,
+    poolState = nil,
+    cursor = nil,
+  }
+  session.byKey["source-plan:global"] = sourcePlanEntry
+  session.interest[#session.interest + 1] = sourcePlanEntry
   return { host = host, realFs = realFs, prefix = prefix, cacheFs = cacheFs, pool = pool, session = session }
 end
 
@@ -923,11 +1352,15 @@ function T.blocking_ensure_never_waits_on_an_absent_parent()
   local env = openLiveSession({ generation = "dependency-block-generation", bankIds = { 3, 5 } })
   publishBankLive(env, 3, "synthetic:romshape:003")
   publishBankLive(env, 5, "synthetic:romshape:005")
+  requestJob(env, "message-bank", "3", "required")
+  pumpSession(env, 2)
   local bankReady, bankFailure = requestJob(env, "message-bank", "3", "required")
-  Assert.isTrue(bankReady, "a published bank answers ready")
+  Assert.isTrue(bankReady, "a published bank answers ready once the pump establishes it")
   Assert.isNil(bankFailure, "a published bank reports no failure")
   Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "a warm bank is never submitted")
   publishSummaryLive(env, { 3, 5 }, { [3] = "synthetic:romshape:003", [5] = "synthetic:romshape:005" })
+  requestJob(env, "message-summary", "global", "required")
+  pumpSession(env, 2)
   local ready, failure = requestJob(env, "message-summary", "global", "required")
   Assert.isTrue(ready, "a published summary answers ready")
   Assert.isNil(failure, "a published summary reports no failure")
@@ -1196,7 +1629,7 @@ function T.dependency_cycle_is_a_terminal_failure()
   local originalDependencies = ArtifactJobs.dependencies
   ArtifactJobs.dependencies = function(kind, key, plans)
     if kind == "message-bank" then
-      return { { kind = "message-summary", key = "global" } }
+      return { { kind = "message-summary", key = "global" } }, true
     end
     return originalDependencies(kind, key, plans)
   end
@@ -1204,12 +1637,16 @@ function T.dependency_cycle_is_a_terminal_failure()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   local session = summarySession(pool, cacheFs, { 3, 5 })
   local callOk, ready, failure = pcall(session.requestJob, session, "message-summary", "global", "required")
+  Assert.isTrue(callOk, "registration answers instead of overflowing: " .. tostring(ready))
+  Assert.isFalse(ready, "a cyclic plan stays pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  session:update()
+  local again, againFailure = session:requestJob("message-summary", "global", "required")
   ArtifactJobs.dependencies = originalDependencies
-  Assert.isTrue(callOk, "a dependency cycle answers instead of overflowing: " .. tostring(ready))
-  Assert.isFalse(ready, "a cyclic plan never answers ready")
+  Assert.isFalse(again, "a cyclic plan never answers ready")
   Assert.isTrue(
-    tostring(failure):find("cycle", 1, true) ~= nil,
-    "the cyclic plan names its cycle: " .. tostring(failure)
+    tostring(againFailure):find("cycle", 1, true) ~= nil,
+    "the cyclic plan names its cycle: " .. tostring(againFailure)
   )
 end
 
@@ -1223,10 +1660,16 @@ function T.stale_epoch_demand_fails_at_the_pool()
       return env.session:requestJob("message-bank", "3", "required")
     end)
   end)
-  Assert.isFalse(requestOk, "demand from a stale epoch never dispatches")
+  Assert.isTrue(requestOk, "registration never touches the pool: " .. tostring(requestError))
+  local pumpOk, pumpError = pcall(function()
+    withHost(env.host, function()
+      return env.session:update()
+    end)
+  end)
+  Assert.isFalse(pumpOk, "demand from a stale epoch never dispatches")
   Assert.isTrue(
-    tostring(requestError):find("epoch", 1, true) ~= nil,
-    "the stale demand names its epoch: " .. tostring(requestError)
+    tostring(pumpError):find("epoch", 1, true) ~= nil,
+    "the stale demand names its epoch: " .. tostring(pumpError)
   )
   shutdownEnv(env)
 end
