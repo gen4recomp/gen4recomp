@@ -101,12 +101,23 @@ local function charDataWithTiles(tileBytes)
   return container("RGCN", { block("CHAR", payload .. table.concat(tileBytes)) })
 end
 
+local function screenDataWH(width, height, entries)
+  local body = {}
+  for _, e in ipairs(entries) do
+    body[#body + 1] = u16(e)
+  end
+  return container(
+    "RCSN",
+    { block("SCRN", u16(width) .. u16(height) .. u32(0) .. u32(#entries * 2) .. table.concat(body)) }
+  )
+end
+
 local function screenData(entries)
   local body = {}
   for _, e in ipairs(entries) do
     body[#body + 1] = u16(e)
   end
-  return container("RCSN", { block("SCRN", u16(256) .. u16(192) .. u32(0) .. u32(#entries * 2) .. table.concat(body)) })
+  return screenDataWH(256, 192, entries)
 end
 
 -- A full 32x24-tile screen filled with one entry value.
@@ -116,6 +127,29 @@ local function fullScreen(entry)
     entries[i] = entry
   end
   return screenData(entries)
+end
+
+-- The synthetic naming archive: palette 0, the shared char bank 2 (tile 0
+-- left blank so page holes stay transparent), the opaque base screen 4, and
+-- the three page screens 6/7/8 (each page's first tile references blank tile
+-- 0, every other tile its own page tile). Member 5 is present but unread,
+-- proving the normal path never requires it.
+local function namingScreenData(width, height, tile)
+  local entries = {}
+  local count = width / 8 * (height / 8)
+  for i = 1, count do
+    entries[i] = tile
+  end
+  entries[1] = 0
+  return screenDataWH(width, height, entries)
+end
+
+local function namingCharData()
+  local tiles = { string.rep("\0", 32) }
+  for t = 1, 7 do
+    tiles[#tiles + 1] = string.rep(string.char((((t - 1) % 15) + 1) * 0x11), 32)
+  end
+  return charDataWithTiles(tiles)
 end
 
 local function paletteData(colors)
@@ -274,6 +308,17 @@ local function fixture(opts)
   card[48] = fullScreen(0)
   card[12] = paletteData({ 0x7FFF, 0x001F })
 
+  local namein = {}
+  for i = 1, 9 do
+    namein[i] = string.rep("\0", 4)
+  end
+  namein[1] = palette16()
+  namein[3] = namingCharData()
+  namein[5] = lz10Wrap(fullScreen(1))
+  namein[7] = lz10Wrap(namingScreenData(256, 112, 2))
+  namein[8] = lz10Wrap(namingScreenData(256, 112, 3))
+  namein[9] = lz10Wrap(namingScreenData(256, 112, 4))
+
   local function narcFile(alias)
     local members
     if alias == "start_menu" then
@@ -292,6 +337,8 @@ local function fixture(opts)
       members[0x16 + 1] = lz10Wrap(opts.cursorChar or charData(12))
     elseif alias == "signpost_graphics" then
       members = signposts
+    elseif alias == "naming_screen" then
+      members = namein
     else
       members = card
     end
@@ -317,6 +364,13 @@ local function fixture(opts)
       symbol = "NARC_a_0_4_9",
       alias = "trainer_card_graphics",
     },
+    naming_screen = {
+      fileId = 14,
+      narcId = 31,
+      path = "a/0/3/1",
+      symbol = "NARC_data_namein",
+      alias = "naming_screen",
+    },
   }
   local romFs = {
     resolvedNarc = function(_, alias)
@@ -334,6 +388,9 @@ local function fixture(opts)
       end
       if fileId == 13 then
         return narcFile("trainer_card_graphics")
+      end
+      if fileId == 14 then
+        return narcFile("naming_screen")
       end
       Assert.fail("unexpected read " .. tostring(fileId))
     end,
@@ -375,12 +432,99 @@ function T.compiles_the_manifest_and_all_assets()
   for _ in pairs(bundle.assets) do
     assetCount = assetCount + 1
   end
-  Assert.equal(assetCount, 7)
+  Assert.equal(assetCount, 11)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
   end
   Assert.equal(bundle.marker, "field-ui-cache-v1:rom-sha:dependency-sha")
+end
+
+-- The normal naming chrome compiles from the producer-selected members: one
+-- opaque 256x192 base and three 256x112 page overlays keyed upper, lower,
+-- and symbols at the canonical y=80 placement, every image indexed by its
+-- semantic asset id with PNG bytes matching the declared dimensions.
+function T.naming_chrome_compiles_the_normal_base_and_pages()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
+  Assert.deepEqual(naming.placement, { x = 0, y = 80, width = 256, height = 112 })
+  Assert.equal(naming.base.asset, FieldUiAssetCache.ASSET.NAMING_SCREEN_BASE)
+  Assert.equal(naming.base.width, 256)
+  Assert.equal(naming.base.height, 192)
+  local expectedPages = {
+    upper = FieldUiAssetCache.ASSET.NAMING_SCREEN_PAGE_UPPER,
+    lower = FieldUiAssetCache.ASSET.NAMING_SCREEN_PAGE_LOWER,
+    symbols = FieldUiAssetCache.ASSET.NAMING_SCREEN_PAGE_SYMBOLS,
+  }
+  local pageCount = 0
+  for key, page in pairs(naming.pages) do
+    Assert.equal(page.asset, expectedPages[key], "page " .. tostring(key) .. " carries its semantic asset id")
+    Assert.equal(page.width, 256, "page " .. tostring(key) .. " width")
+    Assert.equal(page.height, 112, "page " .. tostring(key) .. " height")
+    pageCount = pageCount + 1
+  end
+  Assert.equal(pageCount, 3, "normal naming carries exactly three pages")
+  for key, assetId in pairs(expectedPages) do
+    local entry = assert(bundle.manifest.assets[assetId], "the " .. key .. " page asset is indexed")
+    local width, height = PngReader.rgba(assert(bundle.assets[entry.image]))
+    Assert.equal(width, entry.width, key .. " png width")
+    Assert.equal(height, entry.height, key .. " png height")
+  end
+  local baseEntry = assert(bundle.manifest.assets[naming.base.asset], "the naming base asset is indexed")
+  local baseWidth, baseHeight = PngReader.rgba(assert(bundle.assets[baseEntry.image]))
+  Assert.equal(baseWidth, 256)
+  Assert.equal(baseHeight, 192)
+end
+
+-- The base renders palette-zero as opaque source art while every page keeps
+-- a transparent hole where its screen references the blank tile, so the base
+-- shows through at runtime.
+function T.naming_base_is_opaque_while_pages_keep_transparency_holes()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen)
+  local function transparentPixels(entry)
+    local width, _, rgba = PngReader.rgba(assert(bundle.assets[assert(bundle.manifest.assets[entry.asset]).image]))
+    local transparent, total = 0, math.floor(#rgba / 4)
+    for index = 0, total - 1 do
+      local _, _, _, a = PngReader.pixel(rgba, width, index % width, math.floor(index / width))
+      if a == 0 then
+        transparent = transparent + 1
+      end
+    end
+    return transparent, total
+  end
+  local baseTransparent = transparentPixels(naming.base)
+  Assert.equal(baseTransparent, 0, "the base is fully opaque source art")
+  for _, key in ipairs({ "upper", "lower", "symbols" }) do
+    local transparent, total = transparentPixels(naming.pages[key])
+    Assert.isTrue(transparent > 0, "the " .. key .. " overlay keeps transparent source-zero holes")
+    Assert.isTrue(transparent < total, "the " .. key .. " overlay still carries opaque artwork")
+  end
+end
+
+-- The producer fingerprint pins exactly the normal naming members: palette
+-- 0, char 2, base 4, and pages 6/7/8. Members 5, 9, 17, and 18 never appear,
+-- so the normal path cannot accidentally depend on the special numpad page
+-- or the unmapped members.
+function T.naming_dependencies_pin_exactly_the_normal_members()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local names = {}
+  for _, dep in ipairs(bundle.dependencies) do
+    names[dep.name] = true
+  end
+  for _, member in ipairs({ 0, 2, 4, 6, 7, 8 }) do
+    Assert.isTrue(
+      names["naming_screen:member:" .. member] or names["naming_screen:palette:" .. member],
+      "the fingerprint pins naming member " .. member
+    )
+  end
+  for _, excluded in ipairs({ 5, 9, 17, 18 }) do
+    Assert.isNil(names["naming_screen:member:" .. excluded], "member " .. excluded .. " is not fingerprinted")
+    Assert.isNil(names["naming_screen:palette:" .. excluded], "member " .. excluded .. " is not fingerprinted")
+  end
 end
 
 function T.compilation_is_deterministic()
@@ -629,6 +773,7 @@ function T.source_member_ids_do_not_leak_into_the_runtime_manifest()
     end
   end
   scan(bundle.manifest.signposts, "signposts")
+  scan(bundle.manifest.namingScreen, "namingScreen")
 end
 
 -- cellBounds must span the actual objects: with strictly positive object

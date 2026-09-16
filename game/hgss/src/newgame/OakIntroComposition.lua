@@ -71,7 +71,7 @@ end
 
 local function generatedImageLoader(cacheFs, graphics)
   local function loadImage(path)
-    local bytes = assert(cacheFs:read(path), "missing generated Oak image " .. path)
+    local bytes = assert(cacheFs:read(path), "missing generated image " .. path)
     local fileData = love.filesystem.newFileData(bytes, path)
     return graphics.newImage(fileData, { linear = false, mipmaps = false })
   end
@@ -177,6 +177,7 @@ function OakIntroComposition.compose(options)
     return OakIntroState.new({
       controller = controller --[[@as unknown]],
       manifest = introManifest,
+      uiManifest = uiManifest,
       textRenderer = textRenderer,
       choiceText = choiceText,
       graphics = graphics,

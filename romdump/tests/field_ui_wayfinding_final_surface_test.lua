@@ -71,6 +71,16 @@ local function screenData(entries)
   end
   return container("RCSN", { block("SCRN", u16(256) .. u16(192) .. u32(0) .. u32(#entries * 2) .. table.concat(body)) })
 end
+local function screenDataWH(width, height, entries)
+  local body = {}
+  for _, e in ipairs(entries) do
+    body[#body + 1] = u16(e)
+  end
+  return container(
+    "RCSN",
+    { block("SCRN", u16(width) .. u16(height) .. u32(0) .. u32(#entries * 2) .. table.concat(body)) }
+  )
+end
 local function fullScreen(entry)
   local entries = {}
   for i = 1, 768 do
@@ -187,6 +197,40 @@ local function fixture(opts)
   card[42] = charData(128)
   card[48] = fullScreen(0)
   card[12] = paletteData({ 0x7FFF, 0x001F })
+  -- The naming archive the v8 contract requires: palette 0, char 2, base
+  -- screen 4, and page screens 6/7/8. Tile 0 of the char bank stays blank so
+  -- page holes remain transparent.
+  local function namingPage(width, height, tile)
+    local entries = {}
+    for i = 1, width / 8 * (height / 8) do
+      entries[i] = tile
+    end
+    entries[1] = 0
+    return screenDataWH(width, height, entries)
+  end
+  local namingTiles = { string.rep("\0", 32) }
+  for t = 1, 7 do
+    namingTiles[#namingTiles + 1] = string.rep(string.char((((t - 1) % 15) + 1) * 0x11), 32)
+  end
+  local namingCharPayload = u16(8)
+    .. u16(0x20)
+    .. u32(3)
+    .. u16(0)
+    .. u16(0)
+    .. u32(0)
+    .. u32(#namingTiles * 32)
+    .. u32(0x18)
+  local namingChar = container("RGCN", { block("CHAR", namingCharPayload .. table.concat(namingTiles)) })
+  local namein = {}
+  for i = 1, 9 do
+    namein[i] = string.rep("\0", 4)
+  end
+  namein[1] = palette16()
+  namein[3] = namingChar
+  namein[5] = lz10Wrap(fullScreen(1))
+  namein[7] = lz10Wrap(namingPage(256, 112, 2))
+  namein[8] = lz10Wrap(namingPage(256, 112, 3))
+  namein[9] = lz10Wrap(namingPage(256, 112, 4))
   local function narcFile(alias)
     local members
     if alias == "start_menu" then
@@ -207,6 +251,8 @@ local function fixture(opts)
       members[0x16 + 1] = lz10Wrap(charData(12))
     elseif alias == "signpost_graphics" then
       members = signposts
+    elseif alias == "naming_screen" then
+      members = namein
     else
       members = card
     end
@@ -232,6 +278,13 @@ local function fixture(opts)
       symbol = "NARC_a_0_4_9",
       alias = "trainer_card_graphics",
     },
+    naming_screen = {
+      fileId = 14,
+      narcId = 31,
+      path = "a/0/3/1",
+      symbol = "NARC_data_namein",
+      alias = "naming_screen",
+    },
   }
   local romFs = {
     resolvedNarc = function(_, alias)
@@ -249,6 +302,9 @@ local function fixture(opts)
       end
       if fileId == 13 then
         return narcFile("trainer_card_graphics")
+      end
+      if fileId == 14 then
+        return narcFile("naming_screen")
       end
       Assert.fail("unexpected read " .. tostring(fileId))
     end,

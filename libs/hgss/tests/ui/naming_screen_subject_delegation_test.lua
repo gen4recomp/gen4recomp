@@ -1,11 +1,40 @@
--- The Naming Screen renderer draws primitive chrome and text itself and
--- delegates only subject art to its host: one recording callback proves the
--- seam carries both player and Pokemon subjects without inspecting them.
+-- The Naming Screen renderer composes generated source chrome and text itself
+-- and delegates only subject art to its host: one recording callback proves
+-- the seam carries both player and Pokemon subjects without inspecting them.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
 local T = { tests = {} }
+
+local function namingManifest()
+  return {
+    namingScreen = {
+      base = { asset = "hgss.naming_screen.base", image = "assets/generated/field/ui/naming-screen-base.png" },
+      pages = {
+        upper = {
+          asset = "hgss.naming_screen.page_upper",
+          image = "assets/generated/field/ui/naming-screen-page-upper.png",
+        },
+        lower = {
+          asset = "hgss.naming_screen.page_lower",
+          image = "assets/generated/field/ui/naming-screen-page-lower.png",
+        },
+        symbols = {
+          asset = "hgss.naming_screen.page_symbols",
+          image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+        },
+      },
+      placement = { x = 0, y = 80, width = 256, height = 112 },
+    },
+  }
+end
+
+local function imageLoader()
+  return function(path)
+    return { path = path, release = function() end }
+  end
+end
 
 local function graphicsFake()
   local calls = { push = 0, pop = 0, scaled = 0 }
@@ -88,6 +117,8 @@ function T.tests.host_subject_callback_serves_player_and_pokemon_snapshots()
     drawSubject = function(hostGraphics, subject, rect)
       seen[#seen + 1] = { graphics = hostGraphics, subject = subject, rect = rect }
     end,
+    manifest = namingManifest(),
+    imageLoader = imageLoader(),
   })
   local layout = canonicalLayout()
   local playerSubject = { kind = "player", gender = 1 }

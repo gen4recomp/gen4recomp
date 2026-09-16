@@ -86,6 +86,7 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field renderer OakIntroStateRenderer?
 ---@field graphics unknown?
 ---@field imageLoader (fun(path: string): unknown)?
+---@field uiManifest table<string, unknown>?
 ---@field textInputHost OakIntroStateTextInputHost?
 ---@field glyphs string[]?
 ---@field width number?
@@ -236,6 +237,10 @@ function OakIntroState.new(options)
     local renderer = options.renderer
       or OakIntroRenderer.new({
         manifest = options.manifest,
+        uiManifest = assert(
+          options.uiManifest,
+          "Oak state requires the validated field-UI manifest to build its renderer"
+        ),
         graphics = options.graphics,
         imageLoader = options.imageLoader,
         text = assert(options.textRenderer, "Oak state requires the shared FieldTextRenderer"),

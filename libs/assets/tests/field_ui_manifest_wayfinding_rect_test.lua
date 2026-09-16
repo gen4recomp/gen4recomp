@@ -51,6 +51,26 @@ local function baseManifest()
         height = 32,
       },
       ["hgss.trainer_card.front"] = { image = "assets/generated/field/ui/trainer-card.png", width = 256, height = 192 },
+      ["hgss.naming_screen.base"] = {
+        image = "assets/generated/field/ui/naming-screen-base.png",
+        width = 256,
+        height = 192,
+      },
+      ["hgss.naming_screen.page_upper"] = {
+        image = "assets/generated/field/ui/naming-screen-page-upper.png",
+        width = 256,
+        height = 112,
+      },
+      ["hgss.naming_screen.page_lower"] = {
+        image = "assets/generated/field/ui/naming-screen-page-lower.png",
+        width = 256,
+        height = 112,
+      },
+      ["hgss.naming_screen.page_symbols"] = {
+        image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+        width = 256,
+        height = 112,
+      },
     },
     dialogueFrames = {
       count = 20,
@@ -104,13 +124,22 @@ local function baseManifest()
       },
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
+    namingScreen = {
+      base = { asset = "hgss.naming_screen.base", width = 256, height = 192 },
+      pages = {
+        upper = { asset = "hgss.naming_screen.page_upper", width = 256, height = 112 },
+        lower = { asset = "hgss.naming_screen.page_lower", width = 256, height = 112 },
+        symbols = { asset = "hgss.naming_screen.page_symbols", width = 256, height = 112 },
+      },
+      placement = { x = 0, y = 80, width = 256, height = 112 },
+    },
   }
 end
 
-function T.final_surface_48x32_is_accepted_when_manifest_claims_v7()
+function T.final_surface_48x32_is_accepted_when_manifest_claims_v8()
   local manifest = baseManifest()
-  -- The expected final contract is 48x32 per wayfinding entry, schema v7.
-  manifest.schema = "g4-field-ui-v7"
+  -- The expected final contract is 48x32 per wayfinding entry, schema v8.
+  manifest.schema = "g4-field-ui-v8"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 32 }
@@ -121,7 +150,7 @@ end
 
 function T.old_strip_192x8_is_rejected_under_final_surface_contract()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v7"
+  manifest.schema = "g4-field-ui-v8"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 192, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 192, height = 8 }
@@ -144,7 +173,7 @@ end
 
 function T.final_surface_must_be_inside_atlas_bounds()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v7"
+  manifest.schema = "g4-field-ui-v8"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 10, y = 10, width = 48, height = 32 }
@@ -156,14 +185,14 @@ end
 
 function T.final_surface_must_be_exactly_48x32()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v7"
+  manifest.schema = "g4-field-ui-v8"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 47, height = 32 }
   local ok, _ = FieldUiAssetCache.validateManifest(manifest)
   Assert.isFalse(ok, "47x32 must be rejected - exactly 48x32 required")
   local manifest2 = baseManifest()
-  manifest2.schema = "g4-field-ui-v7"
+  manifest2.schema = "g4-field-ui-v8"
   manifest2.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest2.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 31 }
@@ -173,7 +202,7 @@ end
 
 function T.missing_wayfinding_map_is_rejected()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v7"
+  manifest.schema = "g4-field-ui-v8"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding = {}

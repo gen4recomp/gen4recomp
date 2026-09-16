@@ -1,0 +1,151 @@
+-- The generated field-UI class carries the reusable normal naming chrome as
+-- strict source-independent data: one opaque 256x192 base, exactly the three
+-- normal pages (upper, lower, symbols) as 256x112 overlays, and the canonical
+-- page placement at y=80. Manifests missing that section or carrying
+-- malformed naming dimensions, page keys, placement, or asset references must
+-- fail validation before any renderer can consume them.
+
+local Assert = require("tests.support.Assert")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
+
+local T = {}
+
+local BASE_ID = "hgss.naming_screen.base"
+local UPPER_ID = "hgss.naming_screen.page_upper"
+local LOWER_ID = "hgss.naming_screen.page_lower"
+local SYMBOLS_ID = "hgss.naming_screen.page_symbols"
+
+local function withNaming(manifest)
+  manifest.reference = { width = 256, height = 192 }
+  manifest.assets[BASE_ID] = {
+    image = "assets/generated/field/ui/naming-screen-base.png",
+    width = 256,
+    height = 192,
+  }
+  manifest.assets[UPPER_ID] = {
+    image = "assets/generated/field/ui/naming-screen-page-upper.png",
+    width = 256,
+    height = 112,
+  }
+  manifest.assets[LOWER_ID] = {
+    image = "assets/generated/field/ui/naming-screen-page-lower.png",
+    width = 256,
+    height = 112,
+  }
+  manifest.assets[SYMBOLS_ID] = {
+    image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+    width = 256,
+    height = 112,
+  }
+  manifest.namingScreen = {
+    base = { asset = BASE_ID, width = 256, height = 192 },
+    pages = {
+      upper = { asset = UPPER_ID, width = 256, height = 112 },
+      lower = { asset = LOWER_ID, width = 256, height = 112 },
+      symbols = { asset = SYMBOLS_ID, width = 256, height = 112 },
+    },
+    placement = { x = 0, y = 80, width = 256, height = 112 },
+  }
+  return manifest
+end
+
+local function reject(mutate, message)
+  local manifest = withNaming(FieldUiFixture.manifest())
+  mutate(manifest)
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok, message)
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+end
+
+function T.complete_naming_chrome_validates()
+  local manifest = withNaming(FieldUiFixture.manifest())
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isTrue(ok, "a complete naming section must validate: " .. tostring(err and err.message))
+end
+
+function T.manifest_without_naming_chrome_is_rejected()
+  local manifest = FieldUiFixture.manifest()
+  manifest.reference = { width = 256, height = 192 }
+  Assert.isNil(manifest.namingScreen, "the shared fixture carries no naming section")
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  Assert.isFalse(ok, "naming chrome is required, so a manifest without it must fail")
+  Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
+end
+
+function T.missing_base_is_rejected()
+  reject(function(m)
+    m.namingScreen.base = nil
+    m.assets[BASE_ID] = nil
+  end, "a naming section without its base must fail")
+end
+
+function T.missing_one_page_is_rejected()
+  reject(function(m)
+    m.namingScreen.pages.symbols = nil
+    m.assets[SYMBOLS_ID] = nil
+  end, "a naming section without its symbols page must fail")
+end
+
+function T.extra_page_is_rejected()
+  reject(function(m)
+    m.assets["hgss.naming_screen.page_extra"] = {
+      image = "assets/generated/field/ui/naming-screen-page-extra.png",
+      width = 256,
+      height = 112,
+    }
+    m.namingScreen.pages.extra = { asset = "hgss.naming_screen.page_extra", width = 256, height = 112 }
+  end, "normal naming carries exactly three pages, so a fourth must fail")
+end
+
+function T.unknown_page_key_is_rejected()
+  reject(function(m)
+    m.namingScreen.pages.upper = nil
+    m.namingScreen.pages.digits = { asset = UPPER_ID, width = 256, height = 112 }
+  end, "an unknown page key must fail instead of standing in for a normal page")
+end
+
+function T.wrong_base_dimensions_are_rejected()
+  reject(function(m)
+    m.namingScreen.base.width = 128
+    m.assets[BASE_ID].width = 128
+  end, "a base narrower than the canonical surface must fail")
+end
+
+function T.wrong_page_dimensions_are_rejected()
+  reject(function(m)
+    m.namingScreen.pages.lower.height = 192
+    m.assets[LOWER_ID].height = 192
+  end, "a full-height page overlay must fail")
+end
+
+function T.wrong_page_placement_is_rejected()
+  reject(function(m)
+    m.namingScreen.placement.y = 0
+  end, "page placement anywhere but the canonical y=80 must fail")
+end
+
+function T.invalid_asset_path_is_rejected()
+  reject(function(m)
+    m.assets[UPPER_ID] = nil
+  end, "a page naming an asset the manifest does not index must fail")
+end
+
+function T.source_member_ids_do_not_leak_into_the_naming_section()
+  local manifest = withNaming(FieldUiFixture.manifest())
+  local forbidden = { member = true, memberId = true, narcId = true, alias = true, fileId = true }
+  local function scan(value, path)
+    if type(value) ~= "table" then
+      return
+    end
+    for key, nested in pairs(value) do
+      if type(key) == "string" and forbidden[key] then
+        Assert.isTrue(false, "naming manifest leaks source detail '" .. key .. "' at " .. path)
+      end
+      scan(nested, path .. "." .. tostring(key))
+    end
+  end
+  scan(manifest.namingScreen, "namingScreen")
+end
+
+return { tests = T }

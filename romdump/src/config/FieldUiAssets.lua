@@ -16,7 +16,17 @@
 -- follow src/start_menu.c, dialogue frames LoadUserFrameGfx2 (member =
 -- frame + 2, palette = frame + 0x1A), Trainer Card members
 -- src/overlay_trainer_card_main.s. No sound archive is selected: the branch
--- does not reproduce the source Start Menu effects.
+-- does not reproduce the source Start Menu effects. Normal naming chrome
+-- follows src/naming_screen.c at pret/pokeheartgold
+-- 008257708bd41df5b8c9037e019088ba24df0a87: the normal player/Pokemon path
+-- loads the full 256x192 base screen 4 on the main base layer and switches
+-- the keyboard layer through `pageNum + 6`, cycling page numbers 0..2, so
+-- the normal pages are screens 6 (Upper), 7 (Lower), and 8 (Symbols).
+-- Screen 9 belongs to the special numpad path and stays outside this
+-- contract, as do the unmapped members 5, 17, and 18. Palette 0 is the main
+-- BG palette and char 2 the shared background character bank. The keyboard
+-- layers sit at y=-80 in the 192-high BG coordinate system, so the visible
+-- 112-high page content belongs at canonical y=80 over the base.
 
 return {
   schema = 1,
@@ -27,6 +37,7 @@ return {
       { path = "src/start_menu.c" },
       { path = "asm/render_window.s" },
       { path = "src/overlay_trainer_card_main.s" },
+      { path = "src/naming_screen.c" },
     },
   },
   startMenu = {
@@ -67,5 +78,12 @@ return {
     frontCharMember = 41,
     frontScreenMember = 47,
     frontPaletteMember = 11,
+  },
+  namingScreen = {
+    alias = "naming_screen",
+    paletteMember = 0,
+    charMember = 2,
+    baseScreenMember = 4,
+    pageScreenMembers = { upper = 6, lower = 7, symbols = 8 },
   },
 }

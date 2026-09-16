@@ -3,7 +3,8 @@
 -- strict metadata sections, binary assets (PNG atlases) under the UI asset
 -- root, and a completion marker written last with the ROM SHA-1 and producer
 -- dependency hash. The manifest is the single mod-facing contract for
--- dialogue frames, signposts, the Start Menu, and the Trainer Card; it never
+-- dialogue frames, signposts, the Start Menu, the Trainer Card, and the
+-- normal naming chrome; it never
 -- carries NARC/member ids. A UI class is ready only when the marker matches
 -- exactly and every indexed file exists. Paths are cache-relative; all IO
 -- goes through a CacheFs.
@@ -54,6 +55,10 @@ FieldUiAssetCache.ASSET = {
   START_MENU_BACKGROUND = "hgss.start_menu.background",
   START_MENU_CURSOR = "hgss.start_menu.cursor",
   TRAINER_CARD_FRONT = "hgss.trainer_card.front",
+  NAMING_SCREEN_BASE = "hgss.naming_screen.base",
+  NAMING_SCREEN_PAGE_UPPER = "hgss.naming_screen.page_upper",
+  NAMING_SCREEN_PAGE_LOWER = "hgss.naming_screen.page_lower",
+  NAMING_SCREEN_PAGE_SYMBOLS = "hgss.naming_screen.page_symbols",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -513,6 +518,63 @@ function FieldUiAssetCache.validateManifest(manifest)
   end)
   if not trainerCardOk then
     return false, trainerCardErr
+  end
+
+  -- Normal naming chrome: one opaque 256x192 base plus exactly the three
+  -- normal page overlays (upper, lower, symbols), each 256x112, drawn at the
+  -- canonical y=80 placement over the base. Every entry references its image
+  -- through the shared asset index by semantic id; the manifest carries no
+  -- source archive or member identities.
+  local namingOk, namingErr = section("namingScreen", function(s)
+    if type(s.base) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.base must be a table", {})
+    end
+    local baseAsset = atlasSizes[s.base.asset]
+    if type(s.base.asset) ~= "string" or not baseAsset then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.base must reference an indexed asset", {})
+    end
+    if s.base.width ~= 256 or s.base.height ~= 192 or baseAsset.width ~= 256 or baseAsset.height ~= 192 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.base must be the opaque 256x192 surface", {})
+    end
+    if type(s.pages) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pages must be a table", {})
+    end
+    local pageKeys = { "upper", "lower", "symbols" }
+    local pageCount = 0
+    for _ in pairs(s.pages) do
+      pageCount = pageCount + 1
+    end
+    if pageCount ~= #pageKeys then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.pages must carry exactly upper, lower, and symbols", {})
+    end
+    for _, key in ipairs(pageKeys) do
+      local page = s.pages[key]
+      if type(page) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, "namingScreen.pages." .. key .. " must be a table", {})
+      end
+      local pageAsset = atlasSizes[page.asset]
+      if type(page.asset) ~= "string" or not pageAsset then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.pages." .. key .. " must reference an indexed asset", {})
+      end
+      if page.width ~= 256 or page.height ~= 112 or pageAsset.width ~= 256 or pageAsset.height ~= 112 then
+        return false, Errors.new(MANIFEST_INVALID, "namingScreen.pages." .. key .. " must be the 256x112 overlay", {})
+      end
+    end
+    local placement = s.placement
+    if
+      type(placement) ~= "table"
+      or placement.x ~= 0
+      or placement.y ~= 80
+      or placement.width ~= 256
+      or placement.height ~= 112
+    then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.placement must be the canonical y=80 overlay", {})
+    end
+    return true
+  end)
+  if not namingOk then
+    return false, namingErr
   end
 
   return true
