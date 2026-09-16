@@ -15,6 +15,7 @@
 ---@field focus MainMenuFocus
 ---@field popup table<string, string>?
 ---@field confirmation table<string, string>?
+---@field rememberedSaveId string?
 local MainMenuController = {}
 MainMenuController.__index = MainMenuController
 
@@ -65,6 +66,7 @@ function MainMenuController.new(globalActions, saves)
   assert(type(saves) == "table", "Main Menu saves must be an array")
   local self = setmetatable({ globalActions = globalActions, saves = saves }, MainMenuController)
   self.focus = firstSave(saves)
+  self.rememberedSaveId = self.focus.region == "saves" and self.focus.saveId or nil
   self.popup = nil
   self.confirmation = nil
   return self
@@ -88,6 +90,7 @@ end
 function MainMenuController:focusSave(saveId, lane)
   assert(itemAt(self.saves, saveId), "cannot focus an unknown Main Menu save")
   self.focus = focusForSave(saveId, lane)
+  self.rememberedSaveId = saveId
   self.popup = nil
   self.confirmation = nil
 end
@@ -132,6 +135,17 @@ function MainMenuController:setCatalog(globalActions, saves)
   else
     self.focus = { region = "global", actionId = assert(globalActions[1]).id }
   end
+  local remembered = self.rememberedSaveId and itemAt(saves, self.rememberedSaveId) or nil
+  if remembered then
+    self.rememberedSaveId = remembered.saveId or remembered.id
+  elseif self.focus.region == "saves" then
+    self.rememberedSaveId = self.focus.saveId
+  elseif #saves > 0 then
+    local first = assert(saves[1])
+    self.rememberedSaveId = first.saveId or first.id
+  else
+    self.rememberedSaveId = nil
+  end
 end
 
 local function adjacentSave(saves, saveId, delta)
@@ -159,27 +173,28 @@ function MainMenuController:move(direction)
     return
   end
   if self.focus.region == "global" then
-    if direction == "up" and #self.saves > 0 then
-      local final = assert(self.saves[#self.saves])
-      self:focusSave(final.saveId or final.id, "body")
+    if direction == "right" and #self.saves > 0 then
+      local remembered = self.rememberedSaveId and itemAt(self.saves, self.rememberedSaveId) or nil
+      local target = remembered or assert(self.saves[1])
+      self:focusSave(target.saveId or target.id, "body")
     end
     return
   end
   if self.focus.lane == "body" then
-    if direction == "right" and canDelete(self:focusedItem()) then
+    if direction == "left" then
+      self:focusGlobal(self.globalActions[1].id)
+    elseif direction == "right" and canDelete(self:focusedItem()) then
       self:focusSave(self.focus.saveId, "overflow")
     elseif direction == "up" or direction == "down" then
       local delta = direction == "up" and -1 or 1
       local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
       if saveId then
         self:focusSave(saveId, "body")
-      elseif direction == "down" then
-        self:focusGlobal(self.globalActions[1].id)
       end
     end
   elseif self.focus.lane == "overflow" then
     if direction == "left" then
-      self.focus = focusForSave(self.focus.saveId, "body")
+      self:focusSave(self.focus.saveId, "body")
     elseif direction == "up" or direction == "down" then
       local delta = direction == "up" and -1 or 1
       local saveId = adjacentSave(self.saves, self.focus.saveId, delta)

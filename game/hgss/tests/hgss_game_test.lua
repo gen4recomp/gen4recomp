@@ -81,6 +81,12 @@ end
 -- constructor or assertion fails.
 local function withCompositionSpies(fn)
   local modules = loadApplicationModules()
+  local okText, textOrError = pcall(require, "libs.hgss.src.ui.FieldTextRenderer")
+  Assert.isTrue(okText, "the Main Menu must render through FieldTextRenderer: " .. tostring(textOrError))
+  local okRenderer, rendererOrError = pcall(require, "game.hgss.src.menu.MainMenuRenderer")
+  Assert.isTrue(okRenderer, "the Main Menu must own its renderer: " .. tostring(rendererOrError))
+  modules.fieldText = textOrError
+  modules.menuRenderer = rendererOrError
   local original = {
     fieldNew = modules.fieldState.new,
     apply = modules.initialization.apply,
@@ -88,6 +94,8 @@ local function withCompositionSpies(fn)
     storeNew = modules.store.new,
     candidate = modules.newGame.createCandidate,
     oakCompose = modules.oak.compose,
+    textNew = modules.fieldText.new,
+    menuRendererNew = modules.menuRenderer.new,
   }
   local context
   context = {
@@ -97,6 +105,11 @@ local function withCompositionSpies(fn)
     storeCalls = {},
     candidateCalls = {},
     oakCalls = {},
+    textCalls = {},
+    menuRendererCalls = {},
+    texts = {},
+    menuRenderers = {},
+    rendererFailure = nil,
     stores = {},
     validationFactory = function(_)
       return {
@@ -140,6 +153,49 @@ local function withCompositionSpies(fn)
     context.oakCalls[#context.oakCalls + 1] = options
     return context.oakFactory(options)
   end)
+  -- Headless composition never loads generated presentation assets: the
+  -- required text/renderer constructors are replaced with strict fakes that
+  -- observe wiring and ownership instead.
+  local function fakeText()
+    local text = { releases = 0, draws = 0 }
+    function text:drawText()
+      self.draws = self.draws + 1
+    end
+    function text:release()
+      self.releases = self.releases + 1
+    end
+    return text
+  end
+  modules.fieldText.new = function(options)
+    context.textCalls[#context.textCalls + 1] = options
+    local text = fakeText()
+    context.texts[#context.texts + 1] = text
+    return text
+  end
+  modules.menuRenderer.new = function(options)
+    context.menuRendererCalls[#context.menuRendererCalls + 1] = options
+    if context.rendererFailure ~= nil then
+      error(context.rendererFailure, 0)
+    end
+    Assert.equal(options.text, context.texts[#context.texts], "the menu renderer must own the composed menu text")
+    local renderer = {
+      text = options.text,
+      draws = 0,
+      disposed = 0,
+    }
+    function renderer:draw()
+      self.draws = self.draws + 1
+    end
+    function renderer:dispose()
+      self.disposed = self.disposed + 1
+      if self.text and self.text.release then
+        self.text:release()
+      end
+      self.text = nil
+    end
+    context.menuRenderers[#context.menuRenderers + 1] = renderer
+    return renderer
+  end
   local ok, err = pcall(function()
     fn(modules, context)
   end)
@@ -150,6 +206,8 @@ local function withCompositionSpies(fn)
   rawset(modules.store, "new", original.storeNew)
   rawset(modules.newGame, "createCandidate", original.candidate)
   rawset(modules.oak, "compose", original.oakCompose)
+  modules.fieldText.new = original.textNew
+  modules.menuRenderer.new = original.menuRendererNew
   if not ok then
     error(err, 0)
   end
@@ -241,6 +299,55 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     Assert.deepEqual(exits, { { kind = "quit" } })
     quitGame:dispose()
   end)
+end
+
+function T.menu_presentation_is_wired_from_fakes_and_released_exactly_once()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+    })
+    Assert.equal(#context.textCalls, 1, "menu text construction must run once per game")
+    Assert.equal(#context.menuRendererCalls, 1, "menu renderer construction must run once per game")
+    Assert.equal(#context.texts, 1)
+    Assert.equal(#context.menuRenderers, 1)
+    local renderer = context.menuRenderers[1]
+    Assert.equal(renderer.text, context.texts[1], "the fake renderer must own the fake menu text")
+    Assert.equal(menuView(game.state).kind, "main_menu")
+    game:dispose()
+    Assert.equal(renderer.disposed, 1, "the menu renderer must be disposed exactly once")
+    Assert.equal(context.texts[1].releases, 1, "the owned menu text must be released exactly once")
+  end)
+end
+
+function T.menu_renderer_failure_releases_the_allocated_text_exactly_once()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    context.rendererFailure = "injected menu renderer failure"
+    local ok, err = pcall(modules.hgssGame.new, {
+      versionId = READY_VERSION,
+      onExit = function() end,
+    })
+    Assert.isFalse(ok, "a menu renderer failure must fail game construction")
+    Assert.isTrue(string.find(tostring(err), "injected menu renderer failure") ~= nil)
+    Assert.equal(#context.texts, 1, "the text must be allocated before the renderer fails")
+    Assert.equal(context.texts[1].releases, 1, "the allocated text must be released exactly once")
+    Assert.equal(#context.menuRenderers, 0, "no menu renderer may escape a failed construction")
+  end)
+end
+
+function T.composition_spies_restore_presentation_constructors_when_the_body_throws()
+  local fieldText = require("libs.hgss.src.ui.FieldTextRenderer")
+  local menuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
+  local textNew, rendererNew = fieldText.new, menuRenderer.new
+  local ok, err = pcall(withCompositionSpies, function()
+    error("injected composition body failure", 0)
+  end)
+  Assert.isFalse(ok, "the spy wrapper must rethrow the body failure")
+  Assert.isTrue(string.find(tostring(err), "injected composition body failure") ~= nil)
+  Assert.equal(fieldText.new, textNew, "the text constructor must be restored after a throw")
+  Assert.equal(menuRenderer.new, rendererNew, "the menu renderer constructor must be restored after a throw")
 end
 
 return { tests = T }

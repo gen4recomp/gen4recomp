@@ -5,14 +5,104 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
 
 local T = {}
 
+local CARD_TONE = { r = 123, g = 45, b = 67 }
+
+local INTRO_WIDGETS = {
+  "ball_open",
+  "female",
+  "gender_female",
+  "gender_male",
+  "male",
+  "marill",
+  "marill_appear",
+  "naming_female",
+  "naming_male",
+  "oak",
+  "shrink_female",
+  "shrink_male",
+}
+
+local function introManifest()
+  local widgets = {}
+  for _, id in ipairs(INTRO_WIDGETS) do
+    local path = "assets/generated/intro/" .. id .. ".png"
+    widgets[id] = {
+      image = path,
+      width = 32,
+      height = 32,
+      anchor = { x = 16, y = 32 },
+      sourceBounds = { x = 0, y = 0, width = 32, height = 32 },
+      sampling = "nearest",
+      provenance = { rule = "alpha-crop" },
+      frames = {
+        {
+          image = path,
+          width = 32,
+          height = 32,
+          duration = 4,
+          element = "none",
+          translateX = 0,
+          translateY = 0,
+          scaleX = 1,
+          scaleY = 1,
+          rotation = 0,
+          anchor = { x = 16, y = 32 },
+        },
+      },
+    }
+  end
+  for _, id in ipairs({ "ball_open", "marill_appear", "marill" }) do
+    widgets[id].sourceCenter = { x = 160, y = 80 }
+  end
+  for _, id in ipairs({
+    "ball_open",
+    "marill_appear",
+    "marill",
+    "gender_male",
+    "gender_female",
+    "naming_male",
+    "naming_female",
+  }) do
+    widgets[id].playMode = "forward"
+    widgets[id].loopStartFrameIdx = 0
+  end
+  widgets.gender_male.sourceCenter = { x = 64, y = 104 }
+  widgets.gender_female.sourceCenter = { x = 192, y = 104 }
+  local manifest = {
+    schemaVersion = IntroAssetCache.SCHEMA_VERSION,
+    variant = "heartgold",
+    sourceReference = { width = 256, height = 192 },
+    background = {
+      image = "assets/generated/intro/background.png",
+      width = 1,
+      height = 192,
+      sampling = "linear",
+      provenance = { charMember = 0, screenMember = 3, paletteMember = 1 },
+    },
+    genderSelector = {
+      defaultTone = { r = CARD_TONE.r, g = CARD_TONE.g, b = CARD_TONE.b },
+      buttons = {
+        male = { bounds = { x = 18, y = 25, width = 93, height = 148 } },
+        female = { bounds = { x = 144, y = 25, width = 95, height = 148 } },
+      },
+    },
+    widgets = widgets,
+  }
+  Assert.isTrue(IntroAssetCache.validateManifest(manifest), "the card face fixture must be a valid intro manifest")
+  return manifest
+end
+
 local function renderer(scope)
-  local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-  return MainMenuRenderer.new({ text = text }), text
+  local cache = FieldUiFixture.cacheWithFontAndFrames()
+  cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = cache }))
+  return MainMenuRenderer.new({ text = text, cacheFs = cache }), text
 end
 
 local function view(content, errorText)
@@ -307,7 +397,9 @@ function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
   }
   local focus = { region = "saves", saveId = "save-1", lane = "body" }
   local layout = MainMenuLayout.compute(globals, items, focus, 640, 480, 0, nil, nil, false)
-  local menuRenderer = MainMenuRenderer.new({ text = textProxy, graphics = graphics })
+  local cache = FieldUiFixture.cacheWithFontAndFrames()
+  cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
+  local menuRenderer = MainMenuRenderer.new({ text = textProxy, graphics = graphics, cacheFs = cache })
   menuRenderer:draw({
     focusedId = "save-1",
     focus = focus,
@@ -333,4 +425,20 @@ function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
   Assert.equal(graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
 end
 
+function T.card_faces_use_the_generated_intro_tone(scope)
+  local current = view({ x = 16, y = 80, width = 128, height = 16 })
+  local lg = love.graphics
+  local canvas = scope:own(lg.newCanvas(160, 120))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  local menuRenderer = renderer(scope)
+  menuRenderer:draw(current)
+  lg.setCanvas()
+  -- Inside the focused New Game card face, right of and below the label copy.
+  local pixels = scope:own(canvas:newImageData())
+  local r, g, b = pixels:getPixel(132, 64)
+  Assert.near(r, CARD_TONE.r / 255, 2 / 255, "the card face must use the generated intro tone red")
+  Assert.near(g, CARD_TONE.g / 255, 2 / 255, "the card face must use the generated intro tone green")
+  Assert.near(b, CARD_TONE.b / 255, 2 / 255, "the card face must use the generated intro tone blue")
+end
 return GraphicsSmoke.suite(T)

@@ -13,6 +13,16 @@ local BASE_OVERFLOW_SIZE = 24
 local BASE_OVERFLOW_INSET = 6
 local BASE_CATALOG_ERROR_HEIGHT = 24
 local BASE_CONTENT_WIDTH = 320
+local BASE_POPUP_WIDTH = 144
+local BASE_POPUP_HEIGHT = 56
+local BASE_POPUP_INSET = 8
+local BASE_POPUP_ANCHOR_GAP = 4
+local BASE_CONFIRM_WIDTH = 420
+local BASE_CONFIRM_HEIGHT = 136
+local BASE_CONFIRM_INSET = 8
+local BASE_CONFIRM_ACTION_GAP = 8
+local BASE_CONFIRM_ACTION_HEIGHT = 36
+local BASE_CONFIRM_BOTTOM_OFFSET = 48
 local BASE_INDICATOR_WIDTH = 12
 local BASE_INDICATOR_HEIGHT = 10
 local BASE_INDICATOR_GUTTER = 14
@@ -46,10 +56,10 @@ local function focusIndex(saves, focus)
   return 1
 end
 
-local function popupRect(anchor, width, height, margin)
-  local boxWidth, boxHeight = 144, 56
+local function popupRect(anchor, width, height, margin, uiScale)
+  local boxWidth, boxHeight = BASE_POPUP_WIDTH * uiScale, BASE_POPUP_HEIGHT * uiScale
   local x = anchor.x + anchor.width - boxWidth
-  local y = anchor.y + anchor.height + 4
+  local y = anchor.y + anchor.height + BASE_POPUP_ANCHOR_GAP * uiScale
   x = clamp(x, margin, math.max(margin, width - margin - boxWidth))
   y = clamp(y, margin, math.max(margin, height - margin - boxHeight))
   return { x = x, y = y, width = boxWidth, height = boxHeight }
@@ -187,25 +197,39 @@ function MainMenuLayout.compute(
   end
   if popup then
     local card = assert(cards[popup.saveId], "popup save must have layout geometry")
-    local box = popupRect(card.overflow or card.frame, width, height, margin)
+    local box = popupRect(card.overflow or card.frame, width, height, margin, uiScale)
+    local inset = BASE_POPUP_INSET * uiScale
     result.popup = {
       box = box,
-      actions = { delete = { x = box.x + 8, y = box.y + 8, width = box.width - 16, height = box.height - 16 } },
+      actions = {
+        delete = {
+          x = box.x + inset,
+          y = box.y + inset,
+          width = math.max(1, box.width - inset * 2),
+          height = math.max(1, box.height - inset * 2),
+        },
+      },
     }
   end
   if confirmation then
-    local boxWidth, boxHeight = math.min(420, width - margin * 2), 136
+    local boxWidth, boxHeight =
+      math.min(BASE_CONFIRM_WIDTH * uiScale, width - margin * 2), math.min(BASE_CONFIRM_HEIGHT * uiScale, height)
     local box = {
       x = math.floor((width - boxWidth) / 2),
       y = math.floor((height - boxHeight) / 2),
       width = math.max(1, boxWidth),
-      height = math.min(boxHeight, height),
+      height = math.max(1, boxHeight),
     }
-    local actionWidth = math.max(1, math.floor((box.width - 24) / 2))
+    local inset = BASE_CONFIRM_INSET * uiScale
+    local gap = BASE_CONFIRM_ACTION_GAP * uiScale
+    local actionHeight = BASE_CONFIRM_ACTION_HEIGHT * uiScale
+    local actionWidth = math.max(1, math.floor((box.width - inset * 2 - gap) / 2))
+    local actionY = math.max(box.y + inset, box.y + box.height - BASE_CONFIRM_BOTTOM_OFFSET * uiScale)
+    actionY = math.min(actionY, math.max(box.y + inset, box.y + box.height - actionHeight))
     result.confirmation = {
       box = box,
-      cancel = { x = box.x + 8, y = box.y + box.height - 48, width = actionWidth, height = 36 },
-      delete = { x = box.x + 16 + actionWidth, y = box.y + box.height - 48, width = actionWidth, height = 36 },
+      cancel = { x = box.x + inset, y = actionY, width = actionWidth, height = actionHeight },
+      delete = { x = box.x + inset + actionWidth + gap, y = actionY, width = actionWidth, height = actionHeight },
     }
   end
   return result

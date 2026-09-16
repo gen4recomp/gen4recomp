@@ -47,15 +47,19 @@ end
 
 local function withSpies(fn)
   local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+  local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+  local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
   local originalApply = NewGameInitialization.apply
   local originalFieldStateNew = FieldState.new
   local originalValidationNew = GameSaveValidation.new
   local originalStoreNew = GameSaveStore.new
   local originalCandidate = NewGame.createCandidate
   local originalOakCompose = OakIntroComposition.compose
+  local originalTextNew = FieldTextRenderer.new
+  local originalMenuRendererNew = MainMenuRenderer.new
   local applyCalls = {}
   local fieldStateCalls = {}
-  local context = { stores = {}, candidates = {}, oakStates = {}, fieldOptions = {} }
+  local context = { stores = {}, candidates = {}, oakStates = {}, fieldOptions = {}, texts = {}, menuRenderers = {} }
   rawset(NewGameInitialization, "apply", function(candidate, _)
     applyCalls[#applyCalls + 1] = candidate
     local artifact = {
@@ -100,6 +104,32 @@ local function withSpies(fn)
     state.onComplete = options.onComplete
     return state
   end)
+  -- Headless composition never loads generated presentation assets: the
+  -- required text/renderer constructors are replaced with strict fakes that
+  -- observe wiring and ownership instead.
+  FieldTextRenderer.new = function()
+    local text = { releases = 0 }
+    function text:drawText() end
+    function text:release()
+      self.releases = self.releases + 1
+    end
+    context.texts[#context.texts + 1] = text
+    return text
+  end
+  MainMenuRenderer.new = function(options)
+    Assert.equal(options.text, context.texts[#context.texts], "the menu renderer must own the composed menu text")
+    local renderer = { text = options.text, disposed = 0 }
+    function renderer:draw() end
+    function renderer:dispose()
+      self.disposed = self.disposed + 1
+      if self.text and self.text.release then
+        self.text:release()
+      end
+      self.text = nil
+    end
+    context.menuRenderers[#context.menuRenderers + 1] = renderer
+    return renderer
+  end
 
   local ok, err = pcall(function()
     fn(applyCalls, fieldStateCalls, context)
@@ -110,6 +140,8 @@ local function withSpies(fn)
   rawset(GameSaveStore, "new", originalStoreNew)
   rawset(NewGame, "createCandidate", originalCandidate)
   rawset(OakIntroComposition, "compose", originalOakCompose)
+  FieldTextRenderer.new = originalTextNew
+  MainMenuRenderer.new = originalMenuRendererNew
   if not ok then
     error(err, 0)
   end
