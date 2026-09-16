@@ -177,7 +177,84 @@ function MonCache.isLayoutReady(cacheFs, expectedMarker)
   return cacheFs:exists(MonCache.portraitManifestPath(), "file")
 end
 
--- True only when one page's marker is exact and its page image is present.
+-- Minimum structural envelope for a standalone page PNG (W3C PNG file
+-- structure and chunks): signature, one IHDR, at least one IDAT byte, and
+-- a terminal IEND with nothing after it. This rejects empty and truncated
+-- bodies without decoding pixels or allocating host image resources.
+local PNG_SIGNATURE = "\137PNG\r\n\26\n"
+local MAX_PNG_DIMENSION = 2147483647
+
+---@param bytes string
+---@param position integer 1-based offset of a 4-byte big-endian length
+---@return integer
+local function readU32(bytes, position)
+  local a, b, c, d = string.byte(bytes, position, position + 3)
+  assert(a ~= nil and b ~= nil and c ~= nil and d ~= nil, "chunk header must be present")
+  return ((a * 256 + b) * 256 + c) * 256 + d
+end
+
+---@param bytes string?
+---@return boolean
+local function isPngEnvelope(bytes)
+  if type(bytes) ~= "string" then
+    return false
+  end
+  if #bytes < 8 or bytes:sub(1, 8) ~= PNG_SIGNATURE then
+    return false
+  end
+  local cursor = 9
+  if cursor + 8 - 1 > #bytes then
+    return false
+  end
+  if bytes:sub(cursor + 4, cursor + 7) ~= "IHDR" then
+    return false
+  end
+  if readU32(bytes, cursor) ~= 13 then
+    return false
+  end
+  if cursor + 8 + 13 + 4 - 1 > #bytes then
+    return false
+  end
+  local width = readU32(bytes, cursor + 8)
+  local height = readU32(bytes, cursor + 12)
+  if width < 1 or height < 1 or width > MAX_PNG_DIMENSION or height > MAX_PNG_DIMENSION then
+    return false
+  end
+  cursor = cursor + 8 + 13 + 4
+  local seenIdat = false
+  local idatTotal = 0
+  while true do
+    if cursor + 8 - 1 > #bytes then
+      return false
+    end
+    local length = readU32(bytes, cursor)
+    local chunkType = bytes:sub(cursor + 4, cursor + 7)
+    if length > MAX_PNG_DIMENSION then
+      return false
+    end
+    if cursor + 8 + length + 4 - 1 > #bytes then
+      return false
+    end
+    if chunkType == "IHDR" then
+      return false
+    elseif chunkType == "IDAT" then
+      seenIdat = true
+      idatTotal = idatTotal + length
+    elseif chunkType == "IEND" then
+      if length ~= 0 then
+        return false
+      end
+      if not seenIdat or idatTotal <= 0 then
+        return false
+      end
+      return cursor + 8 + length + 4 - 1 == #bytes
+    end
+    cursor = cursor + 8 + length + 4
+  end
+end
+
+-- True only when one page's marker is exact and its page image carries a
+-- complete PNG envelope.
 ---@param cacheFs CacheFs
 ---@param kind "icons"|"portraits" presentation kind
 ---@param pageId integer zero-based page identity
@@ -188,7 +265,7 @@ function MonCache.isPageReady(cacheFs, kind, pageId, expectedMarker)
   if cacheFs:read(MonCache.pageMarkerPath(kind, pageId)) ~= expectedMarker then
     return false
   end
-  return cacheFs:exists(MonCache.pageImagePath(kind, pageId), "file")
+  return isPngEnvelope(cacheFs:read(MonCache.pageImagePath(kind, pageId)))
 end
 
 -- True only when the layout manifest is loadable and every icon page it
