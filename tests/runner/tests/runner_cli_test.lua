@@ -35,7 +35,7 @@ function T.test_entrypoint_runs_the_incremental_builder_for_real_dependency_fres
   local script = handle:read("*a")
   handle:close()
 
-  contains(script, "love romdump/ --build-cache", "test entrypoint")
+  contains(script, "love romdump/ --import-rom", "test entrypoint")
   contains(script, "love romdump/ --prepare-cache", "test entrypoint")
   contains(script, "--preparation-record", "test entrypoint")
   contains(script, "--dev", "test entrypoint")
@@ -51,7 +51,9 @@ function T.test_tooling_uses_run_scoped_temporary_directories()
   local typecheckScript = handle:read("*a")
   handle:close()
 
-  contains(testScript, 'BUILD_LOG_DIR="$(mktemp -d)"', "test script")
+  contains(testScript, 'receipt_dir="$(mktemp -d -- "$test_root/preparation.XXXXXXXX")"', "test script")
+  contains(testScript, 'fresh_root="$(mktemp -d)"', "test script")
+  contains(testScript, 'run_dir="$(mktemp -d "${TMPDIR:-/tmp}/g4recomp-tests.XXXXXXXX")"', "test script")
   contains(typecheckScript, 'LUALS_LOG_DIR="$(mktemp -d)"', "typecheck script")
 end
 

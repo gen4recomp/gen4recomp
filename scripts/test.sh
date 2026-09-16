@@ -273,22 +273,13 @@ if [ "$fresh" = 1 ]; then
     rm -f -- "$fresh_root/preparation.lua"
   fi
 elif [ -n "$rom_source" ]; then
-  # An explicit source: reuse the verified private root for its canonical
-  # content hash, importing only when its raw dump is absent.
-  file_sha="$(sha1sum -- "$rom_source" | cut -d ' ' -f 1)"
-  read_selection
-  version=""
-  sha=""
-  if [ -n "$select_sha" ] && [ "$select_sha" = "$file_sha" ]; then
-    version="$select_version"
-    sha="$select_sha"
-  elif [ "$(head -c 2 -- "$rom_source")" = "PK" ]; then
-    probe_source "$rom_source"
-    version="$probe_version"
-    sha="$probe_sha"
-  else
-    sha="$file_sha"
-  fi
+  # An explicit source: resolve its canonical identity through the source
+  # owner before selecting a root, then reuse the private root for that
+  # content hash, importing raw data only when absent and preparing exactly
+  # the selected scope.
+  probe_source "$rom_source"
+  version="$probe_version"
+  sha="$probe_sha"
   rom_dir="$test_root/$sha"
   data_home="$rom_dir/data-home"
   mkdir -p -- "$data_home"
@@ -296,60 +287,29 @@ elif [ -n "$rom_source" ]; then
   export XDG_DATA_HOME="$data_home"
   unset G4RECOMP_SAVE_DIR
   if [ ! -f "$rom_dir/rom-ready" ]; then
-    echo "== import and build $rom_source into $data_home =="
-    BUILD_LOG_DIR="$(mktemp -d)"
-    temp_dirs+=("$BUILD_LOG_DIR")
-    BUILD_LOG="$BUILD_LOG_DIR/buildcache.log"
-    build_status=0
-    love romdump/ --build-cache --dev "$rom_source" >"$BUILD_LOG" 2>&1 || build_status=$?
-    if [ "$build_status" -ne 0 ]; then
-      tail -n 20 -- "$BUILD_LOG" >&2
-      echo "test: private cache import failed (exit $build_status); see $BUILD_LOG" >&2
-      exit "$build_status"
+    echo "== import $rom_source into $data_home =="
+    import_status=0
+    love romdump/ --import-rom "$rom_source" || import_status=$?
+    if [ "$import_status" -ne 0 ]; then
+      echo "test: private cache import failed (exit $import_status)" >&2
+      exit "$import_status"
     fi
-    { grep -v ' current$' "$BUILD_LOG" | tail -n 5; } || true
-    if [ -z "$version" ]; then
-      version="$(awk '/^import complete: /{print $3; exit}' "$BUILD_LOG")"
-      if ! is_version_name "$version"; then
-        version="$(awk '/^build-cache: /{print $2; exit}' "$BUILD_LOG")"
-      fi
-      if ! is_version_name "$version"; then
-        version=""
-      fi
-    fi
-    printf 'rom_sha1=%s\n' "$sha" >"$rom_dir/rom-ready"
-    if [ -n "$version" ]; then
-      printf 'version=%s\nrom_sha1=%s\n' "$version" "$sha" >"$rom_dir/rom-ready"
-    fi
+    printf 'version=%s\nrom_sha1=%s\n' "$version" "$sha" >"$rom_dir/rom-ready"
   fi
   # Stale scope text and predecessor receipts inside the owned root never
   # authorize reuse; only the builder-issued receipt below does.
   rm -f -- "$rom_dir/prepared" "$data_home/preparation.lua"
-  if [ -z "$version" ] && [ "$prepare" != "none" ]; then
-    version="$(sed -n 's/^version=//p' -- "$rom_dir/rom-ready" | head -n 1)"
-  fi
-  if [ "$prepare" != "none" ] && ! is_version_name "${version:-}"; then
-    probe_source "$rom_source"
-    if [ "$probe_sha" != "$sha" ]; then
-      echo "test: private cache identity changed; refusing to mix roots" >&2
-      exit 1
-    fi
-    version="$probe_version"
-  fi
-  if [ -n "$version" ]; then
-    write_selection "$version" "$sha"
-    echo "== private ROM test cache: $version $sha in $data_home =="
-  fi
   if [ "$prepare" != "none" ]; then
-    if [ -z "$version" ]; then
-      echo "test: scoped cache preparation needs a version for $sha" >&2
-      exit 1
-    fi
     echo "== prepare ${requires[*]} for $version in $data_home =="
     new_receipt_dir
     run_scoped_prepare "$version" "$receipt_dir/preparation.lua"
     export G4RECOMP_TEST_PREPARATION="$receipt_dir/preparation.lua"
   fi
+  # Publish the successful selection only after this invocation's required
+  # import and scoped preparation succeeded; a failed scope leaves the
+  # previous selection in place while its valid raw import stays reusable.
+  write_selection "$version" "$sha"
+  echo "== private ROM test cache: $version $sha in $data_home =="
 elif [ "$prepare" != "none" ]; then
   # A plain run: reuse the last successfully selected private cache when it
   # names a supported hash whose raw dump validates, otherwise run the
