@@ -1,20 +1,14 @@
--- HGSS-styled Main Menu presentation over Button chrome and the generated field font.
+-- HGSS-styled Main Menu presentation over the shared card chrome and the generated field font.
 
-local Button = require("libs.ui.src.Button")
+local HgssCardButton = require("libs.hgss.src.ui.HgssCardButton")
+local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 
 ---@class MainMenuRenderer
 ---@field text table<string, function>
 ---@field graphics love.graphics
+---@field cardTone { r: integer, g: integer, b: integer }
 local MainMenuRenderer = {}
 MainMenuRenderer.__index = MainMenuRenderer
-
-local BORDER = { 58 / 255, 58 / 255, 58 / 255, 1 }
-local NEUTRAL_RIM = { 222 / 255, 230 / 255, 230 / 255, 1 }
-local SELECTED_RIM = { 255 / 255, 58 / 255, 58 / 255, 1 }
-local FACE_TOP = { 0.97, 0.96, 0.9, 1 }
-local FACE_BOTTOM = { 0.89, 0.87, 0.77, 1 }
-local OVERFLOW_FACE_TOP = { 1, 0.87, 0.82, 1 }
-local OVERFLOW_FACE_BOTTOM = { 0.94, 0.72, 0.66, 1 }
 local INK = { 0.12, 0.18, 0.25, 1 }
 local MUTED = { 0.3, 0.38, 0.42, 1 }
 local ERROR_INK = { 0.65, 0.22, 0.22, 1 }
@@ -25,24 +19,40 @@ local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4] or 1)
 end
 
-local function drawPanel(graphics, rect, scale, selected, faceTop, faceBottom)
-  local resolved = Button.resolve({
-    rect = rect,
-    borderWidth = 2 * scale,
-    rimWidth = 2 * scale,
-    innerBorderWidth = 1 * scale,
-    cornerRadius = 3 * scale,
-    faceSplit = 0.5,
-    contentInsetX = 0,
-    contentInsetY = 0,
+local function drawNoContent() end
+
+local function drawCard(graphics, rect, scale, selected, tone)
+  local resolved = HgssCardButton.resolve({ rect = rect, scale = scale })
+  local content = assert(resolved.contentRect)
+  HgssCardButton.draw(graphics, resolved, {
+    defaultTone = tone,
+    selected = selected,
+    focusBlinkDelta = 0,
+    contentRect = { x = content.x, y = content.y, width = content.width, height = content.height },
+    drawContent = drawNoContent,
   })
-  Button.draw(graphics, resolved, {
-    border = BORDER,
-    rim = selected and SELECTED_RIM or NEUTRAL_RIM,
-    innerBorder = faceTop,
-    faceTop = faceTop,
-    faceBottom = faceBottom,
-  })
+end
+
+-- Selected rim ring around a save frame whose overflow child stays neutral.
+-- The ring is the resolved rim rectangle minus the resolved inner-border
+-- rectangle, so no selected fill is ever painted underneath the child
+-- control. Rim/inner insets come from the shared resolve; only the
+-- ring-minus-hole composition lives here.
+---@param graphics love.graphics
+---@param rect { x: number, y: number, width: number, height: number }
+---@param scale number
+local function drawFrameOutline(graphics, rect, scale)
+  local resolved = HgssCardButton.resolve({ rect = rect, scale = scale })
+  local rimCell = assert(resolved.rim, "resolved card rim is required")
+  local innerCell = assert(resolved.innerBorder, "resolved card inner border is required")
+  ---@cast rimCell { rect: { x: number, y: number, width: number, height: number } }
+  ---@cast innerCell { rect: { x: number, y: number, width: number, height: number } }
+  local rim, inner = rimCell.rect, innerCell.rect
+  setColor(graphics, HgssCardButton.selectedRim())
+  graphics.rectangle("fill", rim.x, rim.y, rim.width, inner.y - rim.y)
+  graphics.rectangle("fill", rim.x, inner.y + inner.height, rim.width, rim.y + rim.height - inner.y - inner.height)
+  graphics.rectangle("fill", rim.x, inner.y, inner.x - rim.x, inner.height)
+  graphics.rectangle("fill", inner.x + inner.width, inner.y, rim.x + rim.width - inner.x - inner.width, inner.height)
 end
 
 local function drawText(graphics, text, value, x, y, scale)
@@ -63,15 +73,39 @@ local function cardTitle(item)
   return item.errorSummary or "Save unavailable"
 end
 
----@param options { text: table<string, function>, graphics?: love.graphics }
+---@param options { text: table<string, function>, cacheFs: table<string, function>, graphics?: love.graphics }
 ---@return MainMenuRenderer
 function MainMenuRenderer.new(options)
   assert(type(options) == "table" and options.text, "Main Menu renderer requires FieldTextRenderer")
+  assert(
+    type(options.cacheFs) == "table" and type(options.cacheFs.loadLua) == "function",
+    "Main Menu renderer requires a version cache for the generated card face"
+  )
   local graphics = options.graphics or love.graphics
   ---@cast graphics love.graphics
   assert(graphics, "Main Menu renderer requires graphics")
   assert(type(options.text.drawText) == "function", "Main Menu renderer requires generated text drawing")
-  return setmetatable({ text = options.text, graphics = graphics }, MainMenuRenderer)
+  local manifest = assert(
+    options.cacheFs:loadLua(IntroAssetCache.manifestPath()),
+    "Main Menu renderer requires the generated intro manifest"
+  )
+  local valid, manifestError = IntroAssetCache.validateManifest(manifest)
+  if not valid then
+    error(manifestError or "Main Menu renderer intro manifest is invalid", 0)
+  end
+  local tone = assert(
+    manifest.genderSelector and manifest.genderSelector.defaultTone,
+    "Main Menu renderer requires the generated card face tone"
+  )
+  assert(
+    type(tone.r) == "number" and type(tone.g) == "number" and type(tone.b) == "number",
+    "Main Menu renderer card face tone must carry byte RGB channels"
+  )
+  return setmetatable({
+    text = options.text,
+    graphics = graphics,
+    cardTone = { r = tone.r, g = tone.g, b = tone.b },
+  }, MainMenuRenderer)
 end
 
 ---@param view table<string, unknown>
@@ -86,6 +120,7 @@ function MainMenuRenderer:draw(view)
   local red, green, blue, alpha = graphics.getColor()
   local lineWidth = graphics.getLineWidth()
   local oldX, oldY, oldWidth, oldHeight = graphics.getScissor()
+  local tone = self.cardTone
   local ok, err = xpcall(function()
     graphics.setColor(0.08, 0.1, 0.15, 1)
     graphics.clear(0.08, 0.1, 0.15, 1)
@@ -107,9 +142,9 @@ function MainMenuRenderer:draw(view)
         local overflowFocused = focus.region == "saves"
           and focus.saveId == (item.saveId or item.id)
           and focus.lane == "overflow"
-        drawPanel(graphics, card.frame, scale, false, FACE_TOP, FACE_BOTTOM)
+        drawCard(graphics, card.frame, scale, false, tone)
         if bodyFocused then
-          drawPanel(graphics, card.body, scale, true, FACE_TOP, FACE_BOTTOM)
+          drawFrameOutline(graphics, card.frame, scale)
         end
         local pad = 6 * scale
         local headingY = card.frame.y + 5 * scale
@@ -125,11 +160,7 @@ function MainMenuRenderer:draw(view)
           drawText(graphics, text, cardTitle(item), card.frame.x + pad, headingY + 20 * scale, scale)
         end
         if card.overflow then
-          if overflowFocused then
-            drawPanel(graphics, card.overflow, scale, true, OVERFLOW_FACE_TOP, OVERFLOW_FACE_BOTTOM)
-          else
-            drawPanel(graphics, card.overflow, scale, false, FACE_TOP, FACE_BOTTOM)
-          end
+          drawCard(graphics, card.overflow, scale, overflowFocused, tone)
           setColor(graphics, INK)
           drawText(graphics, text, "...", card.overflow.x + 3 * scale, card.overflow.y + 4 * scale, scale)
         end
@@ -146,7 +177,7 @@ function MainMenuRenderer:draw(view)
     local globalFocus = view.focus.region == "global"
     local global = assert(layout.global)
     local newGame = assert(global.actions["new-game"])
-    drawPanel(graphics, newGame, scale, globalFocus, FACE_TOP, FACE_BOTTOM)
+    drawCard(graphics, newGame, scale, globalFocus, tone)
     setColor(graphics, INK)
     drawText(graphics, text, "NEW GAME", newGame.x + 6 * scale, newGame.y + 10 * scale, scale)
 
@@ -154,8 +185,8 @@ function MainMenuRenderer:draw(view)
       local popup = assert(layout.popup)
       graphics.setColor(0, 0, 0, 0.45)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
-      drawPanel(graphics, popup.box, scale, false, FACE_TOP, FACE_BOTTOM)
-      drawPanel(graphics, popup.actions.delete, scale, true, FACE_TOP, FACE_BOTTOM)
+      drawCard(graphics, popup.box, scale, false, tone)
+      drawCard(graphics, popup.actions.delete, scale, true, tone)
       setColor(graphics, INK)
       drawText(graphics, text, "Delete", popup.actions.delete.x + 4 * scale, popup.actions.delete.y + 4 * scale, scale)
     end
@@ -163,7 +194,7 @@ function MainMenuRenderer:draw(view)
       local confirmation = assert(layout.confirmation)
       graphics.setColor(0, 0, 0, 0.62)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
-      drawPanel(graphics, confirmation.box, scale, false, FACE_TOP, FACE_BOTTOM)
+      drawCard(graphics, confirmation.box, scale, false, tone)
       setColor(graphics, INK)
       drawText(
         graphics,
@@ -175,8 +206,8 @@ function MainMenuRenderer:draw(view)
       )
       local cancelFocus = view.confirmation.focusedAction == "cancel"
       local deleteFocus = view.confirmation.focusedAction == "delete"
-      drawPanel(graphics, confirmation.cancel, scale, cancelFocus, FACE_TOP, FACE_BOTTOM)
-      drawPanel(graphics, confirmation.delete, scale, deleteFocus, FACE_TOP, FACE_BOTTOM)
+      drawCard(graphics, confirmation.cancel, scale, cancelFocus, tone)
+      drawCard(graphics, confirmation.delete, scale, deleteFocus, tone)
       setColor(graphics, INK)
       drawText(graphics, text, "Cancel", confirmation.cancel.x + 4 * scale, confirmation.cancel.y + 4 * scale, scale)
       drawText(graphics, text, "Delete", confirmation.delete.x + 4 * scale, confirmation.delete.y + 4 * scale, scale)

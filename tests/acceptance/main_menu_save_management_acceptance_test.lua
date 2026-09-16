@@ -164,7 +164,10 @@ local function withMenu(count, width, height, options, fn)
     end,
   })
   local menuText = FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(templateRecord.versionId) })
-  local menuRenderer = MainMenuRenderer.new({ text = menuText })
+  local menuRenderer = MainMenuRenderer.new({
+    text = menuText,
+    cacheFs = CacheFs.forVersion(templateRecord.versionId),
+  })
   local menu = MainMenuState.new({
     saveStore = store,
     readyVersions = { templateRecord.versionId },
@@ -299,16 +302,16 @@ function T.tests.many_saves_scroll_without_moving_the_fixed_new_game_action()
     )
     local globalAction = assert(scrolled.layout.global.actions["new-game"])
     menu:keypressed("left")
-    Assert.equal(view(menu).focusedId, saveIds[1], "Left from a save body must not cross to New Game")
-    menu:keypressed("down")
+    Assert.equal(view(menu).focusedId, "new-game", "Left from a save body must reach New Game directly")
     local globalFocus = view(menu)
-    Assert.equal(globalFocus.focusedId, "new-game", "Down from the final save must reach New Game")
     Assert.equal(globalFocus.layout.global.actions["new-game"].y, globalAction.y)
     Assert.equal(globalFocus.layout.global.actions["new-game"].x, globalAction.x)
-    menu:keypressed("right")
-    Assert.equal(view(menu).focusedId, "new-game", "Right from New Game must not cross to the saves")
+    menu:keypressed("down")
+    Assert.equal(view(menu).focusedId, "new-game", "Down from New Game must stay on New Game")
     menu:keypressed("up")
-    Assert.equal(view(menu).focusedId, saveIds[1], "Up from New Game must return to the final save")
+    Assert.equal(view(menu).focusedId, "new-game", "Up from New Game must stay on New Game")
+    menu:keypressed("right")
+    Assert.equal(view(menu).focusedId, saveIds[1], "Right from New Game must return to the remembered save")
     menu:resize(640, 240)
     menu:keypressed("up")
     Assert.equal(view(menu).focusedId, saveIds[2], "semantic navigation must survive resize")

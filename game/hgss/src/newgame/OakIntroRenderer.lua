@@ -2,9 +2,9 @@
 -- intro manifest; semantic timing and transition decisions remain in the
 -- engine controller.
 
-local ImageButton = require("libs.ui.src.ImageButton")
 local TextButton = require("libs.ui.src.TextButton")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local HgssCardButton = require("libs.hgss.src.ui.HgssCardButton")
 local PixelScale = require("libs.ui.src.PixelScale")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
@@ -47,34 +47,9 @@ local REVEAL_SHADER = [[
   }
 ]]
 
-local PROFILE_CARD = {
-  border = { 58, 58, 58 },
-  selectedRim = { 255, 58, 58 },
-  unselectedRim = { 222, 230, 230 },
-}
-
-local function clamp(value)
-  return math.max(0, math.min(1, value))
-end
-
-local function referenceColor(value)
-  return { value[1] / 255, value[2] / 255, value[3] / 255 }
-end
-
-local function profilePalette(manifest, selected, focusBlinkDelta)
-  local tone = assert(manifest.genderSelector and manifest.genderSelector.defaultTone)
-  local delta = selected and (focusBlinkDelta or 0) / 31 or 0
-  local fill = {
-    clamp(tone.r / 255 + delta),
-    clamp(tone.g / 255 + delta),
-    clamp(tone.b / 255 + delta),
-  }
-  return {
-    border = referenceColor(PROFILE_CARD.border),
-    rim = referenceColor(selected and PROFILE_CARD.selectedRim or PROFILE_CARD.unselectedRim),
-    selectedRim = referenceColor(PROFILE_CARD.selectedRim),
-    face = fill,
-  }
+local function cardTone(manifest)
+  local selector = assert(manifest.genderSelector, "Oak renderer requires a generated gender selector")
+  return assert(selector.defaultTone, "Oak renderer requires a generated gender selector tone")
 end
 
 local function paletteColor(definition, slot)
@@ -340,41 +315,28 @@ function OakIntroRenderer:_draw(view)
       for gender = 0, 1 do
         local entry = assert(layout.genderButtons and layout.genderButtons[gender])
         local selected = view.genderFocus == gender
-        local palette = profilePalette(self.manifest, selected, selected and view.focusBlinkDelta or 0)
-        local colors = {
-          face = { palette.face[1], palette.face[2], palette.face[3], 1 },
-          border = { palette.border[1], palette.border[2], palette.border[3], 1 },
-          rim = { palette.rim[1], palette.rim[2], palette.rim[3], 1 },
-          selectedRim = { palette.selectedRim[1], palette.selectedRim[2], palette.selectedRim[3], 1 },
-          innerBorder = { palette.face[1], palette.face[2], palette.face[3], 1 },
-        }
         local function drawGenderPortrait(rect)
           drawAsset(self, entry.portraitId, 1, rect)
         end
-        ImageButton.draw(graphics, entry.button, {
+        HgssCardButton.draw(graphics, entry.button, {
+          defaultTone = cardTone(self.manifest),
           selected = selected,
-          colors = colors,
-          imageRect = entry.portraitRect,
-          drawImage = drawGenderPortrait,
+          focusBlinkDelta = selected and view.focusBlinkDelta or 0,
+          contentRect = entry.portraitRect,
+          drawContent = drawGenderPortrait,
         })
       end
     elseif layout.selectedProfileButton then
       local entry = layout.selectedProfileButton
-      local palette = profilePalette(self.manifest, true, view.focusBlinkDelta or 0)
-      local colors = {
-        face = { palette.face[1], palette.face[2], palette.face[3], 1 },
-        border = { palette.border[1], palette.border[2], palette.border[3], 1 },
-        rim = { palette.rim[1], palette.rim[2], palette.rim[3], 1 },
-        selectedRim = { palette.selectedRim[1], palette.selectedRim[2], palette.selectedRim[3], 1 },
-      }
       local function drawSelectedProfilePortrait(rect)
         drawAsset(self, entry.portraitId, 1, rect)
       end
-      ImageButton.draw(graphics, entry.button, {
+      HgssCardButton.draw(graphics, entry.button, {
+        defaultTone = cardTone(self.manifest),
         selected = true,
-        colors = colors,
-        imageRect = entry.portraitRect,
-        drawImage = drawSelectedProfilePortrait,
+        focusBlinkDelta = view.focusBlinkDelta or 0,
+        contentRect = entry.portraitRect,
+        drawContent = drawSelectedProfilePortrait,
       })
     end
   end
