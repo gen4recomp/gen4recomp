@@ -132,7 +132,7 @@ end
 -- location left to the repository's own environment file so product-root
 -- isolation is proved against the real default.
 local SANITIZE_ENV =
-  "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE PORTEMON_DERIVED_CACHE_READY PORTEMON_REQUIRE_ROM_TESTS;"
+  "unset PORTEMON_TEST_RUN_DIR PORTEMON_TEST_WORKERS PORTEMON_TEST_WORKER PORTEMON_TEST_AGGREGATE PORTEMON_TEST_ACCEPTANCE_NAMESPACE PORTEMON_TEST_PREPARATION PORTEMON_DERIVED_CACHE_READY PORTEMON_REQUIRE_ROM_TESTS;"
 
 -- Generated fake `love`: plan mode is delegated to the real binary so the
 -- runner's actual selection rules apply; ROM preparation records its data
@@ -172,7 +172,12 @@ if [ "$target" = "romdump/" ]; then
   fi
   # A successful scoped preparation issues its invocation receipt the way
   # the common builder does; a failed one leaves no successful receipt.
-  if [ "${FAKE_PREPARATION_STATUS:-0}" = "0" ]; then
+  # Only scoped preparation honors the failure switch: probing and raw
+  # import always succeed, so a failing scope proves selection preservation
+  # with a reusable raw import behind it.
+  command_status=0
+  if [ "${2:-}" = "--prepare-cache" ]; then command_status="${FAKE_PREPARATION_STATUS:-0}"; fi
+  if [ "$command_status" = "0" ]; then
     previous=""
     for arg in "$@"; do
       if [ "$previous" = "--preparation-record" ]; then : > "$arg"; fi
@@ -181,7 +186,7 @@ if [ "$target" = "romdump/" ]; then
   fi
   if [ "${FAKE_SLOW_PREPARATION:-0}" != "0" ]; then sleep "$FAKE_SLOW_PREPARATION"; fi
   printf 'end=%s\n' "$(date +%s.%N)" >> "$invocation"
-  exit "${FAKE_PREPARATION_STATUS:-0}"
+  exit "$command_status"
 fi
 if [ "$target" = "app/" ]; then
   if [ -n "${PORTEMON_TEST_AGGREGATE:-}" ]; then
@@ -317,6 +322,42 @@ local function countImports(invocations, needle)
   return count
 end
 
+local function invocationsWith(invocations, needle)
+  local selected = {}
+  for _, invocation in ipairs(invocations) do
+    if (invocation.argv or ""):find(needle, 1, true) ~= nil then
+      selected[#selected + 1] = invocation
+    end
+  end
+  return selected
+end
+
+local function shaOf(path)
+  local handle = popen("sha1sum -- " .. shellQuote(path))
+  local digest = trim((handle:read("*l") or ""):match("^%S+") or "")
+  handle:close()
+  assert(#digest == 40, "the fixture source has a content identity")
+  return digest
+end
+
+local function requiresOf(argv)
+  local requirements = {}
+  for requirement in (argv or ""):gmatch("%-%-require ([^%s]+)") do
+    requirements[#requirements + 1] = requirement
+  end
+  table.sort(requirements)
+  return requirements
+end
+
+local function assertRequireUnion(argv, expected, label)
+  local wanted = {}
+  for _, requirement in ipairs(expected) do
+    wanted[#wanted + 1] = requirement
+  end
+  table.sort(wanted)
+  Assert.deepEqual(requiresOf(argv), wanted, label .. ", got: " .. tostring(argv))
+end
+
 -- A repeated run against the same source must reuse one surviving private
 -- root and skip the second import: identity is validated, nothing is
 -- recompiled, and both runs execute inside the same data home.
@@ -366,7 +407,7 @@ function T.a_repeated_source_run_reuses_one_private_root_and_skips_the_second_im
       invocations[#invocations + 1] = invocation
     end
     Assert.equal(
-      countImports(invocations, source),
+      countImports(invocations, "--import-rom") + countImports(invocations, "--build-cache"),
       1,
       "a ready private root must be imported exactly once across both runs"
     )
@@ -497,22 +538,26 @@ function T.a_fresh_run_is_cold_temporary_and_leaves_the_persistent_cache_alone()
   end)
 end
 
--- The machine-readable plan scopes preparation to the actual selection: a
--- cache-backed focus using the historical cache capability prepares the
--- complete scope it is granted from, while a narrow requirement-free focus
--- reports no scope and no requirements.
-function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
-  local loveBin = shellQuote(realLove())
+-- One direct plan child with worker identity sanitized. The real child exit
+-- status travels through a status file; plan fields are parsed only after
+-- exit zero, never inferred from a plan line the wrapper happened to print.
+local function runPlanChild(root, name, args)
+  local logFile = root .. "/" .. name .. ".log"
+  local statusFile = root .. "/" .. name .. ".status"
+  local command = table.concat({
+    SANITIZE_ENV,
+    shellQuote(realLove()) .. " app/ --test " .. args .. " >" .. shellQuote(logFile) .. " 2>&1;",
+    "echo $? > " .. shellQuote(statusFile) .. ";",
+  }, " ")
+  local handle = popen(command)
+  local _ = handle:read("*a")
+  handle:close()
+  return exitStatus(statusFile), readFile(logFile) or ""
+end
 
-  local cacheBacked = popen(loveBin .. " app/ --test --plan --filter field_dialogue_test 2>&1")
-  local cacheLines = {}
-  for line in cacheBacked:lines() do
-    cacheLines[#cacheLines + 1] = line
-  end
-  cacheBacked:close()
-
+local function parsePlanFields(output)
   local prepare, jobs, requires = nil, nil, {}
-  for _, line in ipairs(cacheLines) do
+  for line in (output .. "\n"):gmatch("([^\n]*)\n") do
     local key, value = line:match("^([^=]+)=(.*)$")
     if key == "prepare" then
       prepare = value
@@ -522,37 +567,52 @@ function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
       requires[#requires + 1] = value
     end
   end
-  -- A nested plan call that dies under parallel load prints no prepare line;
-  -- surface its captured output so the failure names the nested cause.
-  local planEvidence = "nested plan output: [" .. table.concat(cacheLines, " | ") .. "]"
-  Assert.equal(prepare, "complete", "a historical-cache focus prepares the complete scope; " .. planEvidence)
-  Assert.isTrue(#requires >= 1, "a cache-backed focus must name its requirements")
-  local hasComplete = false
-  for _, requirement in ipairs(requires) do
-    Assert.isTrue(requirement ~= nil and requirement ~= "", "every requirement names a closed request")
-    if requirement == "complete" then
-      hasComplete = true
-    end
-  end
-  Assert.isTrue(hasComplete, "a historical-cache focus explicitly requires the complete corpus")
-  Assert.isTrue(
-    tostring(jobs):match("^[1-9][0-9]*$") ~= nil,
-    "the plan still answers a positive worker count, got: " .. tostring(jobs)
-  )
+  return prepare, jobs, requires
+end
 
-  local narrow = popen(loveBin .. " app/ --test --plan --filter the_plan_mode_is_part_of_the_command_surface 2>&1")
-  local narrowPrepare, narrowRequires = nil, {}
-  for line in narrow:lines() do
-    local key, value = line:match("^([^=]+)=(.*)$")
-    if key == "prepare" then
-      narrowPrepare = value
-    elseif key == "require" then
-      narrowRequires[#narrowRequires + 1] = value
+-- The machine-readable plan scopes preparation to the actual selection: a
+-- cache-backed focus using the historical cache capability prepares the
+-- complete scope it is granted from, while a narrow requirement-free focus
+-- reports no scope and no requirements. Both children run sanitized, so the
+-- scenario holds under parallel workers as well as serially.
+function T.a_legacy_cache_backed_focus_prepares_the_complete_scope_it_claims()
+  withTempDirectory(function(root)
+    local parentWorker = os.getenv("PORTEMON_TEST_WORKER")
+
+    local cacheStatus, cacheOutput = runPlanChild(root, "cache-plan", "--plan --filter field_dialogue_test")
+    Assert.equal(cacheStatus, "0", "the cache-backed plan child must exit zero, got: " .. cacheOutput)
+    local prepare, jobs, requires = parsePlanFields(cacheOutput)
+    -- A nested plan call that dies under parallel load prints no prepare line;
+    -- surface its captured output so the failure names the nested cause.
+    local planEvidence = "nested plan output: [" .. cacheOutput:gsub("\n", " | ") .. "]"
+    Assert.equal(prepare, "complete", "a historical-cache focus prepares the complete scope; " .. planEvidence)
+    Assert.isTrue(#requires >= 1, "a cache-backed focus must name its requirements")
+    local hasComplete = false
+    for _, requirement in ipairs(requires) do
+      Assert.isTrue(requirement ~= nil and requirement ~= "", "every requirement names a closed request")
+      if requirement == "complete" then
+        hasComplete = true
+      end
     end
-  end
-  narrow:close()
-  Assert.equal(narrowPrepare, "none", "a requirement-free focus prepares nothing")
-  Assert.equal(#narrowRequires, 0, "a requirement-free focus names no requirements")
+    Assert.isTrue(hasComplete, "a historical-cache focus explicitly requires the complete corpus")
+    Assert.isTrue(
+      tostring(jobs):match("^[1-9][0-9]*$") ~= nil,
+      "the plan still answers a positive worker count, got: " .. tostring(jobs)
+    )
+
+    local narrowStatus, narrowOutput =
+      runPlanChild(root, "narrow-plan", "--plan --filter the_plan_mode_is_part_of_the_command_surface")
+    Assert.equal(narrowStatus, "0", "the requirement-free plan child must exit zero, got: " .. narrowOutput)
+    local narrowPrepare, _, narrowRequires = parsePlanFields(narrowOutput)
+    Assert.equal(narrowPrepare, "none", "a requirement-free focus prepares nothing")
+    Assert.equal(#narrowRequires, 0, "a requirement-free focus names no requirements")
+
+    Assert.equal(
+      os.getenv("PORTEMON_TEST_WORKER"),
+      parentWorker,
+      "the parent worker identity is unchanged by its sanitized children"
+    )
+  end)
 end
 
 -- A plain run with no private selection never prepares the product cache:
@@ -660,9 +720,16 @@ function T.concurrent_runs_for_one_source_serialize_their_mutation()
     Assert.equal(exitStatus(recordDir .. "/a.status"), "0", "the first run must succeed")
     Assert.equal(exitStatus(recordDir .. "/b.status"), "0", "the second run must succeed")
 
+    -- Only mutating invocations hold the per-ROM lock; source probes are
+    -- lock-exempt validation that creates no cache state, so concurrent
+    -- probes may overlap while mutation stays serialized.
     local windows = {}
     for _, invocation in ipairs(preparationInvocations(recordDir)) do
-      if invocation.start ~= nil and invocation.finish ~= nil then
+      local argv = invocation.argv or ""
+      local mutates = argv:find("--prepare-cache", 1, true) ~= nil
+        or argv:find("--import-rom", 1, true) ~= nil
+        or argv:find("--build-cache", 1, true) ~= nil
+      if mutates and invocation.start ~= nil and invocation.finish ~= nil then
         windows[#windows + 1] = invocation
       end
     end
@@ -957,6 +1024,168 @@ function T.a_failed_builder_preparation_stops_the_run_without_fabricating_a_rece
       "a failed preparation leaves no successful receipt behind"
     )
   end)
+end
+
+-- A failed scoped preparation for another valid raw input authorizes
+-- nothing: the run exits nonzero with no test child, the previous
+-- successful selection stays published, the valid raw import remains
+-- reusable, and a retry reuses it while minting a fresh proof.
+function T.a_failed_scoped_preparation_keeps_the_previous_selection()
+  withTempDirectory(function(root)
+    local fakeLoveDir = installFakeLove(root)
+    local first = root .. "/first.nds"
+    local second = root .. "/second.nds"
+    writeFile(first, "first valid raw input bytes")
+    writeFile(second, "second valid raw input bytes")
+    local testRoot = root .. "/cache/portemon/rom-tests"
+    local selectionFile = testRoot .. "/selected-rom"
+    local firstArgs = "--rom-source " .. shellQuote(first) .. " --filter field_dialogue_test"
+    local secondArgs = "--rom-source " .. shellQuote(second) .. " --filter field_dialogue_test"
+
+    local seed = root .. "/seed"
+    local _, _, seedStatus = runTestCommand(root, fakeLoveDir, firstArgs, { recordDir = seed, runTag = "seed" })
+    Assert.equal(exitStatus(seedStatus), "0", "the seeding run must succeed")
+    local firstSha = shaOf(first)
+    local published = "version=heartgold\nrom_sha1=" .. firstSha .. "\n"
+    Assert.equal(readFile(selectionFile), published, "the seed publishes the first selection")
+
+    local failed = root .. "/failed"
+    local _, failedLog, failedStatus = runTestCommand(
+      root,
+      fakeLoveDir,
+      secondArgs,
+      { recordDir = failed, runTag = "failed", FAKE_PREPARATION_STATUS = "1" }
+    )
+    Assert.isTrue(
+      exitStatus(failedStatus) ~= "0",
+      "a failed scoped preparation must fail the run: " .. tostring(readFile(failedLog))
+    )
+    Assert.isFalse(fileExists(failed .. "/serial.txt"), "no test child starts after a failed preparation")
+    Assert.equal(
+      readFile(selectionFile),
+      published,
+      "a failed scope must not replace the previous successful selection"
+    )
+
+    local secondSha = shaOf(second)
+    Assert.isTrue(
+      fileExists(testRoot .. "/" .. secondSha .. "/rom-ready"),
+      "the successfully imported new raw data remains reusable"
+    )
+
+    local retry = root .. "/retry"
+    local _, retryLog, retryStatus =
+      runTestCommand(root, fakeLoveDir, secondArgs, { recordDir = retry, runTag = "retry" })
+    Assert.equal(exitStatus(retryStatus), "0", "the retry must succeed: " .. tostring(readFile(retryLog)))
+    Assert.isTrue(fileExists(retry .. "/serial.txt"), "the retry runs its test child")
+    Assert.equal(
+      readFile(selectionFile),
+      "version=heartgold\nrom_sha1=" .. secondSha .. "\n",
+      "the retry publishes the second selection once its scope succeeds"
+    )
+
+    local scoped = {}
+    for _, invocation in ipairs(preparationInvocations(failed)) do
+      scoped[#scoped + 1] = invocation
+    end
+    for _, invocation in ipairs(preparationInvocations(retry)) do
+      scoped[#scoped + 1] = invocation
+    end
+    local imports = 0
+    for _, invocation in ipairs(scoped) do
+      local argv = invocation.argv or ""
+      if argv:find("--import-rom", 1, true) ~= nil or argv:find("--build-cache", 1, true) ~= nil then
+        imports = imports + 1
+      end
+    end
+    Assert.equal(imports, 1, "the retry reuses the raw import and mints only a fresh proof")
+  end)
+end
+
+-- An ordinary first seed into an empty private root imports raw data only
+-- and prepares exactly the selected closure: one import-only invocation,
+-- never an exhaustive build; a requirement-free selection prepares nothing,
+-- while derived selections prepare only their exact requirement union
+-- through an invocation-owned receipt under the private root.
+function T.first_seed_imports_once_and_prepares_only_the_selected_scope()
+  local cases = {
+    {
+      label = "requirement-free",
+      args = "--filter the_plan_mode_is_part_of_the_command_surface",
+      requires = {},
+    },
+    {
+      label = "narrow-derived",
+      args = "--filter field_dialogue_test",
+      requires = { "complete", "field-core" },
+    },
+    {
+      label = "complete",
+      args = "--slow --filter derived_cache_corpus_test",
+      requires = { "complete" },
+    },
+  }
+  for _, case in ipairs(cases) do
+    withTempDirectory(function(root)
+      local fakeLoveDir = installFakeLove(root)
+      local source = root .. "/fixture.nds"
+      writeFile(source, "fixture rom bytes for the " .. case.label .. " first seed")
+      local recordDir = root .. "/records"
+
+      local _, logFile, statusFile = runTestCommand(
+        root,
+        fakeLoveDir,
+        "--rom-source " .. shellQuote(source) .. " " .. case.args,
+        { recordDir = recordDir, runTag = "first" }
+      )
+      Assert.equal(
+        exitStatus(statusFile),
+        "0",
+        "the " .. case.label .. " first seed must succeed: " .. tostring(readFile(logFile))
+      )
+
+      local invocations = preparationInvocations(recordDir)
+      Assert.equal(
+        countImports(invocations, "--import-rom"),
+        1,
+        "the " .. case.label .. " first seed must import raw data exactly once"
+      )
+      Assert.equal(
+        countImports(invocations, "--build-cache"),
+        0,
+        "the " .. case.label .. " first seed must never hide an exhaustive build"
+      )
+
+      local testRoot = root .. "/cache/portemon/rom-tests"
+      local dataHome = testRoot .. "/" .. shaOf(source) .. "/data-home"
+      local prepared = invocationsWith(invocations, "--prepare-cache")
+      if #case.requires == 0 then
+        Assert.equal(#prepared, 0, "a requirement-free first seed prepares nothing")
+        for _, invocation in ipairs(invocations) do
+          Assert.isNil(
+            (invocation.argv or ""):find("--preparation-record", 1, true),
+            "a requirement-free first seed exports no preparation proof"
+          )
+        end
+      else
+        Assert.equal(#prepared, 1, "the " .. case.label .. " first seed must prepare its exact scope once")
+        local argv = prepared[1].argv or ""
+        assertRequireUnion(argv, case.requires, "the " .. case.label .. " preparation requests only its exact union")
+        contains(argv, "--dev", "scoped preparation tests the working-tree development identity")
+        contains(argv, "--preparation-record " .. testRoot, "the invocation receipt stays under the private root")
+      end
+      for _, invocation in ipairs(invocationsWith(invocations, "--import-rom")) do
+        Assert.equal(invocation.xdg, dataHome, "the raw import runs inside the canonical private root")
+      end
+      for _, invocation in ipairs(prepared) do
+        Assert.equal(invocation.xdg, dataHome, "scoped preparation runs inside the canonical private root")
+      end
+      Assert.isTrue(
+        fileExists(recordDir .. "/serial.txt"),
+        "the " .. case.label .. " first seed still executes its test child"
+      )
+    end)
+  end
 end
 
 -- Direct entrypoint children (bypassing the shell wrapper) for pre-setup
