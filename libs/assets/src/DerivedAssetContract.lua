@@ -42,6 +42,11 @@
 -- (type, map) rect is a 6x4 arrangement (48px wide, 32px tall) composed at
 -- build time from the original 24 8x8 tiles, instead of a raw 192x8 strip.
 --
+-- fieldUi schema 8: the manifest carries the required source-independent
+-- normal naming chrome (one opaque 256x192 base plus the exact Upper, Lower,
+-- and Symbols 256x112 page overlays at the canonical y=80 placement), so a
+-- stale pre-change cache without that section must fail readiness.
+--
 -- fieldUi schema 5: signposts.types entries gain per-type palette banks
 -- (one 16-color table per source type) and per-type frameTiles rectangles.
 -- The old global signposts.frame.tiles authority is removed. Each type's
@@ -179,7 +184,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v7",
+  schema = "g4-field-ui-v8",
 }
 
 DerivedAssetContract.intro = {

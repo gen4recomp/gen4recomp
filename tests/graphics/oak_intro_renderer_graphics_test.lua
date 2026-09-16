@@ -3,6 +3,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
@@ -113,6 +114,29 @@ local function manifest()
   }
 end
 
+local function namingManifest()
+  return {
+    namingScreen = {
+      base = { asset = "hgss.naming_screen.base", image = "assets/generated/field/ui/naming-screen-base.png" },
+      pages = {
+        upper = {
+          asset = "hgss.naming_screen.page_upper",
+          image = "assets/generated/field/ui/naming-screen-page-upper.png",
+        },
+        lower = {
+          asset = "hgss.naming_screen.page_lower",
+          image = "assets/generated/field/ui/naming-screen-page-lower.png",
+        },
+        symbols = {
+          asset = "hgss.naming_screen.page_symbols",
+          image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+        },
+      },
+      placement = { x = 0, y = 80, width = 256, height = 112 },
+    },
+  }
+end
+
 local function view()
   return {
     phase = "oak_welcome",
@@ -191,6 +215,7 @@ T.responsive_renderer_uses_declared_sampling_and_identity_tint = function()
   })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -234,6 +259,7 @@ T.background_gradient_stretches_to_the_host_viewport = function()
   })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -268,6 +294,7 @@ T.gender_gradient_covers_the_full_viewport_not_a_composition_region = function()
   })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -302,6 +329,7 @@ T.background_only_view_draws_the_gradient_once_without_a_subject = function()
   })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -344,6 +372,7 @@ function T.confirmation_uses_font_zero_metrics_and_font_four_source_palette()
   end
   local renderer = OakIntroRenderer.new({
     manifest = manifestValue,
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -397,6 +426,7 @@ function T.selected_confirmation_focus_stays_outside_label_content()
   local manifestValue = manifest()
   local renderer = OakIntroRenderer.new({
     manifest = manifestValue,
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -482,6 +512,7 @@ function T.selected_confirmation_focus_stays_outside_label_content()
   local graphics2 = FakeGraphics.new()
   local renderer2 = OakIntroRenderer.new({
     manifest = manifestValue,
+    uiManifest = namingManifest(),
     graphics = graphics2,
     imageLoader = function(path)
       local image = graphics2.newImage()
@@ -519,6 +550,7 @@ function T.focus_uses_source_scale_and_restores_line_width()
   local manifestValue = manifest()
   local renderer = OakIntroRenderer.new({
     manifest = manifestValue,
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -566,6 +598,7 @@ function T.focus_uses_source_scale_and_restores_line_width()
   failingGraphics.setLineWidth(7)
   local failRenderer = OakIntroRenderer.new({
     manifest = manifestValue,
+    uiManifest = namingManifest(),
     graphics = failingGraphics,
     imageLoader = function(path)
       local image = failingGraphics.newImage()
@@ -591,6 +624,7 @@ function T.nonzero_atlas_frame_is_drawn_with_a_reusable_quad(_)
   local graphics = FakeGraphics.new({ imageSizes = { { 8, 8 }, { 4, 8 } } })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(_)
       return graphics.newImage()
@@ -611,6 +645,7 @@ function T.constructor_releases_images_when_quad_creation_fails()
   local ok, err = pcall(function()
     OakIntroRenderer.new({
       manifest = manifest(),
+      uiManifest = namingManifest(),
       graphics = graphics,
       imageLoader = function(_)
         return graphics.newImage()
@@ -631,6 +666,7 @@ function T.constructor_rejects_nil_shader_and_releases_each_image_once()
   local ok, err = pcall(function()
     OakIntroRenderer.new({
       manifest = manifest(),
+      uiManifest = namingManifest(),
       graphics = graphics,
       imageLoader = function(_)
         return graphics.newImage()
@@ -659,6 +695,7 @@ function T.animated_frames_use_distinct_images_and_release_unique_paths()
   }
   local renderer = OakIntroRenderer.new({
     manifest = manifestValue,
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -695,6 +732,7 @@ function T.image_construction_failure_releases_every_prior_image()
   local ok = pcall(function()
     OakIntroRenderer.new({
       manifest = manifest(),
+      uiManifest = namingManifest(),
       graphics = graphics,
       imageLoader = function()
         return graphics.newImage()
@@ -719,6 +757,7 @@ T.gender_focus_leaves_portrait_draw_color_untinted = function()
   })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -761,6 +800,7 @@ T.constructor_rejects_missing_confirmation_widget = function()
   local ok, _ = pcall(function()
     return OakIntroRenderer.new({
       manifest = manifestValue,
+      uiManifest = namingManifest(),
       graphics = graphics,
       imageLoader = function(path)
         local image = graphics.newImage()
@@ -774,12 +814,72 @@ T.constructor_rejects_missing_confirmation_widget = function()
   Assert.isTrue(ok, "renderer must not require confirmation widgets after migration")
 end
 
+-- Oak name editing composes the generated naming chrome through the reusable
+-- Naming Screen: the opaque base draws first, the selected page overlay
+-- draws at its canonical placement, and the host subject draws through Oak's
+-- player callback without taking over naming geometry.
+function T.oak_name_edit_draws_source_chrome_and_host_subject()
+  local graphics = FakeGraphics.new()
+  local renderer = OakIntroRenderer.new({
+    manifest = manifest(),
+    uiManifest = namingManifest(),
+    graphics = graphics,
+    imageLoader = function(path)
+      local image = graphics.newImage()
+      image.path = path
+      return image
+    end,
+    text = textRenderer(),
+    choiceText = choiceTextRenderer(),
+  })
+  local grid = {}
+  for row = 1, 6 do
+    grid[row] = {}
+    for column = 1, 13 do
+      grid[row][column] = { kind = "glyph", glyph = "A" }
+    end
+  end
+  local edit = view()
+  edit.phase = "name_edit"
+  edit.layout.namingScreen = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  edit.namingScreen = {
+    page = "lower",
+    cursor = { row = 2, column = 1 },
+    text = "AB",
+    maxLength = 7,
+    grid = grid,
+    subject = { kind = "player", gender = 1 },
+  }
+
+  renderer:draw(edit)
+
+  local chrome = {}
+  local subjectPath = nil
+  for _, draw in ipairs(graphics.draws) do
+    if type(draw.image) == "table" and type(draw.image.path) == "string" then
+      if draw.quad == nil and draw.image.path:find("naming-screen-", 1, true) then
+        chrome[#chrome + 1] = draw
+      elseif draw.image.path == "naming_female.png" then
+        subjectPath = draw.image.path
+      end
+    end
+  end
+  Assert.equal(#chrome, 2, "name editing draws the base and the selected page as full images")
+  Assert.equal(chrome[1].image.path, "assets/generated/field/ui/naming-screen-base.png")
+  Assert.deepEqual({ x = chrome[1].x, y = chrome[1].y }, { x = 0, y = 0 })
+  Assert.equal(chrome[2].image.path, "assets/generated/field/ui/naming-screen-page-lower.png")
+  Assert.deepEqual({ x = chrome[2].x, y = chrome[2].y }, { x = 0, y = 80 })
+  Assert.equal(subjectPath, "naming_female.png", "the female player subject draws through the host callback")
+  renderer:dispose()
+end
+
 function T.logical_surface_uses_the_resolution_matrix_and_reuses_stable_canvases()
   local graphics = FakeGraphics.new({
     imageSizes = { { 1, 192 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 }, { 4, 8 } },
   })
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
+    uiManifest = namingManifest(),
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()

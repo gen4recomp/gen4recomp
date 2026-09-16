@@ -2,6 +2,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
@@ -53,8 +54,10 @@ local function newImage(cache, path)
 end
 
 local function rendererFor(scope, cache, manifest)
+  local uiManifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()))
   local renderer = OakIntroRenderer.new({
     manifest = manifest,
+    uiManifest = uiManifest,
     imageLoader = function(path)
       return newImage(cache, path)
     end,

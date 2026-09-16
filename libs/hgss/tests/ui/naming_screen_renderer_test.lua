@@ -1,6 +1,8 @@
 -- The Naming Screen renderer keeps its focus mark on the source-shaped cell
 -- under the controller cursor: the highlighted outline must be the layout's
--- own cell rectangle, and exactly one cell carries the selected color.
+-- own cell rectangle, exactly one cell carries the selected color, and no
+-- synthetic fill or unselected outline remains now that the generated
+-- base/page chrome supplies the background pixels.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
@@ -9,7 +11,35 @@ local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 local T = { tests = {} }
 
 local SELECTED = { 0.96, 0.82, 0.40, 1 }
-local UNSELECTED = { 0.28, 0.36, 0.48, 1 }
+
+local function namingManifest()
+  return {
+    namingScreen = {
+      base = { asset = "hgss.naming_screen.base", image = "assets/generated/field/ui/naming-screen-base.png" },
+      pages = {
+        upper = {
+          asset = "hgss.naming_screen.page_upper",
+          image = "assets/generated/field/ui/naming-screen-page-upper.png",
+        },
+        lower = {
+          asset = "hgss.naming_screen.page_lower",
+          image = "assets/generated/field/ui/naming-screen-page-lower.png",
+        },
+        symbols = {
+          asset = "hgss.naming_screen.page_symbols",
+          image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+        },
+      },
+      placement = { x = 0, y = 80, width = 256, height = 112 },
+    },
+  }
+end
+
+local function imageLoader()
+  return function(path)
+    return { path = path, release = function() end }
+  end
+end
 
 local function graphicsFake()
   local calls = {}
@@ -92,38 +122,32 @@ local function isColor(actual, expected)
   return true
 end
 
+local function assertSingleSelectedOutline(calls)
+  for _, call in ipairs(calls) do
+    if call.name == "rectangle" then
+      Assert.isTrue(call.mode == "line", "source chrome supplies the pixels, so no synthetic fill remains")
+    end
+  end
+  local outlined = lineRectsWithPrecedingColor(calls)
+  Assert.equal(#outlined, 1, "exactly one focus mark remains")
+  Assert.isTrue(isColor(outlined[1].color, SELECTED), "the remaining focus mark keeps the selected color")
+  return outlined[1].rect
+end
+
 function T.tests.focus_outline_uses_the_source_shaped_cell_under_the_cursor()
   local graphics, calls = graphicsFake()
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
     drawSubject = function() end,
+    manifest = namingManifest(),
+    imageLoader = imageLoader(),
   })
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 3, column = 5 }), layout)
   renderer:dispose()
 
-  local outlined = lineRectsWithPrecedingColor(calls)
-  local cellKey = {}
-  for row = 1, 6 do
-    for column = 1, 13 do
-      local cell = layout.cells[row][column]
-      cellKey[string.format("%s/%s/%s/%s", cell.x, cell.y, cell.width, cell.height)] = true
-    end
-  end
-  local selected = {}
-  for _, entry in ipairs(outlined) do
-    local key = string.format("%s/%s/%s/%s", entry.rect.x, entry.rect.y, entry.rect.width, entry.rect.height)
-    if cellKey[key] then
-      if isColor(entry.color, SELECTED) then
-        selected[#selected + 1] = entry.rect
-      else
-        Assert.isTrue(isColor(entry.color, UNSELECTED), "every other cell outline keeps the unselected color")
-      end
-    end
-  end
-  Assert.equal(#selected, 1, "exactly one cell carries the selected color")
-  Assert.deepEqual(selected[1], layout.cells[3][5])
+  Assert.deepEqual(assertSingleSelectedOutline(calls), layout.cells[3][5])
 end
 
 function T.tests.home_row_focus_uses_the_control_region_under_the_cursor()
@@ -132,21 +156,16 @@ function T.tests.home_row_focus_uses_the_control_region_under_the_cursor()
     graphics = graphics,
     text = textFake(),
     drawSubject = function() end,
+    manifest = namingManifest(),
+    imageLoader = imageLoader(),
   })
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 1, column = 9 }), layout)
   renderer:dispose()
 
-  local outlined = lineRectsWithPrecedingColor(calls)
-  local selected = {}
-  for _, entry in ipairs(outlined) do
-    if isColor(entry.color, SELECTED) then
-      selected[#selected + 1] = entry.rect
-    end
-  end
-  Assert.equal(#selected, 1, "exactly one home control carries the selected color")
-  Assert.deepEqual(selected[1], layout.cells[1][9])
-  Assert.deepEqual(selected[1], layout.controls.back)
+  local selected = assertSingleSelectedOutline(calls)
+  Assert.deepEqual(selected, layout.cells[1][9])
+  Assert.deepEqual(selected, layout.controls.back)
 end
 
 return T

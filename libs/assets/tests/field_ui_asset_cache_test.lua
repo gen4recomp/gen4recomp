@@ -60,6 +60,26 @@ local function validManifest()
         width = 48,
         height = 320,
       },
+      ["hgss.naming_screen.base"] = {
+        image = "assets/generated/field/ui/naming-screen-base.png",
+        width = 256,
+        height = 192,
+      },
+      ["hgss.naming_screen.page_upper"] = {
+        image = "assets/generated/field/ui/naming-screen-page-upper.png",
+        width = 256,
+        height = 112,
+      },
+      ["hgss.naming_screen.page_lower"] = {
+        image = "assets/generated/field/ui/naming-screen-page-lower.png",
+        width = 256,
+        height = 112,
+      },
+      ["hgss.naming_screen.page_symbols"] = {
+        image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+        width = 256,
+        height = 112,
+      },
     },
     dialogueFrames = {
       count = 20,
@@ -114,6 +134,15 @@ local function validManifest()
       },
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
+    namingScreen = {
+      base = { asset = "hgss.naming_screen.base", width = 256, height = 192 },
+      pages = {
+        upper = { asset = "hgss.naming_screen.page_upper", width = 256, height = 112 },
+        lower = { asset = "hgss.naming_screen.page_lower", width = 256, height = 112 },
+        symbols = { asset = "hgss.naming_screen.page_symbols", width = 256, height = 112 },
+      },
+      placement = { x = 0, y = 80, width = 256, height = 112 },
+    },
   }
 end
 
@@ -264,7 +293,7 @@ function T.ui_row_geometry_must_match_the_hgss_strip_contract()
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 
--- A complete v7 cursor contract passes, while each independently malformed
+-- A complete cursor contract passes, while each independently malformed
 -- cursor field is rejected before runtime can consume the generated class.
 function T.continuation_cursor_contract_rejects_incomplete_manifests()
   local complete = validManifest()

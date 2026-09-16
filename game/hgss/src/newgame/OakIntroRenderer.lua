@@ -177,6 +177,10 @@ function OakIntroRenderer.new(options)
   assert(type(choiceText.drawTextWithPalette) == "function", "Oak renderer requires palette text rendering")
   local imageLoader = options.imageLoader or defaultImageLoader
   assert(type(imageLoader) == "function", "Oak renderer image loader must be callable")
+  local uiManifest = assert(
+    type(options.uiManifest) == "table" and options.uiManifest,
+    "Oak renderer requires the validated field-UI manifest"
+  ) --[[@as table<string, unknown>]]
   local images, bindings, renderedAssets = loadResources(options.manifest, graphics, imageLoader)
   local ok, revealShader = pcall(graphics.newShader, REVEAL_SHADER)
   if not ok then
@@ -220,11 +224,28 @@ function OakIntroRenderer.new(options)
       scale = 1,
     })
   end
-  renderer.namingScreen = NamingScreenRenderer.new({
+  -- The naming chrome shares the generated image loader: a naming acquisition
+  -- failure releases the intro images and shader already acquired here before
+  -- rethrowing, so no partial renderer ever escapes.
+  local namingOk, namingOrFailure = pcall(NamingScreenRenderer.new, {
     graphics = graphics,
     text = text,
     drawSubject = drawNamingSubject,
+    manifest = uiManifest,
+    imageLoader = imageLoader,
   })
+  if not namingOk then
+    local acquired = {}
+    for _, image in pairs(images) do
+      acquired[#acquired + 1] = image
+    end
+    releaseAll(acquired)
+    if revealShader and revealShader.release then
+      pcall(revealShader.release, revealShader)
+    end
+    error(namingOrFailure, 0)
+  end
+  renderer.namingScreen = namingOrFailure --[[@as table<string, unknown>]]
   ---@cast renderer OakIntroRenderer
   return renderer
 end

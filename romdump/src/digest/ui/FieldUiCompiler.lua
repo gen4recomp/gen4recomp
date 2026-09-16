@@ -1,7 +1,8 @@
 -- Compiles the generated HGSS field-UI class: the Start Menu background and
 -- cursor, the twenty user dialogue frames, the corpus signpost frame and
--- wayfinding graphics, and the Trainer Card front — all as decoded PNG
--- atlases and the strict manifest. Wayfinding members are precomposed
+-- wayfinding graphics, the Trainer Card front, and the normal naming screen
+-- chrome (one opaque base plus the three transparent page overlays) — all as
+-- decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
 -- into final 48x32 surfaces (6 by 4 tiles) at build time so runtime draws
 -- a single rect. Source member selection lives in
 -- romdump/src/config/FieldUiAssets.lua; this module owns the HGSS decode
@@ -724,6 +725,95 @@ local function compileTrainerCard(romFs, sha1hex, deps, assets, manifestAssets)
   }
 end
 
+local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
+  local archive, archiveBytes = loadArchive(romFs, manifestConfig.namingScreen.alias)
+  local cfg = manifestConfig.namingScreen
+  local memberBytes = {}
+  local function g2d(kind, memberId, label)
+    memberBytes[memberId] = decodeMember(archive, memberId, label)
+    local decoded, err =
+      G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.namingScreen.alias .. ":" .. memberId })
+    return must(decoded, err)
+  end
+  local palette = g2d("decodePalette", cfg.paletteMember, "naming screen palette") --[[@as FieldUiCompiler.PaletteData]]
+  local charData = g2d("decodeChar", cfg.charMember, "naming screen char") --[[@as FieldUiCompiler.CharData]]
+  local baseScreen = g2d("decodeScreen", cfg.baseScreenMember, "naming screen base") --[[@as FieldUiCompiler.ScreenData]]
+  if baseScreen.width ~= 256 or baseScreen.height ~= 192 then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "the normal naming base must be the 256x192 source surface",
+      { member = cfg.baseScreenMember, width = baseScreen.width, height = baseScreen.height }
+    )
+  end
+  -- The base is the opaque backdrop: palette-zero pixels render as source
+  -- art, never as transparency.
+  local basePath = FieldUiAssetCache.assetDir() .. "/naming-screen-base.png"
+  assets[basePath] = renderScreen(charData, palette.colors, baseScreen, {
+    asset = "naming screen base",
+    member = cfg.baseScreenMember,
+  }, { transparentZero = false })
+  manifestAssets[FieldUiAssetCache.ASSET.NAMING_SCREEN_BASE] =
+    { image = basePath, width = baseScreen.width, height = baseScreen.height }
+
+  -- The pages are transparent overlays: palette-zero holes stay transparent
+  -- so the base shows through at runtime.
+  local pageOrder = { "upper", "lower", "symbols" }
+  local pageAssetIds = {
+    upper = FieldUiAssetCache.ASSET.NAMING_SCREEN_PAGE_UPPER,
+    lower = FieldUiAssetCache.ASSET.NAMING_SCREEN_PAGE_LOWER,
+    symbols = FieldUiAssetCache.ASSET.NAMING_SCREEN_PAGE_SYMBOLS,
+  }
+  local pages = {}
+  for _, key in ipairs(pageOrder) do
+    local screenMember = cfg.pageScreenMembers[key]
+    local screen = g2d("decodeScreen", screenMember, "naming screen " .. key .. " page") --[[@as FieldUiCompiler.ScreenData]]
+    if screen.width ~= 256 or screen.height ~= 112 then
+      Errors.raise(
+        FieldUiCompiler.ERROR.SOURCE_INVALID,
+        "the normal naming " .. key .. " page must be the 256x112 source overlay",
+        { member = screenMember, width = screen.width, height = screen.height }
+      )
+    end
+    local path = FieldUiAssetCache.assetDir() .. "/naming-screen-page-" .. key .. ".png"
+    assets[path] = renderScreen(charData, palette.colors, screen, {
+      asset = "naming screen " .. key .. " page",
+      member = screenMember,
+    })
+    manifestAssets[pageAssetIds[key]] = { image = path, width = screen.width, height = screen.height }
+    pages[key] = { asset = pageAssetIds[key], width = screen.width, height = screen.height }
+  end
+
+  deps[#deps + 1] = {
+    name = manifestConfig.namingScreen.alias .. ":palette:" .. cfg.paletteMember,
+    sha1 = sha1hex(memberBytes[cfg.paletteMember]),
+  }
+  deps[#deps + 1] = {
+    name = manifestConfig.namingScreen.alias .. ":member:" .. cfg.charMember,
+    sha1 = sha1hex(memberBytes[cfg.charMember]),
+  }
+  deps[#deps + 1] = {
+    name = manifestConfig.namingScreen.alias .. ":member:" .. cfg.baseScreenMember,
+    sha1 = sha1hex(memberBytes[cfg.baseScreenMember]),
+  }
+  for _, key in ipairs(pageOrder) do
+    local screenMember = cfg.pageScreenMembers[key]
+    deps[#deps + 1] = {
+      name = manifestConfig.namingScreen.alias .. ":member:" .. screenMember,
+      sha1 = sha1hex(memberBytes[screenMember]),
+    }
+  end
+  deps[#deps + 1] = { name = manifestConfig.namingScreen.alias .. ":narc", sha1 = sha1hex(archiveBytes) }
+  return {
+    base = {
+      asset = FieldUiAssetCache.ASSET.NAMING_SCREEN_BASE,
+      width = baseScreen.width,
+      height = baseScreen.height,
+    },
+    pages = pages,
+    placement = { x = 0, y = 80, width = 256, height = 112 },
+  }
+end
+
 local function compileAll(romFs, sha1hex, hashLua)
   local assets = {}
   local manifestAssets = {}
@@ -734,6 +824,7 @@ local function compileAll(romFs, sha1hex, hashLua)
   local dialogueFrames = compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAssets)
   local signposts = compileSignposts(romFs, sha1hex, deps, assets, manifestAssets)
   local trainerCard = compileTrainerCard(romFs, sha1hex, deps, assets, manifestAssets)
+  local namingScreen = compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
 
   local manifest = {
     schema = FieldUiAssetCache.SCHEMA,
@@ -743,6 +834,7 @@ local function compileAll(romFs, sha1hex, hashLua)
     signposts = signposts,
     startMenu = startMenu,
     trainerCard = trainerCard,
+    namingScreen = namingScreen,
   }
   local ok, err = FieldUiAssetCache.validateManifest(manifest)
   if not ok then

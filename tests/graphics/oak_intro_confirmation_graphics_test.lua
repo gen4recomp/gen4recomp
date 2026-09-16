@@ -5,6 +5,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
@@ -35,8 +36,11 @@ end
 local function rendererFor(scope, entry)
   local font0 = scope:own(FieldTextRenderer.new({ cacheFs = entry.cache }))
   local font4 = scope:own(FieldTextRenderer.new({ cacheFs = entry.cache, fontId = 4 }))
+  local uiManifest = assert(entry.cache:loadLua(FieldUiAssetCache.manifestPath()))
+  Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), entry.versionId .. " field-UI manifest is invalid")
   local renderer = OakIntroRenderer.new({
     manifest = entry.manifest,
+    uiManifest = uiManifest,
     text = font0,
     choiceText = font4,
     imageLoader = function(path)
