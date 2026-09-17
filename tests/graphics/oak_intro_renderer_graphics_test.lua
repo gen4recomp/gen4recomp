@@ -44,7 +44,7 @@ local function genderButtons()
       scale = 1,
       portraitId = "gender_male",
       portraitRect = { x = 20, y = 20, width = 40, height = 60, scale = 1 },
-      button = ImageButton.resolve({ rect = maleRect, scale = 1 }),
+      button = ImageButton.resolve({ rect = maleRect, scale = 1, cornerRadius = 6 }),
     },
     [1] = {
       key = "female",
@@ -52,7 +52,7 @@ local function genderButtons()
       scale = 1,
       portraitId = "gender_female",
       portraitRect = { x = 100, y = 20, width = 40, height = 60, scale = 1 },
-      button = ImageButton.resolve({ rect = femaleRect, scale = 1 }),
+      button = ImageButton.resolve({ rect = femaleRect, scale = 1, cornerRadius = 6 }),
     },
   }
 end
@@ -940,10 +940,10 @@ function T.gender_cards_share_rounded_nested_geometry()
   local buttons = genderButtons()
   for _, key in ipairs({ 0, 1 }) do
     local resolved = assert(buttons[key].button)
-    Assert.equal(resolved.border.cornerRadius, 8)
-    Assert.equal(resolved.rim.cornerRadius, 6)
-    Assert.equal(resolved.innerBorder.cornerRadius, 4)
-    Assert.equal(resolved.face.cornerRadius, 3)
+    Assert.equal(resolved.border.cornerRadius, 6)
+    Assert.equal(resolved.rim.cornerRadius, 4)
+    Assert.equal(resolved.innerBorder.cornerRadius, 2)
+    Assert.equal(resolved.face.cornerRadius, 1)
   end
 end
 

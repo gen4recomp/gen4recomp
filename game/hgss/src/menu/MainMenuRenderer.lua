@@ -1,12 +1,14 @@
--- HGSS-styled Main Menu presentation over the shared card chrome and the generated field font.
+-- Recomp-owned Main Menu presentation over the shared image-button chrome
+-- and the generated field font. Launcher colors live here; the Oak
+-- selector owns its own tone recipe separately.
 
-local HgssCardButton = require("libs.hgss.src.ui.HgssCardButton")
-local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
+local ImageButton = require("libs.ui.src.ImageButton")
 
 ---@class MainMenuRenderer
 ---@field text table<string, function>
 ---@field graphics love.graphics
----@field cardTone { r: integer, g: integer, b: integer }
+---@field versionId string
+---@field background number[]
 local MainMenuRenderer = {}
 MainMenuRenderer.__index = MainMenuRenderer
 local INK = { 0.12, 0.18, 0.25, 1 }
@@ -14,6 +16,21 @@ local MUTED = { 0.3, 0.38, 0.42, 1 }
 local ERROR_INK = { 0.65, 0.22, 0.22, 1 }
 local MARK = { 0.85, 0.88, 0.9, 1 }
 local MARK_EDGE = { 0.35, 0.4, 0.45, 1 }
+
+local CARD_FACE = { 1, 1, 1, 1 }
+local CARD_INNER_BORDER = { 120 / 255, 156 / 255, 198 / 255, 1 }
+local CARD_BORDER = { 58 / 255, 58 / 255, 58 / 255, 1 }
+local CARD_RIM = { 222 / 255, 230 / 255, 230 / 255, 1 }
+local CARD_SELECTED_RIM = { 255 / 255, 58 / 255, 58 / 255, 1 }
+
+local MAIN_MENU_BACKGROUNDS = {
+  heartgold = { 0x33 / 255, 0x27 / 255, 0x11 / 255 },
+  soulsilver = { 0x20 / 255, 0x2A / 255, 0x3D / 255 },
+}
+
+local CARD_RADIUS = 6
+local CARD_INNER_WIDTH = 2
+local CARD_INSET = 10
 
 local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4] or 1)
@@ -30,7 +47,7 @@ end
 local function rolePalette(foreground)
   return {
     foreground = byteRole(foreground),
-    shadow = { r = 255, g = 255, b = 255 },
+    shadow = { r = 140, g = 140, b = 140 },
     background = { r = 0, g = 0, b = 0, a = 0 },
   }
 end
@@ -41,15 +58,21 @@ local ERROR_PALETTE = rolePalette(ERROR_INK)
 
 local function drawNoContent() end
 
-local function drawCard(graphics, rect, scale, selected, tone)
-  local resolved = HgssCardButton.resolve({ rect = rect, scale = scale })
+local function drawCard(graphics, rect, scale, selected)
+  local resolved =
+    ImageButton.resolve({ rect = rect, scale = scale, cornerRadius = CARD_RADIUS, innerBorderWidth = CARD_INNER_WIDTH })
   local content = assert(resolved.contentRect)
-  HgssCardButton.draw(graphics, resolved, {
-    defaultTone = tone,
+  ImageButton.draw(graphics, resolved, {
     selected = selected,
-    focusBlinkDelta = 0,
-    contentRect = { x = content.x, y = content.y, width = content.width, height = content.height },
-    drawContent = drawNoContent,
+    colors = {
+      face = CARD_FACE,
+      border = CARD_BORDER,
+      rim = CARD_RIM,
+      selectedRim = CARD_SELECTED_RIM,
+      innerBorder = CARD_INNER_BORDER,
+    },
+    imageRect = { x = content.x, y = content.y, width = content.width, height = content.height },
+    drawImage = drawNoContent,
   })
 end
 
@@ -62,13 +85,14 @@ end
 ---@param rect { x: number, y: number, width: number, height: number }
 ---@param scale number
 local function drawFrameOutline(graphics, rect, scale)
-  local resolved = HgssCardButton.resolve({ rect = rect, scale = scale })
+  local resolved =
+    ImageButton.resolve({ rect = rect, scale = scale, cornerRadius = CARD_RADIUS, innerBorderWidth = CARD_INNER_WIDTH })
   local rimCell = assert(resolved.rim, "resolved card rim is required")
   local innerCell = assert(resolved.innerBorder, "resolved card inner border is required")
   ---@cast rimCell { rect: { x: number, y: number, width: number, height: number } }
   ---@cast innerCell { rect: { x: number, y: number, width: number, height: number } }
   local rim, inner = rimCell.rect, innerCell.rect
-  setColor(graphics, HgssCardButton.selectedRim())
+  setColor(graphics, CARD_SELECTED_RIM)
   graphics.rectangle("fill", rim.x, rim.y, rim.width, inner.y - rim.y)
   graphics.rectangle("fill", rim.x, inner.y + inner.height, rim.width, rim.y + rim.height - inner.y - inner.height)
   graphics.rectangle("fill", rim.x, inner.y, inner.x - rim.x, inner.height)
@@ -95,38 +119,25 @@ local function cardTitle(item)
   return item.errorSummary or "Save unavailable"
 end
 
----@param options { text: table<string, function>, cacheFs: table<string, function>, graphics?: love.graphics }
+---@param options { text: table<string, function>, versionId: string, graphics?: love.graphics }
 ---@return MainMenuRenderer
 function MainMenuRenderer.new(options)
   assert(type(options) == "table" and options.text, "Main Menu renderer requires FieldTextRenderer")
-  assert(
-    type(options.cacheFs) == "table" and type(options.cacheFs.loadLua) == "function",
-    "Main Menu renderer requires a version cache for the generated card face"
-  )
   local graphics = options.graphics or love.graphics
   ---@cast graphics love.graphics
   assert(graphics, "Main Menu renderer requires graphics")
   assert(type(options.text.drawTextWithPalette) == "function", "Main Menu renderer requires palette text drawing")
-  local manifest = assert(
-    options.cacheFs:loadLua(IntroAssetCache.manifestPath()),
-    "Main Menu renderer requires the generated intro manifest"
-  )
-  local valid, manifestError = IntroAssetCache.validateManifest(manifest)
-  if not valid then
-    error(manifestError or "Main Menu renderer intro manifest is invalid", 0)
-  end
-  local tone = assert(
-    manifest.genderSelector and manifest.genderSelector.defaultTone,
-    "Main Menu renderer requires the generated card face tone"
-  )
-  assert(
-    type(tone.r) == "number" and type(tone.g) == "number" and type(tone.b) == "number",
-    "Main Menu renderer card face tone must carry byte RGB channels"
+  local versionId =
+    assert(type(options.versionId) == "string" and options.versionId, "Main Menu renderer requires a game version")
+  local background = assert(
+    MAIN_MENU_BACKGROUNDS[versionId],
+    "Main Menu renderer does not support game version: " .. tostring(versionId)
   )
   return setmetatable({
     text = options.text,
     graphics = graphics,
-    cardTone = { r = tone.r, g = tone.g, b = tone.b },
+    versionId = versionId,
+    background = { background[1], background[2], background[3] },
   }, MainMenuRenderer)
 end
 
@@ -142,10 +153,10 @@ function MainMenuRenderer:draw(view)
   local red, green, blue, alpha = graphics.getColor()
   local lineWidth = graphics.getLineWidth()
   local oldX, oldY, oldWidth, oldHeight = graphics.getScissor()
-  local tone = self.cardTone
+  local background = self.background
   local ok, err = xpcall(function()
-    graphics.setColor(0.08, 0.1, 0.15, 1)
-    graphics.clear(0.08, 0.1, 0.15, 1)
+    graphics.setColor(background[1], background[2], background[3], 1)
+    graphics.clear(background[1], background[2], background[3], 1)
 
     local focus = assert(view.focus)
     local saves = assert(layout.saves)
@@ -156,8 +167,8 @@ function MainMenuRenderer:draw(view)
         graphics,
         text,
         "Save catalog unavailable",
-        errorRect.x + 6 * scale,
-        errorRect.y + 4 * scale,
+        errorRect.x + CARD_INSET * scale,
+        errorRect.y + CARD_INSET * scale,
         scale,
         ERROR_PALETTE
       )
@@ -171,12 +182,12 @@ function MainMenuRenderer:draw(view)
         local overflowFocused = focus.region == "saves"
           and focus.saveId == (item.saveId or item.id)
           and focus.lane == "overflow"
-        drawCard(graphics, card.frame, scale, false, tone)
+        drawCard(graphics, card.frame, scale, false)
         if bodyFocused then
           drawFrameOutline(graphics, card.frame, scale)
         end
-        local pad = 6 * scale
-        local headingY = card.frame.y + 5 * scale
+        local pad = CARD_INSET * scale
+        local headingY = card.frame.y + CARD_INSET * scale
         drawPaletteText(graphics, text, "CONTINUE", card.frame.x + pad, headingY, scale, TEXT_PALETTE)
         if item.canContinue then
           drawPaletteText(
@@ -209,7 +220,7 @@ function MainMenuRenderer:draw(view)
           )
         end
         if card.overflow then
-          drawCard(graphics, card.overflow, scale, overflowFocused, tone)
+          drawCard(graphics, card.overflow, scale, overflowFocused)
           drawPaletteText(
             graphics,
             text,
@@ -233,15 +244,23 @@ function MainMenuRenderer:draw(view)
     local globalFocus = view.focus.region == "global"
     local global = assert(layout.global)
     local newGame = assert(global.actions["new-game"])
-    drawCard(graphics, newGame, scale, globalFocus, tone)
-    drawPaletteText(graphics, text, "NEW GAME", newGame.x + 6 * scale, newGame.y + 10 * scale, scale, TEXT_PALETTE)
+    drawCard(graphics, newGame, scale, globalFocus)
+    drawPaletteText(
+      graphics,
+      text,
+      "NEW GAME",
+      newGame.x + CARD_INSET * scale,
+      newGame.y + 10 * scale,
+      scale,
+      TEXT_PALETTE
+    )
 
     if view.popup then
       local popup = assert(layout.popup)
       graphics.setColor(0, 0, 0, 0.45)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
-      drawCard(graphics, popup.box, scale, false, tone)
-      drawCard(graphics, popup.actions.delete, scale, true, tone)
+      drawCard(graphics, popup.box, scale, false)
+      drawCard(graphics, popup.actions.delete, scale, true)
       drawPaletteText(
         graphics,
         text,
@@ -256,20 +275,20 @@ function MainMenuRenderer:draw(view)
       local confirmation = assert(layout.confirmation)
       graphics.setColor(0, 0, 0, 0.62)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
-      drawCard(graphics, confirmation.box, scale, false, tone)
+      drawCard(graphics, confirmation.box, scale, false)
       drawPaletteText(
         graphics,
         text,
         "Delete this save?",
-        confirmation.box.x + 6 * scale,
-        confirmation.box.y + 5 * scale,
+        confirmation.box.x + CARD_INSET * scale,
+        confirmation.box.y + CARD_INSET * scale,
         scale,
         TEXT_PALETTE
       )
       local cancelFocus = view.confirmation.focusedAction == "cancel"
       local deleteFocus = view.confirmation.focusedAction == "delete"
-      drawCard(graphics, confirmation.cancel, scale, cancelFocus, tone)
-      drawCard(graphics, confirmation.delete, scale, deleteFocus, tone)
+      drawCard(graphics, confirmation.cancel, scale, cancelFocus)
+      drawCard(graphics, confirmation.delete, scale, deleteFocus)
       drawPaletteText(
         graphics,
         text,

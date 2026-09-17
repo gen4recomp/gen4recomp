@@ -1,4 +1,4 @@
--- Gender-card-style image button composing the generic Button geometry.
+-- Image button composing the generic Button geometry with caller-owned colors.
 
 local Button = require("libs.ui.src.Button")
 
@@ -57,19 +57,35 @@ local function validateColor(value, name)
   return copy
 end
 
----@param spec { rect: {x:number,y:number,width:number,height:number}, scale: number }
+---@param spec { rect: {x:number,y:number,width:number,height:number}, scale: number, cornerRadius?: number, innerBorderWidth?: number }
 ---@return table<string, unknown>
 function ImageButton.resolve(spec)
   assert(type(spec) == "table", "image button specification is required")
   local rectValue = rectangle(spec.rect, "image button rectangle")
   assertFinitePositiveScale(spec.scale)
   local scale = spec.scale
+  local cornerRadius = 8
+  if spec.cornerRadius ~= nil then
+    assert(
+      type(spec.cornerRadius) == "number" and finite(spec.cornerRadius) and spec.cornerRadius >= 0,
+      "image button corner radius must be a finite non-negative number"
+    )
+    cornerRadius = spec.cornerRadius
+  end
+  local innerBorderWidth = 1
+  if spec.innerBorderWidth ~= nil then
+    assert(
+      type(spec.innerBorderWidth) == "number" and finite(spec.innerBorderWidth) and spec.innerBorderWidth > 0,
+      "image button inner border width must be a finite positive number"
+    )
+    innerBorderWidth = spec.innerBorderWidth
+  end
   local resolved = Button.resolve({
     rect = rectValue,
     borderWidth = 2 * scale,
     rimWidth = 2 * scale,
-    innerBorderWidth = 1 * scale,
-    cornerRadius = 8 * scale,
+    innerBorderWidth = innerBorderWidth * scale,
+    cornerRadius = cornerRadius * scale,
     faceSplit = 0.5,
     contentInsetX = 0,
     contentInsetY = 0,

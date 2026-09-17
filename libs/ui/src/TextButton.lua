@@ -1,4 +1,4 @@
--- Yes/No-style text button composing the generic Button geometry.
+-- Text button composing the generic Button geometry with caller-owned colors.
 
 local Button = require("libs.ui.src.Button")
 
@@ -84,19 +84,27 @@ local function rectangle(value, name)
   return { x = value.x, y = value.y, width = value.width, height = value.height }
 end
 
----@param spec { rect: {x:number,y:number,width:number,height:number}, scale: number }
+---@param spec { rect: {x:number,y:number,width:number,height:number}, scale: number, cornerRadius?: number }
 ---@return table<string, unknown>
 function TextButton.resolve(spec)
   assert(type(spec) == "table", "text button specification is required")
   local rectValue = rectangle(spec.rect, "text button rectangle")
   assertFinitePositiveScale(spec.scale)
   local scale = spec.scale
+  local cornerRadius = 3
+  if spec.cornerRadius ~= nil then
+    assert(
+      type(spec.cornerRadius) == "number" and finite(spec.cornerRadius) and spec.cornerRadius >= 0,
+      "text button corner radius must be a finite non-negative number"
+    )
+    cornerRadius = spec.cornerRadius
+  end
   local resolved = Button.resolve({
     rect = rectValue,
     borderWidth = 2 * scale,
     rimWidth = 1 * scale,
     innerBorderWidth = 1 * scale,
-    cornerRadius = 3 * scale,
+    cornerRadius = cornerRadius * scale,
     faceSplit = 0.5,
     contentInsetX = 4 * scale,
     contentInsetY = 12 * scale,
@@ -119,10 +127,12 @@ end
 local function drawFocusOutline(graphics, button, colors)
   local scale = assert(button.scale, "text button scale is missing")
   local outlineRect = assert(button.rect, "text button rectangle is missing")
+  local border = assert(button.border, "text button border is missing")
+  local resolvedRadius = assert(border.cornerRadius, "text button corner radius is missing")
   local outerWidth = 5 * scale
   local innerWidth = 3 * scale
   local inset = 1 * scale
-  local radius = math.max(0, 3 * scale - outerWidth / 2)
+  local radius = math.max(0, resolvedRadius - outerWidth / 2)
   local outer = assert(colors.focusOuter, "text button focus outer color is missing")
   local inner = assert(colors.focusInner, "text button focus inner color is missing")
   graphics.setColor(outer[1], outer[2], outer[3], outer[4])

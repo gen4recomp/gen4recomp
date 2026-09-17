@@ -607,4 +607,61 @@ function T.selected_outline_honors_focus_color_overrides()
   Assert.equal(g._state.lineWidth, 1)
 end
 
+function T.callers_select_a_logical_confirmation_radius()
+  local TextButton = textButtonModule()
+  local at1 = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = 6 })
+  Assert.equal(at1.border.cornerRadius, 6)
+  local at2 = TextButton.resolve({ rect = rect(0, 0, 240, 112), scale = 2, cornerRadius = 6 })
+  Assert.equal(at2.border.cornerRadius, 12)
+end
+
+function T.invalid_confirmation_radius_is_rejected()
+  local TextButton = textButtonModule()
+  Assert.throws(function()
+    TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = -1 })
+  end)
+  Assert.throws(function()
+    TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = "6" })
+  end)
+end
+
+function T.omitted_confirmation_radius_keeps_current_default_geometry()
+  local TextButton = textButtonModule()
+  local defaultButton = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1 })
+  Assert.equal(defaultButton.border.cornerRadius, 3)
+  local scaled = TextButton.resolve({ rect = rect(0, 0, 240, 112), scale = 2 })
+  Assert.equal(scaled.border.cornerRadius, 6)
+end
+
+function T.selected_outline_follows_the_resolved_confirmation_radius()
+  local TextButton = textButtonModule()
+  local text = {
+    measure = function()
+      return 20
+    end,
+    lineHeight = 16,
+    draw = function() end,
+  }
+  local function outlineRadii(button)
+    local g, calls = recordingGraphics()
+    TextButton.draw(g, button, { label = "Yes", selected = true, text = text })
+    local radii = {}
+    for _, r in ipairs(calls.rectangles) do
+      if r.mode == "line" then
+        radii[#radii + 1] = r.rx
+      end
+    end
+    Assert.equal(#radii, 2)
+    return radii
+  end
+  local defaultButton = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1 })
+  local wideButton = TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = 6 })
+  local defaultRadii = outlineRadii(defaultButton)
+  local wideRadii = outlineRadii(wideButton)
+  Assert.isTrue(
+    wideRadii[1] ~= defaultRadii[1] or wideRadii[2] ~= defaultRadii[2],
+    "the focus outline must derive from the resolved button radius"
+  )
+end
+
 return { tests = T }

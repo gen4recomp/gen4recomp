@@ -28,13 +28,13 @@ local function textButtonEntries(origin, scale, gap)
       key = "yes",
       rect = firstRect,
       scale = scale,
-      button = TextButton.resolve({ rect = firstRect, scale = scale }),
+      button = TextButton.resolve({ rect = firstRect, scale = scale, cornerRadius = 6 }),
     },
     [1] = {
       key = "no",
       rect = secondRect,
       scale = scale,
-      button = TextButton.resolve({ rect = secondRect, scale = scale }),
+      button = TextButton.resolve({ rect = secondRect, scale = scale, cornerRadius = 6 }),
     },
   }
 end
@@ -73,7 +73,7 @@ function OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
       scale = selectorCanvas.scale,
       portraitId = "gender_" .. sourceGender,
       portraitRect = portrait,
-      button = ImageButton.resolve({ rect = cardRect, scale = selectorCanvas.scale }),
+      button = ImageButton.resolve({ rect = cardRect, scale = selectorCanvas.scale, cornerRadius = 6 }),
     }
   end
   return entries

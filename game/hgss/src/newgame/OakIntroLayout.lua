@@ -199,13 +199,17 @@ local function integerConfirmationEntries(region, preferredScale)
       key = "yes",
       rect = rect(x, y, width, height),
       scale = scale,
-      button = TextButton.resolve({ rect = rect(x, y, width, height), scale = scale }),
+      button = TextButton.resolve({ rect = rect(x, y, width, height), scale = scale, cornerRadius = 6 }),
     },
     [1] = {
       key = "no",
       rect = rect(x, y + height + 8 * scale, width, height),
       scale = scale,
-      button = TextButton.resolve({ rect = rect(x, y + height + 8 * scale, width, height), scale = scale }),
+      button = TextButton.resolve({
+        rect = rect(x, y + height + 8 * scale, width, height),
+        scale = scale,
+        cornerRadius = 6,
+      }),
     },
   }
 end
