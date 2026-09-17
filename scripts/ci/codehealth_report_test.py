@@ -227,8 +227,8 @@ class CodeHealthReportTest(unittest.TestCase):
             )
 
             with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
-                REPORT, "_version", return_value="test"
-            ):
+                REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+            ), mock.patch.object(REPORT, "_version", return_value="test"):
                 manifest = [
                     "game/a.lua",
                     "game/b.lua",
@@ -239,7 +239,7 @@ class CodeHealthReportTest(unittest.TestCase):
                 ]
                 model = REPORT._build_model(site_root, site_root, manifest)
 
-            self.assertEqual(model["schemaVersion"], 5)
+            self.assertEqual(model["schemaVersion"], 6)
             self.assertTrue(
                 {
                     "schemaVersion",
@@ -827,8 +827,8 @@ class CodeHealthReportTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with mock.patch.object(REPORT, "_git_commit", return_value="b" * 40), mock.patch.object(
-                REPORT, "_version", return_value="test"
-            ):
+                REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+            ), mock.patch.object(REPORT, "_version", return_value="test"):
                 manifest = Path(directory) / "structural-manifest.txt"
                 manifest.write_text("game/a.lua\n", encoding="utf-8")
                 self.assertEqual(
@@ -845,14 +845,14 @@ class CodeHealthReportTest(unittest.TestCase):
                     0,
                 )
             model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
-            self.assertEqual(model["schemaVersion"], 5)
+            self.assertEqual(model["schemaVersion"], 6)
             self.assertNotIn("policy", model)
             self.assertTrue((site_root / "codehealth" / "index.html").exists())
 
     def build_site_model(self, site_root: Path, manifest: list[str] | None = None) -> dict:
         with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
-            REPORT, "_version", return_value="test"
-        ):
+            REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+        ), mock.patch.object(REPORT, "_version", return_value="test"):
             if manifest is None:
                 manifest = sorted(
                     str(path.relative_to(site_root)).replace("\\", "/")
@@ -1127,6 +1127,324 @@ class CodeHealthReportTest(unittest.TestCase):
         self.assertIn("raw", rendered)
         self.assertIn("game/hot_visible.lua", rendered)
         self.assertIn("game/hot_ignored.lua", rendered)
+
+
+def _commit_fixture_repo(site_root: Path) -> None:
+    subprocess.run(["git", "config", "user.email", "codehealth-test@example.com"], cwd=site_root, check=True)
+    subprocess.run(["git", "config", "user.name", "Code Health Test"], cwd=site_root, check=True)
+    subprocess.run(["git", "add", "."], cwd=site_root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "--message", "fixture"], cwd=site_root, check=True)
+
+
+def _trend_nodes(paths: list[str]) -> list[dict[str, object]]:
+    return [{"id": f"node-{index}", "source_file": path} for index, path in enumerate(paths)]
+
+
+def _trend_link(index_by_path: dict[str, int], source: str, target: str) -> dict[str, object]:
+    return {
+        "source": f"node-{index_by_path[source]}",
+        "target": f"node-{index_by_path[target]}",
+        "relation": "imports",
+        "confidence": "EXTRACTED",
+    }
+
+
+def _trend_self_link() -> list[dict[str, object]]:
+    return [{"source": "node-0", "target": "node-0", "relation": "imports", "confidence": "EXTRACTED"}]
+
+
+class CodeHealthTrendsTest(unittest.TestCase):
+    """Protect erosion, subsystem, headline, fan, and compact-history behavior."""
+
+    def build_trend_model(self, site_root: Path, manifest: list[str] | None = None) -> dict:
+        with mock.patch.object(REPORT, "_git_commit", return_value="c" * 40), mock.patch.object(
+            REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+        ), mock.patch.object(REPORT, "_version", return_value="test"):
+            if manifest is None:
+                manifest = sorted(
+                    str(path.relative_to(site_root)).replace("\\", "/")
+                    for path in site_root.rglob("*.lua")
+                    if "codehealth" not in path.parts
+                )
+            return REPORT._build_model(site_root, site_root, manifest)
+
+    def test_erosion_counts_only_high_complexity_mass(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "game/at_limit.lua": _sized_source(120),
+                "game/above_limit.lua": _sized_source(120),
+                "game/calm.lua": _sized_source(420),
+            }
+            lizard_rows = [
+                {"NLOC": "100", "CCN": "10", "file": "game/at_limit.lua", "function": "run"},
+                {"NLOC": "100", "CCN": "11", "file": "game/above_limit.lua", "function": "run"},
+                {"NLOC": "400", "CCN": "5", "file": "game/calm.lua", "function": "run"},
+            ]
+            ordered = sorted(sources)
+            nodes = _trend_nodes(ordered)
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, _trend_self_link())
+            model = self.build_trend_model(site_root)
+            erosion = model["complexity"]["erosion"]
+            self.assertEqual(erosion["threshold"], 10)
+            self.assertAlmostEqual(erosion["totalMass"], 310.0)
+            self.assertAlmostEqual(erosion["highComplexityMass"], 110.0)
+            self.assertEqual(erosion["highComplexityFunctions"], 1)
+            self.assertEqual(erosion["functions"], 3)
+            self.assertAlmostEqual(erosion["score"], 110.0 / 310.0)
+
+    def test_subsystems_group_functions_without_file_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "libs/assets/pack.lua": _sized_source(30),
+                "libs/nds/cart.lua": _sized_source(30),
+                "game/hgss/field.lua": _sized_source(30),
+                "game/party.lua": _sized_source(30),
+                "app/main.lua": _sized_source(30),
+                "romdump/tool.lua": _sized_source(120),
+                "gen4/convert.lua": _sized_source(30),
+            }
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "4", "file": path, "function": "run"}
+                for path in sorted(sources)
+                if path != "romdump/tool.lua"
+            ]
+            lizard_rows.append(
+                {"NLOC": "100", "CCN": "11", "file": "romdump/tool.lua", "function": "run"}
+            )
+            ordered = sorted(sources)
+            nodes = _trend_nodes(ordered)
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, _trend_self_link())
+            model = self.build_trend_model(site_root)
+            subsystems = {row["id"]: row for row in model["subsystems"]}
+            self.assertEqual(
+                sorted(subsystems),
+                ["app", "game", "game/hgss", "gen4", "libs/assets", "libs/nds", "romdump"],
+            )
+            self.assertEqual(
+                [row["id"] for row in model["subsystems"]], sorted(subsystems)
+            )
+            for identifier in ("app", "game", "game/hgss", "gen4", "libs/assets", "libs/nds"):
+                self.assertEqual(subsystems[identifier]["functions"], 1)
+                self.assertEqual(subsystems[identifier]["highComplexityFunctions"], 0)
+                self.assertEqual(subsystems[identifier]["erosion"], 0.0)
+            self.assertEqual(subsystems["romdump"]["functions"], 1)
+            self.assertEqual(subsystems["romdump"]["highComplexityFunctions"], 1)
+            self.assertAlmostEqual(subsystems["romdump"]["erosion"], 1.0)
+
+    def test_headline_cards_and_fan_distributions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                "game/hub.lua": _sized_source(30),
+                "game/left.lua": _sized_source(30),
+                "game/middle.lua": _sized_source(30),
+                "game/right.lua": _sized_source(30),
+                "game/leaf.lua": _sized_source(30),
+            }
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "4", "file": path, "function": "run"}
+                for path in sorted(sources)
+            ]
+            ordered = sorted(sources)
+            index_by_path = {path: index for index, path in enumerate(ordered)}
+            links = [
+                _trend_link(index_by_path, "game/hub.lua", "game/left.lua"),
+                _trend_link(index_by_path, "game/hub.lua", "game/middle.lua"),
+                _trend_link(index_by_path, "game/hub.lua", "game/right.lua"),
+                _trend_link(index_by_path, "game/hub.lua", "game/leaf.lua"),
+                _trend_link(index_by_path, "game/left.lua", "game/middle.lua"),
+                _trend_link(index_by_path, "game/middle.lua", "game/right.lua"),
+            ]
+            nodes = _trend_nodes(ordered)
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, links)
+            model = self.build_trend_model(site_root)
+            distributions = model["structure"]["distributions"]
+            self.assertEqual(distributions["importFanOut"], {"p95": 4, "p99": 4, "max": 4})
+            self.assertEqual(distributions["importFanIn"], {"p95": 2, "p99": 2, "max": 2})
+            rendered = REPORT._render_summary(model)
+            headline = rendered.split("Headline metrics", 1)[1].split("</section>", 1)[0]
+            for title in ("Erosion", "Duplication percentage", "CCN p95", "Import-cycle groups"):
+                self.assertIn(title, headline)
+            self.assertNotIn("Callable visibility", headline)
+            self.assertIn("Callable visibility", rendered)
+
+    def test_nonpositive_nloc_fails_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "functions.csv"
+            with path.open("w", newline="", encoding="utf-8") as report_file:
+                writer = csv.DictWriter(report_file, fieldnames=["NLOC", "CCN", "file", "function"])
+                writer.writeheader()
+                writer.writerow({"NLOC": "0", "CCN": "3", "file": "game/a.lua", "function": "run"})
+            with self.assertRaises(ValueError):
+                REPORT._parse_lizard_report(path)
+
+    def run_site_main(
+        self, site_root: Path, repository: Path, manifest: Path, previous: Path | None
+    ) -> int:
+        with mock.patch.object(REPORT, "_version", return_value="test"), mock.patch.object(
+            REPORT, "_git_commit", return_value="d" * 40
+        ), mock.patch.object(REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"):
+            args = [
+                "--site-root",
+                str(site_root),
+                "--repository-root",
+                str(repository),
+                "--structural-manifest",
+                str(manifest),
+            ]
+            if previous is not None:
+                args += ["--previous-history", str(previous)]
+            return REPORT.main(args)
+
+    def write_previous_history(self, path: Path, entries: list[dict]) -> None:
+        path.write_text(
+            json.dumps({"schemaVersion": 1, "measurementVersion": 1, "entries": entries}),
+            encoding="utf-8",
+        )
+
+    def history_entry(
+        self, commit: str, committed: str, analyzed: str, **overrides: object
+    ) -> dict:
+        entry: dict = {
+            "commit": commit,
+            "committedAt": committed,
+            "analyzedAt": analyzed,
+            "files": 5,
+            "physicalLines": 100,
+            "functions": 5,
+            "erosion": 0.1,
+            "duplicationPercentage": 2.0,
+            "ccnP95": 4,
+            "ccnP99": 8,
+            "importCycleGroups": 0,
+            "fanOutP95": 1,
+            "fanOutP99": 2,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_compatible_history_appends_and_renders_signed_deltas(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {"game/a.lua": _sized_source(30), "game/b.lua": _sized_source(30)}
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "4", "file": "game/a.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "5", "file": "game/b.lua", "function": "run"},
+            ]
+            ordered = sorted(sources)
+            nodes = _trend_nodes(ordered)
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, _trend_self_link())
+            _commit_fixture_repo(site_root)
+            previous_path = root / "previous.json"
+            self.write_previous_history(
+                previous_path,
+                [self.history_entry("a" * 40, "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z")],
+            )
+            manifest = root / "structural-manifest.txt"
+            manifest.write_text("game/a.lua\ngame/b.lua\n", encoding="utf-8")
+            self.assertEqual(self.run_site_main(site_root, site_root, manifest, previous_path), 0)
+            history = json.loads(
+                (site_root / "codehealth" / "history.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(history["schemaVersion"], 1)
+            self.assertEqual(history["measurementVersion"], 1)
+            self.assertEqual(len(history["entries"]), 2)
+            self.assertEqual(history["entries"][0]["commit"], "a" * 40)
+            rendered = (site_root / "codehealth" / "index.html").read_text(encoding="utf-8")
+            self.assertIn("a" * 40, rendered)
+            self.assertRegex(rendered, r"[+-]\d")
+
+    def test_baseline_without_previous_history_has_neutral_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {"game/a.lua": _sized_source(30)}
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "4", "file": "game/a.lua", "function": "run"},
+            ]
+            nodes = _trend_nodes(sorted(sources))
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, _trend_self_link())
+            _commit_fixture_repo(site_root)
+            manifest = root / "structural-manifest.txt"
+            manifest.write_text("game/a.lua\n", encoding="utf-8")
+            self.assertEqual(self.run_site_main(site_root, site_root, manifest, None), 0)
+            history = json.loads(
+                (site_root / "codehealth" / "history.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(history["entries"]), 1)
+            rendered = (site_root / "codehealth" / "index.html").read_text(encoding="utf-8")
+            self.assertIn("aseline", rendered)
+
+    def test_rendered_history_caps_visible_entries_without_truncating_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {"game/a.lua": _sized_source(30)}
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "4", "file": "game/a.lua", "function": "run"},
+            ]
+            nodes = _trend_nodes(sorted(sources))
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, _trend_self_link())
+            _commit_fixture_repo(site_root)
+            entries = [
+                self.history_entry(
+                    format(index, "040x"),
+                    f"2026-01-{(index % 28) + 1:02d}T00:00:00Z",
+                    "2026-02-01T00:00:00Z",
+                )
+                for index in range(1, 56)
+            ]
+            previous_path = root / "previous.json"
+            self.write_previous_history(previous_path, entries)
+            manifest = root / "structural-manifest.txt"
+            manifest.write_text("game/a.lua\n", encoding="utf-8")
+            self.assertEqual(self.run_site_main(site_root, site_root, manifest, previous_path), 0)
+            history = json.loads(
+                (site_root / "codehealth" / "history.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(history["entries"]), 56)
+            rendered = (site_root / "codehealth" / "index.html").read_text(encoding="utf-8")
+            newest = history["entries"][-1]["commit"]
+            oldest = history["entries"][0]["commit"]
+            self.assertIn(newest, rendered)
+            self.assertNotIn(oldest, rendered)
+
+    def test_published_state_holds_only_current_detailed_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {"game/a.lua": _sized_source(30), "game/b.lua": _sized_source(30)}
+            lizard_rows = [
+                {"NLOC": "10", "CCN": "4", "file": "game/a.lua", "function": "run"},
+                {"NLOC": "10", "CCN": "5", "file": "game/b.lua", "function": "run"},
+            ]
+            ordered = sorted(sources)
+            nodes = _trend_nodes(ordered)
+            site_root, _ = _write_hotspot_site(root, sources, lizard_rows, nodes, _trend_self_link())
+            _commit_fixture_repo(site_root)
+            previous_path = root / "previous.json"
+            self.write_previous_history(
+                previous_path,
+                [
+                    self.history_entry("a" * 40, "2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z"),
+                    self.history_entry("b" * 40, "2026-01-15T00:00:00Z", "2026-02-01T00:00:00Z"),
+                ],
+            )
+            manifest = root / "structural-manifest.txt"
+            manifest.write_text("game/a.lua\ngame/b.lua\n", encoding="utf-8")
+            self.assertEqual(self.run_site_main(site_root, site_root, manifest, previous_path), 0)
+            reports_root = site_root / "codehealth" / "reports"
+            nested = sorted(
+                path.relative_to(reports_root).parts[0]
+                for path in reports_root.rglob("*")
+                if path.is_dir()
+            )
+            self.assertEqual(sorted(set(nested)), ["graphify", "jscpd", "lizard"])
+            rendered = (site_root / "codehealth" / "index.html").read_text(encoding="utf-8")
+            self.assertIn("history.json", rendered)
+
+    def test_fan_distributions_cover_single_and_two_file_sets(self) -> None:
+        self.assertEqual(REPORT._distribution([3]), {"p95": 3, "p99": 3, "max": 3})
+        self.assertEqual(REPORT._distribution([0, 4]), {"p95": 4, "p99": 4, "max": 4})
 
 
 if __name__ == "__main__":

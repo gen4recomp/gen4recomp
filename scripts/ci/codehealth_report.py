@@ -7,6 +7,7 @@ import argparse
 import csv
 from datetime import datetime, timezone
 import html
+import importlib.util
 import json
 import math
 from collections.abc import Iterable
@@ -15,6 +16,21 @@ import statistics
 import subprocess
 from typing import Any
 
+
+def _load_history_module() -> Any:
+    module_path = Path(__file__).with_name("codehealth_history.py")
+    module_spec = importlib.util.spec_from_file_location("codehealth_history", module_path)
+    if module_spec is None or module_spec.loader is None:
+        raise ValueError(f"cannot load history helper from {module_path}")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+_HISTORY = _load_history_module()
+
+REPORT_SCHEMA_VERSION = 6
+EROSION_THRESHOLD = 10
 
 EXCLUDED_PREFIXES = [
     "tests/",
@@ -102,6 +118,53 @@ def _nearest_rank(values: list[int | float], percentile: float) -> int | float:
     return sorted(values)[rank - 1]
 
 
+def _subsystem_for_path(source_file: str) -> str:
+    parts = source_file.split("/")
+    if parts[0] == "libs" and len(parts) > 1:
+        return f"libs/{parts[1]}"
+    if parts[0] == "game" and len(parts) > 1 and parts[1] == "hgss":
+        return "game/hgss"
+    return parts[0]
+
+
+def _erosion(records: list[tuple[str | None, float, float]]) -> dict[str, Any]:
+    masses = [ccn * math.sqrt(nloc) for _, nloc, ccn in records]
+    total_mass = sum(masses)
+    high_masses = [mass for (_, _, ccn), mass in zip(records, masses) if ccn > EROSION_THRESHOLD]
+    high_mass = sum(high_masses)
+    score = high_mass / total_mass if total_mass else 0.0
+    if not math.isfinite(score):
+        raise ValueError("erosion score is non-finite")
+    return {
+        "threshold": EROSION_THRESHOLD,
+        "totalMass": total_mass,
+        "highComplexityMass": high_mass,
+        "highComplexityFunctions": len(high_masses),
+        "functions": len(records),
+        "score": score,
+    }
+
+
+def _subsystems(records: list[tuple[str | None, float, float]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[tuple[str | None, float, float]]] = {}
+    for source_file, nloc, ccn in records:
+        if source_file is None:
+            continue
+        groups.setdefault(_subsystem_for_path(source_file), []).append((source_file, nloc, ccn))
+    rows = []
+    for identifier in sorted(groups):
+        aggregate = _erosion(groups[identifier])
+        rows.append(
+            {
+                "id": identifier,
+                "functions": aggregate["functions"],
+                "highComplexityFunctions": aggregate["highComplexityFunctions"],
+                "erosion": aggregate["score"],
+            }
+        )
+    return rows
+
+
 def _parse_lizard_report(path: Path) -> dict[str, Any]:
     try:
         with path.open(newline="", encoding="utf-8") as report_file:
@@ -111,14 +174,18 @@ def _parse_lizard_report(path: Path) -> dict[str, Any]:
             nloc_values: list[int | float] = []
             ccn_values: list[int | float] = []
             file_metrics: dict[str, dict[str, int | float]] = {}
+            function_records: list[tuple[str | None, float, float]] = []
             has_file_column = "file" in reader.fieldnames
             for row in reader:
                 if not row or any(value is None or value.strip() == "" for value in row.values()):
                     raise ValueError(f"Lizard report {path} contains an empty row")
                 nloc = _number(row["NLOC"], path, "NLOC")
                 ccn = _number(row["CCN"], path, "CCN")
+                if nloc <= 0:
+                    raise ValueError(f"Lizard report {path} has a non-positive NLOC")
                 nloc_values.append(nloc)
                 ccn_values.append(ccn)
+                source_file: str | None = None
                 if has_file_column:
                     source_file = _normalize_source_file(row["file"], path)
                     metrics = file_metrics.setdefault(
@@ -128,11 +195,14 @@ def _parse_lizard_report(path: Path) -> dict[str, Any]:
                     metrics["functions"] += 1
                     metrics["maxCcn"] = max(metrics["maxCcn"], ccn)
                     metrics["maxNloc"] = max(metrics["maxNloc"], nloc)
+                function_records.append((source_file, float(nloc), float(ccn)))
     except OSError as error:
         raise ValueError(f"cannot read Lizard report {path}: {error}") from error
     if not nloc_values:
         raise ValueError(f"Lizard report {path} contains no function rows")
     return {
+        "erosion": _erosion(function_records),
+        "subsystems": _subsystems(function_records),
         "functions": len(nloc_values),
         "files": file_metrics,
         "ccn": {
@@ -387,6 +457,14 @@ def _parse_graphify_report(path: Path) -> dict[str, Any]:
     }
 
 
+def _distribution(values: list[int | float]) -> dict[str, Any]:
+    return {
+        "p95": _nearest_rank(values, 0.95),
+        "p99": _nearest_rank(values, 0.99),
+        "max": max(values),
+    }
+
+
 def _lizard_maxima(lizard: dict[str, Any], path: str) -> tuple[Any, Any]:
     metrics = lizard["files"].get(path)
     if metrics is None:
@@ -453,6 +531,10 @@ def _build_structure_metrics(
                 sum(graphify_files.values()) / lizard["functions"] if lizard["functions"] else None
             ),
         },
+        "distributions": {
+            "importFanIn": _distribution([fan_in[path] for path in paths]),
+            "importFanOut": _distribution([fan_out[path] for path in paths]),
+        },
         "files": files,
         "hotspotPolicy": _hotspot_policy(),
         "hotspots": {
@@ -494,7 +576,27 @@ def _git_commit(repository_root: Path) -> str:
     return commit
 
 
-def _render_summary(model: dict[str, Any]) -> str:
+def _git_committed_at(repository_root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository_root), "log", "-1", "--format=%cI"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"cannot determine analyzed commit time: {error}") from error
+    committed_at = result.stdout.strip()
+    if not committed_at:
+        raise ValueError("git returned an empty commit time")
+    return committed_at
+
+
+def _render_summary(
+    model: dict[str, Any],
+    history: dict[str, Any] | None = None,
+    previous: dict[str, Any] | None = None,
+) -> str:
     def value(item: Any) -> str:
         return html.escape(str(item))
 
@@ -553,15 +655,96 @@ def _render_summary(model: dict[str, Any]) -> str:
     source = model["source"]
     directories = model["directories"]
     visibility = structure["callableVisibility"]
-    cards = (
-        ("Functions", complexity["functions"]),
-        ("Duplicated lines", duplication["duplicatedLines"]),
-        ("Architecture modules", architecture["modules"]),
-        ("Callable visibility proxy", visibility["ratio"]),
-    )
+    erosion = complexity.get("erosion") or {}
+    erosion_score = erosion.get("score")
+    duplication_percentage = duplication.get("percentage")
+    ccn_p95 = (complexity.get("ccn") or {}).get("p95")
+    cycle_groups = architecture.get("importCycleGroups")
+    previous_metrics: dict[str, Any] = previous if isinstance(previous, dict) else {}
+
+    def signed(current: Any, old: Any) -> str | None:
+        if current is None or old is None:
+            return None
+        delta = current - old
+        if isinstance(delta, float):
+            return f"{delta:+.4f}"
+        return f"{delta:+d}"
+
+    def headline_card(title: str, formatted: str, delta: str | None) -> str:
+        detail = f"<p>{html.escape(delta)} since previous</p>" if delta is not None else ""
+        return (
+            f'        <article class="card"><h3>{html.escape(title)}</h3>'
+            f"<p>{formatted}</p>{detail}</article>"
+        )
+
+    def formatted_erosion(score: Any) -> str:
+        return "—" if score is None else f"{score:.4f}"
+
+    def formatted_percentage(percentage: Any) -> str:
+        return "—" if percentage is None else f"{value(percentage)}%"
+
     card_markup = "\n".join(
-        f'        <article class="card"><h3>{html.escape(title)}</h3><p>{value(metric)}</p></article>'
-        for title, metric in cards
+        [
+            headline_card(
+                "Erosion",
+                formatted_erosion(erosion_score),
+                signed(erosion_score, previous_metrics.get("erosion")),
+            ),
+            headline_card(
+                "Duplication percentage",
+                formatted_percentage(duplication_percentage),
+                signed(duplication_percentage, previous_metrics.get("duplicationPercentage")),
+            ),
+            headline_card(
+                "CCN p95",
+                display(ccn_p95),
+                signed(ccn_p95, previous_metrics.get("ccnP95")),
+            ),
+            headline_card(
+                "Import-cycle groups",
+                display(cycle_groups),
+                signed(cycle_groups, previous_metrics.get("importCycleGroups")),
+            ),
+        ]
+    )
+    subsystems = model.get("subsystems") or []
+    subsystem_rows_markup = "\n".join(
+        "            <tr>"
+        f"<td>{value(row['id'])}</td>"
+        f"<td>{value(row['functions'])}</td>"
+        f"<td>{value(row['highComplexityFunctions'])}</td>"
+        f"<td>{formatted_erosion(row['erosion'])}</td>"
+        "</tr>"
+        for row in subsystems
+    )
+    history_entries: list[dict[str, Any]] = []
+    if isinstance(history, dict) and isinstance(history.get("entries"), list):
+        history_entries = history["entries"]
+    visible_history = history_entries[-50:]
+    if previous_metrics.get("commit") is not None:
+        history_status = (
+            "<p>Change since "
+            f"<code>{value(previous_metrics['commit'])}</code>. "
+            "Deltas on headline cards are signed differences against that commit.</p>"
+        )
+    else:
+        history_status = (
+            "<p>Baseline — this is the first compatible measurement; "
+            "there is no previous commit to compare.</p>"
+        )
+    history_rows_markup = "\n".join(
+        "            <tr>"
+        f"<td><code>{value(row['commit'])}</code></td>"
+        f"<td>{value(row['committedAt'])}</td>"
+        f"<td>{value(row['analyzedAt'])}</td>"
+        f"<td>{value(row['files'])}</td>"
+        f"<td>{value(row['functions'])}</td>"
+        f"<td>{formatted_erosion(row['erosion'])}</td>"
+        f"<td>{formatted_percentage(row['duplicationPercentage'])}</td>"
+        f"<td>{value(row['ccnP95'])}</td>"
+        f"<td>{value(row['importCycleGroups'])}</td>"
+        "</tr>"
+        for row in visible_history
     )
     human_reports = (
         ("Lizard HTML", "reports/lizard/index.html"),
@@ -572,6 +755,7 @@ def _render_summary(model: dict[str, Any]) -> str:
     )
     machine_reports = (
         ("Normalized quality report", "quality-report.json"),
+        ("Compact history", "history.json"),
         ("Lizard functions", "reports/lizard/functions.csv"),
         ("jscpd report", "reports/jscpd/jscpd-report.json"),
         ("Graphify graph", "reports/graphify/graph.json"),
@@ -637,7 +821,28 @@ def _render_summary(model: dict[str, Any]) -> str:
       </section>
       <section class="panel" aria-labelledby="source-census-title">
         <h2 id="source-census-title">Source census</h2>
-        <p>{value(len(source["files"]))} production Lua files, with bytes and physical-line measurements.</p>
+        <p>{value(len(source["files"]))} analyzed structural files, {value(complexity.get("functions", "—"))} functions, {value(sum(row["physicalLines"] for row in source["files"]))} physical lines, with bytes and physical-line measurements.</p>
+      </section>
+      <section class="panel" aria-labelledby="erosion-title">
+        <h2 id="erosion-title">Structural erosion</h2>
+        <p>Erosion is the share of complexity mass held by functions with CCN above {value(erosion.get("threshold", EROSION_THRESHOLD))}, where mass is CCN times the square root of NLOC. Lizard NLOC is the SLOC proxy for this metric. It is a structural signal, not a health verdict.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">Subsystem</th><th scope="col">Functions</th><th scope="col">High-complexity functions</th><th scope="col">Erosion</th></tr></thead>
+          <tbody>
+{subsystem_rows_markup}
+          </tbody>
+        </table></div>
+      </section>
+      <section class="panel" aria-labelledby="history-title">
+        <h2 id="history-title">Measurement history</h2>
+{history_status}
+        <p>Showing the latest {value(len(visible_history))} of {value(len(history_entries))} compact measurements. Full history remains available through the machine download below.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th scope="col">Commit</th><th scope="col">Committed</th><th scope="col">Analyzed</th><th scope="col">Files</th><th scope="col">Functions</th><th scope="col">Erosion</th><th scope="col">Duplication</th><th scope="col">CCN p95</th><th scope="col">Cycles</th></tr></thead>
+          <tbody>
+{history_rows_markup}
+          </tbody>
+        </table></div>
       </section>
       <section class="panel" aria-labelledby="directory-density-title">
         <h2 id="directory-density-title">Directory density</h2>
@@ -714,15 +919,20 @@ def _build_model(
     }
     lizard = _parse_lizard_report(report_paths["lizard"])
     graphify = _parse_graphify_report(report_paths["graphify"])
+    subsystems = lizard.pop("subsystems")
     complexity = {key: value for key, value in lizard.items() if key != "files"}
     architecture = {
         key: value for key, value in graphify.items() if key not in {"files", "extractedImportPairs"}
     }
     source, directories = _source_census(repository_root, structural_paths)
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    committed_at = _git_committed_at(repository_root)
     model = {
-        "schemaVersion": 5,
+        "schemaVersion": REPORT_SCHEMA_VERSION,
+        "measurementVersion": _HISTORY.MEASUREMENT_VERSION,
         "commit": _git_commit(repository_root),
-        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "committedAt": committed_at,
+        "generatedAt": generated_at,
         "tools": {
             "lizard": _version("lizard"),
             "jscpd": _version("jscpd"),
@@ -735,6 +945,7 @@ def _build_model(
         "complexity": complexity,
         "duplication": _parse_jscpd_report(report_paths["jscpd"]),
         "architecture": architecture,
+        "subsystems": subsystems,
         "source": source,
         "directories": directories,
         "structure": _build_structure_metrics(lizard, graphify, source),
@@ -776,6 +987,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--structure-report", type=Path, default=None)
     parser.add_argument("--repository-root", type=Path, default=None)
     parser.add_argument("--structural-manifest", type=Path, default=None)
+    parser.add_argument("--previous-history", type=Path, default=None)
     args = parser.parse_args(argv)
     site_mode = args.site_root is not None
     structure_mode = args.lizard_csv is not None or args.structure_report is not None
@@ -795,11 +1007,19 @@ def main(argv: list[str] | None = None) -> int:
         try:
             structural_paths = _load_structural_manifest(args.structural_manifest)
             model = _build_model(site_root, repository_root, structural_paths)
+            previous = None
+            if args.previous_history is not None:
+                previous = _load_json(args.previous_history)
+            history = _HISTORY.merge(previous, _HISTORY.entry_from_report(model))
+            previous_entry = _HISTORY.previous_entry(history, model["commit"])
             quality_report = site_root / "codehealth" / "quality-report.json"
+            history_report = site_root / "codehealth" / "history.json"
             summary_page = site_root / "codehealth" / "index.html"
             quality_report.write_text(json.dumps(model, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            summary_page.write_text(_render_summary(model), encoding="utf-8")
+            history_report.write_text(json.dumps(history, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            summary_page.write_text(_render_summary(model, history, previous_entry), encoding="utf-8")
             _load_json(quality_report)
+            _load_json(history_report)
         except (OSError, ValueError) as error:
             print(f"codehealth report: {error}", flush=True)
             return 1

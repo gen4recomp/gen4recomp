@@ -7,6 +7,7 @@ TOOL_ROOT=$(unset CDPATH; cd -- "$SCRIPT_DIR/../.." && pwd)
 
 TARGET_ROOT="$TOOL_ROOT"
 SITE_ROOT="$TOOL_ROOT/tmp/codehealth-site"
+PREVIOUS_HISTORY=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -26,8 +27,16 @@ while [ "$#" -gt 0 ]; do
       SITE_ROOT="$2"
       shift 2
       ;;
+    --previous-history)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "codehealth: --previous-history requires a path" >&2
+        exit 1
+      fi
+      PREVIOUS_HISTORY="$2"
+      shift 2
+      ;;
     *)
-      echo "usage: scripts/ci/codehealth.sh [--repository-root PATH] [--site-root PATH]" >&2
+      echo "usage: scripts/ci/codehealth.sh [--repository-root PATH] [--site-root PATH] [--previous-history PATH]" >&2
       exit 1
       ;;
   esac
@@ -64,7 +73,7 @@ for source_file in site/index.html site/styles.css; do
   fi
 done
 
-for tool_file in scripts/ci/codehealth_scope.py scripts/ci/codehealth_report.py scripts/ci/codehealth_graphify.py; do
+for tool_file in scripts/ci/codehealth_scope.py scripts/ci/codehealth_history.py scripts/ci/codehealth_report.py scripts/ci/codehealth_graphify.py; do
   if [ ! -s "$TOOL_ROOT/$tool_file" ]; then
     echo "codehealth: required tool is missing or empty: $TOOL_ROOT/$tool_file" >&2
     exit 1
@@ -144,16 +153,28 @@ graphify export callflow-html \
   --graph "$GRAPH_JSON" \
   --output "$GRAPHIFY_REPORT_ROOT/callflow.html"
 
+if [ -n "$PREVIOUS_HISTORY" ]; then
+  if [ ! -r "$PREVIOUS_HISTORY" ]; then
+    echo "codehealth: previous history is not readable: $PREVIOUS_HISTORY" >&2
+    exit 1
+  fi
+  REPORT_HISTORY_ARGS=(--previous-history "$PREVIOUS_HISTORY")
+else
+  REPORT_HISTORY_ARGS=()
+fi
+
 python3 "$TOOL_ROOT/scripts/ci/codehealth_report.py" \
   --site-root "$SITE_ROOT" \
   --repository-root "$TARGET_ROOT" \
-  --structural-manifest "$FINAL_MANIFEST"
+  --structural-manifest "$FINAL_MANIFEST" \
+  "${REPORT_HISTORY_ARGS[@]+"${REPORT_HISTORY_ARGS[@]}"}"
 
 for required_file in \
   index.html \
   styles.css \
   codehealth/index.html \
   codehealth/quality-report.json \
+  codehealth/history.json \
   codehealth/reports/lizard/index.html \
   codehealth/reports/lizard/functions.csv \
   codehealth/reports/jscpd/jscpd-report.html \
