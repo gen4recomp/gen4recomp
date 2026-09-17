@@ -27,6 +27,7 @@ local FieldEventResolver = require("libs.hgss.src.interaction.FieldEventResolver
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerAvatarState = require("libs.hgss.src.actors.FieldPlayerAvatarState")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
@@ -954,6 +955,16 @@ function FieldRuntime:_load()
     -- interactions run through the script client and the binding audit
     -- guarantees every interactable event is bound.
     self.messageProvider = FieldMessageProvider.new(cacheFs)
+    -- Pin the Start Menu label bank for the field-runtime lifetime so menu
+    -- composition stays deterministic and I/O-free after a successful boot.
+    -- A missing bank fails the boot with the provider's typed error.
+    -- (Required at function scope: the boot closure sits at LuaJIT's
+    -- upvalue limit, so module-level requires must not grow here.)
+    local startMenuBank = require("libs.assets.src.MenuProtocol").START_MENU_MESSAGE_BANK
+    local _, startMenuBankErr = self.messageProvider:acquireBank(startMenuBank)
+    if startMenuBankErr ~= nil then
+      error(startMenuBankErr, 0)
+    end
     local function actorAt(mapId, candidate)
       return self:_actorAt(mapId, candidate)
     end
@@ -1465,9 +1476,9 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
   -- implementation enabled state (a disabled visual entry renders and
   -- confirms as a no-op). Labels resolve per icon-table row: the
   -- player-name row carries the live player name, never baked text; static
-  -- bank-id labels resolve through the message stack once it publishes the
-  -- label bank (absent from the generated message class, so static rows
-  -- carry no label yet and render icon-only).
+  -- rows resolve their label-bank message through the pinned source label
+  -- bank (a missing bank or message id is a composition failure, never an
+  -- unlabeled icon).
   local startMenuSection = assert(self.uiManifest.startMenu, "the field UI manifest must carry the start menu section")
   local actionIcons = assert(startMenuSection.actionIcons, "the field UI manifest must carry the start menu action map")
   local iconTable = assert(startMenuSection.iconTable, "the field UI manifest must carry the start menu icon table")
@@ -1486,9 +1497,16 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
         enabled = self.bagService ~= nil and self.bagCursor ~= nil and self.itemCatalog ~= nil
       end
       local row = assert(iconTable[icon + 1], "action " .. source.id .. " maps outside the start menu icon table")
-      local label = nil
+      local label
       if row.labelKind == "player_name" then
         label = playerName
+      else
+        assert(type(row.label) == "number", "action " .. source.id .. " has no static start menu label")
+        local template, labelErr = self.messageProvider:get(MenuProtocol.START_MENU_MESSAGE_BANK, row.label)
+        if template == nil then
+          error(labelErr, 0)
+        end
+        label = template.text
       end
       entries[#entries + 1] = {
         id = source.id,

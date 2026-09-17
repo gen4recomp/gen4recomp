@@ -72,11 +72,21 @@ end
 
 local ICON_MANIFEST = iconManifest()
 
--- Recording stand-in for the shared FieldTextRenderer.
+-- Recording stand-in for the shared FieldTextRenderer: palette-driven
+-- draws record beside plain draws, and the generated font palette carries
+-- the slots the renderer resolves its label roles from.
 local function recordingText()
-  local text = { draws = {} }
+  local text = {
+    draws = {},
+    fontDef = {
+      palette = { [15] = { r = 1, g = 2, b = 3 }, [3] = { r = 4, g = 5, b = 6 }, [1] = { r = 7, g = 8, b = 9 } },
+    },
+  }
   function text.drawText(_, str, x, y)
     text.draws[#text.draws + 1] = { text = str, x = x, y = y }
+  end
+  function text.drawTextWithPalette(_, str, x, y, palette)
+    text.draws[#text.draws + 1] = { text = str, x = x, y = y, palette = palette }
   end
   function text.textWidth(_, str)
     return #str * 8
@@ -591,6 +601,91 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
   Assert.equal(lg.pushDepth(), 0, "the transform stack is balanced after a failed draw")
   FieldDialogueFixture.assertRestoredState(lg, canvas, shader)
   renderer:release()
+end
+
+-- A palette-capable stand-in for the shared FieldTextRenderer: records
+-- palette-driven draws separately from plain draws and exposes the
+-- generated font palette the renderer must resolve its label colors from.
+-- Slots use the one-based Lua representation of the source palette roles.
+local function recordingPaletteText()
+  local palette = {}
+  palette[15] = { r = 11, g = 22, b = 33 }
+  palette[3] = { r = 44, g = 55, b = 66 }
+  palette[1] = { r = 77, g = 88, b = 99 }
+  local text = { draws = {}, plainDraws = {}, fontDef = { palette = palette } }
+  function text.drawText(_, str, x, y)
+    text.plainDraws[#text.plainDraws + 1] = { text = str, x = x, y = y }
+  end
+  function text.drawTextWithPalette(_, str, x, y, labelPalette)
+    text.draws[#text.draws + 1] = { text = str, x = x, y = y, palette = labelPalette }
+  end
+  function text.textWidth(_, str)
+    return #str * 8
+  end
+  return text
+end
+
+-- Labels render through the palette-driven text path with the retail label
+-- roles resolved from the generated font palette, centered in their own
+-- source label window exactly as before.
+function T.labels_draw_through_the_palette_path_with_the_retail_label_roles()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local text = recordingPaletteText()
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = text,
+    graphics = lg,
+  })
+  renderer:draw({
+    selectedPosition = 0,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+    },
+  }, canonicalPlacement())
+  renderer:release()
+
+  Assert.equal(#text.draws, 1, "the resolved label reaches the palette-driven text path")
+  Assert.equal(#text.plainDraws, 0, "labels must not use the plain text path")
+  local draw = text.draws[1]
+  Assert.equal(draw.text, "POKEDEX")
+  Assert.isTrue(
+    draw.palette.foreground == text.fontDef.palette[15],
+    "the foreground comes from the generated palette slot for the retail foreground role"
+  )
+  Assert.isTrue(
+    draw.palette.shadow == text.fontDef.palette[3],
+    "the shadow comes from the generated palette slot for the retail shadow role"
+  )
+  Assert.isTrue(
+    draw.palette.background == text.fontDef.palette[1],
+    "the background comes from the generated palette slot for the retail background role"
+  )
+  -- Position 0 labels from { x = 8, y = 48, width = 72 }: "POKEDEX" is
+  -- 56px wide through the recording text, so x centers at 8 + (72-56)/2.
+  Assert.deepEqual({ draw.x, draw.y }, { 8 + 8, 48 }, "the palette path keeps label centering")
+end
+
+-- The label palette comes from generated font data, so a text collaborator
+-- without the palette path or generated palette cannot build the surface.
+function T.rejects_a_text_collaborator_without_the_palette_path()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local plainText = { draws = {} }
+  function plainText.drawText(_, str, x, y)
+    plainText.draws[#plainText.draws + 1] = { text = str, x = x, y = y }
+  end
+  function plainText.textWidth(_, str)
+    return #str * 8
+  end
+  Assert.throws(function()
+    StartMenuRenderer.new({
+      cacheFs = iconCache(ICON_MANIFEST),
+      manifest = ICON_MANIFEST,
+      text = plainText,
+      graphics = lg,
+    })
+  end)
 end
 
 -- Release frees the owned images and clears the quads; a draw after release

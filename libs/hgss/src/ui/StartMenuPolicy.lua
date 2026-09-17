@@ -54,6 +54,7 @@ local ACTIONS = {
     targetApplication = FieldApplicationIds.POKEDEX,
     inhibitedBy = "hasPokedex",
     unlockedBy = "hasPokedex",
+    displayPosition = 0,
   },
   {
     id = "vanilla.pokemon",
@@ -61,6 +62,7 @@ local ACTIONS = {
     targetApplication = FieldApplicationIds.POKEMON,
     inhibitedBy = "hasStarter",
     unlockedBy = "hasStarter",
+    displayPosition = 1,
   },
   {
     id = "vanilla.bag",
@@ -68,6 +70,7 @@ local ACTIONS = {
     targetApplication = FieldApplicationIds.BAG,
     inhibitedBy = "bagUnlocked",
     unlockedBy = "bagUnlocked",
+    displayPosition = 2,
   },
   {
     id = "vanilla.pokegear",
@@ -75,23 +78,27 @@ local ACTIONS = {
     targetApplication = FieldApplicationIds.POKEGEAR,
     inhibitedBy = "hasPokegear",
     unlockedBy = "hasPokegear",
+    displayPosition = 3,
   },
   {
     id = "vanilla.trainer_card",
     actionKind = "application",
     targetApplication = FieldApplicationIds.TRAINER_CARD,
     unlockedBy = "trainerCardUnlocked",
+    displayPosition = 4,
   },
   {
     id = "vanilla.save",
     actionKind = "field_action",
     unlockedBy = "saveUnlocked",
+    displayPosition = 5,
   },
   {
     id = "vanilla.options",
     actionKind = "application",
     targetApplication = FieldApplicationIds.OPTIONS,
     unlockedBy = "optionsUnlocked",
+    displayPosition = 6,
   },
   { id = "vanilla.running_shoes", actionKind = "toggle" },
   {

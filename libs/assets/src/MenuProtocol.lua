@@ -11,6 +11,11 @@
 local MenuProtocol = {}
 
 MenuProtocol.STANDARD_MESSAGE_BANK = 191
+-- The in-field Start Menu label bank (msgdata member 0xC4): overlay 27 loads
+-- it for the menu labels (src/start_menu.c), and no map header or script
+-- bank entry references it, so it is pinned through this protocol constant
+-- like the standard list-menu bank rather than discovered from references.
+MenuProtocol.START_MENU_MESSAGE_BANK = 196
 MenuProtocol.CANCEL_RESULT = 0xFFFE
 MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT = "hgss_bottom_screen_tiles"
 
