@@ -44,11 +44,18 @@ local function newEnv()
       producerId = "d" .. string.rep("1", 64),
     },
     failKeys = {},
+    failureClasses = {},
     pendingKeys = {},
     excludedKeys = {},
     reusedKeys = {},
     causeKeys = {},
+    poolFailures = {},
+    failByVersion = {},
+    infraError = nil,
     publishFails = false,
+    publishFailCalls = {},
+    publishAttempts = 0,
+    publishedVersions = {},
     milestones = {
       bootstrap = { "field-camera:global" },
       ["field-core"] = { "map:7" },
@@ -86,9 +93,19 @@ local function makeSession(pool, identity, sweepEnabled)
     completed = {},
     retired = false,
   }
+  function session:_failFor(jobKey)
+    local perVersion = env.failByVersion
+    if perVersion ~= nil then
+      local versionId = self.identity ~= nil and self.identity.versionId or nil
+      if versionId ~= nil and perVersion[versionId] ~= nil and perVersion[versionId][jobKey] ~= nil then
+        return perVersion[versionId][jobKey]
+      end
+    end
+    return env.failKeys[jobKey]
+  end
   function session:_answer(jobKey)
-    if env.failKeys[jobKey] ~= nil then
-      return false, jobKey .. ": " .. env.failKeys[jobKey]
+    if self:_failFor(jobKey) ~= nil then
+      return false, jobKey .. ": " .. (self:_failFor(jobKey) or "")
     end
     if env.excludedKeys[jobKey] then
       return false, jobKey .. ": source-planned exclusion"
@@ -141,7 +158,7 @@ local function makeSession(pool, identity, sweepEnabled)
     assert(not self.retired, "generation session is retired")
     for _, jobKey in ipairs(self.requested) do
       if
-        env.failKeys[jobKey] == nil
+        self:_failFor(jobKey) == nil
         and env.pendingKeys[jobKey] == nil
         and env.excludedKeys[jobKey] == nil
         and not self.completed[jobKey]
@@ -152,13 +169,18 @@ local function makeSession(pool, identity, sweepEnabled)
         end
       end
     end
+    if env.infraError ~= nil then
+      local injected = env.infraError
+      env.infraError = nil
+      error(injected, 0)
+    end
   end
   function session:status()
     local ready = 0
     local failures = {}
     for _, jobKey in ipairs(self.requested) do
-      if env.failKeys[jobKey] ~= nil then
-        failures[#failures + 1] = jobKey .. ": " .. env.failKeys[jobKey]
+      if self:_failFor(jobKey) ~= nil then
+        failures[#failures + 1] = jobKey .. ": " .. (self:_failFor(jobKey) or "")
       elseif env.excludedKeys[jobKey] then
         failures[#failures + 1] = jobKey .. ": source-planned exclusion"
       elseif self.completed[jobKey] then
@@ -182,11 +204,11 @@ local function makeSession(pool, identity, sweepEnabled)
     for _, jobKey in ipairs(self.requested) do
       local kind, key = splitJobKey(jobKey)
       local state, err, cause, failureClass = nil, nil, nil, nil
-      if env.failKeys[jobKey] ~= nil then
+      if self:_failFor(jobKey) ~= nil then
         state = "failed"
-        err = jobKey .. ": " .. env.failKeys[jobKey]
+        err = jobKey .. ": " .. (self:_failFor(jobKey) or "")
         cause = env.causeKeys ~= nil and env.causeKeys[jobKey] or nil
-        failureClass = "job"
+        failureClass = (env.failureClasses ~= nil and env.failureClasses[jobKey]) or "job"
       elseif env.excludedKeys[jobKey] then
         state = "failed"
         err = jobKey .. ": source-planned exclusion"
@@ -230,6 +252,9 @@ local function makeFakes()
         loadLua = function()
           return env.stateStored
         end,
+        read = function(_, _)
+          return "test-dump-marker"
+        end,
         remove = function(_, path)
           env.removals[#env.removals + 1] = path
           return true
@@ -252,6 +277,17 @@ local function makeFakes()
   }
   fakes.DerivedCacheState = {
     path = "data/generated/build.lua",
+    current = function(inputs)
+      assert(type(inputs) == "table", "generation identity inputs are required")
+      return {
+        schema = 2,
+        versionId = inputs.versionId,
+        generationId = "test-generation",
+        producerId = inputs.producerId,
+        romSha1 = inputs.romSha1,
+        mode = inputs.mode,
+      }
+    end,
     matches = function(stored)
       return env.stateMatches and stored == env.stateStored
     end,
@@ -259,11 +295,13 @@ local function makeFakes()
       env.invalidations = env.invalidations + 1
     end,
     publish = function(_, identity)
-      if env.publishFails then
+      env.publishAttempts = env.publishAttempts + 1
+      if env.publishFails or (env.publishFailCalls ~= nil and env.publishFailCalls[env.publishAttempts]) then
         error("injected attestation failure", 0)
       end
       env.publishes = env.publishes + 1
       env.publishedIdentity = identity
+      env.publishedVersions[#env.publishedVersions + 1] = identity.versionId
     end,
   }
   fakes.ProducerFingerprint = {
@@ -302,6 +340,9 @@ local function makeFakes()
       function pool:drain() end
       function pool:waitForProgress() end
       function pool:jobOutcome(jobKey)
+        if env.poolFailures ~= nil and env.poolFailures[jobKey] ~= nil then
+          return env.poolFailures[jobKey]
+        end
         for _, completed in ipairs(env.completedOrder) do
           if completed == jobKey then
             return {
@@ -419,6 +460,21 @@ local function rowForKey(rows, key)
     end
   end
   return nil
+end
+
+---@param lines string[]
+---@return string[] headers
+---@return string[] footers
+local function splitProfileAll(lines)
+  local headers, footers = {}, {}
+  for _, line in ipairs(lines) do
+    if line:find('"type":"header"', 1, true) ~= nil then
+      headers[#headers + 1] = line
+    elseif line:find('"type":"footer"', 1, true) ~= nil then
+      footers[#footers + 1] = line
+    end
+  end
+  return headers, footers
 end
 
 local T = {}
@@ -802,6 +858,351 @@ function T.attestation_publish_failure_leaves_completeness_false()
     footer:find('"attestationPublished":false', 1, true) ~= nil,
     "the footer records the missing attestation, got: " .. tostring(footer)
   )
+end
+
+-- Error text never changes another job's disposition: a failed map:40 whose
+-- message quotes the healthy map:4 and map:401 keys fails only itself, and
+-- no cause is inferred from the quoted mentions.
+function T.error_text_never_changes_another_jobs_disposition()
+  env = newEnv()
+  env.failKeys["map:40"] = 'WORKER_FAILED: physical job failed; quoted context "map:4" and "map:401" are healthy'
+  env.failureClasses["map:40"] = "job"
+  local profilePath = os.tmpname()
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:4", "map:40", "map:401" },
+      profile = profilePath,
+    })
+  )
+  Assert.isNil(report, "a scope with a failed job must not return a success report")
+  assert(err ~= nil, "a scope with a failed job reports its cause")
+  Assert.isTrue(Errors.is(err), "failures are structured")
+  local _, footer, rows = splitProfile(readProfile(profilePath))
+  assert(footer ~= nil, "a handled failure still closes with a footer")
+  Assert.equal(#rows, 3, "every planned job keeps exactly one row")
+  local failed = rowForKey(rows, "40")
+  assert(failed ~= nil, "the failed job keeps its row")
+  Assert.isTrue(failed:find('"failed"', 1, true) ~= nil, "the failed row carries its failed disposition")
+  Assert.isTrue(failed:find("map:40", 1, true) ~= nil, "the failed row names its own identity")
+  Assert.isTrue(
+    failed:find('"causeJobKey":null', 1, true) ~= nil,
+    "a primary leaf carries no inferred cause, got: " .. tostring(failed)
+  )
+  for _, key in ipairs({ "4", "401" }) do
+    local healthy = rowForKey(rows, key)
+    assert(healthy ~= nil, "map:" .. key .. " keeps its row")
+    Assert.isTrue(
+      healthy:find('"successful"', 1, true) ~= nil,
+      "map:" .. key .. " stays successful despite the quoted mention, got: " .. tostring(healthy)
+    )
+    Assert.isTrue(
+      healthy:find('"causeJobKey":null', 1, true) ~= nil,
+      "map:" .. key .. " carries no inferred cause, got: " .. tostring(healthy)
+    )
+  end
+  Assert.equal(profileCount(footer, "successful"), 2)
+  Assert.equal(profileCount(footer, "failed"), 1)
+  Assert.equal(profileCount(footer, "cancelled"), 0)
+  Assert.equal(profileCount(footer, "excluded"), 0)
+end
+
+-- A dependency-blocked map with a non-map cause is never a tolerated
+-- compile exclusion: the command fails and the row stays failed.
+function T.dependency_blocked_map_with_non_map_cause_is_never_a_compile_exclusion()
+  env = newEnv()
+  env.failKeys["map:9"] = "blocked by ui:font: prerequisite ui:font failed"
+  env.failureClasses["map:9"] = "dependency"
+  env.causeKeys["map:9"] = "ui:font"
+  local profilePath = os.tmpname()
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:7", "map:9" },
+      allowCompileExclusions = true,
+      profile = profilePath,
+    })
+  )
+  Assert.isNil(report, "a prerequisite failure is never laundered into an accepted exclusion")
+  assert(err ~= nil, "a prerequisite failure reports its cause")
+  Assert.isTrue(Errors.is(err), "failures are structured")
+  local _, footer, rows = splitProfile(readProfile(profilePath))
+  assert(footer ~= nil, "a handled failure still closes with a footer")
+  Assert.equal(#rows, 2, "every planned job keeps exactly one row")
+  local blocked = rowForKey(rows, "9")
+  assert(blocked ~= nil, "the blocked job keeps its row")
+  Assert.isTrue(
+    blocked:find('"failed"', 1, true) ~= nil,
+    "the dependency-blocked row stays failed, got: " .. tostring(blocked)
+  )
+  Assert.isTrue(
+    blocked:find("ui:font", 1, true) ~= nil,
+    "the row keeps its exact non-map cause, got: " .. tostring(blocked)
+  )
+  Assert.equal(profileCount(footer, "failed"), 1)
+  Assert.equal(profileCount(footer, "excluded"), 0)
+end
+
+-- A handled infrastructure failure preserves known work: the validated
+-- success stays successful, the exact failed job fails, unfinished work is
+-- cancelled, the failure footer is emitted, and every owner is released
+-- exactly once.
+function T.handled_infrastructure_failure_keeps_known_rows_and_failure_footer()
+  env = newEnv()
+  env.failKeys["map:2"] = "WORKER_FAILED: injected pool failure"
+  env.failureClasses["map:2"] = "job"
+  env.poolFailures["map:2"] = {
+    jobKey = "map:2",
+    generationId = "test-generation",
+    epoch = 1,
+    state = "failed",
+    error = "map:2: injected pool failure",
+    workerId = 2,
+    workSeconds = 0.02,
+    timingReason = "test",
+  }
+  env.pendingKeys["map:3"] = true
+  env.infraError =
+    Errors.new("CACHE_PREPARATION_FAILED", "injected infrastructure failure", { versionId = "heartgold" })
+  local profilePath = os.tmpname()
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:1", "map:2", "map:3" },
+      profile = profilePath,
+    })
+  )
+  Assert.isNil(report, "an interrupted scope must not return a success report")
+  assert(err ~= nil, "an interrupted scope reports its cause")
+  Assert.isTrue(Errors.is(err), "failures are structured")
+  local _, footer, rows = splitProfile(readProfile(profilePath))
+  assert(footer ~= nil, "a handled infrastructure failure still closes with a footer")
+  Assert.equal(#rows, 3, "every planned job keeps exactly one row")
+  local succeeded = rowForKey(rows, "1")
+  assert(succeeded ~= nil, "validated work keeps its row")
+  Assert.isTrue(
+    succeeded:find('"successful"', 1, true) ~= nil,
+    "validated work stays successful, got: " .. tostring(succeeded)
+  )
+  local failed = rowForKey(rows, "2")
+  assert(failed ~= nil, "the failed job keeps its row")
+  Assert.isTrue(failed:find('"failed"', 1, true) ~= nil, "the exact failed job fails, got: " .. tostring(failed))
+  local unfinished = rowForKey(rows, "3")
+  assert(unfinished ~= nil, "unfinished work keeps an explicit row")
+  Assert.isTrue(
+    unfinished:find('"cancelled"', 1, true) ~= nil,
+    "unfinished work is cancelled, got: " .. tostring(unfinished)
+  )
+  Assert.equal(profileCount(footer, "planned"), 3)
+  Assert.equal(profileCount(footer, "successful"), 1)
+  Assert.equal(profileCount(footer, "failed"), 1)
+  Assert.equal(profileCount(footer, "cancelled"), 1)
+  Assert.equal(profileCount(footer, "excluded"), 0)
+  Assert.equal(env.shutdowns, 1, "the pool shuts down exactly once")
+  Assert.equal(env.retires, 1, "the session retires exactly once")
+end
+
+-- A later version failure publishes no new attestation: the first version
+-- keeps its audited successful rows without a new publication or complete
+-- proof, the second version fails, the command fails, and both started
+-- versions retain evidence.
+function T.later_version_failure_publishes_no_new_attestation()
+  env = newEnv()
+  env.auditAvailable = true
+  env.failByVersion = { soulsilver = { ["map:7"] = "WORKER_FAILED: injected later-version failure" } }
+  env.failureClasses["map:7"] = "job"
+  local profilePath = os.tmpname()
+  local report, err = CacheBuilder.buildVersions(
+    { "heartgold", "soulsilver" },
+    { log = function() end, profile = profilePath }
+  )
+  Assert.isNil(report, "a batch with a failed version must not succeed")
+  assert(err ~= nil, "the batch reports its failure")
+  Assert.equal(env.publishes, 0, "no new attestation is published when a later version fails")
+  local lines = readProfile(profilePath)
+  local headers, footers = splitProfileAll(lines)
+  Assert.equal(#headers, 2, "both started versions retain evidence")
+  Assert.equal(#footers, 2, "both started versions retain evidence")
+  local _, _, rows = splitProfile(lines)
+  Assert.equal(#rows, 4, "every planned job of both versions keeps exactly one row")
+  Assert.isTrue(
+    footers[1]:find('"versionId":"heartgold"', 1, true) ~= nil,
+    "the first footer belongs to the first version, got: " .. tostring(footers[1])
+  )
+  Assert.equal(profileCount(footers[1], "successful"), 2, "the first version reports its audited successful jobs")
+  Assert.isTrue(
+    footers[1]:find('"attestationPublished":false', 1, true) ~= nil,
+    "the first version claims no new publication, got: " .. tostring(footers[1])
+  )
+  Assert.isTrue(
+    footers[1]:find('"complete":false', 1, true) ~= nil,
+    "an uncommitted proof is never complete, got: " .. tostring(footers[1])
+  )
+  Assert.isTrue(
+    footers[2]:find('"versionId":"soulsilver"', 1, true) ~= nil,
+    "the second footer belongs to the failed version, got: " .. tostring(footers[2])
+  )
+  Assert.isTrue(
+    (profileCount(footers[2], "failed") or 0) >= 1,
+    "the failed version records its failure, got: " .. tostring(footers[2])
+  )
+end
+
+-- A partial publication failure reports actual effects: only the real
+-- publication is flagged, failed and unattempted versions stay false, the
+-- command fails, and valid earlier outputs are not rolled back.
+function T.partial_publication_failure_reports_actual_effects()
+  env = newEnv()
+  env.auditAvailable = true
+  env.publishFailCalls = { [2] = true }
+  local profilePath = os.tmpname()
+  local ok, report, err = pcall(
+    CacheBuilder.buildVersions,
+    { "heartgold", "soulsilver" },
+    { log = function() end, profile = profilePath }
+  )
+  Assert.isTrue(not ok or report == nil, "a batch with a failed publication must not succeed")
+  Assert.equal(env.publishes, 1, "only the actual publication is recorded")
+  Assert.equal(#env.publishedVersions, 1, "only the actual publication is recorded")
+  Assert.equal(env.publishedVersions[1], "heartgold", "the first publication is preserved")
+  for _, path in ipairs(env.removals) do
+    Assert.isTrue(
+      path ~= ArtifactState.path("map", "7"),
+      "valid published artifacts are not rolled back, got: " .. tostring(path)
+    )
+  end
+  local lines = readProfile(profilePath)
+  local _, footers = splitProfileAll(lines)
+  Assert.equal(#footers, 2, "both started versions retain evidence")
+  Assert.isTrue(
+    footers[1]:find('"attestationPublished":true', 1, true) ~= nil,
+    "the actual publication is flagged, got: " .. tostring(footers[1])
+  )
+  Assert.isTrue(
+    footers[2]:find('"attestationPublished":false', 1, true) ~= nil,
+    "the failed publication stays unflagged, got: " .. tostring(footers[2])
+  )
+  if ok then
+    assert(err ~= nil, "the batch reports its publication failure")
+  end
+end
+
+-- A shared profile close failure fails the command: throwing and explicit
+-- unsuccessful closes report no success, the sink closes exactly once, and
+-- already published artifact facts stay factual.
+function T.shared_profile_close_failure_fails_the_command()
+  for _, mode in ipairs({ "throwing", "unsuccessful" }) do
+    env = newEnv()
+    env.auditAvailable = true
+    local profilePath = os.tmpname()
+    local closes = 0
+    local realOpen = io.open
+    io.open = function(path, openMode)
+      if path == profilePath then
+        return {
+          write = function()
+            return true
+          end,
+          close = function()
+            closes = closes + 1
+            if mode == "throwing" then
+              error("injected close failure", 0)
+            end
+            return nil, "injected close failure"
+          end,
+        }
+      end
+      return realOpen(path, openMode)
+    end
+    local ok, report, err = pcall(
+      CacheBuilder.buildVersions,
+      { "heartgold" },
+      { log = function() end, profile = profilePath }
+    )
+    io.open = realOpen
+    os.remove(profilePath)
+    Assert.isTrue(ok, "a close failure is a handled command failure, not a crash (" .. mode .. ")")
+    Assert.isNil(report, "a command that cannot close its evidence must not claim success (" .. mode .. ")")
+    assert(err ~= nil, "the sink failure is reported (" .. mode .. ")")
+    Assert.equal(closes, 1, "the shared sink closes exactly once (" .. mode .. ")")
+    Assert.equal(env.publishes, 1, "already published artifact facts stay factual (" .. mode .. ")")
+  end
+end
+
+-- A large warm scope and the already-current shortcut keep complete
+-- evidence: every known key has one row with exact timing snapshots, reused
+-- metrics stay null, the shortcut still emits header and footer, and
+-- profile and no-profile runs agree.
+function T.large_warm_scope_and_current_shortcut_keep_complete_evidence()
+  env = newEnv()
+  local requirements = {}
+  for id = 1, 40 do
+    requirements[#requirements + 1] = "map:" .. tostring(id)
+  end
+  for id = 1, 5 do
+    env.reusedKeys["map:" .. tostring(id)] = true
+  end
+  local profilePath = os.tmpname()
+  local profiled, profiledErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = requirements, profile = profilePath }))
+  Assert.isNil(profiledErr)
+  assert(profiled ~= nil, "a fully compiled scope must return a report")
+  local header, footer, rows = splitProfile(readProfile(profilePath))
+  assert(header ~= nil, "the evidence opens with a header")
+  assert(footer ~= nil, "the evidence closes with a footer")
+  Assert.equal(#rows, 40, "one row per known key beyond the diagnostic ring")
+  for id = 1, 40 do
+    local row = rowForKey(rows, tostring(id))
+    assert(row ~= nil, "missing evidence row for map:" .. tostring(id))
+    if id <= 5 then
+      Assert.isTrue(row:find('"reused":true', 1, true) ~= nil, "the row marks its reuse, got: " .. tostring(row))
+      Assert.isTrue(
+        row:find('"workerId":null', 1, true) ~= nil,
+        "a reused job carries no worker evidence, got: " .. tostring(row)
+      )
+      Assert.isTrue(
+        row:find('"workSeconds":null', 1, true) ~= nil,
+        "reused metrics stay null, never fabricated, got: " .. tostring(row)
+      )
+    else
+      Assert.isTrue(
+        row:find('"workerId":1', 1, true) ~= nil,
+        "an executed job keeps its exact worker snapshot, got: " .. tostring(row)
+      )
+      Assert.isTrue(
+        row:find('"workSeconds":0.01', 1, true) ~= nil,
+        "an executed job keeps its exact timing snapshot, got: " .. tostring(row)
+      )
+    end
+  end
+  Assert.equal(profileCount(footer, "planned"), 40)
+  Assert.equal(profileCount(footer, "successful"), 40)
+  local unprofiled, unprofiledErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = requirements }))
+  Assert.isNil(unprofiledErr)
+  assert(unprofiled ~= nil, "the same scope without a profile must return a report")
+  Assert.equal(unprofiled.counts.planned, profiled.counts.planned, "profile and no-profile runs agree")
+  Assert.equal(unprofiled.counts.successful, profiled.counts.successful, "profile and no-profile runs agree")
+  Assert.equal(#unprofiled.outcomes, #profiled.outcomes, "profile and no-profile runs agree")
+  env.stateStored = { schema = 2, generationId = "test-generation" }
+  env.stateMatches = true
+  env.auditAvailable = true
+  local shortcutPath = os.tmpname()
+  local shortcut, shortcutErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" }, profile = shortcutPath }))
+  Assert.isNil(shortcutErr)
+  assert(shortcut ~= nil, "the already-current scope must return a report")
+  Assert.isTrue(shortcut.complete, "the already-current scope stays complete")
+  local shortcutHeader, shortcutFooter, shortcutRows = splitProfile(readProfile(shortcutPath))
+  assert(shortcutHeader ~= nil, "the current shortcut still opens the requested profile sink")
+  assert(shortcutFooter ~= nil, "the current shortcut still closes with a footer")
+  Assert.equal(#shortcutRows, 0, "the zero-job shortcut carries no job rows")
+  Assert.equal(profileCount(shortcutFooter, "planned"), 0)
+  local nosink, nosinkErr = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
+  Assert.isNil(nosinkErr)
+  assert(nosink ~= nil, "the same shortcut without a profile must return a report")
+  Assert.equal(nosink.complete, shortcut.complete, "shortcut runs agree with and without a profile")
+  Assert.equal(nosink.counts.planned, shortcut.counts.planned, "shortcut runs agree with and without a profile")
 end
 
 return module
