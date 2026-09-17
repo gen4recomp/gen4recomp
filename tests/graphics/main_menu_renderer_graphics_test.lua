@@ -98,11 +98,11 @@ local function introManifest()
   return manifest
 end
 
-local function renderer(scope)
+local function renderer(scope, versionId)
   local cache = FieldUiFixture.cacheWithFontAndFrames()
   cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cache }))
-  return MainMenuRenderer.new({ text = text, cacheFs = cache }), text
+  return MainMenuRenderer.new({ text = text, cacheFs = cache, versionId = versionId or "heartgold" }), text
 end
 
 local function view(content, errorText)
@@ -158,9 +158,9 @@ function T.cards_are_clipped_to_the_save_viewport_and_scissor_is_restored(scope)
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
   local r, g, b = pixels:getPixel(20, 100)
-  Assert.near(r, 0.08, 1 / 255)
-  Assert.near(g, 0.1, 1 / 255)
-  Assert.near(b, 0.15, 1 / 255)
+  Assert.near(r, 0x33 / 255, 1 / 255)
+  Assert.near(g, 0x27 / 255, 1 / 255)
+  Assert.near(b, 0x11 / 255, 1 / 255)
 end
 
 function T.catalog_errors_are_drawn_inside_the_returned_error_rectangle(scope)
@@ -307,7 +307,7 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   end
 
   local function isBackground(r, g, b)
-    return math.abs(r - 0.08) < 0.05 and math.abs(g - 0.1) < 0.05 and math.abs(b - 0.15) < 0.05
+    return math.abs(r - 0x33 / 255) < 0.05 and math.abs(g - 0x27 / 255) < 0.05 and math.abs(b - 0x11 / 255) < 0.05
   end
 
   local function isSelectedRed(r, g, b)
@@ -403,7 +403,8 @@ function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
   local layout = MainMenuLayout.compute(globals, items, focus, 640, 480, 0, nil, nil, false)
   local cache = FieldUiFixture.cacheWithFontAndFrames()
   cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
-  local menuRenderer = MainMenuRenderer.new({ text = textProxy, graphics = graphics, cacheFs = cache })
+  local menuRenderer =
+    MainMenuRenderer.new({ text = textProxy, graphics = graphics, cacheFs = cache, versionId = "heartgold" })
   menuRenderer:draw({
     focusedId = "save-1",
     focus = focus,
@@ -429,7 +430,7 @@ function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
   Assert.equal(graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
 end
 
-function T.card_faces_use_the_generated_intro_tone(scope)
+function T.card_faces_use_the_white_launcher_face(scope)
   local current = view({ x = 16, y = 80, width = 128, height = 16 })
   local lg = love.graphics
   local canvas = scope:own(lg.newCanvas(160, 120))
@@ -441,9 +442,9 @@ function T.card_faces_use_the_generated_intro_tone(scope)
   -- Inside the focused New Game card face, right of and below the label copy.
   local pixels = scope:own(canvas:newImageData())
   local r, g, b = pixels:getPixel(132, 64)
-  Assert.near(r, CARD_TONE.r / 255, 2 / 255, "the card face must use the generated intro tone red")
-  Assert.near(g, CARD_TONE.g / 255, 2 / 255, "the card face must use the generated intro tone green")
-  Assert.near(b, CARD_TONE.b / 255, 2 / 255, "the card face must use the generated intro tone blue")
+  Assert.near(r, 1, 2 / 255, "the card face must use the white launcher face red")
+  Assert.near(g, 1, 2 / 255, "the card face must use the white launcher face green")
+  Assert.near(b, 1, 2 / 255, "the card face must use the white launcher face blue")
 end
 function T.menu_text_uses_palette_path_at_identity_tint()
   local graphics = FakeGraphics.new()
@@ -464,7 +465,8 @@ function T.menu_text_uses_palette_path_at_identity_tint()
       return introManifest()
     end,
   }
-  local menuRenderer = MainMenuRenderer.new({ text = textDouble, graphics = graphics, cacheFs = cache })
+  local menuRenderer =
+    MainMenuRenderer.new({ text = textDouble, graphics = graphics, cacheFs = cache, versionId = "heartgold" })
   local globals = { { id = "new-game", kind = "new_game" } }
   local items = {
     {
@@ -507,13 +509,20 @@ end
 
 function T.card_chrome_keeps_rounded_nested_corners()
   local ImageButton = require("libs.ui.src.ImageButton")
-  local HgssCardButton = require("libs.hgss.src.ui.HgssCardButton")
   local button = ImageButton.resolve({ rect = { x = 16, y = 80, width = 128, height = 64 }, scale = 1 })
   Assert.equal(button.border.cornerRadius, 8)
   Assert.equal(button.rim.cornerRadius, 6)
   Assert.equal(button.innerBorder.cornerRadius, 4)
   Assert.equal(button.face.cornerRadius, 3)
-  local card = HgssCardButton.resolve({ rect = { x = 16, y = 80, width = 128, height = 64 }, scale = 1 })
-  Assert.deepEqual(card.contentRect, button.contentRect, "menu cards must share the generic card geometry")
+  local explicit = ImageButton.resolve({
+    rect = { x = 16, y = 80, width = 128, height = 64 },
+    scale = 1,
+    cornerRadius = 6,
+    innerBorderWidth = 2,
+  })
+  Assert.equal(explicit.border.cornerRadius, 6)
+  Assert.equal(explicit.rim.cornerRadius, 4)
+  Assert.equal(explicit.innerBorder.cornerRadius, 2)
+  Assert.equal(explicit.face.cornerRadius, 0)
 end
 return GraphicsSmoke.suite(T)

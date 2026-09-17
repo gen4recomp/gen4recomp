@@ -105,7 +105,7 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   local width, height = love.graphics.getDimensions()
   local versionCache = CacheFs.forVersion(versionId)
   local menuText = FieldTextRenderer.new({ cacheFs = versionCache })
-  local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, cacheFs = versionCache })
+  local rendererOk, menuRendererOrError = pcall(MainMenuRenderer.new, { text = menuText, versionId = versionId })
   if not rendererOk then
     menuText:release()
     error(menuRendererOrError, 0)

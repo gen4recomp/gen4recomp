@@ -1105,7 +1105,46 @@ function T.tests.gender_cards_resolve_the_shared_image_button_primitive()
   for gender = 0, 1 do
     local entry = assert(layout.genderButtons and layout.genderButtons[gender])
     local button = assert(entry.button, "gender card must resolve shared button geometry")
-    Assert.deepEqual(button, ImageButton.resolve({ rect = entry.rect, scale = entry.scale }))
+    Assert.deepEqual(button, ImageButton.resolve({ rect = entry.rect, scale = entry.scale, cornerRadius = 6 }))
+  end
+end
+
+function T.tests.gender_cards_resolve_a_smaller_explicit_radius()
+  for _, size in ipairs({ { 800, 600 }, { 320, 240 } }) do
+    local layout = compute(size[1], size[2], {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, manifest())
+    for gender = 0, 1 do
+      local entry = assert(layout.genderButtons and layout.genderButtons[gender])
+      local button = assert(entry.button, "gender card must resolve shared button geometry")
+      Assert.equal(
+        button.border.cornerRadius,
+        6 * entry.scale,
+        "gender cards must use a 6-logical-pixel radius at " .. size[1] .. "x" .. size[2]
+      )
+    end
+  end
+end
+
+function T.tests.confirmation_buttons_resolve_a_smaller_explicit_radius()
+  local layout = compute(800, 600, {
+    phase = "gender_confirm",
+    visual = "oak",
+    primaryWidget = "oak",
+    genderFocus = 0,
+    genderCompositionProgress = 1,
+    confirmationChoice = { kind = "gender", selected = 0 },
+  }, {}, manifest())
+  local choices = assert(layout.confirmationButtons)
+  for choice = 0, 1 do
+    local entry = assert(choices[choice])
+    local button = assert(entry.button, "confirmation button must resolve shared button geometry")
+    Assert.equal(button.border.cornerRadius, 6 * entry.scale, "Yes/No buttons must use a 6-logical-pixel radius")
   end
 end
 

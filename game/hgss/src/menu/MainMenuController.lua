@@ -167,7 +167,7 @@ end
 function MainMenuController:move(direction)
   assert(direction == "up" or direction == "down" or direction == "left" or direction == "right")
   if self.confirmation then
-    if direction == "up" or direction == "down" then
+    if direction == "left" or direction == "right" then
       self.confirmation.focusedAction = self.confirmation.focusedAction == "cancel" and "delete" or "cancel"
     end
     return

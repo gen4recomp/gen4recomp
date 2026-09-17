@@ -167,6 +167,7 @@ local function withMenu(count, width, height, options, fn)
   local menuRenderer = MainMenuRenderer.new({
     text = menuText,
     cacheFs = CacheFs.forVersion(templateRecord.versionId),
+    versionId = templateRecord.versionId,
   })
   local menu = MainMenuState.new({
     saveStore = store,
@@ -229,10 +230,10 @@ local function assertDeletionSequence(menu, useGamepad)
   Assert.notNil(view(menu).popup, "cancel must return to the save overflow popup")
   pressConfirm()
   if useGamepad then
-    pressGamepad(menu, "dpdown")
+    pressGamepad(menu, "dpright")
     pressGamepad(menu, "a")
   else
-    menu:keypressed("down")
+    menu:keypressed("right")
     menu:keypressed("return")
   end
 end
@@ -360,7 +361,7 @@ function T.tests.overflow_delete_confirmation_is_input_independent_and_never_con
     menu:keypressed("escape")
     Assert.notNil(view(menu).popup)
     menu:keypressed("return")
-    menu:keypressed("down")
+    menu:keypressed("right")
     menu:keypressed("return")
     Assert.isNil(view(menu).layout.saves.cards[saveIds[3]])
   end)
@@ -377,7 +378,7 @@ function T.tests.keyboard_focused_delete_action_activates_by_pointer_click()
     menu:keypressed("return")
     menu:keypressed("return")
     Assert.equal(view(menu).confirmation.focusedAction, "cancel")
-    menu:keypressed("down")
+    menu:keypressed("right")
     Assert.equal(view(menu).confirmation.focusedAction, "delete")
     local deleteRect = assert(view(menu).layout.confirmation).delete
     menu:mousepressed(deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2, 1)

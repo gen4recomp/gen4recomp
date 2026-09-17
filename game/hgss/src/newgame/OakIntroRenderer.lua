@@ -3,8 +3,8 @@
 -- engine controller.
 
 local TextButton = require("libs.ui.src.TextButton")
+local ImageButton = require("libs.ui.src.ImageButton")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
-local HgssCardButton = require("libs.hgss.src.ui.HgssCardButton")
 local PixelScale = require("libs.ui.src.PixelScale")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 
@@ -48,6 +48,44 @@ local REVEAL_SHADER = [[
 local function cardTone(manifest)
   local selector = assert(manifest.genderSelector, "Oak renderer requires a generated gender selector")
   return assert(selector.defaultTone, "Oak renderer requires a generated gender selector tone")
+end
+
+local CARD_BORDER = { 58, 58, 58 }
+local CARD_NEUTRAL_RIM = { 222, 230, 230 }
+local CARD_SELECTED_RIM = { 255, 58, 58 }
+
+local function clamp01(value)
+  return math.max(0, math.min(1, value))
+end
+
+local function referenceColor(value)
+  return { value[1] / 255, value[2] / 255, value[3] / 255 }
+end
+
+local function drawGenderCard(graphics, resolved, tone, selected, focusBlinkDelta, contentRect, drawContent)
+  assert(
+    type(tone.r) == "number" and type(tone.g) == "number" and type(tone.b) == "number",
+    "Oak renderer requires a generated gender selector tone"
+  )
+  assert(type(focusBlinkDelta) == "number", "Oak gender focus delta must be numeric")
+  local delta = selected and focusBlinkDelta / 31 or 0
+  local face = {
+    clamp01(tone.r / 255 + delta),
+    clamp01(tone.g / 255 + delta),
+    clamp01(tone.b / 255 + delta),
+  }
+  ImageButton.draw(graphics, resolved, {
+    selected = selected,
+    colors = {
+      face = face,
+      border = referenceColor(CARD_BORDER),
+      rim = referenceColor(CARD_NEUTRAL_RIM),
+      selectedRim = referenceColor(CARD_SELECTED_RIM),
+      innerBorder = { face[1], face[2], face[3] },
+    },
+    imageRect = contentRect,
+    drawImage = drawContent,
+  })
 end
 
 local function paletteColor(definition, slot)
@@ -333,26 +371,30 @@ function OakIntroRenderer:_draw(view)
         local function drawGenderPortrait(rect)
           drawAsset(self, entry.portraitId, 1, rect)
         end
-        HgssCardButton.draw(graphics, entry.button, {
-          defaultTone = cardTone(self.manifest),
-          selected = selected,
-          focusBlinkDelta = selected and view.focusBlinkDelta or 0,
-          contentRect = entry.portraitRect,
-          drawContent = drawGenderPortrait,
-        })
+        drawGenderCard(
+          graphics,
+          entry.button,
+          cardTone(self.manifest),
+          selected,
+          selected and view.focusBlinkDelta or 0,
+          entry.portraitRect,
+          drawGenderPortrait
+        )
       end
     elseif layout.selectedProfileButton then
       local entry = layout.selectedProfileButton
       local function drawSelectedProfilePortrait(rect)
         drawAsset(self, entry.portraitId, 1, rect)
       end
-      HgssCardButton.draw(graphics, entry.button, {
-        defaultTone = cardTone(self.manifest),
-        selected = true,
-        focusBlinkDelta = view.focusBlinkDelta or 0,
-        contentRect = entry.portraitRect,
-        drawContent = drawSelectedProfilePortrait,
-      })
+      drawGenderCard(
+        graphics,
+        entry.button,
+        cardTone(self.manifest),
+        true,
+        view.focusBlinkDelta or 0,
+        entry.portraitRect,
+        drawSelectedProfilePortrait
+      )
     end
   end
   if layout.confirmationButtons then

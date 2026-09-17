@@ -3,7 +3,6 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FakeGraphics = require("tests.support.FakeGraphics")
-local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local MainMenuController = require("game.hgss.src.menu.MainMenuController")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
@@ -113,7 +112,7 @@ function T.controller_navigation_is_explicit_and_modal_state_captures_input()
   controller:move("down")
   Assert.isTrue(controller:activate() == nil)
   Assert.deepEqual(controller:snapshot().confirmation, { saveId = "two", focusedAction = "cancel" })
-  controller:move("down")
+  controller:move("right")
   Assert.deepEqual(controller:snapshot().confirmation, { saveId = "two", focusedAction = "delete" })
   Assert.deepEqual(controller:activate(), { kind = "delete", saveId = "two" })
   Assert.isNil(controller:snapshot().popup)
@@ -385,7 +384,7 @@ function T.state_deletes_unavailable_save_only_after_confirmation()
   Assert.equal(deleted, 0)
   menu:keypressed("return")
   Assert.equal(deleted, 0)
-  menu:keypressed("down")
+  menu:keypressed("right")
   menu:keypressed("return")
   Assert.equal(deleted, 1)
   Assert.equal(menu:view().focusedId, "new-game")
@@ -408,7 +407,7 @@ function T.state_keeps_delete_failure_visible_and_save_available_for_retry()
   })
   menu:keypressed("delete")
   menu:keypressed("return")
-  menu:keypressed("down")
+  menu:keypressed("right")
   menu:keypressed("return")
   local view = menu:view()
   Assert.equal(view.catalogError, "save could not be deleted")
@@ -518,7 +517,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   menu:keypressed("right")
   menu:keypressed("return")
   menu:keypressed("return")
-  menu:keypressed("down")
+  menu:keypressed("right")
   Assert.equal(menu.controller.confirmation.focusedAction, "delete")
   local confirmation = assert(menu:layout().confirmation)
   menu:mousepressed(
@@ -551,7 +550,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   cancelMenu:keypressed("right")
   cancelMenu:keypressed("return")
   cancelMenu:keypressed("return")
-  cancelMenu:keypressed("down")
+  cancelMenu:keypressed("right")
   Assert.equal(cancelMenu.controller.confirmation.focusedAction, "delete")
   local cancelBox = assert(cancelMenu:layout().confirmation)
   cancelMenu:mousepressed(
@@ -712,7 +711,7 @@ function T.pointer_click_on_focused_delete_action_confirms_deletion()
   menu:keypressed("return")
   menu:keypressed("return")
   Assert.equal(menu:view().confirmation.focusedAction, "cancel")
-  menu:keypressed("down")
+  menu:keypressed("right")
   Assert.equal(menu:view().confirmation.focusedAction, "delete")
   local confirmation = assert(menu:view().layout.confirmation, "confirmation needs hit geometry")
   local deleteRect = confirmation.delete
@@ -851,121 +850,40 @@ local function hasRimColorOverlapping(rectangles, expected, rect)
   return false
 end
 
-local function recordingText(calls)
+local function recordingText(calls, graphics)
   return {
     drawText = function(_, text, x, y)
       calls[#calls + 1] = { text = text, x = x, y = y }
     end,
     drawTextWithPalette = function(_, text, x, y, palette)
-      calls[#calls + 1] = { text = text, x = x, y = y, palette = palette }
+      -- Launcher copy draws at identity through a translated/scaled graphics
+      -- frame, so the fake resolves the active translation to keep the
+      -- recorded position on the same observable boundary as real pixels.
+      local resolvedX, resolvedY = x, y
+      if graphics then
+        for index = #graphics.transforms, 1, -1 do
+          local transform = graphics.transforms[index]
+          if transform[1] == "translate" then
+            resolvedX, resolvedY = transform[2], transform[3]
+            break
+          end
+        end
+      end
+      calls[#calls + 1] = { text = text, x = resolvedX, y = resolvedY, palette = palette }
     end,
-  }
-end
-
-local INTRO_WIDGETS = {
-  "ball_open",
-  "female",
-  "gender_female",
-  "gender_male",
-  "male",
-  "marill",
-  "marill_appear",
-  "naming_female",
-  "naming_male",
-  "oak",
-  "shrink_female",
-  "shrink_male",
-}
-
-local function introManifestWithTone(tone)
-  local widgets = {}
-  for _, id in ipairs(INTRO_WIDGETS) do
-    local path = "assets/generated/intro/" .. id .. ".png"
-    widgets[id] = {
-      image = path,
-      width = 32,
-      height = 32,
-      anchor = { x = 16, y = 32 },
-      sourceBounds = { x = 0, y = 0, width = 32, height = 32 },
-      sampling = "nearest",
-      provenance = { rule = "alpha-crop" },
-      frames = {
-        {
-          image = path,
-          width = 32,
-          height = 32,
-          duration = 4,
-          element = "none",
-          translateX = 0,
-          translateY = 0,
-          scaleX = 1,
-          scaleY = 1,
-          rotation = 0,
-          anchor = { x = 16, y = 32 },
-        },
-      },
-    }
-  end
-  for _, id in ipairs({ "ball_open", "marill_appear", "marill" }) do
-    widgets[id].sourceCenter = { x = 160, y = 80 }
-  end
-  for _, id in ipairs({
-    "ball_open",
-    "marill_appear",
-    "marill",
-    "gender_male",
-    "gender_female",
-    "naming_male",
-    "naming_female",
-  }) do
-    widgets[id].playMode = "forward"
-    widgets[id].loopStartFrameIdx = 0
-  end
-  widgets.gender_male.sourceCenter = { x = 64, y = 104 }
-  widgets.gender_female.sourceCenter = { x = 192, y = 104 }
-  return {
-    schemaVersion = IntroAssetCache.SCHEMA_VERSION,
-    variant = "heartgold",
-    sourceReference = { width = 256, height = 192 },
-    background = {
-      image = "assets/generated/intro/background.png",
-      width = 1,
-      height = 192,
-      sampling = "linear",
-      provenance = { charMember = 0, screenMember = 3, paletteMember = 1 },
-    },
-    genderSelector = {
-      defaultTone = { r = tone.r, g = tone.g, b = tone.b },
-      buttons = {
-        male = { bounds = { x = 18, y = 25, width = 93, height = 148 } },
-        female = { bounds = { x = 144, y = 25, width = 95, height = 148 } },
-      },
-    },
-    widgets = widgets,
   }
 end
 
 local CARD_TONE = { r = 123, g = 45, b = 67 }
 
-local function cardCacheFs(tone)
-  local manifest = introManifestWithTone(tone or CARD_TONE)
-  Assert.isTrue(IntroAssetCache.validateManifest(manifest), "the card face fixture must be a valid intro manifest")
-  return {
-    loadLua = function(_, path)
-      Assert.equal(path, IntroAssetCache.manifestPath(), "the card face must come from the intro manifest path")
-      return manifest
-    end,
-  }
-end
-
-local function menuRenderer(text, graphics, tone)
-  return MainMenuRenderer.new({ text = text, cacheFs = cardCacheFs(tone), graphics = graphics })
+local function menuRenderer(text, graphics)
+  return MainMenuRenderer.new({ text = text, graphics = graphics, versionId = "heartgold" })
 end
 
 local function drawnMenu(entries, width, height, setup)
   local graphics = FakeGraphics.new()
   local calls = {}
-  local renderer = menuRenderer(recordingText(calls), graphics)
+  local renderer = menuRenderer(recordingText(calls, graphics), graphics)
   local menu = state({
     saveStore = {
       list = function()
@@ -1030,7 +948,7 @@ function T.confirmation_focus_marks_only_the_active_action()
     menu:keypressed("right")
     menu:keypressed("return")
     menu:keypressed("return")
-    menu:keypressed("down")
+    menu:keypressed("right")
   end)
   Assert.equal(drawn.view.confirmation.focusedAction, "delete")
   local rectangles = recordedRectangles(drawn.graphics)
@@ -1219,19 +1137,30 @@ function T.confirmation_selection_is_inert_without_an_active_confirmation()
   Assert.isNil(controller:snapshot().popup)
 end
 
-function T.renderer_requires_a_version_cache_for_the_generated_card_face()
+function T.renderer_requires_a_supported_game_version()
   local graphics = FakeGraphics.new()
   Assert.throws(function()
     MainMenuRenderer.new({ text = recordingText({}), graphics = graphics })
-  end, "the Main Menu card face comes from the generated intro tone, so construction without a version cache must fail")
+  end, "construction without a game version must fail")
+  Assert.throws(function()
+    MainMenuRenderer.new({ text = recordingText({}), graphics = graphics, versionId = "unknown" })
+  end, "construction with an unknown game version must fail")
+  local renderer = MainMenuRenderer.new({
+    text = recordingText({}),
+    graphics = graphics,
+    versionId = "heartgold",
+  })
+  Assert.notNil(renderer, "a supported game version must construct the launcher")
+  renderer:dispose()
 end
 
-function T.card_faces_use_the_flat_generated_tone_without_the_old_gradient()
+function T.card_faces_use_a_white_launcher_face_without_the_old_gradient()
   local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
   local rectangles = recordedRectangles(drawn.graphics)
-  Assert.isTrue(
+  Assert.isTrue(hasRimColor(rectangles, { 1, 1, 1 }), "every card face must use the white launcher face")
+  Assert.isFalse(
     hasRimColor(rectangles, { CARD_TONE.r / 255, CARD_TONE.g / 255, CARD_TONE.b / 255 }),
-    "every card face must use the flat generated tone"
+    "the retired selector tone must not remain on any launcher card"
   )
   for _, retired in ipairs({
     { 0.97, 0.96, 0.9 },
@@ -1243,30 +1172,15 @@ function T.card_faces_use_the_flat_generated_tone_without_the_old_gradient()
   end
 end
 
-function T.renderer_rejects_a_missing_or_invalid_intro_manifest()
+function T.renderer_needs_no_intro_manifest_once_the_launcher_owns_its_palette()
   local graphics = FakeGraphics.new()
-  Assert.throws(function()
-    MainMenuRenderer.new({
-      text = recordingText({}),
-      graphics = graphics,
-      cacheFs = {
-        loadLua = function()
-          return nil
-        end,
-      },
-    })
-  end, "a missing intro manifest must fail Main Menu construction")
-  Assert.throws(function()
-    MainMenuRenderer.new({
-      text = recordingText({}),
-      graphics = graphics,
-      cacheFs = {
-        loadLua = function()
-          return { schemaVersion = 0 }
-        end,
-      },
-    })
-  end, "an invalid intro manifest must fail Main Menu construction")
+  local renderer = MainMenuRenderer.new({
+    text = recordingText({}),
+    graphics = graphics,
+    versionId = "soulsilver",
+  })
+  Assert.notNil(renderer, "launcher construction must not require the intro manifest")
+  renderer:dispose()
 end
 
 function T.renderer_dispose_releases_its_text_exactly_once()
@@ -1517,6 +1431,111 @@ function T.global_right_falls_back_to_body_when_the_remembered_overflow_is_locke
     { region = "saves", saveId = "one", lane = "body" },
     "Right must fall back to the body when the remembered save lost its overflow"
   )
+end
+
+function T.delete_confirmation_responds_to_horizontal_arrows_only()
+  local controller = MainMenuController.new(globalActions(), saves({ "one" }))
+  controller:focusSave("one", "overflow")
+  Assert.isTrue(controller:activate() == nil)
+  Assert.isTrue(controller:activate() == nil)
+  Assert.deepEqual(controller:snapshot().confirmation, { saveId = "one", focusedAction = "cancel" })
+  controller:move("right")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "delete")
+  controller:move("up")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "delete")
+  controller:move("down")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "delete")
+  controller:move("left")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "cancel")
+  controller:move("down")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "cancel")
+  controller:move("up")
+  Assert.equal(controller:snapshot().confirmation.focusedAction, "cancel")
+end
+
+function T.launcher_cards_use_white_faces_blue_inner_borders_and_roomy_content()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local rectangles = recordedRectangles(drawn.graphics)
+  Assert.isTrue(hasRimColor(rectangles, { 1, 1, 1 }), "save cards must use a white face")
+  Assert.isTrue(
+    hasRimColor(rectangles, { 120 / 255, 156 / 255, 198 / 255 }),
+    "save cards must use the blue inner border"
+  )
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local scale = assert(drawn.view.layout.uiScale)
+  local headingX
+  for _, call in ipairs(drawn.calls) do
+    if call.text == "CONTINUE" then
+      headingX = call.x
+    end
+  end
+  Assert.notNil(headingX, "the Continue card must draw its heading")
+  assert(headingX)
+  Assert.equal(headingX, card.frame.x + 10 * scale, "card content must sit 10 logical pixels inside the card")
+end
+
+function T.launcher_copy_uses_neutral_gray_text_shadow()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local shadow
+  for _, call in ipairs(drawn.calls) do
+    if call.palette and call.palette.shadow then
+      shadow = call.palette.shadow
+      break
+    end
+  end
+  Assert.notNil(shadow, "launcher copy must draw through the palette path with a shadow role")
+  assert(shadow)
+  Assert.equal(shadow.r, 140, "launcher text shadow must be neutral gray")
+  Assert.equal(shadow.g, 140, "launcher text shadow must be neutral gray")
+  Assert.equal(shadow.b, 140, "launcher text shadow must be neutral gray")
+end
+
+local function versionedBackgroundDraw(versionId)
+  local graphics = FakeGraphics.new()
+  local clears = {}
+  graphics.clear = function(r, g, b, a)
+    clears[#clears + 1] = { r, g, b, a }
+  end
+  local calls = {}
+  local renderer = MainMenuRenderer.new({
+    text = recordingText(calls),
+    graphics = graphics,
+    versionId = versionId,
+  })
+  local menu = state({
+    saveStore = {
+      list = function()
+        return {}
+      end,
+    },
+    width = 640,
+    height = 480,
+  })
+  renderer:draw(menu:view())
+  return clears
+end
+
+function T.launcher_background_follows_the_active_game_version()
+  local heartgold = versionedBackgroundDraw("heartgold")
+  Assert.isTrue(#heartgold > 0, "drawing the launcher must clear the background")
+  Assert.near(heartgold[1][1], 51 / 255, 1 / 255)
+  Assert.near(heartgold[1][2], 39 / 255, 1 / 255)
+  Assert.near(heartgold[1][3], 17 / 255, 1 / 255)
+  local soulsilver = versionedBackgroundDraw("soulsilver")
+  Assert.isTrue(#soulsilver > 0, "drawing the launcher must clear the background")
+  Assert.near(soulsilver[1][1], 32 / 255, 1 / 255)
+  Assert.near(soulsilver[1][2], 42 / 255, 1 / 255)
+  Assert.near(soulsilver[1][3], 61 / 255, 1 / 255)
+end
+
+function T.launcher_rejects_an_unknown_game_version()
+  Assert.throws(function()
+    MainMenuRenderer.new({
+      text = recordingText({}),
+      graphics = FakeGraphics.new(),
+      versionId = "unknown",
+    })
+  end, "an unknown game version must fail launcher construction")
 end
 
 return { tests = T }
