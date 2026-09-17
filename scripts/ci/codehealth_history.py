@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import sys
 from datetime import datetime, timezone
 from typing import Any
 
@@ -173,6 +175,56 @@ def merge(previous: Any, current_entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def published_bootstrap_source(report: Any) -> str | None:
+    """Decide the Pages history continuation from downloaded published state.
+
+    The workflow fetches the live history and quality report over HTTP and
+    passes the parsed bodies here; no networking happens in this helper.
+    A missing report is passed as None. Returning a SHA means the caller
+    must reanalyze that source commit with current tooling and reuse the
+    resulting history. Returning None means the current build starts its
+    own one-entry history. Raising ValueError fails the run closed.
+    """
+    if report is None:
+        return None
+    if not isinstance(report, dict):
+        raise ValueError(f"published report {report!r} is not an object")
+    version = report.get("measurementVersion")
+    if version is None:
+        commit = report.get("commit")
+        if not isinstance(commit, str) or not _COMMIT_RE.match(commit):
+            raise ValueError(f"published report has an invalid commit {commit!r}")
+        return commit
+    if isinstance(version, bool) or version != MEASUREMENT_VERSION:
+        raise ValueError(
+            f"published report measurement version {version!r} is incompatible"
+        )
+    raise ValueError("published report already uses current measurements without history")
+
+
+def main(argv: list[str]) -> int:
+    """Inspect a downloaded published quality report for bootstrap history."""
+    if len(argv) != 2 or argv[0] != "published-bootstrap-source":
+        print(
+            "usage: codehealth_history.py published-bootstrap-source REPORT",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        with open(argv[1], encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, ValueError) as error:
+        print(f"codehealth: cannot parse published report: {error}", file=sys.stderr)
+        return 1
+    try:
+        result = published_bootstrap_source(report)
+    except ValueError as error:
+        print(f"codehealth: {error}", file=sys.stderr)
+        return 1
+    sys.stdout.write((result or "") + "\n")
+    return 0
+
+
 def previous_entry(history: Any, current_commit: str) -> dict[str, Any] | None:
     """Return the entry preceding the current commit, or None at the baseline."""
     if not isinstance(history, dict) or not isinstance(history.get("entries"), list):
@@ -182,3 +234,7 @@ def previous_entry(history: Any, current_commit: str) -> dict[str, Any] | None:
         if isinstance(entry, dict) and entry.get("commit") == current_commit:
             return entries[index - 1] if index > 0 else None
     return None
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

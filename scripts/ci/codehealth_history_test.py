@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -173,6 +175,95 @@ class CodeHealthHistoryTest(unittest.TestCase):
                 _entry(FIRST, "2026-01-01T00:00:00Z", "2026-03-02T00:00:00Z"),
             )
         self.assertEqual([row["commit"] for row in reloaded["entries"]], [FIRST, SECOND])
+
+
+class PublishedBootstrapSourceTest(unittest.TestCase):
+    """Decide the Pages history continuation from downloaded published state.
+
+    The workflow fetches the live history and quality report over HTTP and
+    passes the parsed bodies here; no networking happens in this helper.
+    A missing report is passed as None. Returning a SHA means the caller
+    must reanalyze that source commit with current tooling and reuse the
+    resulting history. Returning None means the current build starts its
+    own one-entry history. Raising ValueError fails the run closed.
+    """
+
+    def test_absent_report_starts_current_only_history(self) -> None:
+        self.assertIsNone(HISTORY.published_bootstrap_source(None))
+
+    def test_report_without_measurement_version_yields_bootstrap_commit(self) -> None:
+        report = {"commit": FIRST, "generatedAt": "2026-01-01T00:00:00Z"}
+        self.assertEqual(HISTORY.published_bootstrap_source(report), FIRST)
+
+    def test_report_with_current_measurement_version_fails_closed(self) -> None:
+        report = {
+            "commit": FIRST,
+            "measurementVersion": 1,
+            "generatedAt": "2026-01-01T00:00:00Z",
+        }
+        with self.assertRaises(ValueError):
+            HISTORY.published_bootstrap_source(report)
+
+    def test_report_with_malformed_commit_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            HISTORY.published_bootstrap_source({"commit": "not-a-sha"})
+        with self.assertRaises(ValueError):
+            HISTORY.published_bootstrap_source({})
+        with self.assertRaises(ValueError):
+            HISTORY.published_bootstrap_source([])
+
+    def test_report_with_mismatched_measurement_version_is_rejected(self) -> None:
+        report = {"commit": FIRST, "measurementVersion": 2}
+        with self.assertRaises(ValueError):
+            HISTORY.published_bootstrap_source(report)
+
+
+class PublishedBootstrapSourceCommandTest(unittest.TestCase):
+    """Exercise the report-inspection entrypoint used by Pages orchestration."""
+
+    def run_command(self, body: str, *arguments: str) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            report.write_text(body, encoding="utf-8")
+            containing = Path(directory)
+            resolved = [
+                str(containing / argument) if argument == "report.json" else argument
+                for argument in arguments
+            ]
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = HISTORY.main(resolved)
+            return status, output.getvalue()
+
+    def test_old_report_prints_bootstrap_commit(self) -> None:
+        status, output = self.run_command(
+            json.dumps({"commit": FIRST}), "published-bootstrap-source", "report.json"
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(output.strip(), FIRST)
+
+    def test_current_report_fails_closed(self) -> None:
+        status, _ = self.run_command(
+            json.dumps({"commit": FIRST, "measurementVersion": 1}),
+            "published-bootstrap-source",
+            "report.json",
+        )
+        self.assertEqual(status, 1)
+
+    def test_malformed_report_fails_closed(self) -> None:
+        status, _ = self.run_command(
+            "not json", "published-bootstrap-source", "report.json"
+        )
+        self.assertEqual(status, 1)
+
+    def test_missing_report_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = str(Path(directory) / "absent.json")
+            self.assertEqual(HISTORY.main(["published-bootstrap-source", missing]), 1)
+
+    def test_unknown_command_is_rejected(self) -> None:
+        self.assertEqual(HISTORY.main([]), 2)
+        self.assertEqual(HISTORY.main(["unknown"]), 2)
 
 
 if __name__ == "__main__":

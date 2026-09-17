@@ -31,6 +31,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -60,10 +62,80 @@ jobs:
         run: |
           python3 scripts/ci/source_scope_test.py
           python3 scripts/ci/check_invariants_test.py
+          python3 scripts/ci/codehealth_scope_test.py
+          python3 scripts/ci/codehealth_history_test.py
           python3 scripts/ci/codehealth_report_test.py
 
+      - name: Fetch previous code-health state
+        id: previous
+        env:
+          HISTORY_URL: https://gen4recomp.github.io/gen4recomp/codehealth/history.json
+          REPORT_URL: https://gen4recomp.github.io/gen4recomp/codehealth/quality-report.json
+        run: |
+          HISTORY_FILE="$RUNNER_TEMP/codehealth-previous-history.json"
+          REPORT_FILE="$RUNNER_TEMP/codehealth-published-report.json"
+          rm -f -- "$HISTORY_FILE" "$REPORT_FILE"
+          echo "previous_history=" >> "$GITHUB_OUTPUT"
+          echo "baseline_sha=" >> "$GITHUB_OUTPUT"
+          history_status=$(curl -sSL -o "$HISTORY_FILE" -w "%{http_code}" "$HISTORY_URL?run=$GITHUB_SHA")
+          if [ "$?" -ne 0 ]; then
+            echo "codehealth: failed to fetch published history" >&2
+            exit 1
+          fi
+          case "$history_status" in
+            200)
+              echo "previous_history=$HISTORY_FILE" >> "$GITHUB_OUTPUT"
+              ;;
+            404)
+              rm -f -- "$HISTORY_FILE"
+              report_status=$(curl -sSL -o "$REPORT_FILE" -w "%{http_code}" "$REPORT_URL?run=$GITHUB_SHA")
+              if [ "$?" -ne 0 ]; then
+                echo "codehealth: failed to fetch published report" >&2
+                exit 1
+              fi
+              case "$report_status" in
+                200)
+                  baseline_sha=$(python3 scripts/ci/codehealth_history.py published-bootstrap-source "$REPORT_FILE")
+                  if [ -n "$baseline_sha" ] && [ "$baseline_sha" != "$(git rev-parse HEAD)" ]; then
+                    echo "baseline_sha=$baseline_sha" >> "$GITHUB_OUTPUT"
+                  fi
+                  ;;
+                404)
+                  rm -f -- "$REPORT_FILE"
+                  ;;
+                *)
+                  echo "codehealth: published report returned HTTP $report_status" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "codehealth: published history returned HTTP $history_status" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Build bootstrap baseline
+        id: baseline
+        if: steps.previous.outputs.baseline_sha != ''
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/codehealth-bootstrap" "${{ steps.previous.outputs.baseline_sha }}"
+          scripts/ci/codehealth.sh \
+            --repository-root "$RUNNER_TEMP/codehealth-bootstrap" \
+            --site-root "$RUNNER_TEMP/codehealth-bootstrap-site"
+          echo "previous_history=$RUNNER_TEMP/codehealth-bootstrap-site/codehealth/history.json" >> "$GITHUB_OUTPUT"
+
       - name: Build code-health site
-        run: scripts/ci/codehealth.sh
+        env:
+          DOWNLOADED_HISTORY: ${{ steps.previous.outputs.previous_history }}
+          BASELINE_HISTORY: ${{ steps.baseline.outputs.previous_history }}
+        run: |
+          PREVIOUS_HISTORY="${BASELINE_HISTORY:-$DOWNLOADED_HISTORY}"
+          if [ -n "$PREVIOUS_HISTORY" ]; then
+            scripts/ci/codehealth.sh --previous-history "$PREVIOUS_HISTORY"
+          else
+            scripts/ci/codehealth.sh
+          fi
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
