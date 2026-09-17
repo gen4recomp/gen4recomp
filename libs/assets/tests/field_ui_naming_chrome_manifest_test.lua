@@ -151,4 +151,42 @@ function T.sprite_visuals_without_offset_anchor_or_image_reference_are_rejected(
   end, "an entered-name advance other than 12px must fail")
 end
 
+function T.stale_static_subject_and_cursor_records_are_rejected()
+  reject(function(m)
+    m.namingScreen.playerSubjects.male =
+      { asset = "hgss.naming_screen.subject_male", anchor = { x = 24, y = 8 }, offset = { x = 0, y = 0 } }
+  end, "a static subject record without animation frames must fail")
+  reject(function(m)
+    m.namingScreen.cursor.keyboard =
+      { asset = "hgss.naming_screen.cursor_keyboard", anchor = { x = 26, y = 91 }, offset = { x = 0, y = 0 } }
+  end, "a static cursor record without animation frames must fail")
+end
+
+function T.malformed_animation_records_are_rejected()
+  reject(function(m)
+    m.namingScreen.playerSubjects.male.loopStartFrameIdx = 5
+  end, "a loop start outside the animation frames must fail")
+  reject(function(m)
+    m.namingScreen.playerSubjects.male.frames[1].duration = 0
+  end, "a zero-duration frame must fail")
+  reject(function(m)
+    m.namingScreen.playerSubjects.male.playMode = "ping_pong"
+  end, "an unsupported play mode must fail")
+  reject(function(m)
+    m.namingScreen.playerSubjects.male.pulseAsset = "hgss.naming_screen.cursor_keyboard_mask"
+  end, "a subject record carrying a pulse-mask role must fail")
+  reject(function(m)
+    m.namingScreen.playerSubjects.male.frames[1].pulseRect = { x = 0, y = 0, width = 16, height = 16 }
+  end, "a subject frame carrying a pulse rect must fail")
+  reject(function(m)
+    m.namingScreen.cursor.keyboard.pulseAsset = nil
+  end, "a cursor record without its pulse-mask atlas must fail")
+  reject(function(m)
+    m.namingScreen.cursor.keyboard.frames[1].pulseRect.width = m.namingScreen.cursor.keyboard.frames[1].rect.width + 1
+  end, "a pulse rect wider than its frame must fail")
+  reject(function(m)
+    m.namingScreen.cursor.keyboard.frames[1].pulseRect = nil
+  end, "a cursor frame without its mask rect must fail")
+end
+
 return { tests = T }

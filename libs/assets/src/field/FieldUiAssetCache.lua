@@ -70,11 +70,17 @@ FieldUiAssetCache.ASSET = {
   NAMING_SCREEN_CONTROL_OK = "hgss.naming_screen.control_ok",
   NAMING_SCREEN_CONTROL_BACKING = "hgss.naming_screen.control_backing",
   NAMING_SCREEN_CURSOR_KEYBOARD = "hgss.naming_screen.cursor_keyboard",
+  NAMING_SCREEN_CURSOR_KEYBOARD_MASK = "hgss.naming_screen.cursor_keyboard_mask",
   NAMING_SCREEN_CURSOR_HOME_UPPER = "hgss.naming_screen.cursor_home_upper",
+  NAMING_SCREEN_CURSOR_HOME_UPPER_MASK = "hgss.naming_screen.cursor_home_upper_mask",
   NAMING_SCREEN_CURSOR_HOME_LOWER = "hgss.naming_screen.cursor_home_lower",
+  NAMING_SCREEN_CURSOR_HOME_LOWER_MASK = "hgss.naming_screen.cursor_home_lower_mask",
   NAMING_SCREEN_CURSOR_HOME_SYMBOLS = "hgss.naming_screen.cursor_home_symbols",
+  NAMING_SCREEN_CURSOR_HOME_SYMBOLS_MASK = "hgss.naming_screen.cursor_home_symbols_mask",
   NAMING_SCREEN_CURSOR_HOME_BACK = "hgss.naming_screen.cursor_home_back",
+  NAMING_SCREEN_CURSOR_HOME_BACK_MASK = "hgss.naming_screen.cursor_home_back_mask",
   NAMING_SCREEN_CURSOR_HOME_OK = "hgss.naming_screen.cursor_home_ok",
+  NAMING_SCREEN_CURSOR_HOME_OK_MASK = "hgss.naming_screen.cursor_home_ok_mask",
   NAMING_SCREEN_SLOT_NORMAL = "hgss.naming_screen.slot_normal",
   NAMING_SCREEN_SLOT_SELECTED = "hgss.naming_screen.slot_selected",
   NAMING_SCREEN_SUBJECT_MALE = "hgss.naming_screen.subject_male",
@@ -846,12 +852,12 @@ function FieldUiAssetCache.validateManifest(manifest)
     local placement = s.placement
     if
       type(placement) ~= "table"
-      or placement.x ~= 0
+      or placement.x ~= 11
       or placement.y ~= 80
       or placement.width ~= 256
       or placement.height ~= 112
     then
-      return false, Errors.new(MANIFEST_INVALID, "namingScreen.placement must be the canonical y=80 overlay", {})
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.placement must be the x=11 y=80 overlay", {})
     end
 
     local function nonNegativeInt(value)
@@ -953,11 +959,11 @@ function FieldUiAssetCache.validateManifest(manifest)
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.controls must be a table", {})
     end
     local controlAnchors = {
-      upper = { x = 4, y = 68 },
-      lower = { x = 36, y = 68 },
-      symbols = { x = 68, y = 68 },
-      back = { x = 136, y = 68 },
-      ok = { x = 176, y = 68 },
+      upper = { x = 26, y = 68 },
+      lower = { x = 58, y = 68 },
+      symbols = { x = 90, y = 68 },
+      back = { x = 158, y = 68 },
+      ok = { x = 198, y = 68 },
       backing = { x = 22, y = 56 },
     }
     local controlCount = 0
@@ -978,14 +984,100 @@ function FieldUiAssetCache.validateManifest(manifest)
       end
     end
 
+    local validPlayModes = { forward = true, forward_loop = true, reverse = true, reverse_loop = true }
+
+    -- One generated animation record: decoded playback mode, zero-based
+    -- loop start, and dense frames each naming an indexed atlas rect with
+    -- the compositor offset and a positive duration. Cursor records
+    -- additionally name their pulse-mask atlas and carry a same-size mask
+    -- rect per frame; subject records carry no pulse fields.
+    local function animationRecord(record, what, isCursor)
+      if type(record) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be a table", { what = what })
+      end
+      if validPlayModes[record.playMode] ~= true then
+        return false, Errors.new(MANIFEST_INVALID, what .. " carries an unsupported play mode", { what = what })
+      end
+      if type(record.frames) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must carry animation frames", { what = what })
+      end
+      local frameCount = 0
+      for _ in pairs(record.frames) do
+        frameCount = frameCount + 1
+      end
+      if frameCount == 0 or frameCount ~= #record.frames then
+        return false, Errors.new(MANIFEST_INVALID, what .. " frames must be a dense sequence", { what = what })
+      end
+      if
+        type(record.loopStartFrameIdx) ~= "number"
+        or record.loopStartFrameIdx % 1 ~= 0
+        or record.loopStartFrameIdx < 0
+        or record.loopStartFrameIdx >= frameCount
+      then
+        return false, Errors.new(MANIFEST_INVALID, what .. " loop start is outside its frames", { what = what })
+      end
+      local pulseAsset = nil
+      if isCursor then
+        pulseAsset = record.pulseAsset
+        if type(pulseAsset) ~= "string" or atlasSizes[pulseAsset] == nil then
+          return false,
+            Errors.new(MANIFEST_INVALID, what .. " must reference its indexed pulse-mask atlas", { what = what })
+        end
+      elseif record.pulseAsset ~= nil then
+        return false, Errors.new(MANIFEST_INVALID, what .. " carries no pulse-mask role", { what = what })
+      end
+      for index = 1, frameCount do
+        local frame = record.frames[index]
+        local frameWhat = what .. " frame " .. index
+        if type(frame) ~= "table" then
+          return false, Errors.new(MANIFEST_INVALID, frameWhat .. " must be a table", { what = frameWhat })
+        end
+        if type(frame.asset) ~= "string" or atlasSizes[frame.asset] == nil then
+          return false,
+            Errors.new(MANIFEST_INVALID, frameWhat .. " must reference an indexed atlas", { what = frameWhat })
+        end
+        local rectOk, rectErr = rectInAtlas(frame.rect, frame.asset, frameWhat .. " rect")
+        if not rectOk then
+          return false, rectErr
+        end
+        if
+          type(frame.offset) ~= "table"
+          or type(frame.offset.x) ~= "number"
+          or frame.offset.x % 1 ~= 0
+          or type(frame.offset.y) ~= "number"
+          or frame.offset.y % 1 ~= 0
+        then
+          return false,
+            Errors.new(MANIFEST_INVALID, frameWhat .. " must carry the generated frame offset", { what = frameWhat })
+        end
+        if type(frame.duration) ~= "number" or frame.duration % 1 ~= 0 or frame.duration < 1 then
+          return false,
+            Errors.new(MANIFEST_INVALID, frameWhat .. " duration must be a positive integer", { what = frameWhat })
+        end
+        if isCursor then
+          local maskOk, maskErr = rectInAtlas(frame.pulseRect, pulseAsset, frameWhat .. " pulse rect")
+          if not maskOk then
+            return false, maskErr
+          end
+          if frame.pulseRect.width ~= frame.rect.width or frame.pulseRect.height ~= frame.rect.height then
+            return false,
+              Errors.new(MANIFEST_INVALID, frameWhat .. " pulse rect must match its frame size", { what = frameWhat })
+          end
+        elseif frame.pulseRect ~= nil then
+          return false, Errors.new(MANIFEST_INVALID, frameWhat .. " carries no pulse-mask role", { what = frameWhat })
+        end
+      end
+      return true
+    end
+
     if type(s.cursor) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.cursor must be a table", {})
     end
-    local keyboardOk, keyboardErr = spriteRecord(s.cursor.keyboard, "namingScreen.cursor.keyboard")
-    if not keyboardOk then
-      return false, keyboardErr
-    end
     local keyboardCursor = s.cursor.keyboard
+    local keyboardAnimOk, keyboardAnimErr = animationRecord(keyboardCursor, "namingScreen.cursor.keyboard", true)
+    if not keyboardAnimOk then
+      return false, keyboardAnimErr
+    end
     if
       type(keyboardCursor.origin) ~= "table"
       or keyboardCursor.origin.x ~= 26
@@ -998,10 +1090,22 @@ function FieldUiAssetCache.validateManifest(manifest)
     if type(s.cursor.home) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.cursor.home must be a table", {})
     end
+    local homeCount = 0
+    for _ in pairs(s.cursor.home) do
+      homeCount = homeCount + 1
+    end
+    if homeCount ~= 5 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.cursor.home must carry five control variants", {})
+    end
     for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
-      local homeOk, homeErr = spriteRecord(s.cursor.home[id], "namingScreen.cursor.home." .. id)
-      if not homeOk then
-        return false, homeErr
+      local homeAnimOk, homeAnimErr = animationRecord(s.cursor.home[id], "namingScreen.cursor.home." .. id, true)
+      if not homeAnimOk then
+        return false, homeAnimErr
+      end
+      local homeAnchorOk, homeAnchorErr =
+        canonicalPoint(s.cursor.home[id].anchor, "namingScreen.cursor.home." .. id .. " anchor")
+      if not homeAnchorOk then
+        return false, homeAnchorErr
       end
     end
 
@@ -1026,10 +1130,18 @@ function FieldUiAssetCache.validateManifest(manifest)
     if type(s.playerSubjects) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.playerSubjects must be a table", {})
     end
+    local subjectCount = 0
+    for _ in pairs(s.playerSubjects) do
+      subjectCount = subjectCount + 1
+    end
+    if subjectCount ~= 2 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.playerSubjects must carry male and female", {})
+    end
     for _, id in ipairs({ "male", "female" }) do
-      local subjectOk, subjectErr = spriteRecord(s.playerSubjects[id], "namingScreen.playerSubjects." .. id)
-      if not subjectOk then
-        return false, subjectErr
+      local subjectAnimOk, subjectAnimErr =
+        animationRecord(s.playerSubjects[id], "namingScreen.playerSubjects." .. id, false)
+      if not subjectAnimOk then
+        return false, subjectAnimErr
       end
       local subjectAnchor = s.playerSubjects[id].anchor
       if subjectAnchor.x ~= 24 or subjectAnchor.y ~= 8 then

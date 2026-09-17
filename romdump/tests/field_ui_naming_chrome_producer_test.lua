@@ -30,6 +30,22 @@ function T.normal_pages_map_to_upper_lower_symbols()
   Assert.equal(config.pageScreenMembers.symbols, 8, "the Symbols page is the third normal keyboard member")
 end
 
+function T.final_page_control_and_keyboard_geometry_match_source_transforms()
+  local config = selection()
+  Assert.deepEqual(config.pagePlacement, { x = 11, y = 80, width = 256, height = 112 }, "pagePlacement")
+  Assert.deepEqual(config.objAnchors.upper, { x = 26, y = 68 }, "objAnchors.upper")
+  Assert.deepEqual(config.objAnchors.lower, { x = 58, y = 68 }, "objAnchors.lower")
+  Assert.deepEqual(config.objAnchors.symbols, { x = 90, y = 68 }, "objAnchors.symbols")
+  Assert.deepEqual(config.objAnchors.back, { x = 158, y = 68 }, "objAnchors.back")
+  Assert.deepEqual(config.objAnchors.ok, { x = 198, y = 68 }, "objAnchors.ok")
+  Assert.deepEqual(config.objAnchors.backing, { x = 22, y = 56 }, "objAnchors.backing")
+  Assert.deepEqual(config.objAnchors.subject, { x = 24, y = 8 }, "objAnchors.subject")
+  Assert.equal(config.keyboardText.originX, 27, "keyboardText.originX")
+  Assert.equal(config.keyboardText.originY, 12, "keyboardText.originY")
+  Assert.equal(config.keyboardText.stepX, 16, "keyboardText.stepX")
+  Assert.equal(config.keyboardText.stepY, 19, "keyboardText.stepY")
+end
+
 function T.special_and_unmapped_members_stay_outside_normal_naming()
   local config = selection()
   local seen = {}

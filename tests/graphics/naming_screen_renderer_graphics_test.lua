@@ -62,6 +62,7 @@ local function snapshot(options)
     maxLength = options.maxLength or 7,
     grid = grid,
     subject = options.subject or { kind = "player", gender = 0 },
+    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
   }
 end
 
@@ -143,6 +144,50 @@ function T.keyboard_and_name_text_follow_the_generated_window_geometry()
   Assert.equal(#textAt(textCalls, "AB"), 0, "the name is placed per glyph, never as one centered string")
 end
 
+function T.page_control_and_keyboard_text_use_independent_source_placements()
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  Assert.deepEqual(naming.placement, { x = 11, y = 80, width = 256, height = 112 }, "placement")
+  Assert.deepEqual(naming.controls.upper.anchor, { x = 26, y = 68 }, "controls.upper.anchor")
+  Assert.deepEqual(naming.controls.lower.anchor, { x = 58, y = 68 }, "controls.lower.anchor")
+  Assert.deepEqual(naming.controls.symbols.anchor, { x = 90, y = 68 }, "controls.symbols.anchor")
+  Assert.deepEqual(naming.controls.back.anchor, { x = 158, y = 68 }, "controls.back.anchor")
+  Assert.deepEqual(naming.controls.ok.anchor, { x = 198, y = 68 }, "controls.ok.anchor")
+  Assert.deepEqual(naming.controls.backing.anchor, { x = 22, y = 56 }, "controls.backing.anchor")
+  local cells = assert(naming.text.keyboard.cells)
+  Assert.equal(cells[1][1].x, 27, "the first keyboard cell starts at screen x 27")
+  Assert.equal(cells[1][1].y, 92, "the first keyboard cell starts at screen y 92")
+  Assert.equal(cells[1][1].width, 16, "keyboard cells stay 16 logical pixels wide")
+  Assert.equal(cells[1][2].x - cells[1][1].x, 16, "keyboard columns step 16 logical pixels")
+  Assert.equal(cells[2][1].y - cells[1][1].y, 19, "keyboard rows step 19 logical pixels")
+
+  local graphics = FakeGraphics.new()
+  local textCalls = {}
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake(textCalls),
+    drawSubject = function() end,
+    manifest = manifest,
+    imageLoader = imageLoaderFake({}),
+  })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  renderer:draw(snapshot({ page = "upper", glyphs = { { row = 2, column = 1, value = "A" } } }), layout)
+  renderer:dispose()
+  assertDrawnOnce(graphics.draws, manifest.assets[naming.pages.upper.asset].image, 11, 80, "the upper page")
+  local upper = naming.controls.upper
+  assertDrawnOnce(
+    graphics.draws,
+    upper.image,
+    upper.anchor.x + upper.offset.x,
+    upper.anchor.y + upper.offset.y,
+    "the upper control"
+  )
+  local glyph = textAt(textCalls, "A")
+  Assert.equal(#glyph, 1, "the first glyph draws once")
+  Assert.equal(glyph[1].x, 27 + (16 - 8) / 2, "the first glyph centers in the corrected first cell")
+  Assert.equal(glyph[1].y, 92, "the first glyph uses the corrected first row")
+end
+
 function T.source_object_layers_and_player_subject_render_from_the_manifest()
   local graphics = FakeGraphics.new()
   local textCalls = {}
@@ -170,14 +215,34 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     back = naming.controls.back,
     ok = naming.controls.ok,
     backing = naming.controls.backing,
-    keyboardCursor = naming.cursor.keyboard,
-    homeUpper = naming.cursor.home.upper,
     slotNormal = naming.entrySlots.normal,
     slotSelected = naming.entrySlots.selected,
+  }) do
+    Assert.isTrue(seen[record.image], "construction acquires the " .. id .. " visual")
+  end
+  local function animationPaths(record)
+    local paths = {}
+    local known = {}
+    for _, frame in ipairs(record.frames) do
+      if not known[frame.asset] then
+        known[frame.asset] = true
+        paths[#paths + 1] = manifest.assets[frame.asset].image
+      end
+    end
+    if record.pulseAsset ~= nil then
+      paths[#paths + 1] = manifest.assets[record.pulseAsset].image
+    end
+    return paths
+  end
+  for id, record in pairs({
+    keyboardCursor = naming.cursor.keyboard,
+    homeUpper = naming.cursor.home.upper,
     male = naming.playerSubjects.male,
     female = naming.playerSubjects.female,
   }) do
-    Assert.isTrue(seen[record.image], "construction acquires the " .. id .. " visual")
+    for _, path in ipairs(animationPaths(record)) do
+      Assert.isTrue(seen[path], "construction acquires the " .. id .. " animation image " .. path)
+    end
   end
 
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
@@ -193,11 +258,12 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     )
   end
   local cursor = naming.cursor.keyboard
+  local cursorFrame = cursor.frames[1]
   assertDrawnOnce(
     graphics.draws,
-    cursor.image,
-    cursor.anchor.x + (5 - 1) * cursor.stepX + cursor.offset.x,
-    cursor.anchor.y + (3 - 2) * cursor.stepY + cursor.offset.y,
+    manifest.assets[cursorFrame.asset].image,
+    cursor.origin.x + (5 - 1) * cursor.stepX + cursorFrame.offset.x,
+    cursor.origin.y + (3 - 2) * cursor.stepY + cursorFrame.offset.y,
     "the keyboard cursor"
   )
   for index = 0, 2 do
@@ -218,11 +284,12 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
     "the current entry slot"
   )
   local male = naming.playerSubjects.male
+  local maleFrame = male.frames[1]
   assertDrawnOnce(
     graphics.draws,
-    male.image,
-    male.anchor.x + male.offset.x,
-    male.anchor.y + male.offset.y,
+    manifest.assets[maleFrame.asset].image,
+    male.anchor.x + maleFrame.offset.x,
+    male.anchor.y + maleFrame.offset.y,
     "the male player subject"
   )
   Assert.equal(#subjects, 0, "the player subject comes from the manifest, not the host callback")
@@ -250,11 +317,12 @@ function T.home_control_focus_uses_the_matching_cursor_variant()
   renderer:dispose()
 
   local variant = manifest.namingScreen.cursor.home.back
+  local variantFrame = variant.frames[1]
   assertDrawnOnce(
     graphics.draws,
-    variant.image,
-    variant.anchor.x + variant.offset.x,
-    variant.anchor.y + variant.offset.y,
+    manifest.assets[variantFrame.asset].image,
+    variant.anchor.x + variantFrame.offset.x,
+    variant.anchor.y + variantFrame.offset.y,
     "the Back home-cursor variant"
   )
 end

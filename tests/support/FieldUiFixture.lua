@@ -777,15 +777,17 @@ end
 
 -- The source-backed naming semantics the reusable renderer consumes: the
 -- keyboard/name text layout from the retail keyboard window transform, the
--- control/cursor/slot/player-subject visuals composed from the naming OBJ
--- stack with per-OAM palette selection, and the canonical anchors every
--- visual draws from. Anchors below are the retail source positions the
--- producer transcribes (pret/pokeheartgold src/naming_screen.c): the entered
--- name starts at (80,24) advancing 12px per glyph, entry slots start at
--- (80,39) stepping 12px, controls sit on the home row, the keyboard cursor
--- steps 16px by 19px from (26,91), and the player subject anchors at (24,8).
--- The keyboard text cells deliberately differ from the interaction hit cells
--- so a renderer that centers glyphs in hit rectangles is a mismatch.
+-- static control/slot visuals plus the animated subject/cursor records with
+-- their pulse masks, and the canonical anchors every visual draws from.
+-- Anchors below are the retail source positions the producer transcribes
+-- (pret/pokeheartgold src/naming_screen.c): the entered name starts at
+-- (80,24) advancing 12px per glyph, entry slots start at (80,39) stepping
+-- 12px, the page overlay rests at x=11, home controls carry their
+-- post-parent-transform anchors, keyboard text starts at screen x=27, the
+-- keyboard cursor steps 16px by 19px from (26,91), and the player subject
+-- anchors at (24,8). The keyboard text cells deliberately differ from the
+-- interaction hit cells so a renderer that centers glyphs in hit rectangles
+-- is a mismatch.
 ---@return table manifest carrying only the assets and namingScreen section
 function FieldUiFixture.namingSemanticsManifest()
   local assets = {
@@ -822,11 +824,46 @@ function FieldUiFixture.namingSemanticsManifest()
       offset = offset,
     }
   end
+  -- One generated animation record: two frames sharing one atlas row with
+  -- distinct offsets and durations, plus the same-size pulse-mask atlas for
+  -- cursor roles. The first frame keeps the legacy static offset so
+  -- position assertions stay anchored to the same visual.
+  local function animated(id, width, height, anchor, firstOffset, maskId)
+    local path = "assets/generated/field/ui/" .. id .. ".png"
+    assets["hgss.naming_screen." .. id] = { image = path, width = width * 2, height = height }
+    local frames = {}
+    for index = 1, 2 do
+      local frame = {
+        asset = "hgss.naming_screen." .. id,
+        rect = { x = (index - 1) * width, y = 0, width = width, height = height },
+        offset = index == 1 and firstOffset or { x = firstOffset.x + 1, y = firstOffset.y },
+        duration = index,
+      }
+      if maskId ~= nil then
+        frame.pulseRect = { x = (index - 1) * width, y = 0, width = width, height = height }
+      end
+      frames[index] = frame
+    end
+    local record = {
+      playMode = "forward_loop",
+      loopStartFrameIdx = 0,
+      frames = frames,
+    }
+    if maskId ~= nil then
+      local maskPath = "assets/generated/field/ui/" .. maskId .. ".png"
+      assets["hgss.naming_screen." .. maskId] = { image = maskPath, width = width * 2, height = height }
+      record.pulseAsset = "hgss.naming_screen." .. maskId
+    end
+    if anchor ~= nil then
+      record.anchor = anchor
+    end
+    return record
+  end
   local cells = {}
   for row = 1, 5 do
     cells[row] = {}
     for column = 1, 13 do
-      cells[row][column] = { x = 8 + (column - 1) * 16, y = 92 + (row - 1) * 19, width = 16 }
+      cells[row][column] = { x = 27 + (column - 1) * 16, y = 92 + (row - 1) * 19, width = 16 }
     end
   end
   return {
@@ -840,33 +877,40 @@ function FieldUiFixture.namingSemanticsManifest()
         lower = { asset = "hgss.naming_screen.page_lower", width = 256, height = 112 },
         symbols = { asset = "hgss.naming_screen.page_symbols", width = 256, height = 112 },
       },
-      placement = { x = 0, y = 80, width = 256, height = 112 },
+      placement = { x = 11, y = 80, width = 256, height = 112 },
       text = {
         name = { x = 80, y = 24, advanceX = 12 },
         keyboard = { cells = cells },
       },
       controls = {
-        upper = sprite("control-upper", 32, 16, { x = 4, y = 68 }, { x = 1, y = 2 }),
-        lower = sprite("control-lower", 32, 16, { x = 36, y = 68 }, { x = 0, y = 2 }),
-        symbols = sprite("control-symbols", 32, 16, { x = 68, y = 68 }, { x = 0, y = 2 }),
-        back = sprite("control-back", 40, 16, { x = 136, y = 68 }, { x = 1, y = 2 }),
-        ok = sprite("control-ok", 40, 16, { x = 176, y = 68 }, { x = 0, y = 2 }),
+        upper = sprite("control-upper", 32, 16, { x = 26, y = 68 }, { x = 1, y = 2 }),
+        lower = sprite("control-lower", 32, 16, { x = 58, y = 68 }, { x = 0, y = 2 }),
+        symbols = sprite("control-symbols", 32, 16, { x = 90, y = 68 }, { x = 0, y = 2 }),
+        back = sprite("control-back", 40, 16, { x = 158, y = 68 }, { x = 1, y = 2 }),
+        ok = sprite("control-ok", 40, 16, { x = 198, y = 68 }, { x = 0, y = 2 }),
         backing = sprite("control-backing", 216, 32, { x = 22, y = 56 }, { x = 0, y = 0 }),
       },
       cursor = {
         keyboard = (function()
-          local record = sprite("cursor-keyboard", 16, 19, { x = 26, y = 91 }, { x = 0, y = 0 })
+          local record = animated("cursor-keyboard", 16, 19, nil, { x = 0, y = 0 }, "cursor_keyboard_mask")
           record.origin = { x = 26, y = 91 }
           record.stepX = 16
           record.stepY = 19
           return record
         end)(),
         home = {
-          upper = sprite("cursor-home-upper", 32, 16, { x = 4, y = 68 }, { x = 0, y = 1 }),
-          lower = sprite("cursor-home-lower", 32, 16, { x = 36, y = 68 }, { x = 0, y = 1 }),
-          symbols = sprite("cursor-home-symbols", 32, 16, { x = 68, y = 68 }, { x = 0, y = 1 }),
-          back = sprite("cursor-home-back", 40, 16, { x = 136, y = 68 }, { x = 0, y = 1 }),
-          ok = sprite("cursor-home-ok", 40, 16, { x = 176, y = 68 }, { x = 0, y = 1 }),
+          upper = animated("cursor-home-upper", 32, 16, { x = 25, y = 68 }, { x = 0, y = 1 }, "cursor_home_upper_mask"),
+          lower = animated("cursor-home-lower", 32, 16, { x = 57, y = 68 }, { x = 0, y = 1 }, "cursor_home_lower_mask"),
+          symbols = animated(
+            "cursor-home-symbols",
+            32,
+            16,
+            { x = 89, y = 68 },
+            { x = 0, y = 1 },
+            "cursor_home_symbols_mask"
+          ),
+          back = animated("cursor-home-back", 40, 16, { x = 158, y = 68 }, { x = 0, y = 1 }, "cursor_home_back_mask"),
+          ok = animated("cursor-home-ok", 40, 16, { x = 198, y = 68 }, { x = 0, y = 1 }, "cursor_home_ok_mask"),
         },
       },
       entrySlots = {
@@ -876,8 +920,8 @@ function FieldUiFixture.namingSemanticsManifest()
         selected = sprite("slot-selected", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
       },
       playerSubjects = {
-        male = sprite("subject-male", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
-        female = sprite("subject-female", 48, 56, { x = 24, y = 8 }, { x = 2, y = 0 }),
+        male = animated("subject-male", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
+        female = animated("subject-female", 48, 56, { x = 24, y = 8 }, { x = 2, y = 0 }),
       },
     },
   }

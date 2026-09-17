@@ -832,6 +832,7 @@ function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 1 },
+    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
   }
 
   renderer:draw(edit)
@@ -839,6 +840,8 @@ function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
   local chrome = {}
   local subjectDraws = {}
   local subject = uiManifest.namingScreen.playerSubjects.female
+  local subjectFrame = subject.frames[1]
+  local subjectPath = uiManifest.assets[subjectFrame.asset].image
   for _, draw in ipairs(graphics.draws) do
     if type(draw.image) == "table" and type(draw.image.path) == "string" then
       if
@@ -850,7 +853,7 @@ function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
       then
         chrome[#chrome + 1] = draw
       end
-      if draw.image.path == subject.image then
+      if draw.image.path == subjectPath then
         subjectDraws[#subjectDraws + 1] = draw
       end
       Assert.isFalse(
@@ -863,11 +866,11 @@ function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
   Assert.equal(chrome[1].image.path, "assets/generated/field/ui/naming-screen-base.png")
   Assert.deepEqual({ x = chrome[1].x, y = chrome[1].y }, { x = 0, y = 0 })
   Assert.equal(chrome[2].image.path, "assets/generated/field/ui/naming-screen-page-lower.png")
-  Assert.deepEqual({ x = chrome[2].x, y = chrome[2].y }, { x = 0, y = 80 })
+  Assert.deepEqual({ x = chrome[2].x, y = chrome[2].y }, { x = 11, y = 80 })
   Assert.equal(#subjectDraws, 1, "the female player subject draws from the manifest")
   Assert.deepEqual({ x = subjectDraws[1].x, y = subjectDraws[1].y }, {
-    x = subject.anchor.x + subject.offset.x,
-    y = subject.anchor.y + subject.offset.y,
+    x = subject.anchor.x + subjectFrame.offset.x,
+    y = subject.anchor.y + subjectFrame.offset.y,
   })
   renderer:dispose()
 end
@@ -986,15 +989,18 @@ function T.oak_hosts_naming_without_duplicate_player_subject_art()
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
+    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
   }
 
   renderer:draw(edit)
 
   local subject = uiManifest.namingScreen.playerSubjects.male
+  local subjectFrame = subject.frames[1]
+  local subjectPath = uiManifest.assets[subjectFrame.asset].image
   local subjectDraws = {}
   for _, draw in ipairs(graphics.draws) do
     if type(draw.image) == "table" and type(draw.image.path) == "string" then
-      if draw.image.path == subject.image then
+      if draw.image.path == subjectPath then
         subjectDraws[#subjectDraws + 1] = draw
       end
       Assert.isFalse(
@@ -1005,8 +1011,8 @@ function T.oak_hosts_naming_without_duplicate_player_subject_art()
   end
   Assert.equal(#subjectDraws, 1, "name editing draws the manifest player subject exactly once")
   Assert.deepEqual({ x = subjectDraws[1].x, y = subjectDraws[1].y }, {
-    x = subject.anchor.x + subject.offset.x,
-    y = subject.anchor.y + subject.offset.y,
+    x = subject.anchor.x + subjectFrame.offset.x,
+    y = subject.anchor.y + subjectFrame.offset.y,
   })
   renderer:dispose()
 end

@@ -96,6 +96,8 @@ function OakIntroController:tick(frames)
     self._timeline:tick(1, self._profile:gender())
     if before ~= "name_edit" and self._timeline:phase() == "name_edit" then
       self._profile:enterNameEditor()
+    elseif before == "name_edit" and self._timeline:phase() == "name_edit" then
+      self._profile:tickNameEditor()
     end
   end
 end
