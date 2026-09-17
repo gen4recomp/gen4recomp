@@ -664,6 +664,59 @@ end
 ---@field cacheFs table<string, unknown>|nil pending publication access
 ---@field primaryError Errors.Error|string|nil handled drain failure preserved for the caller
 
+---@param session table<string, unknown> settled generation session under verification
+---@param parsed CacheBuilder.Requirement[] originally parsed requirements
+---@param versionId string
+---@return Errors.Error|nil scopeError a pending requirement names itself when settlement claims otherwise
+local function verifyOriginalRequirements(session, parsed, versionId)
+  -- Final requested-scope proof: confirm every originally parsed scope or
+  -- canonical job through the session's retained public answers at the
+  -- same urgency. This verifies retained intent without driving new work;
+  -- a count-balanced census never overrides a pending requirement.
+  local pendingScope = nil
+  local function confirm(label, call)
+    if pendingScope ~= nil then
+      return
+    end
+    local ok, ready, failure = pcall(call)
+    if not ok then
+      error(ready, 0)
+    end
+    if ready ~= true and failure == nil then
+      pendingScope = label
+    end
+  end
+  for _, entry in ipairs(parsed) do
+    if entry.scope == "bootstrap" or entry.scope == "field-core" then
+      local scope = assert(entry.scope, "parsed requirements are scopes or canonical jobs")
+      confirm(scope, function()
+        return session:requestMilestone(scope, "required")
+      end)
+    elseif entry.scope == "complete" then
+      confirm("field-core", function()
+        return session:requestMilestone("field-core", "required")
+      end)
+      confirm("mon-summary:global", function()
+        return session:requestJob("mon-summary", "global", "required")
+      end)
+    else
+      local kind = assert(entry.kind, "parsed requirements are scopes or canonical jobs")
+      local key = assert(entry.key, "parsed requirements are scopes or canonical jobs")
+      confirm(kind .. ":" .. key, function()
+        return session:requestJob(kind, key, "required")
+      end)
+    end
+  end
+  if pendingScope == nil then
+    return nil
+  end
+  return Errors.new(
+    "CACHE_PREPARATION_FAILED",
+    "cache preparation settled while " .. pendingScope .. " was still pending; no invocation proof is issued",
+    { versionId = versionId, scope = pendingScope }
+  )
+end
+
 ---@param versionId string
 ---@param allowCompileExclusions boolean|nil
 ---@param developmentRepositoryRoot string|nil
@@ -802,6 +855,9 @@ local function collectVersionFacts(
   end
   status = assert(drainResult, "a settled session reports its status")
   assert(session ~= nil and pool ~= nil, "a settled scope owns its pool and session")
+  -- The command proves only its originally requested scope: a pending
+  -- requirement behind a settled census fails proof without inventing a job.
+  local scopeError = verifyOriginalRequirements(session, parsed, versionId)
   local okOut, outcomeList = pcall(session.outcomes, session)
   assert(okOut and type(outcomeList) == "table", "the generation session owns an exact outcome inventory")
   local dispositions, counts, failures, exclusions, sourceExclusions, timings =
@@ -810,6 +866,9 @@ local function collectVersionFacts(
   pcall(pool.shutdown, pool)
   local enumerationComplete = status.enumerationComplete == true
   local requestedReady = counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
+  if scopeError ~= nil then
+    requestedReady = false
+  end
   local needsAttestation = exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   local auditPassed = false
   local auditReason = nil
@@ -845,7 +904,7 @@ local function collectVersionFacts(
     needsAttestation = needsAttestation,
     isCurrent = false,
     cacheFs = pendingFs,
-    primaryError = nil,
+    primaryError = scopeError,
   }
 end
 

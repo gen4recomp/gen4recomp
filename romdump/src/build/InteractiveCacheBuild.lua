@@ -47,6 +47,7 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field causeJobKey string|nil deepest failed leaf identity when a dependency failed
 ---@field poolState string|nil last observed pool state
 ---@field cursor InteractiveCacheBuild.DependencyCursor|nil private resume position for bounded dependency traversal
+---@field direct boolean|nil true once a public single-request method claims this entry; milestone enrollment never sets it
 
 ---@class InteractiveCacheBuild
 ---@field versionId string
@@ -371,6 +372,14 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
   elseif priority < entry.priority then
     entry.urgency = urgency
     entry.priority = priority
+    -- A stronger urgency revisits already traversed prerequisite edges:
+    -- rewinding the private cursor re-registers visited dependencies under
+    -- the new urgency without duplicating jobs or losing physical slots.
+    -- Upgrades strictly decrease priority, so the rewind cannot oscillate.
+    entry.cursor = nil
+    if not entry.ready and entry.failure == nil then
+      self.dirty[entry.jobKey] = true
+    end
     self:_promoteQueued(entry)
   end
   return entry
@@ -613,6 +622,54 @@ function InteractiveCacheBuild:_dirtyParents(jobKey)
 end
 
 ---@param entry InteractiveCacheBuild.Interest
+---@return string|nil exclusion failure once authoritative membership disproves the entry
+function InteractiveCacheBuild:_deferredExclusion(entry)
+  -- Pump-side supportedness: the same membership rule the public methods
+  -- apply, resolved here once the authoritative roster is known so one
+  -- request plus updates suffices. Unknown membership never excludes;
+  -- failed metadata is a dependency failure, never an exclusion. Only
+  -- families whose membership arrives with adopted metadata resolve here:
+  -- source-static membership (message banks, field records) is known at
+  -- construction and decided at request time, so the pump leaves enrolled
+  -- static members to their retained answers.
+  local kind, key = entry.kind, entry.key
+  if kind == "map" then
+    if not self.sourceLoaded then
+      return nil
+    end
+    if self:_knownMap(canonicalMapId(key)) then
+      return nil
+    end
+    return self.generationId .. " map " .. key .. ": source has no supported map"
+  elseif kind == "field-cell" then
+    if not self.sourceLoaded then
+      return nil
+    end
+    if self:_cellDescriptor(kind, key) ~= nil then
+      return nil
+    end
+    return self.generationId .. " field-cell " .. key .. ": canonical index has no such cell"
+  elseif kind == "audio-bank" or kind == "script-member" then
+    if not self.sourceLoaded then
+      return nil
+    end
+    if self:_knownMember(kind, key) then
+      return nil
+    end
+    return assert(self:_unsupported(kind, key), "member rejection needs its cause")
+  elseif kind == "mon-icon-page" or kind == "mon-portrait-page" then
+    if not self.pagesKnown then
+      return nil
+    end
+    if self:_knownMember(kind, key) then
+      return nil
+    end
+    return assert(self:_unsupported(kind, key), "member rejection needs its cause")
+  end
+  return nil
+end
+
+---@param entry InteractiveCacheBuild.Interest
 ---@param trail table<string, boolean>|nil canonical identities on the current descent
 ---@param budget InteractiveCacheBuild.Budget|nil
 ---@param ledger { bound: integer, outstanding: integer }|nil per-pass sweep admission account
@@ -638,6 +695,13 @@ function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
     return "terminal"
   end
   trail[entry.jobKey] = true
+  local exclusion = self:_deferredExclusion(entry)
+  if exclusion ~= nil then
+    self:_exclude(entry, exclusion)
+    self:_dirtyParents(entry.jobKey)
+    trail[entry.jobKey] = nil
+    return "terminal"
+  end
   local cursor = entry.cursor
   if cursor == nil then
     local deps, depsStatus, complete = self:_dependencies(entry.kind, entry.key, self:_plans(), budget)
@@ -796,20 +860,6 @@ function InteractiveCacheBuild:_answer(entry)
 end
 
 ---@param kind string
----@param urgency string
-function InteractiveCacheBuild:_pullPrerequisites(kind, urgency)
-  -- Registration only: demand for an unadopted family pulls its planning
-  -- prerequisite into the pump so worker inventory and layout work starts
-  -- while the caller keeps its pending answer. Idempotent, no IO.
-  if kind ~= "source-plan" and not self.sourceLoaded then
-    self:_request("source-plan", "global", urgency)
-  end
-  if needsPageMembership(kind) and not self.pagesKnown then
-    self:_request("mon-layout", "global", urgency)
-  end
-end
-
----@param kind string
 ---@param key string
 ---@param urgency string
 ---@return InteractiveCacheBuild.Interest entry
@@ -824,15 +874,33 @@ function InteractiveCacheBuild:_request(kind, key, urgency)
   return entry
 end
 
+---@param kind string
+---@param key string
+---@param urgency string
+---@return InteractiveCacheBuild.Interest entry
+function InteractiveCacheBuild:_requestDirect(kind, key, urgency)
+  -- A public single-request claim: registration plus retained direct
+  -- interest, so settlement can tell requested work from enrolled members
+  -- and dependency-discovered prerequisites.
+  local entry = self:_request(kind, key, urgency)
+  entry.direct = true
+  return entry
+end
+
+---@param name string bootstrap or field-core
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
-function InteractiveCacheBuild:_milestoneAnswer(members)
+function InteractiveCacheBuild:_milestoneAnswer(name, members)
   -- Terminal failure takes precedence over pending siblings: every member
   -- is inspected for a failure before a pending aggregate is claimed, and
   -- readiness additionally requires complete enrollment and membership.
   -- Broken build work outranks absent membership in the aggregate; the
   -- per-member answer still carries its own exact exclusion.
+  -- A field-core answer additionally requires its final scope knowledge:
+  -- adopted source inventory and adopted page membership. Discovery-time
+  -- readiness never certifies the scope; bootstrap answers from its own
+  -- roster without a page-membership gate.
   local failure, exclusion = nil, nil
   for _, member in ipairs(members) do
     local entry = self.byKey[member.kind .. ":" .. member.key]
@@ -851,6 +919,9 @@ function InteractiveCacheBuild:_milestoneAnswer(members)
   end
   if exclusion ~= nil then
     return false, exclusion
+  end
+  if name == "field-core" and (not self.sourceLoaded or not self.pagesKnown) then
+    return false, nil
   end
   for _, member in ipairs(members) do
     local entry = self.byKey[member.kind .. ":" .. member.key]
@@ -913,7 +984,7 @@ function InteractiveCacheBuild:_publishMilestone(name)
     return
   end
   local members = self:_milestoneMembers(name)
-  local ready, _ = self:_milestoneAnswer(members)
+  local ready, _ = self:_milestoneAnswer(name, members)
   if not ready then
     return
   end
@@ -990,7 +1061,7 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   if not self.pagesKnown then
     self:_request("mon-layout", "global", urgency)
   end
-  local ready, failure = self:_milestoneAnswer(members)
+  local ready, failure = self:_milestoneAnswer(name, members)
   if ready then
     self:_publishMilestone(name)
   end
@@ -1016,20 +1087,19 @@ function InteractiveCacheBuild:requestField(mapId, urgency)
   assert(not self.retired, "generation session is retired")
   assert(isInteger(mapId) and mapId >= 0, "map ID must be a non-negative integer")
   ArtifactJobs.priorityFor(urgency)
-  self:_pullPrerequisites("map", urgency)
   if not self.sourceLoaded then
-    return self:_answer(self:_request("map", tostring(mapId), urgency))
+    return self:_answer(self:_requestDirect("map", tostring(mapId), urgency))
   end
   if not self:_knownMap(mapId) then
     return self:_exclude(
-      self:_request("map", tostring(mapId), urgency),
+      self:_requestDirect("map", tostring(mapId), urgency),
       self.generationId .. " map " .. tostring(mapId) .. ": source has no supported map"
     )
   end
   for _, cellKey in ipairs(self.mapCellKeys[mapId]) do
     self:_request("field-cell", cellKey, urgency)
   end
-  return self:_answer(self:_request("map", tostring(mapId), urgency))
+  return self:_answer(self:_requestDirect("map", tostring(mapId), urgency))
 end
 
 ---@param descriptor table<string, unknown>
@@ -1040,27 +1110,26 @@ function InteractiveCacheBuild:requestCell(descriptor, urgency)
   assert(not self.retired, "generation session is retired")
   assert(type(descriptor) == "table", "field cell descriptor is required")
   ArtifactJobs.priorityFor(urgency)
-  self:_pullPrerequisites("field-cell", urgency)
   if not self.sourceLoaded then
     if not (isInteger(descriptor.matrixMemberId) and isInteger(descriptor.index)) then
       error("field cell descriptor needs its canonical matrix and index", 0)
     end
     local key = descriptor.matrixMemberId .. "-" .. descriptor.index
-    return self:_answer(self:_request("field-cell", key, urgency))
+    return self:_answer(self:_requestDirect("field-cell", key, urgency))
   end
   assert(
     isInteger(descriptor.matrixMemberId) and isInteger(descriptor.index),
     "field cell descriptor needs its canonical matrix and index"
   )
   local key = descriptor.matrixMemberId .. "-" .. descriptor.index
-  local authoritative, failure = self:_cellDescriptor("field-cell", key)
+  local authoritative = self:_cellDescriptor("field-cell", key)
   if authoritative == nil then
     return self:_exclude(
-      self:_request("field-cell", key, urgency),
-      self.generationId .. " field-cell " .. key .. ": " .. tostring(failure)
+      self:_requestDirect("field-cell", key, urgency),
+      assert(self:_unsupported("field-cell", key), "member rejection needs its cause")
     )
   end
-  return self:_answer(self:_request("field-cell", key, urgency))
+  return self:_answer(self:_requestDirect("field-cell", key, urgency))
 end
 
 ---@param pageId integer
@@ -1071,9 +1140,8 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
   assert(not self.retired, "generation session is retired")
   assert(isInteger(pageId) and pageId >= 0, "portrait page ID must be a non-negative integer")
   ArtifactJobs.priorityFor(urgency)
-  self:_pullPrerequisites("mon-portrait-page", urgency)
   if not self.pagesKnown then
-    return self:_answer(self:_request("mon-portrait-page", tostring(pageId), urgency))
+    return self:_answer(self:_requestDirect("mon-portrait-page", tostring(pageId), urgency))
   end
   local supported = false
   for _, candidate in ipairs(self.portraitPageIds) do
@@ -1084,11 +1152,11 @@ function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
   end
   if not supported then
     return self:_exclude(
-      self:_request("mon-portrait-page", tostring(pageId), urgency),
+      self:_requestDirect("mon-portrait-page", tostring(pageId), urgency),
       self.generationId .. " mon-portrait-page " .. tostring(pageId) .. ": source has no such page"
     )
   end
-  return self:_answer(self:_request("mon-portrait-page", tostring(pageId), urgency))
+  return self:_answer(self:_requestDirect("mon-portrait-page", tostring(pageId), urgency))
 end
 
 ---@param kind string
@@ -1167,15 +1235,14 @@ function InteractiveCacheBuild:requestJob(kind, key, urgency)
   assert(not self.retired, "generation session is retired")
   ArtifactJobs.jobKey(kind, key)
   ArtifactJobs.priorityFor(urgency)
-  self:_pullPrerequisites(kind, urgency)
   if kind == "map" then
     local mapId = canonicalMapId(key)
     if not self.sourceLoaded then
-      return self:_answer(self:_request(kind, key, urgency))
+      return self:_answer(self:_requestDirect(kind, key, urgency))
     end
     if not self:_knownMap(mapId) then
       return self:_exclude(
-        self:_request(kind, key, urgency),
+        self:_requestDirect(kind, key, urgency),
         self.generationId .. " map " .. key .. ": source has no supported map"
       )
     end
@@ -1184,11 +1251,11 @@ function InteractiveCacheBuild:requestJob(kind, key, urgency)
       if key:match("^[0-9]+-[0-9]+$") == nil then
         error("field-cell key is not canonical: " .. key, 0)
       end
-      return self:_answer(self:_request(kind, key, urgency))
+      return self:_answer(self:_requestDirect(kind, key, urgency))
     end
     if self:_cellDescriptor(kind, key) == nil then
       return self:_exclude(
-        self:_request(kind, key, urgency),
+        self:_requestDirect(kind, key, urgency),
         self.generationId .. " field-cell " .. key .. ": canonical index has no such cell"
       )
     end
@@ -1208,16 +1275,16 @@ function InteractiveCacheBuild:requestJob(kind, key, urgency)
       membershipKnown = false
     end
     if not membershipKnown then
-      return self:_answer(self:_request(kind, key, urgency))
+      return self:_answer(self:_requestDirect(kind, key, urgency))
     end
     if not self:_knownMember(kind, key) then
       return self:_exclude(
-        self:_request(kind, key, urgency),
+        self:_requestDirect(kind, key, urgency),
         assert(self:_unsupported(kind, key), "member rejection needs its cause")
       )
     end
   end
-  return self:_answer(self:_request(kind, key, urgency))
+  return self:_answer(self:_requestDirect(kind, key, urgency))
 end
 
 ---@param kind string
@@ -1400,7 +1467,7 @@ end
 ---@return boolean
 function InteractiveCacheBuild:_bootstrapReady()
   local members = ArtifactJobs.bootstrapJobs(self.audioBankIds)
-  local ready, _ = self:_milestoneAnswer(members)
+  local ready, _ = self:_milestoneAnswer("bootstrap", members)
   return ready
 end
 
@@ -1794,7 +1861,10 @@ function InteractiveCacheBuild:update()
   self:_pumpPlanning(budget, allowSweep)
   self:_publishMilestone("bootstrap")
   self:_publishMilestone("field-core")
-  self.planningPending = budget.worked
+  -- Runnable local work remains when retained planning state is
+  -- non-empty or a requested scope still awaits its necessary membership;
+  -- a pump that merely consumed budget without leaving work ahead reports none.
+  self.planningPending = self:_hasRunnablePlanning()
 end
 
 ---@return { kind: string, key: string, jobKey: string, state: string, reused: boolean, error: string|nil, causeJobKey: string|nil, failureClass: string|nil }[]
@@ -1828,21 +1898,81 @@ function InteractiveCacheBuild:outcomes()
   return list
 end
 
+---@return boolean a retained milestone awaits its necessary membership while discovery stays live
+function InteractiveCacheBuild:_scopeKnowledgePending()
+  if self.retired then
+    return false
+  end
+  if self.milestones["bootstrap"] ~= nil and not self.sourceLoaded then
+    local ready, failure = self:_milestoneAnswer("bootstrap", ArtifactJobs.bootstrapJobs(self.audioBankIds))
+    if not ready and failure == nil then
+      return true
+    end
+  end
+  if self.milestones["field-core"] ~= nil and (not self.sourceLoaded or not self.pagesKnown) then
+    local ready, failure = self:_milestoneAnswer("field-core", self:_milestoneMembers("field-core"))
+    if not ready and failure == nil then
+      return true
+    end
+  end
+  return false
+end
+
+---@return boolean runnable local planning remains from retained state
+function InteractiveCacheBuild:_hasRunnablePlanning()
+  if next(self.dirty) ~= nil or next(self.parked) ~= nil then
+    return true
+  end
+  if self.enrollCursor ~= nil or self.sweepCursor ~= nil then
+    return true
+  end
+  return self:_scopeKnowledgePending()
+end
+
 ---@return table<string, unknown>
 function InteractiveCacheBuild:status()
   -- Read-only retained observation: no cache IO, no validation, no pool
   -- polling. Queued and running follow the last pump-observed pool states;
   -- settled and planningPending carry the exact readiness contract.
+  local bootstrapState, fieldCoreState = "pending", "pending"
+  local bootstrapFailed, fieldCoreFailed = false, false
+  if not self.retired then
+    local bootstrapMembers = ArtifactJobs.bootstrapJobs(self.audioBankIds)
+    local bootstrapReady, bootstrapFailure = self:_milestoneAnswer("bootstrap", bootstrapMembers)
+    if bootstrapReady then
+      bootstrapState = "ready"
+    elseif bootstrapFailure ~= nil then
+      bootstrapState = "failed"
+      bootstrapFailed = self.milestones["bootstrap"] ~= nil
+    end
+    if self.milestones["field-core"] ~= nil then
+      local coreReady, coreFailure = self:_milestoneAnswer("field-core", self:_milestoneMembers("field-core"))
+      if coreReady then
+        fieldCoreState = "ready"
+      elseif coreFailure ~= nil then
+        fieldCoreState = "failed"
+        fieldCoreFailed = true
+      end
+    end
+  end
+  -- Settlement is scope-relative: every retained milestone intent and
+  -- every directly requested entry must be terminal. A fully terminal
+  -- corpus always settles; a terminally failed requested scope also
+  -- settles despite undiscovered downstream corpus, whose pending rows
+  -- finalize as cancelled. Success never settles around running work.
   local ready, queued, running = 0, 0, 0
   local failures = {}
-  local settled = true
+  local allTerminal, directTerminal = true, true
   for _, entry in ipairs(self.interest) do
     if entry.failure ~= nil then
       failures[#failures + 1] = entry.failure
     elseif entry.ready then
       ready = ready + 1
     else
-      settled = false
+      allTerminal = false
+      if entry.direct then
+        directTerminal = false
+      end
       if entry.submitted and (entry.poolState == "running" or entry.poolState == "prepared") then
         running = running + 1
       else
@@ -1850,31 +1980,17 @@ function InteractiveCacheBuild:status()
       end
     end
   end
-  if next(self.dirty) ~= nil or next(self.parked) ~= nil then
-    settled = false
-  end
-  if self.enrollCursor ~= nil or self.sweepCursor ~= nil then
-    settled = false
-  end
-  table.sort(failures)
-  local bootstrapState, fieldCoreState = "pending", "pending"
+  local milestonesTerminal = true
   if not self.retired then
-    local bootstrapMembers = ArtifactJobs.bootstrapJobs(self.audioBankIds)
-    local bootstrapReady, bootstrapFailure = self:_milestoneAnswer(bootstrapMembers)
-    if bootstrapReady then
-      bootstrapState = "ready"
-    elseif bootstrapFailure ~= nil then
-      bootstrapState = "failed"
+    if self.milestones["bootstrap"] ~= nil and bootstrapState == "pending" then
+      milestonesTerminal = false
     end
-    if self.milestones["field-core"] ~= nil then
-      local coreReady, coreFailure = self:_milestoneAnswer(self:_milestoneMembers("field-core"))
-      if coreReady then
-        fieldCoreState = "ready"
-      elseif coreFailure ~= nil then
-        fieldCoreState = "failed"
-      end
+    if self.milestones["field-core"] ~= nil and fieldCoreState == "pending" then
+      milestonesTerminal = false
     end
   end
+  local settled = milestonesTerminal and directTerminal and (allTerminal or bootstrapFailed or fieldCoreFailed)
+  table.sort(failures)
   local complete = bootstrapState == "ready"
     and fieldCoreState == "ready"
     and #failures == 0
