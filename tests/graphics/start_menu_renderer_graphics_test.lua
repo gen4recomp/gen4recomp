@@ -263,73 +263,88 @@ end
 
 -- The real generated surface is checked before it reaches the renderer so a
 -- cursor-only production result cannot be mistaken for a renderer golden.
-function T.real_generated_surface_contains_the_retail_background_and_cursor(scope)
+-- Source conformance for the replacement icon contract (the single
+-- intentionally-paused assertion for this phase): the generated class must
+-- carry the 13-row retail icon table (sprite rows with art, text-only rows
+-- 9-10, poke-icon row 11), non-blank icon art, main chrome transparent
+-- above the panel band, and a non-blank cursor. This fails until the
+-- producer emits the retail icon contract; it must not be weakened to pass.
+function T.real_generated_start_menu_icons_match_the_retail_source_contract(scope)
   for _, versionId in ipairs(GameVersion.ORDER) do
     local cache = CacheFs.forVersion(versionId)
     if RomImporter.isReady(versionId, cache) then
       local manifest = assert(cache:loadLua(FieldUiAssetCache.manifestPath()), "the manifest must load")
-      local background = assert(
-        manifest.assets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND],
-        "the generated class indexes the start menu background"
+      local startMenu = assert(manifest.startMenu, "the generated class carries the start menu section")
+      local iconTable = assert(
+        startMenu.iconTable,
+        versionId .. " start menu section must carry the retail icon table: the producer does not emit it yet"
       )
+      Assert.equal(#iconTable, 13, versionId .. " icon table carries all thirteen retail rows")
+      for _, index in ipairs({ 1, 2, 3, 4, 5, 6, 7, 8, 12, 13 }) do
+        Assert.equal((iconTable[index] or {}).art, "sprite", versionId .. " icon row " .. index .. " is a sprite")
+      end
+      Assert.equal((iconTable[9] or {}).art, "text", versionId .. " icon row 9 is text-only")
+      Assert.equal((iconTable[10] or {}).art, "text", versionId .. " icon row 10 is text-only")
+      Assert.equal((iconTable[11] or {}).art, "poke_icon", versionId .. " icon row 11 is the poke-icon path")
+
+      local iconsAsset =
+        assert(manifest.assets["hgss.start_menu.icons"], versionId .. " generated class indexes the shared icon atlas")
+      local iconPixels = scope:own(
+        love.image.newImageData(love.filesystem.newFileData(assert(cache:read(iconsAsset.image)), iconsAsset.image))
+      )
+      local opaque = 0
+      for y = 0, iconPixels:getHeight() - 1 do
+        for x = 0, iconPixels:getWidth() - 1 do
+          local _, _, _, alpha = iconPixels:getPixel(x, y)
+          if alpha > 0 then
+            opaque = opaque + 1
+          end
+        end
+      end
+      Assert.isTrue(opaque > 0, versionId .. " retail icon atlas must contain art")
+
+      local chrome = assert(
+        startMenu.chrome and startMenu.chrome.main,
+        versionId .. " start menu section must carry its main chrome"
+      )
+      local chromeAsset =
+        assert(manifest.assets[chrome.asset], versionId .. " generated class indexes the main chrome image")
+      local chromePixels = scope:own(
+        love.image.newImageData(love.filesystem.newFileData(assert(cache:read(chromeAsset.image)), chromeAsset.image))
+      )
+      local _, _, _, topAlpha = chromePixels:getPixel(0, 0)
+      Assert.equal(topAlpha, 0, versionId .. " main chrome is transparent above the panel band")
+      local panelOpaque = 0
+      for y = 136, chromePixels:getHeight() - 1 do
+        for x = 0, chromePixels:getWidth() - 1 do
+          local _, _, _, alpha = chromePixels:getPixel(x, y)
+          if alpha > 0 then
+            panelOpaque = panelOpaque + 1
+          end
+        end
+      end
+      Assert.isTrue(panelOpaque > 0, versionId .. " main chrome panel band must contain art")
+
       local cursor = assert(
         manifest.assets[FieldUiAssetCache.ASSET.START_MENU_CURSOR],
         "the generated class indexes the start menu cursor"
       )
-      local startMenu = assert(manifest.startMenu, "the generated class carries the start menu section")
-      local slots = assert(startMenu.slots, "the start menu section carries slots")
-      local frames =
-        assert(startMenu.cursor and startMenu.cursor.frames, "the start menu section carries cursor frames")
-      local backgroundPixels = scope:own(
-        love.image.newImageData(love.filesystem.newFileData(assert(cache:read(background.image)), background.image))
-      )
       local cursorPixels =
         scope:own(love.image.newImageData(love.filesystem.newFileData(assert(cache:read(cursor.image)), cursor.image)))
-      Assert.equal(backgroundPixels:getWidth(), CANONICAL_WIDTH, versionId .. " background width")
-      Assert.equal(backgroundPixels:getHeight(), CANONICAL_HEIGHT, versionId .. " background height")
-
-      local bands = {
-        { y = 0, height = 38 },
-        { y = 38, height = 38 },
-        { y = 76, height = 38 },
-        { y = 114, height = 38 },
-        { y = 152, height = 38 },
-      }
-      for _, band in ipairs(bands) do
-        local opaque = 0
-        for y = band.y, band.y + band.height - 1 do
-          for x = 0, CANONICAL_WIDTH - 1 do
-            local _, _, _, alpha = backgroundPixels:getPixel(x, y)
-            if alpha > 0 then
-              opaque = opaque + 1
-            end
-          end
-        end
-        Assert.isTrue(opaque > 0, versionId .. " retail background band " .. band.y .. " must contain art")
-      end
-
-      local rendered = canonicalRender(scope, cache, manifest, 1, 0, canonicalPlacement(), 256, 192)
-      local slot = slots[1]
-      local frame = frames[1]
-      local originX = slot.x + slot.width / 2 - frame.width / 2
-      local originY = slot.y + slot.height / 2 - frame.height / 2
-      local cursorVisible = false
+      local cursorOpaque = false
       for y = 0, cursorPixels:getHeight() - 1 do
         for x = 0, cursorPixels:getWidth() - 1 do
           local _, _, _, alpha = cursorPixels:getPixel(x, y)
           if alpha > 0 then
-            local _, _, _, renderedAlpha = rendered:getPixel(originX + x, originY + y)
-            cursorVisible = renderedAlpha > 0
-            if cursorVisible then
-              break
-            end
+            cursorOpaque = true
+            break
           end
         end
-        if cursorVisible then
+        if cursorOpaque then
           break
         end
       end
-      Assert.isTrue(cursorVisible, versionId .. " cursor must be drawn over the selected slot")
+      Assert.isTrue(cursorOpaque, versionId .. " cursor must contain art")
     end
   end
 end

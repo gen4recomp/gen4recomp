@@ -47,6 +47,7 @@ local function withNaming(manifest)
     },
     placement = { x = 0, y = 80, width = 256, height = 112 },
   }
+  FieldUiFixture.addStartMenuIconContract(manifest)
   return manifest
 end
 

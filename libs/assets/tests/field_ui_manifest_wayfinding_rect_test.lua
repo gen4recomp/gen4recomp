@@ -50,6 +50,26 @@ local function baseManifest()
         width = 32,
         height = 32,
       },
+      ["hgss.start_menu.icons"] = {
+        image = "assets/generated/field/ui/start-menu-icons.png",
+        width = 352,
+        height = 40,
+      },
+      ["hgss.start_menu.icon_highlight"] = {
+        image = "assets/generated/field/ui/start-menu-icons-highlight.png",
+        width = 352,
+        height = 40,
+      },
+      ["hgss.start_menu.icon_palette"] = {
+        image = "assets/generated/field/ui/start-menu-icon-palette.png",
+        width = 16,
+        height = 2,
+      },
+      ["hgss.start_menu.chrome_sub"] = {
+        image = "assets/generated/field/ui/start-menu-chrome-sub.png",
+        width = 256,
+        height = 256,
+      },
       ["hgss.trainer_card.front"] = { image = "assets/generated/field/ui/trainer-card.png", width = 256, height = 192 },
       ["hgss.naming_screen.base"] = {
         image = "assets/generated/field/ui/naming-screen-base.png",
@@ -117,10 +137,68 @@ local function baseManifest()
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
       slots = slots,
-      actionSurfaces = {
-        ["vanilla.trainer_card"] = slots[6],
-        ["vanilla.save"] = slots[7],
-        ["vanilla.options"] = slots[8],
+      iconTable = (function()
+        local rows = {}
+        local cell = 0
+        for icon = 0, 12 do
+          if icon == 8 or icon == 9 then
+            rows[icon + 1] = { art = "text", label = 32, labelKind = "static" }
+          elseif icon == 10 then
+            rows[icon + 1] = { art = "poke_icon", label = 32, labelKind = "static" }
+          else
+            rows[icon + 1] = {
+              art = "sprite",
+              rect = { x = cell * 32, y = 0, width = 32, height = 40 },
+              label = icon,
+              labelKind = "static",
+            }
+            cell = cell + 1
+          end
+        end
+        return rows
+      end)(),
+      iconAtlas = { asset = "hgss.start_menu.icons" },
+      iconHighlight = { asset = "hgss.start_menu.icon_highlight" },
+      iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 },
+      contexts = {
+        { 0, 1, 2, 3, 4, 5, 6 },
+        { 7, 0, 1, 2, 3, 4, 6 },
+        { 7, 0, 1, 3, 4, 6, 10 },
+        { 7, 0, 1, 3, 4, 6, 9 },
+        { 11, 0, 1, 2, 12, 4, 6 },
+        { 1, 2, 4, 6, false, false, false },
+        { 1, 4, 6, false, false, false, false },
+      },
+      actionIcons = {
+        ["vanilla.pokedex"] = 0,
+        ["vanilla.pokemon"] = 1,
+        ["vanilla.bag"] = 2,
+        ["vanilla.pokegear"] = 3,
+        ["vanilla.trainer_card"] = 4,
+        ["vanilla.save"] = 5,
+        ["vanilla.options"] = 6,
+      },
+      iconBases = {
+        [2] = { x = 24, y = 22 },
+        [3] = { x = 24, y = 62 },
+        [4] = { x = 24, y = 102 },
+        [5] = { x = 24, y = 142 },
+        [6] = { x = 104, y = 22 },
+        [7] = { x = 104, y = 62 },
+        [8] = { x = 104, y = 102 },
+      },
+      labelWindows = {
+        [2] = { x = 8, y = 48, width = 72, height = 16 },
+        [3] = { x = 8, y = 88, width = 72, height = 16 },
+        [4] = { x = 8, y = 128, width = 72, height = 16 },
+        [5] = { x = 8, y = 168, width = 72, height = 16 },
+        [6] = { x = 88, y = 48, width = 72, height = 16 },
+        [7] = { x = 88, y = 88, width = 72, height = 16 },
+        [8] = { x = 88, y = 128, width = 72, height = 16 },
+      },
+      chrome = {
+        main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
+        sub = { asset = "hgss.start_menu.chrome_sub" },
       },
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
@@ -136,21 +214,21 @@ local function baseManifest()
   }
 end
 
-function T.final_surface_48x32_is_accepted_when_manifest_claims_v8()
+function T.final_surface_48x32_is_accepted_when_manifest_claims_v9()
   local manifest = baseManifest()
-  -- The expected final contract is 48x32 per wayfinding entry, schema v8.
-  manifest.schema = "g4-field-ui-v8"
+  -- The expected final contract is 48x32 per wayfinding entry, schema v9.
+  manifest.schema = "g4-field-ui-v9"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 32 }
   local ok, err = FieldUiAssetCache.validateManifest(manifest)
-  Assert.isTrue(ok, "48x32 final surface with v7 schema should be accepted")
+  Assert.isTrue(ok, "48x32 final surface with v9 schema should be accepted")
   Assert.isNil(err)
 end
 
 function T.old_strip_192x8_is_rejected_under_final_surface_contract()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v8"
+  manifest.schema = "g4-field-ui-v9"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 192, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 192, height = 8 }
@@ -173,7 +251,7 @@ end
 
 function T.final_surface_must_be_inside_atlas_bounds()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v8"
+  manifest.schema = "g4-field-ui-v9"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 10, y = 10, width = 48, height = 32 }
@@ -185,14 +263,14 @@ end
 
 function T.final_surface_must_be_exactly_48x32()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v8"
+  manifest.schema = "g4-field-ui-v9"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 47, height = 32 }
   local ok, _ = FieldUiAssetCache.validateManifest(manifest)
   Assert.isFalse(ok, "47x32 must be rejected - exactly 48x32 required")
   local manifest2 = baseManifest()
-  manifest2.schema = "g4-field-ui-v8"
+  manifest2.schema = "g4-field-ui-v9"
   manifest2.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest2.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 31 }
@@ -202,7 +280,7 @@ end
 
 function T.missing_wayfinding_map_is_rejected()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v8"
+  manifest.schema = "g4-field-ui-v9"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding = {}

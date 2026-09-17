@@ -54,6 +54,26 @@ local function validManifest()
         width = 32,
         height = 32,
       },
+      ["hgss.start_menu.icons"] = {
+        image = "assets/generated/field/ui/start-menu-icons.png",
+        width = 352,
+        height = 40,
+      },
+      ["hgss.start_menu.icon_highlight"] = {
+        image = "assets/generated/field/ui/start-menu-icons-highlight.png",
+        width = 352,
+        height = 40,
+      },
+      ["hgss.start_menu.icon_palette"] = {
+        image = "assets/generated/field/ui/start-menu-icon-palette.png",
+        width = 16,
+        height = 2,
+      },
+      ["hgss.start_menu.chrome_sub"] = {
+        image = "assets/generated/field/ui/start-menu-chrome-sub.png",
+        width = 256,
+        height = 256,
+      },
       ["hgss.trainer_card.front"] = { image = "assets/generated/field/ui/trainer-card.png", width = 256, height = 192 },
       ["hgss.dialogue_continue_cursor"] = {
         image = "assets/generated/field/ui/dialogue-continue-cursor.png",
@@ -127,10 +147,82 @@ local function validManifest()
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
       slots = slots,
-      actionSurfaces = {
-        ["vanilla.trainer_card"] = slots[6],
-        ["vanilla.save"] = slots[7],
-        ["vanilla.options"] = slots[8],
+      iconTable = (function()
+        local rows = {}
+        local spriteIcons = {
+          [0] = true,
+          [1] = true,
+          [2] = true,
+          [3] = true,
+          [4] = true,
+          [5] = true,
+          [6] = true,
+          [7] = true,
+          [11] = true,
+          [12] = true,
+        }
+        local labels = { [0] = 0, [1] = 1, [2] = 2, [3] = 14, [4] = 3, [5] = 4, [6] = 5, [7] = 8, [11] = 34, [12] = 35 }
+        local cell = 0
+        for icon = 0, 12 do
+          if spriteIcons[icon] then
+            local rect = { x = cell * 32, y = 0, width = 32, height = 40 }
+            cell = cell + 1
+            rows[icon + 1] = { art = "sprite", rect = rect, label = labels[icon], labelKind = "static" }
+          elseif icon == 10 then
+            rows[icon + 1] = { art = "poke_icon", label = 32, labelKind = "static" }
+          else
+            rows[icon + 1] = { art = "text", label = 32, labelKind = "static" }
+          end
+        end
+        rows[5].labelKind = "player_name"
+        rows[3].variants = {
+          default = rows[3].rect,
+          female = { x = 10 * 32, y = 0, width = 32, height = 40 },
+        }
+        return rows
+      end)(),
+      iconAtlas = { asset = "hgss.start_menu.icons" },
+      iconHighlight = { asset = "hgss.start_menu.icon_highlight" },
+      iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 },
+      contexts = {
+        { 0, 1, 2, 3, 4, 5, 6 },
+        { 7, 0, 1, 2, 3, 4, 6 },
+        { 7, 0, 1, 3, 4, 6, 10 },
+        { 7, 0, 1, 3, 4, 6, 9 },
+        { 11, 0, 1, 2, 12, 4, 6 },
+        { 1, 2, 4, 6, false, false, false },
+        { 1, 4, 6, false, false, false, false },
+      },
+      actionIcons = {
+        ["vanilla.pokedex"] = 0,
+        ["vanilla.pokemon"] = 1,
+        ["vanilla.bag"] = 2,
+        ["vanilla.pokegear"] = 3,
+        ["vanilla.trainer_card"] = 4,
+        ["vanilla.save"] = 5,
+        ["vanilla.options"] = 6,
+      },
+      iconBases = {
+        [2] = { x = 24, y = 22 },
+        [3] = { x = 24, y = 62 },
+        [4] = { x = 24, y = 102 },
+        [5] = { x = 24, y = 142 },
+        [6] = { x = 104, y = 22 },
+        [7] = { x = 104, y = 62 },
+        [8] = { x = 104, y = 102 },
+      },
+      labelWindows = {
+        [2] = { x = 8, y = 48, width = 72, height = 16 },
+        [3] = { x = 8, y = 88, width = 72, height = 16 },
+        [4] = { x = 8, y = 128, width = 72, height = 16 },
+        [5] = { x = 8, y = 168, width = 72, height = 16 },
+        [6] = { x = 88, y = 48, width = 72, height = 16 },
+        [7] = { x = 88, y = 88, width = 72, height = 16 },
+        [8] = { x = 88, y = 128, width = 72, height = 16 },
+      },
+      chrome = {
+        main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
+        sub = { asset = "hgss.start_menu.chrome_sub" },
       },
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
@@ -247,6 +339,51 @@ function T.start_menu_surface_validation_is_strict()
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu.slots = { [0] = { x = 0, y = 0, width = 128, height = 38 } }
+  end, "FIELD_UI_MANIFEST_INVALID")
+end
+
+-- The start menu icon-sprite contract: thirteen icon rows with valid art
+-- and in-atlas rects, seven 7-entry context rows, sprite-backed action
+-- icons, per-slot sprite bases, seven label windows, and indexed chrome.
+function T.start_menu_icon_contract_validation_is_strict()
+  reject(function(m)
+    m.startMenu.iconTable = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.iconTable[13] = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.iconTable[1].art = "baked"
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.iconTable[1].rect = { x = 400, y = 0, width = 32, height = 40 }
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.iconTable[9].art = "sprite"
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.contexts[1] = { 0, 1, 2, 3, 4, 5 }
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.contexts[1][1] = 13
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.actionIcons["vanilla.save"] = 9
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.iconBases[8] = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.labelWindows[8] = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.chrome.main.transparentAboveY = 0
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.chrome.sub.asset = "hgss.start_menu.missing"
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.iconPalette.selectionBank = 3
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 

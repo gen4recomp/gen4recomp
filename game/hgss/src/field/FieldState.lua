@@ -492,7 +492,17 @@ function FieldState:draw()
   -- or the field application owned by the presentation dispatch; never more
   -- than one.
   if hostStatus.menu then
-    resources.startMenuRenderer:draw(hostStatus.menu, assert(self.runtime.startMenuPlacement))
+    -- The icon presentation draws the gender-conditional Bag variant: the
+    -- controller status is gender-agnostic, so the draw site attaches the
+    -- live trainer gender to the fresh status table (never controller
+    -- state) beside the cursor/slot/icon/label data.
+    local menuPresentation = hostStatus.menu
+    local profile =
+      assert(self.runtime.playerData and self.runtime.playerData.profile, "the start menu requires the player profile")
+    local gender = assert(profile.gender, "the start menu requires the player gender")
+    assert(gender == 0 or gender == 1, "the start menu trainer gender is unsupported")
+    menuPresentation.trainerGender = gender == 0 and "male" or "female"
+    resources.startMenuRenderer:draw(menuPresentation, assert(self.runtime.startMenuPlacement))
   elseif hostStatus.application then
     resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
   end

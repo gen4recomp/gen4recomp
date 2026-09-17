@@ -98,6 +98,7 @@ local function drawableState(options)
   viewport.worldViewport = worldViewport
   local runtime = {
     errorText = nil,
+    playerData = { profile = { name = "TEST", gender = 0 } },
     uiManifest = {
       dialogueFrames = { continueCursor = { placement = { x = 240, y = 168, width = 16, height = 16 } } },
     },

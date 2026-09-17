@@ -1,8 +1,9 @@
--- Compiles the generated HGSS field-UI class: the Start Menu background and
--- cursor, the twenty user dialogue frames, the corpus signpost frame and
--- wayfinding graphics, the Trainer Card front, and the normal naming screen
--- chrome (one opaque base plus the three transparent page overlays) — all as
--- decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
+-- Compiles the generated HGSS field-UI class: the Start Menu icon-sprite
+-- contract (shared icon/highlight atlases, palette record, icon table,
+-- contexts, chrome) and cursor, the twenty user dialogue frames, the corpus
+-- signpost frame and wayfinding graphics, the Trainer Card front, and the
+-- normal naming screen chrome (one opaque base plus the three transparent
+-- page overlays) — all as decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
 -- into final 48x32 surfaces (6 by 4 tiles) at build time so runtime draws
 -- a single rect. Source member selection lives in
 -- romdump/src/config/FieldUiAssets.lua; this module owns the HGSS decode
@@ -276,10 +277,11 @@ local function loadArchive(romFs, alias)
   return archive, must(romFs:read(info.fileId), "missing archive bytes " .. alias)
 end
 
-local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
-  local archive, archiveBytes = loadArchive(romFs, manifestConfig.startMenu.alias)
+-- The Start Menu MAIN BG triple is chrome, not entry art: source-zero
+-- pixels stay transparent, so only the bottom-panel band survives into the
+-- generated main-chrome image.
+local function compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local cfg = manifestConfig.startMenu
-  local memberBytes = {}
   local function g2d(kind, memberId, label)
     memberBytes[memberId] = decodeMember(archive, memberId, label)
     local decoded, err =
@@ -293,12 +295,187 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   assets[backgroundPath] = renderScreen(charData, pal.colors, screen, {
     asset = "start menu background",
     member = cfg.backgroundScreenMember,
-  }, { transparentZero = false })
+  })
   manifestAssets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND] = {
     image = backgroundPath,
     width = screen.width,
     height = screen.height,
   }
+  for _, memberId in ipairs({ cfg.backgroundCharMember, cfg.backgroundScreenMember, cfg.backgroundPaletteMember }) do
+    deps[#deps + 1] =
+      { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
+  end
+  return { x = 0, y = 0, width = screen.width, height = screen.height }
+end
+
+-- The SUB background set behind the entry windows, compiled like any other
+-- source screen with source-zero transparency.
+local function compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local cfg = manifestConfig.startMenu
+  local function g2d(kind, memberId, label)
+    memberBytes[memberId] = decodeMember(archive, memberId, label)
+    local decoded, err =
+      G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.startMenu.alias .. ":" .. memberId })
+    return must(decoded, err)
+  end
+  local charData = g2d("decodeChar", cfg.subBackgroundCharMember, "start menu sub background char") --[[@as FieldUiCompiler.CharData]]
+  local screen = g2d("decodeScreen", cfg.subBackgroundScreenMember, "start menu sub background screen") --[[@as FieldUiCompiler.ScreenData]]
+  local pal = g2d("decodePalette", cfg.subBackgroundPaletteMember, "start menu sub background palette") --[[@as FieldUiCompiler.PaletteData]]
+  local subPath = FieldUiAssetCache.assetDir() .. "/start-menu-chrome-sub.png"
+  assets[subPath] = renderScreen(charData, pal.colors, screen, {
+    asset = "start menu sub background",
+    member = cfg.subBackgroundScreenMember,
+  })
+  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_CHROME_SUB] =
+    { image = subPath, width = screen.width, height = screen.height }
+  for _, memberId in ipairs({
+    cfg.subBackgroundCharMember,
+    cfg.subBackgroundScreenMember,
+    cfg.subBackgroundPaletteMember,
+  }) do
+    deps[#deps + 1] =
+      { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
+  end
+end
+
+-- One 16-color bank of a decoded OBJ palette as the 1-based array blitTile
+-- consumes. A bank the decoded palette cannot cover is malformed source.
+local function iconPaletteBank(colors, bank, memberId)
+  local entry = {}
+  for slot = 0, 15 do
+    local color = colors[bank * 16 + slot + 1]
+    if not color then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon palette does not contain the bank", {
+        member = memberId,
+        bank = bank,
+        slot = slot,
+      })
+    end
+    entry[slot + 1] = color
+  end
+  return entry
+end
+
+-- The shared icon atlas: each of the eleven 20-tile sprite chars rasterized
+-- into a 32x40 cell (4 columns x 5 rows of 8x8 tiles) with one OBJ palette
+-- bank, laid out in icon-char-member order. The selection-bank highlight
+-- atlas is the same layout through the next bank. Returns the per-char-member
+-- cell rects plus the two atlas paths.
+local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local cfg = manifestConfig.startMenu
+  local function g2d(kind, memberId, label)
+    memberBytes[memberId] = decodeMember(archive, memberId, label)
+    local decoded, err =
+      G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.startMenu.alias .. ":" .. memberId })
+    return must(decoded, err)
+  end
+  -- The shared banks must exist and be well-formed; the per-icon sprite
+  -- geometry is the fixed cell layout below, not these members' objects.
+  local iconCell = g2d("decodeCell", cfg.iconCellMember, "start menu icon cell") --[[@as FieldUiCompiler.CellData]]
+  local iconAnim = g2d("decodeAnimation", cfg.iconAnimMember, "start menu icon animation") --[[@as FieldUiCompiler.AnimationData]]
+  if iconCell.cells[1] == nil or iconAnim.anims[1] == nil then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon cell/animation banks are empty", {
+      cellMember = cfg.iconCellMember,
+      animMember = cfg.iconAnimMember,
+    })
+  end
+  local iconPal = g2d("decodePalette", cfg.iconPaletteMember, "start menu icon palette") --[[@as FieldUiCompiler.PaletteData]]
+  local baseBank = iconPaletteBank(iconPal.colors, 0, cfg.iconPaletteMember)
+  local selectionBank = iconPaletteBank(iconPal.colors, 1, cfg.iconPaletteMember)
+
+  local cellWidth, cellHeight = 32, 40
+  local atlasWidth = #cfg.iconCharMembers * cellWidth
+  local baseRgba = newRgba(atlasWidth, cellHeight)
+  local highlightRgba = newRgba(atlasWidth, cellHeight)
+  local cells = {}
+  for index, memberId in ipairs(cfg.iconCharMembers) do
+    local charData = g2d("decodeChar", memberId, "start menu icon char") --[[@as FieldUiCompiler.CharData]]
+    local tileBytes = charData.depth == 3 and 32 or 64
+    local tiles = math.floor(#charData.tiles / tileBytes)
+    if tiles ~= 20 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon char must carry exactly 20 tiles", {
+        member = memberId,
+        tiles = tiles,
+      })
+    end
+    local originX = (index - 1) * cellWidth
+    for tile = 0, 19 do
+      local destX = originX + (tile % 4) * 8
+      local destY = math.floor(tile / 4) * 8
+      local source = { asset = "start menu icon", member = memberId, tile = tile }
+      blitTile(baseRgba, atlasWidth, destX, destY, charData, tile, 0, baseBank, false, false, source)
+      blitTile(highlightRgba, atlasWidth, destX, destY, charData, tile, 0, selectionBank, false, false, source)
+    end
+    cells[memberId] = { x = originX, y = 0, width = cellWidth, height = cellHeight }
+  end
+
+  local iconsPath = FieldUiAssetCache.assetDir() .. "/start-menu-icons.png"
+  assets[iconsPath] = PngWriter.encode(atlasWidth, cellHeight, concatChars(baseRgba))
+  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_ICONS] =
+    { image = iconsPath, width = atlasWidth, height = cellHeight }
+  local highlightPath = FieldUiAssetCache.assetDir() .. "/start-menu-icons-highlight.png"
+  assets[highlightPath] = PngWriter.encode(atlasWidth, cellHeight, concatChars(highlightRgba))
+  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_ICON_HIGHLIGHT] =
+    { image = highlightPath, width = atlasWidth, height = cellHeight }
+
+  -- The shared palette record as pixels: bank 0 and the selection bank 1 in
+  -- two 16-color rows, so the generated class carries the exact highlight
+  -- source the atlases were rendered through.
+  local paletteRgba = {}
+  for bank = 0, 1 do
+    for slot = 0, 15 do
+      local color = iconPal.colors[bank * 16 + slot + 1]
+      paletteRgba[#paletteRgba + 1] = string.char(color.r, color.g, color.b, 255)
+    end
+  end
+  local palettePath = FieldUiAssetCache.assetDir() .. "/start-menu-icon-palette.png"
+  assets[palettePath] = PngWriter.encode(16, 2, table.concat(paletteRgba))
+  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_ICON_PALETTE] = { image = palettePath, width = 16, height = 2 }
+
+  for _, memberId in ipairs(cfg.iconCharMembers) do
+    deps[#deps + 1] =
+      { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
+  end
+  for _, memberId in ipairs({ cfg.iconCellMember, cfg.iconAnimMember, cfg.iconPaletteMember }) do
+    deps[#deps + 1] =
+      { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
+  end
+  return cells
+end
+
+local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
+  local archive, archiveBytes = loadArchive(romFs, manifestConfig.startMenu.alias)
+  local cfg = manifestConfig.startMenu
+  local memberBytes = {}
+  local function g2d(kind, memberId, label)
+    memberBytes[memberId] = decodeMember(archive, memberId, label)
+    local decoded, err =
+      G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.startMenu.alias .. ":" .. memberId })
+    return must(decoded, err)
+  end
+  local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local iconCells = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+
+  -- The thirteen retail icon rows as source-independent data: sprite rows
+  -- point at their shared-atlas cells (the Bag row carries the conditional
+  -- female cell as a first-class variant), text and poke-icon rows carry no
+  -- art rect. Labels are bank ids; the trainer-card row is the live player
+  -- name placeholder, never baked text.
+  local iconTable = {}
+  for index, row in ipairs(cfg.iconRows) do
+    local entry = { art = row.art, label = row.label, labelKind = row.labelKind }
+    if row.art == "sprite" then
+      entry.rect = assert(iconCells[row.char], "icon row " .. index .. " references an uncompiled char")
+      if row.femaleChar then
+        entry.variants = {
+          default = assert(iconCells[row.char], "icon row " .. index .. " references an uncompiled char"),
+          female = assert(iconCells[row.femaleChar], "icon row " .. index .. " references an uncompiled char"),
+        }
+      end
+    end
+    iconTable[index] = entry
+  end
 
   local cursorChar = g2d("decodeChar", cfg.cursorCharMember, "start menu cursor char") --[[@as FieldUiCompiler.CharData]]
   local cursorPal = g2d("decodePalette", cfg.cursorPaletteMember, "start menu cursor palette") --[[@as FieldUiCompiler.PaletteData]]
@@ -353,9 +530,6 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
     { image = cursorPath, width = atlasWidth, height = atlasHeight }
 
   for _, memberId in ipairs({
-    cfg.backgroundCharMember,
-    cfg.backgroundScreenMember,
-    cfg.backgroundPaletteMember,
     cfg.cursorPaletteMember,
     cfg.cursorCellMember,
     cfg.cursorAnimMember,
@@ -366,8 +540,32 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   end
   deps[#deps + 1] = { name = manifestConfig.startMenu.alias .. ":narc", sha1 = sha1hex(archiveBytes) }
 
+  local contexts = {}
+  for index, row in ipairs(cfg.contexts) do
+    local entries = {}
+    for slot, icon in ipairs(row) do
+      entries[slot] = icon
+    end
+    contexts[index] = entries
+  end
+
+  local iconBases = {}
+  for slotId, base in pairs(cfg.iconBases) do
+    iconBases[slotId] = { x = base.x, y = base.y }
+  end
+
+  local labelWindows = {}
+  for slotId, window in pairs(cfg.labelWindows) do
+    labelWindows[slotId] = { x = window.x, y = window.y, width = window.width, height = window.height }
+  end
+
+  local actionIcons = {}
+  for actionId, icon in pairs(cfg.actionIcons) do
+    actionIcons[actionId] = icon
+  end
+
   return {
-    background = { x = 0, y = 0, width = screen.width, height = screen.height },
+    background = background,
     cursor = { frames = cursorFrames },
     slots = {
       [1] = { x = 0, y = 0, width = 128, height = 38 },
@@ -381,15 +579,22 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
       [9] = { x = 0, y = 152, width = 128, height = 38 },
       [10] = { x = 128, y = 152, width = 128, height = 38 },
     },
-    actionSurfaces = {
-      ["vanilla.pokedex"] = { x = 0, y = 0, width = 128, height = 38 },
-      ["vanilla.pokemon"] = { x = 128, y = 0, width = 128, height = 38 },
-      ["vanilla.bag"] = { x = 0, y = 38, width = 128, height = 38 },
-      ["vanilla.pokegear"] = { x = 128, y = 38, width = 128, height = 38 },
-      ["vanilla.trainer_card"] = { x = 0, y = 76, width = 128, height = 38 },
-      ["vanilla.save"] = { x = 128, y = 76, width = 128, height = 38 },
-      ["vanilla.options"] = { x = 0, y = 114, width = 128, height = 38 },
+    iconTable = iconTable,
+    contexts = contexts,
+    actionIcons = actionIcons,
+    iconAtlas = { asset = FieldUiAssetCache.ASSET.START_MENU_ICONS },
+    iconHighlight = { asset = FieldUiAssetCache.ASSET.START_MENU_ICON_HIGHLIGHT },
+    iconPalette = {
+      asset = FieldUiAssetCache.ASSET.START_MENU_ICON_PALETTE,
+      banks = 2,
+      selectionBank = 2,
     },
+    chrome = {
+      main = { asset = FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, transparentAboveY = 136 },
+      sub = { asset = FieldUiAssetCache.ASSET.START_MENU_CHROME_SUB },
+    },
+    iconBases = iconBases,
+    labelWindows = labelWindows,
   }
 end
 

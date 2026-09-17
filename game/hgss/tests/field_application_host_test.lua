@@ -4,7 +4,9 @@
 
 local Assert = require("tests.support.Assert")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 
 local T = {
@@ -65,6 +67,64 @@ local function confirmAction(game)
   game.runtime:pressAction()
   game:step()
   game.runtime:releaseAction()
+end
+
+-- Canonical touch topology for pointer-capable menu tests: the default boot
+-- passes no screen topology, so the runtime publishes no placement record
+-- and the host has no pointer support until a touch presentation is applied.
+local function touchTopology(width, height)
+  return ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    role = "world",
+    touch = true,
+  })
+end
+
+local function ensureTouchPlacement(game, width, height)
+  game.runtime:resizePresentation(width, height, touchTopology(width, height))
+end
+
+-- The published placement record carries frame/scale/logical dimensions; the
+-- shared logical mapper additionally requires an origin, which is exactly
+-- the frame origin on this host. Synthesized here for readout only.
+local function readablePlacement(runtime)
+  local placement = assert(runtime.startMenuPlacement, "the runtime must publish the start menu placement record")
+  return {
+    frame = placement.frame,
+    origin = placement.origin or { x = placement.frame.x, y = placement.frame.y },
+    scale = placement.scale,
+    logicalWidth = placement.logicalWidth,
+    logicalHeight = placement.logicalHeight,
+  }
+end
+
+local function findMenuAction(game, id)
+  local menu = assert(game.runtime.applicationHost:status().menu, "the start menu must be open")
+  for _, action in ipairs(menu.actions) do
+    if action.id == id then
+      return action
+    end
+  end
+  error("the start menu does not present action " .. tostring(id))
+end
+
+local function hostPointForSlot(game, slotId)
+  local runtime = game.runtime
+  local slot =
+    assert(runtime.uiManifest.startMenu.slots[slotId], "the generated manifest must carry slot " .. tostring(slotId))
+  local centerX = slot.x + slot.width / 2
+  local centerY = slot.y + slot.height / 2
+  return LayoutGeometry.logicalToHost(readablePlacement(runtime), centerX, centerY)
+end
+
+local function activateActionById(game, id)
+  local action = findMenuAction(game, id)
+  assert(action.slotId ~= nil, "the presented action must carry its destination slot")
+  local hostX, hostY = hostPointForSlot(game, action.slotId)
+  game.runtime.input:pointerDown("touch:1", hostX, hostY)
+  game.runtime.input:pointerUp("touch:1", hostX, hostY)
+  game:step()
 end
 
 -- The per-phase disposal matrix: runtime disposal in every application
@@ -255,11 +315,9 @@ function T.tests.manual_save_publishes_then_updates_through_the_menu_host()
   local ok, err = xpcall(function()
     local runtime = game.runtime
     game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_SAVE_BUTTON })
+    ensureTouchPlacement(game, 256, 192)
     openMenu(game)
-    runtime:press("south")
-    game:step()
-    runtime:release("south")
-    confirmAction(game)
+    activateActionById(game, "vanilla.save")
     Assert.equal(runtime.applicationHost:status().phase, "closed")
     Assert.equal(runtime.savePublished, true)
     ---@type { list: fun(self: table): table[] }
@@ -270,20 +328,14 @@ function T.tests.manual_save_publishes_then_updates_through_the_menu_host()
     local firstWrites = game.lifecycle.saveWrites
 
     openMenu(game)
-    runtime:press("south")
-    game:step()
-    runtime:release("south")
-    confirmAction(game)
+    activateActionById(game, "vanilla.save")
     Assert.equal(#saveStore:list(), 1, "a later save must update the reserved identity, not add a logical record")
     Assert.equal(saveStore:list()[1].saveId, first.saveId, "the update must retain the same reserved save identity")
     Assert.isTrue(game.lifecycle.saveWrites > firstWrites, "a real update must issue a backend write")
 
     game:failNextSave()
     openMenu(game)
-    runtime:press("south")
-    game:step()
-    runtime:release("south")
-    confirmAction(game)
+    activateActionById(game, "vanilla.save")
     Assert.equal(
       runtime.applicationHost:status().phase,
       "failed",
@@ -308,37 +360,114 @@ function T.tests.resize_cancels_an_active_menu_pointer_capture()
   local game = bootGame()
   local ok, err = xpcall(function()
     local runtime = game.runtime
-    local function topology(width, height)
-      return ScreenTopology.oneDisplay({
-        id = "main",
-        rect = { x = 0, y = 0, width = width, height = height },
-        role = "world",
-        touch = true,
-      })
-    end
-    -- Canonical (192, 19) is the center of manifest slot 2 (the fresh menu's
-    -- first action, the production trainer card). The 4:3 surface scales
-    -- uniformly, so that canonical point is (192, 19) at scale 1 and
-    -- (768, 76) at scale 4.
-    runtime:resizePresentation(256, 192, topology(256, 192))
+    ensureTouchPlacement(game, 256, 192)
     openMenu(game)
-    runtime.input:pointerDown("touch:1", 192, 19)
+    local menu = assert(runtime.applicationHost:status().menu, "the start menu must be open")
+    local target = nil ---@type table<string, unknown>?
+    for _, action in ipairs(menu.actions) do
+      if action.enabled then
+        target = action
+        break
+      end
+    end
+    local chosen = assert(target, "the open menu must present an enabled action")
+    local chosenSlot = assert((chosen --[[@as table<string, unknown>]]).slotId, "the action must carry its slot")
+    local preX, preY = hostPointForSlot(game, chosenSlot --[[@as integer]])
+    runtime.input:pointerDown("touch:1", preX, preY)
     game:step()
     -- The capture is held across the resize; the release lands on the same
     -- canonical slot at the new scale and must be discarded by the
     -- cancellation (a press before a resize cannot activate post-resize).
-    runtime:resizePresentation(1024, 768, topology(1024, 768))
-    runtime.input:pointerUp("touch:1", 768, 76)
+    runtime:resizePresentation(1024, 768, touchTopology(1024, 768))
+    local postX, postY = hostPointForSlot(game, chosenSlot --[[@as integer]])
+    runtime.input:pointerUp("touch:1", postX, postY)
     game:step()
     Assert.equal(game.runtime.applicationHost:status().phase, "menu", "the menu must stay open")
     -- A fresh press after the resize lands on the same slot and activates.
-    runtime.input:pointerDown("touch:1", 768, 76)
-    runtime.input:pointerUp("touch:1", 768, 76)
+    runtime.input:pointerDown("touch:1", postX, postY)
+    runtime.input:pointerUp("touch:1", postX, postY)
     game:step()
     Assert.equal(
       game.runtime.applicationHost:status().phase,
       "fading_out",
       "the fresh press after the resize must activate the slot"
+    )
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Normal visual composition admits exactly the icon-backed visual actions.
+-- Retail gates every slot on its draw predicate with the context-to-icon
+-- mapping (the cancel sentinel and the bookkeeping specials carry no icon
+-- slot), so the visual menu holds the seven normal entries while the source
+-- policy keeps its sentinel facts independently. An icon-backed disabled
+-- entry stays visible and confirms as a no-op through the real pointer path.
+function T.tests.normal_menu_presents_only_icon_backed_visual_actions()
+  local game = bootGame()
+  local ok, err = xpcall(function()
+    local runtime = game.runtime
+    for _, flag in ipairs(UNLOCK_FLAGS) do
+      game:setWorldState({ flag = flag })
+    end
+    ensureTouchPlacement(game, 256, 192)
+    openMenu(game)
+    local menu = assert(runtime.applicationHost:status().menu, "the start menu must be open")
+    local presentedIds = {}
+    for _, action in ipairs(menu.actions) do
+      presentedIds[action.id] = true
+    end
+    Assert.keySet(
+      presentedIds,
+      "vanilla.bag,vanilla.options,vanilla.pokedex,vanilla.pokegear,vanilla.pokemon,vanilla.save,vanilla.trainer_card",
+      "the normal visual menu holds exactly the seven icon-backed entries"
+    )
+    local facts = {
+      hasPokedex = true,
+      hasStarter = true,
+      bagUnlocked = true,
+      hasPokegear = true,
+      trainerCardUnlocked = true,
+      saveUnlocked = true,
+      optionsUnlocked = true,
+    }
+    local policyIds = {}
+    for _, entry in ipairs(StartMenuPolicy.actions(facts)) do
+      policyIds[entry.id] = true
+    end
+    Assert.isTrue(policyIds["vanilla.running_shoes"], "the source policy retains the running-shoes sentinel")
+    Assert.isTrue(policyIds["vanilla.special_9"], "the source policy retains the special-9 sentinel")
+    Assert.isTrue(policyIds["vanilla.special_10"], "the source policy retains the special-10 sentinel")
+    Assert.isTrue(
+      presentedIds["vanilla.running_shoes"] == nil,
+      "the cancel sentinel has no icon slot and is not a visual button"
+    )
+    Assert.isTrue(
+      presentedIds["vanilla.special_9"] == nil,
+      "the special-9 bookkeeping entry is not a visual button: vanilla.special_9"
+    )
+    Assert.isTrue(presentedIds["vanilla.special_10"] == nil, "the special-10 bookkeeping entry is not visual")
+    local disabled = nil ---@type table<string, unknown>?
+    for _, action in ipairs(menu.actions) do
+      local candidate = action --[[@as table<string, unknown>]]
+      if candidate["enabled"] == false then
+        disabled = candidate
+        break
+      end
+    end
+    local target = assert(disabled, "the open menu must present an icon-backed disabled action")
+    local targetId = assert((target --[[@as { id: string }]]).id, "the disabled action must carry its id")
+    local targetSlot = assert((target --[[@as { slotId: integer }]]).slotId, "the disabled action must carry its slot")
+    local hostX, hostY = hostPointForSlot(game, targetSlot)
+    runtime.input:pointerDown("touch:1", hostX, hostY)
+    runtime.input:pointerUp("touch:1", hostX, hostY)
+    game:step()
+    Assert.equal(
+      runtime.applicationHost:status().phase,
+      "menu",
+      "confirming the disabled entry " .. tostring(targetId) .. " keeps the menu open"
     )
   end, debug.traceback)
   game:close()

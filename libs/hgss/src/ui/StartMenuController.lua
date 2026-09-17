@@ -72,6 +72,8 @@ local function composeDisplay(entries, slotCount)
       sourcePresent = entry.sourcePresent,
       sourceEnabled = entry.sourceEnabled,
       implemented = entry.implemented,
+      icon = entry.icon,
+      label = entry.label,
     }
   end
   local ordered = {}
@@ -109,6 +111,8 @@ end
 ---@field sourcePresent boolean source action was present in the source menu
 ---@field sourceEnabled boolean source policy enabled the action
 ---@field implemented boolean runtime has an implementation for the action
+---@field icon integer? retail icon index for the renderer (present on icon-backed visual entries)
+---@field label string? caller-resolved label for the renderer (nil until the caller resolves it)
 
 ---@class StartMenuController.Entry
 ---@field id string
@@ -118,6 +122,8 @@ end
 ---@field sourcePresent boolean
 ---@field sourceEnabled boolean
 ---@field implemented boolean
+---@field icon integer?
+---@field label string?
 
 -- opts.entries: the runtime-composed final interactive action list
 -- (id / targetApplication / displayPosition), never empty. opts.slots: the
@@ -379,6 +385,8 @@ function StartMenuController:status()
         sourcePresent = action.sourcePresent,
         sourceEnabled = action.sourceEnabled,
         implemented = action.implemented,
+        icon = action.icon,
+        label = action.label,
       }
     end
   end
