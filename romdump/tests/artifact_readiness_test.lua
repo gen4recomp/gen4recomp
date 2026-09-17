@@ -1945,6 +1945,30 @@ local module = {
         function session:retire()
           self.retired = true
         end
+        function session:outcomes()
+          local list = {}
+          local seen = {}
+          for _, jobKey in ipairs(self.requested) do
+            if seen[jobKey] == nil then
+              seen[jobKey] = true
+              local kind, key = jobKey:match("^([^:]+):(.+)$")
+              list[#list + 1] = {
+                kind = kind,
+                key = key,
+                jobKey = jobKey,
+                state = "successful",
+                reused = false,
+                error = nil,
+                causeJobKey = nil,
+                failureClass = nil,
+              }
+            end
+          end
+          table.sort(list, function(left, right)
+            return left.jobKey < right.jobKey
+          end)
+          return list
+        end
         return session
       end,
     }

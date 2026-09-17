@@ -38,6 +38,8 @@ local function newEnv()
     },
     readyKeys = {},
     failKeys = {},
+    failureClasses = {},
+    causeKeys = {},
     excludedKeys = {},
     milestones = {
       bootstrap = { "world-catalog:global", "field-camera:global" },
@@ -151,47 +153,50 @@ local function makeSession(pool, identity, sweepEnabled)
     end
     return {
       ready = ready,
+      queued = 0,
+      running = 0,
       failed = failed,
       failures = failures,
       enumerated = #self.requested,
       enumerationComplete = true,
+      settled = true,
+      planningPending = false,
     }
   end
   function session:outcomes()
     local list = {}
+    local seen = {}
     self.completed = self.completed or {}
     for _, jobKey in ipairs(self.requested) do
-      local kind, key = splitJobKey(jobKey)
-      local state, err, cause = nil, nil, nil
-      if env.failKeys[jobKey] ~= nil then
-        state = "failed"
-        err = jobKey .. ": " .. env.failKeys[jobKey]
-      elseif env.excludedKeys[jobKey] then
-        state = "failed"
-        err = jobKey .. ": source-planned exclusion"
-      elseif self.completed[jobKey] or env.readyKeys[jobKey] then
-        state = "successful"
-      else
-        state = "pending"
-      end
-      if state == "failed" then
-        assert(type(err) == "string", "failed dispositions carry an error string")
-        for _, other in ipairs(self.requested) do
-          if other ~= jobKey and err:find(other, 1, true) ~= nil then
-            cause = other
-            break
-          end
+      if seen[jobKey] == nil then
+        seen[jobKey] = true
+        local kind, key = splitJobKey(jobKey)
+        local state, err, cause, failureClass = nil, nil, nil, nil
+        if env.failKeys[jobKey] ~= nil then
+          state = "failed"
+          err = jobKey .. ": " .. env.failKeys[jobKey]
+          cause = env.causeKeys ~= nil and env.causeKeys[jobKey] or nil
+          failureClass = (env.failureClasses ~= nil and env.failureClasses[jobKey]) or "job"
+        elseif env.excludedKeys[jobKey] then
+          state = "failed"
+          err = jobKey .. ": source-planned exclusion"
+          failureClass = "source-exclusion"
+        elseif self.completed[jobKey] or env.readyKeys[jobKey] then
+          state = "successful"
+        else
+          state = "pending"
         end
+        list[#list + 1] = {
+          kind = kind,
+          key = key,
+          jobKey = jobKey,
+          state = state,
+          reused = false,
+          error = err,
+          causeJobKey = cause,
+          failureClass = failureClass,
+        }
       end
-      list[#list + 1] = {
-        kind = kind,
-        key = key,
-        jobKey = jobKey,
-        state = state,
-        reused = false,
-        error = err,
-        causeJobKey = cause,
-      }
     end
     table.sort(list, function(left, right)
       return left.jobKey < right.jobKey
@@ -296,6 +301,10 @@ local function makeFakes()
       end
       function pool:update() end
       function pool:drain() end
+      function pool:waitForProgress() end
+      function pool:jobOutcome(_)
+        return nil
+      end
       function pool:shutdown()
         env.shutdowns = env.shutdowns + 1
       end
