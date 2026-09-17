@@ -32,6 +32,8 @@ local function newEnv()
     },
     readyKeys = {},
     failKeys = {},
+    pendingKeys = {},
+    stuckMilestones = {},
     failureClasses = {},
     causeKeys = {},
     excludedKeys = {},
@@ -64,6 +66,7 @@ local function makeSession(pool, identity, sweepEnabled)
     identity = identity,
     sweepEnabled = sweepEnabled,
     requested = {},
+    requestedSet = {},
     retired = false,
   }
   function session:_answer(jobKey)
@@ -83,8 +86,13 @@ local function makeSession(pool, identity, sweepEnabled)
     assert(type(kind) == "string" and type(key) == "string", "job needs its canonical kind and key")
     assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
     local jobKey = kind .. ":" .. key
-    self.requested[#self.requested + 1] = jobKey
-    self.pool.requested[#self.pool.requested + 1] = jobKey
+    -- Retained answers are idempotent like the production session: a
+    -- repeated identical request observes without registering new work.
+    if not self.requestedSet[jobKey] then
+      self.requestedSet[jobKey] = true
+      self.requested[#self.requested + 1] = jobKey
+      self.pool.requested[#self.pool.requested + 1] = jobKey
+    end
     return self:_answer(jobKey)
   end
   function session:requestMilestone(name, urgency)
@@ -103,6 +111,9 @@ local function makeSession(pool, identity, sweepEnabled)
         ready = false
       end
     end
+    if env.stuckMilestones ~= nil and env.stuckMilestones[name] then
+      return false, nil
+    end
     if #failures > 0 then
       return false, failures[1]
     end
@@ -113,7 +124,7 @@ local function makeSession(pool, identity, sweepEnabled)
     self.completed = self.completed or {}
     local function completeAll()
       for _, jobKey in ipairs(self.requested) do
-        if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil then
+        if env.failKeys[jobKey] == nil and env.excludedKeys[jobKey] == nil and env.pendingKeys[jobKey] == nil then
           self.completed[jobKey] = true
         end
       end
@@ -340,6 +351,17 @@ local function requireScopedPreparation()
     "function",
     "scoped preparation must drive one common session per version"
   )
+end
+
+-- Sandbox-safe receipt paths: os.tmpname() cannot generate names under this
+-- runner, while direct writes succeed, so receipts use deterministic unique
+-- names under a fixture-owned root that each test removes after use.
+local recordCounter = 0
+local function tempRecordPath(name)
+  recordCounter = recordCounter + 1
+  local root = os.getenv("TMPDIR") or "/tmp"
+  os.execute('mkdir -p "' .. root .. '/cache-builder-scope"')
+  return root .. "/cache-builder-scope/" .. name .. "-" .. tostring(recordCounter) .. ".lua"
 end
 
 local T = {}
@@ -702,6 +724,124 @@ function T.drain_distinguishes_local_planning_from_physical_waiting()
     tostring(badErr):find("map:5", 1, true) ~= nil,
     "an ordinary producer failure terminates with its actual cause"
   )
+end
+
+-- An independent leaf keeps a small closure through the command: a
+-- camera-only preparation requests only the camera job and succeeds with
+-- no source inventory work and no full attestation.
+function T.camera_only_scope_requests_no_inventory_work()
+  env = newEnv()
+  requireScopedPreparation()
+  local report, err =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "field-camera:global" } }))
+  Assert.isNil(err)
+  assert(report, "a camera-only preparation returns its report")
+  Assert.isTrue(report.requestedReady, "the independent leaf succeeds")
+  Assert.isFalse(report.complete, "a targeted scope never reports a complete cache")
+  local requested = {}
+  for _, jobKey in ipairs(env.sessions[1].requested) do
+    requested[jobKey] = true
+  end
+  Assert.isTrue(requested["field-camera:global"], "the camera job runs")
+  Assert.isNil(requested["source-plan:global"], "no inventory work is requested")
+  Assert.equal(env.publishes, 0, "a targeted scope publishes no full attestation")
+end
+
+-- The command never proves a scope the session still calls pending: a
+-- field-core with one page that never becomes ready fails and leaves no
+-- successful receipt behind.
+function T.unready_field_core_withholds_its_proof()
+  env = newEnv()
+  env.milestones["field-core"] = { "field-camera:global", "map-data:7", "mon-icon-page:9" }
+  env.pendingKeys["mon-icon-page:9"] = true
+  requireScopedPreparation()
+  local recordPath = tempRecordPath("unready-core")
+  os.remove(recordPath)
+  local ok = pcall(function()
+    return CacheBuilder.prepareVersion(
+      "heartgold",
+      scopedOptions({
+        requirements = { "field-core" },
+        preparationRecord = recordPath,
+        saveDirectory = "/private/test-root",
+      })
+    )
+  end)
+  Assert.isFalse(ok, "a scope with a pending page never succeeds")
+  local handle = io.open(recordPath, "r")
+  Assert.isNil(handle, "an unready scope leaves no successful receipt behind")
+  if handle ~= nil then
+    handle:close()
+  end
+  os.remove(recordPath)
+  Assert.equal(env.publishes, 0, "an unready scope publishes no attestation")
+end
+
+-- Balanced counts never override a pending scope: a session that reports a
+-- settled successful census while its originally requested field-core is
+-- still pending fails with a structured error naming the scope and issues
+-- no successful receipt.
+function T.settled_counts_never_override_a_pending_scope()
+  env = newEnv()
+  env.milestones["field-core"] = { "field-camera:global", "map-data:7" }
+  env.stuckMilestones["field-core"] = true
+  requireScopedPreparation()
+  local recordPath = tempRecordPath("pending-scope")
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "field-core" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(report, "a pending scope issues no success report")
+  Assert.notNil(err, "a pending scope fails instead of proving readiness")
+  local Errors = require("libs.errors.src.Errors")
+  Assert.isTrue(Errors.is(err), "the scope failure is structured")
+  Assert.isTrue(
+    tostring(err):find("field-core", 1, true) ~= nil,
+    "the failure names its pending scope: " .. tostring(err)
+  )
+  local handle = io.open(recordPath, "r")
+  Assert.isNil(handle, "a pending scope leaves no successful receipt behind")
+  if handle ~= nil then
+    handle:close()
+  end
+  os.remove(recordPath)
+  Assert.equal(env.publishes, 0, "a pending scope publishes no attestation")
+end
+
+-- A satisfied field-core proves its selected scope without claiming a
+-- complete cache: the successful record follows the satisfied closure
+-- and still reports complete=false with no full attestation.
+function T.ready_field_core_issues_its_proof_without_complete_attestation()
+  env = newEnv()
+  requireScopedPreparation()
+  local recordPath = tempRecordPath("ready-core")
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "field-core" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(err)
+  assert(report, "a satisfied field-core returns its report")
+  Assert.isTrue(report.requestedReady, "the satisfied closure proves readiness")
+  Assert.isFalse(report.complete, "a targeted scope never reports a complete cache")
+  local handle = assert(io.open(recordPath, "r"), "a satisfied scope issues its receipt")
+  local source = handle:read("*a")
+  handle:close()
+  os.remove(recordPath)
+  local chunk = assert(load(source, "@receipt", "t", {}))
+  local record = chunk()
+  Assert.equal(record.requestedReady, true)
+  Assert.equal(record.complete, false)
+  Assert.equal(env.publishes, 0, "a targeted scope publishes no full attestation")
 end
 
 return module

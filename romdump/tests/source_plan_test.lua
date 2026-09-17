@@ -319,9 +319,10 @@ function T.field_record_membership_follows_the_source_rule_without_compiling_rec
     result.failureEligible,
     "a source-eligible record stays pending instead of rejected: " .. tostring(result.failureEligible)
   )
+  Assert.isFalse(contains(result.submitted, "source-plan:global"), "record demand carries no inventory prerequisite")
   Assert.isTrue(
-    contains(result.submitted, "source-plan:global"),
-    "record demand schedules the persisted source inventory job"
+    contains(result.submitted, "map-data:" .. tostring(eligible)),
+    "the record dispatches its own dependency-local work"
   )
   Assert.equal(result.compileCalls, 0, "membership follows the source rule without compiling records")
   Assert.isFalse(result.readyExcluded, "an explicitly excluded header is never answered ready")
@@ -1396,8 +1397,7 @@ function T.source_readiness_agrees_with_the_authoritative_reader()
   }, function()
     local pool = recordingPool()
     local session = openSession(generation, pool)
-    local eligible = firstOrdinaryMapId()
-    session:requestJob("map-data", tostring(eligible), "required")
+    session:requestJob("script-member", "4", "required")
     for _ = 1, 3 do
       session:update()
     end
@@ -1421,8 +1421,7 @@ function T.source_readiness_agrees_with_the_authoritative_reader()
   }, function()
     local pool = recordingPool()
     local session = openSession(generation, pool)
-    local eligible = firstOrdinaryMapId()
-    session:requestJob("map-data", tostring(eligible), "required")
+    session:requestJob("script-member", "4", "required")
     for _ = 1, 3 do
       session:update()
     end
@@ -1729,6 +1728,428 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
     Assert.equal(submissions("mon-icon-page:0"), 0, "repair never rebuilds the healthy sibling")
     Assert.equal(submissions("mon-icon-page:1"), 1, "repair submits the corrupted page exactly once")
     Assert.equal(submissions("mon-summary:global"), 1, "the summary dispatches once its repaired page validates")
+  end)
+end
+
+-- A milestone must not certify its discovery-time roster: field-core stays
+-- pending while icon membership is unknown even when every currently known
+-- member is ready, and no successful milestone record is published from
+-- that discovery-time set.
+function T.field_core_waits_for_adopted_page_membership()
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  stageSynthetic(cacheFs, "discovery-core-generation")
+  local realForVersion = CacheFs.forVersion
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local pool = recordingPool()
+    local session = openSession("discovery-core-generation", pool)
+    local ready, failure = session:requestMilestone("field-core", "required")
+    Assert.isFalse(ready, "field-core stays pending while its membership is unknown")
+    Assert.isNil(failure, "field-core reports no failure while its membership is unknown")
+    for _ = 1, 3 do
+      session:update()
+    end
+    Assert.isTrue(session.sourceLoaded, "the staged inventory is adopted")
+    Assert.isFalse(session.pagesKnown, "no layout means no page membership")
+    session:requestMilestone("field-core", "required")
+    for _, entry in pairs(session.byKey) do
+      if type(entry) == "table" and entry.failure == nil then
+        entry.ready = true
+      end
+    end
+    local again, againFailure = session:requestMilestone("field-core", "required")
+    Assert.isFalse(again, "discovery-time readiness never certifies field-core")
+    Assert.isNil(againFailure, "unknown membership stays pending instead of failing")
+    Assert.isFalse(session:status().settled, "a scope awaiting adoption never settles")
+    Assert.isNil(session.recorded["field-core"], "no successful milestone is recorded from a discovery-time roster")
+  end)
+end
+
+-- Failed discovery terminates instead of waiting forever: a failed source
+-- inventory ends field-core with the original prerequisite cause, never as
+-- an unsupported-source claim.
+function T.failed_source_discovery_ends_field_core_with_its_cause()
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local pool = recordingPool()
+    local session = openSession("failed-discovery-generation", pool)
+    session:requestMilestone("field-core", "required")
+    session:update()
+    Assert.isTrue(contains(pool.submitted, "source-plan:global"), "field-core demand schedules the source inventory")
+    pool.states["source-plan:global"] = { state = "failed", details = { error = "synthetic inventory fault" } }
+    for _ = 1, 5 do
+      session:update()
+    end
+    local ready, failure = session:requestMilestone("field-core", "required")
+    Assert.isFalse(ready, "field-core never succeeds behind a failed inventory")
+    Assert.notNil(failure, "the failed discovery terminates the scope instead of waiting")
+    Assert.isTrue(
+      tostring(failure):find("source-plan:global", 1, true) ~= nil,
+      "the scope names its failed prerequisite: " .. tostring(failure)
+    )
+    Assert.isTrue(session:status().settled, "a failed discovery settles terminally")
+  end)
+end
+
+-- Failed layout discovery also terminates: a failed mon-layout ends
+-- field-core with the original prerequisite cause instead of waiting for
+-- page membership that can never arrive.
+function T.failed_layout_discovery_ends_field_core_with_its_cause()
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "failed-layout-generation"
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  stageSynthetic(cacheFs, generation)
+  local catalogMarker = "synthetic-catalog-marker"
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    session:requestMilestone("field-core", "required")
+    local layoutSubmitted = false
+    -- The partially discovered corpus holds hundreds of entries under a small
+    -- per-update planning slice, so prerequisite scheduling may legitimately
+    -- take many pumps; the loop exits as soon as the layout is scheduled.
+    for _ = 1, 300 do
+      session:update()
+      if contains(pool.submitted, "mon-catalog:global") and pool.states["mon-catalog:global"] == nil then
+        pool.states["mon-catalog:global"] = "ready"
+      end
+      if contains(pool.submitted, "mon-layout:global") then
+        layoutSubmitted = true
+        break
+      end
+    end
+    local dirtyCount = 0
+    for _ in pairs(session.dirty) do
+      dirtyCount = dirtyCount + 1
+    end
+    Assert.isTrue(
+      layoutSubmitted,
+      "field-core demand schedules the layout"
+        .. " sourceLoaded="
+        .. tostring(session.sourceLoaded)
+        .. " dirtyN="
+        .. tostring(dirtyCount)
+        .. " submittedN="
+        .. tostring(#pool.submitted)
+    )
+    pool.states["mon-layout:global"] = { state = "failed", details = { error = "synthetic layout fault" } }
+    for _ = 1, 5 do
+      session:update()
+    end
+    local ready, failure = session:requestMilestone("field-core", "required")
+    Assert.isFalse(ready, "field-core never succeeds behind a failed layout")
+    Assert.notNil(failure, "the failed layout terminates the scope instead of waiting")
+    Assert.isTrue(
+      tostring(failure):find("mon-layout:global", 1, true) ~= nil,
+      "the scope names its failed prerequisite: " .. tostring(failure)
+    )
+    Assert.isTrue(session:status().settled, "a failed discovery settles terminally")
+  end)
+end
+
+-- One request suffices for deferred support: a syntactically valid map that
+-- is absent from the later inventory settles to a source exclusion through
+-- updates alone, without a second request and without worker dispatch.
+function T.unsupported_map_is_excluded_by_updates_after_late_adoption()
+  local generation = "late-map-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  withPatched({
+    {
+      target = CacheFs,
+      name = "forVersion",
+      replacement = function()
+        return realForVersion("heartgold", backend)
+      end,
+    },
+  }, function()
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    local ready, failure = session:requestJob("map", "99999", "required")
+    Assert.isFalse(ready, "an unknown map stays pending while membership is unknown")
+    Assert.isNil(failure, "an unknown map reports no failure while membership is unknown")
+    local staged = compileSynthetic(generation)
+    cacheFs:writeLua(SourcePlan.PATH, staged)
+    for _ = 1, 5 do
+      session:update()
+    end
+    Assert.isTrue(session.sourceLoaded, "the late inventory is adopted")
+    local row = nil
+    for _, item in ipairs(session:outcomes()) do
+      if item.jobKey == "map:99999" then
+        row = item
+      end
+    end
+    assert(row, "the deferred map keeps its canonical outcome row")
+    Assert.equal(row.state, "failed", "the unsupported map settles instead of parking forever")
+    Assert.equal(row.failureClass, "source-exclusion", "late absence is a source exclusion")
+    Assert.isTrue(
+      tostring(row.error):find("99999", 1, true) ~= nil,
+      "the exclusion names its map: " .. tostring(row.error)
+    )
+    for _, jobKey in ipairs(pool.submitted) do
+      Assert.isTrue(jobKey ~= "map:99999", "an unsupported map never reaches a worker")
+    end
+  end)
+end
+
+-- The same owner rule covers a missing canonical cell: it settles to a
+-- source exclusion once the source inventory is known, without a second
+-- request and without worker dispatch.
+function T.unsupported_cell_is_excluded_by_updates_after_late_adoption()
+  local generation = "late-cell-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  withPatched({
+    {
+      target = CacheFs,
+      name = "forVersion",
+      replacement = function()
+        return realForVersion("heartgold", backend)
+      end,
+    },
+  }, function()
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    local ready, failure = session:requestJob("field-cell", "99-99", "required")
+    Assert.isFalse(ready, "an unknown cell stays pending while membership is unknown")
+    Assert.isNil(failure, "an unknown cell reports no failure while membership is unknown")
+    local staged = compileSynthetic(generation)
+    cacheFs:writeLua(SourcePlan.PATH, staged)
+    for _ = 1, 5 do
+      session:update()
+    end
+    Assert.isTrue(session.sourceLoaded, "the late inventory is adopted")
+    local row = nil
+    for _, item in ipairs(session:outcomes()) do
+      if item.jobKey == "field-cell:99-99" then
+        row = item
+      end
+    end
+    assert(row, "the deferred cell keeps its canonical outcome row")
+    Assert.equal(row.state, "failed", "the unsupported cell settles instead of parking forever")
+    Assert.equal(row.failureClass, "source-exclusion", "late absence is a source exclusion")
+    for _, jobKey in ipairs(pool.submitted) do
+      Assert.isTrue(jobKey ~= "field-cell:99-99", "an unsupported cell never reaches a worker")
+    end
+  end)
+end
+
+-- The same owner rule covers a missing portrait page: it settles to a
+-- source exclusion once the layout is known, without a second request
+-- and without worker dispatch.
+function T.unsupported_portrait_page_is_excluded_by_updates_after_adoption()
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "late-page-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  stageSynthetic(cacheFs, generation)
+  local catalogMarker = "synthetic-catalog-marker"
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  local layoutMarker = "synthetic-layout-marker"
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    layoutMarker,
+    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+    generation
+  )
+  writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
+  withPatched({
+    {
+      target = CacheFs,
+      name = "forVersion",
+      replacement = function()
+        return realForVersion("heartgold", backend)
+      end,
+    },
+  }, function()
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    local ready, failure = session:requestJob("mon-portrait-page", "7", "required")
+    Assert.isFalse(ready, "an unknown page stays pending while membership is unknown")
+    Assert.isNil(failure, "an unknown page reports no failure while membership is unknown")
+    for _ = 1, 6 do
+      session:update()
+    end
+    Assert.isTrue(session.pagesKnown, "the staged layout is adopted")
+    local row = nil
+    for _, item in ipairs(session:outcomes()) do
+      if item.jobKey == "mon-portrait-page:7" then
+        row = item
+      end
+    end
+    assert(row, "the deferred page keeps its canonical outcome row")
+    Assert.equal(row.state, "failed", "the unsupported page settles instead of parking forever")
+    Assert.equal(row.failureClass, "source-exclusion", "late absence is a source exclusion")
+    for _, jobKey in ipairs(pool.submitted) do
+      Assert.isTrue(jobKey ~= "mon-portrait-page:7", "an unsupported page never reaches a worker")
+    end
+  end)
+end
+
+-- Unknown is not prematurely excluded: a supported deferred map stays
+-- pending until its membership is known, then follows its declared
+-- dependencies without any invented exclusion.
+function T.supported_deferred_map_runs_after_adoption_without_exclusion()
+  local generation = "supported-late-map-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  withPatched({
+    {
+      target = CacheFs,
+      name = "forVersion",
+      replacement = function()
+        return realForVersion("heartgold", backend)
+      end,
+    },
+  }, function()
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    local ready, failure = session:requestJob("map", "7", "required")
+    Assert.isFalse(ready, "a deferred map stays pending while membership is unknown")
+    Assert.isNil(failure, "a deferred map reports no failure while membership is unknown")
+    local staged = compileSynthetic(generation)
+    cacheFs:writeLua(SourcePlan.PATH, staged)
+    for _ = 1, 5 do
+      session:update()
+    end
+    Assert.isTrue(session.sourceLoaded, "the late inventory is adopted")
+    local row = nil
+    for _, item in ipairs(session:outcomes()) do
+      if item.jobKey == "map:7" then
+        row = item
+      end
+    end
+    assert(row, "the deferred map keeps its canonical outcome row")
+    Assert.isTrue(row.failureClass ~= "source-exclusion", "a supported map is never excluded")
+    Assert.isTrue(
+      contains(pool.submitted, "source-plan:global"),
+      "the supported map still schedules its declared inventory prerequisite"
+    )
+    Assert.isTrue(row.state ~= "failed" or row.failureClass ~= "source-exclusion", "no invented exclusion")
+  end)
+end
+
+-- An independent leaf keeps a small closure: a camera-only demand
+-- dispatches the camera job without reading or scheduling the unrelated
+-- source inventory.
+function T.camera_leaf_schedules_no_inventory_work()
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local pool = recordingPool()
+    local session = openSession("camera-closure-generation", pool)
+    local ready, failure = session:requestJob("field-camera", "global", "required")
+    Assert.isFalse(ready, "the cold camera stays pending")
+    Assert.isNil(failure, "the cold camera reports no failure")
+    for _ = 1, 3 do
+      session:update()
+    end
+    Assert.isTrue(contains(pool.submitted, "field-camera:global"), "the independent leaf dispatches its own work")
+    for _, jobKey in ipairs(pool.submitted) do
+      Assert.isTrue(jobKey ~= "source-plan:global", "an independent leaf never schedules the inventory")
+    end
+    Assert.isFalse(session.sourceLoaded, "camera demand adopts no inventory")
+  end)
+end
+
+-- Removing the blanket edge must not remove legitimate ones: a cold map
+-- and a cold script member still schedule the source inventory, a cold
+-- portrait page still schedules the layout, and no parent dispatches from
+-- an incomplete plan.
+function T.declared_metadata_edges_still_schedule_their_prerequisites()
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local pool = recordingPool()
+    local session = openSession("declared-edge-generation", pool)
+    session:requestJob("map", "7", "required")
+    session:requestJob("script-member", "1", "required")
+    session:requestJob("mon-portrait-page", "0", "required")
+    for _ = 1, 3 do
+      session:update()
+    end
+    local scriptDeps, scriptComplete = ArtifactJobs.dependencies("script-member", "1", {})
+    local scriptNeedsInventory = false
+    for _, dep in ipairs(scriptDeps) do
+      if dep.kind == "source-plan" and dep.key == "global" then
+        scriptNeedsInventory = true
+      end
+    end
+    Assert.isTrue(scriptNeedsInventory, "a script member declares the inventory prerequisite")
+    Assert.isTrue(scriptComplete, "a script member carries a known dependency list")
+    Assert.isTrue(
+      contains(pool.submitted, "source-plan:global"),
+      "a cold map still schedules its declared inventory prerequisite"
+    )
+    Assert.isTrue(
+      contains(pool.submitted, "mon-catalog:global"),
+      "a cold page still traverses its declared layout prerequisite chain"
+    )
+    Assert.isFalse(contains(pool.submitted, "map:7"), "a map never dispatches from an incomplete plan")
+    Assert.isFalse(
+      contains(pool.submitted, "script-member:1"),
+      "a script member never dispatches before its inventory is known"
+    )
+    Assert.isFalse(contains(pool.submitted, "mon-portrait-page:0"), "a page never dispatches from an incomplete plan")
   end)
 end
 

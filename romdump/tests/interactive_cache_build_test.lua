@@ -1674,4 +1674,78 @@ function T.stale_epoch_demand_fails_at_the_pool()
   shutdownEnv(env)
 end
 
+-- Scope-relative completion from the bootstrap side: a bootstrap demand
+-- never enrolls icon/portrait pages or geometry, and it can succeed from
+-- its own roster while page membership stays unknown. It is still not
+-- exhaustive completion.
+function T.bootstrap_finishes_without_pages_or_geometry()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = isolatedSession("bootstrap-scope-generation", pool, backend)
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "bootstrap stays pending until its own members are ready")
+  Assert.isNil(failure, "bootstrap reports no failure while pending")
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil then
+      entry.ready = true
+    end
+  end
+  local again, againFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(again, "bootstrap succeeds from its own scope without page membership")
+  Assert.isNil(againFailure, "bootstrap reports no failure on success")
+  for jobKey in pairs(session.byKey) do
+    local kind = jobKey:match("^([^:]+):")
+    Assert.isTrue(kind ~= "mon-icon-page", "bootstrap enrolls no icon page: " .. jobKey)
+    Assert.isTrue(kind ~= "mon-portrait-page", "bootstrap enrolls no portrait page: " .. jobKey)
+    Assert.isTrue(kind ~= "field-cell", "bootstrap enrolls no geometry: " .. jobKey)
+    Assert.isTrue(kind ~= "map", "bootstrap enrolls no field records: " .. jobKey)
+  end
+  Assert.isFalse(session:status().complete, "a targeted bootstrap is never exhaustive completion")
+end
+
+-- Promotion reaches already traversed prerequisites: a near summary whose
+-- dependency cursor is incomplete upgrades every prerequisite to required
+-- without duplicate dispatch or lost physical ownership.
+function T.promotion_revisits_already_queued_prerequisites()
+  local pool = recordingPool()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local bankIds = {}
+  for bankId = 3, 42 do
+    bankIds[#bankIds + 1] = bankId
+  end
+  local session = summarySession(pool, cacheFs, bankIds)
+  local ready, failure = session:requestJob("message-summary", "global", "near")
+  Assert.isFalse(ready, "the summary stays pending while its banks are cold")
+  Assert.isNil(failure, "no failure is reported while the summary waits")
+  session:update()
+  local firstSubmitted = submittedSet(pool)
+  local visited, unvisited = 0, 0
+  for _, bankId in ipairs(bankIds) do
+    if firstSubmitted["message-bank:" .. tostring(bankId)] then
+      visited = visited + 1
+    else
+      unvisited = unvisited + 1
+    end
+  end
+  Assert.isTrue(visited > 0, "the first pass visits some prerequisites")
+  Assert.isTrue(unvisited > 0, "the first pass leaves the cursor incomplete")
+  local promoted, promotedFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(promoted, "the promoted summary stays pending while its banks are cold")
+  Assert.isNil(promotedFailure, "promotion reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  local counts = {}
+  for _, jobKey in ipairs(pool.submitted) do
+    counts[jobKey] = (counts[jobKey] or 0) + 1
+  end
+  for _, bankId in ipairs(bankIds) do
+    local jobKey = "message-bank:" .. tostring(bankId)
+    Assert.equal(counts[jobKey], 1, "promotion keeps one job under its identity: " .. jobKey)
+    local entry = session.byKey[jobKey]
+    Assert.notNil(entry, "the promoted prerequisite keeps its retained entry: " .. jobKey)
+    Assert.equal(entry.urgency, "required", "every prerequisite inherits the stronger urgency: " .. jobKey)
+  end
+end
+
 return { metadata = { capabilities = {} }, tests = T }
