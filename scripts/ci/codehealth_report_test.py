@@ -23,6 +23,11 @@ REPORT = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(REPORT)
 
 
+def _read_lizard_files(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as report_file:
+        return list(csv.DictReader(report_file))
+
+
 def _write_production_fixture(repository: Path) -> dict[str, int]:
     sources = {
         "game/a.lua": "local value = {}\nfunction value.compute()\nreturn 1\nend\nreturn value\n",
@@ -224,7 +229,15 @@ class CodeHealthReportTest(unittest.TestCase):
             with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
                 REPORT, "_version", return_value="test"
             ):
-                model = REPORT._build_model(site_root, site_root)
+                manifest = [
+                    "game/a.lua",
+                    "game/b.lua",
+                    "game/c.lua",
+                    "game/d.lua",
+                    "game/hgss/src/field/FieldRuntime.lua",
+                    "libs/hgss/src/field/Map.lua",
+                ]
+                model = REPORT._build_model(site_root, site_root, manifest)
 
             self.assertEqual(model["schemaVersion"], 5)
             self.assertTrue(
@@ -658,6 +671,9 @@ class CodeHealthReportTest(unittest.TestCase):
     def run_structure_report_mode(
         self, repository: Path, lizard_csv: Path, output: Path
     ) -> subprocess.CompletedProcess[str]:
+        structural = {row["file"] for row in _read_lizard_files(lizard_csv)}
+        manifest = output.parent / "structural-manifest.txt"
+        manifest.write_text("\n".join(sorted(structural)) + "\n", encoding="utf-8")
         return subprocess.run(
             [
                 sys.executable,
@@ -668,6 +684,8 @@ class CodeHealthReportTest(unittest.TestCase):
                 str(output),
                 "--repository-root",
                 str(repository),
+                "--structural-manifest",
+                str(manifest),
             ],
             check=False,
             capture_output=True,
@@ -688,20 +706,26 @@ class CodeHealthReportTest(unittest.TestCase):
             model = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(model["schemaVersion"], 4)
             source_rows = {row["path"]: row for row in model["source"]["files"]}
+            self.assertEqual(set(source_rows), {"game/a.lua", "game/b.lua"})
+            self.assertNotIn("game/data-only.lua", source_rows)
             self.assertEqual(
-                {path: source_rows[path]["physicalLines"] for path in expected_lines},
-                expected_lines,
+                source_rows["game/a.lua"]["physicalLines"],
+                expected_lines["game/a.lua"],
+            )
+            self.assertEqual(
+                source_rows["game/b.lua"]["physicalLines"],
+                expected_lines["game/b.lua"],
             )
             for row in model["source"]["files"]:
                 self.assertGreater(row["bytes"], 0)
             directories = {row["path"]: row["directProductionFiles"] for row in model["directories"]["files"]}
-            self.assertEqual(directories.get("game"), 3)
+            self.assertEqual(directories.get("game"), 2)
             structure = {row["path"]: row for row in model["structure"]["files"]}
             self.assertEqual(structure["game/a.lua"]["maxCcn"], 7)
             self.assertEqual(structure["game/a.lua"]["maxNloc"], 30)
             self.assertEqual(structure["game/b.lua"]["maxCcn"], 4)
             self.assertEqual(structure["game/b.lua"]["maxNloc"], 15)
-            self.assertIn("game/data-only.lua", source_rows)
+            self.assertNotIn("game/data-only.lua", structure)
 
     def test_structure_report_agrees_with_census_and_lizard_maxima(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -715,7 +739,8 @@ class CodeHealthReportTest(unittest.TestCase):
             result = self.run_structure_report_mode(repository, lizard_csv, output)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             model = json.loads(output.read_text(encoding="utf-8"))
-            expected_source, expected_directories = REPORT._source_census(repository)
+            manifest = ["game/a.lua", "game/b.lua"]
+            expected_source, expected_directories = REPORT._source_census(repository, manifest)
             self.assertEqual(
                 {row["path"]: row for row in model["source"]["files"]},
                 {row["path"]: row for row in expected_source["files"]},
@@ -731,10 +756,7 @@ class CodeHealthReportTest(unittest.TestCase):
                 self.assertEqual(actual_structure[path]["maxCcn"], metrics["maxCcn"])
                 self.assertEqual(actual_structure[path]["maxNloc"], metrics["maxNloc"])
             data_row = actual_structure.get("game/data-only.lua")
-            self.assertTrue(
-                data_row is None
-                or (data_row.get("maxCcn") in (None, 0) and data_row.get("maxNloc") in (None, 0))
-            )
+            self.assertIsNone(data_row)
 
     def test_structure_report_rejects_mixed_or_missing_modes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -763,6 +785,15 @@ class CodeHealthReportTest(unittest.TestCase):
 
     def test_full_site_command_still_writes_quality_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            repository.mkdir()
+            (repository / "game").mkdir(parents=True)
+            (repository / "game" / "a.lua").write_text(
+                "local value = {}\nfunction value.compute()\nreturn 1\nend\nreturn value\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
             site_root = Path(directory) / "site"
             reports_root = site_root / "codehealth" / "reports"
             (reports_root / "lizard").mkdir(parents=True)
@@ -798,17 +829,37 @@ class CodeHealthReportTest(unittest.TestCase):
             with mock.patch.object(REPORT, "_git_commit", return_value="b" * 40), mock.patch.object(
                 REPORT, "_version", return_value="test"
             ):
-                self.assertEqual(REPORT.main(["--site-root", str(site_root)]), 0)
+                manifest = Path(directory) / "structural-manifest.txt"
+                manifest.write_text("game/a.lua\n", encoding="utf-8")
+                self.assertEqual(
+                    REPORT.main(
+                        [
+                            "--site-root",
+                            str(site_root),
+                            "--repository-root",
+                            str(repository),
+                            "--structural-manifest",
+                            str(manifest),
+                        ]
+                    ),
+                    0,
+                )
             model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
             self.assertEqual(model["schemaVersion"], 5)
             self.assertNotIn("policy", model)
             self.assertTrue((site_root / "codehealth" / "index.html").exists())
 
-    def build_site_model(self, site_root: Path) -> dict:
+    def build_site_model(self, site_root: Path, manifest: list[str] | None = None) -> dict:
         with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
             REPORT, "_version", return_value="test"
         ):
-            return REPORT._build_model(site_root, site_root)
+            if manifest is None:
+                manifest = sorted(
+                    str(path.relative_to(site_root)).replace("\\", "/")
+                    for path in site_root.rglob("*.lua")
+                    if "codehealth" not in path.parts
+                )
+            return REPORT._build_model(site_root, site_root, manifest)
 
     def test_threshold_hotspot_lists_are_data_driven(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -974,7 +1025,7 @@ class CodeHealthReportTest(unittest.TestCase):
             self.assertIn("game/hot_visible_sixth.lua", low_visibility)
             self.assertNotIn("game/hot_ignored_exact.lua", fan_out)
             self.assertNotIn("game/hot_ignored_padded.lua", fan_out)
-            lightweight = REPORT._build_structure_report(lizard_csv, site_root)
+            lightweight = REPORT._build_structure_report(lizard_csv, site_root, sorted(sources))
             self.assertEqual(lightweight["schemaVersion"], 4)
             self.assertEqual(
                 lightweight["structure"]["hotspotPolicy"], structure["hotspotPolicy"]

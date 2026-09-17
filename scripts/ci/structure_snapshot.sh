@@ -33,20 +33,32 @@ fi
 
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf -- "$WORK_DIR"' EXIT
-MANIFEST="$WORK_DIR/production-lua-files.txt"
+CANDIDATE_MANIFEST="$WORK_DIR/candidate-lua-files.txt"
+FINAL_MANIFEST="$WORK_DIR/structural-lua-files.txt"
 LIZARD_CSV="$WORK_DIR/lizard-functions.csv"
 
-python3 "$TOOL_ROOT/scripts/ci/source_scope.py" --scope production --repository-root "$TARGET_ROOT" > "$MANIFEST"
+python3 "$TOOL_ROOT/scripts/ci/codehealth_scope.py" candidates --repository-root "$TARGET_ROOT" > "$CANDIDATE_MANIFEST"
 
-if [ ! -s "$MANIFEST" ]; then
-  echo "structure snapshot: production Lua manifest is empty" >&2
+if [ ! -s "$CANDIDATE_MANIFEST" ]; then
+  echo "structure snapshot: candidate Lua manifest is empty" >&2
   exit 1
 fi
 
 cd -- "$TARGET_ROOT"
-lizard -l lua -t 4 -i -1 -f "$MANIFEST" -V --csv > "$LIZARD_CSV"
+lizard -l lua -t 4 -i -1 -f "$CANDIDATE_MANIFEST" -V --csv > "$LIZARD_CSV"
+
+python3 "$TOOL_ROOT/scripts/ci/codehealth_scope.py" structural \
+  --repository-root "$TARGET_ROOT" \
+  --candidates "$CANDIDATE_MANIFEST" \
+  --lizard-csv "$LIZARD_CSV" > "$FINAL_MANIFEST"
+
+if [ ! -s "$FINAL_MANIFEST" ]; then
+  echo "structure snapshot: structural Lua manifest is empty" >&2
+  exit 1
+fi
 
 python3 "$TOOL_ROOT/scripts/ci/codehealth_report.py" \
   --lizard-csv "$LIZARD_CSV" \
   --structure-report "$OUTPUT_FILE" \
-  --repository-root "$TARGET_ROOT"
+  --repository-root "$TARGET_ROOT" \
+  --structural-manifest "$FINAL_MANIFEST"

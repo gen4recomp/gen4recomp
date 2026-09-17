@@ -7,9 +7,9 @@ import argparse
 import csv
 from datetime import datetime, timezone
 import html
-import importlib.util
 import json
 import math
+from collections.abc import Iterable
 from pathlib import Path
 import statistics
 import subprocess
@@ -174,9 +174,9 @@ def _is_excluded_source(source_file: str) -> bool:
     return source_file.startswith("data/generated/") or source_file.startswith("data/scripts/overrides/")
 
 
-def _normalize_source_file(source_file: Any, path: Path) -> str:
+def _normalize_source_file(source_file: Any, path: Path, label: str = "Graphify report") -> str:
     if not isinstance(source_file, str) or not source_file:
-        raise ValueError(f"Graphify report {path} contains an invalid source_file")
+        raise ValueError(f"{label} {path} contains an invalid source_file")
     normalized = source_file.replace("\\", "/")
     parts = normalized.split("/")
     if (
@@ -185,32 +185,46 @@ def _normalize_source_file(source_file: Any, path: Path) -> str:
         or ".." in parts
         or any(not part for part in parts)
     ):
-        raise ValueError(f"Graphify report {path} contains a non-portable source_file {source_file!r}")
+        raise ValueError(f"{label} {path} contains a non-portable source_file {source_file!r}")
     if not normalized.endswith(".lua"):
-        raise ValueError(f"Graphify report {path} contains a non-Lua source_file {source_file!r}")
+        raise ValueError(f"{label} {path} contains a non-Lua source_file {source_file!r}")
     if _is_excluded_source(normalized):
-        raise ValueError(f"Graphify report {path} contains an excluded source_file {source_file!r}")
+        raise ValueError(f"{label} {path} contains an excluded source_file {source_file!r}")
     return normalized
 
 
-def _load_source_scope():
-    module_path = Path(__file__).with_name("source_scope.py")
-    module_spec = importlib.util.spec_from_file_location("source_scope", module_path)
-    if module_spec is None or module_spec.loader is None:
-        raise ValueError(f"cannot load source scope from {module_path}")
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    return module
+def _load_structural_manifest(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValueError(f"cannot read structural manifest {path}: {error}") from error
+    entries: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        normalized = _normalize_source_file(stripped, path, "structural manifest")
+        if normalized in seen:
+            raise ValueError(f"structural manifest {path} contains a duplicate entry {stripped!r}")
+        seen.add(normalized)
+        entries.append(normalized)
+    if not entries:
+        raise ValueError(f"structural manifest {path} is empty")
+    return sorted(entries)
 
 
-def _source_census(repository_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    source_scope = _load_source_scope()
-    production_paths = source_scope.paths_for_scope(repository_root, "production")
-    if not production_paths:
-        raise ValueError("source classification produced an empty production manifest")
+def _source_census(
+    repository_root: Path, structural_paths: Iterable[str]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    paths = [_normalize_source_file(entry, repository_root, "structural manifest") for entry in structural_paths]
+    if len(set(paths)) != len(paths):
+        raise ValueError("structural manifest contains a duplicate entry")
+    if not paths:
+        raise ValueError("structural manifest is empty")
     source_files: list[dict[str, Any]] = []
     directory_counts: dict[str, int] = {}
-    for source_file in production_paths:
+    for source_file in paths:
         source_path = repository_root / source_file
         try:
             raw = source_path.read_bytes()
@@ -689,7 +703,9 @@ def _render_summary(model: dict[str, Any]) -> str:
 """
 
 
-def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
+def _build_model(
+    site_root: Path, repository_root: Path, structural_paths: Iterable[str]
+) -> dict[str, Any]:
     reports_root = site_root / "codehealth" / "reports"
     report_paths = {
         "lizard": reports_root / "lizard" / "functions.csv",
@@ -702,7 +718,7 @@ def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
     architecture = {
         key: value for key, value in graphify.items() if key not in {"files", "extractedImportPairs"}
     }
-    source, directories = _source_census(repository_root)
+    source, directories = _source_census(repository_root, structural_paths)
     model = {
         "schemaVersion": 5,
         "commit": _git_commit(repository_root),
@@ -726,9 +742,11 @@ def _build_model(site_root: Path, repository_root: Path) -> dict[str, Any]:
     return model
 
 
-def _build_structure_report(lizard_csv: Path, repository_root: Path) -> dict[str, Any]:
+def _build_structure_report(
+    lizard_csv: Path, repository_root: Path, structural_paths: Iterable[str]
+) -> dict[str, Any]:
     lizard = _parse_lizard_report(lizard_csv)
-    source, directories = _source_census(repository_root)
+    source, directories = _source_census(repository_root, structural_paths)
     files = []
     for row in source["files"]:
         path = row["path"]
@@ -757,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lizard-csv", type=Path, default=None)
     parser.add_argument("--structure-report", type=Path, default=None)
     parser.add_argument("--repository-root", type=Path, default=None)
+    parser.add_argument("--structural-manifest", type=Path, default=None)
     args = parser.parse_args(argv)
     site_mode = args.site_root is not None
     structure_mode = args.lizard_csv is not None or args.structure_report is not None
@@ -766,9 +785,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--lizard-csv and --structure-report are both required for structure-report mode")
     if site_mode:
         site_root = args.site_root.resolve()
-        repository_root = Path(__file__).resolve().parents[2]
+        if args.structural_manifest is None:
+            parser.error("--structural-manifest is required with --site-root")
+        repository_root = (
+            args.repository_root.resolve()
+            if args.repository_root is not None
+            else Path(__file__).resolve().parents[2]
+        )
         try:
-            model = _build_model(site_root, repository_root)
+            structural_paths = _load_structural_manifest(args.structural_manifest)
+            model = _build_model(site_root, repository_root, structural_paths)
             quality_report = site_root / "codehealth" / "quality-report.json"
             summary_page = site_root / "codehealth" / "index.html"
             quality_report.write_text(json.dumps(model, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -784,7 +810,10 @@ def main(argv: list[str] | None = None) -> int:
         else Path(__file__).resolve().parents[2]
     )
     try:
-        model = _build_structure_report(args.lizard_csv, repository_root)
+        if args.structural_manifest is None:
+            parser.error("--structural-manifest is required with --lizard-csv/--structure-report")
+        structural_paths = _load_structural_manifest(args.structural_manifest)
+        model = _build_structure_report(args.lizard_csv, repository_root, structural_paths)
         args.structure_report.write_text(
             json.dumps(model, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
