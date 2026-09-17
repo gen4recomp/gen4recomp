@@ -52,6 +52,13 @@ local function newEnv()
     poolFailures = {},
     failByVersion = {},
     infraError = nil,
+    infraErrorByVersion = nil,
+    -- A recorded pool fatal is candidate recovery evidence only when the
+    -- drain exception is exactly this value; nil means no fatal recorded.
+    poolFatal = nil,
+    waitInfraError = nil,
+    drainViaWait = false,
+    diagnosticsRaise = nil,
     publishFails = false,
     publishFailCalls = {},
     publishAttempts = 0,
@@ -167,6 +174,20 @@ local function makeSession(pool, identity, sweepEnabled)
         if env.reusedKeys[jobKey] == nil then
           env.completedOrder[#env.completedOrder + 1] = jobKey
         end
+      end
+    end
+    -- The production session delegates bounded waits to the pool; when the
+    -- test arms that path the wait boundary is the failure origin.
+    if env.drainViaWait then
+      pool:waitForProgress()
+    end
+    local versioned = env.infraErrorByVersion
+    if versioned ~= nil and self.identity ~= nil then
+      local versionId = self.identity.versionId
+      if versionId ~= nil and versioned[versionId] ~= nil then
+        local injected = versioned[versionId]
+        versioned[versionId] = nil
+        error(injected, 0)
       end
     end
     if env.infraError ~= nil then
@@ -338,7 +359,13 @@ local function makeFakes()
     new = function()
       local pool = { requested = {}, requestedSet = {} }
       function pool:drain() end
-      function pool:waitForProgress() end
+      function pool:waitForProgress()
+        if env.waitInfraError ~= nil then
+          local injected = env.waitInfraError
+          env.waitInfraError = nil
+          error(injected, 0)
+        end
+      end
       function pool:jobOutcome(jobKey)
         if env.poolFailures ~= nil and env.poolFailures[jobKey] ~= nil then
           return env.poolFailures[jobKey]
@@ -362,6 +389,9 @@ local function makeFakes()
         env.shutdowns = env.shutdowns + 1
       end
       function pool:diagnostics()
+        if env.diagnosticsRaise ~= nil then
+          error(env.diagnosticsRaise, 0)
+        end
         local entries = {}
         for _, jobKey in ipairs(env.completedOrder) do
           entries[#entries + 1] = { jobKey = jobKey, workerId = 1, workSeconds = 0.01, stagedBytes = 0 }
@@ -373,6 +403,7 @@ local function makeFakes()
         return {
           counts = { queued = 0, running = 0, prepared = 0 },
           recentTimings = recent,
+          error = env.poolFatal,
         }
       end
       env.pools[#env.pools + 1] = pool
@@ -475,6 +506,17 @@ local function splitProfileAll(lines)
     end
   end
   return headers, footers
+end
+
+-- Fixture-owned evidence paths: os.tmpname() cannot generate names under this
+-- runner, while direct writes succeed, so profiles use deterministic unique
+-- names under a fixture-owned root that each test removes after use.
+local profileCounter = 0
+local function tempProfilePath(name)
+  profileCounter = profileCounter + 1
+  local root = os.getenv("TMPDIR") or "/tmp"
+  os.execute('mkdir -p "' .. root .. '/cache-execution-profile"')
+  return root .. "/cache-execution-profile/" .. name .. "-" .. tostring(profileCounter) .. ".jsonl"
 end
 
 local T = {}
@@ -1126,6 +1168,221 @@ function T.shared_profile_close_failure_fails_the_command()
     assert(err ~= nil, "the sink failure is reported (" .. mode .. ")")
     Assert.equal(closes, 1, "the shared sink closes exactly once (" .. mode .. ")")
     Assert.equal(env.publishes, 1, "already published artifact facts stay factual (" .. mode .. ")")
+  end
+end
+
+-- A failure thrown from the bounded pool wait finalizes like an update
+-- failure when it equals the recorded fatal: earlier success stays
+-- successful, the exact failed job fails, unfinished work is cancelled, one
+-- failure footer is emitted, and every owner is released exactly once.
+function T.wait_path_failure_preserves_earlier_facts()
+  env = newEnv()
+  local fatal = "recorded stop during the bounded wait"
+  env.failKeys["map:2"] = "WORKER_FAILED: injected pool failure"
+  env.failureClasses["map:2"] = "job"
+  env.poolFailures["map:2"] = {
+    jobKey = "map:2",
+    generationId = "test-generation",
+    epoch = 1,
+    state = "failed",
+    error = "map:2: injected pool failure",
+    workerId = 2,
+    workSeconds = 0.02,
+    timingReason = "test",
+  }
+  env.pendingKeys["map:3"] = true
+  env.poolFatal = fatal
+  env.waitInfraError = fatal
+  env.drainViaWait = true
+  local profilePath = tempProfilePath("wait-path-failure")
+  local ok, report, err = pcall(
+    CacheBuilder.prepareVersion,
+    "heartgold",
+    scopedOptions({
+      requirements = { "map:1", "map:2", "map:3" },
+      profile = profilePath,
+    })
+  )
+  Assert.isTrue(ok, "a recorded wait failure must finalize evidence instead of escaping: " .. tostring(report))
+  Assert.isNil(report, "an interrupted scope must not return a success report")
+  Assert.equal(err, fatal, "the command preserves the recorded wait failure")
+  local _, footer, rows = splitProfile(readProfile(profilePath))
+  assert(footer ~= nil, "a handled wait failure still closes with a footer")
+  Assert.equal(#rows, 3, "every planned job keeps exactly one row")
+  local succeeded = rowForKey(rows, "1")
+  assert(succeeded ~= nil, "validated work keeps its row")
+  Assert.isTrue(
+    succeeded:find('"successful"', 1, true) ~= nil,
+    "validated work stays successful, got: " .. tostring(succeeded)
+  )
+  local failed = rowForKey(rows, "2")
+  assert(failed ~= nil, "the failed job keeps its row")
+  Assert.isTrue(failed:find('"failed"', 1, true) ~= nil, "the exact failed job fails, got: " .. tostring(failed))
+  local unfinished = rowForKey(rows, "3")
+  assert(unfinished ~= nil, "unfinished work keeps an explicit row")
+  Assert.isTrue(
+    unfinished:find('"cancelled"', 1, true) ~= nil,
+    "unfinished work is cancelled, got: " .. tostring(unfinished)
+  )
+  Assert.equal(profileCount(footer, "planned"), 3)
+  Assert.equal(profileCount(footer, "successful"), 1)
+  Assert.equal(profileCount(footer, "failed"), 1)
+  Assert.equal(profileCount(footer, "cancelled"), 1)
+  Assert.equal(profileCount(footer, "excluded"), 0)
+  Assert.equal(env.shutdowns, 1, "the pool shuts down exactly once")
+  Assert.equal(env.retires, 1, "the session retires exactly once")
+end
+
+-- An unrelated raw fault still propagates with its original value: neither a
+-- missing recorded fatal, a different recorded fatal, nor a failing
+-- diagnostic read converts it into handled evidence.
+function T.unmatched_raw_error_propagates_without_evidence_claim()
+  env = newEnv()
+  env.infraError = "unexpected nil dereference"
+  env.diagnosticsRaise = "the diagnostic owner is gone"
+  local raised = Assert.throws(function()
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "map:7" } }))
+  end)
+  Assert.equal(raised, "unexpected nil dereference", "the original fault propagates, never the lookup failure")
+  Assert.equal(env.shutdowns, 1, "the faulting command still shuts its pool down")
+  Assert.equal(env.retires, 1, "the faulting command still retires its session")
+  env = newEnv()
+  env.infraError = "unexpected nil dereference"
+  env.poolFatal = "recorded stop for another worker"
+  raised = Assert.throws(function()
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "map:7" } }))
+  end)
+  Assert.equal(raised, "unexpected nil dereference", "a fatal recorded for another worker never converts this fault")
+  Assert.equal(env.shutdowns, 1, "the faulting command still shuts its pool down")
+  Assert.equal(env.retires, 1, "the faulting command still retires its session")
+end
+
+-- A recorded fatal outside any dispatched job fails the command without
+-- inventing a failed artifact: known work keeps its dispositions, the
+-- footer stays unsuccessful, and no completion is claimed.
+function T.idle_recorded_failure_keeps_known_rows_without_phantom_jobs()
+  env = newEnv()
+  local fatal = "recorded stop outside any dispatched job"
+  env.poolFatal = fatal
+  env.infraError = fatal
+  local profilePath = tempProfilePath("idle-failure")
+  local ok, report, err = pcall(
+    CacheBuilder.prepareVersion,
+    "heartgold",
+    scopedOptions({ requirements = { "map:1" }, profile = profilePath })
+  )
+  Assert.isTrue(ok, "a recorded idle failure must finalize evidence instead of escaping: " .. tostring(report))
+  Assert.isNil(report, "an interrupted command returns no success report")
+  Assert.equal(err, fatal, "the command preserves the recorded idle failure")
+  local _, footer, rows = splitProfile(readProfile(profilePath))
+  assert(footer ~= nil, "the interrupted run still closes with a footer")
+  Assert.equal(#rows, 1, "no phantom job is invented for an idle failure")
+  Assert.isTrue(
+    rows[1]:find('"successful"', 1, true) ~= nil,
+    "known completed work stays successful, got: " .. tostring(rows[1])
+  )
+  Assert.equal(profileCount(footer, "planned"), 1)
+  Assert.equal(profileCount(footer, "successful"), 1)
+  Assert.equal(profileCount(footer, "failed"), 0)
+  Assert.equal(profileCount(footer, "cancelled"), 0)
+  Assert.isTrue(
+    footer:find('"complete":false', 1, true) ~= nil,
+    "the interrupted run never claims completeness, got: " .. tostring(footer)
+  )
+end
+
+-- A raw recorded failure in a later version keeps all started evidence: the
+-- first version retains its rows without a new attestation, the failed
+-- version records its failure, and the batch fails.
+function T.later_version_recorded_failure_keeps_all_started_evidence()
+  env = newEnv()
+  env.auditAvailable = true
+  local fatal = "recorded stop in the later version"
+  env.failByVersion = { soulsilver = { ["map:7"] = "WORKER_FAILED: injected later-version failure" } }
+  env.failureClasses["map:7"] = "job"
+  env.poolFatal = fatal
+  env.infraErrorByVersion = { soulsilver = fatal }
+  local profilePath = tempProfilePath("later-version-failure")
+  local logged = {}
+  local ok, report, err = pcall(CacheBuilder.buildVersions, { "heartgold", "soulsilver" }, {
+    log = function(line)
+      logged[#logged + 1] = line
+    end,
+    profile = profilePath,
+  })
+  Assert.isTrue(ok, "a recorded later-version failure must finalize evidence instead of escaping")
+  Assert.isNil(report, "a batch with a failed version must not succeed")
+  Assert.equal(err, "cache preparation failed", "the batch reports its failure")
+  Assert.isTrue(
+    table.concat(logged, "\n"):find(fatal, 1, true) ~= nil,
+    "the batch log preserves the original failure value"
+  )
+  Assert.equal(env.publishes, 0, "no new attestation is published when a later version fails")
+  local lines = readProfile(profilePath)
+  local headers, footers = splitProfileAll(lines)
+  Assert.equal(#headers, 2, "both started versions retain evidence")
+  Assert.equal(#footers, 2, "both started versions retain evidence")
+  local _, _, rows = splitProfile(lines)
+  Assert.equal(#rows, 4, "every planned job of both versions keeps exactly one row")
+  Assert.equal(profileCount(footers[1], "successful"), 2, "the first version reports its audited successful jobs")
+  Assert.isTrue(
+    footers[1]:find('"attestationPublished":false', 1, true) ~= nil,
+    "the first version claims no new publication, got: " .. tostring(footers[1])
+  )
+  Assert.isTrue(
+    footers[1]:find('"complete":false', 1, true) ~= nil,
+    "an uncommitted proof is never complete, got: " .. tostring(footers[1])
+  )
+  Assert.isTrue(
+    (profileCount(footers[2], "failed") or 0) >= 1,
+    "the failed version records its failure, got: " .. tostring(footers[2])
+  )
+end
+
+-- A failing evidence sink never converts a recorded interruption into
+-- success: the command stays failed whether the sink fails on write or on
+-- close, the sink closes exactly once, and no success report appears.
+function T.sink_failure_keeps_recorded_interruption_failed()
+  for _, mode in ipairs({ "write", "close" }) do
+    env = newEnv()
+    local fatal = "recorded stop with a failing sink"
+    env.poolFatal = fatal
+    env.infraError = fatal
+    local profilePath = tempProfilePath("sink-failure-" .. mode)
+    local realOpen = io.open
+    io.open = function(path, openMode)
+      if path == profilePath then
+        if mode == "write" then
+          return {
+            write = function()
+              return nil, "injected write failure"
+            end,
+            close = function()
+              return true
+            end,
+          }
+        end
+        return {
+          write = function()
+            return true
+          end,
+          close = function()
+            error("injected close failure", 0)
+          end,
+        }
+      end
+      return realOpen(path, openMode)
+    end
+    local ok, report, err = pcall(
+      CacheBuilder.prepareVersion,
+      "heartgold",
+      scopedOptions({ requirements = { "map:7" }, profile = profilePath })
+    )
+    io.open = realOpen
+    os.remove(profilePath)
+    Assert.isTrue(ok, "a sink failure is a handled command failure, not a crash (" .. mode .. ")")
+    Assert.isNil(report, "a command that cannot record its evidence must not claim success (" .. mode .. ")")
+    assert(err ~= nil, "the sink failure is reported (" .. mode .. ")")
   end
 end
 

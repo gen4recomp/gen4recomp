@@ -717,6 +717,24 @@ local function verifyOriginalRequirements(session, parsed, versionId)
   )
 end
 
+-- A drain failure is a handled command interruption when it is an already
+-- supported structured error or when it is exactly the fatal value the
+-- borrowed pool recorded through its public diagnostics. Exact equality
+-- keeps unrelated raw faults on the cleanup-and-rethrow path.
+---@param pool table<string, unknown>|nil
+---@param caught unknown
+---@return boolean
+local function recognizedDrainFailure(pool, caught)
+  if Errors.is(caught) then
+    return true
+  end
+  if pool == nil then
+    return false
+  end
+  local ok, diagnostics = pcall(pool.diagnostics, pool)
+  return ok and type(diagnostics) == "table" and diagnostics.error ~= nil and diagnostics.error == caught
+end
+
 ---@param versionId string
 ---@param allowCompileExclusions boolean|nil
 ---@param developmentRepositoryRoot string|nil
@@ -807,7 +825,7 @@ local function collectVersionFacts(
   end)
   if not drainOk then
     local drainErr = drainResult
-    if Errors.is(drainErr) then
+    if recognizedDrainFailure(pool, drainErr) then
       local outcomeList = {}
       if session ~= nil and type(session.outcomes) == "function" then
         local okOut, list = pcall(session.outcomes, session)
