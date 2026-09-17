@@ -176,6 +176,21 @@ local function fixture(opts)
   startMenuMembers[63] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
   startMenuMembers[64] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
   startMenuMembers[65] = lz10Wrap(charData(17))
+  for _, memberId in ipairs({ 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48 }) do
+    startMenuMembers[memberId + 1] = lz10Wrap(charData(20, memberId % 16))
+  end
+  startMenuMembers[15] = lz10Wrap(palette16())
+  startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
+  startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  startMenuMembers[8] = lz10Wrap(palette16())
+  startMenuMembers[9] = lz10Wrap(charData(192))
+  do
+    local entries = {}
+    for i = 1, 1024 do
+      entries[i] = 0
+    end
+    startMenuMembers[10] = lz10Wrap(screenDataWH(256, 256, entries))
+  end
   local startMenu = {}
   for i = 1, 65 do
     startMenu[i] = startMenuMembers[i] or string.rep("\0", 4)

@@ -266,7 +266,11 @@ end
 -- the audited HGSS geometry: 20 dialogue frames of 18 tiles, the signpost
 -- frame of 18 tiles, the wayfinding members (2..0x35, the type-0 0x21+map
 -- and type-1 2+map ranges the producer selects) of 24 tiles, the start menu
--- bg + cursor, and the card front. Palettes carry enough colors for test
+-- main triple (char 12, screen 13, palette 15) and cursor (palette 61, cell
+-- 62, anim 63, char 64), the start menu icon bank (eleven 20-tile sprite
+-- chars 18/21/24/27/30/33/36/39/42/45/48, shared cell 16, anim 17, and OBJ
+-- palette image 14), the start menu SUB set (palette 7, char 8 of 192 tiles,
+-- 256x256 screen 9), and the card front. Palettes carry enough colors for test
 -- source types (4 types * 16 colors = 64 colors) so every tile value and
 -- palette bank the fixture chars emit is covered. `opts` allows per-test
 -- source tampering: cursor OBJ geometry, the background screen entry, the
@@ -284,6 +288,21 @@ local function fixture(opts)
   startMenuMembers[63] = lz10Wrap(cellData(opts.cursor or { { x = 0, y = 0, tile = 0, pal = 0 } }))
   startMenuMembers[64] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
   startMenuMembers[65] = lz10Wrap(charData(17))
+  for _, memberId in ipairs({ 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48 }) do
+    startMenuMembers[memberId + 1] = lz10Wrap(charData(20, memberId % 16))
+  end
+  startMenuMembers[15] = lz10Wrap(palette16())
+  startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
+  startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  startMenuMembers[8] = lz10Wrap(palette16())
+  startMenuMembers[9] = lz10Wrap(charData(192))
+  do
+    local entries = {}
+    for i = 1, 1024 do
+      entries[i] = 0
+    end
+    startMenuMembers[10] = lz10Wrap(screenDataWH(256, 256, entries))
+  end
   local startMenu = {}
   for i = 1, 65 do
     startMenu[i] = startMenuMembers[i] or string.rep("\0", 4)
@@ -432,7 +451,9 @@ function T.compiles_the_manifest_and_all_assets()
   for _ in pairs(bundle.assets) do
     assetCount = assetCount + 1
   end
-  Assert.equal(assetCount, 11)
+  -- Eleven base assets plus the four start-menu icon-contract images (shared
+  -- icon atlas, selection-bank highlight atlas, palette record, SUB chrome).
+  Assert.equal(assetCount, 15)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
@@ -585,7 +606,11 @@ function T.atlas_pixels_and_dimensions_follow_the_source_mapping()
   Assert.deepEqual({ rB, gB, bB }, { 181, 206, 8 })
 end
 
-function T.start_menu_background_renders_palette_zero_as_opaque_source_art()
+-- The main chrome is source art with holes, not an opaque backdrop: the
+-- retail MAIN BG carries entry chrome only in the bottom panel band
+-- (tile rows 17-23, from px 136), so source-zero pixels above it must stay
+-- transparent in the generated main-chrome image.
+function T.start_menu_source_zero_pixels_compile_transparent()
   local romFs, sha1, hashLua = fixture({
     tamper = function(alias, members)
       if alias == "start_menu" then
@@ -598,7 +623,136 @@ function T.start_menu_background_renders_palette_zero_as_opaque_source_art()
   local path = bundle.manifest.assets[FieldUiAssetCache.ASSET.START_MENU_BACKGROUND].image
   local width, _, rgba = PngReader.rgba(bundle.assets[path])
   local _, _, _, alpha = PngReader.pixel(rgba, width, 0, 0)
-  Assert.equal(alpha, 255, "the background's palette-zero pixels remain visible")
+  Assert.equal(alpha, 0, "source-zero pixels must stay transparent in the generated main chrome")
+end
+
+-- The retail start-menu icon bank for the icon-sprite path: eleven
+-- 20-tile sprite chars, the shared icon cell/anim banks, and the shared OBJ
+-- palette image. Member numbers below are the producer-side selection (this
+-- is the romdump-side test); the manifest itself must carry them only as
+-- the source-independent 13-row icon table the runtime consumes.
+local ICON_CHAR_MEMBERS = { 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48 }
+
+local function withIconBank(members)
+  for _, memberId in ipairs(ICON_CHAR_MEMBERS) do
+    members[memberId + 1] = lz10Wrap(charData(20, memberId % 16))
+  end
+  members[15] = lz10Wrap(palette16())
+  members[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
+  members[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  return members
+end
+
+local function fixtureWithIconBank()
+  return fixture({
+    tamper = function(alias, members)
+      if alias == "start_menu" then
+        return withIconBank(members)
+      end
+      return members
+    end,
+  })
+end
+
+-- The compiled manifest publishes the thirteen retail icon rows as data:
+-- sprite rows carry art, rows 9-10 are text-only, row 11 is the external
+-- poke-icon path. The per-icon cell/anim members (19/20...) have no traced
+-- retail consumer and stay out of the contract.
+function T.start_menu_icon_table_compiles_the_retail_icon_bank()
+  local romFs, sha1, hashLua = fixtureWithIconBank()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  local iconTable = assert(startMenu.iconTable, "the start menu section must carry the retail icon table")
+  Assert.equal(#iconTable, 13, "the icon table carries all thirteen retail rows")
+  for _, index in ipairs({ 1, 2, 3, 4, 5, 6, 7, 8, 12, 13 }) do
+    Assert.equal((iconTable[index] or {}).art, "sprite", "icon row " .. index .. " carries sprite art")
+  end
+  Assert.equal((iconTable[9] or {}).art, "text", "icon row 9 is text-only")
+  Assert.equal((iconTable[10] or {}).art, "text", "icon row 10 is text-only")
+  Assert.equal((iconTable[11] or {}).art, "poke_icon", "icon row 11 is the external poke-icon path")
+end
+
+-- The seven retail context rows map menu contexts to icon indices as data
+-- (Lua index = retail row + 1, `false` marks the none holes). Only the
+-- normal row's assignment is pinned; the remaining row-to-context names
+-- stay open until the init-arg trace lands.
+function T.start_menu_context_rows_compile_as_retail_data()
+  local romFs, sha1, hashLua = fixtureWithIconBank()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  local contexts = assert(startMenu.contexts, "the start menu section must carry the retail context rows")
+  Assert.equal(#contexts, 7, "the contract carries all seven retail context rows")
+  Assert.deepEqual(contexts[1], { 0, 1, 2, 3, 4, 5, 6 }, "the normal context maps icons 0-6")
+  local seen = {}
+  for _, row in ipairs(contexts) do
+    Assert.equal(#row, 7, "every context row maps one icon per sprite slot")
+    for _, icon in ipairs(row) do
+      if icon ~= false then
+        seen[icon] = true
+      end
+    end
+  end
+  Assert.isTrue(seen[9], "a context row addresses text-only row 9")
+  Assert.isTrue(seen[10], "a context row addresses the poke-icon row 10")
+end
+
+-- Every icon row carries its label-bank id; the trainer-card row is the
+-- player-name placeholder the runtime expands per save, never baked text.
+function T.start_menu_icon_rows_carry_label_ids_with_the_trainer_card_placeholder()
+  local romFs, sha1, hashLua = fixtureWithIconBank()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  local iconTable = assert(startMenu.iconTable, "the start menu section must carry the retail icon table")
+  local function row(index)
+    return assert(iconTable[index], "icon row " .. index .. " must exist")
+  end
+  Assert.equal(row(1).label, 0, "pokedex labels from bank id 0")
+  Assert.equal(row(4).label, 14, "pokegear labels from bank id 14")
+  Assert.equal(row(5).label, 3, "the trainer-card row references the name placeholder id")
+  Assert.equal(row(5).labelKind, "player_name", "the trainer-card label expands the live player name")
+  Assert.equal(row(8).label, 8, "retire labels from bank id 8")
+  Assert.equal(row(9).label, 32, "text-only rows label from bank id 32")
+  Assert.equal(row(12).label, 34, "union rows label from bank ids 34/35")
+  Assert.equal(row(13).label, 35)
+  local variants = assert(row(3).variants, "the bag row carries its gender-conditional variant")
+  Assert.notNil(variants.default, "the bag row carries the default art")
+  Assert.notNil(variants.female, "the bag row carries the female art as a first-class variant")
+end
+
+-- The SUB chrome set compiles alongside the main triple: the background set
+-- plus the entry-window grid the runtime places labels through. Member
+-- selection is zero-based (index = member id + 1, like the base fixture):
+-- char 8, palette 7, screen 9.
+function T.start_menu_sub_chrome_compiles_the_window_grid()
+  local romFs, sha1, hashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "start_menu" then
+        withIconBank(members)
+        members[8] = lz10Wrap(palette16())
+        members[9] = lz10Wrap(charData(192))
+        local entries = {}
+        for i = 1, 1024 do
+          entries[i] = 0
+        end
+        members[10] = lz10Wrap(screenDataWH(256, 256, entries))
+      end
+      return members
+    end,
+  })
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  local chrome = assert(startMenu.chrome, "the start menu section must carry its chrome")
+  Assert.notNil(chrome.main, "the chrome carries the transparent main panel")
+  Assert.notNil(chrome.sub, "the chrome carries the sub background set")
+  local windows = assert(startMenu.labelWindows, "the start menu section must carry its label windows")
+  local windowCount = 0
+  for _ in pairs(windows) do
+    windowCount = windowCount + 1
+  end
+  Assert.equal(windowCount, 7, "seven sprite slots carry one label window each")
+  for slotId = 2, 8 do
+    Assert.notNil(windows[slotId], "destination slot " .. slotId .. " carries its own label window")
+  end
 end
 
 function T.dialogue_cursor_phases_compose_frame_backing_and_payload()

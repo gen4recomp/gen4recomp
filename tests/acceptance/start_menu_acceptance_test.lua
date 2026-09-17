@@ -101,8 +101,8 @@ function T.tests.production_start_menu_follows_the_source_two_column_topology()
       Assert.isFalse(byPosition[0].enabled, "the first source action is visible but disabled")
       Assert.notNil(byPosition[1], "the next source row action is visible")
       Assert.notNil(byPosition[2], "the second source row action is visible")
-      Assert.notNil(byPosition[7], "the sparse source menu retains its lower-left action")
-      Assert.notNil(byPosition[8], "the sparse source menu retains its lower-right action")
+      Assert.isNil(byPosition[7], "the special-9 bookkeeping entry is not a visual button")
+      Assert.isNil(byPosition[8], "the special-10 bookkeeping entry is not a visual button")
       Assert.isNil(byPosition[4], "an absent source position remains a hole")
 
       game.runtime:pressAction()
@@ -113,16 +113,24 @@ function T.tests.production_start_menu_follows_the_source_two_column_topology()
       Assert.equal(navigate(game, "east").cursorSlotId, 2, "right stays when the source row has no other action")
       Assert.equal(navigate(game, "south").cursorSlotId, 4, "down scans the same source column past a hole")
       Assert.equal(navigate(game, "west").cursorSlotId, 3, "left selects the other visible action in the row")
-      Assert.equal(navigate(game, "north").cursorSlotId, 9, "up wraps to the last visible action in the column")
-      Assert.equal(navigate(game, "south").cursorSlotId, 3, "down wraps to the first visible action in the column")
+      Assert.equal(
+        navigate(game, "north").cursorSlotId,
+        3,
+        "up stays when the source column holds no other visible action"
+      )
+      Assert.equal(
+        navigate(game, "south").cursorSlotId,
+        3,
+        "down stays when the source column holds no other visible action"
+      )
       Assert.equal(navigate(game, "east").cursorSlotId, 4, "right follows the source row topology")
-      Assert.equal(navigate(game, "south").cursorSlotId, 10, "down scans and wraps in the right column")
-      Assert.equal(navigate(game, "west").cursorSlotId, 9, "left selects the sparse lower-left action")
+      Assert.equal(navigate(game, "south").cursorSlotId, 2, "down wraps to the first visible action in the column")
+      Assert.equal(navigate(game, "west").cursorSlotId, 2, "left stays when the source row has no other action")
 
       local slot = game.runtime.uiManifest.startMenu.slots[9]
       game.runtime.input:pointerMove("acceptance:start-menu:pointer", slot.x + 1, slot.y + 1)
       game:step()
-      Assert.equal(menuStatus(game).cursorSlotId, 9, "pointer hover selects the exact generated slot")
+      Assert.equal(menuStatus(game).cursorSlotId, 2, "pointer hover over a non-visual slot changes nothing")
     end)
   end)
 end

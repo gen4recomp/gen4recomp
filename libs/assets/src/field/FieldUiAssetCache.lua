@@ -54,6 +54,11 @@ FieldUiAssetCache.ASSET = {
   SIGNPOST_WAYFINDING = "hgss.signpost.wayfinding",
   START_MENU_BACKGROUND = "hgss.start_menu.background",
   START_MENU_CURSOR = "hgss.start_menu.cursor",
+  START_MENU_ICONS = "hgss.start_menu.icons",
+  START_MENU_ICON_HIGHLIGHT = "hgss.start_menu.icon_highlight",
+  START_MENU_ICON_PALETTE = "hgss.start_menu.icon_palette",
+  START_MENU_POKE_ICONS = "hgss.start_menu.poke_icons",
+  START_MENU_CHROME_SUB = "hgss.start_menu.chrome_sub",
   TRAINER_CARD_FRONT = "hgss.trainer_card.front",
   NAMING_SCREEN_BASE = "hgss.naming_screen.base",
   NAMING_SCREEN_PAGE_UPPER = "hgss.naming_screen.page_upper",
@@ -490,18 +495,201 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, slotErr
       end
     end
-    if type(s.actionSurfaces) ~= "table" then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.actionSurfaces must be a table", {})
+    -- The retail icon-sprite contract: thirteen icon rows (Lua index =
+    -- retail icon index + 1) with per-row art kind and label data, the
+    -- shared icon/highlight atlases and palette record, seven context rows,
+    -- the action-to-icon map, sprite bases, label windows, and chrome.
+    if type(s.iconTable) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable must be a table", {})
     end
-    for actionId, surface in pairs(s.actionSurfaces) do
-      if type(actionId) ~= "string" or type(surface) ~= "table" then
-        return false, Errors.new(MANIFEST_INVALID, "start menu action surfaces are malformed", {})
+    local iconRowCount = 0
+    for _ in pairs(s.iconTable) do
+      iconRowCount = iconRowCount + 1
+    end
+    if iconRowCount ~= 13 then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable must carry all thirteen retail rows", {})
+    end
+    local validArts = { sprite = true, text = true, poke_icon = true }
+    local validLabelKinds = { static = true, player_name = true }
+    for index = 1, 13 do
+      local row = s.iconTable[index]
+      if type(row) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " must be a table", {})
       end
-      local actionOk, actionErr =
-        rectInAtlas(surface, FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, "start menu action " .. actionId)
-      if not actionOk then
-        return false, actionErr
+      if validArts[row.art] ~= true then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " art is invalid", {})
       end
+      if row.art == "sprite" then
+        local rectOk, rectErr =
+          rectInAtlas(row.rect, FieldUiAssetCache.ASSET.START_MENU_ICONS, "start menu icon row " .. index)
+        if not rectOk then
+          return false, rectErr
+        end
+      end
+      if type(row.label) ~= "number" or row.label % 1 ~= 0 or row.label < 0 then
+        return false,
+          Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " label must be a label-bank id", {})
+      end
+      if validLabelKinds[row.labelKind] ~= true then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " labelKind is invalid", {})
+      end
+      if row.variants ~= nil then
+        if type(row.variants) ~= "table" then
+          return false,
+            Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " variants must be a table", {})
+        end
+        for _, key in ipairs({ "default", "female" }) do
+          local variantOk, variantErr = rectInAtlas(
+            row.variants[key],
+            FieldUiAssetCache.ASSET.START_MENU_ICONS,
+            "start menu icon row " .. index .. " variant " .. key
+          )
+          if not variantOk then
+            return false, variantErr
+          end
+        end
+      end
+    end
+    for _, key in ipairs({ "iconAtlas", "iconHighlight" }) do
+      local ref = s[key]
+      if type(ref) ~= "table" or type(ref.asset) ~= "string" or atlasSizes[ref.asset] == nil then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu." .. key .. " must reference an indexed asset", {})
+      end
+    end
+    local palette = s.iconPalette
+    if type(palette) ~= "table" or type(palette.asset) ~= "string" or atlasSizes[palette.asset] == nil then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconPalette must reference an indexed asset", {})
+    end
+    if
+      type(palette.banks) ~= "number"
+      or palette.banks % 1 ~= 0
+      or palette.banks < 1
+      or type(palette.selectionBank) ~= "number"
+      or palette.selectionBank % 1 ~= 0
+      or palette.selectionBank < 1
+      or palette.selectionBank > palette.banks
+    then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconPalette banks are invalid", {})
+    end
+    if s.pokeIcons ~= nil then
+      if
+        type(s.pokeIcons) ~= "table"
+        or type(s.pokeIcons.asset) ~= "string"
+        or atlasSizes[s.pokeIcons.asset] == nil
+      then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.pokeIcons must reference an indexed asset", {})
+      end
+    end
+    if type(s.contexts) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.contexts must be a table", {})
+    end
+    local contextCount = 0
+    for _ in pairs(s.contexts) do
+      contextCount = contextCount + 1
+    end
+    if contextCount ~= 7 then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.contexts must carry all seven retail rows", {})
+    end
+    for index = 1, 7 do
+      local row = s.contexts[index]
+      if type(row) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.contexts row " .. index .. " must be a table", {})
+      end
+      local entryCount = 0
+      for _ in pairs(row) do
+        entryCount = entryCount + 1
+      end
+      if entryCount ~= 7 then
+        return false,
+          Errors.new(MANIFEST_INVALID, "startMenu.contexts row " .. index .. " must map one icon per sprite slot", {})
+      end
+      for slot = 1, 7 do
+        local icon = row[slot]
+        if icon ~= false then
+          if type(icon) ~= "number" or icon % 1 ~= 0 or icon < 0 or icon > 12 or s.iconTable[icon + 1] == nil then
+            return false,
+              Errors.new(MANIFEST_INVALID, "startMenu.contexts row " .. index .. " entry " .. slot .. " is invalid", {})
+          end
+        end
+      end
+    end
+    if type(s.actionIcons) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.actionIcons must be a table", {})
+    end
+    for actionId, icon in pairs(s.actionIcons) do
+      if type(actionId) ~= "string" then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.actionIcons keys must be action ids", {})
+      end
+      local row = type(icon) == "number" and s.iconTable[icon + 1] or nil
+      if row == nil or row.art ~= "sprite" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "startMenu.actionIcons " .. actionId .. " must map to a sprite icon row", {})
+      end
+    end
+    if type(s.iconBases) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconBases must be a table", {})
+    end
+    local baseCount = 0
+    for _ in pairs(s.iconBases) do
+      baseCount = baseCount + 1
+    end
+    if baseCount ~= 7 then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconBases must carry one base per sprite slot", {})
+    end
+    for slotId = 2, 8 do
+      local base = s.iconBases[slotId]
+      if
+        type(base) ~= "table"
+        or type(base.x) ~= "number"
+        or type(base.y) ~= "number"
+        or base.x % 1 ~= 0
+        or base.y % 1 ~= 0
+        or base.x < 0
+        or base.y < 0
+      then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.iconBases slot " .. slotId .. " is invalid", {})
+      end
+    end
+    if type(s.labelWindows) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.labelWindows must be a table", {})
+    end
+    local windowCount = 0
+    for _ in pairs(s.labelWindows) do
+      windowCount = windowCount + 1
+    end
+    if windowCount ~= 7 then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.labelWindows must carry seven sprite-slot windows", {})
+    end
+    for slotId = 2, 8 do
+      local window = s.labelWindows[slotId]
+      if
+        type(window) ~= "table"
+        or type(window.x) ~= "number"
+        or type(window.y) ~= "number"
+        or type(window.width) ~= "number"
+        or type(window.height) ~= "number"
+        or window.x < 0
+        or window.y < 0
+        or window.width < 1
+        or window.height < 1
+        or window.x + window.width > 256
+        or window.y + window.height > 192
+      then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.labelWindows window " .. slotId .. " is invalid", {})
+      end
+    end
+    if type(s.chrome) ~= "table" or type(s.chrome.main) ~= "table" or type(s.chrome.sub) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.chrome must carry its main and sub sets", {})
+    end
+    for _, key in ipairs({ "main", "sub" }) do
+      local set = s.chrome[key]
+      if type(set.asset) ~= "string" or atlasSizes[set.asset] == nil then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.chrome." .. key .. " must reference an indexed asset", {})
+      end
+    end
+    local aboveY = s.chrome.main.transparentAboveY
+    if type(aboveY) ~= "number" or aboveY % 1 ~= 0 or aboveY < 1 then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.chrome.main must name its transparency boundary", {})
     end
     return true
   end)

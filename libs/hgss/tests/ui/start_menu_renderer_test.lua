@@ -20,7 +20,9 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local Errors = require("libs.errors.src.Errors")
 local FakeCache = require("tests.support.FakeCache")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local PngWriter = require("libs.assets.src.PngWriter")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
@@ -385,6 +387,257 @@ function T.release_frees_the_images_and_draw_after_release_is_a_noop()
   renderer:draw(nil, canonicalPlacement())
   renderer:draw({ cursorSlotId = 1, cursorFrameIndex = 0 }, canonicalPlacement())
   Assert.equal(#lg.draws, 0, "a released renderer draws nothing")
+end
+
+-- The v9 Start Menu contract under test below (retail icon-sprite path
+-- per the worktree forensics report): entry art is OBJ icon sprites, not
+-- baked background rects. The manifest carries a 13-row retail icon table
+-- (Lua index = retail icon index + 1) with per-row art kind and label data,
+-- a shared icon atlas plus a pre-rendered selection-bank highlight atlas,
+-- the shared palette bank record, sprite bases per destination slot, label
+-- windows keyed by destination slot, and main chrome; the presentation
+-- carries semantic icon indices, resolved label strings, and the trainer
+-- gender for the conditional Bag variant. Only the dynamic player name
+-- arrives resolved today (static label-bank resolution is deferred until
+-- the message class ships the label bank) and labels are drawn through the
+-- shared text collaborator, mirroring the TrainerCard/Dialogue renderer seam.
+local ICON_ATLAS_PATH = "assets/generated/field/ui/start-menu-icons.png"
+local ICON_HIGHLIGHT_PATH = "assets/generated/field/ui/start-menu-icons-highlight.png"
+local ICON_PALETTE_PATH = "assets/generated/field/ui/start-menu-icon-palette.png"
+local POKE_ICON_PATH = "assets/generated/field/ui/start-menu-poke-icons.png"
+local CHROME_MAIN_PATH = "assets/generated/field/ui/start-menu-chrome-main.png"
+
+-- Thirteen retail icon rows: sprite icons 0-7 and 11-12 carry art, rows 8-9
+-- are text-only (no art rect), row 10 is the external poke-icon path. Row 2
+-- (Bag) carries the conditional female variant as a first-class rect.
+local function iconTable()
+  local rows = {}
+  for icon = 0, 12 do
+    rows[icon + 1] = {
+      art = "sprite",
+      rect = { x = icon * 32, y = 0, width = 32, height = 32 },
+      label = icon,
+      labelKind = "static",
+    }
+  end
+  rows[2 + 1].variants = {
+    default = { x = 2 * 32, y = 0, width = 32, height = 32 },
+    female = { x = 2 * 32, y = 32, width = 32, height = 32 },
+  }
+  rows[4 + 1].label = 3
+  rows[4 + 1].labelKind = "player_name"
+  rows[8 + 1] = { art = "text", label = 32, labelKind = "static" }
+  rows[9 + 1] = { art = "text", label = 32, labelKind = "static" }
+  rows[10 + 1] = { art = "poke_icon", label = 32, labelKind = "static" }
+  return rows
+end
+
+local function iconManifest()
+  local manifest = FieldUiFixture.manifest()
+  manifest.assets["hgss.start_menu.icons"] = { image = ICON_ATLAS_PATH, width = 13 * 32, height = 64 }
+  manifest.assets["hgss.start_menu.icon_highlight"] = { image = ICON_HIGHLIGHT_PATH, width = 13 * 32, height = 64 }
+  manifest.assets["hgss.start_menu.icon_palette"] = { image = ICON_PALETTE_PATH, width = 16, height = 2 }
+  manifest.assets["hgss.start_menu.poke_icons"] = { image = POKE_ICON_PATH, width = 32, height = 32 }
+  manifest.assets["hgss.start_menu.chrome_main"] = { image = CHROME_MAIN_PATH, width = 256, height = 192 }
+  manifest.startMenu.iconTable = iconTable()
+  manifest.startMenu.iconAtlas = { asset = "hgss.start_menu.icons" }
+  manifest.startMenu.iconHighlight = { asset = "hgss.start_menu.icon_highlight" }
+  manifest.startMenu.iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 }
+  manifest.startMenu.pokeIcons = { asset = "hgss.start_menu.poke_icons" }
+  manifest.startMenu.chrome = {
+    main = { asset = "hgss.start_menu.chrome_main", transparentAboveY = 136 },
+  }
+  manifest.startMenu.iconBases = {
+    [3] = { x = 24, y = 22 },
+    [5] = { x = 24, y = 102 },
+  }
+  manifest.startMenu.labelWindows = {
+    [3] = { x = 8, y = 54, width = 72, height = 16 },
+    [5] = { x = 8, y = 134, width = 72, height = 16 },
+  }
+  return manifest
+end
+
+local function iconCache(manifest)
+  local cache = menuCache()
+  cache:write(ICON_ATLAS_PATH, PngWriter.encode(13 * 32, 64, string.rep(string.char(200, 40, 40, 255), 13 * 32 * 64)))
+  cache:write(
+    ICON_HIGHLIGHT_PATH,
+    PngWriter.encode(13 * 32, 64, string.rep(string.char(255, 220, 120, 255), 13 * 32 * 64))
+  )
+  cache:write(ICON_PALETTE_PATH, PngWriter.encode(16, 2, string.rep(string.char(10, 10, 10, 255), 16 * 2)))
+  cache:write(POKE_ICON_PATH, PngWriter.encode(32, 32, string.rep(string.char(40, 200, 40, 255), 32 * 32)))
+  cache:write(CHROME_MAIN_PATH, PngWriter.encode(256, 192, string.rep(string.char(30, 30, 60, 255), 256 * 192)))
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  return cache
+end
+
+-- Recording stand-in for the shared FieldTextRenderer: the caller resolves
+-- only the dynamic player name before presenting; static label-bank
+-- resolution is deferred until the message class ships the label bank, so
+-- static rows present with no label and the renderer draws their icon
+-- alone. The renderer only places the given strings centered in the
+-- action's own label window.
+local function recordingText()
+  local text = { draws = {} }
+  function text.drawText(_, str, x, y)
+    text.draws[#text.draws + 1] = { text = str, x = x, y = y }
+  end
+  function text.textWidth(_, str)
+    return #str * 8
+  end
+  return text
+end
+
+-- Icons compose from the icon table at their sprite bases with resolved
+-- labels, the cursor draws last, and no whole-background-at-identity draw
+-- remains: entry art is OBJ sprites, never baked background rects.
+function T.icons_compose_from_the_icon_table_at_sprite_bases_with_cursor_last()
+  local manifest = iconManifest()
+  local text = recordingText()
+  local lg = fakeGraphics({ imageSizes = { { 256, 192 }, { 16, 32 } } })
+  local renderer =
+    StartMenuRenderer.new({ cacheFs = iconCache(manifest), manifest = manifest, text = text, graphics = lg })
+  renderer:draw({
+    cursorSlotId = 5,
+    cursorFrameIndex = 0,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.save", slotId = 5, icon = 5, label = "SAVE" },
+      { id = "vanilla.trainer_card", slotId = 3, icon = 4, label = "ASH" },
+    },
+  }, canonicalPlacement())
+  renderer:release()
+
+  Assert.equal(#lg.draws, 4, "chrome plus two icon draws plus the cursor, never a whole-background draw")
+  local chromeDraw, saveDraw, trainerDraw, cursorDraw = lg.draws[1], lg.draws[2], lg.draws[3], lg.draws[4]
+  Assert.deepEqual(
+    { saveDraw.quad.x, saveDraw.quad.y, saveDraw.quad.w, saveDraw.quad.h },
+    { 5 * 32, 0, 32, 32 },
+    "the save draw samples the save icon-table rect"
+  )
+  Assert.equal(saveDraw.x, 24, "the save icon lands at its sprite base")
+  Assert.equal(saveDraw.y, 102)
+  Assert.deepEqual(
+    { trainerDraw.quad.x, trainerDraw.quad.y, trainerDraw.quad.w, trainerDraw.quad.h },
+    { 4 * 32, 0, 32, 32 },
+    "the trainer-card draw samples its icon-table rect"
+  )
+  Assert.equal(trainerDraw.x, 24, "the trainer icon lands at its sprite base")
+  Assert.equal(trainerDraw.y, 22)
+  Assert.equal(#text.draws, 2, "both resolved labels reach the shared text stack")
+  Assert.equal(text.draws[1].text, "SAVE")
+  Assert.equal(text.draws[2].text, "ASH", "the dynamic trainer name draws as resolved by the caller")
+  Assert.deepEqual(
+    { cursorDraw.quad.w, cursorDraw.quad.h },
+    { 16, 16 },
+    "the cursor draws last over the composed icons"
+  )
+  Assert.isTrue(chromeDraw.quad.w == 256, "the chrome panel draws first under the icons")
+end
+
+-- The Bag icon is conditional on trainer gender: the female variant is a
+-- first-class icon-table rect, not an unmapped spare.
+function T.female_bag_variant_draws_the_conditional_icon_art()
+  local manifest = iconManifest()
+  local lg = fakeGraphics({ imageSizes = { { 256, 192 }, { 16, 32 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(manifest),
+    manifest = manifest,
+    text = recordingText(),
+    graphics = lg,
+  })
+  renderer:draw({
+    cursorSlotId = 3,
+    cursorFrameIndex = 0,
+    trainerGender = "female",
+    actions = {
+      { id = "vanilla.bag", slotId = 3, icon = 2, label = "BAG" },
+    },
+  }, canonicalPlacement())
+  renderer:release()
+
+  local bagDraw = nil
+  for _, draw in ipairs(lg.draws) do
+    if draw.quad and draw.quad.w == 32 and draw.quad.h == 32 then
+      bagDraw = draw
+    end
+  end
+  Assert.notNil(bagDraw, "the female bag presentation must draw icon art")
+  Assert.deepEqual({
+    (bagDraw --[[@as table]]).quad.x,
+    (bagDraw --[[@as table]]).quad.y,
+  }, { 2 * 32, 32 }, "the female bag draws the conditional variant rect, not the default")
+end
+
+-- Selection is a palette swap, not cursor placement alone: the selected
+-- action's icon draws from the pre-rendered selection-bank highlight atlas
+-- while unselected icons draw from the base atlas.
+function T.selected_entry_draws_through_the_selection_palette_bank()
+  local manifest = iconManifest()
+  local lg = fakeGraphics({ imageSizes = { { 256, 192 }, { 16, 32 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(manifest),
+    manifest = manifest,
+    text = recordingText(),
+    graphics = lg,
+  })
+  renderer:draw({
+    cursorSlotId = 5,
+    cursorFrameIndex = 0,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.save", slotId = 5, icon = 5, label = "SAVE" },
+      { id = "vanilla.trainer_card", slotId = 3, icon = 4, label = "ASH" },
+    },
+  }, canonicalPlacement())
+  renderer:release()
+
+  local iconDraws = {}
+  for _, draw in ipairs(lg.draws) do
+    if draw.quad and draw.quad.w == 32 and draw.quad.h == 32 then
+      iconDraws[#iconDraws + 1] = draw
+    end
+  end
+  Assert.equal(#iconDraws, 2, "both presented icons draw")
+  Assert.isTrue(#lg.images >= 4, "the renderer must acquire the shared icon palette/highlight art")
+  Assert.isTrue(
+    iconDraws[1].image ~= iconDraws[2].image,
+    "the selected save icon must draw from the selection-bank highlight atlas, not the base atlas"
+  )
+end
+
+-- Text-only icon-table rows carry no art: their actions draw labels without
+-- an icon-atlas draw, and poke-icon rows draw from the external poke-icon
+-- path instead of the shared icon atlas.
+function T.text_only_and_poke_icon_rows_draw_without_shared_icon_art()
+  local manifest = iconManifest()
+  local text = recordingText()
+  local lg = fakeGraphics({ imageSizes = { { 256, 192 }, { 16, 32 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(manifest),
+    manifest = manifest,
+    text = text,
+    graphics = lg,
+  })
+  renderer:draw({
+    cursorSlotId = 3,
+    cursorFrameIndex = 0,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.ball", slotId = 3, icon = 8, label = "BALL" },
+    },
+  }, canonicalPlacement())
+  renderer:release()
+
+  for _, draw in ipairs(lg.draws) do
+    Assert.isTrue(
+      not (draw.quad and draw.quad.w == 32 and draw.quad.h == 32),
+      "a text-only row must draw no shared icon art"
+    )
+  end
+  Assert.equal(#text.draws, 1, "the text-only row still draws its label")
+  Assert.equal(text.draws[1].text, "BALL")
 end
 
 return { tests = T }

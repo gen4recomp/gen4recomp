@@ -1456,26 +1456,57 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
   -- party action additionally requires an owned mon: an empty party must
   -- never offer a usable route into the party screen, even past the
   -- starter progression gate.
+  --
+  -- The normal visual composition admits exactly the icon-backed entries:
+  -- the manifest's action-to-icon map for the normal context intersects the
+  -- source-present policy list. The cancel sentinel and the bookkeeping
+  -- specials carry no icon slot, so they stay source-policy facts but are
+  -- not visual buttons. Icon-backed entries keep their source and
+  -- implementation enabled state (a disabled visual entry renders and
+  -- confirms as a no-op). Labels resolve per icon-table row: the
+  -- player-name row carries the live player name, never baked text; static
+  -- bank-id labels resolve through the message stack once it publishes the
+  -- label bank (absent from the generated message class, so static rows
+  -- carry no label yet and render icon-only).
+  local startMenuSection = assert(self.uiManifest.startMenu, "the field UI manifest must carry the start menu section")
+  local actionIcons = assert(startMenuSection.actionIcons, "the field UI manifest must carry the start menu action map")
+  local iconTable = assert(startMenuSection.iconTable, "the field UI manifest must carry the start menu icon table")
+  local profile = assert(self.playerData and self.playerData.profile, "the start menu requires the player profile")
+  local playerName = assert(profile.name, "the start menu requires the player name")
   local entries = {}
-  for index, source in ipairs(sourceEntries) do
-    local implemented = implementationAvailable(self, source)
-    local enabled = source.sourceEnabled and implemented
-    if enabled and source.id == "vanilla.pokemon" then
-      enabled = self.monService:partyCount() > 0
+  for _, source in ipairs(sourceEntries) do
+    local icon = actionIcons[source.id]
+    if icon ~= nil then
+      local implemented = implementationAvailable(self, source)
+      local enabled = source.sourceEnabled and implemented
+      if enabled and source.id == "vanilla.pokemon" then
+        enabled = self.monService:partyCount() > 0
+      end
+      if enabled and source.id == "vanilla.bag" then
+        enabled = self.bagService ~= nil and self.bagCursor ~= nil and self.itemCatalog ~= nil
+      end
+      local row = assert(iconTable[icon + 1], "action " .. source.id .. " maps outside the start menu icon table")
+      local label = nil
+      if row.labelKind == "player_name" then
+        label = playerName
+      end
+      entries[#entries + 1] = {
+        id = source.id,
+        displayPosition = source.displayPosition,
+        actionKind = source.actionKind,
+        targetApplication = source.targetApplication,
+        sourcePresent = true,
+        sourceEnabled = source.sourceEnabled,
+        implemented = implemented,
+        enabled = enabled,
+        icon = icon,
+        label = label,
+      }
     end
-    if enabled and source.id == "vanilla.bag" then
-      enabled = self.bagService ~= nil and self.bagCursor ~= nil and self.itemCatalog ~= nil
-    end
-    entries[index] = {
-      id = source.id,
-      displayPosition = source.displayPosition,
-      actionKind = source.actionKind,
-      targetApplication = source.targetApplication,
-      sourcePresent = true,
-      sourceEnabled = source.sourceEnabled,
-      implemented = implemented,
-      enabled = enabled,
-    }
+  end
+
+  if #entries == 0 then
+    return nil
   end
 
   return StartMenuController.new({

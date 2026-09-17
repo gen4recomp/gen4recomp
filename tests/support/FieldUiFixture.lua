@@ -557,15 +557,6 @@ function FieldUiFixture.manifest()
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = FieldUiFixture.START_MENU_CURSOR_FRAMES },
       slots = FieldUiFixture.START_MENU_SLOTS,
-      actionSurfaces = {
-        ["vanilla.pokedex"] = FieldUiFixture.START_MENU_SLOTS[2],
-        ["vanilla.pokemon"] = FieldUiFixture.START_MENU_SLOTS[3],
-        ["vanilla.bag"] = FieldUiFixture.START_MENU_SLOTS[4],
-        ["vanilla.pokegear"] = FieldUiFixture.START_MENU_SLOTS[5],
-        ["vanilla.trainer_card"] = FieldUiFixture.START_MENU_SLOTS[6],
-        ["vanilla.save"] = FieldUiFixture.START_MENU_SLOTS[7],
-        ["vanilla.options"] = FieldUiFixture.START_MENU_SLOTS[8],
-      },
     },
     trainerCard = {
       front = { x = 0, y = 0, width = 256, height = 256 },
@@ -612,6 +603,108 @@ function FieldUiFixture.startMenuCache()
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
   cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
   return cache
+end
+
+-- Adds the v9 start-menu icon-sprite contract to a fixture manifest in
+-- place: the thirteen retail icon rows (sprite cells laid out like the
+-- compiled 352x40 shared atlas, the Bag female variant, the trainer-card
+-- player-name row, text-only rows 9-10, poke-icon row 11), the shared
+-- atlas/highlight/palette asset entries, the seven context rows, the
+-- action-to-icon map, sprite bases, label windows, and chrome. Manifests
+-- that predate the icon contract (like manifest() above) stay untouched so
+-- legacy-surface tests keep proving the background path.
+---@param manifest table
+---@return table manifest
+function FieldUiFixture.addStartMenuIconContract(manifest)
+  manifest.assets["hgss.start_menu.icons"] = {
+    image = "assets/generated/field/ui/start-menu-icons.png",
+    width = 352,
+    height = 40,
+  }
+  manifest.assets["hgss.start_menu.icon_highlight"] = {
+    image = "assets/generated/field/ui/start-menu-icons-highlight.png",
+    width = 352,
+    height = 40,
+  }
+  manifest.assets["hgss.start_menu.icon_palette"] = {
+    image = "assets/generated/field/ui/start-menu-icon-palette.png",
+    width = 16,
+    height = 2,
+  }
+  manifest.assets["hgss.start_menu.chrome_sub"] = {
+    image = "assets/generated/field/ui/start-menu-chrome-sub.png",
+    width = 256,
+    height = 256,
+  }
+  local startMenu = assert(manifest.startMenu, "the fixture manifest must carry the start menu section")
+  local iconTable = {}
+  local cell = 0
+  for icon = 0, 12 do
+    if icon == 8 or icon == 9 then
+      iconTable[icon + 1] = { art = "text", label = 32, labelKind = "static" }
+    elseif icon == 10 then
+      iconTable[icon + 1] = { art = "poke_icon", label = 32, labelKind = "static" }
+    else
+      local labels = { [0] = 0, [1] = 1, [2] = 2, [3] = 14, [4] = 3, [5] = 4, [6] = 5, [7] = 8, [11] = 34, [12] = 35 }
+      iconTable[icon + 1] = {
+        art = "sprite",
+        rect = { x = cell * 32, y = 0, width = 32, height = 40 },
+        label = labels[icon],
+        labelKind = "static",
+      }
+      cell = cell + 1
+    end
+  end
+  iconTable[5].labelKind = "player_name"
+  iconTable[3].variants = {
+    default = iconTable[3].rect,
+    female = { x = 10 * 32, y = 0, width = 32, height = 40 },
+  }
+  startMenu.iconTable = iconTable
+  startMenu.iconAtlas = { asset = "hgss.start_menu.icons" }
+  startMenu.iconHighlight = { asset = "hgss.start_menu.icon_highlight" }
+  startMenu.iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 }
+  startMenu.contexts = {
+    { 0, 1, 2, 3, 4, 5, 6 },
+    { 7, 0, 1, 2, 3, 4, 6 },
+    { 7, 0, 1, 3, 4, 6, 10 },
+    { 7, 0, 1, 3, 4, 6, 9 },
+    { 11, 0, 1, 2, 12, 4, 6 },
+    { 1, 2, 4, 6, false, false, false },
+    { 1, 4, 6, false, false, false, false },
+  }
+  startMenu.actionIcons = {
+    ["vanilla.pokedex"] = 0,
+    ["vanilla.pokemon"] = 1,
+    ["vanilla.bag"] = 2,
+    ["vanilla.pokegear"] = 3,
+    ["vanilla.trainer_card"] = 4,
+    ["vanilla.save"] = 5,
+    ["vanilla.options"] = 6,
+  }
+  startMenu.iconBases = {
+    [2] = { x = 24, y = 22 },
+    [3] = { x = 24, y = 62 },
+    [4] = { x = 24, y = 102 },
+    [5] = { x = 24, y = 142 },
+    [6] = { x = 104, y = 22 },
+    [7] = { x = 104, y = 62 },
+    [8] = { x = 104, y = 102 },
+  }
+  startMenu.labelWindows = {
+    [2] = { x = 8, y = 48, width = 72, height = 16 },
+    [3] = { x = 8, y = 88, width = 72, height = 16 },
+    [4] = { x = 8, y = 128, width = 72, height = 16 },
+    [5] = { x = 8, y = 168, width = 72, height = 16 },
+    [6] = { x = 88, y = 48, width = 72, height = 16 },
+    [7] = { x = 88, y = 88, width = 72, height = 16 },
+    [8] = { x = 88, y = 128, width = 72, height = 16 },
+  }
+  startMenu.chrome = {
+    main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
+    sub = { asset = "hgss.start_menu.chrome_sub" },
+  }
+  return manifest
 end
 
 return FieldUiFixture

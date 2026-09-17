@@ -358,29 +358,68 @@ local function openMenu(runtime)
     end
     tick(1)
   end
-  Assert.fail("the source start menu must open after Mom")
+  error("the source start menu must open after Mom")
+end
+
+-- Semantic Start Menu activation: direct id lookup in the published menu
+-- status (loud on absence, never a directional walk), real pointer press at
+-- the action's current manifest slot mapped through the runtime placement,
+-- then a wait on the action's destination application. Field actions such
+-- as Save carry no application id and return the action for host-state
+-- assertions.
+local function hostPointForAction(runtime, action)
+  local slots = assert(runtime.uiManifest and runtime.uiManifest.startMenu.slots, "the menu manifest must carry slots")
+  local slot = assert(slots[action.slotId], "the presented action must carry its destination slot")
+  local placement = assert(runtime.startMenuPlacement, "the runtime must publish the start menu placement record")
+  local readable = {
+    frame = placement.frame,
+    origin = placement.origin or { x = placement.frame.x, y = placement.frame.y },
+    scale = placement.scale,
+    logicalWidth = placement.logicalWidth,
+    logicalHeight = placement.logicalHeight,
+  }
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  return LayoutGeometry.logicalToHost(readable, slot.x + slot.width / 2, slot.y + slot.height / 2)
 end
 
 local function choose(runtime, id)
-  for _ = 1, 20 do
-    local menu = runtime.applicationHost:status().menu
+  local menu = runtime.applicationHost:status().menu
+  local found = nil
+  if menu then
     for _, action in ipairs(menu.actions) do
-      if action.id == id and menu.cursorSlotId == action.slotId then
-        press("a")
-        tick(2)
-        for _ = 1, 120 do
-          if runtime.applicationHost:status().applicationId == id then
-            return
-          end
-          tick(1)
-        end
-        return
+      if action.id == id then
+        found = action
+        break
       end
     end
-    press("dpdown")
+  end
+  if found == nil then
+    error("start menu action was not available: " .. id)
+  end
+  local hostX, hostY = hostPointForAction(runtime, found)
+  runtime.input:pointerDown("touch:1", hostX, hostY)
+  runtime.input:pointerUp("touch:1", hostX, hostY)
+  tick(2)
+  if found.targetApplication ~= nil then
+    for _ = 1, 120 do
+      if runtime.applicationHost:status().applicationId == found.targetApplication then
+        return found
+      end
+      tick(1)
+    end
+    error("the start menu action did not launch its target application: " .. id)
+  end
+  return found
+end
+
+local function waitForHostPhase(runtime, phase, maxTicks)
+  for _ = 1, maxTicks do
+    if runtime.applicationHost:status().phase == phase then
+      return
+    end
     tick(1)
   end
-  error("start menu action was not available: " .. id)
+  error("the application host did not reach phase " .. tostring(phase))
 end
 
 function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
@@ -545,8 +584,10 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     openMenu(runtime)
     choose(runtime, "vanilla.trainer_card")
     Assert.equal(runtime.applicationHost:status().applicationId, "trainer_card")
+    waitForHostPhase(runtime, "application", 120)
     press("b")
-    tick(3)
+    tick(1)
+    waitForHostPhase(runtime, "menu", 120)
     openMenu(runtime)
     choose(runtime, "vanilla.save")
     tick(3)
@@ -556,7 +597,8 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     local savedMap = checkpoint.mapId
     App.setState(nil)
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
-    Assert.equal(#App.state.state:view().items, 2)
+    local restoredView = App.state.state:view()
+    Assert.equal(#restoredView.saves + #restoredView.globalActions, 2)
     press("dpdown")
     press("a")
     tick(4)

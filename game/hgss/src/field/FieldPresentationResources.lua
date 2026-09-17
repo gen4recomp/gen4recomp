@@ -131,6 +131,7 @@ function FieldPresentationResources.new(runtime)
     self.startMenuRenderer = StartMenuRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
+      text = textRenderer,
     })
     self.trainerCardRenderer = TrainerCardRenderer.new({
       cacheFs = runtime.cacheFs,
