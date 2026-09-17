@@ -718,8 +718,27 @@ function T.exhaustive_scheduling_covers_every_current_family_exactly_once()
       sweepEnabled = true,
     })
     local ready, failure = session:requestMilestone("bootstrap", "required")
+    -- Enrollment is update-owned: the admitted roster drains through the
+    -- shared pump slice behind the large static bank fan-out, so wait
+    -- until every member is registered before staging readiness. The
+    -- scheduling assertions below are unchanged.
+    for _ = 1, 60 do
+      local registered = true
+      for _, job in ipairs(ArtifactJobs.bootstrapJobs({})) do
+        if session.byKey[job.kind .. ":" .. job.key] == nil then
+          registered = false
+          break
+        end
+      end
+      if registered then
+        break
+      end
+      session:update()
+    end
     for _, job in ipairs(ArtifactJobs.bootstrapJobs({})) do
-      session.byKey[job.kind .. ":" .. job.key].ready = true
+      local entry = session.byKey[job.kind .. ":" .. job.key]
+      Assert.notNil(entry, "admitted enrollment registers every bootstrap member")
+      entry.ready = true
     end
     session:update()
     local counts = {}
@@ -1703,9 +1722,6 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
     session:requestJob("mon-icon-page", "0", "required")
     session:requestJob("mon-icon-page", "1", "required")
     session:requestJob("mon-summary", "global", "required")
-    for _ = 1, 3 do
-      session:update()
-    end
     local function submissions(jobKey)
       local count = 0
       for _, submitted in ipairs(pool.submitted) do
@@ -1714,6 +1730,19 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
         end
       end
       return count
+    end
+    -- Repair submission is paced by the shared planning budget: a starved
+    -- wall-clock slice may spend early pumps on roster construction and
+    -- validation, so poll boundedly for the repair submission, then drain
+    -- so the exact-once assertions below still observe duplicate work.
+    for _ = 1, 25 do
+      session:update()
+      if submissions("mon-icon-page:1") >= 1 then
+        break
+      end
+    end
+    for _ = 1, 3 do
+      session:update()
     end
     Assert.equal(submissions("mon-icon-page:0"), 0, "the valid sibling stays reused")
     Assert.equal(submissions("mon-icon-page:1"), 1, "only the corrupted page is submitted for repair")
@@ -1793,7 +1822,16 @@ function T.failed_source_discovery_ends_field_core_with_its_cause()
     local pool = recordingPool()
     local session = openSession("failed-discovery-generation", pool)
     session:requestMilestone("field-core", "required")
-    session:update()
+    -- Prerequisite submission is paced by the shared planning budget:
+    -- a starved wall-clock slice may spend the first pump on roster
+    -- construction, so poll boundedly for submission instead of
+    -- assuming it lands on exactly one update.
+    for _ = 1, 25 do
+      session:update()
+      if contains(pool.submitted, "source-plan:global") then
+        break
+      end
+    end
     Assert.isTrue(contains(pool.submitted, "source-plan:global"), "field-core demand schedules the source inventory")
     pool.states["source-plan:global"] = { state = "failed", details = { error = "synthetic inventory fault" } }
     for _ = 1, 5 do
@@ -2151,6 +2189,329 @@ function T.declared_metadata_edges_still_schedule_their_prerequisites()
     )
     Assert.isFalse(contains(pool.submitted, "mon-portrait-page:0"), "a page never dispatches from an incomplete plan")
   end)
+end
+
+-- Transition-driven adoption: metadata reads happen only under an admitted
+-- planning step, newly adopted membership enrolls once at its retained
+-- urgency, and a repaired payload earns exactly one fresh adoption attempt
+-- instead of per-frame rereads.
+function T.exhausted_budget_admits_layout_adoption_before_reading_plans()
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "admitted-adoption-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  stageSynthetic(cacheFs, generation)
+  local catalogMarker = "synthetic-catalog-marker"
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  local layoutMarker = "synthetic-layout-marker"
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    layoutMarker,
+    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+    generation
+  )
+  writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
+  local realPublishedPlans = ArtifactJobs.publishedPlans
+  local realPlanRead = SourcePlan.read
+  local publishedCalls, planReads = 0, 0
+  ArtifactJobs.publishedPlans = function(...)
+    publishedCalls = publishedCalls + 1
+    return realPublishedPlans(...)
+  end
+  SourcePlan.read = function(...)
+    planReads = planReads + 1
+    return realPlanRead(...)
+  end
+  local realLove = rawget(_G, "love")
+  local ok, failure = pcall(function()
+    withPatched({
+      {
+        target = CacheFs,
+        name = "forVersion",
+        replacement = function()
+          return realForVersion("heartgold", backend)
+        end,
+      },
+    }, function()
+      local pool = recordingPool()
+      local session = openSession(generation, pool)
+      session:requestMilestone("field-core", "required")
+      -- The first planning node sets the slice start; every later clock
+      -- read observes an exhausted slice, so the layout adoption below
+      -- cannot admit its planning node in this pass.
+      local clockCalls = 0
+      rawset(_G, "love", {
+        timer = {
+          getTime = function()
+            clockCalls = clockCalls + 1
+            if clockCalls <= 2 then
+              return 1000.0
+            end
+            return 2000.0
+          end,
+        },
+      })
+      local updateOk, _ = pcall(session.update, session)
+      rawset(_G, "love", realLove)
+      Assert.isTrue(updateOk, "the exhausted pass still pumps without raising")
+      Assert.isTrue(session.sourceLoaded, "the admitted source adoption completes first")
+      Assert.isFalse(session.pagesKnown, "the unadmitted layout adoption waits for a fresh slice")
+      Assert.equal(publishedCalls, 0, "an exhausted pass reads no published plans, got " .. tostring(publishedCalls))
+      local admitted = false
+      for _ = 1, 10 do
+        session:update()
+        if session.pagesKnown then
+          admitted = true
+          break
+        end
+      end
+      Assert.isTrue(admitted, "the next admitted step adopts the layout")
+      Assert.equal(publishedCalls, 1, "the admitted adoption reads plans exactly once")
+      Assert.isTrue(contains(session.iconPageIds, 0), "adoption carries the declared icon page")
+      Assert.isTrue(planReads >= 1, "the source inventory was read through its owner")
+    end)
+  end)
+  ArtifactJobs.publishedPlans = realPublishedPlans
+  SourcePlan.read = realPlanRead
+  rawset(_G, "love", realLove)
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.adopted_page_membership_enrolls_once_at_retained_urgency()
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "delta-enrollment-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  stageSynthetic(cacheFs, generation)
+  local catalogMarker = "synthetic-catalog-marker"
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  local layoutMarker = "synthetic-layout-marker"
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    layoutMarker,
+    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+    generation
+  )
+  writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
+  local realBootstrapJobs = ArtifactJobs.bootstrapJobs
+  local realFieldCoreJobs = ArtifactJobs.fieldCoreJobs
+  local constructions = { bootstrap = 0, core = 0 }
+  ArtifactJobs.bootstrapJobs = function(...)
+    constructions.bootstrap = constructions.bootstrap + 1
+    return realBootstrapJobs(...)
+  end
+  ArtifactJobs.fieldCoreJobs = function(...)
+    constructions.core = constructions.core + 1
+    return realFieldCoreJobs(...)
+  end
+  local realBackendRead = backend.read
+  local backendReads = 0
+  function backend.read(self, path)
+    backendReads = backendReads + 1
+    return realBackendRead(self, path)
+  end
+  local ok, failure = pcall(function()
+    withPatched({
+      {
+        target = CacheFs,
+        name = "forVersion",
+        replacement = function()
+          return realForVersion("heartgold", backend)
+        end,
+      },
+    }, function()
+      local pool = recordingPool()
+      local session = InteractiveCacheBuild.new({
+        identity = identity(generation),
+        epoch = 1,
+        pool = pool,
+        sweepEnabled = true,
+      })
+      session:requestMilestone("field-core", "near")
+      local adopted = false
+      for _ = 1, 60 do
+        session:update()
+        if session.pagesKnown then
+          adopted = true
+          break
+        end
+      end
+      Assert.isTrue(adopted, "the staged layout is adopted through the pump")
+      -- Drain every other demand without touching the still-cold page, so
+      -- later idle updates have no legitimate enrollment left to perform.
+      -- The retained cursors drain one planning node per member under the
+      -- shared per-update slice, so a full corpus needs many bounded passes.
+      local drained = false
+      for _ = 1, 1200 do
+        for _, entry in pairs(session.byKey) do
+          if type(entry) == "table" and entry.jobKey ~= "mon-icon-page:0" then
+            if entry.failure == nil and not entry.ready then
+              entry.ready = true
+            end
+          end
+        end
+        session:update()
+        local outstanding = session.byKey["mon-icon-page:0"] == nil
+        if not outstanding then
+          for _, entry in pairs(session.byKey) do
+            if type(entry) == "table" and entry.failure == nil and not entry.ready and not entry.submitted then
+              outstanding = true
+              break
+            end
+          end
+        end
+        if
+          session.byKey["mon-icon-page:0"] ~= nil
+          and session.sweepCursor == nil
+          and session.enrollCursor == nil
+          and not outstanding
+        then
+          drained = true
+          break
+        end
+      end
+      Assert.isTrue(drained, "adoption-triggered enrollment drains through bounded planning")
+      local pageEntry = assert(session.byKey["mon-icon-page:0"], "the enrolled page keeps its entry")
+      Assert.equal(pageEntry.urgency, "near", "the new member joins at the retained urgency")
+      local submissions = {}
+      for _, jobKey in ipairs(pool.submitted) do
+        submissions[jobKey] = (submissions[jobKey] or 0) + 1
+      end
+      Assert.equal(submissions["mon-icon-page:0"], 1, "the adopted page dispatches exactly once")
+      local seen = {}
+      for _, entry in ipairs(session.interest) do
+        Assert.isNil(seen[entry.jobKey], "adoption keeps one retained job: " .. entry.jobKey)
+        seen[entry.jobKey] = true
+      end
+      local pending, pendingFailure = session:requestMilestone("field-core", "near")
+      Assert.isFalse(pending, "field-core waits for its cold page")
+      Assert.isNil(pendingFailure, "the waiting scope reports no failure")
+      Assert.isFalse(session:status().settled, "a scope awaiting enrollment never settles")
+      local before = {
+        bootstrap = constructions.bootstrap,
+        core = constructions.core,
+        reads = backendReads,
+        submitted = #pool.submitted,
+      }
+      for _ = 1, 5 do
+        session:update()
+      end
+      Assert.equal(constructions.bootstrap, before.bootstrap, "idle updates rebuild no bootstrap roster")
+      Assert.equal(constructions.core, before.core, "idle updates rebuild no field-core roster")
+      Assert.equal(backendReads, before.reads, "idle updates perform no readiness reads")
+      Assert.equal(#pool.submitted, before.submitted, "idle updates submit no worker jobs")
+      local duplicates = {}
+      for _, jobKey in ipairs(pool.submitted) do
+        duplicates[jobKey] = (duplicates[jobKey] or 0) + 1
+      end
+      for jobKey, count in pairs(duplicates) do
+        Assert.equal(count, 1, "idle updates duplicate no physical job: " .. jobKey)
+      end
+    end)
+  end)
+  ArtifactJobs.bootstrapJobs = realBootstrapJobs
+  ArtifactJobs.fieldCoreJobs = realFieldCoreJobs
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.repaired_layout_reads_plans_once_without_polling_failures()
+  local MonCache = require("libs.assets.src.MonCache")
+  local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+  local generation = "quiet-repair-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  stageSynthetic(cacheFs, generation)
+  local catalogMarker = "synthetic-catalog-marker"
+  MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), catalogMarker)
+  writeMonReceipt(cacheFs, generation, "mon-catalog", "global", catalogMarker)
+  local layoutMarker = "synthetic-layout-marker"
+  MonCacheWriter.writeLayout(
+    cacheFs,
+    layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+    layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+    layoutMarker,
+    { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+    generation
+  )
+  writeMonReceipt(cacheFs, generation, "mon-layout", "global", layoutMarker)
+  local pagePlanPath = MonCacheWriter.sourcePagePlanPath("portraits", 0)
+  local savedRecord = assert(cacheFs:loadLua(pagePlanPath), "the staged page record reads back")
+  cacheFs:remove(pagePlanPath)
+  local realPublishedPlans = ArtifactJobs.publishedPlans
+  local publishedCalls = 0
+  ArtifactJobs.publishedPlans = function(...)
+    publishedCalls = publishedCalls + 1
+    return realPublishedPlans(...)
+  end
+  local ok, failure = pcall(function()
+    withPatched({
+      {
+        target = CacheFs,
+        name = "forVersion",
+        replacement = function()
+          return realForVersion("heartgold", backend)
+        end,
+      },
+    }, function()
+      local pool = recordingPool()
+      local session = openSession(generation, pool)
+      session:requestJob("mon-portrait-page", "0", "required")
+      for _ = 1, 6 do
+        session:update()
+      end
+      Assert.isFalse(session.pagesKnown, "a layout with a missing page record is never adopted")
+      Assert.equal(
+        publishedCalls,
+        1,
+        "unchanged damage earns no repeated full reader calls, got " .. tostring(publishedCalls)
+      )
+      cacheFs:writeLua(pagePlanPath, savedRecord)
+      local layoutEntry = session.byKey["mon-layout:global"]
+      if layoutEntry ~= nil and layoutEntry.failure ~= nil then
+        session:retry("mon-layout", "global", "required")
+      end
+      local readsBeforeRepair = publishedCalls
+      local adopted = false
+      for _ = 1, 20 do
+        session:update()
+        if session.pagesKnown then
+          adopted = true
+          break
+        end
+      end
+      Assert.isTrue(adopted, "the repaired marker is adopted through its owner transition")
+      Assert.equal(publishedCalls, readsBeforeRepair + 1, "the repair earns exactly one fresh adoption attempt")
+      Assert.isTrue(contains(session.portraitPageIds, 0), "the repair restores page membership")
+      Assert.equal(
+        cacheFs:read(MonCache.layoutMarkerPath()),
+        layoutMarker,
+        "adoption never mutates the deterministic marker"
+      )
+      session:retire()
+      local retiredOk = pcall(session.update, session)
+      Assert.isFalse(retiredOk, "a retired session runs no further planning")
+      Assert.equal(publishedCalls, readsBeforeRepair + 1, "a retired session retries no adoption")
+    end)
+  end)
+  ArtifactJobs.publishedPlans = realPublishedPlans
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 return { tests = T }

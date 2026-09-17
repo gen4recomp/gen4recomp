@@ -357,6 +357,12 @@ local function recordingPool()
   return pool
 end
 
+local function selectableRecordingPool()
+  local pool = recordingPool()
+  function pool:selectGeneration(_, _) end
+  return pool
+end
+
 local function summarySession(pool, cacheFs, bankIds)
   return setmetatable({
     versionId = "heartgold",
@@ -389,6 +395,9 @@ local function summarySession(pool, cacheFs, bankIds)
     pendingFillDone = false,
     loadedFillDone = false,
     enrollCursor = nil,
+    roster = {},
+    autoCoreNearDone = false,
+    layoutAttemptConsumed = false,
     sweepCursor = nil,
     planningPending = false,
     followerChecked = false,
@@ -1042,6 +1051,9 @@ local function openLiveSession(options)
     pendingFillDone = false,
     loadedFillDone = false,
     enrollCursor = nil,
+    roster = {},
+    autoCoreNearDone = false,
+    layoutAttemptConsumed = false,
     sweepCursor = nil,
     planningPending = false,
     followerChecked = false,
@@ -1685,6 +1697,9 @@ function T.bootstrap_finishes_without_pages_or_geometry()
   local ready, failure = session:requestMilestone("bootstrap", "required")
   Assert.isFalse(ready, "bootstrap stays pending until its own members are ready")
   Assert.isNil(failure, "bootstrap reports no failure while pending")
+  -- Enrollment is update-owned: admit the roster before staging readiness
+  -- through the backdoor. The scope assertions below are unchanged.
+  session:update()
   for _, entry in pairs(session.byKey) do
     if type(entry) == "table" and entry.failure == nil then
       entry.ready = true
@@ -1745,6 +1760,391 @@ function T.promotion_revisits_already_queued_prerequisites()
     local entry = session.byKey[jobKey]
     Assert.notNil(entry, "the promoted prerequisite keeps its retained entry: " .. jobKey)
     Assert.equal(entry.urgency, "required", "every prerequisite inherits the stronger urgency: " .. jobKey)
+  end
+end
+
+-- Transition-driven planning: once a scope settles, unchanged updates and
+-- repeated polls perform no membership reconstruction, enrollment,
+-- readiness reads, or worker submissions. Retained answers stay observable
+-- through status and outcomes while the pump alone advances new transitions.
+local function smallInventoryPlan(generation, scriptIds)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local members = {}
+  for _, memberId in ipairs(scriptIds) do
+    members[#members + 1] = { memberId = memberId }
+  end
+  return {
+    schema = SourcePlan.SCHEMA,
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    generationId = generation,
+    producerId = "d" .. string.rep("3", 64),
+    world = {
+      maps = { { id = 7 }, { id = 9 } },
+      analysis = { excluded = { { id = 3, reason = "placeholder header" } } },
+    },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+    scriptPlan = { members = members, generationKey = "synthetic-generation" },
+    audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapCellKeys = { [7] = {}, [9] = {} },
+  }
+end
+
+local function stageInventoryRecord(cacheFs, generation, scriptIds)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  cacheFs:writeLua(SourcePlan.PATH, smallInventoryPlan(generation, scriptIds))
+  cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "source-plan",
+    key = "global",
+    marker = SourcePlan.marker(generation),
+  })
+end
+
+local function countWork(counts, backend)
+  local realBootstrapJobs = ArtifactJobs.bootstrapJobs
+  local realFieldCoreJobs = ArtifactJobs.fieldCoreJobs
+  ArtifactJobs.bootstrapJobs = function(...)
+    counts.bootstrap = counts.bootstrap + 1
+    return realBootstrapJobs(...)
+  end
+  ArtifactJobs.fieldCoreJobs = function(...)
+    counts.core = counts.core + 1
+    return realFieldCoreJobs(...)
+  end
+  local realBackendRead = backend.read
+  function backend.read(self, path)
+    counts.backendRead = counts.backendRead + 1
+    return realBackendRead(self, path)
+  end
+  local realBackendWrite = backend.write
+  function backend.write(self, path, data)
+    counts.backendWrite = counts.backendWrite + 1
+    return realBackendWrite(self, path, data)
+  end
+  return {
+    bootstrapJobs = realBootstrapJobs,
+    fieldCoreJobs = realFieldCoreJobs,
+  }
+end
+
+function T.settled_updates_reuse_retained_membership_without_new_work()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local generation = "idle-membership-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  stageInventoryRecord(cacheFs, generation, {})
+  for _, member in ipairs(ArtifactJobs.bootstrapJobs({})) do
+    cacheFs:writeLua(ArtifactState.path(member.kind, member.key), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generation,
+      kind = member.kind,
+      key = member.key,
+      marker = "idle-marker-" .. member.kind .. "-" .. member.key,
+    })
+  end
+  local counts = { bootstrap = 0, core = 0, backendRead = 0, backendWrite = 0 }
+  local originals = countWork(counts, backend)
+  local realValidate = ArtifactJobs.validate
+  local realPlanRead = SourcePlan.read
+  local realPublishedPlans = ArtifactJobs.publishedPlans
+  local planReads, publishedReads = 0, 0
+  SourcePlan.read = function(...)
+    planReads = planReads + 1
+    return realPlanRead(...)
+  end
+  ArtifactJobs.publishedPlans = function(...)
+    publishedReads = publishedReads + 1
+    return realPublishedPlans(...)
+  end
+  -- Every family except the adopted inventory answers from its staged
+  -- record, so the pump can settle the scope without worker execution.
+  ArtifactJobs.validate = function(first, second, kind, ...)
+    if kind ~= "source-plan" then
+      return true
+    end
+    return realValidate(first, second, kind, ...)
+  end
+  local ok, failure = pcall(function()
+    CacheFs.forVersion = function(versionId)
+      assert(versionId == "heartgold", "session fixture stays on heartgold")
+      return cacheFs
+    end
+    local pool = selectableRecordingPool()
+    local session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("3", 64) },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+    local cold, coldFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(cold, "bootstrap stays pending until the pump validates its roster")
+    Assert.isNil(coldFailure, "bootstrap reports no failure while pending")
+    local settled = false
+    for _ = 1, 40 do
+      session:update()
+      if session:status().settled then
+        settled = true
+        break
+      end
+    end
+    Assert.isTrue(settled, "the stub-validated bootstrap settles with an idle pool")
+    Assert.equal(#pool.submitted, 0, "validation success never occupies a worker")
+    local before = {
+      bootstrap = counts.bootstrap,
+      core = counts.core,
+      planReads = planReads,
+      publishedReads = publishedReads,
+      backendRead = counts.backendRead,
+      backendWrite = counts.backendWrite,
+      submitted = #pool.submitted,
+      status = session:status(),
+    }
+    Assert.isTrue(before.status.settled, "the snapshot observes the settled scope")
+    for _ = 1, 5 do
+      session:update()
+    end
+    session:outcomes()
+    Assert.equal(counts.bootstrap, before.bootstrap, "idle updates rebuild no bootstrap roster")
+    Assert.equal(counts.core, before.core, "idle updates rebuild no field-core roster")
+    Assert.equal(planReads, before.planReads, "idle updates reread no source inventory")
+    Assert.equal(publishedReads, before.publishedReads, "idle updates readopt no published plans")
+    Assert.equal(counts.backendRead, before.backendRead, "idle updates perform no readiness reads")
+    Assert.equal(counts.backendWrite, before.backendWrite, "idle updates rewrite no milestone record")
+    Assert.equal(#pool.submitted, before.submitted, "idle updates submit no worker jobs")
+    local after = session:status()
+    Assert.equal(after.settled, before.status.settled, "settlement survives idle updates")
+    Assert.equal(after.bootstrap, before.status.bootstrap, "the retained bootstrap answer is stable")
+    Assert.equal(after.ready, before.status.ready, "the retained ready count is stable")
+    Assert.equal(after.failed, before.status.failed, "the retained failure count is stable")
+  end)
+  CacheFs.forVersion = realForVersion
+  ArtifactJobs.bootstrapJobs = originals.bootstrapJobs
+  ArtifactJobs.fieldCoreJobs = originals.fieldCoreJobs
+  ArtifactJobs.validate = realValidate
+  SourcePlan.read = realPlanRead
+  ArtifactJobs.publishedPlans = realPublishedPlans
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.repeated_scope_polls_observe_retained_answers_without_new_work()
+  local generation = "observational-poll-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  local counts = { bootstrap = 0, core = 0, backendRead = 0, backendWrite = 0 }
+  local originals = countWork(counts, backend)
+  local realValidate = ArtifactJobs.validate
+  local validates = 0
+  ArtifactJobs.validate = function(...)
+    validates = validates + 1
+    return realValidate(...)
+  end
+  local ok, failure = pcall(function()
+    CacheFs.forVersion = function(versionId)
+      assert(versionId == "heartgold", "session fixture stays on heartgold")
+      return cacheFs
+    end
+    local pool = selectableRecordingPool()
+    local session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("3", 64) },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+    local cold, coldFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(cold, "the first request registers pending demand")
+    Assert.isNil(coldFailure, "registration reports no failure")
+    local before = {
+      bootstrap = counts.bootstrap,
+      core = counts.core,
+      validates = validates,
+      backendRead = counts.backendRead,
+      backendWrite = counts.backendWrite,
+      submitted = #pool.submitted,
+    }
+    for _ = 1, 4 do
+      local pending, pendingFailure = session:requestMilestone("bootstrap", "required")
+      Assert.isFalse(pending, "a repeated required poll still answers pending")
+      Assert.isNil(pendingFailure, "a repeated required poll reports no failure")
+      local lower, lowerFailure = session:requestMilestone("bootstrap", "near")
+      Assert.isFalse(lower, "a lower-urgency poll still answers pending")
+      Assert.isNil(lowerFailure, "a lower-urgency poll reports no failure")
+    end
+    session:status()
+    session:outcomes()
+    Assert.equal(counts.bootstrap, before.bootstrap, "polls rebuild no bootstrap roster")
+    Assert.equal(counts.core, before.core, "polls rebuild no field-core roster")
+    Assert.equal(validates, before.validates, "polls run no family validation")
+    Assert.equal(counts.backendRead, before.backendRead, "polls perform no cache reads")
+    Assert.equal(counts.backendWrite, before.backendWrite, "polls publish no milestone record")
+    Assert.equal(#pool.submitted, before.submitted, "polls submit no worker jobs")
+    -- Enrollment is update-owned: admit the roster first so the backdoor
+    -- covers enrolled members, then establish through the pump. The poll
+    -- contract below is unchanged.
+    session:update()
+    for _, entry in pairs(session.byKey) do
+      if type(entry) == "table" and entry.failure == nil then
+        entry.ready = true
+      end
+    end
+    session:update()
+    local established, establishedFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isTrue(established, "the pump-established scope answers ready")
+    Assert.isNil(establishedFailure, "the established scope reports no failure")
+    local settledCounts = {
+      bootstrap = counts.bootstrap,
+      core = counts.core,
+      validates = validates,
+      backendRead = counts.backendRead,
+      backendWrite = counts.backendWrite,
+      submitted = #pool.submitted,
+    }
+    for _ = 1, 2 do
+      local again, againFailure = session:requestMilestone("bootstrap", "required")
+      Assert.isTrue(again, "a repeated poll of the ready scope still answers ready")
+      Assert.isNil(againFailure, "a repeated poll of the ready scope reports no failure")
+    end
+    Assert.equal(counts.bootstrap, settledCounts.bootstrap, "ready polls rebuild no bootstrap roster")
+    Assert.equal(counts.core, settledCounts.core, "ready polls rebuild no field-core roster")
+    Assert.equal(validates, settledCounts.validates, "ready polls run no family validation")
+    Assert.equal(counts.backendRead, settledCounts.backendRead, "ready polls perform no cache reads")
+    Assert.equal(counts.backendWrite, settledCounts.backendWrite, "ready polls publish no milestone record")
+    Assert.equal(#pool.submitted, settledCounts.submitted, "ready polls submit no worker jobs")
+  end)
+  CacheFs.forVersion = realForVersion
+  ArtifactJobs.bootstrapJobs = originals.bootstrapJobs
+  ArtifactJobs.fieldCoreJobs = originals.fieldCoreJobs
+  ArtifactJobs.validate = realValidate
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.required_promotion_reaches_paused_near_enrollment()
+  local generation = "paused-promotion-generation"
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  local scriptIds = {}
+  for memberId = 1, 40 do
+    scriptIds[#scriptIds + 1] = memberId
+  end
+  local planIds = {}
+  for memberId = 1, 41 do
+    planIds[#planIds + 1] = memberId
+  end
+  stageInventoryRecord(cacheFs, generation, planIds)
+  local ok, failure = pcall(function()
+    CacheFs.forVersion = function(versionId)
+      assert(versionId == "heartgold", "session fixture stays on heartgold")
+      return cacheFs
+    end
+    local pool = { submitted = {}, requests = {}, states = {} }
+    function pool:selectGeneration(_, _) end
+    function pool:update() end
+    function pool:status(jobKey)
+      if self.states[jobKey] ~= nil then
+        return self.states[jobKey]
+      end
+      for _, submitted in ipairs(self.submitted) do
+        if submitted == jobKey then
+          return "queued"
+        end
+      end
+      return "unknown"
+    end
+    function pool:request(job)
+      self.requests[#self.requests + 1] = { jobKey = job.jobKey, priority = job.priority }
+      self.submitted[#self.submitted + 1] = job.jobKey
+      return self.states[job.jobKey] or "queued", nil
+    end
+    local session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("3", 64) },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+    for _, memberId in ipairs(scriptIds) do
+      session:requestJob("script-member", tostring(memberId), "near")
+    end
+    -- Children wait for the inventory entry to become ready, so the first
+    -- passes register and validate while later bounded passes submit: keep
+    -- pumping until some members are queued while others still wait.
+    local submitted, unsubmitted = 0, 0
+    for _ = 1, 8 do
+      session:update()
+      submitted, unsubmitted = 0, 0
+      for _, memberId in ipairs(scriptIds) do
+        local entry = session.byKey["script-member:" .. tostring(memberId)]
+        Assert.notNil(entry, "near demand registers every member")
+        if entry.submitted then
+          submitted = submitted + 1
+        elseif entry.failure == nil and not entry.ready then
+          unsubmitted = unsubmitted + 1
+        end
+      end
+      if submitted > 0 and unsubmitted > 0 then
+        break
+      end
+    end
+    Assert.isTrue(submitted > 0, "bounded passes queue some near work")
+    Assert.isTrue(unsubmitted > 0, "bounded passes leave near work paused")
+    for _, memberId in ipairs(scriptIds) do
+      local entry = session.byKey["script-member:" .. tostring(memberId)]
+      Assert.equal(entry.urgency, "near", "paused demand keeps its near urgency")
+    end
+    for _, memberId in ipairs(scriptIds) do
+      session:requestJob("script-member", tostring(memberId), "required")
+    end
+    local sweepReady, sweepFailure = session:requestJob("script-member", "41", "sweep")
+    Assert.isFalse(sweepReady, "the sweep member stays pending behind required demand")
+    Assert.isNil(sweepFailure, "the sweep member reports no failure")
+    for _ = 1, 6 do
+      session:update()
+    end
+    for _, memberId in ipairs(scriptIds) do
+      local entry = session.byKey["script-member:" .. tostring(memberId)]
+      Assert.equal(entry.urgency, "required", "promotion upgrades every paused member")
+    end
+    local latestPriority, firstRequiredAt, firstSweepAt = {}, {}, nil
+    for index, request in ipairs(pool.requests) do
+      latestPriority[request.jobKey] = request.priority
+      if request.priority == 0 and firstRequiredAt[request.jobKey] == nil then
+        firstRequiredAt[request.jobKey] = index
+      end
+      if request.jobKey == "script-member:41" and firstSweepAt == nil then
+        firstSweepAt = index
+      end
+    end
+    for _, memberId in ipairs(scriptIds) do
+      local jobKey = "script-member:" .. tostring(memberId)
+      Assert.equal(latestPriority[jobKey], 0, "every promoted member last requested at required priority: " .. jobKey)
+      Assert.notNil(firstRequiredAt[jobKey], "every promoted member requested at required priority: " .. jobKey)
+    end
+    Assert.notNil(firstSweepAt, "the sweep member eventually requests at its lower priority")
+    local sweepEntry = session.byKey["script-member:41"]
+    Assert.notNil(sweepEntry, "the sweep member keeps its retained entry")
+    Assert.equal(sweepEntry.urgency, "sweep", "sweep demand never inherits the required urgency")
+    Assert.equal(sweepEntry.priority, 100, "sweep demand keeps its lower priority")
+    local seen = {}
+    for jobKey in pairs(session.byKey) do
+      Assert.isNil(seen[jobKey], "promotion keeps one retained job per identity: " .. tostring(jobKey))
+      seen[jobKey] = true
+    end
+    Assert.isFalse(session:status().settled, "queued demand never settles around waiting workers")
+  end)
+  CacheFs.forVersion = realForVersion
+  if not ok then
+    error(failure, 0)
   end
 end
 
