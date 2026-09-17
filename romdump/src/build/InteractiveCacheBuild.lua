@@ -25,7 +25,7 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field index integer
 
 ---@class InteractiveCacheBuild.EnrollCursor
----@field pending { kind: string, key: string, urgency: string }[]
+---@field pending { milestone: string|nil, kind: string, key: string, urgency: string|nil }[]
 ---@field index integer
 
 ---@class InteractiveCacheBuild.SweepCursor
@@ -80,6 +80,9 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field pendingFillDone boolean
 ---@field loadedFillDone boolean
 ---@field enrollCursor InteractiveCacheBuild.EnrollCursor|nil private incremental membership enrollment after adoption
+---@field roster table<string, { kind: string, key: string }[]> retained milestone membership per requested scope
+---@field autoCoreNearDone boolean automatic field-core near intent already registered once
+---@field layoutAttemptConsumed boolean a layout adoption attempt already ran against the current owner state
 ---@field sweepCursor InteractiveCacheBuild.SweepCursor|nil private incremental sweep enumeration after adoption
 ---@field planningPending boolean runnable local planning remains from the last pump
 ---@field followerMemo string|nil retained follower diagnostic
@@ -204,6 +207,9 @@ function InteractiveCacheBuild.new(options)
     pendingFillDone = false,
     loadedFillDone = false,
     enrollCursor = nil,
+    roster = {},
+    autoCoreNearDone = false,
+    layoutAttemptConsumed = false,
     sweepCursor = nil,
     planningPending = false,
     followerMemo = nil,
@@ -935,6 +941,8 @@ end
 ---@param name string
 ---@return { kind: string, key: string }[]
 function InteractiveCacheBuild:_milestoneMembers(name)
+  -- The single membership construction site: only update and adoption
+  -- transitions call it, never public requests, status or publication.
   assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
   if name == "bootstrap" then
     return ArtifactJobs.bootstrapJobs(self.audioBankIds)
@@ -946,6 +954,124 @@ function InteractiveCacheBuild:_milestoneMembers(name)
     iconPageIds = self.iconPageIds,
     mapDataIds = self.mapDataIds,
   })
+end
+
+---@param name string
+---@return boolean ready
+---@return string|nil failure
+function InteractiveCacheBuild:_retainedMilestoneAnswer(name)
+  -- Retained observation only: an unbuilt roster is pending knowledge,
+  -- never a vacuous success. No construction, IO or validation here.
+  local members = self.roster[name]
+  if members == nil then
+    return false, nil
+  end
+  return self:_milestoneAnswer(name, members)
+end
+
+---@param name string
+---@param enroll boolean queue unknown members for pump enrollment
+function InteractiveCacheBuild:_refreshRoster(name, enroll)
+  -- Rebuild one retained roster from current adopted knowledge: the new
+  -- array replaces its discovery-time predecessor, so the scope predicate
+  -- always observes final membership without confusing the two.
+  self.roster[name] = self:_milestoneMembers(name)
+  if enroll then
+    self:_enqueueRosterDelta(name)
+  end
+end
+
+---@param name string
+function InteractiveCacheBuild:_enqueueRosterDelta(name)
+  -- Enroll only members the session has never seen: previously enrolled
+  -- work keeps its entry, urgency and physical slot through adoption.
+  local members = self.roster[name]
+  if members == nil then
+    return
+  end
+  local pending = {}
+  for _, member in ipairs(members) do
+    if self.byKey[member.kind .. ":" .. member.key] == nil then
+      pending[#pending + 1] = {
+        milestone = name,
+        kind = member.kind,
+        key = member.key,
+        urgency = self.milestones[name],
+      }
+    end
+  end
+  if #pending == 0 then
+    return
+  end
+  local cursor = self.enrollCursor
+  if cursor == nil then
+    cursor = { pending = {}, index = 1 }
+    self.enrollCursor = cursor
+  end
+  for _, item in ipairs(pending) do
+    cursor.pending[#cursor.pending + 1] = item
+  end
+end
+
+---@param budget InteractiveCacheBuild.Budget|nil
+function InteractiveCacheBuild:_buildPendingRosters(budget)
+  -- First construction for every requested scope runs here under one
+  -- admitted update step, never in a public request. Later rebuilds happen
+  -- synchronously inside adoption, so retained answers stay current.
+  local pending = {}
+  for name, _ in pairs(self.milestones) do
+    if self.roster[name] == nil then
+      pending[#pending + 1] = name
+    end
+  end
+  if self.sweepEnabled and self.milestones["bootstrap"] == nil and self.roster["bootstrap"] == nil then
+    pending[#pending + 1] = "bootstrap"
+  end
+  if #pending == 0 then
+    return
+  end
+  if not self:_spendNode(budget) then
+    return
+  end
+  for _, name in ipairs(pending) do
+    self:_refreshRoster(name, self.milestones[name] ~= nil)
+  end
+end
+
+---@return boolean some retained demand can use the worker inventory
+function InteractiveCacheBuild:_needsSourceDemand()
+  if self.sweepEnabled then
+    return true
+  end
+  if self.milestones["bootstrap"] ~= nil or self.milestones["field-core"] ~= nil then
+    return true
+  end
+  for _, entry in ipairs(self.interest) do
+    local kind = entry.kind
+    if needsSourceInventory(kind) or needsPageMembership(kind) then
+      return true
+    end
+    if kind == "source-plan" or kind == "mon-layout" or kind == "mon-catalog" or kind == "mon-summary" then
+      return true
+    end
+  end
+  return false
+end
+
+---@return boolean some retained demand can use mon page membership
+function InteractiveCacheBuild:_needsPageDemand()
+  if self.sweepEnabled then
+    return true
+  end
+  if self.milestones["field-core"] ~= nil then
+    return true
+  end
+  for _, entry in ipairs(self.interest) do
+    if needsPageMembership(entry.kind) then
+      return true
+    end
+  end
+  return false
 end
 
 ---@return string|nil follower mismatch diagnostic
@@ -980,10 +1106,15 @@ end
 
 ---@param name string
 function InteractiveCacheBuild:_publishMilestone(name)
+  -- Update-owned once-only publication from retained final membership:
+  -- public polling never publishes, and an unbuilt roster publishes nothing.
   if self.recorded[name] then
     return
   end
-  local members = self:_milestoneMembers(name)
+  local members = self.roster[name]
+  if members == nil then
+    return
+  end
   local ready, _ = self:_milestoneAnswer(name, members)
   if not ready then
     return
@@ -1045,27 +1176,32 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
   ArtifactJobs.priorityFor(urgency)
   local current = self.milestones[name]
-  if current == nil or ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(current) then
+  local stronger = current ~= nil and ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(current)
+  if current == nil or stronger then
     self.milestones[name] = urgency
   end
-  -- Record the milestone urgency and enroll currently known members for
-  -- the pump. Newly adopted membership enrolls through the same bounded
-  -- path in update; nothing is validated or submitted here.
-  local members = self:_milestoneMembers(name)
-  for _, member in ipairs(members) do
-    self:_request(member.kind, member.key, self.milestones[name])
+  -- Record new or stronger intent and answer from retained state: roster
+  -- construction, enrollment, validation, submission and publication all
+  -- belong to update. Metadata owners are scheduled once per new intent;
+  -- stronger demand upgrades registered members in place while pending
+  -- roster members enroll at the current urgency through the pump. An
+  -- unchanged poll registers nothing and observes the retained answer.
+  if current == nil then
+    if not self.sourceLoaded then
+      self:_request("source-plan", "global", urgency)
+    end
+    if not self.pagesKnown then
+      self:_request("mon-layout", "global", urgency)
+    end
+  elseif stronger then
+    local members = self.roster[name]
+    if members ~= nil then
+      for _, member in ipairs(members) do
+        self:_register(member.kind, member.key, urgency)
+      end
+    end
   end
-  if not self.sourceLoaded then
-    self:_request("source-plan", "global", urgency)
-  end
-  if not self.pagesKnown then
-    self:_request("mon-layout", "global", urgency)
-  end
-  local ready, failure = self:_milestoneAnswer(name, members)
-  if ready then
-    self:_publishMilestone(name)
-  end
-  return ready, failure
+  return self:_retainedMilestoneAnswer(name)
 end
 
 ---@param mapId integer
@@ -1380,6 +1516,11 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
     self.followerChecked = false
     self.followerMemo = nil
   end
+  if kind == "mon-layout" then
+    -- Explicit repair re-arms layout adoption even when the deterministic
+    -- marker is unchanged: failure is never latched by marker string.
+    self.layoutAttemptConsumed = false
+  end
   return self:_answer(entry)
 end
 
@@ -1464,9 +1605,12 @@ function InteractiveCacheBuild:_awaitingPoolWork()
   return false
 end
 
----@return boolean
-function InteractiveCacheBuild:_bootstrapReady()
-  local members = ArtifactJobs.bootstrapJobs(self.audioBankIds)
+---@return boolean retained bootstrap scope is ready, never constructed here
+function InteractiveCacheBuild:_retainedBootstrapReady()
+  local members = self.roster["bootstrap"]
+  if members == nil then
+    return false
+  end
   local ready, _ = self:_milestoneAnswer("bootstrap", members)
   return ready
 end
@@ -1478,14 +1622,25 @@ end
 ---@param budget InteractiveCacheBuild.Budget|nil
 function InteractiveCacheBuild:_ensureInventoryLoaded(budget)
   if not self.sourceLoaded then
-    -- A fast empty read is fixed overhead and never consumes the slice;
-    -- only an adoption that transfers data admits a planning node.
-    local plan, _ = SourcePlan.read(self.cacheFs, self:_identity())
-    if plan ~= nil then
+    -- Scopes that cannot use the inventory never read it: an independent
+    -- leaf stays small even when unrelated metadata happens to be cached.
+    if self:_needsSourceDemand() then
+      -- The adoption charge precedes the read: an exhausted slice defers
+      -- without IO, and the next admitted step performs the single read.
+      -- A fruitless poll leaves the slice clock unstarted: the admitted
+      -- node stays charged, but the work clock still starts at the first
+      -- spend below that transfers data or advances enrollment, so a
+      -- missing inventory never starves the same update's sweep fill.
+      local clockStarted = budget == nil or budget.start ~= nil
       if not self:_spendNode(budget) then
         return
       end
-      self:_adoptSource(plan)
+      local plan, _ = SourcePlan.read(self.cacheFs, self:_identity())
+      if plan ~= nil then
+        self:_adoptSource(plan)
+      elseif not clockStarted and budget ~= nil then
+        budget.start = nil
+      end
     end
   end
   if self.sourceLoaded and not self.pagesKnown then
@@ -1493,14 +1648,34 @@ function InteractiveCacheBuild:_ensureInventoryLoaded(budget)
     if layoutEntry ~= nil and layoutEntry.failure ~= nil then
       return
     end
+    if not self:_needsPageDemand() then
+      return
+    end
+    -- Automatic demand owns its metadata entry: sweep and automatic
+    -- field-core intent schedule the layout owner exactly like an explicit
+    -- milestone request does, so adoption has a validated transition.
+    if layoutEntry == nil and (self.milestones["field-core"] ~= nil or self.sweepEnabled) then
+      layoutEntry = self:_request("mon-layout", "global", self.milestones["field-core"] or "near")
+    end
+    -- No repeated rereads while layout work is still physically pending.
+    if layoutEntry ~= nil and layoutEntry.submitted then
+      local state = self.pool:status(layoutEntry.jobKey)
+      if state == "queued" or state == "running" or state == "prepared" then
+        return
+      end
+    end
+    -- A ready owner always earns its adoption read: success adopts, and a
+    -- still-unreadable plan set is an explicit planning failure on an
+    -- owner that claims readiness, never an eternal pending state. The
+    -- failure itself suppresses repeats until explicit repair.
     if layoutEntry ~= nil and layoutEntry.ready then
-      -- The layout validated but its plans still do not adopt: an explicit
-      -- planning failure, never an eternal pending state.
+      -- The adoption charge precedes the read: an exhausted slice defers
+      -- without IO, and the next admitted step performs the single read.
+      if not self:_spendNode(budget) then
+        return
+      end
       local plans, reason = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
       if plans ~= nil then
-        if not self:_spendNode(budget) then
-          return
-        end
         self:_adoptPublished(plans)
       else
         layoutEntry.failure = self.generationId
@@ -1512,28 +1687,59 @@ function InteractiveCacheBuild:_ensureInventoryLoaded(budget)
       end
       return
     end
-    -- No repeated rereads while layout work is still physically pending;
-    -- the attempt stays eligible under its unchanged deterministic marker.
-    local pending = false
-    if layoutEntry ~= nil and layoutEntry.submitted then
-      local state = self.pool:status(layoutEntry.jobKey)
-      pending = state == "queued" or state == "running" or state == "prepared"
+    if layoutEntry == nil or not layoutEntry.validated or self.layoutAttemptConsumed then
+      if layoutEntry ~= nil and not layoutEntry.submitted and layoutEntry.validated then
+        -- A rejected pre-repair layout validation schedules ordinary repair
+        -- through the normal pump: the entry stays dirty for submission.
+        self.dirty[layoutEntry.jobKey] = true
+      end
+      if self.layoutAttemptConsumed and layoutEntry ~= nil then
+        -- A consumed damaged attempt keeps its owner driven: clearing the
+        -- stale validation forces the pump to re-read the owner, so repair
+        -- surfaces as readiness and earns a fresh adoption read above.
+        -- Plans themselves never poll.
+        layoutEntry.validated = false
+        layoutEntry.cursor = nil
+        self.dirty[layoutEntry.jobKey] = true
+      end
+      return
     end
-    if pending then
+    -- A validated but unready owner attempts once against its staged
+    -- receipt: a damaged plan set consumes the attempt without failing
+    -- the still-compiling owner, so repair can surface through the drive
+    -- above. No receipt, no attempt: cold compilation stays quiet. The
+    -- adoption charge precedes the staged check, so an exhausted slice
+    -- defers without IO.
+    if not self:_spendNode(budget) then
+      return
+    end
+    if not self:_layoutReceiptStaged() then
       return
     end
     local plans, _ = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
     if plans ~= nil then
-      if not self:_spendNode(budget) then
-        return
-      end
       self:_adoptPublished(plans)
-    elseif layoutEntry ~= nil and not layoutEntry.submitted and layoutEntry.validated then
-      -- A rejected pre-repair layout validation schedules ordinary repair
-      -- through the normal pump: the entry stays dirty for submission.
+    else
+      self.layoutAttemptConsumed = true
       self.dirty[layoutEntry.jobKey] = true
     end
   end
+end
+
+---@return boolean the published layout receipt names the staged marker
+function InteractiveCacheBuild:_layoutReceiptStaged()
+  local MonCache = require("libs.assets.src.MonCache")
+  local cacheFs = self.cacheFs
+  local markerOk, marker = pcall(function()
+    return cacheFs:read(MonCache.layoutMarkerPath())
+  end)
+  if not markerOk or type(marker) ~= "string" or marker == "" then
+    return false
+  end
+  local receiptOk, receipt = pcall(function()
+    return cacheFs:loadLua(ArtifactState.path("mon-layout", "global"))
+  end)
+  return receiptOk and type(receipt) == "table" and receipt.marker == marker
 end
 
 ---@param plan table<string, unknown>
@@ -1588,6 +1794,18 @@ function InteractiveCacheBuild:_adoptSource(plan)
     entry.cursor = nil
   end
   self:_replanUnsubmitted()
+  self:_refreshAdoptionRosters()
+end
+
+-- Adoption replaces retained rosters synchronously: answers observed after
+-- this transition see final membership, and newly known members enroll
+-- through the bounded cursor instead of a full re-enrollment loop.
+function InteractiveCacheBuild:_refreshAdoptionRosters()
+  for _, name in ipairs({ "bootstrap", "field-core" }) do
+    if self.roster[name] ~= nil then
+      self:_refreshRoster(name, self.milestones[name] ~= nil)
+    end
+  end
 end
 
 ---@param plans ArtifactJobs.Plans
@@ -1615,6 +1833,7 @@ function InteractiveCacheBuild:_adoptPublished(plans)
     entry.cursor = nil
   end
   self:_replanUnsubmitted()
+  self:_refreshAdoptionRosters()
 end
 
 -- Newly adopted membership can only add answers, so unsubmitted work plans
@@ -1627,22 +1846,6 @@ function InteractiveCacheBuild:_replanUnsubmitted()
       entry.validated = false
       entry.cursor = nil
       self.dirty[entry.jobKey] = true
-    end
-  end
-  local pending = {}
-  for name, urgency in pairs(self.milestones) do
-    for _, member in ipairs(self:_milestoneMembers(name)) do
-      pending[#pending + 1] = { kind = member.kind, key = member.key, urgency = urgency }
-    end
-  end
-  if #pending > 0 then
-    local cursor = self.enrollCursor
-    if cursor == nil then
-      cursor = { pending = {}, index = 1 }
-      self.enrollCursor = cursor
-    end
-    for _, item in ipairs(pending) do
-      cursor.pending[#cursor.pending + 1] = item
     end
   end
   self.parked = {}
@@ -1665,7 +1868,13 @@ function InteractiveCacheBuild:_drainEnroll(budget)
     end
     local item = cursor.pending[cursor.index]
     cursor.index = cursor.index + 1
-    local entry = self:_register(item.kind, item.key, item.urgency)
+    -- Enrollment follows the current strongest intent, so a promotion that
+    -- lands mid-drain reaches members the cursor has not visited yet.
+    local urgency = item.urgency
+    if item.milestone ~= nil and self.milestones[item.milestone] ~= nil then
+      urgency = self.milestones[item.milestone]
+    end
+    local entry = self:_register(item.kind, item.key, assert(urgency, "enrollment needs its urgency"))
     if not entry.ready and entry.failure == nil then
       self.dirty[entry.jobKey] = true
     end
@@ -1797,6 +2006,12 @@ function InteractiveCacheBuild:_fillSweepStep(budget)
     }
   else
     if not self.loadedFillDone then
+      -- The full corpus is unknowable before layout adoption, and its
+      -- enumerator rejects a source-only inventory: wait for page
+      -- membership instead of asserting on discovery-time knowledge.
+      if not self.pagesKnown then
+        return
+      end
       self.loadedFillDone = true
       local jobs = ArtifactJobs.completeJobs(assert(self.adopted, "sweep needs its adopted inventory"))
       local enums = {}
@@ -1841,17 +2056,23 @@ function InteractiveCacheBuild:update()
   -- Sweep enrollment precedes validation-heavy planning so fixed
   -- membership work is not starved by one-time validator load costs; the
   -- pump still processes required demand first under the same budget.
+  -- Automatic field-core warming registers its near intent exactly once:
+  -- later updates advance the retained roster through adoption deltas and
+  -- the bounded cursor instead of re-enrolling the whole scope per frame.
   local allowSweep = false
-  if self.sweepEnabled and self:_bootstrapReady() then
-    if self.milestones["field-core"] == nil then
-      self.milestones["field-core"] = "near"
-    end
-    for _, member in ipairs(self:_milestoneMembers("field-core")) do
-      self:_request(member.kind, member.key, self.milestones["field-core"])
+  if self.sweepEnabled then
+    if not self.autoCoreNearDone and self:_retainedBootstrapReady() then
+      self.autoCoreNearDone = true
+      if self.milestones["field-core"] == nil then
+        self.milestones["field-core"] = "near"
+      end
     end
     self:_fillSweepStep(budget)
     allowSweep = true
   end
+  -- First roster construction for requested scopes runs here under the
+  -- shared budget; adoption rebuilds run synchronously in their transition.
+  self:_buildPendingRosters(budget)
   -- New submissions precede the single pool lifecycle tick so dispatched
   -- work is observable in the same update; completions observed below are
   -- validated and adopted under the remaining same budget.
@@ -1903,14 +2124,24 @@ function InteractiveCacheBuild:_scopeKnowledgePending()
   if self.retired then
     return false
   end
+  -- Retained observation only: an unbuilt roster is pending knowledge, so
+  -- local work remains until the admitted construction step runs.
   if self.milestones["bootstrap"] ~= nil and not self.sourceLoaded then
-    local ready, failure = self:_milestoneAnswer("bootstrap", ArtifactJobs.bootstrapJobs(self.audioBankIds))
+    local members = self.roster["bootstrap"]
+    if members == nil then
+      return true
+    end
+    local ready, failure = self:_milestoneAnswer("bootstrap", members)
     if not ready and failure == nil then
       return true
     end
   end
   if self.milestones["field-core"] ~= nil and (not self.sourceLoaded or not self.pagesKnown) then
-    local ready, failure = self:_milestoneAnswer("field-core", self:_milestoneMembers("field-core"))
+    local members = self.roster["field-core"]
+    if members == nil then
+      return true
+    end
+    local ready, failure = self:_milestoneAnswer("field-core", members)
     if not ready and failure == nil then
       return true
     end
@@ -1937,21 +2168,26 @@ function InteractiveCacheBuild:status()
   local bootstrapState, fieldCoreState = "pending", "pending"
   local bootstrapFailed, fieldCoreFailed = false, false
   if not self.retired then
-    local bootstrapMembers = ArtifactJobs.bootstrapJobs(self.audioBankIds)
-    local bootstrapReady, bootstrapFailure = self:_milestoneAnswer("bootstrap", bootstrapMembers)
-    if bootstrapReady then
-      bootstrapState = "ready"
-    elseif bootstrapFailure ~= nil then
-      bootstrapState = "failed"
-      bootstrapFailed = self.milestones["bootstrap"] ~= nil
+    local bootstrapMembers = self.roster["bootstrap"]
+    if bootstrapMembers ~= nil then
+      local bootstrapReady, bootstrapFailure = self:_milestoneAnswer("bootstrap", bootstrapMembers)
+      if bootstrapReady then
+        bootstrapState = "ready"
+      elseif bootstrapFailure ~= nil then
+        bootstrapState = "failed"
+        bootstrapFailed = self.milestones["bootstrap"] ~= nil
+      end
     end
     if self.milestones["field-core"] ~= nil then
-      local coreReady, coreFailure = self:_milestoneAnswer("field-core", self:_milestoneMembers("field-core"))
-      if coreReady then
-        fieldCoreState = "ready"
-      elseif coreFailure ~= nil then
-        fieldCoreState = "failed"
-        fieldCoreFailed = true
+      local coreMembers = self.roster["field-core"]
+      if coreMembers ~= nil then
+        local coreReady, coreFailure = self:_milestoneAnswer("field-core", coreMembers)
+        if coreReady then
+          fieldCoreState = "ready"
+        elseif coreFailure ~= nil then
+          fieldCoreState = "failed"
+          fieldCoreFailed = true
+        end
       end
     end
   end
@@ -2043,6 +2279,9 @@ function InteractiveCacheBuild:retire()
   self.followerChecked = false
   self.followerMemo = nil
   self.enrollCursor = nil
+  self.roster = {}
+  self.autoCoreNearDone = false
+  self.layoutAttemptConsumed = false
   self.sweepCursor = nil
   self.planningPending = false
 end
