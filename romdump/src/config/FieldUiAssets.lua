@@ -250,13 +250,19 @@ return {
       subjectMale = 48,
       subjectFemale = 49,
     },
-    -- Canonical source anchors for the composed visuals.
+    -- Resting page placement: the active keyboard BG rests scrolled to
+    -- X=-11, so the 256-wide page overlay draws displaced +11 screen pixels
+    -- over the canonical surface.
+    pagePlacement = { x = 11, y = 80, width = 256, height = 112 },
+    -- Final screen anchors for the composed visuals. The home-row controls
+    -- are child sprites of the support backing at x=22, so the published
+    -- anchors already include that parent transform.
     objAnchors = {
-      upper = { x = 4, y = 68 },
-      lower = { x = 36, y = 68 },
-      symbols = { x = 68, y = 68 },
-      back = { x = 136, y = 68 },
-      ok = { x = 176, y = 68 },
+      upper = { x = 26, y = 68 },
+      lower = { x = 58, y = 68 },
+      symbols = { x = 90, y = 68 },
+      back = { x = 158, y = 68 },
+      ok = { x = 198, y = 68 },
       backing = { x = 22, y = 56 },
       subject = { x = 24, y = 8 },
     },
@@ -276,12 +282,11 @@ return {
     entryStepX = 12,
     nameOrigin = { x = 80, y = 24 },
     nameAdvanceX = 12,
-    -- Keyboard text cells in page pixels: 16px columns on 19px rows from the
-    -- page-art text origin. The generated page overlays draw at canonical
-    -- y=80, so the compiler adds the page placement to reach the final
-    -- canonical coordinates.
+    -- Keyboard text cells in final screen pixels: the keyboard window opens
+    -- at local x=16 on the keyboard BG scrolled to X=-11, so the first glyph
+    -- cell rests at screen x=27. Rows start at screen y=92 on 19px steps.
     keyboardText = {
-      originX = 8,
+      originX = 27,
       originY = 12,
       stepX = 16,
       stepY = 19,

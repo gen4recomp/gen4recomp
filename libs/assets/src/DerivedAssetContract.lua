@@ -42,6 +42,13 @@
 -- (type, map) rect is a 6x4 arrangement (48px wide, 32px tall) composed at
 -- build time from the original 24 8x8 tiles, instead of a raw 192x8 strip.
 --
+-- fieldUi schema 12: the normal naming section carries full generated
+-- subject/cursor animations with corrected source geometry (the page
+-- overlay rests at x=11, home controls carry their post-parent-transform
+-- anchors, keyboard text starts at screen x=27) plus the per-frame
+-- cursor pulse-mask role selecting source palette entry 29, so a stale
+-- pre-change cache with static naming visuals must fail readiness.
+--
 -- fieldUi schema 11: the Start Menu section publishes the SUB-side
 -- interactive selector (the seven normal position records with anchors,
 -- label windows, touch bounds, and ordered directional candidates, plus the
@@ -207,7 +214,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v11",
+  schema = "g4-field-ui-v12",
 }
 
 DerivedAssetContract.intro = {

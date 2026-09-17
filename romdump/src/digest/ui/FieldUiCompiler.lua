@@ -3,8 +3,9 @@
 -- record, icon table, contexts, chrome, and the seven interactive position
 -- records) and cursor, the twenty user dialogue frames, the corpus
 -- signpost frame and wayfinding graphics, the Trainer Card front, and the
--- normal naming screen chrome (one opaque base plus the three transparent
--- page overlays) — all as decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
+-- normal naming screen chrome (one opaque base, the three transparent page
+-- overlays, static controls/slots, full generated subject/cursor animations
+-- with entry-29 pulse masks) — all as decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
 -- into final 48x32 surfaces (6 by 4 tiles) at build time so runtime draws
 -- a single rect. Source member selection lives in
 -- romdump/src/config/FieldUiAssets.lua; this module owns the HGSS decode
@@ -1088,8 +1089,10 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     })
   end
 
-  -- Render one semantic animation frame through the shared OAM compositor and
-  -- register it as a generated visual carrying the rasterizer's frame offset.
+  -- Render one static semantic visual through the shared OAM compositor
+  -- and register it as a generated image carrying the rasterizer's frame
+  -- offset. Controls and entry slots keep this one-frame shape; subjects
+  -- and cursors use the animation publisher below.
   local function semanticSprite(role, animId)
     local animation = objAnim.anims[animId + 1]
     if animation == nil then
@@ -1122,17 +1125,155 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     return record
   end
 
+  -- Pack rendered frames deterministically left to right in one atlas row;
+  -- every frame keeps its compositor size and offset, so the manifest
+  -- boundary is stable for a fixed source.
+  local function packAtlasRow(frames)
+    local atlasWidth, atlasHeight = 0, 0
+    for _, frame in ipairs(frames) do
+      atlasWidth = atlasWidth + frame.width
+      atlasHeight = math.max(atlasHeight, frame.height)
+    end
+    local rows = {}
+    for y = 0, atlasHeight - 1 do
+      for _, frame in ipairs(frames) do
+        if y < frame.height then
+          rows[#rows + 1] = frame.pixels:sub(y * frame.width * 4 + 1, (y + 1) * frame.width * 4)
+        else
+          rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), frame.width)
+        end
+      end
+    end
+    return PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows)), atlasWidth, atlasHeight
+  end
+
+  -- The synthetic pulse palette: absolute source palette entry 29 renders
+  -- as the unique white marker while every other entry renders black, so
+  -- post-processing keeps only the marker pixels as the opaque pulse mask.
+  local function pulseMarkerPalette()
+    local colors = {}
+    for index = 1, 9 * 16 do
+      colors[index] = { r = 0, g = 0, b = 0 }
+    end
+    colors[29 + 1] = { r = 255, g = 255, b = 255 }
+    return { colors = colors }
+  end
+
+  local function maskPixels(pixels)
+    local out = {}
+    for index = 1, #pixels, 4 do
+      local r, g, b, a = string.byte(pixels, index, index + 3)
+      if r == 255 and g == 255 and b == 255 and a == 255 then
+        out[#out + 1] = string.char(255, 255, 255, 255)
+      else
+        out[#out + 1] = string.char(0, 0, 0, 0)
+      end
+    end
+    return table.concat(out)
+  end
+
+  -- Publish one full semantic animation: every decoded source frame in
+  -- source order through the shared OAM compositor with its decoded
+  -- duration and compositor offset, packed into one deterministic atlas,
+  -- plus the runtime playback mode and zero-based loop start. Cursor roles
+  -- additionally publish the entry-29 pulse-mask atlas whose frames match
+  -- the normal frames in order and size.
+  local function publishAnimation(role, assetId, maskAssetId, animId)
+    local animation = objAnim.anims[animId + 1]
+    if animation == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming OBJ animation bank has no animation", {
+        anim = animId,
+        available = #objAnim.anims,
+      })
+    end
+    assert(animation ~= nil, "missing naming animations fail above")
+    if #animation.frames == 0 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming animation carries no frames", {
+        anim = animId,
+      })
+    end
+    local source = { asset = "naming screen " .. role, member = cfg.objAnimMember }
+    local normalFrames = {}
+    local maskFrames = {}
+    local markerPalette = nil
+    if maskAssetId ~= nil then
+      markerPalette = pulseMarkerPalette()
+    end
+    for frameIndex = 1, #animation.frames do
+      local decoded = animation.frames[frameIndex]
+      local frame = G2dRasterizer.renderAnimationFrame(
+        objChar,
+        { colors = objPalette.colors },
+        objCell,
+        animation,
+        frameIndex,
+        source
+      )
+      normalFrames[#normalFrames + 1] = {
+        width = frame.width,
+        height = frame.height,
+        pixels = frame.pixels,
+        offset = { x = frame.offset.x, y = frame.offset.y },
+        duration = decoded.duration,
+      }
+      if markerPalette ~= nil then
+        local mask = G2dRasterizer.renderAnimationFrame(objChar, markerPalette, objCell, animation, frameIndex, source)
+        assert(
+          mask.width == frame.width and mask.height == frame.height,
+          "the pulse mask must match its frame geometry"
+        )
+        maskFrames[#maskFrames + 1] = {
+          width = mask.width,
+          height = mask.height,
+          pixels = maskPixels(mask.pixels),
+        }
+      end
+    end
+    local normalPath = FieldUiAssetCache.assetDir() .. "/naming-screen-" .. role .. ".png"
+    local normalBytes, atlasWidth, atlasHeight = packAtlasRow(normalFrames)
+    assets[normalPath] = normalBytes
+    manifestAssets[assetId] = { image = normalPath, width = atlasWidth, height = atlasHeight }
+    local record = {
+      playMode = animation.playMode,
+      loopStartFrameIdx = animation.loopStartFrameIdx,
+      frames = {},
+    }
+    local maskPath = nil
+    if maskAssetId ~= nil then
+      maskPath = FieldUiAssetCache.assetDir() .. "/naming-screen-" .. role .. "-mask.png"
+      local maskBytes, maskWidth, maskHeight = packAtlasRow(maskFrames)
+      assets[maskPath] = maskBytes
+      manifestAssets[maskAssetId] = { image = maskPath, width = maskWidth, height = maskHeight }
+      record.pulseAsset = maskAssetId
+    end
+    local x = 0
+    for index, frame in ipairs(normalFrames) do
+      local entry = {
+        asset = assetId,
+        rect = { x = x, y = 0, width = frame.width, height = frame.height },
+        offset = { x = frame.offset.x, y = frame.offset.y },
+        duration = frame.duration,
+      }
+      if maskAssetId ~= nil then
+        entry.pulseRect = { x = x, y = 0, width = frame.width, height = frame.height }
+      end
+      record.frames[index] = entry
+      x = x + frame.width
+    end
+    return record
+  end
+
   local controls = {}
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok", "backing" }) do
     local assetId = FieldUiAssetCache.ASSET["NAMING_SCREEN_CONTROL_" .. id:upper()]
     controls[id] = publish("control-" .. id, assetId, cfg.objAnims[id], cfg.objAnchors[id])
   end
 
-  local keyboardCursor = publish(
+  local keyboardCursor = publishAnimation(
     "cursor-keyboard",
     FieldUiAssetCache.ASSET.NAMING_SCREEN_CURSOR_KEYBOARD,
-    cfg.objAnims.cursorKeyboard,
-    cfg.cursorOrigin
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_CURSOR_KEYBOARD_MASK,
+    cfg.objAnims.cursorKeyboard
   )
   keyboardCursor.origin = { x = cfg.cursorOrigin.x, y = cfg.cursorOrigin.y }
   keyboardCursor.stepX = cfg.cursorStepX
@@ -1141,12 +1282,14 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
   local homeCursor = {}
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
     local animId = (id == "back" or id == "ok") and cfg.objAnims.cursorHomeConfirm or cfg.objAnims.cursorHomePage
-    homeCursor[id] = publish(
+    local record = publishAnimation(
       "cursor-home-" .. id,
       FieldUiAssetCache.ASSET["NAMING_SCREEN_CURSOR_HOME_" .. id:upper()],
-      animId,
-      cfg.homeCursorAnchors[id]
+      FieldUiAssetCache.ASSET["NAMING_SCREEN_CURSOR_HOME_" .. id:upper() .. "_MASK"],
+      animId
     )
+    record.anchor = { x = cfg.homeCursorAnchors[id].x, y = cfg.homeCursorAnchors[id].y }
+    homeCursor[id] = record
   end
 
   local slotNormal =
@@ -1157,18 +1300,16 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     cfg.objAnims.slotSelected,
     cfg.entryOrigin
   )
-  local subjectMale = publish(
-    "subject-male",
-    FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_MALE,
-    cfg.objAnims.subjectMale,
-    cfg.objAnchors.subject
-  )
-  local subjectFemale = publish(
+  local subjectMale =
+    publishAnimation("subject-male", FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_MALE, nil, cfg.objAnims.subjectMale)
+  subjectMale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
+  local subjectFemale = publishAnimation(
     "subject-female",
     FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_FEMALE,
-    cfg.objAnims.subjectFemale,
-    cfg.objAnchors.subject
+    nil,
+    cfg.objAnims.subjectFemale
   )
+  subjectFemale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
 
   -- Keyboard text cells in final canonical coordinates: the page-art text
   -- origin plus the same y=80 page placement the generated page overlays use.
@@ -1197,7 +1338,12 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       height = baseScreen.height,
     },
     pages = pages,
-    placement = { x = 0, y = 80, width = 256, height = 112 },
+    placement = {
+      x = cfg.pagePlacement.x,
+      y = cfg.pagePlacement.y,
+      width = cfg.pagePlacement.width,
+      height = cfg.pagePlacement.height,
+    },
     text = {
       name = { x = cfg.nameOrigin.x, y = cfg.nameOrigin.y, advanceX = cfg.nameAdvanceX },
       keyboard = { cells = keyboardCells },

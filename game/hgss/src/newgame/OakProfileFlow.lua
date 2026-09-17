@@ -158,6 +158,13 @@ function OakProfileFlow:resolveConfirmation(selected)
   error("unknown Oak confirmation kind: " .. tostring(kind), 0)
 end
 
+function OakProfileFlow:tickNameEditor()
+  if self._naming == nil or self._naming:result() ~= nil then
+    return
+  end
+  self._naming:updateFixed()
+end
+
 function OakProfileFlow:enterNameEditor()
   self._name = ""
   self._naming = NamingScreenController.new({

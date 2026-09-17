@@ -555,8 +555,9 @@ function T.compiles_the_manifest_and_all_assets()
   -- Eleven base assets plus the three start-menu icon-contract images (the
   -- shared icon atlas, the palette record, SUB chrome) plus the sixteen
   -- naming OBJ visuals (six controls, keyboard cursor, five home cursor
-  -- variants, two entry slots, two player subjects).
-  Assert.equal(assetCount, 30)
+  -- variants, two entry slots, two player subjects) plus the six cursor
+  -- pulse-mask atlases.
+  Assert.equal(assetCount, 36)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
@@ -572,7 +573,7 @@ function T.naming_chrome_compiles_the_normal_base_and_pages()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
   local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
-  Assert.deepEqual(naming.placement, { x = 0, y = 80, width = 256, height = 112 })
+  Assert.deepEqual(naming.placement, { x = 11, y = 80, width = 256, height = 112 })
   Assert.equal(naming.base.asset, FieldUiAssetCache.ASSET.NAMING_SCREEN_BASE)
   Assert.equal(naming.base.width, 256)
   Assert.equal(naming.base.height, 192)
@@ -1522,7 +1523,7 @@ function T.naming_manifest_publishes_source_text_and_object_geometry_beside_the_
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
   local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
-  Assert.deepEqual(naming.placement, { x = 0, y = 80, width = 256, height = 112 })
+  Assert.deepEqual(naming.placement, { x = 11, y = 80, width = 256, height = 112 })
   local pageCount = 0
   for _ in pairs(naming.pages) do
     pageCount = pageCount + 1
@@ -1557,12 +1558,15 @@ function T.naming_manifest_publishes_source_text_and_object_geometry_beside_the_
     Assert.isTrue(keyboardCells[row][1].y > keyboardCells[row - 1][1].y, "keyboard text rows run top to bottom")
   end
 
+  Assert.equal(keyboardCells[1][1].x, 27, "the first keyboard cell rests at screen x 27")
+  Assert.equal(keyboardCells[1][1].y, 92, "the first keyboard cell rests at screen y 92")
+
   local controls = assert(naming.controls, "the compiled naming must publish its source controls")
-  Assert.deepEqual(controls.upper.anchor, { x = 4, y = 68 })
-  Assert.deepEqual(controls.lower.anchor, { x = 36, y = 68 })
-  Assert.deepEqual(controls.symbols.anchor, { x = 68, y = 68 })
-  Assert.deepEqual(controls.back.anchor, { x = 136, y = 68 })
-  Assert.deepEqual(controls.ok.anchor, { x = 176, y = 68 })
+  Assert.deepEqual(controls.upper.anchor, { x = 26, y = 68 })
+  Assert.deepEqual(controls.lower.anchor, { x = 58, y = 68 })
+  Assert.deepEqual(controls.symbols.anchor, { x = 90, y = 68 })
+  Assert.deepEqual(controls.back.anchor, { x = 158, y = 68 })
+  Assert.deepEqual(controls.ok.anchor, { x = 198, y = 68 })
   Assert.deepEqual(controls.backing.anchor, { x = 22, y = 56 })
 
   local cursor = assert(naming.cursor, "the compiled naming must publish its source cursor")
@@ -1625,16 +1629,38 @@ function T.naming_object_visuals_honor_per_oam_palette_selection()
     Assert.isTrue(#bytes > 0, "the sprite image carries generated pixels")
     return path, bytes
   end
+  local function recordImages(record)
+    if type(record.frames) ~= "table" then
+      local _, bytes = imageBytes(record)
+      return { bytes }
+    end
+    local images = {}
+    local seen = {}
+    for _, frame in ipairs(record.frames) do
+      if not seen[frame.asset] then
+        seen[frame.asset] = true
+        local entry = assert(bundle.manifest.assets[frame.asset], "the sprite asset is indexed: " .. frame.asset)
+        images[#images + 1] = assert(bundle.assets[entry.image])
+      end
+    end
+    if record.pulseAsset ~= nil then
+      local entry =
+        assert(bundle.manifest.assets[record.pulseAsset], "the pulse asset is indexed: " .. record.pulseAsset)
+      images[#images + 1] = assert(bundle.assets[entry.image])
+    end
+    return images
+  end
   local opaquePixels = 0
   for _, record in ipairs(records) do
-    local _, bytes = imageBytes(record)
-    local width, _, rgba = PngReader.rgba(bytes)
-    local total = math.floor(#rgba / 4)
-    for index = 0, total - 1 do
-      local _, _, _, a = PngReader.pixel(rgba, width, index % width, math.floor(index / width))
-      if a ~= 0 then
-        opaquePixels = opaquePixels + 1
-        break
+    for _, bytes in ipairs(recordImages(record)) do
+      local width, _, rgba = PngReader.rgba(bytes)
+      local total = math.floor(#rgba / 4)
+      for index = 0, total - 1 do
+        local _, _, _, a = PngReader.pixel(rgba, width, index % width, math.floor(index / width))
+        if a ~= 0 then
+          opaquePixels = opaquePixels + 1
+          break
+        end
       end
     end
     for key in pairs(record) do
@@ -1645,9 +1671,140 @@ function T.naming_object_visuals_honor_per_oam_palette_selection()
     end
   end
   Assert.isTrue(opaquePixels > 0, "the compiled naming visuals carry opaque source art")
-  local _, maleBytes = imageBytes(subjects.male)
-  local _, femaleBytes = imageBytes(subjects.female)
-  Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
+  Assert.isTrue(
+    recordImages(subjects.male)[1] ~= recordImages(subjects.female)[1],
+    "the male and female subjects render distinct art"
+  )
+end
+
+-- A multi-frame animation bank for the naming producer: animation 48 packs
+-- three frames (durations 2/1/4, looping from frame 1) while every other
+-- animation keeps one frame, so frame order, durations, mode, and loop
+-- start are observable in the generated subject record.
+local function multiFrameNamingAnim()
+  local animCount = 50
+  local specs = {}
+  for index = 0, animCount - 1 do
+    specs[index + 1] = { playMode = 1, loopStart = 0, frames = { { cell = index, duration = 3 } } }
+  end
+  specs[49] = {
+    playMode = 2,
+    loopStart = 1,
+    frames = {
+      { cell = 10, duration = 2 },
+      { cell = 11, duration = 1 },
+      { cell = 12, duration = 4 },
+    },
+  }
+  local totalFrames = 0
+  for _, spec in ipairs(specs) do
+    totalFrames = totalFrames + #spec.frames
+  end
+  local animsOffset = 0x18
+  local framesOffset = animsOffset + 16 * animCount
+  local dataOffset = framesOffset + 8 * totalFrames
+  local animEntries, frameEntries, dataEntries = {}, {}, {}
+  local frameCursor, dataCursor = 0, 0
+  for _, spec in ipairs(specs) do
+    animEntries[#animEntries + 1] = u16(#spec.frames)
+      .. u16(spec.loopStart)
+      .. u32(0x00010000)
+      .. u32(spec.playMode)
+      .. u32(frameCursor * 8)
+    for _, frame in ipairs(spec.frames) do
+      frameEntries[#frameEntries + 1] = u32(dataCursor * 2) .. u16(frame.duration) .. u16(0)
+      dataEntries[#dataEntries + 1] = u16(frame.cell)
+      frameCursor = frameCursor + 1
+      dataCursor = dataCursor + 1
+    end
+  end
+  return container("RNAN", {
+    block(
+      "ABNK",
+      u16(animCount)
+        .. u16(totalFrames)
+        .. u32(animsOffset)
+        .. u32(framesOffset)
+        .. u32(dataOffset)
+        .. string.rep("\0", 8)
+        .. table.concat(animEntries)
+        .. table.concat(frameEntries)
+        .. table.concat(dataEntries)
+    ),
+  })
+end
+
+-- Subject animations publish every decoded frame in source order with its
+-- decoded duration, playback mode, and loop start, packed left to right in
+-- one deterministic atlas.
+function T.naming_subject_animations_pack_every_decoded_frame_in_order()
+  local romFs, sha1, hashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "naming_screen" then
+        namingObjMembers(members)
+        members[15] = multiFrameNamingAnim()
+      end
+      return members
+    end,
+  })
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen)
+  local male = assert(naming.playerSubjects.male)
+  Assert.equal(male.playMode, "forward_loop")
+  Assert.equal(male.loopStartFrameIdx, 1)
+  Assert.equal(#male.frames, 3, "every decoded subject frame is represented once")
+  local durations = {}
+  for _, frame in ipairs(male.frames) do
+    durations[#durations + 1] = frame.duration
+  end
+  Assert.deepEqual(durations, { 2, 1, 4 }, "frame durations follow the decoded source order")
+  Assert.isNil(male.pulseAsset, "player subjects carry no pulse-mask role")
+  local entry = assert(bundle.manifest.assets[male.frames[1].asset])
+  local atlasWidth, atlasHeight = PngReader.rgba(assert(bundle.assets[entry.image]))
+  Assert.equal(entry.width, atlasWidth)
+  Assert.equal(entry.height, atlasHeight)
+  local x = 0
+  for index, frame in ipairs(male.frames) do
+    Assert.equal(frame.asset, male.frames[1].asset, "subject frames share one packed atlas")
+    Assert.equal(frame.rect.x, x, "frame " .. index .. " packs left to right")
+    Assert.equal(frame.rect.y, 0)
+    Assert.isNil(frame.pulseRect, "player subject frames carry no pulse rect")
+    x = x + frame.rect.width
+  end
+  Assert.equal(atlasWidth, x, "the atlas is exactly the packed frame row")
+  local female = assert(naming.playerSubjects.female)
+  Assert.equal(#female.frames, 1, "untampered animations keep their single frame")
+end
+
+-- Cursor animations publish the same frame packing plus the entry-29
+-- pulse-mask atlas whose rects match the normal frames in order and size,
+-- with only marker pixels opaque.
+function T.naming_cursor_masks_match_their_frames_and_hide_other_pixels()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen)
+  local keyboard = assert(naming.cursor.keyboard)
+  Assert.isTrue(#keyboard.frames >= 1, "the keyboard cursor carries generated frames")
+  local maskEntry = assert(
+    bundle.manifest.assets[assert(keyboard.pulseAsset, "the keyboard cursor names its pulse atlas")],
+    "the pulse-mask atlas is indexed"
+  )
+  local maskWidth, maskHeight, maskRgba = PngReader.rgba(assert(bundle.assets[maskEntry.image]))
+  Assert.equal(maskEntry.width, maskWidth)
+  Assert.equal(maskEntry.height, maskHeight)
+  for index, frame in ipairs(keyboard.frames) do
+    local pulseRect = assert(frame.pulseRect, "cursor frame " .. index .. " carries its mask rect")
+    Assert.equal(pulseRect.width, frame.rect.width, "mask frame " .. index .. " matches its frame width")
+    Assert.equal(pulseRect.height, frame.rect.height, "mask frame " .. index .. " matches its frame height")
+  end
+  local total = math.floor(#maskRgba / 4)
+  for index = 0, total - 1 do
+    local r, g, b, a = PngReader.pixel(maskRgba, maskWidth, index % maskWidth, math.floor(index / maskWidth))
+    local opaque = a ~= 0
+    if opaque then
+      Assert.deepEqual({ r, g, b, a }, { 255, 255, 255, 255 }, "opaque mask pixels are the white marker")
+    end
+  end
 end
 
 -- The normal start-menu icon visuals are source-composed sprite frames, not

@@ -237,7 +237,7 @@ local function validManifest()
         lower = { asset = "hgss.naming_screen.page_lower", width = 256, height = 112 },
         symbols = { asset = "hgss.naming_screen.page_symbols", width = 256, height = 112 },
       },
-      placement = { x = 0, y = 80, width = 256, height = 112 },
+      placement = { x = 11, y = 80, width = 256, height = 112 },
     },
   }
   return FieldUiFixture.addNamingSemantics(built)

@@ -1218,6 +1218,26 @@ function T.shrink_animation_uses_each_generated_frame_duration()
   Assert.equal(state:view().phase, "complete")
 end
 
+function T.name_edit_presentation_advances_once_per_source_tick()
+  local state = advanceToNameEdit()
+  local naming = assert(state:view().namingScreen, "name editing publishes the naming screen")
+  local presentation = assert(naming.presentation, "name editing publishes deterministic presentation clocks")
+  Assert.equal(presentation.subjectTick, 0, "the subject clock rests when name editing opens")
+  Assert.equal(presentation.cursorTick, 0, "the cursor clock rests when name editing opens")
+  Assert.equal(presentation.glowAngle, 180, "the glow angle rests when name editing opens")
+  state:tick(5)
+  local advanced = assert(state:view().namingScreen.presentation)
+  Assert.equal(advanced.subjectTick, 5, "five source ticks advance the subject clock five steps")
+  Assert.equal(advanced.cursorTick, 5, "five source ticks advance the cursor clock five steps")
+  Assert.equal(advanced.glowAngle, 280, "five source ticks step the glow angle five times")
+  state:tick(0)
+  Assert.deepEqual(
+    state:view().namingScreen.presentation,
+    advanced,
+    "a host update with no source tick leaves presentation state alone"
+  )
+end
+
 function T.naming_screen_back_and_ok_controls_reach_the_existing_name_flow()
   local state = advanceToNameEdit()
   Assert.isTrue(state:inputText("A"))

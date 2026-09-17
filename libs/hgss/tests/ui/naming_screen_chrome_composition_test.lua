@@ -33,8 +33,14 @@ local function graphicsFake()
     rectangle = function(mode, x, y, width, height)
       calls.rectangles[#calls.rectangles + 1] = { mode = mode, x = x, y = y, width = width, height = height }
     end,
-    draw = function(image, x, y)
-      calls.draws[#calls.draws + 1] = { image = image, x = x, y = y }
+    newQuad = function(x, y, w, h, imgW, imgH)
+      return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+    end,
+    draw = function(image, quad, x, y)
+      if type(quad) == "number" then
+        quad, x, y = nil, quad, x
+      end
+      calls.draws[#calls.draws + 1] = { image = image, quad = quad, x = x, y = y }
     end,
   }
   return graphics, calls
@@ -86,6 +92,7 @@ local function snapshot(page, cursor)
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
+    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
   }
 end
 
@@ -126,14 +133,27 @@ function T.construction_acquires_the_base_pages_and_every_semantic_visual()
   for _, record in pairs(naming.controls) do
     expected[#expected + 1] = record.image
   end
-  expected[#expected + 1] = naming.cursor.keyboard.image
+  local fixtureManifest = manifest()
+  local function animationImages(record)
+    local seen = {}
+    for _, frame in ipairs(record.frames) do
+      if not seen[frame.asset] then
+        seen[frame.asset] = true
+        expected[#expected + 1] = fixtureManifest.assets[frame.asset].image
+      end
+    end
+    if record.pulseAsset ~= nil then
+      expected[#expected + 1] = fixtureManifest.assets[record.pulseAsset].image
+    end
+  end
+  animationImages(naming.playerSubjects.male)
+  animationImages(naming.playerSubjects.female)
+  animationImages(naming.cursor.keyboard)
   for _, record in pairs(naming.cursor.home) do
-    expected[#expected + 1] = record.image
+    animationImages(record)
   end
   expected[#expected + 1] = naming.entrySlots.normal.image
   expected[#expected + 1] = naming.entrySlots.selected.image
-  expected[#expected + 1] = naming.playerSubjects.male.image
-  expected[#expected + 1] = naming.playerSubjects.female.image
   Assert.equal(#loads.loads, #expected, "construction loads the chrome plus every semantic visual")
   local seen = {}
   for _, path in ipairs(loads.loads) do
@@ -189,7 +209,7 @@ function T.draw_composes_base_page_controls_slots_text_cursor_and_manifest_subje
   Assert.equal(calls.draws[1].image.path, BASE_PATH, "the base draws first")
   Assert.deepEqual({ x = calls.draws[1].x, y = calls.draws[1].y }, { x = 0, y = 0 })
   Assert.equal(calls.draws[2].image.path, LOWER_PATH, "the selected lower page draws over the base")
-  Assert.deepEqual({ x = calls.draws[2].x, y = calls.draws[2].y }, { x = 0, y = 80 })
+  Assert.deepEqual({ x = calls.draws[2].x, y = calls.draws[2].y }, { x = 11, y = 80 })
 
   Assert.equal(#calls.rectangles, 0, "source visuals replace every procedural outline")
   Assert.equal(#seenSubject, 0, "the player subject comes from the manifest, not the host callback")
@@ -202,9 +222,11 @@ function T.draw_composes_base_page_controls_slots_text_cursor_and_manifest_subje
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok", "backing" }) do
     Assert.isTrue(paths[naming.controls[id].image], "the " .. id .. " control draws its generated visual")
   end
-  Assert.isTrue(paths[naming.cursor.keyboard.image], "the keyboard cursor draws its generated visual")
+  local keyboardFrame = naming.cursor.keyboard.frames[1]
+  Assert.isTrue(paths[manifest().assets[keyboardFrame.asset].image], "the keyboard cursor draws its generated visual")
   Assert.isTrue(paths[naming.entrySlots.normal.image], "the entry slots draw their generated visual")
-  Assert.isTrue(paths[naming.playerSubjects.male.image], "the male player subject draws its generated visual")
+  local maleFrame = naming.playerSubjects.male.frames[1]
+  Assert.isTrue(paths[manifest().assets[maleFrame.asset].image], "the male player subject draws its generated visual")
 
   local entered = {}
   for _, entry in ipairs(textCalls.texts) do

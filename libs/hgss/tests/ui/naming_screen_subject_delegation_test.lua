@@ -37,8 +37,14 @@ local function graphicsFake()
     end,
     setColor = function() end,
     rectangle = function() end,
-    draw = function(image, x, y)
-      calls.draws[#calls.draws + 1] = { image = image, x = x, y = y }
+    newQuad = function(x, y, w, h, imgW, imgH)
+      return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
+    end,
+    draw = function(image, quad, x, y)
+      if type(quad) == "number" then
+        quad, x, y = nil, quad, x
+      end
+      calls.draws[#calls.draws + 1] = { image = image, quad = quad, x = x, y = y }
     end,
   }
   return graphics, calls
@@ -93,6 +99,7 @@ local function snapshot(subject)
     maxLength = 7,
     grid = grid,
     subject = subject,
+    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
   }
 end
 
@@ -115,16 +122,18 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
   renderer:draw(snapshot(playerSubject), layout)
   Assert.equal(#seen, 0, "a player subject never reaches the host callback")
   local female = manifest.namingScreen.playerSubjects.female
+  local femaleFrame = female.frames[1]
+  local femalePath = manifest.assets[femaleFrame.asset].image
   local femaleDraws = {}
   for _, draw in ipairs(calls.draws) do
-    if draw.image.path == female.image then
+    if draw.image.path == femalePath then
       femaleDraws[#femaleDraws + 1] = draw
     end
   end
   Assert.equal(#femaleDraws, 1, "the female player subject draws its manifest visual once")
   Assert.deepEqual({ x = femaleDraws[1].x, y = femaleDraws[1].y }, {
-    x = female.anchor.x + female.offset.x,
-    y = female.anchor.y + female.offset.y,
+    x = female.anchor.x + femaleFrame.offset.x,
+    y = female.anchor.y + femaleFrame.offset.y,
   })
   local pokemonSubject = { kind = "pokemon", species = 25, form = 0 }
   renderer:draw(snapshot(pokemonSubject), layout)

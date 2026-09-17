@@ -46,7 +46,7 @@ end
 
 function T.compiled_naming_chrome_has_the_normal_base_and_pages(romFs, _)
   local bundle, naming = compiledNaming(romFs)
-  Assert.deepEqual(naming.placement, { x = 0, y = 80, width = 256, height = 112 })
+  Assert.deepEqual(naming.placement, { x = 11, y = 80, width = 256, height = 112 })
   Assert.equal(naming.base.width, 256)
   Assert.equal(naming.base.height, 192)
   for _, key in ipairs({ "upper", "lower", "symbols" }) do
@@ -158,11 +158,11 @@ function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
     end
   end
   local expectedAnchors = {
-    upper = { x = 4, y = 68 },
-    lower = { x = 36, y = 68 },
-    symbols = { x = 68, y = 68 },
-    back = { x = 136, y = 68 },
-    ok = { x = 176, y = 68 },
+    upper = { x = 26, y = 68 },
+    lower = { x = 58, y = 68 },
+    symbols = { x = 90, y = 68 },
+    back = { x = 158, y = 68 },
+    ok = { x = 198, y = 68 },
     backing = { x = 22, y = 56 },
   }
   for id, anchor in pairs(expectedAnchors) do
@@ -180,7 +180,11 @@ function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
   Assert.deepEqual(naming.playerSubjects.female.anchor, { x = 24, y = 8 })
 
   local function opaqueBytes(record)
-    local assetId = assert(record.asset, "the sprite record must reference its image by semantic asset id")
+    local assetId = record.asset
+    if assetId == nil and type(record.frames) == "table" then
+      assetId = assert(record.frames[1], "the animation record carries frames").asset
+    end
+    assetId = assert(assetId, "the sprite record must reference its image by semantic asset id")
     local asset = assert(bundle.manifest.assets[assetId], "the sprite asset must be indexed: " .. assetId)
     local bytes = assert(bundle.assets[asset.image], "the sprite image must have generated pixels: " .. asset.image)
     local width, _, rgba = PngReader.rgba(bytes)

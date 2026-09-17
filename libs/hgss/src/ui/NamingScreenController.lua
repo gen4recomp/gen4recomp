@@ -32,6 +32,7 @@ local NamingScreenController = {}
 ---@field result fun(self: NamingScreenController): table<string, string>?
 ---@field snapshot fun(self: NamingScreenController): table<string, unknown>
 ---@field text fun(self: NamingScreenController): string
+---@field updateFixed fun(self: NamingScreenController)
 NamingScreenController.__index = NamingScreenController
 
 local ROWS, COLUMNS = 6, 13
@@ -175,7 +176,37 @@ function NamingScreenController.new(options)
     _deltaColumn = 0,
     _text = options.initialText,
     _result = nil,
+    _subjectTick = 0,
+    _cursorTick = 0,
+    _glowAngle = 180,
   }, NamingScreenController)
+end
+
+-- The single focus-assignment path: D-pad motion and direct focus share
+-- the presentation reset, which fires only when the coordinates change.
+function NamingScreenController:_setCursor(row, column)
+  if self._cursor.row == row and self._cursor.column == column then
+    return false
+  end
+  self._cursor = { row = row, column = column }
+  self._cursorTick = 0
+  self._glowAngle = 180
+  return true
+end
+
+-- One deterministic presentation step per source tick while the name is
+-- still being edited. A submitted name freezes the clocks.
+function NamingScreenController:updateFixed()
+  if self._result ~= nil then
+    return
+  end
+  self._subjectTick = self._subjectTick + 1
+  self._cursorTick = self._cursorTick + 1
+  local angle = self._glowAngle + 20
+  if angle > 360 then
+    angle = 0
+  end
+  self._glowAngle = angle
 end
 
 function NamingScreenController:_cell()
@@ -198,7 +229,7 @@ function NamingScreenController:_move(direction)
     local cell = self._grids[self._page][row][column]
     local repeated = cell.kind == "control" and sameCell(cell, start)
     if cell.kind ~= "blank" and not repeated then
-      self._cursor = { row = row, column = column }
+      self:_setCursor(row, column)
       if dc ~= 0 then
         self._deltaColumn = dc
       end
@@ -287,7 +318,7 @@ function NamingScreenController:activateAt(row, column)
   if cell.kind == "blank" then
     return false
   end
-  self._cursor = { row = row, column = column }
+  self:_setCursor(row, column)
   return cell.kind == "glyph" and self:_insert(cell.glyph) or self:activateControl(cell.controlId)
 end
 
@@ -361,6 +392,11 @@ function NamingScreenController:snapshot()
     grid = grid,
     subject = subjectCopy(self._subject),
     result = self:result(),
+    presentation = {
+      subjectTick = self._subjectTick,
+      cursorTick = self._cursorTick,
+      glowAngle = self._glowAngle,
+    },
   }
 end
 
