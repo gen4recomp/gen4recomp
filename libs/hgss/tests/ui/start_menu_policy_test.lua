@@ -155,13 +155,49 @@ function T.tests.actions_does_not_query_applications()
   end
 end
 
--- Presence positions stay dense per source rules: when pokedex is not
--- present, pokemon is position 0, then bag, pokegear, trainer_card.
+-- Visual slots are fixed retail identities, never compacted by presence: when
+-- pokedex is not present, pokemon keeps position 1 and trainer_card keeps
+-- position 4, leaving holes where the absent actions would draw.
 function T.tests.actions_preserves_display_positions_by_presence()
   local withoutPokedex = facts({ hasPokedex = false })
   local actions = StartMenuPolicy.actions(withoutPokedex)
-  Assert.equal(assert(actionById(actions, "vanilla.pokemon")).displayPosition, 0)
-  Assert.equal(assert(actionById(actions, "vanilla.trainer_card")).displayPosition, 3)
+  Assert.equal(assert(actionById(actions, "vanilla.pokemon")).displayPosition, 1)
+  Assert.equal(assert(actionById(actions, "vanilla.trainer_card")).displayPosition, 4)
+end
+
+-- The seven normal actions own stable retail visual slots: an absent early
+-- action leaves a hole instead of shifting later actions forward. With only
+-- the unconditionally present actions unlocked, the trainer card stays in
+-- its right-column slot rather than compacting into the first position.
+function T.tests.normal_actions_keep_stable_visual_slots_when_early_actions_are_absent()
+  local actions = StartMenuPolicy.actions(facts({
+    hasPokedex = false,
+    hasStarter = false,
+    bagUnlocked = false,
+    hasPokegear = false,
+  }))
+  Assert.equal(assert(actionById(actions, "vanilla.trainer_card")).displayPosition, 4)
+  Assert.equal(assert(actionById(actions, "vanilla.save")).displayPosition, 5)
+  Assert.equal(assert(actionById(actions, "vanilla.options")).displayPosition, 6)
+end
+
+-- The full normal set pins every retail slot in one assertion, so a future
+-- reorder of the canonical definitions cannot silently renumber the screen.
+function T.tests.full_normal_set_pins_every_retail_visual_slot()
+  local actions = StartMenuPolicy.actions(facts())
+  local expected = {
+    ["vanilla.pokedex"] = 0,
+    ["vanilla.pokemon"] = 1,
+    ["vanilla.bag"] = 2,
+    ["vanilla.pokegear"] = 3,
+    ["vanilla.trainer_card"] = 4,
+    ["vanilla.save"] = 5,
+    ["vanilla.options"] = 6,
+  }
+  for id, position in pairs(expected) do
+    local action = assert(actionById(actions, id), id .. " must be present")
+    Assert.equal(action.displayPosition, position, id .. " keeps its retail visual slot")
+  end
 end
 
 -- The facts are ordinary internal data: the seven required booleans are

@@ -46,9 +46,17 @@ local NORMAL_R, NORMAL_G, NORMAL_B = 200, 40, 40
 local SELECTED_R, SELECTED_G, SELECTED_B = 255, 220, 120
 
 local function recordingText()
-  local text = { draws = {} }
+  local text = {
+    draws = {},
+    fontDef = {
+      palette = { [15] = { r = 1, g = 2, b = 3 }, [3] = { r = 4, g = 5, b = 6 }, [1] = { r = 7, g = 8, b = 9 } },
+    },
+  }
   function text.drawText(_, str, x, y)
     text.draws[#text.draws + 1] = { text = str, x = x, y = y }
+  end
+  function text.drawTextWithPalette(_, str, x, y, palette)
+    text.draws[#text.draws + 1] = { text = str, x = x, y = y, palette = palette }
   end
   function text.textWidth(_, str)
     return #str * 8

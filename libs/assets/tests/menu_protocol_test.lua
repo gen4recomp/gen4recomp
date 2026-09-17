@@ -9,6 +9,7 @@ local T = {}
 
 function T.protocol_constants_are_stable()
   Assert.equal(MenuProtocol.STANDARD_MESSAGE_BANK, 191)
+  Assert.equal(MenuProtocol.START_MENU_MESSAGE_BANK, 196)
   Assert.equal(MenuProtocol.CANCEL_RESULT, 0xFFFE)
   Assert.equal(MenuProtocol.BOTTOM_SCREEN_TILE_PLACEMENT, "hgss_bottom_screen_tiles")
 end

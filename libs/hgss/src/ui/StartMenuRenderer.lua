@@ -31,7 +31,8 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 
 ---@class StartMenuRenderer
 ---@field _graphics love.graphics
----@field _text FieldTextRenderer the shared text collaborator (drawText/textWidth)
+---@field _text FieldTextRenderer the shared text collaborator (drawTextWithPalette/textWidth)
+---@field _labelPalette { foreground: { r: number, g: number, b: number, a: number? }, shadow: { r: number, g: number, b: number, a: number? }, background: { r: number, g: number, b: number, a: number? } } the retail label roles resolved from the generated font palette
 ---@field _images love.Image[] every acquired image, released exactly once
 ---@field _imageByAsset table<string, love.Image> acquired images by manifest asset id
 ---@field _quads table<string, love.Quad> quads by asset id plus rect
@@ -69,9 +70,18 @@ function StartMenuRenderer.new(opts)
   assert(type(manifest) == "table", "StartMenuRenderer requires the runtime-validated field-UI manifest")
   local text = opts.text
   assert(
-    text and type(text.drawText) == "function" and type(text.textWidth) == "function",
+    text and type(text.drawTextWithPalette) == "function" and type(text.textWidth) == "function",
     "StartMenuRenderer requires the shared text collaborator"
   )
+  -- The label colors are retail palette roles, not hardcoded RGB: the
+  -- source prints labels with foreground 14, shadow 2, background 0, read
+  -- from the generated font palette through its one-based Lua entries.
+  local fontPalette = assert(text.fontDef and text.fontDef.palette, "start menu requires generated field font palette")
+  local labelPalette = {
+    foreground = assert(fontPalette[15]), -- source slot 14
+    shadow = assert(fontPalette[3]), -- source slot 2
+    background = assert(fontPalette[1]), -- source slot 0
+  }
 
   -- The generated field-UI class is a required renderer asset: the manifest
   -- names the SUB chrome and every icon visual atlas. The runtime boot
@@ -87,6 +97,7 @@ function StartMenuRenderer.new(opts)
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
+    _labelPalette = labelPalette,
     _images = {},
     _imageByAsset = {},
     _quads = {},
@@ -227,12 +238,13 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
   )
 end
 
--- One presented action's resolved label in the action's own source label
+-- one presented action's resolved label in the action's own source label
 -- window: windows are keyed by source position, never by presentation
 -- order, so a sparse action list still labels the right row. Labels arrive
--- resolved (the dynamic player name is caller-resolved; the static label
--- bank is deferred until the message class ships it); an action without a
--- resolved label draws its icon alone.
+-- resolved (the dynamic player name is caller-resolved; static labels come
+-- from the pinned source label bank); an action without a resolved label
+-- draws its icon alone. Every label draws through the palette-driven text
+-- path with the retail label roles, centered in its window as before.
 ---@param action table<string, unknown>
 function StartMenuRenderer:_drawActionLabel(action)
   if action.label == nil then
@@ -248,7 +260,12 @@ function StartMenuRenderer:_drawActionLabel(action)
     "label window for position " .. tostring(action.position) .. " is outside the generated window set"
   )
   local width = text:textWidth(action.label)
-  text:drawText(action.label, window.x + (window.width - width) / 2, window.y)
+  text:drawTextWithPalette(
+    action.label,
+    window.x + (window.width - width) / 2,
+    window.y,
+    assert(self._labelPalette, "the icon presentation requires the resolved label palette")
+  )
 end
 
 -- Draws the canonical menu surface through the placement record: the SUB

@@ -27,6 +27,9 @@ local function sourceReferenceBankIds()
     ids[assert(bankId)] = true
   end
   ids[MenuProtocol.STANDARD_MESSAGE_BANK] = true
+  -- The in-field Start Menu labels resolve from this bank through the
+  -- protocol constant; see FieldMessageCompiler's required bank set.
+  ids[MenuProtocol.START_MENU_MESSAGE_BANK] = true
   -- Oak's scripted opening introduction reads directly from this bank; see
   -- FieldMessageCompiler's OAK_INTRO_MESSAGE_BANK.
   ids[219] = true
@@ -167,6 +170,9 @@ function T.source_references_form_one_sorted_bank_set()
     expected[assert(bankId)] = true
   end
   expected[MenuProtocol.STANDARD_MESSAGE_BANK] = true
+  -- The in-field Start Menu labels resolve from this bank through the
+  -- protocol constant; see FieldMessageCompiler's required bank set.
+  expected[MenuProtocol.START_MENU_MESSAGE_BANK] = true
   -- Oak's scripted opening introduction reads directly from this bank; see
   -- FieldMessageCompiler's OAK_INTRO_MESSAGE_BANK.
   expected[219] = true
@@ -232,6 +238,17 @@ function T.message_manifest_has_no_selected_bank_policy()
     "function",
     "message bank selection must be derived by the compiler"
   )
+end
+
+function T.start_menu_label_bank_is_a_required_generated_bank()
+  local required = FieldMessageCompiler.requiredBankIds()
+  local occurrences = 0
+  for _, bankId in ipairs(required) do
+    if bankId == 196 then
+      occurrences = occurrences + 1
+    end
+  end
+  Assert.equal(occurrences, 1, "the start menu label bank must be required exactly once")
 end
 
 function T.compilation_is_deterministic()

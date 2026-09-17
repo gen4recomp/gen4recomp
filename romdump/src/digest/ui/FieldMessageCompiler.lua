@@ -125,6 +125,7 @@ function FieldMessageCompiler.requiredBankIds()
   -- The source script corpus addresses this global list-menu bank through a
   -- runtime protocol constant rather than a map-header association.
   set[MenuProtocol.STANDARD_MESSAGE_BANK] = true
+  set[MenuProtocol.START_MENU_MESSAGE_BANK] = true
   set[OAK_INTRO_MESSAGE_BANK] = true
   set[OPPOSITE_PROTAGONIST_NAME_BANK] = true
   local out = {}

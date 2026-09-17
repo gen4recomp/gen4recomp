@@ -90,39 +90,45 @@ function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
   withEveryVersion(function(harness, versionId)
     local options = { width = 256, height = 192, topology = topology(256, 192) }
     withGame(harness, versionId, options, function(game)
+      -- A fresh save owns no progression: only the unlock-gated trainer
+      -- card, save, and options rows are present, keeping their fixed
+      -- retail slots on the right column while the early slots stay holes.
       local status = openMenu(game)
-      Assert.equal(status.selectedPosition, 0, "fresh field selection starts at source display position zero")
+      Assert.equal(status.selectedPosition, 4, "fresh field selection starts at the first present fixed slot")
 
       local byPosition = {}
       for _, action in ipairs(status.actions) do
         byPosition[action.position] = action
       end
-      Assert.notNil(byPosition[0], "the first source action is visible")
-      Assert.isFalse(byPosition[0].enabled, "the first source action is visible but disabled")
-      Assert.notNil(byPosition[1], "the next source row action is visible")
-      Assert.notNil(byPosition[2], "the second source row action is visible")
+      Assert.isNil(byPosition[0], "the absent pokedex slot remains a hole")
+      Assert.isNil(byPosition[1], "the absent pokemon slot remains a hole")
+      Assert.isNil(byPosition[2], "the absent bag slot remains a hole")
+      Assert.isNil(byPosition[3], "the absent pokegear slot remains a hole")
+      Assert.notNil(byPosition[4], "the trainer card keeps its fixed slot")
+      Assert.isFalse(byPosition[4].enabled, "the trainer card is visible but disabled")
+      Assert.notNil(byPosition[5], "save keeps its fixed slot")
+      Assert.notNil(byPosition[6], "options keeps its fixed slot")
       Assert.isNil(byPosition[7], "the special-9 bookkeeping entry is not a visual button")
       Assert.isNil(byPosition[8], "the special-10 bookkeeping entry is not a visual button")
-      Assert.isNil(byPosition[4], "an absent source position remains a hole")
 
       game.runtime:pressAction()
       game:step()
       game.runtime:releaseAction()
-      Assert.equal(menuStatus(game).selectedPosition, 0, "a disabled visible action is not activated")
+      Assert.equal(menuStatus(game).selectedPosition, 4, "a disabled visible action is not activated")
 
-      Assert.equal(navigate(game, "east").selectedPosition, 0, "right stays on the first visible candidate")
-      Assert.equal(navigate(game, "south").selectedPosition, 1, "down selects the first visible candidate")
-      Assert.equal(navigate(game, "west").selectedPosition, 1, "left stays on the first visible candidate")
-      Assert.equal(navigate(game, "north").selectedPosition, 0, "up selects the first visible candidate")
-      Assert.equal(navigate(game, "south").selectedPosition, 1, "down selects the first visible candidate again")
-      Assert.equal(navigate(game, "east").selectedPosition, 1, "right stays when no candidate is visible")
-      Assert.equal(navigate(game, "south").selectedPosition, 2, "down selects the first visible candidate")
-      Assert.equal(navigate(game, "west").selectedPosition, 2, "left stays when no candidate is visible")
+      Assert.equal(navigate(game, "east").selectedPosition, 4, "right stays on the first visible candidate")
+      Assert.equal(navigate(game, "south").selectedPosition, 5, "down selects the next visible candidate")
+      Assert.equal(navigate(game, "west").selectedPosition, 5, "left stays when no candidate is visible")
+      Assert.equal(navigate(game, "north").selectedPosition, 4, "up selects the previous visible candidate")
+      Assert.equal(navigate(game, "south").selectedPosition, 5, "down selects the next visible candidate again")
+      Assert.equal(navigate(game, "east").selectedPosition, 5, "right stays when no candidate is visible")
+      Assert.equal(navigate(game, "south").selectedPosition, 6, "down selects the last visible candidate")
+      Assert.equal(navigate(game, "west").selectedPosition, 6, "left stays when no candidate is visible")
 
-      local hitRect = game.runtime.uiManifest.startMenu.interactive.positions[4].hitRect
+      local hitRect = game.runtime.uiManifest.startMenu.interactive.positions[0].hitRect
       game.runtime.input:pointerMove("acceptance:start-menu:pointer", hitRect.x + 1, hitRect.y + 1)
       game:step()
-      Assert.equal(menuStatus(game).selectedPosition, 2, "pointer hover over a position hole changes nothing")
+      Assert.equal(menuStatus(game).selectedPosition, 6, "pointer hover over a position hole changes nothing")
     end)
   end)
 end
