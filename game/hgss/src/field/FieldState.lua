@@ -14,7 +14,7 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 
 ---@class FieldStateOptions
 ---@field fieldScaleConfig table<string, unknown>? runtime field-scale configuration
----@field development boolean? product mode (the default) hides the playtest HUD
+---@field development boolean? product mode (the default) hides the developer overlay
 ---@field initialFadeIn boolean? one-shot covered entry: first frame fully black, then reveal
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)?
 ---@field saveStore table<string, unknown>? global GameSaveStore
@@ -33,7 +33,11 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field spriteItems table[] persistent presentation-resolution actor sprites
 ---@field _entryFade StandardFade? one-shot covered-entry reveal, nil when inactive or complete
 ---@field _entryAccumulator number source-frame time held for the covered-entry reveal
----@field development boolean product mode (default) hides the playtest HUD and ignores the F1/F2 developer binds
+---@field development boolean product mode (default) hides the developer overlay; dev mode shows it only after the F3 toggle and unbound keys stay inert
+---@field _developmentOverlayVisible boolean dev-only overlay visibility, always false at construction
+---@field _fpsElapsed number active-overlay seconds accumulated toward the current fps sample
+---@field _fpsFrames integer rendered field frames counted in the current fps sample
+---@field _fps number last published sampled frames per second, 0 before the first sample
 ---@field topologyProvider fun(width: number, height: number): ScreenTopology
 ---@field _starterUiSuspended boolean whether modal UI semantics are suspended while the open starter chooser prepares
 local FieldState = {}
@@ -49,6 +53,10 @@ local NO_DRAWS = {}
 local ENTRY_SOURCE_FRAME = 1 / 30
 local ENTRY_EPSILON = 1e-12
 local ENTRY_MAX_CATCH_UP = 6
+
+-- The developer-overlay sampling window: fps is published from rendered
+-- frames over active-overlay time, never from a host timer.
+local FPS_SAMPLE_SECONDS = 0.5
 
 local function defaultScreenTopology(width, height)
   local os = love.system and love.system.getOS and love.system.getOS() or ""
@@ -92,6 +100,10 @@ function FieldState.new(game, options)
     _entryFade = options.initialFadeIn == true and StandardFade.new({ direction = "in", color = 0 }) or nil,
     _entryAccumulator = 0,
     _starterUiSuspended = false,
+    _developmentOverlayVisible = false,
+    _fpsElapsed = 0,
+    _fpsFrames = 0,
+    _fps = 0,
   }, FieldState)
   local ok, err = pcall(function()
     self.presentationResources = FieldPresentationResources.new(runtime --[[@as FieldPresentationResourcesRuntime]])
@@ -121,6 +133,39 @@ function FieldState:update(dt)
   self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)
   assert(self.actorPresentation, "field actor presentation is unavailable"):sync()
+  self:_sampleOverlayFps(dt)
+end
+
+-- Accumulates active-overlay time and publishes one fps sample per window.
+-- Hidden overlays sample nothing, so hidden intervals cost no counting and
+-- never leak stale frames into the next visible window. Sampling is
+-- presentation-only and never touches simulation or input state.
+---@param dt number
+function FieldState:_sampleOverlayFps(dt)
+  if not self.development or not self._developmentOverlayVisible then
+    return
+  end
+  self._fpsElapsed = self._fpsElapsed + dt
+  if self._fpsElapsed >= FPS_SAMPLE_SECONDS then
+    local frames = self._fpsFrames
+    if frames > 0 then
+      self._fps = frames / self._fpsElapsed
+    else
+      self._fps = 0
+    end
+    self._fpsElapsed = 0
+    self._fpsFrames = 0
+  end
+end
+
+-- Flips the developer overlay and restarts sampling from a clean window:
+-- toggling on starts a fresh 0.0 sample and toggling off discards the
+-- partial sample, so stale frames never survive a visibility change.
+function FieldState:_toggleDevelopmentOverlay()
+  self._developmentOverlayVisible = not self._developmentOverlayVisible
+  self._fpsElapsed = 0
+  self._fpsFrames = 0
+  self._fps = 0
 end
 
 -- Advances the open starter chooser's presentation preparation by one
@@ -523,7 +568,8 @@ function FieldState:draw()
       starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"), width, height)
     end
   end
-  if self.development then
+  if self.development and self._developmentOverlayVisible then
+    self._fpsFrames = self._fpsFrames + 1
     self:_drawHud()
   end
 end
@@ -720,9 +766,9 @@ function FieldState:_drawApplicationFade(alpha)
   end
 end
 
--- The playtest HUD: map identity, the player's field state, the save status,
--- and the controls. Everything else stays out of the frame until the real
--- game UI replaces even this.
+-- The developer overlay: map identity, the player's field state, the
+-- sampled frame rate, and the controls. The overlay is a dev-only,
+-- F3-toggled diagnostic; save status stays out of the frame.
 function FieldState:_drawHud()
   local lg = love.graphics
   local lines = {
@@ -736,8 +782,8 @@ function FieldState:_drawHud()
       self.runtime.player.facing,
       self.runtime.player.motion
     ),
-    self.runtime.saveStatus or "save not written this run",
-    "WASD/arrows move   Z/Space/Enter action   X/Backspace cancel   M menu   -/= zoom" .. "   0 reset zoom   Esc quit",
+    string.format("fps %.1f", self._fps),
+    "WASD/arrows move   Space/Return/Enter action   Backspace/Delete/Escape cancel   Tab menu   F3 overlay   -/= zoom   0 reset zoom",
   }
   lg.setColor(0, 0, 0, 0.55)
   lg.rectangle("fill", 12, 12, 900, 20 * #lines + 12)
@@ -749,6 +795,15 @@ end
 
 ---@param key string
 function FieldState:keypressed(key, _, _)
+  -- The developer overlay toggle precedes every gameplay gate (including
+  -- the covered-entry and starter-preparation gates below), so F3 works even
+  -- while gameplay input is suppressed.
+  if key == "f3" then
+    if self.development then
+      self:_toggleDevelopmentOverlay()
+    end
+    return
+  end
   if self:_entryCoverActive() then
     return
   end
