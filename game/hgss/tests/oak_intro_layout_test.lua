@@ -603,17 +603,6 @@ function T.tests.name_composition_rejects_invalid_progress_state()
         oakBgScrollX = 0,
       },
     },
-    {
-      label = "missing progress in return transition",
-      view = {
-        phase = "name_composition_return",
-        visual = "oak",
-        primaryWidget = "oak",
-        genderFocus = 0,
-        genderCompositionProgress = 1,
-        oakBgScrollX = 0,
-      },
-    },
   }
   for _, case in ipairs(cases) do
     Assert.throws(function()
@@ -772,47 +761,6 @@ function T.tests.name_forward_transition_interpolates_directly_between_gender_an
     assertInterpolated(forwardedSubject, genderSubject, nameSubject, 0.5)
     Assert.deepEqual(forwarded.oakRegion, nameEndpoint.oakRegion)
     Assert.deepEqual(forwarded.selectorRegion, nameEndpoint.selectorRegion)
-  end
-end
-
-function T.tests.rejected_name_return_interpolates_back_to_gender_endpoint()
-  local data = manifest()
-  for _, size in ipairs({ { 640, 480 }, { 390, 844 } }) do
-    local w, h = size[1], size[2]
-    local nameEndpoint = compute(w, h, {
-      phase = "name_confirm",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      confirmationChoice = { kind = "name", selected = 0 },
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 1,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local genderEndpoint = compute(w, h, {
-      phase = "name_composition_return",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 0,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local returnMid = compute(w, h, {
-      phase = "name_composition_return",
-      visual = "oak",
-      primaryWidget = "oak",
-      genderFocus = 0,
-      genderCompositionProgress = 1,
-      nameCompositionProgress = 0.5,
-      oakBgScrollX = 0,
-    }, {}, data)
-    local nameSubject = assert(nameEndpoint.subject)
-    local genderSubject = assert(genderEndpoint.subject)
-    local midSubject = assert(returnMid.subject)
-    assertInterpolated(midSubject, nameSubject, genderSubject, 0.5)
-    Assert.deepEqual(returnMid.oakRegion, nameEndpoint.oakRegion)
-    Assert.deepEqual(returnMid.selectorRegion, nameEndpoint.selectorRegion)
   end
 end
 
@@ -1145,6 +1093,133 @@ function T.tests.confirmation_buttons_resolve_a_smaller_explicit_radius()
     local entry = assert(choices[choice])
     local button = assert(entry.button, "confirmation button must resolve shared button geometry")
     Assert.equal(button.border.cornerRadius, 6 * entry.scale, "Yes/No buttons must use a 6-logical-pixel radius")
+  end
+end
+
+function T.tests.reveal_to_dialogue_boundary_keeps_source_group_stable()
+  local data = manifest()
+  local function revealView(phase)
+    return {
+      phase = phase,
+      visual = "oak",
+      primaryWidget = "oak",
+      revealWidget = "marill",
+      oakBgScrollX = 0,
+    }
+  end
+  local before, _ = computeForHost(1710, 895, revealView("marill_cry_wait"), {}, data)
+  local after, _ = computeForHost(1710, 895, revealView("oak_live_alongside"), {}, data)
+  Assert.notNil(before.dialogue, "the final pre-dialogue reveal phase must reserve the dialogue footprint")
+  Assert.notNil(after.dialogue, "the following message phase must reserve the dialogue footprint")
+  Assert.deepEqual(
+    assert(before.dialogue).outerRect,
+    assert(after.dialogue).outerRect,
+    "dialogue activation alone must not change the reserved footprint"
+  )
+  Assert.deepEqual(before.subject, after.subject, "Oak must not jump when dialogue appears")
+  Assert.deepEqual(before.reveal, after.reveal, "Marill must not jump when dialogue appears")
+end
+
+function T.tests.gender_cards_keep_clearance_above_dialogue_on_widescreen_hosts()
+  local data = manifest()
+  for _, size in ipairs({ { 1710, 895 }, { 2560, 1440 } }) do
+    local label = size[1] .. "x" .. size[2]
+    local selectLayout, _ = computeForHost(size[1], size[2], {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    local selectDialogue =
+      assert(assert(selectLayout.dialogue).outerRect, "gender_select must reserve dialogue at " .. label)
+    local selectorRegion =
+      assert(selectLayout.selectorRegion, "gender_select must publish a selector region at " .. label)
+    Assert.isTrue(
+      selectorRegion.y + selectorRegion.height < selectDialogue.y,
+      "selector region must end with a gap above dialogue at " .. label
+    )
+    Assert.isTrue(inside(selectorRegion, selectLayout.viewport))
+    for gender = 0, 1 do
+      local card = assert(selectLayout.genderButtons[gender]).rect
+      Assert.isTrue(inside(card, selectorRegion), "gender card must stay inside the selector region at " .. label)
+      Assert.isTrue(inside(card, selectLayout.viewport))
+      Assert.isTrue(
+        card.y + card.height < selectDialogue.y,
+        "gender card must keep clearance above dialogue at " .. label
+      )
+    end
+
+    local confirmLayout, _ = computeForHost(size[1], size[2], {
+      phase = "gender_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      confirmationChoice = { kind = "gender", selected = 0 },
+      oakBgScrollX = 0,
+    }, {}, data)
+    local confirmDialogue =
+      assert(assert(confirmLayout.dialogue).outerRect, "gender_confirm must reserve dialogue at " .. label)
+    local confirmSelector =
+      assert(confirmLayout.selectorRegion, "gender_confirm must publish a selector region at " .. label)
+    Assert.isTrue(
+      confirmSelector.y + confirmSelector.height < confirmDialogue.y,
+      "confirm selector region must end with a gap above dialogue at " .. label
+    )
+    local profile = assert(confirmLayout.selectedProfileButton).rect
+    Assert.isTrue(profile.y + profile.height < confirmDialogue.y, "profile card must keep clearance at " .. label)
+    local choices = assert(confirmLayout.confirmationButtons, "gender_confirm must publish choices at " .. label)
+    for choice = 0, 1 do
+      local button = assert(choices[choice]).rect
+      Assert.isTrue(inside(button, confirmLayout.viewport))
+      Assert.isTrue(
+        button.y + button.height < confirmDialogue.y,
+        "confirm choice must keep clearance above dialogue at " .. label
+      )
+    end
+  end
+end
+
+function T.tests.name_confirmation_choices_align_to_choice_region_far_edge()
+  local data = manifest()
+  for _, size in ipairs({ { 1710, 895 }, { 2560, 1440 } }) do
+    local label = size[1] .. "x" .. size[2]
+    local layout, _ = computeForHost(size[1], size[2], {
+      phase = "name_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      confirmationChoice = { kind = "name", selected = 0 },
+      genderCompositionProgress = 1,
+      nameCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    local choiceRegion = assert(layout.selectorRegion, "name_confirm must publish a choice region at " .. label)
+    local oakRegion = assert(layout.oakRegion, "name_confirm must publish an Oak region at " .. label)
+    local subject = assert(layout.subject, "name_confirm must show Oak at " .. label)
+    Assert.isTrue(inside(subject, oakRegion))
+    local yes = assert(layout.confirmationButtons[0])
+    local no = assert(layout.confirmationButtons[1])
+    Assert.isTrue(inside(yes.rect, choiceRegion), "YES must stay inside the choice region at " .. label)
+    Assert.isTrue(inside(no.rect, choiceRegion), "NO must stay inside the choice region at " .. label)
+    Assert.isTrue(inside(yes.rect, layout.viewport))
+    Assert.isTrue(inside(no.rect, layout.viewport))
+    Assert.equal(yes.scale, no.scale)
+    Assert.equal(yes.rect.x, no.rect.x)
+    Assert.equal(yes.rect.width, no.rect.width)
+    Assert.equal(yes.rect.height, no.rect.height)
+    Assert.near((no.rect.y - (yes.rect.y + yes.rect.height)) / yes.scale, 8, 1e-6)
+    Assert.equal(
+      yes.rect.x + yes.rect.width,
+      choiceRegion.x + choiceRegion.width,
+      "name choices must align to the far edge of the choice region at " .. label
+    )
+    Assert.isTrue(disjoint(yes.rect, subject), "YES must stay clear of Oak at " .. label)
+    Assert.isTrue(disjoint(no.rect, subject), "NO must stay clear of Oak at " .. label)
+    Assert.isTrue(disjoint(yes.rect, oakRegion), "YES must stay clear of the Oak region at " .. label)
+    Assert.isTrue(disjoint(no.rect, oakRegion), "NO must stay clear of the Oak region at " .. label)
   end
 end
 

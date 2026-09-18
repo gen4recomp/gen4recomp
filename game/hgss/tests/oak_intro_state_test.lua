@@ -1461,4 +1461,110 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
   Assert.isFalse(stillHeld, "choosing YES/NO clears the hold")
 end
 
+function T.repeated_gender_question_stays_visible_through_selection()
+  local helloTokens = { { kind = "glyph", text = "HELLO", code = 1, raw = { 1 } } }
+  local cursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9, placement = DIALOGUE_CURSOR_PLACEMENT }
+  local dialogue = FieldDialogueController.new({
+    layout = function(message)
+      return {
+        pages = { { lines = { { tokens = message.tokens, width = 0 } }, breakKind = "eos" } },
+        warnings = {},
+        lineHeight = 16,
+        lineSpacing = 2,
+        textOriginX = 0,
+        textOriginY = 0,
+        contentWidth = 216,
+        syntheticBreaks = 0,
+      }
+    end,
+    policy = { interGlyphDelay = 1, glyphBudget = 2, abAcceleration = true },
+    continueCursor = cursor,
+  })
+  local liveActive = true
+  local nameProgress = 1
+  local semantic = fakeController()
+  semantic.phase = "gender_question"
+  semantic.view = function(self)
+    return {
+      phase = self.phase,
+      messageKey = liveActive and "profile.gender_question" or nil,
+      message = liveActive and { tokens = helloTokens } or nil,
+      confirmationChoice = nil,
+      genderCompositionProgress = 1,
+      nameCompositionProgress = nameProgress,
+      name = "GOLD",
+      nameInputEnabled = false,
+      genderFocus = 0,
+      visual = "background",
+    }
+  end
+  semantic.messageCompleted = function(_, key)
+    Assert.equal(key, "profile.gender_question")
+    liveActive = false
+    semantic.phase = "gender_select"
+    nameProgress = 0
+    return true
+  end
+  local renderer = {
+    draws = {},
+    draw = function(self, controllerArg, presentation)
+      self.draws[#self.draws + 1] = {
+        controller = controllerArg,
+        presentation = presentation,
+        status = controllerArg:status(),
+      }
+    end,
+  }
+  local state = OakIntroState.new({
+    controller = semantic --[[@as OakIntroController]],
+    manifest = INTRO_MANIFEST,
+    textRenderer = {},
+    choiceText = { release = function() end },
+    renderer = {
+      draw = function(_, _, overlay)
+        if overlay then
+          overlay()
+        end
+      end,
+      dispose = function() end,
+    },
+    textInputHost = { setTextInput = function() end },
+    dialogueController = dialogue,
+    dialogueRenderer = renderer,
+    dialogueFormatter = {
+      format = function(_, _)
+        return { tokens = helloTokens, text = "profile.gender_question", hadUnresolvedSubstitutions = false }
+      end,
+      choiceLabels = function()
+        return { [0] = "YES", [1] = "NO" }
+      end,
+    },
+    glyphs = { "A" },
+    width = 640,
+    height = 480,
+    dialogueCursorPlacement = DIALOGUE_CURSOR_PLACEMENT,
+  })
+  for _ = 1, 20 do
+    if dialogue:status().state == "WAITING_CLOSE" then
+      break
+    end
+    state:tick(1)
+  end
+  Assert.equal(dialogue:status().state, "WAITING_CLOSE")
+  state:keypressed("return")
+  Assert.equal(dialogue:status().state, "CLOSING")
+  state:tick(1)
+  Assert.equal(dialogue:status().state, "CLOSED")
+  Assert.equal(semantic.phase, "gender_select")
+  Assert.equal(nameProgress, 0)
+  renderer.draws = {}
+  state:draw()
+  Assert.equal(#renderer.draws, 1, "the repeated question must still be drawn while choosing")
+  local held = renderer.draws[1]
+  Assert.isTrue(held.controller ~= dialogue, "the held snapshot must be presentation-only")
+  Assert.equal(held.status.waiting, false, "the held question never carries the continuation cursor")
+  Assert.isNil(held.status.cursorPhase)
+  Assert.equal(held.status.visibleLines[1][1].text, "HELLO")
+end
+
 return { tests = T }
