@@ -7,6 +7,10 @@
 
 local Assert = require("tests.support.Assert")
 
+-- The genuine IO opener, captured before any fault-injection test replaces
+-- it, so suite teardown can restore real IO ahead of owned cleanup.
+local realIoOpen = io.open
+
 local FAKE_PATHS = {
   "libs.storage.src.CacheFs",
   "romdump.src.DerivedCacheState",
@@ -353,21 +357,76 @@ local function requireScopedPreparation()
   )
 end
 
--- Sandbox-safe receipt paths: os.tmpname() cannot generate names under this
--- runner, while direct writes succeed, so receipts use deterministic unique
--- names under a fixture-owned root that each test removes after use.
-local recordCounter = 0
-local function tempRecordPath(name)
-  recordCounter = recordCounter + 1
-  local root = os.getenv("TMPDIR") or "/tmp"
-  os.execute('mkdir -p "' .. root .. '/cache-builder-scope"')
-  return root .. "/cache-builder-scope/" .. name .. "-" .. tostring(recordCounter) .. ".lua"
+-- Invocation-owned output paths: one atomically acquired directory per
+-- suite invocation holds every profile, receipt, and staging sibling this
+-- run writes. A process-local counter is unique only inside that exclusive
+-- root, never across processes, and no shared deterministic directory
+-- is used.
+---@type string|nil
+local outputRoot = nil
+local outputCounter = 0
+local fakesInstalled = false
+
+---@param value string
+---@return string
+local function shellQuote(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+---@param status any
+---@return boolean
+local function commandSucceeded(status)
+  return status == 0 or status == true
+end
+
+---@return string
+local function acquireOutputRoot()
+  local handle = assert(io.popen("mktemp -d"), "mktemp -d could not start")
+  local path = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local closed = handle:close()
+  assert(commandSucceeded(closed), "mktemp -d did not exit successfully")
+  assert(path ~= "", "mktemp -d produced no path")
+  return path
+end
+
+---@param label string
+---@return boolean
+local function isSafeLabel(label)
+  return label:match("^[A-Za-z0-9_-]+$") ~= nil
+end
+
+---@param label string
+---@param suffix string
+---@return string
+local function newOutputPath(label, suffix)
+  local root = assert(outputRoot, "the suite output root is not acquired")
+  assert(isSafeLabel(label), "unsafe output label: " .. tostring(label))
+  outputCounter = outputCounter + 1
+  return root .. "/" .. label .. "-" .. tostring(outputCounter) .. suffix
+end
+
+---@param root string
+local function removeOwnedRoot(root)
+  assert(root ~= "" and root ~= "/", "refusing to remove an unowned path")
+  local status = os.execute("rm -rf -- " .. shellQuote(root))
+  assert(commandSucceeded(status), "owned output cleanup failed: " .. root)
+end
+
+local function releaseOutputRoot()
+  local root = outputRoot
+  outputRoot = nil
+  outputCounter = 0
+  io.open = realIoOpen
+  if root ~= nil then
+    removeOwnedRoot(root)
+  end
 end
 
 local T = {}
 
 local module = {
   beforeAll = function()
+    outputRoot = acquireOutputRoot()
     for _, path in ipairs(FAKE_PATHS) do
       saved[path] = package.loaded[path]
       package.loaded[path] = nil
@@ -377,14 +436,19 @@ local module = {
     for _, path in ipairs(FAKE_PATHS) do
       package.loaded[path] = fakes[path:match("([^%.]+)$")]
     end
+    fakesInstalled = true
     package.loaded["romdump.src.CacheBuilder"] = nil
     CacheBuilder = require("romdump.src.CacheBuilder")
   end,
   afterAll = function()
-    for _, path in ipairs(FAKE_PATHS) do
-      package.loaded[path] = saved[path]
+    if fakesInstalled then
+      for _, path in ipairs(FAKE_PATHS) do
+        package.loaded[path] = saved[path]
+      end
+      package.loaded["romdump.src.CacheBuilder"] = nil
+      fakesInstalled = false
     end
-    package.loaded["romdump.src.CacheBuilder"] = nil
+    releaseOutputRoot()
   end,
   tests = T,
 }
@@ -509,7 +573,7 @@ function T.profile_log_captures_failed_jobs_with_a_partial_census()
   env = newEnv()
   env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
   requireScopedPreparation()
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("partial-census", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -596,7 +660,7 @@ end
 function T.successful_scope_issues_an_invocation_receipt_from_its_report()
   env = newEnv()
   requireScopedPreparation()
-  local recordPath = os.tmpname()
+  local recordPath = newOutputPath("scope-receipt", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
@@ -632,7 +696,7 @@ function T.warm_reuse_issues_an_invocation_receipt_without_recompiling()
   env.stateMatches = true
   env.auditAvailable = true
   requireScopedPreparation()
-  local recordPath = os.tmpname()
+  local recordPath = newOutputPath("warm-receipt", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
@@ -675,7 +739,7 @@ function T.failed_scope_issues_no_receipt()
   env = newEnv()
   env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
   requireScopedPreparation()
-  local recordPath = os.tmpname()
+  local recordPath = newOutputPath("failed-scope-receipt", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
@@ -755,7 +819,7 @@ function T.unready_field_core_withholds_its_proof()
   env.milestones["field-core"] = { "field-camera:global", "map-data:7", "mon-icon-page:9" }
   env.pendingKeys["mon-icon-page:9"] = true
   requireScopedPreparation()
-  local recordPath = tempRecordPath("unready-core")
+  local recordPath = newOutputPath("unready-core", ".lua")
   os.remove(recordPath)
   local ok = pcall(function()
     return CacheBuilder.prepareVersion(
@@ -786,7 +850,7 @@ function T.settled_counts_never_override_a_pending_scope()
   env.milestones["field-core"] = { "field-camera:global", "map-data:7" }
   env.stuckMilestones["field-core"] = true
   requireScopedPreparation()
-  local recordPath = tempRecordPath("pending-scope")
+  local recordPath = newOutputPath("pending-scope", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
@@ -819,7 +883,7 @@ end
 function T.ready_field_core_issues_its_proof_without_complete_attestation()
   env = newEnv()
   requireScopedPreparation()
-  local recordPath = tempRecordPath("ready-core")
+  local recordPath = newOutputPath("ready-core", ".lua")
   os.remove(recordPath)
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
@@ -842,6 +906,95 @@ function T.ready_field_core_issues_its_proof_without_complete_attestation()
   Assert.equal(record.requestedReady, true)
   Assert.equal(record.complete, false)
   Assert.equal(env.publishes, 0, "a targeted scope publishes no full attestation")
+end
+
+-- Invocation-isolation probe: reports the output root this suite invocation
+-- acquired, so two concurrent invocations can prove from their logs whether
+-- they own disjoint output paths.
+function T.invocation_reports_its_owned_evidence_path()
+  local root = assert(outputRoot, "the suite output root is not acquired")
+  print("owned-evidence-path: " .. root)
+end
+
+-- Owned cleanup removes exactly one invocation root: a released root and its
+-- sentinel disappear while a sibling root, its sentinel, and their shared
+-- parent remain intact.
+function T.owned_cleanup_removes_only_the_released_root()
+  local first = acquireOutputRoot()
+  local second = acquireOutputRoot()
+  Assert.isTrue(first ~= second, "independent acquisitions never share a root")
+  local firstSentinel = first .. "/sentinel.txt"
+  local secondSentinel = second .. "/sentinel.txt"
+  local writer = assert(io.open(firstSentinel, "w"))
+  writer:write("first")
+  writer:close()
+  writer = assert(io.open(secondSentinel, "w"))
+  writer:write("second")
+  writer:close()
+  removeOwnedRoot(first)
+  local leaked = io.open(firstSentinel, "r")
+  if leaked ~= nil then
+    leaked:close()
+  end
+  Assert.isNil(leaked, "the released root is gone")
+  local reader = assert(io.open(secondSentinel, "r"), "the sibling root survives teardown")
+  Assert.equal(reader:read("*a"), "second")
+  reader:close()
+  removeOwnedRoot(second)
+  leaked = io.open(secondSentinel, "r")
+  if leaked ~= nil then
+    leaked:close()
+  end
+  Assert.isNil(leaked, "the second release removes its own root")
+end
+
+-- A test that fails before readback still restores genuine IO and releases
+-- only its owned root: the original failure surfaces and the suite root
+-- remains usable.
+function T.injected_failure_still_restores_io_and_releases_ownership()
+  local savedRoot, savedCounter = outputRoot, outputCounter
+  outputRoot = acquireOutputRoot()
+  local root = assert(outputRoot, "the scratch root is not acquired")
+  local sentinel = root .. "/sentinel.txt"
+  local writer = assert(io.open(sentinel, "w"))
+  writer:write("owned")
+  writer:close()
+  io.open = function()
+    return nil, "injected write failure"
+  end
+  local ok, _ = pcall(function()
+    local handle = assert(io.open(root .. "/unwritten.txt", "w"))
+    handle:write("never")
+    handle:close()
+  end)
+  releaseOutputRoot()
+  outputRoot, outputCounter = savedRoot, savedCounter
+  Assert.isFalse(ok, "the injected IO failure must surface")
+  local leaked = io.open(sentinel, "r")
+  if leaked ~= nil then
+    leaked:close()
+  end
+  Assert.isNil(leaked, "the owned root is released after failure")
+  local probePath = newOutputPath("failure-teardown-probe", ".txt")
+  local probe = assert(io.open(probePath, "w"), "genuine IO is restored after failure")
+  probe:write("restored")
+  probe:close()
+  os.remove(probePath)
+end
+
+-- Output labels are confined to a safe alphabet so generated names can never
+-- escape the owned root through path fragments.
+function T.output_path_rejects_unsafe_labels()
+  for _, label in ipairs({ "../escape", "a/b", "", "has space", "semi;colon", "quote'quote", "$HOME" }) do
+    local raised = Assert.throws(function()
+      newOutputPath(label, ".lua")
+    end)
+    Assert.isTrue(tostring(raised):find("unsafe output label", 1, true) ~= nil, "label must be rejected: " .. label)
+  end
+  local root = assert(outputRoot, "the suite output root is not acquired")
+  local path = newOutputPath("probe-9_Z", ".lua")
+  Assert.equal(path:sub(1, #root + 1), root .. "/")
+  Assert.isTrue(path:sub(-4) == ".lua", "the suffix is preserved")
 end
 
 return module

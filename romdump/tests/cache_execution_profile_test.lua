@@ -13,6 +13,10 @@ local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 
+-- The genuine IO opener, captured before any fault-injection test replaces
+-- it, so suite teardown can restore real IO ahead of owned cleanup.
+local realIoOpen = io.open
+
 local FAKE_PATHS = {
   "libs.storage.src.CacheFs",
   "romdump.src.source.RomFs",
@@ -508,21 +512,75 @@ local function splitProfileAll(lines)
   return headers, footers
 end
 
--- Fixture-owned evidence paths: os.tmpname() cannot generate names under this
--- runner, while direct writes succeed, so profiles use deterministic unique
--- names under a fixture-owned root that each test removes after use.
-local profileCounter = 0
-local function tempProfilePath(name)
-  profileCounter = profileCounter + 1
-  local root = os.getenv("TMPDIR") or "/tmp"
-  os.execute('mkdir -p "' .. root .. '/cache-execution-profile"')
-  return root .. "/cache-execution-profile/" .. name .. "-" .. tostring(profileCounter) .. ".jsonl"
+-- Invocation-owned evidence paths: one atomically acquired directory per
+-- suite invocation holds every profile this run writes. A process-local
+-- counter is unique only inside that exclusive root, never across processes,
+-- and no shared deterministic directory is used.
+---@type string|nil
+local outputRoot = nil
+local outputCounter = 0
+local fakesInstalled = false
+
+---@param value string
+---@return string
+local function shellQuote(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+---@param status any
+---@return boolean
+local function commandSucceeded(status)
+  return status == 0 or status == true
+end
+
+---@return string
+local function acquireOutputRoot()
+  local handle = assert(io.popen("mktemp -d"), "mktemp -d could not start")
+  local path = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local closed = handle:close()
+  assert(commandSucceeded(closed), "mktemp -d did not exit successfully")
+  assert(path ~= "", "mktemp -d produced no path")
+  return path
+end
+
+---@param label string
+---@return boolean
+local function isSafeLabel(label)
+  return label:match("^[A-Za-z0-9_-]+$") ~= nil
+end
+
+---@param label string
+---@param suffix string
+---@return string
+local function newOutputPath(label, suffix)
+  local root = assert(outputRoot, "the suite output root is not acquired")
+  assert(isSafeLabel(label), "unsafe output label: " .. tostring(label))
+  outputCounter = outputCounter + 1
+  return root .. "/" .. label .. "-" .. tostring(outputCounter) .. suffix
+end
+
+---@param root string
+local function removeOwnedRoot(root)
+  assert(root ~= "" and root ~= "/", "refusing to remove an unowned path")
+  local status = os.execute("rm -rf -- " .. shellQuote(root))
+  assert(commandSucceeded(status), "owned output cleanup failed: " .. root)
+end
+
+local function releaseOutputRoot()
+  local root = outputRoot
+  outputRoot = nil
+  outputCounter = 0
+  io.open = realIoOpen
+  if root ~= nil then
+    removeOwnedRoot(root)
+  end
 end
 
 local T = {}
 
 local module = {
   beforeAll = function()
+    outputRoot = acquireOutputRoot()
     for _, path in ipairs(FAKE_PATHS) do
       saved[path] = package.loaded[path]
       package.loaded[path] = nil
@@ -536,15 +594,20 @@ local module = {
     for _, path in ipairs(FAKE_PATHS) do
       package.loaded[path] = fakes[path:match("([^%.]+)$")]
     end
+    fakesInstalled = true
     CacheBuilder = require("romdump.src.CacheBuilder")
     CompilerWorker = require("romdump.src.build.CompilerWorker")
   end,
   afterAll = function()
-    for _, path in ipairs(FAKE_PATHS) do
-      package.loaded[path] = saved[path]
+    if fakesInstalled then
+      for _, path in ipairs(FAKE_PATHS) do
+        package.loaded[path] = saved[path]
+      end
+      package.loaded[WORKER_PATH] = saved[WORKER_PATH]
+      package.loaded[BUILDER_PATH] = saved[BUILDER_PATH]
+      fakesInstalled = false
     end
-    package.loaded[WORKER_PATH] = saved[WORKER_PATH]
-    package.loaded[BUILDER_PATH] = saved[BUILDER_PATH]
+    releaseOutputRoot()
   end,
   tests = T,
 }
@@ -558,7 +621,7 @@ function T.profile_records_every_planned_job_beyond_the_bounded_diagnostic_ring(
   for id = 1, 100 do
     requirements[#requirements + 1] = "map:" .. tostring(id)
   end
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("bounded-ring", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -611,7 +674,7 @@ function T.failure_keeps_completed_outcomes_and_marks_unrun_work_cancelled()
   env.failKeys["map:2"] = "blocked by map:1: WORKER_FAILED: injected leaf failure"
   env.causeKeys["map:2"] = "map:1"
   env.pendingKeys["map:3"] = true
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("failure-outcomes", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -657,7 +720,7 @@ function T.failed_final_audit_writes_no_successful_complete_footer()
   env.stateStored = { schema = 2, generationId = "test-generation" }
   env.stateMatches = false
   env.auditAvailable = false
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("failed-audit", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -757,7 +820,7 @@ end
 -- no success report is returned and the observation failure is structured.
 function T.nonthrowing_profile_write_failure_fails_the_command()
   env = newEnv()
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("write-failure", ".jsonl")
   local realOpen = io.open
   io.open = function(path, mode)
     if path == profilePath then
@@ -796,7 +859,7 @@ end
 function T.warm_reused_jobs_report_reuse_without_fabricated_timing()
   env = newEnv()
   env.reusedKeys["map:7"] = true
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("warm-reuse", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -850,7 +913,7 @@ end
 function T.tolerated_compile_exclusion_stays_partial_without_attestation()
   env = newEnv()
   env.failKeys["map:5"] = "MAP_SCHEMA_INVALID: injected compile rejection"
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("tolerated-exclusion", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -881,7 +944,7 @@ function T.attestation_publish_failure_leaves_completeness_false()
   env = newEnv()
   env.auditAvailable = true
   env.publishFails = true
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("attestation-failure", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -909,7 +972,7 @@ function T.error_text_never_changes_another_jobs_disposition()
   env = newEnv()
   env.failKeys["map:40"] = 'WORKER_FAILED: physical job failed; quoted context "map:4" and "map:401" are healthy'
   env.failureClasses["map:40"] = "job"
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("error-text", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -956,7 +1019,7 @@ function T.dependency_blocked_map_with_non_map_cause_is_never_a_compile_exclusio
   env.failKeys["map:9"] = "blocked by ui:font: prerequisite ui:font failed"
   env.failureClasses["map:9"] = "dependency"
   env.causeKeys["map:9"] = "ui:font"
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("dependency-blocked", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -1006,7 +1069,7 @@ function T.handled_infrastructure_failure_keeps_known_rows_and_failure_footer()
   env.pendingKeys["map:3"] = true
   env.infraError =
     Errors.new("CACHE_PREPARATION_FAILED", "injected infrastructure failure", { versionId = "heartgold" })
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("infra-failure", ".jsonl")
   local report, err = CacheBuilder.prepareVersion(
     "heartgold",
     scopedOptions({
@@ -1053,7 +1116,7 @@ function T.later_version_failure_publishes_no_new_attestation()
   env.auditAvailable = true
   env.failByVersion = { soulsilver = { ["map:7"] = "WORKER_FAILED: injected later-version failure" } }
   env.failureClasses["map:7"] = "job"
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("later-version", ".jsonl")
   local report, err = CacheBuilder.buildVersions(
     { "heartgold", "soulsilver" },
     { log = function() end, profile = profilePath }
@@ -1097,7 +1160,7 @@ function T.partial_publication_failure_reports_actual_effects()
   env = newEnv()
   env.auditAvailable = true
   env.publishFailCalls = { [2] = true }
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("partial-publication", ".jsonl")
   local ok, report, err = pcall(
     CacheBuilder.buildVersions,
     { "heartgold", "soulsilver" },
@@ -1136,7 +1199,7 @@ function T.shared_profile_close_failure_fails_the_command()
   for _, mode in ipairs({ "throwing", "unsuccessful" }) do
     env = newEnv()
     env.auditAvailable = true
-    local profilePath = os.tmpname()
+    local profilePath = newOutputPath("close-failure", ".jsonl")
     local closes = 0
     local realOpen = io.open
     io.open = function(path, openMode)
@@ -1194,7 +1257,7 @@ function T.wait_path_failure_preserves_earlier_facts()
   env.poolFatal = fatal
   env.waitInfraError = fatal
   env.drainViaWait = true
-  local profilePath = tempProfilePath("wait-path-failure")
+  local profilePath = newOutputPath("wait-path-failure", ".jsonl")
   local ok, report, err = pcall(
     CacheBuilder.prepareVersion,
     "heartgold",
@@ -1265,7 +1328,7 @@ function T.idle_recorded_failure_keeps_known_rows_without_phantom_jobs()
   local fatal = "recorded stop outside any dispatched job"
   env.poolFatal = fatal
   env.infraError = fatal
-  local profilePath = tempProfilePath("idle-failure")
+  local profilePath = newOutputPath("idle-failure", ".jsonl")
   local ok, report, err = pcall(
     CacheBuilder.prepareVersion,
     "heartgold",
@@ -1302,7 +1365,7 @@ function T.later_version_recorded_failure_keeps_all_started_evidence()
   env.failureClasses["map:7"] = "job"
   env.poolFatal = fatal
   env.infraErrorByVersion = { soulsilver = fatal }
-  local profilePath = tempProfilePath("later-version-failure")
+  local profilePath = newOutputPath("later-version-failure", ".jsonl")
   local logged = {}
   local ok, report, err = pcall(CacheBuilder.buildVersions, { "heartgold", "soulsilver" }, {
     log = function(line)
@@ -1348,7 +1411,7 @@ function T.sink_failure_keeps_recorded_interruption_failed()
     local fatal = "recorded stop with a failing sink"
     env.poolFatal = fatal
     env.infraError = fatal
-    local profilePath = tempProfilePath("sink-failure-" .. mode)
+    local profilePath = newOutputPath("sink-failure-" .. mode, ".jsonl")
     local realOpen = io.open
     io.open = function(path, openMode)
       if path == profilePath then
@@ -1399,7 +1462,7 @@ function T.large_warm_scope_and_current_shortcut_keep_complete_evidence()
   for id = 1, 5 do
     env.reusedKeys["map:" .. tostring(id)] = true
   end
-  local profilePath = os.tmpname()
+  local profilePath = newOutputPath("large-warm", ".jsonl")
   local profiled, profiledErr =
     CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = requirements, profile = profilePath }))
   Assert.isNil(profiledErr)
@@ -1444,7 +1507,7 @@ function T.large_warm_scope_and_current_shortcut_keep_complete_evidence()
   env.stateStored = { schema = 2, generationId = "test-generation" }
   env.stateMatches = true
   env.auditAvailable = true
-  local shortcutPath = os.tmpname()
+  local shortcutPath = newOutputPath("shortcut", ".jsonl")
   local shortcut, shortcutErr =
     CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" }, profile = shortcutPath }))
   Assert.isNil(shortcutErr)
@@ -1460,6 +1523,95 @@ function T.large_warm_scope_and_current_shortcut_keep_complete_evidence()
   assert(nosink ~= nil, "the same shortcut without a profile must return a report")
   Assert.equal(nosink.complete, shortcut.complete, "shortcut runs agree with and without a profile")
   Assert.equal(nosink.counts.planned, shortcut.counts.planned, "shortcut runs agree with and without a profile")
+end
+
+-- Invocation-isolation probe: reports the evidence root this suite invocation
+-- acquired, so two concurrent invocations can prove from their logs whether
+-- they own disjoint output paths.
+function T.invocation_reports_its_owned_evidence_path()
+  local root = assert(outputRoot, "the suite output root is not acquired")
+  print("owned-evidence-path: " .. root)
+end
+
+-- Owned cleanup removes exactly one invocation root: a released root and its
+-- sentinel disappear while a sibling root, its sentinel, and their shared
+-- parent remain intact.
+function T.owned_cleanup_removes_only_the_released_root()
+  local first = acquireOutputRoot()
+  local second = acquireOutputRoot()
+  Assert.isTrue(first ~= second, "independent acquisitions never share a root")
+  local firstSentinel = first .. "/sentinel.txt"
+  local secondSentinel = second .. "/sentinel.txt"
+  local writer = assert(io.open(firstSentinel, "w"))
+  writer:write("first")
+  writer:close()
+  writer = assert(io.open(secondSentinel, "w"))
+  writer:write("second")
+  writer:close()
+  removeOwnedRoot(first)
+  local leaked = io.open(firstSentinel, "r")
+  if leaked ~= nil then
+    leaked:close()
+  end
+  Assert.isNil(leaked, "the released root is gone")
+  local reader = assert(io.open(secondSentinel, "r"), "the sibling root survives teardown")
+  Assert.equal(reader:read("*a"), "second")
+  reader:close()
+  removeOwnedRoot(second)
+  leaked = io.open(secondSentinel, "r")
+  if leaked ~= nil then
+    leaked:close()
+  end
+  Assert.isNil(leaked, "the second release removes its own root")
+end
+
+-- A test that fails before readback still restores genuine IO and releases
+-- only its owned root: the original failure surfaces and the suite root
+-- remains usable.
+function T.injected_failure_still_restores_io_and_releases_ownership()
+  local savedRoot, savedCounter = outputRoot, outputCounter
+  outputRoot = acquireOutputRoot()
+  local root = assert(outputRoot, "the scratch root is not acquired")
+  local sentinel = root .. "/sentinel.txt"
+  local writer = assert(io.open(sentinel, "w"))
+  writer:write("owned")
+  writer:close()
+  io.open = function()
+    return nil, "injected write failure"
+  end
+  local ok, _ = pcall(function()
+    local handle = assert(io.open(root .. "/unwritten.txt", "w"))
+    handle:write("never")
+    handle:close()
+  end)
+  releaseOutputRoot()
+  outputRoot, outputCounter = savedRoot, savedCounter
+  Assert.isFalse(ok, "the injected IO failure must surface")
+  local leaked = io.open(sentinel, "r")
+  if leaked ~= nil then
+    leaked:close()
+  end
+  Assert.isNil(leaked, "the owned root is released after failure")
+  local probePath = newOutputPath("failure-teardown-probe", ".txt")
+  local probe = assert(io.open(probePath, "w"), "genuine IO is restored after failure")
+  probe:write("restored")
+  probe:close()
+  os.remove(probePath)
+end
+
+-- Output labels are confined to a safe alphabet so generated names can never
+-- escape the owned root through path fragments.
+function T.output_path_rejects_unsafe_labels()
+  for _, label in ipairs({ "../escape", "a/b", "", "has space", "semi;colon", "quote'quote", "$HOME" }) do
+    local raised = Assert.throws(function()
+      newOutputPath(label, ".jsonl")
+    end)
+    Assert.isTrue(tostring(raised):find("unsafe output label", 1, true) ~= nil, "label must be rejected: " .. label)
+  end
+  local root = assert(outputRoot, "the suite output root is not acquired")
+  local path = newOutputPath("probe-9_Z", ".jsonl")
+  Assert.equal(path:sub(1, #root + 1), root .. "/")
+  Assert.isTrue(path:sub(-6) == ".jsonl", "the suffix is preserved")
 end
 
 return module
