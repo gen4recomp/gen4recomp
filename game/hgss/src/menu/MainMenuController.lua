@@ -1,5 +1,7 @@
 -- Pure Main Menu interaction state for global actions, save lanes, and modals.
 
+local FocusGraph = require("libs.ui.src.FocusGraph")
+
 ---@class MainMenuGlobalFocus
 ---@field region "global"
 ---@field actionId string
@@ -141,27 +143,102 @@ function MainMenuController:setCatalog(globalActions, saves)
   local remembered = self.rememberedSaveId and itemAt(saves, self.rememberedSaveId) or nil
   if remembered then
     self.rememberedSaveId = remembered.saveId or remembered.id
+    if self.rememberedLane == "overflow" and not canDelete(remembered) then
+      self.rememberedLane = "body"
+    end
   elseif self.focus.region == "saves" then
     self.rememberedSaveId = self.focus.saveId
+    self.rememberedLane = self.focus.lane
   elseif #saves > 0 then
     local first = assert(saves[1])
     self.rememberedSaveId = first.saveId or first.id
+    self.rememberedLane = "body"
   else
     self.rememberedSaveId = nil
+    self.rememberedLane = nil
   end
 end
 
-local function adjacentSave(saves, saveId, delta)
-  local index = indexOf(saves, saveId)
-  if not index then
-    return nil
+local GLOBAL_NODE = "global"
+
+local function bodyNode(index)
+  return "save:" .. index .. ":body"
+end
+
+local function overflowNode(index)
+  return "save:" .. index .. ":overflow"
+end
+
+-- Builds an ephemeral ordered-candidate graph over the current catalog. Node
+-- ids are save-index based so arbitrary save ids never need string parsing;
+-- callers translate the resolved node back to the public focus structs.
+---@class MainMenuFocusTargetGlobal
+---@field kind "global"
+---@class MainMenuFocusTargetSave
+---@field kind "save"
+---@field index integer
+---@field lane "body"|"overflow"
+---@alias MainMenuFocusTarget MainMenuFocusTargetGlobal|MainMenuFocusTargetSave
+
+---@param saves table[]
+---@param rememberedSaveId string?
+---@param rememberedLane ("body"|"overflow")?
+---@return table<string, table<string, string[]>> graph, table<string, MainMenuFocusTarget> targets
+local function buildFocusGraph(saves, rememberedSaveId, rememberedLane)
+  local graph = {}
+  local targets = {}
+  local count = #saves
+  if count == 0 then
+    graph[GLOBAL_NODE] = { up = {}, down = {}, left = {}, right = {} }
+    targets[GLOBAL_NODE] = { kind = "global" }
+    return graph, targets
   end
-  local nextIndex = index + delta
-  if nextIndex < 1 or nextIndex > #saves then
-    return nil
+  graph[GLOBAL_NODE] = { up = { bodyNode(count) }, down = { bodyNode(1) }, left = {}, right = {} }
+  targets[GLOBAL_NODE] = { kind = "global" }
+  for index, item in ipairs(saves) do
+    local body = bodyNode(index)
+    local overflow = overflowNode(index)
+    local hasOverflow = canDelete(item)
+    graph[body] = {
+      up = { index == 1 and GLOBAL_NODE or bodyNode(index - 1) },
+      down = { index == count and GLOBAL_NODE or bodyNode(index + 1) },
+      left = { GLOBAL_NODE },
+      right = hasOverflow and { overflow } or {},
+    }
+    targets[body] = { kind = "save", index = index, lane = "body" }
+    if hasOverflow then
+      local upCandidates
+      if index == 1 then
+        upCandidates = { GLOBAL_NODE }
+      elseif canDelete(saves[index - 1]) then
+        upCandidates = { overflowNode(index - 1), bodyNode(index - 1) }
+      else
+        upCandidates = { bodyNode(index - 1) }
+      end
+      local downCandidates
+      if index == count then
+        downCandidates = { GLOBAL_NODE }
+      elseif canDelete(saves[index + 1]) then
+        downCandidates = { overflowNode(index + 1), bodyNode(index + 1) }
+      else
+        downCandidates = { bodyNode(index + 1) }
+      end
+      graph[overflow] = { up = upCandidates, down = downCandidates, left = { body }, right = {} }
+      targets[overflow] = { kind = "save", index = index, lane = "overflow" }
+    end
   end
-  local save = saves[nextIndex]
-  return save and (save.saveId or save.id) or nil
+  local rememberedIndex = rememberedSaveId and indexOf(saves, rememberedSaveId) or nil
+  if rememberedIndex ~= nil then
+    local remembered = assert(saves[rememberedIndex])
+    if rememberedLane == "overflow" and canDelete(remembered) then
+      graph[GLOBAL_NODE].right = { overflowNode(rememberedIndex), bodyNode(1) }
+    else
+      graph[GLOBAL_NODE].right = { bodyNode(rememberedIndex), bodyNode(1) }
+    end
+  else
+    graph[GLOBAL_NODE].right = { bodyNode(1) }
+  end
+  return graph, targets
 end
 
 function MainMenuController:move(direction)
@@ -175,45 +252,25 @@ function MainMenuController:move(direction)
   if self.popup then
     return
   end
+  local graph, targets = buildFocusGraph(self.saves, self.rememberedSaveId, self.rememberedLane)
+  local current
   if self.focus.region == "global" then
-    if direction == "right" and #self.saves > 0 then
-      local remembered = self.rememberedSaveId and itemAt(self.saves, self.rememberedSaveId) or nil
-      local target = remembered or assert(self.saves[1])
-      local lane = "body"
-      if self.rememberedLane == "overflow" and canDelete(target) then
-        lane = "overflow"
-      end
-      self:focusSave(target.saveId or target.id, lane)
+    current = GLOBAL_NODE
+  else
+    local index = assert(indexOf(self.saves, self.focus.saveId), "Main Menu focus references an unknown save")
+    if self.focus.lane == "overflow" and graph[overflowNode(index)] ~= nil then
+      current = overflowNode(index)
+    else
+      current = bodyNode(index)
     end
-    return
   end
-  if self.focus.lane == "body" then
-    if direction == "left" then
-      self:focusGlobal(self.globalActions[1].id)
-    elseif direction == "right" and canDelete(self:focusedItem()) then
-      self:focusSave(self.focus.saveId, "overflow")
-    elseif direction == "up" or direction == "down" then
-      local delta = direction == "up" and -1 or 1
-      local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
-      if saveId then
-        self:focusSave(saveId, "body")
-      else
-        self:focusGlobal(self.globalActions[1].id)
-      end
-    end
-  elseif self.focus.lane == "overflow" then
-    if direction == "left" then
-      self:focusSave(self.focus.saveId, "body")
-    elseif direction == "up" or direction == "down" then
-      local delta = direction == "up" and -1 or 1
-      local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
-      if saveId then
-        local adjacent = itemAt(self.saves, saveId)
-        self:focusSave(saveId, canDelete(adjacent) and "overflow" or "body")
-      else
-        self:focusGlobal(self.globalActions[1].id)
-      end
-    end
+  local resolved = FocusGraph.move(graph, current, direction)
+  local target = assert(targets[resolved], "the focus resolver returned an unknown node")
+  if target.kind == "global" then
+    self:focusGlobal(self.globalActions[1].id)
+  else
+    local item = assert(self.saves[target.index], "the focus resolver returned an unknown save")
+    self:focusSave(item.saveId or item.id, target.lane)
   end
 end
 

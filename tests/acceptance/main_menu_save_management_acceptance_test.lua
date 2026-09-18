@@ -308,9 +308,13 @@ function T.tests.many_saves_scroll_without_moving_the_fixed_new_game_action()
     Assert.equal(globalFocus.layout.global.actions["new-game"].y, globalAction.y)
     Assert.equal(globalFocus.layout.global.actions["new-game"].x, globalAction.x)
     menu:keypressed("down")
-    Assert.equal(view(menu).focusedId, "new-game", "Down from New Game must stay on New Game")
+    Assert.equal(view(menu).focusedId, saveIds[8], "Down from New Game must wrap to the first save")
     menu:keypressed("up")
-    Assert.equal(view(menu).focusedId, "new-game", "Up from New Game must stay on New Game")
+    Assert.equal(view(menu).focusedId, "new-game", "Up from the first save must return to New Game")
+    menu:keypressed("up")
+    Assert.equal(view(menu).focusedId, saveIds[1], "Up from New Game must wrap to the last save")
+    menu:keypressed("down")
+    Assert.equal(view(menu).focusedId, "new-game", "Down from the last save must return to New Game")
     menu:keypressed("right")
     Assert.equal(view(menu).focusedId, saveIds[1], "Right from New Game must return to the remembered save")
     menu:resize(640, 240)
@@ -388,6 +392,42 @@ function T.tests.keyboard_focused_delete_action_activates_by_pointer_click()
       "clicking the keyboard-focused Delete action must delete the save"
     )
     Assert.equal(view(menu).focusedId, "new-game")
+  end)
+end
+
+function T.tests.new_game_vertical_wrap_reaches_edge_saves_through_keyboard()
+  local versionId = AcceptanceHarness.defaultVersion()
+  if templateRecord == nil then
+    templateRecord = freshRecord(versionId)
+  end
+
+  withMenu(3, 640, 480, nil, function(menu)
+    local catalogFirst = view(menu).focusedId
+    Assert.isTrue(catalogFirst ~= "new-game", "three saves must start on a save")
+    menu:keypressed("left")
+    Assert.equal(view(menu).focusedId, "new-game", "left from a save body must reach New Game")
+    menu:keypressed("down")
+    Assert.equal(
+      view(menu).focusedId,
+      catalogFirst,
+      "down from New Game must wrap to the first save through the production menu"
+    )
+    menu:keypressed("up")
+    Assert.equal(view(menu).focusedId, "new-game", "up from the first save must return to New Game")
+    menu:keypressed("up")
+    local catalogLast = view(menu).focusedId
+    Assert.isTrue(
+      catalogLast ~= "new-game" and catalogLast ~= catalogFirst,
+      "up from New Game must wrap to the last save through the production menu"
+    )
+    menu:keypressed("down")
+    Assert.equal(view(menu).focusedId, "new-game", "down from the last save must return to New Game")
+    menu:keypressed("down")
+    Assert.equal(view(menu).focusedId, catalogFirst)
+    menu:keypressed("up")
+    Assert.equal(view(menu).focusedId, "new-game")
+    menu:keypressed("right")
+    Assert.equal(view(menu).focusedId, catalogFirst, "right from New Game must still restore the remembered save")
   end)
 end
 
