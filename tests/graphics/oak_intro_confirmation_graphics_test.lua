@@ -217,8 +217,8 @@ function T.unselected_text_button_face_has_light_separator_dark(scope)
     local dividerTopY = math.floor(face.splitY - 0.5 * scale)
     local dividerBottomY = math.floor(face.splitY + 0.5 * scale)
     local darkY = math.floor(face.splitY + 2 * scale)
-    -- The side inner ring stops at the midway point: intermediate above the
-    -- divider, dark below it. The bottom ring is dark as well.
+    -- The side inner ring surrounds the full face: intermediate both above
+    -- and below the divider. The bottom ring is intermediate as well.
     local innerBorder = assert(button.innerBorder, "button inner border missing")
     local ringX = math.floor(face.rect.x - 0.5 * scale)
     Assert.isTrue(ringX >= innerBorder.rect.x and ringX < face.rect.x, "ringX inside the side inner ring")
@@ -254,12 +254,12 @@ function T.unselected_text_button_face_has_light_separator_dark(scope)
     Assert.equal(ringMr, 25, entry.versionId .. " side ring above divider r must be 25")
     Assert.equal(ringMg, 189, entry.versionId .. " side ring above divider g must be 189")
     Assert.equal(ringMb, 197, entry.versionId .. " side ring above divider b must be 197")
-    Assert.equal(ringDr, 8, entry.versionId .. " side ring below divider r must be 8")
-    Assert.equal(ringDg, 156, entry.versionId .. " side ring below divider g must be 156")
-    Assert.equal(ringDb, 165, entry.versionId .. " side ring below divider b must be 165")
-    Assert.equal(botR, 8, entry.versionId .. " bottom ring r must be 8")
-    Assert.equal(botG, 156, entry.versionId .. " bottom ring g must be 156")
-    Assert.equal(botB, 165, entry.versionId .. " bottom ring b must be 165")
+    Assert.equal(ringDr, 25, entry.versionId .. " side ring below divider r must be 25")
+    Assert.equal(ringDg, 189, entry.versionId .. " side ring below divider g must be 189")
+    Assert.equal(ringDb, 197, entry.versionId .. " side ring below divider b must be 197")
+    Assert.equal(botR, 25, entry.versionId .. " bottom ring r must be 25")
+    Assert.equal(botG, 189, entry.versionId .. " bottom ring g must be 189")
+    Assert.equal(botB, 197, entry.versionId .. " bottom ring b must be 197")
   end
 end
 

@@ -817,7 +817,7 @@ function T.scroll_state_pins_new_game_and_reports_edge_availability()
 end
 
 local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
-local NEUTRAL_RIM = { 222 / 255, 230 / 255, 230 / 255 }
+local NEUTRAL_RIM = { 48 / 255, 73 / 255, 97 / 255 }
 
 local function nearColor(recorded, expected)
   for index = 1, 3 do
@@ -979,12 +979,15 @@ function T.principal_copy_renders_at_an_integer_scale_and_restores_transforms()
         transform[2] == math.floor(transform[2]) and transform[3] == math.floor(transform[3]),
         "menu text scaling must never be fractional"
       )
-      if transform[2] == 2 and transform[3] == 2 then
+      if transform[2] == 3 and transform[3] == 3 then
         foundDouble = true
       end
     end
   end
-  Assert.isTrue(foundDouble, "principal menu copy at the desktop baseline must render at twice the generated font size")
+  Assert.isTrue(
+    foundDouble,
+    "principal menu copy at the desktop baseline must render at three times the generated font size"
+  )
   Assert.equal(drawn.graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
   Assert.isTrue(#drawn.calls > 0, "the menu must draw principal copy")
 end
@@ -1465,7 +1468,7 @@ function T.launcher_cards_use_white_faces_blue_inner_borders_and_roomy_content()
   local rectangles = recordedRectangles(drawn.graphics)
   Assert.isTrue(hasRimColor(rectangles, { 1, 1, 1 }), "save cards must use a white face")
   Assert.isTrue(
-    hasRimColor(rectangles, { 120 / 255, 156 / 255, 198 / 255 }),
+    hasRimColor(rectangles, { 162 / 255, 227 / 255, 219 / 255 }),
     "save cards must use the blue inner border"
   )
   local card = assert(drawn.view.layout.saves.cards["save-00000001"])
@@ -1525,14 +1528,14 @@ end
 function T.launcher_background_follows_the_active_game_version()
   local heartgold = versionedBackgroundDraw("heartgold")
   Assert.isTrue(#heartgold > 0, "drawing the launcher must clear the background")
-  Assert.near(heartgold[1][1], 51 / 255, 1 / 255)
-  Assert.near(heartgold[1][2], 39 / 255, 1 / 255)
-  Assert.near(heartgold[1][3], 17 / 255, 1 / 255)
+  Assert.near(heartgold[1][1], 255 / 255, 1 / 255)
+  Assert.near(heartgold[1][2], 214 / 255, 1 / 255)
+  Assert.near(heartgold[1][3], 148 / 255, 1 / 255)
   local soulsilver = versionedBackgroundDraw("soulsilver")
   Assert.isTrue(#soulsilver > 0, "drawing the launcher must clear the background")
-  Assert.near(soulsilver[1][1], 32 / 255, 1 / 255)
-  Assert.near(soulsilver[1][2], 42 / 255, 1 / 255)
-  Assert.near(soulsilver[1][3], 61 / 255, 1 / 255)
+  Assert.near(soulsilver[1][1], 97 / 255, 1 / 255)
+  Assert.near(soulsilver[1][2], 97 / 255, 1 / 255)
+  Assert.near(soulsilver[1][3], 251 / 255, 1 / 255)
 end
 
 function T.launcher_rejects_an_unknown_game_version()

@@ -158,9 +158,9 @@ function T.cards_are_clipped_to_the_save_viewport_and_scissor_is_restored(scope)
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
   local r, g, b = pixels:getPixel(20, 100)
-  Assert.near(r, 0x33 / 255, 1 / 255)
-  Assert.near(g, 0x27 / 255, 1 / 255)
-  Assert.near(b, 0x11 / 255, 1 / 255)
+  Assert.near(r, 0xFF / 255, 1 / 255)
+  Assert.near(g, 0xD6 / 255, 1 / 255)
+  Assert.near(b, 0x94 / 255, 1 / 255)
 end
 
 function T.catalog_errors_are_drawn_inside_the_returned_error_rectangle(scope)
@@ -307,7 +307,7 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   end
 
   local function isBackground(r, g, b)
-    return math.abs(r - 0x33 / 255) < 0.05 and math.abs(g - 0x27 / 255) < 0.05 and math.abs(b - 0x11 / 255) < 0.05
+    return math.abs(r - 0xFF / 255) < 0.05 and math.abs(g - 0xD6 / 255) < 0.05 and math.abs(b - 0x94 / 255) < 0.05
   end
 
   local function isSelectedRed(r, g, b)
@@ -374,7 +374,7 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   Assert.isTrue(isSelectedRed(cr, cg, cb), "focused overflow must carry its own selected red rim")
 end
 
-function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
+function T.menu_player_copy_renders_at_triple_the_generated_font_size(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local textDraws = 0
   local textProxy = {
@@ -420,13 +420,16 @@ function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
         transform[2] == math.floor(transform[2]) and transform[3] == math.floor(transform[3]),
         "menu text scaling must never be fractional"
       )
-      if transform[2] == 2 and transform[3] == 2 then
+      if transform[2] == 3 and transform[3] == 3 then
         foundDouble = true
       end
     end
   end
   Assert.isTrue(textDraws > 0, "the menu must draw principal copy through the generated font atlas")
-  Assert.isTrue(foundDouble, "principal menu copy at the desktop baseline must render at twice the generated font size")
+  Assert.isTrue(
+    foundDouble,
+    "principal menu copy at the desktop baseline must render at triple the generated font size"
+  )
   Assert.equal(graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
 end
 
@@ -442,9 +445,9 @@ function T.card_faces_use_the_white_launcher_face(scope)
   -- Inside the focused New Game card face, right of and below the label copy.
   local pixels = scope:own(canvas:newImageData())
   local r, g, b = pixels:getPixel(132, 64)
-  Assert.near(r, 1, 2 / 255, "the card face must use the white launcher face red")
-  Assert.near(g, 1, 2 / 255, "the card face must use the white launcher face green")
-  Assert.near(b, 1, 2 / 255, "the card face must use the white launcher face blue")
+  Assert.near(r, 0xFB / 255, 2 / 255, "the card face must use the white launcher face red")
+  Assert.near(g, 0xFB / 255, 2 / 255, "the card face must use the white launcher face green")
+  Assert.near(b, 0xFB / 255, 2 / 255, "the card face must use the white launcher face blue")
 end
 function T.menu_text_uses_palette_path_at_identity_tint()
   local graphics = FakeGraphics.new()
@@ -525,4 +528,220 @@ function T.card_chrome_keeps_rounded_nested_corners()
   Assert.equal(explicit.innerBorder.cornerRadius, 2)
   Assert.equal(explicit.face.cornerRadius, 0)
 end
+local function nearByte(actual, byte, tolerance)
+  Assert.near(actual, byte / 255, (tolerance or 4) / 255)
+end
+
+function T.neutral_cards_keep_a_dark_exterior_with_a_full_cyan_inner_border(scope)
+  local globals = { { id = "new-game", kind = "new_game" } }
+  local saves = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = false,
+    },
+  }
+  -- Focus the save body so the sampled New Game card renders its neutral
+  -- chrome instead of the selected red rim.
+  local focus = { region = "saves", saveId = "save-1", lane = "body" }
+  local layout = MainMenuLayout.compute(globals, saves, focus, 640, 480, 0, nil, nil, false)
+  local newGame = assert(layout.global.actions["new-game"])
+  local lg = love.graphics
+  local canvas = scope:own(lg.newCanvas(640, 480))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  local menuRenderer = renderer(scope, "soulsilver")
+  menuRenderer:draw({
+    focusedId = "save-1",
+    focus = focus,
+    globalActions = globals,
+    saves = saves,
+    catalogError = nil,
+    layout = layout,
+  })
+  lg.setCanvas()
+  local pixels = scope:own(canvas:newImageData())
+  local cx = newGame.x + math.floor(newGame.width / 2)
+  -- At desktop scale the card insets double: 4px border, 4px rim, 4px inner border.
+  local r, g, b = pixels:getPixel(cx, newGame.y + 2)
+  nearByte(r, 0x30, 4)
+  nearByte(g, 0x49, 4)
+  nearByte(b, 0x61, 4)
+  r, g, b = pixels:getPixel(cx, newGame.y + 6)
+  nearByte(r, 0x30, 4)
+  nearByte(g, 0x49, 4)
+  nearByte(b, 0x61, 4)
+  r, g, b = pixels:getPixel(cx, newGame.y + 10)
+  nearByte(r, 0xA2, 4)
+  nearByte(g, 0xE3, 4)
+  nearByte(b, 0xDB, 4)
+  r, g, b = pixels:getPixel(cx, newGame.y + newGame.height - 10)
+  nearByte(r, 0xA2, 4)
+  nearByte(g, 0xE3, 4)
+  nearByte(b, 0xDB, 4)
+  r, g, b = pixels:getPixel(newGame.x + 14, newGame.y + 14)
+  nearByte(r, 0xFB, 4)
+  nearByte(g, 0xFB, 4)
+  nearByte(b, 0xFB, 4)
+end
+
+function T.version_backgrounds_use_the_bright_launcher_field(scope)
+  local cases = {
+    heartgold = { 0xFF, 0xD6, 0x94 },
+    soulsilver = { 0x61, 0x61, 0xFB },
+  }
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local expected = cases[versionId]
+    local globals = { { id = "new-game", kind = "new_game" } }
+    local focus = { region = "global", actionId = "new-game" }
+    local layout = MainMenuLayout.compute(globals, {}, focus, 640, 480, 0, nil, nil, false)
+    local newGame = assert(layout.global.actions["new-game"])
+    local lg = love.graphics
+    local canvas = scope:own(lg.newCanvas(640, 480))
+    lg.setCanvas(canvas)
+    lg.clear(0, 0, 0, 0)
+    local menuRenderer = renderer(scope, versionId)
+    menuRenderer:draw({
+      focusedId = "new-game",
+      focus = focus,
+      globalActions = globals,
+      saves = {},
+      catalogError = nil,
+      layout = layout,
+    })
+    lg.setCanvas()
+    local pixels = scope:own(canvas:newImageData())
+    local found = false
+    for _, point in ipairs({ { 8, 8 }, { 632, 8 }, { 8, 472 }, { 632, 472 } }) do
+      local outside = point[1] < newGame.x
+        or point[1] >= newGame.x + newGame.width
+        or point[2] < newGame.y
+        or point[2] >= newGame.y + newGame.height
+      if outside then
+        local r, g, b = pixels:getPixel(point[1], point[2])
+        nearByte(r, expected[1], 4)
+        nearByte(g, expected[2], 4)
+        nearByte(b, expected[3], 4)
+        found = true
+      end
+    end
+    Assert.isTrue(found, "a launcher background pixel must be visible for " .. versionId)
+  end
+end
+
+function T.launcher_copy_is_uppercase_and_integer_scaled_without_touching_saved_names(scope)
+  local function asciiUpper(value)
+    return (value:gsub("[a-z]", function(c)
+      return string.char(c:byte() - 32)
+    end))
+  end
+  local function renderAt(width, height, saves)
+    local graphics = FakeGraphics.new()
+    local draws = {}
+    local textDouble = {
+      drawTextWithPalette = function(_, value, _, _, _)
+        local x, y, s = 0, 0, 1
+        for index = #graphics.transforms, 1, -1 do
+          local entry = graphics.transforms[index]
+          if entry[1] == "scale" and s == 1 then
+            s = entry[2]
+          elseif entry[1] == "translate" then
+            x, y = entry[2], entry[3]
+            break
+          end
+        end
+        draws[#draws + 1] = { value = value, x = x, y = y, scale = s }
+      end,
+    }
+    local cache = FieldUiFixture.cacheWithFontAndFrames()
+    cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
+    local globals = { { id = "new-game", kind = "new_game" } }
+    local focus = { region = "saves", saveId = saves[1].saveId or saves[1].id, lane = "body" }
+    local layout = MainMenuLayout.compute(globals, saves, focus, width, height, 0, nil, nil, false)
+    local menuRenderer =
+      MainMenuRenderer.new({ text = textDouble, graphics = graphics, cacheFs = cache, versionId = "heartgold" })
+    menuRenderer:draw({
+      focusedId = focus.saveId,
+      focus = focus,
+      globalActions = globals,
+      saves = saves,
+      catalogError = nil,
+      layout = layout,
+    })
+    return draws, layout
+  end
+  local saves = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "marc",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    },
+    {
+      id = "save-2",
+      saveId = "save-2",
+      playerName = "Zo\195\169",
+      playTimeLabel = "0:00",
+      canContinue = true,
+      canDelete = false,
+    },
+  }
+  local draws, layout = renderAt(640, 480, saves)
+  Assert.isTrue(#draws >= 5, "the launcher must draw principal copy through the generated font path")
+  local sawLowercaseSource = false
+  for _, draw in ipairs(draws) do
+    Assert.equal(draw.value, asciiUpper(draw.value), "launcher copy draws uppercase: " .. draw.value)
+    Assert.equal(draw.scale, math.floor(draw.scale), "launcher text scaling stays integral")
+    Assert.equal(draw.scale, 3, "desktop launcher copy draws at triple the generated font size")
+    if draw.value == "MARC" then
+      sawLowercaseSource = true
+    end
+  end
+  Assert.isTrue(sawLowercaseSource, "a lowercase fixed player name must exercise presentation casing")
+  local foundPassthrough = false
+  for _, draw in ipairs(draws) do
+    if draw.value:find("\195\169") then
+      foundPassthrough = true
+    end
+  end
+  Assert.isTrue(foundPassthrough, "glyphs without ascii case pairs must pass through instead of being lost")
+  Assert.equal(saves[1].playerName, "marc", "presentation casing must not mutate the saved player name")
+  local measure = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  local newGame = assert(layout.global.actions["new-game"])
+  local saveIndex = 0
+  for _, draw in ipairs(draws) do
+    local region
+    if draw.value == "NEW GAME" then
+      region = newGame
+    else
+      if draw.value == "CONTINUE" then
+        saveIndex = saveIndex + 1
+      end
+      local card = assert(layout.saves.cards[saves[saveIndex].saveId], "save card is required")
+      if draw.value == "..." then
+        region = assert(card.overflow, "overflow card is required")
+      else
+        region = assert(card.frame, "save frame is required")
+      end
+    end
+    local right = draw.x + measure:textWidth(draw.value) * draw.scale
+    Assert.isTrue(
+      draw.x >= region.x and right <= region.x + region.width,
+      "launcher copy must stay inside its owning card: " .. draw.value
+    )
+  end
+  local smallDraws = (function()
+    local result = { renderAt(320, 240, saves) }
+    return result[1]
+  end)()
+  for _, draw in ipairs(smallDraws) do
+    Assert.equal(draw.scale, 1, "the canonical small layout keeps single-scale text")
+  end
+end
+
 return GraphicsSmoke.suite(T)

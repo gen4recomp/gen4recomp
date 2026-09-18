@@ -17,15 +17,15 @@ local ERROR_INK = { 0.65, 0.22, 0.22, 1 }
 local MARK = { 0.85, 0.88, 0.9, 1 }
 local MARK_EDGE = { 0.35, 0.4, 0.45, 1 }
 
-local CARD_FACE = { 1, 1, 1, 1 }
-local CARD_INNER_BORDER = { 120 / 255, 156 / 255, 198 / 255, 1 }
-local CARD_BORDER = { 58 / 255, 58 / 255, 58 / 255, 1 }
-local CARD_RIM = { 222 / 255, 230 / 255, 230 / 255, 1 }
+local CARD_FACE = { 0xFB / 255, 0xFB / 255, 0xFB / 255, 1 }
+local CARD_INNER_BORDER = { 0xA2 / 255, 0xE3 / 255, 0xDB / 255, 1 }
+local CARD_BORDER = { 0x30 / 255, 0x49 / 255, 0x61 / 255, 1 }
+local CARD_RIM = CARD_BORDER
 local CARD_SELECTED_RIM = { 255 / 255, 58 / 255, 58 / 255, 1 }
 
 local MAIN_MENU_BACKGROUNDS = {
-  heartgold = { 0x33 / 255, 0x27 / 255, 0x11 / 255 },
-  soulsilver = { 0x20 / 255, 0x2A / 255, 0x3D / 255 },
+  heartgold = { 0xFF / 255, 0xD6 / 255, 0x94 / 255 },
+  soulsilver = { 0x61 / 255, 0x61 / 255, 0xFB / 255 },
 }
 
 local CARD_RADIUS = 6
@@ -119,6 +119,22 @@ local function cardTitle(item)
   return item.errorSummary or "Save unavailable"
 end
 
+-- Presentation-only ASCII casing: saved names and model values keep their
+-- stored form; only the drawn copy is uppercased. Bytes without an ASCII
+-- lowercase pair pass through unchanged.
+local function displayUpper(value)
+  return (value:gsub("[a-z]", function(c)
+    return string.char(c:byte() - 32)
+  end))
+end
+
+local function textScaleFor(uiScale)
+  if uiScale == 1 then
+    return 1
+  end
+  return math.min(3, uiScale + 1)
+end
+
 ---@param options { text: table<string, function>, versionId: string, graphics?: love.graphics }
 ---@return MainMenuRenderer
 function MainMenuRenderer.new(options)
@@ -149,6 +165,9 @@ function MainMenuRenderer:draw(view)
   ---@type integer
   local scale = layout.uiScale or 1
   assert(type(scale) == "number" and scale == math.floor(scale) and scale >= 1, "Main Menu scale must be an integer")
+  -- Generated-font glyph transform only; card geometry and padding stay on
+  -- the layout integer scale so hit rectangles never move with typography.
+  local textScale = textScaleFor(scale)
 
   local red, green, blue, alpha = graphics.getColor()
   local lineWidth = graphics.getLineWidth()
@@ -166,10 +185,10 @@ function MainMenuRenderer:draw(view)
       drawPaletteText(
         graphics,
         text,
-        "Save catalog unavailable",
+        displayUpper("Save catalog unavailable"),
         errorRect.x + CARD_INSET * scale,
         errorRect.y + CARD_INSET * scale,
-        scale,
+        textScale,
         ERROR_PALETTE
       )
     end
@@ -188,34 +207,34 @@ function MainMenuRenderer:draw(view)
         end
         local pad = CARD_INSET * scale
         local headingY = card.frame.y + CARD_INSET * scale
-        drawPaletteText(graphics, text, "CONTINUE", card.frame.x + pad, headingY, scale, TEXT_PALETTE)
+        drawPaletteText(graphics, text, displayUpper("CONTINUE"), card.frame.x + pad, headingY, textScale, TEXT_PALETTE)
         if item.canContinue then
           drawPaletteText(
             graphics,
             text,
-            cardTitle(item),
+            displayUpper(cardTitle(item)),
             card.frame.x + pad,
             headingY + 20 * scale,
-            scale,
+            textScale,
             TEXT_PALETTE
           )
           drawPaletteText(
             graphics,
             text,
-            item.playTimeLabel or "0:00",
+            displayUpper(item.playTimeLabel or "0:00"),
             card.frame.x + pad,
             headingY + 40 * scale,
-            scale,
+            textScale,
             MUTED_PALETTE
           )
         else
           drawPaletteText(
             graphics,
             text,
-            cardTitle(item),
+            displayUpper(cardTitle(item)),
             card.frame.x + pad,
             headingY + 20 * scale,
-            scale,
+            textScale,
             ERROR_PALETTE
           )
         end
@@ -227,7 +246,7 @@ function MainMenuRenderer:draw(view)
             "...",
             card.overflow.x + 3 * scale,
             card.overflow.y + 4 * scale,
-            scale,
+            textScale,
             TEXT_PALETTE
           )
         end
@@ -248,10 +267,10 @@ function MainMenuRenderer:draw(view)
     drawPaletteText(
       graphics,
       text,
-      "NEW GAME",
+      displayUpper("NEW GAME"),
       newGame.x + CARD_INSET * scale,
       newGame.y + 10 * scale,
-      scale,
+      textScale,
       TEXT_PALETTE
     )
 
@@ -264,10 +283,10 @@ function MainMenuRenderer:draw(view)
       drawPaletteText(
         graphics,
         text,
-        "Delete",
+        displayUpper("Delete"),
         popup.actions.delete.x + 4 * scale,
         popup.actions.delete.y + 4 * scale,
-        scale,
+        textScale,
         TEXT_PALETTE
       )
     end
@@ -279,10 +298,10 @@ function MainMenuRenderer:draw(view)
       drawPaletteText(
         graphics,
         text,
-        "Delete this save?",
+        displayUpper("Delete this save?"),
         confirmation.box.x + CARD_INSET * scale,
         confirmation.box.y + CARD_INSET * scale,
-        scale,
+        textScale,
         TEXT_PALETTE
       )
       local cancelFocus = view.confirmation.focusedAction == "cancel"
@@ -292,19 +311,19 @@ function MainMenuRenderer:draw(view)
       drawPaletteText(
         graphics,
         text,
-        "Cancel",
+        displayUpper("Cancel"),
         confirmation.cancel.x + 4 * scale,
         confirmation.cancel.y + 4 * scale,
-        scale,
+        textScale,
         TEXT_PALETTE
       )
       drawPaletteText(
         graphics,
         text,
-        "Delete",
+        displayUpper("Delete"),
         confirmation.delete.x + 4 * scale,
         confirmation.delete.y + 4 * scale,
-        scale,
+        textScale,
         TEXT_PALETTE
       )
     end
