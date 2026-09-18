@@ -15,6 +15,7 @@ local FakeCache = require("tests.support.FakeCache")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
+local BagSave = require("libs.hgss.src.save.BagSave")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -60,6 +61,7 @@ local function seedRecord(saveId, versionId)
     auxiliaryUi = { requested = "shown", state = "shown" },
     audio = {},
     mons = MonsSave.empty("test-catalog-fingerprint", 7),
+    bag = BagSave.empty(),
   }
 end
 
@@ -103,6 +105,23 @@ local function pumpGame(game, ticks)
   for _ = 1, ticks do
     game:update(1 / 60)
   end
+end
+
+function T.tests.fixture_records_carry_independently_owned_bag_state()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local first = seedRecord("save-first", versionId)
+  local second = seedRecord("save-second", versionId)
+  Assert.notNil(first.bag, "each fixture record carries its bag bucket")
+  Assert.notNil(second.bag, "each fixture record carries its bag bucket")
+  Assert.isTrue(first.bag ~= second.bag, "fixture records never share a bag bucket")
+  Assert.isTrue(first.bag.pockets ~= second.bag.pockets, "fixture records never share bag pockets")
+  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
+    Assert.isTrue(
+      first.bag.pockets[pocketKey] ~= second.bag.pockets[pocketKey],
+      "fixture records never share a bag pocket array: " .. pocketKey
+    )
+  end
+  Assert.isTrue(first.bag.registered ~= second.bag.registered, "fixture records never share bag registration")
 end
 
 function T.tests.continue_waits_for_core_then_validates_before_field()
@@ -390,6 +409,7 @@ local function labHarness()
         playTime = PlayTime.new(),
         worldState = FieldEventState.new(),
         mons = require("tests.support.MonBucket").emptyForVersion(versionId),
+        bag = BagSave.empty(),
       }
     end,
   })
