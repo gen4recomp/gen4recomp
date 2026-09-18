@@ -237,6 +237,9 @@ end
 function T.draw_orders_world_then_dialogue_then_hud_when_the_field_is_idle()
   local state, sink =
     drawableState({ hostStatus = { phase = "closed", fadeAlpha = 0 }, dialogueModal = true, development = true })
+  -- The developer overlay starts hidden; F3 reveals it so the HUD position
+  -- in the draw order stays observable.
+  state:keypressed("f3")
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
     state:draw()

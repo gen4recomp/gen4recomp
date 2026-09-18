@@ -251,6 +251,9 @@ local function stateWith(runtime)
   return setmetatable({
     runtime = runtime,
     _pollPresentationTopology = false,
+    -- The HUD only runs while the developer overlay is visible, which
+    -- always initializes sampling state; the fake carries that same field.
+    _fps = 0,
     worldParts = {},
     worldActorItems = {},
     spriteItems = {},
