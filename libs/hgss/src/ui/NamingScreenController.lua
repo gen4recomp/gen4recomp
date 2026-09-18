@@ -343,7 +343,16 @@ function NamingScreenController:press(action)
     return self:_move(action)
   elseif action == "confirm" or action == "a" then
     local cell = self:_cell()
-    return cell.kind == "glyph" and self:_insert(cell.glyph) or self:activateControl(cell.controlId)
+    -- A failed insert (a full buffer) is retail's ignored keypress, not a
+    -- control activation: falling through would hand a nil control id to
+    -- activateControl. Blank cells are likewise ignored, mirroring
+    -- activateAt's blank guard.
+    if cell.kind == "glyph" then
+      return self:_insert(cell.glyph)
+    elseif cell.kind == "control" then
+      return self:activateControl(cell.controlId)
+    end
+    return false
   elseif action == "back" or action == "backspace" then
     return self:deleteGlyph()
   elseif action == "submit" or action == "enter" or action == "start" then
