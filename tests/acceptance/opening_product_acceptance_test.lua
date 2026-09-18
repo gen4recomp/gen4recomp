@@ -262,8 +262,11 @@ local function completeOak(onDraw)
     if view.phase == "name_edit" then
       App.textinput("GOLD")
       -- Navigate keyboard focus onto the virtual Confirm key before
-      -- activating it, matching the one confirm-capable-device contract.
+      -- activating it, matching the one confirm-capable-device contract:
+      -- one step left wraps to the last glyph column, one step up reaches
+      -- the home-row OK control directly above it.
       App.keypressed("left")
+      App.keypressed("up")
       App.keypressed("return")
     elseif interactive[view.phase] then
       press("a")
@@ -602,7 +605,8 @@ function T.tests.opening_reaches_and_restores_the_first_manual_checkpoint()
     App._bootMainMenu({ AcceptanceHarness.defaultVersion() })
     local restoredView = App.state.state:view()
     Assert.equal(#restoredView.saves + #restoredView.globalActions, 2)
-    press("dpdown")
+    -- A fresh boot focuses the first save body, so activating continues
+    -- directly: moving down would leave the saves for the global action.
     press("a")
     tick(4)
     local continuedRuntime = assert(App.state.state.runtime, "Continue must enter the real FieldState")

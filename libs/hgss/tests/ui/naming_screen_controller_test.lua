@@ -54,6 +54,14 @@ function T.tests.directional_navigation_skips_blanks_wraps_and_resolves_wide_con
   Assert.equal(controller:snapshot().cursor.controlId, "lower")
 end
 
+function T.tests.confirm_on_a_full_buffer_is_ignored_instead_of_failing()
+  local controller = player({ maxLength = 3 })
+  Assert.isTrue(controller:inputText("ABC"))
+  Assert.isFalse(controller:press("confirm"), "confirming a glyph with no room left must fail quietly")
+  Assert.isNil(controller:result(), "an ignored confirm must not submit")
+  Assert.equal(controller:text(), "ABC")
+end
+
 function T.tests.pages_back_ok_and_physical_input_share_one_mutation_path()
   local controller = player({ maxLength = 3 })
   Assert.isTrue(controller:inputText("AB"))
