@@ -214,21 +214,62 @@ end
 -- past a short selector host on extreme hosts; pin each entry to the host
 -- so cards never leave the interactive region. Where the canvas already
 -- fits this changes nothing.
+--
+-- The renderer draws each entry portrait as its button image, so the
+-- portrait must stay inside the resolved button content. Pinning the card
+-- to a host shorter than the card can cut chrome the portrait needs;
+-- portrait fit wins over host containment there: a rim bleeding into an
+-- empty host margin stays invisible, a failed draw assert is a crash.
+---@param portrait { x: number, y: number, width: number, height: number }
+---@param content { x: number, y: number, width: number, height: number }
+---@return boolean
+local function portraitFitsContent(portrait, content)
+  local epsilon = 1e-6
+  return portrait.x >= content.x - epsilon
+    and portrait.y >= content.y - epsilon
+    and portrait.x + portrait.width <= content.x + content.width + epsilon
+    and portrait.y + portrait.height <= content.y + content.height + epsilon
+end
 ---@param slot OakGenderCardEntry
 ---@param region { x: number, y: number, width: number, height: number }
 local function clampCardToRegion(slot, region)
   local card = slot.rect
   local x = math.max(card.x, region.x)
   local y = math.max(card.y, region.y)
-  local clamped = rect(
+  local candidate = rect(
     x,
     y,
     math.min(card.x + card.width, region.x + region.width) - x,
     math.min(card.y + card.height, region.y + region.height) - y
   )
-  slot.rect = clamped
-  -- Rebuild chrome from the clamped rect, mirroring genderSelectionEntries.
-  slot.button = ImageButton.resolve({ rect = clamped, scale = slot.scale, cornerRadius = 6 })
+  local candidateButton = ImageButton.resolve({ rect = candidate, scale = slot.scale, cornerRadius = 6 })
+  if portraitFitsContent(slot.portraitRect, assert(candidateButton.contentRect)) then
+    slot.rect = candidate
+    -- Rebuild chrome from the clamped rect, mirroring genderSelectionEntries.
+    slot.button = ImageButton.resolve({ rect = candidate, scale = slot.scale, cornerRadius = 6 })
+    return
+  end
+  -- The host cannot take the full card without cutting portrait chrome:
+  -- keep the source card size and pin its origin as close to the host as
+  -- portrait fit allows instead of shrinking the chrome out from under it.
+  local content = assert(slot.button.contentRect)
+  local insetLeft = content.x - card.x
+  local insetTop = content.y - card.y
+  local insetRight = (card.x + card.width) - (content.x + content.width)
+  local insetBottom = (card.y + card.height) - (content.y + content.height)
+  local portrait = slot.portraitRect
+  local minX = portrait.x + portrait.width - card.width + insetRight
+  local maxX = portrait.x - insetLeft
+  local minY = portrait.y + portrait.height - card.height + insetBottom
+  local maxY = portrait.y - insetTop
+  assert(minX <= maxX and minY <= maxY, "Oak gender card cannot fit its portrait inside button chrome")
+  slot.rect = rect(math.min(math.max(x, minX), maxX), math.min(math.max(y, minY), maxY), card.width, card.height)
+  -- Rebuild chrome from the final rect, mirroring genderSelectionEntries.
+  slot.button = ImageButton.resolve({ rect = slot.rect, scale = slot.scale, cornerRadius = 6 })
+  assert(
+    portraitFitsContent(slot.portraitRect, assert(slot.button.contentRect)),
+    "Oak gender portrait must stay inside its button content"
+  )
 end
 
 local function profileLayout(
