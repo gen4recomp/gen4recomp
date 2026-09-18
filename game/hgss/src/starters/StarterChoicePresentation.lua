@@ -1518,6 +1518,13 @@ function StarterChoicePresentation:_drawSurfaceMessage(surface, region, message,
   if surface == self._machine then
     background = textColors.machineBackground
   end
+  if not region.framed then
+    -- Unframed text owns no window fill: the glyph background-class pixels
+    -- reveal the scene artwork behind the text, so the background role
+    -- keeps its source RGB with zero alpha. The copy never mutates the
+    -- manifest color tables.
+    background = { r = background.r, g = background.g, b = background.b, a = 0 }
+  end
   graphics.push()
   graphics.translate(surface.x, surface.y)
   graphics.scale(surface.width / reference.width, surface.height / reference.height)

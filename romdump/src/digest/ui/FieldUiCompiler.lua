@@ -338,6 +338,7 @@ local function compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archiv
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
+  return pal
 end
 
 -- The shared icon atlas: every sprite char the icon rows (and the Bag
@@ -513,8 +514,36 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
     return must(decoded, err)
   end
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local subPalette = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local iconVisuals = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+
+  -- The label roles are source palette slots, not font colors: the label
+  -- windows live on the SUB background's palette bank 4, so foreground 14,
+  -- shadow 2, and background 0 resolve through that bank of the SUB palette
+  -- resource (colors is 1-based, so bank b slot s sits at b*16+s+1). The
+  -- background keeps its source RGB but carries zero alpha: at runtime the
+  -- glyph background-class pixels reveal the already-rendered chrome
+  -- instead of repainting it.
+  local function labelSlot(slot)
+    local color = subPalette.colors[4 * 16 + slot + 1]
+    if color == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu SUB palette does not contain the label bank", {
+        member = cfg.subBackgroundPaletteMember,
+        bank = 4,
+        slot = slot,
+        available = #subPalette.colors,
+      })
+    end
+    return assert(color)
+  end
+  local labelForeground = labelSlot(14)
+  local labelShadow = labelSlot(2)
+  local labelBackground = labelSlot(0)
+  local labelPalette = {
+    foreground = { r = labelForeground.r, g = labelForeground.g, b = labelForeground.b, a = 1 },
+    shadow = { r = labelShadow.r, g = labelShadow.g, b = labelShadow.b, a = 1 },
+    background = { r = labelBackground.r, g = labelBackground.g, b = labelBackground.b, a = 0 },
+  }
 
   -- The thirteen retail icon rows as source-independent data: sprite rows
   -- carry the composed normal/selected visual records (the Bag row carries
@@ -655,6 +684,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
       banks = 2,
       selectionBank = 2,
     },
+    labelPalette = labelPalette,
     chrome = {
       main = { asset = FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, transparentAboveY = 136 },
       sub = { asset = FieldUiAssetCache.ASSET.START_MENU_CHROME_SUB },

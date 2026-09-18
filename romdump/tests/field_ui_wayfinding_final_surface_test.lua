@@ -226,6 +226,23 @@ local function palette16()
   end
   return paletteData(colors)
 end
+-- The Start Menu SUB palette fixture: five 16-color banks so label bank 4
+-- (colors 64..79) resolves the label roles. The first four banks repeat
+-- the shared 64-color pattern, so SUB chrome pixels compiled through the
+-- lower banks are unchanged.
+local function subPaletteData()
+  local colors = {}
+  for i = 1, 16 do
+    colors[i] = i * 0x39B
+  end
+  for i = 17, 64 do
+    colors[i] = ((i - 1) % 16 + 1) * 0x39B
+  end
+  for i = 65, 80 do
+    colors[i] = 0x4000 + (i - 64) * 0x123
+  end
+  return paletteData(colors)
+end
 local function distinctSignpostPalette(numTypes)
   local colors = {}
   for t = 0, numTypes - 1 do
@@ -252,7 +269,7 @@ local function fixture(opts)
   startMenuMembers[15] = lz10Wrap(palette16())
   startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
   startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
-  startMenuMembers[8] = lz10Wrap(palette16())
+  startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
   do
     local entries = {}

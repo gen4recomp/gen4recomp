@@ -228,6 +228,7 @@ local function validManifest()
         main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
         sub = { asset = "hgss.start_menu.chrome_sub" },
       },
+      labelPalette = FieldUiFixture.startMenuLabelPalette(),
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
     namingScreen = {
@@ -654,6 +655,31 @@ end
 -- finalized naming stage: the full naming semantics keep validating.
 function T.naming_stage_contract_still_validates()
   Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
+end
+
+-- The start menu label palette is a required generated record: the retail
+-- label roles with a compositing-transparent background so glyph
+-- background pixels reveal already-rendered chrome.
+function T.start_menu_label_palette_roles_are_required_with_transparent_background()
+  local manifest = validManifest()
+  manifest.startMenu.labelPalette = {
+    foreground = { r = 248, g = 248, b = 248, a = 1 },
+    shadow = { r = 112, g = 112, b = 112, a = 1 },
+    background = { r = 40, g = 48, b = 56, a = 0 },
+  }
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), "a manifest carrying the label roles validates")
+  local missing = validManifest()
+  missing.startMenu.labelPalette = nil
+  local ok, _ = FieldUiAssetCache.validateManifest(missing)
+  Assert.isFalse(ok, "a manifest without the start menu label palette is stale")
+  local opaque = validManifest()
+  opaque.startMenu.labelPalette = {
+    foreground = { r = 248, g = 248, b = 248, a = 1 },
+    shadow = { r = 112, g = 112, b = 112, a = 1 },
+    background = { r = 40, g = 48, b = 56, a = 1 },
+  }
+  local okOpaque, _ = FieldUiAssetCache.validateManifest(opaque)
+  Assert.isFalse(okOpaque, "an opaque label background would repaint chrome and must be rejected")
 end
 
 return { tests = T }

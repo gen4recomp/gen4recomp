@@ -814,10 +814,12 @@ function T.surface_messages_draw_through_the_generated_chooser_colors()
     Assert.deepEqual(call.variants, manifest.textColors.variants, "line " .. index .. " carries the generated variants")
   end
   for index = 1, promptLines do
+    local background = variantCalls[index].background
+    local machine = manifest.textColors.machineBackground
     Assert.deepEqual(
-      variantCalls[index].background,
-      manifest.textColors.machineBackground,
-      "prompt line " .. index .. " uses the machine background"
+      background,
+      { r = machine.r, g = machine.g, b = machine.b, a = 0 },
+      "prompt line " .. index .. " keeps the machine RGB with a transparent background so the scene stays visible"
     )
   end
   for index = promptLines + 1, #variantCalls do
@@ -848,6 +850,59 @@ function T.surface_messages_draw_through_the_generated_chooser_colors()
     "the framed fill is the generated info background"
   )
   Assert.equal(#fontBackgroundCalls, 0, "the generic font background never fills the chooser")
+end
+
+-- Unframed surfaces leave the scene behind the text untouched while the
+-- framed info message keeps its opaque window background: only the alpha
+-- policy differs, never the source RGB or the manifest tables.
+function T.unframed_messages_use_transparent_background_while_framed_stays_opaque()
+  local presentation, manifest = openPresentation()
+  manifest.textColors = chooserTextColors()
+  local machineBefore = {
+    r = manifest.textColors.machineBackground.r,
+    g = manifest.textColors.machineBackground.g,
+    b = manifest.textColors.machineBackground.b,
+  }
+  local infoBefore = {
+    r = manifest.textColors.infoBackground.r,
+    g = manifest.textColors.infoBackground.g,
+    b = manifest.textColors.infoBackground.b,
+  }
+  local variantCalls = {}
+  local provider = {
+    drawLineWithColorVariants = function(_, line, x, y, variants, background)
+      variantCalls[#variantCalls + 1] = { line = line, x = x, y = y, variants = variants, background = background }
+    end,
+  }
+  presentation._window = {
+    drawWindow = function() end,
+  }
+  local surfaces = manifest.surfaces
+  presentation:_drawSurfaceMessage(
+    presentation._machine,
+    surfaces.machine.prompt,
+    manifest.messages.bottom.normal,
+    provider
+  )
+  presentation:_drawSurfaceMessage(presentation._info, surfaces.info.message, manifest.messages.topInitial, provider)
+  local promptLines = #manifest.messages.bottom.normal.lines
+  Assert.isTrue(#variantCalls == promptLines + #manifest.messages.topInitial.lines, "both regions draw")
+  for index = 1, promptLines do
+    local background = variantCalls[index].background
+    Assert.equal(background.r, machineBefore.r, "the unframed prompt keeps the machine red")
+    Assert.equal(background.g, machineBefore.g, "the unframed prompt keeps the machine green")
+    Assert.equal(background.b, machineBefore.b, "the unframed prompt keeps the machine blue")
+    Assert.equal(background.a, 0, "the unframed prompt leaves the scene visible")
+  end
+  for index = promptLines + 1, #variantCalls do
+    local background = variantCalls[index].background
+    Assert.equal(background.r, infoBefore.r, "the framed message keeps the info red")
+    Assert.equal(background.g, infoBefore.g, "the framed message keeps the info green")
+    Assert.equal(background.b, infoBefore.b, "the framed message keeps the info blue")
+    Assert.isTrue(background.a == nil or background.a == 1, "the framed message stays opaque")
+  end
+  Assert.isNil(manifest.textColors.machineBackground.a, "the manifest machine background is not mutated")
+  Assert.isNil(manifest.textColors.infoBackground.a, "the manifest info background is not mutated")
 end
 
 return { tests = T }

@@ -785,6 +785,66 @@ function FieldUiAssetCache.validateManifest(manifest)
     if type(aboveY) ~= "number" or aboveY % 1 ~= 0 or aboveY < 1 then
       return false, Errors.new(MANIFEST_INVALID, "startMenu.chrome.main must name its transparency boundary", {})
     end
+    -- The Start Menu label palette is a required generated record: the
+    -- source label-window roles as byte RGB with compositing alpha. Ink
+    -- stays opaque while the background stays transparent, so glyph
+    -- background-class pixels reveal the already-rendered chrome instead
+    -- of repainting it.
+    local labelPalette = s.labelPalette
+    if type(labelPalette) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.labelPalette must be a table", {})
+    end
+    local roleCount = 0
+    for _ in pairs(labelPalette) do
+      roleCount = roleCount + 1
+    end
+    if
+      roleCount ~= 3
+      or labelPalette.foreground == nil
+      or labelPalette.shadow == nil
+      or labelPalette.background == nil
+    then
+      return false,
+        Errors.new(MANIFEST_INVALID, "startMenu.labelPalette must carry exactly foreground, shadow, and background", {})
+    end
+    local function labelRole(role, expectedAlpha)
+      local color = labelPalette[role]
+      if type(color) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, "startMenu.labelPalette." .. role .. " must be a table", {})
+      end
+      for _, component in ipairs({ "r", "g", "b" }) do
+        local v = color[component]
+        if type(v) ~= "number" or v % 1 ~= 0 or v < 0 or v > 255 then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "startMenu.labelPalette." .. role .. "." .. component .. " must be an integral byte 0..255",
+              {}
+            )
+        end
+      end
+      if color.a ~= expectedAlpha then
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "startMenu.labelPalette." .. role .. " alpha must be " .. expectedAlpha .. " for label compositing",
+            {}
+          )
+      end
+      return true
+    end
+    local labelForegroundOk, labelForegroundErr = labelRole("foreground", 1)
+    if not labelForegroundOk then
+      return false, labelForegroundErr
+    end
+    local labelShadowOk, labelShadowErr = labelRole("shadow", 1)
+    if not labelShadowOk then
+      return false, labelShadowErr
+    end
+    local labelBackgroundOk, labelBackgroundErr = labelRole("background", 0)
+    if not labelBackgroundOk then
+      return false, labelBackgroundErr
+    end
     return true
   end)
   if not startMenuOk then

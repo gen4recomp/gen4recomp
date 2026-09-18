@@ -318,6 +318,95 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
   end
 end
 
+-- Surface text owns no window of its own: an unframed prompt draws only its
+-- line rect, so glyph background pixels leave the scene artwork behind the
+-- text untouched, while a framed message fills its window with the opaque
+-- chooser background first. The provider paints every line rect with the
+-- background role it receives, so a surviving scene pixel proves the
+-- transparent policy and a filled pixel proves the opaque one.
+function T.surface_text_leaves_the_scene_visible_unframed_and_fills_framed(scope)
+  local Presentation = requireModule(
+    "game.hgss.src.starters.StarterChoicePresentation",
+    "the starter presentation draws its surface messages"
+  )
+  local machineBackground = { r = 10, g = 20, b = 30 }
+  local infoBackground = { r = 200, g = 210, b = 220 }
+  local machineRect = { x = 0, y = 0, width = 256, height = 192 }
+  local infoRect = { x = 0, y = 0, width = 256, height = 192 }
+  local host = setmetatable({
+    _manifest = {
+      reference = { width = 256, height = 192 },
+      textColors = { machineBackground = machineBackground, infoBackground = infoBackground, variants = {} },
+    },
+    _machine = machineRect,
+    _info = infoRect,
+    _frameIndex = 0,
+    _window = {
+      drawWindow = function(_, box, _, fill)
+        love.graphics.setColor(fill[1], fill[2], fill[3], fill[4])
+        love.graphics.rectangle("fill", box.x, box.y, box.width, box.height)
+      end,
+    },
+  }, { __index = Presentation })
+  local backgrounds = {}
+  local provider = {}
+  function provider:drawLineWithColorVariants(_, x, y, _, background)
+    backgrounds[#backgrounds + 1] = background
+    local alpha = background.a
+    if alpha == nil then
+      alpha = 1
+    end
+    love.graphics.setColor(background.r / 255, background.g / 255, background.b / 255, alpha)
+    love.graphics.rectangle("fill", x, y, 40, 12)
+  end
+  local message = { lines = { { { kind = "glyph", code = 65 } } } }
+  local unframed =
+    { box = { x = 10, y = 10, width = 100, height = 40 }, textOrigin = { x = 12, y = 12 }, framed = false }
+  local framed = { box = { x = 10, y = 60, width = 100, height = 40 }, textOrigin = { x = 12, y = 62 }, framed = true }
+  local function quantize(v)
+    return math.floor(v * 255 + 0.5)
+  end
+  local canvas = scope:own(love.graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0.1, 0.7, 0.5, 1)
+  host:_drawSurfaceMessage(machineRect, unframed, message, provider)
+  love.graphics.setCanvas()
+  local unframedFrame = scope:own(canvas:newImageData())
+  Assert.equal(#backgrounds, 1, "the unframed prompt draws its line")
+  Assert.deepEqual(
+    backgrounds[1],
+    { r = machineBackground.r, g = machineBackground.g, b = machineBackground.b, a = 0 },
+    "the unframed prompt keeps the machine colors with a transparent background"
+  )
+  local ur, ug, ub, ua = unframedFrame:getPixel(20, 15)
+  for _, channel in ipairs({
+    { actual = quantize(ur), expected = quantize(0.1) },
+    { actual = quantize(ug), expected = quantize(0.7) },
+    { actual = quantize(ub), expected = quantize(0.5) },
+    { actual = quantize(ua), expected = 255 },
+  }) do
+    Assert.isTrue(
+      math.abs(channel.actual - channel.expected) <= 1,
+      "the unframed line rect leaves the scene artwork visible"
+    )
+  end
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0.1, 0.7, 0.5, 1)
+  host:_drawSurfaceMessage(infoRect, framed, message, provider)
+  love.graphics.setCanvas()
+  local framedFrame = scope:own(canvas:newImageData())
+  Assert.equal(#backgrounds, 2, "the framed message draws its line")
+  Assert.deepEqual(backgrounds[2], infoBackground, "the framed message keeps the opaque info background")
+  local fr, fg, fb, fa = framedFrame:getPixel(20, 70)
+  Assert.deepEqual(
+    { quantize(fr), quantize(fg), quantize(fb), quantize(fa) },
+    { infoBackground.r, infoBackground.g, infoBackground.b, 255 },
+    "the framed window fill stays opaque over the scene"
+  )
+  Assert.isNil(machineBackground.a, "the machine background table is not mutated")
+  Assert.isNil(infoBackground.a, "the info background table is not mutated")
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
 

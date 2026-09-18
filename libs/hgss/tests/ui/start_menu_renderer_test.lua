@@ -603,34 +603,13 @@ function T.draw_failure_balances_transform_stack_and_restores_state()
   renderer:release()
 end
 
--- A palette-capable stand-in for the shared FieldTextRenderer: records
--- palette-driven draws separately from plain draws and exposes the
--- generated font palette the renderer must resolve its label colors from.
--- Slots use the one-based Lua representation of the source palette roles.
-local function recordingPaletteText()
-  local palette = {}
-  palette[15] = { r = 11, g = 22, b = 33 }
-  palette[3] = { r = 44, g = 55, b = 66 }
-  palette[1] = { r = 77, g = 88, b = 99 }
-  local text = { draws = {}, plainDraws = {}, fontDef = { palette = palette } }
-  function text.drawText(_, str, x, y)
-    text.plainDraws[#text.plainDraws + 1] = { text = str, x = x, y = y }
-  end
-  function text.drawTextWithPalette(_, str, x, y, labelPalette)
-    text.draws[#text.draws + 1] = { text = str, x = x, y = y, palette = labelPalette }
-  end
-  function text.textWidth(_, str)
-    return #str * 8
-  end
-  return text
-end
-
--- Labels render through the palette-driven text path with the retail label
--- roles resolved from the generated font palette, centered in their own
--- source label window exactly as before.
-function T.labels_draw_through_the_palette_path_with_the_retail_label_roles()
+-- Labels render through the palette-driven text path with the generated
+-- start menu record, centered in their own source label window exactly as
+-- before. The shared manifest record is the only label color authority:
+-- the text collaborator's font palette, when present, is never consulted.
+function T.labels_draw_through_the_palette_path_with_the_generated_record()
   local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
-  local text = recordingPaletteText()
+  local text = recordingText()
   local renderer = StartMenuRenderer.new({
     cacheFs = iconCache(ICON_MANIFEST),
     manifest = ICON_MANIFEST,
@@ -647,28 +626,100 @@ function T.labels_draw_through_the_palette_path_with_the_retail_label_roles()
   renderer:release()
 
   Assert.equal(#text.draws, 1, "the resolved label reaches the palette-driven text path")
-  Assert.equal(#text.plainDraws, 0, "labels must not use the plain text path")
   local draw = text.draws[1]
   Assert.equal(draw.text, "POKEDEX")
-  Assert.isTrue(
-    draw.palette.foreground == text.fontDef.palette[15],
-    "the foreground comes from the generated palette slot for the retail foreground role"
+  Assert.deepEqual(
+    draw.palette.foreground,
+    ICON_MANIFEST.startMenu.labelPalette.foreground,
+    "the foreground comes from the generated start menu record, not the font palette"
   )
-  Assert.isTrue(
-    draw.palette.shadow == text.fontDef.palette[3],
-    "the shadow comes from the generated palette slot for the retail shadow role"
+  Assert.deepEqual(
+    draw.palette.shadow,
+    ICON_MANIFEST.startMenu.labelPalette.shadow,
+    "the shadow comes from the generated start menu record, not the font palette"
   )
-  Assert.isTrue(
-    draw.palette.background == text.fontDef.palette[1],
-    "the background comes from the generated palette slot for the retail background role"
-  )
+  Assert.equal(draw.palette.background.a, 0, "the label background stays transparent over chrome")
   -- Position 0 labels from { x = 8, y = 48, width = 72 }: "POKEDEX" is
   -- 56px wide through the recording text, so x centers at 8 + (72-56)/2.
   Assert.deepEqual({ draw.x, draw.y }, { 8 + 8, 48 }, "the palette path keeps label centering")
 end
 
--- The label palette comes from generated font data, so a text collaborator
--- without the palette path or generated palette cannot build the surface.
+-- A manifest without the generated label record cannot build the surface:
+-- the renderer fails loudly instead of falling back to the font palette.
+function T.rejects_a_manifest_without_the_generated_label_palette()
+  local manifest = iconManifest()
+  manifest.startMenu.labelPalette = nil
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local err = Assert.throws(function()
+    StartMenuRenderer.new({
+      cacheFs = iconCache(manifest),
+      manifest = manifest,
+      text = recordingText(),
+      graphics = lg,
+    })
+  end)
+  Assert.isTrue(
+    tostring(err):find("must carry the start menu label palette", 1, true) ~= nil,
+    "construction names the missing generated label record"
+  )
+end
+
+-- Labels consume the generated start menu palette record with a
+-- compositing-transparent background: the text collaborator needs no font
+-- palette for label colors and glyph background pixels reveal chrome.
+function T.labels_use_the_generated_start_menu_palette_with_transparent_background()
+  local manifest = FieldUiFixture.manifest()
+  FieldUiFixture.addStartMenuIconContract(manifest)
+  manifest.startMenu.labelPalette = {
+    foreground = { r = 248, g = 248, b = 248, a = 1 },
+    shadow = { r = 112, g = 112, b = 112, a = 1 },
+    background = { r = 40, g = 48, b = 56, a = 0 },
+  }
+  local text = { draws = {}, plainDraws = {} }
+  function text.drawText(_, str, x, y)
+    text.plainDraws[#text.plainDraws + 1] = { text = str, x = x, y = y }
+  end
+  function text.drawTextWithPalette(_, str, x, y, labelPalette)
+    text.draws[#text.draws + 1] = { text = str, x = x, y = y, palette = labelPalette }
+  end
+  function text.textWidth(_, str)
+    return #str * 8
+  end
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(manifest),
+    manifest = manifest,
+    text = text,
+    graphics = lg,
+  })
+  renderer:draw({
+    selectedPosition = 0,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+    },
+  }, canonicalPlacement())
+  renderer:release()
+  Assert.equal(#text.draws, 1, "the resolved label reaches the palette-driven text path")
+  Assert.equal(#text.plainDraws, 0, "labels must not use the plain text path")
+  local draw = text.draws[1]
+  Assert.deepEqual(
+    draw.palette.foreground,
+    manifest.startMenu.labelPalette.foreground,
+    "the foreground comes from the generated start menu record"
+  )
+  Assert.deepEqual(
+    draw.palette.shadow,
+    manifest.startMenu.labelPalette.shadow,
+    "the shadow comes from the generated start menu record"
+  )
+  Assert.equal(draw.palette.background.a, 0, "the label background stays transparent over chrome")
+  Assert.equal(draw.palette.foreground.a, 1, "the transparent background keeps the foreground opaque")
+  Assert.equal(draw.palette.shadow.a, 1, "the transparent background keeps the shadow opaque")
+end
+
+-- Labels draw only through the palette-driven text path, so a text
+-- collaborator without that path cannot build the surface.
 function T.rejects_a_text_collaborator_without_the_palette_path()
   local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
   local plainText = { draws = {} }

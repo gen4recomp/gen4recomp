@@ -32,7 +32,7 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 ---@class StartMenuRenderer
 ---@field _graphics love.graphics
 ---@field _text FieldTextRenderer the shared text collaborator (drawTextWithPalette/textWidth)
----@field _labelPalette { foreground: { r: number, g: number, b: number, a: number? }, shadow: { r: number, g: number, b: number, a: number? }, background: { r: number, g: number, b: number, a: number? } } the retail label roles resolved from the generated font palette
+---@field _labelPalette { foreground: { r: number, g: number, b: number, a: number? }, shadow: { r: number, g: number, b: number, a: number? }, background: { r: number, g: number, b: number, a: number? } } the generated label roles from the manifest start menu record
 ---@field _images love.Image[] every acquired image, released exactly once
 ---@field _imageByAsset table<string, love.Image> acquired images by manifest asset id
 ---@field _quads table<string, love.Quad> quads by asset id plus rect
@@ -73,21 +73,23 @@ function StartMenuRenderer.new(opts)
     text and type(text.drawTextWithPalette) == "function" and type(text.textWidth) == "function",
     "StartMenuRenderer requires the shared text collaborator"
   )
-  -- The label colors are retail palette roles, not hardcoded RGB: the
-  -- source prints labels with foreground 14, shadow 2, background 0, read
-  -- from the generated font palette through its one-based Lua entries.
-  local fontPalette = assert(text.fontDef and text.fontDef.palette, "start menu requires generated field font palette")
-  local labelPalette = {
-    foreground = assert(fontPalette[15]), -- source slot 14
-    shadow = assert(fontPalette[3]), -- source slot 2
-    background = assert(fontPalette[1]), -- source slot 0
-  }
-
+  -- The label colors are the generated start menu record, never the
+  -- field font palette: the label windows resolve their retail slots
+  -- through the SUB background palette bank, which the producer publishes
+  -- as source-independent roles. The background role stays transparent so
+  -- glyph background-class pixels reveal the already-rendered chrome.
   -- The generated field-UI class is a required renderer asset: the manifest
   -- names the SUB chrome and every icon visual atlas. The runtime boot
   -- already validated the full manifest; the renderer resolves what it
   -- draws.
   local startMenu = assert(manifest.startMenu, "the field-UI manifest must carry the start menu section")
+  local labelPalette = assert(startMenu.labelPalette, "the field-UI manifest must carry the start menu label palette")
+  assert(
+    type(labelPalette.foreground) == "table"
+      and type(labelPalette.shadow) == "table"
+      and type(labelPalette.background) == "table",
+    "the start menu label palette must carry its foreground, shadow, and background roles"
+  )
   local interactive =
     assert(startMenu.interactive, "the field-UI manifest must carry the start menu interactive record")
   local iconTable = assert(startMenu.iconTable, "the field-UI manifest must carry the start menu icon table")
