@@ -232,15 +232,6 @@ local function headlessTransitionFactory()
   return buildPart
 end
 
----@return table<string, boolean>
-local function menuBindings()
-  local keys = {}
-  for _, key in ipairs(FieldPresentation.input and FieldPresentation.input.menu or {}) do
-    keys[key] = true
-  end
-  return keys
-end
-
 ---@param avatars table[]
 local function validateAvatarConfig(avatars)
   assert(type(avatars) == "table" and #avatars > 0, "field actor index must contain avatars")
@@ -896,7 +887,7 @@ function FieldRuntime:_load()
     })
     self.actionKeys = HgssInputBindings.actionKeys()
     self.cancelKeys = HgssInputBindings.cancelKeys()
-    self.menuKeys = menuBindings()
+    self.menuKeys = HgssInputBindings.menuKeys()
 
     local function playSequence(sequence)
       if self.audio then

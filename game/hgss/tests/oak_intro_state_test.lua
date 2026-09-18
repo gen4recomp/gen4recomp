@@ -412,25 +412,31 @@ end
 
 -- Physical action keys confirm the focused naming cell like gamepad A:
 -- they activate the focused glyph or control instead of submitting, while
--- cancel keys delete one glyph and Start submits.
+-- cancel keys delete one glyph and Start submits. Removed aliases stay inert.
 function T.physical_action_cancel_and_start_follow_naming_semantics()
   local state, controller = stateHarness()
   Assert.equal(controller.phase, "name_edit")
   state:keypressed("space")
   state:keypressed("return")
   state:keypressed("kpenter")
+  Assert.deepEqual(
+    controller.pressed,
+    { "confirm", "confirm", "confirm" },
+    "Space/Return/KPEnter confirm the focused naming target instead of submitting"
+  )
+  state:keypressed("backspace")
+  state:keypressed("delete")
+  state:keypressed("escape")
+  Assert.deepEqual(
+    controller.pressed,
+    { "confirm", "confirm", "confirm", "cancel", "cancel", "cancel" },
+    "Backspace/Delete/Escape delete one glyph through the naming cancel path"
+  )
+  local before = #controller.pressed
   state:keypressed("z")
-  Assert.deepEqual(
-    controller.pressed,
-    { "confirm", "confirm", "confirm", "confirm" },
-    "Space/Return/KPEnter/Z confirm the focused naming target instead of submitting"
-  )
   state:keypressed("x")
-  Assert.deepEqual(
-    controller.pressed,
-    { "confirm", "confirm", "confirm", "confirm", "cancel" },
-    "X deletes one glyph through the naming cancel path"
-  )
+  state:keypressed("m")
+  Assert.equal(#controller.pressed, before, "removed keyboard aliases never reach the naming controller")
   state:gamepadpressed(nil, "start")
   Assert.deepEqual(controller.pressed[#controller.pressed], "start", "Start submits regardless of the focused cell")
 end

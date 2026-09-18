@@ -749,9 +749,6 @@ end
 
 ---@param key string
 function FieldState:keypressed(key, _, _)
-  if key == "escape" then
-    love.event.quit(0)
-  end
   if self:_entryCoverActive() then
     return
   end
