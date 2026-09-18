@@ -405,7 +405,7 @@ function T.state_keeps_delete_failure_visible_and_save_available_for_retry()
       end,
     },
   })
-  menu:keypressed("delete")
+  menu:keypressed("tab")
   menu:keypressed("return")
   menu:keypressed("right")
   menu:keypressed("return")
@@ -413,6 +413,46 @@ function T.state_keeps_delete_failure_visible_and_save_available_for_retry()
   Assert.equal(view.catalogError, "save could not be deleted")
   Assert.equal(view.focusedId, "save-00000001")
   Assert.notNil(view.layout.saves.cards["save-00000001"])
+end
+
+-- The shared keyboard aliases drive Main Menu actions: confirm activates the
+-- focused entry, cancel backs out toward quit, and the menu alias requests
+-- save deletion where the controller permits it. Removed aliases stay inert.
+function T.shared_aliases_activate_back_out_and_request_delete()
+  local results = {}
+  local menu = state({
+    saveStore = {
+      list = function()
+        return { { saveId = "one", playerData = {}, versionId = "heartgold", playTimeSeconds = 0 } }
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  Assert.equal(menu.controller:snapshot().focus.saveId, "one")
+  menu:keypressed("tab")
+  Assert.deepEqual(
+    menu.controller:snapshot().popup,
+    { saveId = "one", focusedAction = "delete" },
+    "the menu alias requests deletion for the focused save"
+  )
+  menu:keypressed("delete")
+  Assert.isNil(menu.controller:snapshot().popup, "the delete key backs out as cancel")
+  Assert.deepEqual(results, {})
+  menu:keypressed("tab")
+  Assert.notNil(menu.controller:snapshot().popup)
+  menu:keypressed("escape")
+  Assert.isNil(menu.controller:snapshot().popup, "escape backs out as cancel")
+  Assert.deepEqual(results, {})
+  local pressedBefore = #results
+  for _, key in ipairs({ "z", "x", "m" }) do
+    menu:keypressed(key)
+  end
+  Assert.isNil(menu.controller:snapshot().popup, "removed aliases never request deletion")
+  Assert.equal(#results, pressedBefore, "removed aliases emit no menu result")
+  menu:keypressed("backspace")
+  Assert.deepEqual(results, { { kind = "quit" } }, "cancel with nothing to close quits")
 end
 
 function T.overflow_vertical_movement_falls_back_to_body_without_overflow_control()

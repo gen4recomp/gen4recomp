@@ -31,7 +31,7 @@ local function stateWithInput(calls)
     end
   end
   return setmetatable(
-    { runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = { m = true } } },
+    { runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = { tab = true } } },
     FieldState
   )
 end
@@ -104,39 +104,72 @@ function T.releasing_one_of_two_keys_for_the_same_direction_releases_its_own_sou
 end
 
 -- The field honors the shared physical binding authority: every manifest
--- action/cancel alias drives field input, so centralizing the aliases
+-- action/cancel/menu alias drives field input, so centralizing the aliases
 -- cannot silently drop a field key and the keypad Enter expansion flows.
-function T.shared_binding_aliases_drive_field_action_and_cancel()
+-- Escape reaches cancel input instead of the host quit, and removed aliases
+-- stay inert.
+function T.shared_binding_aliases_drive_field_action_cancel_and_menu()
   local calls = {}
   local input = {}
-  for _, name in ipairs({ "pressAction", "pressCancel" }) do
+  for _, name in ipairs({ "pressAction", "releaseAction", "pressCancel", "releaseCancel", "pressMenu", "releaseMenu" }) do
     input[name] = function(_, ...)
       calls[#calls + 1] = { name, ... }
     end
   end
+  -- The menu copy API is part of the shared authority; fall back to the
+  -- requested alias only so field routing stays observable either way.
+  local menuKeys = HgssInputBindings.menuKeys ~= nil and HgssInputBindings.menuKeys() or { tab = true }
   local state = setmetatable({
     runtime = {
       input = input,
       actionKeys = HgssInputBindings.actionKeys(),
       cancelKeys = HgssInputBindings.cancelKeys(),
-      menuKeys = {},
+      menuKeys = menuKeys,
     },
   }, FieldState)
 
-  for _, key in ipairs({ "z", "space", "return", "kpenter" }) do
-    state:keypressed(key)
+  -- Host quit is stubbed so the test observes input routing, not process exit.
+  local quitCalls = 0
+  local eventRef = love.event
+  local quitRef = eventRef.quit
+  eventRef.quit = function()
+    quitCalls = quitCalls + 1
   end
-  for _, key in ipairs({ "x", "backspace" }) do
-    state:keypressed(key)
-  end
+  local ok, err = pcall(function()
+    for _, key in ipairs({ "space", "return", "kpenter" }) do
+      state:keypressed(key)
+      state:keyreleased(key)
+    end
+    for _, key in ipairs({ "backspace", "delete", "escape" }) do
+      state:keypressed(key)
+      state:keyreleased(key)
+    end
+    state:keypressed("tab")
+    state:keyreleased("tab")
+    for _, key in ipairs({ "z", "x", "m" }) do
+      state:keypressed(key)
+      state:keyreleased(key)
+    end
+  end)
+  eventRef.quit = quitRef
+  Assert.isTrue(ok, "field key translation never raises: " .. tostring(err))
 
+  Assert.equal(quitCalls, 0, "field Escape must reach cancel input, never the host quit")
   Assert.deepEqual(calls, {
-    { "pressAction", "key:z" },
     { "pressAction", "key:space" },
+    { "releaseAction", "key:space" },
     { "pressAction", "key:return" },
+    { "releaseAction", "key:return" },
     { "pressAction", "key:kpenter" },
-    { "pressCancel", "key:x" },
+    { "releaseAction", "key:kpenter" },
     { "pressCancel", "key:backspace" },
+    { "releaseCancel", "key:backspace" },
+    { "pressCancel", "key:delete" },
+    { "releaseCancel", "key:delete" },
+    { "pressCancel", "key:escape" },
+    { "releaseCancel", "key:escape" },
+    { "pressMenu", "key:tab" },
+    { "releaseMenu", "key:tab" },
   })
 end
 
@@ -360,13 +393,13 @@ end
 function T.keyboard_menu_key_and_gamepad_west_face_drive_the_semantic_menu_button()
   local calls = {}
   local state = stateWithInput(calls)
-  state:keypressed("m")
-  state:keyreleased("m")
+  state:keypressed("tab")
+  state:keyreleased("tab")
   state:gamepadpressed(joystick, "x")
   state:gamepadreleased(joystick, "x")
   Assert.deepEqual(calls, {
-    { "pressMenu", "key:m" },
-    { "releaseMenu", "key:m" },
+    { "pressMenu", "key:tab" },
+    { "releaseMenu", "key:tab" },
     { "pressMenu", "gamepad:7:x" },
     { "releaseMenu", "gamepad:7:x" },
   })

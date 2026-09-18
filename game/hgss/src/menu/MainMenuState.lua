@@ -1,6 +1,7 @@
 -- Product Main Menu state for save catalog publication and semantic input.
 
 local Errors = require("libs.errors.src.Errors")
+local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 local GameSave = require("libs.hgss.src.save.GameSave")
 local MainMenuController = require("game.hgss.src.menu.MainMenuController")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
@@ -245,18 +246,22 @@ function MainMenuState:_activate()
   end
 end
 
+function MainMenuState:_backOrQuit()
+  if not self.controller:back() then
+    self:_emit({ kind = "quit" })
+  end
+end
+
 function MainMenuState:_key(key)
-  if key == "escape" or key == "b" then
-    if not self.controller:back() then
-      self:_emit({ kind = "quit" })
-    end
+  if HgssInputBindings.isCancelKey(key) then
+    self:_backOrQuit()
     return
   end
   if key == "up" or key == "down" or key == "left" or key == "right" then
     self.controller:move(key)
-  elseif key == "return" or key == "kpenter" or key == "space" then
+  elseif HgssInputBindings.isActionKey(key) then
     self:_activate()
-  elseif key == "delete" then
+  elseif HgssInputBindings.isMenuKey(key) then
     self.controller:requestDelete()
   end
 end
@@ -273,7 +278,7 @@ function MainMenuState:gamepadpressed(_, button)
     dpright = "right",
   }
   if button == "b" then
-    self:_key("b")
+    self:_backOrQuit()
   elseif button == "a" then
     self:_activate()
   elseif button == "x" then

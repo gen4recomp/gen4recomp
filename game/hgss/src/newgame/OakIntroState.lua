@@ -501,8 +501,8 @@ function OakIntroState:keypressed(key, _, isrepeat)
   local direction = ({ ["left"] = "left", ["right"] = "right", ["up"] = "up", ["down"] = "down" })[key]
   local isAction = HgssInputBindings.isActionKey(key)
   local isCancel = HgssInputBindings.isCancelKey(key)
-  if direction or isAction or isCancel or key == "escape" then
-    local action = key == "escape" and "cancel" or direction or (isCancel and "cancel") or "confirm"
+  if direction or isAction or isCancel then
+    local action = direction or (isCancel and "cancel") or "confirm"
     if self.dialogueController and self.dialogueController:isModal() then
       self:_stepDialogue({ actionPressed = action == "confirm", cancelPressed = action == "cancel" })
       self:_sync()
@@ -512,7 +512,7 @@ function OakIntroState:keypressed(key, _, isrepeat)
       if isAction then
         -- HGSS A activates the focused naming cell or control; only Start submits.
         self.controller:press("confirm")
-      elseif isCancel or key == "escape" then
+      elseif isCancel then
         self.controller:press("cancel")
       else
         self.controller:press(action)

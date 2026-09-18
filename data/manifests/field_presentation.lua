@@ -14,8 +14,8 @@ return {
     resizeCompensation = 0.7,
   },
   input = {
-    action = { "z", "space", "return", "kpenter" },
-    cancel = { "x", "backspace" },
-    menu = { "m" },
+    action = { "space", "return", "kpenter" },
+    cancel = { "backspace", "delete", "escape" },
+    menu = { "tab" },
   },
 }
