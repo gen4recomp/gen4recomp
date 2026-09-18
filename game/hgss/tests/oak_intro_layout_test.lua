@@ -904,6 +904,75 @@ function T.tests.gender_cards_keep_equal_top_and_bottom_padding_around_portraits
   end
 end
 
+-- Portrait proportions matching the shipped intro manifest (64x128 portraits
+-- in 93x148/95x148 cards): the shared widget fixture uses smaller portraits
+-- with generous slack, so short-host portrait fit needs its own proof.
+local function retailProportionedManifest()
+  local data = manifest()
+  data.widgets.gender_male = widget(64, 128, { x = 32, y = 64 }, { x = 0, y = 0, width = 64, height = 128 })
+  data.widgets.gender_female = widget(64, 128, { x = 32, y = 64 }, { x = 0, y = 0, width = 64, height = 128 })
+  data.widgets.gender_male.sourceCenter = { x = 64, y = 104 }
+  data.widgets.gender_female.sourceCenter = { x = 192, y = 104 }
+  data.genderSelector.buttons.male.bounds = { x = 18, y = 25, width = 93, height = 148 }
+  data.genderSelector.buttons.female.bounds = { x = 144, y = 25, width = 95, height = 148 }
+  return data
+end
+
+-- Mirrors the shared image-button draw contract: the renderer passes each
+-- entry's portrait as the button image, so the portrait must stay inside
+-- the resolved content rectangle on every host, not just inside the card.
+local function assertPortraitInsideContent(entry, label)
+  local content = assert(entry.button.contentRect, "gender card must resolve button content at " .. label)
+  local portrait = entry.portraitRect
+  local epsilon = 1e-6
+  Assert.isTrue(portrait.x >= content.x - epsilon, "portrait must stay inside button content at " .. label)
+  Assert.isTrue(portrait.y >= content.y - epsilon, "portrait must stay inside button content at " .. label)
+  Assert.isTrue(
+    portrait.x + portrait.width <= content.x + content.width + epsilon,
+    "portrait must stay inside button content at " .. label
+  )
+  Assert.isTrue(
+    portrait.y + portrait.height <= content.y + content.height + epsilon,
+    "portrait must stay inside button content at " .. label
+  )
+end
+
+function T.tests.gender_portraits_stay_inside_button_content_on_short_and_wide_hosts()
+  local data = retailProportionedManifest()
+  for _, size in ipairs({
+    { 1710, 895 },
+    { 1920, 1080 },
+    { 2560, 1440 },
+    { 1366, 768 },
+    { 1024, 768 },
+    { 800, 600 },
+    { 1280, 720 },
+  }) do
+    local label = size[1] .. "x" .. size[2]
+    local layout = computeForHost(size[1], size[2], {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    for gender = 0, 1 do
+      assertPortraitInsideContent(assert(layout.genderButtons and layout.genderButtons[gender]), label)
+    end
+    local confirmLayout = computeForHost(size[1], size[2], {
+      phase = "gender_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = 0,
+      genderCompositionProgress = 1,
+      confirmationChoice = { kind = "gender", selected = 0 },
+      oakBgScrollX = 0,
+    }, {}, data)
+    assertPortraitInsideContent(assert(confirmLayout.selectedProfileButton), label .. " confirm")
+  end
+end
+
 function T.tests.name_launch_wait_keeps_dialogue_reserved_and_oak_region_stable()
   local data = manifest()
   for _, size in ipairs({ { 800, 600 }, { 390, 844 } }) do
