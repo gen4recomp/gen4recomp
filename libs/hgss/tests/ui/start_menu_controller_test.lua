@@ -638,6 +638,40 @@ function T.directional_movement_scans_the_ordered_candidate_lists()
   Assert.equal(stay:status().selectedPosition, 5, "left with no other visible candidate keeps the selection")
 end
 
+function T.hidden_positions_are_skipped_in_declared_candidate_order()
+  local function sparseAt(position)
+    -- Position 5 is unreachable by navigation through this sparse set, so
+    -- restore it through the remembered selection instead.
+    local remembered = position == 5 and "vanilla.save" or nil
+    local controller = newInteractiveController({ entries = interactiveEntries(), rememberedActionId = remembered })
+    if position == 2 then
+      controller:updateFixed({ { type = "navigate", direction = "down" } })
+    end
+    Assert.equal(controller:status().selectedPosition, position, "sparse menu setup must reach position " .. position)
+    return controller
+  end
+  local function move(controller, direction)
+    controller:updateFixed({ { type = "navigate", direction = direction } })
+    return controller:status().selectedPosition
+  end
+
+  -- Visible set is {0, 2, 5}; positions 1, 3, 4, 6 are hidden holes.
+  Assert.equal(move(sparseAt(0), "down"), 2, "down from 0 must skip hidden 1 and select 2")
+  Assert.equal(move(sparseAt(0), "up"), 2, "up from 0 must skip hidden 3 and select 2")
+  Assert.equal(move(sparseAt(0), "right"), 0, "right from 0 must skip hidden 4 and stay")
+  Assert.equal(move(sparseAt(0), "left"), 0, "left from 0 must skip hidden 4 and stay")
+
+  Assert.equal(move(sparseAt(2), "up"), 0, "up from 2 must skip hidden 1 and select 0")
+  Assert.equal(move(sparseAt(2), "down"), 0, "down from 2 must skip hidden 3 and select 0")
+  Assert.equal(move(sparseAt(2), "left"), 2, "left from 2 must skip hidden 6 and stay")
+  Assert.equal(move(sparseAt(2), "right"), 2, "right from 2 must skip hidden 6 and stay")
+
+  Assert.equal(move(sparseAt(5), "up"), 5, "up from 5 must skip hidden 4 and 6 and stay")
+  Assert.equal(move(sparseAt(5), "down"), 5, "down from 5 must skip hidden 6 and 4 and stay")
+  Assert.equal(move(sparseAt(5), "left"), 5, "left from 5 must skip hidden 1 and stay")
+  Assert.equal(move(sparseAt(5), "right"), 5, "right from 5 must skip hidden 1 and stay")
+end
+
 function T.entries_outside_the_normal_seven_positions_are_rejected()
   Assert.throws(function()
     StartMenuController.new({

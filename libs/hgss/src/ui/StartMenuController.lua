@@ -22,6 +22,8 @@
 -- the takeResult contract ({ kind = "close" } / { kind = "launch",
 -- applicationId }) and the application host launches.
 
+local FocusGraph = require("libs.ui.src.FocusGraph")
+
 ---@class StartMenuController
 ---@field _visibleActions table<integer, StartMenuController.Action> visible actions keyed by display position
 ---@field _selectedPosition integer the selected display position
@@ -187,13 +189,21 @@ function StartMenuController:_moveSelection(direction)
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
     "unknown UI direction"
   )
-  local candidates = self._positions[self._selectedPosition].navigation[direction]
-  for _, candidate in ipairs(candidates) do
-    if self._visibleActions[candidate] ~= nil then
-      self._selectedPosition = candidate
-      break
-    end
+  local graph = {}
+  for position in pairs(self._visibleActions) do
+    local record =
+      assert(self._positions[position], "start menu display position " .. tostring(position) .. " has no record")
+    graph[position] = {
+      up = assert(record.navigation.up, "start menu position navigation needs an up list"),
+      down = assert(record.navigation.down, "start menu position navigation needs a down list"),
+      left = assert(record.navigation.left, "start menu position navigation needs a left list"),
+      right = assert(record.navigation.right, "start menu position navigation needs a right list"),
+    }
   end
+  local resolved = FocusGraph.move(graph, self._selectedPosition, direction)
+  assert(type(resolved) == "number" and resolved % 1 == 0, "start menu focus resolves to a source position")
+  ---@cast resolved integer
+  self._selectedPosition = resolved
 end
 
 -- Activation of the selected action. Disabled entries (enabled=false) are
