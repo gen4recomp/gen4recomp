@@ -513,10 +513,10 @@ end
 function T.card_chrome_keeps_rounded_nested_corners()
   local ImageButton = require("libs.ui.src.ImageButton")
   local button = ImageButton.resolve({ rect = { x = 16, y = 80, width = 128, height = 64 }, scale = 1 })
-  Assert.equal(button.border.cornerRadius, 8)
-  Assert.equal(button.rim.cornerRadius, 6)
-  Assert.equal(button.innerBorder.cornerRadius, 4)
-  Assert.equal(button.face.cornerRadius, 3)
+  Assert.equal(button.border.cornerRadius, 6)
+  Assert.equal(button.rim.cornerRadius, 5)
+  Assert.equal(button.innerBorder.cornerRadius, 3)
+  Assert.equal(button.face.cornerRadius, 2)
   local explicit = ImageButton.resolve({
     rect = { x = 16, y = 80, width = 128, height = 64 },
     scale = 1,
@@ -524,9 +524,9 @@ function T.card_chrome_keeps_rounded_nested_corners()
     innerBorderWidth = 2,
   })
   Assert.equal(explicit.border.cornerRadius, 6)
-  Assert.equal(explicit.rim.cornerRadius, 4)
-  Assert.equal(explicit.innerBorder.cornerRadius, 2)
-  Assert.equal(explicit.face.cornerRadius, 0)
+  Assert.equal(explicit.rim.cornerRadius, 5)
+  Assert.equal(explicit.innerBorder.cornerRadius, 3)
+  Assert.equal(explicit.face.cornerRadius, 1)
 end
 local function nearByte(actual, byte, tolerance)
   Assert.near(actual, byte / 255, (tolerance or 4) / 255)
@@ -565,24 +565,65 @@ function T.neutral_cards_keep_a_dark_exterior_with_a_full_cyan_inner_border(scop
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
   local cx = newGame.x + math.floor(newGame.width / 2)
-  -- At desktop scale the card insets double: 4px border, 4px rim, 4px inner border.
-  local r, g, b = pixels:getPixel(cx, newGame.y + 2)
+  -- At desktop scale the card insets double: 2px border, 4px rim, 4px inner border.
+  local r, g, b = pixels:getPixel(cx, newGame.y + 1)
   nearByte(r, 0x30, 4)
   nearByte(g, 0x49, 4)
   nearByte(b, 0x61, 4)
-  r, g, b = pixels:getPixel(cx, newGame.y + 6)
+  r, g, b = pixels:getPixel(cx, newGame.y + 4)
   nearByte(r, 0x30, 4)
   nearByte(g, 0x49, 4)
   nearByte(b, 0x61, 4)
-  r, g, b = pixels:getPixel(cx, newGame.y + 10)
+  r, g, b = pixels:getPixel(cx, newGame.y + 8)
   nearByte(r, 0xA2, 4)
   nearByte(g, 0xE3, 4)
   nearByte(b, 0xDB, 4)
-  r, g, b = pixels:getPixel(cx, newGame.y + newGame.height - 10)
+  r, g, b = pixels:getPixel(cx, newGame.y + newGame.height - 8)
   nearByte(r, 0xA2, 4)
   nearByte(g, 0xE3, 4)
   nearByte(b, 0xDB, 4)
   r, g, b = pixels:getPixel(newGame.x + 14, newGame.y + 14)
+  nearByte(r, 0xFB, 4)
+  nearByte(g, 0xFB, 4)
+  nearByte(b, 0xFB, 4)
+end
+
+function T.inset_actions_use_the_face_color_for_the_inner_border(scope)
+  local globals = { { id = "new-game", kind = "new_game" } }
+  local saves = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    },
+  }
+  local focus = { region = "global", actionId = "new-game" }
+  local popup = { saveId = "save-1" }
+  local layout = MainMenuLayout.compute(globals, saves, focus, 640, 480, 0, popup, nil, false)
+  local delete = assert(layout.popup.actions.delete)
+  local lg = love.graphics
+  local canvas = scope:own(lg.newCanvas(640, 480))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  local menuRenderer = renderer(scope)
+  menuRenderer:draw({
+    focusedId = "new-game",
+    focus = focus,
+    globalActions = globals,
+    saves = saves,
+    catalogError = nil,
+    popup = popup,
+    layout = layout,
+  })
+  lg.setCanvas()
+  local pixels = scope:own(canvas:newImageData())
+  -- Bottom inner-border band of the inset delete action: below the label
+  -- copy and centered horizontally so rounded corners never intrude.
+  local cx = delete.x + math.floor(delete.width / 2)
+  local r, g, b = pixels:getPixel(cx, delete.y + delete.height - 8)
   nearByte(r, 0xFB, 4)
   nearByte(g, 0xFB, 4)
   nearByte(b, 0xFB, 4)

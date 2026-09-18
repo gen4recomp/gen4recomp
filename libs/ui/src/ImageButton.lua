@@ -64,7 +64,7 @@ function ImageButton.resolve(spec)
   local rectValue = rectangle(spec.rect, "image button rectangle")
   assertFinitePositiveScale(spec.scale)
   local scale = spec.scale
-  local cornerRadius = 8
+  local cornerRadius = 6
   if spec.cornerRadius ~= nil then
     assert(
       type(spec.cornerRadius) == "number" and finite(spec.cornerRadius) and spec.cornerRadius >= 0,
@@ -82,7 +82,7 @@ function ImageButton.resolve(spec)
   end
   local resolved = Button.resolve({
     rect = rectValue,
-    borderWidth = 2 * scale,
+    borderWidth = 1 * scale,
     rimWidth = 2 * scale,
     innerBorderWidth = innerBorderWidth * scale,
     cornerRadius = cornerRadius * scale,
