@@ -213,7 +213,7 @@ function NamingScreenController:updateFixed(ticks)
     end
     self._subjectTick = self._subjectTick + 1
     self._cursorTick = self._cursorTick + 1
-    local angle = self._glowAngle + 20
+    local angle = self._glowAngle + 10
     if angle > 360 then
       angle = 0
     end
