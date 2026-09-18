@@ -327,6 +327,38 @@ function T.home_control_focus_uses_the_matching_cursor_variant()
   )
 end
 
+function T.home_controls_composite_above_their_support_backing_with_focus_on_top()
+  local graphics = FakeGraphics.new()
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake({}),
+    drawSubject = function() end,
+    manifest = manifest,
+    imageLoader = imageLoaderFake({}),
+  })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  renderer:draw(snapshot({ cursor = { row = 1, column = 10, controlId = "back" } }), layout)
+  renderer:dispose()
+
+  local order = {}
+  for index, draw in ipairs(graphics.draws) do
+    local path = type(draw.image) == "table" and draw.image.path or nil
+    if path ~= nil and order[path] == nil then
+      order[path] = index
+    end
+  end
+  local backing = assert(order[naming.controls.backing.image], "the support backing composites")
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+    local control = assert(order[naming.controls[id].image], "the " .. id .. " control composites")
+    Assert.isTrue(backing < control, "the " .. id .. " control stays visible above its support backing")
+  end
+  local variant = naming.cursor.home.back
+  local cursor = assert(order[manifest.assets[variant.frames[1].asset].image], "the focus cursor composites")
+  Assert.isTrue(cursor > order[naming.controls.back.image], "the focus cursor draws above its control")
+end
+
 function T.canonical_and_integer_host_scales_share_one_logical_surface()
   local function render(viewport)
     local graphics = FakeGraphics.new()

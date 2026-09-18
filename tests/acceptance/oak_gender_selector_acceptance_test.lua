@@ -227,7 +227,7 @@ T.tests.production_oak_selector_back_confirmation_and_name_flows_return_to_a_val
     Assert.notNil(state:view().namingScreen)
     state:textinput("GOLD")
     Assert.equal(state:view().name, "GOLD")
-    state:keypressed("return")
+    state:gamepadpressed(nil, "start")
     state:tick(26)
     Assert.equal(state:view().phase, "name_confirm")
     Assert.equal(state:view().name, "GOLD")

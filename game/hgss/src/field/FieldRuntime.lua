@@ -66,6 +66,7 @@ local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
+local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 local FieldPresentation = require("data.manifests.field_presentation")
 local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
 local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
@@ -229,24 +230,6 @@ local function headlessTransitionFactory()
     return player
   end
   return buildPart
-end
-
----@return table<string, boolean>
-local function actionBindings()
-  local keys = {}
-  for _, key in ipairs(FieldPresentation.input and FieldPresentation.input.action or {}) do
-    keys[key] = true
-  end
-  return keys
-end
-
----@return table<string, boolean>
-local function cancelBindings()
-  local keys = {}
-  for _, key in ipairs(FieldPresentation.input and FieldPresentation.input.cancel or {}) do
-    keys[key] = true
-  end
-  return keys
 end
 
 ---@return table<string, boolean>
@@ -911,8 +894,8 @@ function FieldRuntime:_load()
       cacheFs = cacheFs,
       frameIndex = self.playerData.options.textFrame,
     })
-    self.actionKeys = actionBindings()
-    self.cancelKeys = cancelBindings()
+    self.actionKeys = HgssInputBindings.actionKeys()
+    self.cancelKeys = HgssInputBindings.cancelKeys()
     self.menuKeys = menuBindings()
 
     local function playSequence(sequence)

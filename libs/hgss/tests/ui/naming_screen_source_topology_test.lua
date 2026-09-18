@@ -118,6 +118,28 @@ function T.tests.identical_adjacent_glyphs_do_not_trap_horizontal_movement()
   Assert.deepEqual({ controller:snapshot().cursor.row, controller:snapshot().cursor.column }, { 4, 8 })
 end
 
+function T.tests.keyboard_text_rows_keep_the_retail_row_formula()
+  local FieldUiAssets = require("romdump.src.config.FieldUiAssets")
+  local text = assert(
+    FieldUiAssets.namingScreen and FieldUiAssets.namingScreen.keyboardText,
+    "the field-UI source config publishes keyboard text geometry"
+  )
+  Assert.equal(text.originX, 27, "keyboard text starts at screen x 27")
+  Assert.equal(text.originY, 12, "keyboard text starts 12 pixels inside the keyboard window")
+  Assert.equal(text.stepX, 16, "keyboard columns step 16 pixels")
+  Assert.equal(text.stepY, 19, "keyboard rows keep the 19-pixel source step")
+  local localRows = {}
+  for row = 1, 5 do
+    localRows[row] = 19 * (row - 1) + 4
+  end
+  Assert.deepEqual(localRows, { 4, 23, 42, 61, 80 }, "local keyboard rows follow 19 * i + 4")
+  local composed = {}
+  for row = 1, 5 do
+    composed[row] = 80 + text.originY + (row - 1) * text.stepY
+  end
+  Assert.deepEqual(composed, { 92, 111, 130, 149, 168 }, "composed rows add the page/window transform")
+end
+
 function T.tests.direct_text_input_ignores_the_keyboard_path()
   local controller = player()
   Assert.isTrue(controller:inputText("AB"))

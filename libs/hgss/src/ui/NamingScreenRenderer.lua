@@ -2,9 +2,9 @@
 -- shared field text. The opaque base draws first, the selected transparent
 -- page overlay draws over it at its manifest placement, then the
 -- OAM-composed support backing, page controls, entry slots, keyboard and
--- entered-name text from the generated text geometry, the animated cursor
--- visual with its source palette pulse mask, and the animated player
--- subject from the manifest. Subject and cursor frames resolve
+-- entered-name text from the generated text geometry, the animated player
+-- subject from the manifest, and the animated cursor visual with its
+-- source palette pulse mask on top. Subject and cursor frames resolve
 -- deterministically from the snapshot presentation clocks against the
 -- generated durations and playback modes. Non-player subjects stay
 -- host-owned: the host injects drawSubject and the renderer only brackets
@@ -369,7 +369,13 @@ function NamingScreenRenderer:draw(view, layout)
     local image = assert(self.images[imageKey], "naming visual is missing: " .. imageKey)
     g.draw(image, PixelScale.snapLogical(x), PixelScale.snapLogical(y))
   end
-  for _, key in ipairs(CONTROL_KEYS) do
+  -- The support backing composites first so the home controls it frames
+  -- stay visible above it.
+  do
+    local backing = naming.controls.backing
+    drawVisual("control:backing", backing.anchor.x + backing.offset.x, backing.anchor.y + backing.offset.y)
+  end
+  for _, key in ipairs(HOME_KEYS) do
     local record = naming.controls[key]
     drawVisual("control:" .. key, record.anchor.x + record.offset.x, record.anchor.y + record.offset.y)
   end
@@ -415,6 +421,18 @@ function NamingScreenRenderer:draw(view, layout)
       and type(presentation.glowAngle) == "number",
     "naming draw requires snapshot presentation clocks"
   )
+  if view.subject.kind == "player" then
+    local gender = view.subject.gender == 1 and "female" or "male"
+    local record = naming.playerSubjects[gender]
+    local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
+    self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
+  else
+    g.push()
+    self.drawSubject(g, view.subject, layout.subject)
+    g.pop()
+  end
+  -- The focus cursor composites last so it stays above the control it
+  -- highlights.
   local cursor = view.cursor
   if cursor.row == 1 then
     local controlId = homeControlAt(cursor.column)
@@ -433,16 +451,6 @@ function NamingScreenRenderer:draw(view, layout)
       record.origin.y + (cursor.row - 2) * record.stepY,
       presentation.glowAngle
     )
-  end
-  if view.subject.kind == "player" then
-    local gender = view.subject.gender == 1 and "female" or "male"
-    local record = naming.playerSubjects[gender]
-    local frame = record.frames[resolveFrameIndex(record, presentation.subjectTick)]
-    self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
-  else
-    g.push()
-    self.drawSubject(g, view.subject, layout.subject)
-    g.pop()
   end
   g.pop()
 end

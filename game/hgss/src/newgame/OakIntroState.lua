@@ -2,6 +2,7 @@
 -- semantic controller, owns text-input mode and intro images, and hands one
 -- finalized unpublished candidate to its caller.
 
+local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
@@ -491,35 +492,46 @@ function OakIntroState:resize(width, height)
   self.width, self.height = width, height
 end
 
-local CONFIRM_KEYS = { ["return"] = true, kpenter = true, space = true }
-
 ---@param key string
 ---@param isrepeat boolean?
 function OakIntroState:keypressed(key, _, isrepeat)
-  if isrepeat and CONFIRM_KEYS[key] then
+  if isrepeat and HgssInputBindings.isActionKey(key) then
     return
   end
-  if key == "left" or key == "right" or key == "up" or key == "down" or CONFIRM_KEYS[key] or key == "escape" then
-    local action = key == "escape" and "cancel"
-      or ({ ["left"] = "left", ["right"] = "right", ["up"] = "up", ["down"] = "down" })[key]
-      or "confirm"
+  local direction = ({ ["left"] = "left", ["right"] = "right", ["up"] = "up", ["down"] = "down" })[key]
+  local isAction = HgssInputBindings.isActionKey(key)
+  local isCancel = HgssInputBindings.isCancelKey(key)
+  if direction or isAction or isCancel or key == "escape" then
+    local action = key == "escape" and "cancel" or direction or (isCancel and "cancel") or "confirm"
     if self.dialogueController and self.dialogueController:isModal() then
       self:_stepDialogue({ actionPressed = action == "confirm", cancelPressed = action == "cancel" })
       self:_sync()
       return
     end
-    if self.controller:view().phase == "name_edit" and CONFIRM_KEYS[key] then
-      self.controller:press("submit")
+    if self.controller:view().phase == "name_edit" then
+      if isAction then
+        -- HGSS A activates the focused naming cell or control; only Start submits.
+        self.controller:press("confirm")
+      elseif isCancel or key == "escape" then
+        self.controller:press("cancel")
+      else
+        self.controller:press(action)
+      end
     else
       self.controller:press(action)
     end
-  elseif key == "backspace" then
-    self.controller:deleteGlyph()
   end
   self:_sync()
 end
 
+-- A consumed action-key press never becomes literal text: Space reaches the
+-- naming screen as confirm, so its key event must not also insert a space
+-- glyph (and likewise for newline). Direct typing of other glyphs still
+-- inserts through the controller.
 function OakIntroState:textinput(text)
+  if self.controller:view().phase == "name_edit" and (text == " " or text == "\n" or text == "\r") then
+    return
+  end
   self.controller:inputText(text)
   self:_sync()
 end

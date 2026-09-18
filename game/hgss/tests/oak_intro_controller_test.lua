@@ -1218,7 +1218,7 @@ function T.shrink_animation_uses_each_generated_frame_duration()
   Assert.equal(state:view().phase, "complete")
 end
 
-function T.name_edit_presentation_advances_once_per_source_tick()
+function T.name_edit_presentation_advances_twice_per_source_tick()
   local state = advanceToNameEdit()
   local naming = assert(state:view().namingScreen, "name editing publishes the naming screen")
   local presentation = assert(naming.presentation, "name editing publishes deterministic presentation clocks")
@@ -1227,9 +1227,9 @@ function T.name_edit_presentation_advances_once_per_source_tick()
   Assert.equal(presentation.glowAngle, 180, "the glow angle rests when name editing opens")
   state:tick(5)
   local advanced = assert(state:view().namingScreen.presentation)
-  Assert.equal(advanced.subjectTick, 5, "five source ticks advance the subject clock five steps")
-  Assert.equal(advanced.cursorTick, 5, "five source ticks advance the cursor clock five steps")
-  Assert.equal(advanced.glowAngle, 280, "five source ticks step the glow angle five times")
+  Assert.equal(advanced.subjectTick, 10, "five source ticks advance the subject clock ten steps")
+  Assert.equal(advanced.cursorTick, 10, "five source ticks advance the cursor clock ten steps")
+  Assert.equal(advanced.glowAngle, 0, "five source ticks step the glow angle ten times with wrap")
   state:tick(0)
   Assert.deepEqual(
     state:view().namingScreen.presentation,
@@ -1245,6 +1245,14 @@ function T.naming_screen_back_and_ok_controls_reach_the_existing_name_flow()
   Assert.equal(state:view().name, "")
   state:press("submit")
   Assert.equal(state:view().name, "Ethan")
+end
+
+function T.naming_screen_start_submits_regardless_of_focused_cell()
+  local state = advanceToNameEdit()
+  Assert.isTrue(state:inputText("GOLD"))
+  state:press("start")
+  Assert.equal(state:view().phase, "name_composition_transition")
+  Assert.equal(state:view().name, "GOLD")
 end
 
 function T.profile_flow_uses_a_naming_screen_configuration()
