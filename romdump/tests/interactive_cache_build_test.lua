@@ -347,12 +347,41 @@ local SUMMARY_GENERATION = "summary-gate-generation"
 local function recordingPool()
   local pool = { submitted = {}, states = {} }
   function pool:update() end
+  function pool:selectGeneration(selection, epoch)
+    self.selected = { identity = selection, epoch = epoch }
+  end
+  function pool:retireSelection(epoch)
+    self.retiredEpoch = epoch
+    return true
+  end
   function pool:status(jobKey)
-    return self.states[jobKey] or "unknown"
+    local state = self.states[jobKey]
+    if state ~= nil then
+      return state
+    end
+    -- A submitted job with no test-driven reply is still queued: only
+    -- never-submitted identities read unknown, matching the production
+    -- pool where request and status agree.
+    if self.accepted ~= nil and self.accepted[jobKey] then
+      return "queued"
+    end
+    return "unknown"
   end
   function pool:request(job)
-    self.submitted[#self.submitted + 1] = job.jobKey
+    if self.accepted == nil or not self.accepted[job.jobKey] then
+      self.submitted[#self.submitted + 1] = job.jobKey
+    end
+    self.accepted = self.accepted or {}
+    self.accepted[job.jobKey] = true
     return self.states[job.jobKey] or "queued", nil
+  end
+  function pool:retry(jobKey, _)
+    self.states[jobKey] = "queued"
+    return "queued", nil
+  end
+  function pool:waitForProgress() end
+  function pool:diagnostics()
+    return { workerCount = 2, counts = {} }
   end
   return pool
 end
@@ -364,45 +393,27 @@ local function selectableRecordingPool()
 end
 
 local function summarySession(pool, cacheFs, bankIds)
-  return setmetatable({
-    versionId = "heartgold",
-    generationId = SUMMARY_GENERATION,
-    producerId = "d" .. string.rep("3", 64),
-    epoch = 1,
-    pool = pool,
-    sweepEnabled = false,
-    cacheFs = cacheFs,
-    messageBankIds = bankIds,
-    audioBankIds = {},
-    scriptMemberIds = {},
-    iconPageIds = {},
-    portraitPageIds = {},
-    mapDataIds = {},
-    mapIds = {},
-    mapCellKeys = {},
-    interest = {},
-    byKey = {},
-    milestones = {},
-    recorded = {},
-    retired = false,
-    sourceLoaded = true,
-    pagesKnown = true,
-    adopted = nil,
-    dirty = {},
-    edges = {},
-    parked = {},
-    depMemo = {},
-    pendingFillDone = false,
-    loadedFillDone = false,
-    enrollCursor = nil,
-    roster = {},
-    autoCoreNearDone = false,
-    layoutAttemptConsumed = false,
-    sweepCursor = nil,
-    planningPending = false,
-    followerChecked = false,
-    followerMemo = nil,
-  }, InteractiveCacheBuild)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function()
+    return cacheFs
+  end
+  local session
+  local ok, err = pcall(function()
+    session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = SUMMARY_GENERATION, producerId = "d" .. string.rep("3", 64) },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+  end)
+  CacheFs.forVersion = realForVersion
+  if not ok then
+    error(err, 0)
+  end
+  session.messageBankIds = bankIds
+  session.sourceLoaded = true
+  session.pagesKnown = true
+  return session
 end
 
 local function submittedSet(pool)
@@ -763,6 +774,13 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
       mapDataIds = FieldMapDataCompiler.supportedMapIds(),
       mapCellKeys = { [7] = {}, [9] = {} },
     })
+    cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = generation,
+      kind = "source-plan",
+      key = "global",
+      marker = SourcePlan.marker(generation),
+    })
     local catalogMarker = "synthetic-catalog-marker"
     cacheFs:write(MonCache.catalogMarkerPath(), catalogMarker)
     cacheFs:write(MonCache.catalogPath(), "synthetic-catalog")
@@ -1020,47 +1038,28 @@ local function openLiveSession(options)
     created:selectGeneration({ versionId = "heartgold", generationId = options.generation }, 1)
     return created
   end)
-  local session = setmetatable({
-    versionId = "heartgold",
-    generationId = options.generation,
-    producerId = PRODUCER_ID,
-    epoch = 1,
-    pool = pool,
-    sweepEnabled = false,
-    cacheFs = cacheFs,
-    messageBankIds = options.bankIds,
-    audioBankIds = {},
-    scriptMemberIds = {},
-    iconPageIds = options.iconPageIds or {},
-    portraitPageIds = {},
-    mapCellKeys = {},
-    mapDataIds = {},
-    mapIds = {},
-    interest = {},
-    byKey = {},
-    milestones = {},
-    recorded = {},
-    retired = false,
-    sourceLoaded = true,
-    pagesKnown = true,
-    adopted = nil,
-    dirty = {},
-    edges = {},
-    parked = {},
-    depMemo = {},
-    pendingFillDone = false,
-    loadedFillDone = false,
-    enrollCursor = nil,
-    roster = {},
-    autoCoreNearDone = false,
-    layoutAttemptConsumed = false,
-    sweepCursor = nil,
-    planningPending = false,
-    followerChecked = false,
-    followerMemo = nil,
-  }, InteractiveCacheBuild)
-  -- The fixture models a post-adoption session: the source inventory reads
-  -- ready without worker work, so page and summary prerequisites proceed.
+  local session = withHost(host, function()
+    local realForVersion = CacheFs.forVersion
+    CacheFs.forVersion = function()
+      return cacheFs
+    end
+    local ok, created = pcall(InteractiveCacheBuild.new, {
+      identity = { versionId = "heartgold", generationId = options.generation, producerId = PRODUCER_ID },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = false,
+    })
+    CacheFs.forVersion = realForVersion
+    assert(ok, created)
+    return created
+  end)
+  -- The fixture models a post-adoption session: source inventory and page
+  -- membership read ready without worker work, so page and summary
+  -- prerequisites proceed.
+  session.messageBankIds = options.bankIds
+  session.iconPageIds = options.iconPageIds or {}
+  session.sourceLoaded = true
+  session.pagesKnown = true
   local sourcePlanEntry = {
     kind = "source-plan",
     key = "global",
@@ -1075,7 +1074,14 @@ local function openLiveSession(options)
     failureClass = nil,
     causeJobKey = nil,
     poolState = nil,
-    cursor = nil,
+    phase = "ready",
+    await = nil,
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+    propagateIndex = nil,
+    retryPending = false,
   }
   session.byKey["source-plan:global"] = sourcePlanEntry
   session.interest[#session.interest + 1] = sourcePlanEntry
@@ -1721,6 +1727,93 @@ end
 -- Promotion reaches already traversed prerequisites: a near summary whose
 -- dependency cursor is incomplete upgrades every prerequisite to required
 -- without duplicate dispatch or lost physical ownership.
+-- A first milestone demand reconciles stronger urgency for members the
+-- session already tracks: present weaker leaves strengthen in place while
+-- unchanged polls register nothing.
+function T.first_milestone_demand_promotes_existing_members()
+  local env = openLiveSession({ generation = "milestone-promotion-generation", bankIds = { 3, 5 } })
+  requestJob(env, "actors", "global", "sweep")
+  requestJob(env, "bag", "global", "sweep")
+  pumpSession(env, 2)
+  Assert.equal(dispatchCount(env, "actors", "global"), 1, "the coarse leaf dispatches once")
+  Assert.equal(poolStatus(env, "bag", "global"), "queued", "the second leaf waits its turn")
+  local before = #env.host.dispatched
+  local first, second = withHost(env.host, function()
+    return env.session:requestMilestone("field-core", "required")
+  end)
+  Assert.isFalse(first, "field core stays pending while cold")
+  Assert.isNil(second, "field core reports no failure while cold")
+  pumpSession(env, 5)
+  local actors = env.session.byKey["actors:global"]
+  local bag = env.session.byKey["bag:global"]
+  Assert.notNil(actors, "the existing member keeps its retained entry")
+  Assert.notNil(bag, "the existing member keeps its retained entry")
+  Assert.equal(actors.urgency, "required", "the existing member strengthens to the milestone urgency")
+  Assert.equal(bag.urgency, "required", "the existing member strengthens to the milestone urgency")
+  Assert.equal(dispatchCount(env, "actors", "global"), 1, "promotion never resubmits")
+  Assert.equal(poolStatus(env, "bag", "global"), "queued", "the second leaf still waits its turn")
+  local calls = #env.host.dispatched
+  withHost(env.host, function()
+    local again, againFailure = env.session:requestMilestone("field-core", "required")
+    Assert.isFalse(again, "an unchanged poll stays pending")
+    Assert.isNil(againFailure, "an unchanged poll reports no failure")
+  end)
+  pumpSession(env, 2)
+  Assert.equal(#env.host.dispatched, calls, "an unchanged poll enrolls nothing new")
+  Assert.isTrue(calls >= before, "dispatch accounting stays monotone")
+  shutdownEnv(env)
+end
+
+-- A sweep-urgency retry passes through sweep admission like any other
+-- waiter: it joins behind older capacity waiters instead of requeueing
+-- ahead of them.
+function T.sweep_retry_waits_behind_older_capacity_waiters()
+  local env = openLiveSession({ generation = "retry-admission-generation", bankIds = { 3, 5, 7 } })
+  requestJob(env, "message-bank", "3", "sweep")
+  requestJob(env, "message-bank", "5", "sweep")
+  pumpSession(env, 2)
+  Assert.equal(poolStatus(env, "message-bank", "3"), "running", "the first sweep job executes")
+  Assert.equal(poolStatus(env, "message-bank", "5"), "queued", "the second sweep job waits its turn")
+  requestJob(env, "message-bank", "7", "sweep")
+  pumpSession(env, 2)
+  Assert.equal(poolStatus(env, "message-bank", "7"), "unknown", "a full frontier parks the waiter")
+  pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "failed")
+  pumpSession(env, 2)
+  local failed, failedFailure = requestJob(env, "message-bank", "3", "sweep")
+  Assert.isFalse(failed, "the failed job answers false")
+  Assert.notNil(failedFailure, "the failed job names its error")
+  local retryCalls = 0
+  local realRetry = env.pool.retry
+  env.pool.retry = function(self, jobKey, priority)
+    retryCalls = retryCalls + 1
+    return realRetry(self, jobKey, priority)
+  end
+  local retried = withHost(env.host, function()
+    return env.session:retry("message-bank", "3", "sweep")
+  end)
+  Assert.isTrue(retried == true or retried == false, "the retry registers")
+  Assert.equal(retryCalls, 0, "a sweep retry waits behind older capacity waiters")
+  Assert.equal(poolStatus(env, "message-bank", "7"), "queued", "the older waiter holds the freed credit")
+  publishBankLive(env, 5, "synthetic:romshape:005")
+  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the release publishes")
+  Assert.equal(dispatchCount(env, "message-bank", "7"), 1, "the older waiter dispatches exactly once")
+  Assert.equal(retryCalls, 1, "the release credit admits the retried waiter next")
+  publishBankLive(env, 7, "synthetic:romshape:007")
+  stageBankReply(env, 7, "synthetic:romshape:007", dispatchedStage(env, 1, "message-bank:7", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "7"), "ready", "the older waiter publishes")
+  Assert.equal(retryCalls, 1, "the next freed credit admits the retried waiter")
+  publishBankLive(env, 3, "synthetic:romshape:003")
+  stageBankReply(env, 3, "synthetic:romshape:003", dispatchedStage(env, 1, "message-bank:3", 2))
+  pumpSession(env, 3)
+  local repaired, repairedFailure = requestJob(env, "message-bank", "3", "sweep")
+  Assert.isTrue(repaired, "the retried leaf succeeds: " .. tostring(repairedFailure))
+  env.pool.retry = realRetry
+  shutdownEnv(env)
+end
+
 function T.promotion_revisits_already_queued_prerequisites()
   local pool = recordingPool()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())

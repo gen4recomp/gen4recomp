@@ -17,20 +17,22 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-local SourcePlan = require("romdump.src.build.SourcePlan")
-
----@class InteractiveCacheBuild.DependencyCursor
----@field deps { kind: string, key: string }[]
----@field complete boolean
----@field index integer
 
 ---@class InteractiveCacheBuild.EnrollCursor
 ---@field pending { milestone: string|nil, kind: string, key: string, urgency: string|nil }[]
 ---@field index integer
 
 ---@class InteractiveCacheBuild.SweepCursor
+---@field phase string pending or loaded membership
 ---@field jobs { kind: string, key: string }[]
 ---@field index integer
+
+---@class InteractiveCacheBuild.Ticket
+---@field kind string entry or control
+---@field jobKey string|nil canonical identity for entry tickets
+---@field priority integer urgency lane
+---@field op string|nil control operation for control tickets
+---@field milestone string|nil milestone scope for roster tickets
 
 ---@class InteractiveCacheBuild.Interest
 ---@field kind string
@@ -45,9 +47,17 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field failure string|nil
 ---@field failureClass string|nil source-exclusion, dependency, job, validation or planning on failed rows
 ---@field causeJobKey string|nil deepest failed leaf identity when a dependency failed
+---@field retryAdmit boolean|nil sweep retry waits for frontier admission
 ---@field poolState string|nil last observed pool state
----@field cursor InteractiveCacheBuild.DependencyCursor|nil private resume position for bounded dependency traversal
 ---@field direct boolean|nil true once a public single-request method claims this entry; milestone enrollment never sets it
+---@field phase string plan, expand, reuse, admit, waitMembership, waitDeps, waitCapacity, waitPool, validateResult, ready or failed
+---@field await string|nil source, pages, deps, pool or capacity: the named external prerequisite while waiting
+---@field finalDeps { kind: string, key: string }[]|nil authoritative dependency list for the current knowledge
+---@field depsFinal boolean the retained list is final for the current knowledge
+---@field depIndex integer resume position for bounded edge installation and urgency propagation
+---@field pendingDeps table<string, boolean> unready children observed through reverse edges
+---@field propagateIndex integer|nil resume position for bounded urgency propagation over retained edges
+---@field retryPending boolean an explicit retry waits for admission
 
 ---@class InteractiveCacheBuild
 ---@field versionId string
@@ -73,17 +83,17 @@ local SourcePlan = require("romdump.src.build.SourcePlan")
 ---@field sourceLoaded boolean worker inventory adopted
 ---@field pagesKnown boolean mon page membership adopted
 ---@field adopted ArtifactJobs.Plans|nil retained published inventory
----@field dirty table<string, boolean> canonical identities needing planning
+---@field queues table<integer, { items: InteractiveCacheBuild.Ticket[], head: integer }> runnable tickets by urgency lane
+---@field ticketLive table<string, integer> one live ticket per runnable entry or control operation
 ---@field edges table<string, table<string, boolean>> dependency to parent identities
----@field parked table<string, boolean> sweep identities paused by the planning budget or admission
 ---@field depMemo table<string, { kind: string, key: string }[]> retained final dependency edges
----@field pendingFillDone boolean
----@field loadedFillDone boolean
+---@field sweepAdmitted table<string, boolean> acknowledged current-epoch sweep admissions
+---@field capacityWaiters string[] FIFO sweep identities waiting for frontier credit
 ---@field enrollCursor InteractiveCacheBuild.EnrollCursor|nil private incremental membership enrollment after adoption
 ---@field roster table<string, { kind: string, key: string }[]> retained milestone membership per requested scope
 ---@field autoCoreNearDone boolean automatic field-core near intent already registered once
----@field layoutAttemptConsumed boolean a layout adoption attempt already ran against the current owner state
 ---@field sweepCursor InteractiveCacheBuild.SweepCursor|nil private incremental sweep enumeration after adoption
+---@field sweepExhausted boolean canonical enumeration reached its end
 ---@field planningPending boolean runnable local planning remains from the last pump
 ---@field followerMemo string|nil retained follower diagnostic
 ---@field followerChecked boolean
@@ -176,6 +186,10 @@ function InteractiveCacheBuild.new(options)
   -- Only source-static membership is known here: required message banks and
   -- supported field records derive from frozen catalogs without opening the
   -- dump. Everything else arrives with the worker inventory.
+  local queues = {}
+  for _, priority in ipairs({ 0, 10, 100 }) do
+    queues[priority] = { items = {}, head = 1 }
+  end
   return setmetatable({
     versionId = versionId,
     generationId = generationId,
@@ -200,17 +214,18 @@ function InteractiveCacheBuild.new(options)
     sourceLoaded = false,
     pagesKnown = false,
     adopted = nil,
-    dirty = {},
+    queues = queues,
+    ticketLive = {},
     edges = {},
-    parked = {},
     depMemo = {},
-    pendingFillDone = false,
-    loadedFillDone = false,
+    sweepAdmitted = {},
+    capacityWaiters = {},
     enrollCursor = nil,
     roster = {},
     autoCoreNearDone = false,
-    layoutAttemptConsumed = false,
     sweepCursor = nil,
+    sweepExhausted = false,
+    pendingEnumerated = false,
     planningPending = false,
     followerMemo = nil,
     followerChecked = false,
@@ -263,7 +278,8 @@ function InteractiveCacheBuild:_spendNode(budget)
   if budget.start == nil then
     budget.start = nowSeconds()
   end
-  if nowSeconds() - budget.start > UPDATE_TIME_SLICE_SECONDS then
+  local elapsed = nowSeconds() - budget.start
+  if elapsed > UPDATE_TIME_SLICE_SECONDS then
     budget.exhausted = true
     return false
   end
@@ -321,7 +337,8 @@ function InteractiveCacheBuild:_validate(kind, key, budget)
   if not self:_spendNode(budget) then
     return nil, nil
   end
-  return ArtifactJobs.validate(self.cacheFs, self.generationId, kind, key, self:_plans(), self:_identity())
+  local results = { ArtifactJobs.validate(self.cacheFs, self.generationId, kind, key, self:_plans(), self:_identity()) }
+  return results[1], results[2]
 end
 
 ---@param kind string
@@ -348,6 +365,141 @@ function InteractiveCacheBuild:_cellDescriptor(kind, key)
   return nil, "field cell " .. key .. " is not in the canonical index"
 end
 
+-- One live FIFO ticket per advanceable entry or control operation at the
+-- existing urgency lanes. FIFO order replaces repeatedly restarted
+-- lexical iteration; promotion invalidates the old ticket and queues a new
+-- one, so two live executions never exist for the same work.
+---@param ticket InteractiveCacheBuild.Ticket
+function InteractiveCacheBuild:_enqueueTicket(ticket)
+  local key = ticket.jobKey or ("control:" .. assert(ticket.op, "control tickets name their operation"))
+  if self.ticketLive[key] ~= nil then
+    return
+  end
+  self.ticketLive[key] = ticket.priority
+  local queue = assert(self.queues[ticket.priority], "tickets run on the existing urgency lanes")
+  queue.items[#queue.items + 1] = ticket
+end
+
+---@param entry InteractiveCacheBuild.Interest
+function InteractiveCacheBuild:_enqueueEntry(entry)
+  if entry.ready or entry.failure ~= nil then
+    return
+  end
+  self:_enqueueTicket({ kind = "entry", jobKey = entry.jobKey, priority = entry.priority })
+end
+
+---@param op string
+---@param priority integer
+---@param milestone string|nil
+function InteractiveCacheBuild:_enqueueControl(op, priority, milestone)
+  self:_enqueueTicket({ kind = "control", priority = priority, op = op, milestone = milestone })
+end
+
+---@param key string
+function InteractiveCacheBuild:_invalidateTicket(key)
+  self.ticketLive[key] = nil
+end
+
+---@return InteractiveCacheBuild.Ticket|nil next runnable ticket or nil when idle
+function InteractiveCacheBuild:_popTicket()
+  for _, priority in ipairs({ 0, 10, 100 }) do
+    local queue = self.queues[priority]
+    while queue.head <= #queue.items do
+      local ticket = queue.items[queue.head]
+      queue.head = queue.head + 1
+      if queue.head > #queue.items then
+        queue.items = {}
+        queue.head = 1
+      elseif queue.head > 128 then
+        local fresh = {}
+        for index = queue.head, #queue.items do
+          fresh[#fresh + 1] = queue.items[index]
+        end
+        queue.items = fresh
+        queue.head = 1
+      end
+      if self:_ticketValid(ticket) then
+        local key = ticket.jobKey or ("control:" .. assert(ticket.op, "control tickets name their operation"))
+        self.ticketLive[key] = nil
+        return ticket
+      end
+      if ticket.kind == "control" then
+        -- A control ticket that is no longer needed releases its live
+        -- marker so a later event can queue a fresh one. Entry tickets
+        -- keep promotion semantics and are never cleared here.
+        local key = "control:" .. assert(ticket.op, "control tickets name their operation")
+        self.ticketLive[key] = nil
+      end
+    end
+  end
+  return nil
+end
+
+---@param ticket InteractiveCacheBuild.Ticket
+---@return boolean
+function InteractiveCacheBuild:_ticketValid(ticket)
+  local key = ticket.jobKey or ("control:" .. assert(ticket.op, "control tickets name their operation"))
+  if self.ticketLive[key] ~= ticket.priority then
+    return false
+  end
+  if ticket.kind == "entry" then
+    local entry = self.byKey[assert(ticket.jobKey, "entry tickets carry their identity")]
+    return entry ~= nil and not entry.ready and entry.failure == nil and entry.priority == ticket.priority
+  end
+  return self:_controlNeeded(ticket.op, ticket.milestone)
+end
+
+---@param op string|nil
+---@param milestone string|nil
+---@return boolean
+function InteractiveCacheBuild:_controlNeeded(op, milestone)
+  if op == "roster" then
+    return milestone ~= nil and self.milestones[milestone] ~= nil and self.roster[milestone] == nil
+  elseif op == "enroll" then
+    return self.enrollCursor ~= nil
+  elseif op == "adoptPages" then
+    return not self.pagesKnown
+  end
+  return false
+end
+
+-- Pending-phase sweep enrollment precedes validation-heavy planning so
+-- fixed membership work is not starved by one-time validator load costs.
+-- Only the six static globals join before the inventory publishes; the
+-- loaded corpus enumerates through the ticketed operation below.
+---@param budget InteractiveCacheBuild.Budget|nil
+function InteractiveCacheBuild:_fillPendingSweep(budget)
+  if not self.sweepEnabled or self.sourceLoaded or self.pendingEnumerated then
+    return
+  end
+  local cursor = self.sweepCursor
+  if cursor == nil then
+    cursor = {
+      phase = "pending",
+      jobs = {
+        { kind = "items", key = "global" },
+        { kind = "bag", key = "global" },
+        { kind = "message-summary", key = "global" },
+        { kind = "script-summary", key = "global" },
+        { kind = "audio-summary", key = "global" },
+        { kind = "mon-summary", key = "global" },
+      },
+      index = 1,
+    }
+    self.sweepCursor = cursor
+  end
+  while cursor.index <= #cursor.jobs do
+    if not self:_spendNode(budget) then
+      return
+    end
+    local job = cursor.jobs[cursor.index]
+    cursor.index = cursor.index + 1
+    self:_register(job.kind, job.key, "sweep")
+  end
+  self.pendingEnumerated = true
+  self.sweepCursor = nil
+end
+
 ---@param kind string
 ---@param key string
 ---@param urgency string
@@ -371,22 +523,47 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       failureClass = nil,
       causeJobKey = nil,
       poolState = nil,
-      cursor = nil,
+      phase = "plan",
+      await = nil,
+      finalDeps = nil,
+      depsFinal = false,
+      depIndex = 1,
+      pendingDeps = {},
+      propagateIndex = nil,
+      retryPending = false,
     }
     self.byKey[jobKey] = entry
     self.interest[#self.interest + 1] = entry
+    self:_enqueueEntry(entry)
   elseif priority < entry.priority then
     entry.urgency = urgency
     entry.priority = priority
-    -- A stronger urgency revisits already traversed prerequisite edges:
-    -- rewinding the private cursor re-registers visited dependencies under
-    -- the new urgency without duplicating jobs or losing physical slots.
-    -- Upgrades strictly decrease priority, so the rewind cannot oscillate.
-    entry.cursor = nil
+    -- A stronger urgency invalidates the old ticket and queues a new one
+    -- at the stronger lane: no two live executions, no lost work. Queued
+    -- physical work is promoted through the pool at once; unsubmitted
+    -- retained edges are revisited one per pump turn through the
+    -- propagation cursor instead of recursing the family here. Waiting
+    -- entries keep their wait but still owe one propagation pass, so
+    -- submitted children learn the stronger urgency promptly.
+    self:_invalidateTicket(entry.jobKey)
     if not entry.ready and entry.failure == nil then
-      self.dirty[entry.jobKey] = true
+      if entry.retryPending then
+        entry.retryPending = false
+      end
+      if entry.submitted then
+        self:_promoteQueued(entry)
+      else
+        if entry.finalDeps ~= nil and entry.await ~= "pool" then
+          entry.propagateIndex = 1
+        end
+        if entry.phase == "waitCapacity" then
+          self:_removeCapacityWaiter(entry.jobKey)
+          entry.phase = "admit"
+          entry.await = nil
+        end
+        self:_enqueueEntry(entry)
+      end
     end
-    self:_promoteQueued(entry)
   end
   return entry
 end
@@ -405,7 +582,12 @@ function InteractiveCacheBuild:_promoteQueued(entry)
   end
   -- The pool owns the heap, so a stronger urgency must reach the queued
   -- record under its canonical identity; the heap keeps its FIFO sequence.
-  self.pool:request({
+  -- A single bounded update operation: the pool answer decides the
+  -- frontier credit. An accepted queued promotion releases the sweep
+  -- admission; a running record keeps its credit; a record the pool no
+  -- longer holds fails the entry with the pool's cause instead of
+  -- silently resubmitting.
+  local ok, state = pcall(self.pool.request, self.pool, {
     versionId = self.versionId,
     generationId = self.generationId,
     epoch = self.epoch,
@@ -416,6 +598,31 @@ function InteractiveCacheBuild:_promoteQueued(entry)
     sizeClass = ArtifactJobs.sizeClass(entry.kind),
     payload = payload,
   })
+  if not ok then
+    self:_failEntry(entry, entry.jobKey .. ": " .. tostring(state), "job", nil)
+    return
+  end
+  entry.poolState = state
+  if state == "queued" and entry.priority ~= 100 then
+    if self.sweepAdmitted[entry.jobKey] then
+      self.sweepAdmitted[entry.jobKey] = nil
+      self:_wakeCapacityWaiter()
+    end
+  elseif state == "failed" then
+    local details = select(2, pcall(self.pool.status, self.pool, entry.jobKey))
+    local message = (type(details) == "table" and details.error) or "compiler job failed"
+    self:_failEntry(entry, entry.jobKey .. ": " .. tostring(message), "job", nil)
+  end
+end
+
+---@param jobKey string
+function InteractiveCacheBuild:_removeCapacityWaiter(jobKey)
+  for index, waiting in ipairs(self.capacityWaiters) do
+    if waiting == jobKey then
+      table.remove(self.capacityWaiters, index)
+      return
+    end
+  end
 end
 
 ---@param kind string
@@ -460,133 +667,449 @@ function InteractiveCacheBuild:_payload(kind, key)
 end
 
 ---@param limit integer|nil stop counting once this many are outstanding
----@return integer
+---@return integer acknowledged current-epoch sweep admissions
 function InteractiveCacheBuild:_outstandingSweep(limit)
+  -- The acknowledged-admission set is the one frontier authority: only
+  -- accepted queued/running sweep submissions insert, and only an observed
+  -- prepared/ready/failed/cancelled transition or an accepted stronger
+  -- queued promotion removes. Requester intent never touches it.
   local count = 0
-  for _, entry in ipairs(self.interest) do
-    if entry.priority == 100 and entry.submitted and not entry.ready and entry.failure == nil then
-      local state = self.pool:status(entry.jobKey)
-      if state == "queued" or state == "running" then
-        count = count + 1
-        if limit ~= nil and count >= limit then
-          return count
-        end
-      end
+  for _ in pairs(self.sweepAdmitted) do
+    count = count + 1
+    if limit ~= nil and count >= limit then
+      return count
     end
   end
   return count
 end
 
+function InteractiveCacheBuild:_wakeCapacityWaiter()
+  if self:_outstandingSweep() >= self:_sweepBound() then
+    return
+  end
+  for _, waiting in ipairs(self.capacityWaiters) do
+    local entry = self.byKey[waiting]
+    if
+      entry ~= nil
+      and not entry.ready
+      and entry.failure == nil
+      and not entry.submitted
+      and entry.priority == 100
+      and entry.phase == "waitCapacity"
+    then
+      self:_removeCapacityWaiter(waiting)
+      entry.await = nil
+      entry.phase = "admit"
+      self:_enqueueEntry(entry)
+      return
+    end
+  end
+  for index = #self.capacityWaiters, 1, -1 do
+    local entry = self.byKey[self.capacityWaiters[index]]
+    if entry == nil or entry.ready or entry.failure ~= nil or entry.submitted or entry.priority ~= 100 then
+      table.remove(self.capacityWaiters, index)
+    end
+  end
+end
+
+---@param entry InteractiveCacheBuild.Interest
+---@param message string
+---@param failureClass string
+---@param causeJobKey string|nil
+function InteractiveCacheBuild:_failEntry(entry, message, failureClass, causeJobKey)
+  if entry.failure ~= nil or entry.ready then
+    return
+  end
+  entry.failure = message
+  entry.failureClass = failureClass
+  entry.causeJobKey = causeJobKey
+  entry.phase = "failed"
+  entry.await = nil
+  entry.retryPending = false
+  entry.validationPending = false
+  self:_invalidateTicket(entry.jobKey)
+  self:_removeCapacityWaiter(entry.jobKey)
+  if self.sweepAdmitted[entry.jobKey] then
+    self.sweepAdmitted[entry.jobKey] = nil
+    self:_wakeCapacityWaiter()
+  end
+  self:_notifyParents(entry.jobKey)
+  -- A failed metadata owner fails its membership waiters with the causal
+  -- dependency failure: waiters on the inventory hold no reverse edge yet,
+  -- so the owner transition itself wakes them instead of leaving them
+  -- behind unknown membership.
+  if entry.jobKey == "source-plan:global" or entry.jobKey == "mon-layout:global" then
+    local await = entry.jobKey == "source-plan:global" and "source" or "pages"
+    for _, waiter in ipairs(self.interest) do
+      if not waiter.ready and waiter.failure == nil and waiter.await == await then
+        self:_failEntry(
+          waiter,
+          self.generationId
+            .. " "
+            .. waiter.kind
+            .. " "
+            .. waiter.key
+            .. ": prerequisite "
+            .. entry.jobKey
+            .. " failed: "
+            .. tostring(entry.failure),
+          "dependency",
+          entry.causeJobKey or entry.jobKey
+        )
+      end
+    end
+  end
+end
+
+---@param entry InteractiveCacheBuild.Interest
+---@param plan table<string, unknown>|nil validated source plan for immediate adoption
+function InteractiveCacheBuild:_succeedEntry(entry, plan)
+  if entry.failure ~= nil or entry.ready then
+    return
+  end
+  entry.ready = true
+  entry.phase = "ready"
+  entry.await = nil
+  entry.validated = true
+  entry.validationPending = false
+  entry.retryPending = false
+  self:_invalidateTicket(entry.jobKey)
+  self:_removeCapacityWaiter(entry.jobKey)
+  if plan ~= nil then
+    self:_adoptValidated(plan)
+  end
+  if entry.kind == "mon-layout" and entry.key == "global" and not self.pagesKnown then
+    -- Warm layout reuse never crosses the pool transition that queues
+    -- adoption, so its own success transition owns the ticket. The live
+    -- ticket also keeps quiescence checks from mistaking the pending
+    -- adoption for stuck work.
+    self:_enqueueControl("adoptPages", 10, nil)
+  end
+  self:_notifyParents(entry.jobKey)
+end
+
+---@param jobKey string
+function InteractiveCacheBuild:_notifyParents(jobKey)
+  -- One terminal observation updates every affected parent once: a
+  -- failed child fails its waiting parents with the deepest cause, a
+  -- ready child releases its parents' dependency waits. A parent never
+  -- executes a waiting child to ask whether it is ready.
+  local parents = self.edges[jobKey]
+  if parents == nil then
+    return
+  end
+  local child = self.byKey[jobKey]
+  for parentKey in pairs(parents) do
+    local parent = self.byKey[parentKey]
+    if parent ~= nil and not parent.ready and parent.failure == nil then
+      if child ~= nil and child.failure ~= nil then
+        parent.pendingDeps[jobKey] = nil
+        self:_failEntry(
+          parent,
+          self.generationId
+            .. " "
+            .. parent.kind
+            .. " "
+            .. parent.key
+            .. ": prerequisite "
+            .. jobKey
+            .. " failed: "
+            .. child.failure,
+          "dependency",
+          child.causeJobKey or jobKey
+        )
+      elseif child ~= nil and child.ready then
+        parent.pendingDeps[jobKey] = nil
+        if parent.await == "deps" and next(parent.pendingDeps) == nil then
+          -- Re-resolve instead of jumping to validation: adopted
+          -- membership may now disprove the parent, and only the plan
+          -- phase applies the exclusion rule.
+          parent.await = nil
+          parent.phase = "plan"
+          self:_enqueueEntry(parent)
+        end
+      end
+    end
+  end
+end
+
 ---@param entry InteractiveCacheBuild.Interest
 ---@param budget InteractiveCacheBuild.Budget|nil
----@param ledger { bound: integer, outstanding: integer }|nil per-pass sweep admission account
----@return string outcome terminal, waiting, parked or paused
-function InteractiveCacheBuild:_submit(entry, budget, ledger)
-  if entry.ready or entry.failure ~= nil then
-    return "terminal"
+---@return boolean advanced into a wait or terminal state; false when the budget paused the attempt
+function InteractiveCacheBuild:_submit(entry, budget)
+  -- Admission for one entry: reuse validation already ran, so the scalar
+  -- payload, the frontier credit and the pool request follow under the
+  -- shared budget. A sweep entry without a free acknowledged credit joins
+  -- the FIFO capacity wait instead of speculatively submitting.
+  if entry.submitted then
+    entry.await = "pool"
+    entry.phase = "waitPool"
+    return true
   end
-  -- A pool-reported ready mark never settles here: the scheduled family
-  -- validator runs under the shared pump budget and only its success marks
-  -- readiness. A rejection after execution is a validation failure.
-  if entry.validationPending then
-    local valid, plan = self:_validate(entry.kind, entry.key, budget)
-    if valid == nil then
-      return "paused"
-    end
-    entry.validationPending = false
-    entry.validated = true
-    if valid then
-      entry.ready = true
-      if plan ~= nil then
-        self:_adoptValidated(plan)
-      end
-      self:_dirtyParents(entry.jobKey)
-      return "terminal"
-    end
-    entry.failure = self.generationId
-      .. " "
-      .. entry.kind
-      .. " "
-      .. entry.key
-      .. ": published output fails its family validator"
-    entry.failureClass = "validation"
-    entry.causeJobKey = nil
-    self:_dirtyParents(entry.jobKey)
-    return "terminal"
+  local payload = self:_payload(entry.kind, entry.key)
+  if payload == nil then
+    entry.await = "source"
+    entry.phase = "waitMembership"
+    return true
   end
-  if not entry.validated then
-    local valid, plan = self:_validate(entry.kind, entry.key, budget)
-    if valid == nil then
-      return "paused"
-    end
-    entry.validated = true
-    if valid then
-      entry.ready = true
-      if plan ~= nil then
-        self:_adoptValidated(plan)
-      end
-      self:_dirtyParents(entry.jobKey)
-      return "terminal"
+  if entry.priority == 100 then
+    if self:_outstandingSweep() >= self:_sweepBound() then
+      entry.await = "capacity"
+      entry.phase = "waitCapacity"
+      self.capacityWaiters[#self.capacityWaiters + 1] = entry.jobKey
+      return true
     end
   end
-  if not entry.submitted then
-    local payload = self:_payload(entry.kind, entry.key)
-    if payload == nil then
-      return "parked"
+  if not self:_spendNode(budget) then
+    self:_enqueueEntry(entry)
+    return false
+  end
+  local request = {
+    versionId = self.versionId,
+    generationId = self.generationId,
+    epoch = self.epoch,
+    kind = entry.kind,
+    key = entry.key,
+    jobKey = entry.jobKey,
+    priority = entry.priority,
+    sizeClass = ArtifactJobs.sizeClass(entry.kind),
+    payload = payload,
+  }
+  if entry.retryAdmit then
+    entry.retryAdmit = nil
+    local ok, state = pcall(self.pool.retry, self.pool, entry.jobKey, entry.priority)
+    if not ok then
+      entry.submitted = false
+      entry.phase = "plan"
+      self:_enqueueEntry(entry)
+      return true
     end
-    if entry.priority == 100 then
-      local bound, outstanding = self:_sweepBound(), self:_outstandingSweep()
-      if ledger ~= nil then
-        bound, outstanding = ledger.bound, ledger.outstanding
-      end
-      if outstanding >= bound then
-        return "parked"
-      end
-    end
-    if not self:_spendNode(budget) then
-      return "paused"
-    end
-    local requestState, requestDetails = self.pool:request({
-      versionId = self.versionId,
-      generationId = self.generationId,
-      epoch = self.epoch,
-      kind = entry.kind,
-      key = entry.key,
-      jobKey = entry.jobKey,
-      priority = entry.priority,
-      sizeClass = ArtifactJobs.sizeClass(entry.kind),
-      payload = payload,
-    })
     entry.submitted = true
-    entry.poolState = requestState
-    if ledger ~= nil and entry.priority == 100 and (requestState == "queued" or requestState == "running") then
-      ledger.outstanding = ledger.outstanding + 1
+    entry.poolState = state
+    if entry.priority == 100 and (state == "queued" or state == "running") then
+      self.sweepAdmitted[entry.jobKey] = true
     end
-    if requestState == "failed" then
-      local message = requestDetails and requestDetails.error or "compiler job failed"
-      entry.failure = entry.jobKey .. ": " .. tostring(message)
-      entry.failureClass = "job"
-      entry.causeJobKey = nil
-      self:_dirtyParents(entry.jobKey)
-      return "terminal"
+    entry.await = "pool"
+    entry.phase = "waitPool"
+    return true
+  end
+  -- A fresh submission speaks for pool ownership: epoch, shape and
+  -- selection errors propagate to the caller instead of masquerading as
+  -- job failures. Only the admitted record states below become waits.
+  local requestState, requestDetails = self.pool:request(request)
+  entry.submitted = true
+  entry.poolState = requestState
+  if entry.priority == 100 and (requestState == "queued" or requestState == "running") then
+    self.sweepAdmitted[entry.jobKey] = true
+  end
+  if requestState == "failed" then
+    local message = (type(requestDetails) == "table" and requestDetails.error) or "compiler job failed"
+    self:_failEntry(entry, entry.jobKey .. ": " .. tostring(message), "job", nil)
+    return true
+  end
+  entry.await = "pool"
+  entry.phase = "waitPool"
+  return true
+end
+
+---@param entry InteractiveCacheBuild.Interest
+---@param budget InteractiveCacheBuild.Budget|nil
+---@return boolean settled into a wait or terminal state; false when the budget paused the attempt
+function InteractiveCacheBuild:_stepEntry(entry, budget)
+  if entry.ready or entry.failure ~= nil then
+    return true
+  end
+  -- Bounded urgency propagation first: one retained edge per turn carries
+  -- the stronger urgency to already visited dependencies without recursing
+  -- the family inside a public call.
+  if entry.propagateIndex ~= nil then
+    local deps = entry.finalDeps or {}
+    if entry.propagateIndex > #deps then
+      entry.propagateIndex = nil
+    else
+      if not self:_spendNode(budget) then
+        self:_enqueueEntry(entry)
+        return false
+      end
+      local dep = deps[entry.propagateIndex]
+      entry.propagateIndex = entry.propagateIndex + 1
+      self:_register(dep.kind, dep.key, entry.urgency)
+      self:_enqueueEntry(entry)
+      return true
     end
-    return "waiting"
   end
-  local state, details = self.pool:status(entry.jobKey)
-  entry.poolState = state
-  if state == "ready" then
-    entry.validationPending = true
-    self.dirty[entry.jobKey] = true
-    return "waiting"
-  elseif state == "failed" then
-    local message = details and details.error or "compiler job failed"
-    entry.failure = entry.jobKey .. ": " .. tostring(message)
-    entry.failureClass = "job"
-    entry.causeJobKey = nil
-    self:_dirtyParents(entry.jobKey)
-    return "terminal"
+  if entry.retryPending then
+    entry.retryPending = false
+    return self:_stepRetry(entry, budget)
   end
-  return "waiting"
+  -- Runnable phases chain within one ticket pop: an entry that can keep
+  -- advancing does so without yielding and requeueing between every
+  -- phase. Only budget pauses, named waits, terminal states, and single
+  -- installed edges (wide-parent fairness) return to the queue.
+  while true do
+    if entry.phase == "plan" then
+      local exclusion = self:_deferredExclusion(entry)
+      if exclusion ~= nil then
+        self:_failEntry(entry, exclusion, "source-exclusion", nil)
+        return true
+      end
+      local deps, depsStatus, complete = self:_dependencies(entry.kind, entry.key, self:_plans(), budget)
+      if deps == nil then
+        if depsStatus == "paused" then
+          self:_enqueueEntry(entry)
+          return false
+        end
+        self:_failEntry(
+          entry,
+          self.generationId
+            .. " "
+            .. entry.kind
+            .. " "
+            .. entry.key
+            .. ": dependency plan failed: "
+            .. tostring(depsStatus),
+          "planning",
+          nil
+        )
+        return true
+      end
+      entry.finalDeps = deps
+      entry.depsFinal = complete ~= false
+      entry.depIndex = 1
+      entry.pendingDeps = {}
+      entry.phase = "expand"
+    elseif entry.phase == "expand" then
+      local deps = entry.finalDeps or {}
+      if entry.depIndex <= #deps then
+        if not self:_spendNode(budget) then
+          self:_enqueueEntry(entry)
+          return false
+        end
+        local dep = deps[entry.depIndex]
+        entry.depIndex = entry.depIndex + 1
+        -- Attach-time terminal check: a completion that occurred before
+        -- attachment is not lost, and a failure settles the parent at once
+        -- with the deepest cause.
+        local child = self:_register(dep.kind, dep.key, entry.urgency)
+        if child.failure ~= nil then
+          self:_failEntry(
+            entry,
+            self.generationId
+              .. " "
+              .. entry.kind
+              .. " "
+              .. entry.key
+              .. ": prerequisite "
+              .. child.jobKey
+              .. " failed: "
+              .. child.failure,
+            "dependency",
+            child.causeJobKey or child.jobKey
+          )
+          return true
+        elseif not child.ready then
+          entry.pendingDeps[child.jobKey] = true
+        end
+        if entry.depIndex <= #deps then
+          -- A partially processed wide parent requeues at the tail with
+          -- its cursor intact, allowing other ready work a turn. The
+          -- final edge falls through instead of yielding pointlessly.
+          self:_enqueueEntry(entry)
+          return true
+        end
+      end
+      if not entry.depsFinal then
+        entry.await = (not self.sourceLoaded) and "source" or "pages"
+        entry.phase = "waitMembership"
+        return true
+      end
+      if next(entry.pendingDeps) == nil then
+        entry.phase = "reuse"
+      else
+        entry.await = "deps"
+        entry.phase = "waitDeps"
+        return true
+      end
+    elseif entry.phase == "reuse" then
+      local valid, plan = self:_validate(entry.kind, entry.key, budget)
+      if valid == nil then
+        self:_enqueueEntry(entry)
+        return false
+      end
+      entry.validated = true
+      if valid then
+        self:_succeedEntry(entry, plan)
+        return true
+      end
+      entry.phase = "admit"
+    elseif entry.phase == "admit" then
+      return self:_submit(entry, budget)
+    elseif entry.phase == "validateResult" then
+      local valid, plan = self:_validate(entry.kind, entry.key, budget)
+      if valid == nil then
+        self:_enqueueEntry(entry)
+        return false
+      end
+      entry.validated = true
+      entry.validationPending = false
+      if valid then
+        self:_succeedEntry(entry, plan)
+      else
+        self:_failEntry(
+          entry,
+          self.generationId .. " " .. entry.kind .. " " .. entry.key .. ": published output fails its family validator",
+          "validation",
+          nil
+        )
+      end
+      return true
+    else
+      -- Named wait states hold no ticket; reaching one here means a stale
+      -- ticket survived its transition, so there is nothing to advance.
+      return true
+    end
+  end
+end
+
+---@param entry InteractiveCacheBuild.Interest
+---@param budget InteractiveCacheBuild.Budget|nil
+---@return boolean settled into a wait or terminal state; false when the budget paused the attempt
+function InteractiveCacheBuild:_stepRetry(entry, budget)
+  -- Explicit retry resumes failed work without reviving healthy siblings.
+  -- A failed pool record retries through the same admission contract as
+  -- new sweep work; anything else simply re-drives from planning.
+  local state = self.pool:status(entry.jobKey)
+  if state ~= "failed" then
+    entry.submitted = state ~= "unknown"
+    entry.phase = "plan"
+    self:_enqueueEntry(entry)
+    return true
+  end
+  if entry.priority == 100 then
+    entry.await = "capacity"
+    entry.phase = "waitCapacity"
+    entry.retryAdmit = true
+    self.capacityWaiters[#self.capacityWaiters + 1] = entry.jobKey
+    self:_wakeCapacityWaiter()
+    return true
+  end
+  if not self:_spendNode(budget) then
+    entry.retryPending = true
+    self:_enqueueEntry(entry)
+    return false
+  end
+  local ok = pcall(self.pool.retry, self.pool, entry.jobKey, entry.priority)
+  if not ok then
+    entry.submitted = false
+    entry.phase = "plan"
+    self:_enqueueEntry(entry)
+    return true
+  end
+  entry.submitted = true
+  entry.poolState = "queued"
+  entry.await = "pool"
+  entry.phase = "waitPool"
+  return true
 end
 
 ---@return integer
@@ -611,20 +1134,6 @@ end
 ---@return integer
 function InteractiveCacheBuild:_sweepBound()
   return 2 * self:_workerCount()
-end
-
----@param jobKey string
-function InteractiveCacheBuild:_dirtyParents(jobKey)
-  local parents = self.edges[jobKey]
-  if parents == nil then
-    return
-  end
-  for parentKey in pairs(parents) do
-    local parent = self.byKey[parentKey]
-    if parent ~= nil and not parent.ready and parent.failure == nil then
-      self.dirty[parentKey] = true
-    end
-  end
 end
 
 ---@param entry InteractiveCacheBuild.Interest
@@ -676,181 +1185,6 @@ function InteractiveCacheBuild:_deferredExclusion(entry)
 end
 
 ---@param entry InteractiveCacheBuild.Interest
----@param trail table<string, boolean>|nil canonical identities on the current descent
----@param budget InteractiveCacheBuild.Budget|nil
----@param ledger { bound: integer, outstanding: integer }|nil per-pass sweep admission account
----@return string outcome terminal, waiting, parked or paused
-function InteractiveCacheBuild:_ensure(entry, trail, budget, ledger)
-  if entry.ready or entry.failure ~= nil then
-    return "terminal"
-  end
-  trail = trail or {}
-  if trail[entry.jobKey] then
-    if entry.failure == nil then
-      entry.failure = self.generationId
-        .. " "
-        .. entry.kind
-        .. " "
-        .. entry.key
-        .. ": dependency cycle involves "
-        .. entry.jobKey
-      entry.failureClass = "planning"
-      entry.causeJobKey = nil
-      self:_dirtyParents(entry.jobKey)
-    end
-    return "terminal"
-  end
-  trail[entry.jobKey] = true
-  local exclusion = self:_deferredExclusion(entry)
-  if exclusion ~= nil then
-    self:_exclude(entry, exclusion)
-    self:_dirtyParents(entry.jobKey)
-    trail[entry.jobKey] = nil
-    return "terminal"
-  end
-  local cursor = entry.cursor
-  if cursor == nil then
-    local deps, depsStatus, complete = self:_dependencies(entry.kind, entry.key, self:_plans(), budget)
-    if deps == nil then
-      trail[entry.jobKey] = nil
-      if depsStatus == "paused" then
-        return "paused"
-      end
-      if entry.failure == nil then
-        entry.failure = self.generationId
-          .. " "
-          .. entry.kind
-          .. " "
-          .. entry.key
-          .. ": dependency plan failed: "
-          .. tostring(depsStatus)
-        entry.failureClass = "planning"
-        entry.causeJobKey = nil
-        self:_dirtyParents(entry.jobKey)
-      end
-      return "terminal"
-    end
-    assert(complete ~= nil, "settled dependencies carry their completeness")
-    cursor = { deps = deps, complete = complete, index = 1 }
-    entry.cursor = cursor
-  end
-  while cursor.index <= #cursor.deps do
-    local dep = cursor.deps[cursor.index]
-    local depEntry = self:_register(dep.kind, dep.key, entry.urgency)
-    if not depEntry.ready and depEntry.failure == nil then
-      self.dirty[depEntry.jobKey] = true
-    end
-    local child = self:_ensure(depEntry, trail, budget, ledger)
-    if child == "paused" then
-      trail[entry.jobKey] = nil
-      return "paused"
-    end
-    if depEntry.failure ~= nil and entry.failure == nil then
-      entry.cursor = nil
-      entry.failure = self.generationId
-        .. " "
-        .. entry.kind
-        .. " "
-        .. entry.key
-        .. ": prerequisite "
-        .. depEntry.jobKey
-        .. " failed: "
-        .. depEntry.failure
-      entry.failureClass = "dependency"
-      entry.causeJobKey = depEntry.causeJobKey or depEntry.jobKey
-      self:_dirtyParents(entry.jobKey)
-      trail[entry.jobKey] = nil
-      return "terminal"
-    end
-    cursor.index = cursor.index + 1
-  end
-  -- A resumed traversal restarts past settled children, so re-scan for
-  -- failures recorded while this entry waited: the deepest causal leaf
-  -- settles the blocked parent with a dependency disposition.
-  for _, dep in ipairs(cursor.deps) do
-    local depEntry = self.byKey[dep.kind .. ":" .. dep.key]
-    if depEntry ~= nil and depEntry.failure ~= nil and entry.failure == nil then
-      entry.cursor = nil
-      entry.failure = self.generationId
-        .. " "
-        .. entry.kind
-        .. " "
-        .. entry.key
-        .. ": prerequisite "
-        .. depEntry.jobKey
-        .. " failed: "
-        .. depEntry.failure
-      entry.failureClass = "dependency"
-      entry.causeJobKey = depEntry.causeJobKey or depEntry.jobKey
-      self:_dirtyParents(entry.jobKey)
-      trail[entry.jobKey] = nil
-      return "terminal"
-    end
-  end
-  -- Warm reuse never occupies a worker: an entry whose family validator
-  -- already accepts its published output settles ready without dispatch,
-  -- even while planning prerequisites are still incomplete. Validation
-  -- failure simply continues to the completeness and dispatch gates below.
-  if not entry.validated and not entry.validationPending then
-    local valid, plan = self:_validate(entry.kind, entry.key, budget)
-    if valid == nil then
-      trail[entry.jobKey] = nil
-      return "paused"
-    end
-    entry.validated = true
-    if valid then
-      entry.cursor = nil
-      entry.ready = true
-      if plan ~= nil then
-        self:_adoptValidated(plan)
-      end
-      self:_dirtyParents(entry.jobKey)
-      trail[entry.jobKey] = nil
-      return "terminal"
-    end
-  end
-  -- An incomplete list never dispatches its parent: the entry waits until
-  -- adoption completes the membership and the reverse edges wake it.
-  if not cursor.complete then
-    trail[entry.jobKey] = nil
-    return "waiting"
-  end
-  entry.cursor = nil
-  -- A parent never occupies a worker while its children are still pending:
-  -- summary and map workers read published children, so dispatch waits until
-  -- every dependency is ready. Settled children wake the parent through the
-  -- reverse edges; the next update re-drives pending parents.
-  for _, dep in ipairs(cursor.deps) do
-    local depEntry = self.byKey[dep.kind .. ":" .. dep.key]
-    if depEntry == nil then
-      if entry.failure == nil then
-        entry.failure = self.generationId
-          .. " "
-          .. entry.kind
-          .. " "
-          .. entry.key
-          .. ": prerequisite "
-          .. dep.kind
-          .. ":"
-          .. dep.key
-          .. " is missing"
-        entry.failureClass = "planning"
-        entry.causeJobKey = dep.kind .. ":" .. dep.key
-        self:_dirtyParents(entry.jobKey)
-      end
-      trail[entry.jobKey] = nil
-      return "terminal"
-    end
-    if not depEntry.ready then
-      trail[entry.jobKey] = nil
-      return "waiting"
-    end
-  end
-  trail[entry.jobKey] = nil
-  return self:_submit(entry, budget, ledger)
-end
-
----@param entry InteractiveCacheBuild.Interest
 ---@return boolean
 ---@return string|nil
 function InteractiveCacheBuild:_answer(entry)
@@ -870,13 +1204,12 @@ end
 ---@param urgency string
 ---@return InteractiveCacheBuild.Interest entry
 function InteractiveCacheBuild:_request(kind, key, urgency)
-  -- Registration only: record canonical interest for the pump. Planning
-  -- prerequisites are expressed as dependency edges and pulled by the pump
-  -- itself, so no inventory, layout, validation or worker work happens here.
+  -- Registration only: record canonical interest and queue one runnable
+  -- planning ticket for the pump. Planning prerequisites are expressed as
+  -- dependency edges and pulled by the pump itself, so no inventory,
+  -- layout, validation or worker work happens here.
   local entry = self:_register(kind, key, urgency)
-  if not entry.ready and entry.failure == nil then
-    self.dirty[entry.jobKey] = true
-  end
+  self:_enqueueEntry(entry)
   return entry
 end
 
@@ -926,6 +1259,12 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   if exclusion ~= nil then
     return false, exclusion
   end
+  -- A scope answer keeps unenrolled membership pending: every
+  -- requested member must be enrolled, not merely listed, before the
+  -- scope can certify readiness.
+  if self:_enrollmentPending(name) then
+    return false, nil
+  end
   if name == "field-core" and (not self.sourceLoaded or not self.pagesKnown) then
     return false, nil
   end
@@ -936,6 +1275,24 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
     end
   end
   return true, nil
+end
+
+---@param name string
+---@return boolean roster enrollment still owes this scope a visit
+function InteractiveCacheBuild:_enrollmentPending(name)
+  if self.roster[name] == nil then
+    return false
+  end
+  local cursor = self.enrollCursor
+  if cursor == nil then
+    return false
+  end
+  for index = cursor.index, #cursor.pending do
+    if cursor.pending[index].milestone == name then
+      return true
+    end
+  end
+  return false
 end
 
 ---@param name string
@@ -983,24 +1340,13 @@ end
 
 ---@param name string
 function InteractiveCacheBuild:_enqueueRosterDelta(name)
-  -- Enroll only members the session has never seen: previously enrolled
-  -- work keeps its entry, urgency and physical slot through adoption.
+  -- Enroll the retained roster through the bounded cursor: absent keys
+  -- register, weaker nonterminal entries strengthen in place, and entries
+  -- already at least as urgent no-op inside register. The cursor visits
+  -- every member including existing ones, so a first or stronger scope
+  -- request reconciles urgency as well as missing membership.
   local members = self.roster[name]
   if members == nil then
-    return
-  end
-  local pending = {}
-  for _, member in ipairs(members) do
-    if self.byKey[member.kind .. ":" .. member.key] == nil then
-      pending[#pending + 1] = {
-        milestone = name,
-        kind = member.kind,
-        key = member.key,
-        urgency = self.milestones[name],
-      }
-    end
-  end
-  if #pending == 0 then
     return
   end
   local cursor = self.enrollCursor
@@ -1008,34 +1354,169 @@ function InteractiveCacheBuild:_enqueueRosterDelta(name)
     cursor = { pending = {}, index = 1 }
     self.enrollCursor = cursor
   end
-  for _, item in ipairs(pending) do
-    cursor.pending[#cursor.pending + 1] = item
+  for _, member in ipairs(members) do
+    cursor.pending[#cursor.pending + 1] = {
+      milestone = name,
+      kind = member.kind,
+      key = member.key,
+      urgency = self.milestones[name],
+    }
+  end
+  self:_enqueueControl("enroll", 10, nil)
+end
+
+function InteractiveCacheBuild:_buildPendingRosters()
+  -- First construction for every requested scope is a bounded roster
+  -- operation queued here, never work inside a public request. Later
+  -- rebuilds happen synchronously inside adoption, so retained answers
+  -- stay current.
+  for name, _ in pairs(self.milestones) do
+    if self.roster[name] == nil then
+      self:_enqueueControl("roster", 10, name)
+    end
+  end
+  if self.sweepEnabled and self.milestones["bootstrap"] == nil and self.roster["bootstrap"] == nil then
+    self:_enqueueControl("roster", 10, "bootstrap")
+  end
+end
+
+---@param ticket InteractiveCacheBuild.Ticket
+---@param budget InteractiveCacheBuild.Budget|nil
+---@return boolean settled; false when the budget paused the operation
+function InteractiveCacheBuild:_runControl(ticket, budget)
+  if ticket.op == "roster" then
+    return self:_runRosterOp(assert(ticket.milestone, "roster operations name their scope"), budget)
+  elseif ticket.op == "enroll" then
+    return self:_runEnrollOp(budget)
+  elseif ticket.op == "adoptPages" then
+    return self:_runAdoptPagesOp(budget)
+  end
+  return true
+end
+
+---@param name string
+---@param budget InteractiveCacheBuild.Budget|nil
+---@return boolean settled; false when the budget paused the operation
+function InteractiveCacheBuild:_runRosterOp(name, budget)
+  if self.roster[name] ~= nil then
+    return true
+  end
+  if not self:_spendNode(budget) then
+    self:_enqueueControl("roster", 10, name)
+    return false
+  end
+  self:_refreshRoster(name, self.milestones[name] ~= nil)
+  return true
+end
+
+---@param budget InteractiveCacheBuild.Budget|nil
+---@return boolean settled; false when the budget paused the operation
+function InteractiveCacheBuild:_runEnrollOp(budget)
+  local cursor = self.enrollCursor
+  if cursor == nil then
+    return true
+  end
+  while cursor.index <= #cursor.pending do
+    if not self:_spendNode(budget) then
+      self:_enqueueControl("enroll", 10, nil)
+      return false
+    end
+    local item = cursor.pending[cursor.index]
+    cursor.index = cursor.index + 1
+    -- Enrollment follows the current strongest intent, so a promotion that
+    -- lands mid-drain reaches members the cursor has not visited yet.
+    local urgency = item.urgency
+    if item.milestone ~= nil and self.milestones[item.milestone] ~= nil then
+      urgency = self.milestones[item.milestone]
+    end
+    self:_register(item.kind, item.key, assert(urgency, "enrollment needs its urgency"))
+  end
+  self.enrollCursor = nil
+  return true
+end
+
+-- Loaded-corpus enumeration runs inline like the pending fill, advancing a
+-- small chunk per update so the same-urgency entry work in the ticket
+-- queues keeps progressing alongside it. A ticketed control operation
+-- would starve behind thousands of entry tickets at ROM scale, stalling
+-- the corpus indefinitely; a bounded inline chunk converges both together.
+---@param budget InteractiveCacheBuild.Budget|nil
+function InteractiveCacheBuild:_fillLoadedSweep(budget)
+  if not self.sweepEnabled or self.sweepExhausted then
+    return
+  end
+  -- The loaded corpus is unknowable before layout adoption: enumeration
+  -- waits for page membership instead of asserting on discovery-time
+  -- knowledge. The adoption transition clears the cursor so the fuller
+  -- membership rebuilds below.
+  if not self.sourceLoaded or not self.pagesKnown then
+    return
+  end
+  local cursor = self.sweepCursor
+  if cursor == nil or cursor.phase ~= "loaded" then
+    if not self:_spendNode(budget) then
+      return
+    end
+    local jobs = ArtifactJobs.completeJobs(assert(self.adopted, "sweep needs its adopted inventory"))
+    local enums = {}
+    for _, job in ipairs(jobs) do
+      enums[#enums + 1] = { kind = job.kind, key = job.key }
+    end
+    cursor = { phase = "loaded", jobs = enums, index = 1 }
+    self.sweepCursor = cursor
+  end
+  -- Enumeration never yields merely because a blocked entry exists, and a
+  -- bounded chunk never starves same-urgency runnable work: small logical
+  -- identities enroll under the budget with no worker payloads allocated
+  -- for the entire corpus at once.
+  local enrolled = 0
+  while cursor.index <= #cursor.jobs and enrolled < 8 do
+    if not self:_spendNode(budget) then
+      return
+    end
+    local job = cursor.jobs[cursor.index]
+    cursor.index = cursor.index + 1
+    enrolled = enrolled + 1
+    self:_register(job.kind, job.key, "sweep")
+  end
+  if cursor.index > #cursor.jobs then
+    self.sweepExhausted = true
+    self.sweepCursor = nil
   end
 end
 
 ---@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_buildPendingRosters(budget)
-  -- First construction for every requested scope runs here under one
-  -- admitted update step, never in a public request. Later rebuilds happen
-  -- synchronously inside adoption, so retained answers stay current.
-  local pending = {}
-  for name, _ in pairs(self.milestones) do
-    if self.roster[name] == nil then
-      pending[#pending + 1] = name
-    end
+---@return boolean settled; false when the budget paused the operation
+function InteractiveCacheBuild:_runAdoptPagesOp(budget)
+  if self.pagesKnown then
+    return true
   end
-  if self.sweepEnabled and self.milestones["bootstrap"] == nil and self.roster["bootstrap"] == nil then
-    pending[#pending + 1] = "bootstrap"
+  if not self.sourceLoaded then
+    return true
   end
-  if #pending == 0 then
-    return
+  local owner = self.byKey["mon-layout:global"]
+  if owner == nil or not owner.ready then
+    return true
   end
   if not self:_spendNode(budget) then
-    return
+    self:_enqueueControl("adoptPages", 10, nil)
+    return false
   end
-  for _, name in ipairs(pending) do
-    self:_refreshRoster(name, self.milestones[name] ~= nil)
+  local plans, reason = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
+  if plans ~= nil then
+    self:_adoptPublished(plans)
+  else
+    -- An owner that claims readiness but hands over no usable plans
+    -- fails explicitly instead of pending forever; the failure wakes its
+    -- dependents with the cause.
+    self:_failEntry(
+      owner,
+      self.generationId .. " mon-layout global: adopted layout has no usable page plans: " .. tostring(reason),
+      "planning",
+      nil
+    )
   end
+  return true
 end
 
 ---@return boolean some retained demand can use the worker inventory
@@ -1160,10 +1641,9 @@ end
 ---@return string
 function InteractiveCacheBuild:_exclude(entry, message)
   -- A syntactically valid but unsupported member keeps its retained
-  -- interest and settles at once with a source-exclusion disposition.
-  entry.failure = message
-  entry.failureClass = "source-exclusion"
-  entry.causeJobKey = nil
+  -- interest and settles at once with a source-exclusion disposition,
+  -- waking any parents that already wait on it.
+  self:_failEntry(entry, message, "source-exclusion", nil)
   return false, message
 end
 
@@ -1182,10 +1662,11 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   end
   -- Record new or stronger intent and answer from retained state: roster
   -- construction, enrollment, validation, submission and publication all
-  -- belong to update. Metadata owners are scheduled once per new intent;
-  -- stronger demand upgrades registered members in place while pending
-  -- roster members enroll at the current urgency through the pump. An
-  -- unchanged poll registers nothing and observes the retained answer.
+  -- belong to update. Metadata owners are scheduled once per new intent.
+  -- A first request queues one bounded roster operation; a stronger
+  -- request queues one bounded reconciliation pass over the retained
+  -- roster that strengthens weaker members in place. An unchanged poll
+  -- registers nothing and observes the retained answer.
   if current == nil then
     if not self.sourceLoaded then
       self:_request("source-plan", "global", urgency)
@@ -1193,13 +1674,9 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
     if not self.pagesKnown then
       self:_request("mon-layout", "global", urgency)
     end
+    self:_enqueueControl("roster", 10, name)
   elseif stronger then
-    local members = self.roster[name]
-    if members ~= nil then
-      for _, member in ipairs(members) do
-        self:_register(member.kind, member.key, urgency)
-      end
-    end
+    self:_enqueueRosterDelta(name)
   end
   return self:_retainedMilestoneAnswer(name)
 end
@@ -1476,14 +1953,13 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
   local repaired = 0
   for _, leaf in ipairs(leaves) do
     local poolFailed = self.pool:status(leaf.jobKey) == "failed"
-    if poolFailed then
-      self.pool:retry(leaf.jobKey, priority)
-      leaf.submitted = true
-    end
-    if poolFailed or leaf.failureClass ~= "source-exclusion" then
-      -- Failed producer leaves go back to the pool; other derived
-      -- failures requeue for pump revalidation. A permanent
-      -- unsupported-member rejection stays explicit.
+    if not poolFailed and leaf.failureClass == "source-exclusion" then
+      -- A permanent unsupported-member rejection stays explicit unless
+      -- its failed producer leaf can be retried.
+    else
+      -- Failed producer leaves resume through pool admission; other
+      -- derived failures re-drive from planning under a runnable ticket.
+      -- Healthy siblings stay put.
       leaf.failure = nil
       leaf.failureClass = nil
       leaf.causeJobKey = nil
@@ -1491,10 +1967,41 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
       leaf.validated = false
       leaf.validationPending = false
       leaf.poolState = nil
-      leaf.cursor = nil
+      leaf.finalDeps = nil
+      leaf.depsFinal = false
+      leaf.depIndex = 1
+      leaf.pendingDeps = {}
+      leaf.propagateIndex = nil
       leaf.urgency = urgency
       leaf.priority = priority
-      self.dirty[leaf.jobKey] = true
+      self:_invalidateTicket(leaf.jobKey)
+      if poolFailed and priority == 100 then
+        -- Sweep-urgency retries re-enter through frontier admission
+        -- like any other sweep waiter instead of requeueing ahead.
+        -- Submission restarts only once the pool accepts the retry.
+        leaf.submitted = false
+        leaf.retryPending = true
+        leaf.phase = "plan"
+        self:_enqueueEntry(leaf)
+      elseif poolFailed then
+        -- Required and near retries resume their physical record at
+        -- once; the pool deduplicates by identity.
+        local ok = pcall(self.pool.retry, self.pool, leaf.jobKey, priority)
+        if ok then
+          leaf.submitted = true
+          leaf.poolState = "queued"
+          leaf.await = "pool"
+          leaf.phase = "waitPool"
+        else
+          leaf.submitted = false
+          leaf.phase = "plan"
+          self:_enqueueEntry(leaf)
+        end
+      else
+        leaf.submitted = false
+        leaf.phase = "plan"
+        self:_enqueueEntry(leaf)
+      end
       repaired = repaired + 1
     end
   end
@@ -1503,23 +2010,26 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
       parent.failure = nil
       parent.failureClass = nil
       parent.causeJobKey = nil
-      parent.cursor = nil
+      parent.finalDeps = nil
+      parent.depsFinal = false
+      parent.depIndex = 1
+      parent.pendingDeps = {}
+      parent.propagateIndex = nil
       if priority < parent.priority then
         parent.urgency = urgency
         parent.priority = priority
-        self:_promoteQueued(parent)
+        self:_invalidateTicket(parent.jobKey)
+        if parent.submitted then
+          self:_promoteQueued(parent)
+        end
       end
       if not parent.ready then
-        self.dirty[parent.jobKey] = true
+        parent.phase = "plan"
+        self:_enqueueEntry(parent)
       end
     end
     self.followerChecked = false
     self.followerMemo = nil
-  end
-  if kind == "mon-layout" then
-    -- Explicit repair re-arms layout adoption even when the deterministic
-    -- marker is unchanged: failure is never latched by marker string.
-    self.layoutAttemptConsumed = false
   end
   return self:_answer(entry)
 end
@@ -1597,7 +2107,7 @@ function InteractiveCacheBuild:_awaitingPoolWork()
   for _, entry in ipairs(self.interest) do
     if not entry.ready and entry.failure == nil and entry.submitted then
       local state = self.pool:status(entry.jobKey)
-      if state == "queued" or state == "running" or state == "prepared" then
+      if state == "queued" or state == "running" or state == "prepared" or state == "unknown" then
         return true
       end
     end
@@ -1615,131 +2125,27 @@ function InteractiveCacheBuild:_retainedBootstrapReady()
   return ready
 end
 
--- Reads the published inventory into retained state. The source leg needs
--- only the staged inventory; the page leg additionally needs the published
--- layout plans. Adoption dirties unsubmitted work once; later updates reuse
--- the retained record instead of re-reading it.
----@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_ensureInventoryLoaded(budget)
-  if not self.sourceLoaded then
-    -- Scopes that cannot use the inventory never read it: an independent
-    -- leaf stays small even when unrelated metadata happens to be cached.
-    if self:_needsSourceDemand() then
-      -- The adoption charge precedes the read: an exhausted slice defers
-      -- without IO, and the next admitted step performs the single read.
-      -- A fruitless poll leaves the slice clock unstarted: the admitted
-      -- node stays charged, but the work clock still starts at the first
-      -- spend below that transfers data or advances enrollment, so a
-      -- missing inventory never starves the same update's sweep fill.
-      local clockStarted = budget == nil or budget.start ~= nil
-      if not self:_spendNode(budget) then
-        return
-      end
-      local plan, _ = SourcePlan.read(self.cacheFs, self:_identity())
-      if plan ~= nil then
-        self:_adoptSource(plan)
-      elseif not clockStarted and budget ~= nil then
-        budget.start = nil
-      end
+-- Retained metadata demand without cache IO: automatic sweep and field-core
+-- intent own their metadata owner entries, so adoption has a validated
+-- transition even when no explicit milestone requested them. Scopes that
+-- cannot use an inventory never schedule it, keeping independent leaves
+-- small. No plans are read, validated or enrolled here.
+function InteractiveCacheBuild:_scheduleMetadataDemand()
+  if not self.sourceLoaded and self:_needsSourceDemand() then
+    local owner = self.byKey["source-plan:global"]
+    if owner == nil then
+      self:_request("source-plan", "global", self.milestones["field-core"] or self.milestones["bootstrap"] or "near")
     end
   end
-  if self.sourceLoaded and not self.pagesKnown then
+  if self.sourceLoaded and not self.pagesKnown and self:_needsPageDemand() then
     local layoutEntry = self.byKey["mon-layout:global"]
-    if layoutEntry ~= nil and layoutEntry.failure ~= nil then
-      return
-    end
-    if not self:_needsPageDemand() then
-      return
-    end
-    -- Automatic demand owns its metadata entry: sweep and automatic
-    -- field-core intent schedule the layout owner exactly like an explicit
-    -- milestone request does, so adoption has a validated transition.
     if layoutEntry == nil and (self.milestones["field-core"] ~= nil or self.sweepEnabled) then
       layoutEntry = self:_request("mon-layout", "global", self.milestones["field-core"] or "near")
     end
-    -- No repeated rereads while layout work is still physically pending.
-    if layoutEntry ~= nil and layoutEntry.submitted then
-      local state = self.pool:status(layoutEntry.jobKey)
-      if state == "queued" or state == "running" or state == "prepared" then
-        return
-      end
-    end
-    -- A ready owner always earns its adoption read: success adopts, and a
-    -- still-unreadable plan set is an explicit planning failure on an
-    -- owner that claims readiness, never an eternal pending state. The
-    -- failure itself suppresses repeats until explicit repair.
     if layoutEntry ~= nil and layoutEntry.ready then
-      -- The adoption charge precedes the read: an exhausted slice defers
-      -- without IO, and the next admitted step performs the single read.
-      if not self:_spendNode(budget) then
-        return
-      end
-      local plans, reason = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
-      if plans ~= nil then
-        self:_adoptPublished(plans)
-      else
-        layoutEntry.failure = self.generationId
-          .. " mon-layout global: adopted layout has no usable page plans: "
-          .. tostring(reason)
-        layoutEntry.failureClass = "planning"
-        layoutEntry.causeJobKey = nil
-        self:_dirtyParents(layoutEntry.jobKey)
-      end
-      return
-    end
-    if layoutEntry == nil or not layoutEntry.validated or self.layoutAttemptConsumed then
-      if layoutEntry ~= nil and not layoutEntry.submitted and layoutEntry.validated then
-        -- A rejected pre-repair layout validation schedules ordinary repair
-        -- through the normal pump: the entry stays dirty for submission.
-        self.dirty[layoutEntry.jobKey] = true
-      end
-      if self.layoutAttemptConsumed and layoutEntry ~= nil then
-        -- A consumed damaged attempt keeps its owner driven: clearing the
-        -- stale validation forces the pump to re-read the owner, so repair
-        -- surfaces as readiness and earns a fresh adoption read above.
-        -- Plans themselves never poll.
-        layoutEntry.validated = false
-        layoutEntry.cursor = nil
-        self.dirty[layoutEntry.jobKey] = true
-      end
-      return
-    end
-    -- A validated but unready owner attempts once against its staged
-    -- receipt: a damaged plan set consumes the attempt without failing
-    -- the still-compiling owner, so repair can surface through the drive
-    -- above. No receipt, no attempt: cold compilation stays quiet. The
-    -- adoption charge precedes the staged check, so an exhausted slice
-    -- defers without IO.
-    if not self:_spendNode(budget) then
-      return
-    end
-    if not self:_layoutReceiptStaged() then
-      return
-    end
-    local plans, _ = ArtifactJobs.publishedPlans(self.cacheFs, self:_identity())
-    if plans ~= nil then
-      self:_adoptPublished(plans)
-    else
-      self.layoutAttemptConsumed = true
-      self.dirty[layoutEntry.jobKey] = true
+      self:_enqueueControl("adoptPages", 10, nil)
     end
   end
-end
-
----@return boolean the published layout receipt names the staged marker
-function InteractiveCacheBuild:_layoutReceiptStaged()
-  local MonCache = require("libs.assets.src.MonCache")
-  local cacheFs = self.cacheFs
-  local markerOk, marker = pcall(function()
-    return cacheFs:read(MonCache.layoutMarkerPath())
-  end)
-  if not markerOk or type(marker) ~= "string" or marker == "" then
-    return false
-  end
-  local receiptOk, receipt = pcall(function()
-    return cacheFs:loadLua(ArtifactState.path("mon-layout", "global"))
-  end)
-  return receiptOk and type(receipt) == "table" and receipt.marker == marker
 end
 
 ---@param plan table<string, unknown>
@@ -1790,13 +2196,41 @@ function InteractiveCacheBuild:_adoptSource(plan)
   }
   self.sourceLoaded = true
   self.depMemo = {}
-  for _, entry in ipairs(self.interest) do
-    entry.cursor = nil
+  self:_wakeForSourceAdoption()
+  if not self.pagesKnown then
+    -- A ready layout must not wait for the next update's demand scan:
+    -- queue the pages-adoption attempt now so waiters observe one
+    -- continuous chain of progress within the same pump.
+    self:_enqueueControl("adoptPages", 10, nil)
   end
-  self:_replanUnsubmitted()
   self:_refreshAdoptionRosters()
 end
 
+-- Source adoption wakes every entry without physical backing: waiters on
+-- the source inventory, runnable entries, and dependency waiters whose
+-- exclusion outcome membership may now decide. Waits backed by submitted
+-- pool work or other inventories keep waiting, and enumeration restarts
+-- against the fuller membership.
+
+function InteractiveCacheBuild:_wakeForSourceAdoption()
+  for _, entry in ipairs(self.interest) do
+    if not entry.ready and entry.failure == nil and not entry.submitted then
+      -- Adoption changes the knowledge base, so every unsubmitted entry
+      -- without physical backing re-resolves: waiters, incomplete member
+      -- lists,
+      -- and dependency waiters whose exclusion outcome membership may now
+      -- decide. Membership-gated waits on other inventories keep waiting.
+      if entry.await == nil or entry.await == "source" or entry.await == "deps" then
+        entry.await = nil
+        entry.phase = "plan"
+        entry.finalDeps = nil
+        entry.depsFinal = false
+        self:_enqueueEntry(entry)
+      end
+    end
+  end
+  self.sweepCursor = nil
+end
 -- Adoption replaces retained rosters synchronously: answers observed after
 -- this transition see final membership, and newly known members enroll
 -- through the bounded cursor instead of a full re-enrollment loop.
@@ -1829,219 +2263,91 @@ function InteractiveCacheBuild:_adoptPublished(plans)
   self.sourceLoaded = true
   self.pagesKnown = true
   self.depMemo = {}
-  for _, entry in ipairs(self.interest) do
-    entry.cursor = nil
-  end
-  self:_replanUnsubmitted()
+  self:_wakeForPagesAdoption()
   self:_refreshAdoptionRosters()
 end
 
--- Newly adopted membership can only add answers, so unsubmitted work plans
--- again from scratch while submitted work keeps its pool lifecycle.
--- Milestone members that were unknowable before adoption enroll
--- incrementally under the pump budget instead of one unbounded loop.
-function InteractiveCacheBuild:_replanUnsubmitted()
+function InteractiveCacheBuild:_wakeForPagesAdoption()
   for _, entry in ipairs(self.interest) do
     if not entry.ready and entry.failure == nil and not entry.submitted then
-      entry.validated = false
-      entry.cursor = nil
-      self.dirty[entry.jobKey] = true
+      if entry.await == nil or entry.await == "pages" or entry.await == "deps" then
+        entry.await = nil
+        entry.phase = "plan"
+        entry.finalDeps = nil
+        entry.depsFinal = false
+        self:_enqueueEntry(entry)
+      end
     end
   end
-  self.parked = {}
   self.sweepCursor = nil
-  self.pendingFillDone = false
-  self.loadedFillDone = false
-  self.followerChecked = false
-  self.followerMemo = nil
 end
 
----@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_drainEnroll(budget)
-  local cursor = self.enrollCursor
-  if cursor == nil then
-    return
-  end
-  while cursor.index <= #cursor.pending do
-    if not self:_spendNode(budget) then
-      return
-    end
-    local item = cursor.pending[cursor.index]
-    cursor.index = cursor.index + 1
-    -- Enrollment follows the current strongest intent, so a promotion that
-    -- lands mid-drain reaches members the cursor has not visited yet.
-    local urgency = item.urgency
-    if item.milestone ~= nil and self.milestones[item.milestone] ~= nil then
-      urgency = self.milestones[item.milestone]
-    end
-    local entry = self:_register(item.kind, item.key, assert(urgency, "enrollment needs its urgency"))
-    if not entry.ready and entry.failure == nil then
-      self.dirty[entry.jobKey] = true
-    end
-  end
-  self.enrollCursor = nil
-end
-
--- Observes already-submitted work for terminal transitions: transitions are
--- worker-driven facts, naturally bounded per update by physical
--- completions, while the budget paces planning. A ready transition only
--- queues family validation under the shared pump budget; a failed one
--- records its cause at once. Either wakes the affected parents.
+-- Observes already-submitted work for pool transitions through the public
+-- pool API: transitions are worker-driven facts. A ready owner queues its
+-- family validation or page adoption; a failed one records its cause at
+-- once; either reconciles the acknowledged frontier and wakes the affected
+-- parents. Missing submitted records and unexpected active-epoch
+-- cancellations are diagnosed, never silently interpreted as ready.
 function InteractiveCacheBuild:_pollSubmitted()
   for _, entry in ipairs(self.interest) do
-    if not entry.ready and entry.failure == nil and entry.submitted and not entry.validationPending then
+    if not entry.ready and entry.failure == nil and entry.submitted then
       local state, details = self.pool:status(entry.jobKey)
       if state ~= entry.poolState then
         entry.poolState = state
         if state == "ready" then
+          if self.sweepAdmitted[entry.jobKey] then
+            self.sweepAdmitted[entry.jobKey] = nil
+            self:_wakeCapacityWaiter()
+          end
           entry.validationPending = true
-          self.dirty[entry.jobKey] = true
+          entry.await = nil
+          entry.phase = "validateResult"
+          self:_enqueueEntry(entry)
+          if entry.kind == "mon-layout" and entry.key == "global" then
+            self:_enqueueControl("adoptPages", 10, nil)
+          end
         elseif state == "failed" then
-          local message = details and details.error or "compiler job failed"
-          entry.failure = entry.jobKey .. ": " .. tostring(message)
-          entry.failureClass = "job"
-          entry.causeJobKey = nil
-          self:_dirtyParents(entry.jobKey)
+          local message = (type(details) == "table" and details.error) or "compiler job failed"
+          self:_failEntry(entry, entry.jobKey .. ": " .. tostring(message), "job", nil)
+        elseif state == "prepared" then
+          if self.sweepAdmitted[entry.jobKey] then
+            self.sweepAdmitted[entry.jobKey] = nil
+            self:_wakeCapacityWaiter()
+          end
+        elseif state == "cancelled" or state == "unknown" then
+          if self.sweepAdmitted[entry.jobKey] then
+            self.sweepAdmitted[entry.jobKey] = nil
+            self:_wakeCapacityWaiter()
+          end
+          self:_failEntry(entry, entry.jobKey .. ": pool " .. state .. " active submitted work", "planning", nil)
         end
       end
     end
   end
 end
 
+-- Drains runnable tickets highest-urgency-first, FIFO within urgency,
+-- under one shared budget. Each retained step advances or waits for a
+-- named cause; a budget pause requeues the operation for the next update.
 ---@param budget InteractiveCacheBuild.Budget|nil
----@param allowSweep boolean
-function InteractiveCacheBuild:_pumpPlanning(budget, allowSweep)
-  -- A budget pause lasts exactly one pass, so paused sweep work rejoins
-  -- planning on the next pump even when workers report no new progress.
-  -- Entries that still cannot run re-park; adoption and pool progress keep
-  -- their existing reopen paths.
-  for jobKey in pairs(self.parked) do
-    self.dirty[jobKey] = true
-  end
-  self.parked = {}
-  local ledger = { bound = self:_sweepBound(), outstanding = self:_outstandingSweep() }
+function InteractiveCacheBuild:_drainTickets(budget)
   while true do
     if budget ~= nil and budget.exhausted then
       return
     end
-    local pending = {}
-    for jobKey in pairs(self.dirty) do
-      local entry = self.byKey[jobKey]
-      if entry ~= nil and not entry.ready and entry.failure == nil then
-        pending[#pending + 1] = entry
-      else
-        self.dirty[jobKey] = nil
-      end
+    local ticket = self:_popTicket()
+    if ticket == nil then
+      return
     end
-    if #pending == 0 then
-      local before = 0
-      for _ in pairs(self.dirty) do
-        before = before + 1
-      end
-      if self.enrollCursor ~= nil then
-        self:_drainEnroll(budget)
-      elseif allowSweep then
-        self:_fillSweepStep(budget)
-      else
-        return
-      end
-      local after = 0
-      for _ in pairs(self.dirty) do
-        after = after + 1
-      end
-      if after == before then
-        return
+    if ticket.kind == "entry" then
+      local entry = self.byKey[assert(ticket.jobKey, "entry tickets carry their identity")]
+      if entry ~= nil then
+        self:_stepEntry(entry, budget)
       end
     else
-      table.sort(pending, function(left, right)
-        if left.priority == right.priority then
-          return left.jobKey < right.jobKey
-        end
-        return left.priority < right.priority
-      end)
-      for _, entry in ipairs(pending) do
-        if budget ~= nil and budget.exhausted then
-          if entry.priority == 100 then
-            self.parked[entry.jobKey] = true
-            self.dirty[entry.jobKey] = nil
-          end
-        else
-          local outcome = self:_ensure(entry, nil, budget, ledger)
-          if outcome == "terminal" or outcome == "waiting" then
-            self.dirty[entry.jobKey] = nil
-          elseif outcome == "parked" then
-            self.parked[entry.jobKey] = true
-            self.dirty[entry.jobKey] = nil
-          elseif outcome == "paused" then
-            if entry.priority == 100 then
-              self.parked[entry.jobKey] = true
-              self.dirty[entry.jobKey] = nil
-            end
-          end
-        end
-      end
+      self:_runControl(ticket, budget)
     end
   end
-end
-
----@param budget InteractiveCacheBuild.Budget|nil
-function InteractiveCacheBuild:_fillSweepStep(budget)
-  if not self.sourceLoaded then
-    if self.pendingFillDone then
-      return
-    end
-    self.pendingFillDone = true
-    -- Page, cell and map membership is still unknown, so only the fixed
-    -- global families join the sweep until the inventory publishes.
-    self.sweepCursor = {
-      jobs = {
-        { kind = "items", key = "global" },
-        { kind = "bag", key = "global" },
-        { kind = "message-summary", key = "global" },
-        { kind = "script-summary", key = "global" },
-        { kind = "audio-summary", key = "global" },
-        { kind = "mon-summary", key = "global" },
-      },
-      index = 1,
-    }
-  else
-    if not self.loadedFillDone then
-      -- The full corpus is unknowable before layout adoption, and its
-      -- enumerator rejects a source-only inventory: wait for page
-      -- membership instead of asserting on discovery-time knowledge.
-      if not self.pagesKnown then
-        return
-      end
-      self.loadedFillDone = true
-      local jobs = ArtifactJobs.completeJobs(assert(self.adopted, "sweep needs its adopted inventory"))
-      local enums = {}
-      for _, job in ipairs(jobs) do
-        enums[#enums + 1] = { kind = job.kind, key = job.key }
-      end
-      self.sweepCursor = { jobs = enums, index = 1 }
-    end
-    if self.sweepCursor == nil then
-      return
-    end
-    -- Required demand outranks sweep enrollment: the corpus drains only
-    -- while no planning remains.
-    if next(self.dirty) ~= nil then
-      return
-    end
-  end
-  local cursor = assert(self.sweepCursor, "sweep enrollment needs its cursor")
-  while cursor.index <= #cursor.jobs do
-    if not self:_spendNode(budget) then
-      return
-    end
-    local job = cursor.jobs[cursor.index]
-    cursor.index = cursor.index + 1
-    local entry = self:_register(job.kind, job.key, "sweep")
-    if not entry.ready and entry.failure == nil then
-      self.dirty[entry.jobKey] = true
-    end
-  end
-  self.sweepCursor = nil
 end
 
 function InteractiveCacheBuild:update()
@@ -2051,15 +2357,13 @@ function InteractiveCacheBuild:update()
   -- validation, adoption, enrollment and submission. The pool's separately
   -- bounded publication operation is not charged here.
   local budget = { used = 0, start = nil, exhausted = false, worked = false }
-  self:_ensureInventoryLoaded(budget)
+  -- Observe submitted state first, then derive newly eligible metadata and
+  -- roster work, advance highest-urgency runnable operations, tick the
+  -- physical pool once, observe its new facts, then use any remaining
+  -- budget. Finalize eligible once-only milestone publication and compute
+  -- retained status from the resulting state.
   self:_pollSubmitted()
-  -- Sweep enrollment precedes validation-heavy planning so fixed
-  -- membership work is not starved by one-time validator load costs; the
-  -- pump still processes required demand first under the same budget.
-  -- Automatic field-core warming registers its near intent exactly once:
-  -- later updates advance the retained roster through adoption deltas and
-  -- the bounded cursor instead of re-enrolling the whole scope per frame.
-  local allowSweep = false
+  self:_scheduleMetadataDemand()
   if self.sweepEnabled then
     if not self.autoCoreNearDone and self:_retainedBootstrapReady() then
       self.autoCoreNearDone = true
@@ -2067,24 +2371,20 @@ function InteractiveCacheBuild:update()
         self.milestones["field-core"] = "near"
       end
     end
-    self:_fillSweepStep(budget)
-    allowSweep = true
   end
-  -- First roster construction for requested scopes runs here under the
-  -- shared budget; adoption rebuilds run synchronously in their transition.
-  self:_buildPendingRosters(budget)
+  self:_buildPendingRosters()
+  self:_fillPendingSweep(budget)
+  self:_fillLoadedSweep(budget)
   -- New submissions precede the single pool lifecycle tick so dispatched
   -- work is observable in the same update; completions observed below are
   -- validated and adopted under the remaining same budget.
-  self:_pumpPlanning(budget, allowSweep)
+  self:_drainTickets(budget)
   self.pool:update()
   self:_pollSubmitted()
-  self:_pumpPlanning(budget, allowSweep)
+  self:_drainTickets(budget)
   self:_publishMilestone("bootstrap")
   self:_publishMilestone("field-core")
-  -- Runnable local work remains when retained planning state is
-  -- non-empty or a requested scope still awaits its necessary membership;
-  -- a pump that merely consumed budget without leaving work ahead reports none.
+  self:_failStuckEntries()
   self.planningPending = self:_hasRunnablePlanning()
 end
 
@@ -2119,45 +2419,65 @@ function InteractiveCacheBuild:outcomes()
   return list
 end
 
----@return boolean a retained milestone awaits its necessary membership while discovery stays live
-function InteractiveCacheBuild:_scopeKnowledgePending()
-  if self.retired then
-    return false
+-- A missing wake source is an implementation error, and a dependency
+-- cycle is an explicit planning failure: when no runnable ticket, no
+-- unfinished physical work and no progress remains, nonterminal
+-- unsubmitted entries cannot advance on their own. Failing them loudly
+-- beats hanging the command past its round cap.
+function InteractiveCacheBuild:_failStuckEntries()
+  if self:_hasRunnablePlanning() then
+    return
   end
-  -- Retained observation only: an unbuilt roster is pending knowledge, so
-  -- local work remains until the admitted construction step runs.
-  if self.milestones["bootstrap"] ~= nil and not self.sourceLoaded then
-    local members = self.roster["bootstrap"]
-    if members == nil then
-      return true
-    end
-    local ready, failure = self:_milestoneAnswer("bootstrap", members)
-    if not ready and failure == nil then
-      return true
+  local physical = false
+  local stuck = {}
+  for _, entry in ipairs(self.interest) do
+    if not entry.ready and entry.failure == nil then
+      if entry.submitted then
+        -- An unreported submission is pending information, not proof of
+        -- anything: only an observed transition to unknown or cancelled
+        -- (seen in _pollSubmitted) diagnoses a lost record. A submission
+        -- the pool never reports on still owns the entry's future.
+        if
+          entry.poolState == "queued"
+          or entry.poolState == "running"
+          or entry.poolState == "prepared"
+          or entry.poolState == "unknown"
+        then
+          physical = true
+        end
+      else
+        stuck[#stuck + 1] = entry
+      end
     end
   end
-  if self.milestones["field-core"] ~= nil and (not self.sourceLoaded or not self.pagesKnown) then
-    local members = self.roster["field-core"]
-    if members == nil then
-      return true
-    end
-    local ready, failure = self:_milestoneAnswer("field-core", members)
-    if not ready and failure == nil then
-      return true
-    end
+  if physical or #stuck == 0 then
+    return
   end
-  return false
+  for _, entry in ipairs(stuck) do
+    self:_failEntry(
+      entry,
+      self.generationId .. " " .. entry.kind .. " " .. entry.key .. ": dependency cycle involves " .. entry.jobKey,
+      "planning",
+      nil
+    )
+  end
 end
 
 ---@return boolean runnable local planning remains from retained state
 function InteractiveCacheBuild:_hasRunnablePlanning()
-  if next(self.dirty) ~= nil or next(self.parked) ~= nil then
-    return true
+  -- The worklist is the runnable authority: a live valid ticket means
+  -- local work can advance now. Blocked interest carries no ticket, so
+  -- missing knowledge, held workers and full frontiers report idle.
+  -- Phase and wait data describe why other interest is not runnable.
+  for _, priority in ipairs({ 0, 10, 100 }) do
+    local queue = self.queues[priority]
+    for index = queue.head, #queue.items do
+      if self:_ticketValid(queue.items[index]) then
+        return true
+      end
+    end
   end
-  if self.enrollCursor ~= nil or self.sweepCursor ~= nil then
-    return true
-  end
-  return self:_scopeKnowledgePending()
+  return false
 end
 
 ---@return table<string, unknown>
@@ -2192,10 +2512,11 @@ function InteractiveCacheBuild:status()
     end
   end
   -- Settlement is scope-relative: every retained milestone intent and
-  -- every directly requested entry must be terminal. A fully terminal
-  -- corpus always settles; a terminally failed requested scope also
-  -- settles despite undiscovered downstream corpus, whose pending rows
-  -- finalize as cancelled. Success never settles around running work.
+  -- every directly requested entry must be terminal, and successful
+  -- settlement additionally needs the authorized enumeration exhausted.
+  -- A terminally failed requested scope or metadata owner settles without
+  -- waiting for successful sweep completion. Success never settles around
+  -- running work.
   local ready, queued, running = 0, 0, 0
   local failures = {}
   local allTerminal, directTerminal = true, true
@@ -2225,7 +2546,28 @@ function InteractiveCacheBuild:status()
       milestonesTerminal = false
     end
   end
-  local settled = milestonesTerminal and directTerminal and (allTerminal or bootstrapFailed or fieldCoreFailed)
+  -- Settlement is scope-relative and truthful: successful settlement
+  -- needs every requested scope ready, every direct root ready, every
+  -- entry terminal and, when sweep is authorized, the canonical
+  -- enumeration exhausted. Membership merely known never substitutes for
+  -- the exhausted cursor. A terminally failed milestone or metadata owner
+  -- also settles without waiting for successful sweep completion, but an
+  -- unrelated failed sweep job never settles around still-pending work.
+  -- Success never settles around running work.
+  local enumerationDone = (not self.sweepEnabled) or self.sweepExhausted
+  local milestoneFailed = bootstrapFailed or fieldCoreFailed
+  local metadataFailed = false
+  if #failures > 0 then
+    local sourceOwner = self.byKey["source-plan:global"]
+    local layoutOwner = self.byKey["mon-layout:global"]
+    if (sourceOwner ~= nil and sourceOwner.failure ~= nil) or (layoutOwner ~= nil and layoutOwner.failure ~= nil) then
+      metadataFailed = true
+    end
+  end
+  local settled = milestonesTerminal
+    and directTerminal
+    and (allTerminal or milestoneFailed or metadataFailed)
+    and (enumerationDone or milestoneFailed or metadataFailed)
   table.sort(failures)
   local complete = bootstrapState == "ready"
     and fieldCoreState == "ready"
@@ -2233,6 +2575,7 @@ function InteractiveCacheBuild:status()
     and (ready + queued + running) > 0
     and queued == 0
     and running == 0
+    and enumerationDone
   return {
     generationId = self.generationId,
     epoch = self.epoch,
@@ -2263,10 +2606,16 @@ function InteractiveCacheBuild:retire()
   self.pool:retireSelection(self.epoch)
   self.interest = {}
   self.byKey = {}
-  self.dirty = {}
+  local queues = {}
+  for _, priority in ipairs({ 0, 10, 100 }) do
+    queues[priority] = { items = {}, head = 1 }
+  end
+  self.queues = queues
+  self.ticketLive = {}
   self.edges = {}
-  self.parked = {}
   self.depMemo = {}
+  self.sweepAdmitted = {}
+  self.capacityWaiters = {}
   self.adopted = nil
   self.sourceLoaded = false
   self.pagesKnown = false
@@ -2281,8 +2630,9 @@ function InteractiveCacheBuild:retire()
   self.enrollCursor = nil
   self.roster = {}
   self.autoCoreNearDone = false
-  self.layoutAttemptConsumed = false
   self.sweepCursor = nil
+  self.sweepExhausted = false
+  self.pendingEnumerated = false
   self.planningPending = false
 end
 

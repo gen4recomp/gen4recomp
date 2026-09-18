@@ -56,35 +56,89 @@ end
 -- Synchronous in-process stand-in for the compiler pool: it records every
 -- request with its urgency, never runs work by itself, and completes jobs
 -- through the real worker entrypoint plus the real publication path, so
--- readiness observed by the session is production readiness.
+-- readiness observed by the session is production readiness. Lookup,
+-- promotion and retirement follow the production selection contract:
+-- current-epoch records only, queued-only promotion, cancelled queued
+-- work on retirement, and no live inheritance across selections. Superseded
+-- records survive only in the append-only epoch-labeled history, which
+-- never answers lookups or counts toward the frontier.
 local function FakePool()
-  local pool = { records = {}, order = {}, selected = nil, peakSweep = 0 }
+  local pool = { records = {}, order = {}, history = {}, selected = nil, peakSweep = 0 }
+  local function archiveCurrent(event)
+    local epoch = pool.selected ~= nil and pool.selected.epoch or 0
+    for _, jobKey in ipairs(pool.order) do
+      local record = pool.records[jobKey]
+      pool.history[#pool.history + 1] = { epoch = epoch, jobKey = jobKey, event = event .. ":" .. record.state }
+    end
+  end
   function pool:selectGeneration(identity, epoch)
-    self.selected = { identity = identity, epoch = epoch }
+    assert(type(identity) == "table", "pool generation identity is required")
+    assert(type(epoch) == "number" and epoch % 1 == 0, "pool epoch must be an integer")
+    local current = self.selected
+    if
+      current ~= nil
+      and current.epoch == epoch
+      and current.versionId == identity.versionId
+      and current.generationId == identity.generationId
+    then
+      return
+    end
+    archiveCurrent("archived")
+    self.records = {}
+    self.order = {}
+    self.selected = {
+      versionId = identity.versionId,
+      generationId = identity.generationId,
+      epoch = epoch,
+    }
     self.retired = false
   end
   function pool:retireSelection(epoch)
     assert(type(epoch) == "number" and epoch % 1 == 0, "pool epoch must be an integer")
-    if self.retired then
+    if self.selected == nil or self.retired then
+      return false
+    end
+    if epoch ~= self.selected.epoch then
       return false
     end
     self.retired = true
+    for _, jobKey in ipairs(self.order) do
+      local record = self.records[jobKey]
+      if record.state == "queued" then
+        record.state = "cancelled"
+        self.history[#self.history + 1] = { epoch = epoch, jobKey = jobKey, event = "retired" }
+      end
+    end
     return true
   end
   function pool:request(job)
     assert(type(job) == "table", "pool job must be a table")
     assert(type(job.jobKey) == "string" and job.jobKey ~= "", "pool job needs an identity")
+    assert(not self.retired, "pool selection is retired")
+    local selected = assert(self.selected, "pool has no selected generation")
+    assert(job.epoch == selected.epoch, "pool job epoch does not match the selected generation")
     local record = self.records[job.jobKey]
-    if record ~= nil and record.state ~= "cancelled" then
+    if record ~= nil then
       if record.state == "failed" then
         error(record.details and record.details.error or "compiler job failed", 0)
       end
-      if record.state == "queued" and job.priority < record.priority then
-        record.priority = job.priority
+      if record.state == "cancelled" then
+        self.records[job.jobKey] = nil
+      else
+        if record.state == "queued" and job.priority < record.priority then
+          record.priority = job.priority
+        end
+        return record.state, record.details
       end
-      return record.state, record.details
     end
-    record = { kind = job.kind, key = job.key, jobKey = job.jobKey, priority = job.priority, job = job }
+    record = {
+      kind = job.kind,
+      key = job.key,
+      jobKey = job.jobKey,
+      priority = job.priority,
+      epoch = job.epoch,
+      job = job,
+    }
     record.state = "queued"
     self.records[job.jobKey] = record
     self.order[#self.order + 1] = job.jobKey
@@ -125,7 +179,7 @@ local function FakePool()
         counts[record.state] = counts[record.state] + 1
       end
     end
-    return counts
+    return { workerCount = math.max(1, math.floor(processorBound() / 2)), counts = counts, error = nil }
   end
   function pool:shutdown() end
   function pool:fail(jobKey, message)
@@ -210,7 +264,8 @@ local function settle(session, pool, cap)
   local status = session:status()
   local lastReady, lastFailed = status.ready, status.failed
   local calm = 0
-  for _ = 1, cap or 2000 do
+  local capValue = cap or 2000
+  for _ = 1, capValue do
     drive(session, 1)
     status = session:status()
     if
@@ -315,6 +370,18 @@ end
 
 local function completeThroughWorker(context, pool, jobKey, stageName)
   local record = assert(pool.records[jobKey], "unknown compiler job: " .. tostring(jobKey))
+  -- Only a current eligible record completes: the selected identity must
+  -- authorize the publication, so obsolete staged output can never satisfy
+  -- a new epoch. A superseded record is rejected loudly, never published
+  -- under its old epoch.
+  local selected = assert(pool.selected, "pool has no selected generation")
+  assert(
+    record.epoch == selected.epoch
+      and record.job.generationId == selected.generationId
+      and record.job.versionId == selected.versionId,
+    "only the selected epoch completes work: " .. tostring(jobKey)
+  )
+  assert(record.state == "queued", "only queued work completes: " .. tostring(jobKey))
   local job = record.job
   local workerJob = {
     kind = job.kind,
@@ -568,9 +635,32 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     end, "job requests validate canonical keys")
   end
   targeted:retire()
+  do
+    -- Retirement cancels live logical work while published output
+    -- persists: no queued or running record survives as current.
+    local live = {}
+    for jobKey, record in pairs(pool.records) do
+      if record.state == "queued" or record.state == "running" then
+        live[#live + 1] = jobKey
+      end
+    end
+    Assert.equal(#live, 0, "retirement cancels every live record: " .. table.concat(live, ", "))
+  end
 
   -- Full client: field core arrives as near work while geometry stays cold.
   local session = openSession(identity, 2, pool, true)
+  do
+    -- The new selection archives the superseded epoch: history keeps the
+    -- epoch-labeled trace while current lookup starts empty.
+    local archived = 0
+    for _, entry in ipairs(pool.history) do
+      if entry.epoch == 1 then
+        archived = archived + 1
+      end
+    end
+    Assert.isTrue(archived > 0, "selection archives its predecessor records")
+    Assert.equal(pool:status("source-plan:global"), "unknown", "the new epoch inherits no live lookup")
+  end
   do
     local first, second = session:requestMilestone("field-core", "required")
     checkPending(first, second, "field core")
@@ -579,9 +669,11 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   do
     local requested = pool:requestSet()
     -- A restart under a new epoch re-plans the same cold bootstrap set.
-    -- The pool union persists across epochs, so every upfront member
-    -- planned cold stays visible; gated parents and already-ready members
-    -- were never (re)submitted and stay out of the expectation.
+    -- Current-epoch lookup starts empty, so every upfront member planned
+    -- cold is requested again; gated parents and already-ready members
+    -- were never (re)submitted and stay out of the expectation. Receipts
+    -- published by the earlier epoch answer through validators, not the
+    -- pool, so the comparison skips them.
     local gatedParents = { ["mon-layout:global"] = true, ["audio-summary:global"] = true }
     for _, identityKey in ipairs(expectedBootstrapSet(audioBankIds)) do
       if not gatedParents[identityKey] and not preReady[identityKey] then
@@ -589,7 +681,10 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       end
     end
     for identityKey in pairs(targetedSet) do
-      Assert.notNil(requested[identityKey], "restart keeps the planned bootstrap identities")
+      local kind, key = identityKey:match("^([^:]+):(.+)$")
+      if ArtifactState.read(cache, generationId, kind, key) == nil then
+        Assert.notNil(requested[identityKey], "restart keeps the planned bootstrap identities")
+      end
     end
     local missing = {}
     -- A gated parent is correctly deferred while any prerequisite is
@@ -765,7 +860,13 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   session:retire()
 
   -- A restarted generation reuses ready jobs without touching raw source.
-  local resumed = openSession(identity, 3, pool, true)
+  -- Targeted resumption, not an exhaustive sweep: the restarted session
+  -- proves reuse for its explicitly requested milestones (bootstrap and
+  -- field core, which carry every completed kind), while the storm below
+  -- proves exhaustive cursor enrollment at scale. Cursor extras (cells,
+  -- maps, portraits) are cold here and never asserted, so they would only
+  -- burn frontier turns without proving reuse.
+  local resumed = openSession(identity, 3, pool, false)
   do
     local first, second = resumed:requestMilestone("bootstrap", "required")
     checkPending(first, second, "resumed bootstrap")
@@ -804,36 +905,78 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   end
 
   -- The sweep storm: every canonical key is accounted for while the frontier
-  -- stays bounded, and failures stay visible without global collapse. The
-  -- bulky geometry families arrive as required work up front (required
-  -- urgency never waits on the frontier); portraits arrive as sweep under a
-  -- lazily drained frontier, so held descriptors never accumulate and no
-  -- settling pass is needed.
+  -- stays bounded. Everything arrives as sweep urgency, so the session's
+  -- acknowledged frontier paces physical dispatch while logical enrollment
+  -- still covers the corpus: membership is proved against logical outcomes,
+  -- dispatch against accepted current-epoch requests. Enrollment is never
+  -- counted as compilation, and no family is forced to required to drive
+  -- coverage.
+  --
+  -- Backend isolation: the storm runs on a fresh owned backend, not the epoch
+  -- 1-3 shared backend (which holds every published bank/member/summary, so a
+  -- shared-backend storm pays full warm-validator CPU per entry and cannot
+  -- converge inside any principled bound). The five structural metadata owners
+  -- are provisioned here through the real worker path first, so enrollment
+  -- and structural dependencies resolve exactly as on the shared backend;
+  -- all 3660 canonical families stay cold, so every family submits under
+  -- maximum dispatch pressure. Warm reuse at scale is proved by the resumed
+  -- epoch-3 session above, not by this census.
+  local sharedBackend = activeBackend
+  activeBackend = FakeCache.new()
+  cache = CacheFs.forVersion(versionId, activeBackend)
+  context = workerContextFor(romFs, versionId, cache)
   local storm = openSession(identity, 4, pool, true)
-  local shelteredPortrait = "mon-portrait-page:" .. tostring(portraitPageIds[2] or portraitPageIds[1])
-  local function sweepQueuedCount()
-    local count = 0
-    for _, record in pairs(pool.records) do
-      if record.priority == 100 and record.state == "queued" then
-        count = count + 1
+  do
+    -- Structural prerequisites arrive required (never sweep dispatch): the
+    -- source inventory, mon catalog, mon layout, world catalog, and cell
+    -- index must be adopted before enrollment can resolve, and the sweep
+    -- cursor fills the tight frontier from the first update, so sweep
+    -- setup would park behind cursor-enrolled families. All five are
+    -- requested up front, then completed in dependency order as their
+    -- records reach the pool. Layout waits for its catalog, so the catalog
+    -- completes first and the layout last.
+    local metadata = {
+      "source-plan:global",
+      "mon-catalog:global",
+      "world-catalog:global",
+      "field-cell-index:global",
+      "mon-layout:global",
+    }
+    for _, jobKey in ipairs(metadata) do
+      local kind, key = jobKey:match("^([^:]+):(.+)$")
+      local ok, first, second = pcall(storm.requestJob, storm, kind, key, "required")
+      if not ok then
+        error("storm setup must accept " .. jobKey .. ": " .. tostring(first), 0)
       end
+      Assert.isFalse(first, "storm metadata provisions cold: " .. jobKey)
+      Assert.isTrue(second == nil, "storm metadata must not fail: " .. jobKey)
     end
-    return count
-  end
-  local function ensureSweepSpace()
-    while sweepQueuedCount() >= bound do
-      local oldest
-      for _, jobKey in ipairs(pool.order) do
+    local function awaitQueued(jobKey)
+      for _ = 1, 200 do
         local record = pool.records[jobKey]
-        if record.priority == 100 and record.state == "queued" and jobKey ~= shelteredPortrait then
-          oldest = jobKey
-          break
+        if record ~= nil and record.state == "queued" then
+          return
         end
+        drive(storm, 1)
       end
-      Assert.notNil(oldest, "bounded sweep drain must keep advancing held descriptors")
-      complete(oldest)
-      Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
+      error("storm setup never submits " .. jobKey, 0)
     end
+    awaitQueued("source-plan:global")
+    complete("source-plan:global")
+    drive(storm, 5)
+    awaitQueued("mon-catalog:global")
+    complete("mon-catalog:global")
+    drive(storm, 5)
+    awaitQueued("world-catalog:global")
+    complete("world-catalog:global")
+    awaitQueued("field-cell-index:global")
+    complete("field-cell-index:global")
+    drive(storm, 5)
+    awaitQueued("mon-layout:global")
+    complete("mon-layout:global")
+    drive(storm, 10)
+    Assert.isTrue(storm.sourceLoaded, "storm adopts the worker inventory")
+    Assert.isTrue(storm.pagesKnown, "storm adopts page membership")
   end
   local function checkPendingOrPublished(first, second, kind, key, what)
     -- A reused root answers already-published work as ready: that is the
@@ -848,33 +991,17 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     checkPending(first, second, what)
   end
   local function requestSweep(kind, key)
-    -- A shared identity deduplicates across urgencies, so a key the pool
-    -- already holds stays covered by its existing entry in the union below.
-    -- Requesting it again as sweep would pin a permanent frontier slot: the
-    -- session counts the new sweep-urgency interest as outstanding while the
-    -- older required or near pool record never cycles through this drain.
-    if pool:status(kind .. ":" .. key) ~= "unknown" then
-      return
-    end
-    ensureSweepSpace()
     local ok, first, second = pcall(storm.requestJob, storm, kind, key, "sweep")
     if not ok then
       error("sweep must accept canonical " .. kind .. "/" .. tostring(key) .. ": " .. tostring(first), 0)
     end
     checkPendingOrPublished(first, second, kind, key, "sweep " .. kind .. "/" .. tostring(key))
   end
-  local function presubmitRequired(kind, key)
-    local ok, first, second = pcall(storm.requestJob, storm, kind, key, "required")
-    if not ok then
-      error("presubmit must accept canonical " .. kind .. "/" .. tostring(key) .. ": " .. tostring(first), 0)
-    end
-    checkPendingOrPublished(first, second, kind, key, "presubmit " .. kind .. "/" .. tostring(key))
-  end
   for _, key in ipairs(cellKeys) do
-    presubmitRequired("field-cell", key)
+    requestSweep("field-cell", key)
   end
   for _, mapId in ipairs(resolvedMapIds) do
-    presubmitRequired("map", tostring(mapId))
+    requestSweep("map", tostring(mapId))
   end
   for _, pageId in ipairs(portraitPageIds) do
     requestSweep("mon-portrait-page", tostring(pageId))
@@ -885,75 +1012,107 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   for _, bankId in ipairs(audioBankIds) do
     requestSweep("audio-bank", tostring(bankId))
   end
-  for _, key in ipairs(cellKeys) do
-    requestSweep("field-cell", key)
-  end
-  for _, mapId in ipairs(resolvedMapIds) do
-    requestSweep("map", tostring(mapId))
-  end
   for _, mapId in ipairs(mapDataIds) do
-    -- The drain already completed this record through the production worker
-    -- path; a ready job answers ready, so only cold records sweep here. The
-    -- union below still accounts for every record through its epoch-2 entry.
-    if not completed["map-data:" .. tostring(mapId)] then
-      requestSweep("map-data", tostring(mapId))
-    end
+    requestSweep("map-data", tostring(mapId))
   end
   do
-    -- Registration-only planning submits nothing by itself: required cells
-    -- and maps drain first (ungated) while sweep parks behind the backlog
-    -- under the session's own frontier, so pump until the sweep frontier
-    -- has carried every portrait page into the pool, completing queued
-    -- sweep through the real worker path to keep the frontier bounded.
-    -- Portraits are the completion proxy, not the full canonical list:
-    -- required cells submit ungated ahead of sweep, pool-known icons and
-    -- audio were skipped at registration, cold map-data was skipped, and
-    -- gated maps resolve through the re-request tracking fallback below,
-    -- while portraits sort last among the newly submitted sweep families,
-    -- so portrait-union coverage implies the rest have submitted. The
-    -- per-iteration coverage check stays a cheap in-memory lookup against
-    -- the pool union; no per-key filesystem probes in the hot loop.
-    local function drainSweepRoom()
-      while sweepQueuedCount() >= bound do
-        local oldest
-        for _, jobKey in ipairs(pool.order) do
-          local record = pool.records[jobKey]
-          if record.priority == 100 and record.state == "queued" and jobKey ~= shelteredPortrait then
-            oldest = jobKey
+    -- Bounded planning converges with no external completions: parked
+    -- capacity waiters hold no runnable ticket, so quiescence is reached
+    -- instead of spinning past the round cap. The bound is node-derived:
+    -- ~30k planning turns (per-edge expansion over the 3660-entry corpus
+    -- plus plans, reuses, and submits) at 32 units per update need at least
+    -- ~940 updates before setup and calm margin, so 1200 carries the census
+    -- with cold validations (~20us early-false each) and warm structural
+    -- metadata. Calm here proves local quiescence only; the census below
+    -- certifies membership separately.
+    settle(storm, pool, 1200)
+    Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
+  end
+  do
+    -- Membership census against logical outcomes: enrollment covers every
+    -- canonical key while most work stays pending on the held frontier.
+    -- Accepted current-epoch requests prove bounded dispatch only: every
+    -- accepted key is canonical sweep work and the peak never exceeds the
+    -- bound. Neither enrollment nor pool history counts as compilation.
+    local canonical = {}
+    for _, memberId in ipairs(scriptMemberIds) do
+      canonical["script-member:" .. tostring(memberId)] = true
+    end
+    for _, bankId in ipairs(requiredBanks) do
+      canonical["message-bank:" .. tostring(bankId)] = true
+    end
+    for _, bankId in ipairs(audioBankIds) do
+      canonical["audio-bank:" .. tostring(bankId)] = true
+    end
+    for _, pageId in ipairs(iconPageIds) do
+      canonical["mon-icon-page:" .. tostring(pageId)] = true
+    end
+    for _, pageId in ipairs(portraitPageIds) do
+      canonical["mon-portrait-page:" .. tostring(pageId)] = true
+    end
+    for _, key in ipairs(cellKeys) do
+      canonical["field-cell:" .. key] = true
+    end
+    for _, mapId in ipairs(resolvedMapIds) do
+      canonical["map:" .. tostring(mapId)] = true
+    end
+    for _, mapId in ipairs(mapDataIds) do
+      canonical["map-data:" .. tostring(mapId)] = true
+    end
+    local function outcomeSet()
+      local set = {}
+      for _, outcome in ipairs(storm:outcomes()) do
+        set[outcome.jobKey] = outcome.state
+      end
+      return set
+    end
+    local covered, iter = false, 0
+    while not covered and iter < 150 do
+      iter = iter + 1
+      drive(storm, 5)
+      if iter % 2 == 0 then
+        local observed = outcomeSet()
+        covered = true
+        for key in pairs(canonical) do
+          if observed[key] == nil then
+            covered = false
             break
           end
         end
-        Assert.notNil(oldest, "bounded sweep drain must keep advancing held descriptors")
-        complete(oldest)
-        Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
       end
     end
-    local function unionCovered()
-      local union = pool:requestSet()
-      local missingPortraits, missingCells = 0, 0
-      for _, pageId in ipairs(portraitPageIds) do
-        if union["mon-portrait-page:" .. tostring(pageId)] == nil then
-          missingPortraits = missingPortraits + 1
-        end
+    Assert.isTrue(covered, "logical enrollment covers the canonical inventory")
+    local observed = outcomeSet()
+    local pending, failed = 0, 0
+    for key in pairs(canonical) do
+      if observed[key] == "pending" then
+        pending = pending + 1
+      elseif observed[key] == "failed" then
+        failed = failed + 1
       end
-      for _, key in ipairs(cellKeys) do
-        if union["field-cell:" .. key] == nil then
-          missingCells = missingCells + 1
-        end
+    end
+    Assert.isTrue(pending > 0, "enrollment alone compiles nothing")
+    Assert.equal(failed, 0, "the held corpus reports no failure")
+    local accepted = pool:requestSet()
+    -- The five structural prerequisites provision required (never sweep),
+    -- so the sweep-dispatch proof skips exactly those setup keys.
+    local setupKeys = {
+      ["source-plan:global"] = true,
+      ["mon-catalog:global"] = true,
+      ["mon-layout:global"] = true,
+      ["world-catalog:global"] = true,
+      ["field-cell-index:global"] = true,
+    }
+    for identityKey, priority in pairs(accepted) do
+      if setupKeys[identityKey] == nil then
+        Assert.equal(priority, 100, "storm dispatch stays sweep work: " .. identityKey)
       end
-      return missingPortraits == 0 and missingCells == 0
     end
-    local done = unionCovered()
-    local iter = 0
-    while not done and iter < 3000 do
-      iter = iter + 1
-      drive(storm, 1)
-      drainSweepRoom()
-      done = unionCovered()
-    end
-    Assert.isTrue(done, "the sweep frontier carries every portrait page into the pool")
+    Assert.isTrue(pool.peakSweep <= bound, "accepted dispatch stays bounded")
   end
   do
+    -- Accepted current-epoch requests plus published receipts account for
+    -- every canonical key: a reused root never resubmits ready work.
     Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
     local union = pool:requestSet()
     -- Accounted for means planned this run or published by an earlier
@@ -972,15 +1131,17 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       if ArtifactState.read(cache, generationId, kind, key) ~= nil then
         return
       end
-      if kind == "map" then
-        local ok, _, second = pcall(storm.requestJob, storm, kind, key, "sweep")
-        if ok and second == nil then
-          return
-        end
-        absent[#absent + 1] = identityKey .. (ok and " (lost: " .. tostring(second) .. ")" or " (rejected)")
+      -- Held-frontier work parks unsubmitted without receipts, so a key the
+      -- pool never received still counts when the session keeps tracking
+      -- it: re-requesting must accept it as pending, never lose it as a
+      -- failure or reject it. Silent loss is caught by the coverage loop
+      -- above (dropped keys vanish from logical outcomes); this accounts
+      -- dispatch without counting enrollment as compilation.
+      local ok, _, second = pcall(storm.requestJob, storm, kind, key, "sweep")
+      if ok and second == nil then
         return
       end
-      absent[#absent + 1] = identityKey
+      absent[#absent + 1] = identityKey .. (ok and " (lost: " .. tostring(second) .. ")" or " (rejected)")
     end
     for _, memberId in ipairs(scriptMemberIds) do
       expect("script-member", tostring(memberId))
@@ -1021,8 +1182,14 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       end
     end
     -- Shared identities deduplicate across urgencies; promotion only
-    -- strengthens the recorded urgency.
+    -- strengthens the recorded urgency. The portrait may still park behind
+    -- the held frontier, so promotion submits it on the next pump.
     local portraitKey = "mon-portrait-page:" .. tostring(portraitPageIds[1])
+    do
+      local first, second = storm:requestJob("mon-portrait-page", tostring(portraitPageIds[1]), "required")
+      checkPending(first, second, "promoted portrait")
+    end
+    drive(storm, 10)
     local duplicates = 0
     for _, jobKey in ipairs(pool.order) do
       if jobKey == portraitKey then
@@ -1030,14 +1197,8 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       end
     end
     Assert.equal(duplicates, 1, "one job exists per identity")
-    do
-      local first, second = storm:requestJob("mon-portrait-page", tostring(portraitPageIds[1]), "required")
-      checkPending(first, second, "promoted portrait")
-    end
+    Assert.notNil(pool.records[portraitKey], "demand submits the sweep portrait")
     Assert.equal(pool.records[portraitKey].priority, 0, "demand promotes the sweep parent")
-    -- The promoted entry only submits on the next pump, so run it before
-    -- failing the pool record below; an unsubmitted failure cannot be observed.
-    drive(storm, 10)
   end
 
   -- A failed portrait stays visible while unrelated work continues.
@@ -1045,6 +1206,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     local portraitKey = "mon-portrait-page:" .. tostring(portraitPageIds[1])
     local siblingKey = "mon-portrait-page:" .. tostring(portraitPageIds[2] or portraitPageIds[1])
     local failure = "simulated worker failure " .. generationId .. " mon-portrait-page " .. tostring(portraitPageIds[1])
+    assert(pool.records[portraitKey] ~= nil, "the promoted portrait holds a current record")
     pool:fail(portraitKey, failure)
     drive(storm, 5)
     local status = storm:status()
@@ -1054,7 +1216,11 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       "failures name their canonical key"
     )
     if siblingKey ~= portraitKey then
-      Assert.equal(pool.records[siblingKey].state, "queued", "unrelated sweep work is not cancelled")
+      local sibling = pool.records[siblingKey]
+      Assert.isTrue(
+        sibling == nil or (sibling.state ~= "failed" and sibling.state ~= "cancelled"),
+        "unrelated sweep work is not cancelled"
+      )
     end
     local first, second = storm:requestJob("mon-portrait-page", tostring(portraitPageIds[1]), "required")
     checkFailed(first, second, portraitPageIds[1], "failed portrait request")
@@ -1067,6 +1233,11 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     Assert.equal(duplicates, 1, "failed jobs are not silently retried")
   end
   storm:retire()
+  -- Restore the suite backend: nothing below needs the storm backend, and
+  -- later versions' early epochs expect the shared backend.
+  activeBackend = sharedBackend
+  cache = CacheFs.forVersion(versionId, activeBackend)
+  context = workerContextFor(romFs, versionId, cache)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)

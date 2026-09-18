@@ -221,6 +221,140 @@ function T.failed_preparation_preserves_the_previous_map()
   Assert.isNil(backend:getInfo("staging/heartgold/map-preparation-test"))
 end
 
+-- Epoch ownership pins the census contract: a new selection inherits no
+-- live lookup, the same selection is idempotent, and identical keys
+-- restart as new-epoch interest while old physical slots stay busy.
+function T.selected_epoch_resets_current_lookup()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local function mapJob(key, mapId, priority, epoch)
+    return {
+      generationId = "epoch-generation",
+      epoch = epoch,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = "normal",
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = "epoch-generation" }, 1)
+    pool:request(mapJob("60", 60, 100, 1))
+    pool:request(mapJob("60", 60, 100, 1))
+    pool:selectGeneration({ versionId = "heartgold", generationId = "epoch-generation" }, 1)
+    pool:request(mapJob("60", 60, 100, 1))
+    pool:update()
+  end)
+  Assert.deepEqual(host.dispatched, { "map:60" }, "one job exists per identity within its epoch")
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = "epoch-generation" }, 2)
+  end)
+  Assert.equal(pool:status("map:60"), "unknown", "the new epoch inherits no live lookup")
+  withLove(host.love, function()
+    pool:request(mapJob("60", 60, 100, 2))
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:60"), "queued", "identical keys restart as new-epoch interest")
+  Assert.deepEqual(host.dispatched, { "map:60" }, "the new record waits on the still-busy old slot")
+  local diagnostics = pool:diagnostics()
+  Assert.isTrue(
+    tostring(diagnostics.workerStates):find("busy", 1, true) ~= nil,
+    "old physical slots stay busy across selections: " .. tostring(diagnostics.workerStates)
+  )
+  pool:shutdown()
+end
+
+-- Queued promotion reorders dispatch while running work holds its slot:
+-- strengthening a queued record promotes it, strengthening a running
+-- record neither preempts nor resubmits it.
+function T.queued_promotion_reorders_dispatch_while_running_holds()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local function mapJob(key, mapId, priority)
+    return {
+      generationId = "promotion-generation",
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = "normal",
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = "promotion-generation" }, 1)
+    pool:request(mapJob("60", 60, 100))
+    pool:request(mapJob("61", 61, 100))
+    pool:request(mapJob("60", 60, 0))
+    pool:update()
+  end)
+  Assert.deepEqual(host.dispatched, { "map:60" }, "the promoted queued job dispatches first")
+  Assert.equal(pool:status("map:60"), "running", "the promoted job executes")
+  Assert.equal(pool:status("map:61"), "queued", "unpromoted work waits")
+  withLove(host.love, function()
+    pool:request(mapJob("60", 60, 0))
+    pool:update()
+  end)
+  Assert.deepEqual(host.dispatched, { "map:60" }, "strengthening a running job resubmits nothing")
+  Assert.equal(pool:status("map:60"), "running", "running work is never preempted")
+  Assert.equal(pool:status("map:61"), "queued", "the waiter still waits on the busy slot")
+  pool:shutdown()
+end
+
+-- Retirement cancels logical queued work: the record reads cancelled, no
+-- new work is accepted into the retired selection, and the next epoch
+-- starts clean.
+function T.retired_selection_cancels_queued_work()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local function mapJob(key, mapId, priority, epoch)
+    return {
+      generationId = "retirement-generation",
+      epoch = epoch,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = "normal",
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = "retirement-generation" }, 1)
+    pool:request(mapJob("60", 60, 100, 1))
+    Assert.isTrue(pool:retireSelection(1), "retirement accepts its epoch")
+    Assert.isFalse(pool:retireSelection(1), "retirement does not repeat")
+  end)
+  Assert.equal(pool:status("map:60"), "cancelled", "retired queued work reads cancelled")
+  local ok = pcall(function()
+    withLove(host.love, function()
+      pool:request(mapJob("61", 61, 100, 1))
+    end)
+  end)
+  Assert.isFalse(ok, "the retired selection accepts no later work")
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = "retirement-generation" }, 2)
+    pool:request(mapJob("60", 60, 100, 2))
+  end)
+  Assert.equal(pool:status("map:60"), "queued", "the next epoch accepts the key as new work")
+  pool:shutdown()
+end
+
 function T.queued_jobs_are_deduplicated_and_priority_fifo()
   local CompilerPool = requirePool()
   local host = newThreadHost(4)
