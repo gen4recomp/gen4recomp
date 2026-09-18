@@ -446,4 +446,41 @@ function T.tests.failed_acquisition_releases_every_previously_acquired_image()
   end
 end
 
+-- The support backing must composite before the home controls it frames,
+-- and the focus cursor must composite after the control it highlights, so
+-- the upper controls stay visible above their backing.
+function T.tests.support_backing_draws_before_home_controls_and_focus_draws_last()
+  local graphics, calls = graphicsFake()
+  local manifest = namingManifest()
+  local naming = manifest.namingScreen
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake(),
+    drawSubject = function() end,
+    manifest = manifest,
+    imageLoader = imageLoader(),
+  })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  renderer:draw(snapshot({ row = 1, column = 9 }), layout)
+  renderer:dispose()
+
+  local order = {}
+  for index, draw in ipairs(calls.draws) do
+    local path = type(draw.image) == "table" and draw.image.path or nil
+    if path ~= nil and order[path] == nil then
+      order[path] = index
+    end
+  end
+  local backing = assert(order[naming.controls.backing.image], "the support backing draws")
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+    local control = assert(order[naming.controls[id].image], "the " .. id .. " control draws")
+    Assert.isTrue(backing < control, "the support backing draws before the " .. id .. " control")
+  end
+  local cursorAsset = naming.cursor.home.back.frames[1].asset
+  local cursor = assert(order[manifest.assets[cursorAsset].image], "the home focus cursor draws")
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+    Assert.isTrue(order[naming.controls[id].image] < cursor, "the focus cursor draws after the " .. id .. " control")
+  end
+end
+
 return T

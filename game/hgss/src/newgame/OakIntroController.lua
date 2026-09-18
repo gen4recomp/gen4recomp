@@ -97,7 +97,9 @@ function OakIntroController:tick(frames)
     if before ~= "name_edit" and self._timeline:phase() == "name_edit" then
       self._profile:enterNameEditor()
     elseif before == "name_edit" and self._timeline:phase() == "name_edit" then
-      self._profile:tickNameEditor()
+      -- The narrative timeline stays at 30 Hz; the naming sprite/pulse
+      -- presentation runs at the 60 Hz presentation cadence.
+      self._profile:tickNameEditor(2)
     end
   end
 end

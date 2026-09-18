@@ -207,6 +207,30 @@ function T.tests.focus_movement_resets_cursor_age_and_glow_while_same_cell_keeps
   Assert.equal(direct.glowAngle, 180, "direct focus resets the glow angle through the same path")
 end
 
+-- One presentation tick keeps its current meaning, while an explicit tick
+-- count advances every presentation clock by exactly that many steps so a
+-- 60 Hz host can drive two ticks per 30 Hz source tick.
+function T.tests.fixed_update_accepts_an_explicit_presentation_tick_count()
+  local controller = player()
+  controller:updateFixed(2)
+  local presentation = assert(controller:snapshot().presentation)
+  Assert.equal(presentation.subjectTick, 2, "two requested ticks advance the subject clock twice")
+  Assert.equal(presentation.cursorTick, 2, "two requested ticks advance the cursor clock twice")
+  Assert.equal(presentation.glowAngle, 220, "two requested ticks step the glow angle twice")
+  controller:updateFixed()
+  local defaulted = assert(controller:snapshot().presentation)
+  Assert.equal(defaulted.subjectTick, 3, "an omitted count still advances one tick")
+  controller:updateFixed(0)
+  Assert.deepEqual(controller:snapshot().presentation, defaulted, "zero requested ticks leave presentation state alone")
+  Assert.throws(function()
+    controller:updateFixed(-1)
+  end, "a negative tick count fails loudly")
+  Assert.throws(function()
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises a fractional tick count
+    controller:updateFixed(1.5)
+  end, "a fractional tick count fails loudly")
+end
+
 function T.tests.layout_keeps_controls_inside_canonical_surface_at_integer_scale()
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 768, height = 576 })
   Assert.deepEqual(layout.surface, { x = 256, y = 192, width = 256, height = 192 })

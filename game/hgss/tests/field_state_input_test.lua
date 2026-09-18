@@ -9,6 +9,7 @@ local BagScreenState = require("game.hgss.src.field.BagScreenState")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 
 local T = {}
 
@@ -99,6 +100,43 @@ function T.releasing_one_of_two_keys_for_the_same_direction_releases_its_own_sou
     { "pressDirection", "north", "key:w" },
     { "pressDirection", "north", "key:up" },
     { "releaseDirection", "key:w" },
+  })
+end
+
+-- The field honors the shared physical binding authority: every manifest
+-- action/cancel alias drives field input, so centralizing the aliases
+-- cannot silently drop a field key and the keypad Enter expansion flows.
+function T.shared_binding_aliases_drive_field_action_and_cancel()
+  local calls = {}
+  local input = {}
+  for _, name in ipairs({ "pressAction", "pressCancel" }) do
+    input[name] = function(_, ...)
+      calls[#calls + 1] = { name, ... }
+    end
+  end
+  local state = setmetatable({
+    runtime = {
+      input = input,
+      actionKeys = HgssInputBindings.actionKeys(),
+      cancelKeys = HgssInputBindings.cancelKeys(),
+      menuKeys = {},
+    },
+  }, FieldState)
+
+  for _, key in ipairs({ "z", "space", "return", "kpenter" }) do
+    state:keypressed(key)
+  end
+  for _, key in ipairs({ "x", "backspace" }) do
+    state:keypressed(key)
+  end
+
+  Assert.deepEqual(calls, {
+    { "pressAction", "key:z" },
+    { "pressAction", "key:space" },
+    { "pressAction", "key:return" },
+    { "pressAction", "key:kpenter" },
+    { "pressCancel", "key:x" },
+    { "pressCancel", "key:backspace" },
   })
 end
 

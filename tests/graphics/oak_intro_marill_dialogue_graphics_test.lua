@@ -136,7 +136,7 @@ local function reachFinalFullArtHold(state, female)
   end
   Assert.equal(state:view().phase, "name_edit")
   state:textinput("GOLD")
-  state:keypressed("return")
+  state:gamepadpressed(nil, "start")
   state:tick(26)
   finishDialogueBoundary(state)
   state:keypressed("return")

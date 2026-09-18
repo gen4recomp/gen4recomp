@@ -32,7 +32,7 @@ local NamingScreenController = {}
 ---@field result fun(self: NamingScreenController): table<string, string>?
 ---@field snapshot fun(self: NamingScreenController): table<string, unknown>
 ---@field text fun(self: NamingScreenController): string
----@field updateFixed fun(self: NamingScreenController)
+---@field updateFixed fun(self: NamingScreenController, ticks: integer?)
 NamingScreenController.__index = NamingScreenController
 
 local ROWS, COLUMNS = 6, 13
@@ -194,19 +194,31 @@ function NamingScreenController:_setCursor(row, column)
   return true
 end
 
--- One deterministic presentation step per source tick while the name is
--- still being edited. A submitted name freezes the clocks.
-function NamingScreenController:updateFixed()
-  if self._result ~= nil then
-    return
+-- Deterministic presentation steps while the name is still being edited.
+-- One tick is the historical single source-tick step; a host running the
+-- presentation clock faster than the narrative clock requests more ticks
+-- per source tick. A submitted name freezes the clocks.
+---@param ticks integer? requested presentation ticks; omitted means one
+function NamingScreenController:updateFixed(ticks)
+  if ticks == nil then
+    ticks = 1
   end
-  self._subjectTick = self._subjectTick + 1
-  self._cursorTick = self._cursorTick + 1
-  local angle = self._glowAngle + 20
-  if angle > 360 then
-    angle = 0
+  assert(
+    type(ticks) == "number" and ticks % 1 == 0 and ticks >= 0,
+    "naming presentation tick count must be a non-negative integer"
+  )
+  for _ = 1, ticks do
+    if self._result ~= nil then
+      return
+    end
+    self._subjectTick = self._subjectTick + 1
+    self._cursorTick = self._cursorTick + 1
+    local angle = self._glowAngle + 20
+    if angle > 360 then
+      angle = 0
+    end
+    self._glowAngle = angle
   end
-  self._glowAngle = angle
 end
 
 function NamingScreenController:_cell()

@@ -158,11 +158,12 @@ function OakProfileFlow:resolveConfirmation(selected)
   error("unknown Oak confirmation kind: " .. tostring(kind), 0)
 end
 
-function OakProfileFlow:tickNameEditor()
+---@param ticks integer? requested naming presentation ticks; omitted means one
+function OakProfileFlow:tickNameEditor(ticks)
   if self._naming == nil or self._naming:result() ~= nil then
     return
   end
-  self._naming:updateFixed()
+  self._naming:updateFixed(ticks)
 end
 
 function OakProfileFlow:enterNameEditor()
@@ -231,7 +232,7 @@ function OakProfileFlow:pressName(action)
   assert(self._naming ~= nil, "Oak naming screen is not active")
   local accepted = self._naming:press(action)
   self._name = self._naming:text()
-  if action == "confirm" or action == "submit" or action == "yes" then
+  if action == "confirm" or action == "submit" or action == "yes" or action == "start" then
     local result = self._naming:result()
     if result and result.kind == "submit" then
       accepted = self:submitName()

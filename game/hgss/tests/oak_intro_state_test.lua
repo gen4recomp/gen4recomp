@@ -369,8 +369,8 @@ function T.keyboard_and_gamepad_use_one_controller_buffer_path()
   state:keypressed("right")
   state:gamepadpressed({}, "a")
   state:keypressed("backspace")
-  Assert.deepEqual(controller.pressed, { "right", "confirm" })
-  Assert.equal(controller.deleted, 1)
+  Assert.deepEqual(controller.pressed, { "right", "confirm", "cancel" })
+  Assert.equal(controller.deleted, 0, "cancel keys delete through press, not the direct glyph path")
   Assert.deepEqual(controller.text, {})
 end
 
@@ -391,9 +391,48 @@ function T.confirm_capable_keys_activate_the_focused_virtual_key_like_gamepad_a(
   state:gamepadpressed(nil, "a")
   Assert.deepEqual(
     controller.pressed,
-    { "submit", "submit", "submit", "confirm" },
-    "keyboard Enter/KPEnter/Space must send the Naming Screen OK action; gamepad A keeps focused-key activation"
+    { "confirm", "confirm", "confirm", "confirm" },
+    "keyboard Enter/KPEnter/Space confirm the focused naming target like gamepad A; only Start submits"
   )
+end
+
+-- A consumed action-key press never becomes literal text: Space confirms the
+-- focused naming target through keypressed, so textinput must not also
+-- insert a space glyph, while direct typing of other glyphs still inserts.
+function T.consumed_action_key_text_never_inserts_a_literal_space_or_newline()
+  local state, controller = stateHarness()
+  Assert.equal(controller.phase, "name_edit")
+  state:textinput(" ")
+  state:textinput("\n")
+  state:textinput("\r")
+  Assert.deepEqual(controller.text, {}, "consumed Space/Return text never inserts a literal glyph")
+  state:textinput("é")
+  Assert.deepEqual(controller.text, { "é" }, "direct typing of other glyphs still inserts")
+end
+
+-- Physical action keys confirm the focused naming cell like gamepad A:
+-- they activate the focused glyph or control instead of submitting, while
+-- cancel keys delete one glyph and Start submits.
+function T.physical_action_cancel_and_start_follow_naming_semantics()
+  local state, controller = stateHarness()
+  Assert.equal(controller.phase, "name_edit")
+  state:keypressed("space")
+  state:keypressed("return")
+  state:keypressed("kpenter")
+  state:keypressed("z")
+  Assert.deepEqual(
+    controller.pressed,
+    { "confirm", "confirm", "confirm", "confirm" },
+    "Space/Return/KPEnter/Z confirm the focused naming target instead of submitting"
+  )
+  state:keypressed("x")
+  Assert.deepEqual(
+    controller.pressed,
+    { "confirm", "confirm", "confirm", "confirm", "cancel" },
+    "X deletes one glyph through the naming cancel path"
+  )
+  state:gamepadpressed(nil, "start")
+  Assert.deepEqual(controller.pressed[#controller.pressed], "start", "Start submits regardless of the focused cell")
 end
 
 function T.a_held_confirm_key_does_not_repeat_activation()
@@ -403,7 +442,7 @@ function T.a_held_confirm_key_does_not_repeat_activation()
   state:keypressed("return", "return", true)
   Assert.deepEqual(
     controller.pressed,
-    { "submit" },
+    { "confirm" },
     "a held physical key must not activate the focused virtual key more than once"
   )
 end
