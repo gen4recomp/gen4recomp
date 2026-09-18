@@ -605,6 +605,19 @@ function FieldUiFixture.startMenuCache()
   return cache
 end
 
+-- The generated Start Menu label roles: opaque source ink with a
+-- compositing-transparent background, so glyph background-class pixels
+-- reveal the already-rendered chrome. Returns a fresh table per call so
+-- tests never share mutable manifest state.
+---@return table
+function FieldUiFixture.startMenuLabelPalette()
+  return {
+    foreground = { r = 248, g = 248, b = 248, a = 1 },
+    shadow = { r = 112, g = 112, b = 112, a = 1 },
+    background = { r = 40, g = 48, b = 56, a = 0 },
+  }
+end
+
 -- Adds the start-menu icon-sprite contract to a fixture manifest in
 -- place: the thirteen retail icon rows (sprite rows with source-composed
 -- normal/selected visual records, the Bag female pair, the trainer-card
@@ -690,6 +703,7 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
     ["vanilla.options"] = 6,
   }
   startMenu.interactive = FieldUiFixture.startMenuInteractive()
+  startMenu.labelPalette = FieldUiFixture.startMenuLabelPalette()
   startMenu.chrome = {
     main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
     sub = { asset = "hgss.start_menu.chrome_sub" },

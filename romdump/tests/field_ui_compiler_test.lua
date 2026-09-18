@@ -249,6 +249,25 @@ local function paletteOr16(colors)
   return palette16()
 end
 
+-- The Start Menu SUB palette fixture: five 16-color banks so label bank 4
+-- (colors 64..79) resolves the label roles. The first four banks repeat
+-- the shared 64-color pattern, so SUB chrome pixels compiled through the
+-- lower banks are unchanged; bank 4 uses a distinct family so a bank
+-- mix-up renders visibly wrong colors instead of coincidentally matching.
+local function subPaletteData()
+  local colors = {}
+  for i = 1, 16 do
+    colors[i] = i * 0x39B
+  end
+  for i = 17, 64 do
+    colors[i] = ((i - 1) % 16 + 1) * 0x39B
+  end
+  for i = 65, 80 do
+    colors[i] = 0x4000 + (i - 64) * 0x123
+  end
+  return paletteData(colors)
+end
+
 -- A signpost palette whose bank for type `t` slot `s` is an unmistakable
 -- (r=t, g=s, b=0) RGB555 signature: with only 4 test types and 16 slots,
 -- both fit their own 5-bit channel exactly, so no two (type, slot) pairs
@@ -394,7 +413,7 @@ local function fixture(opts)
   startMenuMembers[15] = lz10Wrap(palette16())
   startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
   startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
-  startMenuMembers[8] = lz10Wrap(palette16())
+  startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
   do
     local entries = {}
@@ -870,7 +889,7 @@ function T.start_menu_sub_chrome_compiles_the_window_grid()
     tamper = function(alias, members)
       if alias == "start_menu" then
         withIconBank(members)
-        members[8] = lz10Wrap(palette16())
+        members[8] = lz10Wrap(subPaletteData())
         members[9] = lz10Wrap(charData(192))
         local entries = {}
         for i = 1, 1024 do
@@ -1876,6 +1895,25 @@ function T.start_menu_compiles_the_seven_source_position_records()
     assert(startMenu.interactive, "the start menu section must publish its interactive position records")
   Assert.deepEqual(interactive, FieldUiFixture.startMenuInteractive())
   Assert.isNil(startMenu.slots, "the normal selector publishes no synthetic slot grid")
+end
+
+-- The start menu label roles compile as source-independent colors with a
+-- compositing-transparent background: labels resolve without runtime
+-- palette-bank knowledge and glyph background pixels reveal chrome.
+function T.start_menu_compiles_label_roles_with_transparent_background()
+  local romFs, sha1, hashLua = iconComposedFixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  local labelPalette = assert(startMenu.labelPalette, "the start menu section must publish its generated label palette")
+  for _, role in ipairs({ "foreground", "shadow", "background" }) do
+    local color = assert(labelPalette[role], "the label palette must carry " .. role)
+    Assert.isTrue(type(color.r) == "number", "the " .. role .. " role carries red")
+    Assert.isTrue(type(color.g) == "number", "the " .. role .. " role carries green")
+    Assert.isTrue(type(color.b) == "number", "the " .. role .. " role carries blue")
+  end
+  Assert.equal(labelPalette.foreground.a, 1, "the label foreground stays opaque")
+  Assert.equal(labelPalette.shadow.a, 1, "the label shadow stays opaque")
+  Assert.equal(labelPalette.background.a, 0, "the label background stays transparent over chrome")
 end
 
 function T.start_menu_icon_visuals_match_the_shared_animation_composition()

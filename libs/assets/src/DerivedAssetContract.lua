@@ -42,6 +42,12 @@
 -- (type, map) rect is a 6x4 arrangement (48px wide, 32px tall) composed at
 -- build time from the original 24 8x8 tiles, instead of a raw 192x8 strip.
 --
+-- fieldUi schema 13: the Start Menu section carries the source-independent
+-- label palette roles (foreground/shadow from the label window palette bank,
+-- background as the same source RGB with zero alpha so glyph
+-- background-class pixels reveal already-rendered chrome instead of
+-- repainting it). A stale cache without that record must fail readiness.
+--
 -- fieldUi schema 12: the normal naming section carries full generated
 -- subject/cursor animations with corrected source geometry (the page
 -- overlay rests at x=11, home controls carry their post-parent-transform
@@ -214,7 +220,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v12",
+  schema = "g4-field-ui-v13",
 }
 
 DerivedAssetContract.intro = {

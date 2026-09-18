@@ -336,4 +336,41 @@ function T.normal_selector_carries_positions_and_composed_visuals(romFs, version
   Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
 end
 
+-- Labels resolve through the start menu SUB palette bank: the packed retail
+-- label color selects foreground/shadow/background slots in palette bank 4
+-- of the SUB palette resource, never the generic field font palette. The
+-- generated background stays transparent so glyph background pixels reveal
+-- already-rendered chrome while ink stays opaque.
+function T.labels_resolve_through_the_sub_palette_bank(romFs, version)
+  local startMenu = selection()
+  local palette, paletteErr = G2dDecoder.decodePalette(
+    memberBytes(romFs, startMenu.alias, startMenu.subBackgroundPaletteMember),
+    { label = "start menu sub palette" }
+  )
+  assert(palette, paletteErr and paletteErr.message)
+  local function slot(bank, slotId)
+    return assert(
+      palette.colors[bank * 16 + slotId + 1],
+      version .. " SUB palette bank " .. bank .. " slot " .. slotId .. " exists"
+    )
+  end
+  local bundle, compiled = compiledStartMenu(romFs)
+  local labelPalette =
+    assert(compiled.labelPalette, version .. " start menu section must publish its generated label palette")
+  local foreground, shadow, background = slot(4, 14), slot(4, 2), slot(4, 0)
+  Assert.equal(labelPalette.foreground.r, foreground.r, version .. " label foreground red")
+  Assert.equal(labelPalette.foreground.g, foreground.g, version .. " label foreground green")
+  Assert.equal(labelPalette.foreground.b, foreground.b, version .. " label foreground blue")
+  Assert.equal(labelPalette.shadow.r, shadow.r, version .. " label shadow red")
+  Assert.equal(labelPalette.shadow.g, shadow.g, version .. " label shadow green")
+  Assert.equal(labelPalette.shadow.b, shadow.b, version .. " label shadow blue")
+  Assert.equal(labelPalette.background.r, background.r, version .. " label background red")
+  Assert.equal(labelPalette.background.g, background.g, version .. " label background green")
+  Assert.equal(labelPalette.background.b, background.b, version .. " label background blue")
+  Assert.equal(labelPalette.foreground.a, 1, version .. " label foreground stays opaque")
+  Assert.equal(labelPalette.shadow.a, 1, version .. " label shadow stays opaque")
+  Assert.equal(labelPalette.background.a, 0, version .. " label background stays transparent over chrome")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
+end
+
 return require("tests.rom.support.RomSuite").fromFacts(T)

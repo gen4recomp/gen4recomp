@@ -183,6 +183,7 @@ local function baseManifest()
         main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
         sub = { asset = "hgss.start_menu.chrome_sub" },
       },
+      labelPalette = FieldUiFixture.startMenuLabelPalette(),
     },
     trainerCard = { front = { x = 0, y = 0, width = 256, height = 192 } },
     namingScreen = {

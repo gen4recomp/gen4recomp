@@ -511,6 +511,35 @@ function T.restores_graphics_state_after_draw(scope)
   assertRestored(canvas, shader)
 end
 
+-- Labels resolve through the generated start menu record even in the real
+-- graphics composition: the text path receives the manifest roles with a
+-- transparent background, never the generic font palette slots.
+function T.labels_use_the_generated_palette_in_graphics_composition(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  manifest.startMenu.labelPalette = {
+    foreground = { r = 248, g = 248, b = 248, a = 1 },
+    shadow = { r = 112, g = 112, b = 112, a = 1 },
+    background = { r = 40, g = 48, b = 56, a = 0 },
+  }
+  local text = recordingText()
+  text.fontDef = nil
+  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cache, manifest = manifest, text = text }))
+  renderer:draw({
+    selectedPosition = 0,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+    },
+  }, canonicalPlacement())
+  Assert.equal(#text.draws, 1, "the resolved label reaches the palette-driven text path")
+  Assert.deepEqual(
+    text.draws[1].palette.foreground,
+    manifest.startMenu.labelPalette.foreground,
+    "the graphics composition uses the generated foreground"
+  )
+  Assert.equal(text.draws[1].palette.background.a, 0, "the graphics composition keeps chrome visible")
+end
+
 -- Release is the contract here; it is still scoped so a failed assertion does
 -- not leak the renderer. The scope's later release exercises repeat safety.
 function T.release_frees_the_owned_images(scope)
