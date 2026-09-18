@@ -1229,7 +1229,7 @@ function T.name_edit_presentation_advances_twice_per_source_tick()
   local advanced = assert(state:view().namingScreen.presentation)
   Assert.equal(advanced.subjectTick, 10, "five source ticks advance the subject clock ten steps")
   Assert.equal(advanced.cursorTick, 10, "five source ticks advance the cursor clock ten steps")
-  Assert.equal(advanced.glowAngle, 0, "five source ticks step the glow angle ten times with wrap")
+  Assert.equal(advanced.glowAngle, 280, "five source ticks step the glow angle ten times at ten degrees each")
   state:tick(0)
   Assert.deepEqual(
     state:view().namingScreen.presentation,
