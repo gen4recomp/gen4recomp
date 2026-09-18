@@ -12,7 +12,6 @@ local ImageButton = require("libs.ui.src.ImageButton")
 local MainMenuRenderer = {}
 MainMenuRenderer.__index = MainMenuRenderer
 local INK = { 0.12, 0.18, 0.25, 1 }
-local MUTED = { 0.3, 0.38, 0.42, 1 }
 local ERROR_INK = { 0.65, 0.22, 0.22, 1 }
 local MARK = { 0.85, 0.88, 0.9, 1 }
 local MARK_EDGE = { 0.35, 0.4, 0.45, 1 }
@@ -53,8 +52,25 @@ local function rolePalette(foreground)
 end
 
 local TEXT_PALETTE = rolePalette(INK)
-local MUTED_PALETTE = rolePalette(MUTED)
 local ERROR_PALETTE = rolePalette(ERROR_INK)
+
+-- Retail profile-information palette sampled from the reference card: bright
+-- blue copy with a dark blue shadow over a transparent background so the
+-- card face stays visible beneath the glyph masks. Only the three profile
+-- rows use it; headings, errors, and popups keep their existing palettes.
+local PROFILE_INFO_PALETTE = {
+  foreground = { r = 0, g = 113, b = 251 },
+  shadow = { r = 0, g = 81, b = 251 },
+  background = { r = 0, g = 0, b = 0, a = 0 },
+}
+
+-- Centered profile-block share of the Continue body width.
+local PROFILE_BLOCK_WIDTH_FRACTION = 0.62
+
+-- Generated font defs carry their ROM line advance (font-0: 16). Headless
+-- text doubles carry no fontDef, so fall back to that same advance rather
+-- than inventing per-scale offsets; every use below multiplies by uiScale.
+local FALLBACK_LINE_HEIGHT = 16
 
 local function drawNoContent() end
 
@@ -93,29 +109,6 @@ local function drawInset(graphics, rect, scale, selected)
   })
 end
 
--- Selected rim ring around a save frame whose overflow child stays neutral.
--- The ring is the resolved rim rectangle minus the resolved inner-border
--- rectangle, so no selected fill is ever painted underneath the child
--- control. Rim/inner insets come from the shared resolve; only the
--- ring-minus-hole composition lives here.
----@param graphics love.graphics
----@param rect { x: number, y: number, width: number, height: number }
----@param scale number
-local function drawFrameOutline(graphics, rect, scale)
-  local resolved =
-    ImageButton.resolve({ rect = rect, scale = scale, cornerRadius = CARD_RADIUS, innerBorderWidth = CARD_INNER_WIDTH })
-  local rimCell = assert(resolved.rim, "resolved card rim is required")
-  local innerCell = assert(resolved.innerBorder, "resolved card inner border is required")
-  ---@cast rimCell { rect: { x: number, y: number, width: number, height: number } }
-  ---@cast innerCell { rect: { x: number, y: number, width: number, height: number } }
-  local rim, inner = rimCell.rect, innerCell.rect
-  setColor(graphics, CARD_SELECTED_RIM)
-  graphics.rectangle("fill", rim.x, rim.y, rim.width, inner.y - rim.y)
-  graphics.rectangle("fill", rim.x, inner.y + inner.height, rim.width, rim.y + rim.height - inner.y - inner.height)
-  graphics.rectangle("fill", rim.x, inner.y, inner.x - rim.x, inner.height)
-  graphics.rectangle("fill", inner.x + inner.width, inner.y, rim.x + rim.width - inner.x - inner.width, inner.height)
-end
-
 local function drawPaletteText(graphics, text, value, x, y, scale, palette)
   graphics.setColor(1, 1, 1, 1)
   graphics.push()
@@ -136,6 +129,37 @@ local function cardTitle(item)
   return item.errorSummary or "Save unavailable"
 end
 
+-- Continue-card profile rows in one centered block: labels share the block
+-- left edge while values right-align to the block right edge through the
+-- generated-font measure. The vertical area below the heading splits into
+-- three equal bands with each row vertically centered by the font line
+-- advance times the menu scale. The badge count is presentation-only.
+---@param graphics love.graphics
+---@param text table<string, function>
+---@param body { x: number, y: number, width: number, height: number }
+---@param regionTop number
+---@param scale integer
+---@param lineHeight number
+---@param playerName string
+---@param playTimeLabel string
+local function drawProfileRows(graphics, text, body, regionTop, scale, lineHeight, playerName, playTimeLabel)
+  local blockWidth = body.width * PROFILE_BLOCK_WIDTH_FRACTION
+  local blockLeft = body.x + (body.width - blockWidth) / 2
+  local blockRight = blockLeft + blockWidth
+  local bandHeight = (body.y + body.height - regionTop) / 3
+  local rows = {
+    { label = "PLAYER", value = playerName },
+    { label = "TIME", value = playTimeLabel },
+    { label = "BADGES", value = "0" },
+  }
+  for index, row in ipairs(rows) do
+    local y = regionTop + (index - 1) * bandHeight + (bandHeight - lineHeight) / 2
+    local valueWidth = text:textWidth(row.value) * scale
+    drawPaletteText(graphics, text, row.label, blockLeft, y, scale, PROFILE_INFO_PALETTE)
+    drawPaletteText(graphics, text, row.value, blockRight - valueWidth, y, scale, PROFILE_INFO_PALETTE)
+  end
+end
+
 -- Presentation-only ASCII casing: saved names and model values keep their
 -- stored form; only the drawn copy is uppercased. Bytes without an ASCII
 -- lowercase pair pass through unchanged.
@@ -143,13 +167,6 @@ local function displayUpper(value)
   return (value:gsub("[a-z]", function(c)
     return string.char(c:byte() - 32)
   end))
-end
-
-local function textScaleFor(uiScale)
-  if uiScale == 1 then
-    return 1
-  end
-  return math.min(3, uiScale + 1)
 end
 
 ---@param options { text: table<string, function>, versionId: string, graphics?: love.graphics }
@@ -182,9 +199,13 @@ function MainMenuRenderer:draw(view)
   ---@type integer
   local scale = layout.uiScale or 1
   assert(type(scale) == "number" and scale == math.floor(scale) and scale >= 1, "Main Menu scale must be an integer")
-  -- Generated-font glyph transform only; card geometry and padding stay on
-  -- the layout integer scale so hit rectangles never move with typography.
-  local textScale = textScaleFor(scale)
+  -- Generated-font glyphs transform at exactly the layout integer scale so
+  -- copy tracks card geometry one-for-one; padding stays on the same scale
+  -- so hit rectangles never move with typography.
+  local textScale = scale
+  local shaped = text --[[@as { fontDef: FieldFontDef|nil }]]
+  local fontDef = shaped.fontDef
+  local lineHeight = ((fontDef and fontDef.lineHeight) or FALLBACK_LINE_HEIGHT) * scale
 
   local red, green, blue, alpha = graphics.getColor()
   local lineWidth = graphics.getLineWidth()
@@ -218,31 +239,25 @@ function MainMenuRenderer:draw(view)
         local overflowFocused = focus.region == "saves"
           and focus.saveId == (item.saveId or item.id)
           and focus.lane == "overflow"
-        drawCard(graphics, card.frame, scale, false)
-        if bodyFocused then
-          drawFrameOutline(graphics, card.frame, scale)
-        end
+        -- Body focus selects the outer card through the shared rounded rim;
+        -- overflow focus leaves the parent neutral for its own inset chrome.
+        drawCard(graphics, card.frame, scale, bodyFocused)
         local pad = CARD_INSET * scale
         local headingY = card.frame.y + CARD_INSET * scale
         drawPaletteText(graphics, text, displayUpper("CONTINUE"), card.frame.x + pad, headingY, textScale, TEXT_PALETTE)
         if item.canContinue then
-          drawPaletteText(
+          -- Stored values keep their exact form; only headings and labels
+          -- are uppercased presentation copy. The badge count is the only
+          -- count current gameplay supports, rendered without a save field.
+          drawProfileRows(
             graphics,
             text,
-            displayUpper(cardTitle(item)),
-            card.frame.x + pad,
-            headingY + 20 * scale,
-            textScale,
-            TEXT_PALETTE
-          )
-          drawPaletteText(
-            graphics,
-            text,
-            displayUpper(item.playTimeLabel or "0:00"),
-            card.frame.x + pad,
-            headingY + 40 * scale,
-            textScale,
-            MUTED_PALETTE
+            card.body,
+            headingY + lineHeight,
+            scale,
+            lineHeight,
+            item.playerName or "Save unavailable",
+            item.playTimeLabel or "0:00"
           )
         else
           drawPaletteText(
