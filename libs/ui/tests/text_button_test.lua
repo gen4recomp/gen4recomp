@@ -137,7 +137,7 @@ function T.preserves_focus_and_supports_one_role_override()
     draw = function() end,
   }
   TextButton.draw(g3, button, { label = "Yes", selected = true, text = text3, colors = { faceTop = { 0, 0, 1, 1 } } })
-  Assert.equal(calls3.setColor[6][3], 1)
+  Assert.equal(calls3.setColor[5][3], 1)
   Assert.equal(calls3.setColor[1][1], 66 / 255)
 end
 
@@ -425,21 +425,16 @@ function T.face_divider_is_source_pixel_chrome()
   )
   -- The source inner border stops at the midway point: no intermediate-color
   -- fill may extend past the divider's bottom edge into the dark half. The
-  -- ring's top portion ends exactly at the split; only the divider reaches
-  -- one scale below it.
+  -- The inner border surrounds the full face: its ring is painted once
+  -- around the whole interior, and the divider spans the split in the
+  -- same color to join the ring edges across the two-tone face.
   local innerR2, innerG2, innerB2 = 25 / 255, 189 / 255, 197 / 255
   local function isInner(color)
     return math.abs(color[1] - innerR2) < 1e-6
       and math.abs(color[2] - innerG2) < 1e-6
       and math.abs(color[3] - innerB2) < 1e-6
   end
-  for _, r in ipairs(calls1.rectangles) do
-    if r.mode == "fill" and isInner(r.color) then
-      Assert.isTrue(r.y + r.h <= button1.face.splitY + 1 + 1e-9, "intermediate must stop at the divider bottom edge")
-    end
-  end
-  -- The intermediate ring portion terminates exactly at the split.
-  local ringTopFound = false
+  local ringFound = false
   for _, r in ipairs(calls1.rectangles) do
     if
       r.mode == "fill"
@@ -447,12 +442,12 @@ function T.face_divider_is_source_pixel_chrome()
       and r.x == button1.innerBorder.rect.x
       and r.y == button1.innerBorder.rect.y
       and r.w == button1.innerBorder.rect.width
+      and r.h == button1.innerBorder.rect.height
     then
-      Assert.equal(r.y + r.h, button1.face.splitY, "the intermediate ring must stop at the midway point")
-      ringTopFound = true
+      ringFound = true
     end
   end
-  Assert.isTrue(ringTopFound, "the intermediate ring top portion must be present down to the split")
+  Assert.isTrue(ringFound, "the full inner border ring must be painted in the intermediate color")
   -- unselected must not emit focus line widths beyond the final restore
   Assert.equal(#calls1.lineWidths, 1, "unselected divider must not add line width changes")
   Assert.equal(calls1.lineWidths[1], 1)

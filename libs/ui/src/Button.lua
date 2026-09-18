@@ -153,18 +153,12 @@ function Button.draw(graphics, button, palette)
   drawRoundedShape(graphics, button.border)
   graphics.setColor(rim[1], rim[2], rim[3], rim[4])
   drawRoundedShape(graphics, button.rim)
-  -- The inner border stops at the face midway point: its base is the dark
-  -- face color and only the top portion keeps the intermediate color, the
-  -- same split the face itself uses below.
-  local innerBorderShape = assert(button.innerBorder, "resolved button inner border is required")
-  local innerRect = assert(innerBorderShape.rect, "resolved button inner border rectangle is required")
-  local innerRadius = assert(innerBorderShape.cornerRadius, "button inner border corner radius is required")
+  -- The inner border surrounds the full face: it is painted once in the
+  -- intermediate color, then the split face tones are drawn inside it.
+  graphics.setColor(innerBorder[1], innerBorder[2], innerBorder[3], innerBorder[4])
+  drawRoundedShape(graphics, button.innerBorder)
   local faceShape = assert(button.face, "resolved button face is required")
   local splitY = assert(faceShape.splitY, "resolved button face split is required")
-  graphics.setColor(faceBottom[1], faceBottom[2], faceBottom[3], faceBottom[4])
-  drawRoundedShape(graphics, button.innerBorder)
-  graphics.setColor(innerBorder[1], innerBorder[2], innerBorder[3], innerBorder[4])
-  drawRoundedTopPortion(graphics, innerRect, innerRadius, splitY)
   graphics.setColor(faceBottom[1], faceBottom[2], faceBottom[3], faceBottom[4])
   drawRoundedShape(graphics, button.face)
   graphics.setColor(faceTop[1], faceTop[2], faceTop[3], faceTop[4])

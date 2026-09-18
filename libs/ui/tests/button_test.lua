@@ -187,6 +187,52 @@ function T.draw_uses_rounded_rectangles_and_face_split()
   end
 end
 
+function T.draw_paints_the_full_inner_border_before_the_split_face()
+  local Button = buttonModule()
+  local resolved = Button.resolve(spec({ rect = rect(0, 0, 100, 60), cornerRadius = 4 }))
+  local paints = {}
+  local current = { 0, 0, 0, 0 }
+  local graphics = {
+    setColor = function(r, g, b, a)
+      current = { r, g, b, a }
+    end,
+    rectangle = function(_, x, y, w, h)
+      paints[#paints + 1] = { color = { current[1], current[2], current[3], current[4] }, x = x, y = y, w = w, h = h }
+    end,
+  }
+  local palette = {
+    border = { 1, 0, 0, 1 },
+    rim = { 0, 1, 0, 1 },
+    innerBorder = { 0, 0, 1, 1 },
+    faceTop = { 0.5, 0.5, 0.5, 1 },
+    faceBottom = { 0.2, 0.2, 0.2, 1 },
+  }
+  Button.draw(graphics, resolved, palette)
+  local inner = resolved.innerBorder.rect
+  local fullInnerPaints = {}
+  for _, p in ipairs(paints) do
+    if p.x == inner.x and p.y == inner.y and p.w == inner.width and p.h == inner.height then
+      fullInnerPaints[#fullInnerPaints + 1] = p
+    end
+  end
+  Assert.equal(#fullInnerPaints, 1, "the full inner border rectangle is painted exactly once")
+  Assert.deepEqual(fullInnerPaints[1].color, { 0, 0, 1, 1 }, "the full inner border uses the inner border role")
+  local face = resolved.face.rect
+  local fullFacePaints = 0
+  local faceTopPaints = 0
+  for _, p in ipairs(paints) do
+    if p.x == face.x and p.y == face.y and p.w == face.width and p.h == face.height then
+      Assert.deepEqual(p.color, { 0.2, 0.2, 0.2, 1 }, "the full face uses the face bottom role")
+      fullFacePaints = fullFacePaints + 1
+    elseif p.x == face.x and p.y == face.y and p.w == face.width then
+      Assert.deepEqual(p.color, { 0.5, 0.5, 0.5, 1 }, "the face top portion keeps the face top role")
+      faceTopPaints = faceTopPaints + 1
+    end
+  end
+  Assert.equal(fullFacePaints, 1, "the full face rectangle is painted once")
+  Assert.isTrue(faceTopPaints >= 1, "the face top tone remains visible")
+end
+
 function T.draw_with_zero_corner_uses_rectangles_without_radius()
   local Button = buttonModule()
   local resolved = Button.resolve(spec({ cornerRadius = 0 }))
