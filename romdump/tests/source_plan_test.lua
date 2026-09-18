@@ -191,6 +191,42 @@ local function contains(list, value)
   return false
 end
 
+-- A published warm inventory: valid plan file plus its publication
+-- receipt, so the source owner validates ready without worker work.
+-- Membership mirrors the requested members so adopted closure does not
+-- exclude them.
+local function publishWarmSource(cacheFs, generation, firstMember, lastMember)
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local members = {}
+  for memberId = firstMember or 1, lastMember or 0 do
+    members[#members + 1] = { memberId = memberId }
+  end
+  cacheFs:writeLua(SourcePlan.PATH, {
+    schema = SourcePlan.SCHEMA,
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    generationId = generation,
+    producerId = PRODUCER_ID,
+    world = {
+      maps = { { id = 7 }, { id = 9 } },
+      analysis = { excluded = { { id = 3, reason = "placeholder header" } } },
+    },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
+    scriptPlan = { members = members, generationKey = "synthetic-generation" },
+    audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapCellKeys = { [7] = {}, [9] = {} },
+  })
+  cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "source-plan",
+    key = "global",
+    marker = SourcePlan.marker(generation),
+  })
+end
+
 local function openSession(generation, pool, epoch)
   return InteractiveCacheBuild.new({
     identity = identity(generation),
@@ -411,6 +447,10 @@ function T.repeated_scheduling_passes_do_bounded_work_with_urgent_demand_first()
   local realValidate = ArtifactJobs.validate
   local counting = { enabled = false, dependencies = 0, validate = 0, order = {} }
   local patches = plannerPatches(calls, { members = scriptMembers(1, 41) })
+  -- Members report readiness only after final dependencies: the source
+  -- inventory is published upfront so the pass bounds measure planning,
+  -- not missing membership.
+  publishWarmSource(realForVersion("heartgold", backend), "bounded-planning-generation", 1, 41)
   patches[#patches + 1] = {
     target = CacheFs,
     name = "forVersion",
@@ -478,7 +518,7 @@ function T.repeated_scheduling_passes_do_bounded_work_with_urgent_demand_first()
       return snapshot
     end
     local first = measuredUpdate()
-    -- Budget-parked sweep work rejoins planning on later passes even though
+    -- Budget-paused sweep work rejoins planning on later passes even though
     -- the pool reports no progress, until every demand settles worker-free.
     local passes = { first }
     local settled = false
@@ -502,18 +542,24 @@ function T.repeated_scheduling_passes_do_bounded_work_with_urgent_demand_first()
     result.first.nodes <= 32,
     "one scheduling pass advances at most 32 planning nodes, got " .. tostring(result.first.nodes)
   )
-  local sweepPosition, requiredPosition = nil, nil
-  for position, jobKey in ipairs(result.first.order) do
-    if jobKey == "script-member:1" then
-      sweepPosition = position
-    end
-    if jobKey == "script-member:41" then
-      requiredPosition = position
+  local requiredAt, sweepAt = nil, nil
+  for index, pass in ipairs(result.passes) do
+    for position, jobKey in ipairs(pass.order) do
+      if jobKey == "script-member:41" and requiredAt == nil then
+        requiredAt = { index, position }
+      end
+      if jobKey == "script-member:1" and sweepAt == nil then
+        sweepAt = { index, position }
+      end
     end
   end
-  Assert.notNil(requiredPosition, "the urgent demand is planned during the pass")
-  Assert.notNil(sweepPosition, "sweep demand is planned during the pass")
-  Assert.isTrue(requiredPosition < sweepPosition, "urgent demand is planned before sweep work")
+  Assert.notNil(requiredAt, "the urgent demand is planned during the passes")
+  Assert.notNil(sweepAt, "sweep demand is planned during the passes")
+  assert(requiredAt ~= nil and sweepAt ~= nil, "planning order needs both demands")
+  Assert.isTrue(
+    requiredAt[1] < sweepAt[1] or (requiredAt[1] == sweepAt[1] and requiredAt[2] < sweepAt[2]),
+    "urgent demand is planned before sweep work"
+  )
   for index, pass in ipairs(result.passes) do
     Assert.isTrue(pass.nodes <= 32, "repeat pass " .. tostring(index) .. " stays bounded, got " .. tostring(pass.nodes))
   end
@@ -532,6 +578,10 @@ function T.large_sweep_corpus_keeps_settling_worker_free_demand()
   -- node and planning would stall with an idle pool.
   local corpusSize = 30000
   local counting = { enabled = false, dependencies = 0, validate = 0 }
+  -- Members report readiness only after final dependencies: the source
+  -- inventory is published upfront so the pass bounds measure planning,
+  -- not missing membership.
+  publishWarmSource(realForVersion("heartgold", backend), "large-sweep-generation", 1, 30000)
   local patches = plannerPatches(calls, { members = scriptMembers(1, 2) })
   patches[#patches + 1] = {
     target = CacheFs,
@@ -569,6 +619,17 @@ function T.large_sweep_corpus_keeps_settling_worker_free_demand()
   local result = withPatched(patches, function()
     local pool = recordingPool()
     local session = openSession("large-sweep-generation", pool)
+    -- Metadata owners are demanded first, as milestones do: a lazily
+    -- registered owner behind thousands of waiters would only take its
+    -- FIFO turn after them all.
+    session:requestJob("source-plan", "global", "sweep")
+    for _ = 1, 5 do
+      session:update()
+      if session.sourceLoaded then
+        break
+      end
+    end
+    Assert.isTrue(session.sourceLoaded, "the demanded inventory adopts first")
     for memberId = 1, corpusSize do
       session:requestJob("script-member", tostring(memberId), "sweep")
     end
@@ -868,6 +929,21 @@ local function compileSynthetic(generation, failingMapId)
   return withPatched(inventoryPatches(calls, failingMapId), function()
     return SourcePlan.compile(syntheticRomFs(), identity(generation)), calls
   end)
+end
+
+-- A staged inventory becomes adopted only through worker completion: the
+-- plan file plus its publication receipt plus the pool reply that releases
+-- validation. Fixtures that need adoption model all three facts instead of
+-- relying on inventory polling.
+local function publishStagedSource(cacheFs, pool, generation)
+  cacheFs:writeLua(ArtifactState.path("source-plan", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "source-plan",
+    key = "global",
+    marker = SourcePlan.marker(generation),
+  })
+  pool.states["source-plan:global"] = "ready"
 end
 
 function T.inventory_compiles_membership_without_pixel_or_geometry_work()
@@ -1251,6 +1327,155 @@ end
 -- layout: the repaired membership is adopted once under its unchanged
 -- deterministic marker, the waiting portrait exits pending without new
 -- marker state, and no repeated layout repair is scheduled.
+-- Page adoption is level-eligible, not edge-triggered: source and layout
+-- arriving in either order schedule exactly the needed pages and reach the
+-- same final closure without a repeat request.
+function T.page_adoption_reaches_the_same_closure_in_either_arrival_order()
+  local function runOrder(layoutFirst)
+    local calls = freshCalls()
+    local backend = FakeCache.new()
+    local cacheFs = CacheFs.forVersion("heartgold", backend)
+    local generation = layoutFirst and "order-layout-generation" or "order-source-generation"
+    local realForVersion = CacheFs.forVersion
+    local patches = plannerPatches(calls)
+    patches[#patches + 1] = {
+      target = CacheFs,
+      name = "forVersion",
+      replacement = function()
+        return realForVersion("heartgold", backend)
+      end,
+    }
+    return withPatched(patches, function()
+      local MonCache = require("libs.assets.src.MonCache")
+      local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+      local function stageLayout()
+        local PngWriter = require("libs.assets.src.PngWriter")
+        MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "order-catalog-marker")
+        writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "order-catalog-marker")
+        MonCacheWriter.writeLayout(
+          cacheFs,
+          layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+          layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+          "order-layout-marker",
+          { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+          generation
+        )
+        writeMonReceipt(cacheFs, generation, "mon-layout", "global", "order-layout-marker")
+        cacheFs:write(
+          MonCache.pageImagePath("portraits", 0),
+          PngWriter.encode(640, 320, string.rep("\0", 640 * 320 * 4))
+        )
+        cacheFs:write(MonCache.pageMarkerPath("portraits", 0), "order-portrait-marker-0")
+        writeMonReceipt(cacheFs, generation, "mon-portrait-page", "0", "order-portrait-marker-0")
+      end
+      local pool = recordingPool()
+      local session = openSession(generation, pool)
+      if layoutFirst then
+        stageLayout()
+      else
+        stageSynthetic(cacheFs, generation)
+      end
+      pool.states["source-plan:global"] = nil
+      pool.states["mon-catalog:global"] = nil
+      local ready, failure = session:requestJob("mon-portrait-page", "0", "required")
+      Assert.isFalse(ready, "the page stays pending while membership is partial")
+      Assert.isNil(failure, "the page reports no failure while membership is partial")
+      for _ = 1, 3 do
+        session:update()
+      end
+      Assert.isFalse(session.pagesKnown, "partial membership adopts nothing")
+      if layoutFirst then
+        stageSynthetic(cacheFs, generation)
+      else
+        stageLayout()
+      end
+      -- Worker replies land after staging: flipping a state the pool
+      -- already reported would hide the transition the session waits for.
+      pool.states["source-plan:global"] = "ready"
+      pool.states["mon-catalog:global"] = "ready"
+      for _ = 1, 10 do
+        session:update()
+      end
+      Assert.isTrue(session.pagesKnown, "both arrivals adopt page membership")
+      Assert.isTrue(contains(session.portraitPageIds, 0), "both arrivals carry the portrait page")
+      local finalReady, finalFailure = session:requestJob("mon-portrait-page", "0", "required")
+      Assert.isTrue(finalReady, "both arrivals validate the page ready")
+      Assert.isNil(finalFailure, "the validated page reports no failure")
+      local submissions = 0
+      for _, jobKey in ipairs(pool.submitted) do
+        if jobKey == "mon-portrait-page:0" then
+          submissions = submissions + 1
+        end
+      end
+      Assert.equal(submissions, 0, "staged facts validate without occupying a worker")
+      return { pagesKnown = session.pagesKnown, portraitPages = copyList(session.portraitPageIds) }
+    end)
+  end
+  local sourceFirst = runOrder(false)
+  local layoutFirst = runOrder(true)
+  Assert.isTrue(sourceFirst.pagesKnown and layoutFirst.pagesKnown, "both orders adopt")
+  Assert.deepEqual(sourceFirst.portraitPages, layoutFirst.portraitPages, "both orders reach the same closure")
+end
+
+-- A denied adoption step stays runnable: wide pending work cannot starve
+-- it, no false scope completes first, and no fresh completion notice is
+-- needed for the next update to adopt.
+function T.denied_adoption_step_runs_next_update_without_new_notification()
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local generation = "budget-pause-generation"
+  stageSynthetic(cacheFs, generation)
+  local realForVersion = CacheFs.forVersion
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local MonCache = require("libs.assets.src.MonCache")
+    local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    session:requestJob("message-summary", "global", "required")
+    session:requestJob("mon-portrait-page", "0", "required")
+    for _ = 1, 5 do
+      session:update()
+    end
+    Assert.isFalse(session.pagesKnown, "wide work does not invent membership")
+    MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "pause-catalog-marker")
+    writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "pause-catalog-marker")
+    pool.states["source-plan:global"] = "ready"
+    MonCacheWriter.writeLayout(
+      cacheFs,
+      layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+      layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+      "pause-layout-marker",
+      { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+      generation
+    )
+    writeMonReceipt(cacheFs, generation, "mon-layout", "global", "pause-layout-marker")
+    pool.states["mon-catalog:global"] = "ready"
+    for _ = 1, 60 do
+      session:update()
+    end
+    Assert.isTrue(session.pagesKnown, "adoption completes without a fresh completion notice")
+    local submissions = 0
+    for _, jobKey in ipairs(pool.submitted) do
+      if jobKey == "mon-portrait-page:0" then
+        submissions = submissions + 1
+      end
+    end
+    Assert.equal(submissions, 1, "the adoption enrolls the waiting page exactly once")
+    local ready, failure = session:requestJob("message-summary", "global", "required")
+    Assert.isFalse(ready, "held banks keep the wide parent pending")
+    Assert.isNil(failure, "held banks report no failure")
+  end)
+end
+
 function T.repaired_layout_with_the_same_marker_is_adopted()
   local MonCache = require("libs.assets.src.MonCache")
   local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
@@ -1303,6 +1528,7 @@ function T.repaired_layout_with_the_same_marker_is_adopted()
       Assert.isNil(missing, "the damaged layout publishes no plans")
       Assert.notNil(reason, "the damaged layout names its pending state")
       cacheFs:writeLua(pagePlanPath, savedRecord)
+      pool.states["mon-layout:global"] = "ready"
       local repaired, repairReason = ArtifactJobs.publishedPlans(cacheFs, identity(generation))
       Assert.notNil(repaired, "the repaired layout publishes plans: " .. tostring(repairReason))
       for _ = 1, 4 do
@@ -1604,6 +1830,7 @@ function T.unknown_member_stays_pending_until_membership_is_known()
     Assert.isFalse(ready, "an unknown member stays pending while membership is unknown")
     Assert.isNil(failure, "an unknown member reports no failure while membership is unknown")
     cacheFs:writeLua(SourcePlan.PATH, staged)
+    publishStagedSource(cacheFs, pool, generation)
     for _ = 1, 3 do
       session:update()
     end
@@ -1715,7 +1942,14 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
       failureClass = nil,
       causeJobKey = nil,
       poolState = nil,
-      cursor = nil,
+      phase = "ready",
+      await = nil,
+      finalDeps = {},
+      depsFinal = true,
+      depIndex = 1,
+      pendingDeps = {},
+      propagateIndex = nil,
+      retryPending = false,
     }
     session.byKey["source-plan:global"] = sourcePlanEntry
     session.interest[#session.interest + 1] = sourcePlanEntry
@@ -1888,17 +2122,14 @@ function T.failed_layout_discovery_ends_field_core_with_its_cause()
         break
       end
     end
-    local dirtyCount = 0
-    for _ in pairs(session.dirty) do
-      dirtyCount = dirtyCount + 1
-    end
+    local status = session:status()
     Assert.isTrue(
       layoutSubmitted,
       "field-core demand schedules the layout"
         .. " sourceLoaded="
         .. tostring(session.sourceLoaded)
-        .. " dirtyN="
-        .. tostring(dirtyCount)
+        .. " planningPending="
+        .. tostring(status.planningPending)
         .. " submittedN="
         .. tostring(#pool.submitted)
     )
@@ -1941,6 +2172,7 @@ function T.unsupported_map_is_excluded_by_updates_after_late_adoption()
     Assert.isNil(failure, "an unknown map reports no failure while membership is unknown")
     local staged = compileSynthetic(generation)
     cacheFs:writeLua(SourcePlan.PATH, staged)
+    publishStagedSource(cacheFs, pool, generation)
     for _ = 1, 5 do
       session:update()
     end
@@ -1988,6 +2220,7 @@ function T.unsupported_cell_is_excluded_by_updates_after_late_adoption()
     Assert.isNil(failure, "an unknown cell reports no failure while membership is unknown")
     local staged = compileSynthetic(generation)
     cacheFs:writeLua(SourcePlan.PATH, staged)
+    publishStagedSource(cacheFs, pool, generation)
     for _ = 1, 5 do
       session:update()
     end
@@ -2090,6 +2323,17 @@ function T.supported_deferred_map_runs_after_adoption_without_exclusion()
     cacheFs:writeLua(SourcePlan.PATH, staged)
     for _ = 1, 5 do
       session:update()
+      if contains(pool.submitted, "source-plan:global") then
+        break
+      end
+    end
+    Assert.isTrue(
+      contains(pool.submitted, "source-plan:global"),
+      "the supported map still schedules its declared inventory prerequisite"
+    )
+    publishStagedSource(cacheFs, pool, generation)
+    for _ = 1, 5 do
+      session:update()
     end
     Assert.isTrue(session.sourceLoaded, "the late inventory is adopted")
     local row = nil
@@ -2100,10 +2344,6 @@ function T.supported_deferred_map_runs_after_adoption_without_exclusion()
     end
     assert(row, "the deferred map keeps its canonical outcome row")
     Assert.isTrue(row.failureClass ~= "source-exclusion", "a supported map is never excluded")
-    Assert.isTrue(
-      contains(pool.submitted, "source-plan:global"),
-      "the supported map still schedules its declared inventory prerequisite"
-    )
     Assert.isTrue(row.state ~= "failed" or row.failureClass ~= "source-exclusion", "no invented exclusion")
   end)
 end
@@ -2257,20 +2497,32 @@ function T.exhausted_budget_admits_layout_adoption_before_reading_plans()
         },
       })
       local updateOk, _ = pcall(session.update, session)
-      rawset(_G, "love", realLove)
       Assert.isTrue(updateOk, "the exhausted pass still pumps without raising")
-      Assert.isTrue(session.sourceLoaded, "the admitted source adoption completes first")
+      -- A frozen slice admits a single planning node: dependency
+      -- computation runs, but neither adoption reads its plans.
+      Assert.isFalse(session.sourceLoaded, "one node cannot complete source adoption")
       Assert.isFalse(session.pagesKnown, "the unadmitted layout adoption waits for a fresh slice")
       Assert.equal(publishedCalls, 0, "an exhausted pass reads no published plans, got " .. tostring(publishedCalls))
-      local admitted = false
-      for _ = 1, 10 do
+      Assert.equal(planReads, 0, "an exhausted pass validates nothing, got " .. tostring(planReads))
+      rawset(_G, "love", realLove)
+      -- Admission order is structural: pages adoption needs source
+      -- membership, so the source flip lands first. Track both flips.
+      local sourceAt, pagesAt = nil, nil
+      for updateIndex = 1, 10 do
         session:update()
-        if session.pagesKnown then
-          admitted = true
+        if sourceAt == nil and session.sourceLoaded then
+          sourceAt = updateIndex
+        end
+        if pagesAt == nil and session.pagesKnown then
+          pagesAt = updateIndex
+        end
+        if sourceAt ~= nil and pagesAt ~= nil then
           break
         end
       end
-      Assert.isTrue(admitted, "the next admitted step adopts the layout")
+      Assert.isTrue(sourceAt ~= nil, "the admitted source adoption completes")
+      Assert.isTrue(pagesAt ~= nil, "the next admitted step adopts the layout")
+      Assert.isTrue(sourceAt <= pagesAt, "source adoption precedes layout adoption")
       Assert.equal(publishedCalls, 1, "the admitted adoption reads plans exactly once")
       Assert.isTrue(contains(session.iconPageIds, 0), "adoption carries the declared icon page")
       Assert.isTrue(planReads >= 1, "the source inventory was read through its owner")
@@ -2477,10 +2729,11 @@ function T.repaired_layout_reads_plans_once_without_polling_failures()
       Assert.isFalse(session.pagesKnown, "a layout with a missing page record is never adopted")
       Assert.equal(
         publishedCalls,
-        1,
-        "unchanged damage earns no repeated full reader calls, got " .. tostring(publishedCalls)
+        0,
+        "unchanged damage earns no fruitless reader calls, got " .. tostring(publishedCalls)
       )
       cacheFs:writeLua(pagePlanPath, savedRecord)
+      pool.states["mon-layout:global"] = "ready"
       local layoutEntry = session.byKey["mon-layout:global"]
       if layoutEntry ~= nil and layoutEntry.failure ~= nil then
         session:retry("mon-layout", "global", "required")
