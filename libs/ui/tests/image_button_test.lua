@@ -47,8 +47,8 @@ end
 function T.selected_rim_exactly_replaces_unselected_rim()
   local ImageButton = imageButtonModule()
   local button = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1 })
-  Assert.equal(button.rim.rect.width, 96)
-  Assert.equal(button.face.rect.width, 90)
+  Assert.equal(button.rim.rect.width, 98)
+  Assert.equal(button.face.rect.width, 92)
   local g1, calls1 = graphicsFake()
   local g2, calls2 = graphicsFake()
   local imageRect = { x = button.contentRect.x + 2, y = button.contentRect.y + 2, width = 10, height = 10 }
@@ -64,16 +64,16 @@ function T.selected_rim_exactly_replaces_unselected_rim()
   )
   Assert.near(calls1.setColor[2][1], 222 / 255)
   Assert.near(calls2.setColor[2][1], 1)
-  Assert.equal(button.rim.rect.x, button.rect.x + 2)
-  Assert.equal(button.rim.rect.y, button.rect.y + 2)
-  Assert.equal(button.rim.cornerRadius, 6)
+  Assert.equal(button.rim.rect.x, button.rect.x + 1)
+  Assert.equal(button.rim.rect.y, button.rect.y + 1)
+  Assert.equal(button.rim.cornerRadius, 5)
 end
 
 function T.canonical_geometry_and_content_is_face()
   local ImageButton = imageButtonModule()
   local button = ImageButton.resolve({ rect = rect(10, 20, 93, 148), scale = 1 })
-  Assert.equal(button.border.cornerRadius, 8)
-  Assert.equal(button.rim.cornerRadius, 6)
+  Assert.equal(button.border.cornerRadius, 6)
+  Assert.equal(button.rim.cornerRadius, 5)
   Assert.equal(button.contentRect.x, button.face.rect.x)
   Assert.equal(button.contentRect.y, button.face.rect.y)
   Assert.equal(button.contentRect.width, button.face.rect.width)
@@ -175,10 +175,10 @@ function T.card_composes_generic_button_geometry_and_hit_testing()
   local card = ImageButton.resolve({ rect = rect(10, 20, 93, 148), scale = 1 })
   local generic = Button.resolve({
     rect = rect(10, 20, 93, 148),
-    borderWidth = 2,
+    borderWidth = 1,
     rimWidth = 2,
     innerBorderWidth = 1,
-    cornerRadius = 8,
+    cornerRadius = 6,
     faceSplit = 0.5,
     contentInsetX = 0,
     contentInsetY = 0,
@@ -219,10 +219,10 @@ end
 function T.nested_card_layers_keep_positive_corner_radii()
   local ImageButton = imageButtonModule()
   local button = ImageButton.resolve({ rect = rect(10, 20, 93, 148), scale = 1 })
-  Assert.equal(button.border.cornerRadius, 8)
-  Assert.equal(button.rim.cornerRadius, 6)
-  Assert.equal(button.innerBorder.cornerRadius, 4)
-  Assert.equal(button.face.cornerRadius, 3)
+  Assert.equal(button.border.cornerRadius, 6)
+  Assert.equal(button.rim.cornerRadius, 5)
+  Assert.equal(button.innerBorder.cornerRadius, 3)
+  Assert.equal(button.face.cornerRadius, 2)
   Assert.isTrue(button.border.cornerRadius > 0)
   Assert.isTrue(button.rim.cornerRadius > 0)
   Assert.isTrue(button.innerBorder.cornerRadius > 0)
@@ -233,12 +233,12 @@ function T.callers_select_logical_radius_and_inner_border_width()
   local ImageButton = imageButtonModule()
   local at1 = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1, cornerRadius = 6, innerBorderWidth = 2 })
   Assert.equal(at1.border.cornerRadius, 6)
-  Assert.equal(at1.rim.cornerRadius, 4)
-  Assert.equal(at1.innerBorder.cornerRadius, 2)
+  Assert.equal(at1.rim.cornerRadius, 5)
+  Assert.equal(at1.innerBorder.cornerRadius, 3)
   local at2 = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 2, cornerRadius = 6, innerBorderWidth = 2 })
   Assert.equal(at2.border.cornerRadius, 12)
-  Assert.equal(at2.rim.cornerRadius, 8)
-  Assert.equal(at2.innerBorder.cornerRadius, 4)
+  Assert.equal(at2.rim.cornerRadius, 10)
+  Assert.equal(at2.innerBorder.cornerRadius, 6)
   local defaultButton = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1 })
   Assert.isTrue(
     at1.contentRect.x > defaultButton.contentRect.x,
@@ -267,12 +267,12 @@ function T.omitted_options_keep_current_default_geometry()
   local ImageButton = imageButtonModule()
   local defaultButton = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1 })
   local explicitDefault =
-    ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1, cornerRadius = 8, innerBorderWidth = 1 })
+    ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1, cornerRadius = 6, innerBorderWidth = 1 })
   Assert.deepEqual(explicitDefault.rect, defaultButton.rect)
   Assert.deepEqual(explicitDefault.contentRect, defaultButton.contentRect)
-  Assert.equal(explicitDefault.border.cornerRadius, 8)
+  Assert.equal(explicitDefault.border.cornerRadius, 6)
   local scaled = ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 2 })
-  Assert.equal(scaled.border.cornerRadius, 16)
+  Assert.equal(scaled.border.cornerRadius, 12)
 end
 
 return { tests = T }

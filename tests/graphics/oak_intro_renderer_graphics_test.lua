@@ -944,9 +944,9 @@ function T.gender_cards_share_rounded_nested_geometry()
   for _, key in ipairs({ 0, 1 }) do
     local resolved = assert(buttons[key].button)
     Assert.equal(resolved.border.cornerRadius, 6)
-    Assert.equal(resolved.rim.cornerRadius, 4)
-    Assert.equal(resolved.innerBorder.cornerRadius, 2)
-    Assert.equal(resolved.face.cornerRadius, 1)
+    Assert.equal(resolved.rim.cornerRadius, 5)
+    Assert.equal(resolved.innerBorder.cornerRadius, 3)
+    Assert.equal(resolved.face.cornerRadius, 2)
   end
 end
 

@@ -58,21 +58,38 @@ local ERROR_PALETTE = rolePalette(ERROR_INK)
 
 local function drawNoContent() end
 
-local function drawCard(graphics, rect, scale, selected)
+local function drawColoredCard(graphics, rect, scale, selected, colors)
   local resolved =
     ImageButton.resolve({ rect = rect, scale = scale, cornerRadius = CARD_RADIUS, innerBorderWidth = CARD_INNER_WIDTH })
   local content = assert(resolved.contentRect)
   ImageButton.draw(graphics, resolved, {
     selected = selected,
-    colors = {
-      face = CARD_FACE,
-      border = CARD_BORDER,
-      rim = CARD_RIM,
-      selectedRim = CARD_SELECTED_RIM,
-      innerBorder = CARD_INNER_BORDER,
-    },
+    colors = colors,
     imageRect = { x = content.x, y = content.y, width = content.width, height = content.height },
     drawImage = drawNoContent,
+  })
+end
+
+local function drawCard(graphics, rect, scale, selected)
+  drawColoredCard(graphics, rect, scale, selected, {
+    face = CARD_FACE,
+    border = CARD_BORDER,
+    rim = CARD_RIM,
+    selectedRim = CARD_SELECTED_RIM,
+    innerBorder = CARD_INNER_BORDER,
+  })
+end
+
+-- Inset actions nested inside another card keep the card chrome but paint
+-- the inner border in the face color so no contrasting ring separates the
+-- nested control from its parent card.
+local function drawInset(graphics, rect, scale, selected)
+  drawColoredCard(graphics, rect, scale, selected, {
+    face = CARD_FACE,
+    border = CARD_BORDER,
+    rim = CARD_RIM,
+    selectedRim = CARD_SELECTED_RIM,
+    innerBorder = CARD_FACE,
   })
 end
 
@@ -239,7 +256,7 @@ function MainMenuRenderer:draw(view)
           )
         end
         if card.overflow then
-          drawCard(graphics, card.overflow, scale, overflowFocused)
+          drawInset(graphics, card.overflow, scale, overflowFocused)
           drawPaletteText(
             graphics,
             text,
@@ -279,7 +296,7 @@ function MainMenuRenderer:draw(view)
       graphics.setColor(0, 0, 0, 0.45)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
       drawCard(graphics, popup.box, scale, false)
-      drawCard(graphics, popup.actions.delete, scale, true)
+      drawInset(graphics, popup.actions.delete, scale, true)
       drawPaletteText(
         graphics,
         text,
@@ -306,8 +323,8 @@ function MainMenuRenderer:draw(view)
       )
       local cancelFocus = view.confirmation.focusedAction == "cancel"
       local deleteFocus = view.confirmation.focusedAction == "delete"
-      drawCard(graphics, confirmation.cancel, scale, cancelFocus)
-      drawCard(graphics, confirmation.delete, scale, deleteFocus)
+      drawInset(graphics, confirmation.cancel, scale, cancelFocus)
+      drawInset(graphics, confirmation.delete, scale, deleteFocus)
       drawPaletteText(
         graphics,
         text,
