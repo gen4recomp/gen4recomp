@@ -374,10 +374,13 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   Assert.isTrue(isSelectedRed(cr, cg, cb), "focused overflow must carry its own selected red rim")
 end
 
-function T.menu_player_copy_renders_at_triple_the_generated_font_size(scope)
+function T.menu_player_copy_tracks_the_menu_scale(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local textDraws = 0
   local textProxy = {
+    textWidth = function(_, value)
+      return text:textWidth(value)
+    end,
     drawText = function(_, value, x, y)
       textDraws = textDraws + 1
       return text:drawText(value, x, y)
@@ -413,7 +416,7 @@ function T.menu_player_copy_renders_at_triple_the_generated_font_size(scope)
     catalogError = nil,
     layout = layout,
   })
-  local foundDouble = false
+  local foundPromoted = false
   for _, transform in ipairs(graphics.transforms) do
     if transform[1] == "scale" then
       Assert.isTrue(
@@ -421,15 +424,19 @@ function T.menu_player_copy_renders_at_triple_the_generated_font_size(scope)
         "menu text scaling must never be fractional"
       )
       if transform[2] == 3 and transform[3] == 3 then
-        foundDouble = true
+        foundPromoted = true
       end
     end
   end
   Assert.isTrue(textDraws > 0, "the menu must draw principal copy through the generated font atlas")
-  Assert.isTrue(
-    foundDouble,
-    "principal menu copy at the desktop baseline must render at triple the generated font size"
-  )
+  Assert.isFalse(foundPromoted, "desktop menu copy must track the menu scale instead of promoting it")
+  local foundMenuScale = false
+  for _, transform in ipairs(graphics.transforms) do
+    if transform[1] == "scale" and transform[2] == layout.uiScale and transform[3] == layout.uiScale then
+      foundMenuScale = true
+    end
+  end
+  Assert.isTrue(foundMenuScale, "principal menu copy at the desktop baseline must render at the menu scale")
   Assert.equal(graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
 end
 
@@ -454,6 +461,9 @@ function T.menu_text_uses_palette_path_at_identity_tint()
   local plainCalls = {}
   local paletteCalls = {}
   local textDouble = {
+    textWidth = function(_, value)
+      return #value
+    end,
     drawText = function(_, value, x, y)
       local r, g, b, a = graphics.getColor()
       plainCalls[#plainCalls + 1] = { text = value, x = x, y = y, color = { r, g, b, a } }
@@ -673,16 +683,15 @@ function T.version_backgrounds_use_the_bright_launcher_field(scope)
   end
 end
 
-function T.launcher_copy_is_uppercase_and_integer_scaled_without_touching_saved_names(scope)
-  local function asciiUpper(value)
-    return (value:gsub("[a-z]", function(c)
-      return string.char(c:byte() - 32)
-    end))
-  end
+function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
+  local measure = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local function renderAt(width, height, saves)
     local graphics = FakeGraphics.new()
     local draws = {}
     local textDouble = {
+      textWidth = function(_, value)
+        return measure:textWidth(value)
+      end,
       drawTextWithPalette = function(_, value, _, _, _)
         local x, y, s = 0, 0, 1
         for index = #graphics.transforms, 1, -1 do
@@ -734,16 +743,27 @@ function T.launcher_copy_is_uppercase_and_integer_scaled_without_touching_saved_
   }
   local draws, layout = renderAt(640, 480, saves)
   Assert.isTrue(#draws >= 5, "the launcher must draw principal copy through the generated font path")
-  local sawLowercaseSource = false
+  local presentationLabels = {
+    CONTINUE = true,
+    ["NEW GAME"] = true,
+    PLAYER = true,
+    TIME = true,
+    BADGES = true,
+    ["..."] = true,
+  }
+  local seen = {}
   for _, draw in ipairs(draws) do
-    Assert.equal(draw.value, asciiUpper(draw.value), "launcher copy draws uppercase: " .. draw.value)
+    seen[draw.value] = true
     Assert.equal(draw.scale, math.floor(draw.scale), "launcher text scaling stays integral")
-    Assert.equal(draw.scale, 3, "desktop launcher copy draws at triple the generated font size")
-    if draw.value == "MARC" then
-      sawLowercaseSource = true
-    end
+    Assert.equal(draw.scale, layout.uiScale, "launcher copy must track the menu scale: " .. draw.value)
   end
-  Assert.isTrue(sawLowercaseSource, "a lowercase fixed player name must exercise presentation casing")
+  for label in pairs(presentationLabels) do
+    Assert.isTrue(seen[label], "the launcher must draw presentation copy: " .. label)
+  end
+  Assert.isTrue(seen["marc"], "a lowercase stored player name must draw with its casing preserved")
+  Assert.isNil(seen["MARC"], "the stored player name must not be uppercased for presentation")
+  Assert.isTrue(seen["1:00"], "the stored play time must draw exactly")
+  Assert.isTrue(seen["0"], "the presentation badge count must draw")
   local foundPassthrough = false
   for _, draw in ipairs(draws) do
     if draw.value:find("\195\169") then
@@ -751,8 +771,7 @@ function T.launcher_copy_is_uppercase_and_integer_scaled_without_touching_saved_
     end
   end
   Assert.isTrue(foundPassthrough, "glyphs without ascii case pairs must pass through instead of being lost")
-  Assert.equal(saves[1].playerName, "marc", "presentation casing must not mutate the saved player name")
-  local measure = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  Assert.equal(saves[1].playerName, "marc", "presentation copy must not mutate the saved player name")
   local newGame = assert(layout.global.actions["new-game"])
   local saveIndex = 0
   for _, draw in ipairs(draws) do

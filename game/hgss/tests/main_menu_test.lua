@@ -897,8 +897,39 @@ local function hasRimColorOverlapping(rectangles, expected, rect)
   return false
 end
 
+-- The selected parent card underpaints the nested overflow region by design;
+-- the overflow inset's own neutral chrome is drawn after it and covers that
+-- region, so final pixels stay neutral. Assert paint order instead of
+-- paint-list region purity: the inset's own neutral rim must exist and no
+-- selected-colored record overlapping the inset may come after it.
+local function overflowInsetCoversParentSelection(rectangles, rect)
+  local insetIndex = nil
+  for index, record in ipairs(rectangles) do
+    if nearColor(record.color, NEUTRAL_RIM) and overlaps(record, rect) then
+      insetIndex = index
+    end
+  end
+  if insetIndex == nil then
+    return false
+  end
+  for index = insetIndex + 1, #rectangles do
+    local record = rectangles[index]
+    if nearColor(record.color, SELECTED_RIM) and overlaps(record, rect) then
+      return false
+    end
+  end
+  return true
+end
+
+-- Deterministic source advance shared by every headless text double, matching
+-- the production textWidth boundary the renderer right-aligns against.
+local GLYPH_ADVANCE = 7
+
 local function recordingText(calls, graphics)
   return {
+    textWidth = function(_, value)
+      return #value * GLYPH_ADVANCE
+    end,
     drawText = function(_, text, x, y)
       calls[#calls + 1] = { text = text, x = x, y = y }
     end,
@@ -956,9 +987,9 @@ function T.focused_continue_uses_selected_rim_while_other_cards_stay_neutral()
   Assert.isTrue(hasRimColor(rectangles, SELECTED_RIM), "the focused Continue card must use the selected rim color")
   Assert.isTrue(hasRimColor(rectangles, NEUTRAL_RIM), "unfocused cards must keep the neutral rim color")
   local focusedCard = assert(drawn.view.layout.saves.cards["save-00000001"])
-  Assert.isFalse(
-    hasRimColorOverlapping(rectangles, SELECTED_RIM, assert(focusedCard.overflow)),
-    "body focus must not leave the nested overflow control looking selected"
+  Assert.isTrue(
+    overflowInsetCoversParentSelection(rectangles, assert(focusedCard.overflow)),
+    "body focus must cover the nested overflow control with its own neutral chrome"
   )
 end
 
@@ -1010,24 +1041,22 @@ function T.confirmation_focus_marks_only_the_active_action()
   )
 end
 
-function T.principal_copy_renders_at_an_integer_scale_and_restores_transforms()
+function T.principal_copy_tracks_the_menu_scale_and_restores_transforms()
   local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
-  local foundDouble = false
+  local menuScale = assert(drawn.view.layout.uiScale)
+  local foundMenuScale = false
   for _, transform in ipairs(drawn.graphics.transforms) do
     if transform[1] == "scale" then
       Assert.isTrue(
         transform[2] == math.floor(transform[2]) and transform[3] == math.floor(transform[3]),
         "menu text scaling must never be fractional"
       )
-      if transform[2] == 3 and transform[3] == 3 then
-        foundDouble = true
-      end
+      Assert.equal(transform[2], menuScale, "menu text must track the menu scale")
+      Assert.equal(transform[3], menuScale, "menu text must track the menu scale")
+      foundMenuScale = true
     end
   end
-  Assert.isTrue(
-    foundDouble,
-    "principal menu copy at the desktop baseline must render at three times the generated font size"
-  )
+  Assert.isTrue(foundMenuScale, "principal menu copy must render through the scaled font path")
   Assert.equal(drawn.graphics.pushDepth(), 0, "text scaling must restore graphics transforms after each draw")
   Assert.isTrue(#drawn.calls > 0, "the menu must draw principal copy")
 end
@@ -1260,9 +1289,9 @@ function T.body_focus_selects_the_entire_continue_frame()
     hasRimColorOverlapping(rectangles, SELECTED_RIM, rightEdge),
     "body focus must carry the selected rim around the entire Continue frame, including its right edge"
   )
-  Assert.isFalse(
-    hasRimColorOverlapping(rectangles, SELECTED_RIM, assert(card.overflow)),
-    "body focus must leave the nested overflow control neutral"
+  Assert.isTrue(
+    overflowInsetCoversParentSelection(rectangles, assert(card.overflow)),
+    "body focus must cover the nested overflow control with its own neutral chrome"
   )
 end
 
@@ -1733,6 +1762,260 @@ function T.global_right_still_restores_the_remembered_save_after_wrap()
     { region = "saves", saveId = "one", lane = "body" },
     "right must fall back to the save body when the remembered overflow lane is locked"
   )
+end
+
+local PROFILE_BLUE = { foreground = { r = 0, g = 113, b = 251 }, shadow = { r = 0, g = 81, b = 251 } }
+
+-- Text double that records the active graphics scale with every palette draw
+-- and measures with a deterministic width so alignment can be recomputed
+-- from the same observable boundary the renderer must use.
+local function scaledRecordingText(calls, graphics)
+  return {
+    textWidth = function(_, value)
+      return #value * GLYPH_ADVANCE
+    end,
+    drawTextWithPalette = function(_, value, x, y, palette)
+      local resolvedX, resolvedY, activeScale, foundScale = x, y, 1, false
+      for index = #graphics.transforms, 1, -1 do
+        local transform = graphics.transforms[index]
+        if transform[1] == "scale" and not foundScale then
+          activeScale, foundScale = transform[2], true
+        elseif transform[1] == "translate" then
+          resolvedX, resolvedY = transform[2], transform[3]
+          break
+        end
+      end
+      calls[#calls + 1] = { text = value, x = resolvedX, y = resolvedY, scale = activeScale, palette = palette }
+    end,
+  }
+end
+
+local function scaledDrawnMenu(entries, width, height)
+  local graphics = FakeGraphics.new()
+  local calls = {}
+  local renderer =
+    MainMenuRenderer.new({ text = scaledRecordingText(calls, graphics), graphics = graphics, versionId = "heartgold" })
+  local menu = state({
+    saveStore = {
+      list = function()
+        return entries
+      end,
+    },
+    width = width,
+    height = height,
+    renderer = { draw = function() end, dispose = function() end },
+  })
+  local current = menu:view()
+  renderer:draw(current)
+  return { graphics = graphics, calls = calls, view = current }
+end
+
+function T.continue_body_focus_uses_rounded_selected_chrome_without_a_square_ring()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  Assert.deepEqual(drawn.view.focus, { region = "saves", saveId = "save-00000001", lane = "body" })
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local frame = assert(card.frame)
+  local rectangles = recordedRectangles(drawn.graphics)
+  local roundedSelected = false
+  for _, record in ipairs(rectangles) do
+    if nearColor(record.color, SELECTED_RIM) and overlaps(record, frame) then
+      if record.rx ~= nil and record.rx > 0 then
+        roundedSelected = true
+      else
+        error("the Continue body must not paint a square manual focus ring", 0)
+      end
+    end
+  end
+  Assert.isTrue(roundedSelected, "body focus must select the Continue card through rounded button chrome")
+  Assert.isTrue(
+    overflowInsetCoversParentSelection(rectangles, assert(card.overflow)),
+    "body focus must cover the nested overflow control with its own neutral chrome"
+  )
+end
+
+function T.continue_text_scales_exactly_with_the_menu_scale()
+  local cases = {
+    { width = 320, height = 240, scale = 1 },
+    { width = 640, height = 480, scale = 2 },
+    { width = 1280, height = 720, scale = 3 },
+  }
+  for _, case in ipairs(cases) do
+    local drawn = scaledDrawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, case.width, case.height)
+    Assert.equal(drawn.view.layout.uiScale, case.scale, "viewport must select menu scale " .. case.scale)
+    Assert.isTrue(#drawn.calls > 0, "the menu must draw copy at scale " .. case.scale)
+    for _, call in ipairs(drawn.calls) do
+      Assert.equal(call.scale, math.floor(call.scale), "menu text scaling must never be fractional")
+      Assert.equal(call.scale, case.scale, "menu text must track the menu scale: " .. call.text)
+    end
+  end
+end
+
+function T.continue_card_shows_cased_profile_rows_in_retail_blue()
+  local drawn = scaledDrawnMenu({ catalogEntry("save-00000001", "Goldie", 4980) }, 640, 480)
+  Assert.equal(drawn.view.saves[1].playTimeLabel, "1:23")
+  local scale = assert(drawn.view.layout.uiScale)
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local body = assert(card.body)
+  local positions = {}
+  for _, call in ipairs(drawn.calls) do
+    if call.text == "GOLDIE" then
+      error("the Continue card must preserve the stored player-name casing", 0)
+    end
+    positions[call.text] = positions[call.text] or {}
+    positions[call.text][#positions[call.text] + 1] = call
+  end
+  local wanted = { "PLAYER", "Goldie", "TIME", "1:23", "BADGES", "0" }
+  local order = {}
+  for index, call in ipairs(drawn.calls) do
+    for _, text in ipairs(wanted) do
+      if call.text == text and order[text] == nil then
+        order[text] = index
+      end
+    end
+  end
+  for _, text in ipairs(wanted) do
+    Assert.notNil(order[text], "the Continue card must draw " .. text)
+  end
+  for index = 2, #wanted do
+    Assert.isTrue(order[wanted[index - 1]] < order[wanted[index]], "profile rows must read PLAYER/TIME/BADGES in order")
+  end
+  local blockWidth = 0.62 * body.width
+  local blockLeft = body.x + (body.width - blockWidth) / 2
+  local blockRight = blockLeft + blockWidth
+  local previousY = nil
+  for row = 1, 3 do
+    local label = assert(positions[wanted[(row - 1) * 2 + 1]][1], "profile label is required")
+    local value = assert(positions[wanted[(row - 1) * 2 + 2]][1], "profile value is required")
+    Assert.notNil(label.palette, "profile copy must draw through the palette path")
+    Assert.equal(label.palette.foreground.r, PROFILE_BLUE.foreground.r, "profile copy uses retail blue")
+    Assert.equal(label.palette.foreground.g, PROFILE_BLUE.foreground.g, "profile copy uses retail blue")
+    Assert.equal(label.palette.foreground.b, PROFILE_BLUE.foreground.b, "profile copy uses retail blue")
+    Assert.equal(label.palette.shadow.r, PROFILE_BLUE.shadow.r, "profile copy uses the dark blue shadow")
+    Assert.equal(label.palette.shadow.g, PROFILE_BLUE.shadow.g, "profile copy uses the dark blue shadow")
+    Assert.equal(label.palette.shadow.b, PROFILE_BLUE.shadow.b, "profile copy uses the dark blue shadow")
+    Assert.equal(value.palette.foreground.r, PROFILE_BLUE.foreground.r, "profile values use retail blue")
+    Assert.equal(value.palette.foreground.g, PROFILE_BLUE.foreground.g, "profile values use retail blue")
+    Assert.equal(value.palette.foreground.b, PROFILE_BLUE.foreground.b, "profile values use retail blue")
+    Assert.near(label.x, blockLeft, 0.51, "profile labels share the centered block left edge")
+    Assert.near(
+      value.x + #wanted[(row - 1) * 2 + 2] * GLYPH_ADVANCE * scale,
+      blockRight,
+      0.51,
+      "profile values share the centered block right edge"
+    )
+    Assert.equal(label.y, value.y, "each profile label shares its value baseline")
+    Assert.isTrue(label.y >= body.y and value.y >= body.y, "profile rows must stay inside the Continue body")
+    Assert.isTrue(
+      label.x >= body.x and value.x + #wanted[(row - 1) * 2 + 2] * GLYPH_ADVANCE * scale <= body.x + body.width,
+      "profile rows must stay inside the Continue body"
+    )
+    if previousY ~= nil then
+      Assert.isTrue(label.y > previousY, "profile rows must run top to bottom")
+    end
+    previousY = label.y
+  end
+end
+
+function T.unavailable_saves_show_error_summary_without_profile_rows()
+  local drawn = scaledDrawnMenu({
+    {
+      saveId = "save-00000001",
+      versionId = "heartgold",
+      error = "save could not be loaded",
+    },
+  }, 640, 480)
+  Assert.isFalse(drawn.view.saves[1].canContinue, "the fixture must exercise the unavailable save path")
+  local seenError = false
+  for _, call in ipairs(drawn.calls) do
+    Assert.isNil(
+      ({ PLAYER = true, TIME = true, BADGES = true })[call.text],
+      "unavailable saves must not fabricate profile rows: " .. call.text
+    )
+    if call.text == "SAVE COULD NOT BE LOADED" then
+      seenError = true
+    end
+  end
+  Assert.isTrue(seenError, "unavailable saves keep their error summary")
+end
+
+function T.overflow_focus_keeps_the_parent_card_neutral()
+  local graphics = FakeGraphics.new()
+  local calls = {}
+  local renderer = menuRenderer(recordingText(calls, graphics), graphics)
+  local menu = state({
+    saveStore = {
+      list = function()
+        return { catalogEntry("save-00000001", "Goldie", 4980) }
+      end,
+    },
+    width = 640,
+    height = 480,
+    renderer = { draw = function() end, dispose = function() end },
+  })
+  menu:keypressed("right")
+  local current = menu:view()
+  Assert.deepEqual(current.focus, { region = "saves", saveId = "save-00000001", lane = "overflow" })
+  renderer:draw(current)
+  local rectangles = recordedRectangles(graphics)
+  local card = assert(current.layout.saves.cards["save-00000001"])
+  Assert.isFalse(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, card.body),
+    "overflow focus must return the Continue body to its neutral rim"
+  )
+  Assert.isTrue(
+    hasRimColorOverlapping(rectangles, SELECTED_RIM, assert(card.overflow)),
+    "overflow focus must select the overflow control itself"
+  )
+  local seenPlayer, seenBadges = false, false
+  for _, call in ipairs(calls) do
+    if call.text == "Goldie" then
+      seenPlayer = true
+    end
+    if call.text == "BADGES" then
+      seenBadges = true
+    end
+  end
+  Assert.isTrue(seenPlayer, "overflow focus must keep the cased profile rows visible")
+  Assert.isTrue(seenBadges, "overflow focus must keep every profile row visible")
+end
+
+function T.profile_rows_stay_inside_the_continue_body_at_supported_scales()
+  local cases = {
+    { width = 320, height = 240, scale = 1 },
+    { width = 1280, height = 720, scale = 3 },
+  }
+  local wanted = { "PLAYER", "Goldie", "TIME", "1:23", "BADGES", "0" }
+  for _, case in ipairs(cases) do
+    local drawn = scaledDrawnMenu({ catalogEntry("save-00000001", "Goldie", 4980) }, case.width, case.height)
+    Assert.equal(drawn.view.layout.uiScale, case.scale, "viewport must select menu scale " .. case.scale)
+    local body = assert(drawn.view.layout.saves.cards["save-00000001"].body)
+    local overflow = assert(drawn.view.layout.saves.cards["save-00000001"].overflow)
+    local previousY = nil
+    for _, text in ipairs(wanted) do
+      local found = nil
+      for _, call in ipairs(drawn.calls) do
+        if call.text == text then
+          found = call
+          break
+        end
+      end
+      Assert.notNil(found, "the Continue card must draw " .. text .. " at scale " .. case.scale)
+      assert(found)
+      local right = found.x + #text * GLYPH_ADVANCE * case.scale
+      Assert.isTrue(found.x >= body.x, "profile copy must stay inside the Continue body: " .. text)
+      Assert.isTrue(right <= body.x + body.width, "profile copy must stay inside the Continue body: " .. text)
+      Assert.isTrue(found.y >= body.y, "profile rows must stay inside the Continue body: " .. text)
+      Assert.isTrue(found.y <= body.y + body.height, "profile rows must stay inside the Continue body: " .. text)
+      Assert.isTrue(
+        right <= overflow.x or found.x >= overflow.x + overflow.width,
+        "profile rows must stay horizontally clear of the overflow control: " .. text
+      )
+      if previousY ~= nil then
+        Assert.isTrue(found.y >= previousY, "profile rows must run top to bottom at scale " .. case.scale)
+      end
+      previousY = found.y
+    end
+  end
 end
 
 return { tests = T }
