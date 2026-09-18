@@ -241,7 +241,9 @@ function T.hit_testing_resolves_tabs_slots_and_cancel_through_the_record()
   Assert.isNil(resolved.interactiveHitTest(interactive.frame.x - 4, interactive.frame.y - 4, state))
   local emptyState = browsing({ true, false, true, true, true, true })
   x, y = hostAt(204, 56)
-  Assert.isNil(resolved.interactiveHitTest(x, y, emptyState), "empty cells carry no pointer target")
+  local emptyCell = assert(resolved.interactiveHitTest(x, y, emptyState), "empty browse cells carry a pointer target")
+  Assert.equal(emptyCell.kind, "item")
+  Assert.equal(emptyCell.visibleIndex, 1)
 end
 
 function T.overlay_open_routes_fallback_taps_to_description()
@@ -376,7 +378,9 @@ function T.full_item_and_cancel_regions_are_interactive()
   Assert.isNil(resolved.interactiveHitTest(x, y, state), "gaps between control regions carry no target")
   local emptyState = browsing({ true, true, false, true, true, true })
   x, y = hostAt(40, 90)
-  Assert.isNil(resolved.interactiveHitTest(x, y, emptyState), "the full region never makes an empty cell selectable")
+  local emptyCell = assert(resolved.interactiveHitTest(x, y, emptyState), "the full region targets empty cells too")
+  Assert.equal(emptyCell.kind, "item")
+  Assert.equal(emptyCell.visibleIndex, 2)
   x, y = hostAt(250, 176)
   local cancel = assert(resolved.interactiveHitTest(x, y, state), "the full Cancel region resolves")
   Assert.equal(cancel.kind, "cancel")
@@ -384,6 +388,42 @@ function T.full_item_and_cancel_regions_are_interactive()
   local tab = assert(resolved.interactiveHitTest(x, y, state), "tab targets are unchanged")
   Assert.equal(tab.kind, "pocket")
   Assert.equal(tab.pocket, "medicine")
+end
+
+function T.browse_hit_testing_targets_every_visible_cell_including_empties()
+  local resolved = BagLayout.resolve({ topology = oneDisplay(512, 384, false), manifest = manifest() })
+  local interactive = resolved.interactive
+  local function hostAt(logicalX, logicalY)
+    return interactive.frame.x + logicalX * interactive.scale, interactive.frame.y + logicalY * interactive.scale
+  end
+  local centers = { { 64, 53 }, { 192, 53 }, { 64, 96 }, { 192, 96 }, { 64, 136 }, { 192, 136 } }
+  local state = browsing({ true, false, false, true, false, true })
+  for index, center in ipairs(centers) do
+    local x, y = hostAt(center[1], center[2])
+    local hit = assert(resolved.interactiveHitTest(x, y, state), "every browse cell resolves a target")
+    Assert.equal(hit.kind, "item", "an empty browse cell is still an item target")
+    Assert.equal(fieldOf(hit, "visibleIndex"), index - 1)
+  end
+end
+
+function T.move_target_selection_stays_occupied_only()
+  local resolved = BagLayout.resolve({ topology = oneDisplay(512, 384, false), manifest = manifest() })
+  local interactive = resolved.interactive
+  local function hostAt(logicalX, logicalY)
+    return interactive.frame.x + logicalX * interactive.scale, interactive.frame.y + logicalY * interactive.scale
+  end
+  local visibleSlots = {}
+  for index = 1, 6 do
+    visibleSlots[index] = { item = "ITEM_" .. index }
+  end
+  visibleSlots[2] = { empty = true, visibleIndex = 1 }
+  local state = { state = "move_select", visibleSlots = visibleSlots }
+  local x, y = hostAt(64, 53)
+  local occupied = assert(resolved.interactiveHitTest(x, y, state), "an occupied move cell resolves")
+  Assert.equal(occupied.kind, "item")
+  Assert.equal(fieldOf(occupied, "visibleIndex"), 0)
+  x, y = hostAt(192, 53)
+  Assert.isNil(resolved.interactiveHitTest(x, y, state), "an empty cell never becomes a move destination")
 end
 
 return { tests = T }

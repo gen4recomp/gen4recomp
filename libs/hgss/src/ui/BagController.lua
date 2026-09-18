@@ -8,13 +8,16 @@
 -- stale-selection check after every refresh so an external revision can
 -- never redirect a pending mutation onto a different item. Every nested
 -- cancel pops one level without mutation, and closing returns to the menu.
--- Selection and scroll live in the borrowed field cursor through its API
--- only; tab and cancel focus stay private. Pointer press/release capture
--- shares the keyboard confirm path, so a drag or a layout change can never
--- activate a moved target. Results are one-shot ({kind="closed"}) with no
--- renderer state and no love dependency.
+-- Occupied selection and scroll live in the borrowed field cursor through
+-- its API only; browse focus is a private semantic node (a grid cell, a
+-- pocket tab, or cancel) resolved through the shared focus graph, so empty
+-- cells can own focus without inventing an item selection. Pointer
+-- press/release capture shares the keyboard confirm path, so a drag or a
+-- layout change can never activate a moved target. Results are one-shot
+-- ({kind="closed"}) with no renderer state and no love dependency.
 
 local BagSave = require("libs.hgss.src.save.BagSave")
+local FocusGraph = require("libs.ui.src.FocusGraph")
 
 ---@class BagControllerCommands semantic mutations bound to the live inventory service
 ---@field toss fun(itemKey: string, quantity: integer): boolean remove owned copies
@@ -30,8 +33,8 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 ---@field _resolveActions fun(view: table<string, unknown>): table<string, unknown>[]
 ---@field _view table<string, unknown>
 ---@field _observedRevision integer
----@field _focus "items"|"tabs"|"cancel"
----@field _tabFocusPocket string
+---@field _focusNode string the private semantic browse focus node
+---@field _lastSlot integer the most recent grid-cell focus, for tab/cancel return
 ---@field _overlay boolean
 ---@field _state "browsing"|"action_menu"|"toss_quantity"|"toss_confirm"|"move_select"
 ---@field _actions table<string, unknown>[]
@@ -65,6 +68,54 @@ local function checkQuantity(value, what)
   return value
 end
 
+-- Browse focus node identities. Grid cells name their absolute zero-based
+-- cell index, tabs name their pocket key, and cancel is a singleton; the
+-- strings double as focus-graph node ids.
+local CANCEL_NODE = "cancel"
+
+---@param absolute integer
+---@return string
+local function slotNode(absolute)
+  return "slot:" .. tostring(absolute)
+end
+
+---@param pocketKey string
+---@return string
+local function tabNode(pocketKey)
+  return "tab:" .. pocketKey
+end
+
+---@param node unknown
+---@return integer?
+local function parseSlot(node)
+  if type(node) ~= "string" then
+    return nil
+  end
+  local absolute = node:match("^slot:(%d+)$")
+  if absolute == nil then
+    return nil
+  end
+  return math.floor(assert(tonumber(absolute), "slot nodes carry a numeric cell"))
+end
+
+---@param node unknown
+---@return string?
+local function parseTab(node)
+  if type(node) ~= "string" then
+    return nil
+  end
+  local pocketKey = node:match("^tab:(.+)$")
+  if pocketKey == nil then
+    return nil
+  end
+  for _, known in ipairs(BagSave.POCKET_ORDER) do
+    if known == pocketKey then
+      return pocketKey
+    end
+  end
+  return nil
+end
+
 ---@param opts BagController.Options
 ---@return BagController
 function BagController.new(opts)
@@ -87,7 +138,8 @@ function BagController.new(opts)
     _resolveLayout = opts.resolveLayout,
     _commands = opts.commands,
     _resolveActions = opts.resolveActions,
-    _focus = "items",
+    _focusNode = slotNode(0),
+    _lastSlot = 0,
     _overlay = false,
     _state = "browsing",
     _actions = {},
@@ -106,7 +158,17 @@ function BagController.new(opts)
   }, BagController)
   self._view = self:_refresh()
   self:_reconcile()
-  self._tabFocusPocket = self:_pocket()
+  -- Browse focus starts on the top-left cell of the current visible window
+  -- while the borrowed per-pocket scroll is left alone; an occupied start
+  -- cell also becomes the borrowed selection.
+  local pocket = self:_pocket()
+  local start = self._cursor:scroll(pocket)
+  self._focusNode = slotNode(start)
+  self._lastSlot = start
+  if start < self:_count() then
+    self._cursor:setPosition(pocket, start)
+    self:_refresh()
+  end
   return self
 end
 
@@ -184,37 +246,122 @@ end
 -- Enters a pocket through the cursor API: the stored per-pocket offsets
 -- return, clamped to whatever the pocket holds now. Focus stays with the
 -- caller, so keyboard tab travel keeps tab focus while pointer activation
--- moves to the grid explicitly at its own call site.
+-- moves to the grid explicitly at its own call site. The remembered grid
+-- cell resets to the new pocket's top-left visible cell either way.
 ---@param pocketKey string
 function BagController:_enterPocket(pocketKey)
   self._cursor:setPocket(pocketKey)
   self:_refresh()
   self:_reconcile()
-  self._tabFocusPocket = pocketKey
-  -- Focus is caller-owned; do not mutate self._focus here.
+  self._lastSlot = self._cursor:scroll(pocketKey)
+  self:_normalizeFocus()
+  -- Focus is caller-owned; do not mutate self._focusNode here.
 end
 
----@param direction integer -1 for previous, 1 for next
-function BagController:_moveTabFocus(direction)
-  local candidate = assert(self._tabFocusPocket, "tab focus carries a pocket")
-  local order = BagSave.POCKET_ORDER
-  local index = nil
-  for position, pocketKey in ipairs(order) do
-    if pocketKey == candidate then
-      index = position
-      break
-    end
-  end
-  assert(index ~= nil, "tab focus carries a pocket")
-  self._tabFocusPocket = order[((index - 1 + direction) % #order) + 1]
+-- The logical browse grid always covers at least the six visible cells and
+-- otherwise pads occupied items to a complete two-column row, so a padded
+-- trailing cell can own focus without inventing inventory.
+---@return integer
+function BagController:_logicalSlotCount()
+  return math.max(6, math.ceil(self:_count() / 2) * 2)
 end
 
----@param absolute integer
-function BagController:_select(absolute)
+-- Builds the ephemeral browse graph over the current pocket, item count,
+-- tab order, and remembered cell. Grid adjacency is absolute: same-row
+-- siblings sideways (missing neighbors stay put, never wrap), two cells
+-- vertically, the top row up to the active-pocket tab, and the last
+-- logical row down to Cancel. Tabs wrap through the pocket order and
+-- travel vertically back to the remembered cell, as does Cancel upward.
+---@return table<string, table<string, string[]>>
+function BagController:_browseGraph()
   local pocket = self:_pocket()
-  self._cursor:setPosition(pocket, absolute)
-  self:_ensureVisible()
+  local slotCount = self:_logicalSlotCount()
+  local remembered = slotNode(self._lastSlot)
+  local graph = {}
+  for absolute = 0, slotCount - 1 do
+    local id = slotNode(absolute)
+    local left = absolute % 2 == 1 and { slotNode(absolute - 1) } or {}
+    local right = absolute % 2 == 0 and absolute + 1 < slotCount and { slotNode(absolute + 1) } or {}
+    local up = absolute - 2 >= 0 and { slotNode(absolute - 2) } or { tabNode(pocket) }
+    local down = absolute + 2 < slotCount and { slotNode(absolute + 2) } or { CANCEL_NODE }
+    graph[id] = { up = up, down = down, left = left, right = right }
+  end
+  local order = BagSave.POCKET_ORDER
+  for position, pocketKey in ipairs(order) do
+    local previous = order[((position - 2) % #order) + 1]
+    local following = order[(position % #order) + 1]
+    graph[tabNode(pocketKey)] = {
+      left = { tabNode(previous) },
+      right = { tabNode(following) },
+      up = { remembered },
+      down = { remembered },
+    }
+  end
+  graph[CANCEL_NODE] = { up = { remembered }, down = {}, left = {}, right = {} }
+  return graph
+end
+
+-- Repairs focus after an external revision shrank the logical grid: an
+-- out-of-range cell falls back to the nearest valid one, and anything that
+-- is no longer a browse node at all returns to the remembered cell. A
+-- valid-but-empty cell is kept, so removal never steals a visible focus.
+function BagController:_normalizeFocus()
+  local slotCount = self:_logicalSlotCount()
+  if self._lastSlot < 0 or self._lastSlot >= slotCount then
+    self._lastSlot = math.max(slotCount - 1, 0)
+  end
+  local absolute = parseSlot(self._focusNode)
+  if absolute ~= nil then
+    if absolute < 0 or absolute >= slotCount then
+      self._focusNode = slotNode(self._lastSlot)
+    end
+    return
+  end
+  if parseTab(self._focusNode) == nil and self._focusNode ~= CANCEL_NODE then
+    self._focusNode = slotNode(self._lastSlot)
+  end
+end
+
+-- Focuses one absolute grid cell: the window slides in row steps until the
+-- cell is visible, an occupied cell also becomes the borrowed selection,
+-- and an empty cell leaves the borrowed cursor alone. Requests past the
+-- logical grid clamp to its last cell, so a tap beyond the padded row can
+-- never produce a node the graph does not know.
+---@param absolute integer
+function BagController:_focusSlot(absolute)
+  local pocket = self:_pocket()
+  local slotCount = self:_logicalSlotCount()
+  local clamped = math.min(math.max(absolute, 0), slotCount - 1)
+  self._focusNode = slotNode(clamped)
+  self._lastSlot = clamped
+  local cursor = self._cursor
+  local start = cursor:scroll(pocket)
+  while clamped < start do
+    start = start - 2
+  end
+  while clamped >= start + 6 do
+    start = start + 2
+  end
+  if start ~= cursor:scroll(pocket) then
+    cursor:setScroll(pocket, start)
+  end
+  if clamped < self:_count() then
+    cursor:setPosition(pocket, clamped)
+  end
   self:_refresh()
+end
+
+-- Applies one resolved browse node and its side effects: grid cells focus
+-- through the shared slot path, while tabs and Cancel only move focus.
+---@param node string
+function BagController:_applyFocusNode(node)
+  local absolute = parseSlot(node)
+  if absolute ~= nil then
+    self:_focusSlot(absolute)
+    return
+  end
+  assert(parseTab(node) ~= nil or node == CANCEL_NODE, "focus nodes stay inside the browse graph")
+  self._focusNode = node
 end
 
 ---@param direction string
@@ -223,53 +370,31 @@ function BagController:_move(direction)
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
     "unknown UI direction"
   )
-  local pocket = self:_pocket()
-  local count = self:_count()
-  local cursor = self._cursor
-  if self._focus == "tabs" then
-    if direction == "left" then
-      self:_moveTabFocus(-1)
-    elseif direction == "right" then
-      self:_moveTabFocus(1)
-    else
-      self._focus = "items"
-    end
-    return
+  self:_normalizeFocus()
+  local target = FocusGraph.move(self:_browseGraph(), self._focusNode, direction)
+  assert(type(target) == "string", "bag browse nodes are string ids")
+  self:_applyFocusNode(target)
+end
+
+-- The focused absolute cell while plain browsing, or nil on tabs/Cancel.
+-- This is focus identity, not item identity: it may name an empty cell.
+---@return integer?
+function BagController:_focusedSlotAbsolute()
+  if self:_visibleState() ~= "browsing" then
+    return nil
   end
-  -- Cancel is a single bottom button with no horizontal neighbor: only up
-  -- returns to the grid. Tab focus movement lives on the tab strip, so
-  -- horizontal input on Cancel stays where it is.
-  if self._focus == "cancel" then
-    if direction == "up" then
-      self._focus = "items"
-    end
-    return
+  return parseSlot(self._focusNode)
+end
+
+-- The focused cell when it actually holds an item: the only browse focus
+-- that may open the description or the action menu.
+---@return integer?
+function BagController:_focusedOccupiedAbsolute()
+  local absolute = self:_focusedSlotAbsolute()
+  if absolute == nil or absolute >= self:_count() then
+    return nil
   end
-  local selected = count == 0 and 0 or cursor:position(pocket)
-  -- Horizontal grid edges are inert: without a valid same-row sibling the
-  -- grid keeps its pocket, focus, and selection.
-  if direction == "left" then
-    if count > 0 and selected % 2 == 1 then
-      self:_select(selected - 1)
-    end
-  elseif direction == "right" then
-    if count > 0 and selected % 2 == 0 and selected + 1 < count then
-      self:_select(selected + 1)
-    end
-  elseif direction == "up" then
-    if count > 0 and selected - 2 >= 0 then
-      self:_select(selected - 2)
-    else
-      self._tabFocusPocket = self:_pocket()
-      self._focus = "tabs"
-    end
-  else
-    if count > 0 and selected + 2 < count then
-      self:_select(selected + 2)
-    else
-      self._focus = "cancel"
-    end
-  end
+  return absolute
 end
 
 -- Drops every nested action frame and returns to plain browsing. Mutations
@@ -305,12 +430,14 @@ end
 
 -- Confirming an item resolves the inventory-local menu for the refreshed
 -- view and snapshots the semantic selection the nested states verify
--- against. An empty pocket has nothing to act on.
+-- against. Only an occupied focused cell may enter; an empty focus is a
+-- no-op, never an error.
 function BagController:_openActionMenu()
-  if self._focus ~= "items" or self:_count() == 0 then
+  local absolute = self:_focusedOccupiedAbsolute()
+  if absolute == nil then
     return
   end
-  local selected = self._view.selected
+  local selected = self._view.slots[absolute + 1]
   if type(selected) ~= "table" or type(selected.item) ~= "string" then
     return
   end
@@ -433,6 +560,7 @@ function BagController:_commitToss()
   self._commands.toss(assert(self._actionItemKey, "a toss commits its snapshotted item"), quantity)
   self:_refresh()
   self:_reconcile()
+  self:_normalizeFocus()
   self:_toBrowsing()
 end
 
@@ -506,11 +634,12 @@ function BagController:_commitMove()
   local moved = self._commands.move(pocket, fromIndex, toIndex)
   self:_refresh()
   if moved then
-    self._cursor:setPosition(pocket, toIndex - 1)
-    self:_ensureVisible()
-    self:_refresh()
+    -- The moved item stays selected at its new position, and browse focus
+    -- follows it there.
+    self:_focusSlot(toIndex - 1)
   else
     self:_reconcile()
+    self:_normalizeFocus()
   end
   self:_toBrowsing()
 end
@@ -522,6 +651,7 @@ function BagController:_cancelMove()
   self._cursor:setPosition(pocket, math.min(self._moveFromPos, math.max(self:_count() - 1, 0)))
   self:_ensureVisible()
   self:_refresh()
+  self:_normalizeFocus()
   self:_toBrowsing()
 end
 
@@ -543,6 +673,7 @@ function BagController:_commitRegistration(register)
   end
   self:_refresh()
   self:_reconcile()
+  self:_normalizeFocus()
   self:_toBrowsing()
 end
 
@@ -601,11 +732,11 @@ function BagController:_confirm()
     self:_commitToss()
   elseif self._state == "move_select" then
     self:_commitMove()
-  elseif self._focus == "cancel" then
+  elseif self._focusNode == CANCEL_NODE then
     self._result = { kind = "closed" }
     self._closed = true
-  elseif self._focus == "tabs" then
-    local candidate = assert(self._tabFocusPocket, "tab focus carries a pocket")
+  elseif parseTab(self._focusNode) ~= nil then
+    local candidate = assert(parseTab(self._focusNode), "tab focus carries a pocket")
     if candidate ~= self:_pocket() then
       self:_enterPocket(candidate)
     end
@@ -644,7 +775,7 @@ function BagController:_info()
   if self._state ~= "browsing" then
     return
   end
-  if self._focus ~= "items" or self:_count() == 0 then
+  if self:_focusedOccupiedAbsolute() == nil then
     return
   end
   local layout = self._resolveLayout()
@@ -668,6 +799,9 @@ function BagController:_page(page)
   cursor:setPosition(pocket, cursor:scroll(pocket))
   self:_ensureVisible()
   self:_refresh()
+  -- Paging carries browse focus with the window to its top-left cell.
+  self._focusNode = slotNode(cursor:scroll(pocket))
+  self._lastSlot = cursor:scroll(pocket)
 end
 
 ---@param a table<string, unknown>?
@@ -768,7 +902,10 @@ function BagController:_activate(target)
     if target.pocket ~= self:_pocket() then
       self:_enterPocket(target.pocket)
     end
-    self._focus = "items"
+    local view = self._view
+    local start = assert(view.visibleStart, "the bag view needs its window start")
+    assert(type(start) == "number", "the bag view needs its window start")
+    self:_focusSlot(start)
     return
   end
   if target.kind == "item" then
@@ -776,13 +913,13 @@ function BagController:_activate(target)
     local view = self._view
     local start = assert(view.visibleStart, "the bag view needs its window start")
     assert(type(start) == "number", "the bag view needs its window start")
-    local pocket = self:_pocket()
     local absolute = start + target.visibleIndex
-    if self._focus == "items" and absolute == self._cursor:position(pocket) then
+    if parseSlot(self._focusNode) == absolute then
+      -- Activating the focused cell confirms through the shared path, so
+      -- an empty focus stays a no-op instead of opening a ghost menu.
       self:_confirm()
     else
-      self._focus = "items"
-      self:_select(absolute)
+      self:_focusSlot(absolute)
     end
   end
 end
@@ -826,8 +963,7 @@ function BagController:_pointerMove(event)
     local start = assert(view.visibleStart, "the bag view needs its window start")
     assert(type(start) == "number", "the bag view needs its window start")
     assert(type(target.visibleIndex) == "number", "item targets name their cell")
-    self._focus = "items"
-    self:_select(start + target.visibleIndex)
+    self:_focusSlot(start + target.visibleIndex)
   end
 end
 
@@ -877,6 +1013,7 @@ function BagController:updateFixed(uiInput)
   if view.revision ~= previousRevision then
     self:_reconcile()
   end
+  self:_normalizeFocus()
   if not self:_syncNested() then
     return
   end
@@ -915,19 +1052,43 @@ function BagController:status()
     return { open = false }
   end
   local view = self._view
-  local candidate = assert(self._tabFocusPocket, "tab focus carries a pocket")
-  local found = false
-  for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
-    if pocketKey == candidate then
-      found = true
-      break
+  -- The legacy focus category and tab candidate derive from the semantic
+  -- node; grid focus additionally publishes its absolute and visible cell
+  -- so the renderer can frame an empty cell without an item selection.
+  local focus = "items"
+  local candidate = self:_pocket()
+  local focusedAbsolute = parseSlot(self._focusNode)
+  if focusedAbsolute ~= nil then
+    focus = "items"
+  elseif self._focusNode == CANCEL_NODE then
+    focus = "cancel"
+    focusedAbsolute = nil
+  else
+    focus = "tabs"
+    focusedAbsolute = nil
+    candidate = assert(parseTab(self._focusNode), "tab focus carries a pocket")
+  end
+  -- Browse selection follows the focused cell when it holds an item and is
+  -- absent on an empty focus, even though the borrowed cursor keeps its
+  -- last valid occupied position. Nested action states keep the occupied
+  -- contract they snapshotted.
+  local selected = view.selected
+  local selectedAbsoluteIndex = view.selectedAbsoluteIndex
+  ---@type integer?
+  local focusedVisible = nil
+  if focusedAbsolute ~= nil then
+    local start = assert(view.visibleStart, "the bag view needs its window start")
+    assert(type(start) == "number", "the bag view needs its window start")
+    focusedVisible = focusedAbsolute - start
+    if self:_visibleState() == "browsing" and focusedAbsolute >= self:_count() then
+      selected = nil
+      selectedAbsoluteIndex = nil
     end
   end
-  assert(found, "tab focus carries a pocket")
   local record = {
     open = true,
     state = self:_visibleState(),
-    focus = self._focus,
+    focus = focus,
     revision = view.revision,
     pocket = view.pocket,
     tabFocusPocket = candidate,
@@ -935,11 +1096,13 @@ function BagController:status()
     pocketName = view.pocketName,
     pockets = view.pockets,
     slots = view.slots,
-    selectedAbsoluteIndex = view.selectedAbsoluteIndex,
+    selectedAbsoluteIndex = selectedAbsoluteIndex,
     visibleStart = view.visibleStart,
     visibleSlots = view.visibleSlots,
     page = view.page,
-    selected = view.selected,
+    selected = selected,
+    focusedAbsoluteIndex = focusedAbsolute,
+    focusedVisibleIndex = focusedVisible,
     layout = self._resolveLayout(),
   }
   if self._state == "action_menu" and not self._overlay then
