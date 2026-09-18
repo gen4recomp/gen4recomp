@@ -284,6 +284,7 @@ end
 
 function OakIntroTimeline:beginGenderSelection()
   self._genderCompositionProgress = 1
+  self._nameCompositionProgress = 0
   self._phase = "gender_select"
   self._focusTimer = 0
   self._focusBlinkDelta = 0
@@ -381,13 +382,7 @@ function OakIntroTimeline:press(action, profile)
   elseif self._phase == "oak_tell_about_yourself" then
     self:beginGenderQuestion()
   elseif self._phase == "gender_question" then
-    local _, nameProgress = self:profileComposition()
-    if nameProgress > 0 then
-      self._phase = "name_composition_return"
-      self._nameCompositionTimer = NAME_COMPOSITION_FRAMES
-    else
-      self:beginGenderSelection()
-    end
+    self:beginGenderSelection()
   elseif self._phase == "name_prompt" then
     self:beginNameLaunch()
   elseif self._phase == "final_dialogue" then
@@ -410,16 +405,6 @@ local function stepComposition(self, gender)
       self._phase = "name_confirm"
       self:_setVisual("oak")
       self:_setMessage(gender == 0 and "profile.name_confirm.male" or "profile.name_confirm.female")
-    end
-    return true
-  elseif self._phase == "name_composition_return" then
-    self._nameCompositionTimer = self._nameCompositionTimer - 1
-    self._nameCompositionProgress = self._nameCompositionTimer / NAME_COMPOSITION_FRAMES
-    if self._nameCompositionTimer == 0 then
-      self._nameCompositionProgress = 0
-      self._phase = "gender_select"
-      self._focusTimer = 0
-      self._focusBlinkDelta = 0
     end
     return true
   end

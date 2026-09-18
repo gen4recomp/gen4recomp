@@ -138,7 +138,6 @@ function OakSceneLayout.mode(view)
     reservesDialogue = view.dialogue ~= nil
       or phase == "name_confirm"
       or phase == "name_composition_transition"
-      or phase == "name_composition_return"
       or phase == "name_prompt"
       or phase == "name_launch_wait"
       or phase == "final_dialogue"
@@ -147,12 +146,21 @@ function OakSceneLayout.mode(view)
       or phase == "gender_confirm"
       or phase == "greeting"
       or phase == "oak_welcome"
+      or phase == "oak_reveal_wait"
+      or phase == "oak_slide_right"
       or phase == "oak_world_inhabited"
+      or phase == "ball_open_wait"
+      or phase == "scene_flash"
+      or phase == "marill_appear"
+      or phase == "marill_brightness_fade"
+      or phase == "marill_cry_wait"
       or phase == "oak_live_alongside"
+      or phase == "marill_hide"
+      or phase == "marill_hide_wait"
+      or phase == "oak_slide_left"
       or phase == "oak_tell_about_yourself",
     selectorActive = phase == "gender_select" or phase == "gender_confirm",
     nameForward = phase == "name_composition_transition",
-    nameReturn = phase == "name_composition_return",
     nameConfirm = phase == "name_confirm",
     finalDialogue = phase == "final_dialogue",
     genderQuestion = phase == "gender_question",

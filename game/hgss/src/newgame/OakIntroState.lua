@@ -397,16 +397,10 @@ function OakIntroState:update(dt)
   self.accumulator = self.accumulator + dt
   while self.accumulator + SOURCE_FRAME_EPSILON >= SOURCE_FRAME_DURATION do
     self.accumulator = math.max(0, self.accumulator - SOURCE_FRAME_DURATION)
-    local phaseBeforeDialogue = self.controller:view().phase
     if self.dialogueController then
       self:_stepDialogue()
     end
-    local phaseAfterDialogue = self.controller:view().phase
-    local compositionStarted = phaseBeforeDialogue == "gender_question"
-      and phaseAfterDialogue == "name_composition_return"
-    if not compositionStarted then
-      self.controller:tick(1)
-    end
+    self.controller:tick(1)
     if self.controller:view().phase == "complete" then
       break
     end
@@ -421,16 +415,10 @@ function OakIntroState:tick(frames)
   assert(frames >= 0 and frames % 1 == 0, "Oak tick count must be a non-negative integer")
   self:_acknowledgePresentedHandoff()
   for _ = 1, frames do
-    local phaseBeforeDialogue = self.controller:view().phase
     if self.dialogueController then
       self:_stepDialogue()
     end
-    local phaseAfterDialogue = self.controller:view().phase
-    local compositionStarted = phaseBeforeDialogue == "gender_question"
-      and phaseAfterDialogue == "name_composition_return"
-    if not compositionStarted then
-      self.controller:tick(1)
-    end
+    self.controller:tick(1)
   end
   self:_sync()
 end

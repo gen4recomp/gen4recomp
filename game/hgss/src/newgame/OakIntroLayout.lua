@@ -4,6 +4,7 @@
 local OakProfileLayout = require("game.hgss.src.newgame.OakProfileLayout")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local OakSceneLayout = require("game.hgss.src.newgame.OakSceneLayout")
+local ImageButton = require("libs.ui.src.ImageButton")
 local PixelScale = require("libs.ui.src.PixelScale")
 local TextButton = require("libs.ui.src.TextButton")
 
@@ -58,11 +59,10 @@ local function validateSubjectState(view, dialogue, subjectId, subjectWidget, or
     assertFiniteProgress(nameProgress, "Oak name composition progress is invalid")
   end
   local isNameForward = view.phase == "name_composition_transition"
-  local isNameReturn = view.phase == "name_composition_return"
   local isNameConfirm = view.phase == "name_confirm"
   local isFinalDialogue = view.phase == "final_dialogue"
   local isGenderQuestion = view.phase == "gender_question"
-  if isNameForward or isNameReturn then
+  if isNameForward then
     assert(nameProgress ~= nil, "Oak name composition progress is invalid")
     assertFiniteProgress(nameProgress, "Oak name composition progress is invalid")
     assert(compositionProgress == 1, "Oak gender composition progress is invalid")
@@ -133,7 +133,6 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   local nameProgress = view.nameCompositionProgress
   validateSubjectState(view, dialogue, subjectId, subjectWidget, ordinarySubject)
   local isNameForward = view.phase == "name_composition_transition"
-  local isNameReturn = view.phase == "name_composition_return"
   local isNameConfirm = view.phase == "name_confirm"
   local isFinalDialogue = view.phase == "final_dialogue"
   local isGenderQuestion = view.phase == "gender_question"
@@ -141,11 +140,7 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   local oakRegion, selectorRegion
   local nameOakRegion, nameChoiceRegion
   local selectedSubject = ordinarySubject
-  local needsNameEndpoint = isNameForward
-    or isNameReturn
-    or isNameConfirm
-    or isFinalDialogue
-    or isGenderQuestion and nameProgress == 1
+  local needsNameEndpoint = isNameForward or isNameConfirm or isFinalDialogue or isGenderQuestion and nameProgress == 1
   if needsNameEndpoint then
     local genderHost = OakSceneLayout.aboveDialogue(scene, assert(dialogue), gap)
     local genderRegion = OakSceneLayout.selectorRegions(genderHost, gap)
@@ -158,25 +153,16 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
     local nameOakRect = OakSceneLayout.composedOakRect(assert(ordinarySubject), assert(subjectWidget), nameOakRegion, 1)
     if isNameForward then
       selectedSubject = OakSceneLayout.interpolateSubjectRect(genderOakRect, nameOakRect, assert(nameProgress), true)
-    elseif isNameReturn then
-      selectedSubject =
-        OakSceneLayout.interpolateSubjectRect(nameOakRect, genderOakRect, 1 - assert(nameProgress), true)
     else
       selectedSubject = nameOakRect
     end
     oakRegion, selectorRegion = nameOakRegion, nameChoiceRegion
   elseif selectorActive then
-    -- The interactive selector hides Oak, so the cards own the full
-    -- above the dialogue instead of the Oak-visible cards half. Fitting
-    -- the 256x192 reference into the half leaves cards hanging off the
-    -- logical viewport on representative hosts such as 640x480. The host
-    -- runs to the dialogue edge: the centered canvas already keeps its
-    -- content clear of the box, and reserving the gap on top would push
-    -- cards half a pixel past the region on tall-scale hosts such as
-    -- 2560x1440.
+    -- The interactive selector hides Oak, so the cards own the full scene
+    -- above the reserved dialogue, keeping the shared gap clear of the box.
     local selectorHost = scene
     if dialogue ~= nil then
-      selectorHost = rect(scene.x, scene.y, scene.width, dialogue.outerRect.y - scene.y)
+      selectorHost = OakSceneLayout.aboveDialogue(scene, dialogue, gap)
     end
     oakRegion, selectorRegion = nil, selectorHost
     selectedSubject = nil
@@ -184,15 +170,25 @@ local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId
   return selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive
 end
 
-local function integerConfirmationEntries(region, preferredScale)
+local function integerConfirmationEntries(region, preferredScale, alignRight)
   local stackWidth = TextButton.REFERENCE_WIDTH
   local stackHeight = TextButton.REFERENCE_HEIGHT * 2 + 8
   local scale = PixelScale.fitPreferred(region, stackWidth, stackHeight, preferredScale)
   local width, height = stackWidth * scale, TextButton.REFERENCE_HEIGHT * scale
   -- Snap the stack origin to the logical pixel grid: fractional button
   -- edges rasterize the 1px shared rings onto pixel centers, where the
-  -- later face fill wins the tie and erases the ring pixel.
-  local x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
+  -- later face fill wins the tie and erases the ring pixel. Name
+  -- confirmation instead hugs the far edge of its choice region so the
+  -- buttons stay maximally separated from Oak on wide hosts. The far edge
+  -- mates exactly because choice-region right edges are fractional: a
+  -- snapped origin would sit up to half a pixel past the region and break
+  -- region containment and far-edge alignment.
+  local x
+  if alignRight then
+    x = region.x + region.width - width
+  else
+    x = PixelScale.snapLogical(region.x + (region.width - width) / 2)
+  end
   local y = PixelScale.snapLogical(region.y + (region.height - (height * 2 + 8 * scale)) / 2)
   return {
     [0] = {
@@ -214,6 +210,27 @@ local function integerConfirmationEntries(region, preferredScale)
   }
 end
 
+-- Interactive cards are mapped from the source canvas, which can extend
+-- past a short selector host on extreme hosts; pin each entry to the host
+-- so cards never leave the interactive region. Where the canvas already
+-- fits this changes nothing.
+---@param slot OakGenderCardEntry
+---@param region { x: number, y: number, width: number, height: number }
+local function clampCardToRegion(slot, region)
+  local card = slot.rect
+  local x = math.max(card.x, region.x)
+  local y = math.max(card.y, region.y)
+  local clamped = rect(
+    x,
+    y,
+    math.min(card.x + card.width, region.x + region.width) - x,
+    math.min(card.y + card.height, region.y + region.height) - y
+  )
+  slot.rect = clamped
+  -- Rebuild chrome from the clamped rect, mirroring genderSelectionEntries.
+  slot.button = ImageButton.resolve({ rect = clamped, scale = slot.scale, cornerRadius = 6 })
+end
+
 local function profileLayout(
   result,
   view,
@@ -227,6 +244,9 @@ local function profileLayout(
   if selectorActive then
     local selectorCanvas = canvasForRegion(assert(selectorRegion), reference, preferredScale)
     local genderSlots = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
+    for gender = 0, 1 do
+      clampCardToRegion(assert(genderSlots[gender]), assert(selectorRegion))
+    end
     if view.phase == "gender_select" then
       result.genderButtons = genderSlots
     else
@@ -240,7 +260,7 @@ local function profileLayout(
     end
   end
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
-    result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale))
+    result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true)
   end
   if view.phase == "name_edit" then
     result.namingScreen = NamingScreenLayout.compute(result.viewport)
@@ -277,6 +297,13 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   local safeFrame = rect(inset, inset, width - inset * 2, height - inset * 2)
   local gap = logicalHostMetric(math.min(8, math.max(0, math.floor(physicalMinimum * 0.02 + 0.5))), preferredScale)
   local contentWidthCap = logicalHostMetric(1120, preferredScale)
+  -- The cap keeps the content column from spreading across ultra-wide
+  -- hosts, but it must never squeeze the name stage below the minimum
+  -- width its scale-1 content needs: the Oak portrait plus the gap plus
+  -- the Yes/No stack across the stage split owned by nameStageAndRegions.
+  local oakPortraitWidth = widget(manifest, "oak").width
+  local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, TextButton.REFERENCE_WIDTH / 0.54)
+  contentWidthCap = math.max(contentWidthCap, math.ceil(minNameContentWidth))
   local mode = OakSceneLayout.mode(view)
   local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue, preferredScale)
   local scene, sceneContent = OakSceneLayout.sceneRegions(width, safeFrame, contentWidthCap)

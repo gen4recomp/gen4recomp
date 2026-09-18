@@ -1488,7 +1488,7 @@ function T.affirmative_name_answer_keeps_name_placement()
   Assert.equal(assert(after.nameCompositionProgress), 1, "YES must keep name composition at 1")
 end
 
-function T.rejected_name_returns_to_gender_placement_over_twenty_six_frames()
+function T.rejected_name_returns_directly_to_gender_selection_without_return_slide()
   local state = advanceToNameEdit()
   state:inputText("GOLD")
   state:press("submit")
@@ -1497,23 +1497,15 @@ function T.rejected_name_returns_to_gender_placement_over_twenty_six_frames()
   completeActiveMessage(state)
   state:press("cancel")
   Assert.equal(state:view().phase, "gender_question")
-  Assert.equal(state:view().genderCompositionProgress, 1)
-  Assert.equal(assert(state:view().nameCompositionProgress), 1, "rejected question must keep name progress at 1")
   completeActiveMessage(state)
-  local start = state:view()
-  -- closing gender_question must start return transition without consuming a frame
-  Assert.equal(assert(start.nameCompositionProgress), 1, "return must start at 1 before ticking")
-  Assert.isTrue(start.phase ~= "gender_select", "gender_select must wait for return transition")
-  state:tick(1)
-  Assert.isTrue(assert(state:view().nameCompositionProgress) < 1, "progress must decrease after first tick")
-  for _ = 1, 24 do
+  local after = state:view()
+  Assert.equal(after.phase, "gender_select", "the repeated question must close directly to selection")
+  Assert.equal(assert(after.nameCompositionProgress), 0, "re-entering selection must reset name progress")
+  for _ = 1, 26 do
     state:tick(1)
+    Assert.equal(state:view().phase, "gender_select", "no return transition may intervene")
+    Assert.equal(assert(state:view().nameCompositionProgress), 0)
   end
-  state:tick(1)
-  local finished = state:view()
-  Assert.equal(finished.phase, "gender_select")
-  Assert.equal(finished.genderCompositionProgress, 1)
-  Assert.equal(finished.nameCompositionProgress, 0)
 end
 
 -- Drives a male profile through the final dialogue into the shrink
