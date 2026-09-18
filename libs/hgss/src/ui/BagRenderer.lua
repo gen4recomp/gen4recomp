@@ -469,32 +469,24 @@ function BagRenderer:_drawItemFocusCell(cell)
   drawVisual(self._graphics, assert(self._visuals["focus:items"]), target.x, target.y)
 end
 
--- Draws the item focus for the selected occupied cell. Selection outside
--- the six-cell window is an invalid presentation invariant and fails
--- instead of guessing a target.
----@param presentation table<string, unknown>
-function BagRenderer:_drawSelectedItemFocus(presentation)
-  local absolute = assert(presentation.selectedAbsoluteIndex, "the presentation carries its selection index")
-  local start = assert(presentation.visibleStart, "the presentation carries its window start")
-  assert(type(absolute) == "number" and type(start) == "number", "selection indexes are numbers")
-  local visibleIndex = absolute - start + 1
-  assert(visibleIndex >= 1 and visibleIndex <= 6, "selected item must be in the visible Bag window")
-  local visibleSlots = assert(presentation.visibleSlots, "the bag presentation lists its visible cells")
-  local focused = visibleSlots[visibleIndex]
-  if focused ~= nil and focused.empty ~= true then
-    self:_drawItemFocusCell(visibleIndex)
-  end
-end
-
 -- Draws the item focus visual beneath the cell content it frames, so icons,
 -- names, quantities, and registration markers stay visible above the movable
--- cursor. Nothing is drawn for a control that is not semantically focused.
+-- cursor. Browse focus resolves from the controller's focused visible cell,
+-- independently of occupied selection, so an empty focused cell draws the
+-- same chrome. Nothing is drawn for a control that is not semantically
+-- focused.
 ---@param presentation table<string, unknown>
 function BagRenderer:_drawCellFocus(presentation)
   local state = assert(presentation.state, "the bag presentation names its state")
   if state ~= "action_menu" and state ~= "move_select" then
-    if presentation.focus == "items" and presentation.selected ~= nil then
-      self:_drawSelectedItemFocus(presentation)
+    if presentation.focus == "items" then
+      local visibleIndex = presentation.focusedVisibleIndex
+      if type(visibleIndex) == "number" then
+        local cell = visibleIndex + 1
+        if cell >= 1 and cell <= 6 then
+          self:_drawItemFocusCell(cell)
+        end
+      end
     end
     return
   end

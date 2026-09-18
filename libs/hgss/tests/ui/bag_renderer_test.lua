@@ -399,6 +399,8 @@ local function status(overrides)
     slots = { slot("POTION", 5), slot("POKE_BALL", 3) },
     selectedAbsoluteIndex = 0,
     visibleStart = 0,
+    focusedAbsoluteIndex = 0,
+    focusedVisibleIndex = 0,
     visibleSlots = visibleSlots(),
     page = { current = 1, count = 1 },
     selected = slot("POTION", 5),
@@ -1475,7 +1477,7 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
   local unfocused = status({ pocket = "balls", focus = "items" })
   unfocused.selected = nil
   draw:draw(unfocused, singlePane(), { icons = icons() })
-  Assert.equal(staticDrawCount(graphics), 2, "item focus leaves the tab row without its focus visual")
+  Assert.equal(staticDrawCount(graphics), 3, "item focus leaves the tab row without its focus visual")
   Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "item focus keeps the active pocket strip")
   Assert.isFalse(
     staticDrawnAt(graphics, target.x + focusOffset.x, target.y + focusOffset.y),
@@ -1541,7 +1543,15 @@ function T.item_focus_draws_the_generated_visual_at_the_visible_target()
     cells[index] = slot("ITEM_" .. index, 1)
   end
   draw:draw(
-    status({ pocket = "items", focus = "items", selectedAbsoluteIndex = 4, visibleStart = 3, visibleSlots = cells }),
+    status({
+      pocket = "items",
+      focus = "items",
+      selectedAbsoluteIndex = 4,
+      focusedAbsoluteIndex = 4,
+      focusedVisibleIndex = 1,
+      visibleStart = 3,
+      visibleSlots = cells,
+    }),
     layout("horizontal"),
     { icons = icons() }
   )
@@ -1992,6 +2002,58 @@ function T.tabbed_strip_and_focus_resolve_from_separate_pockets()
   local focusAt = assert(drawIndex(draw._images["focus:tabs"]), "the tab focus draws while tabs are focused")
   Assert.isTrue(stripAt < focusAt, "the foreground cursor draws after the pocket strip")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+function T.empty_focused_cell_draws_the_normal_item_focus_visual()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = renderer(graphics)
+  local manifested = manifest()
+  local cells = { slot("POTION", 5) }
+  for index = 2, 6 do
+    cells[index] = { empty = true, visibleIndex = index - 1 }
+  end
+  local presentation = status({
+    pocket = "balls",
+    slots = { slot("POTION", 5) },
+    visibleSlots = cells,
+    visibleStart = 0,
+  })
+  presentation.selected = nil
+  presentation.selectedAbsoluteIndex = nil
+  presentation.focusedAbsoluteIndex = 1
+  presentation.focusedVisibleIndex = 1
+  draw:draw(presentation, layout("horizontal"), { icons = icons() })
+  local itemFocus = manifested.interactive.focus.items
+  local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[2])
+  Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "an empty focused cell draws the normal focus visual")
+  for index, target in ipairs(itemFocus.targets) do
+    if index ~= 2 then
+      local otherX, otherY = focusOrigin(itemFocus, target)
+      Assert.isFalse(staticDrawnAt(graphics, otherX, otherY), "no stale focus remains at target " .. index)
+    end
+  end
+  Assert.equal(#graphics.rectangles, 0, "empty focus emits no primitive outline")
+  draw:release()
+end
+
+function T.empty_pocket_focus_draws_on_the_first_cell_without_icons()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = renderer(graphics)
+  local manifested = manifest()
+  local cells = {}
+  for index = 1, 6 do
+    cells[index] = { empty = true, visibleIndex = index - 1 }
+  end
+  local presentation = status({ pocket = "items", slots = {}, visibleSlots = cells, visibleStart = 0 })
+  presentation.selected = nil
+  presentation.selectedAbsoluteIndex = nil
+  presentation.focusedAbsoluteIndex = 0
+  presentation.focusedVisibleIndex = 0
+  draw:draw(presentation, layout("horizontal"), { icons = icons() })
+  local itemFocus = manifested.interactive.focus.items
+  local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[1])
+  Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "the first empty cell draws the normal focus visual")
   draw:release()
 end
 

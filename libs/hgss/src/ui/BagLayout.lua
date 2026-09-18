@@ -275,12 +275,12 @@ function BagLayout.resolve(spec)
           return { kind = "pocket", pocket = BagSave.POCKET_ORDER[index] }
         end
       end
+      -- Plain browsing exposes every visible cell to the pointer, occupied
+      -- or empty, so keyboard and pointer focus stay aligned. Move-target
+      -- selection keeps its occupancy gate in its own branch above.
       for index, slot in ipairs(slots) do
         if LayoutGeometry.containsPoint(slot.rect, logicalX, logicalY) then
-          if cellOccupied(controllerState and controllerState.visibleSlots, index) then
-            return { kind = "item", visibleIndex = index - 1 }
-          end
-          return nil
+          return { kind = "item", visibleIndex = index - 1 }
         end
       end
       if LayoutGeometry.containsPoint(cancelRect, logicalX, logicalY) then
