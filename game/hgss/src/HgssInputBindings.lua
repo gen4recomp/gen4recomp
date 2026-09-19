@@ -22,65 +22,62 @@ local function buildSet(list, what)
   return set
 end
 
--- The bindings are read from the manifest on every lookup so the authority
--- always reflects the current presentation: tests and development harnesses
--- may rebind the manifest, and a require-time snapshot would silently keep
--- serving the stale aliases. The lists stay tiny, so rebuilding per lookup
--- costs nothing measurable on the input path.
----@param what string
+-- The bindings are application configuration validated once when this module
+-- loads. Every lookup and accessor shares those module-local sets, so field
+-- snapshots and direct callers observe one identical authority for the
+-- process lifetime. Mutating the manifest after load is unsupported and has
+-- no effect.
+local input = assert(
+  type(FieldPresentation) == "table" and FieldPresentation.input,
+  "field presentation input bindings are required"
+)
+assert(type(input) == "table", "field presentation input bindings are required")
+
+local ACTION_KEYS = buildSet(assert(input.action, "field presentation input action aliases are required"), "action")
+local CANCEL_KEYS = buildSet(assert(input.cancel, "field presentation input cancel aliases are required"), "cancel")
+local MENU_KEYS = buildSet(assert(input.menu, "field presentation input menu aliases are required"), "menu")
+
+---@param set table<string, boolean>
 ---@return table<string, boolean>
-local function currentKeys(what)
-  local input = assert(
-    type(FieldPresentation) == "table" and FieldPresentation.input,
-    "field presentation input bindings are required"
-  )
-  assert(type(input) == "table", "field presentation input bindings are required")
-  return buildSet(assert(input[what], "field presentation input " .. what .. " aliases are required"), what)
+local function copySet(set)
+  local copy = {}
+  for key in pairs(set) do
+    copy[key] = true
+  end
+  return copy
 end
 
 ---@param key string
 ---@return boolean
 function HgssInputBindings.isActionKey(key)
-  return currentKeys("action")[key] == true
+  return ACTION_KEYS[key] == true
 end
 
 ---@param key string
 ---@return boolean
 function HgssInputBindings.isCancelKey(key)
-  return currentKeys("cancel")[key] == true
+  return CANCEL_KEYS[key] == true
 end
 
 ---@param key string
 ---@return boolean
 function HgssInputBindings.isMenuKey(key)
-  return currentKeys("menu")[key] == true
+  return MENU_KEYS[key] == true
 end
 
 ---@return table<string, boolean> a fresh copy; callers may not mutate the authority
 function HgssInputBindings.actionKeys()
-  local copy = {}
-  for key in pairs(currentKeys("action")) do
-    copy[key] = true
-  end
-  return copy
+  return copySet(ACTION_KEYS)
 end
 
 ---@return table<string, boolean> a fresh copy; callers may not mutate the authority
 function HgssInputBindings.cancelKeys()
-  local copy = {}
-  for key in pairs(currentKeys("cancel")) do
-    copy[key] = true
-  end
-  return copy
+  return copySet(CANCEL_KEYS)
 end
 
 ---@return table<string, boolean> a fresh copy; callers may not mutate the authority
 function HgssInputBindings.menuKeys()
-  local copy = {}
-  for key in pairs(currentKeys("menu")) do
-    copy[key] = true
-  end
-  return copy
+  return copySet(MENU_KEYS)
 end
 
 return HgssInputBindings
