@@ -163,4 +163,92 @@ function T.a_malformed_inventory_is_unavailable()
   Assert.isTrue(reason ~= nil and reason ~= "", "a refused proof names its cause")
 end
 
+-- A declared leaf without a current receipt refuses that exact leaf and
+-- writes nothing; a present-but-rejected payload still refuses the same
+-- leaf; a fully receipted and validated inventory passes even with a stale
+-- attestation on disk, which the walk never consults.
+function T.a_missing_declared_leaf_is_unavailable_read_only_and_repairable()
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local generationId = "leaf-repair-generation"
+  local identity = { versionId = "heartgold", generationId = generationId, producerId = "audit-producer" }
+  local plans = minimalPlans()
+  plans.messageBankIds = { 4 }
+  local jobs = assert(ArtifactJobs.completeJobs(plans))
+  local target = assert(jobs[#jobs], "the canonical inventory has a last declared leaf")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  for _, job in ipairs(jobs) do
+    if job.jobKey ~= target.jobKey then
+      cache:writeLua(ArtifactState.path(job.kind, job.key), {
+        schema = ArtifactState.RECEIPT_SCHEMA,
+        generationId = generationId,
+        kind = job.kind,
+        key = job.key,
+        marker = "marker-" .. job.kind .. "-" .. job.key,
+      })
+    end
+  end
+  local realValidate = ArtifactJobs.validate
+  local function withValidator(stub, fn)
+    ArtifactJobs.validate = stub
+    local ok, first, second = pcall(fn)
+    ArtifactJobs.validate = realValidate
+    if not ok then
+      error(first, 0)
+    end
+    return first, second
+  end
+  local function acceptAll()
+    return true
+  end
+  local before = snapshot(backend)
+  local available, reason = withValidator(acceptAll, function()
+    return DerivedCacheAudit.isAvailable(cache, identity, plans)
+  end)
+  Assert.isFalse(available)
+  Assert.isTrue(
+    reason ~= nil and reason:find(target.jobKey, 1, true) ~= nil,
+    "the refusal names the missing leaf, got: " .. tostring(reason)
+  )
+  Assert.deepEqual(snapshot(backend), before, "a read-only audit performs no writes")
+  cache:writeLua(ArtifactState.path(target.kind, target.key), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generationId,
+    kind = target.kind,
+    key = target.key,
+    marker = "marker-" .. target.kind .. "-" .. target.key,
+  })
+  local stillUnavailable, payloadReason = withValidator(function(_, _, kind, key)
+    if kind == target.kind and key == target.key then
+      return false
+    end
+    return true
+  end, function()
+    return DerivedCacheAudit.isAvailable(cache, identity, plans)
+  end)
+  Assert.isFalse(stillUnavailable)
+  Assert.isTrue(
+    payloadReason ~= nil and payloadReason:find(target.jobKey, 1, true) ~= nil,
+    "the refusal names the invalid leaf, got: " .. tostring(payloadReason)
+  )
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local Contract = require("libs.assets.src.DerivedAssetContract")
+  local ScriptApi = require("libs.script.src.Schema")
+  cache:writeLua(DerivedCacheState.path, {
+    schema = DerivedCacheState.schema,
+    versionId = "heartgold",
+    romSha1 = string.rep("a", 40),
+    mode = "development",
+    producerId = "d" .. string.rep("1", 64),
+    assetRevision = Contract.revision,
+    scriptApi = ScriptApi.API_VERSION,
+    generationId = "stale-generation",
+  })
+  local accepted = withValidator(acceptAll, function()
+    return DerivedCacheAudit.isAvailable(cache, identity, plans)
+  end)
+  Assert.isTrue(accepted, "a fully receipted and validated inventory is usable")
+end
+
 return { tests = T }

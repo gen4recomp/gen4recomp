@@ -163,6 +163,12 @@ function SceneLoaderFixture.newHarness(versionId, opts)
     load = function(_, mapId)
       return assert(maps[mapId], "map " .. tostring(mapId))
     end,
+    requestWarp = function(_, sourceMap, warp)
+      assert(type(sourceMap) == "table", "fixture warp source is required")
+      assert(type(warp) == "table", "fixture warp record is required")
+      assert(maps[warp.destinationMapId], "fixture destination is not preloaded")
+      return true
+    end,
     transitionEnvironment = function(_, mapId)
       local map = assert(maps[mapId], "map " .. tostring(mapId))
       return assert(map.fieldData.transitionEnvironment, "map transition environment " .. tostring(mapId))
