@@ -7,7 +7,7 @@ import json
 import math
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 
@@ -153,21 +153,16 @@ def entry_from_report(model: Any) -> dict[str, Any]:
     return _validate_entry(entry)
 
 
-def _commit_instant(entry: dict[str, Any]) -> Any:
-    """Return the commit instant for chronological history ordering."""
-    parsed = datetime.fromisoformat(entry["committedAt"].replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed
-
-
 def merge(previous: Any, current_entry: dict[str, Any]) -> dict[str, Any]:
-    """Upsert the current entry into compatible history, ordered by commit time."""
+    """Upsert the current entry preserving serialized publication order."""
     current = _validate_entry(current_entry)
     entries = [] if previous is None else _validate_previous(previous)
-    entries = [entry for entry in entries if entry["commit"] != current["commit"]]
-    entries.append(current)
-    entries.sort(key=lambda entry: (_commit_instant(entry), entry["commit"]))
+    for index, entry in enumerate(entries):
+        if entry["commit"] == current["commit"]:
+            entries[index] = current
+            break
+    else:
+        entries.append(current)
     return {
         "schemaVersion": SCHEMA_VERSION,
         "measurementVersion": MEASUREMENT_VERSION,
@@ -226,7 +221,7 @@ def main(argv: list[str]) -> int:
 
 
 def previous_entry(history: Any, current_commit: str) -> dict[str, Any] | None:
-    """Return the entry preceding the current commit, or None at the baseline."""
+    """Return the immediately preceding published measurement, or None at the baseline."""
     if not isinstance(history, dict) or not isinstance(history.get("entries"), list):
         raise ValueError("history must be an object with an entries list")
     entries = history["entries"]

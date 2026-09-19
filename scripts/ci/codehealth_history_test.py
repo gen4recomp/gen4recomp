@@ -55,7 +55,7 @@ class CodeHealthHistoryTest(unittest.TestCase):
         self.assertEqual(merged["measurementVersion"], 1)
         self.assertEqual(merged["entries"], [current])
 
-    def test_compatible_history_appends_and_orders_by_commit_time(self) -> None:
+    def test_new_measurement_appends_after_prior_publication(self) -> None:
         previous = {
             "schemaVersion": 1,
             "measurementVersion": 1,
@@ -65,7 +65,7 @@ class CodeHealthHistoryTest(unittest.TestCase):
         }
         current = _entry(FIRST, "2026-01-01T00:00:00Z", "2026-03-02T00:00:00Z")
         merged = HISTORY.merge(previous, current)
-        self.assertEqual([row["commit"] for row in merged["entries"]], [FIRST, SECOND])
+        self.assertEqual([row["commit"] for row in merged["entries"]], [SECOND, FIRST])
 
     def test_same_commit_rerun_replaces_entry_without_growing_history(self) -> None:
         previous = {
@@ -81,29 +81,41 @@ class CodeHealthHistoryTest(unittest.TestCase):
         self.assertEqual(merged["entries"][0]["erosion"], 0.2)
         self.assertEqual(merged["entries"][0]["analyzedAt"], "2026-03-05T00:00:00Z")
 
-    def test_same_commit_time_sorts_deterministically_by_sha(self) -> None:
+    def test_rerun_replaces_middle_entry_in_place(self) -> None:
         previous = {
             "schemaVersion": 1,
             "measurementVersion": 1,
             "entries": [
-                _entry(THIRD, "2026-02-01T00:00:00Z", "2026-03-01T00:00:00Z"),
+                _entry(FIRST, "2026-01-01T00:00:00Z", "2026-03-01T00:00:00Z"),
+                _entry(SECOND, "2026-02-01T00:00:00Z", "2026-03-02T00:00:00Z", erosion=0.1),
+                _entry(THIRD, "2026-03-01T00:00:00Z", "2026-03-03T00:00:00Z"),
             ],
         }
-        current = _entry(FIRST, "2026-02-01T00:00:00Z", "2026-03-02T00:00:00Z")
+        current = _entry(SECOND, "2026-04-01T00:00:00Z", "2026-04-02T00:00:00Z", erosion=0.9)
         merged = HISTORY.merge(previous, current)
-        self.assertEqual([row["commit"] for row in merged["entries"]], [FIRST, THIRD])
+        self.assertEqual(
+            [row["commit"] for row in merged["entries"]], [FIRST, SECOND, THIRD]
+        )
+        self.assertEqual(merged["entries"][1]["erosion"], 0.9)
+        self.assertEqual(merged["entries"][1]["committedAt"], "2026-04-01T00:00:00Z")
 
-    def test_mixed_utc_offsets_order_by_instant_not_lexical_string(self) -> None:
-        previous = {
-            "schemaVersion": 1,
-            "measurementVersion": 1,
-            "entries": [
-                _entry(SECOND, "2026-02-01T17:00:00-03:00", "2026-03-01T00:00:00Z"),
-            ],
-        }
-        current = _entry(FIRST, "2026-02-01T20:00:00+02:00", "2026-03-02T00:00:00Z")
-        merged = HISTORY.merge(previous, current)
-        self.assertEqual([row["commit"] for row in merged["entries"]], [FIRST, SECOND])
+    def test_successive_publications_define_order_and_predecessor(self) -> None:
+        first = HISTORY.merge(
+            None, _entry(FIRST, "2026-03-01T00:00:00Z", "2026-03-01T00:00:00Z")
+        )
+        second = HISTORY.merge(
+            first, _entry(SECOND, "2026-03-01T00:00:00Z", "2026-03-02T00:00:00Z")
+        )
+        third = HISTORY.merge(
+            second, _entry(THIRD, "2026-01-01T00:00:00Z", "2026-03-03T00:00:00Z")
+        )
+        self.assertEqual(
+            [row["commit"] for row in third["entries"]], [FIRST, SECOND, THIRD]
+        )
+        predecessor = HISTORY.previous_entry(third, THIRD)
+        self.assertIsNotNone(predecessor)
+        assert predecessor is not None
+        self.assertEqual(predecessor["commit"], SECOND)
 
     def test_previous_entry_selects_immediately_preceding_commit(self) -> None:
         history = {
@@ -117,6 +129,18 @@ class CodeHealthHistoryTest(unittest.TestCase):
         }
         self.assertEqual(HISTORY.previous_entry(history, THIRD)["commit"], SECOND)
         self.assertIsNone(HISTORY.previous_entry(history, FIRST))
+
+    def test_baseline_merge_appends_current_measurement(self) -> None:
+        baseline = {
+            "schemaVersion": 1,
+            "measurementVersion": 1,
+            "entries": [
+                _entry(FIRST, "2026-02-01T00:00:00Z", "2026-03-01T00:00:00Z"),
+            ],
+        }
+        current = _entry(SECOND, "2026-01-01T00:00:00Z", "2026-03-02T00:00:00Z")
+        merged = HISTORY.merge(baseline, current)
+        self.assertEqual([row["commit"] for row in merged["entries"]], [FIRST, SECOND])
 
     def test_incompatible_schema_version_is_rejected(self) -> None:
         previous = {
@@ -174,7 +198,7 @@ class CodeHealthHistoryTest(unittest.TestCase):
                 json.loads(path.read_text(encoding="utf-8")),
                 _entry(FIRST, "2026-01-01T00:00:00Z", "2026-03-02T00:00:00Z"),
             )
-        self.assertEqual([row["commit"] for row in reloaded["entries"]], [FIRST, SECOND])
+        self.assertEqual([row["commit"] for row in reloaded["entries"]], [SECOND, FIRST])
 
 
 class PublishedBootstrapSourceTest(unittest.TestCase):
