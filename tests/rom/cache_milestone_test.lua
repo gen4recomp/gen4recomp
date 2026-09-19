@@ -323,6 +323,7 @@ local function expectedBootstrapSet(audioBankIds)
     "mon-catalog:global",
     "mon-layout:global",
     "message-bank:219",
+    "audio-catalog:global",
     "audio-summary:global",
   }
   for _, bankId in ipairs(audioBankIds) do

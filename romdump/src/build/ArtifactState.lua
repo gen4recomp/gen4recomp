@@ -52,11 +52,13 @@ ArtifactState.KINDS = {
   -- its payload and marker, the summary owns only the index and completion.
   ["message-bank"] = true,
   ["message-summary"] = true,
-  -- One staged audio bank closure (or the family summary) per job: each bank
-  -- owns its bank record, its sequence records, and its completion record
-  -- with shared content-addressed samples, the summary owns only the
-  -- provenance, the index, and the completion.
+  -- One staged audio bank closure (or the catalog, or the family summary)
+  -- per job: each bank owns its bank record, its sequence records, and
+  -- its completion record with shared content-addressed samples; the
+  -- catalog owns only the runtime index and its catalog completion; the
+  -- summary owns only the provenance and the full completion.
   ["audio-bank"] = true,
+  ["audio-catalog"] = true,
   ["audio-summary"] = true,
   -- One staged script member (or the generation summary) per job: each
   -- nonempty member owns its scripts and marker, the summary owns only the

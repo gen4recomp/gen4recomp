@@ -1,9 +1,10 @@
--- Bootstrap-only New Game through production menu routing. Choosing New
--- Game builds the real candidate from the real mon and item catalogs and
--- hands it to Oak composition without waiting on field-core work. A read
--- facade derives item availability from the real bootstrap closure, so a
--- warm complete cache cannot conceal the declared boundary: every catalog
--- byte still loads through the genuine readers and validators.
+-- Gated New Game through production menu routing. Choosing New Game
+-- requests the semantic intro milestone and hands the real candidate from
+-- the real mon and item catalogs to Oak composition only once that
+-- milestone is ready, without waiting on field-core work. A read facade
+-- derives item availability from the real bootstrap closure, so a warm
+-- complete cache cannot conceal the declared boundary: every catalog byte
+-- still loads through the genuine readers and validators.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -48,9 +49,13 @@ function T.tests.new_game_enters_oak_on_bootstrap_alone()
   local candidates = {}
   local requestedMilestones = {}
   local fieldCalls = 0
+  local introReady = false
   local host = {
     requestMilestone = function(name, _)
       requestedMilestones[#requestedMilestones + 1] = name
+      if name == "new-game-intro" then
+        return introReady
+      end
       return false
     end,
     requestField = function(_, _)
@@ -123,12 +128,27 @@ function T.tests.new_game_enters_oak_on_bootstrap_alone()
   local ok, err = pcall(function()
     game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
     game.state:keypressed("return")
+    for _ = 1, 10 do
+      game:update(1 / 60)
+    end
+    Assert.equal(#candidates, 0, "Oak waits for the intro milestone while it is cold")
+    local introRequests = 0
+    for _, name in ipairs(requestedMilestones) do
+      Assert.isTrue(name ~= "field-core", "no field-core request is used to make this pass")
+      if name == "new-game-intro" then
+        introRequests = introRequests + 1
+      end
+    end
+    Assert.isTrue(introRequests >= 1, "New Game requests its intro milestone as required")
+    introReady = true
+    for _ = 1, 10 do
+      game:update(1 / 60)
+    end
     Assert.equal(#candidates, 1, "Oak receives the real candidate once")
     local candidate = assert(candidates[1], "the captured candidate is available")
     Assert.equal(candidate.versionId, versionId, "the candidate carries the selected version")
     Assert.notNil(candidate.mons, "the candidate carries its real mons bucket")
     Assert.isTrue(type(candidate.mons) == "table", "the mons bucket is the constructed domain value")
-    Assert.equal(#requestedMilestones, 0, "no field-core request is used to make this pass")
     Assert.equal(fieldCalls, 0, "no field is constructed before the Oak handoff")
   end)
 

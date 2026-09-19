@@ -112,6 +112,7 @@ function T.every_family_maps_to_its_fixed_size_class()
     ["mon-catalog"] = "heavy",
     ["mon-layout"] = "heavy",
     ["audio-bank"] = "heavy",
+    ["audio-catalog"] = "heavy",
     ["audio-summary"] = "heavy",
     ["script-member"] = "heavy",
     ["script-summary"] = "heavy",
@@ -282,7 +283,12 @@ function T.dependencies_resolve_through_the_fixed_table()
     Assert.isTrue(summary[name] == true, "mon summary pulls " .. name)
   end
   Assert.deepEqual(dependencySet("message-summary", "global"), { ["message-bank:219"] = true })
-  Assert.deepEqual(dependencySet("audio-summary", "global"), { ["source-plan:global"] = true, ["audio-bank:7"] = true })
+  Assert.deepEqual(dependencySet("audio-summary", "global"), {
+    ["source-plan:global"] = true,
+    ["audio-catalog:global"] = true,
+    ["audio-bank:7"] = true,
+  })
+  Assert.deepEqual(dependencySet("audio-catalog", "global"), { ["source-plan:global"] = true })
   Assert.deepEqual(
     dependencySet("script-summary", "global"),
     { ["source-plan:global"] = true, ["script-member:149"] = true }
@@ -1315,6 +1321,27 @@ local function publishCatalogLive(env, marker)
   end)
 end
 
+-- The audio catalog reads ready from a structurally valid index plus its
+-- exact completion marker, so the family summary tests publish it live
+-- instead of routing its source planning through the worker pool.
+---@param env table
+---@param marker string
+local function publishAudioCatalogLive(env, marker)
+  local bundle = require("tests.support.AudioFixture").bundle()
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  withHost(env.host, function()
+    env.cacheFs:writeLua(ArtifactState.path("audio-catalog", "global"), {
+      schema = ArtifactState.RECEIPT_SCHEMA,
+      generationId = env.session.generationId,
+      kind = "audio-catalog",
+      key = "global",
+      marker = marker,
+    })
+    env.cacheFs:writeLua(AudioCache.indexPath(), bundle.index)
+    env.cacheFs:write(AudioCache.catalogMarkerPath(), marker)
+  end)
+end
+
 ---@param env table
 ---@param kind string
 ---@param key string
@@ -1414,6 +1441,7 @@ end
 
 function T.required_request_promotes_an_already_queued_sweep()
   local env = openLiveSession({ generation = "dependency-promotion-generation", bankIds = { 3, 5 } })
+  publishAudioCatalogLive(env, "audio-catalog-marker-promotion")
   requestJob(env, "message-bank", "3", "required")
   requestJob(env, "message-bank", "5", "sweep")
   requestJob(env, "audio-summary", "global", "near")
@@ -1441,6 +1469,7 @@ function T.shared_prerequisite_inherits_urgent_demand()
     iconPageIds = { 0, 1 },
   })
   publishCatalogLive(env, "catalog-marker-shared")
+  publishAudioCatalogLive(env, "audio-catalog-marker-shared")
   requestJob(env, "audio-summary", "global", "required")
   pumpSession(env, 1)
   Assert.deepEqual(env.host.dispatched, { "audio-summary:global" }, "the occupant holds the worker")
@@ -1606,6 +1635,7 @@ function T.required_demand_outranks_earlier_near_sharing()
     iconPageIds = { 0, 1 },
   })
   publishCatalogLive(env, "catalog-marker-mixed")
+  publishAudioCatalogLive(env, "audio-catalog-marker-mixed")
   requestJob(env, "audio-summary", "global", "required")
   pumpSession(env, 1)
   Assert.deepEqual(env.host.dispatched, { "audio-summary:global" }, "the occupant holds the worker")
@@ -1743,6 +1773,151 @@ function T.bootstrap_finishes_without_pages_or_geometry()
     Assert.isTrue(kind ~= "map", "bootstrap enrolls no field records: " .. jobKey)
   end
   Assert.isFalse(session:status().complete, "a targeted bootstrap is never exhaustive completion")
+end
+
+local function oakAudioPlan()
+  return {
+    index = {
+      sequences = {
+        [2] = { id = 2, bankId = 10 },
+        [100] = { id = 100, symbol = "SEQ_GS_STARTING", bankId = 20 },
+        [101] = { id = 101, symbol = "SEQ_GS_STARTING2", bankId = 20 },
+        [102] = { id = 102, symbol = "SEQ_SE_DP_BOWA2", bankId = 30 },
+        [103] = { id = 103, symbol = "SEQ_SE_DP_SELECT", bankId = 30 },
+        [104] = { id = 104, symbol = "SEQ_SE_GS_HERO_SHUKUSHOU", bankId = 40 },
+      },
+      sequenceBySymbol = {
+        SEQ_GS_STARTING = 100,
+        SEQ_GS_STARTING2 = 101,
+        SEQ_SE_DP_BOWA2 = 102,
+        SEQ_SE_DP_SELECT = 103,
+        SEQ_SE_GS_HERO_SHUKUSHOU = 104,
+      },
+    },
+  }
+end
+
+-- The New Game intro milestone stays pending before source adoption with a
+-- unresolved roster, and it never schedules mon page membership: the
+-- intro closure needs the source inventory but no page layout.
+function T.new_game_intro_stays_unresolved_without_source_knowledge()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("new-game-unresolved-generation", pool, backend)
+  local ready, failure = session:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(ready, "the intro milestone stays pending while the inventory is cold")
+  Assert.isNil(failure, "the intro milestone reports no failure while pending")
+  -- Enrollment is update-owned and bounded: pump until the unresolved
+  -- roster drains instead of assuming one update converges it.
+  for _ = 1, 6 do
+    session:update()
+  end
+  local roster = assert(session.roster["new-game-intro"], "the intro roster builds from retained intent")
+  local set = {}
+  for _, member in ipairs(roster) do
+    set[member.kind .. ":" .. member.key] = true
+  end
+  Assert.isTrue(set["source-plan:global"] == true, "the unresolved roster keeps its source owner")
+  Assert.isTrue(set["audio-catalog:global"] == true, "the unresolved roster keeps the catalog")
+  Assert.isNil(set["audio-bank:184"], "no bank closure is final before source adoption")
+  Assert.isNil(session.byKey["mon-layout:global"], "the intro milestone schedules no page layout")
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil then
+      entry.ready = true
+    end
+  end
+  local again, againFailure = session:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(again, "ready members never certify the intro scope before source adoption")
+  Assert.isNil(againFailure, "no failure is reported while the scope is unresolved")
+end
+
+-- With adopted source audio membership the intro roster resolves exactly
+-- the Oak bank closures, excludes the full summary and field work, and
+-- reaches ready from its own members.
+function T.new_game_intro_resolves_exact_bank_closures_after_adoption()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("new-game-final-generation", pool, backend)
+  session.sourceLoaded = true
+  session.audioBankIds = { 10, 20, 30, 40, 184 }
+  session.adopted = { audioPlan = oakAudioPlan() }
+  local ready, failure = session:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(ready, "the intro milestone stays pending while cold")
+  Assert.isNil(failure, "the intro milestone reports no failure while pending")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local roster = assert(session.roster["new-game-intro"], "the adopted roster rebuilds from source knowledge")
+  local set = {}
+  for _, member in ipairs(roster) do
+    set[member.kind .. ":" .. member.key] = true
+  end
+  for _, expected in ipairs({
+    "audio-bank:10",
+    "audio-bank:20",
+    "audio-bank:30",
+    "audio-bank:40",
+    "audio-bank:184",
+  }) do
+    Assert.isTrue(set[expected] == true, "the adopted roster carries " .. expected)
+  end
+  Assert.isNil(set["audio-summary:global"], "the full summary stays out of the intro roster")
+  Assert.isNil(set["actors:global"], "field actors stay out of the intro roster")
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil then
+      entry.ready = true
+    end
+  end
+  local again, againFailure = session:requestMilestone("new-game-intro", "required")
+  Assert.isTrue(again, "the intro scope certifies once its own members are ready")
+  Assert.isNil(againFailure, "the intro scope reports no failure on success")
+end
+
+-- A later required request for an already-prefetched intro closure
+-- strengthens the retained entries instead of duplicating submissions:
+-- queued members promote to priority 0 while the pool sees each identity
+-- at most once for submission plus once for promotion.
+function T.new_game_intro_required_promotes_near_prefetch_without_duplicates()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local priorities = {}
+  local baseRequest = pool.request
+  pool.request = function(self, job)
+    priorities[job.jobKey] = job.priority
+    return baseRequest(self, job)
+  end
+  local session, _ = isolatedSession("new-game-promotion-generation", pool, backend)
+  session.sourceLoaded = true
+  session.audioBankIds = { 10, 20, 30, 40, 184 }
+  session.adopted = { audioPlan = oakAudioPlan() }
+  local first, firstFailure = session:requestMilestone("new-game-intro", "near")
+  Assert.isFalse(first, "the prefetched intro closure stays pending while cold")
+  Assert.isNil(firstFailure, "the prefetch reports no failure")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local second, secondFailure = session:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(second, "the promoted closure stays pending while cold")
+  Assert.isNil(secondFailure, "the promotion reports no failure")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local counts = {}
+  for _, jobKey in ipairs(pool.submitted) do
+    counts[jobKey] = (counts[jobKey] or 0) + 1
+  end
+  local promoted = 0
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil and entry.submitted then
+      Assert.equal(entry.priority, 0, "a promoted member reaches required priority: " .. entry.jobKey)
+      Assert.equal(priorities[entry.jobKey], 0, "the pool observes the promoted priority: " .. entry.jobKey)
+      promoted = promoted + 1
+    end
+  end
+  Assert.isTrue(promoted > 0, "the promotion reaches submitted members")
+  for jobKey, count in pairs(counts) do
+    Assert.isTrue(count <= 2, "no identity resubmits across promotion: " .. jobKey)
+  end
 end
 
 -- Promotion reaches already traversed prerequisites: a near summary whose

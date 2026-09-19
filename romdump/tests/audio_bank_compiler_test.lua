@@ -673,11 +673,31 @@ function T.prepare_repairs_only_the_damaged_bank_closure_and_summary()
       return { instruments = { [0] = { type = Sbnk.TYPE_PCM, param = pcmLeaf(0, 0).param } } }
     end
     local plan = assert(AudioCompiler.plan(romFs))
+    local identity = assert(AudioCompiler.soundIdentity(romFs))
     local byId = planById(plan)
     local backend = FakeCache.new()
     local cache = versionCache(backend)
     local markerA = stageAndPublishBank(cache, romFs, byId[4], "audio-bank-4")
     stageAndPublishBank(cache, romFs, byId[7], "audio-bank-7")
+    local catalogArtifact = PreparedArtifact.new({
+      cacheFs = cache,
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "audio-catalog",
+      key = "global",
+      jobKey = "audio-catalog:global",
+      stageName = "audio-catalog",
+    })
+    local catalogMarker = AudioCacheWriter.stageCatalog(catalogArtifact, plan, identity)
+    catalogArtifact:finishSuccess({ marker = catalogMarker })
+    catalogArtifact:publish({
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "audio-catalog",
+      key = "global",
+      jobKey = "audio-catalog:global",
+    })
+    Assert.isTrue(AudioCache.isCatalogReady(cache, catalogMarker), "the staged catalog reads ready before the summary")
     local summaryArtifact = PreparedArtifact.new({
       cacheFs = cache,
       generationId = GENERATION,
@@ -1023,6 +1043,8 @@ function T.batch_bank_and_summary_publication_matches_staged_closures()
       markers[bankPlan.bankId] = marker
       Assert.isTrue(AudioCache.isBankReady(cache, bankPlan.bankId, expected), "the published bank reads ready")
     end
+    local catalogMarker = AudioCacheWriter.writeCatalog(cache, plan, identity)
+    Assert.isTrue(AudioCache.isCatalogReady(cache, catalogMarker), "the batch catalog reads ready before the summary")
     local summaryMarker = AudioCacheWriter.summaryMarker(plan, markers)
     Assert.equal(AudioCacheWriter.summaryMarker(plan, markers), summaryMarker, "the family marker is deterministic")
     Assert.equal(AudioCacheWriter.writeSummary(cache, plan), summaryMarker, "the summary publishes its marker")

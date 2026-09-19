@@ -12,9 +12,11 @@
 -- Bank closures stage independently through the same core: one bank file,
 -- its sequence files, its completion record, and the immutable
 -- content-addressed samples it references. Shared sample paths deduplicate
--- at controller publication; the family summary owns only the
--- index/provenance/completion files and refuses while any planned closure is
--- unpublished, so it never deletes bank children.
+-- at controller publication; the catalog owns only the runtime index and
+-- its catalog completion, and the family summary owns only the
+-- provenance/completion files and refuses while any planned closure is
+-- unpublished or the live catalog index differs from the current plan, so
+-- neither ever deletes bank children and the index has exactly one owner.
 
 local Errors = require("libs.errors.src.Errors")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
@@ -53,15 +55,35 @@ end
 ---@param plan unknown
 ---@return { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
 local function checkCatalogPlan(plan)
-  assert(type(plan) == "table", "summary staging requires the catalog plan")
+  assert(type(plan) == "table", "audio staging requires the catalog plan")
   ---@cast plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
-  assert(type(plan.index) == "table", "summary staging requires the family index")
-  assert(type(plan.bankPlans) == "table", "summary staging requires the bank closure plans")
+  assert(type(plan.index) == "table", "audio staging requires the family index")
+  assert(type(plan.bankPlans) == "table", "audio staging requires the bank closure plans")
   for position, bankPlan in ipairs(plan.bankPlans) do
-    assert(type(bankPlan) == "table", "summary staging requires a bank closure plan at position " .. position)
+    assert(type(bankPlan) == "table", "audio staging requires a bank closure plan at position " .. position)
     checkBankPlan(bankPlan)
   end
   return plan
+end
+
+---@param soundIdentity unknown
+---@return { romSha1: string, sdatSha1: string, sdatFileId: integer }
+local function checkSoundIdentity(soundIdentity)
+  assert(type(soundIdentity) == "table", "catalog staging requires the sound source identity")
+  ---@cast soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+  assert(
+    type(soundIdentity.romSha1) == "string" and soundIdentity.romSha1 ~= "",
+    "catalog staging requires the ROM identity"
+  )
+  assert(
+    type(soundIdentity.sdatSha1) == "string" and soundIdentity.sdatSha1 ~= "",
+    "catalog staging requires the archive identity"
+  )
+  assert(
+    type(soundIdentity.sdatFileId) == "number" and soundIdentity.sdatFileId % 1 == 0,
+    "catalog staging requires the archive file identity"
+  )
+  return soundIdentity
 end
 
 ---@param sequences table<integer, table<string, unknown>>
@@ -235,11 +257,94 @@ function AudioCacheWriter.summaryMarker(plan, bankMarkers)
   return AudioCache.marker(romSha1, Hashing.hashLua({ index = plan.index, banks = entries }))
 end
 
+-- The deterministic catalog completion marker: the sound source identity
+-- plus the normalized runtime index content. Equal indexes over equal
+-- source repair to the same marker; the ROM identity rides the marker
+-- prefix through AudioCache.marker.
+---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
+---@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+---@return string
+function AudioCacheWriter.catalogMarker(plan, soundIdentity)
+  assert(type(plan.index) == "table", "catalog staging requires the family index")
+  local identity = checkSoundIdentity(soundIdentity)
+  return AudioCache.marker(
+    identity.romSha1,
+    Hashing.hashLua({
+      cacheFormat = AudioCache.FORMAT,
+      versionRomSha1 = identity.romSha1,
+      soundArchive = { fileId = identity.sdatFileId, sha1 = identity.sdatSha1 },
+      index = plan.index,
+    })
+  )
+end
+
+-- The one catalog staging step every catalog entry point shares: the
+-- runtime index and the catalog completion land in the stage, readback
+-- replays catalog readiness there, and only then does the caller publish.
+-- No bank, sequence, or sample payload is staged here.
+---@param stage CacheFs
+---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
+---@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+---@return string
+local function persistCatalog(stage, plan, soundIdentity)
+  local marker = AudioCacheWriter.catalogMarker(plan, soundIdentity)
+  stage:writeLua(AudioCache.indexPath(), plan.index)
+  stage:write(AudioCache.catalogMarkerPath(), marker)
+  local stagedIndex = stage:loadLua(AudioCache.indexPath())
+  local problem = AudioCacheValidator.validateCatalog(stagedIndex)
+  if problem ~= nil then
+    raiseReadback(problem, {})
+  end
+  if stage:read(AudioCache.catalogMarkerPath()) ~= marker then
+    raiseReadback("audio catalog marker readback failed", {})
+  end
+  return marker
+end
+
+-- Stage the runtime catalog through a caller-owned prepared artifact: the
+-- stage owns exactly the index and the catalog completion, never bank
+-- closures. Publication stays with the caller.
+---@param artifact PreparedArtifact
+---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
+---@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+---@return string
+function AudioCacheWriter.stageCatalog(artifact, plan, soundIdentity)
+  assert(artifact and artifact.stageFs and artifact.cacheFs, "catalog staging requires a PreparedArtifact")
+  local owned = checkCatalogPlan(plan)
+  local identity = checkSoundIdentity(soundIdentity)
+  artifact:addOwnedRoot(AudioCache.indexPath())
+  artifact:addOwnedRoot(AudioCache.catalogMarkerPath())
+  return persistCatalog(artifact:stageFs(), owned, identity)
+end
+
+-- Publish the runtime catalog straight into the live cache for the batch
+-- build. Raises like every other writer boundary.
+---@param cacheFs CacheFs
+---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
+---@param soundIdentity { romSha1: string, sdatSha1: string, sdatFileId: integer }
+---@return string
+function AudioCacheWriter.writeCatalog(cacheFs, plan, soundIdentity)
+  local owned = checkCatalogPlan(plan)
+  local identity = checkSoundIdentity(soundIdentity)
+  local tx = ArtifactPublisher.begin(cacheFs, "audio-catalog", {
+    AudioCache.indexPath(),
+    AudioCache.catalogMarkerPath(),
+  })
+  local ok, result = pcall(persistCatalog, tx.stage, owned, identity)
+  if not ok then
+    tx:abort()
+    error(result, 0)
+  end
+  tx:publish()
+  return result
+end
+
 -- The one summary staging step every summary entry point shares: every
 -- planned closure must be current in the live cache under its completion
--- marker with its closure revalidated, then only the provenance, the index,
--- and the completion marker land in the stage. Bank children are never
--- staged here, so the summary cannot erase them. The staged index then faces
+-- marker with its closure revalidated, the live catalog index must match
+-- the current plan, and then only the provenance and the completion marker
+-- land in the stage. Bank children and the catalog-owned index are never
+-- staged here, so the summary cannot erase them. The live index then faces
 -- the authoritative complete walk against the on-disk closures without
 -- assembling a second PCM bundle.
 ---@param stage CacheFs
@@ -286,21 +391,36 @@ local function persistSummary(stage, liveFs, plan)
       missingBankIds = {},
     })
   end
+  -- The catalog owns the runtime index: the summary attests the live
+  -- catalog instead of staging its own copy. A missing catalog or an index
+  -- that differs from the current plan refuses before anything publishes.
+  local liveIndex = liveFs:loadLua(AudioCache.indexPath())
+  if type(liveIndex) ~= "table" then
+    Errors.raise("AUDIO_SUMMARY_INCOMPLETE", "family summary refuses a missing catalog index", {
+      missingBankIds = {},
+    })
+  end
+  if Hashing.hashLua(liveIndex) ~= Hashing.hashLua(plan.index) then
+    Errors.raise(
+      "AUDIO_SUMMARY_INCOMPLETE",
+      "family summary refuses a catalog index that differs from the current plan",
+      { missingBankIds = {} }
+    )
+  end
+  local catalogProblem = AudioCacheValidator.validateCatalog(liveIndex)
+  if catalogProblem ~= nil then
+    raiseReadback(catalogProblem, {})
+  end
   local marker = AudioCacheWriter.summaryMarker(plan, bankMarkers)
   stage:writeLua(AudioCache.provenancePath(), {
     schema = AudioCache.PROVENANCE_SCHEMA,
     dependencies = provenanceDependencies,
   })
-  stage:writeLua(AudioCache.indexPath(), plan.index)
   stage:write(AudioCache.markerPath(), marker)
-  local stagedIndex = stage:loadLua(AudioCache.indexPath())
-  if type(stagedIndex) ~= "table" or stagedIndex.schema ~= AudioCache.INDEX_SCHEMA then
-    raiseReadback("audio index readback failed", {})
-  end
   if stage:read(AudioCache.markerPath()) ~= marker then
     raiseReadback("audio summary marker readback failed", {})
   end
-  local problem = AudioCacheValidator.validateWithIndex(liveFs, stagedIndex)
+  local problem = AudioCacheValidator.validateWithIndex(liveFs, liveIndex)
   if problem ~= nil then
     raiseReadback(problem, {})
   end
@@ -308,8 +428,9 @@ local function persistSummary(stage, liveFs, plan)
 end
 
 -- Stage the family summary through a caller-owned prepared artifact: the
--- stage owns exactly the provenance, the index, and the completion marker,
--- never the bank closures. Publication stays with the caller.
+-- stage owns exactly the provenance and the completion marker, never the
+-- bank closures or the catalog-owned index. Publication stays with the
+-- caller.
 ---@param artifact PreparedArtifact
 ---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
 ---@return string
@@ -317,14 +438,13 @@ function AudioCacheWriter.stageSummary(artifact, plan)
   assert(artifact and artifact.stageFs and artifact.cacheFs, "summary staging requires a PreparedArtifact")
   local owned = checkCatalogPlan(plan)
   artifact:addOwnedRoot(AudioCache.provenancePath())
-  artifact:addOwnedRoot(AudioCache.indexPath())
   artifact:addOwnedRoot(AudioCache.markerPath())
   return persistSummary(artifact:stageFs(), artifact:cacheFs(), owned)
 end
 
 -- Publish the family summary straight into the live cache for the batch
--- build. Refuses while any planned closure is unpublished; raises like every
--- other writer boundary.
+-- build. Refuses while any planned closure is unpublished or the live
+-- catalog differs; raises like every other writer boundary.
 ---@param cacheFs CacheFs
 ---@param plan { index: table<string, unknown>, bankPlans: table<integer, { bankId: integer, sequenceIds: integer[] }> }
 ---@return string
@@ -332,7 +452,6 @@ function AudioCacheWriter.writeSummary(cacheFs, plan)
   local owned = checkCatalogPlan(plan)
   local tx = ArtifactPublisher.begin(cacheFs, "audio-summary", {
     AudioCache.provenancePath(),
-    AudioCache.indexPath(),
     AudioCache.markerPath(),
   })
   local ok, result = pcall(persistSummary, tx.stage, cacheFs, owned)

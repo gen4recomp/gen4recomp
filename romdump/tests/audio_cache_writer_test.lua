@@ -10,8 +10,34 @@ local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local AudioFixture = require("tests.support.AudioFixture")
+local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 
 local T = {}
+
+local GENERATION = "audio-catalog-generation"
+
+local function catalogPlan(bundle)
+  return {
+    index = bundle.index,
+    bankPlans = { { bankId = 12, sequenceIds = { 0, 37 } } },
+  }
+end
+
+local function soundIdentity()
+  return { romSha1 = "rom-sha", sdatSha1 = "archive-sha", sdatFileId = 13 }
+end
+
+local function catalogArtifact(cache, stageName)
+  return PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = GENERATION,
+    epoch = 1,
+    kind = "audio-catalog",
+    key = "global",
+    jobKey = "audio-catalog:global",
+    stageName = stageName or "audio-catalog",
+  })
+end
 
 local function versionCache()
   return CacheFs.forVersion("heartgold", FakeCache.new())
@@ -247,6 +273,59 @@ T["publish failure keeps the stage with recovery material"] = function()
     AudioCache.marker("rom-sha", "dep-sha"),
     "the last-known-good audio class stays in the stage as recovery material"
   )
+end
+
+-- The catalog stages the runtime index apart from every bank payload: the
+-- staged index plus the catalog completion reads catalog-ready while the
+-- full family still refuses, and the runtime provider constructs from the
+-- staged index alone.
+T["stageCatalog publishes the runtime index before any bank closure"] = function()
+  local bundle = AudioFixture.bundle()
+  local cache = versionCache()
+  local artifact = catalogArtifact(cache)
+  local marker = AudioCacheWriter.stageCatalog(artifact, catalogPlan(bundle), soundIdentity())
+  Assert.equal(type(marker), "string", "catalog staging returns its completion marker")
+  local stage = artifact:stageFs()
+  Assert.isTrue(AudioCache.isCatalogReady(stage, marker), "the staged index reads catalog-ready")
+  Assert.isFalse(AudioCache.isReady(stage, marker), "catalog readiness never implies full family readiness")
+  local AudioAssetProvider = require("libs.hgss.src.audio.AudioAssetProvider")
+  Assert.notNil(AudioAssetProvider.new(stage), "the runtime provider constructs from the catalog stage")
+  artifact:abort()
+end
+
+-- The family summary no longer owns the runtime index: it publishes only
+-- provenance and completion over the already-published catalog and every
+-- bank closure, and it refuses a live catalog index that differs from the
+-- current plan.
+T["stageSummary attests the live catalog without republishing the index"] = function()
+  local bundle = AudioFixture.bundle()
+  local cache = versionCache()
+  local catalog = catalogArtifact(cache)
+  local catalogMarker = AudioCacheWriter.stageCatalog(catalog, catalogPlan(bundle), soundIdentity())
+  catalog:finishSuccess({ marker = catalogMarker })
+  catalog:publish({
+    generationId = GENERATION,
+    epoch = 1,
+    kind = "audio-catalog",
+    key = "global",
+    jobKey = "audio-catalog:global",
+  })
+  Assert.isTrue(AudioCache.isCatalogReady(cache, catalogMarker), "the published catalog stays ready")
+  local summary = PreparedArtifact.new({
+    cacheFs = cache,
+    generationId = GENERATION,
+    epoch = 1,
+    kind = "audio-summary",
+    key = "global",
+    jobKey = "audio-summary:global",
+    stageName = "audio-summary",
+  })
+  local liveIndex = assert(cache:loadLua(AudioCache.indexPath()), "the live catalog index exists")
+  liveIndex.version = "soulsilver"
+  cache:writeLua(AudioCache.indexPath(), liveIndex)
+  local ok = pcall(AudioCacheWriter.stageSummary, summary, catalogPlan(bundle))
+  summary:abort()
+  Assert.isFalse(ok, "the summary refuses a live catalog index that differs from the current plan")
 end
 
 return { tests = T }

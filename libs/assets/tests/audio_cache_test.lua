@@ -320,4 +320,44 @@ function T.bank_with_out_of_order_key_split_ranges_is_not_ready()
   Assert.isFalse(AudioCache.isReady(cache, bundle.marker), "key_split ranges must ascend")
 end
 
+-- The runtime index is consumable before exhaustive bank completion: the
+-- catalog completion marker plus a structurally valid index reads ready
+-- without any bank/sequence/sample payload on disk.
+function T.catalog_completion_with_a_valid_index_is_ready_without_bank_payloads()
+  local bundle = AudioFixture.bundle()
+  local backend = require("tests.support.FakeCache").new()
+  local cache = require("libs.storage.src.CacheFs").forVersion("heartgold", backend)
+  local catalogMarker = "g4-audio-cache-v1:rom-sha:catalog-dep"
+  cache:writeLua(AudioCache.indexPath(), bundle.index)
+  cache:write(AudioCache.catalogMarkerPath(), catalogMarker)
+  Assert.isTrue(
+    AudioCache.isCatalogReady(cache, catalogMarker),
+    "a valid index plus the exact catalog marker reads catalog-ready"
+  )
+  Assert.isFalse(AudioCache.isReady(cache, bundle.marker), "catalog readiness never implies full family readiness")
+end
+
+function T.catalog_completion_with_a_wrong_marker_is_not_ready()
+  local bundle = AudioFixture.bundle()
+  local backend = require("tests.support.FakeCache").new()
+  local cache = require("libs.storage.src.CacheFs").forVersion("heartgold", backend)
+  cache:writeLua(AudioCache.indexPath(), bundle.index)
+  cache:write(AudioCache.catalogMarkerPath(), "g4-audio-cache-v1:rom-sha:catalog-dep")
+  Assert.isFalse(AudioCache.isCatalogReady(cache, "g4-audio-cache-v1:rom-sha:other"))
+end
+
+function T.catalog_completion_with_a_malformed_index_is_not_ready()
+  local bundle = AudioFixture.bundle()
+  bundle.index.sequences[0].bankId = 9999
+  local backend = require("tests.support.FakeCache").new()
+  local cache = require("libs.storage.src.CacheFs").forVersion("heartgold", backend)
+  local catalogMarker = "g4-audio-cache-v1:rom-sha:catalog-dep"
+  cache:writeLua(AudioCache.indexPath(), bundle.index)
+  cache:write(AudioCache.catalogMarkerPath(), catalogMarker)
+  Assert.isFalse(
+    AudioCache.isCatalogReady(cache, catalogMarker),
+    "a dangling bank reference fails catalog readiness without payload reads"
+  )
+end
+
 return { tests = T }

@@ -66,6 +66,7 @@ local SIZE_CLASS = {
   ["mon-catalog"] = "heavy",
   ["mon-layout"] = "heavy",
   ["audio-bank"] = "heavy",
+  ["audio-catalog"] = "heavy",
   ["audio-summary"] = "heavy",
   ["script-member"] = "heavy",
   ["script-summary"] = "heavy",
@@ -146,6 +147,81 @@ function ArtifactJobs.bootstrapJobs(audioBankIds)
   return sortedJobs(jobs)
 end
 
+-- The exact semantic audio references the current New Game/Oak path can
+-- touch: the standard cry sequence plus every symbolic sequence the Oak
+-- timeline and profile flow play, resolved against the adopted normalized
+-- audio index. Resolved bank ids are never spelled here.
+local NEW_GAME_AUDIO_SEQUENCES = {
+  2,
+  "SEQ_GS_STARTING",
+  "SEQ_GS_STARTING2",
+  "SEQ_SE_DP_BOWA2",
+  "SEQ_SE_DP_SELECT",
+  "SEQ_SE_GS_HERO_SHUKUSHOU",
+}
+-- Cry playback resolves the species directly as a bank, never through
+-- sequence metadata, so the Marill species bank joins independently.
+local NEW_GAME_DIRECT_AUDIO_BANKS = { 184 }
+
+local NEW_GAME_INTRO_STATIC = {
+  { kind = "source-plan", key = "global" },
+  { kind = "field-ui", key = "global" },
+  { kind = "field-font", key = "global" },
+  { kind = "intro", key = "global" },
+  { kind = "new-game-init", key = "global" },
+  { kind = "mon-catalog", key = "global" },
+  { kind = "items", key = "global" },
+  { kind = "message-bank", key = "219" },
+  { kind = "audio-catalog", key = "global" },
+}
+
+---@param audioPlan table<string, unknown>|nil adopted normalized audio membership
+---@return { kind: string, key: string }[] roster
+---@return boolean complete true once source audio membership resolved the bank closures
+function ArtifactJobs.newGameIntroJobs(audioPlan)
+  local jobs = {}
+  for _, member in ipairs(NEW_GAME_INTRO_STATIC) do
+    jobs[#jobs + 1] = { kind = member.kind, key = member.key }
+  end
+  if audioPlan == nil then
+    return sortedJobs(jobs), false
+  end
+  assert(type(audioPlan) == "table", "intro audio membership requires the adopted audio plan")
+  local index = assert(audioPlan.index, "intro audio membership requires the adopted audio index")
+  assert(type(index.sequences) == "table", "intro audio membership requires the adopted sequences")
+  assert(type(index.sequenceBySymbol) == "table", "intro audio membership requires the adopted sequence symbols")
+  local seen = {}
+  local function addBank(bankId, reference)
+    assert(
+      type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0,
+      "intro audio reference resolves to no bank: " .. tostring(reference)
+    )
+    local key = tostring(bankId)
+    if not seen[key] then
+      seen[key] = true
+      jobs[#jobs + 1] = { kind = "audio-bank", key = key }
+    end
+  end
+  for _, reference in ipairs(NEW_GAME_AUDIO_SEQUENCES) do
+    local sequenceId = reference
+    if type(reference) == "string" then
+      sequenceId = index.sequenceBySymbol[reference]
+      if sequenceId == nil then
+        error("intro audio reference has no adopted sequence: " .. reference, 0)
+      end
+    end
+    local entry = index.sequences[sequenceId]
+    if type(entry) ~= "table" then
+      error("intro audio reference has no adopted sequence: " .. tostring(reference), 0)
+    end
+    addBank(entry.bankId, reference)
+  end
+  for _, bankId in ipairs(NEW_GAME_DIRECT_AUDIO_BANKS) do
+    addBank(bankId, bankId)
+  end
+  return sortedJobs(jobs), true
+end
+
 ---@param lists { audioBankIds: integer[], messageBankIds: integer[], scriptMemberIds: integer[], iconPageIds: integer[], mapDataIds: integer[] }
 ---@return { kind: string, key: string }[]
 function ArtifactJobs.fieldCoreJobs(lists)
@@ -221,8 +297,11 @@ function ArtifactJobs.dependencies(kind, key, plans)
     for _, bankId in ipairs(assert(plans.messageBankIds, "message summary needs the required banks")) do
       deps[#deps + 1] = { kind = "message-bank", key = tostring(bankId) }
     end
+  elseif kind == "audio-catalog" then
+    deps[#deps + 1] = { kind = "source-plan", key = "global" }
   elseif kind == "audio-summary" then
     deps[#deps + 1] = { kind = "source-plan", key = "global" }
+    deps[#deps + 1] = { kind = "audio-catalog", key = "global" }
     if plans.audioBankIds == nil then
       awaitMembership()
     else
@@ -699,6 +778,21 @@ local function executeAudioBank(artifact, context, bankId)
   return AudioCacheWriter.stageBank(artifact, romFs, selected)
 end
 
+local function executeAudioCatalog(artifact, context)
+  local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+  local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
+  local romFs = assert(context.romFs, "audio catalog jobs require a source reader")
+  local plan, planErr = AudioCompiler.plan(romFs)
+  if plan == nil then
+    error(planErr, 0)
+  end
+  local identity, identityErr = AudioCompiler.soundIdentity(romFs)
+  if identity == nil then
+    error(identityErr, 0)
+  end
+  return AudioCacheWriter.stageCatalog(artifact, plan, identity)
+end
+
 local function executeAudioSummary(artifact, context)
   local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
   local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
@@ -864,6 +958,8 @@ local function dispatchExecute(artifact, job, context)
     return executeMessageSummary(artifact, context)
   elseif job.kind == "audio-bank" then
     return executeAudioBank(artifact, context, assert(tonumber(job.key), "bank key is not canonical"))
+  elseif job.kind == "audio-catalog" then
+    return executeAudioCatalog(artifact, context)
   elseif job.kind == "audio-summary" then
     return executeAudioSummary(artifact, context)
   elseif job.kind == "script-member" then
@@ -1125,6 +1221,9 @@ function ArtifactJobs.validate(cacheFs, generationId, kind, key, plans, identity
     elseif kind == "audio-bank" then
       local AudioCache = require("libs.assets.src.audio.AudioCache")
       return AudioCache.isBankReady(cacheFs, canonicalKeyId(key, "bank key"), marker)
+    elseif kind == "audio-catalog" then
+      local AudioCache = require("libs.assets.src.audio.AudioCache")
+      return AudioCache.isCatalogReady(cacheFs, marker)
     elseif kind == "audio-summary" then
       local AudioCache = require("libs.assets.src.audio.AudioCache")
       if not AudioCache.isReady(cacheFs, marker) then
@@ -1333,6 +1432,7 @@ function ArtifactJobs.completeJobs(plans)
     "mon-layout",
     "mon-summary",
     "message-summary",
+    "audio-catalog",
     "audio-summary",
     "script-summary",
   }) do

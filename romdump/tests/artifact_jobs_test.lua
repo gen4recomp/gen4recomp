@@ -35,6 +35,7 @@ local CLOSED_KINDS = {
   "message-bank",
   "message-summary",
   "audio-bank",
+  "audio-catalog",
   "audio-summary",
   "script-member",
   "script-summary",
@@ -67,6 +68,7 @@ local CANONICAL_KEYS = {
   ["message-bank"] = "219",
   ["message-summary"] = "global",
   ["audio-bank"] = "7",
+  ["audio-catalog"] = "global",
   ["audio-summary"] = "global",
   ["script-member"] = "149",
   ["script-summary"] = "global",
@@ -168,6 +170,101 @@ function T.dependencies_report_completeness_for_unknown_and_known_empty_membersh
   local audioOk, _, audioComplete = pcall(ArtifactJobs.dependencies, "audio-summary", "global", {})
   Assert.isTrue(audioOk, "unknown audio membership reports instead of raising")
   Assert.isFalse(audioComplete, "unknown audio membership is incomplete")
+end
+
+-- The audio catalog is a heavy closed job: it plans the normalized index
+-- without compiling banks and stages only the runtime index plus its
+-- catalog completion.
+function T.audio_catalog_maps_to_the_heavy_lane()
+  Assert.equal(ArtifactJobs.sizeClass("audio-catalog"), "heavy")
+  local path = assert(ArtifactState.path("audio-catalog", "global"))
+  Assert.equal(path, "data/generated/jobs/audio-catalog/global.lua")
+end
+
+local function oakAudioPlan()
+  return {
+    index = {
+      sequences = {
+        [2] = { id = 2, bankId = 10 },
+        [100] = { id = 100, symbol = "SEQ_GS_STARTING", bankId = 20 },
+        [101] = { id = 101, symbol = "SEQ_GS_STARTING2", bankId = 20 },
+        [102] = { id = 102, symbol = "SEQ_SE_DP_BOWA2", bankId = 30 },
+        [103] = { id = 103, symbol = "SEQ_SE_DP_SELECT", bankId = 30 },
+        [104] = { id = 104, symbol = "SEQ_SE_GS_HERO_SHUKUSHOU", bankId = 40 },
+      },
+      sequenceBySymbol = {
+        SEQ_GS_STARTING = 100,
+        SEQ_GS_STARTING2 = 101,
+        SEQ_SE_DP_BOWA2 = 102,
+        SEQ_SE_DP_SELECT = 103,
+        SEQ_SE_GS_HERO_SHUKUSHOU = 104,
+      },
+    },
+  }
+end
+
+-- Final New Game intro membership is exactly the static Oak closure plus
+-- the deduplicated audio-bank closures behind the six semantic sequence
+-- references and the direct Marill cry bank: unrelated banks, the full
+-- audio summary, and field geometry never join.
+function T.new_game_intro_membership_resolves_only_exact_oak_audio_closures()
+  local jobs, complete = ArtifactJobs.newGameIntroJobs(oakAudioPlan())
+  Assert.isTrue(complete, "resolved audio membership is final")
+  local set = {}
+  for _, job in ipairs(jobs) do
+    local key = job.kind .. ":" .. job.key
+    Assert.isNil(set[key], "intro membership carries no duplicate: " .. key)
+    set[key] = true
+  end
+  for _, expected in ipairs({
+    "source-plan:global",
+    "field-ui:global",
+    "field-font:global",
+    "intro:global",
+    "new-game-init:global",
+    "mon-catalog:global",
+    "items:global",
+    "message-bank:219",
+    "audio-catalog:global",
+    "audio-bank:10",
+    "audio-bank:20",
+    "audio-bank:30",
+    "audio-bank:40",
+    "audio-bank:184",
+  }) do
+    Assert.isTrue(set[expected] == true, "intro membership carries " .. expected)
+  end
+  Assert.isNil(set["audio-bank:999"], "unrelated banks stay out of the intro closure")
+  Assert.isNil(set["audio-summary:global"], "the full audio summary stays out of the intro closure")
+  Assert.isNil(set["field-core:global"], "field core stays out of the intro closure")
+  Assert.isNil(set["actors:global"], "field actors stay out of the intro closure")
+end
+
+-- Without source audio membership the roster stays unresolved: static
+-- members plus the source-plan owner, never final.
+function T.new_game_intro_without_source_audio_is_unresolved()
+  local jobs, complete = ArtifactJobs.newGameIntroJobs(nil)
+  Assert.isFalse(complete, "unresolved audio membership is unresolved")
+  local set = {}
+  for _, job in ipairs(jobs) do
+    set[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(set["source-plan:global"] == true, "the unresolved roster keeps its source owner")
+  Assert.isTrue(set["audio-catalog:global"] == true, "the unresolved roster keeps the catalog")
+  Assert.isNil(set["audio-bank:184"], "no bank closure is final before source adoption")
+end
+
+-- A missing Oak audio reference fails loudly naming the semantic
+-- reference instead of silently omitting its bank.
+function T.new_game_intro_names_its_missing_audio_reference()
+  local plan = oakAudioPlan()
+  plan.index.sequenceBySymbol.SEQ_SE_DP_SELECT = nil
+  local ok, err = pcall(ArtifactJobs.newGameIntroJobs, plan)
+  Assert.isFalse(ok, "a missing Oak sequence reference fails membership")
+  Assert.isTrue(
+    tostring(err):find("SEQ_SE_DP_SELECT", 1, true) ~= nil,
+    "the failure names the missing semantic reference: " .. tostring(err)
+  )
 end
 
 return { metadata = { capabilities = {} }, tests = T }

@@ -343,6 +343,9 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
       fieldMapLoader = planningLoader(),
     })
     newGame.state:keypressed("return")
+    Assert.equal(#context.candidateCalls, 0, "New Game waits for its intro milestone before reserving a candidate")
+    Assert.equal(#context.oakCalls, 0, "New Game waits for its intro milestone before composing Oak")
+    settle(newGame)
     Assert.equal(#context.candidateCalls, 1)
     Assert.equal(#context.oakCalls, 1)
     context.oakCalls[1].onComplete(finalized)
@@ -367,6 +370,58 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     quitGame.state:keypressed("escape")
     Assert.deepEqual(exits, { { kind = "quit" } })
     quitGame:dispose()
+  end)
+end
+
+-- Choosing New Game while its intro closure is cold enters preparation
+-- instead of composing Oak: the milestone is requested as required, no
+-- candidate is reserved and no Oak state is composed until readiness, and
+-- the pending transfer then happens exactly once.
+function T.cold_new_game_waits_for_its_intro_milestone_before_oak()
+  withCompositionSpies(function(modules, context)
+    local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
+    context.stores[1] = fakeStore({})
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.candidate = candidate
+    context.oakState = disposableState("oak")
+    local introReady = false
+    local milestoneCalls = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      if name == "new-game-intro" then
+        milestoneCalls[#milestoneCalls + 1] = urgency
+        return introReady
+      end
+      return true
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    Assert.equal(getmetatable(game.state).__index, NewGamePreparationState, "cold New Game enters preparation")
+    settle(game)
+    Assert.equal(#milestoneCalls >= 1, true, "preparation requests its intro milestone")
+    for _, urgency in ipairs(milestoneCalls) do
+      Assert.equal(urgency, "required")
+    end
+    Assert.equal(#context.candidateCalls, 0, "no candidate is reserved while the intro closure is cold")
+    Assert.equal(#context.oakCalls, 0, "Oak is never composed before milestone readiness")
+    introReady = true
+    settle(game)
+    Assert.equal(#context.candidateCalls, 1, "readiness reserves exactly one candidate")
+    Assert.equal(#context.oakCalls, 1, "readiness composes Oak exactly once")
+    settle(game)
+    Assert.equal(#context.candidateCalls, 1, "settling never reserves a second candidate")
+    Assert.equal(#context.oakCalls, 1, "settling never composes a second Oak")
+    game:setState(nil)
   end)
 end
 

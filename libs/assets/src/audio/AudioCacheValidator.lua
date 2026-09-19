@@ -125,6 +125,34 @@ local function validateIndexRoot(index)
   return nil
 end
 
+-- Payload-free sequence index checks shared by catalog validation and the
+-- full walk: entry shape, no stored payload path, bank/player resolution.
+-- Records the referenced player in `usedPlayers` for the player rule.
+---@param index AudioCacheValidator.Index
+---@param id number
+---@param entry AudioCacheValidator.IndexEntry
+---@param usedPlayers table<integer, boolean>
+---@return string?
+local function catalogSequenceProblem(index, id, entry, usedPlayers)
+  if not isIndexId(id) or type(entry) ~= "table" or entry.id ~= id then
+    return "sequence index entry is malformed"
+  end
+  -- Index records store no payload path: every path derives from the
+  -- numeric id (AudioCache.sequencePath), so a redundant `file` field is
+  -- malformed index data, never tolerated.
+  if entry.file ~= nil then
+    return "sequence index entry carries a stored payload path"
+  end
+  if type(entry.bankId) ~= "number" or index.banks[entry.bankId] == nil then
+    return "sequence bank id does not resolve"
+  end
+  if index.players[entry.playerId] == nil then
+    return "sequence player id does not resolve"
+  end
+  usedPlayers[entry.playerId] = true
+  return nil
+end
+
 ---@param cacheFs CacheFs
 ---@param index AudioCacheValidator.Index
 ---@param id number
@@ -132,23 +160,10 @@ end
 ---@param usedPlayers table<integer, boolean>
 ---@return string?
 local function validateSequenceEntry(cacheFs, index, id, entry, usedPlayers)
-  if not isIndexId(id) or type(entry) ~= "table" or entry.id ~= id then
-    return "sequence index entry is malformed"
+  local problem = catalogSequenceProblem(index, id, entry, usedPlayers)
+  if problem ~= nil then
+    return problem
   end
-  local entryValue = entry
-  -- Index records store no payload path: every path derives from the
-  -- numeric id (AudioCache.sequencePath), so a redundant `file` field is
-  -- malformed index data, never tolerated.
-  if entryValue.file ~= nil then
-    return "sequence index entry carries a stored payload path"
-  end
-  if type(entryValue.bankId) ~= "number" or index.banks[entryValue.bankId] == nil then
-    return "sequence bank id does not resolve"
-  end
-  if index.players[entryValue.playerId] == nil then
-    return "sequence player id does not resolve"
-  end
-  usedPlayers[entryValue.playerId] = true
   local sequence = cacheFs:loadLua(AudioCache.sequencePath(id))
   if type(sequence) ~= "table" then
     return "sequence asset is missing or unreadable"
@@ -281,17 +296,30 @@ function AudioCacheValidator.validateBankClosure(assetFs, bankId, sequenceIds)
   return validateBankSamples(assetFs, keys)
 end
 
----@param cacheFs CacheFs
+-- Payload-free bank index checks shared by catalog validation and the
+-- full walk: entry shape and no stored payload path.
 ---@param id number
 ---@param entry AudioCacheValidator.IndexEntry
 ---@return string?
-local function validateBankEntry(cacheFs, id, entry)
+local function catalogBankProblem(id, entry)
   if not isIndexId(id) or type(entry) ~= "table" or entry.id ~= id then
     return "bank index entry is malformed"
   end
   -- Bank index records carry no payload path either (AudioCache.bankPath).
   if entry.file ~= nil then
     return "bank index entry carries a stored payload path"
+  end
+  return nil
+end
+
+---@param cacheFs CacheFs
+---@param id number
+---@param entry AudioCacheValidator.IndexEntry
+---@return string?
+local function validateBankEntry(cacheFs, id, entry)
+  local problem = catalogBankProblem(id, entry)
+  if problem ~= nil then
+    return problem
   end
   local bank = cacheFs:loadLua(AudioCache.bankPath(id))
   if type(bank) ~= "table" then
@@ -323,6 +351,44 @@ local function validateBanks(cacheFs, index)
   return nil
 end
 
+-- Data-only catalog validation: every runtime index-structure rule
+-- without reading bank/sequence/sample payload files. Covers the root
+-- schema and sections, self-identifying sequence/bank/player records, no
+-- stored payload paths, sequence bank/player references, supported player
+-- fields, and bidirectional symbol maps. Returns nil when the index is
+-- valid or a problem message otherwise, never raises.
+---@param index AudioCacheValidator.Index|table<string, unknown>|nil
+---@return string|nil
+function AudioCacheValidator.validateCatalog(index)
+  local problem = validateIndexRoot(index)
+  if problem ~= nil then
+    return problem
+  end
+  ---@cast index AudioCacheValidator.Index
+  local usedPlayers = {} ---@type table<integer, boolean>
+  for id, entry in pairs(index.sequences) do
+    problem = catalogSequenceProblem(index, id, entry, usedPlayers)
+    if problem ~= nil then
+      return problem
+    end
+  end
+  for id, entry in pairs(index.banks) do
+    problem = catalogBankProblem(id, entry)
+    if problem ~= nil then
+      return problem
+    end
+  end
+  problem = sectionProblem(index.players, "player")
+  if problem ~= nil then
+    return problem
+  end
+  problem = validatePlayers(index, usedPlayers)
+  if problem ~= nil then
+    return problem
+  end
+  return validateSymbolMaps(index)
+end
+
 -- The authoritative walk over an explicitly supplied index: the same rule
 -- readiness runs, with assets read from the given filesystem. Summary
 -- staging validates the staged index against the already published bank
@@ -331,23 +397,14 @@ end
 ---@param index AudioCacheValidator.Index|table<string, unknown>|nil
 ---@return string|nil
 function AudioCacheValidator.validateWithIndex(assetFs, index)
-  local problem = validateIndexRoot(index)
+  local problem = AudioCacheValidator.validateCatalog(index)
   if problem ~= nil then
     return problem
   end
   ---@cast index AudioCacheValidator.Index
-  local sequenceProblem, usedPlayers = validateSequences(assetFs, index)
+  local sequenceProblem = validateSequences(assetFs, index)
   if sequenceProblem ~= nil then
     return sequenceProblem
-  end
-  ---@cast usedPlayers table<integer, boolean>
-  problem = validatePlayers(index, usedPlayers)
-  if problem ~= nil then
-    return problem
-  end
-  problem = validateSymbolMaps(index)
-  if problem ~= nil then
-    return problem
   end
   return validateBanks(assetFs, index)
 end

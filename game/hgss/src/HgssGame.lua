@@ -7,6 +7,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
+local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
@@ -179,7 +180,14 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     if result.kind == "quit" then
       game:exit(result)
     elseif result.kind == "new_game" then
-      bootOakIntro()
+      -- New Game waits for its semantic intro closure: the candidate and
+      -- Oak composition run only inside the ready transfer, so a cold
+      -- partial cache shows preparation instead of missing-asset failure.
+      game:setState(NewGamePreparationState.new({
+        derivedAssets = derivedAssets,
+        onReady = bootOakIntro,
+        onCancel = backToMenu,
+      }))
     elseif result.kind == "continue" then
       -- Continue is a save intent, not a loaded record: field core, strict
       -- validation and location geometry gate the transfer.

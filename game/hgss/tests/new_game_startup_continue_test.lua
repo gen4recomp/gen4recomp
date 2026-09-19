@@ -601,6 +601,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
       fieldMapLoader = planningLoader(),
     })
     game.state:keypressed("return")
+    settle(game)
     local routedComplete = assert(oakState.onComplete, "the Oak handoff must carry the production completion route")
     oakState.onComplete = function(result)
       timeline[#timeline + 1] = { kind = "oak_complete" }

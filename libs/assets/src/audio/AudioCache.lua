@@ -38,6 +38,13 @@ function AudioCache.markerPath()
   return DATA_DIR .. "/complete"
 end
 
+-- The catalog completion record: proof that the runtime index was
+-- published and structurally validated on its own, never a claim that any
+-- bank/sequence/sample payload is present.
+function AudioCache.catalogMarkerPath()
+  return DATA_DIR .. "/catalog.complete"
+end
+
 function AudioCache.sequencePath(id)
   return string.format("%s/sequences/%04d.lua", DATA_DIR, id)
 end
@@ -83,6 +90,20 @@ function AudioCache.isReady(cacheFs, expectedMarker)
     return false
   end
   return require("libs.assets.src.audio.AudioCacheValidator").validate(cacheFs) == nil
+end
+
+-- True only if the catalog completion marker is exact and the published
+-- index passes structural catalog validation (AudioCacheValidator): root
+-- schema and sections, self-identifying records, no stored payload paths,
+-- sequence bank/player references, player fields, and bidirectional symbol
+-- maps. No bank payload is read; catalog readiness never implies that any
+-- bank closure is ready.
+function AudioCache.isCatalogReady(cacheFs, expectedMarker)
+  if cacheFs:read(AudioCache.catalogMarkerPath()) ~= expectedMarker then
+    return false
+  end
+  local index = cacheFs:loadLua(AudioCache.indexPath()) ---@type table?
+  return require("libs.assets.src.audio.AudioCacheValidator").validateCatalog(index) == nil
 end
 
 -- True only if the bank's own completion marker is exact and the closure it

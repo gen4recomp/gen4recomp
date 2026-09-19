@@ -34,7 +34,7 @@ function T.contract_pins_the_current_asset_identities()
   -- revision identifies the current shared generated-asset contracts. The
   -- sequence initial-volume domain is the current NNS table domain.
   Assert.deepEqual(DerivedAssetContract, {
-    revision = 11,
+    revision = 12,
     map = {
       cacheFormat = "map-cache-v7",
       sceneSchema = "g4-map-scene-v10",

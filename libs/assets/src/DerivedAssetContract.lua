@@ -121,6 +121,11 @@
 -- beside the family output, so a receipt plus the family validator proves
 -- the current generation without recompiling.
 --
+-- revision 12: the audio runtime index is independently attestable before
+-- full audio completion. The audio catalog owns the index and its catalog
+-- completion; the family summary owns only exhaustive provenance and
+-- completion.
+--
 -- world schema 1: the world manifest is a structural catalog derived from
 -- source analysis alone. Membership means the source map is structurally
 -- loadable, never that its scene geometry compiled; every record carries the
@@ -128,7 +133,7 @@
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 11
+DerivedAssetContract.revision = 12
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",

@@ -108,6 +108,7 @@ InteractiveCacheBuild.__index = InteractiveCacheBuild
 local MILESTONE_FILES = {
   bootstrap = "data/generated/bootstrap.lua",
   ["field-core"] = "data/generated/field-core.lua",
+  ["new-game-intro"] = "data/generated/new-game-intro.lua",
 }
 
 -- One update advances at most this many dependency/validation nodes, Urgent
@@ -221,6 +222,7 @@ function InteractiveCacheBuild.new(options)
     capacityWaiters = {},
     enrollCursor = nil,
     roster = {},
+    rosterFailure = {},
     autoCoreNearDone = false,
     sweepCursor = nil,
     sweepExhausted = false,
@@ -1314,7 +1316,7 @@ function InteractiveCacheBuild:_requestDirect(kind, key, urgency)
   return entry
 end
 
----@param name string bootstrap or field-core
+---@param name string bootstrap, field-core, or new-game-intro
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
@@ -1325,9 +1327,11 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   -- Broken build work outranks absent membership in the aggregate; the
   -- per-member answer still carries its own exact exclusion.
   -- A field-core answer additionally requires its final scope knowledge:
-  -- adopted source inventory and adopted page membership. Discovery-time
-  -- readiness never certifies the scope; bootstrap answers from its own
-  -- roster without a page-membership gate.
+  -- adopted source inventory and adopted page membership. A new-game-intro
+  -- answer requires adopted source inventory for its final audio bank
+  -- membership, but never page membership. Discovery-time readiness never
+  -- certifies either scope; bootstrap answers from its own roster without
+  -- a page-membership gate.
   local failure, exclusion = nil, nil
   for _, member in ipairs(members) do
     local entry = self.byKey[member.kind .. ":" .. member.key]
@@ -1354,6 +1358,9 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
     return false, nil
   end
   if name == "field-core" and (not self.sourceLoaded or not self.pagesKnown) then
+    return false, nil
+  end
+  if name == "new-game-intro" and not self.sourceLoaded then
     return false, nil
   end
   for _, member in ipairs(members) do
@@ -1388,9 +1395,17 @@ end
 function InteractiveCacheBuild:_milestoneMembers(name)
   -- The single membership construction site: only update and adoption
   -- transitions call it, never public requests, status or publication.
-  assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+  assert(
+    name == "bootstrap" or name == "field-core" or name == "new-game-intro",
+    "milestones accept only bootstrap, field-core, or new-game-intro"
+  )
   if name == "bootstrap" then
     return ArtifactJobs.bootstrapJobs(self.audioBankIds)
+  end
+  if name == "new-game-intro" then
+    local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
+    local jobs = ArtifactJobs.newGameIntroJobs(audioPlan)
+    return jobs
   end
   return ArtifactJobs.fieldCoreJobs({
     audioBankIds = self.audioBankIds,
@@ -1407,6 +1422,10 @@ end
 function InteractiveCacheBuild:_retainedMilestoneAnswer(name)
   -- Retained observation only: an unbuilt roster is pending knowledge,
   -- never a vacuous success. No construction, IO or validation here.
+  -- A failed roster construction settles the scope with its cause.
+  if self.rosterFailure[name] ~= nil then
+    return false, self.rosterFailure[name]
+  end
   local members = self.roster[name]
   if members == nil then
     return false, nil
@@ -1419,8 +1438,20 @@ end
 function InteractiveCacheBuild:_refreshRoster(name, enroll)
   -- Rebuild one retained roster from current adopted knowledge: the new
   -- array replaces its discovery-time predecessor, so the scope predicate
-  -- always observes final membership without confusing the two.
-  self.roster[name] = self:_milestoneMembers(name)
+  -- always observes final membership without confusing the two. A
+  -- membership planning failure (for example an adopted audio plan that
+  -- cannot resolve a required semantic reference) settles the scope with
+  -- its cause instead of crashing the pump; a later successful rebuild
+  -- clears it.
+  local rebuilt, members = pcall(function()
+    return self:_milestoneMembers(name)
+  end)
+  if not rebuilt then
+    self.rosterFailure[name] = tostring(members)
+    return
+  end
+  self.rosterFailure[name] = nil
+  self.roster[name] = members
   if enroll then
     self:_enqueueRosterDelta(name)
   end
@@ -1613,7 +1644,11 @@ function InteractiveCacheBuild:_needsSourceDemand()
   if self.sweepEnabled then
     return true
   end
-  if self.milestones["bootstrap"] ~= nil or self.milestones["field-core"] ~= nil then
+  if
+    self.milestones["bootstrap"] ~= nil
+    or self.milestones["field-core"] ~= nil
+    or self.milestones["new-game-intro"] ~= nil
+  then
     return true
   end
   return false
@@ -1668,8 +1703,12 @@ end
 ---@param name string
 function InteractiveCacheBuild:_publishMilestone(name)
   -- Update-owned once-only publication from retained final membership:
-  -- public polling never publishes, and an unbuilt roster publishes nothing.
+  -- public polling never publishes, an unbuilt roster publishes nothing,
+  -- and a failed roster construction publishes nothing.
   if self.recorded[name] then
+    return
+  end
+  if self.rosterFailure[name] ~= nil then
     return
   end
   local members = self.roster[name]
@@ -1733,7 +1772,10 @@ end
 ---@return string|nil
 function InteractiveCacheBuild:requestMilestone(name, urgency)
   assert(not self.retired, "generation session is retired")
-  assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
+  assert(
+    name == "bootstrap" or name == "field-core" or name == "new-game-intro",
+    "milestones accept only bootstrap, field-core, or new-game-intro"
+  )
   ArtifactJobs.priorityFor(urgency)
   local current = self.milestones[name]
   local stronger = current ~= nil and ArtifactJobs.priorityFor(urgency) < ArtifactJobs.priorityFor(current)
@@ -1751,7 +1793,10 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
     if not self.sourceLoaded then
       self:_request("source-plan", "global", urgency)
     end
-    if not self.pagesKnown then
+    -- Only field core pulls page membership: bootstrap answers from its
+    -- own roster and the New Game intro closure needs source knowledge
+    -- but no mon pages.
+    if name == "field-core" and not self.pagesKnown then
       self:_request("mon-layout", "global", urgency)
     end
     self:_enqueueControl("roster", 10, name)
@@ -2199,7 +2244,11 @@ function InteractiveCacheBuild:_scheduleMetadataDemand()
   if not self.sourceLoaded and self:_needsSourceDemand() then
     local owner = self.byKey["source-plan:global"]
     if owner == nil then
-      self:_request("source-plan", "global", self.milestones["field-core"] or self.milestones["bootstrap"] or "near")
+      self:_request(
+        "source-plan",
+        "global",
+        self.milestones["field-core"] or self.milestones["new-game-intro"] or self.milestones["bootstrap"] or "near"
+      )
     end
   end
   if self.sourceLoaded and not self.pagesKnown and self:_needsPageDemand() then
@@ -2300,7 +2349,7 @@ end
 -- this transition see final membership, and newly known members enroll
 -- through the bounded cursor instead of a full re-enrollment loop.
 function InteractiveCacheBuild:_refreshAdoptionRosters()
-  for _, name in ipairs({ "bootstrap", "field-core" }) do
+  for _, name in ipairs({ "bootstrap", "field-core", "new-game-intro" }) do
     if self.roster[name] ~= nil then
       self:_refreshRoster(name, self.milestones[name] ~= nil)
     end
@@ -2425,6 +2474,7 @@ function InteractiveCacheBuild:update()
   self:_drainTickets(budget)
   self:_publishMilestone("bootstrap")
   self:_publishMilestone("field-core")
+  self:_publishMilestone("new-game-intro")
   self:_wakeCapacityWaiter()
   self:_failStuckEntries()
   self.planningPending = self:_hasRunnablePlanning()
@@ -2528,8 +2578,8 @@ function InteractiveCacheBuild:status()
   -- Read-only retained observation: no cache IO, no validation, no pool
   -- polling. Queued and running follow the last pump-observed pool states;
   -- settled and planningPending carry the exact readiness contract.
-  local bootstrapState, fieldCoreState = "pending", "pending"
-  local bootstrapFailed, fieldCoreFailed = false, false
+  local bootstrapState, fieldCoreState, newGameIntroState = "pending", "pending", "pending"
+  local bootstrapFailed, fieldCoreFailed, newGameIntroFailed = false, false, false
   if not self.retired then
     local bootstrapMembers = self.roster["bootstrap"]
     if bootstrapMembers ~= nil then
@@ -2550,6 +2600,23 @@ function InteractiveCacheBuild:status()
         elseif coreFailure ~= nil then
           fieldCoreState = "failed"
           fieldCoreFailed = true
+        end
+      end
+    end
+    if self.milestones["new-game-intro"] ~= nil then
+      if self.rosterFailure["new-game-intro"] ~= nil then
+        newGameIntroState = "failed"
+        newGameIntroFailed = true
+      else
+        local introMembers = self.roster["new-game-intro"]
+        if introMembers ~= nil then
+          local introReady, introFailure = self:_milestoneAnswer("new-game-intro", introMembers)
+          if introReady then
+            newGameIntroState = "ready"
+          elseif introFailure ~= nil then
+            newGameIntroState = "failed"
+            newGameIntroFailed = true
+          end
         end
       end
     end
@@ -2588,6 +2655,9 @@ function InteractiveCacheBuild:status()
     if self.milestones["field-core"] ~= nil and fieldCoreState == "pending" then
       milestonesTerminal = false
     end
+    if self.milestones["new-game-intro"] ~= nil and newGameIntroState == "pending" then
+      milestonesTerminal = false
+    end
   end
   -- Settlement is scope-relative and truthful: successful settlement
   -- needs every requested scope ready, every direct root ready, every
@@ -2598,7 +2668,7 @@ function InteractiveCacheBuild:status()
   -- unrelated failed sweep job never settles around still-pending work.
   -- Success never settles around running work.
   local enumerationDone = (not self.sweepEnabled) or self.sweepExhausted
-  local milestoneFailed = bootstrapFailed or fieldCoreFailed
+  local milestoneFailed = bootstrapFailed or fieldCoreFailed or newGameIntroFailed
   local metadataFailed = false
   if #failures > 0 then
     local sourceOwner = self.byKey["source-plan:global"]
@@ -2672,6 +2742,7 @@ function InteractiveCacheBuild:retire()
   self.followerMemo = nil
   self.enrollCursor = nil
   self.roster = {}
+  self.rosterFailure = {}
   self.autoCoreNearDone = false
   self.sweepCursor = nil
   self.sweepExhausted = false
