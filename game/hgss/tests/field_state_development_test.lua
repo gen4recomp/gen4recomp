@@ -80,7 +80,6 @@ local function drawableState(development)
           return nil
         end,
       },
-      startMenuPlacement = nil,
       resizePresentation = function() end,
     },
     topologyProvider = function()

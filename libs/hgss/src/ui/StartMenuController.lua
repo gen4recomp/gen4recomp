@@ -249,7 +249,11 @@ end
 -- pointer_move/pointer_up) with pointer coordinates in canonical logical
 -- space, plus the host-synthesized "menu" event: while the menu is active
 -- the menu button has the same close semantics as HGSS X, and the
--- application host translates a fresh menu edge into it.
+-- application host translates a fresh menu edge into it. A pointer_cancel
+-- event absorbs at its exact batch position by releasing the held press
+-- without moving selection or recording a result: geometry changes, focus
+-- loss, and close invalidate captures through the presentation session,
+-- and the controller must never activate something stale afterwards.
 ---@param uiInput table[]
 function StartMenuController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "the start menu input must be an event list")
@@ -271,6 +275,8 @@ function StartMenuController:updateFixed(uiInput)
       self:_activate(self._selectedPosition)
     elseif event.type == "cancel" or event.type == "menu" then
       self:_close()
+    elseif event.type == "pointer_cancel" then
+      self:cancelPointerCapture()
     elseif event.type == "pointer_move" then
       if self._pointerId == nil then
         local position = positionAt(positions, self._visibleActions, event.x, event.y)

@@ -376,16 +376,20 @@ local function hostPointForAction(runtime, action)
   local interactive = assert(startMenu.interactive, "the menu manifest must carry the interactive record")
   local record = assert(interactive.positions[action.position], "the presented action must carry its source position")
   local slot = record.hitRect
-  local placement = assert(runtime.startMenuPlacement, "the runtime must publish the start menu placement record")
-  local readable = {
-    frame = placement.frame,
-    origin = placement.origin or { x = placement.frame.x, y = placement.frame.y },
-    scale = placement.scale,
-    logicalWidth = placement.logicalWidth,
-    logicalHeight = placement.logicalHeight,
-  }
+  local menu = assert(runtime.applicationHost:status().menu, "the start menu must be open to point at its actions")
+  local plan = assert(menu.presentation, "the open menu must publish its presentation plan")
+  local body = nil
+  for _, pane in ipairs(assert(plan.panes, "the plan must carry its panes")) do
+    if pane.interactive then
+      body = pane.placement
+    end
+  end
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-  return LayoutGeometry.logicalToHost(readable, slot.x + slot.width / 2, slot.y + slot.height / 2)
+  return LayoutGeometry.logicalToHost(
+    assert(body, "the plan must carry an interactive body pane"),
+    slot.x + slot.width / 2,
+    slot.y + slot.height / 2
+  )
 end
 
 local function choose(runtime, id)

@@ -349,4 +349,76 @@ function T.composition_spies_restore_presentation_constructors_when_the_body_thr
   Assert.equal(menuRenderer.new, rendererNew, "the menu renderer constructor must be restored after a throw")
 end
 
+function T.field_receives_the_shared_display_context_and_copied_overrides()
+  withCompositionSpies(function(modules, context)
+    local continueRecord = saveRecord("save-00000002")
+    context.stores[1] = fakeStore({ continueRecord })
+    context.stores[2] = fakeStore({ saveRecord("save-00000004") })
+    local wideFn = function(_, _)
+      return {}
+    end
+    local overrides = { start_menu = { wide = wideFn } }
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      presentationOverrides = overrides,
+    })
+    game.state:keypressed("return")
+    Assert.equal(#context.fieldCalls, 1, "the continue route must reach the field")
+    local fieldOptions = context.fieldCalls[1].options
+    Assert.notNil(fieldOptions.displayContext, "the field shares the product display context")
+    local copied = assert(
+      fieldOptions.presentationOverrides and fieldOptions.presentationOverrides.start_menu,
+      "the field receives the start menu overrides"
+    )
+    Assert.isTrue(copied.wide == wideFn, "override functions arrive intact")
+    Assert.isTrue(fieldOptions.presentationOverrides ~= overrides, "overrides are copied once, never retained")
+    overrides.start_menu.wide = function(_, _)
+      return {}
+    end
+    Assert.isTrue(copied.wide == wideFn, "later caller mutations never reach the game")
+    game:setState(nil)
+
+    local plain = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+    })
+    plain.state:keypressed("return")
+    Assert.equal(#context.fieldCalls, 2, "the second game routes independently")
+    Assert.isTrue(
+      context.fieldCalls[2].options.presentationOverrides == nil,
+      "overrides never leak between game instances"
+    )
+    Assert.isTrue(
+      context.fieldCalls[2].options.displayContext ~= fieldOptions.displayContext,
+      "each game owns its display context"
+    )
+    plain:setState(nil)
+  end)
+end
+
+function T.invalid_presentation_overrides_fail_game_construction()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local okKey = pcall(modules.hgssGame.new, {
+      versionId = READY_VERSION,
+      onExit = function() end,
+      presentationOverrides = {
+        start_menu = {
+          sideways = function(_, _) end,
+        },
+      },
+    })
+    Assert.isFalse(okKey, "an unknown override case fails construction")
+    local okFn = pcall(modules.hgssGame.new, {
+      versionId = READY_VERSION,
+      onExit = function() end,
+      presentationOverrides = {
+        start_menu = { wide = "not-a-function" },
+      },
+    })
+    Assert.isFalse(okFn, "a non-function override fails construction")
+  end)
+end
+
 return { tests = T }

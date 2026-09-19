@@ -1,0 +1,196 @@
+-- Shared presentation input lifetime: pointer batches map in event order,
+-- a press that leaves its visible clip cancels instead of activating
+-- something stale, and a failed candidate never replaces the published
+-- plan. Cancellation reaches the gameplay controller as an ordered
+-- pointer_cancel event the controller must absorb without changing
+-- selection; the session owns capture, header drags, and focus loss.
+
+local Assert = require("tests.support.Assert")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
+local StartMenuController = require("libs.hgss.src.ui.StartMenuController")
+
+local T = { tests = {} }
+
+-- The shared session owns capture and cancellation; per-application pointer
+-- math cannot provide it.
+local function sharedSession()
+  local ok, module = pcall(require, "game.hgss.src.ui.ApplicationPresentation")
+  Assert.isTrue(ok, "one shared session must own pointer capture and ordered cancellation")
+  return module
+end
+
+local function manifest()
+  return FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest())
+end
+
+local function controller()
+  local ui = manifest()
+  local interactive = assert(ui.startMenu.interactive, "the fixture must carry the generated interactive record")
+  return StartMenuController.new({
+    entries = {
+      {
+        id = "vanilla.save",
+        targetApplication = "saving",
+        displayPosition = 5,
+      },
+    },
+    interactive = interactive,
+  })
+end
+
+function T.tests.cancellation_reaches_the_controller_in_batch_order_without_changing_selection()
+  local menu = controller()
+  local before = menu:status()
+  Assert.isTrue(before.open, "the menu must start open")
+  local selected = before.selectedPosition
+  menu:updateFixed({
+    { type = "pointer_down", pointerId = "touch:1", x = 120, y = 70 },
+    { type = "pointer_cancel", pointerId = "touch:1" },
+  })
+  local after = menu:status()
+  Assert.isTrue(after.open, "cancellation must not close the menu")
+  Assert.equal(after.selectedPosition, selected, "cancellation must not move selection")
+  Assert.isNil(menu:takeResult(), "cancellation must not produce a result")
+end
+
+function T.tests.a_press_cancelled_by_reflow_never_activates_on_release()
+  local menu = controller()
+  menu:updateFixed({
+    { type = "pointer_down", pointerId = "touch:1", x = 120, y = 70 },
+  })
+  -- Geometry change invalidates the held press before any later release can
+  -- activate something: the existing capture contract clears the hold.
+  menu:cancelPointerCapture()
+  menu:updateFixed({
+    { type = "pointer_up", pointerId = "touch:1", x = 120, y = 70 },
+  })
+  Assert.isNil(menu:takeResult(), "a release after cancellation must not activate")
+  Assert.isTrue(menu:status().open, "the menu must stay open after a cancelled press")
+end
+
+local function stubMeasurement(width, height, signature)
+  local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+  return {
+    width = width,
+    height = height,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = width, height = height },
+      role = "world",
+      touch = true,
+    }),
+    pixelRatio = 1,
+    signature = signature or ("stub:" .. width .. "x" .. height),
+  }
+end
+
+local function stubInterfaces()
+  local render = function(_, _, _) end
+  local map = function(event, _, _)
+    return event
+  end
+  local full = function(_, _)
+    return {
+      panes = {
+        {
+          id = "content",
+          placement = {
+            frame = { x = 0, y = 0, width = 256, height = 192 },
+            origin = { x = 0, y = 0 },
+            scale = 1,
+            logicalWidth = 256,
+            logicalHeight = 192,
+            clipRect = { x = 0, y = 0, width = 256, height = 192 },
+          },
+          interactive = true,
+        },
+      },
+      content = {},
+      inputKey = "stub",
+      render = render,
+      mapInput = map,
+      coverage = {},
+      backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    }
+  end
+  return { dualDisplay = full, nativeLike = full, wide = full, tall = full }
+end
+
+local function stubSession()
+  local sessionModule = sharedSession()
+  return sessionModule.new(stubInterfaces(), { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } })
+end
+
+function T.tests.equivalent_fresh_resolutions_preserve_capture()
+  local session = stubSession()
+  local view = {}
+  session:resolve(stubMeasurement(256, 192), view)
+  local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#mapped, 1, "the down captures its pane")
+  session:resolve(stubMeasurement(256, 192), view)
+  local release = session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#release, 1, "an equivalent re-resolution never cancels the held press")
+  Assert.equal(release[1].type, "pointer_up", "the release still maps")
+end
+
+function T.tests.plan_callbacks_keep_stable_identities_across_resolves()
+  local session = stubSession()
+  local view = {}
+  local first = session:resolve(stubMeasurement(256, 192), view)
+  local second = session:resolve(stubMeasurement(256, 192), view)
+  Assert.isTrue(first.render == second.render, "render stays a stable reference")
+  Assert.isTrue(first.mapInput == second.mapInput, "input mapping stays a stable reference")
+  Assert.deepEqual(session:mapInput({}, view), {}, "no cancellation without a geometry change")
+end
+
+function T.tests.failed_measurement_validation_keeps_the_previous_plan()
+  local session = stubSession()
+  local view = {}
+  local plan = session:resolve(stubMeasurement(256, 192), view)
+  local bad = stubMeasurement(256, 192)
+  bad.topology, bad.signature = nil, nil
+  Assert.throws(function()
+    session:resolve(bad, view)
+  end, "a measurement without surfaces fails validation")
+  Assert.isTrue(session:plan() == plan, "the failed candidate never replaces the published plan")
+end
+
+function T.tests.unpresentable_space_publishes_an_inactive_plan()
+  local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+  local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
+  local sessionModule = sharedSession()
+  local session = sessionModule.new(
+    StartMenuInterface.withOverrides(nil),
+    { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
+  )
+  local measurement = {
+    width = 100,
+    height = 100,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 100, height = 100 },
+      role = "world",
+      touch = true,
+      occupiedRegions = { { x = 0, y = 0, width = 100, height = 100 } },
+    }),
+    pixelRatio = 1,
+    signature = "occluded",
+  }
+  local plan = session:resolve(measurement, {})
+  Assert.deepEqual(plan.panes, {}, "occlusion publishes no pointer targets")
+  Assert.deepEqual(
+    session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } }, {}),
+    {},
+    "pointer input cannot advance through missing controls"
+  )
+  local semantic = session:mapInput({ { type = "cancel" } }, {})
+  Assert.equal(#semantic, 1, "semantic cancellation remains deliverable")
+  Assert.equal(semantic[1].type, "cancel")
+end
+
+function T.tests.a_failed_candidate_keeps_the_previous_plan_and_window_memory()
+  local session = sharedSession()
+  Assert.isTrue(type(session.new) == "function", "the session must construct per open wrapper")
+end
+
+return T

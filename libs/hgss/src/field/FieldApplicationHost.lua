@@ -19,11 +19,12 @@
 -- launches a child by itself: the menu controller records
 -- { kind = "launch", applicationId } results and the host dispatches them
 -- through the registry only after the fade-out hides the world. Pointer
--- events are mapped through the StartMenuLayout placement record the runtime
--- supplies; scroll events are not forwarded to the Start Menu. Pure module:
--- no love, no I/O.
+-- events reach the menu wrapper unmapped: the wrapper owns its presentation
+-- session and maps host coordinates itself, so the host never holds a
+-- placement record and never drops scroll events on the menu's behalf.
+-- Pure module: no love, no I/O.
 
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 ---@class FieldApplicationHostOptions
 ---@field registry FieldApplicationRegistry the immutable per-runtime child-application catalogue
@@ -46,7 +47,7 @@ local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 ---@field _failure unknown? retained factory/composition failure
 ---@field _uiHeld boolean the modal input lifetime is held (beginUi done, clearUi pending)
 ---@field _reopenPending boolean a script reopen request awaits the session
----@field _layout StartMenuLayout.Placement? the StartMenuLayout placement record (setMenuPlacement)
+---@field _menuCoverage LayoutGeometry.Rect[] retained fullscreen coverage behind the open menu for transition fades
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
 local FieldApplicationHost = {}
 FieldApplicationHost.__index = FieldApplicationHost
@@ -91,7 +92,7 @@ function FieldApplicationHost.new(options)
     _failure = nil,
     _uiHeld = false,
     _reopenPending = false,
-    _layout = nil,
+    _menuCoverage = {},
     _effect = options.effect,
   }, FieldApplicationHost)
 end
@@ -221,6 +222,7 @@ function FieldApplicationHost:_fail(failure)
   self:_disposeController()
   self:_releaseUi()
   self._applicationId = nil
+  self._menuCoverage = {}
   self._fadeTicks = 0
   self._fadeAlpha = 0
   self._phase = FieldApplicationHost.PHASES.failed
@@ -298,45 +300,68 @@ function FieldApplicationHost:updateFixed(uiInput)
   error("unknown application host phase " .. tostring(phase), 2)
 end
 
--- Maps one UI event list for the menu controller: pointer events are
--- consumed by the host (mapped through the StartMenuLayout placement record
--- into canonical logical 0..255 x 0..191 and dropped outside the menu frame;
--- without a placement there is no pointer support at all), unsupported
--- pointer scroll events are dropped rather than taught to the controller,
--- and non-pointer events pass through unchanged.
----@param uiInput table[]
----@return table[]
-function FieldApplicationHost:_mapMenuEvents(uiInput)
-  local mapped = {}
-  for _, event in ipairs(uiInput) do
-    if type(event) == "table" and type(event.x) == "number" and type(event.y) == "number" then
-      if self._layout ~= nil then
-        local x, y = StartMenuLayout.hostToLogical(self._layout, event.x, event.y)
-        if x ~= nil then
-          mapped[#mapped + 1] = {
-            type = event.type,
-            pointerId = event.pointerId,
-            x = x,
-            y = y,
-            dragged = event.dragged,
-          }
-        end
-      end
-    elseif not (type(event) == "table" and event.type == "pointer_scroll") then
-      mapped[#mapped + 1] = event
-    end
+-- Retains the open menu's fullscreen coverage for transition fades: the
+-- wrapper publishes presentation=plan beside its semantic snapshot, and
+-- the fade covers the world plus that retained region once the menu phase
+-- ends. Controllers without a plan (destinations, test fakes) leave the
+-- retained coverage untouched.
+---@param controller table<string, unknown> the active menu controller
+function FieldApplicationHost:_retainMenuCoverage(controller)
+  local status = controller:status()
+  if type(status) ~= "table" then
+    return
   end
-  return mapped
+  local presentation = status.presentation
+  if type(presentation) ~= "table" then
+    return
+  end
+  local coverage = presentation.coverage
+  if type(coverage) ~= "table" then
+    return
+  end
+  local copied = {}
+  for _, rect in ipairs(coverage) do
+    copied[#copied + 1] = LayoutGeometry.rect(rect, "menu coverage")
+  end
+  self._menuCoverage = copied
 end
 
--- The menu phase: one controller step with the tick's (mapped) events, then
--- the recorded result is dispatched. A launch freezes further menu input
--- and starts the fade-out; a close disposes the menu exactly once and
--- releases the input lifetime on the final field return.
+-- The retained menu coverage for transition fades: fresh copies per call,
+-- so draw sites cannot mutate host state.
+---@return LayoutGeometry.Rect[]
+function FieldApplicationHost:menuCoverage()
+  local copied = {}
+  for _, rect in ipairs(self._menuCoverage) do
+    copied[#copied + 1] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+  end
+  return copied
+end
+
+-- Delegates capture cancellation to the active menu wrapper, which drops
+-- its session and controller presses so a stale release never activates.
+-- Controllers without the capability (keyboard-only destinations) stay
+-- valid without it.
+function FieldApplicationHost:cancelPointerCapture()
+  if self._phase ~= FieldApplicationHost.PHASES.menu or self._controller == nil then
+    return
+  end
+  local cancel = self._controller.cancelPointerCapture
+  if type(cancel) == "function" then
+    cancel(self._controller)
+  end
+end
+
+-- The menu phase: one controller step with the tick's normalized events,
+-- then the recorded result is dispatched. The menu wrapper maps pointer
+-- input through its own presentation session, so the host forwards the
+-- batch unchanged like a child destination. A launch freezes further menu
+-- input and starts the fade-out; a close disposes the menu exactly once
+-- and releases the input lifetime on the final field return.
 ---@param uiInput table[]
 function FieldApplicationHost:_stepMenu(uiInput)
   local controller = assert(self._controller, "the menu phase requires the menu controller")
-  controller:updateFixed(self:_mapMenuEvents(uiInput))
+  controller:updateFixed(uiInput)
+  self:_retainMenuCoverage(controller)
   local result = controller:takeResult()
   if result == nil then
     return
@@ -427,22 +452,6 @@ function FieldApplicationHost:_stepFadeIn()
   self:_rebuildMenu()
 end
 
--- Stores the StartMenuLayout placement record the renderer and the pointer
--- mapper share. The host may perform the inverse placement transform for
--- pointer mapping, but it does not choose layout: the runtime computes the
--- placement and re-applies it on presentation-geometry changes. A press held
--- across a placement change must not activate a different post-change slot,
--- so an active menu pointer capture is cancelled.
----@param placement StartMenuLayout.Placement?
-function FieldApplicationHost:setMenuPlacement(placement)
-  self._layout = placement
-  -- Only the menu controller ever holds a pointer capture; destinations own
-  -- their input policy and capture none.
-  if self._phase == FieldApplicationHost.PHASES.menu and self._controller ~= nil then
-    self._controller:cancelPointerCapture()
-  end
-end
-
 -- The one teardown path for reset and runtime disposal: dispose the active
 -- controller exactly once, release the modal input lifetime once, clear the
 -- queued script reopen, and return to closed. The helpers are idempotent, so
@@ -453,6 +462,7 @@ function FieldApplicationHost:dispose()
   self:_releaseUi()
   self._reopenPending = false
   self._applicationId = nil
+  self._menuCoverage = {}
   self._failure = nil
   self._fadeTicks = 0
   self._fadeAlpha = 0

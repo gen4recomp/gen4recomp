@@ -1,11 +1,11 @@
 -- Interactive presentation over the non-rendering field runtime.
 
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 
 local KEY_DIRECTIONS =
@@ -17,6 +17,8 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field development boolean? product mode (the default) hides the developer overlay
 ---@field initialFadeIn boolean? one-shot covered entry: first frame fully black, then reveal
 ---@field topologyProvider (fun(width: number, height: number): ScreenTopology)?
+---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a state-owned context)
+---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field saveStore table<string, unknown>? global GameSaveStore
 ---@field saveValidation GameSaveValidation? shared version-aware GameSave validator
 ---@field audioOutput table<string, unknown>? audio-output host namespace for deterministic runtime audio
@@ -39,6 +41,9 @@ local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", 
 ---@field _fpsFrames integer rendered field frames counted in the current fps sample
 ---@field _fps number last published sampled frames per second, 0 before the first sample
 ---@field topologyProvider fun(width: number, height: number): ScreenTopology
+---@field displayContext DisplayContext the shared actual-display measurement owner
+---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
+---@field _displaySignature string? the structural display identity the last sync consumed
 ---@field _starterUiSuspended boolean whether modal UI semantics are suspended while the open starter chooser prepares
 local FieldState = {}
 FieldState.__index = FieldState
@@ -58,16 +63,6 @@ local ENTRY_MAX_CATCH_UP = 6
 -- frames over active-overlay time, never from a host timer.
 local FPS_SAMPLE_SECONDS = 0.5
 
-local function defaultScreenTopology(width, height)
-  local os = love.system and love.system.getOS and love.system.getOS() or ""
-  return ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
-    touch = os == "Android" or os == "iOS",
-    role = "world",
-  })
-end
-
 ---@param game table<string, unknown> finalized unpublished game or validated loaded GameSave
 ---@param options FieldStateOptions?
 ---@return FieldState
@@ -75,7 +70,10 @@ function FieldState.new(game, options)
   options = options or {}
   -- Only the documented runtime contract crosses the boundary: the finalized
   -- or loaded game is the runtime's save authority, while state-only options
-  -- such as topologyProvider must never become runtime options.
+  -- such as development must never become runtime options. The shared
+  -- display context and product override inputs cross so the state and the
+  -- runtime measure the same actual display.
+  local displayContext = options.displayContext or DisplayContext.new({ topologyProvider = options.topologyProvider })
   local runtimeOptions = {
     fieldScaleConfig = options.fieldScaleConfig,
     presentation = true,
@@ -83,6 +81,8 @@ function FieldState.new(game, options)
     saveValidation = options.saveValidation,
     audioOutput = options.audioOutput,
     derivedAssets = options.derivedAssets,
+    displayContext = displayContext,
+    presentationOverrides = options.presentationOverrides,
   }
   -- Construction is binary: FieldRuntime.new either raised (boot failed) or
   -- returned a fully usable runtime, so presentation resources are acquired
@@ -92,7 +92,11 @@ function FieldState.new(game, options)
   local self = setmetatable({
     runtime = runtime,
     development = options.development == true,
-    topologyProvider = options.topologyProvider or defaultScreenTopology,
+    topologyProvider = options.topologyProvider or function(width, height)
+      return displayContext:measure(width, height).topology
+    end,
+    displayContext = displayContext,
+    presentationOverrides = options.presentationOverrides,
     _pollPresentationTopology = options.topologyProvider ~= nil,
     worldParts = {},
     worldActorItems = {},
@@ -128,6 +132,7 @@ function FieldState.new(game, options)
 end
 
 function FieldState:update(dt)
+  self:_refreshDisplay()
   self.runtime:update(dt)
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
@@ -260,6 +265,25 @@ function FieldState:_advanceEntryCover(dt)
     self._entryFade = nil
     self._entryAccumulator = 0
   end
+end
+
+-- Refreshes the measured display state before runtime input/ticks: the
+-- shared context measures fresh host facts, and only a structural change
+-- reaches the runtime geometry owner. Fixture-built states without a
+-- display context keep their existing resize/draw paths.
+function FieldState:_refreshDisplay()
+  local displayContext = self.displayContext
+  if displayContext == nil then
+    return
+  end
+  local measurement = displayContext:measure()
+  if measurement.signature == self._displaySignature then
+    return
+  end
+  self._displaySignature = measurement.signature
+  local width = measurement.width --[[@as integer]]
+  local height = measurement.height --[[@as integer]]
+  self.runtime:resizePresentation(width, height, measurement.topology)
 end
 
 -- Single predicate for the covered-entry input gate: while the one-shot
@@ -401,7 +425,7 @@ function FieldState:_recordGeometrySignature(width, height, topology)
 end
 
 function FieldState:resize(width, height)
-  local provider = self.topologyProvider or defaultScreenTopology
+  local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
   local topology = provider(width, height)
   self.runtime:resizePresentation(width, height, topology)
   if self._pollPresentationTopology then
@@ -468,7 +492,7 @@ function FieldState:draw()
     resized = true
   end
   if self._pollPresentationTopology and not resized then
-    local provider = self.topologyProvider or defaultScreenTopology
+    local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
     local topology = provider(width, height)
     local integerWidth = width --[[@as integer]]
     local integerHeight = height --[[@as integer]]
@@ -532,10 +556,9 @@ function FieldState:draw()
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
   self:_drawFieldAttachedUi(resources, hostStatus, alpha)
-  -- The one active application surface: the Start Menu through the runtime's
-  -- placement record (the same record the host maps pointer input through),
-  -- or the field application owned by the presentation dispatch; never more
-  -- than one.
+  -- The one active application surface: the Start Menu through its
+  -- resolved presentation plan, or the field application owned by the
+  -- presentation dispatch; never more than one.
   if hostStatus.menu then
     -- The icon presentation draws the gender-conditional Bag variant: the
     -- controller status is gender-agnostic, so the draw site attaches the
@@ -547,7 +570,7 @@ function FieldState:draw()
     local gender = assert(profile.gender, "the start menu requires the player gender")
     assert(gender == 0 or gender == 1, "the start menu trainer gender is unsupported")
     menuPresentation.trainerGender = gender == 0 and "male" or "female"
-    resources.startMenuRenderer:draw(menuPresentation, assert(self.runtime.startMenuPlacement))
+    resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
   elseif hostStatus.application then
     resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
   end
@@ -713,54 +736,38 @@ function FieldState:_drawEntryCoverIfNeeded(width, height)
 end
 
 -- The application fade coverage: the world viewport plus the Start Menu
--- placement frame as a set of non-overlapping rectangles, so the union of
--- separated surfaces is painted once each and the gap between them never is.
--- The world rect is always painted; the frame contributes only the strips
--- outside its intersection with the world (a fully contained frame adds
--- nothing, so no region is alpha-doubled).
+-- plan coverage as a set of non-overlapping rectangles, so the union of
+-- separated surfaces is painted once each and the gap between them never
+-- is. The world rect is always painted; each coverage region contributes
+-- only the strips outside the regions already painted (a contained region
+-- adds nothing, so no region is alpha-doubled).
 ---@param world ScreenTopology.Rectangle
----@param frame ScreenTopology.Rectangle
+---@param coverage ScreenTopology.Rectangle[]
 ---@return ScreenTopology.Rectangle[]
-local function fadeRects(world, frame)
+local function fadeRects(world, coverage)
   local rects = { world }
-  local ix = math.max(world.x, frame.x)
-  local iy = math.max(world.y, frame.y)
-  local ix2 = math.min(world.x + world.width, frame.x + frame.width)
-  local iy2 = math.min(world.y + world.height, frame.y + frame.height)
-  if ix2 <= ix or iy2 <= iy then
-    -- Disjoint surfaces: the frame is painted in full.
-    rects[#rects + 1] = frame
-    return rects
-  end
-  if frame.x < ix then
-    rects[#rects + 1] = { x = frame.x, y = frame.y, width = ix - frame.x, height = frame.height }
-  end
-  if frame.x + frame.width > ix2 then
-    rects[#rects + 1] = { x = ix2, y = frame.y, width = frame.x + frame.width - ix2, height = frame.height }
-  end
-  if frame.y < iy then
-    rects[#rects + 1] = { x = ix, y = frame.y, width = ix2 - ix, height = iy - frame.y }
-  end
-  if frame.y + frame.height > iy2 then
-    rects[#rects + 1] = { x = ix, y = iy2, width = ix2 - ix, height = frame.y + frame.height - iy2 }
+  for _, region in ipairs(coverage) do
+    rects = rectUnion(rects, region)
   end
   return rects
 end
 
 -- The application fade: the union of the world viewport and the Start Menu
--- placement frame, so on a dual-display topology the auxiliary surface region
+-- plan coverage, so on a dual-display topology the auxiliary surface region
 -- goes black with the world and no menu surface can stay visible while only
--- the world viewport fades. Disjoint surfaces paint as separate rectangles
--- (the gap between them stays untouched), and overlapping regions are
--- painted once, never twice.
+-- the world viewport fades. A windowed plan owns no coverage, so settled
+-- windows leave the paused world visible outside themselves. Disjoint
+-- surfaces paint as separate rectangles (the gap between them stays
+-- untouched), and overlapping regions are painted once, never twice.
 ---@param alpha number
 function FieldState:_drawApplicationFade(alpha)
   local lg = love.graphics
   local world = self.runtime.viewport.worldViewport
-  local frame = assert(self.runtime.startMenuPlacement, "the application fade requires the placement record").frame
+  local coverage =
+    assert(self.runtime.applicationHost, "the application fade requires the application host"):menuCoverage()
   lg.setColor(0, 0, 0, alpha)
   for _, rect in
-    ipairs(fadeRects(world, frame --[[@as ScreenTopology.Rectangle]]))
+    ipairs(fadeRects(world, coverage --[[@as ScreenTopology.Rectangle[] ]]))
   do
     lg.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
   end
@@ -862,11 +869,17 @@ function FieldState:keyreleased(key, _)
 end
 
 -- Focus loss clears held and edge state so a blurred window cannot feed a
--- stale Action into the next frame's dialogue or movement.
+-- stale Action into the next frame's dialogue or movement, and delegates
+-- presentation capture cancellation so a held press cannot activate after
+-- the blur.
 ---@param focused boolean
 function FieldState:focus(focused)
   if not focused then
     self.runtime.input:clearAll()
+    local host = self.runtime.applicationHost
+    if host ~= nil and type(host.cancelPointerCapture) == "function" then
+      host:cancelPointerCapture()
+    end
   end
 end
 
@@ -1023,6 +1036,9 @@ function FieldState:dispose()
   self._entryAccumulator = 0
   self._starterUiSuspended = false
   self._lastGeometrySignature = nil
+  self._displaySignature = nil
+  self.displayContext = nil
+  self.presentationOverrides = nil
   if self.worldParts then
     self.worldParts[5] = nil
     self.worldParts[7] = nil

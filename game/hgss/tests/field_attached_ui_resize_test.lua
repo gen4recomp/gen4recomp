@@ -302,7 +302,6 @@ local function fieldStateWithCapturedUi(worldViewport, cameraZoom, viewportWidth
           return nil
         end,
       },
-      startMenuPlacement = nil,
       resizePresentation = function() end,
     },
     topologyProvider = function()

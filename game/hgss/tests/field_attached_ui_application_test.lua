@@ -1,36 +1,54 @@
 -- Start Menu / Trainer Card placement must not follow field camera zoom.
 
 local Assert = require("tests.support.Assert")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
+local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
+local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 
 local T = {}
 
-local function placement(referenceFrame, topology)
-  return StartMenuLayout.resolve(topology, referenceFrame, 2)
+local function measurementFor(topology, width, height)
+  return {
+    width = width,
+    height = height,
+    topology = topology,
+    pixelRatio = 1,
+    signature = "zoom-probe",
+  }
 end
 
-function T.start_menu_placement_identical_across_zooms()
-  local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-  local ref = viewport.referenceFrame
+local function fullscreenContext(topology, width, height)
+  local measurement = measurementFor(topology, width, height)
+  local selection = ApplicationLayout.selectSurfaces(measurement)
+  return {
+    measurement = measurement,
+    configuration = "nativeLike",
+    primary = selection.primary,
+    secondary = selection.secondary,
+    windowPosition = { x = 0.5, y = 0.5 },
+    nativeLikeInterface = StartMenuInterface.fullscreen,
+  }
+end
+
+function T.start_menu_plan_identical_across_zooms()
   local topology = ScreenTopology.oneDisplay({
     id = "main",
-    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    rect = { x = 0, y = 0, width = 640, height = 480 },
     touch = false,
     role = "world",
   })
-  local p1 = placement(ref, topology)
-  local p2 = placement(ref, topology)
-  -- Simulate two zooms: placement must not change (it does not take zoom)
-  Assert.deepEqual(p1, p2)
-  -- Prove that StartMenuLayout never consumes a scale/zoom argument
-  Assert.isTrue(p1.scale ~= nil)
-  -- Different zooms would have different field scales, but placement is same
-  local scale1 = 1
-  local scale2 = 3
-  Assert.isTrue(scale1 ~= scale2)
-  Assert.deepEqual(p1.frame, p2.frame)
+  local view = {}
+  local first = StartMenuInterface.fullscreen(fullscreenContext(topology, 640, 480), view)
+  local second = StartMenuInterface.fullscreen(fullscreenContext(topology, 640, 480), view)
+  -- Two resolves under different field zooms share one UI fit: the
+  -- interface never consumes a camera zoom argument.
+  Assert.deepEqual(first.panes[1].placement, second.panes[1].placement)
+  -- Different zooms would carry different field scales, but the plan is
+  -- the same UI-bounds fit either way.
+  local zoomedOut, zoomedIn = 1, 3
+  Assert.isTrue(zoomedOut ~= zoomedIn)
+  Assert.equal(first.panes[1].placement.pixelScale, 2, "the 640x480 UI fit stays 2x at any zoom")
 end
 
 function T.trainer_card_draw_placement_identical_across_zooms()
