@@ -1,33 +1,31 @@
--- The concrete field-bag application: the per-launch state the field
--- application host steps while the bag owns the tick. It binds the pure
--- browse controller to the live inventory service and runtime cursor,
--- resolves layout from the live viewport and topology every tick so
--- resizes never lose semantic state, advances the hero animation on the
--- fixed cadence, and returns the single close result the host expects. A
--- press held across a viewport or topology change must not activate a
--- different post-change target, so structural geometry changes cancel the
--- pointer capture first. Missing production capabilities fail at
--- construction, never on first draw.
+-- The concrete field-bag application: the per-open wrapper binding the
+-- existing browse controller and hero presenter to one presentation
+-- session. Each tick resolves a complete plan against fresh display
+-- facts, maps one ordered batch, advances the controller once, then
+-- resolves again for the resulting snapshot without advancing semantic
+-- clocks. Geometry lives in the session, never in the host. Construction
+-- is failure-safe: a failed session or controller releases whatever the
+-- open acquired. Missing production capabilities fail at construction,
+-- never on first draw.
 
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local BagActionPolicy = require("libs.hgss.src.ui.BagActionPolicy")
 local BagController = require("libs.hgss.src.ui.BagController")
 local BagHeroPresenter = require("libs.hgss.src.presentation.BagHeroPresenter")
-local BagLayout = require("libs.hgss.src.ui.BagLayout")
+local BagInterface = require("game.hgss.src.field.BagInterface")
 local BagModel = require("libs.hgss.src.ui.BagModel")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 ---@class BagScreenState
 ---@field _service HgssBagService
 ---@field _cursor BagCursor
 ---@field _manifest table<string, unknown>
 ---@field _heroGender "male"|"female"
----@field _measureViewport fun(): number, number
----@field _measureTopology fun(): { topology: ScreenTopology?, referenceFrame: ScreenTopology.Rectangle? }
+---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _controller BagController
+---@field _session ApplicationPresentation the per-open presentation session
 ---@field _hero BagHeroPresenter
 ---@field _heroPocket string?
----@field _tickLayout BagLayoutResolved? the single resolved placement shared by one fixed tick
----@field _lastMapping string? the structural host-to-canonical mapping observed on the previous tick
+---@field _disposed boolean
 local BagScreenState = {}
 BagScreenState.__index = BagScreenState
 
@@ -36,8 +34,9 @@ BagScreenState.__index = BagScreenState
 ---@field cursor BagCursor the borrowed runtime-only field cursor
 ---@field manifest table<string, unknown> the validated bag presentation manifest
 ---@field heroGender "male"|"female" the profile-selected hero backdrop
----@field measureViewport fun(): number, number the live viewport dimensions
----@field measureTopology fun(): { topology: ScreenTopology?, referenceFrame: ScreenTopology.Rectangle? } the live topology
+---@field measureDisplay fun(): DisplayMeasurement the current display facts
+---@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
+---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts BagScreenState.Options
 ---@return BagScreenState
@@ -54,25 +53,24 @@ function BagScreenState.new(opts)
   local manifest = assert(opts.manifest, "the bag screen requires the bag presentation manifest")
   local heroGender = assert(opts.heroGender, "the bag screen requires the hero gender")
   assert(heroGender == "male" or heroGender == "female", "the hero gender selects its backdrop")
-  assert(type(opts.measureViewport) == "function", "the bag screen requires the viewport dimensions")
-  assert(type(opts.measureTopology) == "function", "the bag screen requires the screen topology")
+  assert(type(opts.measureDisplay) == "function", "the bag screen requires the display facts")
+  assert(type(opts.windowState) == "table", "the bag screen borrows its window memory")
   local self = setmetatable({
     _service = service,
     _cursor = cursor,
     _manifest = manifest,
     _heroGender = heroGender,
-    _measureViewport = opts.measureViewport,
-    _measureTopology = opts.measureTopology,
+    _measureDisplay = opts.measureDisplay,
     _heroPocket = nil,
-    _tickLayout = nil,
-    _lastMapping = nil,
+    _disposed = false,
   }, BagScreenState)
   self._hero = BagHeroPresenter.new({ manifest = manifest, gender = heroGender })
   local function refreshModel()
     return BagModel.build(service, cursor)
   end
+  local wrapper = self
   local function resolveLayout()
-    return self:_layout()
+    return wrapper:resolveLayout()
   end
   -- The controller stays pure: every inventory mutation rides the injected
   -- semantic commands straight into the one live service, and the action
@@ -90,117 +88,76 @@ function BagScreenState.new(opts)
   local function unregisterItem(itemKey)
     return service:unregister(itemKey)
   end
-  self._controller = BagController.new({
-    model = { refresh = refreshModel },
-    cursor = cursor,
-    resolveLayout = resolveLayout,
-    commands = {
-      toss = tossItem,
-      move = moveItem,
-      register = registerItem,
-      unregister = unregisterItem,
-    },
-    resolveActions = BagActionPolicy.forService(service),
-  })
+  local controller
+  local session
+  local built, buildErr = pcall(function()
+    session = ApplicationPresentation.new(BagInterface.withOverrides(opts.overrides, manifest), opts.windowState)
+    controller = BagController.new({
+      model = { refresh = refreshModel },
+      cursor = cursor,
+      resolveLayout = resolveLayout,
+      commands = {
+        toss = tossItem,
+        move = moveItem,
+        register = registerItem,
+        unregister = unregisterItem,
+      },
+      resolveActions = BagActionPolicy.forService(service),
+    })
+  end)
+  if not built then
+    if session ~= nil then
+      session:dispose()
+    end
+    if controller ~= nil then
+      controller:dispose()
+    end
+    error(buildErr, 0)
+  end
+  self._controller = assert(controller, "the bag screen requires its browse controller")
+  self._session = assert(session, "the bag screen requires its presentation session")
+  local resolveOk, resolveErr = pcall(function()
+    self._session:resolve(self:_measured(), self:_view())
+  end)
+  if not resolveOk then
+    self._controller:dispose()
+    self._session:dispose()
+    error(resolveErr, 0)
+  end
   return self
 end
 
----@param width number
----@param height number
----@return ScreenTopology
----@return ScreenTopology.Rectangle?
-function BagScreenState:_measure(width, height)
-  local measured = self._measureTopology()
-  assert(type(measured) == "table", "the topology measurement returns a record")
-  local topology = measured.topology
-  if topology == nil then
-    topology = ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = width, height = height },
-      touch = false,
-      role = "world",
-    })
-  end
-  return topology, measured.referenceFrame
+---@return DisplayMeasurement
+function BagScreenState:_measured()
+  local measurement = self._measureDisplay()
+  return assert(measurement, "the bag screen requires current display facts")
 end
 
--- The structural host-to-canonical mapping one fixed tick observes: viewport
--- dimensions plus the resolved placement geometry rendering and hit testing
--- share. Fresh equivalent topology tables serialize identically, so only a
--- real mapping change invalidates a held press.
----@param width number
----@param height number
----@param layout BagLayoutResolved
----@return string
-local function mappingSignature(width, height, layout)
-  local interactive = assert(layout.interactive, "the bag layout places its interactive pane")
-  local frame = assert(interactive.frame, "the interactive placement carries its frame")
-  ---@type (number|string)[]
-  local parts = {
-    width,
-    height,
-    layout.mode,
-    frame.x,
-    frame.y,
-    frame.width,
-    frame.height,
-    interactive.scale,
-    interactive.logicalWidth,
-    interactive.logicalHeight,
-    interactive.surfaceId,
-  }
-  local hero = layout.hero
-  if hero == nil then
-    parts[#parts + 1] = "no-hero"
-  else
-    local heroFrame = assert(hero.frame, "the hero placement carries its frame")
-    parts[#parts + 1] = heroFrame.x
-    parts[#parts + 1] = heroFrame.y
-    parts[#parts + 1] = heroFrame.width
-    parts[#parts + 1] = heroFrame.height
-    parts[#parts + 1] = hero.scale
-    parts[#parts + 1] = hero.surfaceId
-  end
-  local fallback = layout.descriptionFallback
-  if fallback == nil then
-    parts[#parts + 1] = "no-fallback"
-  else
-    parts[#parts + 1] = fallback.x
-    parts[#parts + 1] = fallback.y
-    parts[#parts + 1] = fallback.width
-    parts[#parts + 1] = fallback.height
-  end
-  return table.concat(parts, "|")
+---@return table<string, unknown> the controller snapshot for resolvers and renderers
+function BagScreenState:_view()
+  return self._controller:status()
 end
 
----@return BagLayoutResolved
-function BagScreenState:_layout()
-  local cached = self._tickLayout
-  if cached ~= nil then
-    return cached
-  end
-  local width, height = self._measureViewport()
-  local topology, referenceFrame = self:_measure(width, height)
-  return BagLayout.resolve({ topology = topology, referenceFrame = referenceFrame, manifest = self._manifest })
+-- The canonical logical content the controller hits against: the current
+-- plan's content, never a separately computed host layout.
+---@return table<string, unknown>
+function BagScreenState:resolveLayout()
+  local plan = self._session:plan()
+  return assert(plan.content, "the bag plan carries its canonical content")
 end
 
--- One fixed tick with the tick's UI events in host coordinates, the same
--- coordinate space the layout resolves in. A press held across a real
--- mapping change must not activate a different post-change target, so only
--- a structural placement change cancels the pointer capture first.
+-- One fixed tick: resolve, map once, advance the controller once, sync
+-- the hero presenter, then resolve again for the resulting snapshot.
+-- pointer_cancel flows in batch order; the controller absorbs it without
+-- changing selection.
 ---@param uiInput table[]
 function BagScreenState:updateFixed(uiInput)
-  self._tickLayout = nil
-  local width, height = self._measureViewport()
-  local topology, referenceFrame = self:_measure(width, height)
-  local layout = BagLayout.resolve({ topology = topology, referenceFrame = referenceFrame, manifest = self._manifest })
-  self._tickLayout = layout
-  local mapping = mappingSignature(width, height, layout)
-  if self._lastMapping ~= nil and mapping ~= self._lastMapping then
-    self._controller:cancelPointerCapture()
-  end
-  self._lastMapping = mapping
-  self._controller:updateFixed(uiInput)
+  assert(not self._disposed, "a disposed bag wrapper steps nothing")
+  local session = self._session
+  local measurement = self:_measured()
+  session:resolve(measurement, self:_view())
+  local mapped = session:mapInput(assert(uiInput, "the bag input must be an event list"), self:_view())
+  self._controller:updateFixed(mapped)
   local status = self._controller:status()
   if status.open then
     if status.pocket ~= self._heroPocket then
@@ -209,19 +166,21 @@ function BagScreenState:updateFixed(uiInput)
     end
     self._hero:updateFixed()
   end
+  session:resolve(measurement, self:_view())
 end
 
--- The presentation snapshot: the controller status (semantic browse state
--- plus the current resolved layout for hit testing and rendering) with the
--- hero presentation facts. Fresh tables per call.
+-- The presentation snapshot: the controller status (semantic browse state)
+-- with the hero presentation facts plus presentation=plan, the single
+-- host-facing layout authority. Fresh tables per call.
 ---@return table<string, unknown>
 function BagScreenState:status()
-  local status = self._controller:status()
+  local status = self:_view()
   if not status.open then
     return status
   end
   status.heroGender = self._heroGender
   status.hero = self._hero:status()
+  status.presentation = self._session:plan()
   return status
 end
 
@@ -236,9 +195,22 @@ function BagScreenState:takeResult()
   return { kind = "close" }
 end
 
--- Idempotent release of the logical lifetime: a pending result is
--- discarded and no close is reported after disposal.
+-- Cancels a held press through both owners: the session drops its capture
+-- and the controller releases its own, so a stale release never activates.
+function BagScreenState:cancelPointerCapture()
+  self._session:cancelPointers()
+  self._controller:cancelPointerCapture()
+end
+
+-- Idempotent release of the logical lifetime: the session and controller
+-- release exactly once, a pending result is discarded and no close is
+-- reported after disposal.
 function BagScreenState:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  self._session:dispose()
   self._controller:dispose()
 end
 

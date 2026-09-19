@@ -12,7 +12,6 @@ local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagModel = require("libs.hgss.src.ui.BagModel")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
@@ -72,15 +71,6 @@ local function manifest()
   }
 end
 
-local function topology(width, height)
-  return ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
-    touch = false,
-    role = "world",
-  })
-end
-
 local function service()
   return HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
 end
@@ -101,13 +91,12 @@ end
 
 ---@param bag HgssBagService
 ---@param cursor BagCursor
----@param width integer?
----@param height integer?
+---@param heroVisible boolean? true unless the constrained lower-only composition is under test
 ---@return BagController
-local function controller(bag, cursor, width, height)
+local function controller(bag, cursor, heroVisible)
   local layoutManifest = manifest()
   local function resolveLayout()
-    return BagLayout.resolve({ topology = topology(width or 512, height or 384), manifest = layoutManifest })
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = heroVisible ~= false })
   end
   return BagController.new({
     model = {
@@ -159,7 +148,7 @@ end
 local function controllerWithButtons(bag, cursor)
   local layoutManifest = manifestWithButtons()
   local function resolveLayout()
-    return BagLayout.resolve({ topology = topology(512, 384), manifest = layoutManifest })
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   end
   local control = BagController.new({
     model = {
@@ -189,10 +178,9 @@ local function controllerWithButtons(bag, cursor)
 end
 
 local function tap(control, layout, logicalX, logicalY)
-  local frame = layout.interactive.frame
-  local scale = layout.interactive.scale
-  local x = frame.x + logicalX * scale
-  local y = frame.y + logicalY * scale
+  local _ = layout
+  local x = logicalX
+  local y = logicalY
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
 end
@@ -405,7 +393,7 @@ function T.pointer_pocket_activation_enters_item_focus()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control = controller(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
+  local layout = BagLayout.resolve({ manifest = manifest(), heroVisible = true })
   control:updateFixed({ navigate("up") })
   Assert.equal(control:status().focus, "tabs", "setup focuses the tabs")
   tap(control, layout, 48, 16)
@@ -507,13 +495,7 @@ function T.pointer_down_up_on_the_same_cell_selects()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control = controller(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
-  local frame = layout.interactive.frame
-  local scale = layout.interactive.scale
-  local function hostAt(logicalX, logicalY)
-    return frame.x + logicalX * scale, frame.y + logicalY * scale
-  end
-  local x, y = hostAt(204, 56)
+  local x, y = 204, 56
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
   Assert.equal(selectedKey(control:status()), "POKE_BALL", "press alone never activates")
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
@@ -525,13 +507,8 @@ function T.pointer_release_on_a_different_target_or_drag_does_nothing()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control = controller(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
-  local frame = layout.interactive.frame
-  local function hostAt(logicalX, logicalY)
-    return frame.x + logicalX * layout.interactive.scale, frame.y + logicalY * layout.interactive.scale
-  end
-  local firstX, firstY = hostAt(76, 56)
-  local secondX, secondY = hostAt(204, 56)
+  local firstX, firstY = 76, 56
+  local secondX, secondY = 204, 56
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = firstX, y = firstY } })
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = secondX, y = secondY } })
   Assert.equal(selectedKey(control:status()), "POKE_BALL", "a drag across cells activates nothing")
@@ -545,16 +522,11 @@ function T.pointer_cancel_closes_and_pointer_tab_switches_pocket()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control = controller(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
-  local frame = layout.interactive.frame
-  local function hostAt(logicalX, logicalY)
-    return frame.x + logicalX * layout.interactive.scale, frame.y + logicalY * layout.interactive.scale
-  end
-  local tabX, tabY = hostAt(48, 16)
+  local tabX, tabY = 48, 16
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = tabX, y = tabY } })
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = tabX, y = tabY } })
   Assert.equal(pocketCursor:currentPocket(), "medicine", "tapping a tab selects its pocket")
-  local cancelX, cancelY = hostAt(220, 176)
+  local cancelX, cancelY = 220, 176
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = cancelX, y = cancelY } })
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = cancelX, y = cancelY } })
   Assert.deepEqual(control:takeResult(), { kind = "closed" }, "tapping cancel closes")
@@ -565,10 +537,8 @@ function T.stale_capture_cannot_activate()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control = controller(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
-  local frame = layout.interactive.frame
-  local x = frame.x + 76 * layout.interactive.scale
-  local y = frame.y + 56 * layout.interactive.scale
+  local x = 76
+  local y = 56
   control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
   control:cancelPointerCapture()
   control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
@@ -580,8 +550,7 @@ function T.description_overlay_round_trip_in_constrained_mode()
   local bag = stockTwoPockets(service())
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
-  local control = controller(bag, pocketCursor, 256, 192)
-  Assert.equal(control:status().layout.mode, "interactive_only")
+  local control = controller(bag, pocketCursor, false)
   control:updateFixed({ { type = "menu" } })
   local status = control:status()
   Assert.equal(status.state, "description_overlay", "the info action overlays the description")
@@ -604,7 +573,6 @@ function T.info_action_stays_inert_outside_constrained_mode()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control = controller(bag, pocketCursor)
-  Assert.equal(control:status().layout.mode, "horizontal")
   control:updateFixed({ { type = "menu" } })
   Assert.equal(control:status().state, "browsing", "two-pane modes keep the description in the hero pane")
 end
@@ -629,7 +597,7 @@ function T.pointer_tap_on_a_different_cell_selects_only_while_tap_on_the_selecte
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("balls")
   local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   tap(control, layout, 204, 56)
   local status = control:status()
@@ -650,7 +618,7 @@ function T.pointer_action_button_tap_chooses_the_offered_button_position()
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("medicine")
   local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "activating the selected cell opens the action menu")
   tap(control, layout, 144, 144)
@@ -666,7 +634,7 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   local pocketCursor = BagCursor.new()
   pocketCursor:setPocket("medicine")
   local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   tap(control, layout, 76, 56)
   Assert.equal(control:status().state, "action_menu", "activating the selected cell opens the action menu")
@@ -756,7 +724,7 @@ function T.empty_pocket_confirm_and_info_stay_no_ops()
   Assert.equal(control:status().state, "browsing", "confirming an empty cell opens no menu")
   Assert.isNil(control:takeResult(), "confirming an empty cell closes nothing")
   Assert.equal(cursor:position("items"), revision, "confirming an empty cell moves no cursor")
-  local narrow = controller(service(), BagCursor.new(), 256, 192)
+  local narrow = controller(service(), BagCursor.new(), false)
   narrow:updateFixed({ { type = "menu" } })
   Assert.equal(narrow:status().state, "browsing", "info on an empty cell overlays nothing")
   Assert.isNil(narrow:takeResult())
@@ -918,11 +886,8 @@ function T.pointer_hover_and_tap_focus_empty_browse_cells_without_opening_action
   local cursor = BagCursor.new()
   cursor:setPocket("medicine")
   local control = controller(bag, cursor)
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
-  local frame = layout.interactive.frame
-  local scale = layout.interactive.scale
-  local x = frame.x + 204 * scale
-  local y = frame.y + 56 * scale
+  local x = 204
+  local y = 56
   control:updateFixed({ { type = "pointer_move", pointerId = "touch:0", x = x, y = y } })
   local status = control:status()
   Assert.equal(status.focus, "items")
@@ -991,9 +956,6 @@ function T.scrolled_partial_window_pointer_targets_every_trailing_empty_cell_exa
   local control, cursor = itemsControl(bag)
   control:updateFixed({ { type = "pointer_scroll", pointerId = "touch:0", dx = 0, dy = 1 } })
   Assert.equal(control:status().visibleStart, 6, "setup pages to the partial window")
-  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
-  local frame = layout.interactive.frame
-  local scale = layout.interactive.scale
   local revision = bag:revision()
   local cells = {
     { x = 48, y = 96, absolute = 8, visible = 2 },
@@ -1002,8 +964,8 @@ function T.scrolled_partial_window_pointer_targets_every_trailing_empty_cell_exa
     { x = 176, y = 136, absolute = 11, visible = 5 },
   }
   for _, cell in ipairs(cells) do
-    local x = frame.x + cell.x * scale
-    local y = frame.y + cell.y * scale
+    local x = cell.x
+    local y = cell.y
     control:updateFixed({ { type = "pointer_move", pointerId = "touch:0", x = x, y = y } })
     local status = control:status()
     Assert.equal(status.focus, "items")

@@ -19,6 +19,7 @@
 -- state it touches.
 
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BagSave = require("libs.hgss.src.save.BagSave")
 
 ---@class BagRenderer
@@ -566,9 +567,9 @@ end
 
 ---@param presentation table<string, unknown>
 ---@param icons table<string, unknown>
----@param layout table<string, unknown>
+---@param content table<string, unknown> the canonical logical content selecting compact fallbacks
 ---@param palettes { item: table<string, unknown>, count: table<string, unknown>, description: table<string, unknown> }
-function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
+function BagRenderer:_drawInteractive(presentation, icons, content, palettes)
   local graphics = self._graphics
   local manifest = self._manifest
   local interactive = manifest.interactive
@@ -645,7 +646,7 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   local cancelGeometry = assert(interactive.cancel, "the bag manifest must carry its cancel geometry")
   local labelRect = assert(cancelGeometry.labelRect, "the bag manifest carries its cancel label area")
   self:_drawCancelLabel(cancelLabel, labelRect, palettes.description)
-  if presentation.state == "description_overlay" and layout.mode == "interactive_only" then
+  if presentation.state == "description_overlay" and content.heroVisible == false then
     self:_drawDescriptionOverlay(presentation, icons, iconImage)
   elseif presentation.state == "action_menu" then
     self:_drawActionFocus(presentation)
@@ -657,7 +658,7 @@ function BagRenderer:_drawInteractive(presentation, icons, layout, palettes)
   elseif presentation.state == "move_select" then
     self:_drawMoveHighlight(presentation)
   end
-  self:_drawConstrainedContextual(presentation, layout, palettes.description)
+  self:_drawConstrainedContextual(presentation, content, palettes.description)
 end
 
 -- The action menu draws the generated semantic label for each offered
@@ -774,10 +775,10 @@ end
 -- mode where that fallback surface is valid; two-pane modes already carry
 -- the same text in the hero description rect.
 ---@param presentation table<string, unknown>
----@param layout table<string, unknown>
+---@param content table<string, unknown> the canonical logical content selecting compact fallbacks
 ---@param descriptionPalette table<string, unknown>
-function BagRenderer:_drawConstrainedContextual(presentation, layout, descriptionPalette)
-  if layout.mode ~= "interactive_only" then
+function BagRenderer:_drawConstrainedContextual(presentation, content, descriptionPalette)
+  if content.heroVisible ~= false then
     return
   end
   if presentation.state == "description_overlay" then
@@ -788,7 +789,7 @@ function BagRenderer:_drawConstrainedContextual(presentation, layout, descriptio
     return
   end
   local graphics = self._graphics
-  local frame = assert(layout.descriptionFallback, "the constrained layout carries its fallback frame")
+  local frame = assert(content.descriptionFallback, "the constrained layout carries its fallback frame")
   setColor(graphics, FALLBACK_COLORS.fill)
   graphics.rectangle("fill", frame.x, frame.y, frame.width, frame.height)
   setColor(graphics, FALLBACK_COLORS.border)
@@ -833,73 +834,59 @@ function BagRenderer:_drawDescriptionOverlay(presentation, icons, iconImage)
   self._text:drawText(hint, frame.x + frame.width - self._text:textWidth(hint) - 4, frame.y + frame.height - 14)
 end
 
--- Draws one presentation snapshot through the resolved layout with quads
+-- Draws one presentation snapshot through the resolved plan with quads
 -- from the icon provider. A closed presentation is a no-op. Each pane
--- draws clipped to its host frame under its own placement transform, so
--- icons, text, and cursors never escape their logical pane. Restores the
--- graphics color, scissor, and transform state afterwards.
+-- draws through the shared logical scope under its own placement, so
+-- icons, text, and cursors never escape their logical pane. The borrowed
+-- 3D hero composites once at the full frame under the visible clip; the
+-- canonical transform never applies twice. Restores the graphics color,
+-- scissor, and transform state afterwards.
 ---@param presentation table<string, unknown>
----@param layout table<string, unknown>
+---@param plan table<string, unknown> the resolved plan carrying panes and canonical content
 ---@param collaborators { icons: table<string, unknown> }
-function BagRenderer:draw(presentation, layout, collaborators)
+function BagRenderer:draw(presentation, plan, collaborators)
   assert(type(presentation) == "table", "the bag renderer requires a presentation")
-  assert(type(layout) == "table", "the bag renderer requires a resolved layout")
+  assert(type(plan) == "table", "the bag renderer requires its resolved plan")
   if not presentation.open then
     return
   end
   local icons = assert(collaborators and collaborators.icons, "occupied cells need the icon provider")
+  local content = assert(plan.content, "the bag plan carries its canonical content")
+  local panes = assert(plan.panes, "the bag plan orders its panes")
+  local heroPane
+  local interactivePane
+  for _, pane in ipairs(panes) do
+    if pane.interactive then
+      assert(interactivePane == nil, "the bag plan carries exactly one interactive pane")
+      interactivePane = pane
+    else
+      assert(heroPane == nil, "the bag plan carries at most one hero pane")
+      heroPane = pane
+    end
+  end
+  local interactive = assert(interactivePane, "every plan places the interactive pane")
   local graphics = self._graphics
   local palettes = self:_palettes()
   FieldDrawState.protectedDraw(graphics, function()
-    local mode = assert(layout.mode, "the bag layout names its mode")
-    if mode ~= "interactive_only" then
-      local hero = assert(layout.hero, "two-pane modes place the hero pane")
-      local frame = assert(hero.frame, "the hero placement carries its frame")
-      local function drawHeroScope(draw)
-        graphics.push()
-        local ok, err = pcall(draw)
-        graphics.pop()
-        if not ok then
-          error(err, 0)
-        end
-      end
-      drawHeroScope(function()
-        graphics.setScissor(math.floor(frame.x), math.floor(frame.y), math.floor(frame.width), math.floor(frame.height))
-        graphics.translate(frame.x, frame.y)
-        graphics.scale(hero.scale, hero.scale)
+    if heroPane ~= nil then
+      local hero = assert(heroPane.placement, "the hero pane carries its placement")
+      LogicalSurface.draw(graphics, hero, function()
         self:_drawHeroBackground(presentation)
       end)
-      -- The borrowed 3D hero renders in host coordinates through its own
-      -- placement viewport: the canonical transform must not apply twice.
-      drawHeroScope(function()
-        graphics.setScissor(math.floor(frame.x), math.floor(frame.y), math.floor(frame.width), math.floor(frame.height))
-        local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
-        heroRenderer:draw(
-          assert(presentation.heroGender, "the bag presentation names its hero gender"),
-          assert(presentation.hero, "the bag presentation carries its hero status"),
-          hero
-        )
-      end)
-      drawHeroScope(function()
-        graphics.setScissor(math.floor(frame.x), math.floor(frame.y), math.floor(frame.width), math.floor(frame.height))
-        graphics.translate(frame.x, frame.y)
-        graphics.scale(hero.scale, hero.scale)
+      local heroRenderer = assert(self._heroRenderer, "the hero pane borrows its model renderer")
+      heroRenderer:draw(
+        assert(presentation.heroGender, "the bag presentation names its hero gender"),
+        assert(presentation.hero, "the bag presentation carries its hero status"),
+        hero
+      )
+      LogicalSurface.draw(graphics, hero, function()
         self:_drawHeroForeground(presentation, palettes.description)
       end)
     end
-    local interactive = assert(layout.interactive, "every mode places the interactive pane")
-    local frame = assert(interactive.frame, "the interactive placement carries its frame")
-    graphics.push()
-    local ok, err = pcall(function()
-      graphics.setScissor(math.floor(frame.x), math.floor(frame.y), math.floor(frame.width), math.floor(frame.height))
-      graphics.translate(frame.x, frame.y)
-      graphics.scale(interactive.scale, interactive.scale)
-      self:_drawInteractive(presentation, icons, layout, palettes)
+    local placement = assert(interactive.placement, "the interactive pane carries its placement")
+    LogicalSurface.draw(graphics, placement, function()
+      self:_drawInteractive(presentation, icons, content, palettes)
     end)
-    graphics.pop()
-    if not ok then
-      error(err, 0)
-    end
   end)
 end
 

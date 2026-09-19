@@ -132,9 +132,15 @@ end
 local function placement()
   return {
     frame = { x = 0, y = 0, width = 256, height = 192 },
+    origin = { x = 0, y = 0 },
     scale = 1,
     logicalWidth = 256,
     logicalHeight = 192,
+    clipRect = { x = 0, y = 0, width = 256, height = 192 },
+    pixelScale = 1,
+    pixelRatio = 1,
+    visibleLogicalRect = { x = 0, y = 0, width = 256, height = 192 },
+    crop = { left = 0, right = 0, top = 0, bottom = 0 },
   }
 end
 

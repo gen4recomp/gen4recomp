@@ -10,6 +10,7 @@
 
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
@@ -315,7 +316,7 @@ local function ensureModelCanvas(self)
   assert(type(graphics.newCanvas) == "function", "the bag hero renderer requires canvas creation")
   local canvas
   local ok, err = pcall(function()
-    canvas = graphics.newCanvas(256, 192, { format = "rgba8", readable = true })
+    canvas = graphics.newCanvas(256, 192, { format = "rgba8", readable = true, dpiscale = 1 })
     canvas:setFilter("nearest", "nearest")
   end)
   if not ok then
@@ -409,8 +410,8 @@ end
 
 ---@param self BagHeroRenderer
 ---@param realized BagHeroRealization
----@param viewport table<string, number>
-local function drawCanonicalModel(self, realized, viewport)
+---@param placement table<string, unknown> the complete hero placement selecting the full frame and visible clip
+local function drawCanonicalModel(self, realized, placement)
   local graphics = graphicsFor(self)
   local target = assert(self._modelCanvas)
   local state = FieldDrawState.save(graphics)
@@ -460,7 +461,12 @@ local function drawCanonicalModel(self, realized, viewport)
     graphics.setBlendMode("alpha", "alphamultiply")
     graphics.setColor(1, 1, 1, 1)
     restoreScissor(graphics, state.scissor --[[@as number[]?]])
-    graphics.draw(target, viewport.x, viewport.y, 0, viewport.width / 256, viewport.height / 192)
+    -- One host composite at the full frame under the visible clip: the
+    -- source-sized raster maps through the placement once, so neither the
+    -- camera nor the 2D transform compensates for the crop.
+    LogicalSurface.draw(graphics, placement, function()
+      graphics.draw(target, 0, 0)
+    end)
   end)
   FieldDrawState.restore(graphics, state)
   if not ok then
@@ -520,10 +526,11 @@ local function advancePlayers(realized, steps)
   end
 end
 
--- Draws the gender hero for one presenter status inside one hero placement.
--- The status record is only read: draws never advance the semantic frame or
--- reselect the pocket. The placement frame is in host coordinates; the model
--- itself always renders at canonical size before that frame scales it. The
+-- Draws the gender hero for one presenter status inside one complete hero
+-- placement. The status record is only read: draws never advance the
+-- semantic frame or reselect the pocket. The model itself always renders
+-- at canonical size into its source-sized target before the placement
+-- scales that raster once at the full frame under the visible clip. The
 -- interpolated framing selects the per-draw camera distance/angles and the
 -- model base height; the static target, perspective, clip, base X/Z,
 -- rotation, and scale stay from the manifest.
@@ -549,15 +556,10 @@ function BagHeroRenderer:draw(gender, heroStatus, heroPlacement)
   assert(distance > 0, "the hero framing distance must be positive")
   local modelY = finiteNumber(framing.modelY, "the hero framing model height must be finite")
   assert(type(heroPlacement) == "table", "the hero draw requires its placement")
-  local viewport = assert(heroPlacement.frame, "the hero placement carries its frame")
+  assert(type(heroPlacement.frame) == "table", "the hero placement carries its full frame")
   assert(
-    type(viewport.x) == "number"
-      and type(viewport.y) == "number"
-      and type(viewport.width) == "number"
-      and viewport.width > 0
-      and type(viewport.height) == "number"
-      and viewport.height > 0,
-    "the hero placement frame must be a positive host rectangle"
+    type(heroPlacement.scale) == "number" and heroPlacement.scale > 0,
+    "the hero placement carries its positive scale"
   )
   self:_ensureGender(gender)
   ensureModelCanvas(self)
@@ -602,7 +604,7 @@ function BagHeroRenderer:draw(gender, heroStatus, heroPlacement)
     sync.frame = frame
   end
   realized.instance:evaluatePose()
-  drawCanonicalModel(self, realized, viewport)
+  drawCanonicalModel(self, realized, heroPlacement)
 end
 
 -- Idempotent release of the owned pool and renderer. Borrowed manifest data

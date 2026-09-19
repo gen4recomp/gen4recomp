@@ -93,11 +93,17 @@ local function buildPresenters(owner)
     )
   end
   local function drawBag(presentation, _)
-    assert(owner.bagRenderer, "bag renderer is unavailable"):draw(
-      presentation,
-      assert(presentation and presentation.layout, "the bag application presents its layout"),
-      { icons = assert(owner.itemIconProvider, "bag icon provider is unavailable") }
-    )
+    local status = assert(presentation, "the bag application presents its status")
+    local plan = assert(status.presentation, "the bag application presents its plan")
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", "bag drawing requires its host graphics namespace")
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      bagRenderer = assert(owner.bagRenderer, "bag renderer is unavailable"),
+      heroRenderer = assert(owner.heroRenderer, "bag hero renderer is unavailable"),
+      icons = assert(owner.itemIconProvider, "bag icon provider is unavailable"),
+      text = assert(owner.textRenderer, "bag text renderer is unavailable"),
+    }, status, plan)
   end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,

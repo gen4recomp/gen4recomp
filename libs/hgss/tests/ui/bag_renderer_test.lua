@@ -416,24 +416,47 @@ local function status(overrides)
   return record
 end
 
-local function layout(mode)
-  local hero = nil
-  if mode ~= "interactive_only" then
-    hero = { frame = { x = 0, y = 0, width = 512, height = 384 }, scale = 2, logicalWidth = 256, logicalHeight = 192 }
+local function placement()
+  return {
+    frame = { x = 0, y = 0, width = 512, height = 384 },
+    origin = { x = 0, y = 0 },
+    scale = 2,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = { x = 0, y = 0, width = 512, height = 384 },
+    pixelScale = 2,
+    pixelRatio = 1,
+    visibleLogicalRect = { x = 0, y = 0, width = 256, height = 192 },
+    crop = { left = 0, right = 0, top = 0, bottom = 0 },
+  }
+end
+
+local function plan(heroVisible)
+  local panes = {}
+  if heroVisible then
+    panes[#panes + 1] = { id = "hero", placement = placement(), interactive = false }
+  end
+  panes[#panes + 1] = { id = "interaction", placement = placement(), interactive = true }
+  local fallback = nil
+  if not heroVisible then
+    fallback = { x = 0, y = 144, width = 256, height = 48 }
   end
   return {
-    mode = mode,
-    hero = hero,
-    interactive = {
-      frame = { x = 0, y = 0, width = 512, height = 384 },
-      scale = 2,
-      logicalWidth = 256,
-      logicalHeight = 192,
+    panes = panes,
+    content = {
+      heroVisible = heroVisible,
+      descriptionFallback = fallback,
+      hitTest = function()
+        return nil
+      end,
     },
-    descriptionFallback = mode == "interactive_only" and { x = 0, y = 144, width = 256, height = 48 } or nil,
-    interactiveHitTest = function()
+    inputKey = "bag",
+    render = function(_, _, _) end,
+    mapInput = function()
       return nil
     end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
   }
 end
 
@@ -468,7 +491,7 @@ end
 function T.closed_status_draws_nothing()
   local graphics = FakeGraphics({ color = { 0.2, 0.3, 0.4, 1 }, imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  draw:draw({ open = false }, layout("horizontal"), { icons = icons() })
+  draw:draw({ open = false }, plan(true), { icons = icons() })
   Assert.equal(#graphics.draws, 0, "a closed presentation draws no images")
   Assert.equal(#graphics.primitives, 0, "a closed presentation draws no primitives")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
@@ -485,7 +508,7 @@ function T.two_pane_mode_draws_hero_and_interactive_content()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status(), layout("horizontal"), { icons = icons() })
+  draw:draw(status(), plan(true), { icons = icons() })
   Assert.isTrue(#graphics.draws >= 6, "both panes compose backgrounds, strip, icons, and cursors")
   Assert.isTrue(printedText(content, "POTION"), "occupied cells print their item name")
   Assert.isTrue(printedText(content, "x5"), "occupied cells print their quantity")
@@ -512,7 +535,7 @@ function T.page_indicator_prints_inside_its_manifest_rectangle()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status(), layout("horizontal"), { icons = icons() })
+  draw:draw(status(), plan(true), { icons = icons() })
   local rect = manifested.interactive.pageIndicator.rect
   local entry = assert(printedAt(content, "1/1"), "the page indicator prints its derived page")
   Assert.isTrue(entry.x >= rect.x, "the page text starts inside its indicator rectangle")
@@ -542,7 +565,7 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
     "construction binds every generated focus visual exactly once"
   )
   Assert.equal(#readPathsContaining(reads, "highlight"), 0, "no retired tab highlight is ever acquired")
-  draw:draw(status(), layout("horizontal"), { icons = icons(calls) })
+  draw:draw(status(), plan(true), { icons = icons(calls) })
   local ballsStrip = assert(draw._images["strip:balls"], "the current pocket strip is bound")
   Assert.isTrue(wasDrawn(graphics, ballsStrip), "browse draws its pocket-specific strip")
   for _, pocket in ipairs({ "items", "medicine", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
@@ -571,7 +594,7 @@ function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
       record.actions = { { id = "toss" }, { id = "cancel" } }
       record.selectedAction = 0
     end
-    draw:draw(record, layout("horizontal"), { icons = icons() })
+    draw:draw(record, plan(true), { icons = icons() })
     local key = state == "action_menu" and "background:action:balls"
       or state == "toss_quantity" and "background:quantity:balls"
       or state == "toss_confirm" and "background:confirmation:balls"
@@ -592,7 +615,7 @@ function T.browse_keeps_generated_chrome()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status(), layout("horizontal"), { icons = icons() })
+  draw:draw(status(), plan(true), { icons = icons() })
   Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "browse draws its pocket-specific strip")
   Assert.equal(#readPathsContaining(reads, "highlight"), 0, "the selected pocket carries no synthetic highlight")
   Assert.isTrue(
@@ -610,7 +633,7 @@ function T.graphics_state_is_restored_after_semantic_draw()
   local graphics =
     FakeGraphics({ color = { 0.2, 0.3, 0.4, 1 }, scissor = { 1, 2, 300, 180 }, imageSizes = IMAGE_SIZES })
   local draw = renderer(graphics)
-  draw:draw(status(), layout("horizontal"), { icons = icons() })
+  draw:draw(status(), plan(true), { icons = icons() })
   Assert.deepEqual({ graphics.getScissor() }, { 1, 2, 300, 180 }, "the draw restores the caller scissor")
   Assert.deepEqual({ graphics.getColor() }, { 0.2, 0.3, 0.4, 1 }, "the draw restores the caller color")
   Assert.equal(graphics.pushDepth(), 0, "the draw restores the caller transform stack")
@@ -623,7 +646,7 @@ function T.draw_failure_restores_the_pane_transform_stack()
   local record = status()
   record.visibleSlots[1].registrationSlot = 3
   Assert.throws(function()
-    draw:draw(record, layout("horizontal"), { icons = icons() })
+    draw:draw(record, plan(true), { icons = icons() })
   end, "an invalid cell fails during pane composition")
   Assert.equal(graphics.pushDepth(), 0, "a failed pane draw restores every transform scope")
   draw:release()
@@ -662,7 +685,7 @@ function T.empty_pockets_draw_no_icons_but_keep_navigation_labels()
   end
   local record = status({ slots = {}, visibleSlots = cells, selectedAbsoluteIndex = 0 })
   record.selected = nil
-  draw:draw(record, layout("horizontal"), { icons = icons() })
+  draw:draw(record, plan(true), { icons = icons() })
   for _, entry in ipairs(graphics.draws) do
     local quad = entry.quad
     Assert.isTrue(type(quad) ~= "table" or quad.key == nil, "empty cells draw no item icons")
@@ -674,7 +697,7 @@ function T.empty_pockets_draw_no_icons_but_keep_navigation_labels()
   local manifested = manifest()
   local tabbed = status({ slots = {}, visibleSlots = cells, selectedAbsoluteIndex = 0, focus = "tabs" })
   tabbed.selected = nil
-  draw:draw(tabbed, layout("horizontal"), { icons = icons() })
+  draw:draw(tabbed, plan(true), { icons = icons() })
   local tabFocus = manifested.interactive.focus.tabs
   local tabX, tabY = focusOrigin(tabFocus, tabFocus.targets[3])
   Assert.isTrue(staticDrawnAt(graphics, tabX, tabY), "empty pockets still resolve tab focus")
@@ -697,7 +720,7 @@ function T.constrained_overlay_draws_the_description_panel()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status({ state = "description_overlay" }), layout("interactive_only"), { icons = icons() })
+  draw:draw(status({ state = "description_overlay" }), plan(false), { icons = icons() })
   local panel = false
   for _, rectangle in ipairs(graphics.rectangles) do
     if rectangle.mode == "fill" and rectangle.x == 0 and rectangle.y == 144 then
@@ -789,7 +812,7 @@ local function snapshotImages(records, mode)
     for key in pairs(graphics.draws) do
       graphics.draws[key] = nil
     end
-    draw:draw(record, layout(mode), { icons = icons() })
+    draw:draw(record, plan(mode ~= "interactive_only"), { icons = icons() })
     snaps[#snaps + 1] = stateImages(graphics)
   end
   draw:release()
@@ -808,7 +831,7 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
       graphics = graphics,
       heroRenderer = heroSpy(nil),
     })
-    draw:draw(actionStatus(), layout(mode), { icons = icons() })
+    draw:draw(actionStatus(), plan(mode ~= "interactive_only"), { icons = icons() })
     Assert.isTrue(printedText(content, "TRASH"), "the menu labels its toss action in " .. mode)
     Assert.isTrue(printedText(content, "MOVE"), "the menu labels its move action in " .. mode)
     Assert.isTrue(printedText(content, "BACK OUT"), "the menu labels its way out in " .. mode)
@@ -853,10 +876,10 @@ function T.action_focus_indexes_from_the_selected_action_without_clamping()
     actions = { { id = "toss" }, { id = "move" }, { id = "register" }, { id = "cancel" } },
     selectedAction = 3,
   })
-  draw:draw(fullMenu, layout("horizontal"), { icons = icons() })
+  draw:draw(fullMenu, plan(true), { icons = icons() })
   Assert.isTrue(staticDrawnAt(graphics, lastX, lastY), "the last action resolves to the fourth target")
   Assert.throws(function()
-    draw:draw(actionStatus({ selectedAction = 4 }), layout("horizontal"), { icons = icons() })
+    draw:draw(actionStatus({ selectedAction = 4 }), plan(true), { icons = icons() })
   end, "an action selection outside the generated targets fails instead of clamping")
   draw:release()
 end
@@ -879,7 +902,7 @@ function T.action_menu_resolves_register_and_unregister_labels_independently()
       actions = { { id = case.id, enabled = true }, { id = "cancel", enabled = true } },
       selectedAction = 0,
     })
-    draw:draw(record, layout("horizontal"), { icons = icons() })
+    draw:draw(record, plan(true), { icons = icons() })
     Assert.isTrue(printedText(content, case.label), "the menu labels " .. case.id .. " independently")
     Assert.isFalse(printedText(content, case.id), "the raw " .. case.id .. " id never reaches the screen")
     draw:release()
@@ -899,7 +922,7 @@ function T.action_menu_without_generated_labels_is_a_composition_error()
     heroRenderer = heroSpy(nil),
   })
   Assert.throws(function()
-    draw:draw(actionStatus(), layout("horizontal"), { icons = icons() })
+    draw:draw(actionStatus(), plan(true), { icons = icons() })
   end, "an offered action without a generated label fails instead of printing its raw id")
   draw:release()
 end
@@ -917,7 +940,7 @@ function T.action_menu_without_generated_buttons_is_a_composition_error()
     heroRenderer = heroSpy(nil),
   })
   Assert.throws(function()
-    draw:draw(actionStatus(), layout("horizontal"), { icons = icons() })
+    draw:draw(actionStatus(), plan(true), { icons = icons() })
   end, "an action menu without generated button geometry fails instead of falling back to a list")
   draw:release()
 end
@@ -939,7 +962,7 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }), layout("vertical"), {
+  draw:draw(status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }), plan(true), {
     icons = icons(),
   })
   local joined = joinedText(content)
@@ -975,7 +998,7 @@ function T.confirmation_state_draws_its_own_screen_and_prompt()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status({ state = "toss_confirm", quantity = 2, quantityMax = 5 }), layout("vertical"), {
+  draw:draw(status({ state = "toss_confirm", quantity = 2, quantityMax = 5 }), plan(true), {
     icons = icons(),
   })
   local joined = joinedText(content)
@@ -1011,7 +1034,7 @@ function T.move_state_communicates_the_generated_move_prompt()
     end
     local record = status({ state = "move_select", visibleStart = 0, visibleSlots = cells, moveTarget = 1 })
     record.selected = slot("POTION", 5)
-    draw:draw(record, layout(mode), { icons = icons() })
+    draw:draw(record, plan(mode ~= "interactive_only"), { icons = icons() })
     local joined = joinedText(content)
     Assert.isTrue(joined:find("Move POTION.", 1, true) ~= nil, "the move prompt names the item in " .. mode)
     Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced in " .. mode)
@@ -1037,7 +1060,7 @@ function T.toss_states_communicate_their_prompts_in_every_topology()
       })
       draw:draw(
         status({ state = case.state, quantity = case.quantity, quantityMax = 5 }),
-        layout(mode),
+        plan(mode ~= "interactive_only"),
         { icons = icons() }
       )
       local joined = joinedText(content)
@@ -1064,7 +1087,7 @@ function T.move_highlight_marks_the_target_across_a_page_boundary()
     cells[index] = slot("ITEM_" .. index, 1)
   end
   local record = status({ state = "move_select", visibleStart = 2, visibleSlots = cells, moveTarget = 7 })
-  draw:draw(record, layout("horizontal"), { icons = icons() })
+  draw:draw(record, plan(true), { icons = icons() })
   local highlight = false
   for _, rectangle in ipairs(graphics.rectangles) do
     if rectangle.mode == "line" and rectangle.x == 160 and rectangle.y == 120 then
@@ -1107,7 +1130,7 @@ function T.nested_states_label_their_responsive_buttons()
       graphics = graphics,
       heroRenderer = heroSpy(nil),
     })
-    draw:draw(status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1 }), layout("horizontal"), {
+    draw:draw(status({ state = state, quantity = 2, quantityMax = 5, moveTarget = 1 }), plan(true), {
       icons = icons(),
     })
     draw:release()
@@ -1175,12 +1198,18 @@ function T.hero_pane_delegates_the_model_draw_between_background_and_foreground(
   end
   local draw, spy = rendererWithHero(graphics, order)
   local presentation = heroPresentation()
-  local resolved = layout("horizontal")
+  local resolved = plan(true)
   draw:draw(presentation, resolved, { icons = icons() })
   Assert.equal(#spy.draws, 1, "the hero pane delegates exactly one model draw")
   Assert.equal(spy.draws[1].gender, "male", "the model draw follows the presentation gender")
   Assert.equal(spy.draws[1].status.frame, 3, "the model draw follows the semantic frame")
-  Assert.isTrue(spy.draws[1].placement == resolved.hero, "the model draw uses the hero placement")
+  local heroPlacement
+  for _, pane in ipairs(resolved.panes) do
+    if not pane.interactive then
+      heroPlacement = pane.placement
+    end
+  end
+  Assert.isTrue(spy.draws[1].placement == heroPlacement, "the model draw uses the hero placement")
   local heroAt = nil
   for index, entry in ipairs(order) do
     if entry == "hero" then
@@ -1198,7 +1227,7 @@ end
 function T.single_pane_mode_never_delegates_the_model_draw()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw, spy = rendererWithHero(graphics, nil)
-  draw:draw(heroPresentation(), layout("interactive_only"), { icons = icons() })
+  draw:draw(heroPresentation(), plan(false), { icons = icons() })
   Assert.equal(#spy.draws, 0, "the single-pane mode draws no hero model")
   Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
   draw:release()
@@ -1227,7 +1256,7 @@ function T.unknown_registration_slot_is_a_composition_error()
   local record = status()
   record.visibleSlots[1].registrationSlot = 3
   Assert.throws(function()
-    draw:draw(record, layout("horizontal"), { icons = icons() })
+    draw:draw(record, plan(true), { icons = icons() })
   end, "a registration slot outside 1, 2, or nil fails instead of borrowing a marker")
   draw:release()
 end
@@ -1304,7 +1333,7 @@ function T.registration_markers_follow_live_service_slot_identities()
     visibleStart = view.visibleStart,
     pocket = view.pocket,
   })
-  draw:draw(record, layout("horizontal"), { icons = icons() })
+  draw:draw(record, plan(true), { icons = icons() })
   local slots = manifest().interactive.itemSlots.slots
   local offset = manifest().interactive.itemSlots.registration.offset
   local function markerAt(x, y)
@@ -1400,18 +1429,38 @@ end
 
 local function singlePane()
   return {
-    mode = "interactive_only",
-    hero = nil,
-    interactive = {
-      frame = { x = 0, y = 0, width = 256, height = 192 },
-      scale = 1,
-      logicalWidth = 256,
-      logicalHeight = 192,
+    panes = {
+      {
+        id = "interaction",
+        placement = {
+          frame = { x = 0, y = 0, width = 256, height = 192 },
+          origin = { x = 0, y = 0 },
+          scale = 1,
+          logicalWidth = 256,
+          logicalHeight = 192,
+          clipRect = { x = 0, y = 0, width = 256, height = 192 },
+          pixelScale = 1,
+          pixelRatio = 1,
+          visibleLogicalRect = { x = 0, y = 0, width = 256, height = 192 },
+          crop = { left = 0, right = 0, top = 0, bottom = 0 },
+        },
+        interactive = true,
+      },
     },
-    descriptionFallback = { x = 0, y = 144, width = 256, height = 48 },
-    interactiveHitTest = function()
+    content = {
+      heroVisible = false,
+      descriptionFallback = { x = 0, y = 144, width = 256, height = 48 },
+      hitTest = function()
+        return nil
+      end,
+    },
+    inputKey = "bag",
+    render = function(_, _, _) end,
+    mapInput = function()
       return nil
     end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
   }
 end
 
@@ -1552,7 +1601,7 @@ function T.item_focus_draws_the_generated_visual_at_the_visible_target()
       visibleStart = 3,
       visibleSlots = cells,
     }),
-    layout("horizontal"),
+    plan(true),
     { icons = icons() }
   )
   local itemFocus = manifested.interactive.focus.items
@@ -1614,7 +1663,7 @@ function T.cancel_uses_background_chrome_and_its_text_window()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status({ pocket = "items" }), layout("horizontal"), { icons = icons() })
+  draw:draw(status({ pocket = "items" }), plan(true), { icons = icons() })
   Assert.equal(#graphics.rectangles, 0, "unfocused Cancel emits no primitive chrome")
   local cancelFocus = manifested.interactive.focus.cancel
   local unfocusedX, unfocusedY = focusOrigin(cancelFocus)
@@ -1622,7 +1671,7 @@ function T.cancel_uses_background_chrome_and_its_text_window()
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
-  draw:draw(status({ pocket = "items", focus = "cancel" }), layout("horizontal"), { icons = icons() })
+  draw:draw(status({ pocket = "items", focus = "cancel" }), plan(true), { icons = icons() })
   Assert.isTrue(staticDrawnAt(graphics, unfocusedX, unfocusedY), "Cancel focus lands on its generated target")
   Assert.equal(#graphics.rectangles, 0, "focused Cancel emits no primitive outline")
   local cancel = manifested.interactive.cancel
@@ -1671,7 +1720,7 @@ function T.browse_background_follows_the_visible_occupied_count()
     else
       record.selected = record.visibleSlots[1]
     end
-    draw:draw(record, layout("horizontal"), { icons = icons() })
+    draw:draw(record, plan(true), { icons = icons() })
     local expected = draw._images["background:browse:items:" .. count]
     Assert.notNil(expected, "the count " .. count .. " browse variant is bound")
     Assert.isTrue(wasDrawn(graphics, expected), "the visible count " .. count .. " draws its own background")
@@ -1688,7 +1737,7 @@ function T.browse_background_follows_the_visible_occupied_count()
   mixed[2] = { empty = true, visibleIndex = 1 }
   mixed[3] = slot("ITEM_3", 1)
   Assert.throws(function()
-    draw:draw(status({ pocket = "items", visibleSlots = mixed }), layout("horizontal"), { icons = icons() })
+    draw:draw(status({ pocket = "items", visibleSlots = mixed }), plan(true), { icons = icons() })
   end, "a non-contiguous visible window fails instead of guessing a count")
   Assert.equal(#graphics.rectangles, 0, "count chrome never falls back to primitive outlines")
   draw:release()
@@ -1734,7 +1783,7 @@ function T.cancel_label_centers_inside_its_source_label_area()
     graphics = graphics,
     heroRenderer = heroSpy(nil),
   })
-  draw:draw(status({ pocket = "items" }), layout("horizontal"), { icons = icons() })
+  draw:draw(status({ pocket = "items" }), plan(true), { icons = icons() })
   local label = assert(palettedAt(content, "BACK OUT"), "Cancel prints through the palette path")
   local width = content:textWidth("BACK OUT")
   local area = manifested.interactive.cancel.labelRect
@@ -1761,7 +1810,7 @@ function T.browse_background_selects_each_partial_count()
     end
     local record = status({ pocket = "balls", visibleSlots = occupiedCells(count) })
     record.selected = record.visibleSlots[1]
-    draw:draw(record, layout("horizontal"), { icons = icons() })
+    draw:draw(record, plan(true), { icons = icons() })
     local expected = draw._images["background:browse:balls:" .. count]
     Assert.notNil(expected, "the count " .. count .. " browse variant is bound")
     Assert.isTrue(wasDrawn(graphics, expected), "the visible count " .. count .. " draws its own background")
@@ -1786,7 +1835,7 @@ function T.leading_empty_cell_fails_the_visible_count()
   local cells = occupiedCells(0)
   cells[2] = slot("ITEM_2", 1)
   Assert.throws(function()
-    draw:draw(status({ pocket = "items", visibleSlots = cells }), layout("horizontal"), { icons = icons() })
+    draw:draw(status({ pocket = "items", visibleSlots = cells }), plan(true), { icons = icons() })
   end, "an empty first cell with occupied cells behind it fails instead of guessing a count")
   draw:release()
 end
@@ -2023,7 +2072,7 @@ function T.empty_focused_cell_draws_the_normal_item_focus_visual()
   presentation.selectedAbsoluteIndex = nil
   presentation.focusedAbsoluteIndex = 1
   presentation.focusedVisibleIndex = 1
-  draw:draw(presentation, layout("horizontal"), { icons = icons() })
+  draw:draw(presentation, plan(true), { icons = icons() })
   local itemFocus = manifested.interactive.focus.items
   local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[2])
   Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "an empty focused cell draws the normal focus visual")
@@ -2050,7 +2099,7 @@ function T.empty_pocket_focus_draws_on_the_first_cell_without_icons()
   presentation.selectedAbsoluteIndex = nil
   presentation.focusedAbsoluteIndex = 0
   presentation.focusedVisibleIndex = 0
-  draw:draw(presentation, layout("horizontal"), { icons = icons() })
+  draw:draw(presentation, plan(true), { icons = icons() })
   local itemFocus = manifested.interactive.focus.items
   local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[1])
   Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "the first empty cell draws the normal focus visual")

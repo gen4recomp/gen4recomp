@@ -805,7 +805,7 @@ function BagController:_info()
     return
   end
   local layout = self._resolveLayout()
-  if type(layout) == "table" and layout.mode == "interactive_only" then
+  if type(layout) == "table" and layout.heroVisible == false then
     self._overlay = true
   end
 end
@@ -958,7 +958,7 @@ function BagController:_pointerDown(event)
   assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
   self._pressId = event.pointerId
   local layout = self._resolveLayout()
-  local hitTest = assert(layout.interactiveHitTest, "the bag layout must carry its hit test")
+  local hitTest = assert(layout.hitTest, "the bag layout must carry its hit test")
   local target = hitTest(event.x, event.y, self:_pointerState())
   if target == nil then
     self._pressCapture = nil
@@ -982,7 +982,7 @@ function BagController:_pointerMove(event)
     return
   end
   local layout = self._resolveLayout()
-  local hitTest = assert(layout.interactiveHitTest, "the bag layout must carry its hit test")
+  local hitTest = assert(layout.hitTest, "the bag layout must carry its hit test")
   local target = hitTest(event.x, event.y, self:_pointerState())
   if target ~= nil and target.kind == "item" and not self._overlay then
     local view = self._view
@@ -1005,7 +1005,7 @@ function BagController:_pointerUp(event)
     return
   end
   local layout = self._resolveLayout()
-  local hitTest = assert(layout.interactiveHitTest, "the bag layout must carry its hit test")
+  local hitTest = assert(layout.hitTest, "the bag layout must carry its hit test")
   local up = hitTest(event.x, event.y, self:_pointerState())
   if sameTarget(down, up) then
     self:_activate(up)
@@ -1063,6 +1063,8 @@ function BagController:updateFixed(uiInput)
       self:_pointerMove(event)
     elseif event.type == "pointer_up" then
       self:_pointerUp(event)
+    elseif event.type == "pointer_cancel" then
+      self:cancelPointerCapture()
     elseif event.type == "pointer_scroll" then
       if self._state == "browsing" and not self._overlay and type(event.dy) == "number" and event.dy ~= 0 then
         self:_page(event.dy > 0 and 1 or -1)
@@ -1130,7 +1132,6 @@ function BagController:status()
     selected = selected,
     focusedAbsoluteIndex = focusedAbsolute,
     focusedVisibleIndex = focusedVisible,
-    layout = self._resolveLayout(),
   }
   if self._state == "action_menu" and not self._overlay then
     record.actions = self._actions

@@ -15,7 +15,6 @@ local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagModel = require("libs.hgss.src.ui.BagModel")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
@@ -75,15 +74,6 @@ local function manifest()
   }
 end
 
-local function topology()
-  return ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = 512, height = 384 },
-    touch = false,
-    role = "world",
-  })
-end
-
 local function service()
   return HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
 end
@@ -115,7 +105,7 @@ end
 local function controller(bag, cursor, layoutManifest)
   layoutManifest = layoutManifest or manifest()
   local function resolveLayout()
-    return BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   end
   return BagController.new({
     model = {
@@ -146,9 +136,8 @@ local function manifestWithButtons()
 end
 
 local function hostAt(layout, logicalX, logicalY)
-  local frame = layout.interactive.frame
-  local scale = layout.interactive.scale
-  return frame.x + logicalX * scale, frame.y + logicalY * scale
+  local _ = layout
+  return logicalX, logicalY
 end
 
 local function tap(control, layout, logicalX, logicalY)
@@ -411,7 +400,7 @@ function T.failing_service_call_never_fakes_success()
   cursor:setPocket("medicine")
   local layoutManifest = manifest()
   local function resolveLayout()
-    return BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+    return BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   end
   local control = BagController.new({
     model = {
@@ -540,7 +529,7 @@ function T.pointer_button_tap_matches_the_keyboard_choice()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openActionMenu(control)
   tap(control, layout, 48, 144)
   local view = control:status()
@@ -562,7 +551,7 @@ function T.pointer_cell_tap_steers_the_move_target()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openActionMenu(control)
   chooseAction(control, "move")
   tap(control, layout, 204, 56)
@@ -618,7 +607,7 @@ function T.pointer_only_toss_picks_confirms_once_without_early_mutation()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   openMenuByPointer(control, layout, 0)
   Assert.equal(bag:revision(), revision, "opening the menu never mutates the inventory")
@@ -662,7 +651,7 @@ function T.pointer_only_toss_cancellation_returns_one_level_without_mutation()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 1)
@@ -695,7 +684,7 @@ function T.pointer_quantity_controls_match_press_and_release_targets()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 1)
   Assert.equal(control:status().state, "toss_quantity")
@@ -722,7 +711,7 @@ function T.pointer_only_move_selects_a_target_then_confirms_once()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 2)
@@ -757,7 +746,7 @@ function T.pointer_only_move_cancellation_restores_the_cursor_without_mutation()
   cursor:setPocket("medicine")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   openMenuByPointer(control, layout, 0)
   tapButton(control, layout, layoutManifest, 2)
@@ -783,7 +772,7 @@ function T.pointer_only_register_and_unregister_commit_once_each_with_a_refresh(
   cursor:setPocket("key_items")
   local layoutManifest = manifestWithButtons()
   local control = controller(bag, cursor, layoutManifest)
-  local layout = BagLayout.resolve({ topology = topology(), manifest = layoutManifest })
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
   local revision = bag:revision()
   local view = openMenuByPointer(control, layout, 0)
   Assert.isTrue(hasAction(view, "register"), "an unregistered registerable item must offer to register")

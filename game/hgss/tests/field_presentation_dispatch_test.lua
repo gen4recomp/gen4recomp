@@ -263,21 +263,45 @@ end
 
 function T.bag_routes_only_to_the_bag_presenter()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local presentation = { layout = { frame = { x = 0, y = 0, width = 512, height = 384 } } }
-    resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
-    Assert.equal(#sink, 1, "exactly one presenter draws")
-    Assert.equal(sink[1][1], "bag", "the Bag application draws through the bag renderer")
-    Assert.equal(sink[1][2], presentation, "the presenter receives the host application presentation")
-    Assert.equal(sink[1][3], presentation.layout, "the bag presenter draws through the application layout")
-    Assert.equal(
-      sink[1][4].icons,
-      resources.itemIconProvider,
-      "the bag presenter borrows the shared item icon provider"
-    )
-    Assert.isNil(calls.itemIcons, "drawing never releases the borrowed item icon provider")
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "bag",
+          render = function(borrowed, view, plan)
+            assert(borrowed.bagRenderer, "the bag render borrows its renderer"):draw(view, plan, {
+              icons = borrowed.icons,
+            })
+          end,
+          mapInput = function()
+            return nil
+          end,
+          coverage = {},
+          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "exactly one presenter draws")
+      Assert.equal(sink[1][1], "bag", "the Bag application draws through the bag renderer")
+      Assert.equal(sink[1][2], presentation, "the presenter receives the host application presentation")
+      Assert.equal(sink[1][3], presentation.presentation, "the bag presenter draws through the application plan")
+      Assert.equal(
+        sink[1][4].icons,
+        resources.itemIconProvider,
+        "the bag presenter borrows the shared item icon provider"
+      )
+      Assert.isNil(calls.itemIcons, "drawing never releases the borrowed item icon provider")
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.unknown_application_ids_fault_without_drawing()
@@ -346,14 +370,38 @@ end
 
 function T.bag_draw_borrows_shared_resources_without_releasing_them()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local presentation = { layout = { frame = { x = 0, y = 0, width = 512, height = 384 } } }
-    resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
-    Assert.equal(#sink, 1, "exactly one presenter draws")
-    Assert.isNil(calls.hero, "drawing never releases the borrowed hero model renderer")
-    Assert.isNil(calls.bag, "drawing never releases the borrowed bag renderer")
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "bag",
+          render = function(borrowed, view, plan)
+            assert(borrowed.bagRenderer, "the bag render borrows its renderer"):draw(view, plan, {
+              icons = borrowed.icons,
+            })
+          end,
+          mapInput = function()
+            return nil
+          end,
+          coverage = {},
+          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "exactly one presenter draws")
+      Assert.isNil(calls.hero, "drawing never releases the borrowed hero model renderer")
+      Assert.isNil(calls.bag, "drawing never releases the borrowed bag renderer")
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 -- The Start Menu dispatch executes the resolved plan's render callback with
