@@ -1,12 +1,13 @@
--- The reusable Naming Screen composes generated source chrome instead of
+-- The reusable Naming Screen composes generated source visuals instead of
 -- hand-drawn rectangles: the opaque base first, the selected page overlay at
--- its canonical placement, then the host subject, the entered name, the
--- keyboard glyphs, and exactly one focus mark on the selected cell. Unknown
+-- its canonical placement, then the OAM-composed controls, entry slots,
+-- source-placed text, cursor visual, and manifest player subject. Unknown
 -- pages are programmer errors, never a silent fallback.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
@@ -16,17 +17,7 @@ local LOWER_PATH = "assets/generated/field/ui/naming-screen-page-lower.png"
 local SYMBOLS_PATH = "assets/generated/field/ui/naming-screen-page-symbols.png"
 
 local function manifest()
-  return {
-    namingScreen = {
-      base = { asset = "hgss.naming_screen.base", image = BASE_PATH, width = 256, height = 192 },
-      pages = {
-        upper = { asset = "hgss.naming_screen.page_upper", image = UPPER_PATH, width = 256, height = 112 },
-        lower = { asset = "hgss.naming_screen.page_lower", image = LOWER_PATH, width = 256, height = 112 },
-        symbols = { asset = "hgss.naming_screen.page_symbols", image = SYMBOLS_PATH, width = 256, height = 112 },
-      },
-      placement = { x = 0, y = 80, width = 256, height = 112 },
-    },
-  }
+  return FieldUiFixture.namingSemanticsManifest()
 end
 
 local function graphicsFake()
@@ -120,7 +111,7 @@ function T.construction_requires_the_naming_chrome_contract()
   Assert.equal(#loads.loads, 0, "a rejected construction acquires no images")
 end
 
-function T.construction_acquires_the_base_and_every_page()
+function T.construction_acquires_the_base_pages_and_every_semantic_visual()
   local graphics = graphicsFake()
   local loader, loads = imageLoaderFake()
   local renderer = NamingScreenRenderer.new({
@@ -130,12 +121,25 @@ function T.construction_acquires_the_base_and_every_page()
     manifest = manifest(),
     imageLoader = loader,
   })
-  Assert.equal(#loads.loads, 4, "construction loads the base plus all three pages")
+  local naming = manifest().namingScreen
+  local expected = { BASE_PATH, UPPER_PATH, LOWER_PATH, SYMBOLS_PATH }
+  for _, record in pairs(naming.controls) do
+    expected[#expected + 1] = record.image
+  end
+  expected[#expected + 1] = naming.cursor.keyboard.image
+  for _, record in pairs(naming.cursor.home) do
+    expected[#expected + 1] = record.image
+  end
+  expected[#expected + 1] = naming.entrySlots.normal.image
+  expected[#expected + 1] = naming.entrySlots.selected.image
+  expected[#expected + 1] = naming.playerSubjects.male.image
+  expected[#expected + 1] = naming.playerSubjects.female.image
+  Assert.equal(#loads.loads, #expected, "construction loads the chrome plus every semantic visual")
   local seen = {}
   for _, path in ipairs(loads.loads) do
     seen[path] = true
   end
-  for _, path in ipairs({ BASE_PATH, UPPER_PATH, LOWER_PATH, SYMBOLS_PATH }) do
+  for _, path in ipairs(expected) do
     Assert.isTrue(seen[path], "construction loads " .. path)
   end
   renderer:dispose()
@@ -145,7 +149,7 @@ function T.construction_acquires_the_base_and_every_page()
 end
 
 function T.construction_failure_releases_already_acquired_images()
-  local loader, loads = imageLoaderFake(3)
+  local loader, loads = imageLoaderFake(20)
   local err = Assert.throws(function()
     NamingScreenRenderer.new({
       graphics = graphicsFake(),
@@ -154,15 +158,16 @@ function T.construction_failure_releases_already_acquired_images()
       manifest = manifest(),
       imageLoader = loader,
     })
-  end, "a mid-acquisition image failure must fail construction")
+  end, "a late acquisition image failure must fail construction")
   Assert.isTrue(tostring(err):find("injected image failure", 1, true) ~= nil)
-  Assert.equal(#loads.images, 2, "two images were acquired before the failure")
+  Assert.equal(#loads.images, 19, "nineteen images were acquired before the failure")
   for _, image in ipairs(loads.images) do
     Assert.isTrue(image.released, image.path .. " is released after the failed construction")
+    Assert.equal(image.releaseCount, 1, image.path .. " is released exactly once")
   end
 end
 
-function T.draw_composes_base_page_subject_text_and_a_single_focus_mark()
+function T.draw_composes_base_page_controls_slots_text_cursor_and_manifest_subject()
   local graphics, calls = graphicsFake()
   local text, textCalls = textFake()
   local loader, _ = imageLoaderFake()
@@ -186,31 +191,28 @@ function T.draw_composes_base_page_subject_text_and_a_single_focus_mark()
   Assert.equal(calls.draws[2].image.path, LOWER_PATH, "the selected lower page draws over the base")
   Assert.deepEqual({ x = calls.draws[2].x, y = calls.draws[2].y }, { x = 0, y = 80 })
 
-  for _, rect in ipairs(calls.rectangles) do
-    Assert.isTrue(rect.mode ~= "fill", "source chrome supplies the pixels, so no synthetic fill remains")
-  end
-  local lines = {}
-  for _, rect in ipairs(calls.rectangles) do
-    if rect.mode == "line" then
-      lines[#lines + 1] = rect
-    end
-  end
-  Assert.equal(#lines, 1, "exactly one selected focus mark remains")
-  Assert.deepEqual(
-    { x = lines[1].x, y = lines[1].y, width = lines[1].width, height = lines[1].height },
-    layoutResult.cells[3][5]
-  )
+  Assert.equal(#calls.rectangles, 0, "source visuals replace every procedural outline")
+  Assert.equal(#seenSubject, 0, "the player subject comes from the manifest, not the host callback")
 
-  Assert.equal(#seenSubject, 1, "the host subject still draws through its callback")
-  Assert.deepEqual(seenSubject[1].subject, view.subject)
-  local entered = false
-  for _, entry in ipairs(textCalls.texts) do
-    if entry.value == "AB" then
-      entered = true
-    end
+  local naming = manifest().namingScreen
+  local paths = {}
+  for _, draw in ipairs(calls.draws) do
+    paths[draw.image.path] = true
   end
-  Assert.isTrue(entered, "the entered name still renders")
-  Assert.isTrue(#textCalls.texts > 1, "keyboard glyphs still render")
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok", "backing" }) do
+    Assert.isTrue(paths[naming.controls[id].image], "the " .. id .. " control draws its generated visual")
+  end
+  Assert.isTrue(paths[naming.cursor.keyboard.image], "the keyboard cursor draws its generated visual")
+  Assert.isTrue(paths[naming.entrySlots.normal.image], "the entry slots draw their generated visual")
+  Assert.isTrue(paths[naming.playerSubjects.male.image], "the male player subject draws its generated visual")
+
+  local entered = {}
+  for _, entry in ipairs(textCalls.texts) do
+    entered[entry.value] = true
+  end
+  Assert.isNil(entered["AB"], "the entered name is placed per glyph, never as one string")
+  Assert.isTrue(entered["A"] and entered["B"], "each entered glyph renders")
+  Assert.isTrue(#textCalls.texts > 2, "keyboard glyphs still render")
   renderer:dispose()
 end
 

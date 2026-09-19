@@ -1,8 +1,8 @@
 -- Oak hosts the reusable Naming Screen without taking over its geometry:
 -- composition threads the already-validated field-UI manifest and the
 -- generated image loader through to naming construction, the naming child
--- keeps its canonical 256x192 surface with no child placement, and subject
--- art stays host-owned.
+-- keeps its canonical 256x192 surface with no child placement, and player
+-- subject art comes from the field-UI manifest rather than Oak-owned assets.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")

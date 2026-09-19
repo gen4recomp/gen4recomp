@@ -1,13 +1,15 @@
--- HGSS naming surface renderer composing generated source chrome with shared
--- field text. The opaque base draws first, the selected transparent page
--- overlay draws over it at its manifest placement, then the host-owned
--- subject, the entered name, and the keyboard/control glyphs; exactly one
--- focus mark remains on the selected cell. Subject art stays host-owned: the
--- host injects drawSubject and the renderer only brackets the call with
+-- HGSS naming surface renderer composing generated source visuals with
+-- shared field text. The opaque base draws first, the selected transparent
+-- page overlay draws over it at its manifest placement, then the
+-- OAM-composed support backing, page controls, entry slots, keyboard and
+-- entered-name text from the generated text geometry, the cursor visual, and
+-- the player subject from the manifest. Non-player subjects stay host-owned:
+-- the host injects drawSubject and the renderer only brackets the call with
 -- balanced graphics state. Generated images are owned here and released on
 -- dispose; the text renderer and subject resources stay host-owned.
 
 local PixelScale = require("libs.ui.src.PixelScale")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 local NamingScreenRenderer = {}
 
@@ -22,6 +24,7 @@ local NamingScreenRenderer = {}
 ---@field graphics table<string, function>
 ---@field text table<string, function>
 ---@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>)?
+---@field naming table<string, unknown>
 ---@field placement table<string, number>
 ---@field images table<string, unknown>
 ---@field released boolean
@@ -31,6 +34,8 @@ local NamingScreenRenderer = {}
 NamingScreenRenderer.__index = NamingScreenRenderer
 
 local PAGE_KEYS = { "upper", "lower", "symbols" }
+local CONTROL_KEYS = { "upper", "lower", "symbols", "back", "ok", "backing" }
+local HOME_KEYS = { "upper", "lower", "symbols", "back", "ok" }
 
 local function imagePath(manifest, entry, what)
   assert(type(entry) == "table", "naming chrome " .. what .. " is missing")
@@ -43,6 +48,30 @@ local function imagePath(manifest, entry, what)
     return record.image
   end
   error("naming chrome " .. what .. " names no generated image", 0)
+end
+
+local function acquireOrder()
+  local order = { "base", "upper", "lower", "symbols" }
+  for _, key in ipairs(CONTROL_KEYS) do
+    order[#order + 1] = "control:" .. key
+  end
+  order[#order + 1] = "cursor:keyboard"
+  for _, key in ipairs(HOME_KEYS) do
+    order[#order + 1] = "cursor:home:" .. key
+  end
+  order[#order + 1] = "slot:normal"
+  order[#order + 1] = "slot:selected"
+  order[#order + 1] = "subject:male"
+  order[#order + 1] = "subject:female"
+  return order
+end
+
+local function requireSprite(section, key, what)
+  local entry = type(section) == "table" and section[key] or nil
+  assert(type(entry) == "table", "naming renderer requires the " .. what .. " visual")
+  assert(type(entry.anchor) == "table", "naming renderer requires the " .. what .. " anchor")
+  assert(type(entry.offset) == "table", "naming renderer requires the " .. what .. " frame offset")
+  return entry
 end
 
 ---@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, rect: table<string, number>), manifest: table<string, unknown>, imageLoader: fun(path: string): unknown }
@@ -58,30 +87,53 @@ function NamingScreenRenderer.new(options)
   assert(type(naming.base) == "table", "naming renderer requires the naming base entry")
   assert(type(naming.pages) == "table", "naming renderer requires the naming page entries")
   assert(type(naming.placement) == "table", "naming renderer requires the naming page placement")
+  assert(type(naming.text) == "table", "naming renderer requires the naming text geometry")
+  assert(type(naming.controls) == "table", "naming renderer requires the naming controls")
+  assert(type(naming.cursor) == "table", "naming renderer requires the naming cursor")
+  assert(type(naming.entrySlots) == "table", "naming renderer requires the naming entry slots")
+  assert(type(naming.playerSubjects) == "table", "naming renderer requires the naming player subjects")
   local paths = { base = imagePath(options.manifest, naming.base, "base") }
   for _, key in ipairs(PAGE_KEYS) do
     paths[key] = imagePath(options.manifest, naming.pages[key], key .. " page")
+  end
+  for _, key in ipairs(CONTROL_KEYS) do
+    paths["control:" .. key] =
+      imagePath(options.manifest, requireSprite(naming.controls, key, key .. " control"), key .. " control")
+  end
+  paths["cursor:keyboard"] =
+    imagePath(options.manifest, requireSprite(naming.cursor, "keyboard", "keyboard cursor"), "keyboard cursor")
+  for _, key in ipairs(HOME_KEYS) do
+    paths["cursor:home:" .. key] =
+      imagePath(options.manifest, requireSprite(naming.cursor.home, key, key .. " home cursor"), key .. " home cursor")
+  end
+  paths["slot:normal"] =
+    imagePath(options.manifest, requireSprite(naming.entrySlots, "normal", "normal slot"), "normal slot")
+  paths["slot:selected"] =
+    imagePath(options.manifest, requireSprite(naming.entrySlots, "selected", "selected slot"), "selected slot")
+  for _, key in ipairs({ "male", "female" }) do
+    paths["subject:" .. key] =
+      imagePath(options.manifest, requireSprite(naming.playerSubjects, key, key .. " subject"), key .. " subject")
   end
   ---@type NamingScreenRenderer
   local renderer = setmetatable({
     graphics = options.graphics,
     text = options.text,
     drawSubject = options.drawSubject,
+    naming = naming,
     placement = naming.placement,
     images = {},
     released = false,
   }, NamingScreenRenderer)
   local acquired = renderer.images
+  local order = acquireOrder()
   local ok, failure = pcall(function()
-    acquired.base = options.imageLoader(paths.base)
-    assert(acquired.base ~= nil, "naming image loader returned no image for the base")
-    for _, key in ipairs(PAGE_KEYS) do
+    for _, key in ipairs(order) do
       acquired[key] = options.imageLoader(paths[key])
-      assert(acquired[key] ~= nil, "naming image loader returned no image for the " .. key .. " page")
+      assert(acquired[key] ~= nil, "naming image loader returned no image for " .. key)
     end
   end)
   if not ok then
-    for _, key in ipairs({ "base", "upper", "lower", "symbols" }) do
+    for _, key in ipairs(order) do
       local image = acquired[key]
       if image ~= nil then
         pcall(image.release, image)
@@ -93,8 +145,19 @@ function NamingScreenRenderer.new(options)
   return renderer
 end
 
-local function center(text, region, measure)
-  return PixelScale.snapLogical(region.x + (region.width - measure(text)) / 2)
+local function homeControlAt(column)
+  if column == 1 or column == 2 then
+    return "upper"
+  elseif column == 3 or column == 4 then
+    return "lower"
+  elseif column == 5 or column == 6 then
+    return "symbols"
+  elseif column == 9 or column == 10 or column == 11 then
+    return "back"
+  elseif column == 12 or column == 13 then
+    return "ok"
+  end
+  return nil
 end
 
 function NamingScreenRenderer:draw(view, layout)
@@ -102,6 +165,7 @@ function NamingScreenRenderer:draw(view, layout)
   assert(type(view) == "table" and type(layout) == "table", "naming draw requires view and layout")
   assert(type(view.subject) == "table", "naming draw requires a semantic subject")
   assert(type(layout.surface) == "table", "naming draw requires a canonical surface")
+  local naming = assert(self.naming, "naming renderer requires its manifest section")
   local page = self.images[view.page]
   if page == nil then
     error("unknown naming page: " .. tostring(view.page), 0)
@@ -112,40 +176,73 @@ function NamingScreenRenderer:draw(view, layout)
   g.setColor(1, 1, 1, 1)
   g.draw(self.images.base, 0, 0)
   g.draw(page, self.placement.x, self.placement.y)
-  g.push()
-  self.drawSubject(g, view.subject, layout.subject)
-  g.pop()
-  local text = view.text or ""
+  local function drawVisual(imageKey, x, y)
+    local image = assert(self.images[imageKey], "naming visual is missing: " .. imageKey)
+    g.draw(image, PixelScale.snapLogical(x), PixelScale.snapLogical(y))
+  end
+  for _, key in ipairs(CONTROL_KEYS) do
+    local record = naming.controls[key]
+    drawVisual("control:" .. key, record.anchor.x + record.offset.x, record.anchor.y + record.offset.y)
+  end
+  local slots = naming.entrySlots
+  local entered = 0
+  for _ in Utf8Glyphs.iter(view.text or "") do
+    entered = entered + 1
+  end
+  for index = 0, (view.maxLength or entered) - 1 do
+    local record = slots.normal
+    drawVisual("slot:normal", slots.origin.x + index * slots.stepX + record.offset.x, slots.origin.y + record.offset.y)
+  end
+  if entered < (view.maxLength or entered) then
+    local record = slots.selected
+    drawVisual(
+      "slot:selected",
+      slots.origin.x + entered * slots.stepX + record.offset.x,
+      slots.origin.y + record.offset.y
+    )
+  end
   g.setColor(1, 1, 1, 1)
-  self.text:drawText(
-    text,
-    center(text, layout.nameSlots, function(value)
-      return self.text.textWidth and self.text:textWidth(value) or 0
-    end),
-    layout.nameSlots.y + 4
-  )
-  for row = 1, 6 do
+  local keyboard = naming.text.keyboard.cells
+  for row = 2, 6 do
     for column = 1, 13 do
       local cell = view.grid[row][column]
       if cell.kind == "glyph" then
-        local cellRect = layout.cells[row][column]
+        local textCell = keyboard[row - 1][column]
         local glyphWidth = self.text.textWidth and self.text:textWidth(cell.glyph) or 0
-        g.setColor(1, 1, 1, 1)
-        self.text:drawText(cell.glyph, cellRect.x + (cellRect.width - glyphWidth) / 2, cellRect.y + 2)
+        self.text:drawText(cell.glyph, textCell.x + (textCell.width - glyphWidth) / 2, textCell.y)
       end
     end
   end
-  local labels = { upper = "Upper", lower = "Lower", symbols = "Symbols", back = "Back", ok = "OK" }
-  for id, region in pairs(layout.controls) do
-    local label = labels[id]
-    local labelWidth = self.text.textWidth and self.text:textWidth(label) or 0
-    g.setColor(1, 1, 1, 1)
-    self.text:drawText(label, region.x + (region.width - labelWidth) / 2, region.y + 2)
+  local name = naming.text.name
+  local slot = 0
+  for glyph in Utf8Glyphs.iter(view.text or "") do
+    self.text:drawText(glyph, name.x + slot * name.advanceX, name.y)
+    slot = slot + 1
   end
   local cursor = view.cursor
-  local selectedRect = layout.cells[cursor.row][cursor.column]
-  g.setColor(0.96, 0.82, 0.40, 1)
-  g.rectangle("line", selectedRect.x, selectedRect.y, selectedRect.width, selectedRect.height)
+  if cursor.row == 1 then
+    local controlId = homeControlAt(cursor.column)
+    if controlId ~= nil then
+      local record = naming.cursor.home[controlId]
+      drawVisual("cursor:home:" .. controlId, record.anchor.x + record.offset.x, record.anchor.y + record.offset.y)
+    end
+  else
+    local record = naming.cursor.keyboard
+    drawVisual(
+      "cursor:keyboard",
+      record.anchor.x + (cursor.column - 1) * record.stepX + record.offset.x,
+      record.anchor.y + (cursor.row - 2) * record.stepY + record.offset.y
+    )
+  end
+  if view.subject.kind == "player" then
+    local gender = view.subject.gender == 1 and "female" or "male"
+    local record = naming.playerSubjects[gender]
+    drawVisual("subject:" .. gender, record.anchor.x + record.offset.x, record.anchor.y + record.offset.y)
+  else
+    g.push()
+    self.drawSubject(g, view.subject, layout.subject)
+    g.pop()
+  end
   g.pop()
 end
 
@@ -154,7 +251,7 @@ function NamingScreenRenderer:dispose()
     return
   end
   self.released = true
-  for _, key in ipairs({ "base", "upper", "lower", "symbols" }) do
+  for _, key in ipairs(acquireOrder()) do
     local image = self.images[key]
     if image ~= nil then
       pcall(image.release, image)

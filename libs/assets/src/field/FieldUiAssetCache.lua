@@ -64,6 +64,22 @@ FieldUiAssetCache.ASSET = {
   NAMING_SCREEN_PAGE_UPPER = "hgss.naming_screen.page_upper",
   NAMING_SCREEN_PAGE_LOWER = "hgss.naming_screen.page_lower",
   NAMING_SCREEN_PAGE_SYMBOLS = "hgss.naming_screen.page_symbols",
+  NAMING_SCREEN_CONTROL_UPPER = "hgss.naming_screen.control_upper",
+  NAMING_SCREEN_CONTROL_LOWER = "hgss.naming_screen.control_lower",
+  NAMING_SCREEN_CONTROL_SYMBOLS = "hgss.naming_screen.control_symbols",
+  NAMING_SCREEN_CONTROL_BACK = "hgss.naming_screen.control_back",
+  NAMING_SCREEN_CONTROL_OK = "hgss.naming_screen.control_ok",
+  NAMING_SCREEN_CONTROL_BACKING = "hgss.naming_screen.control_backing",
+  NAMING_SCREEN_CURSOR_KEYBOARD = "hgss.naming_screen.cursor_keyboard",
+  NAMING_SCREEN_CURSOR_HOME_UPPER = "hgss.naming_screen.cursor_home_upper",
+  NAMING_SCREEN_CURSOR_HOME_LOWER = "hgss.naming_screen.cursor_home_lower",
+  NAMING_SCREEN_CURSOR_HOME_SYMBOLS = "hgss.naming_screen.cursor_home_symbols",
+  NAMING_SCREEN_CURSOR_HOME_BACK = "hgss.naming_screen.cursor_home_back",
+  NAMING_SCREEN_CURSOR_HOME_OK = "hgss.naming_screen.cursor_home_ok",
+  NAMING_SCREEN_SLOT_NORMAL = "hgss.naming_screen.slot_normal",
+  NAMING_SCREEN_SLOT_SELECTED = "hgss.naming_screen.slot_selected",
+  NAMING_SCREEN_SUBJECT_MALE = "hgss.naming_screen.subject_male",
+  NAMING_SCREEN_SUBJECT_FEMALE = "hgss.naming_screen.subject_female",
 }
 
 -- One error code for every malformed generated class: the manifest is the
@@ -712,7 +728,13 @@ function FieldUiAssetCache.validateManifest(manifest)
   -- normal page overlays (upper, lower, symbols), each 256x112, drawn at the
   -- canonical y=80 placement over the base. Every entry references its image
   -- through the shared asset index by semantic id; the manifest carries no
-  -- source archive or member identities.
+  -- source archive or member identities. The semantic layer adds the
+  -- source-window text geometry (the entered-name origin plus the five
+  -- thirteen-column keyboard text rows), the six OAM-composed controls with
+  -- their canonical anchors, the stepping keyboard cursor with its five
+  -- home-row variants, the stepping entry slots with normal/selected
+  -- visuals, and the anchored male/female player subjects. Every sprite
+  -- record draws at anchor plus the generated frame offset.
   local namingOk, namingErr = section("namingScreen", function(s)
     if type(s.base) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.base must be a table", {})
@@ -758,6 +780,189 @@ function FieldUiAssetCache.validateManifest(manifest)
       or placement.height ~= 112
     then
       return false, Errors.new(MANIFEST_INVALID, "namingScreen.placement must be the canonical y=80 overlay", {})
+    end
+
+    local function nonNegativeInt(value)
+      return type(value) == "number" and value % 1 == 0 and value >= 0
+    end
+
+    local function canonicalPoint(point, what)
+      if type(point) ~= "table" or not nonNegativeInt(point.x) or not nonNegativeInt(point.y) then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be a canonical integer point", { what = what })
+      end
+      return true
+    end
+
+    -- One OAM-composed visual: a generated image drawn at its canonical
+    -- anchor plus the compositor's frame offset. The asset must be indexed
+    -- with matching dimensions; the offset may be negative (a cell whose
+    -- objects start below the source origin shifts the frame).
+    local function spriteRecord(record, what)
+      if type(record) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be a table", { what = what })
+      end
+      local asset = atlasSizes[record.asset]
+      if type(record.asset) ~= "string" or not asset then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must reference an indexed asset", { what = what })
+      end
+      if record.width ~= asset.width or record.height ~= asset.height then
+        return false, Errors.new(MANIFEST_INVALID, what .. " dimensions must match its indexed asset", { what = what })
+      end
+      if record.width < 1 or record.height < 1 then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be non-empty", { what = what })
+      end
+      local anchorOk, anchorErr = canonicalPoint(record.anchor, what .. " anchor")
+      if not anchorOk then
+        return false, anchorErr
+      end
+      if
+        type(record.offset) ~= "table"
+        or type(record.offset.x) ~= "number"
+        or record.offset.x % 1 ~= 0
+        or type(record.offset.y) ~= "number"
+        or record.offset.y % 1 ~= 0
+      then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must carry the generated frame offset", { what = what })
+      end
+      return true
+    end
+
+    local text = s.text
+    if type(text) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.text must be a table", {})
+    end
+    if type(text.name) ~= "table" or text.name.x ~= 80 or text.name.y ~= 24 or text.name.advanceX ~= 12 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.text.name must be the (80,24)+12px entry origin", {})
+    end
+    if type(text.keyboard) ~= "table" or type(text.keyboard.cells) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.text.keyboard.cells must be a table", {})
+    end
+    local textRowCount = 0
+    for _ in pairs(text.keyboard.cells) do
+      textRowCount = textRowCount + 1
+    end
+    if textRowCount ~= 5 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.text.keyboard must carry five source rows", {})
+    end
+    for row = 1, 5 do
+      local cells = text.keyboard.cells[row]
+      if type(cells) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, "namingScreen.text.keyboard row " .. row .. " is missing", {})
+      end
+      local columnCount = 0
+      for _ in pairs(cells) do
+        columnCount = columnCount + 1
+      end
+      if columnCount ~= 13 then
+        return false,
+          Errors.new(MANIFEST_INVALID, "namingScreen.text.keyboard row " .. row .. " must carry thirteen cells", {})
+      end
+      for column = 1, 13 do
+        local cell = cells[column]
+        if
+          type(cell) ~= "table"
+          or not nonNegativeInt(cell.x)
+          or not nonNegativeInt(cell.y)
+          or cell.width ~= 16
+          or cell.x + cell.width > 256
+          or cell.y > 191
+        then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "namingScreen.text.keyboard row " .. row .. " column " .. column .. " must be a 16px canonical cell",
+              {}
+            )
+        end
+      end
+    end
+
+    if type(s.controls) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.controls must be a table", {})
+    end
+    local controlAnchors = {
+      upper = { x = 4, y = 68 },
+      lower = { x = 36, y = 68 },
+      symbols = { x = 68, y = 68 },
+      back = { x = 136, y = 68 },
+      ok = { x = 176, y = 68 },
+      backing = { x = 22, y = 56 },
+    }
+    local controlCount = 0
+    for _ in pairs(s.controls) do
+      controlCount = controlCount + 1
+    end
+    if controlCount ~= 6 then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.controls must carry six source visuals", {})
+    end
+    for id, anchor in pairs(controlAnchors) do
+      local recordOk, recordErr = spriteRecord(s.controls[id], "namingScreen.controls." .. id)
+      if not recordOk then
+        return false, recordErr
+      end
+      local recordAnchor = s.controls[id].anchor
+      if recordAnchor.x ~= anchor.x or recordAnchor.y ~= anchor.y then
+        return false, Errors.new(MANIFEST_INVALID, "namingScreen.controls." .. id .. " must keep its source anchor", {})
+      end
+    end
+
+    if type(s.cursor) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.cursor must be a table", {})
+    end
+    local keyboardOk, keyboardErr = spriteRecord(s.cursor.keyboard, "namingScreen.cursor.keyboard")
+    if not keyboardOk then
+      return false, keyboardErr
+    end
+    local keyboardCursor = s.cursor.keyboard
+    if
+      type(keyboardCursor.origin) ~= "table"
+      or keyboardCursor.origin.x ~= 26
+      or keyboardCursor.origin.y ~= 91
+      or keyboardCursor.stepX ~= 16
+      or keyboardCursor.stepY ~= 19
+    then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.cursor.keyboard must step 16px by 19px from (26,91)", {})
+    end
+    if type(s.cursor.home) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.cursor.home must be a table", {})
+    end
+    for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+      local homeOk, homeErr = spriteRecord(s.cursor.home[id], "namingScreen.cursor.home." .. id)
+      if not homeOk then
+        return false, homeErr
+      end
+    end
+
+    if type(s.entrySlots) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.entrySlots must be a table", {})
+    end
+    if
+      type(s.entrySlots.origin) ~= "table"
+      or s.entrySlots.origin.x ~= 80
+      or s.entrySlots.origin.y ~= 39
+      or s.entrySlots.stepX ~= 12
+    then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.entrySlots must start at (80,39) stepping 12px", {})
+    end
+    for _, key in ipairs({ "normal", "selected" }) do
+      local slotOk, slotErr = spriteRecord(s.entrySlots[key], "namingScreen.entrySlots." .. key)
+      if not slotOk then
+        return false, slotErr
+      end
+    end
+
+    if type(s.playerSubjects) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "namingScreen.playerSubjects must be a table", {})
+    end
+    for _, id in ipairs({ "male", "female" }) do
+      local subjectOk, subjectErr = spriteRecord(s.playerSubjects[id], "namingScreen.playerSubjects." .. id)
+      if not subjectOk then
+        return false, subjectErr
+      end
+      local subjectAnchor = s.playerSubjects[id].anchor
+      if subjectAnchor.x ~= 24 or subjectAnchor.y ~= 8 then
+        return false, Errors.new(MANIFEST_INVALID, "namingScreen.playerSubjects." .. id .. " must anchor at (24,8)", {})
+      end
     end
     return true
   end)

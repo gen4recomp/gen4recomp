@@ -18,36 +18,8 @@ local SYMBOLS_ID = "hgss.naming_screen.page_symbols"
 
 local function withNaming(manifest)
   manifest.reference = { width = 256, height = 192 }
-  manifest.assets[BASE_ID] = {
-    image = "assets/generated/field/ui/naming-screen-base.png",
-    width = 256,
-    height = 192,
-  }
-  manifest.assets[UPPER_ID] = {
-    image = "assets/generated/field/ui/naming-screen-page-upper.png",
-    width = 256,
-    height = 112,
-  }
-  manifest.assets[LOWER_ID] = {
-    image = "assets/generated/field/ui/naming-screen-page-lower.png",
-    width = 256,
-    height = 112,
-  }
-  manifest.assets[SYMBOLS_ID] = {
-    image = "assets/generated/field/ui/naming-screen-page-symbols.png",
-    width = 256,
-    height = 112,
-  }
-  manifest.namingScreen = {
-    base = { asset = BASE_ID, width = 256, height = 192 },
-    pages = {
-      upper = { asset = UPPER_ID, width = 256, height = 112 },
-      lower = { asset = LOWER_ID, width = 256, height = 112 },
-      symbols = { asset = SYMBOLS_ID, width = 256, height = 112 },
-    },
-    placement = { x = 0, y = 80, width = 256, height = 112 },
-  }
   FieldUiFixture.addStartMenuIconContract(manifest)
+  FieldUiFixture.addNamingSemantics(manifest)
   return manifest
 end
 
@@ -147,6 +119,36 @@ function T.source_member_ids_do_not_leak_into_the_naming_section()
     end
   end
   scan(manifest.namingScreen, "namingScreen")
+end
+
+function T.sprite_visuals_without_offset_anchor_or_image_reference_are_rejected()
+  reject(function(m)
+    m.namingScreen.controls.upper.offset = nil
+  end, "a control visual without its generated frame offset must fail")
+  reject(function(m)
+    m.namingScreen.controls.back.anchor = nil
+  end, "a control visual without its canonical anchor must fail")
+  reject(function(m)
+    m.namingScreen.controls.ok.asset = "hgss.naming_screen.missing"
+  end, "a control visual naming an asset the manifest does not index must fail")
+  reject(function(m)
+    m.namingScreen.cursor.keyboard.origin = nil
+  end, "the keyboard cursor without its stepping origin must fail")
+  reject(function(m)
+    m.namingScreen.cursor.home.ok = nil
+  end, "a missing home cursor variant must fail")
+  reject(function(m)
+    m.namingScreen.entrySlots.selected = nil
+  end, "a missing selected slot visual must fail")
+  reject(function(m)
+    m.namingScreen.playerSubjects.female.anchor = { x = 0, y = 0 }
+  end, "a player subject away from its source anchor must fail")
+  reject(function(m)
+    m.namingScreen.text.keyboard.cells[1][1].width = 17
+  end, "a keyboard text cell wider than the 16px source column must fail")
+  reject(function(m)
+    m.namingScreen.text.name.advanceX = 8
+  end, "an entered-name advance other than 12px must fail")
 end
 
 return { tests = T }

@@ -1,43 +1,29 @@
--- The Naming Screen renderer composes generated source chrome and text itself
--- and delegates only subject art to its host: one recording callback proves
--- the seam carries both player and Pokemon subjects without inspecting them.
+-- The Naming Screen renderer owns player presentation from the generated
+-- manifest and delegates only non-player subjects to its host: one recording
+-- callback proves the seam carries Pokemon subjects while player snapshots
+-- never reach it.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = { tests = {} }
 
 local function namingManifest()
-  return {
-    namingScreen = {
-      base = { asset = "hgss.naming_screen.base", image = "assets/generated/field/ui/naming-screen-base.png" },
-      pages = {
-        upper = {
-          asset = "hgss.naming_screen.page_upper",
-          image = "assets/generated/field/ui/naming-screen-page-upper.png",
-        },
-        lower = {
-          asset = "hgss.naming_screen.page_lower",
-          image = "assets/generated/field/ui/naming-screen-page-lower.png",
-        },
-        symbols = {
-          asset = "hgss.naming_screen.page_symbols",
-          image = "assets/generated/field/ui/naming-screen-page-symbols.png",
-        },
-      },
-      placement = { x = 0, y = 80, width = 256, height = 112 },
-    },
-  }
+  return FieldUiFixture.namingSemanticsManifest()
 end
 
 local function imageLoader()
-  return function(path)
+  local seen = { loads = {} }
+  local loader = function(path)
+    seen.loads[#seen.loads + 1] = path
     return { path = path, release = function() end }
   end
+  return loader, seen
 end
 
 local function graphicsFake()
-  local calls = { push = 0, pop = 0, scaled = 0 }
+  local calls = { push = 0, pop = 0, scaled = 0, draws = {} }
   local graphics = {
     push = function()
       calls.push = calls.push + 1
@@ -51,7 +37,9 @@ local function graphicsFake()
     end,
     setColor = function() end,
     rectangle = function() end,
-    draw = function() end,
+    draw = function(image, x, y)
+      calls.draws[#calls.draws + 1] = { image = image, x = x, y = y }
+    end,
   }
   return graphics, calls
 end
@@ -108,29 +96,42 @@ local function snapshot(subject)
   }
 end
 
-function T.tests.host_subject_callback_serves_player_and_pokemon_snapshots()
+function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegates()
   local graphics, calls = graphicsFake()
+  local manifest = namingManifest()
   local seen = {}
+  local loader = imageLoader()
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
     drawSubject = function(hostGraphics, subject, rect)
       seen[#seen + 1] = { graphics = hostGraphics, subject = subject, rect = rect }
     end,
-    manifest = namingManifest(),
-    imageLoader = imageLoader(),
+    manifest = manifest,
+    imageLoader = loader,
   })
   local layout = canonicalLayout()
   local playerSubject = { kind = "player", gender = 1 }
   renderer:draw(snapshot(playerSubject), layout)
+  Assert.equal(#seen, 0, "a player subject never reaches the host callback")
+  local female = manifest.namingScreen.playerSubjects.female
+  local femaleDraws = {}
+  for _, draw in ipairs(calls.draws) do
+    if draw.image.path == female.image then
+      femaleDraws[#femaleDraws + 1] = draw
+    end
+  end
+  Assert.equal(#femaleDraws, 1, "the female player subject draws its manifest visual once")
+  Assert.deepEqual({ x = femaleDraws[1].x, y = femaleDraws[1].y }, {
+    x = female.anchor.x + female.offset.x,
+    y = female.anchor.y + female.offset.y,
+  })
   local pokemonSubject = { kind = "pokemon", species = 25, form = 0 }
   renderer:draw(snapshot(pokemonSubject), layout)
-  Assert.equal(#seen, 2)
-  Assert.deepEqual(seen[1].subject, playerSubject)
+  Assert.equal(#seen, 1, "a Pokemon subject still draws through the host callback")
+  Assert.deepEqual(seen[1].subject, pokemonSubject)
   Assert.deepEqual(seen[1].rect, layout.subject)
-  Assert.deepEqual(seen[2].subject, pokemonSubject)
-  Assert.deepEqual(seen[2].rect, layout.subject)
-  Assert.isNil(seen[2].subject.gender, "a Pokemon subject carries no gender for the renderer to read")
+  Assert.isNil(seen[1].subject.gender, "a Pokemon subject carries no gender for the renderer to read")
   Assert.equal(calls.push, calls.pop)
   Assert.equal(calls.scaled, 0)
   renderer:dispose()

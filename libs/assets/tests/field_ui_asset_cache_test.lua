@@ -8,6 +8,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
@@ -33,7 +34,7 @@ local function validManifest()
     return palette
   end
 
-  return {
+  local built = {
     schema = FieldUiAssetCache.SCHEMA,
     reference = { width = 256, height = 192 },
     assets = {
@@ -236,6 +237,7 @@ local function validManifest()
       placement = { x = 0, y = 80, width = 256, height = 112 },
     },
   }
+  return FieldUiFixture.addNamingSemantics(built)
 end
 
 local function publishedCache(manifest)

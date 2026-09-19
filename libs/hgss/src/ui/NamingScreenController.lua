@@ -257,14 +257,6 @@ function NamingScreenController:submit()
   return true
 end
 
-function NamingScreenController:cancel()
-  if self._result ~= nil then
-    return false
-  end
-  self._result = { kind = "cancel" }
-  return true
-end
-
 function NamingScreenController:activateControl(id)
   assert(type(id) == "string", "naming control id is required")
   if self._result ~= nil then
@@ -311,10 +303,10 @@ function NamingScreenController:press(action)
     return cell.kind == "glyph" and self:_insert(cell.glyph) or self:activateControl(cell.controlId)
   elseif action == "back" or action == "backspace" then
     return self:deleteGlyph()
-  elseif action == "submit" or action == "enter" then
+  elseif action == "submit" or action == "enter" or action == "start" then
     return self:submit()
   elseif action == "cancel" or action == "escape" or action == "b" then
-    return self:cancel()
+    return self:deleteGlyph()
   end
   return false
 end

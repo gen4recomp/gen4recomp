@@ -31,8 +31,6 @@ local REQUIRED_ASSETS = {
   "ball_open",
   "gender_male",
   "gender_female",
-  "naming_male",
-  "naming_female",
 }
 
 local OakIntroRenderer = {}
@@ -214,15 +212,11 @@ function OakIntroRenderer.new(options)
     logicalCanvasHeight = nil,
     released = false,
   }, OakIntroRenderer)
-  local function drawNamingSubject(_, subject, rect)
-    local gender = type(subject) == "table" and subject.gender == 1 and 1 or 0
-    drawAsset(renderer, gender == 1 and "naming_female" or "naming_male", 1, {
-      x = rect.x,
-      y = rect.y,
-      width = rect.width,
-      height = rect.height,
-      scale = 1,
-    })
+  -- The reusable Naming Screen renders player subjects from the field-UI
+  -- manifest; Oak only hosts player naming, so a non-player subject reaching
+  -- this seam is a programming error, never a silent fallback.
+  local function drawNamingSubject(_, subject, _)
+    error("Oak hosts player naming only: " .. tostring(type(subject) == "table" and subject.kind or subject), 0)
   end
   -- The naming chrome shares the generated image loader: a naming acquisition
   -- failure releases the intro images and shader already acquired here before

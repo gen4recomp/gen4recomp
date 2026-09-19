@@ -525,7 +525,15 @@ function OakIntroState:textinput(text)
 end
 
 function OakIntroState:gamepadpressed(_, button)
-  local action = ({ dpup = "up", dpdown = "down", dpleft = "left", dpright = "right", a = "confirm", b = "cancel" })[button]
+  local action = ({
+    dpup = "up",
+    dpdown = "down",
+    dpleft = "left",
+    dpright = "right",
+    a = "confirm",
+    b = "cancel",
+    start = "start",
+  })[button]
   if
     action == "left"
     or action == "right"
@@ -533,6 +541,7 @@ function OakIntroState:gamepadpressed(_, button)
     or action == "down"
     or action == "confirm"
     or action == "cancel"
+    or action == "start"
   then
     if self.dialogueController and self.dialogueController:isModal() then
       self:_stepDialogue({ actionPressed = action == "confirm", cancelPressed = action == "cancel" })

@@ -120,6 +120,76 @@ local function animData(frames)
   end
   return container("RNAN", { block("ABNK", anims .. anim .. table.concat(frameBlocks) .. table.concat(frameData)) })
 end
+
+-- Multi-cell/multi-animation banks for the naming OBJ stack: fifty cells
+-- and animations cover the semantic animation table (subjects at 48 and 49);
+-- cell i references tile i % 16 through palette bank i % 9 of the nine-bank
+-- palette below.
+local function namingCellBank(cellObjs)
+  local meta, attr = {}, {}
+  local offset = 0
+  for _, objs in ipairs(cellObjs) do
+    meta[#meta + 1] = u16(#objs) .. u16(0) .. u32(offset)
+    offset = offset + #objs * 6
+  end
+  for _, objs in ipairs(cellObjs) do
+    for _, o in ipairs(objs) do
+      attr[#attr + 1] = u16((o.y % 256) + (o.shape or 0) * 16384)
+        .. u16((o.x % 512) + (o.size or 0) * 16384)
+        .. u16(o.tile + o.pal * 4096)
+    end
+  end
+  return container("RECN", {
+    block(
+      "CEBK",
+      u16(#cellObjs)
+        .. u16(0)
+        .. u32(0x18)
+        .. u32(0)
+        .. string.rep("\0", 12)
+        .. table.concat(meta)
+        .. table.concat(attr)
+    ),
+  })
+end
+
+local function namingAnimBank(animCells)
+  local count = #animCells
+  local anims, frames, data = {}, {}, {}
+  for a, cell in ipairs(animCells) do
+    anims[#anims + 1] = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32((a - 1) * 8)
+    frames[#frames + 1] = u32((a - 1) * 2) .. u16(3) .. u16(0)
+    data[#data + 1] = u16(cell)
+  end
+  local animsOffset = 0x18
+  local framesOffset = animsOffset + 16 * count
+  local dataOffset = framesOffset + 8 * count
+  return container("RNAN", {
+    block(
+      "ABNK",
+      u16(count)
+        .. u16(count)
+        .. u32(animsOffset)
+        .. u32(framesOffset)
+        .. u32(dataOffset)
+        .. string.rep("\0", 8)
+        .. table.concat(anims)
+        .. table.concat(frames)
+        .. table.concat(data)
+    ),
+  })
+end
+
+local function namingNineBankPalette()
+  local colors = {}
+  for bank = 0, 8 do
+    for slot = 0, 15 do
+      colors[bank * 16 + slot + 1] = bank + slot * 32
+    end
+  end
+  return paletteData(colors)
+end
+
 local function narc(members)
   local btaf = u16(#members) .. u16(0)
   local running = 0
@@ -237,7 +307,7 @@ local function fixture(opts)
     .. u32(0x18)
   local namingChar = container("RGCN", { block("CHAR", namingCharPayload .. table.concat(namingTiles)) })
   local namein = {}
-  for i = 1, 9 do
+  for i = 1, 15 do
     namein[i] = string.rep("\0", 4)
   end
   namein[1] = palette16()
@@ -246,6 +316,19 @@ local function fixture(opts)
   namein[7] = lz10Wrap(namingPage(256, 112, 2))
   namein[8] = lz10Wrap(namingPage(256, 112, 3))
   namein[9] = lz10Wrap(namingPage(256, 112, 4))
+  -- The normal naming OBJ stack the semantic contract requires: palette 1
+  -- with nine banks, char 10, cell 12, anim 14.
+  namein[2] = namingNineBankPalette()
+  namein[11] = charData(16, 3)
+  do
+    local cells, animCells = {}, {}
+    for index = 0, 49 do
+      cells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 9 } }
+      animCells[index + 1] = index
+    end
+    namein[13] = namingCellBank(cells)
+    namein[15] = namingAnimBank(animCells)
+  end
   local function narcFile(alias)
     local members
     if alias == "start_menu" then

@@ -1008,6 +1008,125 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     }
   end
   deps[#deps + 1] = { name = manifestConfig.namingScreen.alias .. ":narc", sha1 = sha1hex(archiveBytes) }
+
+  -- The normal OBJ stack: char 10, all nine palette-1 banks, NCER 12, and
+  -- NANR 14, decoded once. Each OAM object keeps its own palette bank; no
+  -- palette override is ever applied.
+  local objChar = g2d("decodeChar", cfg.objCharMember, "naming screen obj char") --[[@as FieldUiCompiler.CharData]]
+  local objPalette = g2d("decodePalette", cfg.objPaletteMember, "naming screen obj palette") --[[@as FieldUiCompiler.PaletteData]]
+  local objCell = g2d("decodeCell", cfg.objCellMember, "naming screen obj cell") --[[@as FieldUiCompiler.CellData]]
+  local objAnim = g2d("decodeAnimation", cfg.objAnimMember, "naming screen obj animation") --[[@as FieldUiCompiler.AnimationData]]
+  -- The palette-transfer count for this resource is nine 16-color banks; a
+  -- shorter palette cannot serve every OAM bank the cells select.
+  if #objPalette.colors < 9 * 16 then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming OBJ palette must carry all nine banks", {
+      member = cfg.objPaletteMember,
+      available = #objPalette.colors,
+    })
+  end
+
+  -- Render one semantic animation frame through the shared OAM compositor and
+  -- register it as a generated visual carrying the rasterizer's frame offset.
+  local function semanticSprite(role, animId)
+    local animation = objAnim.anims[animId + 1]
+    if animation == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming OBJ animation bank has no animation", {
+        anim = animId,
+        available = #objAnim.anims,
+      })
+    end
+    assert(animation ~= nil, "missing naming animations fail above")
+    local frame = G2dRasterizer.renderAnimationFrame(objChar, { colors = objPalette.colors }, objCell, animation, 1, {
+      asset = "naming screen " .. role,
+      member = cfg.objAnimMember,
+    })
+    local path = FieldUiAssetCache.assetDir() .. "/naming-screen-" .. role .. ".png"
+    assets[path] = PngWriter.encode(frame.width, frame.height, frame.pixels)
+    return path, frame
+  end
+
+  local function publish(role, assetId, animId, anchor)
+    local path, frame = semanticSprite(role, animId)
+    manifestAssets[assetId] = { image = path, width = frame.width, height = frame.height }
+    local record = {
+      asset = assetId,
+      image = path,
+      width = frame.width,
+      height = frame.height,
+      anchor = { x = anchor.x, y = anchor.y },
+      offset = { x = frame.offset.x, y = frame.offset.y },
+    }
+    return record
+  end
+
+  local controls = {}
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok", "backing" }) do
+    local assetId = FieldUiAssetCache.ASSET["NAMING_SCREEN_CONTROL_" .. id:upper()]
+    controls[id] = publish("control-" .. id, assetId, cfg.objAnims[id], cfg.objAnchors[id])
+  end
+
+  local keyboardCursor = publish(
+    "cursor-keyboard",
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_CURSOR_KEYBOARD,
+    cfg.objAnims.cursorKeyboard,
+    cfg.cursorOrigin
+  )
+  keyboardCursor.origin = { x = cfg.cursorOrigin.x, y = cfg.cursorOrigin.y }
+  keyboardCursor.stepX = cfg.cursorStepX
+  keyboardCursor.stepY = cfg.cursorStepY
+
+  local homeCursor = {}
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+    local animId = (id == "back" or id == "ok") and cfg.objAnims.cursorHomeConfirm or cfg.objAnims.cursorHomePage
+    homeCursor[id] = publish(
+      "cursor-home-" .. id,
+      FieldUiAssetCache.ASSET["NAMING_SCREEN_CURSOR_HOME_" .. id:upper()],
+      animId,
+      cfg.homeCursorAnchors[id]
+    )
+  end
+
+  local slotNormal =
+    publish("slot-normal", FieldUiAssetCache.ASSET.NAMING_SCREEN_SLOT_NORMAL, cfg.objAnims.slotNormal, cfg.entryOrigin)
+  local slotSelected = publish(
+    "slot-selected",
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_SLOT_SELECTED,
+    cfg.objAnims.slotSelected,
+    cfg.entryOrigin
+  )
+  local subjectMale = publish(
+    "subject-male",
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_MALE,
+    cfg.objAnims.subjectMale,
+    cfg.objAnchors.subject
+  )
+  local subjectFemale = publish(
+    "subject-female",
+    FieldUiAssetCache.ASSET.NAMING_SCREEN_SUBJECT_FEMALE,
+    cfg.objAnims.subjectFemale,
+    cfg.objAnchors.subject
+  )
+
+  -- Keyboard text cells in final canonical coordinates: the page-art text
+  -- origin plus the same y=80 page placement the generated page overlays use.
+  local keyboardCells = {}
+  for row = 1, cfg.keyboardText.rows do
+    keyboardCells[row] = {}
+    for column = 1, cfg.keyboardText.columns do
+      keyboardCells[row][column] = {
+        x = cfg.keyboardText.originX + (column - 1) * cfg.keyboardText.stepX,
+        y = 80 + cfg.keyboardText.originY + (row - 1) * cfg.keyboardText.stepY,
+        width = cfg.keyboardText.cellWidth,
+      }
+    end
+  end
+
+  for _, memberId in ipairs({ cfg.objCharMember, cfg.objPaletteMember, cfg.objCellMember, cfg.objAnimMember }) do
+    deps[#deps + 1] = {
+      name = manifestConfig.namingScreen.alias .. ":member:" .. memberId,
+      sha1 = sha1hex(memberBytes[memberId]),
+    }
+  end
   return {
     base = {
       asset = FieldUiAssetCache.ASSET.NAMING_SCREEN_BASE,
@@ -1016,6 +1135,25 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     },
     pages = pages,
     placement = { x = 0, y = 80, width = 256, height = 112 },
+    text = {
+      name = { x = cfg.nameOrigin.x, y = cfg.nameOrigin.y, advanceX = cfg.nameAdvanceX },
+      keyboard = { cells = keyboardCells },
+    },
+    controls = controls,
+    cursor = {
+      keyboard = keyboardCursor,
+      home = homeCursor,
+    },
+    entrySlots = {
+      origin = { x = cfg.entryOrigin.x, y = cfg.entryOrigin.y },
+      stepX = cfg.entryStepX,
+      normal = slotNormal,
+      selected = slotSelected,
+    },
+    playerSubjects = {
+      male = subjectMale,
+      female = subjectFemale,
+    },
   }
 end
 

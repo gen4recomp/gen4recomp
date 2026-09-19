@@ -2,6 +2,7 @@ local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local NewGame = require("game.hgss.src.newgame.NewGame")
@@ -115,26 +116,7 @@ local function manifest()
 end
 
 local function namingManifest()
-  return {
-    namingScreen = {
-      base = { asset = "hgss.naming_screen.base", image = "assets/generated/field/ui/naming-screen-base.png" },
-      pages = {
-        upper = {
-          asset = "hgss.naming_screen.page_upper",
-          image = "assets/generated/field/ui/naming-screen-page-upper.png",
-        },
-        lower = {
-          asset = "hgss.naming_screen.page_lower",
-          image = "assets/generated/field/ui/naming-screen-page-lower.png",
-        },
-        symbols = {
-          asset = "hgss.naming_screen.page_symbols",
-          image = "assets/generated/field/ui/naming-screen-page-symbols.png",
-        },
-      },
-      placement = { x = 0, y = 80, width = 256, height = 112 },
-    },
-  }
+  return FieldUiFixture.namingSemanticsManifest()
 end
 
 local function view()
@@ -814,15 +796,16 @@ T.constructor_rejects_missing_confirmation_widget = function()
   Assert.isTrue(ok, "renderer must not require confirmation widgets after migration")
 end
 
--- Oak name editing composes the generated naming chrome through the reusable
--- Naming Screen: the opaque base draws first, the selected page overlay
--- draws at its canonical placement, and the host subject draws through Oak's
--- player callback without taking over naming geometry.
-function T.oak_name_edit_draws_source_chrome_and_host_subject()
+-- Oak name editing composes the generated naming visuals through the
+-- reusable Naming Screen: the opaque base draws first, the selected page
+-- overlay draws at its canonical placement, and the player subject draws
+-- from the field-UI manifest without taking over naming geometry.
+function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
   local graphics = FakeGraphics.new()
+  local uiManifest = namingManifest()
   local renderer = OakIntroRenderer.new({
     manifest = manifest(),
-    uiManifest = namingManifest(),
+    uiManifest = uiManifest,
     graphics = graphics,
     imageLoader = function(path)
       local image = graphics.newImage()
@@ -854,14 +837,26 @@ function T.oak_name_edit_draws_source_chrome_and_host_subject()
   renderer:draw(edit)
 
   local chrome = {}
-  local subjectPath = nil
+  local subjectDraws = {}
+  local subject = uiManifest.namingScreen.playerSubjects.female
   for _, draw in ipairs(graphics.draws) do
     if type(draw.image) == "table" and type(draw.image.path) == "string" then
-      if draw.quad == nil and draw.image.path:find("naming-screen-", 1, true) then
+      if
+        draw.quad == nil
+        and (
+          draw.image.path == "assets/generated/field/ui/naming-screen-base.png"
+          or draw.image.path == "assets/generated/field/ui/naming-screen-page-lower.png"
+        )
+      then
         chrome[#chrome + 1] = draw
-      elseif draw.image.path == "naming_female.png" then
-        subjectPath = draw.image.path
       end
+      if draw.image.path == subject.image then
+        subjectDraws[#subjectDraws + 1] = draw
+      end
+      Assert.isFalse(
+        draw.image.path == "naming_female.png" or draw.image.path == "naming_male.png",
+        "Oak draws no duplicate player subject of its own"
+      )
     end
   end
   Assert.equal(#chrome, 2, "name editing draws the base and the selected page as full images")
@@ -869,7 +864,11 @@ function T.oak_name_edit_draws_source_chrome_and_host_subject()
   Assert.deepEqual({ x = chrome[1].x, y = chrome[1].y }, { x = 0, y = 0 })
   Assert.equal(chrome[2].image.path, "assets/generated/field/ui/naming-screen-page-lower.png")
   Assert.deepEqual({ x = chrome[2].x, y = chrome[2].y }, { x = 0, y = 80 })
-  Assert.equal(subjectPath, "naming_female.png", "the female player subject draws through the host callback")
+  Assert.equal(#subjectDraws, 1, "the female player subject draws from the manifest")
+  Assert.deepEqual({ x = subjectDraws[1].x, y = subjectDraws[1].y }, {
+    x = subject.anchor.x + subject.offset.x,
+    y = subject.anchor.y + subject.offset.y,
+  })
   renderer:dispose()
 end
 
@@ -946,6 +945,70 @@ function T.gender_cards_share_rounded_nested_geometry()
     Assert.equal(resolved.innerBorder.cornerRadius, 4)
     Assert.equal(resolved.face.cornerRadius, 3)
   end
+end
+
+-- Oak hosts the reusable Naming Screen without duplicating its player
+-- presentation: construction needs no Oak-owned naming subject assets once
+-- the field-UI manifest supplies the player subject, name editing draws that
+-- manifest subject exactly once, and no Oak duplicate subject art appears.
+function T.oak_hosts_naming_without_duplicate_player_subject_art()
+  local graphics = FakeGraphics.new()
+  local manifestValue = manifest()
+  manifestValue.widgets.naming_male = nil
+  manifestValue.widgets.naming_female = nil
+  local uiManifest = FieldUiFixture.namingSemanticsManifest()
+  local renderer = OakIntroRenderer.new({
+    manifest = manifestValue,
+    uiManifest = uiManifest,
+    graphics = graphics,
+    imageLoader = function(path)
+      local image = graphics.newImage()
+      image.path = path
+      return image
+    end,
+    text = textRenderer(),
+    choiceText = choiceTextRenderer(),
+  })
+  local grid = {}
+  for row = 1, 6 do
+    grid[row] = {}
+    for column = 1, 13 do
+      grid[row][column] = { kind = "glyph", glyph = "A" }
+    end
+  end
+  local edit = view()
+  edit.phase = "name_edit"
+  edit.layout.namingScreen = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  edit.namingScreen = {
+    page = "upper",
+    cursor = { row = 2, column = 1 },
+    text = "AB",
+    maxLength = 7,
+    grid = grid,
+    subject = { kind = "player", gender = 0 },
+  }
+
+  renderer:draw(edit)
+
+  local subject = uiManifest.namingScreen.playerSubjects.male
+  local subjectDraws = {}
+  for _, draw in ipairs(graphics.draws) do
+    if type(draw.image) == "table" and type(draw.image.path) == "string" then
+      if draw.image.path == subject.image then
+        subjectDraws[#subjectDraws + 1] = draw
+      end
+      Assert.isFalse(
+        draw.image.path == "naming_male.png" or draw.image.path == "naming_female.png",
+        "Oak draws no duplicate player subject of its own"
+      )
+    end
+  end
+  Assert.equal(#subjectDraws, 1, "name editing draws the manifest player subject exactly once")
+  Assert.deepEqual({ x = subjectDraws[1].x, y = subjectDraws[1].y }, {
+    x = subject.anchor.x + subject.offset.x,
+    y = subject.anchor.y + subject.offset.y,
+  })
+  renderer:dispose()
 end
 
 return GraphicsSmoke.suite(T)
