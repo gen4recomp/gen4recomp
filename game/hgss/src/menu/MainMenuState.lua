@@ -180,7 +180,6 @@ function MainMenuState:refresh()
   return true
 end
 
-
 function MainMenuState:_emit(result)
   if self.onResult then
     self.onResult(result)
