@@ -27,23 +27,22 @@ def _load_history_module() -> Any:
     return module
 
 
-_HISTORY = _load_history_module()
+def _load_scope_module() -> Any:
+    module_path = Path(__file__).with_name("codehealth_scope.py")
+    module_spec = importlib.util.spec_from_file_location("codehealth_scope", module_path)
+    if module_spec is None or module_spec.loader is None:
+        raise ValueError(f"cannot load scope helper from {module_path}")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
 
-REPORT_SCHEMA_VERSION = 6
+
+_HISTORY = _load_history_module()
+_SCOPE = _load_scope_module()
+
+REPORT_SCHEMA_VERSION = 7
 EROSION_THRESHOLD = 10
 
-EXCLUDED_PREFIXES = [
-    "tests/",
-    "**/tests/",
-    "vendor/",
-    "types/",
-    "tools/",
-    "scripts/",
-    "site/",
-    ".github/",
-    "data/generated/",
-    "data/scripts/overrides/",
-]
 STRUCTURAL_ROOT_EXCLUSIONS = {
     ".agents",
     ".cache",
@@ -938,10 +937,7 @@ def _build_model(
             "jscpd": _version("jscpd"),
             "graphify": _version("graphify"),
         },
-        "scope": {
-            "structural": "production-lua",
-            "excludedPrefixes": EXCLUDED_PREFIXES,
-        },
+        "scope": _SCOPE.scope_metadata(),
         "complexity": complexity,
         "duplication": _parse_jscpd_report(report_paths["jscpd"]),
         "architecture": architecture,

@@ -17,6 +17,17 @@ DECLARATIVE_MARKER = "-- codehealth: declarative"
 MARKER_SCAN_LINES = 5
 
 
+def scope_metadata() -> dict[str, object]:
+    return {
+        "structural": "executable-production-lua",
+        "sourceScope": "production",
+        "declarativePrefixes": list(DECLARATIVE_PREFIXES),
+        "declarativeMarker": DECLARATIVE_MARKER,
+        "markerScanLines": MARKER_SCAN_LINES,
+        "requiresLizardFunctionRow": True,
+    }
+
+
 def _resolve_repository_root(value: Path | str) -> Path:
     root = Path(value).resolve()
     if not root.is_dir():

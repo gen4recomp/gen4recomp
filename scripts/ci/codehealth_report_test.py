@@ -22,6 +22,59 @@ assert MODULE_SPEC.loader is not None
 REPORT = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(REPORT)
 
+SCOPE_PATH = Path(__file__).with_name("codehealth_scope.py")
+
+
+def load_scope_owner():
+    scope_spec = importlib.util.spec_from_file_location("codehealth_scope_owner", SCOPE_PATH)
+    if scope_spec is None or scope_spec.loader is None:
+        raise AssertionError("code-health scope owner module cannot be loaded")
+    owner = importlib.util.module_from_spec(scope_spec)
+    scope_spec.loader.exec_module(owner)
+    return owner
+
+
+def _write_minimal_site_fixture(root: Path) -> tuple[Path, list[str]]:
+    site_root = root / "site"
+    reports_root = site_root / "codehealth" / "reports"
+    for report_directory in ("lizard", "jscpd", "graphify"):
+        (reports_root / report_directory).mkdir(parents=True)
+    (site_root / "game").mkdir(parents=True)
+    (site_root / "game" / "a.lua").write_text(
+        "local value = {}\nfunction value.compute()\nreturn 1\nend\nreturn value\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "--quiet"], cwd=site_root, check=True)
+    subprocess.run(["git", "add", "."], cwd=site_root, check=True)
+    with (reports_root / "lizard" / "functions.csv").open("w", newline="", encoding="utf-8") as report_file:
+        writer = csv.DictWriter(report_file, fieldnames=["NLOC", "CCN", "file", "function"])
+        writer.writeheader()
+        writer.writerow({"NLOC": "10", "CCN": "3", "file": "game/a.lua", "function": "compute"})
+    (reports_root / "jscpd" / "jscpd-report.json").write_text(
+        json.dumps(
+            {"statistics": {"total": {"sources": 1, "clones": 0, "duplicatedLines": 0, "percentage": 0}}}
+        ),
+        encoding="utf-8",
+    )
+    (reports_root / "graphify" / "graph.json").write_text(
+        json.dumps(
+            {
+                "directed": True,
+                "nodes": [{"id": "a", "source_file": "game/a.lua"}],
+                "links": [
+                    {
+                        "source": "a",
+                        "target": "a",
+                        "relation": "imports",
+                        "confidence": "EXTRACTED",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return site_root, ["game/a.lua"]
+
 
 def _read_lizard_files(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as report_file:
@@ -239,7 +292,7 @@ class CodeHealthReportTest(unittest.TestCase):
                 ]
                 model = REPORT._build_model(site_root, site_root, manifest)
 
-            self.assertEqual(model["schemaVersion"], 6)
+            self.assertEqual(model["schemaVersion"], 7)
             self.assertTrue(
                 {
                     "schemaVersion",
@@ -257,8 +310,8 @@ class CodeHealthReportTest(unittest.TestCase):
             )
             self.assertNotIn("policy", model)
             self.assertEqual(model["tools"], {"lizard": "test", "jscpd": "test", "graphify": "test"})
-            self.assertEqual(model["scope"]["structural"], "production-lua")
-            self.assertEqual(model["scope"]["excludedPrefixes"], REPORT.EXCLUDED_PREFIXES)
+            self.assertEqual(model["scope"], load_scope_owner().scope_metadata())
+            self.assertNotIn("excludedPrefixes", model["scope"])
             self.assertNotIn("luaLanguageServer", model["tools"])
             self.assertNotIn("files", model["complexity"])
             source_files = {row["path"]: row for row in model["source"]["files"]}
@@ -668,6 +721,30 @@ class CodeHealthReportTest(unittest.TestCase):
         self.assertNotIn("policy", html.lower())
         self.assertIn("INFERRED", html)
 
+    def test_site_scope_matches_scope_owner_and_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            site_root, manifest = _write_minimal_site_fixture(Path(directory))
+            owner = load_scope_owner()
+            with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
+                REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+            ), mock.patch.object(REPORT, "_version", return_value="test"):
+                model = REPORT._build_model(site_root, site_root, manifest)
+            self.assertEqual(model["schemaVersion"], 7)
+            self.assertEqual(model["scope"], owner.scope_metadata())
+            self.assertNotIn("excludedPrefixes", model["scope"])
+
+    def test_site_and_structure_versions_remain_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            site_root, manifest = _write_minimal_site_fixture(Path(directory))
+            with mock.patch.object(REPORT, "_git_commit", return_value="a" * 40), mock.patch.object(
+                REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+            ), mock.patch.object(REPORT, "_version", return_value="test"):
+                model = REPORT._build_model(site_root, site_root, manifest)
+            self.assertEqual(model["measurementVersion"], 1)
+            lizard_csv = site_root / "codehealth" / "reports" / "lizard" / "functions.csv"
+            lightweight = REPORT._build_structure_report(lizard_csv, site_root, manifest)
+            self.assertEqual(lightweight["schemaVersion"], 4)
+
     def run_structure_report_mode(
         self, repository: Path, lizard_csv: Path, output: Path
     ) -> subprocess.CompletedProcess[str]:
@@ -845,7 +922,7 @@ class CodeHealthReportTest(unittest.TestCase):
                     0,
                 )
             model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
-            self.assertEqual(model["schemaVersion"], 6)
+            self.assertEqual(model["schemaVersion"], 7)
             self.assertNotIn("policy", model)
             self.assertTrue((site_root / "codehealth" / "index.html").exists())
 

@@ -282,6 +282,34 @@ class FinalStructuralScopeTest(unittest.TestCase):
                 scope.final_paths(repository_two, candidates, csv_path)
 
 
+class ScopeMetadataContractTest(unittest.TestCase):
+    """The scope owner publishes the machine-readable population description."""
+
+    def test_metadata_describes_effective_population_rules(self) -> None:
+        scope = load_scope_module()
+        self.assertEqual(
+            scope.scope_metadata(),
+            {
+                "structural": "executable-production-lua",
+                "sourceScope": "production",
+                "declarativePrefixes": list(scope.DECLARATIVE_PREFIXES),
+                "declarativeMarker": scope.DECLARATIVE_MARKER,
+                "markerScanLines": scope.MARKER_SCAN_LINES,
+                "requiresLizardFunctionRow": True,
+            },
+        )
+
+    def test_metadata_calls_return_independent_containers(self) -> None:
+        scope = load_scope_module()
+        first = scope.scope_metadata()
+        first["declarativePrefixes"].append("injected/prefix/")
+        first["injected"] = True
+        second = scope.scope_metadata()
+        self.assertNotIn("injected", second)
+        self.assertNotIn("injected/prefix/", second["declarativePrefixes"])
+        self.assertEqual(second["declarativePrefixes"], list(scope.DECLARATIVE_PREFIXES))
+
+
 class ScopeCommandContractTest(unittest.TestCase):
     """Both analysis entry points resolve scope through one shared helper."""
 
