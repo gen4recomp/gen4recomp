@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,8 +23,6 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).with_name("codehealth_scope.py")
-REPORT_PATH = Path(__file__).with_name("codehealth_report.py")
-FULL_BUILD_PATH = Path(__file__).with_name("codehealth.sh")
 SNAPSHOT_PATH = Path(__file__).with_name("structure_snapshot.sh")
 
 
@@ -69,6 +69,31 @@ def _write_lizard_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 def _function_body() -> str:
     return "local value = {}\nfunction value.compute()\nreturn 1\nend\nreturn value\n"
+
+
+def _run_production_lizard_csv(work: Path, repository: Path, candidates: list[str]) -> Path:
+    """Run the production Lizard CSV invocation and return the generated report."""
+    if shutil.which("lizard") is None:
+        raise AssertionError(
+            "the real lizard analyzer must be installed for this composition test; refusing to skip"
+        )
+    manifest = work / "candidates.txt"
+    manifest.write_text("\n".join(candidates) + "\n", encoding="utf-8")
+    result = subprocess.run(
+        ["lizard", "-l", "lua", "-t", "4", "-i", "-1", "-f", str(manifest), "-V", "--csv"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "production lizard invocation failed: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+    csv_path = work / "functions.csv"
+    csv_path.write_text(result.stdout, encoding="utf-8")
+    return csv_path
 
 
 class CandidateScopeTest(unittest.TestCase):
@@ -398,19 +423,60 @@ class ScopeCommandContractTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(), ["game/src/alpha.lua"])
 
-    def test_full_build_declares_target_repository_and_site_options(self) -> None:
-        text = FULL_BUILD_PATH.read_text(encoding="utf-8")
-        self.assertIn("--repository-root", text)
-        self.assertIn("--site-root", text)
+    def test_real_analyzer_rows_define_final_structural_scope(self) -> None:
+        scope = load_scope_module()
+        repository = _init_repository(
+            {
+                "game/src/logic.lua": _function_body(),
+                "game/src/data.lua": "return {\n1,\n2,\n}\n",
+            }
+        )
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        candidates = scope.candidate_paths(repository)
+        self.assertIn("game/src/logic.lua", candidates)
+        self.assertIn("game/src/data.lua", candidates)
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = _run_production_lizard_csv(
+                Path(directory), repository, candidates
+            )
+            final = scope.final_paths(repository, candidates, csv_path)
+            self.assertEqual(final, ["game/src/logic.lua"])
 
-    def test_snapshot_uses_shared_scope_helper(self) -> None:
-        text = SNAPSHOT_PATH.read_text(encoding="utf-8")
-        self.assertIn("codehealth_scope.py", text)
-
-    def test_report_source_census_is_manifest_driven(self) -> None:
-        text = REPORT_PATH.read_text(encoding="utf-8")
-        self.assertNotIn('paths_for_scope(repository_root, "production")', text)
-        self.assertNotIn("paths_for_scope(repository_root, 'production')", text)
+    def test_snapshot_wrapper_reports_explicit_target_root(self) -> None:
+        target = _init_repository(
+            {
+                "game/src/logic.lua": _function_body(),
+                "game/src/data.lua": "return {\n1,\n2,\n}\n",
+            }
+        )
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(target)], check=False)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "snapshot" / "structure.json"
+            output.parent.mkdir(parents=True)
+            result = subprocess.run(
+                [
+                    str(SNAPSHOT_PATH),
+                    "--repository-root",
+                    str(target),
+                    "--output",
+                    str(output),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            )
+            report = json.loads(output.read_text(encoding="utf-8"))
+            paths = [row["path"] for row in report["source"]["files"]]
+            self.assertEqual(paths, ["game/src/logic.lua"])
 
 
 if __name__ == "__main__":
