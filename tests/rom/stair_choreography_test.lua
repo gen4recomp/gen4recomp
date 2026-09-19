@@ -96,27 +96,33 @@ end
 -- destination player before the black-screen commit, like FieldRuntime.
 -- Returns the final player, the transition, the first-tick phase timeline,
 -- and the recorded sound ids.
-local function runChoreography(_, sourceScene, destinationScene, warp, facing, spawn)
-  local sourceMap, destinationMap = sourceScene.map, destinationScene.map
-  local maps = { [sourceMap.mapId] = sourceMap, [destinationMap.mapId] = destinationMap }
-  local propsByMapId = { [sourceMap.mapId] = sourceScene.props, [destinationMap.mapId] = destinationScene.props }
+local function runChoreography(_, sourceScene, destinationScene, stairWarp, facing, spawn)
+  local srcMap, destinationMap = sourceScene.map, destinationScene.map
+  local maps = { [srcMap.mapId] = srcMap, [destinationMap.mapId] = destinationMap }
+  local propsByMapId = { [srcMap.mapId] = sourceScene.props, [destinationMap.mapId] = destinationScene.props }
   local instancesByMapId = {
-    [sourceMap.mapId] = sourceScene.instances,
+    [srcMap.mapId] = sourceScene.instances,
     [destinationMap.mapId] = destinationScene.instances,
   }
   local loader = {
     load = function(_, mapId)
       return assert(maps[mapId], "map " .. tostring(mapId))
     end,
+    requestWarp = function(_, sourceMap, warp)
+      assert(type(sourceMap) == "table", "fixture warp source is required")
+      assert(type(warp) == "table", "fixture warp record is required")
+      assert(maps[warp.destinationMapId], "fixture destination is not preloaded")
+      return true
+    end,
     protectMap = function() end,
   }
 
-  ---@cast sourceMap RuntimeFieldMap
+  ---@cast srcMap RuntimeFieldMap
   local player = FieldPlayer.new({
-    currentMap = sourceMap,
+    currentMap = srcMap,
     fieldX = spawn.x,
     fieldZ = spawn.z,
-    surfaceId = surfaceAt(sourceMap, spawn.x, spawn.z),
+    surfaceId = surfaceAt(srcMap, spawn.x, spawn.z),
     facing = facing,
   })
 
@@ -152,7 +158,7 @@ local function runChoreography(_, sourceScene, destinationScene, warp, facing, s
     end,
   })
   transition.player = player
-  transition:start(sourceMap, { kind = "stairs", warp = warp }, facing)
+  transition:start(srcMap, { kind = "stairs", warp = stairWarp }, facing)
 
   -- The fixed-tick loop mirrors the session: the transition ticks, and while
   -- the stair choreography is active the scene's animated instances advance.
