@@ -939,4 +939,111 @@ function T.pointer_hover_and_tap_focus_empty_browse_cells_without_opening_action
   Assert.isNil(control:takeResult())
 end
 
+function T.scrolled_partial_window_keyboard_reaches_every_visible_cell_before_cancel()
+  local bag = stockItemsPocket(service(), 8)
+  local control, cursor = itemsControl(bag)
+  local revision = bag:revision()
+  control:updateFixed({ { type = "pointer_scroll", pointerId = "touch:0", dx = 0, dy = 1 } })
+  local status = control:status()
+  Assert.equal(status.visibleStart, 6, "paging carries the window to the partial page")
+  Assert.equal(status.focusedAbsoluteIndex, 6)
+  Assert.equal(status.focusedVisibleIndex, 0)
+  Assert.equal(selectedKey(status), "ITEM_42")
+  control:updateFixed({ navigate("right") })
+  status = control:status()
+  Assert.equal(status.focusedAbsoluteIndex, 7, "right reaches the second occupied cell")
+  Assert.equal(status.focusedVisibleIndex, 1)
+  Assert.equal(selectedKey(status), "ITEM_48")
+  control:updateFixed({ navigate("down") })
+  status = control:status()
+  Assert.equal(status.focus, "items", "down from the first row stays inside the visible window")
+  Assert.equal(status.focusedAbsoluteIndex, 9, "down from cell 7 reaches the empty cell below it")
+  Assert.equal(status.focusedVisibleIndex, 3)
+  Assert.isNil(status.selected, "an empty focus selects no item")
+  control:updateFixed({ navigate("left") })
+  status = control:status()
+  Assert.equal(status.focusedAbsoluteIndex, 8, "left reaches the empty row sibling")
+  Assert.equal(status.focusedVisibleIndex, 2)
+  Assert.isNil(status.selected, "an empty focus selects no item")
+  control:updateFixed({ navigate("down") })
+  status = control:status()
+  Assert.equal(status.focusedAbsoluteIndex, 10, "down reaches the last-row empty cell")
+  Assert.equal(status.focusedVisibleIndex, 4)
+  Assert.isNil(status.selected, "an empty focus selects no item")
+  control:updateFixed({ navigate("right") })
+  status = control:status()
+  Assert.equal(status.focusedAbsoluteIndex, 11, "right reaches the final visible cell")
+  Assert.equal(status.focusedVisibleIndex, 5)
+  Assert.isNil(status.selected, "an empty focus selects no item")
+  Assert.equal(cursor:position("items"), 7, "empty focus never moves the occupied cursor")
+  Assert.equal(cursor:scroll("items"), 6, "empty focus keeps the scrolled window")
+  Assert.equal(bag:revision(), revision, "keyboard focus never mutates inventory")
+  control:updateFixed({ navigate("down") })
+  Assert.equal(control:status().focus, "cancel", "down past the last visible row focuses cancel")
+  control:updateFixed({ navigate("up") })
+  status = control:status()
+  Assert.equal(status.focus, "items", "cancel returns to the grid")
+  Assert.equal(status.focusedAbsoluteIndex, 11, "cancel returns to the remembered cell")
+end
+
+function T.scrolled_partial_window_pointer_targets_every_trailing_empty_cell_exactly()
+  local bag = stockItemsPocket(service(), 8)
+  local control, cursor = itemsControl(bag)
+  control:updateFixed({ { type = "pointer_scroll", pointerId = "touch:0", dx = 0, dy = 1 } })
+  Assert.equal(control:status().visibleStart, 6, "setup pages to the partial window")
+  local layout = BagLayout.resolve({ topology = topology(512, 384), manifest = manifest() })
+  local frame = layout.interactive.frame
+  local scale = layout.interactive.scale
+  local revision = bag:revision()
+  local cells = {
+    { x = 48, y = 96, absolute = 8, visible = 2 },
+    { x = 176, y = 96, absolute = 9, visible = 3 },
+    { x = 48, y = 136, absolute = 10, visible = 4 },
+    { x = 176, y = 136, absolute = 11, visible = 5 },
+  }
+  for _, cell in ipairs(cells) do
+    local x = frame.x + cell.x * scale
+    local y = frame.y + cell.y * scale
+    control:updateFixed({ { type = "pointer_move", pointerId = "touch:0", x = x, y = y } })
+    local status = control:status()
+    Assert.equal(status.focus, "items")
+    Assert.equal(status.focusedAbsoluteIndex, cell.absolute, "hover focuses the exact empty cell")
+    Assert.equal(status.focusedVisibleIndex, cell.visible)
+    Assert.isNil(status.selected, "hovering an empty cell selects no item")
+    Assert.equal(cursor:position("items"), 6, "hover never moves the occupied cursor")
+    control:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+    control:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+    status = control:status()
+    Assert.equal(status.state, "browsing", "tapping an empty cell opens no menu")
+    Assert.isNil(control:takeResult(), "tapping an empty cell closes nothing")
+    Assert.equal(bag:revision(), revision, "pointer focus never mutates inventory")
+  end
+  Assert.equal(cursor:scroll("items"), 6, "pointer focus keeps the scrolled window")
+end
+
+function T.external_fill_of_the_focused_empty_cell_reconciles_selection_before_confirm()
+  local bag = stockItemsPocket(service(), 1)
+  local control, cursor = itemsControl(bag)
+  control:updateFixed({ navigate("right") })
+  local status = control:status()
+  Assert.equal(status.focusedAbsoluteIndex, 1, "setup focuses the empty neighbor")
+  Assert.isNil(status.selected, "an empty focus selects no item")
+  Assert.equal(cursor:position("items"), 0)
+  Assert.isTrue(bag:add("ITEM_12", 1), "an external mutation fills the focused cell")
+  control:updateFixed({})
+  status = control:status()
+  Assert.equal(status.focusedAbsoluteIndex, 1, "reconciliation keeps the focused cell")
+  Assert.equal(cursor:position("items"), 1, "reconciliation carries the cursor to the focused cell")
+  Assert.equal(status.selectedAbsoluteIndex, 1)
+  Assert.equal(selectedKey(status), "ITEM_12", "focus and selection name the same new item")
+  local revision = bag:revision()
+  control:updateFixed({ { type = "confirm" } })
+  status = control:status()
+  Assert.equal(status.state, "action_menu", "confirming the reconciled cell opens its menu")
+  Assert.isTrue(type(status.actions) == "table" and #status.actions >= 1, "the menu offers an action plus cancel")
+  Assert.equal(bag:revision(), revision, "opening the menu never mutates inventory")
+  control:updateFixed({})
+  Assert.equal(control:status().state, "action_menu", "the menu survives a quiet update")
+end
+
 return { tests = T }

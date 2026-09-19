@@ -260,12 +260,14 @@ function BagController:_enterPocket(pocketKey)
   -- Focus is caller-owned; do not mutate self._focusNode here.
 end
 
--- The logical browse grid always covers at least the six visible cells and
--- otherwise pads occupied items to a complete two-column row, so a padded
--- trailing cell can own focus without inventing inventory.
+-- The logical browse grid covers the six currently visible cells and
+-- otherwise pads occupied items to a complete two-column row, so a
+-- visible trailing cell can own focus without inventing inventory.
 ---@return integer
 function BagController:_logicalSlotCount()
-  return math.max(6, math.ceil(self:_count() / 2) * 2)
+  local padded = math.max(6, math.ceil(self:_count() / 2) * 2)
+  local start = assert(self._view.visibleStart, "the bag view needs its visible window start")
+  return math.max(padded, start + 6)
 end
 
 -- Builds the ephemeral browse graph over the current pocket, item count,
@@ -322,6 +324,28 @@ function BagController:_normalizeFocus()
   if parseTab(self._focusNode) == nil and self._focusNode ~= CANCEL_NODE then
     self._focusNode = slotNode(self._lastSlot)
   end
+end
+
+-- While plain browsing, an outside revision may have filled the focused
+-- cell without travelling through focus input. Carry the borrowed cursor
+-- to the newly occupied focus so selection names the same item before any
+-- consumer observes the refreshed view. Empty focus keeps no selection and
+-- nested states keep their snapshotted item; neither is retargeted here.
+function BagController:_reconcileBrowseSelection()
+  if self._state ~= "browsing" or self._overlay then
+    return
+  end
+  local absolute = parseSlot(self._focusNode)
+  if absolute == nil or absolute >= self:_count() then
+    return
+  end
+  local pocket = self:_pocket()
+  if self._cursor:position(pocket) == absolute then
+    return
+  end
+  self._cursor:setPosition(pocket, absolute)
+  self:_ensureVisible()
+  self:_refresh()
 end
 
 -- Focuses one absolute grid cell: the window slides in row steps until the
@@ -1016,6 +1040,7 @@ function BagController:updateFixed(uiInput)
     self:_reconcile()
   end
   self:_normalizeFocus()
+  self:_reconcileBrowseSelection()
   if not self:_syncNested() then
     return
   end
