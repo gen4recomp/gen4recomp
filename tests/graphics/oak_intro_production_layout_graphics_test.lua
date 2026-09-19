@@ -202,6 +202,97 @@ T.tests.gender_selection_contains_both_cards_and_hit_regions_at_supported_hosts 
   end
 end
 
+-- the generated intro holds Oak vertically still while the reveal swaps
+-- from ball to Marill appearances and away, and keeps both gender cards
+-- portrait-complete and clear of dialogue on wide hosts.
+local openingLifecycle = {
+  { phase = "oak_world_inhabited", revealWidget = nil },
+  { phase = "ball_open_wait", revealWidget = "ball_open" },
+  { phase = "scene_flash", revealWidget = "ball_open" },
+  { phase = "marill_appear", revealWidget = "marill_appear" },
+  { phase = "marill_brightness_fade", revealWidget = "marill_appear" },
+  { phase = "marill_cry_wait", revealWidget = "marill" },
+  { phase = "oak_live_alongside", revealWidget = "marill" },
+  { phase = "marill_hide", revealWidget = "marill" },
+  { phase = "marill_hide_wait", revealWidget = nil },
+  { phase = "oak_slide_left", revealWidget = nil },
+  { phase = "oak_tell_about_yourself", revealWidget = nil },
+}
+
+T.tests.opening_lifecycle_keeps_production_oak_stable_and_cards_clear = function()
+  for _, entry in ipairs(readyManifests()) do
+    for _, size in ipairs({ { 1920, 1080 }, { 2560, 1440 } }) do
+      local label = string.format("%s at %dx%d", entry.versionId, size[1], size[2])
+      local baseline = nil
+      for _, step in ipairs(openingLifecycle) do
+        local view = { phase = step.phase, visual = "oak", primaryWidget = "oak", oakBgScrollX = 0 }
+        if step.revealWidget ~= nil then
+          view.revealWidget = step.revealWidget
+        end
+        local layout = layoutForHost(size[1], size[2], view, entry.manifest)
+        local subject = assert(layout.subject, label .. " Oak must stay visible during " .. step.phase)
+        if baseline == nil then
+          baseline = subject
+        else
+          Assert.equal(
+            subject.y,
+            baseline.y,
+            label .. " Oak Y must not move across reveal changes (" .. step.phase .. ")"
+          )
+          Assert.equal(
+            subject.height,
+            baseline.height,
+            label .. " Oak height must not change across reveal changes (" .. step.phase .. ")"
+          )
+          Assert.equal(
+            subject.scale,
+            baseline.scale,
+            label .. " Oak scale must not change across reveal changes (" .. step.phase .. ")"
+          )
+        end
+      end
+      for _, phase in ipairs({ "gender_select", "gender_confirm" }) do
+        local view = {
+          phase = phase,
+          visual = "oak",
+          primaryWidget = "oak",
+          genderFocus = 0,
+          genderCompositionProgress = 1,
+          oakBgScrollX = 0,
+        }
+        if phase == "gender_confirm" then
+          view.confirmationChoice = { kind = "gender", selected = 0 }
+        end
+        local layout = layoutForHost(size[1], size[2], view, entry.manifest)
+        local dialogueRect =
+          assert(assert(layout.dialogue).outerRect, label .. " selector must reserve dialogue (" .. phase .. ")")
+        local selector = assert(layout.selectorRegion, label .. " selector must publish a region (" .. phase .. ")")
+        local cards = {}
+        if phase == "gender_select" then
+          cards = { assert(layout.genderButtons[0]), assert(layout.genderButtons[1]) }
+          Assert.isTrue(disjoint(cards[1].rect, cards[2].rect), label .. " gender cards must remain disjoint")
+        else
+          cards = { assert(layout.selectedProfileButton) }
+        end
+        for _, card in ipairs(cards) do
+          Assert.isTrue(
+            inside(card.rect, selector),
+            label .. " gender card must stay inside the selector region (" .. phase .. ")"
+          )
+          Assert.isTrue(
+            inside(card.portraitRect, card.rect),
+            label .. " gender portrait must stay inside its card (" .. phase .. ")"
+          )
+          Assert.isTrue(
+            card.rect.y + card.rect.height < dialogueRect.y,
+            label .. " gender card must keep clearance above dialogue (" .. phase .. ")"
+          )
+        end
+      end
+    end
+  end
+end
+
 -- every ball/Marill animation frame for both ready versions has
 -- visible, chromatic pixels; the pinned source center resolves through
 -- generated metadata rather than a generic host center.

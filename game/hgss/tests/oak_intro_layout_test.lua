@@ -52,6 +52,7 @@ local function manifestWithWidth(sourceWidth)
       male = widget(96, 120, { x = 24, y = 110 }, { x = 36, y = 24, width = 96, height = 120 }),
       female = widget(88, 116, { x = 22, y = 108 }, { x = 48, y = 28, width = 88, height = 116 }),
       ball_open = widget(40, 30, { x = 20, y = 30 }, { x = 140, y = 50, width = 40, height = 30 }),
+      marill_appear = widget(40, 30, { x = 20, y = 30 }, { x = 140, y = 50, width = 40, height = 30 }),
       marill = widget(40, 30, { x = 20, y = 30 }, { x = 140, y = 50, width = 40, height = 30 }),
       gender_male = widget(40, 60, { x = 20, y = 30 }, { x = 0, y = 0, width = 40, height = 60 }),
       gender_female = widget(40, 60, { x = 20, y = 30 }, { x = 0, y = 0, width = 40, height = 60 }),
@@ -60,6 +61,7 @@ local function manifestWithWidth(sourceWidth)
     },
   }
   data.widgets.ball_open.sourceCenter = { x = 160, y = 80 }
+  data.widgets.marill_appear.sourceCenter = { x = 160, y = 80 }
   data.widgets.marill.sourceCenter = { x = 160, y = 80 }
   data.widgets.gender_male.sourceCenter = { x = 64, y = 104 }
   data.widgets.gender_female.sourceCenter = { x = 192, y = 104 }
@@ -1313,6 +1315,208 @@ function T.tests.name_confirmation_choices_align_to_choice_region_far_edge()
     Assert.isTrue(disjoint(no.rect, subject), "NO must stay clear of Oak at " .. label)
     Assert.isTrue(disjoint(yes.rect, oakRegion), "YES must stay clear of the Oak region at " .. label)
     Assert.isTrue(disjoint(no.rect, oakRegion), "NO must stay clear of the Oak region at " .. label)
+  end
+end
+
+-- The opening reveal swaps the ball for two Marill presentations and then
+-- clears the reveal entirely; Oak's vertical placement must not follow those
+-- swaps. The reveal widgets below use deliberately unequal bounds so a
+-- correction measured from only the currently visible reveal moves Oak
+-- between phases instead of holding it still.
+local function unequalRevealManifest()
+  local data = manifest()
+  data.widgets.ball_open = widget(40, 30, { x = 20, y = 30 }, { x = 140, y = 50, width = 40, height = 30 })
+  data.widgets.ball_open.sourceCenter = { x = 160, y = 80 }
+  data.widgets.marill_appear = widget(52, 100, { x = 26, y = 20 }, { x = 134, y = 20, width = 52, height = 100 })
+  data.widgets.marill_appear.sourceCenter = { x = 160, y = 120 }
+  data.widgets.marill = widget(36, 70, { x = 18, y = 15 }, { x = 142, y = 60, width = 36, height = 70 })
+  data.widgets.marill.sourceCenter = { x = 160, y = 120 }
+  return data
+end
+
+local openingLifecycle = {
+  { phase = "oak_world_inhabited", revealWidget = nil },
+  { phase = "ball_open_wait", revealWidget = "ball_open" },
+  { phase = "scene_flash", revealWidget = "ball_open" },
+  { phase = "marill_appear", revealWidget = "marill_appear" },
+  { phase = "marill_brightness_fade", revealWidget = "marill_appear" },
+  { phase = "marill_cry_wait", revealWidget = "marill" },
+  { phase = "oak_live_alongside", revealWidget = "marill" },
+  { phase = "marill_hide", revealWidget = "marill" },
+  { phase = "marill_hide_wait", revealWidget = nil },
+  { phase = "oak_slide_left", revealWidget = nil },
+  { phase = "oak_tell_about_yourself", revealWidget = nil },
+}
+
+function T.tests.opening_reveal_lifecycle_keeps_oak_placement_stable()
+  local data = unequalRevealManifest()
+  for _, host in ipairs({ { 800, 600 }, { 1710, 895 } }) do
+    local label = host[1] .. "x" .. host[2]
+    local baseline = nil
+    for _, step in ipairs(openingLifecycle) do
+      local view = {
+        phase = step.phase,
+        visual = "oak",
+        primaryWidget = "oak",
+        oakBgScrollX = 0,
+      }
+      if step.revealWidget ~= nil then
+        view.revealWidget = step.revealWidget
+      end
+      local layout = computeForHost(host[1], host[2], view, {}, data)
+      Assert.notNil(layout.dialogue, "opening phase must reserve dialogue at " .. label .. "/" .. step.phase)
+      local subject =
+        assert(layout.subject, "Oak must stay visible through the opening stage at " .. label .. "/" .. step.phase)
+      Assert.isTrue(
+        disjoint(subject, assert(layout.dialogue).outerRect),
+        "Oak must stay clear of dialogue at " .. label .. "/" .. step.phase
+      )
+      if baseline == nil then
+        baseline = subject
+      else
+        Assert.equal(
+          subject.y,
+          baseline.y,
+          "Oak Y must not move across reveal changes at " .. label .. " (" .. step.phase .. ")"
+        )
+        Assert.equal(
+          subject.height,
+          baseline.height,
+          "Oak height must not change across reveal changes at " .. label .. " (" .. step.phase .. ")"
+        )
+        Assert.equal(
+          subject.scale,
+          baseline.scale,
+          "Oak scale must not change across reveal changes at " .. label .. " (" .. step.phase .. ")"
+        )
+      end
+    end
+  end
+end
+
+function T.tests.retail_proportioned_gender_cards_keep_clearance_above_dialogue()
+  local data = retailProportionedManifest()
+  for _, size in ipairs({ { 1710, 895 }, { 1920, 1080 }, { 2560, 1440 } }) do
+    local label = size[1] .. "x" .. size[2]
+    for _, phase in ipairs({ "gender_select", "gender_confirm" }) do
+      local view = {
+        phase = phase,
+        visual = "oak",
+        primaryWidget = "oak",
+        genderFocus = 0,
+        genderCompositionProgress = 1,
+        oakBgScrollX = 0,
+      }
+      if phase == "gender_confirm" then
+        view.confirmationChoice = { kind = "gender", selected = 0 }
+      end
+      local layout = computeForHost(size[1], size[2], view, {}, data)
+      local dialogueRect =
+        assert(assert(layout.dialogue).outerRect, "selector must reserve dialogue at " .. label .. "/" .. phase)
+      local selectorRegion =
+        assert(layout.selectorRegion, "selector must publish a region at " .. label .. "/" .. phase)
+      local cards = {}
+      if phase == "gender_select" then
+        cards = { assert(layout.genderButtons[0]), assert(layout.genderButtons[1]) }
+        Assert.isTrue(disjoint(cards[1].rect, cards[2].rect), "gender cards must remain disjoint at " .. label)
+      else
+        cards = { assert(layout.selectedProfileButton) }
+      end
+      for _, card in ipairs(cards) do
+        Assert.isTrue(
+          inside(card.rect, selectorRegion),
+          "gender card must stay inside the selector region at " .. label .. "/" .. phase
+        )
+        assertPortraitInsideContent(card, label .. "/" .. phase)
+        Assert.isTrue(
+          card.rect.y + card.rect.height < dialogueRect.y,
+          "gender card must keep clearance above dialogue at " .. label .. "/" .. phase
+        )
+      end
+      if phase == "gender_confirm" then
+        for choice = 0, 1 do
+          local button = assert(layout.confirmationButtons[choice]).rect
+          Assert.isTrue(inside(button, layout.viewport), "confirm choice must stay on screen at " .. label)
+          Assert.isTrue(
+            button.y + button.height < dialogueRect.y,
+            "confirm choice must keep clearance above dialogue at " .. label
+          )
+        end
+      end
+    end
+  end
+end
+
+function T.tests.gender_selection_and_confirmation_share_selected_card_placement()
+  local data = retailProportionedManifest()
+  for _, focus in ipairs({ 0, 1 }) do
+    local selectLayout = computeForHost(1710, 895, {
+      phase = "gender_select",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = focus,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    local confirmLayout = computeForHost(1710, 895, {
+      phase = "gender_confirm",
+      visual = "oak",
+      primaryWidget = "oak",
+      genderFocus = focus,
+      genderCompositionProgress = 1,
+      oakBgScrollX = 0,
+    }, {}, data)
+    Assert.deepEqual(
+      assert(selectLayout.genderButtons[focus]).rect,
+      assert(confirmLayout.selectedProfileButton).rect,
+      "the selected card must not jump between selection and confirmation"
+    )
+  end
+end
+
+-- Short wide hosts force the card envelope past the selector region: the
+-- group must still end above dialogue (excess leaves the top) instead of
+-- bleeding a full-size card downward into the dialogue box.
+function T.tests.short_wide_hosts_keep_gender_cards_clear_of_dialogue()
+  local data = retailProportionedManifest()
+  for _, size in ipairs({ { 1920, 800 }, { 1366, 600 } }) do
+    local label = size[1] .. "x" .. size[2]
+    for _, phase in ipairs({ "gender_select", "gender_confirm" }) do
+      local view = {
+        phase = phase,
+        visual = "oak",
+        primaryWidget = "oak",
+        genderFocus = 0,
+        genderCompositionProgress = 1,
+        oakBgScrollX = 0,
+      }
+      if phase == "gender_confirm" then
+        view.confirmationChoice = { kind = "gender", selected = 0 }
+      end
+      local layout = computeForHost(size[1], size[2], view, {}, data)
+      local dialogueRect =
+        assert(assert(layout.dialogue).outerRect, "selector must reserve dialogue at " .. label .. "/" .. phase)
+      local selectorRegion =
+        assert(layout.selectorRegion, "selector must publish a region at " .. label .. "/" .. phase)
+      local cards = {}
+      if phase == "gender_select" then
+        cards = { assert(layout.genderButtons[0]), assert(layout.genderButtons[1]) }
+        Assert.isTrue(disjoint(cards[1].rect, cards[2].rect), "gender cards must remain disjoint at " .. label)
+      else
+        cards = { assert(layout.selectedProfileButton) }
+      end
+      for _, card in ipairs(cards) do
+        Assert.isTrue(
+          inside(card.rect, selectorRegion),
+          "gender card must stay inside the selector region at " .. label .. "/" .. phase
+        )
+        assertPortraitInsideContent(card, label .. "/" .. phase)
+        Assert.isTrue(
+          card.rect.y + card.rect.height < dialogueRect.y,
+          "gender card must keep clearance above dialogue at " .. label .. "/" .. phase
+        )
+      end
+    end
   end
 end
 
