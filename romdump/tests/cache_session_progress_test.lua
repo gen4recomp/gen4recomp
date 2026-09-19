@@ -1332,4 +1332,544 @@ function T.command_proof_and_recorded_fatal_behavior()
   end
 end
 
+-- An indirect promotion keeps a queued result validation: the child is
+-- submitted at sweep urgency, its published result is observed, and the
+-- requiring summary promotes it before the validation ticket is
+-- consumed. The validation survives at the stronger urgency exactly
+-- once with no duplicate compilation.
+function T.indirect_promotion_keeps_queued_result_validation()
+  local env = newEnv("indirect-promotion-generation", 2)
+  local session = openSession(env, false)
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local bankIds = FieldMessageCompiler.requiredBankIds()
+  Assert.isTrue(#bankIds > 0, "the real inventory names message banks")
+  local leafBank = tostring(bankIds[1])
+  local leafKey = "message-bank:" .. leafBank
+  local ready, failure = session:requestJob("source-plan", "global", "sweep")
+  Assert.isFalse(ready, "the inventory starts pending")
+  Assert.isNil(failure, "the inventory reports no failure")
+  pump(session, 10)
+  stageSynthetic(env)
+  env.pool:complete("source-plan:global")
+  pump(session, 10)
+  Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
+  ready, failure = session:requestJob("message-bank", leafBank, "sweep")
+  Assert.isFalse(ready, "the leaf starts pending")
+  Assert.isNil(failure, "the leaf reports no failure")
+  pump(session, 10)
+  Assert.isTrue(env.pool.calls[leafKey] ~= nil, "the leaf submits at sweep urgency")
+  publishBank(env, tonumber(leafBank), "promotion-marker")
+  env.pool:complete(leafKey)
+  -- No update here: the requiring summary promotes the submitted child
+  -- through dependency expansion instead of another child request.
+  ready, failure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(ready, "the wide summary stays pending while its banks are held")
+  Assert.isNil(failure, "the wide summary reports no failure")
+  local validations = 0
+  local realValidate = ArtifactJobs.validate
+  ArtifactJobs.validate = function(cacheFs, generationId, kind, key, plans, identity)
+    if kind == "message-bank" and key == leafBank then
+      validations = validations + 1
+    end
+    return realValidate(cacheFs, generationId, kind, key, plans, identity)
+  end
+  local ok, err = pcall(function()
+    -- No further child request here: the indirect promotion through the
+    -- requiring summary must preserve the validation on its own. A
+    -- direct wrapper request would rescue the ticket and hide the loss.
+    for _ = 1, 100 do
+      session:update()
+      for _, outcome in ipairs(session:outcomes()) do
+        if outcome.jobKey == leafKey and outcome.state == "successful" then
+          return
+        end
+      end
+    end
+    error("the promoted child never validated ready", 0)
+  end)
+  ArtifactJobs.validate = realValidate
+  Assert.isTrue(ok, "an indirect promotion preserves pending validation: " .. tostring(err))
+  Assert.equal(validations, 1, "the child validates exactly once at the stronger urgency")
+  Assert.equal(env.pool:createdCount(1, leafKey), 1, "promotion compiles the child exactly once")
+  ready, failure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(ready, "held banks keep the wide summary pending")
+  Assert.isNil(failure, "the wide summary reports no failure")
+end
+
+-- A ready public pool reply schedules family validation at once: the
+-- accepted observation never waits for a second state edge. A usable
+-- payload succeeds while a malformed one fails validation.
+function T.immediate_ready_reply_schedules_family_validation()
+  local env = newEnv("immediate-ready-generation", 2)
+  local session = openSession(env, false)
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local bankIds = FieldMessageCompiler.requiredBankIds()
+  Assert.isTrue(#bankIds >= 2, "the real inventory names several message banks")
+  local goodBank, badBank = tostring(bankIds[1]), tostring(bankIds[2])
+  local goodKey, badKey = "message-bank:" .. goodBank, "message-bank:" .. badBank
+  local ready, failure = session:requestJob("source-plan", "global", "required")
+  Assert.isFalse(ready, "the inventory starts pending")
+  Assert.isNil(failure, "the inventory reports no failure")
+  pump(session, 10)
+  stageSynthetic(env)
+  env.pool:complete("source-plan:global")
+  pump(session, 10)
+  Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
+  -- The accepted observation answers ready at once: no second state
+  -- edge is needed before family validation is scheduled. The usable
+  -- payload is published with the acknowledgement itself, after the
+  -- submission that defeats reuse short-circuiting, so the scheduled
+  -- result validation observes it.
+  local realRequest = env.pool.request
+  env.pool.request = function(self, job)
+    realRequest(self, job)
+    if job.jobKey == goodKey or job.jobKey == badKey then
+      if job.jobKey == goodKey then
+        publishBank(env, tonumber(goodBank), "immediate-marker")
+      end
+      self:complete(job.jobKey)
+      return self:status(job.jobKey)
+    end
+    return self:status(job.jobKey)
+  end
+  local ok, err = pcall(function()
+    withFixtureFacts(env, function()
+      local validations = 0
+      local realValidate = ArtifactJobs.validate
+      ArtifactJobs.validate = function(cacheFs, generationId, kind, key, plans, identity)
+        if kind == "message-bank" and (key == goodBank or key == badBank) then
+          validations = validations + 1
+        end
+        return realValidate(cacheFs, generationId, kind, key, plans, identity)
+      end
+      local okPump, errPump = pcall(function()
+        ready, failure = session:requestJob("message-bank", goodBank, "required")
+        Assert.isFalse(ready, "the usable leaf starts pending")
+        Assert.isNil(failure, "the usable leaf reports no failure")
+        ready, failure = session:requestJob("message-bank", badBank, "required")
+        Assert.isFalse(ready, "the malformed leaf starts pending")
+        Assert.isNil(failure, "the malformed leaf reports no failure")
+        pump(session, 10)
+        Assert.isTrue(env.pool.calls[goodKey] ~= nil, "the usable leaf submits")
+        Assert.isTrue(env.pool.calls[badKey] ~= nil, "the malformed leaf submits")
+        -- The usable payload lands only after submission, so reuse
+        -- cannot short-circuit it: result validation must observe it.
+        publishBank(env, tonumber(goodBank), "immediate-marker")
+        for _ = 1, 50 do
+          session:update()
+        end
+        ready, failure = session:requestJob("message-bank", goodBank, "required")
+        Assert.isTrue(ready, "a usable immediate payload validates ready: " .. tostring(failure))
+        local badReady, badFailure = session:requestJob("message-bank", badBank, "required")
+        Assert.isFalse(badReady, "a malformed immediate payload never validates ready")
+        Assert.isTrue(badFailure ~= nil, "the malformed payload carries its validation failure")
+      end)
+      ArtifactJobs.validate = realValidate
+      Assert.isTrue(okPump, tostring(errPump))
+      Assert.isTrue(validations >= 3, "immediate replies earn result validation")
+    end)
+  end)
+  env.pool.request = realRequest
+  Assert.isTrue(ok, tostring(err))
+end
+
+-- A promoted retry stays a retry: strengthening a failed leaf before its
+-- first retry turn admits exactly one pool retry at the current urgency,
+-- never an ordinary request against the failed record.
+function T.promoted_retry_admits_as_retry_not_fresh_request()
+  local function failCamera(env)
+    local session = openSession(env, false)
+    local ready, failure = session:requestJob("field-camera", "global", "sweep")
+    Assert.isFalse(ready, "the camera starts pending")
+    Assert.isNil(failure, "the camera reports no failure")
+    pump(session, 10)
+    Assert.isTrue(env.pool.calls["field-camera:global"] ~= nil, "the camera submits")
+    env.pool:fail("field-camera:global", "WORKER_FAILED: synthetic camera failure")
+    pump(session, 10)
+    ready, failure = session:requestJob("field-camera", "global", "sweep")
+    Assert.isFalse(ready, "the failed camera stays failed")
+    Assert.isTrue(failure ~= nil, "the failed camera carries its cause")
+    return session
+  end
+  local function driveRetry(session, env)
+    for _ = 1, 200 do
+      session:update()
+      local state = env.pool:status("field-camera:global")
+      if state == "queued" or state == "running" then
+        writeReceipt(env, "field-camera", "global")
+        env.pool:complete("field-camera:global")
+      end
+      local ready = session:requestJob("field-camera", "global", "required")
+      if ready then
+        return
+      end
+    end
+    error("the promoted retry never validated ready", 0)
+  end
+  -- Direct stronger request before the first retry turn.
+  do
+    local env = newEnv("promoted-retry-direct-generation", 2)
+    local session = failCamera(env)
+    local realRetry = env.pool.retry
+    local retryCalls = {}
+    env.pool.retry = function(self, jobKey, priority)
+      retryCalls[jobKey] = (retryCalls[jobKey] or 0) + 1
+      return realRetry(self, jobKey, priority)
+    end
+    local ok, err = pcall(function()
+      withFixtureFacts(env, function()
+        local repaired, repairFailure = session:retry("field-camera", "global", "sweep")
+        Assert.isFalse(repaired, "the retry starts pending")
+        Assert.isNil(repairFailure, "the retry reports no failure")
+        local ready, failure = session:requestJob("field-camera", "global", "required")
+        Assert.isFalse(ready, "the strengthened retry stays pending")
+        Assert.isNil(failure, "strengthening reports no failure")
+        driveRetry(session, env)
+      end)
+    end)
+    env.pool.retry = realRetry
+    Assert.isTrue(ok, "a directly promoted retry stays a retry: " .. tostring(err))
+    Assert.equal(retryCalls["field-camera:global"], 1, "exactly one admitted retry")
+    Assert.equal(env.pool.calls["field-camera:global"], 1, "no ordinary request hits the failed record")
+  end
+  -- Indirect milestone promotion before the first retry turn.
+  do
+    local env = newEnv("promoted-retry-milestone-generation", 2)
+    local session = failCamera(env)
+    -- The camera owns no source dependency, so the inventory is
+    -- requested explicitly before it is staged and completed.
+    local inventoryReady, inventoryFailure = session:requestJob("source-plan", "global", "sweep")
+    Assert.isFalse(inventoryReady, "the inventory starts pending")
+    Assert.isNil(inventoryFailure, "the inventory reports no failure")
+    pump(session, 10)
+    stageSynthetic(env)
+    env.pool:complete("source-plan:global")
+    pump(session, 10)
+    Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
+    local realRetry = env.pool.retry
+    local retryCalls = {}
+    env.pool.retry = function(self, jobKey, priority)
+      retryCalls[jobKey] = (retryCalls[jobKey] or 0) + 1
+      return realRetry(self, jobKey, priority)
+    end
+    local ok, err = pcall(function()
+      withFixtureFacts(env, function()
+        local repaired, repairFailure = session:retry("field-camera", "global", "sweep")
+        Assert.isFalse(repaired, "the retry starts pending")
+        Assert.isNil(repairFailure, "the retry reports no failure")
+        local ready, failure = session:requestMilestone("bootstrap", "required")
+        Assert.isFalse(ready, "the milestone stays pending")
+        Assert.isNil(failure, "the milestone reports no failure")
+        driveRetry(session, env)
+      end)
+    end)
+    env.pool.retry = realRetry
+    Assert.isTrue(ok, "an indirectly promoted retry stays a retry: " .. tostring(err))
+    Assert.equal(retryCalls["field-camera:global"], 1, "exactly one admitted retry")
+    Assert.equal(env.pool.calls["field-camera:global"], 1, "no ordinary request hits the failed record")
+  end
+end
+
+-- Pool faults keep outer ownership: a recorded fault and an unmatched
+-- programming error at the retry/promotion boundary propagate unchanged
+-- instead of becoming fresh requests or leaf failures.
+function T.pool_retry_faults_propagate_without_replanning()
+  -- A faulting retry surfaces with its identity instead of replanning.
+  local env = newEnv("retry-fault-generation", 2)
+  local session = openSession(env, false)
+  session:requestJob("field-camera", "global", "required")
+  pump(session, 10)
+  env.pool:fail("field-camera:global", "WORKER_FAILED: synthetic camera failure")
+  pump(session, 10)
+  local realRetry = env.pool.retry
+  env.pool.retry = function()
+    error("unexpected boom: synthetic programming fault", 0)
+  end
+  local ok, err = pcall(function()
+    withFixtureFacts(env, function()
+      local repaired = session:retry("field-camera", "global", "required")
+      Assert.isFalse(repaired, "the retry starts pending")
+      for _ = 1, 50 do
+        session:update()
+      end
+    end)
+  end)
+  env.pool.retry = realRetry
+  Assert.isFalse(ok, "an unmatched retry fault propagates instead of replanning")
+  Assert.isTrue(
+    tostring(err):find("unexpected boom", 1, true) ~= nil,
+    "the fault keeps its identity: " .. tostring(err)
+  )
+end
+
+function T.pool_promotion_faults_propagate_without_leaf_failure()
+  -- A faulting queued promotion propagates instead of failing the leaf.
+  local env = newEnv("promotion-fault-generation", 2)
+  local session = openSession(env, false)
+  session:requestJob("field-camera", "global", "sweep")
+  pump(session, 10)
+  Assert.isTrue(env.pool.calls["field-camera:global"] ~= nil, "the camera submits")
+  Assert.equal(env.pool:status("field-camera:global"), "queued", "the record waits queued")
+  local realRequest = env.pool.request
+  env.pool.request = function(self, job)
+    if job.jobKey == "field-camera:global" then
+      error("unexpected boom: synthetic selection fault", 0)
+    end
+    return realRequest(self, job)
+  end
+  local ok, err = pcall(session.requestJob, session, "field-camera", "global", "required")
+  env.pool.request = realRequest
+  Assert.isFalse(ok, "an unmatched promotion fault propagates instead of failing the leaf")
+  Assert.isTrue(
+    tostring(err):find("unexpected boom", 1, true) ~= nil,
+    "the fault keeps its identity: " .. tostring(err)
+  )
+end
+
+-- Standalone mon scopes follow only authoritative artifact edges: the
+-- catalog needs no source inventory and the layout needs only its
+-- catalog, with no source-plan, page or world work admitted.
+function T.standalone_mon_scopes_need_no_source_inventory()
+  local env = newEnv("mon-isolation-generation", 2)
+  local session = openSession(env, false)
+  local reads, compilations = 0, 0
+  local realRead, realCompile = SourcePlan.read, SourcePlan.compile
+  SourcePlan.read = function()
+    reads = reads + 1
+    error("mon preparation must not read the source inventory", 0)
+  end
+  SourcePlan.compile = function()
+    compilations = compilations + 1
+    error("mon preparation must not compile the source inventory", 0)
+  end
+  local ok, err = pcall(function()
+    withFixtureFacts(env, function()
+      writeReceipt(env, "mon-catalog", "global")
+      local ready, failure = session:requestJob("mon-catalog", "global", "required")
+      Assert.isFalse(ready, "the catalog starts pending")
+      Assert.isNil(failure, "the catalog reports no failure")
+      pump(session, 10)
+      ready, failure = session:requestJob("mon-catalog", "global", "required")
+      Assert.isTrue(ready, "the catalog validates ready: " .. tostring(failure))
+      ready, failure = session:requestJob("mon-layout", "global", "required")
+      Assert.isFalse(ready, "the layout starts pending")
+      Assert.isNil(failure, "the layout reports no failure")
+      pump(session, 10)
+      Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
+      -- The receipt lands only after submission, so admission cannot be
+      -- short-circuited by reuse: the submitted closure is observed.
+      writeReceipt(env, "mon-layout", "global")
+      env.pool:complete("mon-layout:global")
+      pump(session, 10)
+      ready, failure = session:requestJob("mon-layout", "global", "required")
+      Assert.isTrue(ready, "the layout validates ready: " .. tostring(failure))
+      Assert.isNil(env.pool.calls["source-plan:global"], "the source inventory is never admitted for mon scopes")
+      for jobKey in pairs(env.pool.calls) do
+        Assert.isTrue(jobKey == "mon-layout:global", "only the requested closure submits: " .. jobKey)
+      end
+    end)
+  end)
+  SourcePlan.read, SourcePlan.compile = realRead, realCompile
+  Assert.isTrue(ok, tostring(err))
+  Assert.equal(reads, 0, "no source read backs mon preparation")
+  Assert.equal(compilations, 0, "no source compilation backs mon preparation")
+  Assert.isNil(env.pool.calls["source-plan:global"], "the source inventory is never admitted")
+end
+
+-- Isolation never weakens the real graph: a page still opens its actual
+-- source dependency and the failure propagates with its cause.
+function T.page_demand_still_opens_its_source_dependency()
+  local env = newEnv("page-counterexample-generation", 2)
+  local session = openSession(env, false)
+  local realRead = SourcePlan.read
+  SourcePlan.read = function()
+    error("synthetic source inventory is unavailable", 0)
+  end
+  local ok, err = pcall(function()
+    local ready, failure = session:requestJob("map", "7", "required")
+    Assert.isFalse(ready, "map demand stays pending")
+    Assert.isNil(failure, "map demand reports no failure")
+    pump(session, 5)
+    Assert.isTrue(env.pool.calls["source-plan:global"] ~= nil, "a map still demands its actual source")
+    env.pool:fail("source-plan:global", "WORKER_FAILED: synthetic source failure")
+    pump(session, 20)
+    local outcomes = session:outcomes()
+    local mapOutcome = nil
+    for _, outcome in ipairs(outcomes) do
+      if outcome.jobKey == "map:7" then
+        mapOutcome = outcome
+      end
+    end
+    assert(mapOutcome ~= nil, "map demand stays in the outcomes")
+    Assert.equal(mapOutcome.state, "failed", "the map fails behind its source")
+    Assert.isTrue(
+      tostring(mapOutcome.error):find("source-plan:global", 1, true) ~= nil,
+      "the failure names its source cause: " .. tostring(mapOutcome.error)
+    )
+  end)
+  SourcePlan.read = realRead
+  Assert.isTrue(ok, tostring(err))
+end
+
+-- A warm duplicate prefix stays runnable through the real command: a long
+-- already-enrolled ready prefix with one missing late leaf prepares
+-- through CacheBuilder instead of truncating preparation while inline
+-- enumeration still has unfinished work. Local pending stays true
+-- through duplicate spans and the tail is repaired before proof.
+function T.warm_duplicate_prefix_reaches_its_cold_tail_through_the_command()
+  local env = newEnv("warm-prefix-generation", 4)
+  stageSynthetic(env)
+  stageLayout(env, "warm-catalog-marker", "warm-layout-marker")
+  local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+  env.cacheFs:writeLua(FieldActorCache.indexPath(), { spriteIds = {} })
+  local adopted = assert(ArtifactJobs.publishedPlans(env.cacheFs, env.identity), "staged layout publishes its plans")
+  local canonical = ArtifactJobs.completeJobs(adopted)
+  Assert.isTrue(#canonical > 16, "the synthetic corpus spans several enumeration chunks")
+  local missing = canonical[#canonical]
+  local missingKey = missing.kind .. ":" .. missing.key
+  local ok, err = pcall(function()
+    withFixtureFacts(env, function()
+      for _, job in ipairs(canonical) do
+        local key = job.kind .. ":" .. job.key
+        -- The inventory owner keeps its staged receipt: source-plan
+        -- readiness carries the adoption plan, so a marker-only stub in
+        -- its place would certify readiness without membership.
+        if key ~= missingKey and key ~= "source-plan:global" then
+          writeReceipt(env, job.kind, job.key)
+        end
+      end
+      local savedPool = package.loaded["romdump.src.build.CompilerPool"]
+      local savedBuilder = package.loaded["romdump.src.CacheBuilder"]
+      local realForVersion = CacheFs.forVersion
+      local okCommand, errCommand = pcall(function()
+        package.loaded["romdump.src.build.CompilerPool"] = {
+          new = function()
+            return env.pool
+          end,
+        }
+        CacheFs.forVersion = function()
+          return realForVersion("heartgold", env.backend)
+        end
+        package.loaded["romdump.src.CacheBuilder"] = nil
+        local CacheBuilder = require("romdump.src.CacheBuilder")
+        -- Controlled compilation only for missing leaves: staged facts
+        -- validate without occupying a worker.
+        env.pool.onWait = function(pool)
+          for _, jobKey in ipairs(pool.order) do
+            local record = pool.records[jobKey]
+            if record ~= nil and (record.state == "queued" or record.state == "running") then
+              local kind, key = jobKey:match("^([^:]+):(.+)$")
+              if ArtifactState.read(env.cacheFs, env.generation, kind, key) == nil then
+                writeReceipt(env, kind, key)
+              end
+              pool:complete(jobKey)
+            end
+          end
+        end
+        local report, reportErr = CacheBuilder.prepareVersion("heartgold", {
+          identity = env.identity,
+          requirements = { "complete" },
+          log = function() end,
+        })
+        Assert.isNil(
+          reportErr,
+          "a warm prefix with a cold tail prepares without a progress error: " .. tostring(reportErr)
+        )
+        assert(report ~= nil, "the command returns its report")
+        local seen = {}
+        for _, outcome in ipairs(report.outcomes) do
+          seen[outcome.jobKey] = outcome
+        end
+        local tail = assert(seen[missingKey], "the repaired tail carries its outcome")
+        Assert.equal(tail.state, "successful", "the missing tail is repaired before proof")
+      end)
+      package.loaded["romdump.src.build.CompilerPool"] = savedPool
+      package.loaded["romdump.src.CacheBuilder"] = savedBuilder
+      CacheFs.forVersion = realForVersion
+      env.pool.onWait = nil
+      Assert.isTrue(okCommand, tostring(errCommand))
+    end)
+  end)
+  Assert.isTrue(ok, tostring(err))
+end
+
+-- Both requested roster scopes enroll: bootstrap and field-core keep
+-- their distinct controls through the budget, cover their union once
+-- and never duplicate an admission.
+function T.both_milestone_rosters_enroll_their_scopes()
+  local env = newEnv("dual-roster-generation", 4)
+  local session = openSession(env, false)
+  local ready, failure = session:requestJob("source-plan", "global", "required")
+  Assert.isFalse(ready, "the inventory starts pending")
+  Assert.isNil(failure, "the inventory reports no failure")
+  pump(session, 10)
+  stageSynthetic(env)
+  env.pool:complete("source-plan:global")
+  pump(session, 10)
+  Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
+  ready, failure = session:requestJob("mon-catalog", "global", "required")
+  Assert.isFalse(ready, "the catalog starts pending")
+  Assert.isNil(failure, "the catalog reports no failure")
+  pump(session, 10)
+  Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "the catalog submits")
+  stageLayout(env, "dual-catalog-marker", "dual-layout-marker")
+  env.pool:complete("mon-catalog:global")
+  pump(session, 30)
+  withFixtureFacts(env, function()
+    local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
+    Assert.isFalse(milestoneReady, "bootstrap starts pending")
+    Assert.isNil(milestoneFailure, "bootstrap reports no failure")
+    milestoneReady, milestoneFailure = session:requestMilestone("field-core", "required")
+    Assert.isFalse(milestoneReady, "field-core starts pending")
+    Assert.isNil(milestoneFailure, "field-core reports no failure")
+    -- The expected union comes from the authoritative milestone
+    -- membership functions over the session's adopted selections, never
+    -- from a frozen member list: inventory growth must not break this.
+    -- Recomputed every turn so roster refreshes observe the same
+    -- selections the session enrolls.
+    local function expectedUnion()
+      local union = {}
+      for _, job in ipairs(ArtifactJobs.bootstrapJobs(session.audioBankIds)) do
+        union[#union + 1] = job.kind .. ":" .. job.key
+      end
+      for _, job in
+        ipairs(ArtifactJobs.fieldCoreJobs({
+          audioBankIds = session.audioBankIds,
+          messageBankIds = session.messageBankIds,
+          scriptMemberIds = session.scriptMemberIds,
+          iconPageIds = session.iconPageIds,
+          mapDataIds = session.mapDataIds,
+        }))
+      do
+        union[#union + 1] = job.kind .. ":" .. job.key
+      end
+      return union
+    end
+    for _ = 1, 8000 do
+      completeQueued(env)
+      session:update()
+      local observed = outcomeKeySet(session)
+      local covered = true
+      for _, key in ipairs(expectedUnion()) do
+        if observed[key] == nil then
+          covered = false
+          break
+        end
+      end
+      if covered then
+        break
+      end
+    end
+    local expected = expectedUnion()
+    Assert.isTrue(#expected > 0, "both scopes name a nonempty enrolled union")
+    local observed = outcomeKeySet(session)
+    for _, key in ipairs(expected) do
+      Assert.isTrue(observed[key] ~= nil, "both scopes enroll " .. key)
+    end
+    for jobKey, calls in pairs(env.pool.calls) do
+      Assert.equal(calls, 1, "no admission duplicates: " .. jobKey)
+    end
+  end)
+end
+
 return { tests = T }
