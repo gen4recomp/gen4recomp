@@ -765,27 +765,42 @@ local function collectVersionFacts(
     if plans ~= nil then
       local available, _ = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
       if available then
-        return {
-          versionId = versionId,
-          identity = identity,
-          ordered = ordered,
-          exhaustive = exhaustive,
-          epoch = 0,
-          enumerationComplete = true,
-          requestedReady = true,
-          dispositions = {},
-          counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
-          failures = {},
-          exclusions = {},
-          sourceExclusions = {},
-          timings = {},
-          auditPassed = true,
-          auditReason = nil,
-          needsAttestation = false,
-          isCurrent = true,
-          cacheFs = nil,
-          primaryError = nil,
-        }
+        -- The audited corpus covers only its canonical inventory, so an
+        -- explicitly requested identity reuses it only as a member.
+        local uncovered = {}
+        for _, requirement in ipairs(parsed) do
+          if requirement.jobKey ~= nil then
+            uncovered[requirement.jobKey] = true
+          end
+        end
+        if next(uncovered) ~= nil then
+          for _, job in ipairs(ArtifactJobs.completeJobs(plans)) do
+            uncovered[job.jobKey] = nil
+          end
+        end
+        if next(uncovered) == nil then
+          return {
+            versionId = versionId,
+            identity = identity,
+            ordered = ordered,
+            exhaustive = exhaustive,
+            epoch = 0,
+            enumerationComplete = true,
+            requestedReady = true,
+            dispositions = {},
+            counts = { planned = 0, successful = 0, failed = 0, cancelled = 0, excluded = 0 },
+            failures = {},
+            exclusions = {},
+            sourceExclusions = {},
+            timings = {},
+            auditPassed = true,
+            auditReason = nil,
+            needsAttestation = false,
+            isCurrent = true,
+            cacheFs = nil,
+            primaryError = nil,
+          }
+        end
       end
     end
   end
