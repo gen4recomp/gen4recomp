@@ -1,9 +1,9 @@
 -- ROM-conformance test: New Bark Town (map 60) generated physical cells read
--- from the prepared derived cache. These are the publication/runtime facts
+-- from the prepared derived assets. These are the publication/runtime facts
 -- for the shared EVERYWHERE matrix cell and its neighbors: source identity,
 -- published assets, area animation selection, and headless coverage. The
--- whole-corpus field-cell build belongs to cache preparation; this suite only
--- reads the current generated output. Runs only in the ROM-gated layer.
+-- map-60 field-cell build belongs to cache preparation; this suite only
+-- reads the prepared partial output. Runs only in the ROM-gated layer.
 
 local Assert = require("tests.support.Assert")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
@@ -188,6 +188,6 @@ function T.committed_coverage_includes_everywhere_neighbors(romFs, versionId)
 end
 
 local suite = require("tests.rom.support.RomSuite").fromFacts(T)
-suite.metadata.capabilities = { "rom_dump", "derived_cache" }
+suite.metadata.capabilities = { "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = { "field-core", "map:60" }
 return suite
