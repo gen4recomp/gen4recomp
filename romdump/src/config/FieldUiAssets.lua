@@ -81,6 +81,12 @@ return {
     iconCellMember = 16,
     iconAnimMember = 17,
     iconPaletteMember = 14,
+    -- Every normal icon visual composes the shared animation's stable opening
+    -- frame; the selected visual renders the same frame through the shared
+    -- selection palette bank (zero-based). Indices are zero-based into the
+    -- decoded banks.
+    iconAnim = 0,
+    iconSelectedPalette = 1,
     cursorCharMember = 64,
     cursorPaletteMember = 61,
     cursorCellMember = 62,
@@ -138,30 +144,53 @@ return {
       ["vanilla.save"] = 5,
       ["vanilla.options"] = 6,
     },
-    -- The 7 sprite bases from the ov27_0225D038 table, keyed by the touch
-    -- slot id the sprite position maps to (display position p occupies slot
-    -- p+2; slot 1 is the cancel region). Retail pixel coordinates.
-    iconBases = {
-      [2] = { x = 24, y = 22 },
-      [3] = { x = 24, y = 62 },
-      [4] = { x = 24, y = 102 },
-      [5] = { x = 24, y = 142 },
-      [6] = { x = 104, y = 22 },
-      [7] = { x = 104, y = 62 },
-      [8] = { x = 104, y = 102 },
+    -- The 7 normal action anchors from the ov27_0225D038 table, keyed by
+    -- display position 0..6 (display position p occupied touch slot p+2;
+    -- slot 1 is the cancel region). Retail pixel coordinates.
+    actionAnchors = {
+      [0] = { x = 24, y = 22 },
+      [1] = { x = 24, y = 62 },
+      [2] = { x = 24, y = 102 },
+      [3] = { x = 24, y = 142 },
+      [4] = { x = 104, y = 22 },
+      [5] = { x = 104, y = 62 },
+      [6] = { x = 104, y = 102 },
     },
     -- The 7 entry-label windows from the ov27_0225D074 tile grid (first 7 of
-    -- the 8 pairs; 9x2 tiles each), in pixels, keyed by the destination
-    -- slot id they label (display position p occupies slot p+2; slot 1 is
-    -- the cancel region).
+    -- the 8 pairs; 9x2 tiles each), in pixels, keyed by display position.
     labelWindows = {
-      [2] = { x = 8, y = 48, width = 72, height = 16 },
-      [3] = { x = 8, y = 88, width = 72, height = 16 },
-      [4] = { x = 8, y = 128, width = 72, height = 16 },
-      [5] = { x = 8, y = 168, width = 72, height = 16 },
-      [6] = { x = 88, y = 48, width = 72, height = 16 },
-      [7] = { x = 88, y = 88, width = 72, height = 16 },
-      [8] = { x = 88, y = 128, width = 72, height = 16 },
+      [0] = { x = 8, y = 48, width = 72, height = 16 },
+      [1] = { x = 8, y = 88, width = 72, height = 16 },
+      [2] = { x = 8, y = 128, width = 72, height = 16 },
+      [3] = { x = 8, y = 168, width = 72, height = 16 },
+      [4] = { x = 88, y = 48, width = 72, height = 16 },
+      [5] = { x = 88, y = 88, width = 72, height = 16 },
+      [6] = { x = 88, y = 128, width = 72, height = 16 },
+    },
+    -- The cancel/header touch bound plus the 7 normal touch regions from the
+    -- ov27_0225CF68 table, in pixels, keyed by display position. Half-open
+    -- bounds (x <= p < x+width), matching the runtime comparator.
+    cancelTouchRegion = { x = 8, y = 0, width = 152, height = 16 },
+    touchRegions = {
+      [0] = { x = 16, y = 22, width = 60, height = 32 },
+      [1] = { x = 16, y = 62, width = 60, height = 32 },
+      [2] = { x = 16, y = 102, width = 60, height = 32 },
+      [3] = { x = 16, y = 142, width = 60, height = 32 },
+      [4] = { x = 96, y = 22, width = 60, height = 32 },
+      [5] = { x = 96, y = 62, width = 60, height = 32 },
+      [6] = { x = 96, y = 102, width = 60, height = 32 },
+    },
+    -- The ordered directional candidates from the ov27_0225D0B4 table: three
+    -- display positions per direction, keyed by display position. The runtime
+    -- selects the first candidate that is currently visible.
+    navigationCandidates = {
+      [0] = { up = { 3, 2, 1 }, down = { 1, 2, 3 }, left = { 4, 0, 0 }, right = { 4, 0, 0 } },
+      [1] = { up = { 0, 3, 2 }, down = { 2, 3, 0 }, left = { 5, 1, 0 }, right = { 5, 1, 0 } },
+      [2] = { up = { 1, 0, 3 }, down = { 3, 0, 1 }, left = { 6, 2, 0 }, right = { 6, 2, 0 } },
+      [3] = { up = { 2, 1, 0 }, down = { 0, 1, 2 }, left = { 6, 3, 0 }, right = { 6, 3, 0 } },
+      [4] = { up = { 6, 5, 4 }, down = { 5, 6, 4 }, left = { 0, 4, 0 }, right = { 0, 4, 0 } },
+      [5] = { up = { 4, 6, 5 }, down = { 6, 4, 5 }, left = { 1, 5, 0 }, right = { 1, 5, 0 } },
+      [6] = { up = { 5, 4, 6 }, down = { 4, 5, 6 }, left = { 2, 6, 0 }, right = { 2, 6, 0 } },
     },
   },
   dialogueFrames = {

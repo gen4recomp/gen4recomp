@@ -86,12 +86,12 @@ local function withGame(harness, versionId, options, fn)
   end
 end
 
-function T.tests.production_start_menu_follows_the_source_two_column_topology()
+function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
   withEveryVersion(function(harness, versionId)
     local options = { width = 256, height = 192, topology = topology(256, 192) }
     withGame(harness, versionId, options, function(game)
       local status = openMenu(game)
-      Assert.equal(status.cursorSlotId, 2, "fresh field selection starts at source display position zero")
+      Assert.equal(status.selectedPosition, 0, "fresh field selection starts at source display position zero")
 
       local byPosition = {}
       for _, action in ipairs(status.actions) do
@@ -108,29 +108,21 @@ function T.tests.production_start_menu_follows_the_source_two_column_topology()
       game.runtime:pressAction()
       game:step()
       game.runtime:releaseAction()
-      Assert.equal(menuStatus(game).cursorSlotId, 2, "a disabled visible action is not activated")
+      Assert.equal(menuStatus(game).selectedPosition, 0, "a disabled visible action is not activated")
 
-      Assert.equal(navigate(game, "east").cursorSlotId, 2, "right stays when the source row has no other action")
-      Assert.equal(navigate(game, "south").cursorSlotId, 4, "down scans the same source column past a hole")
-      Assert.equal(navigate(game, "west").cursorSlotId, 3, "left selects the other visible action in the row")
-      Assert.equal(
-        navigate(game, "north").cursorSlotId,
-        3,
-        "up stays when the source column holds no other visible action"
-      )
-      Assert.equal(
-        navigate(game, "south").cursorSlotId,
-        3,
-        "down stays when the source column holds no other visible action"
-      )
-      Assert.equal(navigate(game, "east").cursorSlotId, 4, "right follows the source row topology")
-      Assert.equal(navigate(game, "south").cursorSlotId, 2, "down wraps to the first visible action in the column")
-      Assert.equal(navigate(game, "west").cursorSlotId, 2, "left stays when the source row has no other action")
+      Assert.equal(navigate(game, "east").selectedPosition, 0, "right stays on the first visible candidate")
+      Assert.equal(navigate(game, "south").selectedPosition, 1, "down selects the first visible candidate")
+      Assert.equal(navigate(game, "west").selectedPosition, 1, "left stays on the first visible candidate")
+      Assert.equal(navigate(game, "north").selectedPosition, 0, "up selects the first visible candidate")
+      Assert.equal(navigate(game, "south").selectedPosition, 1, "down selects the first visible candidate again")
+      Assert.equal(navigate(game, "east").selectedPosition, 1, "right stays when no candidate is visible")
+      Assert.equal(navigate(game, "south").selectedPosition, 2, "down selects the first visible candidate")
+      Assert.equal(navigate(game, "west").selectedPosition, 2, "left stays when no candidate is visible")
 
-      local slot = game.runtime.uiManifest.startMenu.slots[9]
-      game.runtime.input:pointerMove("acceptance:start-menu:pointer", slot.x + 1, slot.y + 1)
+      local hitRect = game.runtime.uiManifest.startMenu.interactive.positions[4].hitRect
+      game.runtime.input:pointerMove("acceptance:start-menu:pointer", hitRect.x + 1, hitRect.y + 1)
       game:step()
-      Assert.equal(menuStatus(game).cursorSlotId, 2, "pointer hover over a non-visual slot changes nothing")
+      Assert.equal(menuStatus(game).selectedPosition, 2, "pointer hover over a position hole changes nothing")
     end)
   end)
 end

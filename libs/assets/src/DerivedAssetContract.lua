@@ -42,6 +42,15 @@
 -- (type, map) rect is a 6x4 arrangement (48px wide, 32px tall) composed at
 -- build time from the original 24 8x8 tiles, instead of a raw 192x8 strip.
 --
+-- fieldUi schema 11: the Start Menu section publishes the SUB-side
+-- interactive selector (the seven normal position records with anchors,
+-- label windows, touch bounds, and ordered directional candidates, plus the
+-- cancel bound) and source-composed icon visuals (normal/selected atlas
+-- records with signed frame offsets, the Bag female pair as a first-class
+-- variant) instead of the ten-slot grid, the fixed crop rects, and the
+-- slot-keyed bases/windows. A stale pre-change cache without that section
+-- must fail readiness.
+--
 -- fieldUi schema 10: the normal naming section carries the source-window
 --- text geometry and the OAM-composed control/cursor/slot/subject visuals
 --- (semantic sprite records with canonical anchors plus generated frame
@@ -198,7 +207,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v10",
+  schema = "g4-field-ui-v11",
 }
 
 DerivedAssetContract.intro = {

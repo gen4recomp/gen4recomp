@@ -1,6 +1,7 @@
 -- Compiles the generated HGSS field-UI class: the Start Menu icon-sprite
--- contract (shared icon/highlight atlases, palette record, icon table,
--- contexts, chrome) and cursor, the twenty user dialogue frames, the corpus
+-- contract (one shared icon atlas with normal/selected visuals, palette
+-- record, icon table, contexts, chrome, and the seven interactive position
+-- records) and cursor, the twenty user dialogue frames, the corpus
 -- signpost frame and wayfinding graphics, the Trainer Card front, and the
 -- normal naming screen chrome (one opaque base plus the three transparent
 -- page overlays) — all as decoded PNG atlases and the strict manifest. Wayfinding members are precomposed
@@ -338,29 +339,14 @@ local function compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archiv
   end
 end
 
--- One 16-color bank of a decoded OBJ palette as the 1-based array blitTile
--- consumes. A bank the decoded palette cannot cover is malformed source.
-local function iconPaletteBank(colors, bank, memberId)
-  local entry = {}
-  for slot = 0, 15 do
-    local color = colors[bank * 16 + slot + 1]
-    if not color then
-      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon palette does not contain the bank", {
-        member = memberId,
-        bank = bank,
-        slot = slot,
-      })
-    end
-    entry[slot + 1] = color
-  end
-  return entry
-end
-
--- The shared icon atlas: each of the eleven 20-tile sprite chars rasterized
--- into a 32x40 cell (4 columns x 5 rows of 8x8 tiles) with one OBJ palette
--- bank, laid out in icon-char-member order. The selection-bank highlight
--- atlas is the same layout through the next bank. Returns the per-char-member
--- cell rects plus the two atlas paths.
+-- The shared icon atlas: every sprite char the icon rows (and the Bag
+-- female variant) reference, composed through the shared cell/animation
+-- rasterizer. Each char contributes its stable normal frame plus the same
+-- frame through the selection palette bank; the returned map carries each
+-- char's atlas rects with the rasterizer's source-relative offsets. Frames
+-- pack deterministically left to right in icon-row order (normal, selected,
+-- then the female normal/selected pair), so the manifest boundary is stable
+-- for a fixed source.
 local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local cfg = manifestConfig.startMenu
   local function g2d(kind, memberId, label)
@@ -369,26 +355,25 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
       G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.startMenu.alias .. ":" .. memberId })
     return must(decoded, err)
   end
-  -- The shared banks must exist and be well-formed; the per-icon sprite
-  -- geometry is the fixed cell layout below, not these members' objects.
   local iconCell = g2d("decodeCell", cfg.iconCellMember, "start menu icon cell") --[[@as FieldUiCompiler.CellData]]
   local iconAnim = g2d("decodeAnimation", cfg.iconAnimMember, "start menu icon animation") --[[@as FieldUiCompiler.AnimationData]]
-  if iconCell.cells[1] == nil or iconAnim.anims[1] == nil then
-    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon cell/animation banks are empty", {
-      cellMember = cfg.iconCellMember,
-      animMember = cfg.iconAnimMember,
+  local iconPal = g2d("decodePalette", cfg.iconPaletteMember, "start menu icon palette") --[[@as FieldUiCompiler.PaletteData]]
+  local animation = iconAnim.anims[cfg.iconAnim + 1]
+  if animation == nil then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon animation bank has no animation", {
+      anim = cfg.iconAnim,
+      available = #iconAnim.anims,
     })
   end
-  local iconPal = g2d("decodePalette", cfg.iconPaletteMember, "start menu icon palette") --[[@as FieldUiCompiler.PaletteData]]
-  local baseBank = iconPaletteBank(iconPal.colors, 0, cfg.iconPaletteMember)
-  local selectionBank = iconPaletteBank(iconPal.colors, 1, cfg.iconPaletteMember)
+  assert(animation ~= nil, "missing icon animations fail above")
+  if animation.frames[1] == nil then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon animation carries no stable frame", {
+      anim = cfg.iconAnim,
+    })
+  end
 
-  local cellWidth, cellHeight = 32, 40
-  local atlasWidth = #cfg.iconCharMembers * cellWidth
-  local baseRgba = newRgba(atlasWidth, cellHeight)
-  local highlightRgba = newRgba(atlasWidth, cellHeight)
-  local cells = {}
-  for index, memberId in ipairs(cfg.iconCharMembers) do
+  local composed = {}
+  for _, memberId in ipairs(cfg.iconCharMembers) do
     local charData = g2d("decodeChar", memberId, "start menu icon char") --[[@as FieldUiCompiler.CharData]]
     local tileBytes = charData.depth == 3 and 32 or 64
     local tiles = math.floor(#charData.tiles / tileBytes)
@@ -398,29 +383,102 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
         tiles = tiles,
       })
     end
-    local originX = (index - 1) * cellWidth
-    for tile = 0, 19 do
-      local destX = originX + (tile % 4) * 8
-      local destY = math.floor(tile / 4) * 8
-      local source = { asset = "start menu icon", member = memberId, tile = tile }
-      blitTile(baseRgba, atlasWidth, destX, destY, charData, tile, 0, baseBank, false, false, source)
-      blitTile(highlightRgba, atlasWidth, destX, destY, charData, tile, 0, selectionBank, false, false, source)
+    local source = { asset = "start menu icon", member = memberId }
+    local normal =
+      G2dRasterizer.renderAnimationFrame(charData, { colors = iconPal.colors }, iconCell, animation, 1, source)
+    local selected = G2dRasterizer.renderAnimationFrame(
+      charData,
+      { colors = iconPal.colors },
+      iconCell,
+      animation,
+      1,
+      source,
+      cfg.iconSelectedPalette
+    )
+    for _, frame in ipairs({ normal, selected }) do
+      assert(
+        type(frame.offset.x) == "number"
+          and frame.offset.x % 1 == 0
+          and type(frame.offset.y) == "number"
+          and frame.offset.y % 1 == 0,
+        "the icon compositor must return an integral source-relative offset"
+      )
     end
-    cells[memberId] = { x = originX, y = 0, width = cellWidth, height = cellHeight }
+    composed[memberId] = { normal = normal, selected = selected }
+  end
+
+  -- Deterministic packing in icon-row order: each sprite row's normal then
+  -- selected frame, followed by the female variant pair when the row carries
+  -- one. Every frame keeps its compositor size and offset; the atlas is the
+  -- tight row of those frames.
+  local ordered = {}
+  local visuals = {}
+  for _, row in ipairs(cfg.iconRows) do
+    if row.art == "sprite" then
+      local frames = assert(composed[row.char], "icon row references an uncompiled char")
+      local visual = { normal = { frame = frames.normal }, selected = { frame = frames.selected } }
+      ordered[#ordered + 1] = visual.normal
+      ordered[#ordered + 1] = visual.selected
+      visuals[row.char] = visual
+      if row.femaleChar then
+        local female = assert(composed[row.femaleChar], "icon row references an uncompiled female char")
+        local variant = { normal = { frame = female.normal }, selected = { frame = female.selected } }
+        ordered[#ordered + 1] = variant.normal
+        ordered[#ordered + 1] = variant.selected
+        visuals[row.femaleChar] = variant
+      end
+    end
+  end
+  local atlasWidth, atlasHeight = 0, 0
+  for _, entry in ipairs(ordered) do
+    atlasWidth = atlasWidth + entry.frame.width
+    atlasHeight = math.max(atlasHeight, entry.frame.height)
+  end
+  do
+    local x = 0
+    for _, entry in ipairs(ordered) do
+      local frame = entry.frame
+      entry.rect = { x = x, y = 0, width = frame.width, height = frame.height }
+      entry.offset = { x = frame.offset.x, y = frame.offset.y }
+      x = x + frame.width
+    end
+  end
+  local rows = {}
+  for y = 0, atlasHeight - 1 do
+    for _, entry in ipairs(ordered) do
+      local frame = entry.frame
+      if y < frame.height then
+        rows[#rows + 1] = frame.pixels:sub(y * frame.width * 4 + 1, (y + 1) * frame.width * 4)
+      else
+        rows[#rows + 1] = string.rep(string.char(0, 0, 0, 0), frame.width * 4)
+      end
+    end
+  end
+  for _, entry in ipairs(ordered) do
+    entry.frame = nil
   end
 
   local iconsPath = FieldUiAssetCache.assetDir() .. "/start-menu-icons.png"
-  assets[iconsPath] = PngWriter.encode(atlasWidth, cellHeight, concatChars(baseRgba))
+  assets[iconsPath] = PngWriter.encode(atlasWidth, atlasHeight, table.concat(rows))
   manifestAssets[FieldUiAssetCache.ASSET.START_MENU_ICONS] =
-    { image = iconsPath, width = atlasWidth, height = cellHeight }
-  local highlightPath = FieldUiAssetCache.assetDir() .. "/start-menu-icons-highlight.png"
-  assets[highlightPath] = PngWriter.encode(atlasWidth, cellHeight, concatChars(highlightRgba))
-  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_ICON_HIGHLIGHT] =
-    { image = highlightPath, width = atlasWidth, height = cellHeight }
+    { image = iconsPath, width = atlasWidth, height = atlasHeight }
+  for _, entry in ipairs(ordered) do
+    entry.asset = FieldUiAssetCache.ASSET.START_MENU_ICONS
+  end
 
   -- The shared palette record as pixels: bank 0 and the selection bank 1 in
   -- two 16-color rows, so the generated class carries the exact highlight
-  -- source the atlases were rendered through.
+  -- source the visuals were rendered through. A palette member short of
+  -- both banks is malformed source, never a truncated record.
+  for _, bank in ipairs({ 0, 1 }) do
+    if iconPal.colors[bank * 16 + 16] == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon palette does not contain the bank", {
+        member = cfg.iconPaletteMember,
+        bank = bank,
+        available = #iconPal.colors,
+      })
+    end
+  end
   local paletteRgba = {}
   for bank = 0, 1 do
     for slot = 0, 15 do
@@ -440,7 +498,7 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
-  return cells
+  return visuals
 end
 
 local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
@@ -455,22 +513,21 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   end
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  local iconCells = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local iconVisuals = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
 
   -- The thirteen retail icon rows as source-independent data: sprite rows
-  -- point at their shared-atlas cells (the Bag row carries the conditional
-  -- female cell as a first-class variant), text and poke-icon rows carry no
-  -- art rect. Labels are bank ids; the trainer-card row is the live player
-  -- name placeholder, never baked text.
+  -- carry the composed normal/selected visual records (the Bag row carries
+  -- the conditional female pair as a first-class variant), text and
+  -- poke-icon rows carry no art. Labels are bank ids; the trainer-card row
+  -- is the live player name placeholder, never baked text.
   local iconTable = {}
   for index, row in ipairs(cfg.iconRows) do
     local entry = { art = row.art, label = row.label, labelKind = row.labelKind }
     if row.art == "sprite" then
-      entry.rect = assert(iconCells[row.char], "icon row " .. index .. " references an uncompiled char")
+      entry.visual = assert(iconVisuals[row.char], "icon row " .. index .. " references an uncompiled char")
       if row.femaleChar then
         entry.variants = {
-          default = assert(iconCells[row.char], "icon row " .. index .. " references an uncompiled char"),
-          female = assert(iconCells[row.femaleChar], "icon row " .. index .. " references an uncompiled char"),
+          female = assert(iconVisuals[row.femaleChar], "icon row " .. index .. " references an uncompiled char"),
         }
       end
     end
@@ -549,14 +606,27 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
     contexts[index] = entries
   end
 
-  local iconBases = {}
-  for slotId, base in pairs(cfg.iconBases) do
-    iconBases[slotId] = { x = base.x, y = base.y }
-  end
-
-  local labelWindows = {}
-  for slotId, window in pairs(cfg.labelWindows) do
-    labelWindows[slotId] = { x = window.x, y = window.y, width = window.width, height = window.height }
+  -- The seven normal selector positions as source-independent records: the
+  -- action anchor, label window, touch region, and ordered directional
+  -- candidates per display position, plus the cancel/header touch bound.
+  local positions = {}
+  for position = 0, 6 do
+    local anchor = assert(cfg.actionAnchors[position], "the start menu config must anchor position " .. position)
+    local labelWindow = assert(cfg.labelWindows[position], "the start menu config must label position " .. position)
+    local hitRect = assert(cfg.touchRegions[position], "the start menu config must bound position " .. position)
+    local navigation =
+      assert(cfg.navigationCandidates[position], "the start menu config must navigate position " .. position)
+    positions[position] = {
+      anchor = { x = anchor.x, y = anchor.y },
+      labelWindow = { x = labelWindow.x, y = labelWindow.y, width = labelWindow.width, height = labelWindow.height },
+      hitRect = { x = hitRect.x, y = hitRect.y, width = hitRect.width, height = hitRect.height },
+      navigation = {
+        up = { navigation.up[1], navigation.up[2], navigation.up[3] },
+        down = { navigation.down[1], navigation.down[2], navigation.down[3] },
+        left = { navigation.left[1], navigation.left[2], navigation.left[3] },
+        right = { navigation.right[1], navigation.right[2], navigation.right[3] },
+      },
+    }
   end
 
   local actionIcons = {}
@@ -567,23 +637,18 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   return {
     background = background,
     cursor = { frames = cursorFrames },
-    slots = {
-      [1] = { x = 0, y = 0, width = 128, height = 38 },
-      [2] = { x = 128, y = 0, width = 128, height = 38 },
-      [3] = { x = 0, y = 38, width = 128, height = 38 },
-      [4] = { x = 128, y = 38, width = 128, height = 38 },
-      [5] = { x = 0, y = 76, width = 128, height = 38 },
-      [6] = { x = 128, y = 76, width = 128, height = 38 },
-      [7] = { x = 0, y = 114, width = 128, height = 38 },
-      [8] = { x = 128, y = 114, width = 128, height = 38 },
-      [9] = { x = 0, y = 152, width = 128, height = 38 },
-      [10] = { x = 128, y = 152, width = 128, height = 38 },
+    interactive = {
+      cancelHitRect = {
+        x = cfg.cancelTouchRegion.x,
+        y = cfg.cancelTouchRegion.y,
+        width = cfg.cancelTouchRegion.width,
+        height = cfg.cancelTouchRegion.height,
+      },
+      positions = positions,
     },
     iconTable = iconTable,
     contexts = contexts,
     actionIcons = actionIcons,
-    iconAtlas = { asset = FieldUiAssetCache.ASSET.START_MENU_ICONS },
-    iconHighlight = { asset = FieldUiAssetCache.ASSET.START_MENU_ICON_HIGHLIGHT },
     iconPalette = {
       asset = FieldUiAssetCache.ASSET.START_MENU_ICON_PALETTE,
       banks = 2,
@@ -593,8 +658,6 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
       main = { asset = FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, transparentAboveY = 136 },
       sub = { asset = FieldUiAssetCache.ASSET.START_MENU_CHROME_SUB },
     },
-    iconBases = iconBases,
-    labelWindows = labelWindows,
   }
 end
 

@@ -127,7 +127,7 @@ local function actionById(status, id)
 end
 
 local function cursorActionId(status)
-  local position = assert(status.cursorSlotId, "menu status must expose the cursor slot") - 2
+  local position = assert(status.selectedPosition, "menu status must expose the selected position")
   for _, action in ipairs(assert(status.actions, "menu status must list actions")) do
     if action.position == position then
       return action.id

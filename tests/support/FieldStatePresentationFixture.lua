@@ -367,6 +367,7 @@ end
 ---@return CacheFs
 function FieldStatePresentationFixture.cache()
   local cache = FieldUiFixture.cacheWithFontAndFrames()
+  FieldUiFixture.writeStartMenuSelectorPngs(cache)
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
   cache:writeLua(MonCache.iconManifestPath(), {
     schema = MonCache.ICON_MANIFEST_SCHEMA,

@@ -15,15 +15,16 @@ local T = {}
 -- A valid manifest models the audited HGSS geometry: every dialogue frame
 -- strip and the signpost frame are 18 tiles (144x8), every wayfinding
 -- surface is 24 tiles precomposed as a 48x32 final rect. v6 schema
--- includes per-type signpost palettes and per-type frame geometry.
+-- includes per-type signpost palettes and per-type frame geometry. The Start
+-- Menu section carries the SUB-side interactive selector (seven normal
+-- positions with anchors, label windows, hit rectangles, and ordered
+-- directional candidates, plus the cancel bound) and source-composed icon
+-- visuals (normal/selected records with signed frame offsets, the Bag
+-- female pair as a first-class variant).
 local function validManifest()
   local frameTiles = {}
   for frame = 0, 19 do
     frameTiles[frame] = { x = 0, y = 0, width = 144, height = 8 }
-  end
-  local slots = {}
-  for id = 1, 10 do
-    slots[id] = { x = (id % 2 == 1 and 0 or 128), y = math.floor((id - 1) / 2) * 38, width = 128, height = 38 }
   end
 
   local function validPalette()
@@ -58,12 +59,7 @@ local function validManifest()
       ["hgss.start_menu.icons"] = {
         image = "assets/generated/field/ui/start-menu-icons.png",
         width = 352,
-        height = 40,
-      },
-      ["hgss.start_menu.icon_highlight"] = {
-        image = "assets/generated/field/ui/start-menu-icons-highlight.png",
-        width = 352,
-        height = 40,
+        height = 80,
       },
       ["hgss.start_menu.icon_palette"] = {
         image = "assets/generated/field/ui/start-menu-icon-palette.png",
@@ -147,7 +143,7 @@ local function validManifest()
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
-      slots = slots,
+      interactive = FieldUiFixture.startMenuInteractive(),
       iconTable = (function()
         local rows = {}
         local spriteIcons = {
@@ -166,9 +162,26 @@ local function validManifest()
         local cell = 0
         for icon = 0, 12 do
           if spriteIcons[icon] then
-            local rect = { x = cell * 32, y = 0, width = 32, height = 40 }
+            local normal = { x = cell * 32, y = 0, width = 32, height = 40 }
+            local selected = { x = cell * 32, y = 40, width = 32, height = 40 }
             cell = cell + 1
-            rows[icon + 1] = { art = "sprite", rect = rect, label = labels[icon], labelKind = "static" }
+            rows[icon + 1] = {
+              art = "sprite",
+              visual = {
+                normal = {
+                  asset = "hgss.start_menu.icons",
+                  rect = normal,
+                  offset = { x = 0, y = 0 },
+                },
+                selected = {
+                  asset = "hgss.start_menu.icons",
+                  rect = selected,
+                  offset = { x = 0, y = 0 },
+                },
+              },
+              label = labels[icon],
+              labelKind = "static",
+            }
           elseif icon == 10 then
             rows[icon + 1] = { art = "poke_icon", label = 32, labelKind = "static" }
           else
@@ -177,13 +190,21 @@ local function validManifest()
         end
         rows[5].labelKind = "player_name"
         rows[3].variants = {
-          default = rows[3].rect,
-          female = { x = 10 * 32, y = 0, width = 32, height = 40 },
+          female = {
+            normal = {
+              asset = "hgss.start_menu.icons",
+              rect = { x = 10 * 32, y = 0, width = 32, height = 40 },
+              offset = { x = 0, y = 0 },
+            },
+            selected = {
+              asset = "hgss.start_menu.icons",
+              rect = { x = 10 * 32, y = 40, width = 32, height = 40 },
+              offset = { x = 0, y = 0 },
+            },
+          },
         }
         return rows
       end)(),
-      iconAtlas = { asset = "hgss.start_menu.icons" },
-      iconHighlight = { asset = "hgss.start_menu.icon_highlight" },
       iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 },
       contexts = {
         { 0, 1, 2, 3, 4, 5, 6 },
@@ -202,24 +223,6 @@ local function validManifest()
         ["vanilla.trainer_card"] = 4,
         ["vanilla.save"] = 5,
         ["vanilla.options"] = 6,
-      },
-      iconBases = {
-        [2] = { x = 24, y = 22 },
-        [3] = { x = 24, y = 62 },
-        [4] = { x = 24, y = 102 },
-        [5] = { x = 24, y = 142 },
-        [6] = { x = 104, y = 22 },
-        [7] = { x = 104, y = 62 },
-        [8] = { x = 104, y = 102 },
-      },
-      labelWindows = {
-        [2] = { x = 8, y = 48, width = 72, height = 16 },
-        [3] = { x = 8, y = 88, width = 72, height = 16 },
-        [4] = { x = 8, y = 128, width = 72, height = 16 },
-        [5] = { x = 8, y = 168, width = 72, height = 16 },
-        [6] = { x = 88, y = 48, width = 72, height = 16 },
-        [7] = { x = 88, y = 88, width = 72, height = 16 },
-        [8] = { x = 88, y = 128, width = 72, height = 16 },
       },
       chrome = {
         main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
@@ -320,33 +323,31 @@ function T.missing_sections_are_rejected()
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 
--- The start menu surface contract: at least one cursor frame, the dense
--- 1..10 slot grid (the touch surface the producer hard-codes), and every
--- slot rect inside the background atlas.
-function T.start_menu_surface_validation_is_strict()
+-- The start menu chrome and auxiliary records stay strict: the background
+-- rect inside its atlas, at least one cursor frame with a positive integral
+-- duration, and both chrome sets referencing indexed assets with the main
+-- transparency boundary.
+function T.start_menu_chrome_and_auxiliary_records_are_strict()
+  reject(function(m)
+    m.startMenu.background = { x = 0, y = 0, width = 257, height = 192 }
+  end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu.cursor.frames = {}
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.slots[1] = nil
+    m.startMenu.cursor.frames[1].duration = 0
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.slots[3] = nil
+    m.startMenu.chrome.sub.asset = "hgss.start_menu.missing"
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.slots[11] = { x = 0, y = 0, width = 128, height = 38 }
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.startMenu.slots[5] = { x = 200, y = 0, width = 128, height = 38 }
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.startMenu.slots = { [0] = { x = 0, y = 0, width = 128, height = 38 } }
+    m.startMenu.chrome.main.transparentAboveY = 0
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 
--- The start menu icon-sprite contract: thirteen icon rows with valid art
--- and in-atlas rects, seven 7-entry context rows, sprite-backed action
--- icons, per-slot sprite bases, seven label windows, and indexed chrome.
+-- The start menu icon-sprite contract: thirteen icon rows with valid art and
+-- composed visuals, seven 7-entry context rows, sprite-backed action icons,
+-- the shared icon atlas and palette record, and indexed chrome.
 function T.start_menu_icon_contract_validation_is_strict()
   reject(function(m)
     m.startMenu.iconTable = nil
@@ -358,7 +359,7 @@ function T.start_menu_icon_contract_validation_is_strict()
     m.startMenu.iconTable[1].art = "baked"
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.iconTable[1].rect = { x = 400, y = 0, width = 32, height = 40 }
+    m.startMenu.iconTable[1].visual = nil
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu.iconTable[9].art = "sprite"
@@ -371,18 +372,6 @@ function T.start_menu_icon_contract_validation_is_strict()
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu.actionIcons["vanilla.save"] = 9
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.startMenu.iconBases[8] = nil
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.startMenu.labelWindows[8] = nil
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.startMenu.chrome.main.transparentAboveY = 0
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.startMenu.chrome.sub.asset = "hgss.start_menu.missing"
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu.iconPalette.selectionBank = 3
@@ -575,6 +564,96 @@ function T.v5_rejects_frame_tiles_outside_atlas()
   reject(function(m)
     m.signposts.types[0].frameTiles = { x = 200, y = 0, width = 144, height = 8 }
   end, "FIELD_UI_MANIFEST_INVALID")
+end
+
+-- The interactive selector contract: exactly the seven normal positions with
+-- source anchors, label windows, hit rectangles, and ordered directional
+-- candidates, plus source-composed icon visuals carrying signed frame
+-- offsets. Offsets may be negative (a composed frame may extend left/up of
+-- its source anchor) while every atlas rect stays non-negative and in-atlas.
+-- The shared valid manifest already carries that shape; the negative offset
+-- below proves the validator accepts a frame extending left/up of its
+-- source anchor.
+local function interactiveManifest()
+  local manifest = validManifest()
+  -- A composed frame extending left/up of its source anchor keeps a negative
+  -- offset while its atlas rect stays inside the shared atlas.
+  manifest.startMenu.iconTable[1].visual.normal.offset = { x = -2, y = -4 }
+  return manifest
+end
+
+function T.interactive_position_contract_validates()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(interactiveManifest()))
+end
+
+-- Every malformed interactive topology is rejected once the validator owns
+-- the position contract. These manifests keep the previous slot/icon shape so
+-- the only new authority under test is the interactive record itself.
+local function malformedInteractive(mutate)
+  local manifest = validManifest()
+  manifest.startMenu.interactive = FieldUiFixture.startMenuInteractive()
+  mutate(manifest.startMenu)
+  local ok, err = FieldUiAssetCache.validateManifest(manifest)
+  return ok, err
+end
+
+function T.malformed_interactive_positions_are_rejected()
+  local cases = {
+    ["missing position"] = function(s)
+      s.interactive.positions[3] = nil
+    end,
+    ["extra normal position"] = function(s)
+      s.interactive.positions[7] = s.interactive.positions[0]
+    end,
+    ["missing direction"] = function(s)
+      s.interactive.positions[0].navigation.up = nil
+    end,
+    ["wrong candidate count"] = function(s)
+      s.interactive.positions[0].navigation.up = { 3, 2 }
+    end,
+    ["candidate outside the normal positions"] = function(s)
+      s.interactive.positions[0].navigation.up = { 3, 2, 9 }
+    end,
+    ["missing cancel rectangle"] = function(s)
+      s.interactive.cancelHitRect = nil
+    end,
+  }
+  for name, mutate in pairs(cases) do
+    local ok, err = malformedInteractive(mutate)
+    Assert.isFalse(ok, "the malformed interactive contract must be rejected (" .. name .. ": " .. tostring(err) .. ")")
+  end
+end
+
+-- Every malformed sprite visual is rejected: a missing or non-integral
+-- offset, a rect escaping its atlas, or an incomplete gender variant must
+-- fail validation rather than fall back to a guessed crop.
+function T.malformed_sprite_visuals_are_rejected()
+  local cases = {
+    ["missing visual offset"] = function(s)
+      s.iconTable[1].visual.normal.offset = nil
+    end,
+    ["non-integral visual offset"] = function(s)
+      s.iconTable[1].visual.normal.offset = { x = 1.5, y = 0 }
+    end,
+    ["visual rect escaping its atlas"] = function(s)
+      s.iconTable[1].visual.normal.rect = { x = 400, y = 0, width = 32, height = 40 }
+    end,
+    ["incomplete gender variant"] = function(s)
+      s.iconTable[3].variants.female.selected = nil
+    end,
+  }
+  for name, mutate in pairs(cases) do
+    local manifest = interactiveManifest()
+    mutate(manifest.startMenu)
+    local ok, err = FieldUiAssetCache.validateManifest(manifest)
+    Assert.isFalse(ok, "the malformed sprite visual must be rejected (" .. name .. ": " .. tostring(err) .. ")")
+  end
+end
+
+-- The shared manifest edits for the selector migration must not disturb the
+-- finalized naming stage: the full naming semantics keep validating.
+function T.naming_stage_contract_still_validates()
+  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
 end
 
 return { tests = T }

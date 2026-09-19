@@ -25,7 +25,7 @@ local function stubPresentationRuntime(cache)
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   return setmetatable({
     cacheFs = cache or FieldStatePresentationFixture.cache(),
-    uiManifest = FieldUiFixture.manifest(),
+    uiManifest = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()),
     fieldEntranceIndicatorAsset = {
       model = { batches = {}, materials = {} },
       effects = {

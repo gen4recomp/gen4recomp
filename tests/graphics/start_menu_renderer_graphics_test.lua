@@ -14,6 +14,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local PngWriter = require("libs.assets.src.PngWriter")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
@@ -40,28 +41,48 @@ local function canonicalPlacement()
   )
 end
 
--- Renders one surface presentation into a real canvas through the placement
--- record and returns its ImageData. The manifest drives the rects, so the
--- caller passes the manifest the cache belongs to (the fixture manifest for
--- fixture caches, the real generated manifest for the shared derived cache).
----@param scope GraphicsScope
----@param cacheFs CacheFs
----@param manifest table
----@param cursorSlotId integer
----@param cursorFrameIndex integer
----@param placement StartMenuLayout.Placement
----@param width integer
----@param height integer
----@return love.ImageData
-local function canonicalRender(scope, cacheFs, manifest, cursorSlotId, cursorFrameIndex, placement, width, height)
-  local lg = love.graphics
-  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
-  local canvas = scope:own(lg.newCanvas(width, height))
-  lg.setCanvas(canvas)
-  lg.clear(0, 0, 0, 0)
-  renderer:draw({ cursorSlotId = cursorSlotId, cursorFrameIndex = cursorFrameIndex }, placement)
-  lg.setCanvas()
-  return scope:own(canvas:newImageData())
+local SUB_R, SUB_G, SUB_B = 20, 40, 160
+local NORMAL_R, NORMAL_G, NORMAL_B = 200, 40, 40
+local SELECTED_R, SELECTED_G, SELECTED_B = 255, 220, 120
+
+local function recordingText()
+  local text = { draws = {} }
+  function text.drawText(_, str, x, y)
+    text.draws[#text.draws + 1] = { text = str, x = x, y = y }
+  end
+  function text.textWidth(_, str)
+    return #str * 8
+  end
+  return text
+end
+
+-- The shared selector fixture: the icon-contract manifest plus the SUB
+-- chrome and a banded icon atlas (normal visuals sample the top band,
+-- selected visuals the bottom band, so the selected-state swap is
+-- pixel-visible). The SUB color appears nowhere else in the fixture art.
+local function selectorCacheAndManifest()
+  local manifest = FieldUiFixture.manifest()
+  FieldUiFixture.addStartMenuIconContract(manifest)
+  local cache = FieldUiFixture.startMenuCache()
+  local bands = {}
+  for y = 0, 79 do
+    local r, g, b = NORMAL_R, NORMAL_G, NORMAL_B
+    if y >= 40 then
+      r, g, b = SELECTED_R, SELECTED_G, SELECTED_B
+    end
+    bands[#bands + 1] = string.rep(string.char(r, g, b, 255), 352)
+  end
+  cache:write("assets/generated/field/ui/start-menu-icons.png", PngWriter.encode(352, 80, table.concat(bands)))
+  cache:write(
+    "assets/generated/field/ui/start-menu-icon-palette.png",
+    PngWriter.encode(16, 2, string.rep(string.char(10, 10, 10, 255), 16 * 2))
+  )
+  cache:write(
+    "assets/generated/field/ui/start-menu-chrome-sub.png",
+    PngWriter.encode(256, 256, string.rep(string.char(SUB_R, SUB_G, SUB_B, 255), 256 * 256))
+  )
+  cache:writeLua(FieldUiAssetCache.manifestPath(), manifest)
+  return cache, manifest
 end
 
 -- Compares two ImageData buffers 8-bit channel by 8-bit channel; a single
@@ -104,146 +125,143 @@ local function assertPixelsEqual(expected, actual, label)
 end
 
 -- The independent fixture reference: the slot-colored surface plus the
--- presented cursor frame's solid color centered over the presented slot.
--- Built without the renderer, so a draw regression (wrong rect, wrong
--- position, wrong frame, wrong scale) is a mismatch.
----@param cursorSlotId integer
----@param cursorFrameIndex integer
+
+-- Renders one selector presentation into a real canvas through the
+-- placement record and returns its ImageData. The manifest drives the
+-- rects, so the caller passes the manifest the cache belongs to.
+---@param scope GraphicsScope
+---@param cacheFs CacheFs
+---@param manifest table
+---@param selectedPosition integer
+---@param placement StartMenuLayout.Placement
+---@param width integer
+---@param height integer
 ---@return love.ImageData
-local function fixtureReference(cursorSlotId, cursorFrameIndex)
+local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height)
+  local lg = love.graphics
+  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cacheFs, manifest = manifest, text = recordingText() }))
+  local canvas = scope:own(lg.newCanvas(width, height))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  renderer:draw({
+    selectedPosition = selectedPosition,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+      { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
+    },
+  }, placement)
+  lg.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
+-- The independent selector reference: the SUB chrome color everywhere, with
+-- each presented action's visual band color pasted at its source anchor plus
+-- the visual offset. Built without the renderer, so a wrong background, a
+-- wrong visual state, or a wrong draw position is a mismatch. Normal visuals
+-- sample the top atlas band, selected visuals the bottom band.
+---@param manifest table
+---@param selectedPosition integer
+---@return love.ImageData
+local function selectorReference(manifest, selectedPosition)
   local reference = love.image.newImageData(CANONICAL_WIDTH, CANONICAL_HEIGHT)
-  local function paste(x, y, r, g, b, a)
-    reference:setPixel(math.floor(x), math.floor(y), r, g, b, a)
-  end
   for y = 0, CANONICAL_HEIGHT - 1 do
     for x = 0, CANONICAL_WIDTH - 1 do
-      local slotId = FieldUiFixture.slotIdAt(x, y)
-      if slotId then
-        local r, g, b = FieldUiFixture.startMenuSlotColor(slotId)
-        paste(x, y, r / 255, g / 255, b / 255, 1)
-      end
+      reference:setPixel(x, y, SUB_R / 255, SUB_G / 255, SUB_B / 255, 1)
     end
   end
-  local slot = FieldUiFixture.START_MENU_SLOTS[cursorSlotId]
-  local frame = FieldUiFixture.START_MENU_CURSOR_FRAMES[cursorFrameIndex + 1]
-  local r, g, b = FieldUiFixture.startMenuCursorColor(cursorFrameIndex + 1)
-  local originX = slot.x + slot.width / 2 - frame.width / 2
-  local originY = slot.y + slot.height / 2 - frame.height / 2
-  for y = 0, frame.height - 1 do
-    for x = 0, frame.width - 1 do
-      paste(originX + x, originY + y, r / 255, g / 255, b / 255, 1)
+  local interactive = assert(manifest.startMenu.interactive, "the fixture manifest must carry positions")
+  local iconTable = assert(manifest.startMenu.iconTable, "the fixture manifest must carry the icon table")
+  local presented = {
+    { position = 0, icon = 0 },
+    { position = 1, icon = 1 },
+  }
+  for _, action in ipairs(presented) do
+    local record = assert(interactive.positions[action.position])
+    local row = assert(iconTable[action.icon + 1])
+    local visual = assert(row.visual)
+    local state = action.position == selectedPosition and visual.selected or visual.normal
+    local rect = assert(state.rect)
+    local offset = assert(state.offset)
+    local selected = action.position == selectedPosition
+    local r, g, b = NORMAL_R, NORMAL_G, NORMAL_B
+    if selected then
+      r, g, b = SELECTED_R, SELECTED_G, SELECTED_B
+    end
+    for y = 0, rect.height - 1 do
+      for x = 0, rect.width - 1 do
+        reference:setPixel(record.anchor.x + offset.x + x, record.anchor.y + offset.y + y, r / 255, g / 255, b / 255, 1)
+      end
     end
   end
   return reference
 end
 
--- The independent reference at a non-canonical host resolution: the fixture
--- surface replicated into scale x scale blocks per canonical pixel (the
--- deterministic nearest output of an integer-scale record transform). Built
--- without the renderer and without the layout module, so a wrong record
--- frame/scale in the render path is a mismatch.
----@param cursorSlotId integer
----@param cursorFrameIndex integer
+-- The independent reference at a non-canonical host resolution: the
+-- canonical reference replicated into scale x scale blocks per canonical
+-- pixel (the deterministic nearest output of an integer-scale record
+-- transform). Built without the renderer and without the layout module, so
+-- a wrong record frame/scale in the render path is a mismatch.
+---@param manifest table
+---@param selectedPosition integer
 ---@param scale integer
 ---@return love.ImageData
-local function scaledFixtureReference(cursorSlotId, cursorFrameIndex, scale)
+local function scaledSelectorReference(manifest, selectedPosition, scale)
+  local flat = selectorReference(manifest, selectedPosition)
   local width, height = CANONICAL_WIDTH * scale, CANONICAL_HEIGHT * scale
   local reference = love.image.newImageData(width, height)
-  local function block(x, y, r, g, b, a)
-    for dy = 0, scale - 1 do
-      for dx = 0, scale - 1 do
-        reference:setPixel(math.floor(x * scale + dx), math.floor(y * scale + dy), r, g, b, a)
-      end
-    end
-  end
   for y = 0, CANONICAL_HEIGHT - 1 do
     for x = 0, CANONICAL_WIDTH - 1 do
-      local slotId = FieldUiFixture.slotIdAt(x, y)
-      if slotId then
-        local sr, sg, sb = FieldUiFixture.startMenuSlotColor(slotId)
-        block(x, y, sr / 255, sg / 255, sb / 255, 1)
-      else
-        block(x, y, 0, 0, 0, 0)
+      local r, g, b, a = flat:getPixel(x, y)
+      for dy = 0, scale - 1 do
+        for dx = 0, scale - 1 do
+          reference:setPixel(x * scale + dx, y * scale + dy, r, g, b, a)
+        end
       end
-    end
-  end
-  local slot = FieldUiFixture.START_MENU_SLOTS[cursorSlotId]
-  local frame = FieldUiFixture.START_MENU_CURSOR_FRAMES[cursorFrameIndex + 1]
-  local cr, cg, cb = FieldUiFixture.startMenuCursorColor(cursorFrameIndex + 1)
-  local originX = slot.x + slot.width / 2 - frame.width / 2
-  local originY = slot.y + slot.height / 2 - frame.height / 2
-  for y = 0, frame.height - 1 do
-    for x = 0, frame.width - 1 do
-      block(originX + x, originY + y, cr / 255, cg / 255, cb / 255, 1)
     end
   end
   return reference
 end
 
--- Canonical golden: the full Start Menu surface from the fixture assets
--- matches the independent reference pixel for pixel, with the cursor frame
--- centered over the default (first) slot.
-function T.canonical_golden_matches_the_fixture_surface_pixel_for_pixel(scope)
-  local rendered = canonicalRender(
-    scope,
-    FieldUiFixture.startMenuCache(),
-    FieldUiFixture.manifest(),
-    1,
-    0,
-    canonicalPlacement(),
-    256,
-    192
-  )
-  assertPixelsEqual(fixtureReference(1, 0), rendered, "fixture surface golden")
+-- Canonical golden: the SUB selector surface from the fixture assets matches
+-- the independent reference pixel for pixel, with the selected action
+-- drawing its selected visual at its anchor plus offset.
+function T.canonical_selector_matches_the_fixture_surface_pixel_for_pixel(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local rendered = selectorRenderInto(scope, cache, manifest, 0, canonicalPlacement(), 256, 192)
+  assertPixelsEqual(selectorReference(manifest, 0), rendered, "selector surface golden")
 end
 
--- The fixture's two cursor frames are distinct artwork at the same slot
--- position: the frame index selects the atlas row, never the placement.
-function T.cursor_frames_are_distinct_artwork_at_the_same_position(scope)
-  local frame0 = canonicalRender(
-    scope,
-    FieldUiFixture.startMenuCache(),
-    FieldUiFixture.manifest(),
-    4,
-    0,
-    canonicalPlacement(),
-    256,
-    192
-  )
-  local frame1 = canonicalRender(
-    scope,
-    FieldUiFixture.startMenuCache(),
-    FieldUiFixture.manifest(),
-    4,
-    1,
-    canonicalPlacement(),
-    256,
-    192
-  )
-  assertPixelsEqual(fixtureReference(4, 1), frame1, "fixture cursor frame 1 golden")
-
-  local quantize = function(v)
-    return math.floor(v * 255 + 0.5)
+-- The selected visual is state, not placement: selecting the other action
+-- swaps which icon draws from the selected band while the background stays
+-- put.
+function T.selection_swaps_the_selected_visual_while_the_background_stays_put(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local first = selectorRenderInto(scope, cache, manifest, 0, canonicalPlacement(), 256, 192)
+  local second = selectorRenderInto(scope, cache, manifest, 1, canonicalPlacement(), 256, 192)
+  assertPixelsEqual(selectorReference(manifest, 1), second, "reselected surface golden")
+  local different = false
+  for y = 0, CANONICAL_HEIGHT - 1 do
+    for x = 0, CANONICAL_WIDTH - 1 do
+      local r0, g0, b0, a0 = first:getPixel(x, y)
+      local r1, g1, b1, a1 = second:getPixel(x, y)
+      if r0 ~= r1 or g0 ~= g1 or b0 ~= b1 or a0 ~= a1 then
+        different = true
+        break
+      end
+    end
+    if different then
+      break
+    end
   end
-  local function pixel(data, x, y)
-    local r, g, b, a = data:getPixel(math.floor(x), math.floor(y))
-    return quantize(r), quantize(g), quantize(b), quantize(a)
-  end
-  local slot = FieldUiFixture.START_MENU_SLOTS[4]
-  local sampleX = slot.x + slot.width / 2
-  local sampleY = slot.y + slot.height / 2
-  local f0r, f0g, f0b, f0a = pixel(frame0, sampleX, sampleY)
-  local f1r, f1g, f1b, f1a = pixel(frame1, sampleX, sampleY)
-  Assert.equal(f0a, 255, "the cursor pixel is opaque")
-  Assert.isTrue(f0r ~= f1r or f0g ~= f1g or f0b ~= f1b, "cursor frames have distinct artwork")
-  Assert.equal(f0a, f1a, "the cursor frames occupy the same position")
+  Assert.isTrue(different, "changing selection swaps the selected action visual")
 end
 
--- Record-transform golden: at a non-canonical host resolution the surface
+-- Record-transform golden: at a non-canonical host resolution the selector
 -- renders pixel-exact through the placement record resolved by the real
 -- layout module -- the record's frame and scale drive the draw, and the
 -- canonical surface never reflows internally.
-function T.scaled_golden_matches_the_fixture_surface_through_the_record_transform(scope)
+function T.scaled_selector_matches_through_the_record_transform(scope)
   local placement = StartMenuLayout.resolve(
     ScreenTopology.oneDisplay({
       id = "main",
@@ -256,9 +274,9 @@ function T.scaled_golden_matches_the_fixture_surface_through_the_record_transfor
   )
   Assert.equal(placement.scale, 2, "the 512x384 host resolves an integer scale of 2")
   Assert.deepEqual(placement.frame, { x = 0, y = 0, width = 512, height = 384 })
-  local rendered =
-    canonicalRender(scope, FieldUiFixture.startMenuCache(), FieldUiFixture.manifest(), 1, 0, placement, 512, 384)
-  assertPixelsEqual(scaledFixtureReference(1, 0, 2), rendered, "scaled record golden")
+  local cache, manifest = selectorCacheAndManifest()
+  local rendered = selectorRenderInto(scope, cache, manifest, 0, placement, 512, 384)
+  assertPixelsEqual(scaledSelectorReference(manifest, 0, 2), rendered, "scaled selector golden")
 end
 
 -- The real generated surface is checked before it reaches the renderer so a
@@ -349,11 +367,89 @@ function T.real_generated_start_menu_icons_match_the_retail_source_contract(scop
   end
 end
 
+-- The canonical selector surface uses the retail sub-side composition: the
+-- sub chrome is the interactive background and no movable main-side cursor
+-- sprite travels with the selection. The sub image below is a solid color
+-- found nowhere else in the fixture art, and the fixture magenta/cyan cursor
+-- frames stay in the legacy surface art, so a main-background pixel or a
+-- single cursor pixel anywhere is a surface-ownership mismatch. Selection
+-- still has a visible effect (the selected action visual swaps) while the
+-- background stays put.
+---@param scope GraphicsScope
+---@param cache CacheFs
+---@param manifest table
+---@param selectedPosition integer
+---@return love.ImageData
+local function selectorRender(scope, cache, manifest, selectedPosition)
+  local lg = love.graphics
+  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cache, manifest = manifest, text = recordingText() }))
+  local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  renderer:draw({
+    selectedPosition = selectedPosition,
+    trainerGender = "male",
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+      { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
+    },
+  }, canonicalPlacement())
+  lg.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
+function T.selector_draws_the_sub_background_with_no_movable_main_cursor(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local function quantize(v)
+    return math.floor(v * 255 + 0.5)
+  end
+  local renders = {}
+  for _, selectedPosition in ipairs({ 0, 1 }) do
+    local rendered = selectorRender(scope, cache, manifest, selectedPosition)
+    renders[#renders + 1] = rendered
+    local r, g, b, a = rendered:getPixel(250, 180)
+    Assert.deepEqual(
+      { quantize(r), quantize(g), quantize(b), quantize(a) },
+      { SUB_R, SUB_G, SUB_B, 255 },
+      "the selector background is the sub chrome with selection at position " .. selectedPosition
+    )
+    local cursorPixels = 0
+    for y = 0, CANONICAL_HEIGHT - 1 do
+      for x = 0, CANONICAL_WIDTH - 1 do
+        local pr, pg, pb = rendered:getPixel(x, y)
+        local qr, qg, qb = quantize(pr), quantize(pg), quantize(pb)
+        if (qr == 255 and qg == 0 and qb == 255) or (qr == 0 and qg == 255 and qb == 255) then
+          cursorPixels = cursorPixels + 1
+        end
+      end
+    end
+    Assert.equal(
+      cursorPixels,
+      0,
+      "no movable main cursor pixel travels with selection at position " .. selectedPosition
+    )
+  end
+  local different = false
+  for y = 0, CANONICAL_HEIGHT - 1 do
+    for x = 0, CANONICAL_WIDTH - 1 do
+      local r0, g0, b0, a0 = renders[1]:getPixel(x, y)
+      local r1, g1, b1, a1 = renders[2]:getPixel(x, y)
+      if r0 ~= r1 or g0 ~= g1 or b0 ~= b1 or a0 ~= a1 then
+        different = true
+        break
+      end
+    end
+    if different then
+      break
+    end
+  end
+  Assert.isTrue(different, "changing selection swaps the selected action visual")
+end
+
 function T.restores_graphics_state_after_draw(scope)
   local lg = love.graphics
-  local renderer = scope:own(
-    StartMenuRenderer.new({ cacheFs = FieldUiFixture.startMenuCache(), manifest = FieldUiFixture.manifest() })
-  )
+  local cache, manifest = selectorCacheAndManifest()
+  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cache, manifest = manifest, text = recordingText() }))
 
   local canvas = scope:own(lg.newCanvas(64, 64))
   local shader = lg.getShader()
@@ -366,7 +462,10 @@ function T.restores_graphics_state_after_draw(scope)
   lg.setScissor(4, 8, 32, 16)
 
   renderer:draw(
-    { cursorSlotId = 1, cursorFrameIndex = 0 },
+    {
+      selectedPosition = 0,
+      actions = { { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" } },
+    },
     StartMenuLayout.resolve(
       ScreenTopology.oneDisplay({
         id = "main",
@@ -407,14 +506,13 @@ end
 -- Release is the contract here; it is still scoped so a failed assertion does
 -- not leak the renderer. The scope's later release exercises repeat safety.
 function T.release_frees_the_owned_images(scope)
-  local renderer = scope:own(
-    StartMenuRenderer.new({ cacheFs = FieldUiFixture.startMenuCache(), manifest = FieldUiFixture.manifest() })
-  )
+  local cache, manifest = selectorCacheAndManifest()
+  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cache, manifest = manifest, text = recordingText() }))
 
   renderer:release()
 
-  Assert.isNil(renderer._backgroundImage)
-  Assert.isNil(renderer._cursorImage)
+  Assert.isNil(renderer._subImage)
+  Assert.isNil(next(renderer._imageByAsset))
 end
 
 return GraphicsSmoke.suite(T, {

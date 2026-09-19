@@ -295,7 +295,7 @@ end
 -- at-most-one-owner assert guarantees they cannot be, so the draw path must
 -- never composite them underneath the menu).
 function T.menu_phase_draws_only_the_start_menu_surface_through_the_placement_record()
-  local menuStatus = { cursorSlotId = 1, cursorFrameIndex = 0 }
+  local menuStatus = { selectedPosition = 0, actions = {} }
   local state, sink = drawableState({
     hostStatus = { phase = "menu", fadeAlpha = 0, menu = menuStatus },
     dialogueModal = true,

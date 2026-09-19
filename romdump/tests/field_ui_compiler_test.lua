@@ -17,6 +17,8 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local PngReader = require("tests.support.PngReader")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
@@ -545,16 +547,16 @@ function T.compiles_the_manifest_and_all_assets()
     "type 1 map 21 (the corpus maximum) carries a wayfinding row"
   )
   Assert.isNil(bundle.manifest.signposts.types[2].wayfinding, "type 2 has no map graphic")
-  Assert.equal(bundle.manifest.startMenu.slots[10].x, 128)
+  Assert.isNil(bundle.manifest.startMenu.slots, "the normal selector publishes no synthetic slot grid")
   local assetCount = 0
   for _ in pairs(bundle.assets) do
     assetCount = assetCount + 1
   end
-  -- Eleven base assets plus the four start-menu icon-contract images (shared
-  -- icon atlas, selection-bank highlight atlas, palette record, SUB chrome)
-  -- plus the sixteen naming OBJ visuals (six controls, keyboard cursor, five
-  -- home cursor variants, two entry slots, two player subjects).
-  Assert.equal(assetCount, 31)
+  -- Eleven base assets plus the three start-menu icon-contract images (the
+  -- shared icon atlas, the palette record, SUB chrome) plus the sixteen
+  -- naming OBJ visuals (six controls, keyboard cursor, five home cursor
+  -- variants, two entry slots, two player subjects).
+  Assert.equal(assetCount, 30)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
@@ -771,7 +773,10 @@ local function withIconBank(members)
   for _, memberId in ipairs(ICON_CHAR_MEMBERS) do
     members[memberId + 1] = lz10Wrap(charData(20, memberId % 16))
   end
-  members[15] = lz10Wrap(palette16())
+  -- The icon palette carries distinct banks (bank b slot s decodes b + s*32,
+  -- so no two banks share a color): the OAM bank proves per-object palette
+  -- selection while the selection bank proves the selected-state render.
+  members[15] = lz10Wrap(paletteData(distinctSignpostPalette(4)))
   members[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
   members[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
   return members
@@ -849,8 +854,10 @@ function T.start_menu_icon_rows_carry_label_ids_with_the_trainer_card_placeholde
   Assert.equal(row(12).label, 34, "union rows label from bank ids 34/35")
   Assert.equal(row(13).label, 35)
   local variants = assert(row(3).variants, "the bag row carries its gender-conditional variant")
-  Assert.notNil(variants.default, "the bag row carries the default art")
-  Assert.notNil(variants.female, "the bag row carries the female art as a first-class variant")
+  Assert.isNil(variants.default, "the bag row carries no default variant: its own visual is the default art")
+  local female = assert(variants.female, "the bag row carries the female art as a first-class variant")
+  Assert.notNil(female.normal, "the female variant carries the normal visual record")
+  Assert.notNil(female.selected, "the female variant carries the selected visual record")
 end
 
 -- The SUB chrome set compiles alongside the main triple: the background set
@@ -878,14 +885,18 @@ function T.start_menu_sub_chrome_compiles_the_window_grid()
   local chrome = assert(startMenu.chrome, "the start menu section must carry its chrome")
   Assert.notNil(chrome.main, "the chrome carries the transparent main panel")
   Assert.notNil(chrome.sub, "the chrome carries the sub background set")
-  local windows = assert(startMenu.labelWindows, "the start menu section must carry its label windows")
-  local windowCount = 0
-  for _ in pairs(windows) do
-    windowCount = windowCount + 1
+  local interactive =
+    assert(startMenu.interactive, "the start menu section must carry its interactive position records")
+  local positionCount = 0
+  for _ in pairs(interactive.positions) do
+    positionCount = positionCount + 1
   end
-  Assert.equal(windowCount, 7, "seven sprite slots carry one label window each")
-  for slotId = 2, 8 do
-    Assert.notNil(windows[slotId], "destination slot " .. slotId .. " carries its own label window")
+  Assert.equal(positionCount, 7, "seven normal positions carry one label window each")
+  for position = 0, 6 do
+    Assert.notNil(
+      interactive.positions[position] and interactive.positions[position].labelWindow,
+      "normal position " .. position .. " carries its own label window"
+    )
   end
 end
 
@@ -1637,6 +1648,130 @@ function T.naming_object_visuals_honor_per_oam_palette_selection()
   local _, maleBytes = imageBytes(subjects.male)
   local _, femaleBytes = imageBytes(subjects.female)
   Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
+end
+
+-- The normal start-menu icon visuals are source-composed sprite frames, not
+-- fixed CHAR crops: every sprite row carries the shared cell/animation
+-- compositor's pixels with its source-relative offset, and the manifest
+-- publishes the seven source-position records the runtime selector consumes.
+-- The tampered icon cell below carries two objects with a negative local
+-- origin, a horizontal flip, and a non-zero palette bank, so a fixed 32x40
+-- crop at a zero origin cannot accidentally reproduce it. Member numbers are
+-- the producer-side selection (this is the romdump-side test).
+local TAMPERED_ICON_CELL = {
+  { x = -8, y = 4, tile = 0, pal = 2, flipH = true },
+  { x = 0, y = 4, tile = 1, pal = 2 },
+}
+
+local function iconComposedFixture()
+  return fixture({
+    tamper = function(alias, members)
+      if alias == "start_menu" then
+        withIconBank(members)
+        members[17] = lz10Wrap(cellData(TAMPERED_ICON_CELL))
+      end
+      return members
+    end,
+  })
+end
+
+-- The shared compositor's own answer for one icon char bank over the tampered
+-- cell: the exact pixels and source-relative offset the compiled visual must
+-- pack and record.
+---@param charBase integer the icon char bank base the fixture builds per member
+---@return { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }
+local function expectedIconFrame(charBase)
+  local char = assert(G2dDecoder.decodeChar(charData(20, charBase)))
+  local palette = assert(G2dDecoder.decodePalette(paletteData(distinctSignpostPalette(4))))
+  local cell = assert(G2dDecoder.decodeCell(cellData(TAMPERED_ICON_CELL)))
+  local anim = assert(G2dDecoder.decodeAnimation(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } })))
+  return G2dRasterizer.renderAnimationFrame(char, { colors = palette.colors }, cell, anim.anims[1], 1, {
+    asset = "start menu icon expectation",
+  })
+end
+
+---@param bundle table
+---@param assetId string
+---@return integer, integer, string
+local function atlasRgba(bundle, assetId)
+  local entry = assert(bundle.manifest.assets[assetId], "the generated class must index asset " .. assetId)
+  return PngReader.rgba(assert(bundle.assets[entry.image]))
+end
+
+---@param rgba string
+---@param atlasWidth integer
+---@param rect table
+---@return string
+local function regionPixels(rgba, atlasWidth, rect)
+  local region = {}
+  for y = 0, rect.height - 1 do
+    local rowStart = (rect.y + y) * atlasWidth * 4
+    region[#region + 1] = rgba:sub(rowStart + rect.x * 4 + 1, rowStart + (rect.x + rect.width) * 4)
+  end
+  return table.concat(region)
+end
+
+function T.start_menu_compiles_the_seven_source_position_records()
+  local romFs, sha1, hashLua = iconComposedFixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  local interactive =
+    assert(startMenu.interactive, "the start menu section must publish its interactive position records")
+  Assert.deepEqual(interactive, FieldUiFixture.startMenuInteractive())
+  Assert.isNil(startMenu.slots, "the normal selector publishes no synthetic slot grid")
+end
+
+function T.start_menu_icon_visuals_match_the_shared_animation_composition()
+  local romFs, sha1, hashLua = iconComposedFixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  -- Retail icon 0 compiles from char member 18, whose fixture bank base is 2.
+  local expected = expectedIconFrame(18 % 16)
+  Assert.isTrue(expected.width ~= 32 or expected.height ~= 40, "the probe cell is not the fixed 32x40 crop")
+  local row = assert(startMenu.iconTable[1], "icon row 1 must exist")
+  local visual = assert(row.visual, "icon row 1 must carry its source-composed visual, not a fixed crop rect")
+  local normal = assert(visual.normal, "the icon visual carries its normal state")
+  local selected = assert(visual.selected, "the icon visual carries its selected state")
+  Assert.equal(normal.asset, FieldUiAssetCache.ASSET.START_MENU_ICONS, "the normal visual names the shared atlas")
+  Assert.equal(selected.asset, FieldUiAssetCache.ASSET.START_MENU_ICONS, "the selected visual names the shared atlas")
+  Assert.deepEqual(normal.offset, expected.offset, "the normal visual keeps the compositor source-relative offset")
+  Assert.equal(normal.rect.width, expected.width, "the normal visual keeps the compositor frame width")
+  Assert.equal(normal.rect.height, expected.height, "the normal visual keeps the compositor frame height")
+  local width, _, rgba = atlasRgba(bundle, normal.asset)
+  Assert.equal(regionPixels(rgba, width, normal.rect), expected.pixels, "the normal visual packs the compositor pixels")
+  local selectedPixels = regionPixels(rgba, width, selected.rect)
+  Assert.isTrue(selectedPixels ~= expected.pixels, "the selected state renders through the selection palette")
+end
+
+function T.bag_female_variant_carries_its_own_composed_frame()
+  local romFs, sha1, hashLua = iconComposedFixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local startMenu = assert(bundle.manifest.startMenu, "the manifest must carry the start menu section")
+  -- The Bag female art compiles from char member 27, whose fixture bank base
+  -- is 11: same cell geometry as the default art, distinct pixels.
+  local expectedFemale = expectedIconFrame(27 % 16)
+  local expectedDefault = expectedIconFrame(18 % 16)
+  Assert.isTrue(expectedFemale.pixels ~= expectedDefault.pixels, "the probe banks render distinct art")
+  local row = assert(startMenu.iconTable[3], "the bag row must exist")
+  local variants = assert(row.variants, "the bag row carries its gender-conditional variant")
+  local female = assert(variants.female, "the bag row carries the female art as a first-class variant")
+  local femaleNormal = assert(female.normal, "the female variant carries the same normal/selected record shape")
+  local femaleSelected = assert(female.selected, "the female variant carries the same normal/selected record shape")
+  Assert.deepEqual(
+    femaleNormal.offset,
+    expectedFemale.offset,
+    "the female visual keeps its own compositor source-relative offset"
+  )
+  local width, _, rgba = atlasRgba(bundle, femaleNormal.asset)
+  Assert.equal(
+    regionPixels(rgba, width, femaleNormal.rect),
+    expectedFemale.pixels,
+    "the female visual packs its own compositor pixels"
+  )
+  Assert.isTrue(
+    regionPixels(rgba, width, femaleSelected.rect) ~= regionPixels(rgba, width, femaleNormal.rect),
+    "the female selected state renders through the selection palette"
+  )
 end
 
 return { tests = T }

@@ -49,7 +49,7 @@ local function boot(withCover)
   FieldRuntime.new = function(_, _)
     return setmetatable({
       cacheFs = cache,
-      uiManifest = FieldUiFixture.manifest(),
+      uiManifest = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()),
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },
         effects = {

@@ -55,7 +55,6 @@ FieldUiAssetCache.ASSET = {
   START_MENU_BACKGROUND = "hgss.start_menu.background",
   START_MENU_CURSOR = "hgss.start_menu.cursor",
   START_MENU_ICONS = "hgss.start_menu.icons",
-  START_MENU_ICON_HIGHLIGHT = "hgss.start_menu.icon_highlight",
   START_MENU_ICON_PALETTE = "hgss.start_menu.icon_palette",
   START_MENU_POKE_ICONS = "hgss.start_menu.poke_icons",
   START_MENU_CHROME_SUB = "hgss.start_menu.chrome_sub",
@@ -488,33 +487,37 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, Errors.new(MANIFEST_INVALID, "cursor frame duration must be a positive integer", {})
       end
     end
-    -- The producer compiles the HGSS touch surface: ten slots in a complete
-    -- 1..10 grid (the touch handler maps touch ids 1..10). The manifest pins
-    -- the dense grid so the controller never rediscovers slot assumptions.
-    if type(s.slots) ~= "table" then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.slots must be a table", {})
-    end
-    local slotCount = 0
-    for _ in pairs(s.slots) do
-      slotCount = slotCount + 1
-    end
-    if slotCount ~= 10 then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.slots must be exactly the ten-slot grid", {})
-    end
-    for id = 1, 10 do
-      local slot = s.slots[id]
-      if slot == nil then
-        return false, Errors.new(MANIFEST_INVALID, "startMenu.slots must be the dense 1..10 grid", {})
+    -- One composed sprite visual: an indexed atlas asset, a non-negative
+    -- in-atlas rect, and the compositor's frame offset. The offset is a
+    -- signed integral pair: a frame may extend left/up of its source anchor.
+    local function spriteVisual(visual, what)
+      if type(visual) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be a table", { what = what })
       end
-      local slotOk, slotErr = rectInAtlas(slot, FieldUiAssetCache.ASSET.START_MENU_BACKGROUND, "start menu slot " .. id)
-      if not slotOk then
-        return false, slotErr
+      if type(visual.asset) ~= "string" or atlasSizes[visual.asset] == nil then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must reference an indexed asset", { what = what })
       end
+      local rectOk, rectErr = rectInAtlas(visual.rect, visual.asset, what .. " rect")
+      if not rectOk then
+        return false, rectErr
+      end
+      if
+        type(visual.offset) ~= "table"
+        or type(visual.offset.x) ~= "number"
+        or visual.offset.x % 1 ~= 0
+        or type(visual.offset.y) ~= "number"
+        or visual.offset.y % 1 ~= 0
+      then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must carry an integral frame offset", { what = what })
+      end
+      return true
     end
     -- The retail icon-sprite contract: thirteen icon rows (Lua index =
     -- retail icon index + 1) with per-row art kind and label data, the
-    -- shared icon/highlight atlases and palette record, seven context rows,
-    -- the action-to-icon map, sprite bases, label windows, and chrome.
+    -- shared icon atlas and palette record, seven context rows, the
+    -- action-to-icon map, and chrome. Sprite rows carry source-composed
+    -- normal/selected visuals (the Bag row carries the female pair as a
+    -- first-class variant); text and poke-icon rows carry no art.
     if type(s.iconTable) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable must be a table", {})
     end
@@ -536,10 +539,12 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " art is invalid", {})
       end
       if row.art == "sprite" then
-        local rectOk, rectErr =
-          rectInAtlas(row.rect, FieldUiAssetCache.ASSET.START_MENU_ICONS, "start menu icon row " .. index)
-        if not rectOk then
-          return false, rectErr
+        for _, key in ipairs({ "normal", "selected" }) do
+          local visual = type(row.visual) == "table" and row.visual[key] or nil
+          local visualOk, visualErr = spriteVisual(visual, "start menu icon row " .. index .. " " .. key .. " visual")
+          if not visualOk then
+            return false, visualErr
+          end
         end
       end
       if type(row.label) ~= "number" or row.label % 1 ~= 0 or row.label < 0 then
@@ -554,22 +559,21 @@ function FieldUiAssetCache.validateManifest(manifest)
           return false,
             Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " variants must be a table", {})
         end
-        for _, key in ipairs({ "default", "female" }) do
-          local variantOk, variantErr = rectInAtlas(
-            row.variants[key],
-            FieldUiAssetCache.ASSET.START_MENU_ICONS,
-            "start menu icon row " .. index .. " variant " .. key
-          )
+        local variantCount = 0
+        for _ in pairs(row.variants) do
+          variantCount = variantCount + 1
+        end
+        if variantCount ~= 1 or type(row.variants.female) ~= "table" then
+          return false,
+            Errors.new(MANIFEST_INVALID, "startMenu.iconTable row " .. index .. " carries only the female variant", {})
+        end
+        for _, key in ipairs({ "normal", "selected" }) do
+          local variantOk, variantErr =
+            spriteVisual(row.variants.female[key], "start menu icon row " .. index .. " female " .. key .. " visual")
           if not variantOk then
             return false, variantErr
           end
         end
-      end
-    end
-    for _, key in ipairs({ "iconAtlas", "iconHighlight" }) do
-      local ref = s[key]
-      if type(ref) ~= "table" or type(ref.asset) ~= "string" or atlasSizes[ref.asset] == nil then
-        return false, Errors.new(MANIFEST_INVALID, "startMenu." .. key .. " must reference an indexed asset", {})
       end
     end
     local palette = s.iconPalette
@@ -642,56 +646,124 @@ function FieldUiAssetCache.validateManifest(manifest)
           Errors.new(MANIFEST_INVALID, "startMenu.actionIcons " .. actionId .. " must map to a sprite icon row", {})
       end
     end
-    if type(s.iconBases) ~= "table" then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconBases must be a table", {})
-    end
-    local baseCount = 0
-    for _ in pairs(s.iconBases) do
-      baseCount = baseCount + 1
-    end
-    if baseCount ~= 7 then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.iconBases must carry one base per sprite slot", {})
-    end
-    for slotId = 2, 8 do
-      local base = s.iconBases[slotId]
-      if
-        type(base) ~= "table"
-        or type(base.x) ~= "number"
-        or type(base.y) ~= "number"
-        or base.x % 1 ~= 0
-        or base.y % 1 ~= 0
-        or base.x < 0
-        or base.y < 0
-      then
-        return false, Errors.new(MANIFEST_INVALID, "startMenu.iconBases slot " .. slotId .. " is invalid", {})
+    -- The normal interactive selector: exactly the seven source positions
+    -- 0..6, each carrying its action anchor, label window, touch hit
+    -- rectangle, and four ordered three-candidate navigation lists, plus the
+    -- cancel/header hit rectangle. Anchors are integral canonical points;
+    -- label and hit rectangles stay inside the canonical 256x192 surface;
+    -- every candidate names a normal position.
+    local function canonicalRect(rect, what)
+      if type(rect) ~= "table" then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be a rectangle", { what = what })
       end
+      for _, field in ipairs({ "x", "y", "width", "height" }) do
+        local v = rect[field]
+        if type(v) ~= "number" or v % 1 ~= 0 or v < 0 then
+          return false,
+            Errors.new(MANIFEST_INVALID, what .. " " .. field .. " must be a non-negative integer", {
+              what = what,
+              field = field,
+            })
+        end
+      end
+      if rect.width == 0 or rect.height == 0 then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must be non-empty", { what = what })
+      end
+      if rect.x + rect.width > 256 or rect.y + rect.height > 192 then
+        return false, Errors.new(MANIFEST_INVALID, what .. " must stay inside the 256x192 surface", { what = what })
+      end
+      return true
     end
-    if type(s.labelWindows) ~= "table" then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.labelWindows must be a table", {})
+    if type(s.interactive) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.interactive must be a table", {})
     end
-    local windowCount = 0
-    for _ in pairs(s.labelWindows) do
-      windowCount = windowCount + 1
+    local cancelOk, cancelErr = canonicalRect(s.interactive.cancelHitRect, "start menu cancel hit rectangle")
+    if not cancelOk then
+      return false, cancelErr
     end
-    if windowCount ~= 7 then
-      return false, Errors.new(MANIFEST_INVALID, "startMenu.labelWindows must carry seven sprite-slot windows", {})
+    if type(s.interactive.positions) ~= "table" then
+      return false, Errors.new(MANIFEST_INVALID, "startMenu.interactive.positions must be a table", {})
     end
-    for slotId = 2, 8 do
-      local window = s.labelWindows[slotId]
+    local positionCount = 0
+    for _ in pairs(s.interactive.positions) do
+      positionCount = positionCount + 1
+    end
+    if positionCount ~= 7 then
+      return false,
+        Errors.new(MANIFEST_INVALID, "startMenu.interactive must carry exactly the seven normal positions", {})
+    end
+    for position = 0, 6 do
+      local record = s.interactive.positions[position]
+      if type(record) ~= "table" then
+        return false,
+          Errors.new(MANIFEST_INVALID, "startMenu.interactive position " .. position .. " must be a table", {})
+      end
       if
-        type(window) ~= "table"
-        or type(window.x) ~= "number"
-        or type(window.y) ~= "number"
-        or type(window.width) ~= "number"
-        or type(window.height) ~= "number"
-        or window.x < 0
-        or window.y < 0
-        or window.width < 1
-        or window.height < 1
-        or window.x + window.width > 256
-        or window.y + window.height > 192
+        type(record.anchor) ~= "table"
+        or type(record.anchor.x) ~= "number"
+        or record.anchor.x % 1 ~= 0
+        or type(record.anchor.y) ~= "number"
+        or record.anchor.y % 1 ~= 0
       then
-        return false, Errors.new(MANIFEST_INVALID, "startMenu.labelWindows window " .. slotId .. " is invalid", {})
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "startMenu.interactive position " .. position .. " anchor must be an integral point",
+            {}
+          )
+      end
+      local labelOk, labelErr = canonicalRect(record.labelWindow, "start menu position " .. position .. " label window")
+      if not labelOk then
+        return false, labelErr
+      end
+      local hitOk, hitErr = canonicalRect(record.hitRect, "start menu position " .. position .. " hit rectangle")
+      if not hitOk then
+        return false, hitErr
+      end
+      if type(record.navigation) ~= "table" then
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "startMenu.interactive position " .. position .. " navigation must be a table",
+            {}
+          )
+      end
+      local directionCount = 0
+      for _ in pairs(record.navigation) do
+        directionCount = directionCount + 1
+      end
+      if directionCount ~= 4 then
+        return false,
+          Errors.new(
+            MANIFEST_INVALID,
+            "startMenu.interactive position " .. position .. " carries four navigation directions",
+            {}
+          )
+      end
+      for _, direction in ipairs({ "up", "down", "left", "right" }) do
+        local candidates = record.navigation[direction]
+        if type(candidates) ~= "table" or #candidates ~= 3 then
+          return false,
+            Errors.new(
+              MANIFEST_INVALID,
+              "startMenu.interactive position " .. position .. " " .. direction .. " must list three candidates",
+              {}
+            )
+        end
+        for _, candidate in ipairs(candidates) do
+          if type(candidate) ~= "number" or candidate % 1 ~= 0 or candidate < 0 or candidate > 6 then
+            return false,
+              Errors.new(
+                MANIFEST_INVALID,
+                "startMenu.interactive position "
+                  .. position
+                  .. " "
+                  .. direction
+                  .. " candidates must name normal positions 0..6",
+                {}
+              )
+          end
+        end
       end
     end
     if type(s.chrome) ~= "table" or type(s.chrome.main) ~= "table" or type(s.chrome.sub) ~= "table" then

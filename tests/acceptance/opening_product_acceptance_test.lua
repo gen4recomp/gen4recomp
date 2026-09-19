@@ -368,8 +368,11 @@ end
 -- as Save carry no application id and return the action for host-state
 -- assertions.
 local function hostPointForAction(runtime, action)
-  local slots = assert(runtime.uiManifest and runtime.uiManifest.startMenu.slots, "the menu manifest must carry slots")
-  local slot = assert(slots[action.slotId], "the presented action must carry its destination slot")
+  local startMenu =
+    assert(runtime.uiManifest and runtime.uiManifest.startMenu, "the menu manifest must carry startMenu")
+  local interactive = assert(startMenu.interactive, "the menu manifest must carry the interactive record")
+  local record = assert(interactive.positions[action.position], "the presented action must carry its source position")
+  local slot = record.hitRect
   local placement = assert(runtime.startMenuPlacement, "the runtime must publish the start menu placement record")
   local readable = {
     frame = placement.frame,

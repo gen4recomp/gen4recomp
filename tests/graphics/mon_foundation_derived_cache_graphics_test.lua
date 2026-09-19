@@ -175,7 +175,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
           return assert(status.menu, "the menu phase exposes its controller")
         end
         local function cursorActionId(status)
-          local position = assert(status.cursorSlotId, "menu status exposes the cursor") - 2
+          local position = assert(status.selectedPosition, "menu status must expose the selected position")
           for _, action in ipairs(assert(status.actions, "menu status lists actions")) do
             if action.position == position then
               return action.id
