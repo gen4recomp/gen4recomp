@@ -212,6 +212,85 @@ local function renderScreen(charData, palette, screen, source, options)
   return PngWriter.encode(image.width, image.height, image.pixels)
 end
 
+-- Paint the retail keyboard fill into one rasterized naming page: the
+-- page-local window first takes the page frame slot over its full extent,
+-- then the grid cells take the companion slot wherever (row + column)
+-- parity is odd. Both slots resolve through palette bank 1: retail opens
+-- the keyboard windows with palette 1 (AddWindowParameterized ... 1 ...)
+-- and NamingScreen_DrawKeyboardOnWindow fills raw 4bpp values
+-- (sKeyboardFrameColors/sKeyboardFillValues) into that window, so value v
+-- displays as bank-1 slot v. The window holds five row-height rows inside
+-- its full height, so the final bottom pixel row keeps the frame slot. A
+-- window that leaves the page, or frame/companion slots the palette cannot
+-- serve, is corrupt source, never a silent clip or substitute color.
+---@param image { width: integer, height: integer, pixels: string }
+---@param window { x: integer, y: integer, width: integer, height: integer, columns: integer, rows: integer, cellWidth: integer, rowHeight: integer, textInsetY: integer }
+---@param role { base: integer, alternate: integer }
+---@param colors { r: integer, g: integer, b: integer }[]
+---@param pageKey string
+---@return string PNG bytes for the composed page
+local function composeNamingPageWindow(image, window, role, colors, pageKey)
+  if
+    window.x < 0
+    or window.y < 0
+    or window.x + window.width > image.width
+    or window.y + window.height > image.height
+  then
+    Errors.raise(
+      FieldUiCompiler.ERROR.SOURCE_INVALID,
+      "the naming keyboard window must fit its page raster",
+      { page = pageKey, width = image.width, height = image.height }
+    )
+  end
+  -- The keyboard window carries palette bank 1 (retail opens both keyboard
+  -- windows with palette param 1), so frame/fill values resolve at
+  -- bank-1 slot v (colors[16 + v + 1]), never bank 0.
+  local bankBase = 16
+  local base = colors[bankBase + role.base + 1]
+  local alternate = colors[bankBase + role.alternate + 1]
+  if base == nil or alternate == nil then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming palette must serve the keyboard window slots", {
+      page = pageKey,
+      bank = 1,
+      base = role.base,
+      alternate = role.alternate,
+      available = #colors,
+    })
+  end
+  assert(base ~= nil and alternate ~= nil, "missing keyboard window slots fail above")
+  local bytes = {}
+  do
+    local raw = image.pixels
+    for i = 1, #raw, 4096 do
+      local chunk = { string.byte(raw, i, math.min(i + 4095, #raw)) }
+      for j = 1, #chunk do
+        bytes[#bytes + 1] = chunk[j]
+      end
+    end
+  end
+  local function setPixel(x, y, color)
+    local offset = (y * image.width + x) * 4
+    bytes[offset + 1], bytes[offset + 2], bytes[offset + 3], bytes[offset + 4] = color.r, color.g, color.b, 255
+  end
+  for y = window.y, window.y + window.height - 1 do
+    for x = window.x, window.x + window.width - 1 do
+      setPixel(x, y, base)
+    end
+  end
+  for row = 0, window.rows - 1 do
+    for column = 0, window.columns - 1 do
+      if (row + column) % 2 == 1 then
+        for y = window.y + row * window.rowHeight, window.y + (row + 1) * window.rowHeight - 1 do
+          for x = window.x + column * window.cellWidth, window.x + (column + 1) * window.cellWidth - 1 do
+            setPixel(x, y, alternate)
+          end
+        end
+      end
+    end
+  end
+  return PngWriter.encode(image.width, image.height, concatChars(bytes))
+end
+
 local function cellBounds(cell)
   local first = assert(cell.objs[1], "cell bounds require at least one object")
   local minX, minY, maxX, maxY = first.x, first.y, first.x + first.width, first.y + first.height
@@ -1074,10 +1153,12 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       )
     end
     local path = FieldUiAssetCache.assetDir() .. "/naming-screen-page-" .. key .. ".png"
-    assets[path] = renderScreen(charData, palette.colors, screen, {
+    local pageImage = G2dRasterizer.renderScreen(charData, { colors = palette.colors }, screen, {
       asset = "naming screen " .. key .. " page",
       member = screenMember,
     })
+    assets[path] =
+      composeNamingPageWindow(pageImage, cfg.keyboardWindow, cfg.keyboardWindow.pages[key], palette.colors, key)
     manifestAssets[pageAssetIds[key]] = { image = path, width = screen.width, height = screen.height }
     pages[key] = { asset = pageAssetIds[key], width = screen.width, height = screen.height }
   end
@@ -1341,16 +1422,17 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
   )
   subjectFemale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
 
-  -- Keyboard text cells in final canonical coordinates: the page-art text
-  -- origin plus the same y=80 page placement the generated page overlays use.
+  -- Keyboard text cells in final canonical coordinates: page placement
+  -- plus the keyboard window origin plus the glyph inset below each row top.
+  local keyboardWindow = cfg.keyboardWindow
   local keyboardCells = {}
-  for row = 1, cfg.keyboardText.rows do
+  for row = 1, keyboardWindow.rows do
     keyboardCells[row] = {}
-    for column = 1, cfg.keyboardText.columns do
+    for column = 1, keyboardWindow.columns do
       keyboardCells[row][column] = {
-        x = cfg.keyboardText.originX + (column - 1) * cfg.keyboardText.stepX,
-        y = 80 + cfg.keyboardText.originY + (row - 1) * cfg.keyboardText.stepY,
-        width = cfg.keyboardText.cellWidth,
+        x = cfg.pagePlacement.x + keyboardWindow.x + (column - 1) * keyboardWindow.cellWidth,
+        y = cfg.pagePlacement.y + keyboardWindow.y + keyboardWindow.textInsetY + (row - 1) * keyboardWindow.rowHeight,
+        width = keyboardWindow.cellWidth,
       }
     end
   end

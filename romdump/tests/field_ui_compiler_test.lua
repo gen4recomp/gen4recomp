@@ -1969,4 +1969,182 @@ function T.bag_female_variant_carries_its_own_composed_frame()
   )
 end
 
+-- The expected keyboard-window pixel colors come from bank 1 of the
+-- fixture BG palette: retail opens the keyboard windows with palette 1,
+-- so value v displays as bank-1 slot v (colors is 1-based, hence
+-- colors[16 + v + 1]). The shared fixture repeats its pattern across
+-- banks, so this helper resolves the bank-1 index explicitly while the
+-- real-palette ROM test below is the guard that distinguishes the banks.
+local function namingSlotPalette()
+  local decoded = assert(G2dDecoder.decodePalette(palette16(), { label = "naming window test palette" }))
+  return decoded.colors
+end
+
+local function namingPagePixels(bundle, assetId)
+  local entry = assert(bundle.manifest.assets[assetId], "the naming page asset is indexed: " .. assetId)
+  local bytes = assert(bundle.assets[entry.image], "the naming page has generated pixels: " .. entry.image)
+  local width, height, rgba = PngReader.rgba(bytes)
+  Assert.equal(width, 256, "the naming page stays 256 wide")
+  Assert.equal(height, 112, "the naming page stays 112 tall")
+  return width, rgba
+end
+
+local function assertNamingPixel(width, rgba, x, y, colors, slot, what)
+  local expected = assert(colors[16 + slot + 1], "the fixture palette covers bank-1 slot " .. slot)
+  local r, g, b, a = PngReader.pixel(rgba, width, x, y)
+  local where = what .. " at (" .. x .. "," .. y .. ")"
+  Assert.equal(a, 255, where .. " is opaque window art")
+  Assert.equal(r, expected.r, where .. " red")
+  Assert.equal(g, expected.g, where .. " green")
+  Assert.equal(b, expected.b, where .. " blue")
+end
+
+-- Every normal page carries the retail keyboard window the original game
+-- fills dynamically before printing letters: the page-local 208x96 window at
+-- (16,8) in the page base slot, resolved through palette bank 1, partitioned into 13x5 16x19 cells whose
+-- color alternates with (row + column) parity exactly like the source fill
+-- loops (row 0 colors odd columns alternate, row 1 colors even columns, and
+-- so on). The final bottom pixel row of the 96px window stays the base
+-- color. Cell centers plus the row/column boundary pixels pin the 16x19
+-- geometry so an inverted checkerboard or a shifted grid fails.
+function T.naming_pages_compose_the_source_keyboard_window()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
+  local colors = namingSlotPalette()
+  local roles = {
+    upper = { base = 4, alternate = 3 },
+    lower = { base = 7, alternate = 6 },
+    symbols = { base = 13, alternate = 12 },
+  }
+  for _, key in ipairs({ "upper", "lower", "symbols" }) do
+    local page = assert(naming.pages[key], "the normal " .. key .. " page is required")
+    local width, rgba = namingPagePixels(bundle, page.asset)
+    local role = roles[key]
+    for row = 0, 4 do
+      for column = 0, 12 do
+        local slot = role.base
+        if (row + column) % 2 == 1 then
+          slot = role.alternate
+        end
+        assertNamingPixel(
+          width,
+          rgba,
+          16 + column * 16 + 8,
+          8 + row * 19 + 9,
+          colors,
+          slot,
+          "the " .. key .. " window cell row " .. row .. " column " .. column
+        )
+      end
+    end
+    for column = 0, 12 do
+      assertNamingPixel(
+        width,
+        rgba,
+        16 + column * 16 + 8,
+        8 + 95,
+        colors,
+        role.base,
+        "the " .. key .. " window bottom remainder"
+      )
+    end
+    assertNamingPixel(width, rgba, 16 + 15, 8 + 9, colors, role.base, "the " .. key .. " column 0 edge")
+    assertNamingPixel(width, rgba, 16 + 16, 8 + 9, colors, role.alternate, "the " .. key .. " column 1 edge")
+    assertNamingPixel(width, rgba, 16 + 8, 8 + 18, colors, role.base, "the " .. key .. " row 0 edge")
+    assertNamingPixel(width, rgba, 16 + 8, 8 + 19, colors, role.alternate, "the " .. key .. " row 1 edge")
+  end
+end
+
+-- The generated backing rows and the published runtime text cells share one
+-- geometry: backing tops at page-local 8/27/46 (screen 88/107/126) on the
+-- 19px pitch, and glyph tops exactly 4px below at 92/111/130. The text
+-- values alone already match source; this scenario fails until the backing
+-- rows the text sits over exist in the generated page.
+function T.naming_backing_rows_lock_runtime_text_geometry()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
+  local colors = namingSlotPalette()
+  local upper = assert(naming.pages.upper, "the normal upper page is required")
+  local width, rgba = namingPagePixels(bundle, upper.asset)
+  assertNamingPixel(width, rgba, 16 + 8, 8 + 9, colors, 4, "the upper backing row 0")
+  assertNamingPixel(width, rgba, 16 + 8, 27 + 9, colors, 3, "the upper backing row 1")
+  assertNamingPixel(width, rgba, 16 + 8, 46 + 9, colors, 4, "the upper backing row 2")
+  local cells = assert(naming.text.keyboard.cells, "the keyboard text cells are published")
+  local expectedTops = { 92, 111, 130 }
+  for row = 1, 3 do
+    local cell = assert(cells[row][1], "keyboard text row " .. row .. " column 1 is required")
+    Assert.equal(cell.x, 27, "keyboard text row " .. row .. " starts at screen x 27")
+    Assert.equal(cell.y, expectedTops[row], "keyboard text row " .. row .. " top")
+    Assert.equal(cell.width, 16, "keyboard text cells stay 16px wide")
+    Assert.equal(
+      cell.y - (80 + (8 + (row - 1) * 19)),
+      4,
+      "keyboard text row " .. row .. " sits 4px below its backing top"
+    )
+  end
+  Assert.equal(cells[2][1].y - cells[1][1].y, 19, "backing and text advance 19px per row")
+  Assert.equal(cells[3][1].y - cells[2][1].y, 19, "backing and text advance 19px per row")
+end
+
+-- A keyboard window that does not fit the 256x112 page raster is corrupt
+-- source configuration, never a silent clip.
+function T.naming_keyboard_window_outside_the_page_is_a_source_defect()
+  local manifestConfig = require("romdump.src.config.FieldUiAssets")
+  local original = manifestConfig.namingScreen.keyboardWindow
+  manifestConfig.namingScreen.keyboardWindow = {
+    x = 200,
+    y = 8,
+    width = 208,
+    height = 96,
+    columns = 13,
+    rows = 5,
+    cellWidth = 16,
+    rowHeight = 19,
+    textInsetY = 4,
+    pages = {
+      upper = { base = 4, alternate = 3 },
+      lower = { base = 7, alternate = 6 },
+      symbols = { base = 13, alternate = 12 },
+    },
+  }
+  local romFs, sha1, hashLua = fixture()
+  local ok, bundle, err = xpcall(compileWithTestConfig, debug.traceback, romFs, sha1, hashLua)
+  manifestConfig.namingScreen.keyboardWindow = original
+  Assert.isTrue(ok, "overriding the keyboard window must not raise outside the compiler: " .. tostring(bundle))
+  Assert.isNil(bundle, "a keyboard window outside the 256x112 page must not compile")
+  Assert.equal(
+    assert(err, "the compiler reports the defect").code,
+    FieldUiCompiler.ERROR.SOURCE_INVALID,
+    "the window overflow is a typed source defect"
+  )
+end
+
+-- The three normal pages need their bank-1 base/alternate palette slots to
+-- exist; a palette too short to serve them is malformed source, never a
+-- silent substitute color. Eight colors still cover every pre-window pixel value
+-- the fixture rasterizes, so only the missing window slots can fail this.
+function T.naming_keyboard_window_with_a_missing_palette_slot_is_a_source_defect()
+  local short = {}
+  for i = 1, 8 do
+    short[i] = i * 0x39B
+  end
+  local romFs, sha1, hashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "naming_screen" then
+        members[1] = paletteOr16(short)
+      end
+      return members
+    end,
+  })
+  local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
+  Assert.isNil(bundle, "a naming palette missing the window slots must not compile")
+  Assert.equal(
+    assert(err, "the compiler reports the defect").code,
+    FieldUiCompiler.ERROR.SOURCE_INVALID,
+    "the missing palette slot is a typed source defect"
+  )
+end
+
 return { tests = T }

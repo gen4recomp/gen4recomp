@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
+local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 
@@ -201,6 +202,64 @@ function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
   local maleBytes = opaqueBytes(naming.playerSubjects.male)
   local femaleBytes = opaqueBytes(naming.playerSubjects.female)
   Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
+end
+
+-- The real dump carries the dynamically constructed retail keyboard window
+-- inside all three generated pages: the page-local 208x96 window at (16,8)
+-- painted with the page base slot and alternating 16x19 cells resolved
+-- through palette bank 1 against the real palette member, while runtime text stays on the source
+-- 19px pitch with the first row at y 92.
+function T.rom_naming_pages_carry_the_source_keyboard_window(romFs, _)
+  local selection = namingSelection()
+  local archive = assert(romFs:openNarc(selection.alias), "the naming archive opens")
+  local paletteBytes = assert(archive:readMember(selection.paletteMember), "the naming palette member exists")
+  local palette =
+    assert(G2dDecoder.decodePalette(paletteBytes, { label = "naming window palette" }), "the naming palette decodes")
+  local colors = assert(palette.colors, "the naming palette carries colors")
+  local roles = {
+    upper = { base = 4, alternate = 3 },
+    lower = { base = 7, alternate = 6 },
+    symbols = { base = 13, alternate = 12 },
+  }
+  local bundle, naming = compiledNaming(romFs)
+  for _, key in ipairs({ "upper", "lower", "symbols" }) do
+    local page = assert(naming.pages[key], "the normal " .. key .. " page is required")
+    local asset = assert(bundle.manifest.assets[page.asset], "the " .. key .. " page asset is indexed: " .. page.asset)
+    local bytes = assert(bundle.assets[asset.image], "the " .. key .. " page has generated pixels")
+    local width, height, rgba = PngReader.rgba(bytes)
+    Assert.equal(width, 256, key .. " page width")
+    Assert.equal(height, 112, key .. " page height")
+    local role = roles[key]
+    for row = 0, 4 do
+      for column = 0, 12 do
+        local slot = role.base
+        if (row + column) % 2 == 1 then
+          slot = role.alternate
+        end
+        local expected = assert(colors[16 + slot + 1], "the palette covers bank-1 slot " .. slot)
+        local x, y = 16 + column * 16 + 8, 8 + row * 19 + 9
+        local r, g, b, a = PngReader.pixel(rgba, width, x, y)
+        local where = "the " .. key .. " window row " .. row .. " column " .. column
+        Assert.equal(a, 255, where .. " is opaque")
+        Assert.equal(r, expected.r, where .. " red")
+        Assert.equal(g, expected.g, where .. " green")
+        Assert.equal(b, expected.b, where .. " blue")
+      end
+    end
+    local remainder = assert(colors[16 + role.base + 1], "the palette covers the bank-1 base slot")
+    local rr, rg, rb, ra = PngReader.pixel(rgba, width, 16 + 8, 8 + 95)
+    Assert.equal(ra, 255, "the " .. key .. " window bottom remainder is opaque")
+    Assert.equal(rr, remainder.r, "the " .. key .. " window bottom remainder red")
+    Assert.equal(rg, remainder.g, "the " .. key .. " window bottom remainder green")
+    Assert.equal(rb, remainder.b, "the " .. key .. " window bottom remainder blue")
+  end
+  local cells = assert(naming.text.keyboard.cells, "the keyboard text cells are published")
+  Assert.equal(cells[1][1].x, 27, "the first keyboard cell starts at screen x 27")
+  Assert.equal(cells[1][1].y, 92, "the first keyboard row starts at screen y 92")
+  Assert.equal(cells[2][1].y, 111, "the second keyboard row starts at screen y 111")
+  Assert.equal(cells[3][1].y, 130, "the third keyboard row starts at screen y 130")
+  Assert.equal(cells[2][1].y - cells[1][1].y, 19, "keyboard rows step 19 pixels")
+  Assert.equal(cells[3][1].y - cells[2][1].y, 19, "keyboard rows step 19 pixels")
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)
