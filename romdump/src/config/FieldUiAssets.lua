@@ -282,17 +282,29 @@ return {
     entryStepX = 12,
     nameOrigin = { x = 80, y = 24 },
     nameAdvanceX = 12,
-    -- Keyboard text cells in final screen pixels: the keyboard window opens
-    -- at local x=16 on the keyboard BG scrolled to X=-11, so the first glyph
-    -- cell rests at screen x=27. Rows start at screen y=92 on 19px steps.
-    keyboardText = {
-      originX = 27,
-      originY = 12,
-      stepX = 16,
-      stepY = 19,
-      rows = 5,
+    -- Keyboard window the retail keyboard fill owns before text is printed:
+    -- the window opens at tile (2,1), so page-local (16,8), spanning 26x12
+    -- tiles (208x96 pixels). The fill paints the page frame slot over the
+    -- whole window, then 13x5 16x19 cells taking the companion slot wherever
+    -- (row + column) parity is odd; the final bottom pixel row keeps the
+    -- frame slot. Both slots resolve through palette bank 1 (retail opens
+    -- the keyboard windows with palette 1). Glyphs print 4 pixels below each row top on the 16-pixel
+    -- column pitch, so the runtime text cells derive from this same record.
+    keyboardWindow = {
+      x = 16,
+      y = 8,
+      width = 208,
+      height = 96,
       columns = 13,
+      rows = 5,
       cellWidth = 16,
+      rowHeight = 19,
+      textInsetY = 4,
+      pages = {
+        upper = { base = 4, alternate = 3 },
+        lower = { base = 7, alternate = 6 },
+        symbols = { base = 13, alternate = 12 },
+      },
     },
   },
 }

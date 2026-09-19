@@ -395,4 +395,25 @@ function T.canonical_and_integer_host_scales_share_one_logical_surface()
   end
 end
 
+-- The runtime keyboard text keeps the source row geometry no backing repair
+-- may ever retune: the first three letter rows start at 92, 111, and 130
+-- with a 19px pitch, and every row holds thirteen 16px cells from x 27.
+function T.keyboard_text_rows_keep_the_source_pitch()
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local cells = assert(manifest.namingScreen.text.keyboard.cells)
+  local expectedTops = { 92, 111, 130, 149, 168 }
+  for row = 1, 5 do
+    Assert.equal(cells[row][1].y, expectedTops[row], "keyboard row " .. row .. " top")
+    Assert.equal(cells[row][1].x, 27, "keyboard row " .. row .. " starts at screen x 27")
+    Assert.equal(cells[row][1].width, 16, "keyboard row " .. row .. " cells stay 16px wide")
+    for column = 2, 13 do
+      Assert.equal(cells[row][column].x - cells[row][column - 1].x, 16, "keyboard row " .. row .. " columns step 16px")
+      Assert.equal(cells[row][column].y, expectedTops[row], "keyboard row " .. row .. " stays level")
+    end
+    if row > 1 then
+      Assert.equal(cells[row][1].y - cells[row - 1][1].y, 19, "keyboard rows step 19px into row " .. row)
+    end
+  end
+end
+
 return GraphicsSmoke.suite(T)

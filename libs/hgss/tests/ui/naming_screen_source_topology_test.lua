@@ -120,14 +120,14 @@ end
 
 function T.tests.keyboard_text_rows_keep_the_retail_row_formula()
   local FieldUiAssets = require("romdump.src.config.FieldUiAssets")
-  local text = assert(
-    FieldUiAssets.namingScreen and FieldUiAssets.namingScreen.keyboardText,
-    "the field-UI source config publishes keyboard text geometry"
-  )
-  Assert.equal(text.originX, 27, "keyboard text starts at screen x 27")
-  Assert.equal(text.originY, 12, "keyboard text starts 12 pixels inside the keyboard window")
-  Assert.equal(text.stepX, 16, "keyboard columns step 16 pixels")
-  Assert.equal(text.stepY, 19, "keyboard rows keep the 19-pixel source step")
+  local naming = assert(FieldUiAssets.namingScreen, "the field-UI source config publishes naming geometry")
+  local window = assert(naming.keyboardWindow, "the keyboard text geometry derives from the window record")
+  local originX = naming.pagePlacement.x + window.x
+  local originY = window.y + window.textInsetY
+  Assert.equal(originX, 27, "keyboard text starts at screen x 27")
+  Assert.equal(originY, 12, "keyboard text starts 12 pixels inside the keyboard window")
+  Assert.equal(window.cellWidth, 16, "keyboard columns step 16 pixels")
+  Assert.equal(window.rowHeight, 19, "keyboard rows keep the 19-pixel source step")
   local localRows = {}
   for row = 1, 5 do
     localRows[row] = 19 * (row - 1) + 4
@@ -135,7 +135,7 @@ function T.tests.keyboard_text_rows_keep_the_retail_row_formula()
   Assert.deepEqual(localRows, { 4, 23, 42, 61, 80 }, "local keyboard rows follow 19 * i + 4")
   local composed = {}
   for row = 1, 5 do
-    composed[row] = 80 + text.originY + (row - 1) * text.stepY
+    composed[row] = 80 + originY + (row - 1) * window.rowHeight
   end
   Assert.deepEqual(composed, { 92, 111, 130, 149, 168 }, "composed rows add the page/window transform")
 end

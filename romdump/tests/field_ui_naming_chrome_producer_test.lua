@@ -40,10 +40,15 @@ function T.final_page_control_and_keyboard_geometry_match_source_transforms()
   Assert.deepEqual(config.objAnchors.ok, { x = 198, y = 68 }, "objAnchors.ok")
   Assert.deepEqual(config.objAnchors.backing, { x = 22, y = 56 }, "objAnchors.backing")
   Assert.deepEqual(config.objAnchors.subject, { x = 24, y = 8 }, "objAnchors.subject")
-  Assert.equal(config.keyboardText.originX, 27, "keyboardText.originX")
-  Assert.equal(config.keyboardText.originY, 12, "keyboardText.originY")
-  Assert.equal(config.keyboardText.stepX, 16, "keyboardText.stepX")
-  Assert.equal(config.keyboardText.stepY, 19, "keyboardText.stepY")
+  local window = assert(config.keyboardWindow, "the keyboard text geometry derives from the window record")
+  Assert.equal(config.pagePlacement.x + window.x, 27, "the first text cell x follows the window origin")
+  Assert.equal(
+    config.pagePlacement.y + window.y + window.textInsetY,
+    92,
+    "the first text cell y follows the window origin plus inset"
+  )
+  Assert.equal(window.cellWidth, 16, "keyboard columns step 16 pixels")
+  Assert.equal(window.rowHeight, 19, "keyboard rows step 19 pixels")
 end
 
 function T.special_and_unmapped_members_stay_outside_normal_naming()
@@ -63,6 +68,50 @@ function T.special_and_unmapped_members_stay_outside_normal_naming()
     count = count + 1
   end
   Assert.equal(count, 3, "normal naming carries exactly three page members")
+end
+
+-- The keyboard window is the single source authority both the generated
+-- page backing and the runtime text cells derive from: the page-local
+-- window the retail keyboard fill owns, its 13x5 grid of 16x19 cells with
+-- the 4px text inset, and the per-page base/alternate palette slots. The
+-- window holds five 19px rows (95px) inside its 96px height, so the final
+-- bottom pixel row stays the base color. The first text cell follows from
+-- page placement plus window origin plus inset: x 11 + 16 = 27,
+-- y 80 + 8 + 4 = 92.
+function T.keyboard_window_geometry_is_the_single_source_authority()
+  local config = selection()
+  local window = config.keyboardWindow
+  Assert.notNil(window, "the naming keyboard window is the single backing/text geometry authority")
+  Assert.equal(window.x, 16, "keyboardWindow.x")
+  Assert.equal(window.y, 8, "keyboardWindow.y")
+  Assert.equal(window.width, 208, "keyboardWindow.width")
+  Assert.equal(window.height, 96, "keyboardWindow.height")
+  Assert.equal(window.columns, 13, "keyboardWindow.columns")
+  Assert.equal(window.rows, 5, "keyboardWindow.rows")
+  Assert.equal(window.cellWidth, 16, "keyboardWindow.cellWidth")
+  Assert.equal(window.rowHeight, 19, "keyboardWindow.rowHeight")
+  Assert.equal(window.textInsetY, 4, "keyboardWindow.textInsetY")
+  Assert.equal(window.width, window.columns * window.cellWidth, "the window holds exactly 13 16px columns")
+  Assert.equal(
+    window.height - window.rows * window.rowHeight,
+    1,
+    "the window keeps a one-pixel base remainder below its five rows"
+  )
+  local pages = window.pages
+  Assert.notNil(pages, "the keyboard window carries per-page palette roles")
+  Assert.deepEqual(pages.upper, { base = 4, alternate = 3 }, "pages.upper")
+  Assert.deepEqual(pages.lower, { base = 7, alternate = 6 }, "pages.lower")
+  Assert.deepEqual(pages.symbols, { base = 13, alternate = 12 }, "pages.symbols")
+  Assert.equal(
+    config.pagePlacement.x + window.x,
+    27,
+    "the first text cell x follows from page placement plus window origin"
+  )
+  Assert.equal(
+    config.pagePlacement.y + window.y + window.textInsetY,
+    92,
+    "the first text cell y follows from page placement plus window origin plus inset"
+  )
 end
 
 return { tests = T }
