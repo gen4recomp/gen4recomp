@@ -533,4 +533,55 @@ function T.cancelling_field_preparation_returns_to_the_menu_without_publishing()
   end)
 end
 
+function T.cancelled_preparation_rebuilds_the_menu_at_the_current_viewport()
+  withCompositionSpies(function(modules, context)
+    local continueRecord = saveRecord("save-00000002")
+    context.stores[1] = fakeStore({ continueRecord })
+    local pending = true
+    local host = readyHost()
+    host.requestMilestone = function()
+      return not pending
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    local firstRenderer = context.menuRenderers[1]
+    local firstText = context.texts[1]
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.fieldCalls, 0, "pending core never constructs the field")
+    Assert.isTrue(
+      getmetatable(game.state).__index ~= modules.menu,
+      "Continue must leave the menu for preparation while core is pending"
+    )
+    Assert.equal(firstRenderer.disposed, 1, "entering preparation disposes the previous menu renderer")
+    Assert.equal(firstText.releases, 1, "entering preparation releases the previous menu text")
+    game:resize(960, 720)
+    game.state:keypressed("escape")
+    Assert.equal(getmetatable(game.state).__index, modules.menu, "cancellation returns to the owning menu")
+    Assert.equal(#context.fieldCalls, 0, "cancellation publishes no field")
+    local rebuilt = game.state
+    Assert.equal(rebuilt.width, 960, "the rebuilt menu must use the current drawable width")
+    Assert.equal(rebuilt.height, 720, "the rebuilt menu must use the current drawable height")
+    local frame = assert(
+      menuView(rebuilt).presentation.panes[1].placement.frame,
+      "the rebuilt menu must resolve its placement frame"
+    )
+    Assert.equal(frame.width, 960, "the rebuilt menu frame must cover the current viewport width")
+    Assert.equal(frame.height, 720, "the rebuilt menu frame must cover the current viewport height")
+    Assert.equal(#context.menuRenderers, 2, "cancellation constructs exactly one replacement renderer")
+    Assert.equal(#context.texts, 2, "cancellation constructs exactly one replacement text")
+    local secondRenderer = context.menuRenderers[2]
+    Assert.equal(secondRenderer.disposed, 0, "the replacement renderer must be live before disposal")
+    game:dispose()
+    Assert.equal(secondRenderer.disposed, 1, "final disposal releases the replacement renderer exactly once")
+    Assert.equal(context.texts[2].releases, 1, "final disposal releases the replacement text exactly once")
+    Assert.equal(firstRenderer.disposed, 1, "the first renderer must not be disposed twice")
+    Assert.equal(firstText.releases, 1, "the first text must not be released twice")
+  end)
+end
+
 return { tests = T }

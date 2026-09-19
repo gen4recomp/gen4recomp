@@ -118,7 +118,6 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   local displayContext = DisplayContext.new({ topologyProvider = options.topologyProvider })
   local presentationOverrides = copyPresentationOverrides(options.presentationOverrides)
   local derivedAssets = assert(options.derivedAssets, "HgssGame requires the derived-asset host")
-  local width, height = love.graphics.getDimensions()
   local bootMenu -- forward: menu construction closes over the result router below
   local function backToMenu()
     game:setState(bootMenu())
@@ -202,8 +201,8 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     return MainMenuState.new({
       saveStore = saveStore,
       readyVersions = { versionId },
-      width = width,
-      height = height,
+      width = game.drawableWidth,
+      height = game.drawableHeight,
       renderer = makeMenuRenderer(),
       onResult = onMenuResult,
       displayContext = displayContext,
