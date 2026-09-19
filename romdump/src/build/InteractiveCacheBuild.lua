@@ -813,6 +813,9 @@ function InteractiveCacheBuild:_outstandingSweep(limit)
 end
 
 function InteractiveCacheBuild:_wakeCapacityWaiter()
+  if #self.capacityWaiters == 0 then
+    return
+  end
   if self:_outstandingSweep() >= self:_sweepBound() then
     return
   end
@@ -2422,6 +2425,7 @@ function InteractiveCacheBuild:update()
   self:_drainTickets(budget)
   self:_publishMilestone("bootstrap")
   self:_publishMilestone("field-core")
+  self:_wakeCapacityWaiter()
   self:_failStuckEntries()
   self.planningPending = self:_hasRunnablePlanning()
 end

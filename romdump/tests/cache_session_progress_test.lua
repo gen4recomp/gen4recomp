@@ -693,6 +693,205 @@ function T.queued_promotion_releases_a_credit_on_acknowledgement()
   end)
 end
 
+-- Free capacity survives a promotion gap: two released sweep credits wake
+-- two waiters, a paused planning slice leaves both admissions queued as
+-- tickets instead of submitting them, and promoting the pair before the
+-- next update releases no new credit, yet the last waiter still converges
+-- exactly once with a bounded peak and no cycle.
+function T.promoted_peers_do_not_strand_the_last_capacity_waiter()
+  local env = newEnv("promotion-gap-generation", 1)
+  local session = openSession(env, false)
+  local leaves = { "mon-catalog", "items", "bag", "field-camera", "field-effects" }
+  withFixtureFacts(env, function()
+    for _, kind in ipairs(leaves) do
+      local ready, failure = session:requestJob(kind, "global", "sweep")
+      Assert.isFalse(ready, "capacity work starts pending: " .. kind)
+      Assert.isNil(failure, "capacity work must not fail: " .. kind)
+    end
+    pump(session, 20)
+    Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "the first sweep job is admitted")
+    Assert.isTrue(env.pool.calls["items:global"] ~= nil, "the second sweep job is admitted")
+    Assert.isNil(env.pool.calls["bag:global"], "a full frontier parks later waiters")
+    Assert.isNil(env.pool.calls["field-camera:global"], "a full frontier parks later waiters")
+    Assert.isNil(env.pool.calls["field-effects:global"], "a full frontier parks later waiters")
+    writeReceipt(env, "mon-catalog", "global")
+    writeReceipt(env, "items", "global")
+    env.pool:complete("mon-catalog:global")
+    env.pool:complete("items:global")
+    -- Pause exactly one planning slice: the released credits wake their
+    -- waiters, but the exhausted budget leaves both admissions queued as
+    -- tickets instead of submitting them.
+    local realLove = rawget(_G, "love")
+    local ticks = 0
+    rawset(_G, "love", {
+      timer = {
+        getTime = function()
+          ticks = ticks + 1
+          if ticks <= 1 then
+            return 0
+          end
+          return 10
+        end,
+      },
+    })
+    local sliceOk, sliceErr = pcall(function()
+      session:update()
+    end)
+    rawset(_G, "love", realLove)
+    Assert.isTrue(sliceOk, "the paused slice still runs: " .. tostring(sliceErr))
+    -- Promote the awakened pair before any further update: their later
+    -- completions release no sweep credit, so only a level reconciliation
+    -- can still admit the last waiter.
+    local bagReady, bagFailure = session:requestJob("bag", "global", "required")
+    Assert.isFalse(bagReady, "the first awakened job stays pending")
+    Assert.isNil(bagFailure, "promotion reports no failure")
+    local cameraReady, cameraFailure = session:requestJob("field-camera", "global", "required")
+    Assert.isFalse(cameraReady, "the second awakened job stays pending")
+    Assert.isNil(cameraFailure, "promotion reports no failure")
+    -- Finish only actually accepted work: receipts land alongside
+    -- submission, never ahead of it.
+    for _ = 1, 500 do
+      for _, jobKey in ipairs(env.pool.order) do
+        local record = env.pool.records[jobKey]
+        if record ~= nil and (record.state == "queued" or record.state == "running") then
+          local kind, key = jobKey:match("^([^:]+):(.+)$")
+          assert(kind ~= nil and key ~= nil, "pool job keys stay canonical")
+          if ArtifactState.read(env.cacheFs, env.generation, kind, key) == nil then
+            writeReceipt(env, kind, key)
+          end
+          env.pool:complete(jobKey)
+        end
+      end
+      session:update()
+    end
+    Assert.isTrue(env.pool.calls["field-effects:global"] ~= nil, "the last waiter is eventually admitted")
+    Assert.equal(env.pool.calls["field-effects:global"], 1, "the last waiter is admitted exactly once")
+    Assert.equal(env.pool:createdCount(1, "field-effects:global"), 1, "the last waiter compiles exactly once")
+    local seen = {}
+    for _, outcome in ipairs(session:outcomes()) do
+      seen[outcome.jobKey] = outcome
+    end
+    for _, kind in ipairs(leaves) do
+      local outcome = assert(seen[kind .. ":global"], "every leaf carries its outcome: " .. kind)
+      Assert.equal(outcome.state, "successful", "every leaf succeeds: " .. kind)
+    end
+    local status = session:status()
+    Assert.equal(#status.failures, 0, "no failure is reported")
+    for _, outcome in ipairs(session:outcomes()) do
+      Assert.isTrue(
+        outcome.error == nil or tostring(outcome.error):find("dependency cycle", 1, true) == nil,
+        "no waiter is misreported as a cycle: " .. outcome.jobKey
+      )
+    end
+    Assert.isTrue(env.pool.peakSweep <= 2, "the peak stays bounded across the gap")
+  end)
+end
+
+-- A full frontier with held physical work stays locally idle: waiters earn
+-- no phantom admission, drained children are never revalidated, and
+-- nothing resubmits while completions are withheld.
+function T.full_frontier_stays_idle_without_completion()
+  local env = newEnv("held-frontier-generation", 1)
+  local session = openSession(env, false)
+  withFixtureFacts(env, function()
+    for _, kind in ipairs({ "mon-catalog", "items", "bag" }) do
+      local ready, failure = session:requestJob(kind, "global", "sweep")
+      Assert.isFalse(ready, "capacity work starts pending: " .. kind)
+      Assert.isNil(failure, "capacity work must not fail: " .. kind)
+    end
+    pump(session, 20)
+    Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "the first sweep job is admitted")
+    Assert.isTrue(env.pool.calls["items:global"] ~= nil, "the second sweep job is admitted")
+    Assert.isNil(env.pool.calls["bag:global"], "the waiter parks behind the full frontier")
+    Assert.isTrue(drainLocal(session, 500), "a full frontier with no local work goes idle")
+    local idle = session:status()
+    Assert.isFalse(idle.planningPending, "a full frontier leaves no runnable local work")
+    Assert.isFalse(idle.settled, "held work never settles")
+    local validations = 0
+    local realValidate = ArtifactJobs.validate
+    ArtifactJobs.validate = function(...)
+      validations = validations + 1
+      return realValidate(...)
+    end
+    local callsBefore = acceptedCount(env.pool)
+    local ok, err = pcall(function()
+      for _ = 1, 50 do
+        session:update()
+      end
+    end)
+    ArtifactJobs.validate = realValidate
+    Assert.isTrue(ok, tostring(err))
+    local status = session:status()
+    Assert.isFalse(status.planningPending, "repeated held updates stay idle")
+    Assert.isFalse(status.settled, "repeated held updates never settle held work")
+    Assert.equal(validations, 0, "held polling performs no validation")
+    Assert.equal(acceptedCount(env.pool), callsBefore, "held polling submits no duplicate work")
+    Assert.isNil(env.pool.calls["bag:global"], "no phantom admission frees a credit")
+    for jobKey, calls in pairs(env.pool.calls) do
+      Assert.equal(calls, 1, "no held child is resubmitted: " .. jobKey)
+    end
+    Assert.isTrue(env.pool.peakSweep <= 2, "the frontier never exceeds twice the worker count")
+  end)
+end
+
+-- A settled session keeps idle updates cheap: with no capacity waiter
+-- pending, repeated updates and status polls issue no capacity
+-- diagnostics, perform no validation or readiness IO, and change no state.
+function T.settled_session_keeps_idle_updates_cheap()
+  local env = newEnv("settled-idle-generation", 1)
+  local session = openSession(env, false)
+  withFixtureFacts(env, function()
+    for _, kind in ipairs({ "field-camera", "field-effects" }) do
+      local ready, failure = session:requestJob(kind, "global", "required")
+      Assert.isFalse(ready, "required work starts pending: " .. kind)
+      Assert.isNil(failure, "required work must not fail: " .. kind)
+    end
+    pump(session, 10)
+    Assert.isTrue(env.pool.calls["field-camera:global"] ~= nil, "the first leaf submits")
+    Assert.isTrue(env.pool.calls["field-effects:global"] ~= nil, "the second leaf submits")
+    writeReceipt(env, "field-camera", "global")
+    writeReceipt(env, "field-effects", "global")
+    env.pool:complete("field-camera:global")
+    env.pool:complete("field-effects:global")
+    pump(session, 10)
+    local ready, failure = session:requestJob("field-camera", "global", "required")
+    Assert.isTrue(ready, "the first leaf validates ready: " .. tostring(failure))
+    local settled = session:status()
+    Assert.isTrue(settled.settled, "completed required work settles")
+    Assert.isFalse(settled.planningPending, "settlement leaves no runnable work")
+    local diagnostics = 0
+    local realDiagnostics = env.pool.diagnostics
+    env.pool.diagnostics = function(self)
+      diagnostics = diagnostics + 1
+      return realDiagnostics(self)
+    end
+    local validations = 0
+    local realValidate = ArtifactJobs.validate
+    ArtifactJobs.validate = function(...)
+      validations = validations + 1
+      return realValidate(...)
+    end
+    local callsBefore = acceptedCount(env.pool)
+    local outcomesBefore = #session:outcomes()
+    local ok, err = pcall(function()
+      for _ = 1, 100 do
+        session:update()
+        session:status()
+      end
+    end)
+    env.pool.diagnostics = realDiagnostics
+    ArtifactJobs.validate = realValidate
+    Assert.isTrue(ok, tostring(err))
+    Assert.equal(diagnostics, 0, "idle updates issue no capacity diagnostics")
+    Assert.equal(validations, 0, "idle updates perform no validation")
+    Assert.equal(acceptedCount(env.pool), callsBefore, "idle updates submit nothing")
+    Assert.equal(#session:outcomes(), outcomesBefore, "idle updates change no outcomes")
+    local again = session:status()
+    Assert.isTrue(again.settled, "the session stays settled")
+    Assert.isFalse(again.planningPending, "the session stays idle")
+  end)
+end
+
 -- Mon page membership through the real layout writers: catalog and layout
 -- files are staged exactly as the digesters write them, so page adoption
 -- reads authentic published plans.
