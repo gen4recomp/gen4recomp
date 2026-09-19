@@ -261,7 +261,6 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     Assert.equal(#context.validationCalls, 1)
     Assert.equal(#context.storeCalls, 1)
 
-    game.state:keypressed("down")
     game.state:keypressed("return")
     Assert.equal(#context.fieldCalls, 1)
     Assert.equal(context.fieldCalls[1].game, continueRecord)

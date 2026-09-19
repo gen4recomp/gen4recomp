@@ -19,6 +19,26 @@ local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4] or 1)
 end
 
+local function byteRole(color)
+  return { r = color[1] * 255, g = color[2] * 255, b = color[3] * 255 }
+end
+
+-- Role palettes for generated-font copy: the current foreground role colors
+-- plus an explicit light shadow and a transparent background so the card
+-- face stays visible beneath the glyph masks. All text draws at identity
+-- tint through the palette path, never through modulated plain draws.
+local function rolePalette(foreground)
+  return {
+    foreground = byteRole(foreground),
+    shadow = { r = 255, g = 255, b = 255 },
+    background = { r = 0, g = 0, b = 0, a = 0 },
+  }
+end
+
+local TEXT_PALETTE = rolePalette(INK)
+local MUTED_PALETTE = rolePalette(MUTED)
+local ERROR_PALETTE = rolePalette(ERROR_INK)
+
 local function drawNoContent() end
 
 local function drawCard(graphics, rect, scale, selected, tone)
@@ -55,12 +75,14 @@ local function drawFrameOutline(graphics, rect, scale)
   graphics.rectangle("fill", inner.x + inner.width, inner.y, rim.x + rim.width - inner.x - inner.width, inner.height)
 end
 
-local function drawText(graphics, text, value, x, y, scale)
+local function drawPaletteText(graphics, text, value, x, y, scale, palette)
+  graphics.setColor(1, 1, 1, 1)
   graphics.push()
   graphics.translate(x, y)
   graphics.scale(scale, scale)
-  local ok, err = pcall(text.drawText, text, value, 0, 0)
+  local ok, err = pcall(text.drawTextWithPalette, text, value, 0, 0, palette)
   graphics.pop()
+  graphics.setColor(1, 1, 1, 1)
   if not ok then
     error(err, 0)
   end
@@ -84,7 +106,7 @@ function MainMenuRenderer.new(options)
   local graphics = options.graphics or love.graphics
   ---@cast graphics love.graphics
   assert(graphics, "Main Menu renderer requires graphics")
-  assert(type(options.text.drawText) == "function", "Main Menu renderer requires generated text drawing")
+  assert(type(options.text.drawTextWithPalette) == "function", "Main Menu renderer requires palette text drawing")
   local manifest = assert(
     options.cacheFs:loadLua(IntroAssetCache.manifestPath()),
     "Main Menu renderer requires the generated intro manifest"
@@ -130,8 +152,15 @@ function MainMenuRenderer:draw(view)
     graphics.setScissor(saves.viewport.x, saves.viewport.y, saves.viewport.width, saves.viewport.height)
     if view.catalogError and view.catalogError ~= "" then
       local errorRect = assert(layout.catalogErrorRect)
-      setColor(graphics, ERROR_INK)
-      drawText(graphics, text, "Save catalog unavailable", errorRect.x + 6 * scale, errorRect.y + 4 * scale, scale)
+      drawPaletteText(
+        graphics,
+        text,
+        "Save catalog unavailable",
+        errorRect.x + 6 * scale,
+        errorRect.y + 4 * scale,
+        scale,
+        ERROR_PALETTE
+      )
     end
     for _, item in ipairs(assert(view.saves)) do
       local card = saves.cards[item.saveId or item.id]
@@ -148,21 +177,48 @@ function MainMenuRenderer:draw(view)
         end
         local pad = 6 * scale
         local headingY = card.frame.y + 5 * scale
-        setColor(graphics, INK)
-        drawText(graphics, text, "CONTINUE", card.frame.x + pad, headingY, scale)
+        drawPaletteText(graphics, text, "CONTINUE", card.frame.x + pad, headingY, scale, TEXT_PALETTE)
         if item.canContinue then
-          setColor(graphics, INK)
-          drawText(graphics, text, cardTitle(item), card.frame.x + pad, headingY + 20 * scale, scale)
-          setColor(graphics, MUTED)
-          drawText(graphics, text, item.playTimeLabel or "0:00", card.frame.x + pad, headingY + 40 * scale, scale)
+          drawPaletteText(
+            graphics,
+            text,
+            cardTitle(item),
+            card.frame.x + pad,
+            headingY + 20 * scale,
+            scale,
+            TEXT_PALETTE
+          )
+          drawPaletteText(
+            graphics,
+            text,
+            item.playTimeLabel or "0:00",
+            card.frame.x + pad,
+            headingY + 40 * scale,
+            scale,
+            MUTED_PALETTE
+          )
         else
-          setColor(graphics, ERROR_INK)
-          drawText(graphics, text, cardTitle(item), card.frame.x + pad, headingY + 20 * scale, scale)
+          drawPaletteText(
+            graphics,
+            text,
+            cardTitle(item),
+            card.frame.x + pad,
+            headingY + 20 * scale,
+            scale,
+            ERROR_PALETTE
+          )
         end
         if card.overflow then
           drawCard(graphics, card.overflow, scale, overflowFocused, tone)
-          setColor(graphics, INK)
-          drawText(graphics, text, "...", card.overflow.x + 3 * scale, card.overflow.y + 4 * scale, scale)
+          drawPaletteText(
+            graphics,
+            text,
+            "...",
+            card.overflow.x + 3 * scale,
+            card.overflow.y + 4 * scale,
+            scale,
+            TEXT_PALETTE
+          )
         end
       end
     end
@@ -178,8 +234,7 @@ function MainMenuRenderer:draw(view)
     local global = assert(layout.global)
     local newGame = assert(global.actions["new-game"])
     drawCard(graphics, newGame, scale, globalFocus, tone)
-    setColor(graphics, INK)
-    drawText(graphics, text, "NEW GAME", newGame.x + 6 * scale, newGame.y + 10 * scale, scale)
+    drawPaletteText(graphics, text, "NEW GAME", newGame.x + 6 * scale, newGame.y + 10 * scale, scale, TEXT_PALETTE)
 
     if view.popup then
       local popup = assert(layout.popup)
@@ -187,30 +242,52 @@ function MainMenuRenderer:draw(view)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
       drawCard(graphics, popup.box, scale, false, tone)
       drawCard(graphics, popup.actions.delete, scale, true, tone)
-      setColor(graphics, INK)
-      drawText(graphics, text, "Delete", popup.actions.delete.x + 4 * scale, popup.actions.delete.y + 4 * scale, scale)
+      drawPaletteText(
+        graphics,
+        text,
+        "Delete",
+        popup.actions.delete.x + 4 * scale,
+        popup.actions.delete.y + 4 * scale,
+        scale,
+        TEXT_PALETTE
+      )
     end
     if view.confirmation then
       local confirmation = assert(layout.confirmation)
       graphics.setColor(0, 0, 0, 0.62)
       graphics.rectangle("fill", 0, 0, layout.viewport.width, layout.viewport.height)
       drawCard(graphics, confirmation.box, scale, false, tone)
-      setColor(graphics, INK)
-      drawText(
+      drawPaletteText(
         graphics,
         text,
         "Delete this save?",
         confirmation.box.x + 6 * scale,
         confirmation.box.y + 5 * scale,
-        scale
+        scale,
+        TEXT_PALETTE
       )
       local cancelFocus = view.confirmation.focusedAction == "cancel"
       local deleteFocus = view.confirmation.focusedAction == "delete"
       drawCard(graphics, confirmation.cancel, scale, cancelFocus, tone)
       drawCard(graphics, confirmation.delete, scale, deleteFocus, tone)
-      setColor(graphics, INK)
-      drawText(graphics, text, "Cancel", confirmation.cancel.x + 4 * scale, confirmation.cancel.y + 4 * scale, scale)
-      drawText(graphics, text, "Delete", confirmation.delete.x + 4 * scale, confirmation.delete.y + 4 * scale, scale)
+      drawPaletteText(
+        graphics,
+        text,
+        "Cancel",
+        confirmation.cancel.x + 4 * scale,
+        confirmation.cancel.y + 4 * scale,
+        scale,
+        TEXT_PALETTE
+      )
+      drawPaletteText(
+        graphics,
+        text,
+        "Delete",
+        confirmation.delete.x + 4 * scale,
+        confirmation.delete.y + 4 * scale,
+        scale,
+        TEXT_PALETTE
+      )
     end
   end, debug.traceback)
   if oldX ~= nil then

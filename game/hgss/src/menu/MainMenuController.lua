@@ -16,6 +16,7 @@
 ---@field popup table<string, string>?
 ---@field confirmation table<string, string>?
 ---@field rememberedSaveId string?
+---@field rememberedLane "body"|"overflow"?
 local MainMenuController = {}
 MainMenuController.__index = MainMenuController
 
@@ -67,6 +68,7 @@ function MainMenuController.new(globalActions, saves)
   local self = setmetatable({ globalActions = globalActions, saves = saves }, MainMenuController)
   self.focus = firstSave(saves)
   self.rememberedSaveId = self.focus.region == "saves" and self.focus.saveId or nil
+  self.rememberedLane = self.focus.region == "saves" and self.focus.lane or nil
   self.popup = nil
   self.confirmation = nil
   return self
@@ -91,6 +93,7 @@ function MainMenuController:focusSave(saveId, lane)
   assert(itemAt(self.saves, saveId), "cannot focus an unknown Main Menu save")
   self.focus = focusForSave(saveId, lane)
   self.rememberedSaveId = saveId
+  self.rememberedLane = lane
   self.popup = nil
   self.confirmation = nil
 end
@@ -176,7 +179,11 @@ function MainMenuController:move(direction)
     if direction == "right" and #self.saves > 0 then
       local remembered = self.rememberedSaveId and itemAt(self.saves, self.rememberedSaveId) or nil
       local target = remembered or assert(self.saves[1])
-      self:focusSave(target.saveId or target.id, "body")
+      local lane = "body"
+      if self.rememberedLane == "overflow" and canDelete(target) then
+        lane = "overflow"
+      end
+      self:focusSave(target.saveId or target.id, lane)
     end
     return
   end
@@ -190,6 +197,8 @@ function MainMenuController:move(direction)
       local saveId = adjacentSave(self.saves, self.focus.saveId, delta)
       if saveId then
         self:focusSave(saveId, "body")
+      else
+        self:focusGlobal(self.globalActions[1].id)
       end
     end
   elseif self.focus.lane == "overflow" then
@@ -201,6 +210,8 @@ function MainMenuController:move(direction)
       if saveId then
         local adjacent = itemAt(self.saves, saveId)
         self:focusSave(saveId, canDelete(adjacent) and "overflow" or "body")
+      else
+        self:focusGlobal(self.globalActions[1].id)
       end
     end
   end

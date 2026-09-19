@@ -217,7 +217,6 @@ function T.continue_never_reapplies_fresh_startup_initialization()
       versionId = "heartgold",
       onExit = function() end,
     })
-    game.state:keypressed("down")
     game.state:keypressed("return")
     Assert.equal(#applyCalls, 0, "Continue must never invoke fresh startup initialization")
     Assert.equal(#fieldStateCalls, 1)
@@ -276,7 +275,6 @@ function T.continue_enters_the_field_without_the_covered_entry()
       versionId = "heartgold",
       onExit = function() end,
     })
-    game.state:keypressed("down")
     game.state:keypressed("return")
     Assert.equal(#fieldStateCalls, 1)
     local options = context.fieldOptions[1] or {}
@@ -596,7 +594,6 @@ function T.continue_constructs_the_field_without_the_oak_handoff()
       versionId = "heartgold",
       onExit = function() end,
     })
-    game.state:keypressed("down")
     game.state:keypressed("return")
     Assert.equal(composeCalls, 0, "Continue must never compose the Oak handoff")
     Assert.equal(#applyCalls, 0, "Continue must never invoke fresh startup initialization")
