@@ -56,8 +56,18 @@ function T.menu_bindings_are_built_from_the_field_presentation_manifest(context)
   end
   local FieldPresentation = require("data.manifests.field_presentation")
   local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
-  local originalMenu = FieldPresentation.input.menu
-  FieldPresentation.input.menu = { "n" }
+  local input = assert(FieldPresentation.input, "the field presentation manifest configures input aliases")
+  local configuredMenu = assert(input.menu, "the field presentation manifest configures menu aliases")
+  local configured = {
+    action = assert(input.action, "the field presentation manifest configures action aliases"),
+    cancel = assert(input.cancel, "the field presentation manifest configures cancel aliases"),
+  }
+  local absentKey = "n"
+  for _, list in pairs({ configuredMenu, configured.action, configured.cancel }) do
+    for _, key in ipairs(list) do
+      Assert.isTrue(key ~= absentKey, "the probe key stays outside the configured aliases")
+    end
+  end
   local game
   local ok, err = xpcall(function()
     game = AcceptanceHarness.new({ versions = { "heartgold" } }):boot({
@@ -65,10 +75,11 @@ function T.menu_bindings_are_built_from_the_field_presentation_manifest(context)
       map = "MAP_BURNED_TOWER_1F",
       save = "fresh",
     })
-    Assert.equal(game.runtime.menuKeys.n, true)
-    Assert.isNil(game.runtime.menuKeys.m)
+    for _, key in ipairs(configuredMenu) do
+      Assert.equal(game.runtime.menuKeys[key], true, "the runtime menu snapshot carries the configured alias")
+    end
+    Assert.isNil(game.runtime.menuKeys[absentKey], "an unconfigured key stays out of the runtime menu snapshot")
   end, debug.traceback)
-  FieldPresentation.input.menu = originalMenu
   if game ~= nil then
     local closeOk, closeErr = pcall(function()
       game:close()
