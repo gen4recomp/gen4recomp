@@ -13,8 +13,11 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@class CompilerPool.Node
 ---@field key string
 ---@field priority integer
+---@field sizeClass string
 ---@field sequence integer
----@field index integer?
+---@class CompilerPool.Lane
+---@field items CompilerPool.Node[]
+---@field head integer
 ---@class CompilerPool.Job
 ---@field versionId string
 ---@field generationId string
@@ -28,6 +31,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field sequence integer
 ---@field state string
 ---@field node CompilerPool.Node?
+---@field resourceActive boolean?
 ---@field details table<string, unknown>?
 ---@field stageName string?
 ---@field workerId integer?
@@ -58,7 +62,10 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field selected CompilerPool.Selected?
 ---@field selectedCacheFs CacheFs?
 ---@field resultChannel table<string, function>
----@field heap CompilerPool.Node[]
+---@field lanes table<integer, table<string, CompilerPool.Lane>>
+---@field queuedCount integer
+---@field activeHeavy integer
+---@field activeJumbo integer
 ---@field jobs table<string, CompilerPool.Job>
 ---@field workers CompilerPool.Worker[]
 ---@field completions CompilerPool.Completion[]
@@ -99,80 +106,151 @@ local SIZE_CLASSES = {
   jumbo = true,
 }
 
+local PRIORITIES = { 0, 10, 100 }
+local SIZE_ORDER = { "normal", "heavy", "jumbo" }
+
+---@param a CompilerPool.Node
+---@param b CompilerPool.Node
+---@return boolean
 local function before(a, b)
   return a.priority < b.priority or (a.priority == b.priority and a.sequence < b.sequence)
 end
 
----@param heap CompilerPool.Node[]
----@param left integer
----@param right integer
-local function swap(heap, left, right)
-  local leftNode = assert(heap[left])
-  local rightNode = assert(heap[right])
-  heap[left], heap[right] = rightNode, leftNode
-  leftNode.index = right
-  rightNode.index = left
+---@return table<integer, table<string, CompilerPool.Lane>>
+local function newLanes()
+  local lanes = {}
+  for _, priority in ipairs(PRIORITIES) do
+    local sizes = {}
+    for _, sizeClass in ipairs(SIZE_ORDER) do
+      sizes[sizeClass] = { items = {}, head = 1 }
+    end
+    lanes[priority] = sizes
+  end
+  return lanes
 end
 
----@param heap CompilerPool.Node[]
----@param index integer
-local function siftUp(heap, index)
-  while index > 1 do
-    local parent = math.floor(index / 2)
-    if before(heap[parent], heap[index]) then
+---@param lanes table<integer, table<string, CompilerPool.Lane>>
+---@param node CompilerPool.Node
+local function enqueueLane(lanes, node)
+  local lane = lanes[node.priority][node.sizeClass]
+  lane.items[#lane.items + 1] = node
+  if lane.head > 128 then
+    local fresh = {}
+    for index = lane.head, #lane.items do
+      fresh[#fresh + 1] = lane.items[index]
+    end
+    lane.items = fresh
+    lane.head = 1
+  end
+end
+
+-- Lanes stay ordered by FIFO sequence: fresh requests and retries always
+-- carry a new maximum sequence and append, while a promotion keeps its
+-- original sequence and is inserted at its ordered position. Stale
+-- tombstoned nodes keep their positions inertly; peeks skip them.
+-- Promotion runs at most twice per job lifetime, never on the dispatch
+-- path, so this single ordered insert never taxes steady-state frames.
+---@param lanes table<integer, table<string, CompilerPool.Lane>>
+---@param node CompilerPool.Node
+local function insertOrderedLane(lanes, node)
+  local lane = lanes[node.priority][node.sizeClass]
+  local position = #lane.items + 1
+  for index = lane.head, #lane.items do
+    if node.sequence < lane.items[index].sequence then
+      position = index
       break
     end
-    swap(heap, parent, index)
-    index = parent
+  end
+  if position > #lane.items then
+    lane.items[#lane.items + 1] = node
+  else
+    for index = #lane.items, position, -1 do
+      lane.items[index + 1] = lane.items[index]
+    end
+    lane.items[position] = node
+  end
+  if lane.head > 128 then
+    local fresh = {}
+    for index = lane.head, #lane.items do
+      fresh[#fresh + 1] = lane.items[index]
+    end
+    lane.items = fresh
+    lane.head = 1
   end
 end
 
-local function siftDown(heap, index)
-  local size = #heap
-  while true do
-    local left = index * 2
-    if left > size then
-      return
-    end
-    local right = left + 1
-    local child = left
-    if right <= size and before(heap[right], heap[left]) then
-      child = right
-    end
-    if before(heap[index], heap[child]) then
-      return
-    end
-    swap(heap, index, child)
-    index = child
-  end
-end
-
----@param heap CompilerPool.Node[]
----@param node CompilerPool.Node
-local function pushHeap(heap, node)
-  local index = #heap + 1
-  node.index = index
-  heap[index] = node
-  siftUp(heap, index)
-end
-
----@param heap CompilerPool.Node[]
----@param index integer
+---@param self CompilerPool
+---@param priority integer
+---@param sizeClass string
 ---@return CompilerPool.Node?
-local function removeHeapAt(heap, index)
-  local node = heap[index]
-  if not node then
-    return nil
+local function peekLane(self, priority, sizeClass)
+  local lane = self.lanes[priority][sizeClass]
+  while lane.head <= #lane.items do
+    local node = lane.items[lane.head]
+    local record = self.jobs[node.key]
+    if record ~= nil and record.node == node and record.state == "queued" then
+      return node
+    end
+    lane.head = lane.head + 1
   end
-  local last = table.remove(heap)
-  if last ~= node then
-    heap[index] = last
-    last.index = index
-    siftUp(heap, index)
-    siftDown(heap, index)
+  if lane.head > 128 then
+    lane.items = {}
+    lane.head = 1
   end
-  node.index = nil
-  return node
+  return nil
+end
+
+---@param self CompilerPool
+---@param node CompilerPool.Node
+local function claimLane(self, node)
+  local lane = self.lanes[node.priority][node.sizeClass]
+  assert(lane.items[lane.head] == node, "dispatch claims the live lane head")
+  lane.head = lane.head + 1
+  if lane.head > 128 then
+    local fresh = {}
+    for index = lane.head, #lane.items do
+      fresh[#fresh + 1] = lane.items[index]
+    end
+    lane.items = fresh
+    lane.head = 1
+  end
+end
+
+---@param self CompilerPool
+local function resetLanes(self)
+  self.lanes = newLanes()
+  self.queuedCount = 0
+end
+
+---@param self CompilerPool
+---@param record CompilerPool.Job
+local function activateResource(self, record)
+  if record.sizeClass ~= "heavy" and record.sizeClass ~= "jumbo" then
+    return
+  end
+  assert(not record.resourceActive, "resource activation is exactly once")
+  record.resourceActive = true
+  if record.sizeClass == "heavy" then
+    self.activeHeavy = self.activeHeavy + 1
+  else
+    self.activeJumbo = self.activeJumbo + 1
+  end
+end
+
+---@param self CompilerPool
+---@param record CompilerPool.Job
+local function deactivateResource(self, record)
+  if not record.resourceActive then
+    return
+  end
+  record.resourceActive = false
+  if record.sizeClass == "heavy" then
+    self.activeHeavy = self.activeHeavy - 1
+    assert(self.activeHeavy >= 0, "heavy activity never releases twice")
+  elseif record.sizeClass == "jumbo" then
+    self.activeJumbo = self.activeJumbo - 1
+    assert(self.activeJumbo >= 0, "jumbo activity never releases twice")
+  end
 end
 
 local function requireFunction(value, name)
@@ -298,7 +376,10 @@ local function newPool(options)
     selected = nil,
     selectedCacheFs = nil,
     resultChannel = resultChannel,
-    heap = {},
+    lanes = newLanes(),
+    queuedCount = 0,
+    activeHeavy = 0,
+    activeJumbo = 0,
     jobs = {},
     workers = {},
     completions = {},
@@ -351,14 +432,13 @@ function CompilerPool:selectGeneration(identity, epoch)
   if self.quiescing and not self:isQuiescent() then
     error("compiler pool quiescence barrier is incomplete", 0)
   end
-  for _, node in ipairs(self.heap) do
-    local record = self.jobs[node.key]
-    if record then
+  for _, record in pairs(self.jobs) do
+    if record.state == "queued" then
       record.state = "cancelled"
       record.node = nil
     end
   end
-  self.heap = {}
+  resetLanes(self)
   for _, completion in ipairs(self.completions) do
     self:_abortStage(completion.record)
     if self.jobs[completion.record.jobKey] == completion.record then
@@ -368,6 +448,7 @@ function CompilerPool:selectGeneration(identity, epoch)
     -- it. Dropping the completion queue must release that pin: the worker
     -- would otherwise stay busy forever behind a cancelled record, and the
     -- jumbo exclusivity rule would block all future jumbo dispatch.
+    deactivateResource(self, completion.record)
     self:_freeSlot(completion.record, completion.workerId)
   end
   self.completions = {}
@@ -414,19 +495,19 @@ function CompilerPool:retireSelection(epoch)
   -- Logical interest is cancelled; executing physical slots stay charged
   -- under their old identity until their terminal reply or joined exit.
   self.retired = true
-  for _, node in ipairs(self.heap) do
-    local record = self.jobs[node.key]
-    if record then
+  for _, record in pairs(self.jobs) do
+    if record.state == "queued" then
       record.state = "cancelled"
       record.node = nil
     end
   end
-  self.heap = {}
+  resetLanes(self)
   for _, completion in ipairs(self.completions) do
     self:_abortStage(completion.record)
     if self.jobs[completion.record.jobKey] == completion.record then
       completion.record.state = "cancelled"
     end
+    deactivateResource(self, completion.record)
     self:_freeSlot(completion.record, completion.workerId)
   end
   self.completions = {}
@@ -499,9 +580,17 @@ function CompilerPool:request(job)
       self.jobs[job.jobKey] = nil
     else
       if existing.state == "queued" and job.priority < existing.priority then
+        -- Promotion keeps the original FIFO sequence: the old lane node
+        -- goes stale because the record no longer points at it, and the
+        -- new node carries the same sequence into the stronger lane.
         existing.priority = job.priority
-        existing.node.priority = job.priority
-        siftUp(self.heap, existing.node.index)
+        existing.node = {
+          key = existing.jobKey,
+          priority = job.priority,
+          sizeClass = existing.sizeClass,
+          sequence = existing.sequence,
+        }
+        insertOrderedLane(self.lanes, existing.node)
       end
       return existing.state, existing.details
     end
@@ -523,9 +612,15 @@ function CompilerPool:request(job)
     node = nil,
     details = nil,
   }
-  record.node = { key = record.jobKey, priority = record.priority, sequence = record.sequence }
+  record.node = {
+    key = record.jobKey,
+    priority = record.priority,
+    sizeClass = record.sizeClass,
+    sequence = record.sequence,
+  }
   self.jobs[record.jobKey] = record
-  pushHeap(self.heap, record.node)
+  enqueueLane(self.lanes, record.node)
+  self.queuedCount = self.queuedCount + 1
   return record.state
 end
 
@@ -547,8 +642,15 @@ function CompilerPool:retry(jobKey, priority)
   record.sequence = self.sequence
   record.details = nil
   record.state = "queued"
-  record.node = { key = record.jobKey, priority = priority, sequence = self.sequence }
-  pushHeap(self.heap, record.node)
+  -- A retry rejoins behind older same-priority work with a fresh sequence.
+  record.node = {
+    key = record.jobKey,
+    priority = priority,
+    sizeClass = record.sizeClass,
+    sequence = self.sequence,
+  }
+  enqueueLane(self.lanes, record.node)
+  self.queuedCount = self.queuedCount + 1
   return record.state
 end
 
@@ -605,6 +707,21 @@ function CompilerPool:jobOutcome(jobKey)
   return snapshot
 end
 
+---@param self CompilerPool
+---@return CompilerPool.Node?
+local function laneRoot(self)
+  local root = nil
+  for _, priority in ipairs(PRIORITIES) do
+    for _, sizeClass in ipairs(SIZE_ORDER) do
+      local node = peekLane(self, priority, sizeClass)
+      if node ~= nil and (root == nil or before(node, root)) then
+        root = node
+      end
+    end
+  end
+  return root
+end
+
 ---@param record CompilerPool.Job
 ---@return string?
 function CompilerPool:_admissionBlockReason(record)
@@ -617,7 +734,7 @@ function CompilerPool:_admissionBlockReason(record)
   if self:_runningCount() + #self.completions > #self.workers then
     return "prepared-backpressure"
   end
-  local heavyActive, jumboActive = self:_activeSizes()
+  local heavyActive, jumboActive = self.activeHeavy, self.activeJumbo
   if record.sizeClass == "jumbo" then
     if jumboActive > 0 or heavyActive > 0 then
       return "active-job"
@@ -635,7 +752,7 @@ function CompilerPool:_admissionBlockReason(record)
   if record.sizeClass == "heavy" and heavyActive > 0 then
     return "active-job"
   end
-  local root = self.heap[1]
+  local root = laneRoot(self)
   if root and root.key ~= record.jobKey then
     local rootRecord = self.jobs[root.key]
     if rootRecord and rootRecord.sizeClass == "jumbo" and rootRecord.priority <= record.priority then
@@ -662,43 +779,6 @@ function CompilerPool:_admissionBlockReason(record)
     return "active-job"
   end
   return nil
-end
-
----@return integer, integer
-function CompilerPool:_activeSizes()
-  local heavy, jumbo = 0, 0
-  local seen = {}
-  local function count(record)
-    if record == nil or seen[record] then
-      return
-    end
-    seen[record] = true
-    if record.state == "running" then
-      if record.sizeClass == "heavy" then
-        heavy = heavy + 1
-      elseif record.sizeClass == "jumbo" then
-        jumbo = jumbo + 1
-      end
-    elseif record.state == "prepared" and not record.retired then
-      -- A prepared heavy/jumbo result keeps counting until publication drains
-      -- it. Normal results join the bounded backlog without holding activity,
-      -- and a recycled jumbo worker's queued result no longer blocks admission.
-      if record.sizeClass == "heavy" then
-        heavy = heavy + 1
-      elseif record.sizeClass == "jumbo" then
-        jumbo = jumbo + 1
-      end
-    end
-  end
-  for _, record in pairs(self.jobs) do
-    count(record)
-  end
-  -- Detached slots from a retired epoch stay physically busy and keep counting
-  -- against size admission until their completion or termination is observed.
-  for _, worker in ipairs(self.workers) do
-    count(worker.slot)
-  end
-  return heavy, jumbo
 end
 
 ---@return integer
@@ -746,62 +826,86 @@ local function workerIdle(worker)
   return worker.started and not worker.joined and worker.slot == nil and not worker.retiring
 end
 
+---@param self CompilerPool
+---@return boolean
+local function allWorkersIdle(self)
+  for _, worker in ipairs(self.workers) do
+    if not workerIdle(worker) then
+      return false
+    end
+  end
+  return true
+end
+
+---@param self CompilerPool
+---@param priority integer
+---@return CompilerPool.Node[] oldest live head per size class, oldest first
+local function priorityHeads(self, priority)
+  local heads = {}
+  for _, sizeClass in ipairs(SIZE_ORDER) do
+    local node = peekLane(self, priority, sizeClass)
+    if node ~= nil then
+      heads[#heads + 1] = node
+    end
+  end
+  -- At most three heads: order explicitly without a general sort.
+  for left = 2, #heads do
+    local candidate = heads[left]
+    local index = left
+    while index > 1 and before(candidate, heads[index - 1]) do
+      heads[index] = heads[index - 1]
+      index = index - 1
+    end
+    heads[index] = candidate
+  end
+  return heads
+end
+
 function CompilerPool:_eligibleRecord()
-  if self.quiescing or #self.heap == 0 then
+  if self.quiescing or self.queuedCount == 0 then
     return nil
   end
   if self:_runningCount() + #self.completions > #self.workers then
     return nil
   end
-  local heavyActive, jumboActive = self:_activeSizes()
-  local ordered = {}
-  for _, node in ipairs(self.heap) do
-    ordered[#ordered + 1] = node
+  local heavyActive, jumboActive = self.activeHeavy, self.activeJumbo
+  if jumboActive > 0 then
+    return nil
   end
-  table.sort(ordered, before)
-  local rootRecord = self.jobs[ordered[1].key]
+  local root = laneRoot(self)
+  if root == nil then
+    return nil
+  end
+  local rootRecord = self.jobs[root.key]
   local reserveJumbo = false
   if rootRecord and rootRecord.sizeClass == "jumbo" then
-    local allIdle = true
-    for _, worker in ipairs(self.workers) do
-      if not workerIdle(worker) then
-        allIdle = false
-        break
-      end
-    end
-    if not allIdle or heavyActive > 0 or jumboActive > 0 then
+    if not allWorkersIdle(self) or heavyActive > 0 or jumboActive > 0 then
       reserveJumbo = true
     end
   end
-  for _, node in ipairs(ordered) do
-    local record = self.jobs[node.key]
-    if record and record.state == "queued" then
-      if record.sizeClass == "jumbo" then
-        local allIdle = true
-        for _, worker in ipairs(self.workers) do
-          if not workerIdle(worker) then
-            allIdle = false
-            break
+  for _, priority in ipairs(PRIORITIES) do
+    if reserveJumbo and rootRecord and priority >= rootRecord.priority then
+      -- The drained window is reserved for the waiting jumbo job; weaker
+      -- work already had its chance at stronger priorities above.
+      return nil
+    end
+    for _, node in ipairs(priorityHeads(self, priority)) do
+      local record = self.jobs[node.key]
+      if record ~= nil and record.node == node and record.state == "queued" then
+        if record.sizeClass == "jumbo" then
+          if allWorkersIdle(self) and heavyActive == 0 and jumboActive == 0 then
+            return record
           end
-        end
-        if allIdle and heavyActive == 0 and jumboActive == 0 then
-          return record
-        end
-      else
-        if jumboActive == 0 then
-          if record.sizeClass == "heavy" and heavyActive > 0 then
-            -- At most one heavy job executes at a time.
-          elseif reserveJumbo and rootRecord and record.priority >= rootRecord.priority then
-            -- The drained window is reserved for the waiting jumbo job unless
-            -- higher-priority work arrives first.
-          else
-            for _, worker in ipairs(self.workers) do
-              if workerIdle(worker) then
-                return record
-              end
+        elseif record.sizeClass == "heavy" and heavyActive > 0 then
+          -- At most one heavy job executes at a time; a compatible normal
+          -- behind it may still dispatch below.
+        else
+          for _, worker in ipairs(self.workers) do
+            if workerIdle(worker) then
+              return record
             end
-            return nil
           end
+          return nil
         end
       end
     end
@@ -859,15 +963,18 @@ function CompilerPool:_dispatch()
     if not worker then
       return
     end
-    assert(record.node and record.node.index, "queued compiler job is missing its heap position")
-    removeHeapAt(self.heap, record.node.index)
+    assert(record.node ~= nil, "queued compiler job is missing its queue position")
+    claimLane(self, record.node)
     record.node = nil
+    self.queuedCount = self.queuedCount - 1
+    assert(self.queuedCount >= 0, "queued compiler jobs never dispatch twice")
     self.sequence = self.sequence + 1
     local stageName = self:_allocateStageName(record.versionId, worker.id, self.sequence)
     record.state = "running"
     record.stageName = stageName
     record.workerId = worker.id
     worker.slot = record
+    activateResource(self, record)
     local ok, pushError = pcall(worker.input.push, worker.input, {
       kind = record.kind,
       key = record.key,
@@ -900,6 +1007,7 @@ function CompilerPool:_dispatch()
       record.details = { error = pushError }
       record.stageName = nil
       record.workerId = nil
+      deactivateResource(self, record)
       self.fatalError = pushError
       error(pushError, 0)
     end
@@ -909,6 +1017,7 @@ end
 function CompilerPool:_settleFailure(record, workerId, failure)
   record.state = "failed"
   record.details = { workerId = workerId, error = failure }
+  deactivateResource(self, record)
 end
 
 ---@param message table<string, unknown>
@@ -1059,6 +1168,7 @@ function CompilerPool:_acceptCompletion(message)
     if obsolete then
       self:_abortStage(slot)
       slot.state = "cancelled"
+      deactivateResource(self, slot)
       if message.retiring then
         worker.retiring = true
       end
@@ -1075,6 +1185,7 @@ function CompilerPool:_acceptCompletion(message)
     release()
     self:_abortStage(slot)
     slot.state = "cancelled"
+    deactivateResource(self, slot)
     if message.retiring then
       worker.retiring = true
     end
@@ -1091,6 +1202,10 @@ function CompilerPool:_acceptCompletion(message)
   self.completions[#self.completions + 1] = { record = slot, workerId = worker.id }
   if message.retiring then
     slot.retired = true
+    -- A recycled worker's queued result no longer blocks admission: the
+    -- prepared pin releases here, exactly as the retired exclusion did
+    -- under the scanned accounting.
+    deactivateResource(self, slot)
     release()
     worker.retiring = true
   elseif slot.sizeClass == "normal" then
@@ -1226,6 +1341,7 @@ function CompilerPool:_publishOne()
   local record = completion.record
   if record.state ~= "prepared" then
     self:_abortStage(record)
+    deactivateResource(self, record)
     self:_freeSlot(record, completion.workerId)
     return true
   end
@@ -1259,6 +1375,7 @@ function CompilerPool:_publishOne()
   else
     local manifest = artifact:manifest()
     record.state = "ready"
+    deactivateResource(self, record)
     record.details = {
       workerId = completion.workerId,
       result = manifest.result,
@@ -1332,7 +1449,7 @@ function CompilerPool:update(budget)
 end
 
 function CompilerPool:_hasUnsettled()
-  if #self.heap > 0 or #self.completions > 0 then
+  if self.queuedCount > 0 or #self.completions > 0 then
     return true
   end
   for _, record in pairs(self.jobs) do
@@ -1420,14 +1537,13 @@ function CompilerPool:quiesce()
   end
   self.quiescing = true
   self.closeToken = (self.closeToken or 0) + 1
-  for _, node in ipairs(self.heap) do
-    local record = self.jobs[node.key]
-    if record then
+  for _, record in pairs(self.jobs) do
+    if record.state == "queued" then
       record.state = "cancelled"
       record.node = nil
     end
   end
-  self.heap = {}
+  resetLanes(self)
   for _, worker in ipairs(self.workers) do
     if worker.joined then
       -- An exited, joined worker needs no acknowledgement: its exit proves
@@ -1450,7 +1566,7 @@ function CompilerPool:isQuiescent()
   if self.fatalError ~= nil then
     return false
   end
-  if #self.heap > 0 or #self.completions > 0 then
+  if self.queuedCount > 0 or #self.completions > 0 then
     return false
   end
   for _, record in pairs(self.jobs) do
@@ -1502,17 +1618,24 @@ function CompilerPool:diagnostics()
     end
   end
   local heapStates = {}
-  for index, node in ipairs(self.heap) do
-    if index > 12 then
-      heapStates[#heapStates + 1] = "+" .. tostring(#self.heap - 12) .. " more"
-      break
+  local queuedSeen = 0
+  for _, priority in ipairs(PRIORITIES) do
+    for _, sizeClass in ipairs(SIZE_ORDER) do
+      local lane = self.lanes[priority][sizeClass]
+      for index = lane.head, #lane.items do
+        local node = lane.items[index]
+        local record = self.jobs[node.key]
+        if record ~= nil and record.node == node and record.state == "queued" then
+          queuedSeen = queuedSeen + 1
+          if queuedSeen <= 12 then
+            heapStates[#heapStates + 1] = tostring(record.state) .. ":" .. tostring(record.sizeClass)
+          end
+        end
+      end
     end
-    local record = self.jobs[node.key]
-    if record == nil then
-      heapStates[#heapStates + 1] = "orphan"
-    else
-      heapStates[#heapStates + 1] = tostring(record.state) .. ":" .. tostring(record.sizeClass)
-    end
+  end
+  if queuedSeen > 12 then
+    heapStates[#heapStates + 1] = "+" .. tostring(queuedSeen - 12) .. " more"
   end
   return {
     mode = self.mode,
@@ -1534,14 +1657,13 @@ function CompilerPool:shutdown()
   if self.closed then
     return true
   end
-  for _, node in ipairs(self.heap) do
-    local record = self.jobs[node.key]
-    if record then
+  for _, record in pairs(self.jobs) do
+    if record.state == "queued" then
       record.state = "cancelled"
       record.node = nil
     end
   end
-  self.heap = {}
+  resetLanes(self)
   for _, worker in ipairs(self.workers) do
     if worker.started and not worker.joined then
       pcall(worker.input.push, worker.input, { kind = "stop" })
@@ -1573,6 +1695,7 @@ function CompilerPool:shutdown()
       if record.state == "running" or record.state == "prepared" then
         record.state = "failed"
         record.details = { workerId = worker.id, error = "compiler worker stopped during shutdown" }
+        deactivateResource(self, record)
       end
       worker.slot = nil
     end

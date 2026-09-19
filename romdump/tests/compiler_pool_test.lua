@@ -859,4 +859,336 @@ function T.stopped_worker_thread_finalizes_command_evidence()
   Assert.equal(host.threads[1].waits, 1, "the stopped worker joins exactly once")
 end
 
+-- Large-backlog dispatch keeps priority/FIFO/admission order without sorting
+-- the queued corpus on the dispatch path: a promoted sweep job keeps its
+-- original sequence among required jobs while weaker work waits.
+function T.large_backlog_dispatch_preserves_order_without_whole_queue_sort()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(3)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "backlog-order-generation"
+  local function mapJob(key, mapId, priority, sizeClass)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = sizeClass or "normal",
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    for index = 1, 1200 do
+      pool:request(mapJob(tostring(30000 + index), 30000 + index, 100))
+    end
+    pool:request(mapJob("31201", 31201, 10))
+    pool:request(mapJob("31202", 31202, 10))
+    pool:request(mapJob("31203", 31203, 0))
+    pool:request(mapJob("30001", 30001, 0))
+    local realSort = table.sort
+    table.sort = function()
+      error("hot-path whole-queue sort during dispatch", 0)
+    end
+    local ok, sortFailure = pcall(function()
+      pool:update()
+    end)
+    table.sort = realSort
+    if not ok then
+      error(sortFailure, 0)
+    end
+  end)
+  Assert.deepEqual(
+    { host.dispatched[1], host.dispatched[2] },
+    { "map:30001", "map:31203" },
+    "the promoted sweep job keeps its original sequence ahead of the later required job"
+  )
+  Assert.equal(pool:status("map:30001"), "running", "the promoted job executes")
+  Assert.equal(pool:status("map:31203"), "running", "the required job executes")
+  Assert.equal(pool:status("map:31201"), "queued", "weaker work waits behind required")
+  Assert.equal(pool:status("map:30002"), "queued", "the backlog waits behind required")
+  pool:shutdown()
+end
+
+-- A waiting jumbo reserves the drain window against same/lower priority
+-- work while a stronger arrival still dispatches, all without sorting the
+-- queued corpus on the dispatch path.
+function T.stronger_priority_bypasses_a_reserved_jumbo_without_sort()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(3)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "jumbo-reservation-generation"
+  local function mapJob(key, mapId, priority, sizeClass)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = sizeClass,
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request(mapJob("32001", 32001, 0, "heavy"))
+    pool:update()
+  end)
+  Assert.deepEqual(host.dispatched, { "map:32001" }, "the heavy job takes the first worker")
+  withLove(host.love, function()
+    pool:request(mapJob("32002", 32002, 100, "jumbo"))
+    pool:request(mapJob("32003", 32003, 100, "normal"))
+    pool:request(mapJob("32004", 32004, 0, "normal"))
+    local realSort = table.sort
+    table.sort = function()
+      error("hot-path whole-queue sort during dispatch", 0)
+    end
+    local ok, sortFailure = pcall(function()
+      pool:update()
+    end)
+    table.sort = realSort
+    if not ok then
+      error(sortFailure, 0)
+    end
+  end)
+  Assert.deepEqual(
+    host.dispatched,
+    { "map:32001", "map:32004" },
+    "only the stronger arrival dispatches while the jumbo waits for the drain"
+  )
+  Assert.equal(pool:status("map:32002"), "queued", "the jumbo waits for a full drain")
+  Assert.equal(pool:status("map:32003"), "queued", "reserved same-priority work waits")
+  local _, sweepDetails = pool:status("map:32003")
+  Assert.equal(
+    type(sweepDetails) == "table" and sweepDetails.waitingOn,
+    "reserved-for-jumbo",
+    "the reservation names its cause"
+  )
+  pool:shutdown()
+end
+
+-- Promotion never leaves a dispatchable stale queue node and retry rejoins
+-- behind older same-priority work with a fresh sequence.
+function T.promotion_stale_nodes_never_dispatch_and_retry_takes_a_fresh_sequence()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "stale-node-generation"
+  local function mapJob(key, mapId, priority)
+    return {
+      generationId = generation,
+      epoch = 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = "normal",
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request(mapJob("33001", 33001, 100))
+    pool:request(mapJob("33002", 33002, 100))
+    pool:request(mapJob("33001", 33001, 0))
+    pool:update()
+  end)
+  local dispatchedOrder = {}
+  withLove(host.love, function()
+    local dispatched = host.channels[2]:pop()
+    assert(type(dispatched) == "table", "the worker received a job record")
+    dispatchedOrder[#dispatchedOrder + 1] = assert(dispatched.jobKey, "dispatched work names its job")
+    local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = "33001",
+      jobKey = "map:33001",
+      stageName = stageName,
+      status = "failed",
+    })
+    pool:update()
+    Assert.equal(pool:status("map:33001"), "failed", "the worker failure settles the job")
+    Assert.equal(pool:status("map:33002"), "running", "the waiter takes the freed worker")
+    pool:request(mapJob("33003", 33003, 100))
+    pool:retry("map:33001", 100)
+    local runningMessage = host.channels[2]:pop()
+    assert(type(runningMessage) == "table", "the waiter reached the worker")
+    dispatchedOrder[#dispatchedOrder + 1] = assert(runningMessage.jobKey, "dispatched work names its job")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = "33002",
+      jobKey = "map:33002",
+      stageName = assert(runningMessage.stageName, "dispatched work carries its stage identity"),
+      status = "failed",
+    })
+    pool:update()
+    local thirdMessage = host.channels[2]:pop()
+    assert(type(thirdMessage) == "table", "the third job reached the worker")
+    dispatchedOrder[#dispatchedOrder + 1] = assert(thirdMessage.jobKey, "dispatched work names its job")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = "33003",
+      jobKey = "map:33003",
+      stageName = assert(thirdMessage.stageName, "dispatched work carries its stage identity"),
+      status = "failed",
+    })
+    pool:update()
+    local retriedMessage = host.channels[2]:pop()
+    assert(type(retriedMessage) == "table", "the retried job reached the worker")
+    dispatchedOrder[#dispatchedOrder + 1] = assert(retriedMessage.jobKey, "dispatched work names its job")
+  end)
+  Assert.deepEqual(
+    dispatchedOrder,
+    { "map:33001", "map:33002", "map:33003", "map:33001" },
+    "the stale promotion node never dispatches and the retry rejoins last"
+  )
+  pool:shutdown()
+end
+
+-- Heavy/jumbo admission survives prepared pinning, selection retirement,
+-- and late terminal replies: a prepared heavy blocks a second heavy, a
+-- jumbo waits for the drain, an old physical heavy keeps blocking across a
+-- new epoch, and its late reply releases exactly once.
+function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_completion()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(3)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "scheduler-lifecycle-generation"
+  local function mapJob(key, mapId, priority, sizeClass, epoch)
+    return {
+      generationId = generation,
+      epoch = epoch or 1,
+      versionId = "heartgold",
+      kind = "map",
+      key = key,
+      jobKey = "map:" .. key,
+      priority = priority,
+      sizeClass = sizeClass,
+      payload = { mapId = mapId },
+    }
+  end
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request(mapJob("61", 61, 0, "heavy"))
+    pool:update()
+    Assert.equal(pool:status("map:61"), "running", "the heavy job executes")
+    pool:request(mapJob("62", 62, 0, "normal"))
+    pool:update()
+    Assert.equal(pool:status("map:62"), "running", "a normal job coexists with the heavy job")
+    local normalMessage = host.channels[3]:pop()
+    assert(type(normalMessage) == "table", "the second worker received the normal job")
+    local normalStage = assert(normalMessage.stageName, "dispatched work carries its stage identity")
+    host.channels[1]:push({
+      workerId = 2,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = "62",
+      jobKey = "map:62",
+      stageName = normalStage,
+      status = "failed",
+    })
+    pool:update()
+    Assert.equal(pool:status("map:62"), "failed", "the normal job settles without holding activity")
+    Assert.equal(pool:status("map:61"), "running", "the heavy job still executes")
+    pool:request(mapJob("63", 63, 0, "heavy"))
+    local secondState, secondDetails = pool:status("map:63")
+    Assert.equal(secondState, "queued", "the second heavy waits")
+    Assert.equal(
+      type(secondDetails) == "table" and secondDetails.waitingOn,
+      "active-job",
+      "the wait names heavy activity"
+    )
+    pool:request(mapJob("64", 64, 0, "jumbo"))
+    local jumboState, jumboDetails = pool:status("map:64")
+    Assert.equal(jumboState, "queued", "the jumbo waits for a full drain")
+    Assert.equal(
+      type(jumboDetails) == "table" and jumboDetails.waitingOn,
+      "active-job",
+      "the jumbo wait names activity"
+    )
+    local heavyMessage = host.channels[2]:pop()
+    assert(type(heavyMessage) == "table", "the first worker received the heavy job")
+    local heavyStage = assert(heavyMessage.stageName, "dispatched work carries its stage identity")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = "61",
+      jobKey = "map:61",
+      stageName = heavyStage,
+      status = "prepared",
+      compileSeconds = 1,
+      stageSeconds = 1,
+      workSeconds = 1,
+      stagedBytes = 8,
+    })
+    pool:update(0)
+    Assert.equal(pool:status("map:61"), "prepared", "the prepared heavy stays pinned")
+    Assert.equal(pool:status("map:63"), "queued", "a prepared heavy still blocks the next heavy")
+    Assert.equal(pool:status("map:64"), "queued", "a prepared heavy still blocks the jumbo")
+    pool:update()
+    Assert.equal(
+      pool:status("map:61"),
+      "failed",
+      "the terminal heavy releases admission even when publication finds no staged bytes"
+    )
+    Assert.equal(pool:status("map:63"), "running", "the second heavy dispatches after the release")
+    Assert.equal(pool:status("map:64"), "queued", "the jumbo still waits while the heavy runs")
+    Assert.isTrue(pool:retireSelection(1), "the selection retires while work executes")
+    Assert.equal(pool:status("map:63"), "running", "retirement keeps the executing record")
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 2)
+    pool:request(mapJob("65", 65, 0, "heavy", 2))
+    local nextState, nextDetails = pool:status("map:65")
+    Assert.equal(nextState, "queued", "the new epoch heavy waits")
+    Assert.equal(
+      type(nextDetails) == "table" and nextDetails.waitingOn,
+      "active-job",
+      "the retired physical heavy still counts"
+    )
+    local retiredMessage = host.channels[2]:pop()
+    assert(type(retiredMessage) == "table", "the retired heavy reached the first worker")
+    local retiredStage = assert(retiredMessage.stageName, "retired work carries its stage identity")
+    host.channels[1]:push({
+      workerId = 1,
+      epoch = 1,
+      generationId = generation,
+      kind = "map",
+      key = "63",
+      jobKey = "map:63",
+      stageName = retiredStage,
+      status = "failed",
+    })
+    pool:update()
+    Assert.equal(pool:status("map:65"), "running", "the late reply releases the retired heavy exactly once")
+    pool:request(mapJob("66", 66, 0, "heavy", 2))
+    Assert.equal(pool:status("map:66"), "queued", "a further heavy still waits behind the running one")
+  end)
+  pool:shutdown()
+end
+
 return { tests = T }

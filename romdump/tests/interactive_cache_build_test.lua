@@ -2437,4 +2437,112 @@ function T.required_promotion_reaches_paused_near_enrollment()
   end
 end
 
+-- Normal updates poll only submitted frontier work: hundreds of retained
+-- terminal entries stay untouched while one pending job is observed.
+function T.normal_update_polls_only_submitted_frontier_entries()
+  local pool = recordingPool()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local session = summarySession(pool, cacheFs, { 3 })
+  local ready, failure = session:requestJob("message-bank", "3", "near")
+  Assert.isFalse(ready, "the bank stays pending while its worker is cold")
+  Assert.isNil(failure, "no failure is reported while the bank waits")
+  session:update()
+  local entry = assert(session.byKey["message-bank:3"], "the bank keeps its retained entry")
+  Assert.isTrue(entry.submitted, "the bank reached the pool")
+  for index = 1, 200 do
+    local sentinel = setmetatable({ jobKey = "retained-sentinel:" .. index }, {
+      __index = function(_, _)
+        error("retained-history sentinel touched by normal update: retained-sentinel:" .. index, 0)
+      end,
+    })
+    session.interest[#session.interest + 1] = sentinel
+  end
+  session:update()
+  Assert.isFalse(entry.ready, "the submitted bank stays pending")
+  Assert.isNil(entry.failure, "the submitted bank reports no failure")
+  Assert.equal(entry.poolState, "queued", "the submitted bank is still observed")
+  local frontier = assert(session.submittedPending, "the session indexes its submitted frontier for normal updates")
+  Assert.isTrue(frontier["message-bank:3"] == entry, "the frontier holds the pending job")
+  local frontierSize = 0
+  for _ in pairs(frontier) do
+    frontierSize = frontierSize + 1
+  end
+  Assert.equal(frontierSize, 1, "the frontier holds only submitted work")
+end
+
+-- Sweep capacity waiters wake in registration order with tombstoned FIFO
+-- semantics: a promoted waiter never reawakens and no removal compacts
+-- the remaining queue.
+function T.sweep_capacity_waiters_wake_fifo_without_array_compaction()
+  local env = openLiveSession({ generation = "capacity-fifo-generation", bankIds = { 3, 5, 7, 9, 11 } })
+  requestJob(env, "message-bank", "3", "sweep")
+  requestJob(env, "message-bank", "5", "sweep")
+  requestJob(env, "message-bank", "7", "sweep")
+  requestJob(env, "message-bank", "9", "sweep")
+  requestJob(env, "message-bank", "11", "sweep")
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "3"), "running", "the first sweep job executes")
+  Assert.equal(poolStatus(env, "message-bank", "5"), "queued", "the second sweep job holds frontier credit")
+  Assert.equal(poolStatus(env, "message-bank", "7"), "unknown", "a full frontier parks the waiter")
+  Assert.equal(poolStatus(env, "message-bank", "9"), "unknown", "later waiters park behind")
+  Assert.equal(poolStatus(env, "message-bank", "11"), "unknown", "later waiters park behind")
+  local waiters = env.session.capacityWaiters
+  Assert.equal(type(waiters), "table", "capacity waiters use a queue record")
+  Assert.equal(type(waiters.items), "table", "the waiter queue keeps its items")
+  Assert.equal(type(waiters.live), "table", "the waiter queue tracks live entries")
+  Assert.isTrue(waiters.live["message-bank:7"], "the first waiter is live")
+  Assert.isTrue(waiters.live["message-bank:9"], "the promoted waiter starts live")
+  Assert.isTrue(waiters.live["message-bank:11"], "the last waiter is live")
+  requestJob(env, "message-bank", "9", "near")
+  pumpSession(env, 2)
+  Assert.equal(poolStatus(env, "message-bank", "9"), "queued", "promotion admits outside frontier credit")
+  Assert.isNil(
+    env.session.capacityWaiters.live["message-bank:9"],
+    "promotion tombstones the waiter instead of compacting the queue"
+  )
+  publishBankLive(env, 3, "synthetic:romshape:003")
+  stageBankReply(env, 3, "synthetic:romshape:003", dispatchedStage(env, 1, "message-bank:3", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the release publishes")
+  Assert.equal(poolStatus(env, "message-bank", "7"), "queued", "the oldest live waiter wakes first")
+  Assert.equal(poolStatus(env, "message-bank", "11"), "unknown", "the younger waiter stays parked while credit is held")
+  Assert.equal(dispatchCount(env, "message-bank", "11"), 0, "the parked waiter never dispatches early")
+  publishBankLive(env, 9, "synthetic:romshape:009")
+  stageBankReply(env, 9, "synthetic:romshape:009", dispatchedStage(env, 1, "message-bank:9", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "9"), "ready", "the promoted waiter publishes")
+  publishBankLive(env, 5, "synthetic:romshape:005")
+  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the credit holder publishes")
+  publishBankLive(env, 7, "synthetic:romshape:007")
+  stageBankReply(env, 7, "synthetic:romshape:007", dispatchedStage(env, 1, "message-bank:7", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "7"), "ready", "the woken waiter publishes")
+  Assert.isTrue(
+    poolStatus(env, "message-bank", "11") ~= "unknown",
+    "the last waiter leaves the park once credit frees again"
+  )
+  publishBankLive(env, 11, "synthetic:romshape:011")
+  stageBankReply(env, 11, "synthetic:romshape:011", dispatchedStage(env, 1, "message-bank:11", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "11"), "ready", "the last waiter publishes")
+  for _, bankId in ipairs({ 3, 5, 7, 9, 11 }) do
+    local key = tostring(bankId)
+    Assert.equal(dispatchCount(env, "message-bank", key), 1, "sweep bank dispatches exactly once: " .. key)
+  end
+  local order = {}
+  for _, jobKey in ipairs(env.host.dispatched) do
+    order[#order + 1] = jobKey
+  end
+  Assert.deepEqual(order, {
+    "message-bank:3",
+    "message-bank:9",
+    "message-bank:5",
+    "message-bank:7",
+    "message-bank:11",
+  }, "promotion jumps the queue once while parked waiters keep FIFO")
+  shutdownEnv(env)
+end
+
 return { metadata = { capabilities = {} }, tests = T }

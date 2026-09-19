@@ -87,7 +87,8 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field edges table<string, table<string, boolean>> dependency to parent identities
 ---@field depMemo table<string, { kind: string, key: string }[]> retained final dependency edges
 ---@field sweepAdmitted table<string, boolean> acknowledged current-epoch sweep admissions
----@field capacityWaiters string[] FIFO sweep identities waiting for frontier credit
+---@field capacityWaiters { items: string[], head: integer, live: table<string, boolean> }
+---@field submittedPending table<string, InteractiveCacheBuild.Interest> submitted nonterminal pool work
 ---@field enrollCursor InteractiveCacheBuild.EnrollCursor|nil private incremental membership enrollment after adoption
 ---@field roster table<string, { kind: string, key: string }[]> retained milestone membership per requested scope
 ---@field autoCoreNearDone boolean automatic field-core near intent already registered once
@@ -219,7 +220,8 @@ function InteractiveCacheBuild.new(options)
     edges = {},
     depMemo = {},
     sweepAdmitted = {},
-    capacityWaiters = {},
+    capacityWaiters = { items = {}, head = 1, live = {} },
+    submittedPending = {},
     enrollCursor = nil,
     roster = {},
     rosterFailure = {},
@@ -274,8 +276,9 @@ function InteractiveCacheBuild:_spendNode(budget)
     budget.exhausted = true
     return false
   end
-  -- Fixed per-update overhead (pool polling, the admission ledger, the
-  -- scheduling sort) grows with the corpus and must never consume the slice.
+  -- Fixed per-update overhead (frontier pool polling, the admission ledger,
+  -- fixed-lane selection) is bounded by active work and must never consume
+  -- the slice.
   if budget.start == nil then
     budget.start = nowSeconds()
   end
@@ -663,11 +666,13 @@ function InteractiveCacheBuild:_observePoolState(entry, state, details)
   if state == "queued" or state == "running" then
     entry.await = "pool"
     entry.phase = "waitPool"
+    self.submittedPending[entry.jobKey] = entry
     return
   end
   if state == "prepared" then
     entry.await = "pool"
     entry.phase = "waitPool"
+    self.submittedPending[entry.jobKey] = entry
     if self.sweepAdmitted[entry.jobKey] then
       self.sweepAdmitted[entry.jobKey] = nil
       self:_wakeCapacityWaiter()
@@ -675,6 +680,7 @@ function InteractiveCacheBuild:_observePoolState(entry, state, details)
     return
   end
   if state == "ready" then
+    self.submittedPending[entry.jobKey] = nil
     if self.sweepAdmitted[entry.jobKey] then
       self.sweepAdmitted[entry.jobKey] = nil
       self:_wakeCapacityWaiter()
@@ -696,10 +702,12 @@ function InteractiveCacheBuild:_observePoolState(entry, state, details)
     return
   end
   if state == "failed" then
+    self.submittedPending[entry.jobKey] = nil
     local message = (type(details) == "table" and details.error) or "compiler job failed"
     self:_failEntry(entry, entry.jobKey .. ": " .. tostring(message), "job", nil)
     return
   end
+  self.submittedPending[entry.jobKey] = nil
   if self.sweepAdmitted[entry.jobKey] then
     self.sweepAdmitted[entry.jobKey] = nil
     self:_wakeCapacityWaiter()
@@ -719,8 +727,8 @@ function InteractiveCacheBuild:_promoteQueued(entry)
   if payload == nil then
     return
   end
-  -- The pool owns the heap, so a stronger urgency must reach the queued
-  -- record under its canonical identity; the heap keeps its FIFO sequence.
+  -- The pool owns physical queueing, so a stronger urgency must reach the
+  -- queued record under its canonical identity; the lanes keep its FIFO sequence.
   -- A single bounded update operation: the pool answer decides the
   -- frontier credit. An accepted queued promotion releases the sweep
   -- admission; a running record keeps its credit; a repeated identical
@@ -748,11 +756,21 @@ end
 
 ---@param jobKey string
 function InteractiveCacheBuild:_removeCapacityWaiter(jobKey)
-  for index, waiting in ipairs(self.capacityWaiters) do
-    if waiting == jobKey then
-      table.remove(self.capacityWaiters, index)
-      return
+  -- Logical removal only: the cell is tombstoned and skipped once when the
+  -- head reaches it, so removal never shifts the remaining queue.
+  self.capacityWaiters.live[jobKey] = nil
+end
+
+---@param self InteractiveCacheBuild
+local function compactCapacityWaiters(self)
+  local waiters = self.capacityWaiters
+  if waiters.head > 128 then
+    local fresh = {}
+    for index = waiters.head, #waiters.items do
+      fresh[#fresh + 1] = waiters.items[index]
     end
+    waiters.items = fresh
+    waiters.head = 1
   end
 end
 
@@ -815,35 +833,40 @@ function InteractiveCacheBuild:_outstandingSweep(limit)
 end
 
 function InteractiveCacheBuild:_wakeCapacityWaiter()
-  if #self.capacityWaiters == 0 then
+  local waiters = self.capacityWaiters
+  if waiters.head > #waiters.items then
     return
   end
   if self:_outstandingSweep() >= self:_sweepBound() then
     return
   end
-  for _, waiting in ipairs(self.capacityWaiters) do
-    local entry = self.byKey[waiting]
-    if
-      entry ~= nil
-      and not entry.ready
-      and entry.failure == nil
-      and not entry.submitted
-      and entry.priority == 100
-      and entry.phase == "waitCapacity"
-    then
-      self:_removeCapacityWaiter(waiting)
-      entry.await = nil
-      entry.phase = "admit"
-      self:_enqueueEntry(entry)
-      return
+  while waiters.head <= #waiters.items do
+    local waiting = waiters.items[waiters.head]
+    if waiters.live[waiting] == nil then
+      waiters.head = waiters.head + 1
+    else
+      local entry = self.byKey[waiting]
+      if
+        entry ~= nil
+        and not entry.ready
+        and entry.failure == nil
+        and not entry.submitted
+        and entry.priority == 100
+        and entry.phase == "waitCapacity"
+      then
+        waiters.live[waiting] = nil
+        waiters.head = waiters.head + 1
+        entry.await = nil
+        entry.phase = "admit"
+        self:_enqueueEntry(entry)
+        compactCapacityWaiters(self)
+        return
+      end
+      waiters.live[waiting] = nil
+      waiters.head = waiters.head + 1
     end
   end
-  for index = #self.capacityWaiters, 1, -1 do
-    local entry = self.byKey[self.capacityWaiters[index]]
-    if entry == nil or entry.ready or entry.failure ~= nil or entry.submitted or entry.priority ~= 100 then
-      table.remove(self.capacityWaiters, index)
-    end
-  end
+  compactCapacityWaiters(self)
 end
 
 ---@param entry InteractiveCacheBuild.Interest
@@ -990,15 +1013,10 @@ function InteractiveCacheBuild:_submit(entry, budget)
     if self:_outstandingSweep() >= self:_sweepBound() then
       entry.await = "capacity"
       entry.phase = "waitCapacity"
-      local waiting = false
-      for _, queued in ipairs(self.capacityWaiters) do
-        if queued == entry.jobKey then
-          waiting = true
-          break
-        end
-      end
-      if not waiting then
-        self.capacityWaiters[#self.capacityWaiters + 1] = entry.jobKey
+      local waiters = self.capacityWaiters
+      if waiters.live[entry.jobKey] == nil then
+        waiters.live[entry.jobKey] = true
+        waiters.items[#waiters.items + 1] = entry.jobKey
       end
       return true
     end
@@ -2214,8 +2232,8 @@ end
 
 ---@return boolean
 function InteractiveCacheBuild:_awaitingPoolWork()
-  for _, entry in ipairs(self.interest) do
-    if not entry.ready and entry.failure == nil and entry.submitted then
+  for jobKey, entry in pairs(self.submittedPending) do
+    if entry == self.byKey[jobKey] and not entry.ready and entry.failure == nil and entry.submitted then
       local state = self.pool:status(entry.jobKey)
       if state == "queued" or state == "running" or state == "prepared" or state == "unknown" then
         return true
@@ -2406,8 +2424,12 @@ end
 -- records and unexpected active-epoch cancellations are diagnosed, never
 -- silently interpreted as ready.
 function InteractiveCacheBuild:_pollSubmitted()
-  for _, entry in ipairs(self.interest) do
-    if not entry.ready and entry.failure == nil and entry.submitted then
+  -- Frontier-only polling: completed sweep history in retained interest
+  -- can never produce a new pool transition, so normal updates never walk
+  -- it. Terminal acknowledgements remove the entry from the frontier
+  -- through the shared observation path before any downstream action.
+  for jobKey, entry in pairs(self.submittedPending) do
+    if entry == self.byKey[jobKey] and not entry.ready and entry.failure == nil and entry.submitted then
       local state, details = self.pool:status(entry.jobKey)
       if state ~= entry.poolState or state == "ready" or state == "failed" then
         self:_observePoolState(entry, state, details)
@@ -2517,9 +2539,10 @@ end
 -- unsubmitted entries cannot advance on their own. Failing them loudly
 -- beats hanging the command past its round cap.
 function InteractiveCacheBuild:_failStuckEntries()
-  if self:_hasRunnablePlanning() then
+  if self:_hasRunnablePlanning() or next(self.submittedPending) ~= nil then
     return
   end
+  -- Only now may stuck diagnosis inspect retained nonterminal history.
   local physical = false
   local stuck = {}
   for _, entry in ipairs(self.interest) do
@@ -2728,7 +2751,8 @@ function InteractiveCacheBuild:retire()
   self.edges = {}
   self.depMemo = {}
   self.sweepAdmitted = {}
-  self.capacityWaiters = {}
+  self.capacityWaiters = { items = {}, head = 1, live = {} }
+  self.submittedPending = {}
   self.adopted = nil
   self.sourceLoaded = false
   self.pagesKnown = false
