@@ -13,6 +13,7 @@ local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Lz10 = require("romdump.src.digest.Lz10")
 
@@ -99,8 +100,10 @@ function T.icon_chars_compile_from_eleven_non_blank_sprite_banks(romFs, version)
   end
   Assert.equal(iconTable[5].labelKind, "player_name", "the trainer-card row expands the live player name")
   local variants = assert(iconTable[3].variants, "the bag row carries its gender-conditional variant")
-  Assert.notNil(variants.default, "the bag row carries the default art")
-  Assert.notNil(variants.female, "the bag row carries the female art as a first-class variant")
+  Assert.isNil(variants.default, "the bag row carries no default variant: its own visual is the default art")
+  local female = assert(variants.female, "the bag row carries the female art as a first-class variant")
+  Assert.notNil(female.normal, "the female variant carries the normal visual record")
+  Assert.notNil(female.selected, "the female variant carries the selected visual record")
 
   local _, iconBytes = assetBytes(bundle, FieldUiAssetCache.ASSET.START_MENU_ICONS)
   local opaque = opaqueCount(iconBytes)
@@ -248,19 +251,89 @@ function T.chrome_carries_the_panel_boundary_and_the_sub_window_set(romFs, versi
     version .. " sub screen entry count matches its dimensions"
   )
 
-  local windows = assert(compiled.labelWindows, "the start menu section must carry its label windows")
-  local windowCount = 0
-  for _ in pairs(windows) do
-    windowCount = windowCount + 1
+  local positions = assert(compiled.interactive, "the start menu section must carry its position records").positions
+  local positionCount = 0
+  for _ in pairs(positions) do
+    positionCount = positionCount + 1
   end
-  Assert.equal(windowCount, 7, "seven sprite slots carry one label window each")
-  for slotId = 2, 8 do
-    Assert.notNil(windows[slotId], version .. " destination slot " .. slotId .. " carries its own label window")
+  Assert.equal(positionCount, 7, "seven normal positions carry one label window each")
+  for position = 0, 6 do
+    Assert.notNil(
+      positions[position] and positions[position].labelWindow,
+      version .. " normal position " .. position .. " carries its own label window"
+    )
   end
 
   local _, cursorBytes = assetBytes(bundle, FieldUiAssetCache.ASSET.START_MENU_CURSOR)
   local cursorOpaque = opaqueCount(cursorBytes)
   Assert.isTrue(cursorOpaque > 0, version .. " cursor must contain art")
+end
+
+-- The normal selector contract on the real dump: the seven source-position
+-- records (anchors, label windows, touch bounds, ordered directional
+-- candidates, cancel rectangle) with no synthetic slot grid, and
+-- source-composed icon visuals (normal/selected frame offsets plus the Bag
+-- gender variant) instead of fixed crop rects. Asserts only structural facts
+-- and pixel alpha behavior, never copied source bytes or text.
+function T.normal_selector_carries_positions_and_composed_visuals(romFs, version)
+  local bundle, compiled = compiledStartMenu(romFs)
+  Assert.deepEqual(
+    assert(compiled.interactive, version .. " start menu section must publish its interactive position records"),
+    FieldUiFixture.startMenuInteractive(),
+    version .. " publishes the seven source positions"
+  )
+  Assert.isNil(compiled.slots, version .. " normal selector publishes no synthetic slot grid")
+
+  local function visualPixels(visual)
+    local asset = assert(bundle.manifest.assets[assert(visual.asset)], "the visual asset must be indexed")
+    local bytes = assert(bundle.assets[assert(asset.image)], "the visual atlas must have pixels")
+    local width, _, rgba = PngReader.rgba(bytes)
+    local rect = visual.rect
+    Assert.isTrue(
+      rect.x >= 0 and rect.y >= 0 and rect.x + rect.width <= asset.width and rect.y + rect.height <= asset.height,
+      version .. " visual rect stays inside its atlas"
+    )
+    local region = {}
+    for y = 0, rect.height - 1 do
+      local rowStart = (rect.y + y) * width * 4
+      region[#region + 1] = rgba:sub(rowStart + rect.x * 4 + 1, rowStart + (rect.x + rect.width) * 4)
+    end
+    return table.concat(region)
+  end
+
+  local function assertVisualStates(visual, what)
+    for _, key in ipairs({ "normal", "selected" }) do
+      local state = assert(visual[key], version .. " " .. what .. " carries its " .. key .. " state")
+      for _, field in ipairs({ "x", "y" }) do
+        local v = assert(state.offset, version .. " " .. what .. " " .. key .. " carries its frame offset")[field]
+        Assert.isTrue(type(v) == "number" and v % 1 == 0, version .. " " .. what .. " offset stays integral")
+      end
+    end
+    return visual
+  end
+
+  local function assertVisual(row, what)
+    local visual = assert(row.visual, version .. " " .. what .. " must carry its source-composed visual")
+    Assert.isNil(row.rect, version .. " " .. what .. " carries no fixed crop rect")
+    return assertVisualStates(visual, what)
+  end
+
+  for _, index in ipairs({ 1, 2, 3, 4, 5, 6, 7, 8, 12, 13 }) do
+    local row = assert(compiled.iconTable[index], "icon row " .. index .. " must exist")
+    local visual = assertVisual(row, "icon row " .. index)
+    Assert.isTrue(
+      visualPixels(visual.selected) ~= visualPixels(visual.normal),
+      version .. " icon row " .. index .. " selected state renders through the selection palette"
+    )
+  end
+  local bag = assert(compiled.iconTable[3], "the bag row must exist")
+  local female = assert(bag.variants and bag.variants.female, version .. " bag row carries its female variant")
+  local femaleVisual = assertVisualStates(female, "bag female variant")
+  Assert.isTrue(
+    visualPixels(femaleVisual.normal) ~= visualPixels(assert(bag.visual, "the bag row carries its visual").normal),
+    version .. " female art renders its own composed frame"
+  )
+  Assert.isTrue(FieldUiAssetCache.validateManifest(bundle.manifest))
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)

@@ -605,26 +605,23 @@ function FieldUiFixture.startMenuCache()
   return cache
 end
 
--- Adds the v9 start-menu icon-sprite contract to a fixture manifest in
--- place: the thirteen retail icon rows (sprite cells laid out like the
--- compiled 352x40 shared atlas, the Bag female variant, the trainer-card
--- player-name row, text-only rows 9-10, poke-icon row 11), the shared
--- atlas/highlight/palette asset entries, the seven context rows, the
--- action-to-icon map, sprite bases, label windows, and chrome. Manifests
--- that predate the icon contract (like manifest() above) stay untouched so
--- legacy-surface tests keep proving the background path.
+-- Adds the start-menu icon-sprite contract to a fixture manifest in
+-- place: the thirteen retail icon rows (sprite rows with source-composed
+-- normal/selected visual records, the Bag female pair, the trainer-card
+-- player-name row, text-only rows 9-10, poke-icon row 11), the shared atlas
+-- and palette asset entries, the seven context rows, the action-to-icon map,
+-- chrome, and the seven normal interactive position records. Normal visuals
+-- live in the atlas top band, selected visuals in the bottom band, so the
+-- two states are visibly distinct art. Manifests that predate the icon
+-- contract (like manifest() above) stay untouched so legacy-surface tests
+-- keep proving the background path.
 ---@param manifest table
 ---@return table manifest
 function FieldUiFixture.addStartMenuIconContract(manifest)
   manifest.assets["hgss.start_menu.icons"] = {
     image = "assets/generated/field/ui/start-menu-icons.png",
     width = 352,
-    height = 40,
-  }
-  manifest.assets["hgss.start_menu.icon_highlight"] = {
-    image = "assets/generated/field/ui/start-menu-icons-highlight.png",
-    width = 352,
-    height = 40,
+    height = 80,
   }
   manifest.assets["hgss.start_menu.icon_palette"] = {
     image = "assets/generated/field/ui/start-menu-icon-palette.png",
@@ -639,6 +636,13 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
   local startMenu = assert(manifest.startMenu, "the fixture manifest must carry the start menu section")
   local iconTable = {}
   local cell = 0
+  local function visual(rect, offset)
+    return {
+      asset = "hgss.start_menu.icons",
+      rect = rect,
+      offset = offset or { x = 0, y = 0 },
+    }
+  end
   for icon = 0, 12 do
     if icon == 8 or icon == 9 then
       iconTable[icon + 1] = { art = "text", label = 32, labelKind = "static" }
@@ -648,7 +652,10 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
       local labels = { [0] = 0, [1] = 1, [2] = 2, [3] = 14, [4] = 3, [5] = 4, [6] = 5, [7] = 8, [11] = 34, [12] = 35 }
       iconTable[icon + 1] = {
         art = "sprite",
-        rect = { x = cell * 32, y = 0, width = 32, height = 40 },
+        visual = {
+          normal = visual({ x = cell * 32, y = 0, width = 32, height = 40 }),
+          selected = visual({ x = cell * 32, y = 40, width = 32, height = 40 }),
+        },
         label = labels[icon],
         labelKind = "static",
       }
@@ -657,12 +664,12 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
   end
   iconTable[5].labelKind = "player_name"
   iconTable[3].variants = {
-    default = iconTable[3].rect,
-    female = { x = 10 * 32, y = 0, width = 32, height = 40 },
+    female = {
+      normal = visual({ x = 10 * 32, y = 0, width = 32, height = 40 }),
+      selected = visual({ x = 10 * 32, y = 40, width = 32, height = 40 }),
+    },
   }
   startMenu.iconTable = iconTable
-  startMenu.iconAtlas = { asset = "hgss.start_menu.icons" }
-  startMenu.iconHighlight = { asset = "hgss.start_menu.icon_highlight" }
   startMenu.iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 }
   startMenu.contexts = {
     { 0, 1, 2, 3, 4, 5, 6 },
@@ -682,29 +689,90 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
     ["vanilla.save"] = 5,
     ["vanilla.options"] = 6,
   }
-  startMenu.iconBases = {
-    [2] = { x = 24, y = 22 },
-    [3] = { x = 24, y = 62 },
-    [4] = { x = 24, y = 102 },
-    [5] = { x = 24, y = 142 },
-    [6] = { x = 104, y = 22 },
-    [7] = { x = 104, y = 62 },
-    [8] = { x = 104, y = 102 },
-  }
-  startMenu.labelWindows = {
-    [2] = { x = 8, y = 48, width = 72, height = 16 },
-    [3] = { x = 8, y = 88, width = 72, height = 16 },
-    [4] = { x = 8, y = 128, width = 72, height = 16 },
-    [5] = { x = 8, y = 168, width = 72, height = 16 },
-    [6] = { x = 88, y = 48, width = 72, height = 16 },
-    [7] = { x = 88, y = 88, width = 72, height = 16 },
-    [8] = { x = 88, y = 128, width = 72, height = 16 },
-  }
+  startMenu.interactive = FieldUiFixture.startMenuInteractive()
   startMenu.chrome = {
     main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
     sub = { asset = "hgss.start_menu.chrome_sub" },
   }
   return manifest
+end
+
+-- Writes valid SUB selector PNGs (the SUB chrome, the shared icon atlas,
+-- and the palette record) into a fixture cache whose manifest carries the
+-- icon contract: enough for the SUB selector renderer to construct without
+-- reading real generated art.
+---@param cache CacheFs
+function FieldUiFixture.writeStartMenuSelectorPngs(cache)
+  cache:write(
+    "assets/generated/field/ui/start-menu-chrome-sub.png",
+    PngWriter.encode(256, 256, string.rep(string.char(20, 40, 160, 255), 256 * 256))
+  )
+  cache:write(
+    "assets/generated/field/ui/start-menu-icons.png",
+    PngWriter.encode(352, 80, string.rep(string.char(200, 40, 40, 255), 352 * 80))
+  )
+  cache:write(
+    "assets/generated/field/ui/start-menu-icon-palette.png",
+    PngWriter.encode(16, 2, string.rep(string.char(10, 10, 10, 255), 16 * 2))
+  )
+end
+
+-- The retail seven-position interactive selector geometry for the field start
+-- menu: the cancel/header hit rectangle plus the source anchor, label window,
+-- touch hit rectangle, and ordered directional candidate lists for each normal
+-- position 0..6. Hit rectangles are half-open (x <= p < x+width), matching the
+-- runtime comparator. Producer, cache, controller, and renderer tests share
+-- this one table so drawing, pointer mapping, and directional movement prove
+-- the same source-position identity instead of re-stating coordinates.
+---@return { cancelHitRect: table, positions: table<integer, table> }
+function FieldUiFixture.startMenuInteractive()
+  return {
+    cancelHitRect = { x = 8, y = 0, width = 152, height = 16 },
+    positions = {
+      [0] = {
+        anchor = { x = 24, y = 22 },
+        labelWindow = { x = 8, y = 48, width = 72, height = 16 },
+        hitRect = { x = 16, y = 22, width = 60, height = 32 },
+        navigation = { up = { 3, 2, 1 }, down = { 1, 2, 3 }, left = { 4, 0, 0 }, right = { 4, 0, 0 } },
+      },
+      [1] = {
+        anchor = { x = 24, y = 62 },
+        labelWindow = { x = 8, y = 88, width = 72, height = 16 },
+        hitRect = { x = 16, y = 62, width = 60, height = 32 },
+        navigation = { up = { 0, 3, 2 }, down = { 2, 3, 0 }, left = { 5, 1, 0 }, right = { 5, 1, 0 } },
+      },
+      [2] = {
+        anchor = { x = 24, y = 102 },
+        labelWindow = { x = 8, y = 128, width = 72, height = 16 },
+        hitRect = { x = 16, y = 102, width = 60, height = 32 },
+        navigation = { up = { 1, 0, 3 }, down = { 3, 0, 1 }, left = { 6, 2, 0 }, right = { 6, 2, 0 } },
+      },
+      [3] = {
+        anchor = { x = 24, y = 142 },
+        labelWindow = { x = 8, y = 168, width = 72, height = 16 },
+        hitRect = { x = 16, y = 142, width = 60, height = 32 },
+        navigation = { up = { 2, 1, 0 }, down = { 0, 1, 2 }, left = { 6, 3, 0 }, right = { 6, 3, 0 } },
+      },
+      [4] = {
+        anchor = { x = 104, y = 22 },
+        labelWindow = { x = 88, y = 48, width = 72, height = 16 },
+        hitRect = { x = 96, y = 22, width = 60, height = 32 },
+        navigation = { up = { 6, 5, 4 }, down = { 5, 6, 4 }, left = { 0, 4, 0 }, right = { 0, 4, 0 } },
+      },
+      [5] = {
+        anchor = { x = 104, y = 62 },
+        labelWindow = { x = 88, y = 88, width = 72, height = 16 },
+        hitRect = { x = 96, y = 62, width = 60, height = 32 },
+        navigation = { up = { 4, 6, 5 }, down = { 6, 4, 5 }, left = { 1, 5, 0 }, right = { 1, 5, 0 } },
+      },
+      [6] = {
+        anchor = { x = 104, y = 102 },
+        labelWindow = { x = 88, y = 128, width = 72, height = 16 },
+        hitRect = { x = 96, y = 102, width = 60, height = 32 },
+        navigation = { up = { 5, 4, 6 }, down = { 4, 5, 6 }, left = { 2, 6, 0 }, right = { 2, 6, 0 } },
+      },
+    },
+  }
 end
 
 -- The source-backed naming semantics the reusable renderer consumes: the

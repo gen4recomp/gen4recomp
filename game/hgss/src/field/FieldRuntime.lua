@@ -1511,8 +1511,10 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
 
   return StartMenuController.new({
     entries = entries,
-    slots = self.uiManifest.startMenu.slots,
-    cursorFrames = self.uiManifest.startMenu.cursor.frames,
+    interactive = assert(
+      startMenuSection.interactive,
+      "the field UI manifest must carry the start menu interactive record"
+    ),
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
   })

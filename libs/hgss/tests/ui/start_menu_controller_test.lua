@@ -1,18 +1,20 @@
 -- The pure Start Menu controller: final interactive action display,
--- selection, the folded-in fixed-tick cursor animation, confirm/cancel/
--- menu-key close, and touch/pointer slot interaction. The controller
--- receives the runtime-composed final action list (each entry already
--- intersected with the registered destination capabilities, carrying only
--- id / targetApplication / displayPosition) and the generated manifest slot
--- surface; it carries no labels, no product-mode projections, and no
--- capability or progression knowledge. The final list is never empty -- the
--- menu factory returns nil when no action is interactive -- so the
--- controller's invariants are that at least one action exists, every
--- display position fits the slot surface, and the selection always resolves.
--- The cursor animation is the manifest frame durations stepped exactly once
--- per fixed tick. The controller is silent: it never names a ROM sequence
--- and never touches love. No application launches happen here: the
--- controller records the takeResult contract and the host launches.
+-- selection, confirm/cancel/menu-key close, and pointer interaction over the
+-- generated normal-position contract. The controller receives the
+-- runtime-composed final action list (each entry already intersected with
+-- the registered destination capabilities, carrying only id /
+-- targetApplication / displayPosition) and the generated manifest
+-- interactive record (cancel/header hit rectangle plus the source anchor,
+-- label window, touch hit rectangle, and ordered directional candidate
+-- lists per normal position 0..6); it carries no labels, no product-mode
+-- projections, and no capability or progression knowledge. The final list is
+-- never empty -- the menu factory returns nil when no action is
+-- interactive -- so the controller's invariants are that at least one
+-- action exists and every display position fits the normal seven-position
+-- selector, and the selection always resolves. The controller is silent: it
+-- never names a ROM sequence and never touches love. No application
+-- launches happen here: the controller records the takeResult contract and
+-- the host launches.
 
 local Assert = require("tests.support.Assert")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -20,12 +22,10 @@ local StartMenuController = require("libs.hgss.src.ui.StartMenuController")
 
 local T = {}
 
-local SLOTS = FieldUiFixture.START_MENU_SLOTS
-local CURSOR_FRAMES = FieldUiFixture.START_MENU_CURSOR_FRAMES
+local POSITIONS = FieldUiFixture.startMenuInteractive()
 
 -- The full-progression interactive list (every destination registered):
--- display positions 0..6 plus the special Pokégear-family entries at the
--- reserved positions 7/8.
+-- display positions 0..6.
 local function fullEntries()
   return {
     { id = "vanilla.pokedex", targetApplication = "pokedex", actionKind = "application", displayPosition = 0 },
@@ -40,8 +40,6 @@ local function fullEntries()
     },
     { id = "vanilla.save", targetApplication = "save", actionKind = "application", displayPosition = 5 },
     { id = "vanilla.options", targetApplication = "options", actionKind = "application", displayPosition = 6 },
-    { id = "vanilla.special_9", targetApplication = "pokegear", actionKind = "application", displayPosition = 7 },
-    { id = "vanilla.special_10", targetApplication = "pokegear", actionKind = "application", displayPosition = 8 },
   }
 end
 
@@ -49,17 +47,15 @@ end
 ---@return StartMenuController
 local function newController(opts)
   opts = opts or {}
-  local controller = StartMenuController.new({
+  return StartMenuController.new({
     entries = opts.entries ~= nil and opts.entries or fullEntries(),
-    slots = opts.slots or SLOTS,
-    cursorFrames = opts.cursorFrames or CURSOR_FRAMES,
+    interactive = opts.interactive or POSITIONS,
     rememberedActionId = opts.rememberedActionId,
+    effect = opts.effect,
   })
-  return controller
 end
 
-local function slotCenter(slotId)
-  local rect = assert(SLOTS[slotId], "fixture slot " .. slotId .. " required")
+local function rectCenter(rect)
   return rect.x + rect.width / 2, rect.y + rect.height / 2
 end
 
@@ -68,27 +64,23 @@ function T.construction_succeeds_with_only_the_documented_options()
   Assert.equal(controller:status().open, true)
 end
 
-function T.visible_actions_follow_positions_and_slot_ids()
+function T.visible_actions_follow_positions_with_the_selected_position()
   local controller = newController()
   local status = controller:status()
   Assert.equal(status.open, true)
-  Assert.equal(status.cancelSlotId, 1, "the cancel touch region is slot 1")
   Assert.deepEqual(status.actions, {
-    { id = "vanilla.pokedex", targetApplication = "pokedex", position = 0, slotId = 2, enabled = true },
-    { id = "vanilla.pokemon", targetApplication = "pokemon", position = 1, slotId = 3, enabled = true },
-    { id = "vanilla.bag", targetApplication = "bag", position = 2, slotId = 4, enabled = true },
-    { id = "vanilla.pokegear", targetApplication = "pokegear", position = 3, slotId = 5, enabled = true },
-    { id = "vanilla.trainer_card", targetApplication = "trainer_card", position = 4, slotId = 6, enabled = true },
-    { id = "vanilla.save", targetApplication = "save", position = 5, slotId = 7, enabled = true },
-    { id = "vanilla.options", targetApplication = "options", position = 6, slotId = 8, enabled = true },
-    { id = "vanilla.special_9", targetApplication = "pokegear", position = 7, slotId = 9, enabled = true },
-    { id = "vanilla.special_10", targetApplication = "pokegear", position = 8, slotId = 10, enabled = true },
+    { id = "vanilla.pokedex", targetApplication = "pokedex", position = 0, enabled = true },
+    { id = "vanilla.pokemon", targetApplication = "pokemon", position = 1, enabled = true },
+    { id = "vanilla.bag", targetApplication = "bag", position = 2, enabled = true },
+    { id = "vanilla.pokegear", targetApplication = "pokegear", position = 3, enabled = true },
+    { id = "vanilla.trainer_card", targetApplication = "trainer_card", position = 4, enabled = true },
+    { id = "vanilla.save", targetApplication = "save", position = 5, enabled = true },
+    { id = "vanilla.options", targetApplication = "options", position = 6, enabled = true },
   })
-  Assert.equal(status.cursorSlotId, 2, "the default selection is the first visible action")
-  Assert.equal(status.cursorFrameIndex, 0, "a selected menu presents the cursor animation frame")
+  Assert.equal(status.selectedPosition, 0, "the default selection is the first visible action")
 end
 
-function T.actions_carry_id_destination_position_slot_and_enabled()
+function T.actions_carry_id_destination_position_and_enabled()
   local actions = newController():status().actions
   for _, action in ipairs(actions) do
     local keys = {}
@@ -98,8 +90,8 @@ function T.actions_carry_id_destination_position_slot_and_enabled()
     table.sort(keys)
     Assert.deepEqual(
       keys,
-      { "enabled", "id", "position", "slotId", "targetApplication" },
-      "status actions include enabled flag"
+      { "enabled", "id", "position", "targetApplication" },
+      "status actions include the enabled flag"
     )
   end
 end
@@ -134,7 +126,6 @@ function T.status_preserves_source_and_implementation_capabilities()
       id = "vanilla.trainer_card",
       targetApplication = "trainer_card",
       position = 0,
-      slotId = 2,
       enabled = true,
       sourcePresent = true,
       sourceEnabled = true,
@@ -144,7 +135,6 @@ function T.status_preserves_source_and_implementation_capabilities()
       id = "vanilla.options",
       targetApplication = "options",
       position = 1,
-      slotId = 3,
       enabled = false,
       sourcePresent = true,
       sourceEnabled = true,
@@ -155,20 +145,14 @@ end
 
 function T.selection_and_close_emit_source_effects()
   local effects = {}
-  local controller = StartMenuController.new({
-    entries = fullEntries(),
-    slots = SLOTS,
-    cursorFrames = CURSOR_FRAMES,
+  local controller = newController({
     effect = function(sequence)
       effects[#effects + 1] = sequence
     end,
   })
   controller:updateFixed({ { type = "confirm" } })
   Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" })
-  local closing = StartMenuController.new({
-    entries = fullEntries(),
-    slots = SLOTS,
-    cursorFrames = CURSOR_FRAMES,
+  local closing = newController({
     effect = function(sequence)
       effects[#effects + 1] = sequence
     end,
@@ -179,85 +163,27 @@ end
 
 function T.selection_restores_by_remembered_action_id()
   local controller = newController({ rememberedActionId = "vanilla.bag" })
-  Assert.equal(controller:status().cursorSlotId, 4, "the remembered action restores its display slot")
+  Assert.equal(controller:status().selectedPosition, 2, "the remembered action restores its display position")
 end
 
 function T.selection_falls_back_to_the_first_action_when_the_remembered_id_is_absent()
   local controller = newController({ rememberedActionId = "vanilla.running_shoes" })
-  Assert.equal(controller:status().cursorSlotId, 2, "an absent remembered id falls back to the first action")
+  Assert.equal(controller:status().selectedPosition, 0, "an absent remembered id falls back to the first action")
 end
 
-function T.directional_navigation_follows_the_source_two_column_topology()
-  local controller = newController({
-    entries = {
-      {
-        id = "vanilla.trainer_card",
-        targetApplication = "trainer_card",
-        actionKind = "application",
-        displayPosition = 0,
-        enabled = false,
-      },
-      {
-        id = "vanilla.running_shoes",
-        targetApplication = "running_shoes",
-        actionKind = "application",
-        displayPosition = 1,
-      },
-      { id = "vanilla.bag", targetApplication = "bag", actionKind = "application", displayPosition = 2 },
-      {
-        id = "vanilla.special_9",
-        targetApplication = "pokegear",
-        actionKind = "application",
-        displayPosition = 7,
-        enabled = false,
-      },
-      { id = "vanilla.special_10", targetApplication = "pokegear", actionKind = "application", displayPosition = 8 },
-    },
-  })
-  Assert.equal(controller:status().cursorSlotId, 2, "the first visible action starts in the right column")
-
+function T.directional_navigation_walks_the_full_normal_menu()
+  local controller = newController()
+  Assert.equal(controller:status().selectedPosition, 0)
   controller:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller:status().cursorSlotId, 2, "right stays when the same row has no other visible action")
-
+  Assert.equal(controller:status().selectedPosition, 4, "right from 0 selects the first visible candidate")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(controller:status().cursorSlotId, 4, "down scans the same column and skips the missing left slot")
-
+  Assert.equal(controller:status().selectedPosition, 5, "down from 4 selects the first visible candidate")
   controller:updateFixed({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller:status().cursorSlotId, 3, "left selects the visible action in the same row")
-
+  Assert.equal(controller:status().selectedPosition, 1, "left from 5 selects the first visible candidate")
   controller:updateFixed({ { type = "navigate", direction = "up" } })
-  Assert.equal(controller:status().cursorSlotId, 9, "up wraps through the same column to the last visible row")
-
+  Assert.equal(controller:status().selectedPosition, 0, "up from 1 selects the first visible candidate")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(controller:status().cursorSlotId, 3, "down wraps through the same column to the first visible row")
-
-  controller:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(controller:status().cursorSlotId, 4, "right selects the visible action in the same row")
-
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  Assert.equal(controller:status().cursorSlotId, 10, "down scans and wraps in the right column")
-  controller:updateFixed({ { type = "navigate", direction = "left" } })
-  Assert.equal(controller:status().cursorSlotId, 9, "left selects the visible disabled action in the same row")
-  controller:updateFixed({ { type = "confirm" } })
-  Assert.isNil(controller:takeResult(), "a visible disabled action remains selectable but cannot activate")
-  Assert.equal(controller:status().open, true, "a disabled activation leaves the menu open")
-end
-
-function T.navigation_skips_holes_in_the_display_array()
-  local controller = newController({
-    entries = {
-      { id = "vanilla.trainer_card", targetApplication = "trainer_card", displayPosition = 0 },
-      { id = "vanilla.save", targetApplication = "save", displayPosition = 1 },
-      { id = "vanilla.options", targetApplication = "options", displayPosition = 2 },
-      { id = "vanilla.special_9", targetApplication = "pokegear", displayPosition = 7 },
-      { id = "vanilla.special_10", targetApplication = "pokegear", displayPosition = 8 },
-    },
-  })
-  -- positions 0,1,2,7,8 are filled; 3..6 are holes.
-  for _ = 1, 2 do
-    controller:updateFixed({ { type = "navigate", direction = "down" } })
-  end
-  Assert.equal(controller:status().cursorSlotId, 10, "navigation must skip empty display positions")
+  Assert.equal(controller:status().selectedPosition, 1, "down from 0 selects the first visible candidate")
 end
 
 function T.confirm_launches_the_selected_application()
@@ -317,16 +243,16 @@ end
 
 function T.pointer_hover_moves_selection_without_activating()
   local controller = newController()
-  local x, y = slotCenter(5)
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
   controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
-  Assert.equal(controller:status().cursorSlotId, 5, "hover selects the hovered slot")
+  Assert.equal(controller:status().selectedPosition, 4, "hover selects the hovered position")
 end
 
-function T.pointer_down_up_on_the_same_action_slot_activates()
+function T.pointer_down_up_on_the_same_position_activates()
   local controller = newController()
-  local x, y = slotCenter(6)
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
-  Assert.equal(controller:status().cursorSlotId, 6, "pointer down selects the pressed slot")
+  Assert.equal(controller:status().selectedPosition, 4, "pointer down selects the pressed position")
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
   Assert.deepEqual(controller:takeResult(), {
     kind = "launch",
@@ -337,8 +263,8 @@ end
 
 function T.pointer_down_up_mismatch_and_drag_discard_the_activation()
   local mismatch = newController()
-  local downX, downY = slotCenter(4)
-  local upX, upY = slotCenter(5)
+  local downX, downY = rectCenter(POSITIONS.positions[2].hitRect)
+  local upX, upY = rectCenter(POSITIONS.positions[3].hitRect)
   mismatch:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = downX, y = downY } })
   mismatch:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = upX, y = upY, dragged = false } })
   Assert.isNil(mismatch:takeResult(), "a down/up mismatch must not activate")
@@ -351,9 +277,9 @@ function T.pointer_down_up_mismatch_and_drag_discard_the_activation()
   Assert.equal(dragged:status().open, true)
 end
 
-function T.pointer_cancel_slot_down_up_closes()
+function T.pointer_cancel_region_down_up_closes()
   local controller = newController()
-  local x, y = slotCenter(1)
+  local x, y = rectCenter(POSITIONS.cancelHitRect)
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
   Assert.deepEqual(controller:takeResult(), { kind = "close" })
@@ -361,11 +287,11 @@ end
 
 function T.pointer_cancel_mismatch_and_drag_do_not_close()
   local mismatch = newController()
-  local x, y = slotCenter(1)
-  local otherX, otherY = slotCenter(2)
+  local x, y = rectCenter(POSITIONS.cancelHitRect)
+  local otherX, otherY = rectCenter(POSITIONS.positions[0].hitRect)
   mismatch:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   mismatch:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = otherX, y = otherY, dragged = false } })
-  Assert.isNil(mismatch:takeResult(), "a cancel-slot down/up mismatch must not close")
+  Assert.isNil(mismatch:takeResult(), "a cancel down released over an action must not close")
   Assert.equal(mismatch:status().open, true)
 
   local dragged = newController()
@@ -377,8 +303,8 @@ end
 
 function T.pointer_capture_ignores_other_pointers()
   local controller = newController()
-  local firstX, firstY = slotCenter(6)
-  local secondX, secondY = slotCenter(10)
+  local firstX, firstY = rectCenter(POSITIONS.positions[4].hitRect)
+  local secondX, secondY = rectCenter(POSITIONS.positions[6].hitRect)
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = firstX, y = firstY } })
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = secondX, y = secondY } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = secondX, y = secondY, dragged = false } })
@@ -393,10 +319,10 @@ function T.pointer_capture_ignores_other_pointers()
 end
 
 -- A placement change cancels the active pointer capture, so a press held
--- across a layout change cannot activate a different post-change slot.
+-- across a layout change cannot activate a different post-change position.
 function T.cancel_pointer_capture_discards_the_held_press()
   local controller = newController()
-  local x, y = slotCenter(6)
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   controller:cancelPointerCapture()
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
@@ -407,44 +333,29 @@ function T.cancel_pointer_capture_discards_the_held_press()
   Assert.notNil(controller:takeResult(), "a fresh press after the cancellation works normally")
 end
 
-function T.pointer_press_outside_any_slot_does_not_move_selection()
+function T.pointer_press_outside_any_hit_rect_does_not_move_selection()
   local controller = newController()
   controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = 255, y = 191 } })
-  Assert.equal(controller:status().cursorSlotId, 2, "a point outside the slot grid changes nothing")
+  Assert.equal(controller:status().selectedPosition, 0, "a point outside the hit regions changes nothing")
 end
 
-function T.pointer_over_an_empty_display_position_changes_nothing()
-  -- Display positions 4..6 are holes in this list, so slots 6..8 have no
-  -- action.
+function T.pointer_over_a_position_without_a_visible_action_changes_nothing()
+  -- Display positions 0, 1, and 2 are visible in this list, so the hit
+  -- rectangles of positions 5 and 6 have no action.
   local controller = newController({
     entries = {
       { id = "vanilla.trainer_card", targetApplication = "trainer_card", displayPosition = 0 },
       { id = "vanilla.save", targetApplication = "save", displayPosition = 1 },
       { id = "vanilla.options", targetApplication = "options", displayPosition = 2 },
-      { id = "vanilla.special_9", targetApplication = "pokegear", displayPosition = 7 },
-      { id = "vanilla.special_10", targetApplication = "pokegear", displayPosition = 8 },
     },
   })
-  local x, y = slotCenter(7)
+  local x, y = rectCenter(POSITIONS.positions[5].hitRect)
   controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
-  Assert.equal(controller:status().cursorSlotId, 2, "hovering an empty slot must not move the selection")
+  Assert.equal(controller:status().selectedPosition, 0, "hovering an empty position must not move the selection")
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
-  Assert.isNil(controller:takeResult(), "a press on an empty slot must not activate anything")
+  Assert.isNil(controller:takeResult(), "a press on an empty position must not activate anything")
   Assert.equal(controller:status().open, true)
-end
-
--- The cursor animation is folded into the controller: the manifest frame
--- durations are stepped exactly once per fixed tick.
-function T.cursor_animation_advances_on_fixed_ticks_while_selected()
-  local controller = newController()
-  -- Fixture frames: frame 0 holds 22 ticks, frame 1 holds 11.
-  for _ = 1, 21 do
-    controller:updateFixed({})
-  end
-  Assert.equal(controller:status().cursorFrameIndex, 0, "the first frame holds for its duration")
-  controller:updateFixed({})
-  Assert.equal(controller:status().cursorFrameIndex, 1, "the animation advances exactly once per fixed tick")
 end
 
 function T.dispose_is_idempotent_and_discards_a_pending_result()
@@ -457,31 +368,21 @@ function T.dispose_is_idempotent_and_discards_a_pending_result()
 end
 
 -- The constructor guards the real controller invariants: the final list is
--- never empty (the menu factory returns nil instead), every display position
--- fits the manifest slot surface, and the cursor animation has frames.
+-- never empty (the menu factory returns nil instead) and every display
+-- position fits the normal seven-position selector with a generated record.
 function T.construction_guards_the_controller_invariants()
-  local function with(overrides)
-    local opts = {
-      entries = fullEntries(),
-      slots = SLOTS,
-      cursorFrames = CURSOR_FRAMES,
-    }
-    for key, value in pairs(overrides) do
-      opts[key] = value
-    end
-    return opts
-  end
   Assert.throws(function()
-    StartMenuController.new(with({ entries = {} }))
+    StartMenuController.new({ entries = {}, interactive = POSITIONS })
   end, "a blank menu is never constructed -- the factory returns nil")
   Assert.throws(function()
-    StartMenuController.new(
-      with({ entries = { { id = "vanilla.save", targetApplication = "save", displayPosition = 9 } } })
-    )
-  end, "a position beyond the slot capacity is rejected")
+    StartMenuController.new({
+      entries = { { id = "vanilla.save", targetApplication = "save", displayPosition = 9 } },
+      interactive = POSITIONS,
+    })
+  end, "a position beyond the normal selector is rejected")
   Assert.throws(function()
-    StartMenuController.new(with({ cursorFrames = {} }))
-  end, "the cursor animation requires frames")
+    StartMenuController.new({ entries = fullEntries() })
+  end, "the generated interactive record is required")
 end
 
 -- Disabled entries (enabled=false) are visible and selectable but do not
@@ -507,11 +408,11 @@ function T.confirming_disabled_entry_is_noop()
   }
   local controller = newController({ entries = mixed })
   controller:updateFixed({ { type = "navigate", direction = "down" } })
-  local selectedBefore = controller:status().cursorSlotId
+  local selectedBefore = controller:status().selectedPosition
   controller:updateFixed({ { type = "confirm" } })
   Assert.isNil(controller:takeResult(), "confirming disabled entry produces no result")
   Assert.equal(controller:status().open, true, "menu remains open")
-  Assert.equal(controller:status().cursorSlotId, selectedBefore, "selection unchanged")
+  Assert.equal(controller:status().selectedPosition, selectedBefore, "selection unchanged")
 end
 
 -- Pointer tap on a disabled entry is a no-op.
@@ -521,7 +422,7 @@ function T.pointer_tap_on_disabled_entry_is_noop()
     { id = "vanilla.save", targetApplication = "save", displayPosition = 1, enabled = false },
   }
   local controller = newController({ entries = mixed })
-  local x, y = slotCenter(3) -- slot 3 is the disabled save action
+  local x, y = rectCenter(POSITIONS.positions[1].hitRect)
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
   Assert.isNil(controller:takeResult(), "tap on disabled entry produces no result")
@@ -542,7 +443,7 @@ function T.confirming_an_enabled_non_application_action_errors()
   end, "an enabled action with unimplemented routing must error, not silently close")
 end
 
--- Status output includes enabled field for each action.
+-- Status output includes the enabled field for each action.
 function T.status_includes_enabled_field()
   local mixed = {
     { id = "vanilla.trainer_card", targetApplication = "trainer_card", displayPosition = 0, enabled = true },
@@ -552,6 +453,200 @@ function T.status_includes_enabled_field()
   local actions = controller:status().actions
   Assert.equal(actions[1].enabled, true, "enabled action has enabled=true")
   Assert.equal(actions[2].enabled, false, "disabled action has enabled=false")
+end
+
+-- Unknown event types are programming faults, never silently dropped.
+function T.unknown_event_types_are_rejected()
+  local controller = newController()
+  Assert.throws(function()
+    controller:updateFixed({ { type = "pointer_scroll", pointerId = "mouse:1", x = 10, y = 10 } })
+  end, "an unknown event type must error")
+end
+
+-- The interactive selector below consumes the generated source-position
+-- contract: entries carry display positions 0..6 and the controller receives
+-- the shared anchor/label/hit/navigation record. Selection is published as a
+-- source position, pointer input resolves against the generated hit
+-- rectangles (plus the cancel/header rectangle), and directional movement
+-- scans the generated ordered candidate lists against visible positions.
+-- Disabled visible entries stay selectable; only activation is a no-op.
+
+local INTERACTIVE = FieldUiFixture.startMenuInteractive()
+
+---@param opts table?
+---@return StartMenuController
+local function newInteractiveController(opts)
+  opts = opts or {}
+  return StartMenuController.new({
+    entries = assert(opts.entries, "interactive selector tests compose their own entries"),
+    interactive = opts.interactive or INTERACTIVE,
+    rememberedActionId = opts.rememberedActionId,
+  })
+end
+
+local function interactiveEntries()
+  return {
+    { id = "vanilla.pokedex", targetApplication = "pokedex", actionKind = "application", displayPosition = 0 },
+    { id = "vanilla.bag", targetApplication = "bag", actionKind = "application", displayPosition = 2 },
+    {
+      id = "vanilla.save",
+      targetApplication = "save",
+      actionKind = "application",
+      displayPosition = 5,
+      enabled = false,
+    },
+  }
+end
+
+local function hitCenter(rect)
+  return rect.x + rect.width / 2, rect.y + rect.height / 2
+end
+
+function T.selection_identifies_the_source_position_and_restores_by_action_id()
+  local controller = newInteractiveController({ entries = interactiveEntries() })
+  local status = controller:status()
+  Assert.equal(status.open, true)
+  Assert.equal(status.selectedPosition, 0, "selection starts at the first visible normal position")
+
+  local remembered = newInteractiveController({ entries = interactiveEntries(), rememberedActionId = "vanilla.bag" })
+  Assert.equal(remembered:status().selectedPosition, 2, "the remembered action restores its source position")
+
+  local absent = newInteractiveController({ entries = interactiveEntries(), rememberedActionId = "vanilla.options" })
+  Assert.equal(
+    absent:status().selectedPosition,
+    0,
+    "an absent remembered id falls back to the first visible normal action"
+  )
+end
+
+function T.pointer_resolves_against_the_generated_touch_bounds()
+  local controller = newInteractiveController({ entries = interactiveEntries() })
+  for _, position in ipairs({ 0, 2, 5 }) do
+    local x, y = hitCenter(INTERACTIVE.positions[position].hitRect)
+    controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+    Assert.equal(controller:status().selectedPosition, position, "hover selects generated position " .. position)
+  end
+
+  local press = newInteractiveController({ entries = interactiveEntries() })
+  local x, y = hitCenter(INTERACTIVE.positions[2].hitRect)
+  press:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(press:status().selectedPosition, 2, "pointer down selects the pressed position")
+  press:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
+  Assert.deepEqual(press:takeResult(), {
+    kind = "launch",
+    applicationId = "bag",
+    actionId = "vanilla.bag",
+  })
+end
+
+function T.disabled_visible_entries_select_but_never_activate()
+  local controller = newInteractiveController({ entries = interactiveEntries() })
+  local x, y = hitCenter(INTERACTIVE.positions[5].hitRect)
+  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+  Assert.equal(controller:status().selectedPosition, 5, "a disabled visible entry is selectable")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isNil(controller:takeResult(), "confirming a disabled entry is a no-op")
+  Assert.equal(controller:status().open, true)
+
+  local tap = newInteractiveController({ entries = interactiveEntries() })
+  tap:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  tap:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
+  Assert.isNil(tap:takeResult(), "tapping a disabled entry is a no-op")
+  Assert.equal(tap:status().open, true)
+end
+
+function T.mismatched_and_dragged_releases_do_not_activate()
+  local mismatch = newInteractiveController({ entries = interactiveEntries() })
+  local downX, downY = hitCenter(INTERACTIVE.positions[0].hitRect)
+  local upX, upY = hitCenter(INTERACTIVE.positions[2].hitRect)
+  mismatch:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = downX, y = downY } })
+  mismatch:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = upX, y = upY, dragged = false } })
+  Assert.isNil(mismatch:takeResult(), "a down/up mismatch across positions must not activate")
+  Assert.equal(mismatch:status().open, true)
+
+  local dragged = newInteractiveController({ entries = interactiveEntries() })
+  dragged:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = downX, y = downY } })
+  dragged:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = downX, y = downY, dragged = true } })
+  Assert.isNil(dragged:takeResult(), "a drag must not activate")
+  Assert.equal(dragged:status().open, true)
+end
+
+function T.cancel_region_closes_through_the_same_close_path()
+  local controller = newInteractiveController({ entries = interactiveEntries() })
+  local x, y = hitCenter(INTERACTIVE.cancelHitRect)
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
+  Assert.deepEqual(controller:takeResult(), { kind = "close" })
+
+  local mismatch = newInteractiveController({ entries = interactiveEntries() })
+  local otherX, otherY = hitCenter(INTERACTIVE.positions[0].hitRect)
+  mismatch:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  mismatch:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = otherX, y = otherY, dragged = false } })
+  Assert.isNil(mismatch:takeResult(), "a cancel down released over an action must not close")
+  Assert.equal(mismatch:status().open, true)
+end
+
+function T.directional_movement_scans_the_ordered_candidate_lists()
+  local function atPosition(position, extra)
+    local entries = {
+      { id = "vanilla.a", targetApplication = "a", actionKind = "application", displayPosition = position },
+    }
+    for _, entry in ipairs(extra or {}) do
+      entries[#entries + 1] = entry
+    end
+    local controller = newInteractiveController({ entries = entries })
+    Assert.equal(controller:status().selectedPosition, position)
+    return controller
+  end
+  local function entry(id, position, enabled)
+    return {
+      id = id,
+      targetApplication = id,
+      actionKind = "application",
+      displayPosition = position,
+      enabled = enabled,
+    }
+  end
+
+  -- Position 0 right lists {4,0,0}: the first candidate wins when visible.
+  local first = atPosition(0, { entry("vanilla.b", 4) })
+  first:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(first:status().selectedPosition, 4, "right from 0 selects the first visible candidate")
+
+  -- Position 1 up lists {0,3,2}: with 0 absent the second candidate wins.
+  local second = atPosition(1, { entry("vanilla.b", 3) })
+  second:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(second:status().selectedPosition, 3, "up from 1 falls through to the second candidate")
+
+  -- Position 2 down lists {3,0,1}: with 3 and 0 absent the third wins.
+  local third = atPosition(2, { entry("vanilla.b", 1) })
+  third:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(third:status().selectedPosition, 1, "down from 2 falls through to the third candidate")
+
+  -- Disabled visible candidates stay eligible: presence, not enabled, decides.
+  local disabled = atPosition(0, { entry("vanilla.b", 1, false) })
+  disabled:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(disabled:status().selectedPosition, 1, "a disabled visible candidate is eligible for movement")
+
+  -- No candidate but the current position resolves: selection stays put.
+  local stay = atPosition(5, {})
+  stay:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(stay:status().selectedPosition, 5, "down with no other visible candidate keeps the selection")
+  stay:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(stay:status().selectedPosition, 5, "up with no other visible candidate keeps the selection")
+  stay:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(stay:status().selectedPosition, 5, "left with no other visible candidate keeps the selection")
+end
+
+function T.entries_outside_the_normal_seven_positions_are_rejected()
+  Assert.throws(function()
+    StartMenuController.new({
+      entries = {
+        { id = "vanilla.special", targetApplication = "pokegear", actionKind = "application", displayPosition = 7 },
+      },
+      interactive = INTERACTIVE,
+    })
+  end, "position 7 is outside the normal seven-position selector")
 end
 
 return { tests = T }

@@ -1,18 +1,19 @@
 -- The pure Start Menu controller: the final interactive action display,
--- selection, confirm/cancel, and touch/pointer slot interaction of the HGSS
--- Start Menu, plus the folded-in fixed-tick cursor animation. It consumes
--- the runtime-composed final action list (the intersection of the source
--- policy with the registered destination applications; display-array
--- positions follow StartMenu_BuildActionLists, src/start_menu.c at the
--- pinned decomp commit 008257708) and the generated manifest slot surface
--- (the 2x5 slot grid keyed by the source touch-menu ids: slot 1 is the
--- cancel region and touch ids 2..10 are display positions 0..8, StartMenu_
--- HandleTouchInput start_menu.c:613-659). The final list is never empty --
--- the menu factory returns nil when no action is interactive -- so the
--- controller's constructor guards the real invariants (a non-empty list, a
--- display position that fits the slot surface, cursor frames to animate),
--- and the selection always resolves. The controller is silent -- the branch
--- does not reproduce the source Start Menu effects (SEQ_SE_DP_WIN_OPEN/
+-- selection, confirm/cancel, and touch/pointer interaction of the HGSS Start
+-- Menu over the generated normal-position contract. It consumes the
+-- runtime-composed final action list (the intersection of the source policy
+-- with the registered destination applications; entries carry explicit
+-- display positions 0..6) and the generated manifest interactive record (the
+-- cancel/header hit rectangle plus the source anchor, label window, touch
+-- hit rectangle, and ordered directional candidate lists per normal
+-- position). The final list is never empty -- the menu factory returns nil
+-- when no action is interactive -- so the controller's constructor guards
+-- the real invariants (a non-empty list, display positions inside the normal
+-- seven-position selector), and the selection always resolves. Directional
+-- movement scans the generated ordered candidate lists and selects the
+-- first currently visible candidate; pointer input resolves against the
+-- generated hit rectangles. The controller is silent -- the branch does not
+-- reproduce the source Start Menu effects (SEQ_SE_DP_WIN_OPEN/
 -- SELECT and SEQ_SE_GS_GEARCANCEL); it never touches love and never names a
 -- ROM sequence or member number. Pointer events carry canonical logical
 -- coordinates (0..255 x 0..191); the layout host maps host coordinates
@@ -22,52 +23,40 @@
 -- applicationId }) and the application host launches.
 
 ---@class StartMenuController
----@field _visibleActions table<integer, StartMenuController.Action> ordered display positions with entries
----@field _orderedPositions integer[] the visible display positions in ascending order
+---@field _visibleActions table<integer, StartMenuController.Action> visible actions keyed by display position
 ---@field _selectedPosition integer the selected display position
 ---@field _result table<string, unknown>?
 ---@field _closed boolean
----@field _cursorFrames { duration: integer }[] the manifest cursor frame durations
----@field _cursorFrameIndex integer zero-based index into _cursorFrames
----@field _cursorFrameTicks integer
----@field _slots table<integer, FieldDialogueTheme.Rect>
+---@field _positions table<integer, StartMenuController.Position> the generated normal-position records keyed 0..6
+---@field _cancelHitRect FieldDialogueTheme.Rect the generated cancel/header hit rectangle
 ---@field _pointerId string?
 ---@field _pointerDown { kind: "cancel"|"action"|"none", position: integer? }?
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
 local StartMenuController = {}
 StartMenuController.__index = StartMenuController
 
--- The cancel touch region is the manifest's slot 1 (the source touch menu id
--- 1); display position p occupies slot id p+2 (touch id p+2).
-StartMenuController.CANCEL_SLOT_ID = 1
-
--- The final interactive action list and the manifest slot surface are
+-- The final interactive action list and the generated interactive record are
 -- already validated by their producers, so the controller only guards its
 -- own invariants: a non-empty list (the factory returns nil for a blank
--- menu), display positions that fit the slot surface, and cursor frames to
--- animate.
----@param entries table[]
----@param slotCount integer
----@return table<integer, StartMenuController.Action>, table[]
-local function composeDisplay(entries, slotCount)
-  -- The source display array: visible entries write their display position
-  -- (later writes win -- special 9/10 overwrite positions 7/8). The array
-  -- length is the action slot count (slots 2..n), so position p = slot p+2.
-  local capacity = slotCount - 1
+-- menu) and display positions inside the normal seven-position selector.
+---@param entries StartMenuController.Entry[]
+---@param interactive StartMenuController.Interactive
+---@return table<integer, StartMenuController.Action>, StartMenuController.Action[]
+local function composeDisplay(entries, interactive)
+  local positions = assert(interactive.positions, "the start menu requires the generated position records")
   local display = {}
   for _, entry in ipairs(entries) do
     local position = entry.displayPosition
     assert(
-      type(position) == "number" and position % 1 == 0 and position >= 0,
-      "a start menu entry needs an integral display position"
+      type(position) == "number" and position % 1 == 0 and position >= 0 and position <= 6,
+      "a start menu entry needs a display position inside the normal seven-position selector"
     )
-    assert(position < capacity, "start menu display capacity exceeded at position " .. tostring(position))
+    assert(positions[position] ~= nil, "start menu display position " .. tostring(position) .. " has no record")
     display[position] = {
       id = entry.id,
       targetApplication = entry.targetApplication,
       actionKind = entry.actionKind,
       position = position,
-      slotId = position + StartMenuController.CANCEL_SLOT_ID + 1,
       enabled = entry.enabled ~= false, -- default to enabled if not specified
       sourcePresent = entry.sourcePresent,
       sourceEnabled = entry.sourceEnabled,
@@ -77,10 +66,9 @@ local function composeDisplay(entries, slotCount)
     }
   end
   local ordered = {}
-  for position = 0, capacity - 1 do
-    if display[position] then
-      ordered[#ordered + 1] = display[position]
-    end
+  for _, entry in ipairs(entries) do
+    local action = assert(display[entry.displayPosition], "composed display must carry every entry position")
+    ordered[#ordered + 1] = action
   end
   return display, ordered
 end
@@ -106,7 +94,6 @@ end
 ---@field targetApplication string
 ---@field actionKind string?
 ---@field position integer display position (0-based)
----@field slotId integer manifest slot id
 ---@field enabled boolean whether the action can be activated (source-enabled and implementation-available)
 ---@field sourcePresent boolean source action was present in the source menu
 ---@field sourceEnabled boolean source policy enabled the action
@@ -119,42 +106,44 @@ end
 ---@field targetApplication string
 ---@field actionKind string?
 ---@field displayPosition integer
----@field sourcePresent boolean
----@field sourceEnabled boolean
----@field implemented boolean
+---@field enabled boolean?
+---@field sourcePresent boolean?
+---@field sourceEnabled boolean?
+---@field implemented boolean?
 ---@field icon integer?
 ---@field label string?
 
+---@class StartMenuController.Position
+---@field anchor { x: integer, y: integer }
+---@field labelWindow FieldDialogueTheme.Rect
+---@field hitRect FieldDialogueTheme.Rect
+---@field navigation { up: integer[], down: integer[], left: integer[], right: integer[] }
+
+---@class StartMenuController.Interactive
+---@field cancelHitRect FieldDialogueTheme.Rect
+---@field positions table<integer, StartMenuController.Position>
+
 -- opts.entries: the runtime-composed final interactive action list
--- (id / targetApplication / displayPosition), never empty. opts.slots: the
--- generated manifest startMenu.slots. opts.cursorFrames: the generated
--- manifest startMenu.cursor.frames. opts.rememberedActionId: the selection
--- remembered across a child-application round trip.
----@param opts { entries: StartMenuController.Entry[], slots: table<integer, FieldDialogueTheme.Rect>, cursorFrames: { duration: integer }[], rememberedActionId?: string?, effect?: fun(sequence: string) }
+-- (id / targetApplication / displayPosition), never empty.
+-- opts.interactive: the generated manifest startMenu.interactive record
+-- (cancelHitRect plus positions 0..6). opts.rememberedActionId: the
+-- selection remembered across a child-application round trip.
+---@param opts { entries: StartMenuController.Entry[], interactive: StartMenuController.Interactive, rememberedActionId?: string?, effect?: fun(sequence: string) }
 ---@return StartMenuController
 function StartMenuController.new(opts)
   assert(type(opts) == "table", "the start menu controller requires options")
   assert(type(opts.entries) == "table" and #opts.entries >= 1, "a blank start menu is never constructed")
-  assert(type(opts.slots) == "table", "the start menu requires the manifest slot surface")
-  assert(
-    type(opts.cursorFrames) == "table" and #opts.cursorFrames >= 1,
-    "the cursor animation requires manifest frames"
-  )
-  local display, ordered = composeDisplay(opts.entries, #opts.slots)
-  local orderedPositions = {}
-  for index, action in ipairs(ordered) do
-    orderedPositions[index] = action.position
-  end
+  assert(type(opts.interactive) == "table", "the start menu requires the generated interactive record")
+  assert(type(opts.interactive.positions) == "table", "the start menu requires the generated normal-position records")
+  assert(type(opts.interactive.cancelHitRect) == "table", "the start menu requires the generated cancel hit rectangle")
+  local display, ordered = composeDisplay(opts.entries, opts.interactive)
   local self = setmetatable({
     _visibleActions = display,
-    _orderedPositions = orderedPositions,
     _selectedPosition = initialPosition(ordered, opts.rememberedActionId),
     _result = nil,
     _closed = false,
-    _cursorFrames = opts.cursorFrames,
-    _cursorFrameIndex = 0,
-    _cursorFrameTicks = 0,
-    _slots = opts.slots,
+    _positions = opts.interactive.positions,
+    _cancelHitRect = opts.interactive.cancelHitRect,
     _pointerId = nil,
     _pointerDown = nil,
     _effect = opts.effect,
@@ -162,46 +151,30 @@ function StartMenuController.new(opts)
   return self
 end
 
----@param slot FieldDialogueTheme.Rect
+---@param rect FieldDialogueTheme.Rect
 ---@param x number
 ---@param y number
 ---@return boolean
-local function contains(slot, x, y)
-  return x >= slot.x and y >= slot.y and x < slot.x + slot.width and y < slot.y + slot.height
+local function contains(rect, x, y)
+  return x >= rect.x and y >= rect.y and x < rect.x + rect.width and y < rect.y + rect.height
 end
 
--- The slot under a canonical logical point, or nil outside the grid.
----@param slots table<integer, FieldDialogueTheme.Rect>
+-- The visible action position under a canonical logical point, or nil
+-- outside every generated hit rectangle. Positions without a visible action
+-- never resolve: hovering or pressing them changes nothing.
+---@param positions table<integer, StartMenuController.Position>
+---@param visibleActions table<integer, StartMenuController.Action>
 ---@param x number
 ---@param y number
----@return integer? slotId
-local function slotAt(slots, x, y)
-  for slotId, rect in pairs(slots) do
-    if contains(rect, x, y) then
-      return slotId
+---@return integer? position
+local function positionAt(positions, visibleActions, x, y)
+  for position = 0, 6 do
+    local record = positions[position]
+    if record ~= nil and visibleActions[position] ~= nil and contains(record.hitRect, x, y) then
+      return position
     end
   end
   return nil
-end
-
----@param slotId integer?
----@return integer? position
-local function positionOf(slotId)
-  if slotId == nil or slotId <= StartMenuController.CANCEL_SLOT_ID then
-    return nil
-  end
-  return slotId - StartMenuController.CANCEL_SLOT_ID - 1
-end
-
--- One fixed tick of the cursor animation: the current manifest frame holds
--- for its duration, then the animation moves to the next frame and wraps.
-function StartMenuController:_advanceCursor()
-  local duration = self._cursorFrames[self._cursorFrameIndex + 1].duration
-  self._cursorFrameTicks = self._cursorFrameTicks + 1
-  if self._cursorFrameTicks >= duration then
-    self._cursorFrameIndex = (self._cursorFrameIndex + 1) % #self._cursorFrames
-    self._cursorFrameTicks = 0
-  end
 end
 
 function StartMenuController:_selectPosition(position)
@@ -209,48 +182,16 @@ function StartMenuController:_selectPosition(position)
   self._selectedPosition = position
 end
 
----@param position integer
----@return integer row
----@return integer column
-local function sourceCoordinates(position)
-  local slotId = position + StartMenuController.CANCEL_SLOT_ID + 1
-  return math.floor((slotId - 1) / 2), (slotId - 1) % 2
-end
-
----@param row integer
----@param column integer
----@return integer? position
-local function sourcePosition(row, column)
-  local position = row * 2 + column - 1
-  if position < 0 then
-    return nil
-  end
-  return position
-end
-
 function StartMenuController:_moveSelection(direction)
   assert(
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
     "unknown UI direction"
   )
-  local row, column = sourceCoordinates(self._selectedPosition)
-  if direction == "left" or direction == "right" then
-    local targetColumn = 1 - column
-    local targetPosition = sourcePosition(row, targetColumn)
-    if targetPosition ~= nil and self._visibleActions[targetPosition] ~= nil then
-      self:_selectPosition(targetPosition)
-    end
-    return
-  end
-
-  local rowCount = math.floor(#self._slots / 2)
-  local step = direction == "up" and -1 or 1
-  for distance = 1, rowCount - 1 do
-    local targetRow = (row + step * distance) % rowCount
-    local targetPosition = sourcePosition(targetRow, column)
-    if targetPosition ~= nil and self._visibleActions[targetPosition] ~= nil then
-      self:_selectPosition(targetPosition)
-      return
+  local candidates = self._positions[self._selectedPosition].navigation[direction]
+  for _, candidate in ipairs(candidates) do
+    if self._visibleActions[candidate] ~= nil then
+      self._selectedPosition = candidate
+      break
     end
   end
 end
@@ -293,21 +234,20 @@ function StartMenuController:_close()
   self._closed = true
 end
 
--- One fixed tick: the cursor animation advances exactly once, then the
--- tick's UI events are consumed. The events are the FieldInput uiSnapshot
--- shapes (navigate/confirm/cancel/pointer_down/pointer_move/pointer_up)
--- with pointer coordinates in canonical logical space, plus the
--- host-synthesized "menu" event: while the menu is active the menu button
--- has the same close semantics as HGSS X, and the application host
--- translates a fresh menu edge into it.
+-- One fixed tick: the tick's UI events are consumed. The events are the
+-- FieldInput uiSnapshot shapes (navigate/confirm/cancel/pointer_down/
+-- pointer_move/pointer_up) with pointer coordinates in canonical logical
+-- space, plus the host-synthesized "menu" event: while the menu is active
+-- the menu button has the same close semantics as HGSS X, and the
+-- application host translates a fresh menu edge into it.
 ---@param uiInput table[]
 function StartMenuController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "the start menu input must be an event list")
   if self._closed then
     return
   end
-  self:_advanceCursor()
-  local slots = self._slots
+  local positions = self._positions
+  local cancelHitRect = self._cancelHitRect
   for _, event in ipairs(uiInput) do
     -- A terminal event (close or a successful activate) ends this tick's
     -- processing: later events must not overwrite the recorded result.
@@ -323,8 +263,8 @@ function StartMenuController:updateFixed(uiInput)
       self:_close()
     elseif event.type == "pointer_move" then
       if self._pointerId == nil then
-        local position = positionOf(slotAt(slots, event.x, event.y))
-        if position ~= nil and self._visibleActions[position] ~= nil then
+        local position = positionAt(positions, self._visibleActions, event.x, event.y)
+        if position ~= nil then
           self:_selectPosition(position)
         end
       end
@@ -332,11 +272,10 @@ function StartMenuController:updateFixed(uiInput)
       if self._pointerId == nil then
         assert(type(event.pointerId) == "string", "pointer down needs a pointer id")
         self._pointerId = event.pointerId
-        local slotId = slotAt(slots, event.x, event.y)
-        local position = positionOf(slotId)
-        if slotId == StartMenuController.CANCEL_SLOT_ID then
+        local position = positionAt(positions, self._visibleActions, event.x, event.y)
+        if contains(cancelHitRect, event.x, event.y) then
           self._pointerDown = { kind = "cancel" }
-        elseif position ~= nil and self._visibleActions[position] ~= nil then
+        elseif position ~= nil then
           self:_selectPosition(position)
           self._pointerDown = { kind = "action", position = position }
         else
@@ -349,9 +288,8 @@ function StartMenuController:updateFixed(uiInput)
         self._pointerId = nil
         self._pointerDown = nil
         if event.dragged ~= true then
-          local upSlotId = slotAt(slots, event.x, event.y)
-          local upPosition = positionOf(upSlotId)
-          if down.kind == "cancel" and upSlotId == StartMenuController.CANCEL_SLOT_ID then
+          local upPosition = positionAt(positions, self._visibleActions, event.x, event.y)
+          if down.kind == "cancel" and contains(cancelHitRect, event.x, event.y) then
             self:_close()
           elseif down.kind == "action" and upPosition ~= nil and upPosition == down.position then
             self:_activate(upPosition)
@@ -364,23 +302,22 @@ function StartMenuController:updateFixed(uiInput)
   end
 end
 
--- The presentation snapshot: cursor slot/frame for the renderer plus the
--- ordered visible actions, or the closed marker alone. Fresh tables per
--- call; the caller may not mutate controller state through them.
+-- The presentation snapshot: the selected source position plus the ordered
+-- visible actions, or the closed marker alone. Fresh tables per call; the
+-- caller may not mutate controller state through them.
 ---@return StartMenuController.OpenStatus|StartMenuController.ClosedStatus
 function StartMenuController:status()
   if self._closed then
     return { open = false }
   end
   local actions = {}
-  for position = 0, #self._slots - 2 do
+  for position = 0, 6 do
     local action = self._visibleActions[position]
     if action then
       actions[#actions + 1] = {
         id = action.id,
         targetApplication = action.targetApplication,
         position = action.position,
-        slotId = action.slotId,
         enabled = action.enabled,
         sourcePresent = action.sourcePresent,
         sourceEnabled = action.sourceEnabled,
@@ -393,9 +330,7 @@ function StartMenuController:status()
   return {
     open = true,
     actions = actions,
-    cancelSlotId = StartMenuController.CANCEL_SLOT_ID,
-    cursorSlotId = self._selectedPosition + StartMenuController.CANCEL_SLOT_ID + 1,
-    cursorFrameIndex = self._cursorFrameIndex,
+    selectedPosition = self._selectedPosition,
   }
 end
 
@@ -420,8 +355,8 @@ function StartMenuController:dispose()
 end
 
 -- The placement-change contract: a press held across a layout change must
--- not activate a different post-layout slot, so the application host cancels
--- an active pointer capture when the menu placement changes.
+-- not activate a different post-layout position, so the application host
+-- cancels an active pointer capture when the menu placement changes.
 function StartMenuController:cancelPointerCapture()
   self._pointerId = nil
   self._pointerDown = nil
@@ -433,8 +368,6 @@ end
 ---@class StartMenuController.OpenStatus
 ---@field open true
 ---@field actions StartMenuController.Action[]
----@field cancelSlotId integer
----@field cursorSlotId integer
----@field cursorFrameIndex integer
+---@field selectedPosition integer
 
 return StartMenuController

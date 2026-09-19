@@ -109,19 +109,22 @@ local function findMenuAction(game, id)
   error("the start menu does not present action " .. tostring(id))
 end
 
-local function hostPointForSlot(game, slotId)
+local function hostPointForPosition(game, position)
   local runtime = game.runtime
-  local slot =
-    assert(runtime.uiManifest.startMenu.slots[slotId], "the generated manifest must carry slot " .. tostring(slotId))
-  local centerX = slot.x + slot.width / 2
-  local centerY = slot.y + slot.height / 2
+  local interactive =
+    assert(runtime.uiManifest.startMenu.interactive, "the generated manifest must carry the interactive record")
+  local record =
+    assert(interactive.positions[position], "the generated manifest must carry position " .. tostring(position))
+  local rect = record.hitRect
+  local centerX = rect.x + rect.width / 2
+  local centerY = rect.y + rect.height / 2
   return LayoutGeometry.logicalToHost(readablePlacement(runtime), centerX, centerY)
 end
 
 local function activateActionById(game, id)
   local action = findMenuAction(game, id)
-  assert(action.slotId ~= nil, "the presented action must carry its destination slot")
-  local hostX, hostY = hostPointForSlot(game, action.slotId)
+  assert(action.position ~= nil, "the presented action must carry its source position")
+  local hostX, hostY = hostPointForPosition(game, action.position)
   game.runtime.input:pointerDown("touch:1", hostX, hostY)
   game.runtime.input:pointerUp("touch:1", hostX, hostY)
   game:step()
@@ -371,15 +374,16 @@ function T.tests.resize_cancels_an_active_menu_pointer_capture()
       end
     end
     local chosen = assert(target, "the open menu must present an enabled action")
-    local chosenSlot = assert((chosen --[[@as table<string, unknown>]]).slotId, "the action must carry its slot")
-    local preX, preY = hostPointForSlot(game, chosenSlot --[[@as integer]])
+    local chosenPosition =
+      assert((chosen --[[@as table<string, unknown>]]).position, "the action must carry its position")
+    local preX, preY = hostPointForPosition(game, chosenPosition --[[@as integer]])
     runtime.input:pointerDown("touch:1", preX, preY)
     game:step()
     -- The capture is held across the resize; the release lands on the same
     -- canonical slot at the new scale and must be discarded by the
     -- cancellation (a press before a resize cannot activate post-resize).
     runtime:resizePresentation(1024, 768, touchTopology(1024, 768))
-    local postX, postY = hostPointForSlot(game, chosenSlot --[[@as integer]])
+    local postX, postY = hostPointForPosition(game, chosenPosition --[[@as integer]])
     runtime.input:pointerUp("touch:1", postX, postY)
     game:step()
     Assert.equal(game.runtime.applicationHost:status().phase, "menu", "the menu must stay open")
@@ -459,8 +463,9 @@ function T.tests.normal_menu_presents_only_icon_backed_visual_actions()
     end
     local target = assert(disabled, "the open menu must present an icon-backed disabled action")
     local targetId = assert((target --[[@as { id: string }]]).id, "the disabled action must carry its id")
-    local targetSlot = assert((target --[[@as { slotId: integer }]]).slotId, "the disabled action must carry its slot")
-    local hostX, hostY = hostPointForSlot(game, targetSlot)
+    local targetPosition =
+      assert((target --[[@as { position: integer }]]).position, "the disabled action must carry its position")
+    local hostX, hostY = hostPointForPosition(game, targetPosition)
     runtime.input:pointerDown("touch:1", hostX, hostY)
     runtime.input:pointerUp("touch:1", hostX, hostY)
     game:step()

@@ -21,10 +21,6 @@ local function baseManifest()
   for frame = 0, 19 do
     frameTiles[frame] = { x = 0, y = 0, width = 144, height = 8 }
   end
-  local slots = {}
-  for id = 1, 10 do
-    slots[id] = { x = (id % 2 == 1 and 0 or 128), y = math.floor((id - 1) / 2) * 38, width = 128, height = 38 }
-  end
   local manifest = {
     schema = DerivedAssetContract.fieldUi.schema,
     reference = { width = 256, height = 192 },
@@ -54,12 +50,7 @@ local function baseManifest()
       ["hgss.start_menu.icons"] = {
         image = "assets/generated/field/ui/start-menu-icons.png",
         width = 352,
-        height = 40,
-      },
-      ["hgss.start_menu.icon_highlight"] = {
-        image = "assets/generated/field/ui/start-menu-icons-highlight.png",
-        width = 352,
-        height = 40,
+        height = 80,
       },
       ["hgss.start_menu.icon_palette"] = {
         image = "assets/generated/field/ui/start-menu-icon-palette.png",
@@ -137,7 +128,7 @@ local function baseManifest()
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
       cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
-      slots = slots,
+      interactive = FieldUiFixture.startMenuInteractive(),
       iconTable = (function()
         local rows = {}
         local cell = 0
@@ -149,7 +140,18 @@ local function baseManifest()
           else
             rows[icon + 1] = {
               art = "sprite",
-              rect = { x = cell * 32, y = 0, width = 32, height = 40 },
+              visual = {
+                normal = {
+                  asset = "hgss.start_menu.icons",
+                  rect = { x = cell * 32, y = 0, width = 32, height = 40 },
+                  offset = { x = 0, y = 0 },
+                },
+                selected = {
+                  asset = "hgss.start_menu.icons",
+                  rect = { x = cell * 32, y = 40, width = 32, height = 40 },
+                  offset = { x = 0, y = 0 },
+                },
+              },
               label = icon,
               labelKind = "static",
             }
@@ -158,8 +160,6 @@ local function baseManifest()
         end
         return rows
       end)(),
-      iconAtlas = { asset = "hgss.start_menu.icons" },
-      iconHighlight = { asset = "hgss.start_menu.icon_highlight" },
       iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 },
       contexts = {
         { 0, 1, 2, 3, 4, 5, 6 },
@@ -178,24 +178,6 @@ local function baseManifest()
         ["vanilla.trainer_card"] = 4,
         ["vanilla.save"] = 5,
         ["vanilla.options"] = 6,
-      },
-      iconBases = {
-        [2] = { x = 24, y = 22 },
-        [3] = { x = 24, y = 62 },
-        [4] = { x = 24, y = 102 },
-        [5] = { x = 24, y = 142 },
-        [6] = { x = 104, y = 22 },
-        [7] = { x = 104, y = 62 },
-        [8] = { x = 104, y = 102 },
-      },
-      labelWindows = {
-        [2] = { x = 8, y = 48, width = 72, height = 16 },
-        [3] = { x = 8, y = 88, width = 72, height = 16 },
-        [4] = { x = 8, y = 128, width = 72, height = 16 },
-        [5] = { x = 8, y = 168, width = 72, height = 16 },
-        [6] = { x = 88, y = 48, width = 72, height = 16 },
-        [7] = { x = 88, y = 88, width = 72, height = 16 },
-        [8] = { x = 88, y = 128, width = 72, height = 16 },
       },
       chrome = {
         main = { asset = "hgss.start_menu.background", transparentAboveY = 136 },
@@ -216,10 +198,10 @@ local function baseManifest()
   return FieldUiFixture.addNamingSemantics(manifest)
 end
 
-function T.final_surface_48x32_is_accepted_when_manifest_claims_v10()
+function T.final_surface_48x32_is_accepted_when_manifest_claims_v11()
   local manifest = baseManifest()
   -- The expected final contract is 48x32 per wayfinding entry, schema v10.
-  manifest.schema = "g4-field-ui-v10"
+  manifest.schema = "g4-field-ui-v11"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 32 }
@@ -230,7 +212,7 @@ end
 
 function T.old_strip_192x8_is_rejected_under_final_surface_contract()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v10"
+  manifest.schema = "g4-field-ui-v11"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 192, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 192, height = 8 }
@@ -253,7 +235,7 @@ end
 
 function T.final_surface_must_be_inside_atlas_bounds()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v10"
+  manifest.schema = "g4-field-ui-v11"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 10, y = 10, width = 48, height = 32 }
@@ -265,14 +247,14 @@ end
 
 function T.final_surface_must_be_exactly_48x32()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v10"
+  manifest.schema = "g4-field-ui-v11"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 47, height = 32 }
   local ok, _ = FieldUiAssetCache.validateManifest(manifest)
   Assert.isFalse(ok, "47x32 must be rejected - exactly 48x32 required")
   local manifest2 = baseManifest()
-  manifest2.schema = "g4-field-ui-v10"
+  manifest2.schema = "g4-field-ui-v11"
   manifest2.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest2.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 31 }
@@ -282,7 +264,7 @@ end
 
 function T.missing_wayfinding_map_is_rejected()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v10"
+  manifest.schema = "g4-field-ui-v11"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding = {}
