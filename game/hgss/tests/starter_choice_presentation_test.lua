@@ -543,8 +543,11 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
     end
     local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
     if path == FieldUiAssetCache.manifestPath() then
-      local uiManifest = require("tests.support.FieldUiFixture").manifest()
+      local fixture = require("tests.support.FieldUiFixture")
+      local uiManifest = fixture.manifest()
       uiManifest.reference = { width = 256, height = 192 }
+      fixture.addStartMenuIconContract(uiManifest)
+      fixture.addNamingSemantics(uiManifest)
       return uiManifest
     end
     return nil

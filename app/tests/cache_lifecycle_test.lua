@@ -94,6 +94,10 @@ function T.menu_listing_reads_display_envelopes_without_deep_validation()
   Assert.deepEqual(calls.cacheReads, {}, "metadata listing reads no generated caches")
 
   local results = {}
+  local renderer = {
+    draw = function() end,
+    dispose = function() end,
+  }
   local menu = MainMenuState.new({
     saveStore = {
       listMetadata = function()
@@ -103,15 +107,15 @@ function T.menu_listing_reads_display_envelopes_without_deep_validation()
     readyVersions = { VERSION },
     width = 640,
     height = 480,
+    renderer = renderer,
     onResult = function(result)
       results[#results + 1] = result
     end,
   })
-  local card = menu:view().items[2]
+  local card = menu:view().saves[1]
   Assert.equal(card.saveId, saveId)
   Assert.equal(card.playerName, "GOLD")
   Assert.isTrue(card.canContinue, "a displayed record stays continuable while the cache is cold")
-  menu:keypressed("down")
   menu:keypressed("return")
   Assert.deepEqual(
     results,

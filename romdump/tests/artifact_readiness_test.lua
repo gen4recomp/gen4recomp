@@ -1197,92 +1197,13 @@ end
 
 local function publishUiFamily(cache)
   local UiCache = require("libs.assets.src.field.FieldUiAssetCache")
-  local assetImage = {
-    [UiCache.ASSET.DIALOGUE_FRAME_TILES] = "assets/generated/field/ui/dialogue-frame-tiles.png",
-    [UiCache.ASSET.DIALOGUE_CONTINUE_CURSOR] = "assets/generated/field/ui/dialogue-continue-cursor.png",
-    [UiCache.ASSET.SIGNPOST_TILES] = "assets/generated/field/ui/signpost-tiles.png",
-    [UiCache.ASSET.START_MENU_BACKGROUND] = "assets/generated/field/ui/start-menu-background.png",
-    [UiCache.ASSET.START_MENU_CURSOR] = "assets/generated/field/ui/start-menu-cursor.png",
-    [UiCache.ASSET.TRAINER_CARD_FRONT] = "assets/generated/field/ui/trainer-card-front.png",
-  }
-  local palette = {}
-  for slot = 0, 15 do
-    palette[slot] = { r = 1, g = 2, b = 3 }
-  end
-  local slots = {}
-  for id = 1, 10 do
-    slots[id] = { x = ((id - 1) % 5) * 48, y = id <= 5 and 64 or 96, width = 40, height = 24 }
-  end
-  local manifest = {
-    schema = UiCache.SCHEMA,
-    reference = { width = 256, height = 192 },
-    assets = {
-      [UiCache.ASSET.DIALOGUE_FRAME_TILES] = {
-        image = assetImage[UiCache.ASSET.DIALOGUE_FRAME_TILES],
-        width = 144,
-        height = 8,
-      },
-      [UiCache.ASSET.DIALOGUE_CONTINUE_CURSOR] = {
-        image = assetImage[UiCache.ASSET.DIALOGUE_CONTINUE_CURSOR],
-        width = 48,
-        height = 16,
-      },
-      [UiCache.ASSET.SIGNPOST_TILES] = { image = assetImage[UiCache.ASSET.SIGNPOST_TILES], width = 144, height = 8 },
-      [UiCache.ASSET.START_MENU_BACKGROUND] = {
-        image = assetImage[UiCache.ASSET.START_MENU_BACKGROUND],
-        width = 256,
-        height = 192,
-      },
-      [UiCache.ASSET.START_MENU_CURSOR] = {
-        image = assetImage[UiCache.ASSET.START_MENU_CURSOR],
-        width = 16,
-        height = 16,
-      },
-      [UiCache.ASSET.TRAINER_CARD_FRONT] = {
-        image = assetImage[UiCache.ASSET.TRAINER_CARD_FRONT],
-        width = 256,
-        height = 192,
-      },
-    },
-    dialogueFrames = {
-      count = 1,
-      frameTiles = { [0] = { x = 0, y = 0, width = 144, height = 8 } },
-      continueCursor = {
-        asset = UiCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
-        cycle = { 0, 1, 2, 1 },
-        framePrinterTicks = 9,
-        placement = { x = 240, y = 168, width = 16, height = 16 },
-        styles = {
-          [0] = {
-            phases = {
-              [0] = { x = 0, y = 0, width = 16, height = 16 },
-              [1] = { x = 16, y = 0, width = 16, height = 16 },
-              [2] = { x = 32, y = 0, width = 16, height = 16 },
-            },
-          },
-        },
-      },
-    },
-    signposts = {
-      textColors = { foreground = 2, shadow = 10, background = 15 },
-      types = {
-        [0] = {
-          sourceType = 0,
-          palette = palette,
-          frameTiles = { x = 0, y = 0, width = 144, height = 8 },
-        },
-      },
-    },
-    startMenu = {
-      background = { x = 0, y = 0, width = 64, height = 32 },
-      cursor = { frames = { { x = 0, y = 0, width = 16, height = 16, duration = 1 } } },
-      slots = slots,
-      actionSurfaces = {},
-    },
-    trainerCard = {
-      front = { x = 0, y = 0, width = 64, height = 32 },
-    },
-  }
+  local FieldUiFixture = require("tests.support.FieldUiFixture")
+  local manifest = FieldUiFixture.manifest()
+  manifest.reference = { width = 256, height = 192 }
+  FieldUiFixture.addStartMenuIconContract(manifest)
+  FieldUiFixture.addNamingSemantics(manifest)
+  local valid, manifestErr = UiCache.validateManifest(manifest)
+  Assert.isTrue(valid, "the current field-UI fixture validates: " .. tostring(manifestErr and manifestErr.message))
   local marker = UiCache.marker("test-rom", "test-dep")
   cache:writeLua(UiCache.manifestPath(), manifest)
   for _, entry in pairs(manifest.assets) do
@@ -1296,7 +1217,15 @@ end
 
 local function publishIntroFamily(cache)
   local IntroCache = require("libs.assets.src.newgame.IntroAssetCache")
-  local playback = { ball_open = true, marill_appear = true, marill = true, gender_male = true, gender_female = true }
+  local playback = {
+    ball_open = true,
+    marill_appear = true,
+    marill = true,
+    gender_male = true,
+    gender_female = true,
+    naming_male = true,
+    naming_female = true,
+  }
   local centered = { gender_male = true, gender_female = true, ball_open = true, marill_appear = true, marill = true }
   local widgets = {}
   for _, id in ipairs(IntroCache.REQUIRED_ASSETS) do
@@ -1329,7 +1258,7 @@ local function publishIntroFamily(cache)
   end
   local backgroundImage = "assets/generated/intro/background.png"
   local manifest = {
-    schemaVersion = 11,
+    schemaVersion = IntroCache.SCHEMA_VERSION,
     variant = "heartgold",
     sourceReference = { width = 256, height = 192 },
     background = { image = backgroundImage, width = 1, height = 192, sampling = "linear" },

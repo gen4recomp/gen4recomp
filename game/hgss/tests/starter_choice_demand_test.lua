@@ -383,6 +383,8 @@ local function readyHeadlessCache()
     requireModule("libs.assets.src.field.FieldUiAssetCache", "the generated field-UI cache owns the window manifest")
   local uiManifest = FieldUiFixture.manifest()
   uiManifest.reference = { width = 256, height = 192 }
+  FieldUiFixture.addStartMenuIconContract(uiManifest)
+  FieldUiFixture.addNamingSemantics(uiManifest)
   Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), "the field-UI fixture validates")
   cacheFs:writeLua(FieldUiAssetCache.manifestPath(), uiManifest)
   cacheFs:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())

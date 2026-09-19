@@ -290,7 +290,7 @@ function T.tests.zero_and_one_save_boots_choose_the_correct_initial_continue_pat
     Assert.equal(#initial.globalActions, 1, "New Game must remain a separate global action")
     menu:keypressed("return")
     Assert.equal(results[1].kind, "continue", "save confirmation must publish Continue")
-    Assert.equal(results[1].game.saveId, saveIds[1])
+    Assert.equal(results[1].saveId, saveIds[1])
   end)
 end
 
