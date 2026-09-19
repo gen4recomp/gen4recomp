@@ -126,6 +126,9 @@ function App._launchMenuWithProvisioner(versionId)
     error(game, 0)
   end
   App.setState(game)
+  -- Exhaustive warmup authorizes only after the menu game owns the process
+  -- state: the next producer pump may enroll sweep work, never this call.
+  provisioner:startBackgroundWarmup()
 end
 
 function App._showVersionSelector()
@@ -143,7 +146,7 @@ end
 -- Selects a game version: constructs its session on the process pool, then
 -- launches the menu immediately when bootstrap is already ready or waits
 -- through a visible preparation state otherwise. A ready bootstrap never
--- recompiles; field core and sweep warm while the menu shows.
+-- recompiles; broader warming starts only after the menu is installed.
 function App._selectVersion(versionId)
   local pool = App.pool
   if pool ~= nil then

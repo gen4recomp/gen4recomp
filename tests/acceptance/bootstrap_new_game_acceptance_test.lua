@@ -2,7 +2,7 @@
 -- requests the semantic intro milestone and hands the real candidate from
 -- the real mon and item catalogs to Oak composition only once that
 -- milestone is ready, without waiting on field-core work. A read facade
--- derives item availability from the real bootstrap closure, so a warm
+-- derives item availability from the real intro closure, so a warm
 -- complete cache cannot conceal the declared boundary: every catalog byte
 -- still loads through the genuine readers and validators.
 
@@ -26,8 +26,9 @@ local T = {
   tests = {},
 }
 
-local function bootstrapDeclaresItems()
-  for _, job in ipairs(ArtifactJobs.bootstrapJobs({})) do
+local function introDeclaresItems()
+  local jobs = ArtifactJobs.newGameIntroJobs(nil)
+  for _, job in ipairs(jobs) do
     if job.kind == "items" and job.key == "global" then
       return true
     end
@@ -35,10 +36,10 @@ local function bootstrapDeclaresItems()
   return false
 end
 
-function T.tests.new_game_enters_oak_on_bootstrap_alone()
+function T.tests.new_game_enters_oak_on_intro_readiness_without_field_core()
   local versionId = AcceptanceHarness.defaultVersion()
   local store = GameSaveStore.new(SaveFs.global(FakeCache.new()))
-  local itemsDeclared = bootstrapDeclaresItems()
+  local itemsDeclared = introDeclaresItems()
   local itemCatalogPath = ItemCache.catalogPath()
 
   local originalForVersion = CacheFs.forVersion
@@ -51,8 +52,8 @@ function T.tests.new_game_enters_oak_on_bootstrap_alone()
   local fieldCalls = 0
   local introReady = false
   local host = {
-    requestMilestone = function(name, _)
-      requestedMilestones[#requestedMilestones + 1] = name
+    requestMilestone = function(name, urgency)
+      requestedMilestones[#requestedMilestones + 1] = { name = name, urgency = urgency }
       if name == "new-game-intro" then
         return introReady
       end
@@ -133,13 +134,18 @@ function T.tests.new_game_enters_oak_on_bootstrap_alone()
     end
     Assert.equal(#candidates, 0, "Oak waits for the intro milestone while it is cold")
     local introRequests = 0
-    for _, name in ipairs(requestedMilestones) do
-      Assert.isTrue(name ~= "field-core", "no field-core request is used to make this pass")
-      if name == "new-game-intro" then
+    local sawNearAtMenu = false
+    for _, request in ipairs(requestedMilestones) do
+      Assert.isTrue(request.name ~= "field-core", "no field-core request is used to make this pass")
+      if request.name == "new-game-intro" then
         introRequests = introRequests + 1
+        if request.urgency == "near" then
+          sawNearAtMenu = true
+        end
       end
     end
     Assert.isTrue(introRequests >= 1, "New Game requests its intro milestone as required")
+    Assert.isTrue(sawNearAtMenu, "menu installation prefetches the intro closure at near")
     introReady = true
     for _ = 1, 10 do
       game:update(1 / 60)

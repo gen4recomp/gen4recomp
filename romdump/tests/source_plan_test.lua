@@ -295,7 +295,7 @@ function T.construction_schedules_the_source_inventory_without_compiling_sources
       catalog = calls.catalog,
       presentation = calls.presentation,
     }
-    local ready, failure = session:requestMilestone("bootstrap", "required")
+    local ready, failure = session:requestMilestone("new-game-intro", "required")
     session:update()
     return {
       snapshot = snapshot,
@@ -311,11 +311,11 @@ function T.construction_schedules_the_source_inventory_without_compiling_sources
   Assert.equal(result.snapshot.audio, 0, "selecting a generation plans no audio")
   Assert.equal(result.snapshot.catalog, 0, "selecting a generation compiles no mon catalog")
   Assert.equal(result.snapshot.presentation, 0, "selecting a generation plans no mon presentation")
-  Assert.isFalse(result.ready, "bootstrap stays pending until the inventory publishes")
-  Assert.isNil(result.failure, "bootstrap reports no failure while the inventory is pending")
+  Assert.isFalse(result.ready, "the intro stays pending until the inventory publishes")
+  Assert.isNil(result.failure, "the intro reports no failure while the inventory is pending")
   Assert.isTrue(
     contains(result.submitted, "source-plan:global"),
-    "bootstrap demand schedules the persisted source inventory job"
+    "intro demand schedules the persisted source inventory job"
   )
   Assert.isTrue(result.enumerationComplete == false, "enumeration is not complete before the inventory publishes")
 end
@@ -801,7 +801,7 @@ function T.exhaustive_scheduling_covers_every_current_family_exactly_once()
     -- scheduling assertions below are unchanged.
     for _ = 1, 60 do
       local registered = true
-      for _, job in ipairs(ArtifactJobs.bootstrapJobs({})) do
+      for _, job in ipairs(ArtifactJobs.bootstrapJobs()) do
         if session.byKey[job.kind .. ":" .. job.key] == nil then
           registered = false
           break
@@ -812,7 +812,7 @@ function T.exhaustive_scheduling_covers_every_current_family_exactly_once()
       end
       session:update()
     end
-    for _, job in ipairs(ArtifactJobs.bootstrapJobs({})) do
+    for _, job in ipairs(ArtifactJobs.bootstrapJobs()) do
       local entry = session.byKey[job.kind .. ":" .. job.key]
       Assert.notNil(entry, "admitted enrollment registers every bootstrap member")
       entry.ready = true

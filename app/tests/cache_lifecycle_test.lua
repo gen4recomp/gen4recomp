@@ -217,6 +217,10 @@ local function withAppStubs(fn)
       requestMilestone = function(_)
         return true
       end,
+      enableSweep = function(self)
+        self.sweepEnabled = true
+        context.warmups = (context.warmups or 0) + 1
+      end,
       status = function(_)
         return { bootstrap = "ready" }
       end,
@@ -263,6 +267,12 @@ function T.game_switch_retires_the_old_epoch_on_the_shared_process_pool()
     Assert.equal(first.retired + first.disposed, 1, "the old epoch retires exactly once without joining workers")
     Assert.equal(#context.games, 2)
     Assert.equal(context.games[1].disposed, 1, "switching disposes the old game consumer")
+    Assert.equal(
+      App.pool:diagnostics().mode,
+      "interactive",
+      "bootstrap keeps the single interactive pool instead of a batch path"
+    )
+    Assert.isTrue((context.warmups or 0) >= 1, "each menu installation authorizes background warmup")
   end)
 end
 
@@ -492,7 +502,10 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
     local sessionOptions = assert(built[1])
     Assert.equal(sessionOptions.epoch, 3)
     Assert.equal(sessionOptions.pool, pool)
-    Assert.isTrue(sessionOptions.sweepEnabled)
+    Assert.isFalse(
+      sessionOptions.sweepEnabled,
+      "interactive sessions start demand-only; warmup is authorized after the menu"
+    )
     Assert.equal(assert(sessionOptions.identity).versionId, "heartgold")
     local host = provisioner:gameHost()
     Assert.isTrue(host.requestMilestone("bootstrap", "required"))
@@ -505,6 +518,8 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
     Assert.equal(seen.cell.urgency, "near")
     Assert.isTrue(host.requestMonPortraitPage(0, "required"))
     Assert.deepEqual(seen.page, { pageId = 0, urgency = "required" })
+    Assert.isNil(host.startBackgroundWarmup, "warmup lifecycle stays off the semantic game host")
+    Assert.isNil(host.enableSweep, "session authorization stays off the semantic game host")
     provisioner:update()
     provisioner:dispose()
     Assert.equal(retired, 1, "disposal retires the session")
@@ -518,6 +533,110 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
   if not ok then
     error(err, 0)
   end
+end
+
+-- Menu handoff authorizes background warmup through the owner operation
+-- only after the new game state is installed: constructor, state
+-- installation, then warmup. A failed game constructor recovers to the
+-- selector without ever authorizing warmup.
+function T.menu_installation_authorizes_background_warmup_after_state_handoff()
+  local App = require("app.src.App")
+  local HgssGame = require("game.hgss.src.HgssGame")
+  local Provisioner = require("app.src.DerivedAssetProvisioner")
+  local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+  local originalBuildNew = InteractiveCacheBuild.new
+  local originalGameNew = HgssGame.new
+  local originalSetState = App.setState
+  local originalShowSelector = App._showVersionSelector
+  local originalState = App.state
+  local originalProvisioner = App.provisioner
+  local originalOpts = App.opts
+  App.opts = { dev = false }
+  local events = {}
+  local enabled = 0
+  local fakeSession = {}
+  function fakeSession:enableSweep()
+    enabled = enabled + 1
+    events[#events + 1] = "provisioner:startBackgroundWarmup"
+  end
+  function fakeSession:retire() end
+  InteractiveCacheBuild.new = function(_)
+    return fakeSession
+  end
+  local game = {
+    update = function() end,
+    dispose = function() end,
+  }
+  HgssGame.new = function(options)
+    events[#events + 1] = "game:new"
+    Assert.notNil(options.derivedAssets, "the menu game receives the semantic host")
+    return game
+  end
+  App.setState = function(next)
+    events[#events + 1] = "app:setState"
+    originalSetState(next)
+  end
+  local ok, err = pcall(function()
+    local provisioner = Provisioner.new({
+      versionId = "heartgold",
+      producerFingerprint = "r1",
+      pool = {},
+      epoch = 1,
+    })
+    local host = provisioner:gameHost()
+    Assert.isNil(host.startBackgroundWarmup, "warmup lifecycle stays off the semantic game host")
+    Assert.isNil(host.enableSweep, "session authorization stays off the semantic game host")
+    App.provisioner = provisioner
+    App.state = nil
+    App._launchMenuWithProvisioner("heartgold")
+  end)
+  local launchedState = App.state
+  local launchedEvents = {}
+  for _, event in ipairs(events) do
+    launchedEvents[#launchedEvents + 1] = event
+  end
+  local launchedEnabled = enabled
+  HgssGame.new = function()
+    error("synthetic game failure", 0)
+  end
+  local selectorShown = 0
+  App._showVersionSelector = function()
+    selectorShown = selectorShown + 1
+  end
+  App.state = nil
+  local failOk, failErr
+  local innerOk, innerErr = pcall(function()
+    failOk, failErr = pcall(App._launchMenuWithProvisioner, "heartgold")
+  end)
+  local failedEnabled = enabled
+  local failedSelectorShown = selectorShown
+  InteractiveCacheBuild.new = originalBuildNew
+  HgssGame.new = originalGameNew
+  App.setState = originalSetState
+  App._showVersionSelector = originalShowSelector
+  App.state = originalState
+  App.provisioner = originalProvisioner
+  App.opts = originalOpts
+  if not ok then
+    error(err, 0)
+  end
+  if not innerOk then
+    error(innerErr, 0)
+  end
+  Assert.equal(launchedState, game, "the launched game becomes the process state")
+  Assert.deepEqual(
+    launchedEvents,
+    { "game:new", "app:setState", "provisioner:startBackgroundWarmup" },
+    "warmup authorizes only after the menu state is installed"
+  )
+  Assert.equal(launchedEnabled, 1, "a successful launch enables sweep exactly once")
+  Assert.isFalse(failOk, "a failed game constructor still surfaces its error")
+  Assert.isTrue(
+    tostring(failErr):find("synthetic game failure", 1, true) ~= nil,
+    "the surfaced error is the game failure"
+  )
+  Assert.equal(failedSelectorShown, 1, "a failed launch recovers to the version selector")
+  Assert.equal(failedEnabled, launchedEnabled, "a failed launch never authorizes warmup")
 end
 
 -- Selection/import ownership through the real production composition: the

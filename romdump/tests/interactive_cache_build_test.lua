@@ -144,103 +144,6 @@ local function jobSet(jobs)
   return set
 end
 
-function T.bootstrap_membership_is_the_fixed_set_plus_audio_closures()
-  local jobs = ArtifactJobs.bootstrapJobs({ 7, 0 })
-  local set = jobSet(jobs)
-  for _, name in ipairs({
-    "world-catalog:global",
-    "field-cell-index:global",
-    "field-camera:global",
-    "field-weather:global",
-    "field-effects:global",
-    "field-emotes:global",
-    "field-ui:global",
-    "field-font:global",
-    "intro:global",
-    "new-game-init:global",
-    "mon-catalog:global",
-    "mon-layout:global",
-    "items:global",
-    "message-bank:219",
-    "audio-summary:global",
-    "audio-bank:7",
-    "audio-bank:0",
-  }) do
-    Assert.isTrue(set[name] == true, "bootstrap carries " .. name)
-  end
-  Assert.equal(#jobs, 17, "bootstrap carries nothing else")
-  local itemsCount = 0
-  for _, job in ipairs(jobs) do
-    if job.kind == "items" and job.key == "global" then
-      itemsCount = itemsCount + 1
-    end
-  end
-  Assert.equal(itemsCount, 1, "bootstrap carries exactly one canonical items job")
-  for _, job in ipairs(jobs) do
-    local kind = job.kind
-    Assert.isTrue(
-      kind ~= "map"
-        and kind ~= "field-cell"
-        and kind ~= "map-data"
-        and kind ~= "script-member"
-        and kind ~= "script-summary"
-        and kind ~= "message-summary"
-        and kind ~= "mon-icon-page"
-        and kind ~= "mon-portrait-page"
-        and kind ~= "mon-summary"
-        and kind ~= "actors"
-        and kind ~= "starter-choice"
-        and kind ~= "bag",
-      "bootstrap never pulls geometry, records, scripts, pages, actors, or bag: " .. kind
-    )
-  end
-end
-
-function T.field_core_contains_bootstrap_without_geometry_or_portraits()
-  local lists = {
-    audioBankIds = { 7 },
-    messageBankIds = { 219, 220 },
-    scriptMemberIds = { 149 },
-    iconPageIds = { 3 },
-    mapDataIds = { 7 },
-  }
-  local coreJobs = ArtifactJobs.fieldCoreJobs(lists)
-  local core = jobSet(coreJobs)
-  local bootstrap = ArtifactJobs.bootstrapJobs(lists.audioBankIds)
-  for _, job in ipairs(bootstrap) do
-    Assert.isTrue(core[job.kind .. ":" .. job.key] == true, "core keeps bootstrap work")
-  end
-  local coreItemsCount = 0
-  for _, job in ipairs(coreJobs) do
-    if job.kind == "items" and job.key == "global" then
-      coreItemsCount = coreItemsCount + 1
-    end
-  end
-  Assert.equal(coreItemsCount, 1, "field core carries exactly one canonical items job")
-  for _, name in ipairs({
-    "actors:global",
-    "starter-choice:global",
-    "items:global",
-    "bag:global",
-    "message-bank:219",
-    "message-bank:220",
-    "message-summary:global",
-    "script-member:149",
-    "script-summary:global",
-    "mon-icon-page:3",
-    "map-data:7",
-  }) do
-    Assert.isTrue(core[name] == true, "core carries " .. name)
-  end
-  for identityKey in pairs(core) do
-    local kind = identityKey:match("^([^:]+):")
-    Assert.isTrue(
-      kind ~= "map" and kind ~= "field-cell" and kind ~= "mon-portrait-page" and kind ~= "mon-summary",
-      "field entry never waits for geometry or portraits: " .. identityKey
-    )
-  end
-end
-
 local function syntheticPlans()
   return {
     iconPageIds = { 0, 1 },
@@ -748,14 +651,14 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     local backend = FakeCache.new()
     local pool = retryCapablePool()
     local session = isolatedSession("deferred-source-generation", pool, backend)
-    local ready, failure = session:requestMilestone("bootstrap", "required")
-    Assert.isFalse(ready, "bootstrap stays pending while the inventory is cold")
-    Assert.isNil(failure, "bootstrap reports no failure while the inventory is pending")
+    local ready, failure = session:requestMilestone("new-game-intro", "required")
+    Assert.isFalse(ready, "the intro stays pending while the inventory is cold")
+    Assert.isNil(failure, "the intro reports no failure while the inventory is pending")
     session:update()
-    Assert.isTrue(
-      submissionCount(pool, "source-plan:global") >= 1,
-      "bootstrap demand schedules the source inventory job"
-    )
+    Assert.isTrue(submissionCount(pool, "source-plan:global") >= 1, "intro demand schedules the source inventory job")
+    local waitingReady, waitingFailure = session:requestJob("audio-summary", "global", "required")
+    Assert.isFalse(waitingReady, "audio demand waits while the inventory is cold")
+    Assert.isNil(waitingFailure, "audio demand reports no failure while the inventory is pending")
     pool.states["source-plan:global"] = "failed"
     for _ = 1, 3 do
       session:update()
@@ -854,14 +757,14 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
     Assert.isFalse(milestoneReady, "the milestone never answers ready while its members are pending")
     Assert.isNil(milestoneFailure, "an unrelated bank failure never poisons the milestone")
-    pool.states["message-bank:219"] = "failed"
+    pool.states["field-font:global"] = "failed"
     for _ = 1, 3 do
       session:update()
     end
     local failedReady, failedFailure = session:requestMilestone("bootstrap", "required")
     Assert.isFalse(failedReady, "the milestone never answers ready behind a failed member")
     Assert.isTrue(
-      tostring(failedFailure):find("message-bank:219", 1, true) ~= nil,
+      tostring(failedFailure):find("field-font:global", 1, true) ~= nil,
       "the milestone failure wins over pending siblings: " .. tostring(failedFailure)
     )
     local retried = session:retry("message-summary", "global", "required")
@@ -1775,6 +1678,196 @@ function T.bootstrap_finishes_without_pages_or_geometry()
   Assert.isFalse(session:status().complete, "a targeted bootstrap is never exhaustive completion")
 end
 
+function T.bootstrap_membership_is_exactly_the_menu_font()
+  local jobs = ArtifactJobs.bootstrapJobs()
+  Assert.equal(#jobs, 1, "bootstrap carries only the menu prerequisite")
+  Assert.equal(jobs[1].kind, "field-font", "the menu prerequisite is the field font")
+  Assert.equal(jobs[1].key, "global", "the menu prerequisite is the global font")
+end
+
+function T.field_core_contains_bootstrap_without_geometry_or_portraits()
+  local lists = {
+    audioBankIds = { 7 },
+    messageBankIds = { 219, 220 },
+    scriptMemberIds = { 149 },
+    iconPageIds = { 3 },
+    mapDataIds = { 7 },
+  }
+  local coreJobs = ArtifactJobs.fieldCoreJobs(lists)
+  local core = jobSet(coreJobs)
+  local bootstrap = ArtifactJobs.bootstrapJobs()
+  for _, job in ipairs(bootstrap) do
+    Assert.isTrue(core[job.kind .. ":" .. job.key] == true, "core keeps bootstrap work")
+  end
+  local coreItemsCount = 0
+  for _, job in ipairs(coreJobs) do
+    if job.kind == "items" and job.key == "global" then
+      coreItemsCount = coreItemsCount + 1
+    end
+  end
+  Assert.equal(coreItemsCount, 1, "field core carries exactly one canonical items job")
+  for _, name in ipairs({
+    "actors:global",
+    "starter-choice:global",
+    "items:global",
+    "bag:global",
+    "message-bank:219",
+    "message-bank:220",
+    "message-summary:global",
+    "script-member:149",
+    "script-summary:global",
+    "mon-icon-page:3",
+    "map-data:7",
+  }) do
+    Assert.isTrue(core[name] == true, "core carries " .. name)
+  end
+  for identityKey in pairs(core) do
+    local kind = identityKey:match("^([^:]+):")
+    Assert.isTrue(
+      kind ~= "map" and kind ~= "field-cell" and kind ~= "mon-portrait-page" and kind ~= "mon-summary",
+      "field entry never waits for geometry or portraits: " .. identityKey
+    )
+  end
+end
+
+-- Decoupling bootstrap from field core must not silently shrink field
+-- readiness: the decoupled roster carries every previously inherited
+-- member plus the audio catalog the current summary dependency requires.
+function T.field_core_preserves_the_decoupled_closure()
+  local lists = {
+    audioBankIds = { 7 },
+    messageBankIds = { 219, 220 },
+    scriptMemberIds = { 149 },
+    iconPageIds = { 3 },
+    mapDataIds = { 7 },
+  }
+  local core = jobSet(ArtifactJobs.fieldCoreJobs(lists))
+  local expected = {
+    "world-catalog:global",
+    "field-cell-index:global",
+    "field-camera:global",
+    "field-weather:global",
+    "field-effects:global",
+    "field-emotes:global",
+    "field-ui:global",
+    "field-font:global",
+    "intro:global",
+    "new-game-init:global",
+    "mon-catalog:global",
+    "mon-layout:global",
+    "items:global",
+    "message-bank:219",
+    "message-bank:220",
+    "audio-catalog:global",
+    "audio-summary:global",
+    "audio-bank:7",
+    "actors:global",
+    "starter-choice:global",
+    "bag:global",
+    "message-summary:global",
+    "script-member:149",
+    "script-summary:global",
+    "mon-icon-page:3",
+    "map-data:7",
+  }
+  for _, name in ipairs(expected) do
+    Assert.isTrue(core[name] == true, "decoupled core keeps " .. name)
+  end
+  local count = 0
+  for _ in pairs(core) do
+    count = count + 1
+  end
+  Assert.equal(count, #expected, "decoupled core carries nothing else")
+end
+
+-- A cold bootstrap request enrolls only the menu font: no source
+-- inventory, no page layout, and no work beyond the font reaches the pool.
+function T.bootstrap_registers_no_source_or_page_metadata()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = isolatedSession("bootstrap-metadata-generation", pool, backend)
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "bootstrap stays pending until the font is ready")
+  Assert.isNil(failure, "bootstrap reports no failure while pending")
+  for _ = 1, 4 do
+    session:update()
+  end
+  Assert.isNil(session.byKey["source-plan:global"], "bootstrap schedules no source inventory")
+  Assert.isNil(session.byKey["mon-layout:global"], "bootstrap schedules no page layout")
+  Assert.isNil(session.milestones["field-core"], "bootstrap enrolls no field-core intent")
+  for jobKey in pairs(session.byKey) do
+    Assert.equal(jobKey, "field-font:global", "bootstrap interest stays font-scoped: " .. jobKey)
+  end
+  for _, jobKey in ipairs(pool.submitted) do
+    Assert.equal(jobKey, "field-font:global", "bootstrap work stays font-scoped: " .. jobKey)
+  end
+end
+
+-- Bootstrap readiness must not enroll field-core interest on its own:
+-- explicit field preparation owns that demand. The automatic promotion
+-- lived behind sweep authorization, so this drives a sweep-authorized
+-- session to readiness and proves no field-core intent appears.
+function T.bootstrap_readiness_registers_no_automatic_field_core()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  CacheFs.forVersion = function(versionId)
+    assert(versionId == "heartgold", "session fixture stays on heartgold")
+    return cacheFs
+  end
+  local session
+  local ok, err = pcall(function()
+    session = InteractiveCacheBuild.new({
+      identity = { versionId = "heartgold", generationId = "bootstrap-autocore-generation", producerId = PRODUCER_ID },
+      epoch = 1,
+      pool = pool,
+      sweepEnabled = true,
+    })
+  end)
+  CacheFs.forVersion = realForVersion
+  if not ok then
+    error(err, 0)
+  end
+  session:requestMilestone("bootstrap", "required")
+  session:update()
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil then
+      entry.ready = true
+    end
+  end
+  for _ = 1, 4 do
+    session:update()
+  end
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(ready, "bootstrap answers ready from the font alone")
+  Assert.isNil(failure, "bootstrap reports no failure on success")
+  Assert.isNil(session.milestones["field-core"], "ready bootstrap never auto-requests field core")
+end
+
+-- Sweep authorization is an explicit idempotent owner operation: it flips
+-- the flag, performs no pool or cache work synchronously, and rejects on
+-- a retired session.
+function T.sweep_enable_is_idempotent_and_performs_no_synchronous_work()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local session = isolatedSession("sweep-enable-generation", pool, backend)
+  session:update()
+  Assert.isTrue(session.sweepCursor == nil, "a demand-only session enumerates no sweep")
+  local submittedBefore = #pool.submitted
+  session:enableSweep()
+  Assert.isTrue(session.sweepEnabled, "enabling authorizes sweep")
+  Assert.equal(#pool.submitted, submittedBefore, "enabling submits no work synchronously")
+  Assert.isTrue(session.sweepCursor == nil, "enabling enumerates nothing synchronously")
+  session:enableSweep()
+  Assert.isTrue(session.sweepEnabled, "repeated enabling stays authorized")
+  Assert.equal(#pool.submitted, submittedBefore, "repeated enabling stays work-free")
+  session:retire()
+  local ok, err = pcall(session.enableSweep, session)
+  Assert.isFalse(ok, "enabling a retired session rejects")
+  Assert.isTrue(tostring(err):find("retired", 1, true) ~= nil, "the rejection names retirement")
+end
+
 local function oakAudioPlan()
   return {
     index = {
@@ -2129,7 +2222,7 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
   local realForVersion = CacheFs.forVersion
   local cacheFs = realForVersion("heartgold", backend)
   stageInventoryRecord(cacheFs, generation, {})
-  for _, member in ipairs(ArtifactJobs.bootstrapJobs({})) do
+  for _, member in ipairs(ArtifactJobs.bootstrapJobs()) do
     cacheFs:writeLua(ArtifactState.path(member.kind, member.key), {
       schema = ArtifactState.RECEIPT_SCHEMA,
       generationId = generation,

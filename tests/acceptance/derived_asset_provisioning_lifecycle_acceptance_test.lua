@@ -76,6 +76,9 @@ local function withApp(fn)
       update = function() end,
       dispose = function() end,
       retire = function() end,
+      enableSweep = function()
+        result.warmups = (result.warmups or 0) + 1
+      end,
       requestMilestone = function()
         return true
       end,
@@ -140,6 +143,9 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     Assert.equal(type(host.ensureCell), "function")
     Assert.isNil(host.update, "the game must not receive producer lifecycle control")
     Assert.isNil(host.dispose, "the game must not receive producer disposal control")
+    Assert.isNil(host.startBackgroundWarmup, "the game must not receive warmup lifecycle control")
+    Assert.isNil(host.enableSweep, "the game must not receive session authorization control")
+    Assert.equal(result.warmups or 0, 1, "menu installation authorizes exactly one background warmup")
   end)
 end
 

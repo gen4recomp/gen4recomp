@@ -408,9 +408,10 @@ function T.cold_new_game_waits_for_its_intro_milestone_before_oak()
     game.state:keypressed("return")
     Assert.equal(getmetatable(game.state).__index, NewGamePreparationState, "cold New Game enters preparation")
     settle(game)
-    Assert.equal(#milestoneCalls >= 1, true, "preparation requests its intro milestone")
-    for _, urgency in ipairs(milestoneCalls) do
-      Assert.equal(urgency, "required")
+    Assert.equal(#milestoneCalls >= 2, true, "menu prefetch plus preparation request their intro milestone")
+    Assert.equal(milestoneCalls[1], "near", "menu installation prefetches the intro closure")
+    for index = 2, #milestoneCalls do
+      Assert.equal(milestoneCalls[index], "required")
     end
     Assert.equal(#context.candidateCalls, 0, "no candidate is reserved while the intro closure is cold")
     Assert.equal(#context.oakCalls, 0, "Oak is never composed before milestone readiness")
@@ -636,6 +637,35 @@ function T.cancelled_preparation_rebuilds_the_menu_at_the_current_viewport()
     Assert.equal(context.texts[2].releases, 1, "final disposal releases the replacement text exactly once")
     Assert.equal(firstRenderer.disposed, 1, "the first renderer must not be disposed twice")
     Assert.equal(firstText.releases, 1, "the first text must not be released twice")
+  end)
+end
+
+function T.menu_installation_prefetches_the_new_game_closure_at_near()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local requests = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      requests[#requests + 1] = { name = name, urgency = urgency }
+      return true
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    Assert.equal(getmetatable(game.state).__index, modules.menu, "construction installs the menu")
+    local prefetch = 0
+    for _, request in ipairs(requests) do
+      Assert.isTrue(request.name ~= "field-core", "menu installation prefetches no field core")
+      if request.name == "new-game-intro" then
+        prefetch = prefetch + 1
+        Assert.equal(request.urgency, "near", "the New Game prefetch stays speculative")
+      end
+    end
+    Assert.equal(prefetch, 1, "menu installation prefetches the New Game closure exactly once")
+    game:dispose()
   end)
 end
 

@@ -91,7 +91,6 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field submittedPending table<string, InteractiveCacheBuild.Interest> submitted nonterminal pool work
 ---@field enrollCursor InteractiveCacheBuild.EnrollCursor|nil private incremental membership enrollment after adoption
 ---@field roster table<string, { kind: string, key: string }[]> retained milestone membership per requested scope
----@field autoCoreNearDone boolean automatic field-core near intent already registered once
 ---@field sweepCursor InteractiveCacheBuild.SweepCursor|nil private incremental sweep enumeration after adoption
 ---@field sweepExhausted boolean canonical enumeration reached its end
 ---@field planningPending boolean runnable local planning remains from the last pump
@@ -225,7 +224,6 @@ function InteractiveCacheBuild.new(options)
     enrollCursor = nil,
     roster = {},
     rosterFailure = {},
-    autoCoreNearDone = false,
     sweepCursor = nil,
     sweepExhausted = false,
     pendingEnumerated = false,
@@ -1418,7 +1416,7 @@ function InteractiveCacheBuild:_milestoneMembers(name)
     "milestones accept only bootstrap, field-core, or new-game-intro"
   )
   if name == "bootstrap" then
-    return ArtifactJobs.bootstrapJobs(self.audioBankIds)
+    return ArtifactJobs.bootstrapJobs()
   end
   if name == "new-game-intro" then
     local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
@@ -1658,15 +1656,13 @@ function InteractiveCacheBuild:_needsSourceDemand()
   -- Only scope intent owns source discovery: milestone and sweep requests
   -- need membership they cannot name yet. Ordinary artifacts initiate
   -- their source prerequisite through the authoritative dependency graph,
-  -- never through a second kind table here.
+  -- never through a second kind table here. Bootstrap answers from the
+  -- field font alone and never pulls the inventory; the intro closure
+  -- needs source knowledge, field core needs source and pages.
   if self.sweepEnabled then
     return true
   end
-  if
-    self.milestones["bootstrap"] ~= nil
-    or self.milestones["field-core"] ~= nil
-    or self.milestones["new-game-intro"] ~= nil
-  then
+  if self.milestones["field-core"] ~= nil or self.milestones["new-game-intro"] ~= nil then
     return true
   end
   return false
@@ -1808,7 +1804,10 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
   -- roster that strengthens weaker members in place. An unchanged poll
   -- registers nothing and observes the retained answer.
   if current == nil then
-    if not self.sourceLoaded then
+    -- Bootstrap answers from the menu font alone and schedules no
+    -- inventory; only the intro closure and field core pull source
+    -- knowledge, and only field core pulls page membership.
+    if not self.sourceLoaded and (name == "field-core" or name == "new-game-intro") then
       self:_request("source-plan", "global", urgency)
     end
     -- Only field core pulls page membership: bootstrap answers from its
@@ -2243,18 +2242,8 @@ function InteractiveCacheBuild:_awaitingPoolWork()
   return false
 end
 
----@return boolean retained bootstrap scope is ready, never constructed here
-function InteractiveCacheBuild:_retainedBootstrapReady()
-  local members = self.roster["bootstrap"]
-  if members == nil then
-    return false
-  end
-  local ready, _ = self:_milestoneAnswer("bootstrap", members)
-  return ready
-end
-
--- Retained metadata demand without cache IO: automatic sweep and field-core
--- intent own their metadata owner entries, so adoption has a validated
+-- Retained metadata demand without cache IO: sweep owns its metadata owner
+-- entries, so adoption has a validated
 -- transition even when no explicit milestone requested them. Scopes that
 -- cannot use an inventory never schedule it, keeping independent leaves
 -- small. No plans are read, validated or enrolled here.
@@ -2476,14 +2465,6 @@ function InteractiveCacheBuild:update()
   -- retained status from the resulting state.
   self:_pollSubmitted()
   self:_scheduleMetadataDemand()
-  if self.sweepEnabled then
-    if not self.autoCoreNearDone and self:_retainedBootstrapReady() then
-      self.autoCoreNearDone = true
-      if self.milestones["field-core"] == nil then
-        self.milestones["field-core"] = "near"
-      end
-    end
-  end
   self:_buildPendingRosters()
   self:_fillPendingSweep(budget)
   self:_fillLoadedSweep(budget)
@@ -2730,6 +2711,14 @@ function InteractiveCacheBuild:status()
   }
 end
 
+---Authorizes exhaustive sweep work for the selected generation. The call
+---only flips authorization: it never enumerates, validates, or submits
+---jobs; the next update advances sweep work. Idempotent and safe to repeat.
+function InteractiveCacheBuild:enableSweep()
+  assert(not self.retired, "generation session is retired")
+  self.sweepEnabled = true
+end
+
 function InteractiveCacheBuild:retire()
   if self.retired then
     return
@@ -2767,7 +2756,6 @@ function InteractiveCacheBuild:retire()
   self.enrollCursor = nil
   self.roster = {}
   self.rosterFailure = {}
-  self.autoCoreNearDone = false
   self.sweepCursor = nil
   self.sweepExhausted = false
   self.pendingEnumerated = false

@@ -1,5 +1,6 @@
 -- Census over the common generation session through the real ROM-derived
--- plans: bootstrap requests its exact fixed set with no geometry, field core
+-- plans: bootstrap requests only the menu font with no inventory, field core
+-- keeps its decoupled closure, and sweep still converges afterward.
 -- arrives as near work while geometry stays cold, demand promotes
 -- dependencies, the sweep frontier stays bounded while every canonical key
 -- is accounted for, failures stay visible without global collapse, and a
@@ -308,29 +309,8 @@ local function sortedKeys(set)
 end
 
 local function expectedBootstrapSet(audioBankIds)
-  local expected = {
-    "world-catalog:global",
-    "field-cell-index:global",
-    "field-camera:global",
-    "field-weather:global",
-    "field-effects:global",
-    "field-emotes:global",
-    "field-ui:global",
-    "field-font:global",
-    "intro:global",
-    "new-game-init:global",
-    "items:global",
-    "mon-catalog:global",
-    "mon-layout:global",
-    "message-bank:219",
-    "audio-catalog:global",
-    "audio-summary:global",
-  }
-  for _, bankId in ipairs(audioBankIds) do
-    expected[#expected + 1] = "audio-bank:" .. tostring(bankId)
-  end
-  table.sort(expected)
-  return expected
+  assert(audioBankIds ~= nil, "census bootstrap helper keeps its planned-closure argument")
+  return { "field-font:global" }
 end
 
 local function failedCount(status)
@@ -439,9 +419,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   local generationId = assert(identity.generationId, "generation identity is required")
   local pool = FakePool()
   local context = workerContextFor(romFs, versionId, cache)
-  -- Milestone files live in the private backend: the snapshot below proves
-  -- this session records nothing while audio banks stay cold.
-  local bootstrapBefore = cache:read("data/generated/bootstrap.lua")
+  -- Milestone files live in the private backend.
   local bound = processorBound()
   local stageSeq = 0
   local function complete(jobKey)
@@ -667,6 +645,13 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     checkPending(first, second, "field core")
   end
   settle(session, pool)
+  -- Field core owns the persisted source inventory like any other scope:
+  -- complete it through the real worker path so the session plans the
+  -- census from published data. Bootstrap no longer schedules it.
+  if pool.records["source-plan:global"] ~= nil and pool.records["source-plan:global"].state == "queued" then
+    complete("source-plan:global")
+    settle(session, pool)
+  end
   do
     local requested = pool:requestSet()
     -- A restart under a new epoch re-plans the same cold bootstrap set.
@@ -895,10 +880,9 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
       rawBefore,
       "resume never re-imports or deletes the borrowed raw source"
     )
-    Assert.equal(
+    Assert.notNil(
       cache:read("data/generated/bootstrap.lua"),
-      bootstrapBefore,
-      "no milestone is recorded while audio banks are cold"
+      "the menu-font milestone is recorded while audio banks are cold"
     )
     local status = resumed:status()
     Assert.isFalse(status.complete, "the census never completes the whole corpus")

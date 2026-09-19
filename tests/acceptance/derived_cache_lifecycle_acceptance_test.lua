@@ -1,8 +1,8 @@
 -- Cold-cache application lifecycle through production composition.
 -- Continue waits for field core before strict load and for location
--- geometry before field entry; New Game enters Oak on bootstrap alone and
--- holds the finalized handoff until core plus initial geometry are ready;
--- warps hold their cover while the destination compiles and commit once;
+-- geometry before field entry; New Game waits in preparation until the
+-- intro closure is ready, then enters Oak and holds the finalized handoff
+-- until core plus initial geometry are ready; warps hold their cover while the destination compiles and commit once;
 -- the starter chooser demand-loads its actual portrait pages and drops
 -- closed interest. Real ROM-derived caches stay in the path; only host
 -- boundaries (audio output, clocks, save-root location) are faked, and
@@ -141,8 +141,15 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
   local entered = nil
   local coreReady, geometryReady = false, false
   local requestedMaps = {}
+  local requestedMilestones = {}
   local host = {
     requestMilestone = function(name, _)
+      requestedMilestones[#requestedMilestones + 1] = name
+      if name == "new-game-intro" then
+        -- Menu-installed speculative prefetch stays pending here: Continue
+        -- must reach field on field-core readiness alone.
+        return false
+      end
       Assert.equal(name, "field-core")
       if coreReady then
         return true
@@ -172,12 +179,12 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
     return entered
   end, function()
     local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
+    Assert.equal(requestedMilestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
     local ok, err = pcall(function()
-      local card = game.state:view().items[2]
+      local card = game.state:view().saves[1]
       Assert.equal(card.saveId, saveId)
       Assert.isTrue(card.canContinue, "a displayed record stays continuable while field core is cold")
       Assert.isNil(card.errorSummary, "a pending cache never reads as a corrupt save")
-      game.state:keypressed("down")
       game.state:keypressed("return")
       Assert.equal(#fieldCalls, 0, "Continue waits for field core before strict load")
       Assert.deepEqual(loads, {}, "strict load runs only after core readiness")
@@ -248,9 +255,13 @@ local function completeOak(game, oakState)
       end
       local view = oakState:view()
       if view.phase == "name_edit" then
-        game:textinput("GOLD")
-        game:keypressed("left")
-        game:keypressed("return")
+        -- The current naming screen inserts typed glyphs and submits only
+        -- on Start; confirming a cell never submits.
+        if view.name ~= "GOLD" then
+          game:textinput("GOLD")
+        end
+        game:gamepadpressed(JOYSTICK, "start")
+        game:gamepadreleased(JOYSTICK, "start")
       elseif OAK_INTERACTIVE[view.phase] then
         game:gamepadpressed(JOYSTICK, "a")
         game:gamepadreleased(JOYSTICK, "a")
@@ -275,10 +286,13 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
   local store = isolatedStore()
   local fieldCalls = {}
   local requested = { milestones = {}, maps = {}, pages = 0 }
-  local coreReady, geometryReady = false, false
+  local coreReady, geometryReady, introReady = false, false, false
   local host = {
     requestMilestone = function(name, _)
       requested.milestones[#requested.milestones + 1] = name
+      if name == "new-game-intro" and introReady then
+        return true
+      end
       if name == "field-core" and coreReady then
         return true
       end
@@ -331,25 +345,42 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
       end, function()
         local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
         local ok, err = pcall(function()
+          Assert.equal(requested.milestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
           game.state:keypressed("return")
-          local oakState = assert(game.state, "New Game enters Oak on bootstrap alone")
+          Assert.isNil(game.state.view, "New Game waits in preparation while the intro closure is pending")
+          introReady = true
+          local oakState = nil
+          local waited = 0
+          while oakState == nil and waited < 120 do
+            game:update(1 / 60)
+            waited = waited + 1
+            if game.state.view ~= nil then
+              oakState = game.state
+            end
+          end
+          oakState = assert(oakState, "New Game composes Oak once the intro closure is ready")
           Assert.equal(requested.pages, 0, "Oak starts without awaiting unrelated portrait pages")
           Assert.isTrue(completeOak(game, oakState), "the real Oak intro finalizes its candidate")
           Assert.equal(#applyCalls, 1, "finalization applies exactly once to the Oak candidate")
           local finalized = applyCalls[1]
           Assert.equal(assert(finalized.playerData and finalized.playerData.profile).name, "GOLD")
           Assert.equal(#fieldCalls, 0, "the handoff requests field core before constructing field")
-          local waited = 0
-          while #requested.milestones == 0 and waited < 60 do
+          for _, name in ipairs(requested.milestones) do
+            Assert.isTrue(name ~= "field-core", "only the intro closure is awaited before the finalized handoff")
+          end
+          coreReady = true
+          waited = 0
+          local sawCore = false
+          while not sawCore and waited < 60 do
             game:update(1 / 60)
             waited = waited + 1
+            for _, name in ipairs(requested.milestones) do
+              if name == "field-core" then
+                sawCore = true
+              end
+            end
           end
-          Assert.deepEqual(
-            requested.milestones,
-            { "field-core" },
-            "only field core is awaited beyond the finalized candidate"
-          )
-          coreReady = true
+          Assert.isTrue(sawCore, "field core is awaited beyond the finalized candidate")
           waited = 0
           while #requested.maps == 0 and waited < 60 do
             game:update(1 / 60)

@@ -87,6 +87,7 @@ end
 ---@field provisionerOptions table[]
 ---@field quitCodes integer[]
 ---@field provisionerDisposals integer
+---@field warmups integer
 ---@param opts table|nil
 ---@param ready fun(id: string): boolean
 ---@param fn fun(result: AppStateHarness)
@@ -118,6 +119,7 @@ local function withAppHarness(opts, ready, fn)
     provisionerOptions = {},
     quitCodes = {},
     provisionerDisposals = 0,
+    warmups = 0,
   }
   local unownedOption = {}
   App.opts = setmetatable(opts or { dev = false }, {
@@ -148,6 +150,9 @@ local function withAppHarness(opts, ready, fn)
       update = function() end,
       retire = function()
         result.provisionerDisposals = result.provisionerDisposals + 1
+      end,
+      enableSweep = function()
+        result.warmups = result.warmups + 1
       end,
       requestMilestone = function()
         return true
@@ -377,6 +382,7 @@ function T.boot_existing_with_one_ready_version_enters_the_main_menu()
     Assert.isFalse(launch.development)
     Assert.equal(App.state, result.state)
     Assert.equal(result.provisionerDisposals, 0, "launch must not dispose its new provisioner")
+    Assert.equal(result.warmups, 1, "entering the menu authorizes exactly one background warmup")
   end)
 end
 
@@ -448,7 +454,7 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       Assert.keySet(options, "epoch,identity,pool,sweepEnabled")
       Assert.equal(options.epoch, 1)
       Assert.notNil(options.pool)
-      Assert.isTrue(options.sweepEnabled)
+      Assert.isFalse(options.sweepEnabled, "selection starts demand-only; the menu handoff authorizes warmup")
       local identity = assert(options.identity)
       Assert.equal(identity.versionId, "heartgold")
       Assert.equal(identity.producerId, "r1")

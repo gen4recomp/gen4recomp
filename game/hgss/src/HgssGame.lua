@@ -219,6 +219,11 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
   end
 
   game:setState(bootMenu())
+  -- Speculative New Game warmth once the menu exists: the intro closure
+  -- prefetches at near, and choosing New Game later promotes the same
+  -- milestone to required. Readiness is ignored here; pending work simply
+  -- continues in the background.
+  derivedAssets.requestMilestone("new-game-intro", "near")
 end
 
 ---@param options HgssGameOptions

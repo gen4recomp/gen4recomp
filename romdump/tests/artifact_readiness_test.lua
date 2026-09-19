@@ -399,6 +399,8 @@ local function publishAudioFamily(cache, marker)
     sequenceBySymbol = {},
     bankBySymbol = {},
   })
+  cache:write(AudioCache.catalogMarkerPath(), marker)
+  writeReceipt(cache, "audio-catalog", "global", marker)
   writeReceipt(cache, "audio-summary", "global", marker)
 end
 

@@ -99,7 +99,11 @@ function ArtifactJobs.jobKey(kind, key)
   return kind .. ":" .. key
 end
 
-local BOOTSTRAP_COARSE = {
+-- Field core keeps the exact pre-decoupling closure on its own: the former
+-- bootstrap coarse members plus the audio catalog the current summary
+-- dependency requires. It never derives from bootstrapJobs, so shrinking
+-- bootstrap cannot silently shrink field readiness.
+local FIELD_CORE_COARSE = {
   "world-catalog",
   "field-cell-index",
   "field-camera",
@@ -114,6 +118,7 @@ local BOOTSTRAP_COARSE = {
   "mon-layout",
   "items",
   "message-bank:219",
+  "audio-catalog",
   "audio-summary",
 }
 
@@ -127,24 +132,24 @@ local function sortedJobs(jobs)
   return jobs
 end
 
----@param audioBankIds integer[]
 ---@return { kind: string, key: string }[]
-function ArtifactJobs.bootstrapJobs(audioBankIds)
-  assert(type(audioBankIds) == "table", "bootstrap membership requires the planned audio closures")
+function ArtifactJobs.bootstrapJobs()
+  return { { kind = "field-font", key = "global" } }
+end
+
+---@param entries string[] fixed kind[:key] members, bare kinds read global
+---@return { kind: string, key: string }[]
+local function fixedJobs(entries)
   local jobs = {}
-  for _, entry in ipairs(BOOTSTRAP_COARSE) do
+  for _, entry in ipairs(entries) do
     local kind, key = entry:match("^([^:]+):?(.*)$")
-    assert(kind, "bootstrap membership entry is malformed: " .. tostring(entry))
+    assert(kind, "field-core membership entry is malformed: " .. tostring(entry))
     if key == "" then
       key = "global"
     end
     jobs[#jobs + 1] = { kind = kind, key = key }
   end
-  for _, bankId in ipairs(audioBankIds) do
-    assert(type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0, "audio closure needs its bank identity")
-    jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
-  end
-  return sortedJobs(jobs)
+  return jobs
 end
 
 -- The exact semantic audio references the current New Game/Oak path can
@@ -226,11 +231,16 @@ end
 ---@return { kind: string, key: string }[]
 function ArtifactJobs.fieldCoreJobs(lists)
   assert(type(lists) == "table", "field-core membership requires the planned family selections")
-  local jobs = ArtifactJobs.bootstrapJobs(assert(lists.audioBankIds, "field-core needs the audio closures"))
+  local audioBankIds = assert(lists.audioBankIds, "field-core needs the audio closures")
   local messageBankIds = assert(lists.messageBankIds, "field-core needs the required message banks")
   local scriptMemberIds = assert(lists.scriptMemberIds, "field-core needs the nonempty script members")
   local iconPageIds = assert(lists.iconPageIds, "field-core needs the icon pages")
   local mapDataIds = assert(lists.mapDataIds, "field-core needs the supported field records")
+  local jobs = fixedJobs(FIELD_CORE_COARSE)
+  for _, bankId in ipairs(audioBankIds) do
+    assert(type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0, "audio closure needs its bank identity")
+    jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
+  end
   jobs[#jobs + 1] = { kind = "actors", key = "global" }
   jobs[#jobs + 1] = { kind = "starter-choice", key = "global" }
   jobs[#jobs + 1] = { kind = "bag", key = "global" }
