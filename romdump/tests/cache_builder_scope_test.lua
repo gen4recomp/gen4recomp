@@ -969,6 +969,37 @@ function T.warm_complete_with_absent_extra_map_refuses_without_proof()
   os.remove(recordPath)
 end
 
+-- A refused uncovered mixed request preserves the audited attestation: the
+-- first call refuses without invalidating, and a later plain complete
+-- request reuses the current cache with no additional pool or session.
+function T.refused_uncovered_request_preserves_attestation_for_later_reuse()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.excludedKeys["map:999999"] = true
+  requireScopedPreparation()
+  local first, firstErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete", "map:999999" } }))
+  Assert.isNil(firstErr)
+  assert(first, "a refused mixed request returns its refusal report")
+  Assert.isFalse(first.requestedReady, "an uncovered extra identity is never ready")
+  Assert.isFalse(first.complete, "a refused mixed request never reports a complete cache")
+  Assert.equal(#first.exclusions, 1, "the uncovered identity is reported exactly once")
+  Assert.isTrue(first.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
+  Assert.equal(env.invalidations, 0, "a refused request preserves the audited attestation")
+  Assert.equal(env.publishes, 0, "a refused request publishes no attestation")
+  Assert.equal(#env.sessions, 1, "the uncovered key falls through to the normal session")
+  local pools, sessions = #env.pools, #env.sessions
+  local second, secondErr = CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
+  Assert.isNil(secondErr)
+  assert(second, "the later complete request returns its report")
+  Assert.isTrue(second.requestedReady, "the preserved attestation stays ready")
+  Assert.isTrue(second.complete, "the preserved attestation stays complete")
+  Assert.equal(env.invalidations, 0, "later reuse invalidates nothing")
+  Assert.equal(#env.pools, pools, "later reuse creates no additional pool")
+  Assert.equal(#env.sessions, sessions, "later reuse opens no additional session")
+end
+
 -- Cache history never changes satisfiability: the same absent mixed
 -- request refuses identically whether or not a matching attestation
 -- happens to remain on disk.
@@ -1160,6 +1191,7 @@ function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
   Assert.isNil(missingReport)
   Assert.notNil(missingErr)
   Assert.equal(#env.sessions, 1, "missing inventory runs the normal session")
+  Assert.isTrue(env.invalidations >= 1, "missing inventory invalidates before replacement work")
   Assert.equal(env.publishes, 0, "missing inventory publishes no attestation")
 
   env = newEnv()
@@ -1171,6 +1203,7 @@ function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
   Assert.isNil(refusedReport)
   Assert.notNil(refusedErr)
   Assert.equal(#env.sessions, 1, "a failed audit runs the normal session")
+  Assert.isTrue(env.invalidations >= 1, "a failed audit invalidates before replacement work")
   Assert.equal(env.publishes, 0, "a failed audit publishes no attestation")
 
   env = newEnv()

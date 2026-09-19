@@ -759,12 +759,14 @@ local function collectVersionFacts(
   log
 )
   local stored = cacheFs:loadLua(DerivedCacheState.path)
+  local auditedCurrent = false
   if exhaustive and #rebuildJobs == 0 and DerivedCacheState.matches(stored, identity) then
     local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
     local plans = ArtifactJobs.publishedPlans(cacheFs, identity)
     if plans ~= nil then
       local available, _ = DerivedCacheAudit.isAvailable(cacheFs, identity, plans)
       if available then
+        auditedCurrent = true
         -- The audited corpus covers only its canonical inventory, so an
         -- explicitly requested identity reuses it only as a member.
         local uncovered = {}
@@ -804,7 +806,10 @@ local function collectVersionFacts(
       end
     end
   end
-  if exhaustive or #rebuildJobs > 0 then
+  -- An audited current attestation survives an uncovered explicit request:
+  -- only stale, unverifiable, or explicitly rebuilt state is removed
+  -- before replacement work.
+  if (exhaustive and not auditedCurrent) or #rebuildJobs > 0 then
     DerivedCacheState.invalidate(cacheFs)
   end
   for _, job in ipairs(rebuildJobs) do
