@@ -77,8 +77,8 @@ function T.controller_defaults_to_existing_save_and_reaches_global_action()
   controller:move("down")
   Assert.deepEqual(
     controller:snapshot().focus,
-    { region = "saves", saveId = "two", lane = "body" },
-    "down from the final save must stay in the save list"
+    { region = "global", actionId = "new-game" },
+    "down from the final save must reach the global action"
   )
   controller:move("left")
   Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
@@ -166,10 +166,18 @@ function T.controller_keeps_overflow_at_the_list_edges()
   local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
   controller:focusSave("one", "overflow")
   controller:move("up")
-  Assert.equal(controller:focusedId(), "one")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "up from the first save overflow must reach the global action"
+  )
   controller:focusSave("two", "overflow")
   controller:move("down")
-  Assert.equal(controller:focusedId(), "two")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "down from the last save overflow must reach the global action"
+  )
 end
 
 function T.layout_separates_global_and_scrollable_save_regions()
@@ -466,8 +474,8 @@ function T.deep_saves_scroll_while_new_game_stays_fixed_and_direct()
   controller:move("down")
   Assert.deepEqual(
     controller:snapshot().focus,
-    { region = "saves", saveId = "save-12", lane = "body" },
-    "down from the final save must stay in the save list"
+    { region = "global", actionId = "new-game" },
+    "down from the final save must reach the global action"
   )
   local relaid = MainMenuLayout.compute(
     globalActions(),
@@ -563,8 +571,8 @@ function T.vertical_moves_stay_within_their_region_without_wrapping()
   controller:move("down")
   Assert.deepEqual(
     controller:snapshot().focus,
-    { region = "saves", saveId = "three", lane = "body" },
-    "down from the final save body must stay in the save list"
+    { region = "global", actionId = "new-game" },
+    "down from the final save body must reach the global action"
   )
   controller:focusGlobal("new-game")
   controller:move("down")
@@ -591,8 +599,8 @@ function T.vertical_moves_stay_within_their_region_without_wrapping()
   controller:move("up")
   Assert.deepEqual(
     controller:snapshot().focus,
-    { region = "saves", saveId = "one", lane = "body" },
-    "up from the first save must not wrap"
+    { region = "global", actionId = "new-game" },
+    "up from the first save must reach the global action"
   )
 end
 
@@ -847,6 +855,9 @@ local function recordingText(calls)
   return {
     drawText = function(_, text, x, y)
       calls[#calls + 1] = { text = text, x = x, y = y }
+    end,
+    drawTextWithPalette = function(_, text, x, y, palette)
+      calls[#calls + 1] = { text = text, x = x, y = y, palette = palette }
     end,
   }
 end
@@ -1324,14 +1335,15 @@ function T.saves_reach_new_game_horizontally_and_remember_the_focused_save()
   controller:move("down")
   Assert.deepEqual(
     controller:snapshot().focus,
-    { region = "saves", saveId = "three", lane = "body" },
-    "Down from the final save must stay in the save list"
+    { region = "global", actionId = "new-game" },
+    "Down from the final save must reach the global action"
   )
+  controller:focusGlobal("new-game")
   controller:move("up")
   Assert.deepEqual(
     controller:snapshot().focus,
-    { region = "saves", saveId = "three", lane = "body" },
-    "Up from the first save must stay in the save list"
+    { region = "global", actionId = "new-game" },
+    "Up from the first save must reach the global action"
   )
   controller:focusGlobal("new-game")
   controller:move("up")
@@ -1393,6 +1405,118 @@ function T.popup_and_confirmation_geometry_scales_with_the_menu_scale()
       "confirmation actions must stay disjoint"
     )
   end
+end
+
+function T.collection_edge_vertical_moves_reach_global_and_restore_remembered_lane()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two", "three" }))
+  controller:focusSave("one", "body")
+  controller:move("up")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Up from the first save body must reach the global action"
+  )
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "body" },
+    "Right from global must restore the remembered first save body"
+  )
+  controller:focusSave("one", "overflow")
+  controller:move("up")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Up from the first save overflow must reach the global action"
+  )
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "overflow" },
+    "Right from global must restore the remembered overflow lane"
+  )
+  controller:focusSave("three", "body")
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Down from the last save body must reach the global action"
+  )
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "body" },
+    "Right from global must restore the remembered last save body"
+  )
+  controller:focusSave("three", "overflow")
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Down from the last save overflow must reach the global action"
+  )
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "overflow" },
+    "Right from global must restore the remembered last overflow lane"
+  )
+  controller:focusSave("two", "body")
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "body" },
+    "interior Down must preserve the body lane"
+  )
+  controller:focusSave("two", "overflow")
+  controller:move("down")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "three", lane = "overflow" },
+    "interior Down must preserve the overflow lane"
+  )
+  local single = MainMenuController.new(globalActions(), saves({ "only" }))
+  single:focusSave("only", "body")
+  single:move("up")
+  Assert.deepEqual(
+    single:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Up from the only save must reach the global action"
+  )
+  single:focusSave("only", "body")
+  single:move("down")
+  Assert.deepEqual(
+    single:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Down from the only save must reach the global action"
+  )
+  local empty = MainMenuController.new(globalActions(), {})
+  empty:move("right")
+  Assert.deepEqual(
+    empty:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Right with zero saves must stay on the global action"
+  )
+end
+
+function T.global_right_falls_back_to_body_when_the_remembered_overflow_is_locked()
+  local controller = MainMenuController.new(globalActions(), saves({ "one", "two" }))
+  controller:focusSave("one", "overflow")
+  controller:move("up")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "global", actionId = "new-game" },
+    "Up from the first save overflow must reach the global action"
+  )
+  local locked = saves({ "one", "two" })
+  locked[1].canDelete = false
+  controller:setCatalog(globalActions(), locked)
+  controller:move("right")
+  Assert.deepEqual(
+    controller:snapshot().focus,
+    { region = "saves", saveId = "one", lane = "body" },
+    "Right must fall back to the body when the remembered save lost its overflow"
+  )
 end
 
 return { tests = T }

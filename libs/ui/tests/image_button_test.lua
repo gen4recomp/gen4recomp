@@ -66,14 +66,14 @@ function T.selected_rim_exactly_replaces_unselected_rim()
   Assert.near(calls2.setColor[2][1], 1)
   Assert.equal(button.rim.rect.x, button.rect.x + 2)
   Assert.equal(button.rim.rect.y, button.rect.y + 2)
-  Assert.equal(button.rim.cornerRadius, 1)
+  Assert.equal(button.rim.cornerRadius, 6)
 end
 
 function T.canonical_geometry_and_content_is_face()
   local ImageButton = imageButtonModule()
   local button = ImageButton.resolve({ rect = rect(10, 20, 93, 148), scale = 1 })
-  Assert.equal(button.border.cornerRadius, 3)
-  Assert.equal(button.rim.cornerRadius, 1)
+  Assert.equal(button.border.cornerRadius, 8)
+  Assert.equal(button.rim.cornerRadius, 6)
   Assert.equal(button.contentRect.x, button.face.rect.x)
   Assert.equal(button.contentRect.y, button.face.rect.y)
   Assert.equal(button.contentRect.width, button.face.rect.width)
@@ -178,7 +178,7 @@ function T.card_composes_generic_button_geometry_and_hit_testing()
     borderWidth = 2,
     rimWidth = 2,
     innerBorderWidth = 1,
-    cornerRadius = 3,
+    cornerRadius = 8,
     faceSplit = 0.5,
     contentInsetX = 0,
     contentInsetY = 0,
@@ -214,6 +214,19 @@ function T.focus_changes_chrome_only_while_portrait_draws()
   Assert.near(calls1.setColor[2][2], 230 / 255)
   Assert.near(calls2.setColor[2][2], 58 / 255)
   Assert.near(calls2.setColor[2][3], 58 / 255)
+end
+
+function T.nested_card_layers_keep_positive_corner_radii()
+  local ImageButton = imageButtonModule()
+  local button = ImageButton.resolve({ rect = rect(10, 20, 93, 148), scale = 1 })
+  Assert.equal(button.border.cornerRadius, 8)
+  Assert.equal(button.rim.cornerRadius, 6)
+  Assert.equal(button.innerBorder.cornerRadius, 4)
+  Assert.equal(button.face.cornerRadius, 3)
+  Assert.isTrue(button.border.cornerRadius > 0)
+  Assert.isTrue(button.rim.cornerRadius > 0)
+  Assert.isTrue(button.innerBorder.cornerRadius > 0)
+  Assert.isTrue(button.face.cornerRadius > 0)
 end
 
 return { tests = T }

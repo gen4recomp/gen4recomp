@@ -937,4 +937,15 @@ function T.logical_surface_uses_the_resolution_matrix_and_reuses_stable_canvases
   renderer:dispose()
 end
 
+function T.gender_cards_share_rounded_nested_geometry()
+  local buttons = genderButtons()
+  for _, key in ipairs({ 0, 1 }) do
+    local resolved = assert(buttons[key].button)
+    Assert.equal(resolved.border.cornerRadius, 8)
+    Assert.equal(resolved.rim.cornerRadius, 6)
+    Assert.equal(resolved.innerBorder.cornerRadius, 4)
+    Assert.equal(resolved.face.cornerRadius, 3)
+  end
+end
+
 return GraphicsSmoke.suite(T)

@@ -382,6 +382,10 @@ function T.menu_player_copy_renders_at_twice_the_generated_font_size(scope)
       textDraws = textDraws + 1
       return text:drawText(value, x, y)
     end,
+    drawTextWithPalette = function(_, value, x, y, palette)
+      textDraws = textDraws + 1
+      return text:drawTextWithPalette(value, x, y, palette)
+    end,
   }
   local graphics = FakeGraphics.new()
   local globals = { { id = "new-game", kind = "new_game" } }
@@ -440,5 +444,76 @@ function T.card_faces_use_the_generated_intro_tone(scope)
   Assert.near(r, CARD_TONE.r / 255, 2 / 255, "the card face must use the generated intro tone red")
   Assert.near(g, CARD_TONE.g / 255, 2 / 255, "the card face must use the generated intro tone green")
   Assert.near(b, CARD_TONE.b / 255, 2 / 255, "the card face must use the generated intro tone blue")
+end
+function T.menu_text_uses_palette_path_at_identity_tint()
+  local graphics = FakeGraphics.new()
+  local plainCalls = {}
+  local paletteCalls = {}
+  local textDouble = {
+    drawText = function(_, value, x, y)
+      local r, g, b, a = graphics.getColor()
+      plainCalls[#plainCalls + 1] = { text = value, x = x, y = y, color = { r, g, b, a } }
+    end,
+    drawTextWithPalette = function(_, value, x, y, palette)
+      local r, g, b, a = graphics.getColor()
+      paletteCalls[#paletteCalls + 1] = { text = value, x = x, y = y, palette = palette, color = { r, g, b, a } }
+    end,
+  }
+  local cache = {
+    loadLua = function()
+      return introManifest()
+    end,
+  }
+  local menuRenderer = MainMenuRenderer.new({ text = textDouble, graphics = graphics, cacheFs = cache })
+  local globals = { { id = "new-game", kind = "new_game" } }
+  local items = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    },
+    {
+      id = "save-2",
+      saveId = "save-2",
+      errorSummary = "Save data unavailable",
+      canContinue = false,
+      canDelete = false,
+    },
+  }
+  local focus = { region = "saves", saveId = "save-1", lane = "body" }
+  local layout = MainMenuLayout.compute(globals, items, focus, 320, 240, 0, nil, nil, false)
+  menuRenderer:draw({
+    focusedId = "save-1",
+    focus = focus,
+    globalActions = globals,
+    saves = items,
+    catalogError = nil,
+    layout = layout,
+  })
+  Assert.isTrue(#paletteCalls > 0, "menu copy must draw through the palette path")
+  Assert.equal(#plainCalls, 0, "menu copy must not use tinted plain text draws")
+  for _, call in ipairs(paletteCalls) do
+    Assert.deepEqual(call.color, { 1, 1, 1, 1 }, "palette text must draw at identity tint")
+    Assert.notNil(call.palette.foreground, "palette text needs a foreground role color")
+    Assert.notNil(call.palette.shadow, "palette text needs a shadow role color")
+    Assert.notNil(call.palette.background, "palette text needs a background entry")
+  end
+  local r, g, b, a = graphics.getColor()
+  Assert.deepEqual({ r, g, b, a }, { 1, 1, 1, 1 }, "menu drawing must leave graphics color at identity")
+end
+
+function T.card_chrome_keeps_rounded_nested_corners()
+  local ImageButton = require("libs.ui.src.ImageButton")
+  local HgssCardButton = require("libs.hgss.src.ui.HgssCardButton")
+  local button = ImageButton.resolve({ rect = { x = 16, y = 80, width = 128, height = 64 }, scale = 1 })
+  Assert.equal(button.border.cornerRadius, 8)
+  Assert.equal(button.rim.cornerRadius, 6)
+  Assert.equal(button.innerBorder.cornerRadius, 4)
+  Assert.equal(button.face.cornerRadius, 3)
+  local card = HgssCardButton.resolve({ rect = { x = 16, y = 80, width = 128, height = 64 }, scale = 1 })
+  Assert.deepEqual(card.contentRect, button.contentRect, "menu cards must share the generic card geometry")
 end
 return GraphicsSmoke.suite(T)
