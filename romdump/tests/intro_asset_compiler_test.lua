@@ -724,4 +724,29 @@ function T.compiled_selector_publishes_compact_bounds_without_mask_artifacts()
   end
 end
 
+function T.staging_accepts_the_current_schema_through_the_production_path()
+  local cache = introCache()
+  local CacheWriter = writer()
+  local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+  local backend = FakeCache.new()
+  local live = CacheFs.forVersion("heartgold", backend)
+  local bundle = fixtureBundle(cache, "intro-cache-current:fixture:stage")
+  bundle.manifest.schemaVersion = cache.SCHEMA_VERSION
+  local artifact = PreparedArtifact.new({
+    cacheFs = live,
+    generationId = "stage-generation",
+    epoch = 1,
+    kind = "intro",
+    key = "global",
+    jobKey = "intro:global",
+    stageName = "intro-stage",
+  })
+  Assert.equal(CacheWriter.stage(artifact, bundle), bundle.marker)
+  local staged = artifact:stageFs()
+  local manifest = staged:loadLua(cache.manifestPath())
+  Assert.equal(manifest.schemaVersion, cache.SCHEMA_VERSION, "staged manifest keeps the current schema")
+  Assert.isTrue(cache.validateManifest(manifest), "staged manifest validates")
+  Assert.equal(staged:read(cache.markerPath()), bundle.marker, "the marker stages with the bundle")
+end
+
 return { tests = T }

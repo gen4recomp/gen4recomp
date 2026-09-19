@@ -55,7 +55,7 @@ end
 function IntroAssetCacheWriter.stage(artifact, bundle)
   assert(artifact and artifact.stageFs, "intro staging requires a PreparedArtifact")
   assert(bundle and bundle.marker and bundle.manifest and bundle.dependencies and bundle.assets)
-  assert(bundle.manifest.schemaVersion == 11, "intro manifest schema mismatch")
+  assert(bundle.manifest.schemaVersion == IntroAssetCache.SCHEMA_VERSION, "intro manifest schema mismatch")
   artifact:addOwnedRoot(IntroAssetCache.assetDir())
   artifact:addOwnedRoot(IntroAssetCache.dir())
   stageBundle(artifact:stageFs(), bundle)
