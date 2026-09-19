@@ -138,6 +138,20 @@ local function openingEnvelopeBottom(manifest, canvas)
   return bottom
 end
 
+-- The boy-or-girl question still shows Oak against the just-finished
+-- reveal lifecycle, so it shares the opening stable correction until Oak
+-- leaves for card selection. The second asking inside the naming flow
+-- (nameCompositionProgress == 1) belongs to the name endpoint and keeps
+-- the ordinary correction shared with the surrounding name phases.
+---@param view table<string, unknown>
+---@return boolean
+local function usesStableOpeningEnvelope(view)
+  if isOpeningStage(view) then
+    return true
+  end
+  return view.phase == "gender_question" and view.nameCompositionProgress == 0
+end
+
 ---@param scene { x: number, y: number, width: number, height: number }
 ---@param dialogue table<string, unknown>?
 ---@param gap number
@@ -431,7 +445,7 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
     ordinaryReveal = OakSceneLayout.revealRect(widget(manifest, view.revealWidget), canvas)
   end
   local envelopeBottom
-  if isOpeningStage(view) then
+  if usesStableOpeningEnvelope(view) then
     envelopeBottom = openingEnvelopeBottom(manifest, canvas)
   end
   ordinarySubject, ordinaryReveal =

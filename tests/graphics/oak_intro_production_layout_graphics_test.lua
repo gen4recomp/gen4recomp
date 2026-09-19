@@ -251,6 +251,26 @@ T.tests.opening_lifecycle_keeps_production_oak_stable_and_cards_clear = function
           )
         end
       end
+      do
+        -- The boy-or-girl question still shows Oak after the reveal
+        -- lifecycle ends; his placement must not drop when it appears.
+        local questionLayout = layoutForHost(size[1], size[2], {
+          phase = "gender_question",
+          visual = "oak",
+          primaryWidget = "oak",
+          dialogue = { messageKey = "profile.gender_question" },
+          genderCompositionProgress = 0,
+          nameCompositionProgress = 0,
+          oakBgScrollX = 0,
+        }, entry.manifest)
+        local questionSubject =
+          assert(questionLayout.subject, label .. " Oak must stay visible for the gender question")
+        Assert.equal(
+          questionSubject.y,
+          assert(baseline, label .. " the opening baseline is required").y,
+          label .. " Oak Y must not drop for the gender question"
+        )
+      end
       for _, phase in ipairs({ "gender_select", "gender_confirm" }) do
         local view = {
           phase = phase,
