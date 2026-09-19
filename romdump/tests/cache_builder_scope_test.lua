@@ -26,6 +26,10 @@ local saved = {}
 local env
 local CacheBuilder
 
+-- The genuine canonical-inventory enumerator, captured before the suite
+-- installs its package fakes so membership checks stay real.
+local realCompleteJobs
+
 local function newEnv()
   return {
     identity = {
@@ -62,6 +66,22 @@ end
 local function splitJobKey(jobKey)
   local kind, key = jobKey:match("^([^:]+):(.+)$")
   return kind, key
+end
+
+-- Smallest well-shaped generation inventory for canonical-membership
+-- checks: the controlled corpus knows map 7 and no other map, with empty
+-- banks, members, pages, and cell matrices around it.
+local function canonicalPlans()
+  return {
+    messageBankIds = {},
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = {},
+    portraitPageIds = {},
+    mapDataIds = { 7 },
+    indexBundle = { index = { matrices = {} } },
+    mapIds = { 7 },
+  }
 end
 
 local function makeSession(pool, identity, sweepEnabled)
@@ -284,7 +304,11 @@ local function makeFakes()
       if env.plansAvailable == false then
         return nil, "no published source inventory"
       end
-      return { stubInventory = true }
+      return canonicalPlans()
+    end,
+    completeJobs = function(plans)
+      local enumerate = assert(realCompleteJobs, "canonical membership needs its genuine enumerator")
+      return enumerate(plans)
     end,
   }
   fakes.ProducerFingerprint = {
@@ -427,6 +451,7 @@ local T = {}
 local module = {
   beforeAll = function()
     outputRoot = acquireOutputRoot()
+    realCompleteJobs = require("romdump.src.build.ArtifactJobs").completeJobs
     for _, path in ipairs(FAKE_PATHS) do
       saved[path] = package.loaded[path]
       package.loaded[path] = nil
@@ -906,6 +931,265 @@ function T.ready_field_core_issues_its_proof_without_complete_attestation()
   Assert.equal(record.requestedReady, true)
   Assert.equal(record.complete, false)
   Assert.equal(env.publishes, 0, "a targeted scope publishes no full attestation")
+end
+
+-- A warm complete corpus never proves an explicitly requested identity it
+-- does not contain: complete plus an absent map falls through to the
+-- normal session, reports the source exclusion, and issues no success
+-- proof or new attestation.
+function T.warm_complete_with_absent_extra_map_refuses_without_proof()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.excludedKeys["map:999999"] = true
+  requireScopedPreparation()
+  local recordPath = newOutputPath("absent-extra-proof", ".lua")
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete", "map:999999" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(err)
+  assert(report, "an excluded mixed request returns its refusal report")
+  Assert.isFalse(report.requestedReady, "an absent extra identity is never ready")
+  Assert.isFalse(report.complete, "an excluded mixed request never reports a complete cache")
+  Assert.equal(#report.exclusions, 1, "the absent identity is reported exactly once")
+  Assert.isTrue(report.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
+  Assert.equal(#env.sessions, 1, "the uncovered key falls through to the normal session")
+  Assert.equal(env.publishes, 0, "a refused request publishes no attestation")
+  local handle = io.open(recordPath, "r")
+  Assert.isNil(handle, "a refused request leaves no success proof behind")
+  if handle ~= nil then
+    handle:close()
+  end
+  os.remove(recordPath)
+end
+
+-- Cache history never changes satisfiability: the same absent mixed
+-- request refuses identically whether or not a matching attestation
+-- happens to remain on disk.
+function T.absent_extra_map_refuses_identically_warm_and_ordinary()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.excludedKeys["map:999999"] = true
+  requireScopedPreparation()
+  local warmRecordPath = newOutputPath("parity-warm-proof", ".lua")
+  os.remove(warmRecordPath)
+  local warmReport, warmErr = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete", "map:999999" },
+      preparationRecord = warmRecordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(warmErr)
+  assert(warmReport, "the warm request returns its refusal report")
+  Assert.isFalse(warmReport.requestedReady, "the warm request is never ready")
+  Assert.isFalse(warmReport.complete, "the warm request never reports a complete cache")
+  Assert.isTrue(
+    warmReport.exclusions[1]:find("map:999999", 1, true) ~= nil,
+    "the warm exclusion names its canonical key"
+  )
+
+  env = newEnv()
+  env.stateMatches = false
+  env.auditAvailable = true
+  env.excludedKeys["map:999999"] = true
+  requireScopedPreparation()
+  local coldRecordPath = newOutputPath("parity-cold-proof", ".lua")
+  os.remove(coldRecordPath)
+  local coldReport, coldErr = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete", "map:999999" },
+      preparationRecord = coldRecordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(coldErr)
+  assert(coldReport, "the ordinary request returns its refusal report")
+  Assert.equal(coldReport.requestedReady, warmReport.requestedReady, "warm and ordinary refusals agree on readiness")
+  Assert.equal(coldReport.complete, warmReport.complete, "warm and ordinary refusals agree on completeness")
+  Assert.deepEqual(coldReport.exclusions, warmReport.exclusions, "warm and ordinary refusals name the same key")
+  local warmHandle = io.open(warmRecordPath, "r")
+  Assert.isNil(warmHandle, "the warm refusal leaves no success proof behind")
+  if warmHandle ~= nil then
+    warmHandle:close()
+  end
+  os.remove(warmRecordPath)
+  local coldHandle = io.open(coldRecordPath, "r")
+  Assert.isNil(coldHandle, "the ordinary refusal leaves no success proof behind")
+  if coldHandle ~= nil then
+    coldHandle:close()
+  end
+  os.remove(coldRecordPath)
+end
+
+-- A covered mixed request keeps the zero-pool shortcut: map 7 plus
+-- complete reuses the audited corpus in any order or duplication, and the
+-- proof retains the original deduplicated requested set.
+function T.covered_mixed_request_reuses_the_audited_corpus_without_new_work()
+  local variants = {
+    { "map:7", "complete" },
+    { "complete", "map:7" },
+    { "complete", "map:7", "map:7" },
+  }
+  for _, requirements in ipairs(variants) do
+    env = newEnv()
+    env.stateMatches = true
+    env.auditAvailable = true
+    requireScopedPreparation()
+    local recordPath = newOutputPath("covered-mixed-proof", ".lua")
+    os.remove(recordPath)
+    local report, err = CacheBuilder.prepareVersion(
+      "heartgold",
+      scopedOptions({
+        requirements = requirements,
+        preparationRecord = recordPath,
+        saveDirectory = "/private/test-root",
+      })
+    )
+    Assert.isNil(err)
+    assert(report, "a covered mixed request returns its report")
+    Assert.isTrue(report.requestedReady, "a covered mixed request stays ready")
+    Assert.isTrue(report.complete, "a covered mixed request stays complete")
+    Assert.equal(#env.pools, 0, "covered reuse creates no compiler pool")
+    Assert.equal(#env.sessions, 0, "covered reuse opens no generation session")
+    Assert.equal(env.invalidations, 0, "covered reuse invalidates nothing")
+    local handle = assert(io.open(recordPath, "r"), "covered reuse still issues its proof")
+    local source = handle:read("*a")
+    handle:close()
+    os.remove(recordPath)
+    local chunk = assert(load(source, "@receipt", "t", {}))
+    local record = chunk()
+    Assert.deepEqual(record.requested, { "complete", "map:7" })
+  end
+end
+
+-- A scope-only complete request needs no explicit-membership walk: the
+-- audited corpus reuses immediately with no new pool or session.
+function T.scope_only_complete_reuses_the_audited_corpus_without_new_work()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  requireScopedPreparation()
+  local recordPath = newOutputPath("scope-only-proof", ".lua")
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete" },
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(err)
+  assert(report, "a scope-only complete request returns its report")
+  Assert.isTrue(report.requestedReady, "the audited scope stays ready")
+  Assert.isTrue(report.complete, "the audited scope stays complete")
+  Assert.equal(#env.pools, 0, "scope-only reuse creates no compiler pool")
+  Assert.equal(#env.sessions, 0, "scope-only reuse opens no generation session")
+  local handle = assert(io.open(recordPath, "r"), "scope-only reuse still issues its proof")
+  local source = handle:read("*a")
+  handle:close()
+  os.remove(recordPath)
+  local chunk = assert(load(source, "@receipt", "t", {}))
+  local record = chunk()
+  Assert.deepEqual(record.requested, { "complete" })
+end
+
+-- Profiling observes without changing the result: the warm absent-extra
+-- run excludes its exact key, reports no readiness or completeness,
+-- issues no success proof, and still closes its evidence log normally.
+function T.profiled_absent_extra_map_excludes_without_success_evidence()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.excludedKeys["map:999999"] = true
+  requireScopedPreparation()
+  local profilePath = newOutputPath("absent-extra-profile", ".jsonl")
+  local recordPath = newOutputPath("absent-extra-profile-proof", ".lua")
+  os.remove(recordPath)
+  local report, err = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete", "map:999999" },
+      profile = profilePath,
+      preparationRecord = recordPath,
+      saveDirectory = "/private/test-root",
+    })
+  )
+  Assert.isNil(err)
+  assert(report, "a profiled refusal returns its report")
+  Assert.isFalse(report.requestedReady, "profiling never makes an absent identity ready")
+  Assert.isFalse(report.complete, "a profiled refusal never reports a complete cache")
+  Assert.isTrue(report.exclusions[1]:find("map:999999", 1, true) ~= nil, "the exclusion names its canonical key")
+  local handle = assert(io.open(profilePath, "r"), "a refusal still closes its evidence log")
+  local body = handle:read("*a")
+  handle:close()
+  os.remove(profilePath)
+  Assert.isTrue(body:find("map:999999", 1, true) ~= nil, "the evidence names the excluded identity")
+  Assert.isTrue(body:find('"requestedReady":false', 1, true) ~= nil, "the footer records the refusal")
+  Assert.isTrue(body:find('"complete":false', 1, true) ~= nil, "the footer never claims completeness")
+  local proof = io.open(recordPath, "r")
+  Assert.isNil(proof, "a profiled refusal leaves no success proof behind")
+  if proof ~= nil then
+    proof:close()
+  end
+  os.remove(recordPath)
+  Assert.equal(env.publishes, 0, "a profiled refusal publishes no attestation")
+end
+
+-- Freshness always outranks coverage: missing inventory, a failed audit,
+-- and an explicit development rebuild each run the normal session instead
+-- of any shortcut.
+function T.stale_or_explicitly_rebuilt_complete_runs_the_normal_session()
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  env.plansAvailable = false
+  requireScopedPreparation()
+  local missingReport, missingErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
+  Assert.isNil(missingReport)
+  Assert.notNil(missingErr)
+  Assert.equal(#env.sessions, 1, "missing inventory runs the normal session")
+  Assert.equal(env.publishes, 0, "missing inventory publishes no attestation")
+
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = false
+  requireScopedPreparation()
+  local refusedReport, refusedErr =
+    CacheBuilder.prepareVersion("heartgold", scopedOptions({ requirements = { "complete" } }))
+  Assert.isNil(refusedReport)
+  Assert.notNil(refusedErr)
+  Assert.equal(#env.sessions, 1, "a failed audit runs the normal session")
+  Assert.equal(env.publishes, 0, "a failed audit publishes no attestation")
+
+  env = newEnv()
+  env.stateMatches = true
+  env.auditAvailable = true
+  requireScopedPreparation()
+  local rebuiltReport, rebuiltErr = CacheBuilder.prepareVersion(
+    "heartgold",
+    scopedOptions({
+      requirements = { "complete" },
+      rebuild = { "map:7" },
+      dev = true,
+    })
+  )
+  Assert.isNil(rebuiltErr)
+  assert(rebuiltReport, "an explicit rebuild returns its report")
+  Assert.isTrue(rebuiltReport.requestedReady, "the rebuilt scope is ready")
+  Assert.equal(#env.sessions, 1, "an explicit rebuild runs the normal session")
+  Assert.isTrue(env.invalidations >= 1, "an explicit rebuild invalidates first")
 end
 
 -- Invocation-isolation probe: reports the output root this suite invocation
