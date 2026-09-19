@@ -145,11 +145,27 @@ local function recordingPool()
     return state or "unknown", nil
   end
   function pool:status(jobKey)
-    return stateOf(self, jobKey)
+    local state, details = stateOf(self, jobKey)
+    -- Like the production pool, request and status agree: an accepted
+    -- submission without a staged reply reads queued, while a
+    -- never-submitted identity reads unknown.
+    if state == "unknown" and self.accepted ~= nil and self.accepted[jobKey] then
+      return "queued", nil
+    end
+    return state, details
   end
   function pool:request(job)
     self.submitted[#self.submitted + 1] = job.jobKey
-    return stateOf(self, job.jobKey)
+    -- Like the production pool, an accepted submission is at least
+    -- queued: only an explicitly staged reply reads differently. A fresh
+    -- submission never lingers as an unacknowledged unknown record.
+    self.accepted = self.accepted or {}
+    self.accepted[job.jobKey] = true
+    local state, details = stateOf(self, job.jobKey)
+    if state == "unknown" then
+      return "queued", nil
+    end
+    return state, details
   end
   function pool:retireSelection(epoch)
     self.retiredEpoch = epoch
@@ -2765,6 +2781,113 @@ function T.repaired_layout_reads_plans_once_without_polling_failures()
   if not ok then
     error(failure, 0)
   end
+end
+
+-- A refused page handoff fails its ready owner exactly once: the layout
+-- leaves readiness with the reader's cause, waiting pages fail causally,
+-- the reader is not polled again, and an explicit same-marker repair
+-- adopts without rebuilding the valid layout.
+function T.refused_page_handoff_fails_the_ready_owner_once()
+  local calls = freshCalls()
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local generation = "refused-handoff-generation"
+  stageSynthetic(cacheFs, generation)
+  local realForVersion = CacheFs.forVersion
+  local patches = plannerPatches(calls)
+  patches[#patches + 1] = {
+    target = CacheFs,
+    name = "forVersion",
+    replacement = function()
+      return realForVersion("heartgold", backend)
+    end,
+  }
+  withPatched(patches, function()
+    local MonCache = require("libs.assets.src.MonCache")
+    local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+    local PngWriter = require("libs.assets.src.PngWriter")
+    MonCacheWriter.writeCatalog(cacheFs, minimalCatalog(), "refused-catalog-marker")
+    writeMonReceipt(cacheFs, generation, "mon-catalog", "global", "refused-catalog-marker")
+    MonCacheWriter.writeLayout(
+      cacheFs,
+      layoutManifest(MonCache.ICON_MANIFEST_SCHEMA, MonCache.iconPagePath(0), 256, 128, 32),
+      layoutManifest(MonCache.PORTRAIT_MANIFEST_SCHEMA, MonCache.portraitPagePath(0), 640, 320, 80),
+      "refused-layout-marker",
+      { iconPages = { [0] = iconPagePlan(0) }, portraitPages = { [0] = portraitPagePlan(0) } },
+      generation
+    )
+    writeMonReceipt(cacheFs, generation, "mon-layout", "global", "refused-layout-marker")
+    cacheFs:write(MonCache.pageImagePath("portraits", 0), PngWriter.encode(640, 320, string.rep("\0", 640 * 320 * 4)))
+    cacheFs:write(MonCache.pageMarkerPath("portraits", 0), "refused-portrait-marker-0")
+    writeMonReceipt(cacheFs, generation, "mon-portrait-page", "0", "refused-portrait-marker-0")
+    local pool = recordingPool()
+    local session = openSession(generation, pool)
+    -- The refusal is injected before any update: adoption runs promptly
+    -- once its owners validate, so a later patch would arrive after the
+    -- handoff already succeeded.
+    local realPublishedPlans = ArtifactJobs.publishedPlans
+    local handoffCalls = 0
+    ArtifactJobs.publishedPlans = function()
+      handoffCalls = handoffCalls + 1
+      return nil, "synthetic refused handoff"
+    end
+    local ready, failure = session:requestJob("mon-portrait-page", "0", "required")
+    Assert.isFalse(ready, "the portrait starts pending")
+    Assert.isNil(failure, "the portrait reports no failure")
+    pool.states["source-plan:global"] = "ready"
+    pool.states["mon-catalog:global"] = "ready"
+    pool.states["mon-layout:global"] = "ready"
+    local ok, err = pcall(function()
+      for _ = 1, 10 do
+        session:update()
+      end
+      local outcomes = {}
+      for _, outcome in ipairs(session:outcomes()) do
+        outcomes[outcome.jobKey] = outcome
+      end
+      local layout = assert(outcomes["mon-layout:global"], "the layout stays in the outcomes")
+      Assert.equal(layout.state, "failed", "the refused handoff fails its ready owner")
+      Assert.equal(layout.failureClass, "planning", "the handoff failure keeps its planning class")
+      Assert.isTrue(
+        tostring(layout.error):find("synthetic refused handoff", 1, true) ~= nil,
+        "the owner keeps the reader cause: " .. tostring(layout.error)
+      )
+      local page = assert(outcomes["mon-portrait-page:0"], "the waiting page stays in the outcomes")
+      Assert.equal(page.state, "failed", "the waiting page fails causally")
+      Assert.equal(page.causeJobKey, "mon-layout:global", "the page names its layout cause")
+      for _ = 1, 50 do
+        session:update()
+      end
+      Assert.equal(handoffCalls, 1, "the refused reader is never polled again")
+      local scopeReady, scopeFailure = session:requestJob("mon-portrait-page", "0", "required")
+      Assert.isFalse(scopeReady, "no success is proven behind the refused handoff")
+      Assert.isTrue(scopeFailure ~= nil, "the scope carries its cause")
+    end)
+    ArtifactJobs.publishedPlans = realPublishedPlans
+    Assert.isTrue(ok, tostring(err))
+    -- The explicit repair under the same deterministic marker adopts:
+    -- no automatic retry happened while failed and no rebuild follows.
+    local repaired, repairFailure = session:retry("mon-layout", "global", "required")
+    Assert.isFalse(repaired, "the repair starts pending")
+    Assert.isNil(repairFailure, "the repair reports no failure")
+    for _ = 1, 20 do
+      session:update()
+    end
+    Assert.isTrue(session.pagesKnown, "the repaired handoff adopts page membership")
+    Assert.isTrue(contains(session.portraitPageIds, 0), "the repair carries its portrait page")
+    local layoutSubmissions = 0
+    for _, jobKey in ipairs(pool.submitted) do
+      if jobKey == "mon-layout:global" then
+        layoutSubmissions = layoutSubmissions + 1
+      end
+    end
+    Assert.isTrue(layoutSubmissions <= 1, "the valid layout is never rebuilt")
+    Assert.equal(
+      cacheFs:read(MonCache.layoutMarkerPath()),
+      "refused-layout-marker",
+      "adoption never mutates the deterministic marker"
+    )
+  end)
 end
 
 return { tests = T }

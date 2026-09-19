@@ -521,10 +521,21 @@ local function retryCapablePool()
     if type(state) == "table" then
       return state.state, state.details
     end
-    return state or "unknown", nil
+    if state ~= nil then
+      return state
+    end
+    -- Request and status agree, matching the production pool: an accepted
+    -- submission without a staged reply reads queued, while a
+    -- never-submitted identity reads unknown.
+    if self.accepted ~= nil and self.accepted[jobKey] then
+      return "queued", nil
+    end
+    return "unknown", nil
   end
   function pool:request(job)
     self.submitted[#self.submitted + 1] = job.jobKey
+    self.accepted = self.accepted or {}
+    self.accepted[job.jobKey] = true
     return self:status(job.jobKey)
   end
   function pool:retry(jobKey, _)
@@ -849,6 +860,9 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     )
     local retried = session:retry("message-summary", "global", "required")
     Assert.isFalse(retried, "the retry stays pending until the leaf republishes")
+    -- The retry records intent; the budgeted admission step performs the
+    -- pool operation on the next pump, never inside the public call.
+    session:update()
     Assert.deepEqual(pool.retried, { "message-bank:5" }, "exactly the failed leaf retries once")
     Assert.equal(submissionCount(pool, "message-bank:3"), 0, "retry never rebuilds the healthy sibling")
     publishWarmBank(cacheFs, generation, 5)
@@ -1475,13 +1489,20 @@ function T.retry_repairs_only_the_failed_leaf()
   end)
   Assert.isTrue(retried == true or retried == false, "an explicit retry of the blocked parent is accepted")
   Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "retry never rebuilds the healthy sibling")
-  Assert.equal(poolStatus(env, "message-bank", "5"), "queued", "only the failed leaf retries")
   Assert.equal(env.session:status().failed, 0, "retry clears the leaf and parent failure annotations")
+  -- The retry records intent; the budgeted admission step performs the
+  -- pool operation on the next pump, which dispatches exactly one new
+  -- attempt for the failed leaf while the healthy sibling stays idle.
   pumpSession(env, 1)
   Assert.deepEqual(
     env.host.dispatched,
     { "message-bank:5", "message-bank:5" },
     "the retry creates exactly one new leaf attempt"
+  )
+  local retriedStatus = poolStatus(env, "message-bank", "5")
+  Assert.isTrue(
+    retriedStatus == "queued" or retriedStatus == "running",
+    "only the failed leaf retries: " .. tostring(retriedStatus)
   )
   stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 2))
   pumpSession(env, 2)
