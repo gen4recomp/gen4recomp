@@ -135,4 +135,68 @@ function T.naming_manifest_carries_no_source_identities(romFs, _)
   Assert.isTrue(FieldUiAssetCache.validateManifest(assert(FieldUiCompiler.compile(romFs)).manifest))
 end
 
+-- The real dump compiles the full source-backed naming semantics through
+-- actual OAM composition: window-derived text geometry, anchored controls
+-- with per-OAM palette selection, the stepping cursor with home variants,
+-- stepping entry slots, and distinct male/female subjects. Asserts only
+-- structural facts and pixel distinctness, never copied source bytes.
+function T.compiled_naming_semantics_follow_the_source_contract(romFs, _)
+  local bundle, naming = compiledNaming(romFs)
+  Assert.deepEqual(naming.text.name, { x = 80, y = 24, advanceX = 12 })
+  local rowCount = 0
+  for _ in pairs(naming.text.keyboard.cells) do
+    rowCount = rowCount + 1
+  end
+  Assert.equal(rowCount, 5, "the keyboard text carries five source rows")
+  for row = 1, 5 do
+    for column = 1, 13 do
+      local cell = assert(
+        naming.text.keyboard.cells[row][column],
+        "keyboard text row " .. row .. " column " .. column .. " is required"
+      )
+      Assert.equal(cell.width, 16, "keyboard text cells are the 16px source columns")
+    end
+  end
+  local expectedAnchors = {
+    upper = { x = 4, y = 68 },
+    lower = { x = 36, y = 68 },
+    symbols = { x = 68, y = 68 },
+    back = { x = 136, y = 68 },
+    ok = { x = 176, y = 68 },
+    backing = { x = 22, y = 56 },
+  }
+  for id, anchor in pairs(expectedAnchors) do
+    Assert.deepEqual(assert(naming.controls[id], "the " .. id .. " control is required").anchor, anchor)
+  end
+  Assert.deepEqual(naming.cursor.keyboard.origin, { x = 26, y = 91 })
+  Assert.equal(naming.cursor.keyboard.stepX, 16)
+  Assert.equal(naming.cursor.keyboard.stepY, 19)
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+    Assert.notNil(naming.cursor.home[id], "the home cursor carries the " .. id .. " variant")
+  end
+  Assert.deepEqual(naming.entrySlots.origin, { x = 80, y = 39 })
+  Assert.equal(naming.entrySlots.stepX, 12)
+  Assert.deepEqual(naming.playerSubjects.male.anchor, { x = 24, y = 8 })
+  Assert.deepEqual(naming.playerSubjects.female.anchor, { x = 24, y = 8 })
+
+  local function opaqueBytes(record)
+    local assetId = assert(record.asset, "the sprite record must reference its image by semantic asset id")
+    local asset = assert(bundle.manifest.assets[assetId], "the sprite asset must be indexed: " .. assetId)
+    local bytes = assert(bundle.assets[asset.image], "the sprite image must have generated pixels: " .. asset.image)
+    local width, _, rgba = PngReader.rgba(bytes)
+    local total = math.floor(#rgba / 4)
+    for index = 0, total - 1 do
+      local _, _, _, a = PngReader.pixel(rgba, width, index % width, math.floor(index / width))
+      if a ~= 0 then
+        return bytes
+      end
+    end
+    Assert.isTrue(false, "the " .. assetId .. " visual carries no opaque source art")
+    return bytes
+  end
+  local maleBytes = opaqueBytes(naming.playerSubjects.male)
+  local femaleBytes = opaqueBytes(naming.playerSubjects.female)
+  Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
+end
+
 return require("tests.rom.support.RomSuite").fromFacts(T)

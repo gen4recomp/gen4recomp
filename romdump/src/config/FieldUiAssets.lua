@@ -35,13 +35,26 @@
 -- contract, as do the unmapped members 5, 17, and 18. Palette 0 is the main
 -- BG palette and char 2 the shared background character bank. The keyboard
 -- layers sit at y=-80 in the 192-high BG coordinate system, so the visible
--- 112-high page content belongs at canonical y=80 over the base.
+-- 112-high page content belongs at canonical y=80 over the base. The normal
+-- OBJ stack is char 10, palette 1 (nine 16-color banks selected per OAM
+-- object), NCER 12, and NANR 14. The semantic animation/anchor table below
+-- transcribes src/naming_screen.c `sUISpritesParam`, the home-row cursor
+-- tables, the entry-slot/subject creation, and the keyboard window geometry:
+-- page controls use anims 3/8/13 (selected 0/5/10), Back/OK use 23/25
+-- (selected 24/26), the support backing uses 37, the keyboard cursor uses 39
+-- with home variants 40 (page controls) and 41 (Back/OK), entry slots use 43
+-- (selected 44), and the player subjects use 48/49. The fourth page slot
+-- (sprite 3 at y=200, sprite 4 hidden) serves the special paths and stays
+-- outside the normal contract. Entered-name glyphs start at (80,24) advancing
+-- 12px; entry slots start at (80,39) stepping 12px; keyboard text cells are
+-- 16px columns on 19px rows from the page-art origin; the keyboard cursor
+-- steps 16px by 19px from (26,91); the player subject anchors at (24,8).
 
 return {
   schema = 1,
   provenance = {
     repo = "pret/pokeheartgold",
-    commit = "7e25c842061d026f43fe6efbd7be0ec94c50839d",
+    commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
     sources = {
       { path = "src/start_menu.c" },
       { path = "asm/render_window.s" },
@@ -186,5 +199,66 @@ return {
     charMember = 2,
     baseScreenMember = 4,
     pageScreenMembers = { upper = 6, lower = 7, symbols = 8 },
+    objCharMember = 10,
+    objPaletteMember = 1,
+    objCellMember = 12,
+    objAnimMember = 14,
+    -- Source animation identities (zero-based) per semantic visual. Only the
+    -- normal-path roles are selected; the special-path fourth page slot and
+    -- the selected-control page-switch frames stay outside this contract.
+    objAnims = {
+      upper = 3,
+      lower = 8,
+      symbols = 13,
+      back = 23,
+      ok = 25,
+      backing = 37,
+      cursorKeyboard = 39,
+      cursorHomePage = 40,
+      cursorHomeConfirm = 41,
+      slotNormal = 43,
+      slotSelected = 44,
+      subjectMale = 48,
+      subjectFemale = 49,
+    },
+    -- Canonical source anchors for the composed visuals.
+    objAnchors = {
+      upper = { x = 4, y = 68 },
+      lower = { x = 36, y = 68 },
+      symbols = { x = 68, y = 68 },
+      back = { x = 136, y = 68 },
+      ok = { x = 176, y = 68 },
+      backing = { x = 22, y = 56 },
+      subject = { x = 24, y = 8 },
+    },
+    -- Home-row cursor draw positions per control (the source cursor-x table
+    -- at y=68); the keyboard cursor steps from its own origin below.
+    homeCursorAnchors = {
+      upper = { x = 25, y = 68 },
+      lower = { x = 57, y = 68 },
+      symbols = { x = 89, y = 68 },
+      back = { x = 158, y = 68 },
+      ok = { x = 198, y = 68 },
+    },
+    cursorOrigin = { x = 26, y = 91 },
+    cursorStepX = 16,
+    cursorStepY = 19,
+    entryOrigin = { x = 80, y = 39 },
+    entryStepX = 12,
+    nameOrigin = { x = 80, y = 24 },
+    nameAdvanceX = 12,
+    -- Keyboard text cells in page pixels: 16px columns on 19px rows from the
+    -- page-art text origin. The generated page overlays draw at canonical
+    -- y=80, so the compiler adds the page placement to reach the final
+    -- canonical coordinates.
+    keyboardText = {
+      originX = 8,
+      originY = 12,
+      stepX = 16,
+      stepY = 19,
+      rows = 5,
+      columns = 13,
+      cellWidth = 16,
+    },
   },
 }

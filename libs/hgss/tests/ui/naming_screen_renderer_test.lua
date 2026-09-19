@@ -1,38 +1,18 @@
--- The Naming Screen renderer keeps its focus mark on the source-shaped cell
--- under the controller cursor: the highlighted outline must be the layout's
--- own cell rectangle, exactly one cell carries the selected color, and no
--- synthetic fill or unselected outline remains now that the generated
--- base/page chrome supplies the background pixels.
+-- The Naming Screen focus mark is a generated source visual, never a
+-- procedural outline: the keyboard cursor draws at its stepped position on
+-- glyph rows, and the matching home cursor variant draws on the home row. No
+-- synthetic rectangle remains now that the generated visuals supply the
+-- focus presentation.
 
 local Assert = require("tests.support.Assert")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = { tests = {} }
 
-local SELECTED = { 0.96, 0.82, 0.40, 1 }
-
 local function namingManifest()
-  return {
-    namingScreen = {
-      base = { asset = "hgss.naming_screen.base", image = "assets/generated/field/ui/naming-screen-base.png" },
-      pages = {
-        upper = {
-          asset = "hgss.naming_screen.page_upper",
-          image = "assets/generated/field/ui/naming-screen-page-upper.png",
-        },
-        lower = {
-          asset = "hgss.naming_screen.page_lower",
-          image = "assets/generated/field/ui/naming-screen-page-lower.png",
-        },
-        symbols = {
-          asset = "hgss.naming_screen.page_symbols",
-          image = "assets/generated/field/ui/naming-screen-page-symbols.png",
-        },
-      },
-      placement = { x = 0, y = 80, width = 256, height = 112 },
-    },
-  }
+  return FieldUiFixture.namingSemanticsManifest()
 end
 
 local function imageLoader()
@@ -42,28 +22,18 @@ local function imageLoader()
 end
 
 local function graphicsFake()
-  local calls = {}
+  local calls = { draws = {} }
   local graphics = {
-    push = function()
-      calls[#calls + 1] = { name = "push" }
+    push = function() end,
+    pop = function() end,
+    translate = function() end,
+    scale = function() end,
+    setColor = function() end,
+    rectangle = function()
+      calls[#calls + 1] = { name = "rectangle" }
     end,
-    pop = function()
-      calls[#calls + 1] = { name = "pop" }
-    end,
-    translate = function()
-      calls[#calls + 1] = { name = "translate" }
-    end,
-    scale = function()
-      calls[#calls + 1] = { name = "scale" }
-    end,
-    setColor = function(r, g, b, a)
-      calls[#calls + 1] = { name = "setColor", color = { r, g, b, a } }
-    end,
-    rectangle = function(mode, x, y, width, height)
-      calls[#calls + 1] = { name = "rectangle", mode = mode, rect = { x = x, y = y, width = width, height = height } }
-    end,
-    draw = function()
-      calls[#calls + 1] = { name = "draw" }
+    draw = function(image, x, y)
+      calls.draws[#calls.draws + 1] = { image = image, x = x, y = y }
     end,
   }
   return graphics, calls
@@ -96,76 +66,101 @@ local function snapshot(cursor)
   }
 end
 
-local function lineRectsWithPrecedingColor(calls)
-  local colored = {}
-  local pending = nil
-  for _, call in ipairs(calls) do
-    if call.name == "setColor" then
-      pending = call.color
-    elseif call.name == "rectangle" and call.mode == "line" then
-      colored[#colored + 1] = { rect = call.rect, color = pending }
-      pending = nil
+local function drawsOf(calls, path)
+  local found = {}
+  for _, draw in ipairs(calls.draws) do
+    if draw.image.path == path then
+      found[#found + 1] = draw
     end
   end
-  return colored
+  return found
 end
 
-local function isColor(actual, expected)
-  if actual == nil then
-    return false
-  end
-  for index = 1, 4 do
-    if actual[index] ~= expected[index] then
-      return false
-    end
-  end
-  return true
-end
-
-local function assertSingleSelectedOutline(calls)
-  for _, call in ipairs(calls) do
-    if call.name == "rectangle" then
-      Assert.isTrue(call.mode == "line", "source chrome supplies the pixels, so no synthetic fill remains")
-    end
-  end
-  local outlined = lineRectsWithPrecedingColor(calls)
-  Assert.equal(#outlined, 1, "exactly one focus mark remains")
-  Assert.isTrue(isColor(outlined[1].color, SELECTED), "the remaining focus mark keeps the selected color")
-  return outlined[1].rect
-end
-
-function T.tests.focus_outline_uses_the_source_shaped_cell_under_the_cursor()
+function T.tests.keyboard_focus_draws_the_stepped_cursor_visual_without_outlines()
   local graphics, calls = graphicsFake()
+  local manifest = namingManifest()
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
     drawSubject = function() end,
-    manifest = namingManifest(),
+    manifest = manifest,
     imageLoader = imageLoader(),
   })
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 3, column = 5 }), layout)
   renderer:dispose()
 
-  Assert.deepEqual(assertSingleSelectedOutline(calls), layout.cells[3][5])
+  for _, call in ipairs(calls) do
+    Assert.isTrue(call.name ~= "rectangle", "source visuals supply the focus, so no outline remains")
+  end
+  local cursor = manifest.namingScreen.cursor.keyboard
+  local found = drawsOf(calls, cursor.image)
+  Assert.equal(#found, 1, "the keyboard cursor draws exactly once")
+  Assert.deepEqual({ x = found[1].x, y = found[1].y }, {
+    x = cursor.anchor.x + (5 - 1) * cursor.stepX + cursor.offset.x,
+    y = cursor.anchor.y + (3 - 2) * cursor.stepY + cursor.offset.y,
+  })
 end
 
-function T.tests.home_row_focus_uses_the_control_region_under_the_cursor()
+function T.tests.home_row_focus_draws_the_matching_cursor_variant()
   local graphics, calls = graphicsFake()
+  local manifest = namingManifest()
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
     text = textFake(),
     drawSubject = function() end,
-    manifest = namingManifest(),
+    manifest = manifest,
     imageLoader = imageLoader(),
   })
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ row = 1, column = 9 }), layout)
   renderer:dispose()
 
-  local selected = assertSingleSelectedOutline(calls)
-  Assert.deepEqual(selected, layout.cells[1][9])
-  Assert.deepEqual(selected, layout.controls.back)
+  for _, call in ipairs(calls) do
+    Assert.isTrue(call.name ~= "rectangle", "source visuals supply the focus, so no outline remains")
+  end
+  local variant = manifest.namingScreen.cursor.home.back
+  local found = drawsOf(calls, variant.image)
+  Assert.equal(#found, 1, "the Back home-cursor variant draws exactly once")
+  Assert.deepEqual({ x = found[1].x, y = found[1].y }, {
+    x = variant.anchor.x + variant.offset.x,
+    y = variant.anchor.y + variant.offset.y,
+  })
+end
+
+-- A loader failure partway through the expanded visual acquisition must
+-- release every image acquired so far exactly once before the constructor
+-- rethrows: partial acquisition never leaks.
+function T.tests.failed_acquisition_releases_every_previously_acquired_image()
+  local acquired = {}
+  local calls = 0
+  local loader = function(path)
+    calls = calls + 1
+    if calls == 5 then
+      error("injected naming image failure", 0)
+    end
+    local image = { path = path, releases = 0 }
+    image.release = function()
+      image.releases = image.releases + 1
+    end
+    acquired[#acquired + 1] = image
+    return image
+  end
+  local graphics = graphicsFake()
+  local err = Assert.throws(function()
+    NamingScreenRenderer.new({
+      graphics = graphics,
+      text = textFake(),
+      drawSubject = function() end,
+      manifest = namingManifest(),
+      imageLoader = loader,
+    })
+  end)
+  Assert.isTrue(tostring(err):find("injected naming image failure", 1, true) ~= nil, "rethrows the loader failure")
+  Assert.equal(#acquired, 4, "four visuals were acquired before the failure")
+  for _, image in ipairs(acquired) do
+    Assert.equal(image.releases, 1, "acquired image " .. image.path .. " is released exactly once")
+  end
 end
 
 return T

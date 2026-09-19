@@ -270,12 +270,110 @@ end
 -- 62, anim 63, char 64), the start menu icon bank (eleven 20-tile sprite
 -- chars 18/21/24/27/30/33/36/39/42/45/48, shared cell 16, anim 17, and OBJ
 -- palette image 14), the start menu SUB set (palette 7, char 8 of 192 tiles,
--- 256x256 screen 9), and the card front. Palettes carry enough colors for test
+-- 256x256 screen 9), and the card front. The naming archive carries palette
+-- 0, char 2, base 4, pages 6/7/8, plus the normal OBJ stack (palette 1 with
+-- nine banks, char 10, cell 12, anim 14) installed by namingObjMembers.
+-- Palettes carry enough colors for test
 -- source types (4 types * 16 colors = 64 colors) so every tile value and
 -- palette bank the fixture chars emit is covered. `opts` allows per-test
 -- source tampering: cursor OBJ geometry, the background screen entry, the
 -- background palette colors, and a whole-member tamper hook.
 --
+-- A multi-cell OBJ bank for the naming-screen fixture: each entry is one
+-- cell carrying its own object list, with per-cell object offsets laid out
+-- exactly like the single-cell helper above.
+local function cellBank(cellObjs)
+  local meta, attr = {}, {}
+  local offset = 0
+  for _, objs in ipairs(cellObjs) do
+    meta[#meta + 1] = u16(#objs) .. u16(0) .. u32(offset)
+    offset = offset + #objs * 6
+  end
+  for _, objs in ipairs(cellObjs) do
+    for _, o in ipairs(objs) do
+      attr[#attr + 1] = u16((o.y % 256) + (o.shape or 0) * 16384)
+        .. u16((o.x % 512) + (o.flipH and 4096 or 0) + (o.flipV and 8192 or 0) + (o.size or 0) * 16384)
+        .. u16(o.tile + o.pal * 4096)
+    end
+  end
+  return container("RECN", {
+    block(
+      "CEBK",
+      u16(#cellObjs)
+        .. u16(0)
+        .. u32(0x18)
+        .. u32(0)
+        .. string.rep("\0", 12)
+        .. table.concat(meta)
+        .. table.concat(attr)
+    ),
+  })
+end
+
+-- A multi-animation bank: animation a drives one frame selecting cell
+-- animCells[a]. Mirrors the single-animation helper's header layout.
+local function animBank(animCells)
+  local count = #animCells
+  local anims, frames, data = {}, {}, {}
+  for a, cell in ipairs(animCells) do
+    anims[#anims + 1] = u32(1) .. u16(0) .. u16(1) .. u32(1) .. u32((a - 1) * 8)
+    frames[#frames + 1] = u32((a - 1) * 2) .. u16(3) .. u16(0)
+    data[#data + 1] = u16(cell)
+  end
+  local animsOffset = 0x18
+  local framesOffset = animsOffset + 16 * count
+  local dataOffset = framesOffset + 8 * count
+  return container("RNAN", {
+    block(
+      "ABNK",
+      u16(count)
+        .. u16(count)
+        .. u32(animsOffset)
+        .. u32(framesOffset)
+        .. u32(dataOffset)
+        .. string.rep("\0", 8)
+        .. table.concat(anims)
+        .. table.concat(frames)
+        .. table.concat(data)
+    ),
+  })
+end
+
+-- Nine distinct 16-color OBJ palette banks: bank b slot s decodes word
+-- b + s*32, so no two (bank, slot) pairs share a color and a bank mix-up is
+-- always visible. Nine banks also prove the palette-count argument is a
+-- count: a producer that mistakes the count for bank 9 would read past these
+-- 144 colors into a typed source error.
+local function nineBankPalette()
+  local colors = {}
+  for bank = 0, 8 do
+    for slot = 0, 15 do
+      colors[bank * 16 + slot + 1] = bank + slot * 32
+    end
+  end
+  return paletteData(colors)
+end
+
+-- The normal naming OBJ stack in producer-side member numbers (this is the
+-- romdump-side test): char 10, palette 1, cell 12, anim 14. Fifty cells and
+-- animations cover the transcribed semantic animation table (subjects at 48
+-- and 49); cell i references tile i % 16 of the 16-tile char through palette
+-- bank i % 9, so every bank the nine-bank palette carries is exercised and
+-- neighboring roles render distinct art.
+local function namingObjMembers(members)
+  members[2] = nineBankPalette()
+  members[11] = charData(16, 3)
+  local cells = {}
+  local animCells = {}
+  for index = 0, 49 do
+    cells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index % 9 } }
+    animCells[index + 1] = index
+  end
+  members[13] = cellBank(cells)
+  members[15] = animBank(animCells)
+  return members
+end
+
 -- v5 schema: compile uses a test-specific config with only types 0..3 instead
 -- of the production config's 25 types, to keep palette sizes within G2D limits.
 local function fixture(opts)
@@ -328,7 +426,7 @@ local function fixture(opts)
   card[12] = paletteData({ 0x7FFF, 0x001F })
 
   local namein = {}
-  for i = 1, 9 do
+  for i = 1, 15 do
     namein[i] = string.rep("\0", 4)
   end
   namein[1] = palette16()
@@ -337,6 +435,7 @@ local function fixture(opts)
   namein[7] = lz10Wrap(namingScreenData(256, 112, 2))
   namein[8] = lz10Wrap(namingScreenData(256, 112, 3))
   namein[9] = lz10Wrap(namingScreenData(256, 112, 4))
+  namingObjMembers(namein)
 
   local function narcFile(alias)
     local members
@@ -452,8 +551,10 @@ function T.compiles_the_manifest_and_all_assets()
     assetCount = assetCount + 1
   end
   -- Eleven base assets plus the four start-menu icon-contract images (shared
-  -- icon atlas, selection-bank highlight atlas, palette record, SUB chrome).
-  Assert.equal(assetCount, 15)
+  -- icon atlas, selection-bank highlight atlas, palette record, SUB chrome)
+  -- plus the sixteen naming OBJ visuals (six controls, keyboard cursor, five
+  -- home cursor variants, two entry slots, two player subjects).
+  Assert.equal(assetCount, 31)
   for path, bytes in pairs(bundle.assets) do
     Assert.isTrue(path:find("^assets/generated/field/ui/") ~= nil)
     Assert.isTrue(#bytes > 0)
@@ -526,9 +627,10 @@ function T.naming_base_is_opaque_while_pages_keep_transparency_holes()
 end
 
 -- The producer fingerprint pins exactly the normal naming members: palette
--- 0, char 2, base 4, and pages 6/7/8. Members 5, 9, 17, and 18 never appear,
--- so the normal path cannot accidentally depend on the special numpad page
--- or the unmapped members.
+-- 0, char 2, base 4, pages 6/7/8, and the normal OBJ stack (palette 1, char
+-- 10, cell 12, anim 14). Members 5, 9, 17, and 18 never appear, so the normal
+-- path cannot accidentally depend on the special numpad page or the unmapped
+-- members.
 function T.naming_dependencies_pin_exactly_the_normal_members()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
@@ -536,7 +638,7 @@ function T.naming_dependencies_pin_exactly_the_normal_members()
   for _, dep in ipairs(bundle.dependencies) do
     names[dep.name] = true
   end
-  for _, member in ipairs({ 0, 2, 4, 6, 7, 8 }) do
+  for _, member in ipairs({ 0, 1, 2, 4, 6, 7, 8, 10, 12, 14 }) do
     Assert.isTrue(
       names["naming_screen:member:" .. member] or names["naming_screen:palette:" .. member],
       "the fingerprint pins naming member " .. member
@@ -546,6 +648,38 @@ function T.naming_dependencies_pin_exactly_the_normal_members()
     Assert.isNil(names["naming_screen:member:" .. excluded], "member " .. excluded .. " is not fingerprinted")
     Assert.isNil(names["naming_screen:palette:" .. excluded], "member " .. excluded .. " is not fingerprinted")
   end
+end
+
+-- The palette-count argument is a count of nine banks, never bank 9: the OBJ
+-- palette member decodes to exactly nine 16-color banks, the highest OAM bank
+-- (8) resolves inside them, and a cell reaching past the ninth bank is a
+-- typed source defect instead of a silent miscolor.
+function T.naming_obj_palette_count_is_nine_banks_not_bank_nine()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
+  Assert.notNil(naming.playerSubjects.female, "bank 8 (the highest OAM bank) resolves inside the nine banks")
+  local pastBankCells = {}
+  for index = 0, 49 do
+    pastBankCells[index + 1] = { { x = 0, y = 0, tile = index % 16, pal = index == 3 and 9 or index % 9 } }
+  end
+  local pastBankAnimCells = {}
+  for index = 0, 49 do
+    pastBankAnimCells[index + 1] = index
+  end
+  local overFs, overSha1, overHashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "naming_screen" then
+        namingObjMembers(members)
+        members[13] = cellBank(pastBankCells)
+        members[15] = animBank(pastBankAnimCells)
+      end
+      return members
+    end,
+  })
+  local overBundle, overErr = compileWithTestConfig(overFs, overSha1, overHashLua)
+  Assert.isNil(overBundle, "an OAM object past the ninth bank must not compile")
+  Assert.equal(assert(overErr).code, FieldUiCompiler.ERROR.SOURCE_INVALID)
 end
 
 function T.compilation_is_deterministic()
@@ -1366,6 +1500,143 @@ function T.g2d_palette_decodes_rgb555_with_correct_channel_order()
     Assert.equal(b, expected.b, "palette " .. tileIndex .. " blue channel")
     Assert.equal(a, 255, "palette " .. tileIndex .. " alpha")
   end
+end
+
+-- The normal naming manifest keeps its proven base/page chrome and
+-- additionally publishes the source text and OBJ geometry the reusable
+-- renderer consumes. Member numbers below are the producer-side selection
+-- (this is the romdump-side test); the manifest itself must carry them only
+-- as source-independent anchors, steps, and origins.
+function T.naming_manifest_publishes_source_text_and_object_geometry_beside_the_proven_chrome()
+  local romFs, sha1, hashLua = fixture()
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
+  Assert.deepEqual(naming.placement, { x = 0, y = 80, width = 256, height = 112 })
+  local pageCount = 0
+  for _ in pairs(naming.pages) do
+    pageCount = pageCount + 1
+  end
+  Assert.equal(pageCount, 3, "normal naming still carries exactly three pages")
+
+  local text = assert(naming.text, "the compiled naming must publish its source text geometry")
+  Assert.deepEqual(text.name, { x = 80, y = 24, advanceX = 12 })
+  local keyboardCells =
+    assert(text.keyboard and text.keyboard.cells, "the compiled naming must publish its five keyboard text rows")
+  local rowCount = 0
+  for _ in pairs(keyboardCells) do
+    rowCount = rowCount + 1
+  end
+  Assert.equal(rowCount, 5, "the keyboard text carries five source rows")
+  for row = 1, 5 do
+    local cells = assert(keyboardCells[row], "keyboard text row " .. row .. " is required")
+    local columnCount = 0
+    for _ in pairs(cells) do
+      columnCount = columnCount + 1
+    end
+    Assert.equal(columnCount, 13, "keyboard text row " .. row .. " carries thirteen cells")
+    for column = 1, 13 do
+      local cell = assert(cells[column], "keyboard text row " .. row .. " column " .. column .. " is required")
+      Assert.equal(cell.width, 16, "keyboard text cells are the 16px source columns")
+    end
+    for column = 2, 13 do
+      Assert.equal(cells[column].x - cells[column - 1].x, 16, "text row " .. row .. " advances one 16px column")
+    end
+  end
+  for row = 2, 5 do
+    Assert.isTrue(keyboardCells[row][1].y > keyboardCells[row - 1][1].y, "keyboard text rows run top to bottom")
+  end
+
+  local controls = assert(naming.controls, "the compiled naming must publish its source controls")
+  Assert.deepEqual(controls.upper.anchor, { x = 4, y = 68 })
+  Assert.deepEqual(controls.lower.anchor, { x = 36, y = 68 })
+  Assert.deepEqual(controls.symbols.anchor, { x = 68, y = 68 })
+  Assert.deepEqual(controls.back.anchor, { x = 136, y = 68 })
+  Assert.deepEqual(controls.ok.anchor, { x = 176, y = 68 })
+  Assert.deepEqual(controls.backing.anchor, { x = 22, y = 56 })
+
+  local cursor = assert(naming.cursor, "the compiled naming must publish its source cursor")
+  Assert.deepEqual(cursor.keyboard.origin, { x = 26, y = 91 })
+  Assert.equal(cursor.keyboard.stepX, 16)
+  Assert.equal(cursor.keyboard.stepY, 19)
+  for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
+    Assert.notNil(cursor.home and cursor.home[id], "the home cursor carries the " .. id .. " variant")
+  end
+
+  local slots = assert(naming.entrySlots, "the compiled naming must publish its entry slots")
+  Assert.deepEqual(slots.origin, { x = 80, y = 39 })
+  Assert.equal(slots.stepX, 12)
+  Assert.notNil(slots.normal, "the entry slots carry the normal visual")
+  Assert.notNil(slots.selected, "the entry slots carry the selected visual")
+
+  local subjects = assert(naming.playerSubjects, "the compiled naming must publish its player subjects")
+  Assert.deepEqual(subjects.male.anchor, { x = 24, y = 8 })
+  Assert.deepEqual(subjects.female.anchor, { x = 24, y = 8 })
+end
+
+-- The naming OBJ visuals honor each OAM object's own palette bank: the
+-- fixture palette carries nine distinct banks while its cells spread objects
+-- across all nine banks, so every compiled sprite must resolve its own bank
+-- and the male/female subjects must render distinct art.
+function T.naming_object_visuals_honor_per_oam_palette_selection()
+  local romFs, sha1, hashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "naming_screen" then
+        namingObjMembers(members)
+      end
+      return members
+    end,
+  })
+  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
+  local naming = assert(bundle.manifest.namingScreen, "the compiled field UI must publish normal naming chrome")
+  local records = {}
+  for _, record in pairs(assert(naming.controls, "the compiled naming must publish its source controls")) do
+    records[#records + 1] = record
+  end
+  local cursor = assert(naming.cursor, "the compiled naming must publish its source cursor")
+  records[#records + 1] = cursor.keyboard
+  for _, record in pairs(assert(cursor.home, "the home cursor carries per-control variants")) do
+    records[#records + 1] = record
+  end
+  local slots = assert(naming.entrySlots, "the compiled naming must publish its entry slots")
+  records[#records + 1] = slots.normal
+  records[#records + 1] = slots.selected
+  local subjects = assert(naming.playerSubjects, "the compiled naming must publish its player subjects")
+  records[#records + 1] = subjects.male
+  records[#records + 1] = subjects.female
+  Assert.isTrue(#records >= 8, "the naming visuals cover controls, cursor, slots, and both subjects")
+  local function imageBytes(record)
+    local path = record.image
+    if path == nil and type(record.asset) == "string" then
+      local entry = assert(bundle.manifest.assets[record.asset], "the sprite asset is indexed: " .. record.asset)
+      path = entry.image
+    end
+    local bytes = assert(bundle.assets[assert(path, "the sprite record names its image")])
+    Assert.isTrue(#bytes > 0, "the sprite image carries generated pixels")
+    return path, bytes
+  end
+  local opaquePixels = 0
+  for _, record in ipairs(records) do
+    local _, bytes = imageBytes(record)
+    local width, _, rgba = PngReader.rgba(bytes)
+    local total = math.floor(#rgba / 4)
+    for index = 0, total - 1 do
+      local _, _, _, a = PngReader.pixel(rgba, width, index % width, math.floor(index / width))
+      if a ~= 0 then
+        opaquePixels = opaquePixels + 1
+        break
+      end
+    end
+    for key in pairs(record) do
+      Assert.isFalse(
+        key == "member" or key == "memberId" or key == "cell" or key == "anim" or key == "narcId" or key == "alias",
+        "the sprite record must not leak source identities through '" .. tostring(key) .. "'"
+      )
+    end
+  end
+  Assert.isTrue(opaquePixels > 0, "the compiled naming visuals carry opaque source art")
+  local _, maleBytes = imageBytes(subjects.male)
+  local _, femaleBytes = imageBytes(subjects.female)
+  Assert.isTrue(maleBytes ~= femaleBytes, "the male and female subjects render distinct art")
 end
 
 return { tests = T }

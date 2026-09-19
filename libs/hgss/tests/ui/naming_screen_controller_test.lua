@@ -70,12 +70,17 @@ function T.tests.pages_back_ok_and_physical_input_share_one_mutation_path()
   Assert.deepEqual(controller:result(), { kind = "submit", text = "A" })
 end
 
-function T.tests.pointer_and_gamepad_cancel_and_submit_are_semantic_results()
+function T.tests.pointer_and_gamepad_back_and_submit_are_semantic_results()
   local controller = player()
   Assert.isTrue(controller:activateAt(2, 1))
   Assert.equal(controller:text(), "A")
   Assert.isTrue(controller:press("cancel"))
-  Assert.deepEqual(controller:result(), { kind = "cancel" })
+  Assert.isNil(controller:result(), "the cancel alias deletes like Back, never emits app cancel")
+  Assert.equal(controller:text(), "")
+  Assert.isTrue(controller:activateAt(2, 2))
+  Assert.equal(controller:text(), "B")
+  Assert.isTrue(controller:press("submit"))
+  Assert.deepEqual(controller:result(), { kind = "submit", text = "B" })
 end
 
 function T.tests.player_and_pokemon_subject_contracts_are_strict()
@@ -119,6 +124,23 @@ function T.tests.vertical_motion_out_of_a_skipped_home_region_uses_the_remembere
     { 2, 12 },
     "a vertical step from the home row skips blank glyphs sideways instead of dropping through them"
   )
+end
+
+function T.tests.physical_back_aliases_delete_and_start_submits_without_cancel()
+  local controller = player({ maxLength = 7 })
+  Assert.isTrue(controller:inputText("AB"))
+  Assert.isTrue(controller:press("b"))
+  Assert.isNil(controller:result(), "physical B deletes like Back, never emits app cancel")
+  Assert.equal(controller:text(), "A")
+  Assert.isTrue(controller:press("cancel"))
+  Assert.isNil(controller:result(), "the cancel alias deletes like Back, never emits app cancel")
+  Assert.equal(controller:text(), "")
+  Assert.isTrue(controller:press("escape"))
+  Assert.isNil(controller:result(), "the escape alias deletes like Back, never emits app cancel")
+  Assert.equal(controller:text(), "")
+  Assert.isTrue(controller:inputText("C"))
+  Assert.isTrue(controller:press("start"))
+  Assert.deepEqual(controller:result(), { kind = "submit", text = "C" })
 end
 
 function T.tests.layout_keeps_controls_inside_canonical_surface_at_integer_scale()

@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 
 local T = {}
 
@@ -24,7 +25,7 @@ local function baseManifest()
   for id = 1, 10 do
     slots[id] = { x = (id % 2 == 1 and 0 or 128), y = math.floor((id - 1) / 2) * 38, width = 128, height = 38 }
   end
-  return {
+  local manifest = {
     schema = DerivedAssetContract.fieldUi.schema,
     reference = { width = 256, height = 192 },
     assets = {
@@ -212,12 +213,13 @@ local function baseManifest()
       placement = { x = 0, y = 80, width = 256, height = 112 },
     },
   }
+  return FieldUiFixture.addNamingSemantics(manifest)
 end
 
-function T.final_surface_48x32_is_accepted_when_manifest_claims_v9()
+function T.final_surface_48x32_is_accepted_when_manifest_claims_v10()
   local manifest = baseManifest()
-  -- The expected final contract is 48x32 per wayfinding entry, schema v9.
-  manifest.schema = "g4-field-ui-v9"
+  -- The expected final contract is 48x32 per wayfinding entry, schema v10.
+  manifest.schema = "g4-field-ui-v10"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 32 }
@@ -228,7 +230,7 @@ end
 
 function T.old_strip_192x8_is_rejected_under_final_surface_contract()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v9"
+  manifest.schema = "g4-field-ui-v10"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 192, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 192, height = 8 }
@@ -251,7 +253,7 @@ end
 
 function T.final_surface_must_be_inside_atlas_bounds()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v9"
+  manifest.schema = "g4-field-ui-v10"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 10, y = 10, width = 48, height = 32 }
@@ -263,14 +265,14 @@ end
 
 function T.final_surface_must_be_exactly_48x32()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v9"
+  manifest.schema = "g4-field-ui-v10"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 47, height = 32 }
   local ok, _ = FieldUiAssetCache.validateManifest(manifest)
   Assert.isFalse(ok, "47x32 must be rejected - exactly 48x32 required")
   local manifest2 = baseManifest()
-  manifest2.schema = "g4-field-ui-v9"
+  manifest2.schema = "g4-field-ui-v10"
   manifest2.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest2.signposts.types[0].wayfinding[0] = { x = 0, y = 0, width = 48, height = 31 }
@@ -280,7 +282,7 @@ end
 
 function T.missing_wayfinding_map_is_rejected()
   local manifest = baseManifest()
-  manifest.schema = "g4-field-ui-v9"
+  manifest.schema = "g4-field-ui-v10"
   manifest.assets["hgss.signpost.wayfinding"] =
     { image = "assets/generated/field/ui/wayfinding-tiles.png", width = 48, height = 32 }
   manifest.signposts.types[0].wayfinding = {}

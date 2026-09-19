@@ -42,6 +42,12 @@
 -- (type, map) rect is a 6x4 arrangement (48px wide, 32px tall) composed at
 -- build time from the original 24 8x8 tiles, instead of a raw 192x8 strip.
 --
+-- fieldUi schema 10: the normal naming section carries the source-window
+--- text geometry and the OAM-composed control/cursor/slot/subject visuals
+--- (semantic sprite records with canonical anchors plus generated frame
+--- offsets) instead of chrome alone, so a stale pre-change cache without
+--- that section must fail readiness.
+--
 -- fieldUi schema 9: the Start Menu section carries the retail icon-sprite
 -- contract (the 13-row icon table with label-bank ids, the 7 context rows,
 -- the shared icon/highlight atlases and palette record, the action-to-icon
@@ -192,7 +198,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v9",
+  schema = "g4-field-ui-v10",
 }
 
 DerivedAssetContract.intro = {

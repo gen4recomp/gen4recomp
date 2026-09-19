@@ -222,9 +222,6 @@ end
 
 function OakProfileFlow:pressName(action)
   assert(self._naming ~= nil, "Oak naming screen is not active")
-  if action == "cancel" or action == "escape" or action == "b" then
-    return false
-  end
   local accepted = self._naming:press(action)
   self._name = self._naming:text()
   if action == "confirm" or action == "submit" or action == "yes" then

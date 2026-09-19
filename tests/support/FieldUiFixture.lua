@@ -707,4 +707,128 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
   return manifest
 end
 
+-- The source-backed naming semantics the reusable renderer consumes: the
+-- keyboard/name text layout from the retail keyboard window transform, the
+-- control/cursor/slot/player-subject visuals composed from the naming OBJ
+-- stack with per-OAM palette selection, and the canonical anchors every
+-- visual draws from. Anchors below are the retail source positions the
+-- producer transcribes (pret/pokeheartgold src/naming_screen.c): the entered
+-- name starts at (80,24) advancing 12px per glyph, entry slots start at
+-- (80,39) stepping 12px, controls sit on the home row, the keyboard cursor
+-- steps 16px by 19px from (26,91), and the player subject anchors at (24,8).
+-- The keyboard text cells deliberately differ from the interaction hit cells
+-- so a renderer that centers glyphs in hit rectangles is a mismatch.
+---@return table manifest carrying only the assets and namingScreen section
+function FieldUiFixture.namingSemanticsManifest()
+  local assets = {
+    ["hgss.naming_screen.base"] = {
+      image = "assets/generated/field/ui/naming-screen-base.png",
+      width = 256,
+      height = 192,
+    },
+    ["hgss.naming_screen.page_upper"] = {
+      image = "assets/generated/field/ui/naming-screen-page-upper.png",
+      width = 256,
+      height = 112,
+    },
+    ["hgss.naming_screen.page_lower"] = {
+      image = "assets/generated/field/ui/naming-screen-page-lower.png",
+      width = 256,
+      height = 112,
+    },
+    ["hgss.naming_screen.page_symbols"] = {
+      image = "assets/generated/field/ui/naming-screen-page-symbols.png",
+      width = 256,
+      height = 112,
+    },
+  }
+  local function sprite(id, width, height, anchor, offset)
+    local path = "assets/generated/field/ui/" .. id .. ".png"
+    assets["hgss.naming_screen." .. id] = { image = path, width = width, height = height }
+    return {
+      asset = "hgss.naming_screen." .. id,
+      image = path,
+      width = width,
+      height = height,
+      anchor = anchor,
+      offset = offset,
+    }
+  end
+  local cells = {}
+  for row = 1, 5 do
+    cells[row] = {}
+    for column = 1, 13 do
+      cells[row][column] = { x = 8 + (column - 1) * 16, y = 92 + (row - 1) * 19, width = 16 }
+    end
+  end
+  return {
+    schema = FieldUiAssetCache.SCHEMA,
+    reference = { width = 256, height = 192 },
+    assets = assets,
+    namingScreen = {
+      base = { asset = "hgss.naming_screen.base", width = 256, height = 192 },
+      pages = {
+        upper = { asset = "hgss.naming_screen.page_upper", width = 256, height = 112 },
+        lower = { asset = "hgss.naming_screen.page_lower", width = 256, height = 112 },
+        symbols = { asset = "hgss.naming_screen.page_symbols", width = 256, height = 112 },
+      },
+      placement = { x = 0, y = 80, width = 256, height = 112 },
+      text = {
+        name = { x = 80, y = 24, advanceX = 12 },
+        keyboard = { cells = cells },
+      },
+      controls = {
+        upper = sprite("control-upper", 32, 16, { x = 4, y = 68 }, { x = 1, y = 2 }),
+        lower = sprite("control-lower", 32, 16, { x = 36, y = 68 }, { x = 0, y = 2 }),
+        symbols = sprite("control-symbols", 32, 16, { x = 68, y = 68 }, { x = 0, y = 2 }),
+        back = sprite("control-back", 40, 16, { x = 136, y = 68 }, { x = 1, y = 2 }),
+        ok = sprite("control-ok", 40, 16, { x = 176, y = 68 }, { x = 0, y = 2 }),
+        backing = sprite("control-backing", 216, 32, { x = 22, y = 56 }, { x = 0, y = 0 }),
+      },
+      cursor = {
+        keyboard = (function()
+          local record = sprite("cursor-keyboard", 16, 19, { x = 26, y = 91 }, { x = 0, y = 0 })
+          record.origin = { x = 26, y = 91 }
+          record.stepX = 16
+          record.stepY = 19
+          return record
+        end)(),
+        home = {
+          upper = sprite("cursor-home-upper", 32, 16, { x = 4, y = 68 }, { x = 0, y = 1 }),
+          lower = sprite("cursor-home-lower", 32, 16, { x = 36, y = 68 }, { x = 0, y = 1 }),
+          symbols = sprite("cursor-home-symbols", 32, 16, { x = 68, y = 68 }, { x = 0, y = 1 }),
+          back = sprite("cursor-home-back", 40, 16, { x = 136, y = 68 }, { x = 0, y = 1 }),
+          ok = sprite("cursor-home-ok", 40, 16, { x = 176, y = 68 }, { x = 0, y = 1 }),
+        },
+      },
+      entrySlots = {
+        origin = { x = 80, y = 39 },
+        stepX = 12,
+        normal = sprite("slot-normal", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
+        selected = sprite("slot-selected", 12, 16, { x = 80, y = 39 }, { x = 0, y = 0 }),
+      },
+      playerSubjects = {
+        male = sprite("subject-male", 48, 56, { x = 24, y = 8 }, { x = 0, y = 0 }),
+        female = sprite("subject-female", 48, 56, { x = 24, y = 8 }, { x = 2, y = 0 }),
+      },
+    },
+  }
+end
+
+-- Grafts the source-backed naming semantics (generated visual assets plus
+-- the full text/control/cursor/slot/subject section) onto a fixture
+-- manifest that already carries the Start Menu icon contract. Validator
+-- fixtures whose subject is another section use this to satisfy the required
+-- naming contract without restating it.
+---@param manifest table
+---@return table manifest
+function FieldUiFixture.addNamingSemantics(manifest)
+  local semantics = FieldUiFixture.namingSemanticsManifest()
+  for id, entry in pairs(semantics.assets) do
+    manifest.assets[id] = entry
+  end
+  manifest.namingScreen = semantics.namingScreen
+  return manifest
+end
+
 return FieldUiFixture
