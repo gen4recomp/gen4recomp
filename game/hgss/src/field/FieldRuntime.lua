@@ -60,7 +60,7 @@ local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
 local StartMenuState = require("game.hgss.src.field.StartMenuState")
 local DisplayContext = require("game.hgss.src.ui.DisplayContext")
-local TrainerCardController = require("libs.hgss.src.ui.TrainerCardController")
+local TrainerCardScreenState = require("game.hgss.src.field.TrainerCardScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
@@ -945,6 +945,7 @@ function FieldRuntime:_load()
       start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
       bag = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
       party = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      trainer_card = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
     }
     self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
 
@@ -1375,13 +1376,24 @@ function FieldRuntime:_applicationDescriptors()
     end
   end
   local function trainerCardFactory()
-    -- The Trainer Card factory copies the immutable profile fields from the
-    -- authoritative player-data record into the close-input-only
-    -- controller.
-    return TrainerCardController.new({
+    -- The Trainer Card factory wraps the close-input-only controller in
+    -- its presentation session, keeping the authoritative profile fields
+    -- with the existing controller ownership.
+    local windowMemory = assert(
+      self.presentationWindows and self.presentationWindows.trainer_card,
+      "the card wrapper requires its runtime window memory"
+    )
+    local cardOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.trainer_card or nil
+    local function measureDisplay()
+      return self.presentationDisplay
+    end
+    return TrainerCardScreenState.new({
       profile = self.playerData.profile,
       playTimeSeconds = self.playTime:seconds(),
       effect = playSequence,
+      measureDisplay = measureDisplay,
+      windowState = windowMemory,
+      overrides = cardOverrides,
     })
   end
   local function partyScreenFactory()

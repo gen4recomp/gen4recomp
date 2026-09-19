@@ -189,19 +189,40 @@ function T.odd_width_field_surfaces_start_on_whole_host_pixels(_)
   signpost:release()
   signpostText:release()
 
-  local cardGraphics = fakeGraphicsFromSupport()
-  local cardText = FieldTextRenderer.new({ cacheFs = FieldUiFixture.trainerCardCache(), graphics = cardGraphics })
-  local card = TrainerCardRenderer.new({
-    cacheFs = FieldUiFixture.trainerCardCache(),
-    manifest = FieldUiFixture.manifest(),
-    text = cardText,
-    graphics = cardGraphics,
-  })
-  card:draw({ name = "GOLD", visibleTrainerId = 0, money = 0, playTimeSeconds = 0 }, viewport, 2)
-  Assert.equal(cardGraphics.transforms[1][2], 65, "trainer card origin is the nearest host pixel")
-  Assert.equal(cardGraphics.transforms[2][2], 2, "trainer card keeps its integer scale")
-  card:release()
-  cardText:release()
+  local function cardOnFreshGraphics()
+    local graphics = fakeGraphicsFromSupport()
+    local text = FieldTextRenderer.new({ cacheFs = FieldUiFixture.trainerCardCache(), graphics = graphics })
+    local renderer = TrainerCardRenderer.new({
+      cacheFs = FieldUiFixture.trainerCardCache(),
+      manifest = FieldUiFixture.manifest(),
+      text = text,
+      graphics = graphics,
+    })
+    return graphics, text, renderer
+  end
+  -- The shared placement owns the origin policy now: both draws resolve
+  -- one integer-fit placement and draw through it, so camera zoom cannot
+  -- reach either transform list.
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local placement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 641, height = 480 }, 256, 192),
+    "the probe host must admit a card placement"
+  )
+  local probe = { name = "GOLD", visibleTrainerId = 0, money = 0, playTimeSeconds = 0 }
+  local graphicsA, textA, cardA = cardOnFreshGraphics()
+  cardA:draw(probe, placement)
+  local graphicsB, textB, cardB = cardOnFreshGraphics()
+  cardB:draw(probe, placement)
+  Assert.deepEqual(
+    graphicsB.transforms,
+    graphicsA.transforms,
+    "trainer card transform identical regardless of camera zoom (no zoom plumbing)"
+  )
+  Assert.equal(graphicsA.transforms[2][2], 2, "trainer card keeps its integer scale")
+  cardA:release()
+  textA:release()
+  cardB:release()
+  textB:release()
 end
 
 return GraphicsSmoke.suite(T)

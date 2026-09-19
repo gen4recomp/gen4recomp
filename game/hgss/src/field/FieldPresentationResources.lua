@@ -23,7 +23,6 @@ local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
-local PixelScale = require("libs.ui.src.PixelScale")
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
@@ -83,19 +82,16 @@ local function buildPresenters(owner)
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
   end
-  local function drawTrainerCard(presentation, runtime)
-    local fieldRuntime = assert(runtime, "the card application requires field runtime")
-    local viewport = assert(fieldRuntime.viewport, "the card application requires the runtime viewport")
-    assert(owner.trainerCardRenderer, "trainer card renderer is unavailable"):draw(
-      presentation,
-      viewport,
-      PixelScale.fitPreferred(
-        viewport.referenceFrame,
-        256,
-        192,
-        assert(fieldRuntime.fieldPixelScale, "the card application requires the field pixel scale"):resolvedScale()
-      )
-    )
+  local function drawTrainerCard(presentation, _)
+    local status = assert(presentation, "the card application presents its status")
+    local plan = assert(status.presentation, "the card application presents its plan")
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", "card drawing requires its host graphics namespace")
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      trainerCardRenderer = assert(owner.trainerCardRenderer, "trainer card renderer is unavailable"),
+      text = assert(owner.textRenderer, "card text renderer is unavailable"),
+    }, status, plan)
   end
   local function drawBag(presentation, _)
     local status = assert(presentation, "the bag application presents its status")

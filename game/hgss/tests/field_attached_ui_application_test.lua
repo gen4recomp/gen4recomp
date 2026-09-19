@@ -4,7 +4,6 @@ local Assert = require("tests.support.Assert")
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
-local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 
 local T = {}
 
@@ -52,9 +51,14 @@ function T.start_menu_plan_identical_across_zooms()
 end
 
 function T.trainer_card_draw_placement_identical_across_zooms()
-  local viewport = FieldViewport.new(1280, 720, { mode = "expanded" })
-  -- Application surfaces receive their own integer-fit scale and do not
-  -- consume the field camera zoom.
+  local PixelScale = require("libs.ui.src.PixelScale")
+  -- Application surfaces resolve one integer-fit placement from UI
+  -- bounds and never consume the field camera zoom: the same resolved
+  -- placement draws identically twice.
+  local placement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 1280, height = 720 }, 256, 192),
+    "the probe host must admit a card placement"
+  )
   local FieldUiFixture = require("tests.support.FieldUiFixture")
   local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
   local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
@@ -74,8 +78,8 @@ function T.trainer_card_draw_placement_identical_across_zooms()
     money = 0,
     playTimeSeconds = 0,
   }
-  rA:draw(presentation, viewport, 2)
-  rB:draw(presentation, viewport, 2)
+  rA:draw(presentation, placement)
+  rB:draw(presentation, placement)
   Assert.deepEqual(
     lgA.transforms,
     lgB.transforms,
