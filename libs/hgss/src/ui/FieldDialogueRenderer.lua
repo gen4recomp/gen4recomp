@@ -16,6 +16,7 @@
 -- injected explicitly; this renderer never reloads it from the cache.
 
 local Errors = require("libs.errors.src.Errors")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
@@ -223,24 +224,43 @@ function FieldDialogueRenderer:draw(controller, presentation)
   DialoguePresentationLayout.validate(layout)
   local lg = assert(self._graphics)
   local status = controller:status()
+  -- The complete transformed strip plus its visible host region, resolved
+  -- locally at the draw boundary: source text geometry never carries host
+  -- fields, and input-free dialogue keeps its existing layout and timing.
+  local outer = layout.outerRect
+  local bounds = layout.bounds
+  local clipX = math.max(outer.x, bounds.x)
+  local clipY = math.max(outer.y, bounds.y)
+  local clipFarX = math.min(outer.x + outer.width, bounds.x + bounds.width)
+  local clipFarY = math.min(outer.y + outer.height, bounds.y + bounds.height)
+  if clipFarX <= clipX or clipFarY <= clipY then
+    return
+  end
+  local placement = {
+    frame = { x = outer.x, y = outer.y, width = outer.width, height = outer.height },
+    origin = { x = layout.origin.x, y = layout.origin.y },
+    scale = layout.scale,
+    logicalWidth = outer.width / layout.scale,
+    logicalHeight = outer.height / layout.scale,
+    clipRect = { x = clipX, y = clipY, width = clipFarX - clipX, height = clipFarY - clipY },
+  }
   FieldDrawState.protectedDraw(lg, function()
-    lg.intersectScissor(layout.bounds.x, layout.bounds.y, layout.bounds.width, layout.bounds.height)
     -- Everything draws in reference-canvas coordinates under one
     -- translate(origin) + scale transform; the theme never returns
     -- screen-mapped rects, so nothing is scaled twice.
-    lg.translate(layout.origin.x, layout.origin.y)
-    lg.scale(layout.scale, layout.scale)
-    self:_drawFrame(status, layout)
-    local lines = status.scrollLines or status.visibleLines
-    local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
-    local lineY = layout.text.y - scrollOffset
-    for _, line in ipairs(lines) do
-      local tokens = line.tokens or line
-      self._text:drawLine(tokens, layout.text.x, lineY)
-      lineY = lineY + status.lineHeight + status.lineSpacing
-    end
-    self:_drawFocusIndicator(status, layout)
-    self:_drawCursor(status, layout)
+    LogicalSurface.draw(lg, placement, function()
+      self:_drawFrame(status, layout)
+      local lines = status.scrollLines or status.visibleLines
+      local scrollOffset = status.scrollLines and status.scrollOffsetY or 0
+      local lineY = layout.text.y - scrollOffset
+      for _, line in ipairs(lines) do
+        local tokens = line.tokens or line
+        self._text:drawLine(tokens, layout.text.x, lineY)
+        lineY = lineY + status.lineHeight + status.lineSpacing
+      end
+      self:_drawFocusIndicator(status, layout)
+      self:_drawCursor(status, layout)
+    end)
   end)
 end
 

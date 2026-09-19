@@ -200,4 +200,108 @@ function T.host_logical_transforms_round_trip_and_reject_outside_points()
   Assert.equal(hostY, offset.frame.y)
 end
 
+function T.minimal_placements_without_origin_or_clip_map_the_whole_frame()
+  local placement = { frame = rect(10, 20, 100, 50), scale = 2 }
+  local logicalX, logicalY = LayoutGeometry.hostToLogical(placement, 10, 20)
+  Assert.equal(logicalX, 0, "legacy records invert through the frame origin")
+  Assert.equal(logicalY, 0, "legacy records invert through the frame origin")
+  local edgeX, edgeY = LayoutGeometry.hostToLogical(placement, 109, 69)
+  Assert.notNil(edgeX, "legacy records hit-test the whole frame")
+  Assert.notNil(edgeY, "legacy records hit-test the whole frame")
+  Assert.isNil(LayoutGeometry.hostToLogical(placement, 110, 69), "the half-open far edge stays outside")
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, 5, 5)
+  Assert.equal(hostX, 20, "the forward transform defaults to the frame origin")
+  Assert.equal(hostY, 30, "the forward transform defaults to the frame origin")
+end
+
+function T.cropped_placements_reject_hidden_margins_but_invert_through_the_full_origin()
+  local placement = {
+    frame = rect(-9, -8, 768, 576),
+    origin = { x = -9, y = -8 },
+    scale = 3,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = rect(0, 1, 750, 558),
+  }
+  local visibleX, visibleY = LayoutGeometry.hostToLogical(placement, 0, 1)
+  Assert.equal(visibleX, 3, "a visible edge maps past the hidden margin, never from the clip origin")
+  Assert.equal(visibleY, 3, "a visible edge maps past the hidden margin, never from the clip origin")
+  Assert.isNil(LayoutGeometry.hostToLogical(placement, 0, 0), "the hidden top margin cannot hit")
+  Assert.isNil(LayoutGeometry.hostToLogical(placement, -9, -8), "the hidden frame corner cannot hit")
+  Assert.isNil(LayoutGeometry.hostToLogical(placement, 750, 558), "the half-open far edge cannot hit")
+  local snapshot = {
+    frame = { x = -9, y = -8, width = 768, height = 576 },
+    clipRect = { x = 0, y = 1, width = 750, height = 558 },
+  }
+  LayoutGeometry.hostToLogical(placement, 100, 100)
+  Assert.deepEqual(
+    { frame = placement.frame, clipRect = placement.clipRect },
+    snapshot,
+    "hit testing never mutates the placement record"
+  )
+end
+
+function T.logical_rectangles_map_to_full_unclipped_host_extents()
+  local placement = {
+    frame = rect(-9, -8, 768, 576),
+    origin = { x = -9, y = -8 },
+    scale = 3,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = rect(0, 1, 750, 558),
+  }
+  local mapped = LayoutGeometry.logicalRectToHost(placement, rect(10, 20, 30, 40))
+  Assert.deepEqual(mapped, { x = 21, y = 52, width = 90, height = 120 })
+  local source = rect(10, 20, 30, 40)
+  LayoutGeometry.logicalRectToHost(placement, source)
+  Assert.deepEqual(source, { x = 10, y = 20, width = 30, height = 40 }, "mapping copies, never mutates")
+  local nothing = nil ---@type any
+  Assert.throws(function()
+    LayoutGeometry.logicalRectToHost(placement, nothing)
+  end)
+end
+
+function T.sub_placements_clip_to_the_parent_and_vanish_when_invisible()
+  local parent = {
+    frame = rect(-9, -8, 768, 576),
+    origin = { x = -9, y = -8 },
+    scale = 3,
+    logicalWidth = 256,
+    logicalHeight = 192,
+    clipRect = rect(0, 1, 750, 558),
+    pixelScale = 3,
+    pixelRatio = 1,
+  }
+  local child = LayoutGeometry.subPlacement(parent, rect(10, 20, 30, 40))
+  Assert.notNil(child, "an overlapping subregion resolves")
+  assert(child ~= nil, "the child placement is required below")
+  Assert.deepEqual(child.frame, { x = 21, y = 52, width = 90, height = 120 })
+  Assert.deepEqual(child.origin, { x = 21, y = 52 }, "the child origin is the subregion top-left")
+  Assert.equal(child.scale, 3, "subregions never reselect the scale")
+  Assert.equal(child.logicalWidth, 30)
+  Assert.equal(child.logicalHeight, 40)
+  Assert.deepEqual(child.clipRect, { x = 21, y = 52, width = 90, height = 120 })
+  Assert.equal(child.pixelScale, 3, "pixel metadata carries into the child")
+  local edged = LayoutGeometry.subPlacement(parent, rect(0, 0, 10, 10))
+  Assert.notNil(edged, "a partially visible subregion resolves")
+  assert(edged ~= nil, "the edged placement is required below")
+  Assert.deepEqual(
+    edged.clipRect,
+    { x = 0, y = 1, width = 21, height = 21 },
+    "the child clip is the parent clip intersected with the child frame"
+  )
+  Assert.isNil(
+    LayoutGeometry.subPlacement(parent, rect(0, 0, 2, 2)),
+    "a wholly cropped subregion returns nil instead of a malformed placement"
+  )
+  Assert.isNil(
+    LayoutGeometry.subPlacement(parent, rect(300, 300, 10, 10)),
+    "a subregion outside the parent returns nil"
+  )
+  local parentSnapshot = { x = parent.frame.x, y = parent.frame.y }
+  LayoutGeometry.subPlacement(parent, rect(10, 20, 30, 40))
+  Assert.equal(parent.frame.x, parentSnapshot.x, "subregions never mutate the parent")
+  Assert.equal(parent.frame.y, parentSnapshot.y, "subregions never mutate the parent")
+end
+
 return { tests = T }

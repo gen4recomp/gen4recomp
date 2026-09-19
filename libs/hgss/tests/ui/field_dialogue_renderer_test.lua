@@ -228,7 +228,10 @@ function T.clips_to_the_dialogue_bounds_and_restores_the_callers_scissor()
   renderer:draw(FieldDialogueFixture.openDialogue("AB", 0), clippedPresentation())
   Assert.deepEqual(lg.scissorIntersections, {
     {
-      requested = { 37, 11, 255, 47 },
+      -- The shared root scope clips the strip (host bounds intersected with
+      -- the resolved outer strip) against the caller scissor: the effective
+      -- region matches the previous manual boundary exactly.
+      requested = { 37, 11, 219, 37 },
       effective = { 40, 11, 20, 14 },
     },
   }, "dialogue clips against both its host bounds and the caller scissor")

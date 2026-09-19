@@ -325,6 +325,102 @@ function T.canonical_golden_matches_frame_one_pixel_for_pixel(scope)
   Assert.equal(quantize(ta0r), 200, "the first glyph renders at the layout origin")
 end
 
+local function sharedScopeFor(behavior)
+  local ok, moduleOrError = pcall(require, "libs.ui.src.LogicalSurface")
+  Assert.isTrue(ok, behavior .. " is missing: the shared logical drawing scope is unavailable")
+  local Surface = moduleOrError
+  Assert.isTrue(type(Surface.draw) == "function", behavior .. " is missing: the root placement scope is unavailable")
+  return Surface
+end
+
+-- The dialogue draws through the shared root scope exactly once: the sighted
+-- contract is the invocation itself plus unchanged pixels, so the first
+-- production migration cannot silently keep a private transform path.
+function T.draws_through_the_shared_root_scope_without_changing_pixels(scope)
+  local Surface = sharedScopeFor("dialogue drawing")
+  local dialogue = renderer(scope)
+  local controller = FieldDialogueFixture.openDialogue("AB", 0)
+  settleDialogue(controller)
+  local presentation = DialoguePresentationLayout.compute(
+    { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
+    { scale = 1, cursorPlacement = CURSOR_PLACEMENT }
+  )
+  local seen = {}
+  local original = Surface.draw
+  Surface.draw = function(graphics, placement, draw)
+    seen[#seen + 1] = placement
+    return original(graphics, placement, draw)
+  end
+  local canvas = scope:own(love.graphics.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  local ok, err = pcall(dialogue.draw, dialogue, controller, presentation)
+  Surface.draw = original
+  love.graphics.setCanvas()
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(#seen, 1, "one dialogue draw crosses one shared root scope")
+  Assert.equal(seen[1].logicalWidth, CANONICAL_WIDTH, "the scope keeps source dialogue geometry")
+  Assert.equal(seen[1].logicalHeight, 48, "the scope keeps source dialogue geometry")
+  Assert.equal(seen[1].scale, presentation.scale, "the scope owns the single output transform")
+  assertPixelsEqual(goldenReference(0), scope:own(canvas:newImageData()), "shared scope output matches source geometry")
+end
+
+-- An already-active outer scissor stays enforced at unit and triple density:
+-- content outside it never paints, while the visible strip still draws. This
+-- preservation gate passes before and after the shared-scope migration.
+function T.active_outer_scissor_stays_enforced_at_single_and_triple_density(scope)
+  local lg = love.graphics
+  for _, case in ipairs({
+    { scale = 1, width = 256, height = 192 },
+    { scale = 3, width = 768, height = 576 },
+  }) do
+    local label = case.width .. "x" .. case.height
+    local dialogue = renderer(scope)
+    local controller = FieldDialogueFixture.openDialogue("AB", 0)
+    settleDialogue(controller)
+    local presentation = DialoguePresentationLayout.compute(
+      { x = 0, y = 0, width = case.width, height = case.height },
+      { scale = case.scale, cursorPlacement = CURSOR_PLACEMENT }
+    )
+    local canvas = scope:own(lg.newCanvas(case.width, case.height))
+    lg.setCanvas(canvas)
+    lg.clear(0.1, 0.2, 0.3, 1)
+    lg.setScissor(0, 0, math.floor(case.width / 2), case.height)
+    dialogue:draw(controller, presentation)
+    lg.setCanvas()
+    lg.setScissor()
+    local data = scope:own(canvas:newImageData())
+    local function isBackdrop(x, y)
+      local r, g, b, a = data:getPixel(x, y)
+      return math.abs(r - 0.1) < 0.01
+        and math.abs(g - 0.2) < 0.01
+        and math.abs(b - 0.3) < 0.01
+        and math.abs(a - 1) < 0.01
+    end
+    Assert.isTrue(isBackdrop(case.width - 1, 0), "outside the outer scissor stays backdrop at " .. label)
+    Assert.isTrue(isBackdrop(case.width - 1, case.height - 1), "outside the outer scissor stays backdrop at " .. label)
+    Assert.isTrue(
+      isBackdrop(math.floor(case.width / 2) + 2, math.floor(case.height / 2)),
+      "outside the outer scissor stays backdrop at " .. label
+    )
+    local painted = false
+    for y = case.height - 48 * case.scale, case.height - 1 do
+      for x = 0, math.floor(case.width / 2) - 1 do
+        if not isBackdrop(x, y) then
+          painted = true
+          break
+        end
+      end
+      if painted then
+        break
+      end
+    end
+    Assert.isTrue(painted, "the visible strip still draws inside the outer scissor at " .. label)
+  end
+end
+
 -- Release is the contract here; it is still scoped so a failed assertion does
 -- not leak the renderer. The scope's later release exercises repeat safety.
 function T.release_frees_the_owned_frame_strip(scope)

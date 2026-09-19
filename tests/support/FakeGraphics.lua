@@ -47,6 +47,11 @@ function FakeGraphics.new(opts)
   local primitives = {}
   local rectangles = {}
   local scissorIntersections = {}
+  -- Current logical-to-target transform tracked alongside the recording
+  -- lists so transformPoint maps like the real driver; push/pop save and
+  -- restore it exactly as the graphics state stack does.
+  local currentTransform = { tx = 0, ty = 0, sx = 1, sy = 1 }
+  local transformStack = {}
   local state = {
     canvas = opts.canvas,
     shader = opts.shader,
@@ -154,17 +159,71 @@ function FakeGraphics.new(opts)
       end
       return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
     end,
-    push = function()
+    -- push("all") saves the full borrowed state like the real driver;
+    -- a bare push() saves only the transform, matching the two stack
+    -- modes scopes use.
+    push = function(mode)
       pushDepth = pushDepth + 1
+      local entry = {
+        tx = currentTransform.tx,
+        ty = currentTransform.ty,
+        sx = currentTransform.sx,
+        sy = currentTransform.sy,
+      }
+      if mode == "all" then
+        entry.savedState = {
+          canvas = state.canvas,
+          shader = state.shader,
+          blendMode = state.blendMode,
+          blendAlpha = state.blendAlpha,
+          depthMode = state.depthMode,
+          depthWrite = state.depthWrite,
+          wireframe = state.wireframe,
+          cullMode = state.cullMode,
+          color = { state.color[1], state.color[2], state.color[3], state.color[4] },
+          scissor = state.scissor and { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] } or nil,
+          lineWidth = state.lineWidth,
+        }
+      end
+      transformStack[#transformStack + 1] = entry
     end,
     pop = function()
       pushDepth = pushDepth - 1
+      local saved = transformStack[#transformStack]
+      transformStack[#transformStack] = nil
+      if saved ~= nil then
+        currentTransform = { tx = saved.tx, ty = saved.ty, sx = saved.sx, sy = saved.sy }
+        if saved.savedState ~= nil then
+          local restored = saved.savedState
+          state.canvas = restored.canvas
+          state.shader = restored.shader
+          state.blendMode = restored.blendMode
+          state.blendAlpha = restored.blendAlpha
+          state.depthMode = restored.depthMode
+          state.depthWrite = restored.depthWrite
+          state.wireframe = restored.wireframe
+          state.cullMode = restored.cullMode
+          state.color = restored.color
+          state.scissor = restored.scissor
+          state.lineWidth = restored.lineWidth
+        end
+      end
+    end,
+    origin = function()
+      currentTransform = { tx = 0, ty = 0, sx = 1, sy = 1 }
+    end,
+    transformPoint = function(x, y)
+      return currentTransform.tx + currentTransform.sx * x, currentTransform.ty + currentTransform.sy * y
     end,
     translate = function(x, y)
       transforms[#transforms + 1] = { "translate", x, y }
+      currentTransform.tx = currentTransform.tx + currentTransform.sx * x
+      currentTransform.ty = currentTransform.ty + currentTransform.sy * y
     end,
     scale = function(x, y)
       transforms[#transforms + 1] = { "scale", x, y }
+      currentTransform.sx = currentTransform.sx * x
+      currentTransform.sy = currentTransform.sy * (y == nil and x or y)
     end,
     setColor = function(r, g, b, a)
       state.color = { r, g, b, a }
