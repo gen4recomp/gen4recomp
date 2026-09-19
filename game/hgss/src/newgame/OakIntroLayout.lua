@@ -4,7 +4,6 @@
 local OakProfileLayout = require("game.hgss.src.newgame.OakProfileLayout")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local OakSceneLayout = require("game.hgss.src.newgame.OakSceneLayout")
-local ImageButton = require("libs.ui.src.ImageButton")
 local PixelScale = require("libs.ui.src.PixelScale")
 local TextButton = require("libs.ui.src.TextButton")
 
@@ -94,15 +93,70 @@ local function validateSubjectState(view, dialogue, subjectId, subjectWidget, or
   end
 end
 
-local function translateSourceGroupAboveDialogue(scene, dialogue, gap, subject, reveal)
+-- Every opening-stage frame draws Oak against the same reveal lifecycle
+-- (ball, appearing Marill, looping Marill, or nothing), so the
+-- dialogue-avoidance correction is measured from one envelope containing
+-- Oak plus all three reveal assets. Measuring only the currently visible
+-- reveal would move Oak whenever the active reveal changes or disappears.
+local OPENING_STAGE_PHASES = {
+  oak_reveal_wait = true,
+  oak_welcome = true,
+  oak_slide_right = true,
+  oak_world_inhabited = true,
+  ball_open_wait = true,
+  scene_flash = true,
+  marill_appear = true,
+  marill_brightness_fade = true,
+  marill_cry_wait = true,
+  oak_live_alongside = true,
+  marill_hide = true,
+  marill_hide_wait = true,
+  oak_slide_left = true,
+  oak_tell_about_yourself = true,
+}
+
+---@param view table<string, unknown>
+---@return boolean
+local function isOpeningStage(view)
+  return view.phase ~= nil and OPENING_STAGE_PHASES[view.phase] == true
+end
+
+-- The envelope is a measurement authority only: it never causes an inactive
+-- asset to render. Oak is measured without scroll displacement because the
+-- horizontal slide changes X only and must not alter the vertical delta.
+---@param manifest table<string, unknown>
+---@param canvas { scale: number, origin: { x: number, y: number } }
+---@return number the deepest bottom edge among Oak and every opening reveal asset
+local function openingEnvelopeBottom(manifest, canvas)
+  local bottom = -math.huge
+  local oak = OakSceneLayout.sourceWidgetRect(widget(manifest, "oak"), canvas, 0)
+  bottom = math.max(bottom, oak.y + oak.height)
+  for _, id in ipairs({ "ball_open", "marill_appear", "marill" }) do
+    local reveal = OakSceneLayout.revealRect(widget(manifest, id), canvas)
+    bottom = math.max(bottom, reveal.y + reveal.height)
+  end
+  return bottom
+end
+
+---@param scene { x: number, y: number, width: number, height: number }
+---@param dialogue table<string, unknown>?
+---@param gap number
+---@param subject { x: number, y: number, width: number, height: number, scale: number }?
+---@param reveal { x: number, y: number, width: number, height: number, scale: number }?
+---@param measuredBottom number?
+---@return { x: number, y: number, width: number, height: number, scale: number }?, { x: number, y: number, width: number, height: number, scale: number }?
+local function translateSourceGroupAboveDialogue(scene, dialogue, gap, subject, reveal, measuredBottom)
   if dialogue == nil or (subject == nil and reveal == nil) then
     return subject, reveal
   end
   local visualHost = OakSceneLayout.aboveDialogue(scene, dialogue, gap)
-  local bottom = -math.huge
-  for _, item in ipairs({ subject, reveal }) do
-    if item ~= nil then
-      bottom = math.max(bottom, item.y + item.height)
+  local bottom = measuredBottom
+  if bottom == nil then
+    bottom = -math.huge
+    for _, item in ipairs({ subject, reveal }) do
+      if item ~= nil then
+        bottom = math.max(bottom, item.y + item.height)
+      end
     end
   end
   local delta = 0
@@ -219,16 +273,16 @@ local function integerConfirmationEntries(region, preferredScale, alignRight)
   }
 end
 
--- Interactive cards are mapped from the source canvas, which can extend
--- past a short selector host on extreme hosts; pin each entry to the host
--- so cards never leave the interactive region. Where the canvas already
--- fits this changes nothing.
+-- Gender cards are placed as one group: initial entries resolve from
+-- the selector canvas, the deepest card edge decides a single upward shift
+-- of that canvas, and final entries regenerate from the shifted canvas so
+-- card chrome and portraits move together. A host too short for the whole
+-- group keeps the lower edge above dialogue while excess leaves the top;
+-- cards never bleed downward out of the selector region.
 --
 -- The renderer draws each entry portrait as its button image, so the
--- portrait must stay inside the resolved button content. Pinning the card
--- to a host shorter than the card can cut chrome the portrait needs;
--- portrait fit wins over host containment there: a rim bleeding into an
--- empty host margin stays invisible, a failed draw assert is a crash.
+-- portrait must stay inside the resolved button content. Group translation
+-- preserves the resolved relationship instead of clipping it.
 
 ---@param portrait { x: number, y: number, width: number, height: number }
 ---@param content { x: number, y: number, width: number, height: number }
@@ -240,46 +294,36 @@ local function portraitFitsContent(portrait, content)
     and portrait.x + portrait.width <= content.x + content.width + epsilon
     and portrait.y + portrait.height <= content.y + content.height + epsilon
 end
----@param slot OakGenderCardEntry
----@param region { x: number, y: number, width: number, height: number }
-local function clampCardToRegion(slot, region)
-  local card = slot.rect
-  local x = math.max(card.x, region.x)
-  local y = math.max(card.y, region.y)
-  local candidate = rect(
-    x,
-    y,
-    math.min(card.x + card.width, region.x + region.width) - x,
-    math.min(card.y + card.height, region.y + region.height) - y
-  )
-  local candidateButton = ImageButton.resolve({ rect = candidate, scale = slot.scale, cornerRadius = 6 })
-  if portraitFitsContent(slot.portraitRect, assert(candidateButton.contentRect)) then
-    slot.rect = candidate
-    -- Rebuild chrome from the clamped rect, mirroring genderSelectionEntries.
-    slot.button = ImageButton.resolve({ rect = candidate, scale = slot.scale, cornerRadius = 6 })
-    return
+---@param selectorRegion { x: number, y: number, width: number, height: number }
+---@param reference { width: number, height: number }
+---@param manifest table<string, unknown>
+---@param preferredScale integer
+---@return OakGenderCardEntry[]
+local function genderGroupEntries(selectorRegion, reference, manifest, preferredScale)
+  local selectorCanvas = canvasForRegion(selectorRegion, reference, preferredScale)
+  local entries = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
+  local bottom = -math.huge
+  for gender = 0, 1 do
+    local card = assert(entries[gender]).rect
+    bottom = math.max(bottom, card.y + card.height)
   end
-  -- The host cannot take the full card without cutting portrait chrome:
-  -- keep the source card size and pin its origin as close to the host as
-  -- portrait fit allows instead of shrinking the chrome out from under it.
-  local content = assert(slot.button.contentRect)
-  local insetLeft = content.x - card.x
-  local insetTop = content.y - card.y
-  local insetRight = (card.x + card.width) - (content.x + content.width)
-  local insetBottom = (card.y + card.height) - (content.y + content.height)
-  local portrait = slot.portraitRect
-  local minX = portrait.x + portrait.width - card.width + insetRight
-  local maxX = portrait.x - insetLeft
-  local minY = portrait.y + portrait.height - card.height + insetBottom
-  local maxY = portrait.y - insetTop
-  assert(minX <= maxX and minY <= maxY, "Oak gender card cannot fit its portrait inside button chrome")
-  slot.rect = rect(math.min(math.max(x, minX), maxX), math.min(math.max(y, minY), maxY), card.width, card.height)
-  -- Rebuild chrome from the final rect, mirroring genderSelectionEntries.
-  slot.button = ImageButton.resolve({ rect = slot.rect, scale = slot.scale, cornerRadius = 6 })
-  assert(
-    portraitFitsContent(slot.portraitRect, assert(slot.button.contentRect)),
-    "Oak gender portrait must stay inside its button content"
-  )
+  local regionBottom = selectorRegion.y + selectorRegion.height
+  if bottom > regionBottom then
+    selectorCanvas = {
+      scale = selectorCanvas.scale,
+      origin = { x = selectorCanvas.origin.x, y = selectorCanvas.origin.y - (bottom - regionBottom) },
+    }
+    entries = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
+  end
+  for gender = 0, 1 do
+    local entry = assert(entries[gender])
+    assert(
+      portraitFitsContent(entry.portraitRect, assert(entry.button.contentRect)),
+      "Oak gender portrait must stay inside its button content"
+    )
+    assert(entry.rect.y + entry.rect.height <= regionBottom + 1e-6, "Oak gender group must stay above dialogue")
+  end
+  return entries
 end
 
 local function profileLayout(
@@ -293,11 +337,7 @@ local function profileLayout(
   preferredScale
 )
   if selectorActive then
-    local selectorCanvas = canvasForRegion(assert(selectorRegion), reference, preferredScale)
-    local genderSlots = OakProfileLayout.genderSelectionEntries(selectorCanvas, manifest)
-    for gender = 0, 1 do
-      clampCardToRegion(assert(genderSlots[gender]), assert(selectorRegion))
-    end
+    local genderSlots = genderGroupEntries(assert(selectorRegion), reference, manifest, preferredScale)
     if view.phase == "gender_select" then
       result.genderButtons = genderSlots
     else
@@ -390,8 +430,12 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   if view.revealWidget then
     ordinaryReveal = OakSceneLayout.revealRect(widget(manifest, view.revealWidget), canvas)
   end
+  local envelopeBottom
+  if isOpeningStage(view) then
+    envelopeBottom = openingEnvelopeBottom(manifest, canvas)
+  end
   ordinarySubject, ordinaryReveal =
-    translateSourceGroupAboveDialogue(scene, dialogue, gap, ordinarySubject, ordinaryReveal)
+    translateSourceGroupAboveDialogue(scene, dialogue, gap, ordinarySubject, ordinaryReveal, envelopeBottom)
   local selectedSubject, oakRegion, selectorRegion, nameChoiceRegion, selectorActive =
     subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
   result.subject = selectedSubject

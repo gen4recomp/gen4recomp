@@ -94,6 +94,27 @@ local INTRO_MANIFEST = {
       sourceBounds = { x = 0, y = 0, width = 64, height = 96 },
       sourceCenter = { x = 192, y = 104 },
     },
+    ball_open = {
+      width = 40,
+      height = 30,
+      anchor = { x = 20, y = 30 },
+      sourceBounds = { x = 140, y = 50, width = 40, height = 30 },
+      sourceCenter = { x = 160, y = 80 },
+    },
+    marill_appear = {
+      width = 40,
+      height = 30,
+      anchor = { x = 20, y = 30 },
+      sourceBounds = { x = 140, y = 50, width = 40, height = 30 },
+      sourceCenter = { x = 160, y = 80 },
+    },
+    marill = {
+      width = 40,
+      height = 30,
+      anchor = { x = 20, y = 30 },
+      sourceBounds = { x = 140, y = 50, width = 40, height = 30 },
+      sourceCenter = { x = 160, y = 80 },
+    },
     confirmation_yes = {
       width = 115,
       height = 57,
