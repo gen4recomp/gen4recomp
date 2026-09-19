@@ -247,13 +247,15 @@ end
 -- return, clamped to whatever the pocket holds now. Focus stays with the
 -- caller, so keyboard tab travel keeps tab focus while pointer activation
 -- moves to the grid explicitly at its own call site. The remembered grid
--- cell resets to the new pocket's top-left visible cell either way.
+-- cell follows the clamped per-pocket cursor position either way, so a
+-- later vertical return from the tabs or Cancel lands on the remembered
+-- selection instead of the window top-left diverging from it.
 ---@param pocketKey string
 function BagController:_enterPocket(pocketKey)
   self._cursor:setPocket(pocketKey)
   self:_refresh()
   self:_reconcile()
-  self._lastSlot = self._cursor:scroll(pocketKey)
+  self._lastSlot = self._cursor:position(pocketKey)
   self:_normalizeFocus()
   -- Focus is caller-owned; do not mutate self._focusNode here.
 end

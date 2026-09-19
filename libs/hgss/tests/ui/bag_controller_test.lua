@@ -370,6 +370,36 @@ function T.confirm_commits_focused_tab_and_keeps_tab_focus()
   Assert.equal(control:status().tabFocusPocket, "balls", "re-entering resets the candidate to the committed pocket")
 end
 
+-- A pocket round trip through the tabs must return browse focus to the
+-- remembered per-pocket selection, not the window top-left: selection and
+-- focus diverge otherwise, and a later confirm acts on a different item
+-- than the restored selection names.
+function T.tab_round_trip_returns_focus_to_the_remembered_selection()
+  local bag = stockTwoPockets(service())
+  local cursor = BagCursor.new()
+  cursor:setPocket("balls")
+  local control = controller(bag, cursor)
+  control:updateFixed({ navigate("right") })
+  Assert.equal(selectedKey(control:status()), "GREAT_BALL", "setup selects the second ball")
+  control:updateFixed({ navigate("up") })
+  Assert.equal(control:status().focus, "tabs", "setup focuses the tabs")
+  control:updateFixed({ navigate("right") })
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(cursor:currentPocket(), "tmhm", "setup leaves for another pocket")
+  control:updateFixed({ navigate("left") })
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(cursor:currentPocket(), "balls", "setup returns to the balls pocket")
+  Assert.equal(cursor:position("balls"), 1, "returning restores the remembered position")
+  Assert.equal(selectedKey(control:status()), "GREAT_BALL", "returning restores the remembered selection")
+  control:updateFixed({ navigate("down") })
+  local returned = control:status()
+  Assert.equal(returned.focus, "items", "leaving tabs returns to the grid")
+  Assert.equal(returned.focusedAbsoluteIndex, 1, "leaving tabs returns to the remembered selection")
+  Assert.equal(selectedKey(returned), "GREAT_BALL", "the refocused cell carries the remembered item")
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "action_menu", "confirming acts on the remembered selection")
+end
+
 function T.pointer_pocket_activation_enters_item_focus()
   local bag = stockTwoPockets(service())
   local pocketCursor = BagCursor.new()

@@ -140,6 +140,8 @@ local function presentation(firstIcon, secondIcon, heroStatus, overrides)
     pocket = heroStatus.pocket,
     pockets = pockets(),
     selectedAbsoluteIndex = 0,
+    focusedAbsoluteIndex = 0,
+    focusedVisibleIndex = 0,
     visibleStart = 0,
     visibleSlots = cells,
     page = { current = 1, count = 1 },
