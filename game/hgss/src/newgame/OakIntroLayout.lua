@@ -129,18 +129,27 @@ local function translateSourceGroupAboveDialogue(scene, dialogue, gap, subject, 
   return translated(subject), translated(reveal)
 end
 
+-- The phases that lay out the name endpoint through nameStageAndRegions:
+-- the name-stage width floor below applies exactly here, so the shared
+-- content column never widens for phases that never use the split.
+---@param view table<string, unknown>
+---@return boolean
+local function usesNameStage(view)
+  return view.phase == "name_composition_transition"
+    or view.phase == "name_confirm"
+    or view.phase == "final_dialogue"
+    or (view.phase == "gender_question" and view.nameCompositionProgress == 1)
+end
+
 local function subjectLayout(view, scene, sceneContent, gap, dialogue, subjectId, subjectWidget, ordinarySubject)
   local nameProgress = view.nameCompositionProgress
   validateSubjectState(view, dialogue, subjectId, subjectWidget, ordinarySubject)
   local isNameForward = view.phase == "name_composition_transition"
-  local isNameConfirm = view.phase == "name_confirm"
-  local isFinalDialogue = view.phase == "final_dialogue"
-  local isGenderQuestion = view.phase == "gender_question"
   local selectorActive = view.phase == "gender_select" or view.phase == "gender_confirm"
   local oakRegion, selectorRegion
   local nameOakRegion, nameChoiceRegion
   local selectedSubject = ordinarySubject
-  local needsNameEndpoint = isNameForward or isNameConfirm or isFinalDialogue or isGenderQuestion and nameProgress == 1
+  local needsNameEndpoint = usesNameStage(view)
   if needsNameEndpoint then
     local genderHost = OakSceneLayout.aboveDialogue(scene, assert(dialogue), gap)
     local genderRegion = OakSceneLayout.selectorRegions(genderHost, gap)
@@ -220,6 +229,7 @@ end
 -- to a host shorter than the card can cut chrome the portrait needs;
 -- portrait fit wins over host containment there: a rim bleeding into an
 -- empty host margin stays invisible, a failed draw assert is a crash.
+
 ---@param portrait { x: number, y: number, width: number, height: number }
 ---@param content { x: number, y: number, width: number, height: number }
 ---@return boolean
@@ -337,15 +347,19 @@ function OakIntroLayout.compute(width, height, view, glyphs, manifest, preferred
   )
   local safeFrame = rect(inset, inset, width - inset * 2, height - inset * 2)
   local gap = logicalHostMetric(math.min(8, math.max(0, math.floor(physicalMinimum * 0.02 + 0.5))), preferredScale)
+  local mode = OakSceneLayout.mode(view)
   local contentWidthCap = logicalHostMetric(1120, preferredScale)
   -- The cap keeps the content column from spreading across ultra-wide
   -- hosts, but it must never squeeze the name stage below the minimum
   -- width its scale-1 content needs: the Oak portrait plus the gap plus
   -- the Yes/No stack across the stage split owned by nameStageAndRegions.
-  local oakPortraitWidth = widget(manifest, "oak").width
-  local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, TextButton.REFERENCE_WIDTH / 0.54)
-  contentWidthCap = math.max(contentWidthCap, math.ceil(minNameContentWidth))
-  local mode = OakSceneLayout.mode(view)
+  -- The floor applies only while the name endpoint is laid out; anywhere
+  -- else it would widen the shared column past the pinned 1120.
+  if usesNameStage(view) then
+    local oakPortraitWidth = widget(manifest, "oak").width
+    local minNameContentWidth = gap + math.max(oakPortraitWidth / 0.46, TextButton.REFERENCE_WIDTH / 0.54)
+    contentWidthCap = math.max(contentWidthCap, math.ceil(minNameContentWidth))
+  end
   local dialogue = OakSceneLayout.dialogue(safeFrame, mode.reservesDialogue, preferredScale)
   local scene, sceneContent = OakSceneLayout.sceneRegions(width, safeFrame, contentWidthCap)
   local result ---@type OakIntroStateLayout

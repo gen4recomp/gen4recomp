@@ -120,8 +120,7 @@ local function actionById(status, id)
 end
 
 function T.tests.static_labels_resolve_from_the_source_bank_and_trainer_card_uses_the_live_name()
-  local controller = FieldRuntime._composeStartMenu(composeSelf())
-  Assert.notNil(controller, "the full normal menu composes a controller")
+  local controller = assert(FieldRuntime._composeStartMenu(composeSelf()), "the full normal menu composes a controller")
   local status = controller:status()
   local expected = {
     ["vanilla.pokedex"] = "DEX-LABEL",

@@ -253,7 +253,13 @@ function T.invalid_radius_and_inner_border_width_are_rejected()
     ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1, cornerRadius = -1 })
   end)
   Assert.throws(function()
-    ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1, cornerRadius = "6" })
+    -- The mistyped spec carries its own annotation so the constructor stays
+    -- clean: the mismatch surfaces at the call below, where the allowed
+    -- param-type-mismatch suppression applies.
+    ---@type { rect: {x:number,y:number,width:number,height:number}, scale: number, cornerRadius?: string }
+    local stringRadiusSpec = { rect = rect(0, 0, 100, 100), scale = 1, cornerRadius = "6" }
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid radius
+    ImageButton.resolve(stringRadiusSpec)
   end)
   Assert.throws(function()
     ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 1, innerBorderWidth = 0 })

@@ -616,7 +616,13 @@ function T.invalid_confirmation_radius_is_rejected()
     TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = -1 })
   end)
   Assert.throws(function()
-    TextButton.resolve({ rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = "6" })
+    -- The mistyped spec carries its own annotation so the constructor stays
+    -- clean: the mismatch surfaces at the call below, where the allowed
+    -- param-type-mismatch suppression applies.
+    ---@type { rect: {x:number,y:number,width:number,height:number}, scale: number, cornerRadius?: string }
+    local stringRadiusSpec = { rect = rect(0, 0, 120, 56), scale = 1, cornerRadius = "6" }
+    ---@diagnostic disable-next-line: param-type-mismatch -- test deliberately exercises an invalid radius
+    TextButton.resolve(stringRadiusSpec)
   end)
 end
 

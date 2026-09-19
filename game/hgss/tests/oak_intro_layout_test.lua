@@ -174,6 +174,30 @@ function T.tests.wide_host_metrics_stay_in_physical_pixel_policy_after_logical_c
   end
 end
 
+-- The name-stage width floor must not widen phases that never lay out the
+-- name endpoint: at a scale where the floor exceeds the 1120 column (such
+-- as 1920x1080 at scale 5) the gender selector keeps the pinned column
+-- while name confirmation still claims the wider column its split needs.
+function T.tests.name_width_floor_applies_only_to_the_name_endpoint()
+  local selector, surface = computeForHost(1920, 1080, compositionView(1, "gender_select"), {}, manifest())
+  local scale = surface.placement.scale
+  Assert.equal(selector.stageContent.width, logicalHostMetric(1120, scale))
+  local confirm, _ = computeForHost(1920, 1080, {
+    phase = "name_confirm",
+    visual = "oak",
+    primaryWidget = "oak",
+    genderFocus = 0,
+    confirmationChoice = { kind = "name", selected = 0 },
+    genderCompositionProgress = 1,
+    nameCompositionProgress = 1,
+    oakBgScrollX = 0,
+  }, {}, manifest())
+  Assert.isTrue(
+    confirm.stageContent.width > logicalHostMetric(1120, scale),
+    "name confirmation keeps the wider column its split needs"
+  )
+end
+
 function T.tests.odd_logical_viewport_places_dialogue_on_its_pixel_grid()
   local layout = computeForHost(1705, 895, ordinaryView(0), {}, manifest())
   Assert.equal(layout.dialogue.outerRect.x, math.floor(layout.dialogue.outerRect.x))
