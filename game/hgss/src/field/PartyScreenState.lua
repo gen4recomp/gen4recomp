@@ -1,42 +1,47 @@
--- The concrete party-screen application: the per-launch controller the
--- field application host steps while the party screen owns the tick. It
--- binds the shared pure view-mode controller to the live mon service
--- (view projection reads, swaps), resolves layout from the live viewport
--- every tick so resizes never lose semantic state, and returns the single
--- close result the host expects. Reordering is already in the service on
--- return, so the following-mon controller observes it immediately and
--- persistence follows the existing save boundaries.
+-- The concrete party-screen application: the per-open wrapper binding the
+-- existing view-mode controller to one presentation session. Each tick
+-- resolves a complete plan against fresh display facts, maps one ordered
+-- batch, advances the controller once, then resolves again for the
+-- resulting snapshot without advancing semantic clocks. Geometry lives in
+-- the session, never in the host. Construction is failure-safe: a failed
+-- session or controller releases whatever the open acquired. Missing
+-- production capabilities fail at construction, never on first draw.
 
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local PartyScreenController = require("libs.hgss.src.ui.PartyScreenController")
-local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
+local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
 local PartyScreenModel = require("libs.hgss.src.ui.PartyScreenModel")
 
 ---@class PartyScreenState
----@field _measureViewport fun(): number, number
----@field _lastWidth number?
----@field _lastHeight number?
+---@field _service HgssMonService the live mon service
+---@field _measureDisplay fun(): DisplayMeasurement the live display facts
 ---@field _controller PartyScreenController
+---@field _session ApplicationPresentation the per-open presentation session
+---@field _disposed boolean
 local PartyScreenState = {}
 PartyScreenState.__index = PartyScreenState
 
 ---@class PartyScreenState.Options
 ---@field service HgssMonService the live mon service
----@field measureViewport fun(): number, number the live viewport dimensions
+---@field measureDisplay fun(): DisplayMeasurement the current display facts
+---@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
+---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts PartyScreenState.Options
 ---@return PartyScreenState
 function PartyScreenState.new(opts)
   assert(type(opts) == "table", "the party screen requires options")
   local service = assert(opts.service, "the party screen requires the live mon service")
-  assert(type(opts.measureViewport) == "function", "the party screen requires the viewport dimensions")
+  assert(type(opts.measureDisplay) == "function", "the party screen requires the display facts")
+  assert(type(opts.windowState) == "table", "the party screen borrows its window memory")
   assert(
     type(service.partyCount) == "function" and service:partyCount() > 0,
     "the party screen requires a non-empty party"
   )
   local self = setmetatable({
-    _measureViewport = opts.measureViewport,
-    _lastWidth = nil,
-    _lastHeight = nil,
+    _service = service,
+    _measureDisplay = opts.measureDisplay,
+    _disposed = false,
   }, PartyScreenState)
   local function refreshModel()
     return PartyScreenModel.build(service)
@@ -44,53 +49,88 @@ function PartyScreenState.new(opts)
   local function swapPartyMons(a, b)
     service:swapPartyMons(a, b)
   end
+  local wrapper = self
   local function resolveLayout()
-    return self:_layout()
+    return wrapper:resolveLayout()
   end
-  self._controller = PartyScreenController.new({
-    mode = "view",
-    model = {
-      refresh = refreshModel,
-    },
-    swap = swapPartyMons,
-    resolveLayout = resolveLayout,
-  })
+  local controller
+  local session
+  local built, buildErr = pcall(function()
+    session = ApplicationPresentation.new(PartyScreenInterface.withOverrides(opts.overrides), opts.windowState)
+    controller = PartyScreenController.new({
+      mode = "view",
+      model = {
+        refresh = refreshModel,
+      },
+      swap = swapPartyMons,
+      resolveLayout = resolveLayout,
+    })
+  end)
+  if not built then
+    if session ~= nil then
+      session:dispose()
+    end
+    if controller ~= nil then
+      controller:dispose()
+    end
+    error(buildErr, 0)
+  end
+  self._controller = assert(controller, "the party screen requires its view controller")
+  self._session = assert(session, "the party screen requires its presentation session")
+  local resolveOk, resolveErr = pcall(function()
+    self._session:resolve(self:_measured(), self:_view())
+  end)
+  if not resolveOk then
+    self._controller:dispose()
+    self._session:dispose()
+    error(resolveErr, 0)
+  end
   return self
 end
 
----@return PartyScreenLayoutResolved
-function PartyScreenState:_layout()
-  local width, height = self._measureViewport()
-  return PartyScreenLayout.resolve({
-    width = width,
-    height = height,
-    cancellable = self._controller:cancellable(),
-  })
+---@return DisplayMeasurement
+function PartyScreenState:_measured()
+  local measurement = self._measureDisplay()
+  return assert(measurement, "the party screen requires current display facts")
 end
 
--- One fixed tick with the tick's UI events in viewport coordinates, the
--- same coordinate space the layout resolves in. A press held across a
--- viewport change must not activate a different post-change target, so a
--- dimension change cancels the pointer capture first.
+---@return table<string, unknown> the controller snapshot for resolvers and renderers
+function PartyScreenState:_view()
+  return self._controller:status()
+end
+
+-- The canonical logical content the controller hits against: the current
+-- plan's content, never a separately computed host layout.
+---@return table<string, unknown>
+function PartyScreenState:resolveLayout()
+  local plan = self._session:plan()
+  return assert(plan.content, "the party plan carries its canonical content")
+end
+
+-- One fixed tick: resolve, map once, advance the controller once, then
+-- resolve again for the resulting snapshot. pointer_cancel flows in batch
+-- order; the controller absorbs it without changing selection.
 ---@param uiInput table[]
 function PartyScreenState:updateFixed(uiInput)
-  local width, height = self._measureViewport()
-  if self._lastWidth ~= nil and (width ~= self._lastWidth or height ~= self._lastHeight) then
-    self._controller:cancelPointerCapture()
-  end
-  self._lastWidth, self._lastHeight = width, height
-  self._controller:updateFixed(uiInput)
+  assert(not self._disposed, "a disposed party wrapper steps nothing")
+  local session = self._session
+  local measurement = self:_measured()
+  session:resolve(measurement, self:_view())
+  local mapped = session:mapInput(assert(uiInput, "the party input must be an event list"), self:_view())
+  self._controller:updateFixed(mapped)
+  session:resolve(measurement, self:_view())
 end
 
--- The presentation snapshot: the controller status plus the current
--- resolved layout for hit testing and rendering. Fresh tables per call.
+-- The presentation snapshot: the controller status (semantic view state)
+-- plus presentation=plan, the single host-facing layout authority. Fresh
+-- tables per call.
 ---@return table<string, unknown>
 function PartyScreenState:status()
-  local status = self._controller:status()
+  local status = self:_view()
   if not status.open then
     return status
   end
-  status.layout = self:_layout()
+  status.presentation = self._session:plan()
   return status
 end
 
@@ -105,9 +145,22 @@ function PartyScreenState:takeResult()
   return { kind = "close" }
 end
 
--- Idempotent release of the logical lifetime: a pending result is
--- discarded and no close is reported after disposal.
+-- Cancels a held press through both owners: the session drops its capture
+-- and the controller releases its own, so a stale release never activates.
+function PartyScreenState:cancelPointerCapture()
+  self._session:cancelPointers()
+  self._controller:cancelPointerCapture()
+end
+
+-- Idempotent release of the logical lifetime: the session and controller
+-- release exactly once, a pending result is discarded and no close is
+-- reported after disposal.
 function PartyScreenState:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  self._session:dispose()
   self._controller:dispose()
 end
 

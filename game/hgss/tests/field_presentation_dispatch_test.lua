@@ -233,17 +233,43 @@ end
 
 function T.pokemon_routes_only_to_the_party_presenter()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local presentation = { layout = { frame = { x = 0, y = 0, width = 640, height = 480 } } }
-    resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
-    Assert.equal(#sink, 1, "exactly one presenter draws")
-    Assert.equal(sink[1][1], "party", "the Pokemon application draws through the party renderer")
-    Assert.equal(sink[1][2], presentation, "the presenter receives the host application presentation")
-    Assert.equal(sink[1][3], presentation.layout, "the party presenter draws through the application layout")
-    Assert.equal(sink[1][4], resources.monIconProvider, "the party presenter borrows the shared icon provider")
-    Assert.isNil(calls.icons, "drawing never releases the borrowed icon provider")
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "party",
+          render = function(borrowed, view, plan)
+            assert(borrowed.partyScreenRenderer, "the party render borrows its renderer"):draw(
+              view,
+              plan,
+              borrowed.icons
+            )
+          end,
+          mapInput = function()
+            return nil
+          end,
+          coverage = {},
+          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "exactly one presenter draws")
+      Assert.equal(sink[1][1], "party", "the Pokemon application draws through the party renderer")
+      Assert.equal(sink[1][2], presentation, "the presenter receives the host application presentation")
+      Assert.equal(sink[1][3], presentation.presentation, "the party presenter draws through the application plan")
+      Assert.equal(sink[1][4], resources.monIconProvider, "the party presenter borrows the shared icon provider")
+      Assert.isNil(calls.icons, "drawing never releases the borrowed icon provider")
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.trainer_card_routes_only_to_the_card_presenter()
@@ -317,46 +343,99 @@ end
 
 function T.draw_reuses_presenters_without_acquiring_resources()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    local presentation = { layout = { frame = { x = 0, y = 0, width = 10, height = 10 } } }
-    resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
-    local map = assert(resources.presenters, "dispatch owns one per-instance presenter map")
-    resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
-    Assert.equal(resources.presenters, map, "repeated draws must not rebuild the presenter map")
-    Assert.equal(type(map[FieldApplicationIds.POKEMON]), "function", "the Pokemon presenter is explicitly mapped")
-    Assert.equal(
-      type(map[FieldApplicationIds.TRAINER_CARD]),
-      "function",
-      "the Trainer Card presenter is explicitly mapped"
-    )
-    Assert.equal(type(map[FieldApplicationIds.BAG]), "function", "the Bag presenter is explicitly mapped")
-    Assert.equal(#sink, 2, "both draws reach the same borrowed renderer")
-    Assert.isNil(calls.icons, "drawing never releases the borrowed icon provider")
-    resources:dispose()
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "party",
+          render = function(borrowed, view, plan)
+            assert(borrowed.partyScreenRenderer, "the party render borrows its renderer"):draw(
+              view,
+              plan,
+              borrowed.icons
+            )
+          end,
+          mapInput = function()
+            return nil
+          end,
+          coverage = {},
+          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      local map = assert(resources.presenters, "dispatch owns one per-instance presenter map")
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      Assert.equal(resources.presenters, map, "repeated draws must not rebuild the presenter map")
+      Assert.equal(type(map[FieldApplicationIds.POKEMON]), "function", "the Pokemon presenter is explicitly mapped")
+      Assert.equal(
+        type(map[FieldApplicationIds.TRAINER_CARD]),
+        "function",
+        "the Trainer Card presenter is explicitly mapped"
+      )
+      Assert.equal(type(map[FieldApplicationIds.BAG]), "function", "the Bag presenter is explicitly mapped")
+      Assert.equal(#sink, 2, "both draws reach the same borrowed renderer")
+      Assert.isNil(calls.icons, "drawing never releases the borrowed icon provider")
+      resources:dispose()
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.dispose_releases_owned_resources_exactly_once()
   local sink, calls = {}, {}
-  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-    resources:drawApplication(FieldApplicationIds.POKEMON, { layout = {} }, drawRuntime())
-    resources:dispose()
-    resources:dispose()
-    Assert.equal(calls.menu, 1, "repeat disposal never releases a renderer twice")
-    Assert.equal(calls.card, 1, "repeat disposal never releases the card renderer twice")
-    Assert.equal(calls.icons, 1, "repeat disposal never releases the icon provider twice")
-    Assert.equal(calls.bag, 1, "repeat disposal never releases the bag renderer twice")
-    Assert.equal(calls.itemIcons, 1, "repeat disposal never releases the item icon provider twice")
-    Assert.equal(calls.hero, 1, "repeat disposal never releases the hero model renderer twice")
-    Assert.equal(calls.dialogue, 1, "repeat disposal never releases the dialogue renderer twice")
-    Assert.equal(calls.signpost, 1, "repeat disposal never releases the signpost renderer twice")
-    Assert.equal(calls.text, 1, "repeat disposal never releases the text renderer twice")
-    Assert.equal(calls.renderer, 1, "repeat disposal never releases the field renderer twice")
-    Assert.equal(calls.staticEffect, 2, "repeat disposal releases each static effect renderer once")
-    Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
-    Assert.equal(calls.emote, 1, "repeat disposal never releases the emote renderer twice")
-    Assert.equal(calls.pool, 2, "repeat disposal releases each asset pool once")
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "party",
+          render = function(borrowed, view, plan)
+            assert(borrowed.partyScreenRenderer, "the party render borrows its renderer"):draw(
+              view,
+              plan,
+              borrowed.icons
+            )
+          end,
+          mapInput = function()
+            return nil
+          end,
+          coverage = {},
+          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      resources:dispose()
+      resources:dispose()
+      Assert.equal(calls.menu, 1, "repeat disposal never releases a renderer twice")
+      Assert.equal(calls.card, 1, "repeat disposal never releases the card renderer twice")
+      Assert.equal(calls.icons, 1, "repeat disposal never releases the icon provider twice")
+      Assert.equal(calls.bag, 1, "repeat disposal never releases the bag renderer twice")
+      Assert.equal(calls.itemIcons, 1, "repeat disposal never releases the item icon provider twice")
+      Assert.equal(calls.hero, 1, "repeat disposal never releases the hero model renderer twice")
+      Assert.equal(calls.dialogue, 1, "repeat disposal never releases the dialogue renderer twice")
+      Assert.equal(calls.signpost, 1, "repeat disposal never releases the signpost renderer twice")
+      Assert.equal(calls.text, 1, "repeat disposal never releases the text renderer twice")
+      Assert.equal(calls.renderer, 1, "repeat disposal never releases the field renderer twice")
+      Assert.equal(calls.staticEffect, 2, "repeat disposal releases each static effect renderer once")
+      Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
+      Assert.equal(calls.emote, 1, "repeat disposal never releases the emote renderer twice")
+      Assert.equal(calls.pool, 2, "repeat disposal releases each asset pool once")
+    end)
   end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.dispose_releases_the_borrowed_hero_model_renderer_exactly_once()

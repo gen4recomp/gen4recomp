@@ -103,4 +103,109 @@ function T.resize_keeps_the_navigation_structure()
   Assert.deepEqual(after.neighbors.cancel, before.neighbors.cancel)
 end
 
+-- The native compact interface: two columns and three rows of readable
+-- cards inside one 256x192 pane, a footer band carrying the selected name
+-- and the cancel control, a centred action overlay, and hit targets over
+-- the same rectangles the renderer paints.
+local COMPACT_CARDS = {
+  { x = 4, y = 4 },
+  { x = 130, y = 4 },
+  { x = 4, y = 60 },
+  { x = 130, y = 60 },
+  { x = 4, y = 116 },
+  { x = 130, y = 116 },
+}
+local COMPACT_CARD_WIDTH = 122
+local COMPACT_CARD_HEIGHT = 52
+local COMPACT_FOOTER_TOP = 172
+
+local function assertCompactRect(rect, expected, label)
+  Assert.equal(rect.x, expected.x, label .. " x")
+  Assert.equal(rect.y, expected.y, label .. " y")
+  Assert.equal(rect.width, expected.width, label .. " width")
+  Assert.equal(rect.height, expected.height, label .. " height")
+end
+
+function T.compact_native_grid_resolves_six_readable_cards()
+  local layout = PartyScreenLayout.resolve({ width = 256, height = 192, cancellable = true })
+  assertCompactRect(
+    layout.frame,
+    { x = 0, y = 0, width = 256, height = 192 },
+    "the compact pane fills its native surface"
+  )
+  Assert.equal(#layout.slotRects, 6, "six slot rectangles resolve")
+  local painted = {}
+  for slot0 = 0, 5 do
+    local rect = layout.slotRects[slot0 + 1]
+    assertCompactRect(rect, {
+      x = COMPACT_CARDS[slot0 + 1].x,
+      y = COMPACT_CARDS[slot0 + 1].y,
+      width = COMPACT_CARD_WIDTH,
+      height = COMPACT_CARD_HEIGHT,
+    }, "card " .. slot0)
+    Assert.isTrue(rect.y + rect.height <= COMPACT_FOOTER_TOP, "card " .. slot0 .. " clears the footer band")
+    for _, other in ipairs(painted) do
+      Assert.isFalse(
+        rect.x < other.x + other.width
+          and other.x < rect.x + rect.width
+          and rect.y < other.y + other.height
+          and other.y < rect.y + rect.height,
+        "compact cards never overlap"
+      )
+    end
+    painted[#painted + 1] = rect
+    local hit = layout.hitTest(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    assert(hit ~= nil, "card centers hit their rectangles")
+    Assert.equal(hit.kind, "slot", "card centers hit slots")
+    Assert.equal(hit.slot, slot0, "card centers hit their own slot")
+  end
+  assertCompactRect(layout.cancelRect, { x = 192, y = 172, width = 60, height = 16 }, "cancel sits in the footer band")
+  assertCompactRect(
+    layout.actionRects.switch,
+    { x = 64, y = 76, width = 128, height = 20 },
+    "the switch row fills the overlay top half"
+  )
+  assertCompactRect(
+    layout.actionRects.cancel,
+    { x = 64, y = 96, width = 128, height = 20 },
+    "the overlay cancel row fills the overlay bottom half"
+  )
+  Assert.deepEqual(layout.hitTest(128, 86, true), { kind = "action", action = "switch" })
+  Assert.deepEqual(layout.hitTest(128, 106, true), { kind = "action", action = "cancel" })
+  local sealed = PartyScreenLayout.resolve({ width = 256, height = 192, cancellable = false })
+  Assert.isNil(sealed.cancelRect, "no close affordance resolves when forbidden")
+  Assert.isNil(sealed.hitTest(222, 180), "the forbidden cancel region stays noninteractive")
+end
+
+function T.compact_grid_neighbors_reach_cancel_without_wrapping()
+  local layout = PartyScreenLayout.resolve({ width = 256, height = 192, cancellable = true })
+  local neighbors = layout.neighbors
+  Assert.equal(neighbors[0].right, 1, "right moves within the top row")
+  Assert.equal(neighbors[1].left, 0, "left moves within the top row")
+  Assert.equal(neighbors[0].down, 2, "down preserves the left column")
+  Assert.equal(neighbors[1].down, 3, "down preserves the right column")
+  Assert.equal(neighbors[2].up, 0, "up preserves the left column")
+  Assert.equal(neighbors[3].up, 1, "up preserves the right column")
+  Assert.equal(neighbors[2].right, 3, "right moves within the middle row")
+  Assert.equal(neighbors[3].left, 2, "left moves within the middle row")
+  Assert.equal(neighbors[2].down, 4, "down preserves the left column")
+  Assert.equal(neighbors[3].down, 5, "down preserves the right column")
+  Assert.equal(neighbors[4].up, 2, "up preserves the left column")
+  Assert.equal(neighbors[5].up, 3, "up preserves the right column")
+  Assert.equal(neighbors[4].right, 5, "right moves within the bottom row")
+  Assert.equal(neighbors[5].left, 4, "left moves within the bottom row")
+  Assert.equal(neighbors[4].down, "cancel", "the bottom row moves down to cancel")
+  Assert.equal(neighbors[5].down, "cancel", "the bottom row moves down to cancel")
+  Assert.equal(neighbors.cancel.up, 4, "cancel returns to the bottom row")
+  Assert.isNil(neighbors[0].left, "the left column does not wrap")
+  Assert.isNil(neighbors[1].right, "the right column does not wrap")
+  Assert.isNil(neighbors[2].left, "the left column does not wrap")
+  Assert.isNil(neighbors[3].right, "the right column does not wrap")
+  Assert.isNil(neighbors[4].left, "the left column does not wrap")
+  Assert.isNil(neighbors[5].right, "the right column does not wrap")
+  local sealed = PartyScreenLayout.resolve({ width = 256, height = 192, cancellable = false })
+  Assert.isNil(sealed.neighbors[5].down, "no cancel node resolves when forbidden")
+  Assert.isNil(sealed.neighbors.cancel, "no cancel node resolves when forbidden")
+end
+
 return { tests = T }

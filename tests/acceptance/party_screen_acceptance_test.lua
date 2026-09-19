@@ -10,6 +10,8 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {
   metadata = {
@@ -225,6 +227,227 @@ function T.tests.reordered_party_persists_without_screen_state()
     game:restart()
     game:waitForFieldEntry()
     Assert.deepEqual(partyOrder(game), order, "reloading must restore the reordered party")
+  end)
+end
+
+local function wideTopology()
+  return ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 1280, height = 720 },
+    role = "world",
+    touch = true,
+  })
+end
+
+local function nativeTopology(width, height)
+  return ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    role = "world",
+    touch = false,
+  })
+end
+
+local function withWideGame(fn)
+  local game = AcceptanceHarness.new():boot({
+    versionId = AcceptanceHarness.defaultVersion(),
+    map = "MAP_BURNED_TOWER_1F",
+    save = "fresh",
+    fieldOptions = {
+      viewportWidth = 1280,
+      viewportHeight = 720,
+      screenTopology = wideTopology(),
+    },
+  })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    fn(game)
+    Assert.equal(game:renderAttempts(), 0, "party acceptance must stop before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function partyView(game)
+  local status = game.runtime.applicationHost:status()
+  Assert.equal(
+    status.phase,
+    FieldApplicationHost.PHASES.application,
+    "the party application must own the tick while browsing"
+  )
+  Assert.equal(status.applicationId, PARTY_APPLICATION, "the launched application must be the party screen")
+  return assert(status.application, "the party application must expose its browse status")
+end
+
+local function pressKey(game, state, key)
+  state:keypressed(key)
+  game:step()
+  state:keyreleased(key)
+end
+
+local function pressCancel(game)
+  game.runtime:pressCancel()
+  game:step()
+  game.runtime:releaseCancel()
+  game:step()
+end
+
+local function tapAt(game, x, y)
+  game.runtime.input:pointerDown("acceptance:party:pointer", x, y)
+  game:step()
+  game.runtime.input:pointerUp("acceptance:party:pointer", x, y)
+  game:step()
+end
+
+local function interactivePlacement(plan)
+  for _, pane in ipairs(assert(plan.panes, "the plan must carry its panes")) do
+    if pane.interactive then
+      return assert(pane.placement, "the interactive pane must carry its placement")
+    end
+  end
+  error("the party plan must carry one interactive pane", 0)
+end
+
+local function hostPoint(placement, logicalX, logicalY)
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+  assert(hostX ~= nil and hostY ~= nil, "the tapped logical point must be visible")
+  return hostX, hostY
+end
+
+-- One windowed journey through the compact grid: keyboard navigation
+-- follows the visible two-column neighbors onto cancel and back, a body
+-- tap selects through the same plan, a title-strip drag moves the window
+-- without swapping, a keyboard switch reorders exactly once, a native-like
+-- reflow preserves the selection, and cancel closes back to the field.
+function T.tests.party_grid_window_and_reflow_journey_preserves_semantics()
+  withWideGame(function(game)
+    local state = hostCallbacks(game)
+    giveStarterPair(game)
+    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local revision = service:partyRevision()
+
+    openStartMenu(game)
+    navigateTo(game, state, POKEMON_ACTION)
+    confirm(game)
+    game:advanceUntil("party application launches through the host fade", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.application
+    end, 120)
+
+    local view = partyView(game)
+    local plan = assert(view.presentation, "the open party must publish its presentation plan")
+    Assert.equal(#plan.panes, 1, "the party plan carries its single content pane")
+    Assert.isTrue(type(plan.inputKey) == "string", "the party plan names its input geometry")
+    local inputKey = plan.inputKey
+    local placement = interactivePlacement(plan)
+    local window = assert(plan.window, "a wide host must frame the party in a window")
+    assert(window.grabRect, "the party window must carry its title-strip grab rectangle")
+    local pixelScale = placement.pixelScale
+    Assert.isTrue(
+      type(pixelScale) == "number" and pixelScale >= 1 and pixelScale % 1 == 0,
+      "the windowed body keeps an integral pixel scale"
+    )
+    Assert.equal(view.cursorNode, 0, "the remembered selection opens on the lead slot")
+
+    -- Keyboard navigation follows the visible grid: down skips the empty
+    -- middle and bottom rows onto cancel, up returns through the column.
+    pressKey(game, state, "s")
+    Assert.equal(partyView(game).cursorNode, "cancel", "down from the lead reaches cancel")
+    pressKey(game, state, "w")
+    Assert.equal(partyView(game).cursorNode, 0, "up from cancel returns to the lead")
+    pressKey(game, state, "d")
+    Assert.equal(partyView(game).cursorNode, 1, "right moves within the top row")
+    pressKey(game, state, "a")
+    Assert.equal(partyView(game).cursorNode, 0, "left moves within the top row")
+
+    -- A body tap on the second card selects through the same plan and
+    -- opens the action choice, dismissed back to browsing.
+    local tapX, tapY = hostPoint(interactivePlacement(partyView(game).presentation), 191, 30)
+    tapAt(game, tapX, tapY)
+    Assert.equal(partyView(game).cursorNode, 1, "a tap on the second card selects it")
+    Assert.equal(partyView(game).action, "action_choice", "a tap opens the action choice")
+    pressCancel(game)
+    Assert.equal(partyView(game).action, "browsing", "cancel dismisses the action choice")
+
+    -- A title-strip drag moves the window without touching selection,
+    -- scale, or party order.
+    local moved = partyView(game).presentation
+    local movedGrab = assert(moved.window, "the plan keeps its window").grabRect
+    local safe = game.runtime.screenTopology.surfaces[1].safeRect
+    game.runtime.input:pointerDown(
+      "acceptance:party:drag",
+      movedGrab.x + movedGrab.width / 2,
+      movedGrab.y + movedGrab.height / 2
+    )
+    game:step()
+    game.runtime.input:pointerMove("acceptance:party:drag", safe.x + safe.width - 4, safe.y + 4)
+    game:step()
+    game.runtime.input:pointerUp("acceptance:party:drag", safe.x + safe.width - 4, safe.y + 4)
+    game:step()
+    local dragged = partyView(game)
+    Assert.equal(dragged.cursorNode, 1, "a window drag never moves the selection")
+    Assert.equal(
+      interactivePlacement(dragged.presentation).pixelScale,
+      pixelScale,
+      "a window drag never changes the pixel scale"
+    )
+    Assert.equal(service:partyRevision(), revision, "a window drag never swaps")
+    local outer = assert(dragged.presentation.window, "the plan keeps its window").outer.frame
+    Assert.isTrue(
+      outer.x >= safe.x
+        and outer.y >= safe.y
+        and outer.x + outer.width <= safe.x + safe.width
+        and outer.y + outer.height <= safe.y + safe.height,
+      "the dragged window stays in the usable bounds"
+    )
+
+    -- A keyboard switch reorders the live party exactly once: choice,
+    -- switch start, step right, confirm.
+    pressKey(game, state, "a")
+    Assert.equal(partyView(game).cursorNode, 0, "left returns to the lead before the switch")
+    confirm(game)
+    Assert.equal(partyView(game).action, "action_choice", "confirm opens the action choice")
+    confirm(game)
+    Assert.equal(partyView(game).action, "switch_destination", "confirm starts the switch")
+    pressKey(game, state, "d")
+    Assert.equal(partyView(game).cursorNode, 1, "right selects the switch destination")
+    confirm(game)
+    Assert.equal(service:partyRevision(), revision + 1, "the screen switch bumps the revision exactly once")
+    Assert.deepEqual(
+      partyOrder(game),
+      { "CYNDAQUIL", "CHIKORITA" },
+      "the switch reorders the live party through the service"
+    )
+    Assert.equal(partyView(game).cursorNode, 1, "the switch lands on the destination slot")
+
+    -- A native-like reflow preserves the active selection and order
+    -- while the plan becomes a windowless fullscreen.
+    game.runtime:resizePresentation(640, 480, nativeTopology(640, 480))
+    game:step()
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.application,
+      "a reflow must keep the party application open"
+    )
+    local reflowed = partyView(game)
+    Assert.equal(reflowed.cursorNode, 1, "a reflow preserves the active selection")
+    Assert.deepEqual(partyOrder(game), { "CYNDAQUIL", "CHIKORITA" }, "a reflow preserves the party order")
+    Assert.isNil(reflowed.presentation.window, "the native-like plan carries no window")
+    Assert.equal(reflowed.presentation.inputKey, inputKey, "a reflow keeps the input geometry")
+
+    -- Down onto cancel and confirm closes back through the menu to the
+    -- unchanged field session with the reorder intact.
+    pressKey(game, state, "s")
+    Assert.equal(partyView(game).cursorNode, "cancel", "down reaches cancel before closing")
+    confirm(game)
+    game:advanceUntil("party screen closes without choosing", function()
+      local phase = hostPhase(game)
+      return phase == FieldApplicationHost.PHASES.menu or phase == FieldApplicationHost.PHASES.closed
+    end, 120)
+    closeStartMenu(game)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the journey ends back on the field")
+    Assert.deepEqual(partyOrder(game), { "CYNDAQUIL", "CHIKORITA" }, "closing preserves the switched order")
   end)
 end
 

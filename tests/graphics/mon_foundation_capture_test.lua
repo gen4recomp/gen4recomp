@@ -7,6 +7,8 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
@@ -100,6 +102,7 @@ local function opaqueCount(image, width, height)
 end
 
 function T.mixed_six_slot_party_paints_every_slot(scope)
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   for _, size in ipairs({ { width = 320, height = 240 }, { width = 640, height = 480 } }) do
     local layout = PartyScreenLayout.resolve({ width = size.width, height = size.height, cancellable = true })
     Assert.equal(#layout.slotRects, 6, "all six slots resolve")
@@ -113,7 +116,7 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
       end
     end
     local provider = MonIconAssetProvider.new(iconCache())
-    local renderer = PartyScreenRenderer.new()
+    local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
     local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 0)
@@ -150,7 +153,7 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
   status.mode = "select"
   status.view.slots[2].eligible = false
   local provider = MonIconAssetProvider.new(iconCache())
-  local renderer = PartyScreenRenderer.new()
+  local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
   local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 0)

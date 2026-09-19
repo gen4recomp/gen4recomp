@@ -173,6 +173,19 @@ function T.view_pointer_cancel_closes()
   Assert.equal(controller:takeResult().kind, "closed")
 end
 
+function T.view_pointer_cancel_clears_the_capture_without_changing_selection()
+  local controller = newController({ hitTarget = { kind = "slot", slot = 1 } })
+  controller:updateFixed({ { type = "pointer_down", pointerId = "p", x = 1, y = 1 } })
+  controller:updateFixed({
+    { type = "pointer_cancel" },
+    { type = "pointer_up", pointerId = "p", x = 1, y = 1 },
+  })
+  Assert.isNil(controller:takeResult(), "a cancelled press never activates")
+  Assert.isTrue(status(controller).open)
+  Assert.equal(status(controller).cursorNode, 0, "cancellation changes no selection")
+  Assert.equal(status(controller).action, "browsing", "cancellation changes no action")
+end
+
 function T.view_dragged_pointer_commits_nothing()
   local controller = newController({ hitTarget = { kind = "cancel" } })
   controller:updateFixed({ { type = "pointer_down", pointerId = "p", x = 1, y = 1 } })

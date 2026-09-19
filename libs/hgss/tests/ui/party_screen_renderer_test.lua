@@ -88,43 +88,55 @@ local function layout()
   return PartyScreenLayout.resolve({ width = 640, height = 480, cancellable = true })
 end
 
-local function countPrints(graphics)
-  local count = 0
-  for _, primitive in ipairs(graphics.primitives) do
-    if primitive == "print" then
-      count = count + 1
-    end
-  end
-  return count
+-- The borrowed generated-font collaborator: records drawn strings while
+-- measuring eight units per glyph, so truncation and alignment stay
+-- deterministic without GPU resources.
+local function stubText(calls)
+  return {
+    draws = calls,
+    drawText = function(_, value, x, y)
+      calls[#calls + 1] = { value = value, x = x, y = y }
+    end,
+    textWidth = function(_, value)
+      return #value * 8
+    end,
+  }
+end
+
+local function countTexts(calls)
+  return #calls
 end
 
 function T.occupied_slots_draw_icons_text_hp_and_status()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   local status = presentation()
   status.view.slots[1] = occupiedSlot(0, { status = "poison", currentHp = 7, maxHp = 20, hpFraction = 0.35 })
   status.view.slots[2] = occupiedSlot(1, { gender = "genderless" })
   renderer:draw(status, layout(), icons())
   Assert.equal(#graphics.draws, 2, "one icon draw per occupied slot")
   Assert.equal(graphics.draws[1].quad.key, "MON0/f0")
-  Assert.isTrue(countPrints(graphics) >= 8, "names, levels, HP, and status print per occupied slot")
+  Assert.isTrue(countTexts(texts) >= 8, "names, levels, HP, and status print per occupied slot")
   Assert.isTrue(#graphics.rectangles > 6, "frames, slots, HP bars, and cursor paint as rectangles")
 end
 
 function T.empty_slots_draw_no_icon_or_text()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   local status = presentation()
   status.view.slots[1] = occupiedSlot(0)
-  local before = countPrints(graphics)
+  local before = countTexts(texts)
   renderer:draw(status, layout(), icons())
   Assert.equal(#graphics.draws, 1, "empty slots draw no icon")
-  Assert.isTrue(countPrints(graphics) > before, "the occupied slot still prints")
+  Assert.isTrue(countTexts(texts) > before, "the occupied slot still prints")
 end
 
 function T.ineligible_slots_keep_their_icon_with_disabled_chrome()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   local status = presentation({ mode = "select" })
   status.view.slots[1] = occupiedSlot(0, { eligible = false })
   status.view.slots[2] = occupiedSlot(1, { eligible = true })
@@ -134,7 +146,8 @@ end
 
 function T.switch_source_and_cursor_highlight()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   local status = presentation({ action = "switch_destination", cursorNode = 1, switchSource = 0 })
   status.view.slots[1] = occupiedSlot(0)
   status.view.slots[2] = occupiedSlot(1)
@@ -145,24 +158,27 @@ end
 
 function T.action_overlay_paints_both_rows()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   local status = presentation({ action = "action_choice", actionSelection = "switch" })
   status.view.slots[1] = occupiedSlot(0)
-  local prints = countPrints(graphics)
+  local prints = countTexts(texts)
   renderer:draw(status, layout(), icons())
-  Assert.isTrue(countPrints(graphics) >= prints + 2, "the overlay prints both action rows")
+  Assert.isTrue(countTexts(texts) >= prints + 2, "the overlay prints both action rows")
 end
 
 function T.closed_presentation_draws_nothing()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   renderer:draw({ open = false }, layout(), icons())
   Assert.equal(#graphics.draws + #graphics.primitives + #graphics.rectangles, 0)
 end
 
 function T.occupied_slots_require_the_icon_provider()
   local graphics = fakeGraphics()
-  local renderer = PartyScreenRenderer.new({ graphics = graphics })
+  local texts = {}
+  local renderer = PartyScreenRenderer.new({ graphics = graphics, text = stubText(texts) })
   local status = presentation()
   status.view.slots[1] = occupiedSlot(0)
   Assert.throws(function()

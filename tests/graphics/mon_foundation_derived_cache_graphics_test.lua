@@ -7,6 +7,7 @@ local BagSave = require("libs.hgss.src.save.BagSave")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MonCache = require("libs.assets.src.MonCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -214,8 +215,12 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         -- the modal surface replaces the field frame with no abrupt cut
         -- and no stale world/UI underneath it.
         Assert.equal(settle.fadeAlpha, 1, "the application frame holds full fade cover")
-        local rect = assert(settle.application.layout, "the party application presents its layout").slotRects[1]
-        local r, g, b = image:getPixel(math.floor(rect.x + 2), math.floor(rect.y + 2))
+        local plan = assert(settle.application.presentation, "the party application presents its plan")
+        local pane = assert(plan.panes[1], "the party plan carries its content pane")
+        local placement = assert(pane.placement, "the party pane carries its placement")
+        local hostX, hostY = LayoutGeometry.logicalToHost(placement, 10, 50)
+        assert(hostX ~= nil and hostY ~= nil, "the lead blank chrome stays visible")
+        local r, g, b = image:getPixel(math.floor(hostX), math.floor(hostY))
         Assert.near(r, 0.2, 0.08, "the modal lead slot paints over the field frame")
         Assert.near(g, 0.2, 0.08)
         Assert.near(b, 0.28, 0.08)
