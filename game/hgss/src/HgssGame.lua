@@ -162,6 +162,8 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
     height = height,
     renderer = assert(menuRendererOrError),
     onResult = onMenuResult,
+    displayContext = displayContext,
+    overrides = presentationOverrides ~= nil and presentationOverrides.main_menu or nil,
   }))
 end
 

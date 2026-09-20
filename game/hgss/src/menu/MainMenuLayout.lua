@@ -1,4 +1,6 @@
--- Pure responsive Main Menu geometry shared by drawing and hit testing.
+-- Pure logical Main Menu geometry shared by drawing and hit testing. All
+-- dimensions are logical pixels: the single presentation transform lives
+-- at the outer draw/input boundary, never inside these metrics.
 
 local PixelScale = require("libs.ui.src.PixelScale")
 
@@ -26,7 +28,6 @@ local BASE_CONFIRM_BOTTOM_OFFSET = 48
 local BASE_INDICATOR_WIDTH = 12
 local BASE_INDICATOR_HEIGHT = 10
 local BASE_INDICATOR_GUTTER = 14
-local MAX_UI_SCALE = 3
 
 local function clamp(value, low, high)
   return math.max(low, math.min(high, value))
@@ -56,10 +57,10 @@ local function focusIndex(saves, focus)
   return 1
 end
 
-local function popupRect(anchor, width, height, margin, uiScale)
-  local boxWidth, boxHeight = BASE_POPUP_WIDTH * uiScale, BASE_POPUP_HEIGHT * uiScale
+local function popupRect(anchor, width, height, margin)
+  local boxWidth, boxHeight = BASE_POPUP_WIDTH, BASE_POPUP_HEIGHT
   local x = anchor.x + anchor.width - boxWidth
-  local y = anchor.y + anchor.height + BASE_POPUP_ANCHOR_GAP * uiScale
+  local y = anchor.y + anchor.height + BASE_POPUP_ANCHOR_GAP
   x = clamp(x, margin, math.max(margin, width - margin - boxWidth))
   y = clamp(y, margin, math.max(margin, height - margin - boxHeight))
   return { x = x, y = y, width = boxWidth, height = boxHeight }
@@ -68,9 +69,9 @@ end
 ---@param globalActions table[]
 ---@param saves table[]
 ---@param focus table<string, string>
----@param width number
----@param height number
----@param previousOffset number|nil
+---@param width number logical viewport width
+---@param height number logical viewport height
+---@param previousOffset number|nil logical scroll offset retained from the previous layout
 ---@param popup table<string, string>|nil
 ---@param confirmation table<string, string>|nil
 ---@param hasCatalogError boolean|nil
@@ -90,19 +91,22 @@ function MainMenuLayout.compute(
   assert(type(saves) == "table", "Main Menu saves must be an array")
   assert(type(focus) == "table" and type(focus.region) == "string", "Main Menu focus is required")
   assert(type(width) == "number" and width > 0 and type(height) == "number" and height > 0)
-  local uiScale = clamp(math.floor(math.min(width / 320, height / 240)), 1, MAX_UI_SCALE)
-  local margin = BASE_MARGIN * uiScale
-  local regionGap = BASE_REGION_GAP * uiScale
-  local cardHeight = BASE_CARD_HEIGHT * uiScale
-  local cardGap = BASE_CARD_GAP * uiScale
-  local newGameHeight = BASE_NEW_GAME_HEIGHT * uiScale
-  local overflowSize = BASE_OVERFLOW_SIZE * uiScale
-  local overflowInset = BASE_OVERFLOW_INSET * uiScale
-  local errorHeight = hasCatalogError and BASE_CATALOG_ERROR_HEIGHT * uiScale or 0
+  assert(
+    previousOffset == nil or (type(previousOffset) == "number" and previousOffset == previousOffset),
+    "Main Menu scroll offset must be a number"
+  )
+  local margin = BASE_MARGIN
+  local regionGap = BASE_REGION_GAP
+  local cardHeight = BASE_CARD_HEIGHT
+  local cardGap = BASE_CARD_GAP
+  local newGameHeight = BASE_NEW_GAME_HEIGHT
+  local overflowSize = BASE_OVERFLOW_SIZE
+  local overflowInset = BASE_OVERFLOW_INSET
+  local errorHeight = hasCatalogError and BASE_CATALOG_ERROR_HEIGHT or 0
   local errorGap = hasCatalogError and cardGap or 0
 
   local viewport = { x = 0, y = 0, width = width, height = height }
-  local contentWidth = math.max(1, math.min(width - margin * 2, BASE_CONTENT_WIDTH * uiScale))
+  local contentWidth = math.max(1, math.min(width - margin * 2, BASE_CONTENT_WIDTH))
   local contentX = PixelScale.snapLogical((width - contentWidth) / 2)
   local newGame = {
     x = contentX,
@@ -120,7 +124,10 @@ function MainMenuLayout.compute(
   local totalCardsHeight = #saves * cardHeight + math.max(0, #saves - 1) * cardGap
   local totalContentHeight = errorHeight + errorGap + totalCardsHeight
   local maxOffset = math.max(0, totalContentHeight - saveViewport.height)
-  local offset = clamp(previousOffset or 0, 0, maxOffset)
+  -- The retained offset survives resize verbatim in logical units: a
+  -- viewport that grew can leave the offset past its own maximum until
+  -- navigation or another resize moves it. Only invalid input clamps low.
+  local offset = math.max(0, previousOffset or 0)
   local focusedIndex = focusIndex(saves, focus)
   local focusedTop = errorHeight + errorGap + (focusedIndex - 1) * (cardHeight + cardGap)
   if focus.region == "saves" then
@@ -130,9 +137,9 @@ function MainMenuLayout.compute(
       offset = focusedTop + cardHeight - saveViewport.height
     end
   end
-  offset = clamp(offset, 0, maxOffset)
+  offset = math.max(0, offset)
 
-  local gutter = maxOffset > 0 and BASE_INDICATOR_GUTTER * uiScale or 0
+  local gutter = maxOffset > 0 and BASE_INDICATOR_GUTTER or 0
   local frameWidth = math.max(1, saveViewport.width - gutter)
 
   local cards = {}
@@ -156,19 +163,19 @@ function MainMenuLayout.compute(
     cards[id] = { frame = frame, body = body, overflow = overflow }
   end
 
-  local indicatorWidth = BASE_INDICATOR_WIDTH * uiScale
-  local indicatorHeight = BASE_INDICATOR_HEIGHT * uiScale
+  local indicatorWidth = BASE_INDICATOR_WIDTH
+  local indicatorHeight = BASE_INDICATOR_HEIGHT
   local indicatorX = saveViewport.x + saveViewport.width - gutter + math.floor((gutter - indicatorWidth) / 2)
   local scrollIndicators = {
     up = offset > 0 and {
       x = indicatorX,
-      y = saveViewport.y + BASE_REGION_GAP * uiScale - uiScale,
+      y = saveViewport.y + BASE_REGION_GAP - 1,
       width = indicatorWidth,
       height = indicatorHeight,
     } or nil,
     down = offset < maxOffset and {
       x = indicatorX,
-      y = saveViewport.y + saveViewport.height - BASE_REGION_GAP * uiScale + uiScale - indicatorHeight,
+      y = saveViewport.y + saveViewport.height - BASE_REGION_GAP + 1 - indicatorHeight,
       width = indicatorWidth,
       height = indicatorHeight,
     } or nil,
@@ -176,7 +183,6 @@ function MainMenuLayout.compute(
 
   local result = {
     viewport = viewport,
-    uiScale = uiScale,
     global = { region = newGame, actions = { [assert(globalActions[1]).id] = newGame } },
     saves = {
       viewport = saveViewport,
@@ -192,13 +198,13 @@ function MainMenuLayout.compute(
       x = saveViewport.x,
       y = saveViewport.y - offset,
       width = frameWidth,
-      height = BASE_CATALOG_ERROR_HEIGHT * uiScale,
+      height = BASE_CATALOG_ERROR_HEIGHT,
     }
   end
   if popup then
     local card = assert(cards[popup.saveId], "popup save must have layout geometry")
-    local box = popupRect(card.overflow or card.frame, width, height, margin, uiScale)
-    local inset = BASE_POPUP_INSET * uiScale
+    local box = popupRect(card.overflow or card.frame, width, height, margin)
+    local inset = BASE_POPUP_INSET
     result.popup = {
       box = box,
       actions = {
@@ -212,19 +218,18 @@ function MainMenuLayout.compute(
     }
   end
   if confirmation then
-    local boxWidth, boxHeight =
-      math.min(BASE_CONFIRM_WIDTH * uiScale, width - margin * 2), math.min(BASE_CONFIRM_HEIGHT * uiScale, height)
+    local boxWidth, boxHeight = math.min(BASE_CONFIRM_WIDTH, width - margin * 2), math.min(BASE_CONFIRM_HEIGHT, height)
     local box = {
       x = math.floor((width - boxWidth) / 2),
       y = math.floor((height - boxHeight) / 2),
       width = math.max(1, boxWidth),
       height = math.max(1, boxHeight),
     }
-    local inset = BASE_CONFIRM_INSET * uiScale
-    local gap = BASE_CONFIRM_ACTION_GAP * uiScale
-    local actionHeight = BASE_CONFIRM_ACTION_HEIGHT * uiScale
+    local inset = BASE_CONFIRM_INSET
+    local gap = BASE_CONFIRM_ACTION_GAP
+    local actionHeight = BASE_CONFIRM_ACTION_HEIGHT
     local actionWidth = math.max(1, math.floor((box.width - inset * 2 - gap) / 2))
-    local actionY = math.max(box.y + inset, box.y + box.height - BASE_CONFIRM_BOTTOM_OFFSET * uiScale)
+    local actionY = math.max(box.y + inset, box.y + box.height - BASE_CONFIRM_BOTTOM_OFFSET)
     actionY = math.min(actionY, math.max(box.y + inset, box.y + box.height - actionHeight))
     result.confirmation = {
       box = box,
@@ -233,6 +238,76 @@ function MainMenuLayout.compute(
     }
   end
   return result
+end
+
+-- Centralized semantic hit resolution over the returned geometry with the
+-- existing modal precedence: confirmation beats popup beats global action
+-- beats save cards, and cards clipped by the save viewport never hit. The
+-- coordinates are logical units in the layout viewport. Modal ownership
+-- (which save a popup or confirmation belongs to) comes from the semantic
+-- view beside the layout.
+---@param layout table<string, unknown> the computed logical geometry
+---@param view table<string, unknown> the semantic snapshot carrying popup/confirmation ownership
+---@param x number logical x
+---@param y number logical y
+---@return table<string, string|nil> hit descriptor: global action, save body/overflow, popup delete/outside, confirmation cancel/delete, or all nil
+function MainMenuLayout.hitTest(layout, view, x, y)
+  assert(type(layout) == "table", "Main Menu hit testing needs its layout")
+  assert(type(view) == "table", "Main Menu hit testing needs its semantic view")
+  assert(type(x) == "number" and type(y) == "number", "Main Menu hit testing needs logical coordinates")
+  local function miss()
+    return { region = nil, actionId = nil, saveId = nil, lane = nil }
+  end
+  local confirmation = layout.confirmation
+  if confirmation ~= nil then
+    local shaped = confirmation --[[@as { box: table<string, number>, cancel: table<string, number>, delete: table<string, number> }]]
+    local confirmSaveId = view.confirmation ~= nil and view.confirmation.saveId or nil
+    if MainMenuLayout.contains(shaped.delete, x, y) then
+      return { region = "confirmation", actionId = nil, saveId = confirmSaveId, lane = "delete" }
+    end
+    if MainMenuLayout.contains(shaped.cancel, x, y) then
+      return { region = "confirmation", actionId = nil, saveId = confirmSaveId, lane = "cancel" }
+    end
+    return miss()
+  end
+  local popup = layout.popup
+  if popup ~= nil then
+    local shaped = popup --[[@as { box: table<string, number>, actions: { delete: table<string, number> } }]]
+    local popupSaveId = view.popup ~= nil and view.popup.saveId or nil
+    if MainMenuLayout.contains(shaped.actions.delete, x, y) then
+      return { region = "popup", actionId = nil, saveId = popupSaveId, lane = "delete" }
+    end
+    if not MainMenuLayout.contains(shaped.box, x, y) then
+      return { region = "popup", actionId = nil, saveId = popupSaveId, lane = "outside" }
+    end
+    return miss()
+  end
+  local global = layout.global
+  if global ~= nil then
+    local actions = global.actions
+    if type(actions) == "table" then
+      for actionId, rect in pairs(actions) do
+        if MainMenuLayout.contains(rect, x, y) then
+          return { region = "global", actionId = actionId, saveId = nil, lane = nil }
+        end
+      end
+    end
+  end
+  local saves = layout.saves
+  if saves ~= nil then
+    local shaped = saves --[[@as { viewport: table<string, number>, cards: table<string, table<string, table<string, number>>> }]]
+    if MainMenuLayout.contains(shaped.viewport, x, y) then
+      for cardId, card in pairs(shaped.cards) do
+        if card.overflow ~= nil and MainMenuLayout.contains(card.overflow, x, y) then
+          return { region = "saves", actionId = nil, saveId = cardId, lane = "overflow" }
+        end
+        if MainMenuLayout.contains(card.body, x, y) then
+          return { region = "saves", actionId = nil, saveId = cardId, lane = "body" }
+        end
+      end
+    end
+  end
+  return miss()
 end
 
 return MainMenuLayout
