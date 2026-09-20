@@ -62,8 +62,10 @@ applications, or game instances.
   pixels (default 4, independently overridable, zero where controls
   reach an edge); edge-critical content uses protected rectangles that
   a bump must keep visible. Crops land on whole source pixels.
-- Below unit scale, a complete logical viewport draws with fractional
-  downscale so every control stays reachable; nothing is cropped.
+- Below unit scale, the fitter may still retain physical 1x by cropping
+  whole source pixels within the configured overdraw/protection budgets;
+  when no safe 1x crop exists, the complete logical viewport draws with
+  fractional downscale and zero crop so every control stays reachable.
 - Host units and framebuffer pixels convert once at the drawable
   boundary; inner layout, text, and hit testing stay in logical
   pixels under one root transform.
