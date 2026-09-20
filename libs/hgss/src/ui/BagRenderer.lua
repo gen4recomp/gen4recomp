@@ -90,14 +90,14 @@ local function formatBagTemplate(template, selected, quantity)
   return table.concat(parts)
 end
 
--- Selects the one contextual string for the current state: the selected
--- description while browsing or choosing an action, otherwise the generated
--- move/toss prompt formatted over the projected selection. A missing
--- selection outside a prompt state simply carries no text.
+-- Selects the one state-owned prompt string when the controller holds a
+-- move/toss state, independent of which control owns focus. Ordinary
+-- browsing descriptions are never state prompts; the compact path gates
+-- those separately on item-grid focus ownership.
 ---@param presentation table<string, unknown>
 ---@param manifest table<string, unknown>
 ---@return string?
-local function contextualText(presentation, manifest)
+local function promptText(presentation, manifest)
   local state = presentation.state
   local interactive = assert(manifest.interactive, "the bag manifest must carry its interactive pane")
   local generated = assert(interactive.text, "the bag manifest must carry its semantic text")
@@ -115,6 +115,50 @@ local function contextualText(presentation, manifest)
       selected,
       quantity
     )
+  end
+  return nil
+end
+
+-- Selects the one contextual string for the current state: the selected
+-- description while browsing or choosing an action, otherwise the generated
+-- move/toss prompt formatted over the projected selection. A missing
+-- selection outside a prompt state simply carries no text. This is the
+-- hero-pane treatment, which keeps its existing visibility; the compact
+-- lower-only path gates ordinary descriptions on focus ownership below.
+---@param presentation table<string, unknown>
+---@param manifest table<string, unknown>
+---@return string?
+local function contextualText(presentation, manifest)
+  local prompt = promptText(presentation, manifest)
+  if prompt ~= nil then
+    return prompt
+  end
+  local selected = presentation.selected
+  if selected == nil then
+    return nil
+  end
+  assert(type(selected.description) == "string", "selected slots carry a description")
+  return selected.description
+end
+
+-- Selects the compact lower-only contextual string: state-owned move/toss
+-- prompts render whenever their state holds, while the ordinary selected
+-- description renders only while browsing with the item grid focused. Tab
+-- or cancel focus hides the ordinary description without clearing the
+-- controller selection, so returning focus restores it.
+---@param presentation table<string, unknown>
+---@param manifest table<string, unknown>
+---@return string?
+local function compactContextualText(presentation, manifest)
+  local prompt = promptText(presentation, manifest)
+  if prompt ~= nil then
+    return prompt
+  end
+  if presentation.state ~= "browsing" then
+    return nil
+  end
+  if presentation.focus ~= "items" then
+    return nil
   end
   local selected = presentation.selected
   if selected == nil then
@@ -771,9 +815,12 @@ end
 
 -- Without a hero pane the state-specific contextual text would be lost, so
 -- the constrained single-pane mode keeps it in the canonical fallback
--- region with the existing constrained overlay treatment. This is the only
--- mode where that fallback surface is valid; two-pane modes already carry
--- the same text in the hero description rect.
+-- region through the source Bag description frame and the generated
+-- fallback text rectangle. This is the only mode where that fallback
+-- surface is valid; two-pane modes already carry the same text in the hero
+-- description rect. The source frame visual is a 256x192 visual whose frame
+-- pixels sit at their generated source location, so it draws at the
+-- canonical origin while text uses the generated text rectangle.
 ---@param presentation table<string, unknown>
 ---@param content table<string, unknown> the canonical logical content selecting compact fallbacks
 ---@param descriptionPalette table<string, unknown>
@@ -784,18 +831,16 @@ function BagRenderer:_drawConstrainedContextual(presentation, content, descripti
   if presentation.state == "description_overlay" then
     return
   end
-  local contextual = contextualText(presentation, self._manifest)
+  local contextual = compactContextualText(presentation, self._manifest)
   if contextual == nil then
     return
   end
   local graphics = self._graphics
-  local frame = assert(content.descriptionFallback, "the constrained layout carries its fallback frame")
-  setColor(graphics, FALLBACK_COLORS.fill)
-  graphics.rectangle("fill", frame.x, frame.y, frame.width, frame.height)
-  setColor(graphics, FALLBACK_COLORS.border)
-  graphics.rectangle("line", frame.x, frame.y, frame.width, frame.height)
+  assert(content.descriptionFallback ~= nil, "the constrained layout carries its fallback frame")
+  local textRect = assert(content.descriptionTextRect, "the constrained layout carries its fallback text rectangle")
+  drawVisual(graphics, assert(self._visuals.descriptionFrame), 0, 0)
   setColor(graphics, WHITE)
-  self:_drawPaletteLines(contextual, frame.x + 4, frame.y + 2, descriptionPalette, 2)
+  self:_drawPaletteLines(contextual, textRect.x, textRect.y, descriptionPalette, 3)
 end
 
 -- The move target keeps its explicit confirm affordance; the controller

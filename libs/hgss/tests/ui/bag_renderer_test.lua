@@ -438,14 +438,17 @@ local function plan(heroVisible)
   end
   panes[#panes + 1] = { id = "interaction", placement = placement(), interactive = true }
   local fallback = nil
+  local textRect = nil
   if not heroVisible then
     fallback = { x = 0, y = 144, width = 256, height = 48 }
+    textRect = { x = 20, y = 144, width = 236, height = 48 }
   end
   return {
     panes = panes,
     content = {
       heroVisible = heroVisible,
       descriptionFallback = fallback,
+      descriptionTextRect = textRect,
       hitTest = function()
         return nil
       end,
@@ -1450,6 +1453,7 @@ local function singlePane()
     content = {
       heroVisible = false,
       descriptionFallback = { x = 0, y = 144, width = 256, height = 48 },
+      descriptionTextRect = { x = 20, y = 144, width = 236, height = 48 },
       hitTest = function()
         return nil
       end,
@@ -2104,6 +2108,168 @@ function T.empty_pocket_focus_draws_on_the_first_cell_without_icons()
   local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[1])
   Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "the first empty cell draws the normal focus visual")
   draw:release()
+end
+
+-- Compact lower-only browsing shows the selected description through the
+-- source Bag description frame and the generated fallback text rectangle,
+-- with room for three 16 px lines. No invented fill/border may replace
+-- the source art.
+local function compactPlan(manifested)
+  local fallback =
+    assert(manifested.interactive.overlays.descriptionFallback, "the compact plan needs its generated fallback")
+  local frame = assert(fallback.frame, "the compact plan needs its fallback frame")
+  local textRect = assert(fallback.textRect, "the compact plan needs its fallback text rectangle")
+  return {
+    panes = {
+      {
+        id = "interaction",
+        placement = placement(),
+        interactive = true,
+      },
+    },
+    content = {
+      heroVisible = false,
+      descriptionFallback = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
+      descriptionTextRect = { x = textRect.x, y = textRect.y, width = textRect.width, height = textRect.height },
+      hitTest = function()
+        return nil
+      end,
+    },
+    inputKey = "bag",
+    render = function(_, _, _) end,
+    mapInput = function()
+      return nil
+    end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+  }
+end
+
+local function threeLineSelection()
+  local selected = slot("POTION", 5)
+  selected.description = "first line\nsecond line\nthird line"
+  return selected
+end
+
+function T.compact_browsing_description_uses_source_frame_and_three_lines()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = paletteText()
+  local manifested = manifest()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifested,
+    text = content,
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+  })
+  local selected = threeLineSelection()
+  local record = status({ state = "browsing", focus = "items", selected = selected })
+  draw:draw(record, compactPlan(manifested), { icons = icons() })
+  local frame = assert(draw._images["descriptionFrame"], "the source description frame is bound")
+  Assert.isTrue(wasDrawn(graphics, frame), "the compact description draws the source frame visual")
+  Assert.equal(#graphics.rectangles, 0, "the compact description never invents a fill/border rectangle")
+  local textRect = manifested.interactive.overlays.descriptionFallback.textRect
+  local first = assert(palettedAt(content, "first line"), "the first description line prints")
+  local second = assert(palettedAt(content, "second line"), "the second description line prints")
+  local third = assert(palettedAt(content, "third line"), "the third description line keeps its 16 px row")
+  Assert.equal(first.x, textRect.x, "the first line starts at the generated text rectangle")
+  Assert.equal(first.y, textRect.y, "the first line keeps the generated text top")
+  Assert.equal(second.x, textRect.x, "the second line starts at the generated text rectangle")
+  Assert.equal(second.y, textRect.y + 16, "the second line keeps its 16 px row")
+  Assert.equal(third.x, textRect.x, "the third line starts at the generated text rectangle")
+  Assert.equal(third.y, textRect.y + 32, "the third line keeps its 16 px row")
+  Assert.deepEqual(third.palette, paletteRecord(content, 15, 14), "the third line uses the window roles")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  draw:release()
+end
+
+-- Ordinary compact descriptions follow item-grid focus ownership while
+-- state-owned move/toss prompts keep their own visibility: tab/Cancel
+-- focus hides the selected description, but prompt states still render.
+function T.compact_browsing_description_follows_item_focus_while_prompts_persist()
+  local manifested = manifest()
+  local selected = threeLineSelection()
+  local function drawWith(presentationRecord)
+    local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+    local content = paletteText()
+    local draw = BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifested,
+      text = content,
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+    })
+    draw:draw(presentationRecord, compactPlan(manifested), { icons = icons() })
+    return graphics, content, draw
+  end
+  local function descriptionDrawn(content, graphics, draw)
+    local frame = assert(draw._images["descriptionFrame"], "the source description frame is bound")
+    return wasDrawn(graphics, frame) or palettedAt(content, "first line") ~= nil
+  end
+  do
+    local graphics, content, draw = drawWith(status({ state = "browsing", focus = "tabs", selected = selected }))
+    Assert.isFalse(descriptionDrawn(content, graphics, draw), "tab focus hides the ordinary compact description")
+    Assert.equal(#graphics.rectangles, 0, "hidden descriptions leave no invented rectangle")
+    draw:release()
+  end
+  do
+    local graphics, content, draw = drawWith(status({ state = "browsing", focus = "cancel", selected = selected }))
+    Assert.isFalse(descriptionDrawn(content, graphics, draw), "cancel focus hides the ordinary compact description")
+    Assert.equal(#graphics.rectangles, 0, "hidden descriptions leave no invented rectangle")
+    draw:release()
+  end
+  do
+    local graphics, content, draw =
+      drawWith(status({ state = "move_select", focus = "tabs", selected = selected, moveTarget = 1, visibleStart = 0 }))
+    local joined = {}
+    for _, entry in ipairs(content.paletted) do
+      joined[#joined + 1] = entry.text
+    end
+    Assert.isTrue(
+      table.concat(joined, "\n"):find("Move POTION.", 1, true) ~= nil,
+      "the move prompt stays visible while item focus is elsewhere"
+    )
+    Assert.isTrue(
+      wasDrawn(graphics, assert(draw._images["descriptionFrame"])),
+      "the move prompt keeps the source frame"
+    )
+    draw:release()
+  end
+  do
+    local graphics, content, draw =
+      drawWith(status({ state = "toss_quantity", focus = "items", selected = selected, quantity = 2, quantityMax = 5 }))
+    local joined = {}
+    for _, entry in ipairs(content.paletted) do
+      joined[#joined + 1] = entry.text
+    end
+    Assert.isTrue(
+      table.concat(joined, "\n"):find("Toss POTION?", 1, true) ~= nil,
+      "the toss prompt stays visible in its own state"
+    )
+    Assert.isTrue(
+      wasDrawn(graphics, assert(draw._images["descriptionFrame"])),
+      "the toss prompt keeps the source frame"
+    )
+    draw:release()
+  end
+  do
+    local graphics, content, draw = drawWith(status({
+      state = "toss_confirm",
+      focus = "items",
+      selected = selected,
+      quantity = 2,
+      quantityMax = 5,
+    }))
+    local joined = {}
+    for _, entry in ipairs(content.paletted) do
+      joined[#joined + 1] = entry.text
+    end
+    Assert.isTrue(
+      table.concat(joined, "\n"):find("Toss 2 POTION?", 1, true) ~= nil,
+      "the toss confirmation keeps item and quantity"
+    )
+    draw:release()
+  end
 end
 
 return { tests = T }

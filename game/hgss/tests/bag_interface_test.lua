@@ -30,7 +30,10 @@ local function manifest()
       itemSlots = { slots = slots },
       cancel = { rect = { x = 192, y = 168, width = 64, height = 24 } },
       overlays = {
-        descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
+        descriptionFallback = {
+          frame = { x = 0, y = 144, width = 256, height = 48 },
+          textRect = { x = 20, y = 144, width = 236, height = 48 },
+        },
         actionMenu = {
           buttons = {
             { x = 8, y = 136, width = 80, height = 16 },

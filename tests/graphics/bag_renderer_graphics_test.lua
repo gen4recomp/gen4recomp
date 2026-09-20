@@ -1860,6 +1860,146 @@ function T.hero_model_composites_once_at_full_origin_under_the_visible_clip(scop
   end
 end
 
+-- The single-pane compact description reuses the source Bag description
+-- frame and the generated fallback text rectangle: the selected item text
+-- inks across three 16 px rows inside the generated text rectangle while
+-- the frame border matches the decoded source frame art. Tab focus hides
+-- the ordinary description entirely, while a move prompt from the same
+-- selection still paints. Every rectangle and visual comes from the
+-- generated manifest; row positions derive from the generated text
+-- rectangle, never from fixed screen coordinates.
+local function singlePaneLayout(manifest, versionId)
+  local single = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192),
+    versionId .. " fits its single pane at unit scale"
+  )
+  Assert.equal(single.pixelScale, 1, versionId .. " keeps canonical coordinates")
+  return {
+    panes = {
+      { id = "interaction", placement = single, interactive = true },
+    },
+    content = BagLayout.resolve({ manifest = manifest, heroVisible = false }),
+    inputKey = "bag",
+    render = function(_, _, _) end,
+    mapInput = function()
+      return nil
+    end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+  }
+end
+
+local function threeLineSelected(firstIcon)
+  return {
+    item = "SMOKE_ITEM_A",
+    nativeId = 1,
+    name = "Smoke A",
+    quantity = 5,
+    description = "Smoke line one\nSmoke line two\nSmoke line three",
+    icon = firstIcon,
+  }
+end
+
+function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_gating(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = singlePaneLayout(manifest, versionId)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local fallback = assert(
+      manifest.interactive.overlays.descriptionFallback,
+      versionId .. " carries its generated description fallback"
+    )
+    local frameRect = assert(fallback.frame, versionId .. " carries its fallback frame")
+    local textRect = assert(fallback.textRect, versionId .. " carries its fallback text rectangle")
+    Assert.isTrue(textRect.height >= 48, versionId .. " sizes the fallback text for three 16 px lines")
+    local selected = threeLineSelected(firstIcon)
+    local lined = render(scope, owned, presentation(firstIcon, secondIcon, heroStatus, { selected = selected }), layout)
+    local emptyRecord = presentation(firstIcon, secondIcon, heroStatus)
+    emptyRecord.selected = nil
+    local empty = render(scope, owned, emptyRecord, layout)
+    local frameRegion = {
+      x = interactiveFrame.x + frameRect.x,
+      y = interactiveFrame.y + frameRect.y,
+      width = frameRect.width,
+      height = frameRect.height,
+    }
+    Assert.isTrue(
+      regionDistance(lined, empty, frameRegion, 2) > 20,
+      versionId .. " the ordinary description paints inside the fallback frame"
+    )
+    for row = 0, 2 do
+      Assert.isTrue(regionDistance(lined, empty, {
+        x = interactiveFrame.x + textRect.x,
+        y = interactiveFrame.y + textRect.y + row * 16,
+        width = textRect.width,
+        height = 16,
+      }, 1) > 0, versionId .. " description row " .. (row + 1) .. " inks inside the generated text rectangle")
+    end
+    local sourceFrame = decodeImage(
+      scope,
+      cacheFs,
+      assert(manifest.hero.description.frame.image, versionId .. " carries its description frame art"),
+      versionId .. " description frame"
+    )
+    local matched = 0
+    for y = frameRect.y, frameRect.y + frameRect.height - 1 do
+      for x = frameRect.x, frameRect.x + frameRect.width - 1 do
+        local inText = x >= textRect.x - 1
+          and x < textRect.x + textRect.width + 1
+          and y >= textRect.y - 1
+          and y < textRect.y + textRect.height + 1
+        if not inText and x < sourceFrame:getWidth() and y < sourceFrame:getHeight() then
+          local sr, sg, sb, sa = sourceFrame:getPixel(x, y)
+          if sa > 0.5 then
+            matched = matched + 1
+            local cr, cg, cb, ca = lined:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+            Assert.equal(quantize(cr), quantize(sr), versionId .. " keeps the source frame red")
+            Assert.equal(quantize(cg), quantize(sg), versionId .. " keeps the source frame green")
+            Assert.equal(quantize(cb), quantize(sb), versionId .. " keeps the source frame blue")
+            Assert.equal(quantize(ca), quantize(sa), versionId .. " keeps the source frame alpha")
+          end
+        end
+      end
+    end
+    Assert.isTrue(matched > 50, versionId .. " the source frame contributes border pixels")
+    local tabbed = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, { selected = selected, focus = "tabs" }),
+      layout
+    )
+    Assert.equal(
+      regionDistance(tabbed, empty, frameRegion, 1),
+      0,
+      versionId .. " tab focus hides the ordinary compact description"
+    )
+    local moved = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        selected = selected,
+        state = "move_select",
+        focus = "tabs",
+        moveTarget = 1,
+        visibleStart = 0,
+      }),
+      layout
+    )
+    Assert.isTrue(
+      regionDistance(moved, empty, frameRegion, 2) > 0,
+      versionId .. " the move prompt survives while item focus is elsewhere"
+    )
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_cache" }
 return suite

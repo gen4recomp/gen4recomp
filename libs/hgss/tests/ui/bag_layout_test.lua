@@ -53,7 +53,10 @@ local function manifest()
         textRect = { x = 192, y = 168, width = 56, height = 16 },
       },
       overlays = {
-        descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
+        descriptionFallback = {
+          frame = { x = 0, y = 144, width = 256, height = 48 },
+          textRect = { x = 20, y = 144, width = 236, height = 48 },
+        },
         actionMenu = {
           buttons = {
             { x = 8, y = 136, width = 80, height = 16 },
@@ -282,6 +285,37 @@ function T.move_target_selection_stays_occupied_only()
   Assert.equal(occupied.kind, "item")
   Assert.equal(fieldOf(occupied, "visibleIndex"), 0)
   Assert.isNil(resolved.hitTest(192, 53, state), "an empty cell never becomes a move destination")
+end
+
+-- The canonical lower-only resolution carries the generated fallback text
+-- rectangle alongside the fallback frame so the compact description can
+-- reuse source geometry instead of inventing text offsets.
+local function manifestWithFallbackText()
+  local layoutManifest = manifest()
+  layoutManifest.interactive.overlays.descriptionFallback.textRect = { x = 20, y = 144, width = 236, height = 48 }
+  return layoutManifest
+end
+
+function T.hidden_hero_composition_carries_the_generated_fallback_text_rectangle()
+  local resolved = BagLayout.resolve({ manifest = manifestWithFallbackText(), heroVisible = false })
+  Assert.deepEqual(
+    resolved.descriptionTextRect,
+    { x = 20, y = 144, width = 236, height = 48 },
+    "the resolved text rectangle matches the generated fallback geometry"
+  )
+  Assert.deepEqual(
+    resolved.descriptionFallback,
+    { x = 0, y = 144, width = 256, height = 48 },
+    "the fallback frame stays the canonical overlay geometry"
+  )
+end
+
+function T.resolve_rejects_a_fallback_without_its_generated_text_rectangle()
+  local layoutManifest = manifest()
+  layoutManifest.interactive.overlays.descriptionFallback.textRect = nil
+  Assert.throws(function()
+    BagLayout.resolve({ manifest = layoutManifest, heroVisible = false })
+  end, "a lower-only composition without generated fallback text is a composition error")
 end
 
 return { tests = T }

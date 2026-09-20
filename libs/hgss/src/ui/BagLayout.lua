@@ -47,6 +47,7 @@ local function checkManifest(manifest)
     "the manifest must carry its description fallback"
   )
   checkRect(assert(fallback.frame, "the fallback needs its frame"), "description fallback")
+  checkRect(assert(fallback.textRect, "the fallback needs its text rectangle"), "description fallback text")
   return interactive --[[@as table<string, unknown>]]
 end
 
@@ -109,6 +110,7 @@ end
 ---@class BagLayoutResolved
 ---@field heroVisible boolean the leaf capability selecting the hero pane and its compact fallbacks
 ---@field descriptionFallback LayoutGeometry.Rect? canonical overlay frame (lower-only compositions only)
+---@field descriptionTextRect LayoutGeometry.Rect? generated fallback text rectangle (lower-only compositions only)
 ---@field hitTest fun(logicalX: number, logicalY: number, controllerState: BagLayout.ControllerState?): BagLayout.Hit?
 
 ---@param spec BagLayout.Spec
@@ -122,7 +124,9 @@ function BagLayout.resolve(spec)
   local tabs = interactive.pocketTabs.rects
   local slots = interactive.itemSlots.slots
   local cancelRect = interactive.cancel.rect
-  local fallbackFrame = interactive.overlays.descriptionFallback.frame
+  local fallback = interactive.overlays.descriptionFallback
+  local fallbackFrame = fallback.frame
+  local fallbackTextRect = fallback.textRect
   local buttons = actionButtons(interactive)
 
   ---@param logicalX number
@@ -222,6 +226,7 @@ function BagLayout.resolve(spec)
     return {
       heroVisible = true,
       descriptionFallback = nil,
+      descriptionTextRect = nil,
       hitTest = hitTest,
     }
   end
@@ -232,6 +237,12 @@ function BagLayout.resolve(spec)
       y = fallbackFrame.y,
       width = fallbackFrame.width,
       height = fallbackFrame.height,
+    },
+    descriptionTextRect = {
+      x = fallbackTextRect.x,
+      y = fallbackTextRect.y,
+      width = fallbackTextRect.width,
+      height = fallbackTextRect.height,
     },
     hitTest = hitTest,
   }
