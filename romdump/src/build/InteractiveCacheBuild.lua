@@ -24,8 +24,9 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 
 ---@class InteractiveCacheBuild.SweepCursor
 ---@field phase string pending or loaded membership
----@field jobs { kind: string, key: string }[]
----@field index integer
+---@field jobs { kind: string, key: string }[] batch identities for the pending phase, empty once loaded
+---@field index integer batch position for the pending phase
+---@field next (fun(): { kind: string, key: string }|nil)|nil canonical enumerator for the loaded phase
 
 ---@class InteractiveCacheBuild.Ticket
 ---@field kind string entry or control
@@ -42,14 +43,12 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field priority integer
 ---@field submitted boolean
 ---@field ready boolean
----@field validated boolean
----@field validationPending boolean pool reports ready, family validation queued under the pump budget
 ---@field failure string|nil
 ---@field failureClass string|nil source-exclusion, dependency, job, validation or planning on failed rows
 ---@field causeJobKey string|nil deepest failed leaf identity when a dependency failed
 ---@field poolState string|nil last observed pool state
 ---@field direct boolean|nil true once a public single-request method claims this entry; milestone enrollment never sets it
----@field phase string plan, expand, reuse, admit, waitMembership, waitDeps, waitCapacity, waitPool, validateResult, ready or failed
+---@field phase string plan, expand, admit, waitMembership, waitDeps, waitCapacity, waitPool, ready or failed
 ---@field await string|nil source, pages, deps, pool or capacity: the named external prerequisite while waiting
 ---@field finalDeps { kind: string, key: string }[]|nil authoritative dependency list for the current knowledge
 ---@field depsFinal boolean the retained list is final for the current knowledge
@@ -90,6 +89,7 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field capacityWaiters { items: string[], head: integer, live: table<string, boolean> }
 ---@field submittedPending table<string, InteractiveCacheBuild.Interest> submitted nonterminal pool work
 ---@field enrollCursor InteractiveCacheBuild.EnrollCursor|nil private incremental membership enrollment after adoption
+---@field sweepBound integer acknowledged sweep admissions allowed by the construction-time worker count
 ---@field roster table<string, { kind: string, key: string }[]> retained milestone membership per requested scope
 ---@field sweepCursor InteractiveCacheBuild.SweepCursor|nil private incremental sweep enumeration after adoption
 ---@field sweepExhausted boolean canonical enumeration reached its end
@@ -183,6 +183,10 @@ function InteractiveCacheBuild.new(options)
   cacheFs:recoverPublication()
   assert(type(pool.selectGeneration) == "function", "generation session pool cannot select generations")
   pool:selectGeneration(identity, epoch)
+  -- The sweep frontier is a construction-time constant: the selected
+  -- generation owns an empty job table here, so one diagnostics read
+  -- captures the physical worker count while it is still cheap. No
+  -- scheduler path consults diagnostics again afterwards.
   -- Only source-static membership is known here: required message banks and
   -- supported field records derive from frozen catalogs without opening the
   -- dump. Everything else arrives with the worker inventory.
@@ -190,7 +194,7 @@ function InteractiveCacheBuild.new(options)
   for _, priority in ipairs({ 0, 10, 100 }) do
     queues[priority] = { items = {}, head = 1 }
   end
-  return setmetatable({
+  local session = setmetatable({
     versionId = versionId,
     generationId = generationId,
     producerId = producerId,
@@ -231,6 +235,8 @@ function InteractiveCacheBuild.new(options)
     followerMemo = nil,
     followerChecked = false,
   }, InteractiveCacheBuild)
+  session.sweepBound = 2 * session:_workerCount()
+  return session
 end
 
 ---@return { versionId: string, generationId: string, producerId: string }
@@ -384,9 +390,11 @@ local function ticketKey(ticket)
 end
 
 -- Local-phase eligibility: a nonterminal entry owes the pump a turn while
--- it can execute plan, edge expansion, reuse validation, admission or
--- result validation, or while a bounded urgency-propagation continuation
--- is pending. Historical pool submission never removes this obligation;
+-- it can execute plan, edge expansion, admission, or while a bounded
+-- urgency-propagation continuation is pending. Admission covers both the
+-- first submission and explicit retries: the worker decides reuse versus
+-- compilation, so no local validation phase exists. Historical pool
+-- submission never removes this obligation;
 -- a named capacity/worker/metadata/dependency wait without such a
 -- continuation owes nothing until its waker fires.
 ---@param entry InteractiveCacheBuild.Interest
@@ -398,11 +406,7 @@ local function entryNeedsTurn(entry)
   if entry.propagateIndex ~= nil then
     return true
   end
-  return entry.phase == "plan"
-    or entry.phase == "expand"
-    or entry.phase == "reuse"
-    or entry.phase == "admit"
-    or entry.phase == "validateResult"
+  return entry.phase == "plan" or entry.phase == "expand" or entry.phase == "admit"
 end
 
 -- One live FIFO ticket per advanceable entry or control operation at the
@@ -517,11 +521,7 @@ function InteractiveCacheBuild:_inlinePlanningReady()
     return true
   end
   if self.sourceLoaded and self.pagesKnown and not self.sweepExhausted then
-    local cursor = self.sweepCursor
-    if cursor == nil then
-      return true
-    end
-    return cursor.index <= #cursor.jobs
+    return true
   end
   return false
 end
@@ -594,8 +594,6 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       priority = priority,
       submitted = false,
       ready = false,
-      validated = false,
-      validationPending = false,
       failure = nil,
       failureClass = nil,
       causeJobKey = nil,
@@ -683,17 +681,28 @@ function InteractiveCacheBuild:_observePoolState(entry, state, details)
       self.sweepAdmitted[entry.jobKey] = nil
       self:_wakeCapacityWaiter()
     end
-    -- A ready reply is a request to validate the published family, not
-    -- proof of readiness: schedule validation at once even when no later
-    -- state edge will occur. An already-queued validation is never
-    -- duplicated.
-    if entry.validationPending and entry.phase == "validateResult" then
-      return
+    -- A ready reply is worker proof, not a request for controller
+    -- validation: the worker already validated warm output before
+    -- reusing it, and fresh output carries staged readback proof
+    -- through publication. Ordinary entries succeed at once. The
+    -- source inventory is the one exception: its generation record is
+    -- adopted here through one explicit validating read before source
+    -- waiters wake, and a failed adoption is explicit.
+    if entry.kind == "source-plan" and entry.key == "global" then
+      local valid, plan = self:_validate(entry.kind, entry.key, nil)
+      if valid then
+        self:_succeedEntry(entry, plan)
+      else
+        self:_failEntry(
+          entry,
+          self.generationId .. " source-plan global: published inventory failed adoption",
+          "planning",
+          nil
+        )
+      end
+    else
+      self:_succeedEntry(entry, nil)
     end
-    entry.validationPending = true
-    entry.await = nil
-    entry.phase = "validateResult"
-    self:_enqueueEntry(entry)
     if entry.kind == "mon-layout" and entry.key == "global" and self:_adoptPagesEligible() then
       self:_enqueueControl("adoptPages", 10, nil)
     end
@@ -881,7 +890,6 @@ function InteractiveCacheBuild:_failEntry(entry, message, failureClass, causeJob
   entry.phase = "failed"
   entry.await = nil
   entry.retryPending = false
-  entry.validationPending = false
   self:_invalidateTicket(entry.jobKey)
   self:_removeCapacityWaiter(entry.jobKey)
   if self.sweepAdmitted[entry.jobKey] then
@@ -925,8 +933,6 @@ function InteractiveCacheBuild:_succeedEntry(entry, plan)
   entry.ready = true
   entry.phase = "ready"
   entry.await = nil
-  entry.validated = true
-  entry.validationPending = false
   entry.retryPending = false
   self:_invalidateTicket(entry.jobKey)
   self:_removeCapacityWaiter(entry.jobKey)
@@ -992,9 +998,9 @@ end
 ---@param budget InteractiveCacheBuild.Budget|nil
 ---@return boolean advanced into a wait or terminal state; false when the budget paused the attempt
 function InteractiveCacheBuild:_submit(entry, budget)
-  -- Admission for one entry: reuse validation already ran, so the scalar
-  -- payload, the frontier credit and the pool request follow under the
-  -- shared budget. A sweep entry without a free acknowledged credit joins
+  -- Admission for one entry: the worker decides reuse versus compile,
+  -- so the scalar payload, the frontier credit and the pool request
+  -- follow under the shared budget. A sweep entry without a free acknowledged credit joins
   -- the FIFO capacity wait instead of speculatively submitting.
   if entry.submitted then
     entry.await = "pool"
@@ -1171,45 +1177,14 @@ function InteractiveCacheBuild:_stepEntry(entry, budget)
         return true
       end
       if next(entry.pendingDeps) == nil then
-        entry.phase = "reuse"
+        entry.phase = "admit"
       else
         entry.await = "deps"
         entry.phase = "waitDeps"
         return true
       end
-    elseif entry.phase == "reuse" then
-      local valid, plan = self:_validate(entry.kind, entry.key, budget)
-      if valid == nil then
-        self:_enqueueEntry(entry)
-        return false
-      end
-      entry.validated = true
-      if valid then
-        self:_succeedEntry(entry, plan)
-        return true
-      end
-      entry.phase = "admit"
     elseif entry.phase == "admit" then
       return self:_submit(entry, budget)
-    elseif entry.phase == "validateResult" then
-      local valid, plan = self:_validate(entry.kind, entry.key, budget)
-      if valid == nil then
-        self:_enqueueEntry(entry)
-        return false
-      end
-      entry.validated = true
-      entry.validationPending = false
-      if valid then
-        self:_succeedEntry(entry, plan)
-      else
-        self:_failEntry(
-          entry,
-          self.generationId .. " " .. entry.kind .. " " .. entry.key .. ": published output fails its family validator",
-          "validation",
-          nil
-        )
-      end
-      return true
     else
       -- Named wait states hold no ticket; reaching one here means a stale
       -- ticket survived its transition, so there is nothing to advance.
@@ -1239,7 +1214,7 @@ end
 
 ---@return integer
 function InteractiveCacheBuild:_sweepBound()
-  return 2 * self:_workerCount()
+  return self.sweepBound
 end
 
 ---@param entry InteractiveCacheBuild.Interest
@@ -1567,11 +1542,14 @@ function InteractiveCacheBuild:_runEnrollOp(budget)
   return true
 end
 
--- Loaded-corpus enumeration runs inline like the pending fill, advancing a
--- small chunk per update so the same-urgency entry work in the ticket
--- queues keeps progressing alongside it. A ticketed control operation
--- would starve behind thousands of entry tickets at ROM scale, stalling
--- the corpus indefinitely; a bounded inline chunk converges both together.
+-- Loaded-corpus enumeration advances a small chunk per update through
+-- the canonical producer enumerator, so the same-urgency entry work in
+-- the ticket queues keeps progressing alongside it. A ticketed control
+-- operation would starve behind thousands of entry tickets at ROM scale,
+-- stalling the corpus indefinitely; a bounded inline chunk converges both
+-- together. Creating and advancing the cursor never builds, sorts, or
+-- copies the corpus: one logical job per enumerator call enrolls under
+-- the budget with no worker payloads allocated for the entire corpus.
 ---@param budget InteractiveCacheBuild.Budget|nil
 function InteractiveCacheBuild:_fillLoadedSweep(budget)
   if not self.sweepEnabled or self.sweepExhausted then
@@ -1589,12 +1567,12 @@ function InteractiveCacheBuild:_fillLoadedSweep(budget)
     if not self:_spendNode(budget) then
       return
     end
-    local jobs = ArtifactJobs.completeJobs(assert(self.adopted, "sweep needs its adopted inventory"))
-    local enums = {}
-    for _, job in ipairs(jobs) do
-      enums[#enums + 1] = { kind = job.kind, key = job.key }
-    end
-    cursor = { phase = "loaded", jobs = enums, index = 1 }
+    cursor = {
+      phase = "loaded",
+      jobs = {},
+      index = 1,
+      next = ArtifactJobs.completeIterator(assert(self.adopted, "sweep needs its adopted inventory")),
+    }
     self.sweepCursor = cursor
   end
   -- Enumeration never yields merely because a blocked entry exists, and a
@@ -1602,18 +1580,19 @@ function InteractiveCacheBuild:_fillLoadedSweep(budget)
   -- identities enroll under the budget with no worker payloads allocated
   -- for the entire corpus at once.
   local enrolled = 0
-  while cursor.index <= #cursor.jobs and enrolled < 8 do
+  local advance = assert(cursor.next, "loaded sweep owns its canonical enumerator")
+  while enrolled < 8 do
+    local job = advance()
+    if job == nil then
+      self.sweepExhausted = true
+      self.sweepCursor = nil
+      return
+    end
     if not self:_spendNode(budget) then
       return
     end
-    local job = cursor.jobs[cursor.index]
-    cursor.index = cursor.index + 1
     enrolled = enrolled + 1
     self:_register(job.kind, job.key, "sweep")
-  end
-  if cursor.index > #cursor.jobs then
-    self.sweepExhausted = true
-    self.sweepCursor = nil
   end
 end
 
@@ -1639,7 +1618,6 @@ function InteractiveCacheBuild:_runAdoptPagesOp(budget)
     -- never usable. No automatic reread follows; only an explicit retry
     -- under the same marker may revalidate the repaired handoff.
     owner.ready = false
-    owner.validated = false
     owner.phase = "plan"
     self:_failEntry(
       owner,
@@ -2110,8 +2088,6 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
       leaf.failureClass = nil
       leaf.causeJobKey = nil
       leaf.ready = false
-      leaf.validated = false
-      leaf.validationPending = false
       leaf.poolState = nil
       leaf.finalDeps = nil
       leaf.depsFinal = false

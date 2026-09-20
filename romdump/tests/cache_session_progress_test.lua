@@ -1136,10 +1136,15 @@ function T.epoch_lookup_resets_while_receipts_stay_reusable()
   Assert.isFalse(reready, "reuse still starts pending")
   Assert.isNil(refailure, "reuse reports no failure")
   pump(resumed, 10)
+  -- No controller reuse phase remains: the published receipt is worker
+  -- proof input, so the resumed request admits to the pool for the
+  -- worker reuse decision instead of answering from the receipt.
+  Assert.equal(env.pool:createdCount(2, "message-bank:219"), 1, "reuse resubmits for worker proof")
+  env.pool:complete("message-bank:219")
+  pump(resumed, 10)
   reready, refailure = resumed:requestJob("message-bank", "219", "required")
-  Assert.isTrue(reready, "a validated receipt answers without recompilation")
+  Assert.isTrue(reready, "worker-proved output succeeds without recompilation")
   Assert.isNil(refailure, "reuse reports no failure")
-  Assert.equal(env.pool:createdCount(2, "message-bank:219"), 0, "reuse submits nothing new")
   local missing, missingFailure = resumed:requestJob("message-bank", "3", "required")
   Assert.isFalse(missing, "missing work stays pending")
   Assert.isNil(missingFailure, "missing work reports no failure")
@@ -1319,8 +1324,18 @@ function T.logical_enumeration_completes_without_forging_dispatch()
     stageLayout(env, "catalog-marker", "layout-marker")
     env.pool:complete("mon-catalog:global")
     pump(session, 30)
+    -- No controller reuse phase remains: the staged layout is worker
+    -- proof input, so the layout admits to the pool and succeeds once
+    -- the pool completion stands in for that worker decision.
     local layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
-    Assert.isTrue(layoutReady, "staged layout validates ready without redispatch: " .. tostring(layoutFailure))
+    Assert.isFalse(layoutReady, "the layout starts pending for worker proof")
+    Assert.isNil(layoutFailure, "the layout reports no failure")
+    pump(session, 10)
+    Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
+    env.pool:complete("mon-layout:global")
+    pump(session, 10)
+    layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
+    Assert.isTrue(layoutReady, "worker-proved layout succeeds: " .. tostring(layoutFailure))
     Assert.isTrue(session.pagesKnown, "page membership adopts from authentic published plans")
     local canonical = canonicalKeySet(
       ArtifactJobs.completeJobs(
@@ -1380,8 +1395,18 @@ function T.exhaustive_intent_progresses_without_later_rescue()
     stageLayout(env, "catalog-marker", "layout-marker")
     env.pool:complete("mon-catalog:global")
     pump(session, 30)
+    -- No controller reuse phase remains: the staged layout is worker
+    -- proof input, so the layout admits to the pool and succeeds once
+    -- the pool completion stands in for that worker decision.
     local layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
-    Assert.isTrue(layoutReady, "staged layout validates ready without redispatch: " .. tostring(layoutFailure))
+    Assert.isFalse(layoutReady, "the layout starts pending for worker proof")
+    Assert.isNil(layoutFailure, "the layout reports no failure")
+    pump(session, 10)
+    Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
+    env.pool:complete("mon-layout:global")
+    pump(session, 10)
+    layoutReady, layoutFailure = session:requestJob("mon-layout", "global", "required")
+    Assert.isTrue(layoutReady, "worker-proved layout succeeds: " .. tostring(layoutFailure))
     Assert.isTrue(finishCorpus(env, session, 8000), "enumeration finishes without a later caller rescue")
     local final = session:status()
     Assert.isTrue(final.settled, "the exhausted sweep settles")
@@ -1536,7 +1561,7 @@ end
 -- requiring summary promotes it before the validation ticket is
 -- consumed. The validation survives at the stronger urgency exactly
 -- once with no duplicate compilation.
-function T.indirect_promotion_keeps_queued_result_validation()
+function T.indirect_promotion_succeeds_on_worker_proof()
   local env = newEnv("indirect-promotion-generation", 2)
   local session = openSession(env, false)
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
@@ -1574,7 +1599,7 @@ function T.indirect_promotion_keeps_queued_result_validation()
   end
   local ok, err = pcall(function()
     -- No further child request here: the indirect promotion through the
-    -- requiring summary must preserve the validation on its own. A
+    -- requiring summary must preserve the success on its own. A
     -- direct wrapper request would rescue the ticket and hide the loss.
     for _ = 1, 100 do
       session:update()
@@ -1584,21 +1609,21 @@ function T.indirect_promotion_keeps_queued_result_validation()
         end
       end
     end
-    error("the promoted child never validated ready", 0)
+    error("the promoted child never succeeded", 0)
   end)
   ArtifactJobs.validate = realValidate
-  Assert.isTrue(ok, "an indirect promotion preserves pending validation: " .. tostring(err))
-  Assert.equal(validations, 1, "the child validates exactly once at the stronger urgency")
+  Assert.isTrue(ok, "an indirect promotion succeeds on worker proof: " .. tostring(err))
+  Assert.equal(validations, 0, "ready replies carry worker proof; the controller runs no family validation")
   Assert.equal(env.pool:createdCount(1, leafKey), 1, "promotion compiles the child exactly once")
   ready, failure = session:requestJob("message-summary", "global", "required")
   Assert.isFalse(ready, "held banks keep the wide summary pending")
   Assert.isNil(failure, "the wide summary reports no failure")
 end
 
--- A ready public pool reply schedules family validation at once: the
--- accepted observation never waits for a second state edge. A usable
--- payload succeeds while a malformed one fails validation.
-function T.immediate_ready_reply_schedules_family_validation()
+-- A ready pool reply is worker proof: the promoted child succeeds at
+-- once with no controller family validation. A usable payload succeeds
+-- while a worker-rejected one fails through the pool failure path.
+function T.immediate_ready_reply_succeeds_without_controller_validation()
   local env = newEnv("immediate-ready-generation", 2)
   local session = openSession(env, false)
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
@@ -1614,21 +1639,12 @@ function T.immediate_ready_reply_schedules_family_validation()
   env.pool:complete("source-plan:global")
   pump(session, 10)
   Assert.isTrue(session.sourceLoaded, "the staged inventory adopts membership")
-  -- The accepted observation answers ready at once: no second state
-  -- edge is needed before family validation is scheduled. The usable
-  -- payload is published with the acknowledgement itself, after the
-  -- submission that defeats reuse short-circuiting, so the scheduled
-  -- result validation observes it.
+  -- A ready reply carries worker proof, so the controller schedules no
+  -- family validation of its own: usable output succeeds on completion
+  -- while worker-rejected output fails through the pool failure path.
   local realRequest = env.pool.request
   env.pool.request = function(self, job)
     realRequest(self, job)
-    if job.jobKey == goodKey or job.jobKey == badKey then
-      if job.jobKey == goodKey then
-        publishBank(env, tonumber(goodBank), "immediate-marker")
-      end
-      self:complete(job.jobKey)
-      return self:status(job.jobKey)
-    end
     return self:status(job.jobKey)
   end
   local ok, err = pcall(function()
@@ -1651,21 +1667,24 @@ function T.immediate_ready_reply_schedules_family_validation()
         pump(session, 10)
         Assert.isTrue(env.pool.calls[goodKey] ~= nil, "the usable leaf submits")
         Assert.isTrue(env.pool.calls[badKey] ~= nil, "the malformed leaf submits")
-        -- The usable payload lands only after submission, so reuse
-        -- cannot short-circuit it: result validation must observe it.
+        -- The pool completion below stands in for the worker reuse
+        -- decision on the published payload; the rejection stands in
+        -- for the worker refusing the malformed one.
         publishBank(env, tonumber(goodBank), "immediate-marker")
+        env.pool:complete(goodKey)
+        env.pool:fail(badKey, "WORKER_FAILED: synthetic malformed payload")
         for _ = 1, 50 do
           session:update()
         end
         ready, failure = session:requestJob("message-bank", goodBank, "required")
-        Assert.isTrue(ready, "a usable immediate payload validates ready: " .. tostring(failure))
+        Assert.isTrue(ready, "worker-proved output succeeds: " .. tostring(failure))
         local badReady, badFailure = session:requestJob("message-bank", badBank, "required")
-        Assert.isFalse(badReady, "a malformed immediate payload never validates ready")
-        Assert.isTrue(badFailure ~= nil, "the malformed payload carries its validation failure")
+        Assert.isFalse(badReady, "worker-rejected output never succeeds")
+        Assert.isTrue(badFailure ~= nil, "the rejected payload carries its worker failure")
       end)
       ArtifactJobs.validate = realValidate
       Assert.isTrue(okPump, tostring(errPump))
-      Assert.isTrue(validations >= 3, "immediate replies earn result validation")
+      Assert.equal(validations, 0, "ready replies earn no controller validation")
     end)
   end)
   env.pool.request = realRequest
@@ -1848,23 +1867,31 @@ function T.standalone_mon_scopes_need_no_source_inventory()
       Assert.isFalse(ready, "the catalog starts pending")
       Assert.isNil(failure, "the catalog reports no failure")
       pump(session, 10)
+      Assert.isTrue(env.pool.calls["mon-catalog:global"] ~= nil, "the catalog submits")
+      -- The staged receipt is what the worker validates: the pool
+      -- completion below stands in for that worker reuse decision.
+      env.pool:complete("mon-catalog:global")
+      pump(session, 10)
       ready, failure = session:requestJob("mon-catalog", "global", "required")
-      Assert.isTrue(ready, "the catalog validates ready: " .. tostring(failure))
+      Assert.isTrue(ready, "worker-proved catalog succeeds: " .. tostring(failure))
       ready, failure = session:requestJob("mon-layout", "global", "required")
       Assert.isFalse(ready, "the layout starts pending")
       Assert.isNil(failure, "the layout reports no failure")
       pump(session, 10)
       Assert.isTrue(env.pool.calls["mon-layout:global"] ~= nil, "the layout submits")
-      -- The receipt lands only after submission, so admission cannot be
-      -- short-circuited by reuse: the submitted closure is observed.
+      -- The staged receipt is what the worker validates: the pool
+      -- completion below stands in for that worker reuse decision.
       writeReceipt(env, "mon-layout", "global")
       env.pool:complete("mon-layout:global")
       pump(session, 10)
       ready, failure = session:requestJob("mon-layout", "global", "required")
-      Assert.isTrue(ready, "the layout validates ready: " .. tostring(failure))
+      Assert.isTrue(ready, "worker-proved layout succeeds: " .. tostring(failure))
       Assert.isNil(env.pool.calls["source-plan:global"], "the source inventory is never admitted for mon scopes")
       for jobKey in pairs(env.pool.calls) do
-        Assert.isTrue(jobKey == "mon-layout:global", "only the requested closure submits: " .. jobKey)
+        Assert.isTrue(
+          jobKey == "mon-layout:global" or jobKey == "mon-catalog:global",
+          "only the requested closure submits: " .. jobKey
+        )
       end
     end)
   end)

@@ -261,7 +261,11 @@ local function removeCandidates(cacheFs, candidates)
   end
 end
 
-local function copyTree(cacheFs, sourcePath, destinationPath)
+-- Move one staged root into its adjacent candidate without reading or
+-- writing payload bytes: directories are recreated and every file travels
+-- by backend rename. Only files cross from the stage tree to the
+-- candidate tree, so every directory rename stays within one parent.
+local function moveTree(cacheFs, sourcePath, destinationPath)
   local backend = cacheFs.backend
   local info = backend:getInfo(sourcePath)
   if not info then
@@ -278,7 +282,7 @@ local function copyTree(cacheFs, sourcePath, destinationPath)
       Errors.raise(CACHE_ERRORS.READ_FAILED, listErr or "could not list directory", { path = sourcePath })
     end
     for _, name in ipairs(items) do
-      copyTree(cacheFs, sourcePath .. "/" .. name, destinationPath .. "/" .. name)
+      moveTree(cacheFs, sourcePath .. "/" .. name, destinationPath .. "/" .. name)
     end
     return info.type
   end
@@ -288,16 +292,7 @@ local function copyTree(cacheFs, sourcePath, destinationPath)
       type = info.type,
     })
   end
-  local data, readErr = backend:read(sourcePath)
-  if data == nil then
-    local message = type(readErr) == "string" and readErr or "could not read staged file"
-    Errors.raise(CACHE_ERRORS.READ_FAILED, message, { path = sourcePath })
-  end
-  assert(data, "staged file data must be available")
-  local ok, err = backend:write(destinationPath, data)
-  ScopedFs.ensureBackend(ok, err, CACHE_ERRORS.WRITE_FAILED, "could not copy staged file", {
-    path = destinationPath,
-  })
+  renamePath(cacheFs, sourcePath, destinationPath)
   return info.type
 end
 
@@ -738,7 +733,11 @@ local function publishStagedRoots(cacheFs, stageCache, roots, cleanup)
           if cacheFs.backend:getInfo(nextPath) then
             cacheFs:_removeTreeAt(nextPath)
           end
-          copyTree(cacheFs, sourcePath, nextPath)
+          assert(
+            publicationResourceIdentity(stageCache.backend) == publicationResourceIdentity(cacheFs.backend),
+            "staged publication requires a shared filesystem"
+          )
+          moveTree(cacheFs, sourcePath, nextPath)
         end
         local candidateInfo = cacheFs.backend:getInfo(nextPath)
         assert(candidateInfo, "staged candidate info must be available")

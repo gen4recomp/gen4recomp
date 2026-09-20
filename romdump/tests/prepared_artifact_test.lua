@@ -16,7 +16,7 @@ local Sha256 = require("libs.script.src.Sha256")
 local T = {}
 
 local HEARTGOLD_SHA1 = GameVersion.VERSIONS.heartgold.sha1
-local PREPARED_SCHEMA = "g4-prepared-artifact-v2"
+local PREPARED_SCHEMA = "g4-prepared-artifact-v3"
 local RECEIPT_SCHEMA = "g4-derived-receipt-v1"
 
 local function requireReceipts()
@@ -348,10 +348,16 @@ function T.identical_shared_bytes_promote_once_but_conflicts_fail()
   clashing:addSharedFile("geometry/shared")
   clashing:stageFs():write("maps/73/complete", "ready")
   clashing:addOwnedRoot("maps/73")
-  clashing:finishSuccess({ marker = "complete" })
-  Assert.throws(function()
-    clashing:publish(expectedOf("map", "73", generation, 1))
+  -- Worker-side reconciliation seals shared proof before success: the
+  -- contradiction fails here, never reaching controller publication.
+  local conflict = Assert.throws(function()
+    clashing:finishSuccess({ marker = "complete" })
   end)
+  Assert.isTrue(
+    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "the worker seals the shared contradiction"
+  )
+  clashing:abort()
   Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict must keep the live bytes")
   Assert.isFalse(cache:exists("maps/73/complete"), "a shared conflict must not expose the staged family")
 end

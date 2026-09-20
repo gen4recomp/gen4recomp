@@ -1087,7 +1087,10 @@ function CompilerPool:_acceptMessage(message)
     if worker ~= nil and worker.closeSent and message.closeToken == worker.closeToken then
       worker.closeAcked = true
     end
-  elseif type(message) == "table" and (message.status == "prepared" or message.status == "failed") then
+  elseif
+    type(message) == "table"
+    and (message.status == "prepared" or message.status == "failed" or message.status == "reused")
+  then
     self:_acceptCompletion(message)
   else
     self:_stopWithProtocolFailure(message, "unknown worker message")
@@ -1191,6 +1194,36 @@ function CompilerPool:_acceptCompletion(message)
     end
     return
   end
+  -- A worker reuse carries no stage and publishes nothing: the
+  -- current-epoch record is ready at once, its size resource releases,
+  -- and the worker stays available. Reuse never retires a VM.
+  if message.status == "reused" then
+    release()
+    slot.state = "ready"
+    slot.timing = {
+      compileSeconds = message.compileSeconds,
+      stageSeconds = message.stageSeconds,
+      workSeconds = message.workSeconds,
+      stagedBytes = message.stagedBytes,
+      timingReason = message.timingReason,
+    }
+    slot.details = { workerId = worker.id }
+    deactivateResource(self, slot)
+    self.recentTimings[#self.recentTimings + 1] = {
+      jobKey = slot.jobKey,
+      workerId = worker.id,
+      compileSeconds = slot.timing.compileSeconds,
+      stageSeconds = slot.timing.stageSeconds,
+      workSeconds = slot.timing.workSeconds,
+      stagedBytes = slot.timing.stagedBytes,
+      timingReason = slot.timing.timingReason,
+    }
+    if #self.recentTimings > MAX_RECENT_TIMINGS then
+      table.remove(self.recentTimings, 1)
+    end
+    return
+  end
+  assert(message.status == "prepared", "worker completion must be prepared after reuse handling")
   slot.state = "prepared"
   slot.timing = {
     compileSeconds = message.compileSeconds,

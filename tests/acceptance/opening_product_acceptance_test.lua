@@ -72,10 +72,11 @@ local function tick(frames)
 end
 
 local function waitForMainMenu()
-  -- The boot can install a preparation state while the selected session
-  -- validates its first demand; each update moves that work forward, so a
-  -- fixed frame budget reaches the menu without waiting on the clock.
-  for _ = 1, 600 do
+  -- The boot can install a preparation state while a compiler worker
+  -- validates its first demand off the game thread; worker threads run on
+  -- wall time, so the wait is clock-bounded while updates keep pumping.
+  local deadline = love.timer.getTime() + 60
+  while love.timer.getTime() < deadline do
     local game = App.state
     local inner = game and game.state or nil
     local view = inner and inner.view and inner:view() or nil
@@ -87,10 +88,11 @@ local function waitForMainMenu()
 end
 
 local function waitForField()
-  -- Continue validates its field demand through the same per-update work as
-  -- the boot; a fixed frame budget reaches the field without wall-clock
-  -- waiting.
-  for _ = 1, 1200 do
+  -- Continue validates its field demand through worker-thread warmup while
+  -- game pumps stay cheap, so the wait is clock-bounded while updates
+  -- keep pumping.
+  local deadline = love.timer.getTime() + 600
+  while love.timer.getTime() < deadline do
     local game = App.state
     local inner = game and game.state or nil
     if inner ~= nil and inner.runtime ~= nil then
@@ -280,7 +282,11 @@ local function completeOak(onDraw)
     name_confirm = true,
     final_dialogue = true,
   }
-  for _ = 1, 3600 do
+  -- Cache warmup and compilation now happen on worker threads while game
+  -- pumps stay cheap, so pump counts no longer imply wall time: the
+  -- handoff waits on the clock (bounded) while ticks keep driving it.
+  local deadline = love.timer.getTime() + 600
+  while love.timer.getTime() < deadline do
     Assert.notNil(App.state and App.state.state, "Oak must remain active until the profile is finalized")
     if App.state.state.runtime ~= nil then
       return

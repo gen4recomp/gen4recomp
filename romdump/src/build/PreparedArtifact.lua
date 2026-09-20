@@ -23,6 +23,8 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field status "success"|"failure"
 ---@field ownedRoots string[]
 ---@field sharedFiles string[]
+---@field sharedInstall string[] worker-resolved shared paths the controller must install
+---@field sharedReused string[] worker-resolved shared paths already live and byte-identical
 ---@field result table<string, unknown>?
 ---@field error table<string, unknown>?
 ---@class PreparedArtifact
@@ -36,13 +38,15 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field private _stageName string
 ---@field private _ownedRoots table<string, boolean>
 ---@field private _sharedFiles table<string, boolean>
+---@field private _sharedInstall string[]
+---@field private _sharedReused string[]
 ---@field private _status string
 ---@field private _manifest PreparedArtifact.Manifest?
 local PreparedArtifact = {}
 PreparedArtifact.__index = PreparedArtifact
 
 local MANIFEST_PATH = "_prepared/result.lua"
-local MANIFEST_SCHEMA = "g4-prepared-artifact-v2"
+local MANIFEST_SCHEMA = "g4-prepared-artifact-v3"
 
 local function assertSafePath(cacheFs, path, label)
   assert(type(path) == "string" and path ~= "", label .. " must be a non-empty path")
@@ -94,6 +98,27 @@ local function validateManifest(manifest, expected)
   assert(manifest.status == "success" or manifest.status == "failure", "prepared artifact status is invalid")
   assert(type(manifest.ownedRoots) == "table", "prepared artifact owned roots are missing")
   assert(type(manifest.sharedFiles) == "table", "prepared artifact shared files are missing")
+  assert(type(manifest.sharedInstall) == "table", "prepared artifact shared installs are missing")
+  assert(type(manifest.sharedReused) == "table", "prepared artifact shared reuses are missing")
+  local classified = {}
+  for _, path in ipairs(manifest.sharedInstall) do
+    assert(type(path) == "string" and classified[path] == nil, "prepared artifact shared decision is invalid")
+    classified[path] = true
+  end
+  for _, path in ipairs(manifest.sharedReused) do
+    assert(type(path) == "string" and classified[path] == nil, "prepared artifact shared decision is invalid")
+    classified[path] = true
+  end
+  if manifest.status == "failure" then
+    assert(
+      #manifest.sharedInstall == 0 and #manifest.sharedReused == 0,
+      "failed prepared artifact carries shared decisions"
+    )
+  else
+    for _, path in ipairs(manifest.sharedFiles) do
+      assert(classified[path] == true, "prepared artifact shared file has no publication decision: " .. tostring(path))
+    end
+  end
   if manifest.status == "success" then
     assert(#manifest.ownedRoots > 0, "prepared artifact has no owned roots")
     assert(
@@ -145,6 +170,8 @@ local function newInstance(options)
     _stageName = stageName,
     _ownedRoots = {},
     _sharedFiles = {},
+    _sharedInstall = {},
+    _sharedReused = {},
     _status = "open",
   }, PreparedArtifact)
 end
@@ -177,6 +204,8 @@ function PreparedArtifact.open(options)
   for _, path in ipairs(validated.sharedFiles) do
     artifact:addSharedFile(path)
   end
+  artifact._sharedInstall = validated.sharedInstall
+  artifact._sharedReused = validated.sharedReused
   artifact._status = validated.status == "success" and "finished" or "failed"
   artifact._manifest = validated
   return artifact
@@ -225,8 +254,45 @@ function PreparedArtifact:addSharedFile(path)
   self._sharedFiles[path] = true
 end
 
+-- Worker-side shared-file proof, sealed before success: every staged
+-- shared path must exist; a path absent from the live tree becomes an
+-- install candidate, a byte-identical live path is marked reused and its
+-- redundant staged copy removed, and a contradiction fails before any
+-- success is sealed. The controller later installs or reuses from this
+-- classification without reading payload bytes. Shared paths must be
+-- deterministic derivations of the generation source: the same path always
+-- carries the same bytes, so concurrent producers cannot genuinely
+-- conflict; a mismatch fails here and serialized controller publication
+-- never overwrites live bytes on a race.
+function PreparedArtifact:_reconcileShared()
+  assert(self._status == "open", "prepared artifact is already finalized")
+  local install, reused = {}, {}
+  for path in pairs(self._sharedFiles) do
+    assert(self._stageFs:exists(path, "file"), "prepared shared file is missing: " .. path)
+    local live = self._cacheFs:read(path)
+    if live == nil then
+      install[#install + 1] = path
+    elseif live == self._stageFs:read(path) then
+      reused[#reused + 1] = path
+      self._stageFs:remove(path)
+    else
+      Errors.raise("PREPARED_SHARED_CONFLICT", "staged shared file contradicts the live artifact", { path = path })
+    end
+  end
+  table.sort(install)
+  table.sort(reused)
+  self._sharedInstall = install
+  self._sharedReused = reused
+end
+
 function PreparedArtifact:_finish(status, result, failure)
   assert(self._status == "open", "prepared artifact is already finalized")
+  if status == "success" then
+    self:_reconcileShared()
+  else
+    self._sharedInstall = {}
+    self._sharedReused = {}
+  end
   local ownedRoots = sortedKeys(self._ownedRoots)
   if status == "success" then
     assert(type(result) == "table", "prepared artifact result must be a table")
@@ -266,6 +332,8 @@ function PreparedArtifact:_finish(status, result, failure)
     status = status,
     ownedRoots = ownedRoots,
     sharedFiles = sortedKeys(self._sharedFiles),
+    sharedInstall = self._sharedInstall,
+    sharedReused = self._sharedReused,
     result = result,
     error = failure,
   }
@@ -312,17 +380,21 @@ function PreparedArtifact:publish(expected)
   })
   assert(manifest.status == "success", "failed prepared artifact cannot publish")
 
-  for _, path in ipairs(manifest.sharedFiles) do
+  -- Shared publication follows the worker-resolved classification with
+  -- metadata checks and renames only: installs move the staged copy
+  -- into the live tree, reuses only require the live path to still
+  -- exist. No payload byte is read or copied here.
+  for _, path in ipairs(manifest.sharedInstall) do
     assert(self._stageFs:exists(path, "file"), "prepared shared file is missing: " .. path)
-    local live = self._cacheFs:read(path)
-    if live == nil then
-      local parent = path:match("^(.*)/[^/]+$")
-      if parent then
-        self._cacheFs:createDirectory(parent)
-      end
-      self._cacheFs:replaceAt(self._stageFs:resolve(path), self._cacheFs:resolve(path))
-    elseif live ~= self._stageFs:read(path) then
-      Errors.raise("PREPARED_SHARED_CONFLICT", "staged shared file contradicts the live artifact", { path = path })
+    local parent = path:match("^(.*)/[^/]+$")
+    if parent then
+      self._cacheFs:createDirectory(parent)
+    end
+    self._cacheFs:replaceAt(self._stageFs:resolve(path), self._cacheFs:resolve(path))
+  end
+  for _, path in ipairs(manifest.sharedReused) do
+    if not self._cacheFs:exists(path) then
+      Errors.raise("PREPARED_SHARED_CONFLICT", "reused shared file changed before publication", { path = path })
     end
   end
 

@@ -7,6 +7,7 @@
 -- restarted generation reuses ready jobs.
 
 local Assert = require("tests.support.Assert")
+local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -349,6 +350,11 @@ local function workerContextFor(romFs, versionId, cacheFs)
   return context
 end
 
+-- Job keys the test harness actually compiled (as opposed to worker-reused).
+-- The resumed-generation proof below asserts warm resubmissions reuse.
+local compiledThroughWorker = {}
+local reusedThroughWorker = {}
+
 local function completeThroughWorker(context, pool, jobKey, stageName)
   local record = assert(pool.records[jobKey], "unknown compiler job: " .. tostring(jobKey))
   -- Only a current eligible record completes: the selected identity must
@@ -381,10 +387,19 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
       end
     end
   end
-  local ok, result = pcall(CompilerWorker.execute, workerJob, context)
-  if not ok then
+  local ok, reused = pcall(ArtifactJobs.validateCurrent, workerJob, context)
+  if ok and reused == true then
+    -- Worker proof without compilation: warm output reuses with no
+    -- stage and no publication, exactly like the production worker.
+    pool:markReady(jobKey)
+    reusedThroughWorker[jobKey] = record.epoch
+    return { reused = true }
+  end
+  local compiledOk, result = pcall(CompilerWorker.execute, workerJob, context)
+  if not compiledOk then
     error("worker path cannot complete " .. tostring(jobKey) .. ": " .. tostring(result), 0)
   end
+  compiledThroughWorker[jobKey] = record.epoch
   local artifact = PreparedArtifact.open({
     cacheFs = context.cacheFs,
     generationId = job.generationId,
@@ -655,11 +670,12 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   do
     local requested = pool:requestSet()
     -- A restart under a new epoch re-plans the same cold bootstrap set.
-    -- Current-epoch lookup starts empty, so every upfront member planned
-    -- cold is requested again; gated parents and already-ready members
-    -- were never (re)submitted and stay out of the expectation. Receipts
-    -- published by the earlier epoch answer through validators, not the
-    -- pool, so the comparison skips them.
+    -- Current-epoch lookup starts empty, so every upfront member is
+    -- requested again for worker proof; gated parents stay out of the
+    -- expectation until their prerequisites publish. Receipts published
+    -- by the earlier epoch are worker validation input, not submission
+    -- shortcuts, so the comparison below also accepts resubmitted warm
+    -- members alongside cold ones.
     local gatedParents = { ["mon-layout:global"] = true, ["audio-summary:global"] = true }
     for _, identityKey in ipairs(expectedBootstrapSet(audioBankIds)) do
       if not gatedParents[identityKey] and not preReady[identityKey] then
@@ -676,8 +692,9 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     -- A gated parent is correctly deferred while any prerequisite is
     -- still pending (ArtifactJobs.dependencies; a parent never occupies a
     -- worker before its children are ready). Demand planning only for
-    -- members whose prerequisites are all ready -- and never for members
-    -- already ready on a reused root.
+    -- members whose prerequisites are all ready; already-requested warm
+    -- members resubmit for worker proof rather than answering from
+    -- receipts.
     local function expect(kind, key, depKeys)
       local identityKey = kind .. ":" .. key
       if requested[identityKey] ~= nil or preReady[identityKey] then
@@ -845,13 +862,14 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   end
   session:retire()
 
-  -- A restarted generation reuses ready jobs without touching raw source.
-  -- Targeted resumption, not an exhaustive sweep: the restarted session
-  -- proves reuse for its explicitly requested milestones (bootstrap and
-  -- field core, which carry every completed kind), while the storm below
-  -- proves exhaustive cursor enrollment at scale. Cursor extras (cells,
-  -- maps, portraits) are cold here and never asserted, so they would only
-  -- burn frontier turns without proving reuse.
+  -- A restarted generation resubmits ready jobs for worker proof instead
+  -- of answering from receipts: every warm resubmission must reuse
+  -- without compiling. Targeted resumption, not an exhaustive sweep: the
+  -- restarted session proves reuse for its explicitly requested milestones
+  -- (bootstrap and field core, which carry every completed kind), while the
+  -- storm below proves exhaustive cursor enrollment at scale. Cursor extras
+  -- (cells, maps, portraits) are cold here and never asserted, so they would
+  -- only burn frontier turns without proving reuse.
   local resumed = openSession(identity, 3, pool, false)
   do
     local first, second = resumed:requestMilestone("bootstrap", "required")
@@ -863,14 +881,31 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   end
   settle(resumed, pool)
   do
-    local recompiled = {}
+    -- Warm resubmissions complete through the worker reuse decision above;
+    -- cold roster extras stay queued and are never asserted here.
+    local resubmitted = {}
     for _, jobKey in ipairs(pool.order) do
       local record = pool.records[jobKey]
-      if record.job.epoch == 3 and completed[record.kind .. ":" .. record.key] then
+      if record.job.epoch == 3 and record.state == "queued" and completed[record.kind .. ":" .. record.key] then
+        resubmitted[#resubmitted + 1] = jobKey
+      end
+    end
+    Assert.isTrue(#resubmitted > 0, "resumed milestones resubmit warm jobs for worker proof")
+    for _, jobKey in ipairs(resubmitted) do
+      complete(jobKey)
+    end
+    settle(resumed, pool)
+    local recompiled = {}
+    for _, jobKey in ipairs(resubmitted) do
+      if compiledThroughWorker[jobKey] == 3 then
+        local record = pool.records[jobKey]
         recompiled[#recompiled + 1] = record.kind .. ":" .. record.key
       end
     end
-    Assert.deepEqual(recompiled, {}, "ready jobs are skipped before any compiler runs")
+    Assert.deepEqual(recompiled, {}, "worker-proved resubmissions compile nothing")
+    for _, jobKey in ipairs(resubmitted) do
+      Assert.equal(reusedThroughWorker[jobKey], 3, "every warm resubmission reuses through worker proof: " .. jobKey)
+    end
     for _, memberId in ipairs(scriptMemberIds) do
       local receipt = ArtifactState.read(cache, generationId, "script-member", tostring(memberId))
       Assert.notNil(receipt, "completed script members stay published across restart")
@@ -1097,12 +1132,13 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   end
   do
     -- Accepted current-epoch requests plus published receipts account for
-    -- every canonical key: a reused root never resubmits ready work.
+    -- every canonical key: warm members resubmit for worker proof while
+    -- receipts count alongside pool records.
     Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
     local union = pool:requestSet()
     -- Accounted for means planned this run or published by an earlier
-    -- run under the same generation: a reused root never resubmits
-    -- ready work, so receipts count alongside pool records. Maps are
+    -- run under the same generation: warm resubmissions carry worker
+    -- proof, so receipts count alongside pool records. Maps are
     -- correctly gated behind their cells (ArtifactJobs.dependencies), so
     -- a map the pool never received still counts when the session keeps
     -- tracking it: re-requesting must accept it as pending, never lose

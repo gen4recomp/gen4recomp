@@ -1409,76 +1409,316 @@ function ArtifactJobs.publishedPlans(cacheFs, identity)
   }
 end
 
+-- Canonical complete-inventory order behind both the materialized list
+-- and the resumable enumerator: the fixed global closure first, then one
+-- dynamic family after another in the same sequence. The enumerator
+-- yields one logical job per call without building, sorting, or copying
+-- the corpus, so interactive sweep can advance a bounded chunk per
+-- update; draining it reproduces the complete list below.
+local COMPLETE_STATIC_GLOBALS = {
+  "world-catalog",
+  "field-cell-index",
+  "field-camera",
+  "field-weather",
+  "field-effects",
+  "field-emotes",
+  "field-ui",
+  "field-font",
+  "intro",
+  "new-game-init",
+  "actors",
+  "starter-choice",
+  "items",
+  "bag",
+  "mon-catalog",
+  "mon-layout",
+  "mon-summary",
+  "message-summary",
+  "audio-catalog",
+  "audio-summary",
+  "script-summary",
+}
+
+-- Producer-internal generation source-plan memo for compiler-worker
+-- context. The worker owns the memo for one VM: it returns the validated
+-- record for the worker's current version/generation/producer identity
+-- and re-reads through the validating reader whenever that identity
+-- changes. The record is borrowed immutable; it carries no ROM handle
+-- and never reaches runtime packages.
+---@param context table<string, unknown>
+---@param identity { versionId: string, generationId: string, producerId: string }
+---@return table<string, unknown>|nil
+---@return string|nil
+function ArtifactJobs.sourcePlanForContext(context, identity)
+  assert(type(context) == "table", "worker source plans require a context table")
+  assert(type(identity) == "table", "worker source plans require the generation identity")
+  assert(type(identity.versionId) == "string" and identity.versionId ~= "", "worker source plans require the version")
+  assert(
+    type(identity.generationId) == "string" and identity.generationId ~= "",
+    "worker source plans require the generation"
+  )
+  assert(
+    type(identity.producerId) == "string" and identity.producerId ~= "",
+    "worker source plans require the producer"
+  )
+  local memo = context.sourcePlanMemo
+  if
+    type(memo) == "table"
+    and memo.versionId == identity.versionId
+    and memo.generationId == identity.generationId
+    and memo.producerId == identity.producerId
+    and type(memo.plan) == "table"
+  then
+    return memo.plan
+  end
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local cacheFs = assert(context.cacheFs, "worker source plans require a cache filesystem")
+  local plan, reason = SourcePlan.read(cacheFs, identity)
+  if plan == nil then
+    return nil, reason
+  end
+  context.sourcePlanMemo = {
+    versionId = identity.versionId,
+    generationId = identity.generationId,
+    producerId = identity.producerId,
+    plan = plan,
+  }
+  return plan
+end
+
+---@param audioPlan table<string, unknown>
+---@return integer[]
+local function sourceAudioBankIds(audioPlan)
+  local ids = {}
+  for _, bankPlan in ipairs(assert(audioPlan.bankPlans, "worker validation needs the audio bank closures")) do
+    ids[#ids + 1] = assert(bankPlan.bankId, "worker validation needs the audio bank identity")
+  end
+  table.sort(ids)
+  return ids
+end
+
+---@param scriptPlan table<string, unknown>
+---@return integer[]
+local function sourceScriptMemberIds(scriptPlan)
+  local ids = {}
+  for _, member in ipairs(assert(scriptPlan.members, "worker validation needs the script membership")) do
+    ids[#ids + 1] = assert(member.memberId, "worker validation needs the script member identity")
+  end
+  table.sort(ids)
+  return ids
+end
+
+---@param world table<string, unknown>
+---@return integer[]
+local function sourceMapIds(world)
+  local ids = {}
+  for _, record in ipairs(assert(world.maps, "worker validation needs the world membership")) do
+    ids[#ids + 1] = assert(record.id, "worker validation needs the world map identity")
+  end
+  table.sort(ids)
+  return ids
+end
+
+-- Worker-facing readiness wrapper around the one authoritative family
+-- validator. It assembles the minimal plan envelope for the job:
+-- source-static selections always, the worker generation memo for
+-- source-derived families, the published mon page index for mon summary
+-- work. Families independent of the source inventory never force a
+-- source-plan read. A false answer means compile, never job failure.
+---@param job { kind: string, key: string, generationId: string, producerFingerprint: string|nil, versionId: string|nil, payload: table<string, unknown>|nil }
+---@param context table<string, unknown>
+---@return boolean
+function ArtifactJobs.validateCurrent(job, context)
+  assert(type(job) == "table", "worker validation requires a job")
+  assert(type(job.kind) == "string" and job.kind ~= "", "worker validation requires the job kind")
+  assert(type(job.key) == "string" and job.key ~= "", "worker validation requires the job key")
+  ArtifactState.path(job.kind, job.key)
+  assert(type(context) == "table", "worker validation requires a context table")
+  local cacheFs = assert(context.cacheFs, "worker validation requires a cache filesystem")
+  assert(type(job.generationId) == "string" and job.generationId ~= "", "worker validation requires the job generation")
+  local versionId = job.versionId or context.versionId
+  assert(type(versionId) == "string" and versionId ~= "", "worker validation requires the version")
+  local producerId = job.producerFingerprint
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local plans = {
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+  }
+  if
+    job.kind == "field-cell"
+    or job.kind == "script-member"
+    or job.kind == "script-summary"
+    or job.kind == "audio-summary"
+  then
+    if type(producerId) ~= "string" or producerId == "" then
+      return false
+    end
+    local source, _ = ArtifactJobs.sourcePlanForContext(context, {
+      versionId = versionId,
+      generationId = job.generationId,
+      producerId = producerId,
+    })
+    if source == nil then
+      return false
+    end
+    ---@cast source table<string, unknown>
+    plans.indexBundle = source.fieldCellIndexBundle
+    plans.scriptPlan = source.scriptPlan
+    plans.audioPlan = source.audioPlan
+    plans.messageBankIds = source.messageBankIds
+    plans.mapDataIds = source.mapDataIds
+    plans.mapCellKeys = source.mapCellKeys
+    plans.world = source.world
+    plans.audioBankIds = sourceAudioBankIds(assert(source.audioPlan, "worker validation needs the audio membership"))
+    plans.scriptMemberIds =
+      sourceScriptMemberIds(assert(source.scriptPlan, "worker validation needs the script membership"))
+    plans.mapIds = sourceMapIds(assert(source.world, "worker validation needs the world membership"))
+  elseif job.kind == "mon-summary" then
+    local MonCacheWriter = require("romdump.src.digest.mons.MonCacheWriter")
+    local ok, index = pcall(cacheFs.loadLua, cacheFs, MonCacheWriter.sourcePlanIndexPath())
+    if not ok or type(index) ~= "table" then
+      return false
+    end
+    ---@cast index table<string, unknown>
+    plans.iconPageIds = index.iconPageIds
+    plans.portraitPageIds = index.portraitPageIds
+  elseif job.kind == "source-plan" then
+    if type(producerId) ~= "string" or producerId == "" then
+      return false
+    end
+  end
+  -- The source inventory is the only family that reads the producer
+  -- identity, and it returns above unless the producer is present, so
+  -- an absent producer below is never consulted.
+  return ArtifactJobs.validate(cacheFs, job.generationId, job.kind, job.key, plans, {
+    versionId = versionId,
+    generationId = job.generationId,
+    producerId = producerId or "",
+  })
+end
+
+---@param plans ArtifactJobs.Plans
+---@return fun(): { kind: string, key: string, jobKey: string }|nil
+function ArtifactJobs.completeIterator(plans)
+  assert(type(plans) == "table", "complete inventory requires its published plans")
+  local messageBankIds = assert(plans.messageBankIds, "complete inventory needs the message banks")
+  local audioBankIds = assert(plans.audioBankIds, "complete inventory needs the audio banks")
+  local scriptMemberIds = assert(plans.scriptMemberIds, "complete inventory needs the script members")
+  local iconPageIds = assert(plans.iconPageIds, "complete inventory needs the icon pages")
+  local portraitPageIds = assert(plans.portraitPageIds, "complete inventory needs the portrait pages")
+  local mapDataIds = assert(plans.mapDataIds, "complete inventory needs the field records")
+  local mapIds = assert(plans.mapIds, "complete inventory needs the world maps")
+  local indexBundle = assert(plans.indexBundle, "complete inventory needs the canonical cell index")
+  ---@cast indexBundle table<string, unknown>
+  local cellIndex = assert(indexBundle.index, "complete inventory needs the canonical cell index")
+  ---@cast cellIndex table<string, unknown>
+  local matrices = assert(cellIndex.matrices, "complete inventory needs the canonical cell index")
+  ---@cast matrices table[]
+  local function identify(kind, key)
+    return { kind = kind, key = key, jobKey = ArtifactJobs.jobKey(kind, key) }
+  end
+  local phase = 0
+  local position = 1
+  local matrixPosition = 1
+  local cellPosition = 1
+  local function nextComplete()
+    while true do
+      if phase == 0 then
+        phase, position = 1, 1
+        return identify("source-plan", "global")
+      elseif phase == 1 then
+        if position <= #COMPLETE_STATIC_GLOBALS then
+          local kind = COMPLETE_STATIC_GLOBALS[position]
+          position = position + 1
+          return identify(kind, "global")
+        end
+        phase, position = 2, 1
+      elseif phase == 2 then
+        if position <= #messageBankIds then
+          local bankId = messageBankIds[position]
+          position = position + 1
+          return identify("message-bank", tostring(bankId))
+        end
+        phase, position = 3, 1
+      elseif phase == 3 then
+        if position <= #audioBankIds then
+          local bankId = audioBankIds[position]
+          position = position + 1
+          return identify("audio-bank", tostring(bankId))
+        end
+        phase, position = 4, 1
+      elseif phase == 4 then
+        if position <= #scriptMemberIds then
+          local memberId = scriptMemberIds[position]
+          position = position + 1
+          return identify("script-member", tostring(memberId))
+        end
+        phase, position = 5, 1
+      elseif phase == 5 then
+        if position <= #iconPageIds then
+          local pageId = iconPageIds[position]
+          position = position + 1
+          return identify("mon-icon-page", tostring(pageId))
+        end
+        phase, position = 6, 1
+      elseif phase == 6 then
+        if position <= #portraitPageIds then
+          local pageId = portraitPageIds[position]
+          position = position + 1
+          return identify("mon-portrait-page", tostring(pageId))
+        end
+        phase, position = 7, 1
+      elseif phase == 7 then
+        if position <= #mapDataIds then
+          local mapId = mapDataIds[position]
+          position = position + 1
+          return identify("map-data", tostring(mapId))
+        end
+        phase = 8
+      elseif phase == 8 then
+        while matrixPosition <= #matrices do
+          local cells = matrices[matrixPosition].cells
+          if cellPosition <= #cells then
+            local descriptor = cells[cellPosition]
+            cellPosition = cellPosition + 1
+            return identify("field-cell", descriptor.matrixMemberId .. "-" .. descriptor.index)
+          end
+          matrixPosition = matrixPosition + 1
+          cellPosition = 1
+        end
+        phase, position = 9, 1
+      elseif phase == 9 then
+        if position <= #mapIds then
+          local mapId = mapIds[position]
+          position = position + 1
+          return identify("map", tostring(mapId))
+        end
+        return nil
+      else
+        return nil
+      end
+    end
+  end
+  return nextComplete
+end
+
 ---@param plans ArtifactJobs.Plans
 ---@return { kind: string, key: string, jobKey: string }[]
 function ArtifactJobs.completeJobs(plans)
   assert(type(plans) == "table", "complete inventory requires its published plans")
   local jobs = {}
   local seen = {}
-  local function add(kind, key)
-    local jobKey = ArtifactJobs.jobKey(kind, key)
-    if not seen[jobKey] then
-      seen[jobKey] = true
-      jobs[#jobs + 1] = { kind = kind, key = key, jobKey = jobKey }
+  local iterate = ArtifactJobs.completeIterator(plans)
+  while true do
+    local job = iterate()
+    if job == nil then
+      break
     end
-  end
-  add("source-plan", "global")
-  for _, kind in ipairs({
-    "world-catalog",
-    "field-cell-index",
-    "field-camera",
-    "field-weather",
-    "field-effects",
-    "field-emotes",
-    "field-ui",
-    "field-font",
-    "intro",
-    "new-game-init",
-    "actors",
-    "starter-choice",
-    "items",
-    "bag",
-    "mon-catalog",
-    "mon-layout",
-    "mon-summary",
-    "message-summary",
-    "audio-catalog",
-    "audio-summary",
-    "script-summary",
-  }) do
-    add(kind, "global")
-  end
-  for _, bankId in ipairs(assert(plans.messageBankIds, "complete inventory needs the message banks")) do
-    add("message-bank", tostring(bankId))
-  end
-  for _, bankId in ipairs(assert(plans.audioBankIds, "complete inventory needs the audio banks")) do
-    add("audio-bank", tostring(bankId))
-  end
-  for _, memberId in ipairs(assert(plans.scriptMemberIds, "complete inventory needs the script members")) do
-    add("script-member", tostring(memberId))
-  end
-  for _, pageId in ipairs(assert(plans.iconPageIds, "complete inventory needs the icon pages")) do
-    add("mon-icon-page", tostring(pageId))
-  end
-  for _, pageId in ipairs(assert(plans.portraitPageIds, "complete inventory needs the portrait pages")) do
-    add("mon-portrait-page", tostring(pageId))
-  end
-  for _, mapId in ipairs(assert(plans.mapDataIds, "complete inventory needs the field records")) do
-    add("map-data", tostring(mapId))
-  end
-  local indexBundle = assert(plans.indexBundle, "complete inventory needs the canonical cell index")
-  ---@cast indexBundle table<string, unknown>
-  local cellIndex = assert(indexBundle.index, "complete inventory needs the canonical cell index")
-  ---@cast cellIndex table<string, unknown>
-  local matrices = cellIndex.matrices
-  ---@cast matrices table[]
-  for _, matrix in ipairs(matrices) do
-    for _, descriptor in ipairs(matrix.cells) do
-      add("field-cell", descriptor.matrixMemberId .. "-" .. descriptor.index)
+    if not seen[job.jobKey] then
+      seen[job.jobKey] = true
+      jobs[#jobs + 1] = job
     end
-  end
-  for _, mapId in ipairs(assert(plans.mapIds, "complete inventory needs the world maps")) do
-    add("map", tostring(mapId))
   end
   table.sort(jobs, function(left, right)
     if left.kind == right.kind then

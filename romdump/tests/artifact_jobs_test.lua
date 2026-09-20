@@ -6,6 +6,8 @@
 local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
@@ -252,6 +254,160 @@ function T.new_game_intro_without_source_audio_is_unresolved()
   Assert.isTrue(set["source-plan:global"] == true, "the unresolved roster keeps its source owner")
   Assert.isTrue(set["audio-catalog:global"] == true, "the unresolved roster keeps the catalog")
   Assert.isNil(set["audio-bank:184"], "no bank closure is final before source adoption")
+end
+
+-- The complete inventory enumerates incrementally through one canonical
+-- iterator: draining it covers exactly the materialized list, each job
+-- exactly once, under canonical identity. The interactive session consumes
+-- the same iterator a bounded chunk at a time instead of materializing
+-- the whole corpus in one update.
+local function sweepPlans()
+  local matrices = {}
+  for matrixMemberId = 1, 3 do
+    local cells = {}
+    for index = 0, 9 do
+      cells[#cells + 1] = { matrixMemberId = matrixMemberId, index = index }
+    end
+    matrices[#matrices + 1] = { matrixMemberId = matrixMemberId, cells = cells }
+  end
+  return {
+    messageBankIds = { 1, 219 },
+    audioBankIds = { 3, 7 },
+    scriptMemberIds = { 5, 149 },
+    iconPageIds = { 0, 1 },
+    portraitPageIds = { 0 },
+    mapDataIds = { 2, 4 },
+    indexBundle = { index = { matrices = matrices }, indexMarker = "sweep-index-marker" },
+    mapIds = { 7, 9 },
+  }
+end
+
+function T.complete_inventory_drains_the_incremental_enumerator()
+  local plans = sweepPlans()
+  local expected = ArtifactJobs.completeJobs(plans)
+  Assert.isTrue(#expected > 40, "the sweep fixture spans dozens of jobs")
+  local iterate = ArtifactJobs.completeIterator(plans)
+  Assert.isTrue(type(iterate) == "function", "the producer inventory enumerates incrementally")
+  local seen = {}
+  local count = 0
+  while true do
+    local job = iterate()
+    if job == nil then
+      break
+    end
+    count = count + 1
+    Assert.isNil(seen[job.jobKey], "the enumerator visits each job once: " .. tostring(job.jobKey))
+    seen[job.jobKey] = true
+    Assert.equal(job.jobKey, job.kind .. ":" .. job.key, "enumerated identities stay canonical")
+  end
+  Assert.equal(count, #expected, "the enumerator covers the complete inventory")
+  for _, job in ipairs(expected) do
+    Assert.isTrue(seen[job.jobKey] == true, "the enumerator visits " .. job.jobKey)
+  end
+end
+
+-- A published message bank validates warm through the worker-facing
+-- wrapper without a source reader: the authoritative family rule decides
+-- reuse, and a missing bank validates cold. No ROM handle is opened.
+local function publishWarmBank(cacheFs, generation, bankId)
+  local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+  local marker = "worker-warm-marker-" .. tostring(bankId)
+  cacheFs:writeLua(ArtifactState.path("message-bank", tostring(bankId)), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "message-bank",
+    key = tostring(bankId),
+    marker = marker,
+  })
+  cacheFs:write(FieldMessageCache.bankMarkerPath(bankId), marker)
+  cacheFs:writeLua(FieldMessageCache.bankPath(bankId), {
+    schema = FieldMessageCache.SCHEMA,
+    bankId = bankId,
+  })
+end
+
+function T.worker_validation_reuses_published_families_without_source()
+  local producerId = "d" .. string.rep("3", 64)
+  local generation = "worker-validation-generation"
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  publishWarmBank(cacheFs, generation, 219)
+  local context = { cacheFs = cacheFs, versionId = "heartgold" }
+  local warm = {
+    kind = "message-bank",
+    key = "219",
+    generationId = generation,
+    producerFingerprint = producerId,
+  }
+  Assert.isTrue(ArtifactJobs.validateCurrent(warm, context) == true, "a published bank validates warm without source")
+  Assert.isNil(context.romFs, "warm validation opens no source reader")
+  local cold = {
+    kind = "message-bank",
+    key = "220",
+    generationId = generation,
+    producerFingerprint = producerId,
+  }
+  Assert.isFalse(ArtifactJobs.validateCurrent(cold, context), "a missing bank validates cold")
+end
+
+-- The worker-local source-plan memo reads the published inventory once
+-- per worker generation: two lookups share one read, an identity change
+-- re-reads, and a mismatched identity is rejected without poisoning
+-- the memo.
+local function warmSourceCache(generation, producerId)
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(SourcePlan.PATH, {
+    schema = SourcePlan.SCHEMA,
+    versionId = "heartgold",
+    romSha1 = string.rep("b", 40),
+    generationId = generation,
+    producerId = producerId,
+    world = { maps = { { id = 7 } }, analysis = { excluded = {} } },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "memo-index-marker" },
+    scriptPlan = { members = { { memberId = 1 } }, generationKey = "memo-script-generation" },
+    audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapCellKeys = { [7] = {} },
+  })
+  return cacheFs
+end
+
+function T.worker_source_plan_memo_reads_once_per_generation()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local producerId = "d" .. string.rep("3", 64)
+  local generation = "memo-generation"
+  local cacheFs = warmSourceCache(generation, producerId)
+  local reads = 0
+  local realRead = SourcePlan.read
+  SourcePlan.read = function(cache, identity)
+    reads = reads + 1
+    return realRead(cache, identity)
+  end
+  local ok, failure = pcall(function()
+    local context = { cacheFs = cacheFs, versionId = "heartgold" }
+    local identity = { versionId = "heartgold", generationId = generation, producerId = producerId }
+    local first = assert(ArtifactJobs.sourcePlanForContext(context, identity))
+    local second = assert(ArtifactJobs.sourcePlanForContext(context, identity))
+    Assert.isTrue(first == second, "the same generation memoizes its record")
+    Assert.equal(reads, 1, "two source-plan-dependent lookups read once")
+    local stale = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("9", 64) }
+    local rejected, reason = ArtifactJobs.sourcePlanForContext(context, stale)
+    Assert.isNil(rejected, "a mismatched producer identity is rejected")
+    Assert.notNil(reason, "the rejection names its cause")
+    local rotatedGeneration = "memo-generation-next"
+    local rotatedCache = warmSourceCache(rotatedGeneration, producerId)
+    context.cacheFs = rotatedCache
+    local rotated = { versionId = "heartgold", generationId = rotatedGeneration, producerId = producerId }
+    Assert.notNil(ArtifactJobs.sourcePlanForContext(context, rotated), "a replaced generation reads its own record")
+    Assert.equal(reads, 3, "identity changes re-read through the validating reader")
+  end)
+  SourcePlan.read = realRead
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 -- A missing Oak audio reference fails loudly naming the semantic

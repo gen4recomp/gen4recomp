@@ -313,20 +313,20 @@ function T.conflicting_shared_bytes_are_reported()
   second:addSharedFile("geometry/shared")
   second:stageFs():write("maps/66/complete", "ready")
   second:addOwnedRoot("maps/66")
-  second:finishSuccess({ marker = "complete" })
-  local ok = pcall(function()
-    second:publish({
-      generationId = generation,
-      epoch = 1,
-      kind = kind,
-      key = "66",
-      jobKey = kind .. ":66",
-    })
+  -- Worker-side reconciliation seals shared proof before success: the
+  -- contradiction fails here, never reaching controller publication.
+  local ok, failure = pcall(function()
+    second:finishSuccess({ marker = "complete" })
   end)
   Assert.isFalse(
     ok,
     "a staged shared file that contradicts live bytes is corruption and must fail before any reference is exposed"
   )
+  Assert.isTrue(
+    tostring(failure):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "the worker reports the shared contradiction"
+  )
+  second:abort()
   Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict must not silently reuse either byte sequence")
 end
 

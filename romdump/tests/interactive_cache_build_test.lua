@@ -373,7 +373,10 @@ function T.summary_dispatch_waits_for_bank_publication()
   Assert.isTrue(submittedSet(pool)["message-summary:global"] == true, "the summary dispatches once every bank is ready")
 end
 
-function T.warm_summary_answers_without_dispatch()
+-- A published summary succeeds through pool readiness with no
+-- controller-side family validation: the session admits warm demand to
+-- the pool, and each ready reply is worker proof of reuse.
+function T.warm_summary_succeeds_through_pool_readiness()
   local pool = recordingPool()
   local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
   publishMessageBank(cacheFs, 3, "bank-marker-3")
@@ -391,22 +394,43 @@ function T.warm_summary_answers_without_dispatch()
     version = "heartgold",
     bankIds = { 3, 5 },
   })
-  local session = summarySession(pool, cacheFs, { 3, 5 })
-  local cold, coldFailure = session:requestJob("message-summary", "global", "required")
-  Assert.isFalse(cold, "a newly registered warm interest answers pending until the pump validates it")
-  Assert.isNil(coldFailure, "registration reports no failure")
-  session:update()
-  local ready, failure = session:requestJob("message-summary", "global", "required")
-  for _ = 1, 9 do
-    if ready then
-      break
-    end
-    session:update()
-    ready, failure = session:requestJob("message-summary", "global", "required")
+  local realValidate = ArtifactJobs.validate
+  local validations = 0
+  ArtifactJobs.validate = function(...)
+    validations = validations + 1
+    return realValidate(...)
   end
-  Assert.isTrue(ready, "a published summary answers ready once the pump establishes it")
-  Assert.isNil(failure, "a published summary reports no failure")
-  Assert.equal(#pool.submitted, 0, "warm readiness dispatches nothing")
+  local ok, failure = pcall(function()
+    local session = summarySession(pool, cacheFs, { 3, 5 })
+    local cold, coldFailure = session:requestJob("message-summary", "global", "required")
+    Assert.isFalse(cold, "a newly registered warm interest answers pending until the pump admits it")
+    Assert.isNil(coldFailure, "registration reports no failure")
+    session:update()
+    pool.states["message-bank:3"] = "ready"
+    pool.states["message-bank:5"] = "ready"
+    session:update()
+    session:update()
+    Assert.isTrue(
+      submittedSet(pool)["message-summary:global"] == true,
+      "the proven banks wake their parent into the pool"
+    )
+    pool.states["message-summary:global"] = "ready"
+    local ready, readyFailure = session:requestJob("message-summary", "global", "required")
+    for _ = 1, 9 do
+      if ready then
+        break
+      end
+      session:update()
+      ready, readyFailure = session:requestJob("message-summary", "global", "required")
+    end
+    Assert.isTrue(ready, "a published summary answers ready once the pool proves it")
+    Assert.isNil(readyFailure, "a published summary reports no failure")
+    Assert.equal(validations, 0, "pool-proven output runs no controller validation")
+  end)
+  ArtifactJobs.validate = realValidate
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 -- Dependency scheduling through the real session and pool: cold requests
@@ -504,11 +528,181 @@ local function submissionCount(pool, jobKey)
   return count
 end
 
+-- Sweep admission reads a construction-time worker bound: after
+-- construction the scheduler never consults pool diagnostics again, so
+-- replacing diagnostics with a raising stub cannot disturb capacity
+-- waits, wakeups, or sweep convergence.
+function T.sweep_admission_uses_the_construction_time_worker_bound()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local diagnosticsCalls = 0
+  local realDiagnostics = pool.diagnostics
+  pool.diagnostics = function(self)
+    diagnosticsCalls = diagnosticsCalls + 1
+    return realDiagnostics(self)
+  end
+  local session, _ = isolatedSession("sweep-bound-generation", pool, backend)
+  Assert.equal(diagnosticsCalls, 1, "construction captures the worker count once")
+  pool.diagnostics = function()
+    error("scheduler census must not run on the game thread")
+  end
+  session.adopted = {
+    indexBundle = { index = { matrices = {} }, indexMarker = "bound-index-marker" },
+    scriptPlan = { members = {}, generationKey = "bound-script-generation" },
+    audioPlan = { index = {}, bankPlans = {} },
+    messageBankIds = {},
+    audioBankIds = {},
+    scriptMemberIds = {},
+    iconPageIds = {},
+    portraitPageIds = {},
+    mapDataIds = {},
+    mapIds = {},
+    mapCellKeys = {},
+    world = { maps = {} },
+  }
+  session.sourceLoaded = true
+  session.pagesKnown = true
+  session:enableSweep()
+  for _ = 1, 30 do
+    session:update()
+  end
+  local outcomes = session:outcomes()
+  Assert.isTrue(#outcomes > 0, "sweep enrollment converges without scheduler census")
+end
+
+-- Loaded sweep enrolls a bounded chunk per update without materializing
+-- the complete corpus: with the materialized inventory patched to raise,
+-- one update visits only a small prefix, while many updates still cover
+-- exactly the canonical union.
+function T.loaded_sweep_enrolls_incrementally_without_materializing_the_corpus()
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local matrices = {}
+  for matrixMemberId = 1, 3 do
+    local cells = {}
+    for index = 0, 199 do
+      cells[#cells + 1] = {
+        matrixMemberId = matrixMemberId,
+        index = index,
+        x = 0,
+        z = 0,
+        mapHeaderId = 0,
+        altitude = 0,
+        landDataMemberId = 1,
+        areaDataMemberId = 2,
+      }
+    end
+    matrices[#matrices + 1] = { matrixMemberId = matrixMemberId, cells = cells }
+  end
+  local messageBankIds = FieldMessageCompiler.requiredBankIds()
+  local mapDataIds = FieldMapDataCompiler.supportedMapIds()
+  local mapIds = {}
+  local mapCellKeys = {}
+  for mapId = 1, 10 do
+    mapIds[#mapIds + 1] = mapId
+    mapCellKeys[mapId] = { "1-0", "2-0" }
+  end
+  local plans = {
+    indexBundle = { index = { matrices = matrices }, indexMarker = "incremental-index-marker" },
+    scriptPlan = { members = { { memberId = 149 }, { memberId = 150 } }, generationKey = "inc-script-generation" },
+    audioPlan = { index = {}, bankPlans = { { bankId = 7 }, { bankId = 8 } } },
+    messageBankIds = messageBankIds,
+    audioBankIds = { 7, 8 },
+    scriptMemberIds = { 149, 150 },
+    iconPageIds = { 0 },
+    portraitPageIds = { 0 },
+    mapDataIds = mapDataIds,
+    mapIds = mapIds,
+    mapCellKeys = mapCellKeys,
+    world = { maps = {} },
+  }
+  local expected = ArtifactJobs.completeJobs(plans)
+  Assert.isTrue(#expected > 600, "the loaded fixture spans hundreds of jobs")
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  pool.diagnostics = nil
+  local session, _ = isolatedSession("incremental-sweep-generation", pool, backend)
+  session.adopted = plans
+  session.sourceLoaded = true
+  session.pagesKnown = true
+  session:enableSweep()
+  local realCompleteJobs = ArtifactJobs.completeJobs
+  ArtifactJobs.completeJobs = function()
+    error("interactive sweep must not materialize the complete corpus")
+  end
+  local ok, failure = pcall(function()
+    session:update()
+    local firstPass = session:outcomes()
+    Assert.isTrue(#firstPass < 40, "one update visits only a bounded chunk, not the corpus: " .. tostring(#firstPass))
+    -- Enrollment shares the bounded planning slice with every enrolled
+    -- entry, so later updates enroll less per turn; iterate to quiescence
+    -- (no growth across sustained pumping) rather than a fixed turn
+    -- count, which a loaded machine can outlast without product change.
+    local lastCount, stagnant = 0, 0
+    for _ = 1, 20000 do
+      if #session:outcomes() >= #expected then
+        break
+      end
+      session:update()
+      if #session:outcomes() == lastCount then
+        stagnant = stagnant + 1
+        if stagnant >= 500 then
+          break
+        end
+      else
+        lastCount, stagnant = #session:outcomes(), 0
+      end
+    end
+    local outcomes = session:outcomes()
+    Assert.equal(#outcomes, #expected, "sweep enrollment covers the canonical union")
+    local seen = {}
+    for _, outcome in ipairs(outcomes) do
+      seen[outcome.jobKey] = true
+    end
+    for _, job in ipairs(expected) do
+      Assert.isTrue(seen[job.jobKey] == true, "sweep enrolls " .. job.jobKey)
+    end
+  end)
+  ArtifactJobs.completeJobs = realCompleteJobs
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- A ready pool reply is worker proof, not a request for controller
+-- validation: the entry succeeds with zero family-validator calls on
+-- the session thread.
+function T.ready_pool_results_succeed_without_controller_revalidation()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("ready-without-revalidation", pool, backend)
+  local realValidate = ArtifactJobs.validate
+  ArtifactJobs.validate = function()
+    error("controller must not deep-validate fresh pool output")
+  end
+  local ok, failure = pcall(function()
+    local ready, requestFailure = session:requestJob("message-bank", "219", "required")
+    Assert.isFalse(ready, "the undispatched bank answers pending")
+    Assert.isNil(requestFailure, "registration reports no failure")
+    session:update()
+    Assert.equal(submissionCount(pool, "message-bank:219"), 1, "the cold bank dispatches once")
+    pool.states["message-bank:219"] = "ready"
+    session:update()
+    local established, establishedFailure = session:requestJob("message-bank", "219", "required")
+    Assert.isTrue(established, "the pool-proven bank answers ready")
+    Assert.isNil(establishedFailure, "the proven bank reports no failure")
+  end)
+  ArtifactJobs.validate = realValidate
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 -- The nonblocking surface registers interest and reports retained state:
 -- repeated requests, readiness polls and outcome snapshots perform no
 -- cache reads and no family validation. A newly registered warm interest
--- answers pending until the update pump validates it; once the pump
--- establishes ready, later polls answer ready without further work.
+-- answers pending until the update pump admits it; once staged pool
+-- replies prove ready, later polls answer ready without further work.
 function T.public_observations_register_without_cache_or_validation_io()
   local backend = FakeCache.new()
   local cacheReads = 0
@@ -591,8 +785,12 @@ function T.public_observations_register_without_cache_or_validation_io()
     Assert.equal(calls.planRead, 0, "public observations read no source inventory")
     Assert.equal(calls.publishedPlans, 0, "public observations adopt no published plans")
     Assert.equal(#pool.submitted, 0, "registration submits no worker jobs")
-    -- The update pump establishes warm banks within a bounded per-update
-    -- budget, so poll until every bank answers ready.
+    -- The update pump admits warm banks to the pool within a bounded
+    -- per-update budget; staged ready replies stand in for worker reuse
+    -- proof, so poll until every bank answers ready.
+    for _, bankId in ipairs(bankIds) do
+      pool.states["message-bank:" .. tostring(bankId)] = "ready"
+    end
     local established = false
     for _ = 1, 100 do
       session:update()
@@ -714,6 +912,8 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     local ready, failure = session:requestJob("mon-portrait-page", "0", "required")
     Assert.isFalse(ready, "the portrait stays pending while its layout is cold")
     Assert.isNil(failure, "the portrait reports no failure while its layout is pending")
+    pool.states["source-plan:global"] = "ready"
+    pool.states["mon-catalog:global"] = "ready"
     session:update()
     Assert.isTrue(session.sourceLoaded, "the staged inventory is adopted before layout work")
     pool.states["mon-layout:global"] = "failed"
@@ -742,8 +942,8 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     Assert.isFalse(ready, "the summary stays pending while one bank is cold")
     Assert.isNil(failure, "the summary reports no failure while its banks are pending")
     session:update()
-    Assert.equal(submissionCount(pool, "message-bank:5"), 1, "only the cold bank dispatches")
-    Assert.equal(submissionCount(pool, "message-bank:3"), 0, "the warm bank never dispatches")
+    Assert.equal(submissionCount(pool, "message-bank:5"), 1, "only the cold bank dispatches past its warm sibling")
+    Assert.equal(submissionCount(pool, "message-bank:3"), 1, "the warm bank is admitted once for worker proof")
     pool.states["message-bank:5"] = "failed"
     for _ = 1, 2 do
       session:update()
@@ -773,8 +973,9 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
     -- pool operation on the next pump, never inside the public call.
     session:update()
     Assert.deepEqual(pool.retried, { "message-bank:5" }, "exactly the failed leaf retries once")
-    Assert.equal(submissionCount(pool, "message-bank:3"), 0, "retry never rebuilds the healthy sibling")
+    Assert.equal(submissionCount(pool, "message-bank:3"), 1, "retry never rebuilds the healthy sibling")
     publishWarmBank(cacheFs, generation, 5)
+    pool.states["message-bank:3"] = "ready"
     pool.states["message-bank:5"] = "ready"
     for _ = 1, 2 do
       session:update()
@@ -786,10 +987,10 @@ function T.deferred_prerequisite_failure_reaches_the_waiting_demand()
   end
 end
 
--- Warm parents wake their dependents without resubmission: published banks
--- answer through reuse, and the summary dispatches exactly once while its
--- healthy prerequisites never occupy a worker.
-function T.reused_prerequisites_wake_their_parent_without_resubmission()
+-- Warm parents wake their dependents through pool proof: published banks
+-- are admitted once each for worker reuse validation, and the summary
+-- dispatches exactly once its prerequisites prove ready.
+function T.proven_prerequisites_wake_their_parent_through_the_pool()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
   local generation = "reuse-wake-generation"
@@ -797,17 +998,22 @@ function T.reused_prerequisites_wake_their_parent_without_resubmission()
   session.messageBankIds = { 3, 5 }
   publishWarmBank(cacheFs, generation, 3)
   publishWarmBank(cacheFs, generation, 5)
-  for _ = 1, 2 do
-    session:update()
-  end
   local summaryReady, summaryFailure = session:requestJob("message-summary", "global", "required")
-  Assert.isFalse(summaryReady, "the unpublished summary stays pending while its banks are reused")
-  Assert.isNil(summaryFailure, "reused prerequisites report no failure")
+  Assert.isFalse(summaryReady, "the unpublished summary stays pending while its banks prove out")
+  Assert.isNil(summaryFailure, "proving prerequisites report no failure")
   for _ = 1, 2 do
     session:update()
   end
-  Assert.equal(submissionCount(pool, "message-bank:3"), 0, "a reused bank never occupies a worker")
-  Assert.equal(submissionCount(pool, "message-bank:5"), 0, "a reused bank never occupies a worker")
+  Assert.equal(submissionCount(pool, "message-bank:3"), 1, "a warm bank is admitted once for worker proof")
+  Assert.equal(submissionCount(pool, "message-bank:5"), 1, "a warm bank is admitted once for worker proof")
+  Assert.isNil(submittedSet(pool)["message-summary:global"], "the parent waits for proven prerequisites")
+  pool.states["message-bank:3"] = "ready"
+  pool.states["message-bank:5"] = "ready"
+  for _ = 1, 4 do
+    session:update()
+  end
+  Assert.equal(submissionCount(pool, "message-bank:3"), 1, "a proven bank never resubmits")
+  Assert.equal(submissionCount(pool, "message-bank:5"), 1, "a proven bank never resubmits")
   Assert.equal(submissionCount(pool, "message-summary:global"), 1, "the woken parent dispatches exactly once")
 end
 
@@ -991,8 +1197,6 @@ local function openLiveSession(options)
     priority = 100,
     submitted = false,
     ready = true,
-    validated = true,
-    validationPending = false,
     failure = nil,
     failureClass = nil,
     causeJobKey = nil,
@@ -1315,18 +1519,27 @@ function T.blocking_ensure_never_waits_on_an_absent_parent()
   publishBankLive(env, 3, "synthetic:romshape:003")
   publishBankLive(env, 5, "synthetic:romshape:005")
   requestJob(env, "message-bank", "3", "required")
+  pumpSession(env, 1)
+  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "the warm bank dispatches for worker proof")
+  pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "reused")
   pumpSession(env, 2)
   local bankReady, bankFailure = requestJob(env, "message-bank", "3", "required")
-  Assert.isTrue(bankReady, "a published bank answers ready once the pump establishes it")
-  Assert.isNil(bankFailure, "a published bank reports no failure")
-  Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "a warm bank is never submitted")
+  Assert.isTrue(bankReady, "a proven bank answers ready")
+  Assert.isNil(bankFailure, "a proven bank reports no failure")
+  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "a proven bank holds no worker")
+  requestJob(env, "message-bank", "5", "required")
+  pumpSession(env, 1)
+  pushWorkerReply(env, 1, "message-bank", "5", dispatchedStage(env, 1, "message-bank:5", 1), "reused")
+  pumpSession(env, 2)
   publishSummaryLive(env, { 3, 5 }, { [3] = "synthetic:romshape:003", [5] = "synthetic:romshape:005" })
   requestJob(env, "message-summary", "global", "required")
+  pumpSession(env, 1)
+  pushWorkerReply(env, 1, "message-summary", "global", dispatchedStage(env, 1, "message-summary:global", 1), "reused")
   pumpSession(env, 2)
   local ready, failure = requestJob(env, "message-summary", "global", "required")
-  Assert.isTrue(ready, "a published summary answers ready")
-  Assert.isNil(failure, "a published summary reports no failure")
-  Assert.equal(poolStatus(env, "message-summary", "global"), "unknown", "a warm parent is never submitted")
+  Assert.isTrue(ready, "a proven summary answers ready")
+  Assert.isNil(failure, "a proven summary reports no failure")
+  Assert.equal(poolStatus(env, "message-summary", "global"), "ready", "a proven parent holds no worker")
 
   local waitCalls = 0
   local realWait = env.pool.wait
@@ -1361,7 +1574,7 @@ function T.required_request_promotes_an_already_queued_sweep()
   )
   Assert.equal(dispatchCount(env, "message-bank", "5"), 1, "promotion keeps one job under its identity")
   Assert.equal(poolStatus(env, "message-bank", "5"), "running", "the promoted bank executes next")
-  Assert.equal(poolStatus(env, "audio-summary", "global"), "queued", "near work still waits its turn")
+  Assert.equal(poolStatus(env, "audio-summary", "global"), "unknown", "near work never occupies a worker early")
   shutdownEnv(env)
 end
 
@@ -1375,18 +1588,37 @@ function T.shared_prerequisite_inherits_urgent_demand()
   publishAudioCatalogLive(env, "audio-catalog-marker-shared")
   requestJob(env, "audio-summary", "global", "required")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "audio-summary:global" }, "the occupant holds the worker")
-  requestJob(env, "mon-icon-page", "0", "sweep")
-  requestJob(env, "mon-icon-page", "1", "sweep")
-  pumpSession(env, 1)
-  Assert.equal(poolStatus(env, "mon-layout", "global"), "queued", "the shared layout waits behind the occupant")
-  requestJob(env, "message-bank", "3", "near")
-  requestJob(env, "mon-icon-page", "0", "required")
-  pushWorkerReply(env, 1, "audio-summary", "global", dispatchedStage(env, 1, "audio-summary:global", 1), "failed")
-  pumpSession(env, 1)
+  Assert.deepEqual(env.host.dispatched, { "audio-catalog:global" }, "the catalog proves first for worker reuse")
+  pushWorkerReply(env, 1, "audio-catalog", "global", dispatchedStage(env, 1, "audio-catalog:global", 1), "reused")
+  pumpSession(env, 2)
   Assert.deepEqual(
     env.host.dispatched,
-    { "audio-summary:global", "mon-layout:global" },
+    { "audio-catalog:global", "audio-summary:global" },
+    "the occupant holds the worker"
+  )
+  requestJob(env, "mon-icon-page", "0", "sweep")
+  requestJob(env, "mon-icon-page", "1", "sweep")
+  pumpSession(env, 2)
+  Assert.equal(poolStatus(env, "mon-catalog", "global"), "queued", "the shared catalog waits behind the occupant")
+  requestJob(env, "mon-icon-page", "0", "required")
+  -- Required urgency cascades through the waiting layout to its queued
+  -- catalog before the occupant releases the worker.
+  pumpSession(env, 4)
+  pushWorkerReply(env, 1, "audio-summary", "global", dispatchedStage(env, 1, "audio-summary:global", 1), "failed")
+  pumpSession(env, 2)
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "audio-catalog:global", "audio-summary:global", "mon-catalog:global" },
+    "the required catalog inherits the urgent demand"
+  )
+  pushWorkerReply(env, 1, "mon-catalog", "global", dispatchedStage(env, 1, "mon-catalog:global", 1), "reused")
+  pumpSession(env, 1)
+  Assert.equal(poolStatus(env, "mon-layout", "global"), "queued", "the proven catalog wakes its layout")
+  requestJob(env, "message-bank", "3", "near")
+  pumpSession(env, 2)
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "audio-catalog:global", "audio-summary:global", "mon-catalog:global", "mon-layout:global" },
     "the shared prerequisite inherits the urgent demand"
   )
   Assert.equal(dispatchCount(env, "mon-layout", "global"), 1, "the shared job dispatches once for both pages")
@@ -1403,9 +1635,17 @@ function T.retry_repairs_only_the_failed_leaf()
   local ready, failure = requestJob(env, "message-summary", "global", "required")
   Assert.isFalse(ready, "the summary is pending while one bank is cold")
   Assert.isNil(failure, "no failure is reported while the summary waits")
-  Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "the healthy bank is never submitted")
+  Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "the healthy bank is never submitted before admission")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:5" }, "only the cold bank dispatches")
+  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "the warm bank dispatches first for worker proof")
+  pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "reused")
+  pumpSession(env, 2)
+  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the reused bank proves ready without publication")
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "message-bank:3", "message-bank:5" },
+    "the cold bank dispatches once the worker frees"
+  )
   pushWorkerReply(env, 1, "message-bank", "5", dispatchedStage(env, 1, "message-bank:5", 1), "failed")
   pumpSession(env, 2)
   local blocked, blockedFailure = requestJob(env, "message-summary", "global", "required")
@@ -1420,7 +1660,7 @@ function T.retry_repairs_only_the_failed_leaf()
     return env.session:retry("message-summary", "global", "required")
   end)
   Assert.isTrue(retried == true or retried == false, "an explicit retry of the blocked parent is accepted")
-  Assert.equal(poolStatus(env, "message-bank", "3"), "unknown", "retry never rebuilds the healthy sibling")
+  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "retry never rebuilds the proven sibling")
   Assert.equal(env.session:status().failed, 0, "retry clears the leaf and parent failure annotations")
   -- The retry records intent; the budgeted admission step performs the
   -- pool operation on the next pump, which dispatches exactly one new
@@ -1428,7 +1668,7 @@ function T.retry_repairs_only_the_failed_leaf()
   pumpSession(env, 1)
   Assert.deepEqual(
     env.host.dispatched,
-    { "message-bank:5", "message-bank:5" },
+    { "message-bank:3", "message-bank:5", "message-bank:5" },
     "the retry creates exactly one new leaf attempt"
   )
   local retriedStatus = poolStatus(env, "message-bank", "5")
@@ -1442,7 +1682,7 @@ function T.retry_repairs_only_the_failed_leaf()
   pumpSession(env, 2)
   Assert.deepEqual(
     env.host.dispatched,
-    { "message-bank:5", "message-bank:5", "message-summary:global" },
+    { "message-bank:3", "message-bank:5", "message-bank:5", "message-summary:global" },
     "the parent dispatches once its repaired bank publishes"
   )
   stageSummaryReply(
@@ -1455,7 +1695,7 @@ function T.retry_repairs_only_the_failed_leaf()
   local repaired, repairedFailure = requestJob(env, "message-summary", "global", "required")
   Assert.isTrue(repaired, "the parent succeeds once its repaired closure publishes")
   Assert.isNil(repairedFailure, "the repaired parent reports no failure")
-  Assert.equal(dispatchCount(env, "message-bank", "3"), 0, "the healthy sibling never dispatched")
+  Assert.equal(dispatchCount(env, "message-bank", "3"), 1, "the healthy sibling dispatched once for proof")
   shutdownEnv(env)
 end
 
@@ -1541,22 +1781,43 @@ function T.required_demand_outranks_earlier_near_sharing()
   publishAudioCatalogLive(env, "audio-catalog-marker-mixed")
   requestJob(env, "audio-summary", "global", "required")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "audio-summary:global" }, "the occupant holds the worker")
-  requestJob(env, "message-bank", "3", "near")
-  requestJob(env, "mon-icon-page", "0", "sweep")
-  requestJob(env, "mon-icon-page", "1", "sweep")
-  pumpSession(env, 1)
-  Assert.equal(poolStatus(env, "mon-layout", "global"), "queued", "the shared layout waits behind the occupant")
-  requestJob(env, "mon-icon-page", "1", "required")
-  pushWorkerReply(env, 1, "audio-summary", "global", dispatchedStage(env, 1, "audio-summary:global", 1), "failed")
-  pumpSession(env, 1)
+  Assert.deepEqual(env.host.dispatched, { "audio-catalog:global" }, "the catalog proves first for worker reuse")
+  pushWorkerReply(env, 1, "audio-catalog", "global", dispatchedStage(env, 1, "audio-catalog:global", 1), "reused")
+  pumpSession(env, 2)
   Assert.deepEqual(
     env.host.dispatched,
-    { "audio-summary:global", "mon-layout:global" },
-    "the required layout outranks the earlier near bank"
+    { "audio-catalog:global", "audio-summary:global" },
+    "the occupant holds the worker"
+  )
+  requestJob(env, "mon-icon-page", "0", "sweep")
+  requestJob(env, "mon-icon-page", "1", "sweep")
+  pumpSession(env, 2)
+  Assert.equal(poolStatus(env, "mon-catalog", "global"), "queued", "the shared catalog waits behind the occupant")
+  requestJob(env, "mon-icon-page", "1", "required")
+  -- Required urgency cascades through the waiting layout to its queued
+  -- catalog before the occupant releases the worker.
+  pumpSession(env, 4)
+  pushWorkerReply(env, 1, "audio-summary", "global", dispatchedStage(env, 1, "audio-summary:global", 1), "failed")
+  pumpSession(env, 2)
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "audio-catalog:global", "audio-summary:global", "mon-catalog:global" },
+    "the required catalog outranks later near demand"
+  )
+  pushWorkerReply(env, 1, "mon-catalog", "global", dispatchedStage(env, 1, "mon-catalog:global", 1), "reused")
+  pumpSession(env, 1)
+  Assert.equal(poolStatus(env, "mon-layout", "global"), "queued", "the proven catalog wakes its layout")
+  -- Near demand arriving after the required job queued still waits its
+  -- turn behind the shared prerequisite.
+  requestJob(env, "message-bank", "3", "near")
+  pumpSession(env, 2)
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "audio-catalog:global", "audio-summary:global", "mon-catalog:global", "mon-layout:global" },
+    "the required layout outranks the near bank"
   )
   Assert.equal(dispatchCount(env, "mon-layout", "global"), 1, "the shared job dispatches once for both pages")
-  Assert.equal(poolStatus(env, "message-bank", "3"), "queued", "the earlier near bank still waits its turn")
+  Assert.equal(poolStatus(env, "message-bank", "3"), "queued", "the near bank still waits its turn")
   shutdownEnv(env)
 end
 
@@ -1567,7 +1828,14 @@ function T.failed_dependency_blocks_parent_before_submission()
   Assert.isFalse(pending, "the summary stays pending while one bank is cold")
   Assert.isNil(pendingFailure, "no failure is reported while the summary waits")
   pumpSession(env, 1)
-  Assert.deepEqual(env.host.dispatched, { "message-bank:5" }, "only the cold bank dispatches")
+  Assert.deepEqual(env.host.dispatched, { "message-bank:3" }, "the warm bank dispatches first for worker proof")
+  pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "reused")
+  pumpSession(env, 2)
+  Assert.deepEqual(
+    env.host.dispatched,
+    { "message-bank:3", "message-bank:5" },
+    "the cold bank dispatches once the worker frees"
+  )
   pushWorkerReply(env, 1, "message-bank", "5", dispatchedStage(env, 1, "message-bank:5", 1), "failed")
   pumpSession(env, 2)
   local blocked, blockedFailure = requestJob(env, "message-summary", "global", "required")
@@ -2245,14 +2513,9 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
     publishedReads = publishedReads + 1
     return realPublishedPlans(...)
   end
-  -- Every family except the adopted inventory answers from its staged
-  -- record, so the pump can settle the scope without worker execution.
-  ArtifactJobs.validate = function(first, second, kind, ...)
-    if kind ~= "source-plan" then
-      return true
-    end
-    return realValidate(first, second, kind, ...)
-  end
+  -- Every family answers through pool proof: staged ready replies stand
+  -- in for worker reuse validation, so the pump settles the scope once
+  -- every admitted entry proves out.
   local ok, failure = pcall(function()
     CacheFs.forVersion = function(versionId)
       assert(versionId == "heartgold", "session fixture stays on heartgold")
@@ -2266,18 +2529,22 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
       sweepEnabled = false,
     })
     local cold, coldFailure = session:requestMilestone("bootstrap", "required")
-    Assert.isFalse(cold, "bootstrap stays pending until the pump validates its roster")
+    Assert.isFalse(cold, "bootstrap stays pending until the pump admits its roster")
     Assert.isNil(coldFailure, "bootstrap reports no failure while pending")
     local settled = false
     for _ = 1, 40 do
+      session:update()
+      for _, jobKey in ipairs(pool.submitted) do
+        pool.states[jobKey] = "ready"
+      end
       session:update()
       if session:status().settled then
         settled = true
         break
       end
     end
-    Assert.isTrue(settled, "the stub-validated bootstrap settles with an idle pool")
-    Assert.equal(#pool.submitted, 0, "validation success never occupies a worker")
+    Assert.isTrue(settled, "the pool-proven bootstrap settles")
+    Assert.isTrue(#pool.submitted > 0, "warm demand reaches the pool for worker proof")
     local before = {
       bootstrap = counts.bootstrap,
       core = counts.core,
@@ -2458,9 +2725,10 @@ function T.required_promotion_reaches_paused_near_enrollment()
     for _, memberId in ipairs(scriptIds) do
       session:requestJob("script-member", tostring(memberId), "near")
     end
-    -- Children wait for the inventory entry to become ready, so the first
-    -- passes register and validate while later bounded passes submit: keep
-    -- pumping until some members are queued while others still wait.
+    -- The inventory proves through one staged pool reply, so adoption
+    -- populates membership and the bounded passes submit members
+    -- incrementally while later members still wait.
+    pool.states["source-plan:global"] = "ready"
     local submitted, unsubmitted = 0, 0
     for _ = 1, 8 do
       session:update()

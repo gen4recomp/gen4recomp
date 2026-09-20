@@ -492,12 +492,6 @@ function T.repeated_scheduling_passes_do_bounded_work_with_urgent_demand_first()
       if counting.enabled then
         counting.validate = counting.validate + 1
       end
-      local kind = select(3, ...)
-      -- Sweep members that need no worker execution settle ready here, so a
-      -- later pass must re-drive budget-parked entries while the pool is idle.
-      if kind == "script-member" then
-        return true
-      end
       return realValidate(...)
     end,
   }
@@ -534,11 +528,18 @@ function T.repeated_scheduling_passes_do_bounded_work_with_urgent_demand_first()
       return snapshot
     end
     local first = measuredUpdate()
-    -- Budget-paused sweep work rejoins planning on later passes even though
-    -- the pool reports no progress, until every demand settles worker-free.
+    -- Staged ready replies stand in for worker reuse proof: the source
+    -- inventory adopts, members admit to the pool, and each proves out
+    -- on a later pass while the pool reports no real progress. Later
+    -- passes must re-drive budget-parked entries until every demand
+    -- settles through the pool.
+    pool.states["source-plan:global"] = "ready"
     local passes = { first }
     local settled = false
-    for _ = 1, 10 do
+    for _ = 1, 12 do
+      for _, jobKey in ipairs(pool.submitted) do
+        pool.states[jobKey] = "ready"
+      end
       settled = true
       for memberId = 1, 41 do
         local entry = session.byKey["script-member:" .. tostring(memberId)]
@@ -579,7 +580,7 @@ function T.repeated_scheduling_passes_do_bounded_work_with_urgent_demand_first()
   for index, pass in ipairs(result.passes) do
     Assert.isTrue(pass.nodes <= 32, "repeat pass " .. tostring(index) .. " stays bounded, got " .. tostring(pass.nodes))
   end
-  Assert.isTrue(result.settled, "parked sweep work is re-driven without worker progress")
+  Assert.isTrue(result.settled, "parked sweep work is re-driven until pool proof settles it")
 end
 
 function T.large_sweep_corpus_keeps_settling_worker_free_demand()
@@ -623,12 +624,6 @@ function T.large_sweep_corpus_keeps_settling_worker_free_demand()
       if counting.enabled then
         counting.validate = counting.validate + 1
       end
-      local kind = select(3, ...)
-      -- Every sweep member settles without worker execution, so progress
-      -- depends only on planning reaching it.
-      if kind == "script-member" then
-        return true
-      end
       return realValidate(...)
     end,
   }
@@ -637,7 +632,9 @@ function T.large_sweep_corpus_keeps_settling_worker_free_demand()
     local session = openSession("large-sweep-generation", pool)
     -- Metadata owners are demanded first, as milestones do: a lazily
     -- registered owner behind thousands of waiters would only take its
-    -- FIFO turn after them all.
+    -- FIFO turn after them all. One staged pool reply adopts the
+    -- published inventory.
+    pool.states["source-plan:global"] = "ready"
     session:requestJob("source-plan", "global", "sweep")
     for _ = 1, 5 do
       session:update()
@@ -657,6 +654,11 @@ function T.large_sweep_corpus_keeps_settling_worker_free_demand()
       passes[#passes + 1] = counting.dependencies + counting.validate
       counting.dependencies = 0
       counting.validate = 0
+      -- Staged ready replies stand in for worker reuse proof so
+      -- planning reach, not pool silence, is what the bounds measure.
+      for _, jobKey in ipairs(pool.submitted) do
+        pool.states[jobKey] = "ready"
+      end
     end
     local settled = 0
     for memberId = 1, corpusSize do
@@ -724,6 +726,9 @@ function T.warm_selection_reuses_published_plans_without_compiling_sources()
     local cold, coldFailure = session:requestJob("message-bank", tostring(bankId), "required")
     for _ = 1, 3 do
       session:update()
+      for _, jobKey in ipairs(pool.submitted) do
+        pool.states[jobKey] = "ready"
+      end
     end
     local ready, failure = session:requestJob("message-bank", tostring(bankId), "required")
     local grammarOk = pcall(session.requestJob, session, "bogus-kind", "global", "required")
@@ -745,12 +750,15 @@ function T.warm_selection_reuses_published_plans_without_compiling_sources()
   Assert.equal(result.snapshot.audio, 0, "a warm selection plans no audio")
   Assert.equal(result.snapshot.catalog, 0, "a warm selection compiles no mon catalog")
   Assert.equal(result.snapshot.presentation, 0, "a warm selection plans no mon presentation")
-  Assert.isFalse(result.cold, "a newly registered warm interest answers pending until the pump validates it")
+  Assert.isFalse(result.cold, "a newly registered warm interest answers pending until the pump admits it")
   Assert.isNil(result.coldFailure, "registration reports no failure")
-  Assert.isTrue(result.ready, "a published bank answers ready once the pump establishes it")
+  Assert.isTrue(result.ready, "a published bank answers ready once pool proof establishes it")
   Assert.isNil(result.failure, "a published bank reports no failure on the warm selection")
   for _, jobKey in ipairs(result.submitted) do
-    Assert.equal(jobKey, "source-plan:global", "only the source inventory schedules while the warm bank reuses")
+    Assert.isTrue(
+      jobKey == "source-plan:global" or jobKey == "message-bank:" .. tostring(result.bankId),
+      "warm demand reaches the pool for worker proof: " .. tostring(jobKey)
+    )
   end
   Assert.isFalse(result.grammarOk, "an invalid target is still rejected immediately on the warm selection")
 end
@@ -1158,6 +1166,10 @@ function T.loaded_inventory_answers_known_members_and_rejects_unknown_ones()
     local coldUnknownMap, coldUnknownMapFailure = session:requestJob("map", "99999", "required")
     local coldUnknownMember, coldUnknownMemberFailure = session:requestJob("script-member", "99999", "required")
     local readyUnknownPage, failureUnknownPage = session:requestJob("mon-icon-page", "999", "required")
+    session:update()
+    -- One staged pool reply adopts the published inventory; planner
+    -- calls below must stay zero throughout.
+    pool.states["source-plan:global"] = "ready"
     for _ = 1, 3 do
       session:update()
     end
@@ -1409,21 +1421,26 @@ function T.page_adoption_reaches_the_same_closure_in_either_arrival_order()
       -- already reported would hide the transition the session waits for.
       pool.states["source-plan:global"] = "ready"
       pool.states["mon-catalog:global"] = "ready"
+      pool.states["mon-layout:global"] = "ready"
       for _ = 1, 10 do
         session:update()
       end
       Assert.isTrue(session.pagesKnown, "both arrivals adopt page membership")
       Assert.isTrue(contains(session.portraitPageIds, 0), "both arrivals carry the portrait page")
+      pool.states["mon-portrait-page:0"] = "ready"
+      for _ = 1, 4 do
+        session:update()
+      end
       local finalReady, finalFailure = session:requestJob("mon-portrait-page", "0", "required")
-      Assert.isTrue(finalReady, "both arrivals validate the page ready")
-      Assert.isNil(finalFailure, "the validated page reports no failure")
+      Assert.isTrue(finalReady, "both arrivals prove the page ready through the pool")
+      Assert.isNil(finalFailure, "the proven page reports no failure")
       local submissions = 0
       for _, jobKey in ipairs(pool.submitted) do
         if jobKey == "mon-portrait-page:0" then
           submissions = submissions + 1
         end
       end
-      Assert.equal(submissions, 0, "staged facts validate without occupying a worker")
+      Assert.equal(submissions, 1, "the adoption admits the waiting page exactly once")
       return { pagesKnown = session.pagesKnown, portraitPages = copyList(session.portraitPageIds) }
     end)
   end
@@ -1475,6 +1492,7 @@ function T.denied_adoption_step_runs_next_update_without_new_notification()
     )
     writeMonReceipt(cacheFs, generation, "mon-layout", "global", "pause-layout-marker")
     pool.states["mon-catalog:global"] = "ready"
+    pool.states["mon-layout:global"] = "ready"
     for _ = 1, 60 do
       session:update()
     end
@@ -1537,6 +1555,8 @@ function T.repaired_layout_with_the_same_marker_is_adopted()
       local ready, err = session:requestJob("mon-portrait-page", "0", "required")
       Assert.isFalse(ready, "the portrait stays pending while its layout record is missing")
       Assert.isNil(err, "the portrait reports no failure while its layout is pending")
+      pool.states["source-plan:global"] = "ready"
+      pool.states["mon-catalog:global"] = "ready"
       session:update()
       session:update()
       Assert.isFalse(session.pagesKnown, "a layout with a missing page record is never adopted")
@@ -1681,15 +1701,20 @@ function T.source_readiness_agrees_with_the_authoritative_reader()
     },
   }, function()
     local pool = recordingPool()
+    pool.states["source-plan:global"] = "ready"
     local session = openSession(generation, pool)
     session:requestJob("script-member", "4", "required")
     for _ = 1, 3 do
       session:update()
     end
     Assert.isTrue(session.sourceLoaded, "the valid record is adopted and reusable")
+    local inventorySubmissions = 0
     for _, jobKey in ipairs(pool.submitted) do
-      Assert.isTrue(jobKey ~= "source-plan:global", "a valid record schedules no inventory repair")
+      if jobKey == "source-plan:global" then
+        inventorySubmissions = inventorySubmissions + 1
+      end
     end
+    Assert.equal(inventorySubmissions, 1, "adoption admits the inventory exactly once")
   end)
 end
 
@@ -1744,9 +1769,6 @@ function T.one_budget_covers_request_and_completion_work()
         if counting.enabled then
           counting.validate = counting.validate + 1
         end
-        if select(3, ...) == "script-member" then
-          return true
-        end
         return realValidate(...)
       end,
     },
@@ -1764,6 +1786,12 @@ function T.one_budget_covers_request_and_completion_work()
     })
     local ok, first = pcall(function()
       local pool = recordingPool()
+      -- Staged ready replies stand in for worker reuse proof, so every
+      -- admitted demand settles through the pool within the budget.
+      pool.states["source-plan:global"] = "ready"
+      for memberId = 1, 61 do
+        pool.states["script-member:" .. tostring(memberId)] = "ready"
+      end
       local session = openSession(generation, pool)
       counting.enabled = true
       for memberId = 1, 60 do
@@ -1921,6 +1949,11 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
   }, function()
     local pool = recordingPool()
     local session = openSession(generation, pool)
+    -- Mon prerequisites prove through staged pool replies; page
+    -- adoption is already settled by the fixture.
+    pool.states["mon-catalog:global"] = "ready"
+    pool.states["mon-layout:global"] = "ready"
+    pool.states["mon-portrait-page:0"] = "ready"
     session.sourceLoaded = true
     session.pagesKnown = true
     local adopted = {
@@ -1952,8 +1985,6 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
       priority = 100,
       submitted = false,
       ready = true,
-      validated = true,
-      validationPending = false,
       failure = nil,
       failureClass = nil,
       causeJobKey = nil,
@@ -1981,32 +2012,43 @@ function T.corrupted_page_gets_targeted_repair_while_siblings_reuse()
       end
       return count
     end
-    -- Repair submission is paced by the shared planning budget: a starved
-    -- wall-clock slice may spend early pumps on roster construction and
-    -- validation, so poll boundedly for the repair submission, then drain
-    -- so the exact-once assertions below still observe duplicate work.
+    -- Both pages admit once each for worker reuse proof; the worker
+    -- decides which needs repair, so admission is never the repair
+    -- signal. A starved wall-clock slice may spend early pumps on
+    -- roster construction, so poll boundedly for both admissions.
     for _ = 1, 25 do
       session:update()
-      if submissions("mon-icon-page:1") >= 1 then
+      if submissions("mon-icon-page:0") >= 1 and submissions("mon-icon-page:1") >= 1 then
         break
       end
     end
     for _ = 1, 3 do
       session:update()
     end
-    Assert.equal(submissions("mon-icon-page:0"), 0, "the valid sibling stays reused")
-    Assert.equal(submissions("mon-icon-page:1"), 1, "only the corrupted page is submitted for repair")
+    Assert.equal(submissions("mon-icon-page:0"), 1, "the valid sibling admits once for worker proof")
+    Assert.equal(submissions("mon-icon-page:1"), 1, "the corrupted page admits once for worker proof")
     local summaryReady, summaryFailure = session:requestJob("mon-summary", "global", "required")
-    Assert.isFalse(summaryReady, "the summary cannot answer ready while its page is corrupted")
+    Assert.isFalse(summaryReady, "the summary cannot answer ready while its page is unproven")
     Assert.isNil(summaryFailure, "the waiting summary reports no failure")
+    -- The healthy sibling proves out while the corrupted page waits for
+    -- its repair: targeted readiness, not targeted admission.
+    pool.states["mon-icon-page:0"] = "ready"
+    for _ = 1, 3 do
+      session:update()
+    end
+    Assert.equal(submissions("mon-icon-page:0"), 1, "proof never rebuilds the healthy sibling")
+    Assert.equal(submissions("mon-icon-page:1"), 1, "the unproven page waits for its repair")
+    local stillWaiting, stillWaitingFailure = session:requestJob("mon-summary", "global", "required")
+    Assert.isFalse(stillWaiting, "the summary waits for the corrupted page")
+    Assert.isNil(stillWaitingFailure, "the waiting summary reports no failure")
     publishIconPage(1)
     pool.states["mon-icon-page:1"] = "ready"
     for _ = 1, 3 do
       session:update()
     end
-    Assert.equal(submissions("mon-icon-page:0"), 0, "repair never rebuilds the healthy sibling")
-    Assert.equal(submissions("mon-icon-page:1"), 1, "repair submits the corrupted page exactly once")
-    Assert.equal(submissions("mon-summary:global"), 1, "the summary dispatches once its repaired page validates")
+    Assert.equal(submissions("mon-icon-page:0"), 1, "repair never rebuilds the healthy sibling")
+    Assert.equal(submissions("mon-icon-page:1"), 1, "repair proves the corrupted page exactly once")
+    Assert.equal(submissions("mon-summary:global"), 1, "the summary dispatches once its repaired page proves")
   end)
 end
 
@@ -2034,6 +2076,7 @@ function T.field_core_waits_for_adopted_page_membership()
     local ready, failure = session:requestMilestone("field-core", "required")
     Assert.isFalse(ready, "field-core stays pending while its membership is unknown")
     Assert.isNil(failure, "field-core reports no failure while its membership is unknown")
+    pool.states["source-plan:global"] = "ready"
     for _ = 1, 3 do
       session:update()
     end
@@ -2294,6 +2337,9 @@ function T.unsupported_portrait_page_is_excluded_by_updates_after_adoption()
     local ready, failure = session:requestJob("mon-portrait-page", "7", "required")
     Assert.isFalse(ready, "an unknown page stays pending while membership is unknown")
     Assert.isNil(failure, "an unknown page reports no failure while membership is unknown")
+    pool.states["source-plan:global"] = "ready"
+    pool.states["mon-catalog:global"] = "ready"
+    pool.states["mon-layout:global"] = "ready"
     for _ = 1, 6 do
       session:update()
     end
@@ -2522,7 +2568,11 @@ function T.exhausted_budget_admits_layout_adoption_before_reading_plans()
       Assert.equal(planReads, 0, "an exhausted pass validates nothing, got " .. tostring(planReads))
       rawset(_G, "love", realLove)
       -- Admission order is structural: pages adoption needs source
-      -- membership, so the source flip lands first. Track both flips.
+      -- membership, so the source flip lands first. Staged pool replies
+      -- stand in for worker proof. Track both flips.
+      pool.states["source-plan:global"] = "ready"
+      pool.states["mon-catalog:global"] = "ready"
+      pool.states["mon-layout:global"] = "ready"
       local sourceAt, pagesAt = nil, nil
       for updateIndex = 1, 10 do
         session:update()
@@ -2608,6 +2658,9 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
         sweepEnabled = true,
       })
       session:requestMilestone("field-core", "near")
+      pool.states["source-plan:global"] = "ready"
+      pool.states["mon-catalog:global"] = "ready"
+      pool.states["mon-layout:global"] = "ready"
       local adopted = false
       for _ = 1, 60 do
         session:update()
@@ -2739,6 +2792,8 @@ function T.repaired_layout_reads_plans_once_without_polling_failures()
       local pool = recordingPool()
       local session = openSession(generation, pool)
       session:requestJob("mon-portrait-page", "0", "required")
+      pool.states["source-plan:global"] = "ready"
+      pool.states["mon-catalog:global"] = "ready"
       for _ = 1, 6 do
         session:update()
       end
@@ -2866,7 +2921,19 @@ function T.refused_page_handoff_fails_the_ready_owner_once()
     ArtifactJobs.publishedPlans = realPublishedPlans
     Assert.isTrue(ok, tostring(err))
     -- The explicit repair under the same deterministic marker adopts:
-    -- no automatic retry happened while failed and no rebuild follows.
+    -- no automatic retry resubmitted while failed, one explicit repair
+    -- re-admits (the pool answers from its ready record), and no
+    -- rebuild follows.
+    local function layoutSubmissions()
+      local count = 0
+      for _, jobKey in ipairs(pool.submitted) do
+        if jobKey == "mon-layout:global" then
+          count = count + 1
+        end
+      end
+      return count
+    end
+    Assert.equal(layoutSubmissions(), 1, "no automatic retry resubmits while failed")
     local repaired, repairFailure = session:retry("mon-layout", "global", "required")
     Assert.isFalse(repaired, "the repair starts pending")
     Assert.isNil(repairFailure, "the repair reports no failure")
@@ -2875,13 +2942,7 @@ function T.refused_page_handoff_fails_the_ready_owner_once()
     end
     Assert.isTrue(session.pagesKnown, "the repaired handoff adopts page membership")
     Assert.isTrue(contains(session.portraitPageIds, 0), "the repair carries its portrait page")
-    local layoutSubmissions = 0
-    for _, jobKey in ipairs(pool.submitted) do
-      if jobKey == "mon-layout:global" then
-        layoutSubmissions = layoutSubmissions + 1
-      end
-    end
-    Assert.isTrue(layoutSubmissions <= 1, "the valid layout is never rebuilt")
+    Assert.equal(layoutSubmissions(), 2, "the explicit repair re-admits exactly once")
     Assert.equal(
       cacheFs:read(MonCache.layoutMarkerPath()),
       "refused-layout-marker",

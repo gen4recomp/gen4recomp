@@ -536,16 +536,16 @@ function T.staged_shared_files_promote_once_and_conflicts_fail()
   clashing:addSharedFile("geometry/shared")
   clashing:stageFs():write("maps/63/complete", "ready")
   clashing:addOwnedRoot("maps/63")
-  clashing:finishSuccess({ mapId = 63, marker = "complete" })
-  Assert.throws(function()
-    clashing:publish({
-      generationId = generation,
-      epoch = 1,
-      kind = "map",
-      key = "63",
-      jobKey = "map:63",
-    })
+  -- Worker-side reconciliation seals shared proof before success: a staged
+  -- contradiction fails here, never reaching controller publication.
+  local conflict = Assert.throws(function()
+    clashing:finishSuccess({ mapId = 63, marker = "complete" })
   end)
+  Assert.isTrue(
+    tostring(conflict):find("PREPARED_SHARED_CONFLICT", 1, true) ~= nil,
+    "the worker seals the shared contradiction"
+  )
+  clashing:abort()
   Assert.equal(cache:read("geometry/shared"), "first", "a shared conflict never overwrites live bytes")
   Assert.isFalse(cache:exists("maps/63/complete"), "a shared conflict never exposes the staged family")
 end
@@ -1189,6 +1189,256 @@ function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_comple
     Assert.equal(pool:status("map:66"), "queued", "a further heavy still waits behind the running one")
   end)
   pool:shutdown()
+end
+
+-- A worker reuse completion carries no stage and publishes nothing: the
+-- pool marks the current-epoch record ready at once and frees the worker
+-- for the next dispatch.
+function T.reused_completions_become_ready_without_publication()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "reuse-completion-generation"
+  local job = {
+    generationId = generation,
+    epoch = 1,
+    versionId = "heartgold",
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    priority = 0,
+    sizeClass = "normal",
+    payload = { mapId = 60 },
+  }
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request(job)
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:60"), "running", "the job dispatches to a worker")
+  local dispatched = host.channels[2]:pop()
+  assert(type(dispatched) == "table", "the worker received the job")
+  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  host.channels[1]:push({
+    workerId = 1,
+    epoch = 1,
+    generationId = generation,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = stageName,
+    status = "reused",
+    workSeconds = 0,
+    timingReason = "reused",
+    retiring = false,
+  })
+  withLove(host.love, function()
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:60"), "ready", "the reused result settles ready")
+  Assert.equal(pool:diagnostics().pendingPublications, 0, "reuse enters no publication queue")
+  local followup = {
+    generationId = generation,
+    epoch = 1,
+    versionId = "heartgold",
+    kind = "map",
+    key = "61",
+    jobKey = "map:61",
+    priority = 0,
+    sizeClass = "normal",
+    payload = { mapId = 61 },
+  }
+  withLove(host.love, function()
+    pool:request(followup)
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:61"), "running", "the reuse freed its worker for new work")
+  pool:shutdown()
+end
+
+-- A reused jumbo validation retires no worker: the VM stays available
+-- for the next dispatch instead of recycling.
+function T.reused_jumbo_completions_keep_their_worker()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "reuse-jumbo-generation"
+  local job = {
+    generationId = generation,
+    epoch = 1,
+    versionId = "heartgold",
+    kind = "map",
+    key = "70",
+    jobKey = "map:70",
+    priority = 0,
+    sizeClass = "jumbo",
+    payload = { mapId = 70 },
+  }
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request(job)
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:70"), "running", "the jumbo job dispatches while idle")
+  local dispatched = host.channels[2]:pop()
+  assert(type(dispatched) == "table", "the worker received the jumbo job")
+  host.channels[1]:push({
+    workerId = 1,
+    epoch = 1,
+    generationId = generation,
+    kind = "map",
+    key = "70",
+    jobKey = "map:70",
+    stageName = assert(dispatched.stageName, "dispatched work carries its stage identity"),
+    status = "reused",
+    workSeconds = 0,
+    timingReason = "reused",
+    retiring = false,
+  })
+  withLove(host.love, function()
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:70"), "ready", "the reused jumbo settles ready")
+  local followup = {
+    generationId = generation,
+    epoch = 1,
+    versionId = "heartgold",
+    kind = "map",
+    key = "71",
+    jobKey = "map:71",
+    priority = 0,
+    sizeClass = "jumbo",
+    payload = { mapId = 71 },
+  }
+  withLove(host.love, function()
+    pool:request(followup)
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:71"), "running", "a reuse-only jumbo retires no worker VM")
+  pool:shutdown()
+end
+
+-- A late reuse from a retired selection can never become ready: the
+-- stale result is cancelled and no live root moves.
+function T.stale_reused_completions_cannot_publish()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(2)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  local generation = "stale-reuse-generation"
+  local job = {
+    generationId = generation,
+    epoch = 1,
+    versionId = "heartgold",
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    priority = 0,
+    sizeClass = "normal",
+    payload = { mapId = 60 },
+  }
+  local stageName = nil
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+    pool:request(job)
+    pool:update()
+  end)
+  local dispatched = host.channels[2]:pop()
+  assert(type(dispatched) == "table", "the worker received the job")
+  stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  withLove(host.love, function()
+    Assert.isTrue(pool:retireSelection(1), "the selection retires while the worker runs")
+  end)
+  host.channels[1]:push({
+    workerId = 1,
+    epoch = 1,
+    generationId = generation,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = stageName,
+    status = "reused",
+    workSeconds = 0,
+    timingReason = "reused",
+    retiring = false,
+  })
+  withLove(host.love, function()
+    pool:update()
+  end)
+  Assert.equal(pool:status("map:60"), "cancelled", "the retired reuse never becomes ready")
+  Assert.equal(pool:diagnostics().pendingPublications, 0, "the stale reuse enters no publication queue")
+  pool:shutdown()
+end
+
+-- Controller publication is metadata and renames only: with backend
+-- counters armed after the worker-side finish, publishing a prepared
+-- artifact with owned and shared payload reads and writes no payload
+-- bytes while the final live bytes equal the staged bytes.
+function T.controller_publication_moves_payload_without_byte_copies()
+  local prepared = requirePreparedArtifact()
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  local generation = "payload-free-publication-generation"
+  local artifact = prepared.new({
+    cacheFs = cache,
+    generationId = generation,
+    epoch = 1,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = "payload-free-stage",
+  })
+  local scene = string.rep("scene-payload", 64)
+  local shared = string.rep("shared-payload", 64)
+  artifact:stageFs():write("maps/60/scene.lua", scene)
+  artifact:addOwnedRoot("maps/60")
+  artifact:stageFs():write("geometry/shared", shared)
+  artifact:addSharedFile("geometry/shared")
+  artifact:finishSuccess({ mapId = 60, marker = "payload-free-marker" })
+  local reads, writes = {}, {}
+  local realBackendRead = backend.read
+  local realBackendWrite = backend.write
+  backend.read = function(self, path)
+    reads[#reads + 1] = path
+    return realBackendRead(self, path)
+  end
+  backend.write = function(self, path, data)
+    writes[#writes + 1] = path
+    return realBackendWrite(self, path, data)
+  end
+  local ok, failure = pcall(function()
+    artifact:publish({
+      generationId = generation,
+      epoch = 1,
+      kind = "map",
+      key = "60",
+      jobKey = "map:60",
+    })
+  end)
+  backend.read = realBackendRead
+  backend.write = realBackendWrite
+  if not ok then
+    error(failure, 0)
+  end
+  for _, path in ipairs(reads) do
+    Assert.isFalse(
+      path:find("maps/60", 1, true) ~= nil or path:find("geometry/shared", 1, true) ~= nil,
+      "controller publication reads no payload bytes: " .. tostring(path)
+    )
+  end
+  for _, path in ipairs(writes) do
+    Assert.isFalse(
+      path:find("maps/60", 1, true) ~= nil or path:find("geometry/shared", 1, true) ~= nil,
+      "controller publication copies no payload bytes: " .. tostring(path)
+    )
+  end
+  Assert.equal(cache:read("maps/60/scene.lua"), scene, "the owned payload moves intact")
+  Assert.equal(cache:read("geometry/shared"), shared, "the shared install lands intact")
 end
 
 return { tests = T }

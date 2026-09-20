@@ -354,6 +354,11 @@ local function makeFakes()
       return { stubInventory = true }
     end,
     closeSessions = function() end,
+    -- The real worker validates before compiling: a cold test family is
+    -- never reusable, so validation declines and execution proceeds.
+    validateCurrent = function()
+      return false
+    end,
     execute = function(job)
       env.executedJobs[#env.executedJobs + 1] = job.kind .. ":" .. job.key
       return env.executeResult

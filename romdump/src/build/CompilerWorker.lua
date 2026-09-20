@@ -1,8 +1,10 @@
 -- Runs fixed producer jobs inside one persistent worker VM.
 -- Each job carries its explicit source version, generation, and epoch. The
--- worker opens or switches its source context only at job boundaries, stages
--- one prepared artifact per job, releases transient scratch after heavy work,
--- and exits after jumbo work so the controller can recycle the VM.
+-- worker selects its cache context at job boundaries, validates the
+-- published family before opening any source handle, compiles and stages
+-- one prepared artifact per invalid family, releases transient scratch
+-- after heavy work, and exits after jumbo compilations so the controller
+-- can recycle the VM.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
@@ -36,27 +38,43 @@ local function closeContext(context)
     context.cacheFs = nil
     context.versionId = nil
   end
+  context.sourcePlanMemo = nil
   context.terrainScratch = {}
   if context.fieldCellScratch ~= nil then
     context.fieldCellScratch.terrainScratch = context.terrainScratch
   end
 end
 
+-- Select the version-scoped cache without opening ROM source: warm
+-- validation reads published cache and producer metadata only, so most
+-- reuse decisions never pay for a source handle.
 ---@param job table<string, unknown>
 ---@param context table<string, unknown>
-local function switchContext(job, context)
+local function switchCacheContext(job, context)
   assert(type(job.versionId) == "string" and job.versionId ~= "", "worker job version is required")
   assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
   assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
   if context.versionId ~= job.versionId then
     closeContext(context)
-    local romFs, openError = RomFs.open(job.versionId)
+    context.cacheFs = CacheFs.forVersion(job.versionId)
+    context.versionId = job.versionId
+  end
+  assert(context.cacheFs, "worker context is incomplete")
+end
+
+-- Open the ROM source lazily for compilation only. Warm validation
+-- above never reaches this, so valid published output reuses without
+-- source work.
+---@param job table<string, unknown>
+---@param context table<string, unknown>
+local function ensureRomSource(job, context)
+  if context.romFs == nil then
+    local versionId = assert(job.versionId, "worker job version is required")
+    local romFs, openError = RomFs.open(versionId)
     if not romFs then
       error(openError, 0)
     end
     context.romFs = romFs
-    context.cacheFs = CacheFs.forVersion(job.versionId)
-    context.versionId = job.versionId
   end
   assert(context.romFs and context.cacheFs, "worker context is incomplete")
 end
@@ -78,6 +96,44 @@ end
 function CompilerWorker.execute(job, context)
   assert(type(job) == "table", "worker job must be a table")
   return ArtifactJobs.execute(job, context)
+end
+
+---@param resultChannel table<string, function>
+---@param workerId integer
+---@param job table<string, unknown> channel job carrying the controller identity
+---@param executeJob table<string, unknown> worker job with the resolved key
+---@param stageName string|nil prepared stage, present only for compiled output
+---@param status string reused, prepared, or failed
+---@param timingReason string reused or interleaved
+---@param retiring boolean the VM exits after this reply
+---@param workSeconds number wall time spent on validation and compilation
+local function pushCompletion(
+  resultChannel,
+  workerId,
+  job,
+  executeJob,
+  stageName,
+  status,
+  timingReason,
+  retiring,
+  workSeconds
+)
+  resultChannel:push({
+    workerId = workerId,
+    epoch = job.epoch,
+    generationId = job.generationId,
+    kind = job.kind,
+    key = executeJob.key,
+    jobKey = assert(job.jobKey or job.key),
+    stageName = stageName,
+    status = status,
+    compileSeconds = nil,
+    stageSeconds = nil,
+    workSeconds = workSeconds,
+    stagedBytes = nil,
+    timingReason = timingReason,
+    retiring = retiring,
+  })
 end
 
 ---@param workerId integer
@@ -109,65 +165,99 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
       closeContext(context)
       resultChannel:push({ workerId = workerId, status = "context-closed", closeToken = job.closeToken })
     else
-      local jobKey = assert(job.jobKey or job.key)
       local startedAt = wallSeconds()
-      switchContext(job, context)
+      switchCacheContext(job, context)
       local executeJob = {
         kind = job.kind,
-        key = job.key or jobKey,
+        key = job.key or job.jobKey,
+        versionId = job.versionId,
         generationId = job.generationId,
         epoch = job.epoch,
         producerFingerprint = job.producerFingerprint,
         stageName = job.stageName,
         payload = job.payload,
       }
-      local retiring = job.sizeClass == "jumbo"
-      local ok, result = xpcall(function()
-        return CompilerWorker.execute(executeJob, context)
+      -- Authoritative warm validation first: a valid published family
+      -- reuses with no stage, no publication, and no source handle. Only
+      -- an invalid or missing family compiles below. A validation
+      -- failure is terminal for the job, exactly like a compile failure.
+      local validOk, reusable = xpcall(function()
+        return ArtifactJobs.validateCurrent(executeJob, context)
       end, function(failure)
         return failure
       end)
-      local workSeconds = wallSeconds() - startedAt
-      if job.sizeClass == "heavy" then
-        releaseHeavyScratch(context)
-      end
-      if ok then
-        resultChannel:push({
-          workerId = workerId,
-          epoch = job.epoch,
-          generationId = job.generationId,
-          kind = job.kind,
-          key = executeJob.key,
-          jobKey = jobKey,
-          stageName = result.stageName,
-          status = "prepared",
-          compileSeconds = nil,
-          stageSeconds = nil,
-          workSeconds = workSeconds,
-          stagedBytes = nil,
-          timingReason = "interleaved",
-          retiring = retiring,
-        })
+      if validOk and reusable == true then
+        pushCompletion(
+          resultChannel,
+          workerId,
+          job,
+          executeJob,
+          job.stageName,
+          "reused",
+          "reused",
+          false,
+          wallSeconds() - startedAt
+        )
       else
-        resultChannel:push({
-          workerId = workerId,
-          epoch = job.epoch,
-          generationId = job.generationId,
-          kind = job.kind,
-          key = executeJob.key,
-          jobKey = jobKey,
-          stageName = job.stageName,
-          status = "failed",
-          compileSeconds = nil,
-          stageSeconds = nil,
-          workSeconds = workSeconds,
-          stagedBytes = nil,
-          timingReason = "interleaved",
-          retiring = retiring,
-        })
-      end
-      if retiring then
-        break
+        local retiring = job.sizeClass == "jumbo"
+        if validOk then
+          ensureRomSource(job, context)
+          local ok, result = xpcall(function()
+            return CompilerWorker.execute(executeJob, context)
+          end, function(failure)
+            return failure
+          end)
+          local workSeconds = wallSeconds() - startedAt
+          if job.sizeClass == "heavy" then
+            releaseHeavyScratch(context)
+          end
+          if ok then
+            pushCompletion(
+              resultChannel,
+              workerId,
+              job,
+              executeJob,
+              result.stageName,
+              "prepared",
+              "interleaved",
+              retiring,
+              workSeconds
+            )
+          else
+            pushCompletion(
+              resultChannel,
+              workerId,
+              job,
+              executeJob,
+              job.stageName,
+              "failed",
+              "interleaved",
+              retiring,
+              workSeconds
+            )
+          end
+          if retiring then
+            break
+          end
+        else
+          if job.sizeClass == "heavy" then
+            releaseHeavyScratch(context)
+          end
+          pushCompletion(
+            resultChannel,
+            workerId,
+            job,
+            executeJob,
+            job.stageName,
+            "failed",
+            "interleaved",
+            retiring,
+            wallSeconds() - startedAt
+          )
+          if retiring then
+            break
+          end
+        end
       end
     end
   end
