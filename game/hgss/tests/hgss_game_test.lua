@@ -466,6 +466,193 @@ function T.menu_renderer_failure_releases_the_allocated_text_exactly_once()
   end)
 end
 
+-- Production loader observation for the cold-cache sequencing contract below.
+-- The fake version cache answers only the world-manifest read with a canned
+-- manifest; every other generated read fails loudly so the tests prove the
+-- composition never reaches past the manifest before field-core readiness.
+local function cannedWorld()
+  return {
+    maps = {
+      { id = 60, mapCode = "MAP_NEW_BARK_PLAYER_HOUSE_2F", worldOriginX = 0, worldOriginZ = 0 },
+    },
+    byId = { [60] = 1 },
+    bySymbol = { MAP_NEW_BARK_PLAYER_HOUSE_2F = 60 },
+  }
+end
+
+local function withProductionLoaderObservation(worldOrNil, fn)
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
+  local originalForVersion = CacheFs.forVersion
+  local originalLoaderNew = FieldMapLoader.new
+  local observation = { worldReads = 0, loaderBuilds = 0, world = worldOrNil }
+  rawset(CacheFs, "forVersion", function(_)
+    local cacheFs = {}
+    function cacheFs:loadLua(_)
+      observation.worldReads = observation.worldReads + 1
+      return observation.world
+    end
+    return cacheFs
+  end)
+  rawset(FieldMapLoader, "new", function(cacheFs, world, options)
+    observation.loaderBuilds = observation.loaderBuilds + 1
+    return originalLoaderNew(cacheFs, world, options)
+  end)
+  local ok, err = pcall(fn, observation)
+  rawset(CacheFs, "forVersion", originalForVersion)
+  rawset(FieldMapLoader, "new", originalLoaderNew)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Cold Continue must not touch generated world metadata before field core
+-- reports ready: selecting Continue with a pending core constructs
+-- preparation without reading the world, and the production loader is
+-- built exactly once after readiness before geometry is requested.
+function T.cold_continue_defers_world_read_until_field_core_is_ready()
+  withCompositionSpies(function(modules, _)
+    withProductionLoaderObservation(cannedWorld(), function(observation)
+      local continueRecord = saveRecord("save-00000002")
+      local contextStores = { fakeStore({ continueRecord }) }
+      local storeModule = require("libs.hgss.src.save.GameSaveStore")
+      local originalStoreNew = storeModule.new
+      rawset(storeModule, "new", function()
+        return contextStores[1]
+      end)
+      local ok, err = pcall(function()
+        local coreReady = false
+        local host = readyHost()
+        host.requestMilestone = function()
+          return coreReady
+        end
+        local game = modules.hgssGame.new({
+          versionId = READY_VERSION,
+          onExit = function() end,
+          derivedAssets = host,
+        })
+        game.state:keypressed("return")
+        Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
+        Assert.equal(observation.loaderBuilds, 0, "selecting Continue builds no planning loader")
+        settle(game)
+        Assert.equal(observation.worldReads, 0, "pending core never reads world metadata")
+        Assert.equal(observation.loaderBuilds, 0, "pending core never builds the planning loader")
+        coreReady = true
+        settle(game)
+        Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
+        Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
+        settle(game)
+        Assert.equal(observation.worldReads, 1, "settling never re-reads the world manifest")
+        Assert.equal(observation.loaderBuilds, 1, "settling never rebuilds the planning loader")
+        game:setState(nil)
+      end)
+      rawset(storeModule, "new", originalStoreNew)
+      if not ok then
+        error(err, 0)
+      end
+    end)
+  end)
+end
+
+-- Cold New Game must survive the Oak handoff without world metadata: the
+-- finalized candidate waits on field core with zero world reads, then
+-- builds the production loader exactly once after readiness.
+function T.cold_new_game_handoff_defers_world_read_until_field_core_is_ready()
+  withCompositionSpies(function(modules, context)
+    withProductionLoaderObservation(cannedWorld(), function(observation)
+      context.stores[1] = fakeStore({})
+      local finalized = {
+        saveId = "save-00000003",
+        versionId = READY_VERSION,
+        playerData = {},
+        location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+      }
+      context.candidate = {
+        saveId = "save-00000003",
+        versionId = READY_VERSION,
+        playerData = nil,
+        location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+      }
+      context.oakState = disposableState("oak")
+      local coreReady = false
+      local host = readyHost()
+      host.requestMilestone = function(name, _)
+        if name == "field-core" then
+          return coreReady
+        end
+        return true
+      end
+      local game = modules.hgssGame.new({
+        versionId = READY_VERSION,
+        onExit = function() end,
+        derivedAssets = host,
+      })
+      game.state:keypressed("return")
+      settle(game)
+      Assert.equal(#context.oakCalls, 1, "the intro closure composes Oak while core stays pending")
+      context.oakCalls[1].onComplete(finalized)
+      Assert.equal(observation.worldReads, 0, "the Oak handoff reads no world metadata")
+      Assert.equal(observation.loaderBuilds, 0, "the Oak handoff builds no planning loader")
+      settle(game)
+      Assert.equal(observation.worldReads, 0, "pending core never reads world metadata after the handoff")
+      Assert.equal(#context.fieldCalls, 0, "field never constructs before core readiness")
+      coreReady = true
+      settle(game)
+      Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
+      Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
+      settle(game)
+      Assert.equal(#context.fieldCalls, 1, "field constructs once core and geometry are ready")
+      Assert.equal(context.fieldCalls[1].game, finalized)
+      game:setState(nil)
+    end)
+  end)
+end
+
+-- A world manifest that is still unavailable after field core reports ready
+-- is a visible preparation failure, never an escaped composition error and
+-- never a manual full-cache instruction.
+function T.missing_world_after_core_readiness_fails_preparation_visibly()
+  withCompositionSpies(function(modules, _)
+    withProductionLoaderObservation(nil, function(observation)
+      local continueRecord = saveRecord("save-00000002")
+      local contextStores = { fakeStore({ continueRecord }) }
+      local storeModule = require("libs.hgss.src.save.GameSaveStore")
+      local originalStoreNew = storeModule.new
+      rawset(storeModule, "new", function()
+        return contextStores[1]
+      end)
+      local ok, err = pcall(function()
+        local FieldPreparationState = require("game.hgss.src.field.FieldPreparationState")
+        local game = modules.hgssGame.new({
+          versionId = READY_VERSION,
+          onExit = function() end,
+          derivedAssets = readyHost(),
+        })
+        game.state:keypressed("return")
+        Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
+        settle(game)
+        Assert.equal(
+          getmetatable(game.state).__index,
+          FieldPreparationState,
+          "a missing world still enters preparation once core is ready"
+        )
+        Assert.equal(game.state.phase, "failed", "the missing world fails preparation visibly")
+        Assert.isTrue(game.state.error ~= nil, "the failure carries a diagnostic")
+        Assert.isTrue(
+          string.find(tostring(game.state.error), "buildcache", 1, true) == nil,
+          "the failure never instructs a manual full-cache build: " .. tostring(game.state.error)
+        )
+        Assert.equal(observation.worldReads, 1, "the failed attempt still read the world exactly once")
+        game:setState(nil)
+      end)
+      rawset(storeModule, "new", originalStoreNew)
+      if not ok then
+        error(err, 0)
+      end
+    end)
+  end)
+end
+
 function T.composition_spies_restore_presentation_constructors_when_the_body_throws()
   local fieldText = require("libs.hgss.src.ui.FieldTextRenderer")
   local menuRenderer = require("game.hgss.src.menu.MainMenuRenderer")

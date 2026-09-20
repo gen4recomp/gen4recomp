@@ -17,6 +17,7 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local HgssGame = require("game.hgss.src.HgssGame")
+local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
@@ -101,6 +102,23 @@ local function withApplySpy(fn)
   end
 end
 
+-- Counts production planning-loader constructions through the real
+-- FieldMapLoader owner. The caller restores the constructor once its flow
+-- completes; every scenario below restores on both pass and failure paths.
+local function countLoaderBuilds()
+  local original = FieldMapLoader.new
+  local builds = 0
+  rawset(FieldMapLoader, "new", function(...)
+    builds = builds + 1
+    return original(...)
+  end)
+  return function()
+    rawset(FieldMapLoader, "new", original)
+  end, function()
+    return builds
+  end
+end
+
 local function pumpGame(game, ticks)
   for _ = 1, ticks do
     game:update(1 / 60)
@@ -178,6 +196,7 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
     entered = { dispose = function() end }
     return entered
   end, function()
+    local stopCounting, loaderBuilds = countLoaderBuilds()
     local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
     Assert.equal(requestedMilestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
     local ok, err = pcall(function()
@@ -191,6 +210,7 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
       pumpGame(game, 5)
       Assert.equal(#fieldCalls, 0, "the menu stays responsive without entering field while core is pending")
       Assert.deepEqual(loads, {}, "pumping never loads before core readiness")
+      Assert.equal(loaderBuilds(), 0, "pending core never constructs the production planning loader")
       coreReady = true
       local waited = 0
       while #loads == 0 and waited < 60 do
@@ -198,6 +218,7 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
         waited = waited + 1
       end
       Assert.deepEqual(loads, { saveId }, "exactly one strict load follows core readiness")
+      Assert.equal(loaderBuilds(), 1, "readiness constructs the production planning loader exactly once")
       Assert.equal(#fieldCalls, 0, "field begins only after location geometry is current")
       waited = 0
       while #requestedMaps == 0 and waited < 60 do
@@ -218,8 +239,10 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
       Assert.equal(fieldCalls[1].saveId, saveId, "field receives the strictly loaded record")
       Assert.equal(game.state, entered, "the committed field becomes the running state")
       Assert.deepEqual(store:list(), listedBefore, "Continue mutates neither the catalog nor any payload")
+      Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")
     end)
     game:dispose()
+    stopCounting()
     if not ok then
       error(err, 0)
     end
@@ -343,6 +366,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
         fieldCalls[#fieldCalls + 1] = record
         return { dispose = function() end }
       end, function()
+        local stopCounting, loaderBuilds = countLoaderBuilds()
         local game = HgssGame.new({ versionId = versionId, onExit = function() end, derivedAssets = host })
         local ok, err = pcall(function()
           Assert.equal(requested.milestones[1], "new-game-intro", "installing the menu prefetches the intro closure")
@@ -365,6 +389,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
           local finalized = applyCalls[1]
           Assert.equal(assert(finalized.playerData and finalized.playerData.profile).name, "GOLD")
           Assert.equal(#fieldCalls, 0, "the handoff requests field core before constructing field")
+          Assert.equal(loaderBuilds(), 0, "the finalized handoff builds no planning loader before core")
           for _, name in ipairs(requested.milestones) do
             Assert.isTrue(name ~= "field-core", "only the intro closure is awaited before the finalized handoff")
           end
@@ -381,6 +406,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
             end
           end
           Assert.isTrue(sawCore, "field core is awaited beyond the finalized candidate")
+          Assert.equal(loaderBuilds(), 1, "core readiness builds the planning loader exactly once")
           waited = 0
           while #requested.maps == 0 and waited < 60 do
             game:update(1 / 60)
@@ -405,8 +431,10 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
           end
           Assert.equal(#fieldCalls, 1, "field entry commits once core and geometry are ready")
           Assert.equal(#applyCalls, 1, "waiting never applies initialization again")
+          Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")
         end)
         game:dispose()
+        stopCounting()
         if not ok then
           error(err, 0)
         end
@@ -546,7 +574,6 @@ local function passHost()
 end
 
 function T.tests.warp_waits_under_cover_then_commits_once()
-  local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
   Assert.isTrue(
     type(FieldMapLoader.requestWarp) == "function",
     "warp waits under cover while destination artifacts compile"

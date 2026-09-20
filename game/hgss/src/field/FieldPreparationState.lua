@@ -13,7 +13,7 @@
 ---@field versionId string selected game version, carried for diagnostics
 ---@field derivedAssets table<string, function> semantic derived-asset host
 ---@field saveStore table<string, unknown>? Continue only: the strict save store
----@field loader table<string, unknown> borrowed metadata-only field map loader
+---@field createLoader fun(): table<string, unknown> loader factory owned by the HGSS composition
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?) ownership transfer
 ---@field onCancel fun()? return to the owning menu
 
@@ -24,7 +24,8 @@
 ---@field versionId string
 ---@field derivedAssets table<string, function>
 ---@field saveStore table<string, unknown>?
----@field loader table<string, unknown>
+---@field createLoader fun(): table<string, unknown>
+---@field loader table<string, unknown>? retained planning loader, built once after core readiness
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?)
 ---@field onCancel fun()?
 ---@field phase "core"|"load"|"geometry"|"done"|"failed"
@@ -43,7 +44,7 @@ function FieldPreparationState.new(options)
   assert(options.kind == "continue" or options.kind == "newgame", "field preparation kind is continue or newgame")
   assert(type(options.versionId) == "string" and options.versionId ~= "", "field preparation requires a versionId")
   assert(type(options.derivedAssets) == "table", "field preparation requires the derived-asset host")
-  assert(type(options.loader) == "table", "field preparation requires its metadata-only loader")
+  assert(type(options.createLoader) == "function", "field preparation requires its metadata-only loader factory")
   assert(type(options.enterField) == "function", "field preparation requires its field transfer")
   if options.kind == "continue" then
     assert(type(options.saveId) == "string" and options.saveId ~= "", "Continue preparation requires a saveId")
@@ -58,7 +59,8 @@ function FieldPreparationState.new(options)
     versionId = options.versionId,
     derivedAssets = options.derivedAssets,
     saveStore = options.saveStore,
-    loader = options.loader,
+    createLoader = options.createLoader,
+    loader = nil,
     enterField = options.enterField,
     onCancel = options.onCancel,
     phase = "core",
@@ -91,6 +93,23 @@ function FieldPreparationState:_pollCore()
   if ready then
     self.phase = "load"
   end
+end
+
+function FieldPreparationState:_ensureLoader()
+  -- The planning loader is legal only after the field-core gate: build it
+  -- exactly once, then reuse the retained loader for every later update.
+  -- A failed build is a visible preparation failure, never a retried probe.
+  if self.loader ~= nil then
+    return true
+  end
+  local factory = assert(self.createLoader, "field preparation requires its metadata-only loader factory")
+  local ok, loaderOrError = pcall(factory)
+  if not ok then
+    self:_fail(loaderOrError)
+    return false
+  end
+  self.loader = assert(loaderOrError)
+  return true
 end
 
 function FieldPreparationState:_strictLoad()
@@ -128,8 +147,9 @@ function FieldPreparationState:_planNewGameTarget()
   end
   -- A new game's location is local to its map; the loader converts it to
   -- the same global domain normal loading uses.
+  local loader = assert(self.loader, "target planning requires the retained planning loader")
   local ok, positionOrError = pcall(function()
-    return self.loader:globalPosition(location.mapSymbol, location.fieldX, location.fieldZ)
+    return loader:globalPosition(location.mapSymbol, location.fieldX, location.fieldZ)
   end)
   if not ok then
     self:_fail(positionOrError)
@@ -143,8 +163,9 @@ end
 
 function FieldPreparationState:_pollGeometry()
   local target = assert(self.target, "geometry demand requires its target")
+  local loader = assert(self.loader, "geometry demand requires the retained planning loader")
   local ok, ready, failure =
-    pcall(self.loader.requestLocation, self.loader, target.idOrSymbol, target.fieldX, target.fieldZ, "required")
+    pcall(loader.requestLocation, loader, target.idOrSymbol, target.fieldX, target.fieldZ, "required")
   if not ok then
     self:_fail(ready)
     return
@@ -184,6 +205,9 @@ function FieldPreparationState:update(_)
     return
   end
   if self.phase == "load" then
+    if not self:_ensureLoader() then
+      return
+    end
     if self.kind == "continue" then
       self:_strictLoad()
     else
@@ -235,6 +259,8 @@ function FieldPreparationState:dispose()
   self.candidate = nil
   self.record = nil
   self.target = nil
+  self.createLoader = nil
+  self.loader = nil
 end
 
 return FieldPreparationState

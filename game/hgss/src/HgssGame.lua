@@ -140,8 +140,12 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
       return assert(options.fieldMapLoader)
     end
     local cacheFs = CacheFs.forVersion(versionId)
-    local world =
-      assert(cacheFs:loadLua(MapAssetCache.worldPath()), "world.lua missing -- run `scripts/buildcache.sh` first")
+    -- This factory runs only after field core reports ready, so a missing
+    -- manifest is a cache/preparation failure, not a manual prerequisite.
+    local world = assert(
+      cacheFs:loadLua(MapAssetCache.worldPath()),
+      "field world metadata is unavailable although field core is ready"
+    )
     return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
   end
   local function enterPreparation(preparationOptions)
@@ -152,7 +156,7 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
       versionId = versionId,
       derivedAssets = derivedAssets,
       saveStore = saveStore,
-      loader = entryLoader(),
+      createLoader = entryLoader,
       enterField = enterField,
       onCancel = backToMenu,
     }))
