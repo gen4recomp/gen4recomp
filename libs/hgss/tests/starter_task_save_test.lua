@@ -80,6 +80,12 @@ local function modalHost()
     self.done = true
     self.index = index
   end
+  -- The migrated task delegates every input batch here. These journeys
+  -- send no input while the modal is open, so the entrypoint only
+  -- acknowledges the batch without touching generation state.
+  function host:handleInput(events)
+    assert(type(events) == "table", "the choice host requires the event batch")
+  end
   return host
 end
 

@@ -588,7 +588,7 @@ function FieldState:draw()
   if starter ~= nil and starter:isActive() then
     local ready = type(starter.isPresentationReady) ~= "function" or starter:isPresentationReady()
     if ready then
-      starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"), width, height)
+      starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"))
     end
   end
   if self.development and self._developmentOverlayVisible then
@@ -879,6 +879,15 @@ function FieldState:focus(focused)
     local host = self.runtime.applicationHost
     if host ~= nil and type(host.cancelPointerCapture) == "function" then
       host:cancelPointerCapture()
+    end
+    local starter = self.runtime.starterChoice
+    if
+      starter ~= nil
+      and type(starter.isActive) == "function"
+      and starter:isActive()
+      and type(starter.cancelPointerCapture) == "function"
+    then
+      starter:cancelPointerCapture()
     end
   end
 end

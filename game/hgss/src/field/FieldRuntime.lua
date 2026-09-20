@@ -900,15 +900,40 @@ function FieldRuntime:_load()
     })
     self.auxiliaryFieldUi = loadedGame and AuxiliaryFieldUi.restore(loadedGame.auxiliaryUi) or AuxiliaryFieldUi.new()
     self.contextChoiceProvider = ContextChoiceProvider.new()
+    -- The initial display measurement and per-application window memory:
+    -- the runtime measures from the boot topology (or the actual default)
+    -- so pointer input works before any resize; the menu wrapper consumes
+    -- this exact record through its measurement closure. The script-owned
+    -- starter host below borrows the same record. This precedes the
+    -- starter composition because the choice surface is built eagerly.
+    self.presentationWindows = {
+      start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      bag = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      party = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      trainer_card = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      starter_choice = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+    }
+    self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
     -- The starter composition: the hand-editable default roster provider
     -- and the modal choice surface. The blocking starter task receives both
     -- through scheduler services; no starter code requires the concrete
     -- provider module after this composition step.
     self.starterProvider = require("game.hgss.src.starters.VanillaStarterProvider")
+    local starterWindowMemory = assert(
+      self.presentationWindows and self.presentationWindows.starter_choice,
+      "the starter wrapper requires its runtime window memory"
+    )
+    local starterOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.starter_choice or nil
+    local function starterMeasureDisplay()
+      return self.presentationDisplay
+    end
     self.starterChoice = require("game.hgss.src.starters.StarterChoiceState").new({
       catalog = self.monCatalog,
       cacheFs = cacheFs,
       frameIndex = self.playerData.options.textFrame,
+      measureDisplay = starterMeasureDisplay,
+      windowState = starterWindowMemory,
+      overrides = starterOverrides,
     })
     self.actionKeys = HgssInputBindings.actionKeys()
     self.cancelKeys = HgssInputBindings.cancelKeys()
@@ -937,18 +962,6 @@ function FieldRuntime:_load()
       fieldAction = fieldAction,
       effect = playSequence,
     })
-    -- The initial display measurement and per-application window memory:
-    -- the runtime measures from the boot topology (or the actual default)
-    -- so pointer input works before any resize; the menu wrapper consumes
-    -- this exact record through its measurement closure.
-    self.presentationWindows = {
-      start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      bag = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      party = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      trainer_card = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-    }
-    self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
-
     -- Interaction discovery: the resolver is pure and consults the same
     -- live-or-probe actor lookup movement collision uses, so both agree about
     -- objects on a logical map that is not the active actor map; bound

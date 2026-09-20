@@ -4,7 +4,9 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local RomImporter = require("romdump.src.source.RomImporter")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
@@ -97,7 +99,76 @@ local function loadManifest(cacheModule, cacheFs)
   Assert.isTrue(cacheModule.validateManifest(manifest), "the starter manifest validates read-only")
 end
 
-local function openProductionChoice(versionId, cacheFs, speciesKeys)
+-- The default measured facts for the migrated native scene tests: one
+-- 520x192 display resolving the native wide pair at 1x, so drawn frames
+-- fill the capture canvas exactly. Built inline (rather than through the
+-- graphicsBox helper below) so the declaration precedes its callers.
+local function nativeWideBox()
+  return {
+    width = 520,
+    height = 192,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 520, height = 192 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "starter-graphics-native-wide",
+  }
+end
+
+-- Complete caller-owned measurements: translated host-unit bounds, actual
+-- topology, uniform pixel ratio, and stable signatures.
+local function graphicsBox(width, height, topology, pixelRatio, signature)
+  return {
+    width = width,
+    height = height,
+    topology = topology,
+    pixelRatio = pixelRatio,
+    signature = signature,
+  }
+end
+
+local WORLD_RECT = { x = 400, y = 100, width = 256, height = 192 }
+local AUX_RECT = { x = 100, y = 300, width = 256, height = 192 }
+
+local function dualBox()
+  return graphicsBox(
+    656,
+    492,
+    ScreenTopology.dualDisplay({
+      id = "world",
+      rect = WORLD_RECT,
+      role = "world",
+      touch = false,
+    }, {
+      id = "aux",
+      rect = AUX_RECT,
+      role = "auxiliary",
+      touch = true,
+    }),
+    1,
+    "starter-graphics-dual"
+  )
+end
+
+local function compactBox()
+  return graphicsBox(
+    640,
+    480,
+    ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 640, height = 480 },
+      role = "world",
+      touch = false,
+    }),
+    1,
+    "starter-graphics-compact"
+  )
+end
+
+local function openProductionChoice(versionId, cacheFs, speciesKeys, measureDisplay)
   local StarterChoiceState = requireModule(STATE_MODULE, "the starter state owns the production chooser")
   local MonCache = requireModule(MON_CACHE_MODULE, "the generated mon cache owns the catalog")
   local MonCatalog = requireModule(CATALOG_MODULE, "the mon catalog names the candidates")
@@ -122,7 +193,14 @@ local function openProductionChoice(versionId, cacheFs, speciesKeys)
     end,
     date = { year = 2000, month = 1, day = 1 },
   })
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = cacheFs, frameIndex = 1 })
+  local opts = {
+    catalog = catalog,
+    cacheFs = cacheFs,
+    frameIndex = 1,
+    measureDisplay = assert(measureDisplay, "the production choice resolves through measured display facts"),
+    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+  }
+  local host = StarterChoiceState.new(opts)
   speciesKeys = speciesKeys or { "CHIKORITA", "CYNDAQUIL", "TOTODILE" }
   local candidates = {}
   for _, key in ipairs(speciesKeys) do
@@ -154,6 +232,11 @@ local function drawFrame(scope, host, width, height)
     drawLine = function() end,
     drawLineWithColorVariants = function() end,
     drawText = function() end,
+    -- The stub draws no glyphs, so measured advances are zero; the
+    -- production contract still requires the metrics entrypoint.
+    textWidth = function()
+      return 0
+    end,
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
     end,
@@ -191,10 +274,9 @@ local function frameDistance(first, second, width, height)
   return changed
 end
 
-local function assertBallHit(hit, versionId)
-  Assert.notNil(hit, versionId .. " hit testing finds a rendered ball")
-  Assert.equal(hit.kind, "ball", versionId .. " hit testing resolves a ball region")
-  Assert.isTrue(hit.index >= 0 and hit.index <= 2, versionId .. " hit testing returns a valid ball index")
+local function assertBallHit(ball, versionId)
+  Assert.notNil(ball, versionId .. " hit testing finds a rendered ball")
+  Assert.isTrue(ball >= 1 and ball <= 3, versionId .. " hit testing returns a valid ball region")
 end
 
 function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow(scope, context)
@@ -211,23 +293,22 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     Assert.isTrue(cacheModule.isReady(cacheFs, marker), versionId .. " starter cache is ready")
     loadManifest(cacheModule, cacheFs)
 
-    local host = openProductionChoice(versionId, cacheFs)
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return nativeWideBox()
+    end)
     Assert.isFalse(host:status().done, versionId .. " opens an active chooser")
 
     local backend = prepareHost(host, cacheFs)
-    local initial = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
-    Assert.isTrue(
-      brightPixels(initial, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 20,
-      versionId .. " initial chooser state leaves visible pixels"
-    )
+    local initial = drawFrame(scope, host, 520, 192)
+    Assert.isTrue(brightPixels(initial, 520, 192) > 20, versionId .. " initial chooser state leaves visible pixels")
 
     local seen = {}
     for y = 0, REFERENCE_HEIGHT - 1, 8 do
       for x = 0, REFERENCE_WIDTH - 1, 8 do
-        local hit = host:hitTest(x, y)
-        if hit ~= nil then
-          assertBallHit(hit, versionId)
-          seen[hit.index] = true
+        local ball = host:ballAt(x, y)
+        if ball ~= nil then
+          assertBallHit(ball, versionId)
+          seen[ball] = true
         end
       end
     end
@@ -236,13 +317,13 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       ballCount = ballCount + 1
     end
     Assert.equal(ballCount, 3, versionId .. " realizes all three ball hit regions")
-    Assert.isNil(host:hitTest(-1, -1), versionId .. " outside coordinates hit no ball")
+    Assert.isNil(host:ballAt(-1, -1), versionId .. " outside coordinates hit no ball")
 
     host:move("right")
     host:update()
-    local rotating = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+    local rotating = drawFrame(scope, host, 520, 192)
     Assert.isTrue(
-      frameDistance(initial, rotating, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 10,
+      frameDistance(initial, rotating, 520, 192) > 10,
       versionId .. " rotation realizes an intermediate scene"
     )
     Assert.isTrue(
@@ -251,7 +332,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       end, 1024),
       versionId .. " rotation reaches its semantic boundary"
     )
-    local rotated = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+    local rotated = drawFrame(scope, host, 520, 192)
     Assert.isNil(host:confirm(), versionId .. " first activation enters inspection")
     Assert.equal(snapshotOf(host, versionId).selectionState, "inspect", versionId .. " enters inspection state")
     Assert.isNil(host:confirm(), versionId .. " second activation starts the confirmation view")
@@ -262,9 +343,9 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       versionId .. " confirmation view reaches its semantic boundary"
     )
     Assert.isFalse(host:status().done, versionId .. " confirmation view does not complete early")
-    local zoomed = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+    local zoomed = drawFrame(scope, host, 520, 192)
     Assert.isTrue(
-      frameDistance(rotated, zoomed, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 10,
+      frameDistance(rotated, zoomed, 520, 192) > 10,
       versionId .. " confirmation view changes the realized scene"
     )
     host:dispose()
@@ -288,7 +369,9 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
     local cacheFs = CacheFs.forVersion(versionId)
     loadManifest(cacheModule, cacheFs)
     local catalog = MonCatalog.new(MonCache.loadCatalog(cacheFs), ItemCatalog.new(ItemCache.loadCatalog(cacheFs)))
-    local host = openProductionChoice(versionId, cacheFs, { "CHIKORITA", "PIKACHU", "TOTODILE" })
+    local host = openProductionChoice(versionId, cacheFs, { "CHIKORITA", "PIKACHU", "TOTODILE" }, function()
+      return nativeWideBox()
+    end)
     local middle = assert(host._candidates[2], versionId .. " retains the middle candidate")
     local species = catalog:species(middle.species)
     local gender = Personality.gender(species.genderRatio, middle.personality)
@@ -304,13 +387,13 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
     Assert.isFalse(status.done, versionId .. " inspecting keeps the chooser active")
     Assert.equal(status.cursor, 1, versionId .. " the middle candidate remains selected")
     local backend = prepareHost(host, cacheFs)
-    local middleFrame = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
-    Assert.isTrue(brightPixels(middleFrame, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 0, versionId .. " portrait is visible")
+    local middleFrame = drawFrame(scope, host, 520, 192)
+    Assert.isTrue(brightPixels(middleFrame, 520, 192) > 0, versionId .. " portrait is visible")
 
     host:focus(0)
-    local neighboringFrame = drawFrame(scope, host, REFERENCE_WIDTH, REFERENCE_HEIGHT)
+    local neighboringFrame = drawFrame(scope, host, 520, 192)
     Assert.isTrue(
-      frameDistance(middleFrame, neighboringFrame, REFERENCE_WIDTH, REFERENCE_HEIGHT) > 10,
+      frameDistance(middleFrame, neighboringFrame, 520, 192) > 10,
       versionId .. " inspected portraits follow their generated candidates"
     )
     host:dispose()
@@ -369,7 +452,12 @@ function T.surface_text_leaves_the_scene_visible_unframed_and_fills_framed(scope
   local canvas = scope:own(love.graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0.1, 0.7, 0.5, 1)
-  host:_drawSurfaceMessage(machineRect, unframed, message, provider)
+  host:_drawMessageLines(unframed, message, provider, {
+    r = machineBackground.r,
+    g = machineBackground.g,
+    b = machineBackground.b,
+    a = 0,
+  })
   love.graphics.setCanvas()
   local unframedFrame = scope:own(canvas:newImageData())
   Assert.equal(#backgrounds, 1, "the unframed prompt draws its line")
@@ -392,7 +480,7 @@ function T.surface_text_leaves_the_scene_visible_unframed_and_fills_framed(scope
   end
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0.1, 0.7, 0.5, 1)
-  host:_drawSurfaceMessage(infoRect, framed, message, provider)
+  host:_drawMessageLines(framed, message, provider, infoBackground)
   love.graphics.setCanvas()
   local framedFrame = scope:own(canvas:newImageData())
   Assert.equal(#backgrounds, 2, "the framed message draws its line")
@@ -405,6 +493,281 @@ function T.surface_text_leaves_the_scene_visible_unframed_and_fills_framed(scope
   )
   Assert.isNil(machineBackground.a, "the machine background table is not mutated")
   Assert.isNil(infoBackground.a, "the info background table is not mutated")
+end
+
+local function wideBox()
+  return graphicsBox(
+    1280,
+    720,
+    ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 100, y = 50, width = 1280, height = 720 },
+      role = "world",
+      touch = false,
+    }),
+    1,
+    "starter-graphics-wide"
+  )
+end
+
+local function tallBox()
+  return graphicsBox(
+    390,
+    844,
+    ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 20, y = 30, width = 390, height = 844 },
+      role = "world",
+      touch = false,
+    }),
+    1,
+    "starter-graphics-tall"
+  )
+end
+
+local function planOf(host, versionId, what)
+  local status = host:status()
+  Assert.isTrue(type(status) == "table", versionId .. " keeps an active chooser " .. what)
+  local plan = status.presentation
+  Assert.isTrue(type(plan) == "table", versionId .. " publishes its presentation plan " .. what)
+  return plan
+end
+
+local function frameOf(pane, versionId, what)
+  local placement = assert(pane.placement, versionId .. " interface pane carries its placement " .. what)
+  return assert(placement.frame, versionId .. " interface placement carries its host frame " .. what)
+end
+
+local function centerIn(frame, rect)
+  local cx = frame.x + frame.width / 2
+  local cy = frame.y + frame.height / 2
+  return cx >= rect.x and cx <= rect.x + rect.width and cy >= rect.y and cy <= rect.y + rect.height
+end
+
+-- The chooser follows actual display cases instead of always
+-- manufacturing side-by-side surfaces. Wide pairs info left of the
+-- machine, tall stacks info above the machine, a genuine pair keeps info
+-- on world with the machine on auxiliary, and nativeLike resolves one
+-- usable compact portrait/action/message interface. A full inspect/confirm
+-- flow on wide still publishes the confirmed candidate identity.
+function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the starter topology needs a ready user-owned ROM with a derived cache")
+  end
+  local cacheModule = requireModule(CACHE_MODULE, "the starter cache owns the normalized scene")
+
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    Assert.isTrue(
+      cacheModule.isReady(cacheFs, cacheFs:read(cacheModule.markerPath())),
+      versionId .. " starter cache is ready"
+    )
+    local cell = { box = wideBox() }
+    local function measure()
+      return cell.box
+    end
+
+    local wide = openProductionChoice(versionId, cacheFs, nil, measure)
+    local widePlan = planOf(wide, versionId, "wide")
+    Assert.equal(#widePlan.panes, 2, versionId .. " wide pairs exactly two panes")
+    local wideLeft = frameOf(widePlan.panes[1], versionId, "wide")
+    local wideRight = frameOf(widePlan.panes[2], versionId, "wide")
+    Assert.isTrue(wideLeft.x + wideLeft.width <= wideRight.x, versionId .. " wide keeps info left of the machine")
+    local wideScale = assert(widePlan.panes[1].placement.scale, versionId .. " wide pane carries its scale")
+    Assert.equal(widePlan.panes[2].placement.scale, wideScale, versionId .. " wide shares one presentation scale")
+    Assert.equal(
+      wideRight.x - (wideLeft.x + wideLeft.width),
+      8 * wideScale,
+      versionId .. " wide keeps the eight-logical-pixel gap"
+    )
+    wide:move("right")
+    Assert.isTrue(
+      stepHostUntil(wide, function()
+        return snapshotOf(wide, versionId).transition == "idle"
+      end, 1024),
+      versionId .. " wide rotation settles"
+    )
+    Assert.isNil(wide:confirm(), versionId .. " wide first activation inspects")
+    Assert.isTrue(
+      stepHostUntil(wide, function()
+        return snapshotOf(wide, versionId).selectionState == "inspect"
+      end, 1024),
+      versionId .. " wide enters inspection"
+    )
+    Assert.isNil(wide:confirm(), versionId .. " wide second activation starts confirmation")
+    Assert.isTrue(
+      stepHostUntil(wide, function()
+        return snapshotOf(wide, versionId).selectionState == "confirm"
+      end, 1024),
+      versionId .. " wide reaches confirmation"
+    )
+    Assert.isNil(wide:confirm(), versionId .. " wide final activation starts the lock")
+    Assert.isTrue(
+      stepHostUntil(wide, function()
+        return snapshotOf(wide, versionId).done
+      end, 1024),
+      versionId .. " wide lock completes"
+    )
+    Assert.equal(wide:status().index, 1, versionId .. " wide confirms the rotated candidate identity")
+    wide:dispose()
+
+    cell.box = tallBox()
+    local tall = openProductionChoice(versionId, cacheFs, nil, measure)
+    local tallPlan = planOf(tall, versionId, "tall")
+    Assert.equal(#tallPlan.panes, 2, versionId .. " tall pairs exactly two panes")
+    local tallUpper = frameOf(tallPlan.panes[1], versionId, "tall")
+    local tallLower = frameOf(tallPlan.panes[2], versionId, "tall")
+    Assert.isTrue(tallUpper.y + tallUpper.height <= tallLower.y, versionId .. " tall keeps info above the machine")
+    Assert.equal(
+      tallPlan.panes[1].placement.scale,
+      tallPlan.panes[2].placement.scale,
+      versionId .. " tall shares one presentation scale"
+    )
+    tall:dispose()
+
+    cell.box = dualBox()
+    local dual = openProductionChoice(versionId, cacheFs, nil, measure)
+    local dualPlan = planOf(dual, versionId, "dual")
+    Assert.equal(#dualPlan.panes, 2, versionId .. " dual keeps both physical surfaces")
+    local dualWorld = 0
+    local dualAux = 0
+    for _, pane in ipairs(dualPlan.panes) do
+      local frame = frameOf(pane, versionId, "dual")
+      if centerIn(frame, WORLD_RECT) then
+        dualWorld = dualWorld + 1
+      end
+      if centerIn(frame, AUX_RECT) then
+        dualAux = dualAux + 1
+      end
+    end
+    Assert.equal(dualWorld, 1, versionId .. " dual keeps info on the world surface")
+    Assert.equal(dualAux, 1, versionId .. " dual keeps the machine on the auxiliary surface")
+    dual:dispose()
+
+    cell.box = compactBox()
+    local compact = openProductionChoice(versionId, cacheFs, nil, measure)
+    local compactPlan = planOf(compact, versionId, "compact")
+    Assert.equal(#compactPlan.panes, 1, versionId .. " compact is one complete interface")
+    local compactPlacement = assert(compactPlan.panes[1].placement, versionId .. " compact pane carries its placement")
+    Assert.equal(compactPlacement.logicalWidth, 256, versionId .. " compact keeps native logical width")
+    Assert.equal(compactPlacement.logicalHeight, 192, versionId .. " compact keeps native logical height")
+    local backend = prepareHost(compact, cacheFs)
+    local before = snapshotOf(compact, versionId)
+    drawFrame(scope, compact, 640, 480)
+    local second = drawFrame(scope, compact, 640, 480)
+    local after = snapshotOf(compact, versionId)
+    Assert.equal(after.selection, before.selection, versionId .. " repeated draws never reselect")
+    Assert.equal(after.selectionState, before.selectionState, versionId .. " repeated draws never transition")
+    local regions = {
+      { x = 8, y = 8, width = 240, height = 48 },
+      { x = 8, y = 60, width = 240, height = 80 },
+      { x = 8, y = 164, width = 240, height = 24 },
+    }
+    for _, region in ipairs(regions) do
+      local bright = 0
+      for ly = region.y, region.y + region.height - 1, 2 do
+        for lx = region.x, region.x + region.width - 1, 2 do
+          local hx, hy = LayoutGeometry.logicalToHost(compactPlacement, lx, ly)
+          local red, green, blue, alpha = second:getPixel(math.floor(hx), math.floor(hy))
+          if alpha > 0.5 and math.max(red, green, blue) > 0.05 then
+            bright = bright + 1
+          end
+        end
+      end
+      Assert.isTrue(bright > 20, versionId .. " compact paints its message, portrait, and action regions")
+    end
+    compact:dispose()
+    backend:release()
+  end
+end
+
+-- Native machine hit testing agrees with source projection
+-- through one placement. At a translated DPI-2 auxiliary pane, each
+-- projected ball centre round-trips to its own index, and a backdrop
+-- point outside every clip inverts to nothing.
+function T.translated_dpi2_machine_placement_agrees_with_source_projection(_, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the starter projection needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local worldRect = { x = 400, y = 100, width = 512, height = 384 }
+    local auxRect = { x = 100, y = 300, width = 512, height = 384 }
+    local box = graphicsBox(
+      1024,
+      768,
+      ScreenTopology.dualDisplay({
+        id = "world",
+        rect = worldRect,
+        role = "world",
+        touch = true,
+      }, {
+        id = "aux",
+        rect = auxRect,
+        role = "auxiliary",
+        touch = false,
+      }),
+      2,
+      "starter-graphics-dpi2-dual"
+    )
+    local host = openProductionChoice(versionId, cacheFs, nil, function()
+      return box
+    end)
+    local plan = planOf(host, versionId, "dpi2 dual")
+    Assert.equal(#plan.panes, 2, versionId .. " dpi2 dual keeps both physical surfaces")
+    local machinePlacement = nil
+    for _, pane in ipairs(plan.panes) do
+      if centerIn(frameOf(pane, versionId, "dpi2 dual"), auxRect) then
+        machinePlacement = pane.placement
+      end
+    end
+    local machine = assert(machinePlacement, versionId .. " the machine interaction lives on the auxiliary surface")
+    local sums = {}
+    for y = 0, 191 do
+      for x = 0, 255 do
+        local ball = host:ballAt(x, y)
+        if ball ~= nil then
+          local entry = sums[ball]
+          if entry == nil then
+            entry = { count = 0, sumX = 0, sumY = 0 }
+            sums[ball] = entry
+          end
+          entry.count = entry.count + 1
+          entry.sumX = entry.sumX + x
+          entry.sumY = entry.sumY + y
+        end
+      end
+    end
+    local probed = 0
+    for index = 1, 3 do
+      local entry = assert(sums[index], versionId .. " realizes ball region " .. index)
+      local cx = entry.sumX / entry.count
+      local cy = entry.sumY / entry.count
+      local hx, hy = LayoutGeometry.logicalToHost(machine, cx, cy)
+      local frame = assert(machine.frame, versionId .. " machine placement carries its frame")
+      Assert.isTrue(
+        hx >= frame.x and hx <= frame.x + frame.width and hy >= frame.y and hy <= frame.y + frame.height,
+        versionId .. " the projected ball centre lands inside the machine frame"
+      )
+      local sx, sy = LayoutGeometry.hostToLogical(machine, hx, hy)
+      sx = assert(sx, versionId .. " the forward-mapped ball stays inside the visible clip")
+      sy = assert(sy, versionId .. " the forward-mapped ball stays inside the visible clip")
+      Assert.near(sx, cx, 0.001, versionId .. " host inversion restores the source x exactly")
+      Assert.near(sy, cy, 0.001, versionId .. " host inversion restores the source y exactly")
+      Assert.equal(
+        host:ballAt(math.floor(sx + 0.5), math.floor(sy + 0.5)),
+        index,
+        versionId .. " source projection and placement inversion agree on ball " .. index
+      )
+      probed = probed + 1
+    end
+    Assert.equal(probed, 3, versionId .. " all three ball regions round-trip")
+    local backdrop, _ = LayoutGeometry.hostToLogical(machine, 0, 0)
+    Assert.isNil(backdrop, versionId .. " a backdrop point outside every clip inverts to nothing")
+    host:dispose()
+  end
 end
 
 local suite = GraphicsSmoke.suite(T)
