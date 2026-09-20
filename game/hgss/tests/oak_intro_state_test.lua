@@ -319,6 +319,78 @@ function T.naming_reflow_keeps_the_session_without_stale_activation()
   )
   state:mousepressed(fx, fy, 1)
   Assert.deepEqual(controller.activated, { { row = 2, column = 1 }, { row = 2, column = 1 } })
+  state:mousereleased(fx, fy, 1)
+end
+
+-- Blur must end any held naming gesture: a stale move/release after
+-- focus loss moves nothing and activates nothing, while a fresh press
+-- afterwards still works. Blur outside the editor stays a no-op.
+function T.held_naming_gesture_ends_on_focus_loss_and_fresh_input_recovers()
+  local state, controller = stateHarness()
+  controller.phase = "name_edit"
+  state:resize(1280, 720)
+  local plan = assert(state:view().namingPresentation, "name editing publishes its naming plan")
+  local window = assert(plan.window, "a wide host must frame naming in a window")
+  local grab = assert(window.grabRect, "the naming window must carry its grab strip")
+  local frame0 = assert(window.outer, "the naming window must carry its outer placement").frame
+  local grabX, grabY = grab.x + grab.width / 2, grab.y + grab.height / 2
+  state:mousepressed(grabX, grabY, 1)
+  state:focus(false)
+  state:focus(true)
+  state:mousemoved(grabX + 40, grabY, 0, 0, false)
+  state:mousereleased(grabX + 40, grabY, 1)
+  local held = assert(state:view().namingPresentation, "the naming plan survives the blur").window.outer.frame
+  Assert.deepEqual(
+    { x = held.x, y = held.y },
+    { x = frame0.x, y = frame0.y },
+    "a stale move after blur must not continue the old drag"
+  )
+  state:mousepressed(grabX, grabY, 1)
+  state:mousemoved(grabX + 40, grabY, 0, 0, false)
+  local moved = assert(state:view().namingPresentation, "the naming plan survives a fresh drag").window.outer.frame
+  Assert.isTrue(moved.x > frame0.x, "a fresh drag works after refocus")
+  state:mousereleased(grabX + 40, grabY, 1)
+
+  local fresh = state:view()
+  local freshPlan = assert(fresh.namingPresentation, "the naming plan resolves after the fresh drag")
+  local freshPane = assert(freshPlan.panes[1], "the plan carries its content pane")
+  local naming = assert(fresh.layout.namingScreen, "name editing publishes the canonical Naming Screen")
+  local key = naming.cells[2][1]
+  local keyX, keyY = LayoutGeometry.logicalToHost(
+    assert(freshPane.placement, "the pane carries its host placement"),
+    key.x + 1,
+    key.y + 1
+  )
+  state:mousepressed(keyX, keyY, 1)
+  Assert.deepEqual(controller.activated, { { row = 2, column = 1 } })
+  state:focus(false)
+  state:focus(true)
+  state:mousereleased(keyX, keyY, 1)
+  Assert.deepEqual(
+    controller.activated,
+    { { row = 2, column = 1 } },
+    "a stale release after blur must not activate the cell twice"
+  )
+  state:mousepressed(keyX, keyY, 1)
+  Assert.deepEqual(
+    controller.activated,
+    { { row = 2, column = 1 }, { row = 2, column = 1 } },
+    "a fresh cell press still activates after refocus"
+  )
+  state:mousereleased(keyX, keyY, 1)
+
+  controller.phase = "gender_select"
+  state:focus(false)
+  state:focus(true)
+  Assert.isNil(state:view().namingPresentation, "blur outside the editor publishes no naming plan")
+  local genderLayout = state:view().layout
+  local genderX, genderY = LayoutGeometry.logicalToHost(
+    assert(state:view().pixelSurface).placement,
+    genderLayout.genderButtons[1].rect.x + genderLayout.genderButtons[1].rect.width / 2,
+    genderLayout.genderButtons[1].rect.y + genderLayout.genderButtons[1].rect.height / 2
+  )
+  state:mousepressed(genderX, genderY, 1)
+  Assert.deepEqual(controller.pressed, { "female" }, "blur outside the editor changes nothing")
 end
 
 function T.pointer_hits_the_same_drawn_virtual_key_geometry()
@@ -335,6 +407,7 @@ function T.pointer_hits_the_same_drawn_virtual_key_geometry()
   )
   state:mousepressed(x, y, 1)
   Assert.deepEqual(controller.activated, { { row = 2, column = 1 } })
+  state:mousereleased(x, y, 1)
   local control = naming.controls.upper
   local cx, cy = LayoutGeometry.logicalToHost(
     assert(pane.placement, "the naming pane carries its host placement"),
@@ -343,6 +416,7 @@ function T.pointer_hits_the_same_drawn_virtual_key_geometry()
   )
   state:mousepressed(cx, cy, 1)
   Assert.deepEqual(controller.activated, { { row = 2, column = 1 }, { control = "upper" } })
+  state:mousereleased(cx, cy, 1)
 end
 
 function T.pointer_mapping_uses_the_logical_surface_for_name_and_gender_controls()

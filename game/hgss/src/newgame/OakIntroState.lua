@@ -160,8 +160,14 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field textinput fun(self: OakIntroState, text: string)
 ---@field gamepadpressed fun(self: OakIntroState, joystick: unknown, button: string)
 ---@field _pointer fun(self: OakIntroState, x: number, y: number, pointerId: unknown)
+---@field _applyNamingEvent fun(self: OakIntroState, event: { type: string, pointerId: unknown, x: number?, y: number? })
 ---@field mousepressed fun(self: OakIntroState, x: number, y: number, button: integer)
+---@field mousemoved fun(self: OakIntroState, x: number, y: number, dx: number?, dy: number?, istouch: boolean?)
+---@field mousereleased fun(self: OakIntroState, x: number, y: number, button: integer)
 ---@field touchpressed fun(self: OakIntroState, id: unknown, x: number, y: number)
+---@field touchmoved fun(self: OakIntroState, id: unknown, x: number, y: number)
+---@field touchreleased fun(self: OakIntroState, id: unknown, x: number, y: number)
+---@field focus fun(self: OakIntroState, focused: boolean)
 ---@field dispose fun(self: OakIntroState)
 local OakIntroState = {}
 OakIntroState.__index = OakIntroState
@@ -618,26 +624,39 @@ function OakIntroState:gamepadpressed(_, button)
   self:_sync()
 end
 
-function OakIntroState:_pointer(x, y, pointerId)
+-- Forwards one host pointer event to the owned naming session and applies
+-- the semantic hit it returns. Presses activate cells and controls through
+-- the leaf mapper; header moves drag the window inside the shared session
+-- and releases end whichever capture the session holds. Never invents drag
+-- state here: the session owns capture, translation, and cancellation.
+---@param event { type: string, pointerId: unknown, x: number?, y: number? }
+function OakIntroState:_applyNamingEvent(event)
   local view = self:view()
   if self.dialogueController and self.dialogueController:isModal() then
     self:_sync()
     return
   end
-  if view.phase == "name_edit" then
-    local session = self:_ensureNamingSession()
-    local snapshot = assert(view.namingScreen, "Oak name editing requires its Naming Screen snapshot")
-    local mapped = session:mapInput({
-      { type = "pointer_down", pointerId = pointerId, x = x, y = y },
-      { type = "pointer_up", pointerId = pointerId, x = x, y = y },
-    }, snapshot)
-    for _, event in ipairs(mapped) do
-      if event.type == "name_control" then
-        self.controller:activateNameControl(event.id)
-      elseif event.type == "name_cell" then
-        self.controller:activateNameCell(event.row, event.column)
-      end
+  assert(view.phase == "name_edit", "Oak naming pointer events require the name editor")
+  local session = self:_ensureNamingSession()
+  local snapshot = assert(view.namingScreen, "Oak name editing requires its Naming Screen snapshot")
+  local mapped = session:mapInput({ event }, snapshot)
+  for _, result in ipairs(mapped) do
+    if result.type == "name_control" then
+      self.controller:activateNameControl(result.id)
+    elseif result.type == "name_cell" then
+      self.controller:activateNameCell(result.row, result.column)
     end
+  end
+  self:_sync()
+end
+
+function OakIntroState:_pointer(x, y, pointerId)
+  if self.controller:view().phase == "name_edit" then
+    self:_applyNamingEvent({ type = "pointer_down", pointerId = pointerId, x = x, y = y })
+    return
+  end
+  local view = self:view()
+  if self.dialogueController and self.dialogueController:isModal() then
     self:_sync()
     return
   end
@@ -676,8 +695,48 @@ function OakIntroState:mousepressed(x, y, button)
   end
 end
 
+function OakIntroState:mousemoved(x, y, _, _, istouch)
+  if istouch then
+    return
+  end
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_move", pointerId = "mouse", x = x, y = y })
+end
+
+function OakIntroState:mousereleased(x, y, button)
+  if button ~= 1 then
+    return
+  end
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_up", pointerId = "mouse", x = x, y = y })
+end
+
 function OakIntroState:touchpressed(id, x, y)
   self:_pointer(x, y, id)
+end
+
+function OakIntroState:touchmoved(id, x, y)
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_move", pointerId = id, x = x, y = y })
+end
+
+function OakIntroState:touchreleased(id, x, y)
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_up", pointerId = id, x = x, y = y })
+end
+
+function OakIntroState:focus(focused)
+  if not focused and self._namingSession ~= nil then
+    self._namingSession:cancelPointers()
+  end
 end
 
 function OakIntroState:dispose()

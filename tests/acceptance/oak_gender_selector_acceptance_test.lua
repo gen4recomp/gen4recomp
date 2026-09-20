@@ -324,6 +324,7 @@ local function clickNamingCell(state, row, column)
     cell.y + 1
   )
   state:mousepressed(x, y, 1)
+  state:mousereleased(x, y, 1)
 end
 
 T.tests.production_oak_name_entry_uses_the_retail_naming_surface = function()

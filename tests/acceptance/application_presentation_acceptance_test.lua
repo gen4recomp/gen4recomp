@@ -981,9 +981,26 @@ function T.tests.oak_naming_draft_survives_reflow_and_drag_without_glyphs()
     Assert.equal(reflowedPlan.panes[1].placement.logicalWidth, 256, "reflow never shrinks the child")
     local window = assert(reflowedPlan.window, "a wide host must frame naming in a window")
     local grab = assert(window.grabRect, "the naming window must carry its grab strip")
+    local frame0 = assert(window.outer, "the naming window must carry its outer placement").frame
     local grabX, grabY = grab.x + grab.width / 2, grab.y + grab.height / 2
     state:mousepressed(grabX, grabY, 1)
-    state:mousepressed(grabX + 40, grabY + 10, 1)
+    Assert.equal(state:view().name, "GOLD", "a header press must never insert a glyph")
+    state:mousemoved(grabX + 30, grabY + 10, 0, 0, false)
+    local frame1 =
+      assert(state:view().namingPresentation, "name editing must publish a plan during the drag").window.outer.frame
+    Assert.isTrue(frame1.x > frame0.x, "the first drag move must displace the window")
+    state:mousemoved(grabX + 60, grabY + 20, 0, 0, false)
+    local frame2 =
+      assert(state:view().namingPresentation, "name editing must publish a plan during the drag").window.outer.frame
+    Assert.isTrue(frame2.x > frame1.x, "the second drag move must extend the same gesture")
+    state:mousereleased(grabX + 60, grabY + 20, 1)
+    local landed =
+      assert(state:view().namingPresentation, "name editing must publish a plan after release").window.outer.frame
+    Assert.deepEqual(
+      { x = landed.x, y = landed.y },
+      { x = frame2.x, y = frame2.y },
+      "release must end the drag without snapping the window back"
+    )
     Assert.equal(state:view().name, "GOLD", "window dragging must never insert a glyph")
 
     state:gamepadpressed(nil, "start")
