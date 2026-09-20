@@ -13,7 +13,7 @@ local Errors = require("libs.errors.src.Errors")
 local SourcePlan = {}
 
 SourcePlan.PATH = "data/generated/producer/source-plan.lua"
-SourcePlan.SCHEMA = "g4-source-plan-v1"
+SourcePlan.SCHEMA = "g4-source-plan-v2"
 
 ---@param generationId string
 ---@return string
@@ -142,6 +142,7 @@ function SourcePlan.validate(plan, identity)
     fieldCellIndexBundle = true,
     scriptPlan = true,
     audioPlan = true,
+    audioIdentity = true,
     messageBankIds = true,
     mapDataIds = true,
     mapCellKeys = true,
@@ -281,6 +282,39 @@ function SourcePlan.validate(plan, identity)
       previous = bankPlan.bankId
     end
   end
+  local audioIdentity = plan.audioIdentity --[[@as table<string, unknown>]]
+  if type(audioIdentity) ~= "table" then
+    return nil, "source inventory carries no sound archive identity"
+  end
+  do
+    local fields = 0
+    for _ in pairs(audioIdentity) do
+      fields = fields + 1
+    end
+    if fields ~= 3 then
+      return nil, "source inventory sound archive identity carries an unexpected field"
+    end
+  end
+  if
+    type(audioIdentity.romSha1) ~= "string"
+    or #audioIdentity.romSha1 ~= 40
+    or audioIdentity.romSha1:match("^[0-9a-fA-F]+$") == nil
+  then
+    return nil, "source inventory sound archive identity carries no ROM identity"
+  end
+  if
+    type(audioIdentity.sdatSha1) ~= "string"
+    or #audioIdentity.sdatSha1 ~= 40
+    or audioIdentity.sdatSha1:match("^[0-9a-fA-F]+$") == nil
+  then
+    return nil, "source inventory sound archive identity carries no archive digest"
+  end
+  if not isInteger(audioIdentity.sdatFileId) or audioIdentity.sdatFileId < 0 then
+    return nil, "source inventory sound archive identity carries no archive file identity"
+  end
+  if audioIdentity.romSha1 ~= plan.romSha1 then
+    return nil, "source inventory sound archive identity disagrees with the ROM identity"
+  end
   if not isAscendingUniqueIds(plan.messageBankIds) then
     return nil, "source inventory message banks are not ascending and unique"
   end
@@ -356,9 +390,9 @@ function SourcePlan.compile(romFs, identity)
   local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
   local scriptPlan = ScriptCompiler.plan(romFs, producerId)
   local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
-  local audioPlan, audioErr = AudioCompiler.plan(romFs)
-  if audioPlan == nil then
-    error(audioErr, 0)
+  local audioSource, audioSourceErr = AudioCompiler.planSource(romFs)
+  if audioSource == nil then
+    error(audioSourceErr, 0)
   end
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local messageBankIds = FieldMessageCompiler.requiredBankIds()
@@ -407,7 +441,8 @@ function SourcePlan.compile(romFs, identity)
     world = world,
     fieldCellIndexBundle = fieldCellIndexBundle,
     scriptPlan = scriptPlan,
-    audioPlan = { index = audioPlan.index, bankPlans = audioPlan.bankPlans },
+    audioPlan = audioSource.plan,
+    audioIdentity = audioSource.identity,
     messageBankIds = messageBankIds,
     mapDataIds = mapDataIds,
     mapCellKeys = mapCellKeys,

@@ -6,8 +6,15 @@
 local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
+local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
+local Hashing = require("romdump.src.digest.Hashing")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local SdatFixture = require("tests.support.SdatFixture")
+local SseqFixture = require("tests.support.SseqFixture")
+local SbnkFixture = require("tests.support.SbnkFixture")
+local SwarFixture = require("tests.support.SwarFixture")
 
 local T = {}
 
@@ -368,6 +375,7 @@ local function warmSourceCache(generation, producerId)
     fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "memo-index-marker" },
     scriptPlan = { members = { { memberId = 1 } }, generationKey = "memo-script-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    audioIdentity = { romSha1 = string.rep("b", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     messageBankIds = FieldMessageCompiler.requiredBankIds(),
     mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = { [7] = {} },
@@ -421,6 +429,136 @@ function T.new_game_intro_names_its_missing_audio_reference()
     tostring(err):find("SEQ_SE_DP_SELECT", 1, true) ~= nil,
     "the failure names the missing semantic reference: " .. tostring(err)
   )
+end
+
+-- A one-bank synthetic archive with real decodable payloads: one used
+-- sequence on bank zero backed by one wave archive member.
+local function leafSourceBytes()
+  local spec = {
+    sequences = { [0] = { bankId = 0, volume = 120, channelPriority = 127, playerPriority = 64, playerId = 0 } },
+    banks = { [0] = { waveArchives = { 0, 0xFFFF, 0xFFFF, 0xFFFF } } },
+    waveArchives = { [0] = {} },
+    players = { [0] = { maxSequences = 2, channelMask = 0xC000, heapSize = 0x5E88 } },
+    extraFiles = 0,
+  }
+  local _, layout = SdatFixture.build(spec)
+  spec.payloads = {
+    [layout.fileIds.sequences[0]] = SseqFixture.build({ { op = "fin" } }),
+    [layout.fileIds.banks[0]] = SbnkFixture.build({
+      {
+        type = 1,
+        param = {
+          swav = 0,
+          swarSlot = 0,
+          rootKey = 60,
+          attack = 120,
+          decay = 60,
+          sustain = 80,
+          release = 100,
+          pan = 64,
+        },
+      },
+    }),
+    [layout.fileIds.waveArchives[0]] = SwarFixture.build({
+      SwarFixture.pcm8({ -128, -64, 0, 64, 127, -1, 1, 2 }, { sampleRate = 16000 }),
+    }),
+  }
+  return SdatFixture.build(spec)
+end
+
+local function leafRomFs(bytes)
+  return {
+    readSourcePath = function(_, path)
+      Assert.equal(path, "data/sound/gs_sound_data.sdat")
+      return bytes
+    end,
+    metadata = function()
+      return { sha1 = string.rep("c", 40) }
+    end,
+    version = function()
+      return "heartgold"
+    end,
+    fileIdForPath = function(_, _)
+      return 7
+    end,
+  }
+end
+
+-- Leaf audio jobs consume the published generation source plan instead of
+-- re-planning the archive: bank, catalog, and summary executions all route
+-- through the worker source-plan memo while the standalone planners stay
+-- silent, and an unknown bank fails with its own identity.
+function T.audio_leaf_jobs_consume_the_published_generation_plan()
+  local SourcePlan = require("romdump.src.build.SourcePlan")
+  local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
+  local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
+  local bytes = leafSourceBytes()
+  local romFs = leafRomFs(bytes)
+  local catalog = assert(AudioCompiler.plan(romFs))
+  local generation = "leaf-generation"
+  local producerId = "d" .. string.rep("3", 64)
+  local identity = { romSha1 = string.rep("c", 40), sdatSha1 = Hashing.sha1hex(bytes), sdatFileId = 7 }
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  cacheFs:writeLua(SourcePlan.PATH, {
+    schema = SourcePlan.SCHEMA,
+    versionId = "heartgold",
+    romSha1 = string.rep("c", 40),
+    generationId = generation,
+    producerId = producerId,
+    world = { maps = { { id = 7 } }, analysis = { excluded = {} } },
+    fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "leaf-index-marker" },
+    scriptPlan = { members = {}, generationKey = "leaf-script-generation" },
+    audioPlan = { index = catalog.index, bankPlans = catalog.bankPlans },
+    audioIdentity = identity,
+    messageBankIds = FieldMessageCompiler.requiredBankIds(),
+    mapDataIds = FieldMapDataCompiler.supportedMapIds(),
+    mapCellKeys = { [7] = {} },
+  })
+  for _, bankPlan in ipairs(catalog.bankPlans) do
+    Assert.notNil(AudioCacheWriter.writeBank(cacheFs, romFs, bankPlan), "the live cache stages the planned bank")
+  end
+  Assert.notNil(AudioCacheWriter.writeCatalog(cacheFs, catalog, identity), "the live cache stages the planned catalog")
+  local planCalls, identityCalls = 0, 0
+  local realPlan, realSoundIdentity = AudioCompiler.plan, AudioCompiler.soundIdentity
+  AudioCompiler.plan = function(source)
+    planCalls = planCalls + 1
+    return realPlan(source)
+  end
+  AudioCompiler.soundIdentity = function(source)
+    identityCalls = identityCalls + 1
+    return realSoundIdentity(source)
+  end
+  local ok, failure = pcall(function()
+    local context = { cacheFs = cacheFs, romFs = romFs, versionId = "heartgold" }
+    local function execute(kind, key, stageName)
+      return ArtifactJobs.execute({
+        kind = kind,
+        key = key,
+        generationId = generation,
+        producerFingerprint = producerId,
+        stageName = stageName,
+        epoch = 1,
+      }, context)
+    end
+    local bank = execute("audio-bank", "0", "leaf-bank-stage")
+    Assert.notNil(bank.result.marker, "the planned bank stages its marker")
+    local staged = execute("audio-catalog", "global", "leaf-catalog-stage")
+    Assert.notNil(staged.result.marker, "the planned catalog stages its marker")
+    local summary = execute("audio-summary", "global", "leaf-summary-stage")
+    Assert.notNil(summary.result.marker, "the planned summary stages its marker")
+    local unknown, unknownErr = pcall(execute, "audio-bank", "7", "leaf-unknown-stage")
+    Assert.isFalse(unknown, "a bank outside the published membership fails")
+    Assert.isTrue(
+      tostring(unknownErr):find("7", 1, true) ~= nil,
+      "the failure names the requested bank: " .. tostring(unknownErr)
+    )
+    Assert.equal(planCalls, 0, "leaf jobs never re-plan the archive")
+    Assert.equal(identityCalls, 0, "leaf jobs never re-derive the sound identity")
+  end)
+  AudioCompiler.plan, AudioCompiler.soundIdentity = realPlan, realSoundIdentity
+  if not ok then
+    error(failure, 0)
+  end
 end
 
 return { metadata = { capabilities = {} }, tests = T }

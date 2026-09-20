@@ -230,6 +230,7 @@ local function publishWarmSource(cacheFs, generation, firstMember, lastMember)
     fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
     scriptPlan = { members = members, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     messageBankIds = FieldMessageCompiler.requiredBankIds(),
     mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = { [7] = {}, [9] = {} },
@@ -919,10 +920,13 @@ local function inventoryPatches(calls, failingMapId)
     },
     {
       target = AudioCompiler,
-      name = "plan",
+      name = "planSource",
       replacement = function()
         calls.audio = (calls.audio or 0) + 1
-        return { index = { version = "heartgold" }, bankPlans = { { bankId = 2 }, { bankId = 5 } } }
+        return {
+          plan = { index = { version = "heartgold" }, bankPlans = { { bankId = 2 }, { bankId = 5 } } },
+          identity = { romSha1 = SYNTHETIC_SHA1, sdatSha1 = string.rep("d", 40), sdatFileId = 9 },
+        }
       end,
     },
     {
@@ -981,7 +985,7 @@ function T.inventory_compiles_membership_without_pixel_or_geometry_work()
   for _ in pairs(plan) do
     fields = fields + 1
   end
-  Assert.equal(fields, 12, "the persisted shape carries exactly its twelve fields")
+  Assert.equal(fields, 13, "the persisted shape carries exactly its thirteen fields")
   Assert.equal(plan.schema, SourcePlan.SCHEMA, "the inventory carries its schema")
   Assert.equal(plan.generationId, "assembly-generation", "the inventory carries its generation")
   Assert.equal(plan.romSha1, SYNTHETIC_SHA1, "the inventory carries its source identity")
@@ -1256,6 +1260,7 @@ local function inventoryPlan(generation, scriptIds)
     fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
     scriptPlan = { members = members, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     messageBankIds = FieldMessageCompiler.requiredBankIds(),
     mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = { [7] = {}, [9] = {} },
@@ -1629,6 +1634,24 @@ function T.source_readiness_agrees_with_the_authoritative_reader()
     end,
     audioWithoutBanks = function(record)
       record.audioPlan = { index = { version = "heartgold" } }
+    end,
+    audioWithoutIdentity = function(record)
+      record.audioIdentity = nil
+    end,
+    audioScalarIdentity = function(record)
+      record.audioIdentity = "not-a-table"
+    end,
+    audioIdentityExtraField = function(record)
+      record.audioIdentity.extra = "unexpected"
+    end,
+    audioIdentityWrongRom = function(record)
+      record.audioIdentity.romSha1 = string.rep("b", 40)
+    end,
+    audioIdentityBadDigest = function(record)
+      record.audioIdentity.sdatSha1 = "too-short"
+    end,
+    audioIdentityBadFileId = function(record)
+      record.audioIdentity.sdatFileId = -1
     end,
     duplicateWorldMap = function(record)
       record.world.maps = { { id = 7 }, { id = 7 } }

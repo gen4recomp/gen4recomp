@@ -493,15 +493,24 @@ local function planClosures(sdat)
   return plans
 end
 
+--- One archive observation yielding both the catalog plan and the sound
+--- identity: a single SDAT read/open binds both records to the same bytes.
 ---@param romFs table<string, unknown>
----@return AudioCompiler.CatalogPlan
-local function _plan(romFs)
+---@return { plan: AudioCompiler.CatalogPlan, identity: AudioCompiler.SoundIdentity }
+local function _planSource(romFs)
   local sdatBytes = openSdatBytes(romFs)
   local sdat = openSdat(sdatBytes)
   local symbols = catalogSymbols(sdat)
   return {
-    index = buildIndex(sdat, symbols, romFs:version()),
-    bankPlans = planClosures(sdat),
+    plan = {
+      index = buildIndex(sdat, symbols, romFs:version()),
+      bankPlans = planClosures(sdat),
+    },
+    identity = {
+      romSha1 = romFs:metadata().sha1,
+      sdatSha1 = Hashing.sha1hex(sdatBytes),
+      sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+    },
   }
 end
 
@@ -695,14 +704,17 @@ local function _compile(romFs, sha1hex, hashLua)
 end
 
 -- Plans the deterministic bank closures without lowering sequences or
--- decoding waves: the normalized catalog metadata plus one plan per used
--- bank with its ascending used sequences. A used sequence naming an absent
--- or unused bank fails with both identities.
+-- decoding waves and binds the sound identity from the same single archive
+-- observation: the normalized catalog metadata plus one plan per used bank
+-- with its ascending used sequences. Producer-internal: generation
+-- scheduling owns the one planning pass per source; leaf jobs consume the
+-- published record. A used sequence naming an absent or unused bank fails
+-- with both identities.
 ---@param romFs table<string, unknown>
----@return AudioCompiler.CatalogPlan?|nil
+---@return { plan: AudioCompiler.CatalogPlan, identity: AudioCompiler.SoundIdentity }?|nil
 ---@return Errors.Error?|nil
-function AudioCompiler.plan(romFs)
-  local ok, result = pcall(_plan, romFs)
+function AudioCompiler.planSource(romFs)
+  local ok, result = pcall(_planSource, romFs)
   if ok then
     return result
   end
@@ -710,6 +722,19 @@ function AudioCompiler.plan(romFs)
     return nil, result --[[@as Errors.Error]]
   end
   error(result)
+end
+
+-- The catalog plan alone, derived through the same single observation as
+-- the sound identity. Preserves the standalone planning contract.
+---@param romFs table<string, unknown>
+---@return AudioCompiler.CatalogPlan?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.plan(romFs)
+  local planned, err = AudioCompiler.planSource(romFs)
+  if planned == nil then
+    return nil, err
+  end
+  return planned.plan
 end
 
 -- Reads the sound source identity the derived audio binds. One archive read;

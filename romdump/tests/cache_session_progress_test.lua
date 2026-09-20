@@ -390,10 +390,13 @@ local function compileSynthetic(env, scriptIds)
     },
     {
       target = AudioCompiler,
-      name = "plan",
+      name = "planSource",
       replacement = function()
         calls.audio = calls.audio + 1
-        return { index = { version = "heartgold" }, bankPlans = { { bankId = 2 }, { bankId = 5 } } }
+        return {
+          plan = { index = { version = "heartgold" }, bankPlans = { { bankId = 2 }, { bankId = 5 } } },
+          identity = { romSha1 = SYNTHETIC_SHA1, sdatSha1 = string.rep("d", 40), sdatFileId = 9 },
+        }
       end,
     },
     {

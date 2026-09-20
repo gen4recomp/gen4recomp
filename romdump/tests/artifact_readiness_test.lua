@@ -1388,6 +1388,7 @@ function T.staged_source_inventory_with_current_marker_is_usable()
     fieldCellIndexBundle = { index = { matrices = {} }, indexMarker = "synthetic-index-marker" },
     scriptPlan = { members = {}, generationKey = "synthetic-generation" },
     audioPlan = { index = { version = "heartgold" }, bankPlans = {} },
+    audioIdentity = { romSha1 = string.rep("a", 40), sdatSha1 = string.rep("e", 40), sdatFileId = 11 },
     messageBankIds = FieldMessageCompiler.requiredBankIds(),
     mapDataIds = FieldMapDataCompiler.supportedMapIds(),
     mapCellKeys = {},

@@ -767,51 +767,62 @@ local function executeMessageSummary(artifact, context)
   return FieldMessageCacheWriter.stageSummary(artifact, index, bankMarkers)
 end
 
-local function executeAudioBank(artifact, context, bankId)
-  local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+--- The borrowed immutable generation source record behind every audio
+--- leaf job: resolved once per worker generation through the worker
+--- source-plan memo, never re-planned per leaf and never mutated here.
+---@param context table<string, unknown>
+---@param job { generationId: string, producerFingerprint: string|nil, payload: table<string, unknown> }
+---@param operation string
+---@return table<string, unknown>
+local function generationAudioSource(context, job, operation)
+  local producerId = assert(job.producerFingerprint, operation .. " require a producer")
+  local payload = job.payload
+  local versionId = (type(payload) == "table" and payload.versionId) or context.versionId
+  assert(type(versionId) == "string" and versionId ~= "", operation .. " require the version")
+  local source, sourceErr = ArtifactJobs.sourcePlanForContext(context, {
+    versionId = versionId,
+    generationId = assert(job.generationId, operation .. " require a generation"),
+    producerId = producerId,
+  })
+  if source == nil then
+    error(sourceErr, 0)
+  end
+  return source
+end
+
+local function executeAudioBank(artifact, context, job, bankId)
   local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
   local romFs = assert(context.romFs, "audio bank jobs require a source reader")
-  local plan, planErr = AudioCompiler.plan(romFs)
-  if plan == nil then
-    error(planErr, 0)
-  end
+  local source = generationAudioSource(context, job, "audio bank jobs")
+  local audioPlan = assert(source.audioPlan, "audio bank jobs require the published audio membership")
+  ---@cast audioPlan table<string, unknown>
   local selected = nil
-  for _, bankPlan in ipairs(plan.bankPlans) do
+  for _, bankPlan in ipairs(assert(audioPlan.bankPlans, "audio bank jobs require the published bank closures")) do
+    ---@cast bankPlan table<string, unknown>
     if bankPlan.bankId == bankId then
       selected = bankPlan
       break
     end
   end
   if selected == nil then
-    error("audio bank " .. tostring(bankId) .. " has no source plan", 0)
+    error("audio bank " .. tostring(bankId) .. " is not a member of the published audio plan", 0)
   end
   return AudioCacheWriter.stageBank(artifact, romFs, selected)
 end
 
-local function executeAudioCatalog(artifact, context)
-  local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+local function executeAudioCatalog(artifact, context, job)
   local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
-  local romFs = assert(context.romFs, "audio catalog jobs require a source reader")
-  local plan, planErr = AudioCompiler.plan(romFs)
-  if plan == nil then
-    error(planErr, 0)
-  end
-  local identity, identityErr = AudioCompiler.soundIdentity(romFs)
-  if identity == nil then
-    error(identityErr, 0)
-  end
-  return AudioCacheWriter.stageCatalog(artifact, plan, identity)
+  local source = generationAudioSource(context, job, "audio catalog jobs")
+  local audioPlan = assert(source.audioPlan, "audio catalog jobs require the published audio membership")
+  local audioIdentity = assert(source.audioIdentity, "audio catalog jobs require the published sound identity")
+  return AudioCacheWriter.stageCatalog(artifact, audioPlan, audioIdentity)
 end
 
-local function executeAudioSummary(artifact, context)
-  local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+local function executeAudioSummary(artifact, context, job)
   local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
-  local romFs = assert(context.romFs, "audio summary jobs require a source reader")
-  local plan, planErr = AudioCompiler.plan(romFs)
-  if plan == nil then
-    error(planErr, 0)
-  end
-  return AudioCacheWriter.stageSummary(artifact, plan)
+  local source = generationAudioSource(context, job, "audio summary jobs")
+  local audioPlan = assert(source.audioPlan, "audio summary jobs require the published audio membership")
+  return AudioCacheWriter.stageSummary(artifact, audioPlan)
 end
 
 local function executeScriptMember(artifact, context, memberId, generationKey, producer)
@@ -967,11 +978,11 @@ local function dispatchExecute(artifact, job, context)
   elseif job.kind == "message-summary" then
     return executeMessageSummary(artifact, context)
   elseif job.kind == "audio-bank" then
-    return executeAudioBank(artifact, context, assert(tonumber(job.key), "bank key is not canonical"))
+    return executeAudioBank(artifact, context, job, assert(tonumber(job.key), "bank key is not canonical"))
   elseif job.kind == "audio-catalog" then
-    return executeAudioCatalog(artifact, context)
+    return executeAudioCatalog(artifact, context, job)
   elseif job.kind == "audio-summary" then
-    return executeAudioSummary(artifact, context)
+    return executeAudioSummary(artifact, context, job)
   elseif job.kind == "script-member" then
     return executeScriptMember(
       artifact,
