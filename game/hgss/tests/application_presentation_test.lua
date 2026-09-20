@@ -444,4 +444,106 @@ function T.tests.malformed_frame_geometry_never_replaces_the_published_plan()
   Assert.isTrue(session:plan() == plan, "the valid session keeps its published plan")
 end
 
+-- Framed-application hit fixtures: one interactive content pane, one
+-- noninteractive visual pane, and one decorative frame whose visible clip
+-- extends past the content pane on every side. Geometry-only interior
+-- classification must consume border and hero presses without leaf events.
+local function framedInterfaces(spy)
+  local render = function(_, _, _) end
+  local map = function(event, _, _)
+    spy.calls[#spy.calls + 1] = event
+    return event
+  end
+  local function resolver(_, _)
+    local body = {
+      frame = { x = 100, y = 100, width = 256, height = 192 },
+      origin = { x = 100, y = 100 },
+      scale = 1,
+      logicalWidth = 256,
+      logicalHeight = 192,
+      clipRect = { x = 100, y = 100, width = 256, height = 192 },
+    }
+    local hero = {
+      frame = { x = 100, y = 300, width = 256, height = 96 },
+      origin = { x = 100, y = 300 },
+      scale = 1,
+      logicalWidth = 256,
+      logicalHeight = 96,
+      clipRect = { x = 100, y = 300, width = 256, height = 96 },
+    }
+    local framePlacement = {
+      frame = { x = 92, y = 76, width = 272, height = 232 },
+      origin = { x = 92, y = 76 },
+      scale = 1,
+      logicalWidth = 272,
+      logicalHeight = 232,
+      clipRect = { x = 92, y = 76, width = 272, height = 232 },
+    }
+    return {
+      panes = {
+        { id = "content", placement = body, interactive = true },
+        { id = "hero", placement = hero, interactive = false },
+      },
+      content = {},
+      inputKey = "framed-stub",
+      render = render,
+      mapInput = map,
+      frames = {
+        { placement = framePlacement, contentBox = { x = 8, y = 24, width = 256, height = 192 } },
+      },
+      fadeCoverage = {},
+    }
+  end
+  return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
+end
+
+local function framedSession(spy)
+  local sessionModule = sharedSession()
+  local session = sessionModule.new(framedInterfaces(spy))
+  session:resolve(stubMeasurement(512, 512), {})
+  return session
+end
+
+function T.tests.a_press_on_the_decorative_frame_border_is_consumed_as_interior()
+  local spy = { calls = {} }
+  local session = framedSession(spy)
+  local view = {}
+  local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 94, y = 80 } }, view)
+  Assert.deepEqual(mapped, {}, "a border press maps to no leaf event")
+  Assert.equal(#spy.calls, 0, "a border press never reaches the leaf mapper")
+  local release = session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = 94, y = 80 } }, view)
+  Assert.deepEqual(release, {}, "a border press acquires no capture, so its release maps to nothing")
+  local outside = session:mapInput({ { type = "pointer_down", pointerId = "touch:2", x = 10, y = 10 } }, view)
+  Assert.equal(#outside, 1, "the interior press must not suppress a later true outside press")
+  Assert.equal(outside[1].outside, true, "the later press still reaches the leaf as outside")
+end
+
+function T.tests.a_press_on_a_noninteractive_pane_is_consumed_as_interior()
+  local spy = { calls = {} }
+  local session = framedSession(spy)
+  local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 150, y = 330 } }, {})
+  Assert.deepEqual(mapped, {}, "a hero-pane press maps to no leaf event")
+  Assert.equal(#spy.calls, 0, "a hero-pane press never reaches the leaf mapper")
+end
+
+function T.tests.a_press_outside_every_pane_and_frame_reaches_the_leaf_as_outside()
+  local spy = { calls = {} }
+  local session = framedSession(spy)
+  local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } }, {})
+  Assert.equal(#mapped, 1, "a true outside press reaches the leaf mapper")
+  Assert.equal(mapped[1].outside, true, "the leaf sees the outside marker")
+  Assert.equal(#spy.calls, 1, "the mapper records the outside press")
+end
+
+function T.tests.a_captured_move_leaving_its_pane_cancels_instead_of_dismissing()
+  local spy = { calls = {} }
+  local session = framedSession(spy)
+  local view = {}
+  local held = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 150, y = 150 } }, view)
+  Assert.equal(#held, 1, "content still captures its pane")
+  local moved = session:mapInput({ { type = "pointer_move", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#moved, 1, "leaving the pane emits exactly one event")
+  Assert.equal(moved[1].type, "pointer_cancel", "the gesture cancels rather than dismissing")
+end
+
 return T

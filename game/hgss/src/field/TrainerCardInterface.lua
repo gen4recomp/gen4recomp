@@ -5,9 +5,10 @@
 -- center the canonical 256x192 pane in a static framed box with zero
 -- crop and a native-like fallback below 1x. The renderer is the existing
 -- card surface invoked through the resolved placement; input forwards the
--- existing semantic events and discards pointer content, so outside clicks
--- never close the card. A per-case override replaces the whole render/input
--- pair, never a mode token. Resolvers require the measured context
+-- existing semantic events and discards pointer content, while a true
+-- outside press maps to the terminal dismiss edge. A per-case override
+-- replaces the whole render/input pair, never a mode token.
+-- Resolvers require the measured context
 -- production sessions supply; helper-derived surface selections fill the
 -- remaining fields.
 
@@ -42,6 +43,9 @@ end
 ---@return table<string, unknown>? the app event, or nil when the card ignores it
 local function mapCardInput(event, _, _)
   local eventType = event.type
+  if eventType == "pointer_down" and event.outside == true then
+    return { type = "dismiss" }
+  end
   if
     eventType == "pointer_down"
     or eventType == "pointer_move"

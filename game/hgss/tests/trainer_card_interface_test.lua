@@ -200,6 +200,16 @@ function T.map_input_discards_pointer_content_and_forwards_semantics()
   Assert.isTrue(map(cancel, {}, plan) == cancel, "the semantic close edge reaches the controller")
 end
 
+function T.an_outside_press_maps_to_a_terminal_dismiss()
+  local plan = TrainerCardInterface.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike"), {})
+  local map = assert(plan.mapInput, "the plan carries its input mapper")
+  Assert.deepEqual(
+    map({ type = "pointer_down", pointerId = "touch:1", outside = true }, {}, plan),
+    { type = "dismiss" },
+    "an outside press dismisses the card while body taps stay inert"
+  )
+end
+
 function T.case_override_replaces_one_complete_interface()
   local wide = {
     panes = {},

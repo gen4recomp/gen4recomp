@@ -314,6 +314,24 @@ local function hitPane(plan, hostX, hostY)
 end
 
 ---@param plan ApplicationPlan
+---@param hostX number
+---@param hostY number
+---@return boolean true when the host point lands on a visible frame or pane
+local function hitApplicationRegion(plan, hostX, hostY)
+  for _, frame in ipairs(plan.frames) do
+    if LayoutGeometry.hostToLogical(frame.placement, hostX, hostY) ~= nil then
+      return true
+    end
+  end
+  for _, pane in ipairs(plan.panes) do
+    if LayoutGeometry.hostToLogical(pane.placement, hostX, hostY) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+---@param plan ApplicationPlan
 ---@param view table<string, unknown>
 ---@param event table<string, unknown>
 ---@param out table<string, unknown>[]
@@ -327,6 +345,13 @@ function ApplicationPresentation:_mapDown(plan, view, event, out)
   end
   local pane, hitX, hitY = hitPane(plan, event.x, event.y)
   if pane == nil then
+    -- Decorative frame borders and noninteractive panes are visible
+    -- application interior: the press is consumed with no leaf event and
+    -- no capture. Only a press outside every frame and pane reaches the
+    -- leaf as outside.
+    if hitApplicationRegion(plan, event.x, event.y) then
+      return
+    end
     local mapped = plan.mapInput({ type = "pointer_down", pointerId = pointerId, outside = true }, view, plan)
     if mapped ~= nil then
       out[#out + 1] = mapped

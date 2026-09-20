@@ -210,12 +210,13 @@ function T.render_invokes_the_borrowed_renderer_with_plan_and_icons()
   Assert.equal(graphics:pushDepth(), 0, "the render scope restores the graphics stack")
 end
 
-function T.map_input_drops_outside_points_and_forwards_the_rest()
+function T.map_input_turns_outside_points_into_dismiss_and_forwards_the_rest()
   local interfaces = partyInterface()
   local plan = interfaces.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", interfaces), view(true))
-  Assert.isNil(
+  Assert.deepEqual(
     plan.mapInput({ type = "pointer_down", pointerId = "p", outside = true }, view(true), plan),
-    "outside points never reach the controller"
+    { type = "dismiss" },
+    "an outside press dismisses instead of unwinding nested party state"
   )
   local event = { type = "pointer_down", pointerId = "p", x = 10, y = 10 }
   Assert.isTrue(

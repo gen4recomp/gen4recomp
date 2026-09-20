@@ -1326,6 +1326,225 @@ end
 -- Matte and non-interactive regions never reach content: a fullscreen
 -- matte click changes nothing, and a press fully outside all panes is
 -- reported without coordinates.
+local function hostRectContains(rect, x, y)
+  return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
+end
+
+-- Geometry-only interior: every visible pane clip plus every published
+-- outer frame clip. Fade coverage is transition metadata, never a hit
+-- region, so it stays out of this probe by construction.
+local function planOwnsPoint(plan, x, y)
+  for _, pane in ipairs(assert(plan.panes, "the plan must carry its panes for hit probing")) do
+    local clip = assert(pane.placement, "every pane carries its placement").clipRect
+    if clip ~= nil and hostRectContains(clip, x, y) then
+      return true
+    end
+  end
+  for _, frame in ipairs(plan.frames or {}) do
+    local clip = assert(frame.placement, "every frame carries its placement").clipRect
+    if clip ~= nil and hostRectContains(clip, x, y) then
+      return true
+    end
+  end
+  return false
+end
+
+local function outsidePoint(plan, width, height)
+  local candidates = {
+    { 8, 8 },
+    { width - 8, 8 },
+    { 8, height - 8 },
+    { width - 8, height - 8 },
+    { width / 2, 8 },
+    { 8, height / 2 },
+  }
+  for _, candidate in ipairs(candidates) do
+    if not planOwnsPoint(plan, candidate[1], candidate[2]) then
+      return candidate[1], candidate[2]
+    end
+  end
+  error("the framed plan leaves no outside margin on this host", 0)
+end
+
+-- Two host pixels inside the outer frame origin: within the left/top
+-- border for any integer scale >= 1, hence application interior that must
+-- never dismiss.
+local function frameBorderPoint(plan)
+  local frameRecord = assert((plan.frames or {})[1], "the plan must publish an outer frame")
+  local outer = assert(frameRecord.placement, "the frame carries its placement").frame
+  return outer.x + 2, outer.y + 2
+end
+
+local function downOnly(game, source, x, y)
+  game.runtime.input:pointerDown(source, x, y)
+  game:step()
+end
+
+local function upOnly(game, source, x, y)
+  game.runtime.input:pointerUp(source, x, y)
+  game:step()
+end
+
+-- A press on the decorative frame border is application interior: it
+-- moves nothing and closes nothing, while a true outside press on the
+-- next tick dismisses the menu through the normal host lifecycle without
+-- opening anything else.
+function T.tests.outside_press_dismisses_the_start_menu_while_frame_press_stays_inside()
+  withFieldGame({}, function(game)
+    switchDisplay(game, 1280, 720)
+    openStartMenu(game)
+    local menu = menuStatus(game)
+    local selectedBefore = assert(menu.selectedPosition, "menu status must expose its selection")
+    local plan = assert(menu.presentation, "the menu must publish its plan")
+    Assert.isTrue(#(plan.frames or {}) >= 1, "the wide menu must publish its outer frame")
+    local borderX, borderY = frameBorderPoint(plan)
+    Assert.isTrue(planOwnsPoint(plan, borderX, borderY), "the border probe must hit the frame clip")
+    downOnly(game, "integration:frame", borderX, borderY)
+    local held = menuStatus(game)
+    Assert.equal(held.selectedPosition, selectedBefore, "a frame press must not move selection")
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "a frame press must not leave the menu")
+    upOnly(game, "integration:frame", borderX, borderY)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "the frame release must not leave the menu")
+    local outsideX, outsideY = outsidePoint(plan, 1280, 720)
+    downOnly(game, "integration:outside", outsideX, outsideY)
+    game:advanceUntil("an outside press dismisses the menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.closed
+    end, 120)
+    upOnly(game, "integration:outside", outsideX, outsideY)
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.closed,
+      "dismissal returns to the field without opening anything else"
+    )
+  end)
+end
+
+-- Ordinary Cancel unwinds one nested Bag level while the bag stays open;
+-- an outside press from the same nested state closes the bag at once.
+function T.tests.bag_nested_cancel_unwinds_while_outside_press_closes()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    grantBag(game)
+    stockBasics(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openBag(game, state)
+    Assert.equal(opened.state, "browsing", "the bag opens in top-level browsing")
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local targetPocket = bag:pocketOf("POTION")
+    local function bagApp()
+      return assert(game.runtime.applicationHost:status().application, "the bag must stay open")
+    end
+    for _ = 1, 160 do
+      local view = bagApp()
+      local pocket = view.pocket ~= nil and view.pocket or view.currentPocket
+      if pocket == targetPocket then
+        break
+      end
+      if view.focus == "tabs" then
+        if view.tabFocusPocket ~= pocket then
+          confirm(game)
+        else
+          state:keypressed("d")
+          game:step()
+          state:keyreleased("d")
+        end
+      else
+        state:keypressed("w")
+        game:step()
+        state:keyreleased("w")
+      end
+    end
+    local stocked = bagApp()
+    local stockedPocket = stocked.pocket ~= nil and stocked.pocket or stocked.currentPocket
+    Assert.equal(stockedPocket, targetPocket, "setup must reach the stocked pocket")
+    local function selectedItemKey(view)
+      local selected = view.selected
+      if selected == nil then
+        return nil
+      end
+      assert(type(selected) == "table", "the bag selection must be a record")
+      return selected.item or selected.itemKey or selected.key
+    end
+    Assert.equal(selectedItemKey(stocked), "POTION", "the stocked pocket starts on its first item")
+    if stocked.focus ~= "items" then
+      state:keypressed("s")
+      game:step()
+      state:keyreleased("s")
+    end
+    local entered = bagApp()
+    Assert.equal(entered.focus, "items", "setup must hand interaction to the item grid")
+    local function confirmItem()
+      confirm(game)
+      game:step()
+    end
+    confirmItem()
+    local nested = assert(game.runtime.applicationHost:status().application, "the bag must stay open after confirm")
+    Assert.equal(nested.state, "action_menu", "confirming an item opens the nested action menu")
+    pressCancel(game)
+    game:step()
+    local unwound = assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the bag open")
+    Assert.equal(unwound.state, "browsing", "ordinary cancel unwinds one level without closing")
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.application,
+      "ordinary cancel stays inside the application"
+    )
+    confirmItem()
+    local rentered =
+      assert(game.runtime.applicationHost:status().application, "the bag must stay open after the second confirm")
+    Assert.equal(rentered.state, "action_menu", "the second confirm reopens the nested action menu")
+    local plan = assert(rentered.presentation, "the nested bag must publish its plan")
+    local outsideX, outsideY = outsidePoint(plan, 1280, 720)
+    downOnly(game, "integration:outside", outsideX, outsideY)
+    game:advanceUntil("an outside press closes the nested bag", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
+    upOnly(game, "integration:outside", outsideX, outsideY)
+    Assert.equal(bag:quantity("POTION"), 5, "dismissal must issue no inventory mutation")
+  end)
+end
+
+-- Ordinary Cancel returns the nested party toward browsing while the
+-- screen stays open; an outside press from the same nested state closes
+-- at once without swapping.
+function T.tests.party_nested_cancel_unwinds_while_outside_press_closes()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    giveStarterPair(game)
+    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local revision = service:partyRevision()
+    local order = partyOrder(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openParty(game, state)
+    Assert.equal(opened.action, "browsing", "the party opens in top-level browsing")
+    confirm(game)
+    game:step()
+    local nested = assert(game.runtime.applicationHost:status().application, "the party must stay open after confirm")
+    Assert.equal(nested.action, "action_choice", "confirming a mon opens the nested action choice")
+    pressCancel(game)
+    game:step()
+    local unwound =
+      assert(game.runtime.applicationHost:status().application, "ordinary cancel must keep the party open")
+    Assert.equal(unwound.action, "browsing", "ordinary cancel returns toward browsing without closing")
+    confirm(game)
+    game:step()
+    local rentered =
+      assert(game.runtime.applicationHost:status().application, "the party must stay open after the second confirm")
+    Assert.equal(rentered.action, "action_choice", "the second confirm reopens the nested action choice")
+    local plan = assert(rentered.presentation, "the nested party must publish its plan")
+    local outsideX, outsideY = outsidePoint(plan, 1280, 720)
+    downOnly(game, "integration:outside", outsideX, outsideY)
+    game:advanceUntil("an outside press closes the nested party", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
+    upOnly(game, "integration:outside", outsideX, outsideY)
+    Assert.equal(service:partyRevision(), revision, "dismissal must not bump the revision")
+    Assert.deepEqual(partyOrder(game), order, "dismissal must not reorder the party")
+  end)
+end
+
 function T.tests.matte_and_outside_input_never_reach_content()
   withFieldGame({}, function(game)
     switchDisplay(game, 640, 480)

@@ -257,4 +257,51 @@ function T.cancelled_pointer_capture_never_activates()
   Assert.isTrue(status(controller).open)
 end
 
+function T.view_dismiss_from_browsing_closes_immediately()
+  local controller = newController()
+  controller:updateFixed({ { type = "dismiss" } })
+  local result = controller:takeResult()
+  Assert.equal(result.kind, "closed", "dismiss closes the party without unwinding")
+  Assert.isNil(result.slot, "an outside close carries no slot")
+  Assert.isFalse(status(controller).open, "the party is closed")
+end
+
+function T.view_dismiss_from_action_choice_closes_without_returning_to_browsing()
+  local controller, calls = newController()
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(status(controller).action, "action_choice", "setup opens the nested action choice")
+  controller:updateFixed({ { type = "dismiss" } })
+  Assert.equal(controller:takeResult().kind, "closed", "dismiss closes instead of popping one level")
+  Assert.isFalse(status(controller).open, "the party is closed")
+  Assert.equal(#calls.swaps, 0, "dismiss never swaps")
+end
+
+function T.view_dismiss_from_switch_destination_closes_without_swapping()
+  local controller, calls = newController()
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(status(controller).action, "switch_destination", "setup enters the nested switch target")
+  controller:updateFixed({ { type = "dismiss" } })
+  Assert.equal(controller:takeResult().kind, "closed", "dismiss closes instead of abandoning the switch")
+  Assert.equal(#calls.swaps, 0, "dismiss never swaps")
+end
+
+function T.view_dismiss_ends_the_batch_so_later_events_cannot_overwrite_the_close()
+  local controller = newController()
+  controller:updateFixed({ { type = "dismiss" }, { type = "confirm" } })
+  Assert.equal(controller:takeResult().kind, "closed", "only the terminal close survives the batch")
+  Assert.isNil(controller:takeResult(), "the close result is delivered exactly once")
+end
+
+function T.select_dismiss_is_a_programming_error()
+  local controller = newController({ mode = "select" })
+  local err = Assert.throws(function()
+    controller:updateFixed({ { type = "dismiss" } })
+  end, "no current producer dismisses script selection")
+  Assert.isTrue(
+    tostring(err):find("select", 1, true) ~= nil,
+    "the failure must name select mode, not a generic unknown event: " .. tostring(err)
+  )
+end
+
 return { tests = T }

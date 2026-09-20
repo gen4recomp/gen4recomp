@@ -91,8 +91,9 @@ function TrainerCardController.new(opts)
   return self
 end
 
--- One fixed tick. The card consumes only its own close edge; foreign input
--- is ignored (the child-application input policy).
+-- One fixed tick. The card consumes its own close edge and the terminal
+-- outside dismiss edge; foreign input is ignored (the child-application
+-- input policy).
 ---@param uiInput table[]
 function TrainerCardController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "the trainer card input must be an event list")
@@ -100,7 +101,7 @@ function TrainerCardController:updateFixed(uiInput)
     return
   end
   for _, event in ipairs(uiInput) do
-    if not self._closed and type(event) == "table" and event.type == "cancel" then
+    if not self._closed and type(event) == "table" and (event.type == "cancel" or event.type == "dismiss") then
       self:_close()
     end
   end

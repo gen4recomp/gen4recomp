@@ -432,6 +432,13 @@ function PartyScreenController:updateFixed(uiInput)
       self:_confirm()
     elseif event.type == "cancel" then
       self:_cancel()
+    elseif event.type == "dismiss" then
+      -- Terminal outside dismissal for view mode only: close immediately
+      -- without unwinding action/switch state. No select-mode producer
+      -- emits dismiss, so reaching it there is a programming error.
+      assert(self._mode == "view", "party dismiss is a view-mode edge; select mode never emits it")
+      self._result = { kind = "closed" }
+      self._closed = true
     elseif event.type == "pointer_down" then
       self:_pointerDown(event)
     elseif event.type == "pointer_move" then

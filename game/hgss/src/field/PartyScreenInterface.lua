@@ -41,8 +41,8 @@ end
 ---@param event table<string, unknown> session-inverted logical input
 ---@return table<string, unknown>? the app event, or nil when the party ignores it
 local function mapPartyInput(event, _, _)
-  if event.outside == true then
-    return nil
+  if event.type == "pointer_down" and event.outside == true then
+    return { type = "dismiss" }
   end
   return event
 end

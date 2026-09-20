@@ -248,13 +248,14 @@ function T.equivalent_measurements_resolve_the_same_plan_shape()
   )
 end
 
-function T.outside_input_never_reaches_the_controller()
+function T.an_outside_press_maps_to_a_terminal_dismiss()
   local interface = bagInterface()
   local measured = singleDisplay(512, 384)
   local plan = interface.nativeLike(contextFor(measured, "nativeLike", interface), {})
-  Assert.isNil(
+  Assert.deepEqual(
     plan.mapInput({ type = "pointer_down", pointerId = "touch:0", outside = true }, {}, plan),
-    "an outside tap maps to nothing"
+    { type = "dismiss" },
+    "an outside tap dismisses instead of unwinding nested bag state"
   )
   local logical = { type = "pointer_down", pointerId = "touch:0", x = 10, y = 10 }
   Assert.deepEqual(

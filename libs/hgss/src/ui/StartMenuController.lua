@@ -275,6 +275,8 @@ function StartMenuController:updateFixed(uiInput)
       self:_activate(self._selectedPosition)
     elseif event.type == "cancel" or event.type == "menu" then
       self:_close()
+    elseif event.type == "dismiss" then
+      self:_close()
     elseif event.type == "pointer_cancel" then
       self:cancelPointerCapture()
     elseif event.type == "pointer_move" then

@@ -662,6 +662,55 @@ function T.pointer_quantity_steps_confirm_and_nested_cancel_hold_across_updates(
   Assert.equal(bag:revision(), revision + 1, "the nested cancel never mutates the inventory")
 end
 
+function T.dismiss_from_browsing_closes_without_unwinding()
+  local control = controller(stockTwoPockets(service()), BagCursor.new())
+  Assert.equal(control:status().state, "browsing", "setup starts in top-level browsing")
+  control:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "dismiss closes the bag immediately")
+  Assert.isFalse(control:status().open, "the bag is closed")
+end
+
+function T.dismiss_from_a_nested_action_menu_closes_without_unwinding()
+  local bag = stockTwoPockets(service())
+  local pocketCursor = BagCursor.new()
+  pocketCursor:setPocket("balls")
+  local control = controller(bag, pocketCursor)
+  local revision = bag:revision()
+  control:updateFixed({ { type = "confirm" } })
+  Assert.equal(control:status().state, "action_menu", "setup opens the nested action menu")
+  control:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "dismiss closes instead of popping one level")
+  Assert.isFalse(control:status().open, "the bag is closed")
+  Assert.equal(bag:revision(), revision, "dismiss never mutates the inventory")
+end
+
+function T.dismiss_from_a_toss_state_closes_without_unwinding()
+  local bag = stockTwoPockets(service())
+  local pocketCursor = BagCursor.new()
+  pocketCursor:setPocket("medicine")
+  local control, layoutManifest = controllerWithButtons(bag, pocketCursor)
+  local layout = BagLayout.resolve({ manifest = layoutManifest, heroVisible = true })
+  local revision = bag:revision()
+  tap(control, layout, 76, 56)
+  Assert.equal(control:status().state, "action_menu", "setup opens the action menu")
+  tap(control, layout, 48, 144)
+  Assert.equal(control:status().state, "toss_quantity", "setup enters the nested quantity picker")
+  control:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "dismiss closes instead of popping to the menu")
+  Assert.isFalse(control:status().open, "the bag is closed")
+  Assert.equal(bag:revision(), revision, "dismiss never mutates the inventory")
+end
+
+function T.dismiss_ends_the_batch_so_later_events_cannot_reopen_or_mutate()
+  local bag = stockTwoPockets(service())
+  local control = controller(bag, BagCursor.new())
+  local revision = bag:revision()
+  control:updateFixed({ { type = "dismiss" }, { type = "confirm" }, navigate("down") })
+  Assert.deepEqual(control:takeResult(), { kind = "closed" }, "only the terminal close survives the batch")
+  Assert.isNil(control:takeResult(), "the close result is delivered exactly once")
+  Assert.equal(bag:revision(), revision, "events after dismiss never mutate")
+end
+
 function T.unknown_events_are_programming_errors()
   local control = controller(stockTwoPockets(service()), BagCursor.new())
   Assert.throws(function()

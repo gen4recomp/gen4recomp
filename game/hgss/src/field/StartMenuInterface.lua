@@ -37,8 +37,8 @@ local function mapStartInput(event, _, _)
   if event.type == "pointer_scroll" then
     return nil
   end
-  if event.outside == true then
-    return nil
+  if event.type == "pointer_down" and event.outside == true then
+    return { type = "dismiss" }
   end
   return event
 end

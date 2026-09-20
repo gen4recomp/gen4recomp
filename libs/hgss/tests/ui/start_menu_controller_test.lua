@@ -672,6 +672,21 @@ function T.hidden_positions_are_skipped_in_declared_candidate_order()
   Assert.equal(move(sparseAt(5), "right"), 5, "right from 5 must skip hidden 1 and stay")
 end
 
+function T.dismiss_closes_immediately_without_activation()
+  local control = newController()
+  Assert.isTrue(control:status().open, "the menu starts open")
+  control:updateFixed({ { type = "dismiss" } })
+  Assert.deepEqual(control:takeResult(), { kind = "close" }, "dismiss records the terminal close result")
+  Assert.isFalse(control:status().open, "dismiss closes the menu")
+end
+
+function T.dismiss_ends_the_batch_so_later_events_cannot_overwrite_the_close()
+  local control = newController()
+  control:updateFixed({ { type = "dismiss" }, { type = "confirm" }, { type = "navigate", direction = "down" } })
+  Assert.deepEqual(control:takeResult(), { kind = "close" }, "only the terminal close survives the batch")
+  Assert.isNil(control:takeResult(), "the close result is delivered exactly once")
+end
+
 function T.entries_outside_the_normal_seven_positions_are_rejected()
   Assert.throws(function()
     StartMenuController.new({

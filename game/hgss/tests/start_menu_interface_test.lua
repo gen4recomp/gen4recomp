@@ -96,4 +96,36 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
   )
 end
 
+function T.tests.an_outside_press_maps_to_a_terminal_dismiss()
+  local interface = startMenuInterface()
+  local view = { actions = {}, selectedPosition = 1 }
+  local measurement = {
+    width = 1280,
+    height = 720,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 1280, height = 720 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "start-menu-outside-dismiss",
+  }
+  local selection = ApplicationLayout.selectSurfaces(measurement)
+  local context = {
+    measurement = measurement,
+    configuration = "wide",
+    primary = selection.primary,
+    secondary = selection.secondary,
+    windowPosition = { x = 0.5, y = 0.5 },
+    nativeLikeInterface = interface.fullscreen,
+  }
+  local widePlan = interface.wide(context, view)
+  Assert.deepEqual(
+    widePlan.mapInput({ type = "pointer_down", pointerId = "touch:1", outside = true }, view, widePlan),
+    { type = "dismiss" },
+    "an outside press dismisses the menu instead of reaching content"
+  )
+end
+
 return T
