@@ -61,7 +61,6 @@ local function options(overrides)
     measureDisplay = overrides.measureDisplay or function()
       return measurement(640, 480)
     end,
-    windowState = overrides.windowState or { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
     overrides = overrides.overrides,
   }
 end

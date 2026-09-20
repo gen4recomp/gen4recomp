@@ -736,7 +736,7 @@ function FieldState:_drawEntryCoverIfNeeded(width, height)
 end
 
 -- The application fade coverage: the world viewport plus the Start Menu
--- plan coverage as a set of non-overlapping rectangles, so the union of
+-- plan fade coverage as a set of non-overlapping rectangles, so the union of
 -- separated surfaces is painted once each and the gap between them never
 -- is. The world rect is always painted; each coverage region contributes
 -- only the strips outside the regions already painted (a contained region
@@ -752,19 +752,19 @@ local function fadeRects(world, coverage)
   return rects
 end
 
--- The application fade: the union of the world viewport and the Start Menu
--- plan coverage, so on a dual-display topology the auxiliary surface region
--- goes black with the world and no menu surface can stay visible while only
--- the world viewport fades. A windowed plan owns no coverage, so settled
--- windows leave the paused world visible outside themselves. Disjoint
--- surfaces paint as separate rectangles (the gap between them stays
--- untouched), and overlapping regions are painted once, never twice.
+-- The application fade: the union of the world viewport and the retained Start
+-- Menu fade coverage, so on a dual-display topology the auxiliary surface
+-- region goes black with the world and no menu surface can stay visible while
+-- only the world viewport fades. An empty fade coverage leaves the paused
+-- world visible outside the application. Disjoint surfaces paint as separate
+-- rectangles (the gap between them stays untouched), and overlapping regions
+-- are painted once, never twice.
 ---@param alpha number
 function FieldState:_drawApplicationFade(alpha)
   local lg = love.graphics
   local world = self.runtime.viewport.worldViewport
   local coverage =
-    assert(self.runtime.applicationHost, "the application fade requires the application host"):menuCoverage()
+    assert(self.runtime.applicationHost, "the application fade requires the application host"):menuFadeCoverage()
   lg.setColor(0, 0, 0, alpha)
   for _, rect in
     ipairs(fadeRects(world, coverage --[[@as ScreenTopology.Rectangle[] ]]))

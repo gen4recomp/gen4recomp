@@ -187,11 +187,11 @@ function T.tests.production_start_menu_follows_the_shared_display_policy()
           label .. " body stays inside the safe rect"
         )
         if size.windowed then
-          Assert.notNil(plan.window, label .. " frames the menu in a window")
-          Assert.equal(#(plan.coverage or {}), 0, label .. " window owns no fullscreen coverage")
+          Assert.equal(#plan.frames, 1, label .. " frames the menu in a static box")
+          Assert.equal(#(plan.fadeCoverage or {}), 0, label .. " static frame owns no transition region")
         else
           Assert.isNil(plan.window, label .. " stays a fullscreen native surface")
-          Assert.isTrue(#plan.coverage >= 1, label .. " fullscreen owns its target region")
+          Assert.isTrue(#plan.fadeCoverage >= 1, label .. " fullscreen names its transition region")
         end
         closeMenu(game)
       end

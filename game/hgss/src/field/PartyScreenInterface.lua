@@ -1,7 +1,7 @@
 -- The current party screen's four function references with matching
 -- render and input callbacks. DualDisplay takes the auxiliary fullscreen
 -- and nativeLike the single-surface fullscreen, both uncropped; wide and
--- tall frame the canonical 256x192 pane in a shared draggable window with
+-- tall center the canonical 256x192 pane in a static framed box with
 -- a native-like fallback below 1x. The content is the canonical compact
 -- grid resolved against the controller's cancel permission; input passes
 -- visible logical points to the existing controller and drops matte taps.
@@ -18,7 +18,6 @@ local PartyScreenInterface = {}
 local NATIVE = { id = "content", width = 256, height = 192 }
 local INPUT_KEY = "party"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local MATTE = { r = 0, g = 0, b = 0, a = 1 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -59,18 +58,18 @@ end
 local function inactivePlan()
   return {
     panes = {},
+    frames = {},
+    fadeCoverage = {},
     content = {},
     inputKey = "party-inactive",
     render = noopRender,
     mapInput = noopMap,
-    coverage = {},
-    backgroundColor = MATTE,
   }
 end
 
 -- Completes a measured production context with helper-derived surface
 -- selections. The effective nativeLike entry (including an override) backs
--- the below-1x window fallback.
+-- the below-1x framed fallback.
 ---@param context ApplicationLayout.Context
 ---@return ApplicationLayout.Context the production context with helper-derived selections
 local function completeContext(context)
@@ -82,7 +81,6 @@ local function completeContext(context)
     configuration = context.configuration,
     primary = context.primary or selection.primary,
     secondary = context.secondary or selection.secondary,
-    windowPosition = context.windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = context.nativeLikeInterface or PartyScreenInterface.fullscreen,
   }
 end
@@ -100,8 +98,19 @@ local function partyContent(view)
   return PartyScreenLayout.resolve({ width = NATIVE.width, height = NATIVE.height, cancellable = cancellable })
 end
 
+---@param context ApplicationLayout.Context
+---@return LayoutGeometry.Rect? the fullscreen target bounds
+local function fullscreenTarget(context)
+  local target = context.secondary or context.primary
+  if target == nil then
+    return nil
+  end
+  return target.usableBounds
+end
+
 -- Fullscreen party for the dualDisplay and nativeLike cases: one canonical
--- interactive pane over the owned target region, never cropped.
+-- interactive pane over the owned target region, never cropped, framed only
+-- when the pane leaves target background visible.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
@@ -112,27 +121,35 @@ function PartyScreenInterface.fullscreen(context, view)
   if placement == nil then
     return inactivePlan()
   end
+  local frames = {}
+  local target = fullscreenTarget(complete)
+  if target ~= nil then
+    local frame = ApplicationLayout.frameAround(target, placement)
+    if frame ~= nil then
+      frames = { frame }
+    end
+  end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = frames,
+    fadeCoverage = geometry.fadeCoverage,
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,
     mapInput = mapPartyInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
   }
 end
 
--- Windowed party for the wide and tall cases: the canonical pane in a
--- shared draggable window. A window that cannot fit 1x falls back to the
--- effective nativeLike case with the same context and view; the
+-- Static framed party for the wide and tall cases: the canonical pane
+-- centered with its complete outer frame. A frame that cannot fit 1x falls
+-- back to the effective nativeLike case with the same context and view; the
 -- configuration keeps describing the actual measured display.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
-function PartyScreenInterface.windowed(context, view)
+function PartyScreenInterface.framed(context, view)
   local complete = completeContext(context)
-  local geometry = ApplicationLayout.windowed(complete, NATIVE, {})
+  local geometry = ApplicationLayout.framed(complete, NATIVE, {})
   if geometry == nil then
     return complete.nativeLikeInterface(complete, view)
   end
@@ -142,25 +159,24 @@ function PartyScreenInterface.windowed(context, view)
   end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = geometry.frames or {},
+    fadeCoverage = geometry.fadeCoverage,
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,
     mapInput = mapPartyInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
-    window = geometry.window,
   }
 end
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 
 -- The four resolver functions behind one case per display configuration:
--- dual and native-like own their fullscreen region, wide and tall frame
--- the canonical pane in a draggable window.
+-- dual and native-like own their fullscreen region, wide and tall center
+-- the canonical pane in a static frame.
 PartyScreenInterface.dualDisplay = PartyScreenInterface.fullscreen
 PartyScreenInterface.nativeLike = PartyScreenInterface.fullscreen
-PartyScreenInterface.wide = PartyScreenInterface.windowed
-PartyScreenInterface.tall = PartyScreenInterface.windowed
+PartyScreenInterface.wide = PartyScreenInterface.framed
+PartyScreenInterface.tall = PartyScreenInterface.framed
 
 -- Merges an optional per-case override into the complete default set:
 -- only the four function fields merge, unknown keys and non-functions
@@ -171,8 +187,8 @@ function PartyScreenInterface.withOverrides(overrides)
   local set = {
     dualDisplay = PartyScreenInterface.fullscreen,
     nativeLike = PartyScreenInterface.fullscreen,
-    wide = PartyScreenInterface.windowed,
-    tall = PartyScreenInterface.windowed,
+    wide = PartyScreenInterface.framed,
+    tall = PartyScreenInterface.framed,
   }
   if overrides ~= nil then
     assert(type(overrides) == "table", "the party overrides must be a record")

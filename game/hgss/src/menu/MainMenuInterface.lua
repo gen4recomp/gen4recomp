@@ -23,7 +23,6 @@ local DENSITY_HEIGHT = 240
 local MAX_DENSITY_SCALE = 3
 local FALLBACK_WIDTH = 256
 local FALLBACK_HEIGHT = 192
-local MATTE = { r = 0, g = 0, b = 0, a = 1 }
 
 local function clampScale(value)
   return math.max(1, math.min(MAX_DENSITY_SCALE, value))
@@ -39,7 +38,7 @@ end
 
 -- The default mapper emits one semantic hit per content press: the shared
 -- layout hit test with modal precedence over the resolved logical
--- geometry. Matte, scroll, move and release carry no menu action; the
+-- geometry. Scroll, move and release carry no menu action; the
 -- session owns capture and cancellation around this mapper.
 ---@param event table<string, unknown> session-inverted logical input
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -72,12 +71,12 @@ end
 local function inactivePlan()
   return {
     panes = {},
+    frames = {},
+    fadeCoverage = {},
     content = {},
     inputKey = "main-menu-inactive",
     render = noopRender,
     mapInput = noopMap,
-    coverage = {},
-    backgroundColor = MATTE,
   }
 end
 
@@ -95,7 +94,6 @@ local function completeContext(context)
     configuration = context.configuration,
     primary = context.primary or selection.primary,
     secondary = context.secondary or selection.secondary,
-    windowPosition = context.windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = context.nativeLikeInterface or MainMenuInterface.resolve,
   }
 end
@@ -171,19 +169,21 @@ function MainMenuInterface.resolve(context, view)
     view.confirmation,
     type(view.catalogError) == "string" and view.catalogError ~= ""
   )
-  local coverage = { copyRect(usable) }
+  -- The startup surface owns no paused field beneath it, so the menu keeps
+  -- painting its own host background regions leaf-locally through content.
+  local hostBackgrounds = { copyRect(usable) }
   local secondary = complete.secondary
   if secondary ~= nil and secondary.usableBounds ~= nil then
-    coverage[#coverage + 1] = copyRect(secondary.usableBounds)
+    hostBackgrounds[#hostBackgrounds + 1] = copyRect(secondary.usableBounds)
   end
   return {
     panes = { { id = PANE_ID, placement = placement, interactive = true } },
-    content = { layout = layout, width = viewportWidth, height = viewportHeight },
+    frames = {},
+    fadeCoverage = {},
+    content = { layout = layout, width = viewportWidth, height = viewportHeight, hostBackgrounds = hostBackgrounds },
     inputKey = INPUT_KEY,
     render = renderMenu,
     mapInput = mapMenuInput,
-    coverage = coverage,
-    backgroundColor = MATTE,
   }
 end
 

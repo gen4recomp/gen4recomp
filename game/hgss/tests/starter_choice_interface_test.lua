@@ -35,9 +35,9 @@ local function measurementFor(width, height, topology, pixelRatio, signature)
   }
 end
 
--- A complete C02 context around a measurement, exactly as the owning
--- session supplies it: measured display, configuration, selected surfaces,
--- copied window position, and the effective nativeLike function.
+-- A complete context around a measurement, exactly as the owning session
+-- supplies it: measured display, configuration, selected surfaces, and the
+-- effective nativeLike function.
 local function contextFor(measurement, configuration, interfaceModule)
   local selection = ApplicationLayout.selectSurfaces(measurement)
   return {
@@ -45,7 +45,6 @@ local function contextFor(measurement, configuration, interfaceModule)
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaceModule.nativeLike,
   }
 end
@@ -146,8 +145,7 @@ function T.tests.wide_pairs_info_left_of_the_machine_with_one_shared_scale()
   local leftScale = assert(plan.panes[1].placement.scale, "the left pane carries its host scale")
   local rightScale = assert(plan.panes[2].placement.scale, "the right pane carries its host scale")
   Assert.equal(leftScale, rightScale, "a single-display pair shares one integer presentation scale")
-  local gap = right.x - (left.x + left.width)
-  Assert.equal(gap, 8 * leftScale, "the paired envelope keeps the locked eight-logical-pixel gap")
+  Assert.near(right.x - (left.x + left.width), 0, 1e-6, "paired starter panes touch with no synthetic gap")
   Assert.equal(type(plan.inputKey), "string", "the wide plan names its stable input geometry")
   Assert.isTrue(type(plan.render) == "function", "the wide plan carries its render callback")
   Assert.isTrue(type(plan.mapInput) == "function", "the wide plan carries its matching input mapper")
@@ -231,8 +229,8 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
         customMappings = customMappings + 1
         return { type = "confirm" }
       end,
-      coverage = {},
-      backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+      frames = {},
+      fadeCoverage = {},
     }
   end
   local merged = {

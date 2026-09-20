@@ -500,9 +500,9 @@ end
 -- Presentation changes must not change application lifetime: one modal input
 -- lifetime spans menu, child, and return; both fades keep their twelve-tick
 -- cadence; the modal never leaks ticks into world simulation; the published
--- plan owns drawing and input together, with fullscreen matte on a native
--- host and an empty coverage on a windowed host that leaves the paused
--- world visible outside itself.
+-- plan owns drawing and input together, with transition fade coverage on a
+-- native host and an empty fade coverage on a static framed host that leaves
+-- the paused world visible outside itself.
 function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan_coverage()
   local game = bootGame()
   local ok, err = xpcall(function()
@@ -538,8 +538,8 @@ function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan
     local hostStatus = runtime.applicationHost:status()
     local plan = assert(hostStatus.menu.presentation, "the open menu must publish its presentation plan")
     Assert.isTrue(
-      (plan.coverage ~= nil and #plan.coverage >= 1) or plan.window == nil,
-      "a fullscreen native plan must own its target region"
+      #(assert(plan.fadeCoverage, "the native plan names its transition region")) >= 1,
+      "a fullscreen native plan must own its transition region"
     )
     local session = assert(runtime.session, "the field session must exist")
     local playerX, playerZ = session.player.fieldX, session.player.fieldZ
@@ -598,10 +598,10 @@ end
 
 -- The Trainer Card follows the shared interface policy instead of the
 -- field camera: on a wide host it owns one source-sized content pane in a
--- draggable window whose position survives a close/reopen cycle, a field
--- viewport refit keeps its logical content and input geometry stable, a
--- physical pair hosts it on the auxiliary surface without a window, and
--- closing reports exactly one result.
+-- static framed box with no position memory, a field viewport refit keeps
+-- its logical content and input geometry stable, a physical pair hosts it
+-- on the auxiliary surface without a frame, and closing reports exactly
+-- one result.
 function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
   local game = bootGame()
   local ok, err = xpcall(function()
@@ -643,28 +643,36 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
     local placement = assert(plan.panes[1].placement, "the content pane must carry its placement")
     Assert.equal(placement.logicalWidth, 256, "the card content stays source-sized")
     Assert.equal(placement.logicalHeight, 192, "the card content stays source-sized")
-    local window = assert(plan.window, "the wide card must own its draggable window")
-    local grab = assert(window.grabRect, "the window must carry its host grab strip")
-    local outerBefore = { x = window.outer.frame.x, y = window.outer.frame.y }
-    local startX, startY = grab.x + grab.width / 2, grab.y + grab.height / 2
+    local frame =
+      assert(assert(plan.frames, "the wide card must own its static frame")[1], "one outer frame decorates the card")
+    local outerBefore = { x = frame.placement.frame.x, y = frame.placement.frame.y }
+    -- A press on the decorative frame border is application interior: it
+    -- moves nothing and closes nothing.
+    local startX, startY = frame.placement.frame.x + 4, frame.placement.frame.y + 4
     runtime.input:pointerDown("touch:1", startX, startY)
     game:step()
     runtime.input:pointerMove("touch:1", startX + 120, startY + 60)
     game:step()
     runtime.input:pointerUp("touch:1", startX + 120, startY + 60)
     game:step()
-    local moved =
-      assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan after the drag")
-    Assert.equal(runtime.applicationHost:status().phase, "application", "the title drag must not close the card")
-    local movedOuter = assert(moved.window, "the card must stay windowed after the drag").outer.frame
+    local settled = assert(
+      runtime.applicationHost:status().application.presentation,
+      "the card must keep its plan after the frame press"
+    )
+    Assert.equal(runtime.applicationHost:status().phase, "application", "a frame press must not close the card")
+    local settledOuter = assert(settled.frames, "the card must stay framed after the press")[1].placement.frame
+    Assert.deepEqual(
+      { x = settledOuter.x, y = settledOuter.y },
+      { x = outerBefore.x, y = outerBefore.y },
+      "static frames never move: the frame press changes no geometry"
+    )
     closeCard()
     local reopened = assert(openCard().presentation, "the reopened card must publish its plan")
-    local reopenedOuter = assert(reopened.window, "the reopened card must own its window").outer.frame
-    Assert.equal(reopenedOuter.x, movedOuter.x, "the drag position survives the reopen")
-    Assert.equal(reopenedOuter.y, movedOuter.y, "the drag position survives the reopen")
-    Assert.isTrue(
-      reopenedOuter.x ~= outerBefore.x or reopenedOuter.y ~= outerBefore.y,
-      "the drag must have moved the window"
+    local reopenedOuter = assert(reopened.frames, "the reopened card must own its frame")[1].placement.frame
+    Assert.deepEqual(
+      { x = reopenedOuter.x, y = reopenedOuter.y },
+      { x = outerBefore.x, y = outerBefore.y },
+      "no position memory survives the reopen: the frame recenters deterministically"
     )
     -- a field viewport refit (which drives field zoom on the old path)
     -- keeps the card's logical content and input geometry stable
@@ -698,7 +706,7 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
     game:step()
     local dual =
       assert(runtime.applicationHost:status().application.presentation, "the card must keep its plan on the pair")
-    Assert.isNil(dual.window, "the auxiliary card needs no window")
+    Assert.deepEqual(dual.frames, {}, "the auxiliary card needs no frame")
     local dualFrame = assert(dual.panes[1].placement, "the dual pane must carry its placement").frame
     Assert.isTrue(
       dualFrame.x >= 100

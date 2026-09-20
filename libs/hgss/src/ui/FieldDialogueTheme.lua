@@ -96,6 +96,56 @@ function FieldDialogueTheme.frameTilePlacements(box)
   }
 end
 
+---@return { left: integer, top: integer, right: integer, bottom: integer }
+function FieldDialogueTheme.applicationFrameInsets()
+  return { left = 8, top = 24, right = 8, bottom = 16 }
+end
+
+-- Rotated application-frame tile targets derived from the audited
+-- standard tilemap: the source composition around swapped content
+-- dimensions expands to 8x8 instances, then the whole composition
+-- rotates so source right becomes target top, source left becomes
+-- target bottom, source top becomes target left, and source bottom
+-- becomes target right. Returns tile identities with target positions;
+-- drawing and artwork rotation stay with the frame renderer.
+---@param box FieldDialogueTheme.Rect the target content box
+---@return { tile: integer, x: number, y: number }[]
+function FieldDialogueTheme.applicationFrameTilePlacements(box)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "applicationFrameTilePlacements requires the content box"
+  )
+  assert(
+    type(box.x) == "number" and type(box.y) == "number" and type(box.width) == "number" and type(box.height) == "number",
+    "applicationFrameTilePlacements requires numeric box geometry"
+  )
+  assert(
+    box.width > 0 and box.height > 0 and box.width == math.floor(box.width) and box.height == math.floor(box.height),
+    "applicationFrameTilePlacements requires positive integral content dimensions"
+  )
+  assert(box.width % 8 == 0 and box.height % 8 == 0, "applicationFrameTilePlacements requires 8px-compatible content")
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local targetOuterX = box.x - insets.left
+  local targetOuterY = box.y - insets.top
+  local sourceBox = { x = 16, y = 8, width = box.height, height = box.width }
+  local sourceOuterWidth = sourceBox.width + 16 + 24
+  local placements = {}
+  for _, entry in ipairs(FieldDialogueTheme.frameTilePlacements(sourceBox)) do
+    local countX = entry.spanX or 1
+    local countY = entry.spanY or 1
+    for ix = 0, countX - 1 do
+      for iy = 0, countY - 1 do
+        local sx = entry.x + ix * 8
+        local sy = entry.y + iy * 8
+        local tx = targetOuterX + sy
+        local ty = targetOuterY + (sourceOuterWidth - sx - 8)
+        placements[#placements + 1] = { tile = entry.tile, x = tx, y = ty }
+      end
+    end
+  end
+  return placements
+end
+
 -- Reference-to-screen mapping for one viewport. The canonical 256x192
 -- surface is scaled by the resolved field pixel scale used for world
 -- presentation —

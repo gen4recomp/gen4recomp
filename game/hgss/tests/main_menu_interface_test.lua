@@ -99,6 +99,11 @@ function T.tests.default_menu_occupies_the_primary_surface_only_on_a_physical_du
       "no menu pane may extend into the auxiliary surface: the save UI stays primary-only"
     )
   end
+  Assert.deepEqual(plan.frames, {}, "the startup menu publishes no application frame")
+  Assert.deepEqual(plan.fadeCoverage, {}, "the startup menu owns no transition fade region")
+  local hostBackgrounds =
+    assert(plan.content.hostBackgrounds, "the startup menu carries its leaf-owned host backgrounds")
+  Assert.equal(#hostBackgrounds, 2, "the dual startup menu paints both host surfaces itself")
 end
 
 function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
@@ -109,6 +114,8 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
     wide = function(_, _)
       return {
         panes = {},
+        frames = {},
+        fadeCoverage = {},
         content = {},
         inputKey = "replacement-wide",
         render = function(_, _, _)
@@ -117,8 +124,6 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
         mapInput = function(_, _, _)
           return { type = "activateNewGame" }
         end,
-        coverage = {},
-        backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
       }
     end,
   }

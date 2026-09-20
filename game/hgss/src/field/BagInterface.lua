@@ -1,14 +1,15 @@
 -- The current Bag's four function references with matching render and
 -- input callbacks. DualDisplay maps the hero to the world surface and the
 -- interaction to auxiliary; wide pairs hero left of interaction and tall
--- stacks hero above, sharing one integer scale across an eight
--- logical-pixel gap; nativeLike shows only the interaction pane with the
--- canonical description fallback. The lower pane never crops (its controls
--- reach the source edges); the hero may use the default four-edge budget
--- on a separate physical display. A pair that cannot fit 1x falls back to
--- the nativeLike case. Resolvers require the measured context production
--- sessions supply; helper-derived surface selections fill the remaining
--- fields.
+-- stacks hero above, sharing one integer scale with no synthetic gap;
+-- nativeLike shows only the interaction pane with the canonical description
+-- fallback. The lower pane never crops (its controls reach the source
+-- edges); the hero may use the default four-edge budget on a separate
+-- physical display. A pair that cannot fit 1x falls back to the nativeLike
+-- case. Underfilled panes carry one static outer frame around the pair
+-- envelope or around each underfilled physical pane. Resolvers require the
+-- measured context production sessions supply; helper-derived surface
+-- selections fill the remaining fields.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local BagLayout = require("libs.hgss.src.ui.BagLayout")
@@ -20,7 +21,6 @@ local HERO_NATIVE = { id = "hero", width = 256, height = 192 }
 local INTERACTION_NATIVE = { id = "interaction", width = 256, height = 192 }
 local INPUT_KEY = "bag"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local MATTE = { r = 0, g = 0, b = 0, a = 1 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -56,29 +56,30 @@ end
 local function inactivePlan()
   return {
     panes = {},
+    frames = {},
+    fadeCoverage = {},
     content = {},
     inputKey = "bag-inactive",
     render = noopRender,
     mapInput = noopMap,
-    coverage = {},
-    backgroundColor = MATTE,
   }
 end
 
 ---@param manifest table<string, unknown> the validated bag presentation manifest
 ---@param heroVisible boolean true when the resolved panes include the hero
 ---@param panes table<integer, table<string, unknown>> the resolved ordered panes
----@param coverage table<integer, table<string, unknown>> the owned host regions
+---@param frames table<integer, table<string, unknown>> the static outer-frame geometry
+---@param fadeCoverage table<integer, table<string, unknown>> the transition-only host regions
 ---@return ApplicationPlan
-local function bagPlan(manifest, heroVisible, panes, coverage)
+local function bagPlan(manifest, heroVisible, panes, frames, fadeCoverage)
   return {
     panes = panes,
+    frames = frames,
+    fadeCoverage = fadeCoverage,
     content = BagLayout.resolve({ manifest = manifest, heroVisible = heroVisible }),
     inputKey = INPUT_KEY,
     render = renderBag,
     mapInput = mapBagInput,
-    coverage = coverage,
-    backgroundColor = MATTE,
   }
 end
 
@@ -103,14 +104,33 @@ local function withManifest(manifest)
       configuration = context.configuration,
       primary = context.primary or selection.primary,
       secondary = context.secondary or selection.secondary,
-      windowPosition = context.windowPosition or { x = 0.5, y = 0.5 },
       nativeLikeInterface = context.nativeLikeInterface or set.nativeLike,
     }
   end
 
+  -- One static frame around the common pair envelope, attached only when
+  -- the envelope leaves target background visible.
+  ---@param context ApplicationLayout.Context
+  ---@param geometry ApplicationLayout.Geometry
+  ---@return table<integer, table<string, unknown>> frames
+  local function envelopeFrames(context, geometry)
+    local envelope = geometry.envelope
+    local primary = assert(context.primary, "a pair frame needs its primary surface")
+    local usable = primary.usableBounds
+    if envelope == nil or usable == nil then
+      return {}
+    end
+    local frame = ApplicationLayout.frameAround(usable, envelope)
+    if frame == nil then
+      return {}
+    end
+    return { frame }
+  end
+
   -- DualDisplay: hero on the world surface, interaction on auxiliary. The
   -- hero may use the default four-edge crop budget on its own display;
-  -- the edge-reaching lower pane never crops.
+  -- the edge-reaching lower pane never crops. Each underfilled physical
+  -- pane carries its own outer frame.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
@@ -125,14 +145,30 @@ local function withManifest(manifest)
     if hero == nil or interaction == nil then
       return inactivePlan()
     end
+    local frames = {}
+    local primary = assert(complete.primary, "dual frames need the world surface")
+    local secondary = assert(complete.secondary, "dual frames need the auxiliary surface")
+    if primary.usableBounds ~= nil then
+      local heroFrame = ApplicationLayout.frameAround(primary.usableBounds, hero)
+      if heroFrame ~= nil then
+        frames[#frames + 1] = heroFrame
+      end
+    end
+    if secondary.usableBounds ~= nil then
+      local interactionFrame = ApplicationLayout.frameAround(secondary.usableBounds, interaction)
+      if interactionFrame ~= nil then
+        frames[#frames + 1] = interactionFrame
+      end
+    end
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, geometry.coverage)
+    }, frames, geometry.fadeCoverage)
   end
 
   -- NativeLike: only the interaction pane with the canonical description
   -- fallback carrying the compact information the hidden hero would show.
+  -- A frame is attached only when the pane leaves target background visible.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
@@ -144,15 +180,24 @@ local function withManifest(manifest)
     if interaction == nil then
       return inactivePlan()
     end
+    local frames = {}
+    local target = complete.secondary or complete.primary
+    if target ~= nil and target.usableBounds ~= nil then
+      local frame = ApplicationLayout.frameAround(target.usableBounds, interaction)
+      if frame ~= nil then
+        frames = { frame }
+      end
+    end
     return bagPlan(manifest, false, {
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, geometry.coverage)
+    }, frames, geometry.fadeCoverage)
   end
   set.nativeLike = nativeLike
 
-  -- Wide: hero left, interaction right, one shared integer scale across
-  -- the eight logical-pixel gap. A pair that cannot fit 1x falls back to
-  -- the effective nativeLike entry without changing the measured configuration.
+  -- Wide: hero left, interaction right, one shared integer scale with no
+  -- gap and one frame around the common envelope. A pair that cannot fit
+  -- 1x falls back to the effective nativeLike entry without changing the
+  -- measured configuration.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
@@ -170,11 +215,12 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, geometry.coverage)
+    }, envelopeFrames(complete, geometry), geometry.fadeCoverage)
   end
 
-  -- Tall: hero above, interaction below, one shared integer scale across
-  -- the eight logical-pixel gap, with the same 1x fallback as wide.
+  -- Tall: hero above, interaction below, one shared integer scale with no
+  -- gap and one frame around the common envelope, with the same 1x
+  -- fallback as wide.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
@@ -192,7 +238,7 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, geometry.coverage)
+    }, envelopeFrames(complete, geometry), geometry.fadeCoverage)
   end
 
   set.dualDisplay = dualDisplay

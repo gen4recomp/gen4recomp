@@ -127,7 +127,6 @@ local function composition(overrides)
     measureDisplay = function()
       return measurementFor(box)
     end,
-    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   }
   for key, value in pairs(overrides) do
     options[key] = value
@@ -784,7 +783,7 @@ end
 
 function T.missing_capabilities_fail_at_construction()
   local options = composition()
-  for _, key in ipairs({ "service", "cursor", "manifest", "heroGender", "measureDisplay", "windowState" }) do
+  for _, key in ipairs({ "service", "cursor", "manifest", "heroGender", "measureDisplay" }) do
     local broken = {}
     for optionKey, value in pairs(options) do
       broken[optionKey] = value
@@ -854,9 +853,10 @@ function T.status_publishes_a_shared_presentation_plan_beside_semantics()
   state:dispose()
 end
 
--- Paired single-display panes share one integer pixel scale with a single
--- eight logical-pixel gap, and exactly one pane takes input.
-function T.wide_pairs_share_one_integer_scale_across_an_eight_pixel_gap()
+-- Paired single-display panes share one integer pixel scale with no
+-- synthetic gap, one frame around the common envelope, and exactly one
+-- pane takes input.
+function T.wide_pairs_share_one_integer_scale_with_no_gap()
   local options, box = composition()
   box.width, box.height = 1280, 720
   box.topologyObject = topology(1280, 720)
@@ -889,8 +889,13 @@ function T.wide_pairs_share_one_integer_scale_across_an_eight_pixel_gap()
     heroPlacement.frame.x + heroPlacement.frame.width <= wideInteraction.frame.x,
     "the hero pane sits left of the interaction pane"
   )
-  local gap = wideInteraction.frame.x - (heroPlacement.frame.x + heroPlacement.frame.width)
-  Assert.equal(gap, 8 * wideInteraction.scale, "paired panes keep one eight logical-pixel gap")
+  Assert.near(
+    wideInteraction.frame.x - (heroPlacement.frame.x + heroPlacement.frame.width),
+    0,
+    1e-6,
+    "paired panes touch with no synthetic gap"
+  )
+  Assert.equal(#plan.frames, 1, "the pair carries one frame around its envelope")
   Assert.isNil(state:status().layout, "the migrated status carries no stale host layout")
   state:dispose()
 end
@@ -922,8 +927,12 @@ function T.tall_stacks_the_hero_above_the_interaction_pane()
     heroPlacement.frame.y + heroPlacement.frame.height <= stackedInteraction.frame.y,
     "the hero pane sits above the interaction pane"
   )
-  local gap = stackedInteraction.frame.y - (heroPlacement.frame.y + heroPlacement.frame.height)
-  Assert.equal(gap, 8 * stackedInteraction.scale, "stacked panes keep one eight logical-pixel gap")
+  Assert.near(
+    stackedInteraction.frame.y - (heroPlacement.frame.y + heroPlacement.frame.height),
+    0,
+    1e-6,
+    "stacked panes touch with no synthetic gap"
+  )
   state:dispose()
 end
 

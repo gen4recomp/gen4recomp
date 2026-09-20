@@ -101,7 +101,6 @@ local function contextFor(measured, configuration, interfaceTable)
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaceTable.nativeLike,
   }
 end
@@ -136,7 +135,6 @@ function T.native_like_shows_only_the_interaction_pane_with_zero_crop()
   Assert.isTrue(plan.panes[1].interactive, "the single pane takes input")
   Assert.equal(plan.content.heroVisible, false, "the native-like plan hides the hero pane")
   Assert.isTrue(type(plan.content.descriptionFallback) == "table", "the lower-only plan keeps its fallback")
-  Assert.isNil(plan.window, "the native-like fullscreen carries no window")
   local placement = plan.panes[1].placement
   Assert.equal(placement.crop.left, 0, "the edge-reaching lower pane takes no left crop")
   Assert.equal(placement.crop.right, 0, "the edge-reaching lower pane takes no right crop")
@@ -144,7 +142,7 @@ function T.native_like_shows_only_the_interaction_pane_with_zero_crop()
   Assert.equal(placement.crop.bottom, 0, "the edge-reaching lower pane takes no bottom crop")
 end
 
-function T.wide_pairs_share_one_integer_scale_across_an_eight_pixel_gap()
+function T.wide_pairs_share_one_integer_scale_with_no_gap()
   local interface = bagInterface()
   local measured = singleDisplay(1280, 720)
   local plan = interface.wide(contextFor(measured, "wide", interface), {})
@@ -165,8 +163,13 @@ function T.wide_pairs_share_one_integer_scale_across_an_eight_pixel_gap()
     heroPlacement.frame.x + heroPlacement.frame.width <= interactivePlacement.frame.x,
     "the hero pane sits left of the interaction pane"
   )
-  local gap = interactivePlacement.frame.x - (heroPlacement.frame.x + heroPlacement.frame.width)
-  Assert.equal(gap, 8 * interactivePlacement.scale, "paired panes keep one eight logical-pixel gap")
+  Assert.near(
+    interactivePlacement.frame.x - (heroPlacement.frame.x + heroPlacement.frame.width),
+    0,
+    1e-6,
+    "paired panes touch with no synthetic gap"
+  )
+  Assert.equal(#plan.frames, 1, "the pair carries one frame around its envelope")
   Assert.equal(plan.content.heroVisible, true, "the paired plan shows the hero pane")
   Assert.isNil(plan.content.descriptionFallback, "the paired plan needs no description fallback")
 end
@@ -273,8 +276,8 @@ function T.a_case_override_replaces_only_its_own_case()
     mapInput = function(_, _, _)
       return nil
     end,
-    coverage = baseline.coverage,
-    backgroundColor = baseline.backgroundColor,
+    frames = baseline.frames,
+    fadeCoverage = baseline.fadeCoverage,
   }
   local interface = BagInterface.withOverrides({
     wide = function(_, _)

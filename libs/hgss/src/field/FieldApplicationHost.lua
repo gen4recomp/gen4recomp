@@ -47,7 +47,7 @@ local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 ---@field _failure unknown? retained factory/composition failure
 ---@field _uiHeld boolean the modal input lifetime is held (beginUi done, clearUi pending)
 ---@field _reopenPending boolean a script reopen request awaits the session
----@field _menuCoverage LayoutGeometry.Rect[] retained fullscreen coverage behind the open menu for transition fades
+---@field _menuFadeCoverage LayoutGeometry.Rect[] retained menu fade coverage behind the open menu for transition fades only
 ---@field _effect fun(sequence: string)? source UI sound effect boundary
 local FieldApplicationHost = {}
 FieldApplicationHost.__index = FieldApplicationHost
@@ -92,7 +92,7 @@ function FieldApplicationHost.new(options)
     _failure = nil,
     _uiHeld = false,
     _reopenPending = false,
-    _menuCoverage = {},
+    _menuFadeCoverage = {},
     _effect = options.effect,
   }, FieldApplicationHost)
 end
@@ -222,7 +222,7 @@ function FieldApplicationHost:_fail(failure)
   self:_disposeController()
   self:_releaseUi()
   self._applicationId = nil
-  self._menuCoverage = {}
+  self._menuFadeCoverage = {}
   self._fadeTicks = 0
   self._fadeAlpha = 0
   self._phase = FieldApplicationHost.PHASES.failed
@@ -300,13 +300,13 @@ function FieldApplicationHost:updateFixed(uiInput)
   error("unknown application host phase " .. tostring(phase), 2)
 end
 
--- Retains the open menu's fullscreen coverage for transition fades: the
+-- Retains the open menu's fade coverage for transition fades only: the
 -- wrapper publishes presentation=plan beside its semantic snapshot, and
 -- the fade covers the world plus that retained region once the menu phase
 -- ends. Controllers without a plan (destinations, test fakes) leave the
--- retained coverage untouched.
+-- retained coverage untouched. This metadata never paints settled pixels.
 ---@param controller table<string, unknown> the active menu controller
-function FieldApplicationHost:_retainMenuCoverage(controller)
+function FieldApplicationHost:_retainMenuFadeCoverage(controller)
   local status = controller:status()
   if type(status) ~= "table" then
     return
@@ -315,23 +315,23 @@ function FieldApplicationHost:_retainMenuCoverage(controller)
   if type(presentation) ~= "table" then
     return
   end
-  local coverage = presentation.coverage
+  local coverage = presentation.fadeCoverage
   if type(coverage) ~= "table" then
     return
   end
   local copied = {}
   for _, rect in ipairs(coverage) do
-    copied[#copied + 1] = LayoutGeometry.rect(rect, "menu coverage")
+    copied[#copied + 1] = LayoutGeometry.rect(rect, "menu fade coverage")
   end
-  self._menuCoverage = copied
+  self._menuFadeCoverage = copied
 end
 
--- The retained menu coverage for transition fades: fresh copies per call,
+-- The retained menu fade coverage for transition fades: fresh copies per call,
 -- so draw sites cannot mutate host state.
 ---@return LayoutGeometry.Rect[]
-function FieldApplicationHost:menuCoverage()
+function FieldApplicationHost:menuFadeCoverage()
   local copied = {}
-  for _, rect in ipairs(self._menuCoverage) do
+  for _, rect in ipairs(self._menuFadeCoverage) do
     copied[#copied + 1] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
   end
   return copied
@@ -363,7 +363,7 @@ end
 function FieldApplicationHost:_stepMenu(uiInput)
   local controller = assert(self._controller, "the menu phase requires the menu controller")
   controller:updateFixed(uiInput)
-  self:_retainMenuCoverage(controller)
+  self:_retainMenuFadeCoverage(controller)
   local result = controller:takeResult()
   if result == nil then
     return
@@ -464,7 +464,7 @@ function FieldApplicationHost:dispose()
   self:_releaseUi()
   self._reopenPending = false
   self._applicationId = nil
-  self._menuCoverage = {}
+  self._menuFadeCoverage = {}
   self._failure = nil
   self._fadeTicks = 0
   self._fadeAlpha = 0

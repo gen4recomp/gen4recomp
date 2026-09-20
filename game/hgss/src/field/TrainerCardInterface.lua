@@ -2,7 +2,7 @@
 -- render and input callbacks. DualDisplay takes the auxiliary fullscreen
 -- and nativeLike the single-surface fullscreen, both with the default
 -- four-edge crop budget guarded by the protected text rect; wide and tall
--- frame the canonical 256x192 pane in a shared draggable window with zero
+-- center the canonical 256x192 pane in a static framed box with zero
 -- crop and a native-like fallback below 1x. The renderer is the existing
 -- card surface invoked through the resolved placement; input forwards the
 -- existing semantic events and discards pointer content, so outside clicks
@@ -20,7 +20,6 @@ local NATIVE = { id = "content", width = 256, height = 192 }
 local INPUT_KEY = "trainer-card"
 local FULL_CROP = { left = 4, right = 4, top = 4, bottom = 4 }
 local PROTECTED = { x = 8, y = 8, width = 240, height = 176 }
-local MATTE = { r = 0, g = 0, b = 0, a = 1 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -39,7 +38,6 @@ end
 -- The card has no pointer controls: ordinary pointer content and pointer
 -- cancellation reach no semantic action, while the existing semantic events
 -- (the close edge and its siblings) travel to the controller unchanged.
--- Header drags are consumed by the session before this mapper runs.
 ---@param event table<string, unknown> session-inverted logical input
 ---@return table<string, unknown>? the app event, or nil when the card ignores it
 local function mapCardInput(event, _, _)
@@ -67,18 +65,18 @@ end
 local function inactivePlan()
   return {
     panes = {},
+    frames = {},
+    fadeCoverage = {},
     content = { width = NATIVE.width, height = NATIVE.height },
     inputKey = "trainer-card-inactive",
     render = noopRender,
     mapInput = noopMap,
-    coverage = {},
-    backgroundColor = MATTE,
   }
 end
 
 -- Completes a measured production context with helper-derived surface
 -- selections. The effective nativeLike entry (including an override) backs
--- the below-1x window fallback.
+-- the below-1x framed fallback.
 ---@param context ApplicationLayout.Context
 ---@return ApplicationLayout.Context the production context with helper-derived selections
 local function completeContext(context)
@@ -90,7 +88,6 @@ local function completeContext(context)
     configuration = context.configuration,
     primary = context.primary or selection.primary,
     secondary = context.secondary or selection.secondary,
-    windowPosition = context.windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = context.nativeLikeInterface or TrainerCardInterface.fullscreen,
   }
 end
@@ -100,10 +97,21 @@ local function cardContent()
   return { width = NATIVE.width, height = NATIVE.height }
 end
 
+---@param context ApplicationLayout.Context
+---@return LayoutGeometry.Rect? the fullscreen target bounds
+local function fullscreenTarget(context)
+  local target = context.secondary or context.primary
+  if target == nil then
+    return nil
+  end
+  return target.usableBounds
+end
+
 -- Fullscreen card for the dualDisplay and nativeLike cases: one canonical
 -- pane over the owned target region with the default four-edge crop budget
 -- guarded by the protected text rect, so only borders and margins can hide
--- in a near fit.
+-- in a near fit. A frame is attached only when the pane leaves target
+-- background visible.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
@@ -116,27 +124,35 @@ function TrainerCardInterface.fullscreen(context, view)
   if placement == nil then
     return inactivePlan()
   end
+  local frames = {}
+  local target = fullscreenTarget(complete)
+  if target ~= nil then
+    local frame = ApplicationLayout.frameAround(target, placement)
+    if frame ~= nil then
+      frames = { frame }
+    end
+  end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = frames,
+    fadeCoverage = geometry.fadeCoverage,
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,
     mapInput = mapCardInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
   }
 end
 
--- Windowed card for the wide and tall cases: the canonical pane in a shared
--- draggable window with zero crop. A window that cannot fit 1x falls back
--- to the effective nativeLike case with the same context and view; the
--- configuration keeps describing the actual measured display.
+-- Static framed card for the wide and tall cases: the canonical pane
+-- centered with its complete outer frame and zero crop. A frame that cannot
+-- fit 1x falls back to the effective nativeLike case with the same context
+-- and view; the configuration keeps describing the actual measured display.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
-function TrainerCardInterface.windowed(context, view)
+function TrainerCardInterface.framed(context, view)
   local complete = completeContext(context)
-  local geometry = ApplicationLayout.windowed(complete, NATIVE, {})
+  local geometry = ApplicationLayout.framed(complete, NATIVE, {})
   if geometry == nil then
     return complete.nativeLikeInterface(complete, view)
   end
@@ -146,25 +162,24 @@ function TrainerCardInterface.windowed(context, view)
   end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = geometry.frames or {},
+    fadeCoverage = geometry.fadeCoverage,
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,
     mapInput = mapCardInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
-    window = geometry.window,
   }
 end
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 
 -- The four resolver functions behind one case per display configuration:
--- dual and native-like own their fullscreen region, wide and tall frame
--- the canonical pane in a draggable window.
+-- dual and native-like own their fullscreen region, wide and tall center
+-- the canonical pane in a static frame.
 TrainerCardInterface.dualDisplay = TrainerCardInterface.fullscreen
 TrainerCardInterface.nativeLike = TrainerCardInterface.fullscreen
-TrainerCardInterface.wide = TrainerCardInterface.windowed
-TrainerCardInterface.tall = TrainerCardInterface.windowed
+TrainerCardInterface.wide = TrainerCardInterface.framed
+TrainerCardInterface.tall = TrainerCardInterface.framed
 
 -- Merges an optional per-case override into the complete default set:
 -- only the four function fields merge, unknown keys and non-functions
@@ -175,8 +190,8 @@ function TrainerCardInterface.withOverrides(overrides)
   local set = {
     dualDisplay = TrainerCardInterface.fullscreen,
     nativeLike = TrainerCardInterface.fullscreen,
-    wide = TrainerCardInterface.windowed,
-    tall = TrainerCardInterface.windowed,
+    wide = TrainerCardInterface.framed,
+    tall = TrainerCardInterface.framed,
   }
   if overrides ~= nil then
     assert(type(overrides) == "table", "the card overrides must be a record")

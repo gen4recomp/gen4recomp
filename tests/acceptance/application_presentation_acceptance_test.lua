@@ -521,14 +521,18 @@ function T.tests.party_inert_close_across_config_switch_issues_no_swap()
     switchDisplay(game, 1280, 720)
     local opened = openParty(game, state)
     local plan = assert(opened.presentation, "the open party must publish its presentation plan")
-    Assert.notNil(plan.window, "a wide host must frame the party in a window")
+    Assert.equal(
+      #assert(plan.frames, "a wide host must frame the party"),
+      1,
+      "a wide host frames the party in a static box"
+    )
 
     switchDisplay(game, 640, 480)
     local status = game.runtime.applicationHost:status()
     Assert.equal(status.applicationId, PARTY_APPLICATION, "the party must stay open across the switch")
     local view = assert(status.application, "the party must expose its status after the switch")
     local nativePlan = assert(view.presentation, "the party must publish a plan after the switch")
-    Assert.isNil(nativePlan.window, "native-like party is fullscreen, not a window")
+    Assert.deepEqual(nativePlan.frames, {}, "native-like party is fullscreen, not a frame")
     Assert.equal(#nativePlan.panes, 1, "native-like party shows its single compact pane")
 
     -- Keyboard navigation stays inside the visible grid, then an inert
@@ -1240,7 +1244,7 @@ function T.tests.start_menu_wide_override_replaces_pair_without_leaking()
   local customRenders = 0
   local customMaps = 0
   local function customWide(context, view)
-    local fallback = StartMenuInterface.windowed(context, view)
+    local fallback = StartMenuInterface.framed(context, view)
     local body = nil
     for _, pane in ipairs(assert(fallback.panes, "the default wide plan carries its panes")) do
       if pane.interactive then
@@ -1262,8 +1266,8 @@ function T.tests.start_menu_wide_override_replaces_pair_without_leaking()
         end
         return nil
       end,
-      coverage = fallback.coverage,
-      backgroundColor = fallback.backgroundColor,
+      frames = fallback.frames,
+      fadeCoverage = fallback.fadeCoverage,
     }
   end
 
@@ -1311,8 +1315,8 @@ end
 function T.tests.unknown_override_case_key_fails_without_publication()
   local ok, err = pcall(function()
     return StartMenuInterface.withOverrides({
-      wide = StartMenuInterface.windowed,
-      bogus = StartMenuInterface.windowed,
+      wide = StartMenuInterface.framed,
+      bogus = StartMenuInterface.framed,
     })
   end)
   Assert.isFalse(ok, "an unknown override case key must fail")

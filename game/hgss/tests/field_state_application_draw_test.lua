@@ -85,14 +85,14 @@ end
 -- recording into the sink, a fake runtime carrying every field draw touches,
 -- and the topology provider under test. The player visual record is
 -- invisible, so the actor assembly never touches a real asset provider.
----@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table, menuCoverage?: table }
+---@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table, menuFadeCoverage?: table }
 ---@return FieldState state
 ---@return table[] sink
 local function drawableState(options)
   local sink = {}
   local topology = options.topology or worldTopology()
   local worldViewport = options.worldViewport or { x = 0, y = 0, width = 640, height = 480 }
-  local menuCoverage = options.menuCoverage or {}
+  local menuFadeCoverage = options.menuFadeCoverage or {}
   local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
   viewport.worldViewport = worldViewport
   local runtime = {
@@ -153,9 +153,9 @@ local function drawableState(options)
       status = function()
         return options.hostStatus
       end,
-      menuCoverage = function()
+      menuFadeCoverage = function()
         local copied = {}
-        for _, rect in ipairs(menuCoverage) do
+        for _, rect in ipairs(menuFadeCoverage) do
           copied[#copied + 1] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
         end
         return copied
@@ -332,8 +332,8 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_its_plan()
     mapInput = function()
       return nil
     end,
-    coverage = { { x = 0, y = 0, width = 640, height = 480 } },
-    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    frames = {},
+    fadeCoverage = { { x = 0, y = 0, width = 640, height = 480 } },
   }
   local state, sink = drawableState({
     hostStatus = { phase = "menu", fadeAlpha = 0, menu = menuStatus },
@@ -349,14 +349,10 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_its_plan()
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "rect", "menu" })
-  local matteCall = sink[2]
-  Assert.deepEqual(
-    { matteCall[6], matteCall[7], matteCall[8], matteCall[9], matteCall[10] },
-    { "fill", 0, 0, 640, 480 },
-    "the fullscreen plan owns its target region before the menu draws"
-  )
-  local menuCall = sink[3]
+  -- Settled plans paint no matte: the world draws, then the menu draws
+  -- through its plan with no settled fill between them.
+  Assert.deepEqual(labels(sink), { "world", "menu" })
+  local menuCall = sink[2]
   Assert.equal(menuCall[2], menuStatus, "the start menu renderer receives the host's menu presentation")
   Assert.deepEqual(menuCall[3], bodyPlacement, "the menu draws through the plan body placement")
 end
@@ -445,7 +441,7 @@ function T.the_application_fade_paints_disjoint_surfaces_separately_and_never_th
     worldViewport = { x = 0, y = 0, width = 256, height = 192 },
     -- Separate the menu surface from the world with a real gap: the fade
     -- follows the retained plan coverage exactly.
-    menuCoverage = { { x = 320, y = 0, width = 256, height = 192 } },
+    menuFadeCoverage = { { x = 320, y = 0, width = 256, height = 192 } },
   })
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
@@ -492,7 +488,7 @@ function T.the_application_fade_never_doubles_alpha_for_a_contained_menu_frame()
   local state, sink = drawableState({
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = worldTopology(),
-    menuCoverage = { { x = 64, y = 48, width = 320, height = 240 } },
+    menuFadeCoverage = { { x = 64, y = 48, width = 320, height = 240 } },
   })
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
@@ -520,7 +516,7 @@ function T.the_application_fade_paints_only_the_non_overlapping_strip_of_a_parti
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = worldTopology(),
     worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-    menuCoverage = { { x = 128, y = 0, width = 384, height = 192 } },
+    menuFadeCoverage = { { x = 128, y = 0, width = 384, height = 192 } },
   })
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
@@ -563,7 +559,7 @@ function T.the_application_fade_paints_the_strips_around_a_corner_overlap()
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = worldTopology(),
     worldViewport = { x = 0, y = 0, width = 256, height = 192 },
-    menuCoverage = { { x = 128, y = -64, width = 384, height = 320 } },
+    menuFadeCoverage = { { x = 128, y = -64, width = 384, height = 320 } },
   })
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()

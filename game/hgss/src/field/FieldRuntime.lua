@@ -173,7 +173,6 @@ end
 ---@field displayContext DisplayContext the actual-display measurement owner (shared or runtime-owned)
 ---@field presentationDisplay DisplayMeasurement? the complete measured display rendering and menu input share
 ---@field _displayTopology ScreenTopology? the latest resize topology tracked by the default display context
----@field presentationWindows table<string, table<string, { x: number, y: number }>>? per-application session-only window memory
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field dayNight fun(): string?
 ---@field audioOutput table<string, unknown>?
@@ -900,29 +899,18 @@ function FieldRuntime:_load()
     })
     self.auxiliaryFieldUi = loadedGame and AuxiliaryFieldUi.restore(loadedGame.auxiliaryUi) or AuxiliaryFieldUi.new()
     self.contextChoiceProvider = ContextChoiceProvider.new()
-    -- The initial display measurement and per-application window memory:
-    -- the runtime measures from the boot topology (or the actual default)
-    -- so pointer input works before any resize; the menu wrapper consumes
-    -- this exact record through its measurement closure. The script-owned
-    -- starter host below borrows the same record. This precedes the
-    -- starter composition because the choice surface is built eagerly.
-    self.presentationWindows = {
-      start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      bag = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      party = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      trainer_card = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-      starter_choice = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
-    }
+    -- The initial display measurement: the runtime measures from the boot
+    -- topology (or the actual default) so pointer input works before any
+    -- resize; the menu wrapper consumes this exact record through its
+    -- measurement closure. The script-owned starter host below borrows the
+    -- same record. This precedes the starter composition because the choice
+    -- surface is built eagerly.
     self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
     -- The starter composition: the hand-editable default roster provider
     -- and the modal choice surface. The blocking starter task receives both
     -- through scheduler services; no starter code requires the concrete
     -- provider module after this composition step.
     self.starterProvider = require("game.hgss.src.starters.VanillaStarterProvider")
-    local starterWindowMemory = assert(
-      self.presentationWindows and self.presentationWindows.starter_choice,
-      "the starter wrapper requires its runtime window memory"
-    )
     local starterOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.starter_choice or nil
     local function starterMeasureDisplay()
       return self.presentationDisplay
@@ -932,7 +920,6 @@ function FieldRuntime:_load()
       cacheFs = cacheFs,
       frameIndex = self.playerData.options.textFrame,
       measureDisplay = starterMeasureDisplay,
-      windowState = starterWindowMemory,
       overrides = starterOverrides,
     })
     self.actionKeys = HgssInputBindings.actionKeys()
@@ -1392,10 +1379,6 @@ function FieldRuntime:_applicationDescriptors()
     -- The Trainer Card factory wraps the close-input-only controller in
     -- its presentation session, keeping the authoritative profile fields
     -- with the existing controller ownership.
-    local windowMemory = assert(
-      self.presentationWindows and self.presentationWindows.trainer_card,
-      "the card wrapper requires its runtime window memory"
-    )
     local cardOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.trainer_card or nil
     local function measureDisplay()
       return self.presentationDisplay
@@ -1405,15 +1388,10 @@ function FieldRuntime:_applicationDescriptors()
       playTimeSeconds = self.playTime:seconds(),
       effect = playSequence,
       measureDisplay = measureDisplay,
-      windowState = windowMemory,
       overrides = cardOverrides,
     })
   end
   local function partyScreenFactory()
-    local windowMemory = assert(
-      self.presentationWindows and self.presentationWindows.party,
-      "the party wrapper requires its runtime window memory"
-    )
     local partyOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.party or nil
     local function measureDisplay()
       return self.presentationDisplay
@@ -1421,7 +1399,6 @@ function FieldRuntime:_applicationDescriptors()
     return PartyScreenState.new({
       service = self.monService,
       measureDisplay = measureDisplay,
-      windowState = windowMemory,
       overrides = partyOverrides,
     })
   end
@@ -1435,10 +1412,6 @@ function FieldRuntime:_applicationDescriptors()
     local avatar = assert(self.avatar, "the bag application requires the player avatar")
     assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
     local heroGender = avatar.gender == 0 and "male" or "female"
-    local windowMemory = assert(
-      self.presentationWindows and self.presentationWindows.bag,
-      "the bag wrapper requires its runtime window memory"
-    )
     local bagOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.bag or nil
     local function measureDisplay()
       return self.presentationDisplay
@@ -1449,7 +1422,6 @@ function FieldRuntime:_applicationDescriptors()
       manifest = manifest,
       heroGender = heroGender,
       measureDisplay = measureDisplay,
-      windowState = windowMemory,
       overrides = bagOverrides,
     })
   end
@@ -1563,10 +1535,6 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
 
   local startMenuInteractive =
     assert(startMenuSection.interactive, "the field UI manifest must carry the start menu interactive record")
-  local windowMemory = assert(
-    self.presentationWindows and self.presentationWindows.start_menu,
-    "the start menu wrapper requires its runtime window memory"
-  )
   local startMenuOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.start_menu or nil
   local function measureDisplay()
     return self.presentationDisplay
@@ -1577,7 +1545,6 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
     measureDisplay = measureDisplay,
-    windowState = windowMemory,
     overrides = startMenuOverrides,
   })
 end
@@ -1876,8 +1843,7 @@ function FieldRuntime:_releaseAll()
     self.applicationHost:dispose()
   end
   self.applicationHost, self.applications = nil, nil
-  self.displayContext, self.presentationDisplay, self.presentationWindows, self.presentationOverrides =
-    nil, nil, nil, nil
+  self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
   if self.messageProvider then
     self.messageProvider:dispose()

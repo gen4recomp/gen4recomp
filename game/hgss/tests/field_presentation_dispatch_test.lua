@@ -252,8 +252,8 @@ function T.pokemon_routes_only_to_the_party_presenter()
           mapInput = function()
             return nil
           end,
-          coverage = {},
-          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+          frames = {},
+          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -302,8 +302,8 @@ function T.trainer_card_routes_only_to_the_card_presenter()
           mapInput = function()
             return nil
           end,
-          coverage = {},
-          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+          frames = {},
+          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.TRAINER_CARD, presentation, drawRuntime())
@@ -344,8 +344,8 @@ function T.bag_routes_only_to_the_bag_presenter()
           mapInput = function()
             return nil
           end,
-          coverage = {},
-          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+          frames = {},
+          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
@@ -400,8 +400,8 @@ function T.draw_reuses_presenters_without_acquiring_resources()
           mapInput = function()
             return nil
           end,
-          coverage = {},
-          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+          frames = {},
+          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -447,8 +447,8 @@ function T.dispose_releases_owned_resources_exactly_once()
           mapInput = function()
             return nil
           end,
-          coverage = {},
-          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+          frames = {},
+          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -504,8 +504,8 @@ function T.bag_draw_borrows_shared_resources_without_releasing_them()
           mapInput = function()
             return nil
           end,
-          coverage = {},
-          backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+          frames = {},
+          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
@@ -568,8 +568,8 @@ function T.start_menu_draw_executes_the_resolved_plan_with_borrowed_resources()
       mapInput = function()
         return nil
       end,
-      coverage = { { x = 0, y = 0, width = 640, height = 480 } },
-      backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+      frames = {},
+      fadeCoverage = { { x = 0, y = 0, width = 640, height = 480 } },
     }
     local graphics = FakeGraphics({})
     resources:drawStartMenu(status, graphics)

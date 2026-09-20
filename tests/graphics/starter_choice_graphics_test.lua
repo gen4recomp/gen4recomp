@@ -198,7 +198,6 @@ local function openProductionChoice(versionId, cacheFs, speciesKeys, measureDisp
     cacheFs = cacheFs,
     frameIndex = 1,
     measureDisplay = assert(measureDisplay, "the production choice resolves through measured display facts"),
-    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   }
   local host = StarterChoiceState.new(opts)
   speciesKeys = speciesKeys or { "CHIKORITA", "CYNDAQUIL", "TOTODILE" }

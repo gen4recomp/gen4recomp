@@ -2,8 +2,8 @@
 -- matched plans over the canonical 256x192 card surface. Dual takes the
 -- auxiliary fullscreen and nativeLike the single-surface fullscreen, both
 -- with the default four-edge crop budget guarded by the protected text
--- rect; wide and tall frame the card in a shared draggable window with
--- zero crop and a native-like fallback below 1x. Input forwards the
+-- rect; wide and tall center the card in a static framed box with zero
+-- crop and a native-like fallback below 1x. Input forwards the
 -- existing semantic events and discards pointer content, so outside clicks
 -- never close the card.
 
@@ -104,7 +104,6 @@ end
 
 function T.dual_display_takes_the_auxiliary_fullscreen()
   local plan = TrainerCardInterface.dualDisplay(contextFor(translatedPair(), "dualDisplay"), {})
-  Assert.isNil(plan.window, "the auxiliary card needs no window")
   Assert.equal(#plan.panes, 1, "the auxiliary card shows one content pane")
   local frame = assert(plan.panes[1].placement, "the card pane carries its placement").frame
   Assert.isTrue(
@@ -114,7 +113,7 @@ function T.dual_display_takes_the_auxiliary_fullscreen()
 end
 
 local function assertNoCrop(placement, what)
-  -- The crop budget is an optional placement field: window bodies carry
+  -- The crop budget is an optional placement field: framed bodies carry
   -- no crop record, which is the zero-crop case.
   Assert.deepEqual(
     placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
@@ -123,19 +122,24 @@ local function assertNoCrop(placement, what)
   )
 end
 
-function T.wide_and_tall_frame_a_zero_crop_window()
+function T.wide_and_tall_center_a_static_framed_box()
   local wide = TrainerCardInterface.wide(contextFor(singleDisplay(1280, 720), "wide"), {})
-  local window = assert(wide.window, "the wide card owns its draggable window")
-  Assert.isTrue(window.outer ~= nil and window.body ~= nil, "the window carries its outer and body placements")
-  assertNoCrop(assert(wide.panes[1].placement, "the card pane carries its placement"), "windows never crop")
+  local wideFrame = assert(wide.frames, "the wide card owns its static frame")[1]
+  Assert.notNil(wideFrame, "one outer frame decorates the wide pane")
+  Assert.deepEqual(
+    wideFrame.contentBox,
+    { x = 8, y = 24, width = 256, height = 192 },
+    "the wide content box sits inside the rotated insets"
+  )
+  assertNoCrop(assert(wide.panes[1].placement, "the card pane carries its placement"), "static frames never crop")
   local tall = TrainerCardInterface.tall(contextFor(singleDisplay(600, 1000), "tall"), {})
-  Assert.isTrue(tall.window ~= nil, "the tall card owns its draggable window")
-  assertNoCrop(assert(tall.panes[1].placement, "the tall pane carries its placement"), "tall windows never crop")
+  Assert.equal(#tall.frames, 1, "the tall card owns its static frame")
+  assertNoCrop(assert(tall.panes[1].placement, "the tall pane carries its placement"), "tall frames never crop")
 end
 
-function T.small_windowed_hosts_fall_back_to_native_like()
+function T.small_framed_hosts_fall_back_to_native_like()
   local plan = TrainerCardInterface.wide(contextFor(singleDisplay(200, 150), "wide"), {})
-  Assert.isNil(plan.window, "the fallback interface is a fullscreen, not a window")
+  Assert.deepEqual(plan.frames, {}, "the fallback interface is a fullscreen, not a frame")
   Assert.equal(plan.inputKey, "trainer-card", "the fallback keeps the card input geometry")
   Assert.equal(#plan.panes, 1, "the fallback shows its single content pane")
 end
@@ -205,8 +209,8 @@ function T.case_override_replaces_one_complete_interface()
     mapInput = function(_, _, _)
       return nil
     end,
-    coverage = {},
-    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    frames = {},
+    fadeCoverage = {},
   }
   local function customWide(_, _)
     return wide
@@ -224,7 +228,7 @@ function T.unknown_override_cases_and_non_functions_fail()
     TrainerCardInterface.withOverrides({ sideways = function(_, _) end })
   end)
   Assert.throws(function()
-    TrainerCardInterface.withOverrides({ wide = "windowed" })
+    TrainerCardInterface.withOverrides({ wide = "framed" })
   end)
 end
 

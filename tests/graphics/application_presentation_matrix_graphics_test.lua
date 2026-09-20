@@ -85,7 +85,6 @@ local function contextFor(measured, configuration, interfaceTable)
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaceTable.nativeLike,
   }
 end
@@ -299,7 +298,7 @@ function T.callback_failure_restores_scope_and_propagates(scope)
 end
 
 -- Every migrated interface resolves its real plans across the matrix:
--- canonical single panes fullscreen or auxiliary, draggable windows on
+-- canonical single panes fullscreen or auxiliary, static frames on
 -- wide/tall, matched input keys, and no window on fullscreen cases.
 function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local _ = scope
@@ -310,8 +309,7 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local singleMeasured = singleDisplay(640, 480)
   local menuPlan = startMenu.nativeLike(contextFor(singleMeasured, "nativeLike", startMenu), {})
   Assert.equal(#menuPlan.panes, 1, "native-like start menu shows its single body")
-  Assert.isNil(menuPlan.window, "native-like carries no window")
-  Assert.isTrue(#menuPlan.coverage >= 1, "fullscreen owns its target region")
+  Assert.isTrue(#menuPlan.fadeCoverage >= 1, "fullscreen names its transition region")
 
   local partyPlan = party.nativeLike(contextFor(singleMeasured, "nativeLike", party), partyView)
   Assert.equal(#partyPlan.panes, 1, "native-like party shows its single compact pane")
@@ -322,17 +320,18 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
 
   local wideMeasured = singleDisplay(1280, 720)
   local wideMenu = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {})
-  Assert.notNil(wideMenu.window, "wide frames the start menu in a window")
-  Assert.equal(#(wideMenu.coverage or {}), 0, "a window owns no fullscreen coverage")
+  Assert.equal(#wideMenu.frames, 1, "wide frames the start menu in a static box")
+  Assert.equal(#(wideMenu.fadeCoverage or {}), 0, "a static frame owns no transition region")
   local wideParty = party.wide(contextFor(wideMeasured, "wide", party), partyView)
-  Assert.notNil(wideParty.window, "wide frames the party in a window")
+  Assert.equal(#wideParty.frames, 1, "wide frames the party in a static box")
   local wideCard = card.wide(contextFor(wideMeasured, "wide", card), {})
-  Assert.notNil(wideCard.window, "wide frames the card in a window")
+  Assert.equal(#wideCard.frames, 1, "wide frames the card in a static box")
 
   local tallMeasured = singleDisplay(390, 844)
-  Assert.notNil(
-    startMenu.tall(contextFor(tallMeasured, "tall", startMenu), {}).window,
-    "tall frames the start menu in a window"
+  Assert.equal(
+    #startMenu.tall(contextFor(tallMeasured, "tall", startMenu), {}).frames,
+    1,
+    "tall frames the start menu in a static box"
   )
 
   local dualMeasured = translatedPair()
@@ -346,10 +345,10 @@ function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   )
 end
 
--- The Bag pairs hero and interaction at one shared integer scale with the
--- locked gap; native-like collapses to interaction with its description
--- fallback content.
-function T.bag_pairs_share_scale_and_gap(scope)
+-- The Bag pairs hero and interaction at one shared integer scale with no
+-- synthetic gap and one frame around the common envelope; native-like
+-- collapses to interaction with its description fallback content.
+function T.bag_pairs_share_scale_with_no_gap(scope)
   local _ = scope
   local tabs = {}
   for index = 0, 7 do
@@ -388,6 +387,13 @@ function T.bag_pairs_share_scale_and_gap(scope)
     wide.panes[2].placement.pixelScale,
     "paired bag panes must share one integer scale"
   )
+  Assert.near(
+    wide.panes[1].placement.frame.x + wide.panes[1].placement.frame.width,
+    wide.panes[2].placement.frame.x,
+    1e-6,
+    "paired bag panes touch with no gap"
+  )
+  Assert.equal(#wide.frames, 1, "the pair carries one frame around its envelope")
   local native = bag.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", bag), {})
   Assert.equal(#native.panes, 1, "native-like bag shows only interaction")
   Assert.notNil(native.content.descriptionFallback, "lower-only bag must carry its description fallback")

@@ -24,7 +24,6 @@ StartMenuState.__index = StartMenuState
 ---@field rememberedActionId string? selection remembered across a child-application round trip
 ---@field effect (fun(sequence: string))? source UI sound effect boundary
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
----@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts StartMenuState.Options
@@ -32,7 +31,6 @@ StartMenuState.__index = StartMenuState
 function StartMenuState.new(opts)
   assert(type(opts) == "table", "the start menu wrapper requires options")
   assert(type(opts.measureDisplay) == "function", "the start menu wrapper requires the display facts")
-  assert(type(opts.windowState) == "table", "the start menu wrapper borrows its window memory")
   local controller = StartMenuController.new({
     entries = assert(opts.entries, "the start menu wrapper requires its entries"),
     interactive = assert(opts.interactive, "the start menu wrapper requires the interactive record"),
@@ -40,7 +38,7 @@ function StartMenuState.new(opts)
     effect = opts.effect,
   })
   local built, sessionOrError = pcall(function()
-    return ApplicationPresentation.new(StartMenuInterface.withOverrides(opts.overrides), opts.windowState)
+    return ApplicationPresentation.new(StartMenuInterface.withOverrides(opts.overrides))
   end)
   if not built then
     controller:dispose()

@@ -223,4 +223,53 @@ function T.resolved_substitutions_contribute_replacement_glyph_widths()
   Assert.isTrue(codes[360], "the resolved multibyte glyph rides in the laid-out line")
 end
 
+-- Static application boxes decorate content with the user frame rotated so
+-- the thick source-right edge sits on top: 8 left, 24 top, 8 right,
+-- 16 bottom in logical pixels.
+function T.application_frame_insets_follow_rotated_thickness()
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  Assert.deepEqual(insets, { left = 8, top = 24, right = 8, bottom = 16 }, "rotated frame thickness")
+  Assert.isTrue(insets ~= FieldDialogueTheme.applicationFrameInsets(), "insets are fresh records")
+end
+
+-- Rotated tile targets derive from the audited standard tilemap: source
+-- right-side tiles land on the target top, source left on target bottom,
+-- source top on target left, source bottom on target right.
+function T.application_frame_tiles_remap_standard_sides_onto_rotated_targets()
+  local box = { x = 8, y = 24, width = 256, height = 192 }
+  local placements = FieldDialogueTheme.applicationFrameTilePlacements(box)
+  Assert.isTrue(#placements > 0, "the rotated frame places tiles")
+  local standardByTile = {}
+  for _, entry in ipairs(FieldDialogueTheme.frameTilePlacements({ x = 16, y = 8, width = 192, height = 256 })) do
+    standardByTile[entry.tile] = entry
+  end
+  local seen = {}
+  for _, entry in ipairs(placements) do
+    Assert.isTrue(standardByTile[entry.tile] ~= nil, "every rotated tile reuses a standard tile identity")
+    Assert.isTrue(type(entry.x) == "number" and type(entry.y) == "number", "tiles carry target positions")
+    Assert.isTrue((entry.x - 0) % 8 == 0 and (entry.y - 0) % 8 == 0, "tiles sit on 8px cells")
+    seen[entry.tile] = true
+  end
+  -- The thick-edge families must survive the rotation: right-edge tiles
+  -- (4/5/10/11/16/17 in the standard map) appear on the 24px target top,
+  -- and top-edge tiles (0/1/3/4) appear on the 8px target left.
+  local topIds = {}
+  local leftIds = {}
+  for _, entry in ipairs(placements) do
+    if entry.y < box.y then
+      topIds[entry.tile] = true
+    end
+    if entry.x < box.x then
+      leftIds[entry.tile] = true
+    end
+  end
+  for _, tile in ipairs({ 4, 5, 10, 11, 16, 17 }) do
+    Assert.isTrue(topIds[tile] == true, "source right tile " .. tile .. " lands on the target top")
+  end
+  for _, tile in ipairs({ 0, 1, 3, 4 }) do
+    Assert.isTrue(leftIds[tile] == true, "source top tile " .. tile .. " lands on the target left")
+  end
+  Assert.isTrue(seen[4] == true and seen[11] == true, "both thick-edge families are represented")
+end
+
 return { tests = T }

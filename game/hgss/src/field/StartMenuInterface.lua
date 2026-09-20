@@ -1,7 +1,7 @@
 -- The current Start Menu's four function references with matching render and
 -- input callbacks. Fullscreen owns the auxiliary region on a genuine pair
--- and the single surface otherwise; wide and tall frame the canonical
--- 256x192 body in a draggable window with zero crop (the source
+-- and the single surface otherwise; wide and tall center the canonical
+-- 256x192 body in a static framed box with zero crop (the source
 -- header/cancel target reaches the edge). The renderer is the existing
 -- generated surface invoked through the resolved placement; input passes canonical body
 -- coordinates to the existing controller and ignores matte and scroll. A
@@ -17,7 +17,6 @@ local StartMenuInterface = {}
 local NATIVE = { id = "content", width = 256, height = 192 }
 local INPUT_KEY = "start-menu"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local MATTE = { r = 0, g = 0, b = 0, a = 1 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -55,12 +54,12 @@ end
 local function inactivePlan()
   return {
     panes = {},
+    frames = {},
+    fadeCoverage = {},
     content = {},
     inputKey = "start-menu-inactive",
     render = noopRender,
     mapInput = noopMap,
-    coverage = {},
-    backgroundColor = MATTE,
   }
 end
 
@@ -75,13 +74,23 @@ local function completeContext(context)
     configuration = context.configuration,
     primary = context.primary or selection.primary,
     secondary = context.secondary or selection.secondary,
-    windowPosition = context.windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = context.nativeLikeInterface or StartMenuInterface.fullscreen,
   }
 end
 
+---@param context ApplicationLayout.Context
+---@return LayoutGeometry.Rect? the fullscreen target bounds
+local function fullscreenTarget(context)
+  local target = context.secondary or context.primary
+  if target == nil then
+    return nil
+  end
+  return target.usableBounds
+end
+
 -- Fullscreen Start Menu for the dualDisplay and nativeLike cases: one
--- canonical interactive body pane over the owned target region.
+-- canonical interactive body pane over the owned target region, framed only
+-- when the pane leaves target background visible.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
@@ -93,27 +102,35 @@ function StartMenuInterface.fullscreen(context, view)
     return inactivePlan()
   end
   local _ = view
+  local frames = {}
+  local target = fullscreenTarget(complete)
+  if target ~= nil then
+    local frame = ApplicationLayout.frameAround(target, placement)
+    if frame ~= nil then
+      frames = { frame }
+    end
+  end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = frames,
+    fadeCoverage = geometry.fadeCoverage,
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,
     mapInput = mapStartInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
   }
 end
 
--- Windowed Start Menu for the wide and tall cases: the canonical body in a
--- shared draggable window. A window that cannot fit 1x falls back to the
--- effective nativeLike case with the same context and view; the
+-- Static framed Start Menu for the wide and tall cases: the canonical body
+-- centered with its complete outer frame. A frame that cannot fit 1x falls
+-- back to the effective nativeLike case with the same context and view; the
 -- configuration keeps describing the actual measured display.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
-function StartMenuInterface.windowed(context, view)
+function StartMenuInterface.framed(context, view)
   local complete = completeContext(context)
-  local geometry = ApplicationLayout.windowed(complete, NATIVE, {})
+  local geometry = ApplicationLayout.framed(complete, NATIVE, {})
   if geometry == nil then
     return complete.nativeLikeInterface(complete, view)
   end
@@ -124,25 +141,24 @@ function StartMenuInterface.windowed(context, view)
   local _ = view
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = geometry.frames or {},
+    fadeCoverage = geometry.fadeCoverage,
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,
     mapInput = mapStartInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
-    window = geometry.window,
   }
 end
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 
 -- The four resolver functions behind one case per display configuration:
--- dual and native-like own their fullscreen region, wide and tall frame
--- the canonical body in a draggable window.
+-- dual and native-like own their fullscreen region, wide and tall center
+-- the canonical body in a static frame.
 StartMenuInterface.dualDisplay = StartMenuInterface.fullscreen
 StartMenuInterface.nativeLike = StartMenuInterface.fullscreen
-StartMenuInterface.wide = StartMenuInterface.windowed
-StartMenuInterface.tall = StartMenuInterface.windowed
+StartMenuInterface.wide = StartMenuInterface.framed
+StartMenuInterface.tall = StartMenuInterface.framed
 
 -- Merges an optional per-case override into the complete default set:
 -- only the four function fields merge, unknown keys and non-functions
@@ -153,8 +169,8 @@ function StartMenuInterface.withOverrides(overrides)
   local set = {
     dualDisplay = StartMenuInterface.fullscreen,
     nativeLike = StartMenuInterface.fullscreen,
-    wide = StartMenuInterface.windowed,
-    tall = StartMenuInterface.windowed,
+    wide = StartMenuInterface.framed,
+    tall = StartMenuInterface.framed,
   }
   if overrides ~= nil then
     assert(type(overrides) == "table", "the start menu overrides must be a record")

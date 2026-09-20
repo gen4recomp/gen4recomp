@@ -1,10 +1,11 @@
 -- Parent-owned placement for the reusable Naming Screen child. One
 -- canonical 256x192 crop-0 pane on the auxiliary surface for genuine pairs,
--- fullscreen for native-like, and a shared draggable window for wide/tall.
--- The child layout always derives from the full canonical logical region,
--- never the visible clip; the child itself carries no placement or scale.
--- Input maps canonical pointer hits to the existing controller entrypoints;
--- activation stays on downs, cancellation stays mute.
+-- fullscreen for native-like, and a static centered pane for wide/tall.
+-- Naming never carries outer decoration. The child layout always derives
+-- from the full canonical logical region, never the visible clip; the child
+-- itself carries no placement or scale. Input maps canonical pointer hits
+-- to the existing controller entrypoints; activation stays on downs,
+-- cancellation stays mute.
 
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
@@ -17,7 +18,6 @@ local NATIVE = { id = "content", width = 256, height = 192 }
 local CANONICAL_VIEWPORT = { x = 0, y = 0, width = 256, height = 192 }
 local INPUT_KEY = "naming"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local MATTE = { r = 0, g = 0, b = 0, a = 1 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the naming semantic snapshot
@@ -77,12 +77,12 @@ end
 local function inactivePlan()
   return {
     panes = {},
+    frames = {},
+    fadeCoverage = {},
     content = {},
     inputKey = "naming-inactive",
     render = noopRender,
     mapInput = noopMap,
-    coverage = {},
-    backgroundColor = MATTE,
   }
 end
 
@@ -97,14 +97,13 @@ local function completeContext(context)
     configuration = context.configuration,
     primary = context.primary or selection.primary,
     secondary = context.secondary or selection.secondary,
-    windowPosition = context.windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = context.nativeLikeInterface or NamingInterface.fullscreen,
   }
 end
 
 -- Fullscreen naming for the dualDisplay and nativeLike cases: one
--- canonical child pane over the owned target region. Auxiliary on a
--- genuine pair, the single surface otherwise.
+-- canonical child pane over the owned target region, never decorated.
+-- Auxiliary on a genuine pair, the single surface otherwise.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
@@ -118,25 +117,25 @@ function NamingInterface.fullscreen(context, view)
   local _ = view
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = {},
+    fadeCoverage = geometry.fadeCoverage,
     content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT) },
     inputKey = INPUT_KEY,
     render = renderNaming,
     mapInput = mapNamingInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
   }
 end
 
--- Windowed naming for the wide and tall cases: the canonical child in a
--- shared draggable window. A window that cannot fit 1x falls back to the
--- effective nativeLike case with the same context and view; the
--- configuration keeps describing the actual measured display.
+-- Static centered naming for the wide and tall cases: the canonical child
+-- at integer scale with no outer decoration. A pane that cannot fit 1x
+-- falls back to the effective nativeLike case with the same context and
+-- view; the configuration keeps describing the actual measured display.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
-function NamingInterface.windowed(context, view)
+function NamingInterface.centered(context, view)
   local complete = completeContext(context)
-  local geometry = ApplicationLayout.windowed(complete, NATIVE, {})
+  local geometry = ApplicationLayout.centered(complete, NATIVE, {})
   if geometry == nil then
     return complete.nativeLikeInterface(complete, view)
   end
@@ -147,25 +146,24 @@ function NamingInterface.windowed(context, view)
   local _ = view
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
+    frames = {},
+    fadeCoverage = geometry.fadeCoverage,
     content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT) },
     inputKey = INPUT_KEY,
     render = renderNaming,
     mapInput = mapNamingInput,
-    coverage = geometry.coverage,
-    backgroundColor = MATTE,
-    window = geometry.window,
   }
 end
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 
 -- The four resolver functions behind one case per display configuration:
--- dual and native-like own their fullscreen region, wide and tall frame
--- the canonical child in a draggable window.
+-- dual and native-like own their fullscreen region, wide and tall center
+-- the canonical child with no decoration.
 NamingInterface.dualDisplay = NamingInterface.fullscreen
 NamingInterface.nativeLike = NamingInterface.fullscreen
-NamingInterface.wide = NamingInterface.windowed
-NamingInterface.tall = NamingInterface.windowed
+NamingInterface.wide = NamingInterface.centered
+NamingInterface.tall = NamingInterface.centered
 
 -- Merges an optional per-case override into the complete default set:
 -- only the four function fields merge, unknown keys and non-functions
@@ -176,8 +174,8 @@ function NamingInterface.withOverrides(overrides)
   local set = {
     dualDisplay = NamingInterface.fullscreen,
     nativeLike = NamingInterface.fullscreen,
-    wide = NamingInterface.windowed,
-    tall = NamingInterface.windowed,
+    wide = NamingInterface.centered,
+    tall = NamingInterface.centered,
   }
   if overrides ~= nil then
     assert(type(overrides) == "table", "the naming overrides must be a record")

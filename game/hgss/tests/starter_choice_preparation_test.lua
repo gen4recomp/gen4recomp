@@ -331,10 +331,6 @@ local function headlessBox()
   }
 end
 
-local function headlessMemory()
-  return { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
-end
-
 local function openHeadlessChoice()
   local StarterChoiceState = requireModule(STATE_MODULE, "the starter state owns the modal choice surface")
   local catalog = CatalogFixture.makeCatalog()
@@ -361,7 +357,6 @@ local function openHeadlessChoice()
     cacheFs = readyHeadlessCache(),
     frameIndex = 3,
     measureDisplay = headlessBox,
-    windowState = headlessMemory(),
   })
   return host, service
 end

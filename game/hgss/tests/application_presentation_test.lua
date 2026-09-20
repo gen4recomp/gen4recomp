@@ -3,7 +3,7 @@
 -- something stale, and a failed candidate never replaces the published
 -- plan. Cancellation reaches the gameplay controller as an ordered
 -- pointer_cancel event the controller must absorb without changing
--- selection; the session owns capture, header drags, and focus loss.
+-- selection; the session owns content capture and focus loss.
 
 local Assert = require("tests.support.Assert")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -109,8 +109,8 @@ local function stubInterfaces()
       inputKey = "stub",
       render = render,
       mapInput = map,
-      coverage = {},
-      backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+      frames = {},
+      fadeCoverage = {},
     }
   end
   return { dualDisplay = full, nativeLike = full, wide = full, tall = full }
@@ -118,7 +118,7 @@ end
 
 local function stubSession()
   local sessionModule = sharedSession()
-  return sessionModule.new(stubInterfaces(), { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } })
+  return sessionModule.new(stubInterfaces())
 end
 
 function T.tests.equivalent_fresh_resolutions_preserve_capture()
@@ -159,10 +159,7 @@ function T.tests.unpresentable_space_publishes_an_inactive_plan()
   local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
   local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
   local sessionModule = sharedSession()
-  local session = sessionModule.new(
-    StartMenuInterface.withOverrides(nil),
-    { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
-  )
+  local session = sessionModule.new(StartMenuInterface.withOverrides(nil))
   local measurement = {
     width = 100,
     height = 100,
@@ -188,156 +185,263 @@ function T.tests.unpresentable_space_publishes_an_inactive_plan()
   Assert.equal(semantic[1].type, "cancel")
 end
 
-local function windowedInterfaces(spy, spoil)
+-- Static content fixtures: one canonical interactive pane with no window
+-- memory, title strip, or grab geometry.
+local function staticInterfaces(spy, spoil)
   local render = function(_, _, _) end
   local map = function(event, _, _)
     spy.calls[#spy.calls + 1] = event
     return event
   end
-  local function resolver(context, _)
-    local position = context.windowPosition
-    local originX = 100 + position.x * 200
-    local originY = 100 + position.y * 100
-    local outer = {
-      frame = { x = originX, y = originY, width = 516, height = 412 },
-      origin = { x = originX, y = originY },
-      scale = 2,
-      logicalWidth = 258,
-      logicalHeight = 206,
-      clipRect = { x = originX, y = originY, width = 516, height = 412 },
-    }
+  local function resolver(_, _)
     local body = {
-      frame = { x = originX + 2, y = originY + 26, width = 512, height = 384 },
-      origin = { x = originX + 2, y = originY + 26 },
+      frame = { x = 100, y = 100, width = 512, height = 384 },
+      origin = { x = 100, y = 100 },
       scale = 2,
       logicalWidth = 256,
       logicalHeight = 192,
-      clipRect = { x = originX + 2, y = originY + 26, width = 512, height = 384 },
+      clipRect = { x = 100, y = 100, width = 512, height = 384 },
     }
+    local frames = {}
+    local fadeCoverage = {}
     if spoil.mode == "origin" then
-      outer.origin = { x = 0 / 0, y = originY }
+      body.origin = { x = 0 / 0, y = 100 }
     elseif spoil.mode == "clip" then
-      outer.clipRect = { x = originX, y = originY, width = -4, height = 10 }
+      body.clipRect = { x = 100, y = 100, width = -4, height = 10 }
     elseif spoil.mode == "logical" then
-      outer.logicalWidth = 0
+      body.logicalWidth = 0
     elseif spoil.mode == "pane" then
       body.logicalHeight = 0 / 0
-    elseif spoil.mode == "window" then
-      outer.scale = 0
+    elseif spoil.mode == "frame" then
+      frames = {
+        {
+          placement = {
+            frame = { x = 0, y = 0, width = -4, height = 10 },
+            origin = { x = 0, y = 0 },
+            scale = 1,
+            logicalWidth = 1,
+            logicalHeight = 1,
+            clipRect = { x = 0, y = 0, width = -4, height = 10 },
+          },
+          contentBox = { x = 0, y = 0, width = 1, height = 1 },
+        },
+      }
+    elseif spoil.mode == "fade" then
+      fadeCoverage = { { x = 0, y = 0, width = -4, height = 10 } }
     end
     return {
       panes = { { id = "content", placement = body, interactive = true } },
       content = {},
-      inputKey = "windowed-stub",
+      inputKey = "static-stub",
       render = render,
       mapInput = map,
-      coverage = {},
-      backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
-      window = {
-        outer = outer,
-        body = body,
-        grabRect = { x = originX + 2, y = originY + 2, width = 512, height = 24 },
-      },
+      frames = frames,
+      fadeCoverage = fadeCoverage,
     }
   end
   return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
 end
 
-local function windowedSession(spy, spoil, windowState)
+local function staticSession(spy, spoil)
   local sessionModule = sharedSession()
-  return sessionModule.new(windowedInterfaces(spy, spoil), windowState)
+  return sessionModule.new(staticInterfaces(spy, spoil))
 end
 
-local function freshWindowState()
-  return { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
-end
-
-local function grabCenter(plan)
-  local grab = assert(plan.window, "the stub publishes a window").grabRect
-  return grab.x + grab.width / 2, grab.y + grab.height / 2
-end
-
-function T.tests.header_drag_survives_consecutive_self_reflows()
+function T.tests.content_capture_survives_consecutive_equivalent_reflows()
   local spy = { calls = {} }
   local spoil = {}
-  local windowState = freshWindowState()
-  local session = windowedSession(spy, spoil, windowState)
+  local session = staticSession(spy, spoil)
   local view = {}
   local measurement = stubMeasurement(1280, 720)
-  local plan = session:resolve(measurement, view)
-  local startX, startY = grabCenter(plan)
-  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = startX, y = startY } }, view)
-  Assert.equal(#spy.calls, 0, "a header press never reaches the leaf mapper")
-  local firstX = startX + 76
-  session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = firstX, y = startY } }, view)
-  Assert.equal(#spy.calls, 0, "a header move never reaches the leaf mapper")
-  local afterFirst = windowState.wide.x
-  Assert.isTrue(afterFirst > 0.5, "the first move contributes to the drag")
   session:resolve(measurement, view)
-  local secondX = firstX + 76
-  local moved = session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = secondX, y = startY } }, view)
-  Assert.deepEqual(moved, {}, "the second move stays inside the retained header capture")
-  Assert.isTrue(windowState.wide.x > afterFirst, "the second move contributes to the same gesture")
-  Assert.equal(#spy.calls, 0, "neither move reaches the leaf mapper")
-  local released = session:mapInput({ { type = "pointer_up", pointerId = "mouse:1", x = secondX, y = startY } }, view)
-  Assert.deepEqual(released, {}, "a header release ends capture without leaf input")
-  local fresh = session:resolve(measurement, view)
-  local body = assert(fresh.window, "the stub still publishes a window").body.frame
-  local mapped =
-    session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = body.x + 256, y = body.y + 192 } }, view)
-  Assert.equal(#mapped, 1, "a fresh press works after the drag ends")
-  Assert.equal(#spy.calls, 1, "content input still reaches the leaf mapper")
+  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = 200, y = 200 } }, view)
+  Assert.equal(#spy.calls, 1, "a content press reaches the leaf mapper")
+  session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = 276, y = 200 } }, view)
+  Assert.equal(#spy.calls, 2, "a content move reaches the leaf mapper")
+  session:resolve(measurement, view)
+  local moved = session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = 352, y = 200 } }, view)
+  Assert.equal(#spy.calls, 3, "the move stays inside the retained content capture")
+  Assert.equal(moved[1].type, "pointer_move", "the second move still maps")
+  local released = session:mapInput({ { type = "pointer_up", pointerId = "mouse:1", x = 352, y = 200 } }, view)
+  Assert.equal(released[1].type, "pointer_up", "a content release ends capture with leaf input")
+  Assert.equal(#spy.calls, 4, "content input still reaches the leaf mapper")
 end
 
-function T.tests.external_reflow_cancels_an_active_header_drag()
+function T.tests.external_reflow_cancels_an_active_content_press()
   local spy = { calls = {} }
   local spoil = {}
-  local windowState = freshWindowState()
-  local session = windowedSession(spy, spoil, windowState)
+  local session = staticSession(spy, spoil)
   local view = {}
-  local plan = session:resolve(stubMeasurement(1280, 720), view)
-  local startX, startY = grabCenter(plan)
-  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = startX, y = startY } }, view)
+  session:resolve(stubMeasurement(1280, 720), view)
+  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = 200, y = 200 } }, view)
+  Assert.equal(#spy.calls, 1, "a content press reaches the leaf mapper")
   -- No move yet, so the re-resolution is geometrically identical: only the
   -- changed measurement signature may terminate the held press.
-  local held = windowState.wide.x
   session:resolve(stubMeasurement(1920, 1080), view)
-  local stale =
-    session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = startX + 152, y = startY } }, view)
-  Assert.equal(windowState.wide.x, held, "a stale move cannot continue the old drag")
+  local cancelled = session:mapInput({}, view)
+  Assert.equal(#cancelled, 1, "the reflow queues cancellation for the held press")
+  Assert.equal(cancelled[1].type, "pointer_cancel", "the queued event cancels the held press")
+  local stale = session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = 352, y = 200 } }, view)
+  Assert.deepEqual(stale, {}, "the stale move maps to nothing")
   Assert.deepEqual(
-    session:mapInput({ { type = "pointer_up", pointerId = "mouse:1", x = startX + 152, y = startY } }, view),
+    session:mapInput({ { type = "pointer_up", pointerId = "mouse:1", x = 352, y = 200 } }, view),
     {},
     "a stale release activates nothing"
   )
-  Assert.deepEqual(stale, {}, "the stale move maps to nothing")
-  local resettled = session:resolve(stubMeasurement(1920, 1080), view)
-  local freshX, freshY = grabCenter(resettled)
-  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = freshX, y = freshY } }, view)
-  session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = freshX + 76, y = freshY } }, view)
-  Assert.isTrue(windowState.wide.x > held, "a fresh press starts a new drag")
-  Assert.equal(#spy.calls, 0, "header input never reaches the leaf mapper")
+  session:resolve(stubMeasurement(1920, 1080), view)
+  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = 200, y = 200 } }, view)
+  session:mapInput({ { type = "pointer_move", pointerId = "mouse:1", x = 276, y = 200 } }, view)
+  Assert.isTrue(#spy.calls >= 3, "a fresh press starts a new content gesture")
 end
 
-function T.tests.a_failed_candidate_keeps_the_previous_plan_and_window_memory()
+function T.tests.a_failed_candidate_keeps_the_previous_plan()
   local spy = { calls = {} }
   local spoil = {}
-  local windowState = freshWindowState()
-  local session = windowedSession(spy, spoil, windowState)
+  local session = staticSession(spy, spoil)
   local view = {}
   local measurement = stubMeasurement(1280, 720)
   local plan = session:resolve(measurement, view)
-  local beforeX, beforeY = windowState.wide.x, windowState.wide.y
-  for _, mode in ipairs({ "origin", "clip", "logical", "pane", "window" }) do
+  for _, mode in ipairs({ "origin", "clip", "logical", "pane", "frame", "fade" }) do
     spoil.mode = mode
     Assert.throws(function()
       session:resolve(measurement, view)
     end, "a malformed " .. mode .. " placement fails before publication")
     Assert.isTrue(session:plan() == plan, "the failed candidate never replaces the published plan")
   end
-  Assert.deepEqual(windowState.wide, { x = beforeX, y = beforeY }, "a failed resolution never touches window memory")
   spoil.mode = nil
   Assert.notNil(session:resolve(measurement, view), "the session still resolves after rejected candidates")
+end
+
+local function staticStubInterfaces()
+  local render = function(_, _, _) end
+  local map = function(event, _, _)
+    return event
+  end
+  local full = function(_, _)
+    return {
+      panes = {
+        {
+          id = "content",
+          placement = {
+            frame = { x = 0, y = 0, width = 256, height = 192 },
+            origin = { x = 0, y = 0 },
+            scale = 1,
+            logicalWidth = 256,
+            logicalHeight = 192,
+            clipRect = { x = 0, y = 0, width = 256, height = 192 },
+          },
+          interactive = true,
+        },
+      },
+      frames = {},
+      fadeCoverage = {},
+      content = {},
+      inputKey = "static-stub",
+      render = render,
+      mapInput = map,
+    }
+  end
+  return { dualDisplay = full, nativeLike = full, wide = full, tall = full }
+end
+
+-- Static sessions borrow only the interface set: no caller-owned position
+-- memory exists, and every plan carries frame plus fade geometry with no
+-- window or settled background contract.
+function T.tests.static_session_publishes_frame_and_fade_geometry_without_window_memory()
+  local sessionModule = sharedSession()
+  local session = sessionModule.new(staticStubInterfaces())
+  local plan = session:resolve(stubMeasurement(1280, 720), {})
+  Assert.isTrue(type(plan.frames) == "table", "the plan carries its frame list")
+  Assert.isTrue(type(plan.fadeCoverage) == "table", "the plan carries its fade coverage")
+  local untyped = plan --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.window, "static plans carry no window")
+  Assert.isNil(untyped.backgroundColor, "static plans carry no settled background color")
+  Assert.isNil(untyped.coverage, "the renamed fade coverage leaves no legacy coverage field")
+  local again = session:resolve(stubMeasurement(1280, 720), {})
+  Assert.deepEqual(again.panes[1].placement.frame, plan.panes[1].placement.frame, "repeated resolves stay static")
+end
+
+-- Settled drawing only invokes the leaf render callback: fade regions
+-- never paint, and no chrome fills the host.
+function T.tests.settled_draw_invokes_leaf_render_without_painting_fade_regions()
+  local sessionModule = sharedSession()
+  local session = sessionModule.new(staticStubInterfaces())
+  local sentinelCoverage = { x = 0, y = 0, width = 1280, height = 720 }
+  local rendered = 0
+  local plan = session:resolve(stubMeasurement(256, 192), {})
+  plan.fadeCoverage = { sentinelCoverage }
+  plan.render = function()
+    rendered = rendered + 1
+  end
+  local fills = 0
+  local stubGraphics = {
+    push = function(_) end,
+    pop = function() end,
+    setColor = function(_) end,
+    rectangle = function(_)
+      fills = fills + 1
+    end,
+  }
+  sessionModule.draw(stubGraphics, {}, {}, plan)
+  Assert.equal(rendered, 1, "settled draw invokes the leaf render exactly once")
+  Assert.equal(fills, 0, "settled draw paints no fade region or chrome")
+end
+
+-- Malformed frame geometry fails before publication and keeps the last
+-- known-good plan.
+function T.tests.malformed_frame_geometry_never_replaces_the_published_plan()
+  local sessionModule = sharedSession()
+  local good = staticStubInterfaces()
+  local session = sessionModule.new(good)
+  local view = {}
+  local plan = session:resolve(stubMeasurement(256, 192), view)
+  local spoilFrame = { armed = false }
+  local function conditional(_, _)
+    local frames = {}
+    if spoilFrame.armed then
+      frames = {
+        {
+          placement = { frame = { x = 0, y = 0, width = -4, height = 10 } },
+          contentBox = { x = 0, y = 0, width = 1, height = 1 },
+        },
+      }
+    end
+    return {
+      panes = {
+        {
+          id = "content",
+          placement = {
+            frame = { x = 0, y = 0, width = 256, height = 192 },
+            origin = { x = 0, y = 0 },
+            scale = 1,
+            logicalWidth = 256,
+            logicalHeight = 192,
+            clipRect = { x = 0, y = 0, width = 256, height = 192 },
+          },
+          interactive = true,
+        },
+      },
+      frames = frames,
+      fadeCoverage = {},
+      content = {},
+      inputKey = "static-stub",
+      render = function(_, _, _) end,
+      mapInput = function(event, _, _)
+        return event
+      end,
+    }
+  end
+  local conditionalInterfaces =
+    { dualDisplay = conditional, nativeLike = conditional, wide = conditional, tall = conditional }
+  local failing = sessionModule.new(conditionalInterfaces)
+  failing:resolve(stubMeasurement(256, 192), view)
+  local published = failing:plan()
+  spoilFrame.armed = true
+  Assert.throws(function()
+    failing:resolve(stubMeasurement(640, 480), view)
+  end, "a malformed frame placement fails before publication")
+  Assert.isTrue(failing:plan() == published, "the failed candidate never replaces the published plan")
+  Assert.isTrue(session:plan() == plan, "the valid session keeps its published plan")
 end
 
 return T

@@ -26,7 +26,6 @@ TrainerCardScreenState.__index = TrainerCardScreenState
 ---@field playTimeSeconds number the current play time
 ---@field effect fun(sequence: string)? source UI sound effect boundary
 ---@field measureDisplay fun(): DisplayMeasurement the current display facts
----@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
 ---@field overrides table<string, unknown>? per-case function overrides for this application
 
 ---@param opts TrainerCardScreenState.Options
@@ -35,7 +34,6 @@ function TrainerCardScreenState.new(opts)
   assert(type(opts) == "table", "the trainer card requires options")
   assert(type(opts.profile) == "table", "the trainer card requires the player profile")
   assert(type(opts.measureDisplay) == "function", "the trainer card requires the display facts")
-  assert(type(opts.windowState) == "table", "the trainer card borrows its window memory")
   local self = setmetatable({
     _measureDisplay = opts.measureDisplay,
     _disposed = false,
@@ -48,7 +46,7 @@ function TrainerCardScreenState.new(opts)
       playTimeSeconds = opts.playTimeSeconds,
       effect = opts.effect,
     })
-    session = ApplicationPresentation.new(TrainerCardInterface.withOverrides(opts.overrides), opts.windowState)
+    session = ApplicationPresentation.new(TrainerCardInterface.withOverrides(opts.overrides))
   end)
   if not built then
     if session ~= nil then

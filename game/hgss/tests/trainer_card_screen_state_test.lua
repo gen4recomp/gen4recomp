@@ -41,7 +41,6 @@ local function composition(overrides)
     measureDisplay = function()
       return singleDisplay(640, 480)
     end,
-    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   }
   for key, value in pairs(overrides) do
     options[key] = value
@@ -117,27 +116,15 @@ function T.missing_capabilities_fail_at_construction()
   local withoutDisplay = {
     profile = { name = "GOLD", trainerId = 1, money = 0 },
     playTimeSeconds = 0,
-    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   }
   Assert.throws(function()
     TrainerCardScreenState.new(withoutDisplay --[[@as TrainerCardScreenState.Options]])
   end, "a card without display facts fails")
-  local withoutWindows = {
-    profile = { name = "GOLD", trainerId = 1, money = 0 },
-    playTimeSeconds = 0,
-    measureDisplay = function()
-      return singleDisplay(640, 480)
-    end,
-  }
-  Assert.throws(function()
-    TrainerCardScreenState.new(withoutWindows --[[@as TrainerCardScreenState.Options]])
-  end, "a card without window memory fails")
   local withoutProfile = {
     playTimeSeconds = 0,
     measureDisplay = function()
       return singleDisplay(640, 480)
     end,
-    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   }
   Assert.throws(function()
     TrainerCardScreenState.new(withoutProfile --[[@as TrainerCardScreenState.Options]])
