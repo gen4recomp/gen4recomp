@@ -2067,4 +2067,31 @@ function T.hit_test_resolves_confirmation_modal_precedence()
   Assert.equal(hit.saveId, "save-00000001", "the confirmation hit must name its owning save")
 end
 
+function T.pointer_transition_during_dispatch_does_not_resolve_after_dispose()
+  -- Production replaces (and disposes) the menu synchronously inside
+  -- onResult via Game:setState; the in-flight pointer dispatch must stop
+  -- instead of resolving again against the released session.
+  local results = {}
+  local menu = nil
+  menu = state({
+    saveStore = {
+      list = function()
+        return {}
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+      assert(menu ~= nil, "menu must exist when the result fires")
+      menu:dispose()
+    end,
+  })
+  local published = menu:view()
+  local action = assert(published.layout.global.actions["new-game"], "New Game needs hit geometry")
+  pressAt(menu, action.x + action.width / 2, action.y + action.height / 2)
+  Assert.deepEqual(results, { { kind = "new_game" } })
+  menu:mousepressed(1, 1, 1)
+  menu:mousereleased(1, 1, 1)
+  menu:keypressed("return")
+end
+
 return { tests = T }

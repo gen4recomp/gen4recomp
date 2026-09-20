@@ -221,7 +221,8 @@ end
 ---@param snapshot table<string, unknown>
 ---@return ApplicationPlan the resolved interface plan
 function MainMenuState:_resolve(snapshot)
-  local plan = self._session:resolve(assert(self:_measured(), "Main Menu needs its display facts"), snapshot)
+  local session = assert(self._session, "Main Menu session is disposed")
+  local plan = session:resolve(assert(self:_measured(), "Main Menu needs its display facts"), snapshot)
   local content = plan.content
   if type(content) == "table" and type(content.layout) == "table" then
     local shaped = content.layout --[[@as { saves: { offset: number } }]]
@@ -379,13 +380,23 @@ end
 -- only and never cancels or confirms a dialog semantically.
 ---@param events table<string, unknown>[]
 function MainMenuState:_dispatchPointer(events)
+  if self._disposed then
+    return
+  end
   local snapshot = self:_snapshot()
   self:_resolve(snapshot)
-  local mapped = self._session:mapInput(events, snapshot)
+  local session = assert(self._session, "Main Menu session is disposed")
+  local mapped = session:mapInput(events, snapshot)
   for _, event in ipairs(mapped) do
+    if self._disposed then
+      return
+    end
     if type(event) == "table" and event.type ~= "pointer_cancel" and event.region ~= nil then
       self:_dispatchHit(event)
     end
+  end
+  if self._disposed then
+    return
   end
   self:_resolve(self:_snapshot())
 end
@@ -394,9 +405,13 @@ end
 -- click fires on press, so releases and moves never dispatch hits.
 ---@param events table<string, unknown>[]
 function MainMenuState:_trackPointer(events)
+  if self._disposed then
+    return
+  end
   local snapshot = self:_snapshot()
   self:_resolve(snapshot)
-  self._session:mapInput(events, snapshot)
+  local session = assert(self._session, "Main Menu session is disposed")
+  session:mapInput(events, snapshot)
 end
 
 function MainMenuState:_key(key)
@@ -414,10 +429,16 @@ function MainMenuState:_key(key)
 end
 
 function MainMenuState:keypressed(key)
+  if self._disposed then
+    return
+  end
   self:_key(key)
 end
 
 function MainMenuState:gamepadpressed(_, button)
+  if self._disposed then
+    return
+  end
   local keys = {
     dpup = "up",
     dpdown = "down",
@@ -436,36 +457,57 @@ function MainMenuState:gamepadpressed(_, button)
 end
 
 function MainMenuState:mousepressed(x, y, button)
+  if self._disposed then
+    return
+  end
   if button == 1 then
     self:_dispatchPointer({ { type = "pointer_down", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
 function MainMenuState:mousemoved(x, y, _, _, istouch)
+  if self._disposed then
+    return
+  end
   if not istouch then
     self:_trackPointer({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
 function MainMenuState:mousereleased(x, y, button)
+  if self._disposed then
+    return
+  end
   if button == 1 then
     self:_trackPointer({ { type = "pointer_up", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
 function MainMenuState:touchpressed(id, x, y)
+  if self._disposed then
+    return
+  end
   self:_dispatchPointer({ { type = "pointer_down", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function MainMenuState:touchmoved(id, x, y)
+  if self._disposed then
+    return
+  end
   self:_trackPointer({ { type = "pointer_move", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function MainMenuState:touchreleased(id, x, y)
+  if self._disposed then
+    return
+  end
   self:_trackPointer({ { type = "pointer_up", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function MainMenuState:wheelmoved(_, y)
+  if self._disposed then
+    return
+  end
   if not self.controller.popup and not self.controller.confirmation then
     self.controller:move(y > 0 and "up" or "down")
   end
