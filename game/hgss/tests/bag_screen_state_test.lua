@@ -936,9 +936,10 @@ function T.tall_stacks_the_hero_above_the_interaction_pane()
   state:dispose()
 end
 
--- Pointer input on the hero display pane or on the matte never selects an
--- item: only the visible interactive pane maps pointer input.
-function T.hero_and_matte_pointer_input_never_selects_an_item()
+-- Pointer input on the hero display pane never selects an item, while a
+-- press fully outside every pane and frame dismisses terminally: only
+-- the visible interactive pane maps pointer input to content.
+function T.hero_tap_stays_inert_while_outside_tap_dismisses()
   local options, box = composition()
   box.width, box.height = 1280, 720
   box.topologyObject = topology(1280, 720)
@@ -966,13 +967,26 @@ function T.hero_and_matte_pointer_input_never_selects_an_item()
   local afterHero = state:status()
   Assert.equal(afterHero.state, "browsing", "a hero-pane tap never opens the action menu")
   Assert.equal(afterHero.revision, revision, "a hero-pane tap issues no inventory mutation")
-  local matteX, matteY = 5, 5
-  Assert.isTrue(matteX < math.min(heroFrame.x, interactiveFrame.x), "the matte probe sits outside every pane")
-  tapHost(matteX, matteY)
-  local afterMatte = state:status()
-  Assert.equal(afterMatte.state, "browsing", "a matte tap never opens the action menu")
-  Assert.equal(afterMatte.revision, revision, "a matte tap issues no inventory mutation")
-  Assert.equal(selectedKey(afterMatte), "POKE_BALL", "off-pane taps preserve the selection")
+  -- A press fully outside every pane and frame dismisses terminally
+  -- through the existing close result instead of selecting anything.
+  local frameRecord = assert(plan.frames, "the wide composition publishes its outer frame")[1]
+  local outerFrame = assert(frameRecord.placement, "the frame carries its placement").frame
+  local outsideX, outsideY = 5, 5
+  local function insideOuter(x, y)
+    return x >= outerFrame.x
+      and x < outerFrame.x + outerFrame.width
+      and y >= outerFrame.y
+      and y < outerFrame.y + outerFrame.height
+  end
+  Assert.isTrue(outsideX < math.min(heroFrame.x, interactiveFrame.x), "the probe sits outside every pane")
+  if insideOuter(outsideX, outsideY) then
+    outsideX, outsideY = 1275, 715
+  end
+  Assert.isFalse(insideOuter(outsideX, outsideY), "the probe must clear the outer frame")
+  tapHost(outsideX, outsideY)
+  local afterOutside = state:status()
+  Assert.isFalse(afterOutside.open, "an outside tap terminally closes the bag")
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "dismissal reports the existing close result")
   state:dispose()
 end
 

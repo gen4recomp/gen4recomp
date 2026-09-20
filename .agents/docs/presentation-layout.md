@@ -31,12 +31,14 @@ policy; leaf interfaces supply only their own geometry and callbacks.
   framebuffer-pixels-per-host-unit ratio. It never invents surfaces.
 - `ApplicationLayout` classifies one of four configurations
   (`dualDisplay`, `nativeLike`, `wide`, `tall`) and offers shared
-  placement helpers (fullscreen, single/paired composition, draggable
-  windows). It owns no gameplay, resources, or drawing.
+  placement helpers (fullscreen, single/paired composition, static
+  framed and centered boxes, frame-around-content geometry). It owns
+  no gameplay, resources, or drawing.
 - `ApplicationPresentation` owns one open interface's published plan,
-  pointer capture, window drag positions, and ordered cancellation. One
-  plan supplies both input mapping and drawing; geometry changes, focus
-  loss, and close cancel held presses before any stale release.
+  pointer capture, and ordered cancellation. One plan supplies both
+  input mapping and drawing; geometry changes, focus loss, and close
+  cancel held presses before any stale release. Plans are static:
+  no position is remembered between opens, resolves, or instances.
 
 A leaf `InterfaceSet` provides four resolver functions, one per
 configuration. Each resolver returns a complete matched interface:
@@ -54,9 +56,14 @@ applications, or game instances.
 - Near-native single surface: fullscreen. Entry into native-like
   requires aspect error at most 12 logical pixels per edge; a session
   retains it through 14 and leaves above 14.
-- Wide/tall single surface: a draggable window with title strip and
-  border; a window that cannot fit at unit scale falls back to the
-  native-like case. Window positions are session-only and never saved.
+- Wide/tall single surface: a static centered framed box. The complete
+  outer frame (content plus its HGSS border) fits at the largest integer
+  scale inside the usable bounds; a box that cannot fit at unit scale
+  falls back to the native-like case. Geometry is deterministic: an
+  equivalent re-resolution returns the identical placement.
+- Same-display pairs are contiguous: side-by-side or stacked panes share
+  one integer scale with no synthetic gap, and one outer frame may
+  surround their common envelope.
 - Integer fitting is the norm: the largest permitted integer fit with
   at most one safe bump. Cropping is budgeted per edge in logical
   pixels (default 4, independently overridable, zero where controls
@@ -76,14 +83,54 @@ applications, or game instances.
 | --- | --- | --- |
 | Physical dual-screen | Auxiliary fullscreen; pairs split world/auxiliary | Preserve source separation and relative intent. |
 | Single near-native display | Fullscreen | Keep the canonical logical surface; crop only within budget. |
-| Single wide display | Draggable window | Shared chrome; content keeps its logical geometry. |
-| Single tall display | Draggable window, stacked pairs | Same window rules; pairs stack vertically. |
+| Single wide display | Static centered framed box | Content keeps its logical geometry; the frame never moves. |
+| Single tall display | Static centered framed box, stacked pairs | Same frame rules; pairs stack vertically with no gap. |
 | Constrained single display | Native-like fallback | Compact interfaces keep essential controls; reduce or crop only nonessential content. |
 
 A feature with no meaningful auxiliary content need not invent a second panel.
 Transient decorative content may overlap only when it cannot obscure active
 controls or essential state. Both source roles must not be blindly composited at
 the same coordinates.
+
+## Application frames, background, and dismissal
+
+Underfilled field applications are decorated with the player's selected
+HGSS dialogue frame (`playerData.options.textFrame`), rotated so the
+source frame's thick right edge becomes the top edge: 8 logical pixels
+on the left, 24 on top, 8 on the right, and 16 on the bottom. The frame
+is pure plan geometry until field or Starter presentation draws it
+through the shared frame renderer; application code never invents
+border styling.
+
+Plans publish two separate concepts that must not be confused:
+
+- `frames`: the decorative outer geometry drawn around content.
+- `fadeCoverage`: transition-only metadata naming where open/close
+  fades apply. It is never painted as settled background.
+
+Settled pixels outside application panes and frames stay whatever the
+host already rendered, which is the paused field wherever field
+presentation exists. Applications never paint a matte over the field to
+"own" the background; the startup Main Menu is the exception that
+proves the rule, painting its own backdrop because no field exists
+beneath it.
+
+A decorative frame is part of the application: presses on the border or
+on non-interactive panes are consumed as interior and do nothing. A
+pointer-down fully outside every pane and frame dismisses the closable
+field applications (Start Menu, Bag, Party, Trainer Card) at once. This
+dismissal is terminal and bypasses nested cancel/unwind behavior; it is
+not ordinary Cancel and it never clicks through to the paused field.
+
+Three surfaces never gain an outer frame or outside dismissal:
+
+- Oak Naming stays canonical 256x192, centered and scaled but
+  undecorated, and outside presses neither insert glyphs nor leave
+  name editing.
+- The startup Main Menu is a responsive fullscreen surface with its
+  own backdrop and no HGSS frame.
+- Starter Choice draws an outer frame when underfilled but stays
+  blocking: outside presses never dismiss it.
 
 ## Feature-local layout responsibility
 

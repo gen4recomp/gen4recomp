@@ -72,23 +72,36 @@ function T.cancel_edge_closes_exactly_once_through_the_host_contract()
   box.state:dispose()
 end
 
-function T.pointer_content_never_closes_or_mutates_the_card()
+function T.pane_content_never_closes_while_outside_press_dismisses()
   local box = composition()
-  box.state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } })
-  box.state:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 20, y = 20 } })
-  box.state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 20, y = 20 } })
+  local plan = assert(box.state:status().presentation, "the card publishes its presentation plan")
+  local bodyFrame = assert(plan.panes[1].placement, "the content pane carries its placement").frame
+  local contentX, contentY = bodyFrame.x + bodyFrame.width / 2, bodyFrame.y + bodyFrame.height / 2
+  box.state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = contentX, y = contentY } })
+  box.state:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = contentX + 10, y = contentY + 10 } })
+  box.state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = contentX + 10, y = contentY + 10 } })
   box.state:updateFixed({ { type = "pointer_cancel", pointerId = "touch:1" } })
   Assert.isNil(box.state:takeResult(), "pointer content produces no result")
   Assert.equal(box.state:status().open, true, "pointer content leaves the card open")
   Assert.equal(box.state:status().name, "GOLD", "pointer content preserves the profile snapshot")
+  -- A press fully outside every pane and frame dismisses terminally.
+  local outerFrame = assert(plan.frames, "the underfilled card carries its outer frame")[1].placement.frame
+  local outsideX, outsideY = 5, 5
+  Assert.isTrue(outsideX < outerFrame.x, "the probe must clear the outer frame")
+  box.state:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = outsideX, y = outsideY } })
+  local dismissed = assert(box.state:takeResult(), "an outside press dismisses the card")
+  Assert.equal(dismissed.kind, "close", "dismissal reports the existing close result")
   box.state:dispose()
 end
 
 function T.cancel_capture_drops_the_session_gesture_without_semantics()
   local box = composition()
-  box.state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } })
+  local plan = assert(box.state:status().presentation, "the card publishes its presentation plan")
+  local bodyFrame = assert(plan.panes[1].placement, "the content pane carries its placement").frame
+  local contentX, contentY = bodyFrame.x + bodyFrame.width / 2, bodyFrame.y + bodyFrame.height / 2
+  box.state:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = contentX, y = contentY } })
   box.state:cancelPointerCapture()
-  box.state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 10, y = 10 } })
+  box.state:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = contentX, y = contentY } })
   Assert.isNil(box.state:takeResult(), "the cancelled release produces no result")
   Assert.equal(box.state:status().open, true, "the cancelled release leaves the card open")
   box.state:dispose()

@@ -272,7 +272,6 @@ function T.missing_measurement_fails_without_a_partial_plan()
   Assert.throws(function()
     local incomplete = {
       configuration = "nativeLike",
-      windowPosition = { x = 0.5, y = 0.5 },
       nativeLikeInterface = interfaces.nativeLike,
     }
     interfaces.nativeLike(incomplete --[[@as ApplicationLayout.Context]], view(true))

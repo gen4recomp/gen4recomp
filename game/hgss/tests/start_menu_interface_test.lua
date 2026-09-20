@@ -52,7 +52,6 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
     configuration = "wide",
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interface.fullscreen,
   }
   local widePlan = interface.wide(context, view)
@@ -117,7 +116,6 @@ function T.tests.an_outside_press_maps_to_a_terminal_dismiss()
     configuration = "wide",
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interface.fullscreen,
   }
   local widePlan = interface.wide(context, view)

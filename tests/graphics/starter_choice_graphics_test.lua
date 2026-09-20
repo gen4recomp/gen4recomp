@@ -577,8 +577,8 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
     Assert.equal(widePlan.panes[2].placement.scale, wideScale, versionId .. " wide shares one presentation scale")
     Assert.equal(
       wideRight.x - (wideLeft.x + wideLeft.width),
-      8 * wideScale,
-      versionId .. " wide keeps the eight-logical-pixel gap"
+      0,
+      versionId .. " wide pairs info and machine edge-adjacent with no gap"
     )
     wide:move("right")
     Assert.isTrue(

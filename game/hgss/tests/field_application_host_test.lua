@@ -108,7 +108,7 @@ local function readablePlacement(game)
       return assert(pane.placement, "the body pane must carry its placement")
     end
   end
-  error("the windowed plan must carry an interactive body pane", 0)
+  error("the framed plan must carry an interactive body pane", 0)
 end
 
 local function findMenuAction(game, id)
@@ -585,10 +585,10 @@ function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan
     openMenu(game)
     local wide = runtime.applicationHost:status()
     local widePlan = assert(wide.menu.presentation, "the wide host must publish its presentation plan")
-    Assert.notNil(widePlan.window, "a wide host must frame the menu in a window")
-    Assert.equal(#(widePlan.coverage or {}), 0, "a window must not clear pixels outside itself")
+    Assert.equal(#assert(widePlan.frames, "a wide host must frame the menu"), 1, "one static box frames the menu")
+    Assert.equal(#(widePlan.fadeCoverage or {}), 0, "a static frame owns no transition region")
     pressMenuEdge(game)
-    stepTo("closed", 16, "the windowed menu must close")
+    stepTo("closed", 16, "the framed menu must close")
   end, debug.traceback)
   game:close()
   if not ok then
@@ -687,7 +687,7 @@ function T.tests.trainer_card_follows_interface_policy_not_camera_zoom()
       256,
       "the refit keeps source-sized content"
     )
-    -- a physical pair hosts the card on the auxiliary surface with no window
+    -- a physical pair hosts the card on the auxiliary surface with no outer frame
     game.runtime:resizePresentation(
       800,
       600,

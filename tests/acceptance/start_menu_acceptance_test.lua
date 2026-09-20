@@ -145,11 +145,11 @@ end
 
 function T.tests.production_start_menu_follows_the_shared_display_policy()
   local cases = {
-    { width = 640, height = 480, windowed = false },
-    { width = 1280, height = 720, windowed = true },
-    { width = 1920, height = 1080, windowed = true },
-    { width = 2560, height = 1440, windowed = true },
-    { width = 1080, height = 1920, windowed = true },
+    { width = 640, height = 480, framed = true, keepsTransitionRegion = true },
+    { width = 1280, height = 720, framed = true, keepsTransitionRegion = false },
+    { width = 1920, height = 1080, framed = true, keepsTransitionRegion = false },
+    { width = 2560, height = 1440, framed = true, keepsTransitionRegion = false },
+    { width = 1080, height = 1920, framed = true, keepsTransitionRegion = false },
   }
   withEveryVersion(function(harness, versionId)
     local first = cases[1]
@@ -186,12 +186,15 @@ function T.tests.production_start_menu_follows_the_shared_display_policy()
             and frame.y + frame.height <= safe.y + safe.height,
           label .. " body stays inside the safe rect"
         )
-        if size.windowed then
+        if size.framed then
           Assert.equal(#plan.frames, 1, label .. " frames the menu in a static box")
-          Assert.equal(#(plan.fadeCoverage or {}), 0, label .. " static frame owns no transition region")
         else
-          Assert.isNil(plan.window, label .. " stays a fullscreen native surface")
-          Assert.isTrue(#plan.fadeCoverage >= 1, label .. " fullscreen names its transition region")
+          Assert.isTrue(type(plan.frames) == "table", label .. " carries its static frame list")
+        end
+        if size.keepsTransitionRegion then
+          Assert.isTrue(#plan.fadeCoverage >= 1, label .. " names its transition region")
+        else
+          Assert.equal(#(plan.fadeCoverage or {}), 0, label .. " static frame owns no transition region")
         end
         closeMenu(game)
       end
@@ -211,13 +214,14 @@ function T.tests.production_start_menu_follows_the_shared_display_policy()
   end)
 end
 
--- A wide host frames the menu in a draggable window instead of a gutter
--- panel: the open menu publishes one presentation plan that supplies both
--- drawing and input. Dragging the title strip clamps the whole window to
--- the usable bounds without changing its pixel scale and never launches an
--- action; body pointer input maps through the same plan exactly once; the
--- remembered window position survives close/reopen per configuration.
-function T.tests.production_start_menu_window_keeps_scale_clip_and_input_while_dragging()
+-- A wide host frames the menu in one static centered box instead of a
+-- gutter panel: the open menu publishes one presentation plan that
+-- supplies both drawing and input. The frame never moves between
+-- equivalent resolves, keeps its pixel scale, and never launches an
+-- action from border presses; body pointer input maps through the same
+-- plan exactly once; reopening on the same host resolves the identical
+-- centered box because no position is remembered.
+function T.tests.production_start_menu_frame_stays_static_centered_and_maps_input_once()
   withEveryVersion(function(harness, versionId)
     withGame(harness, versionId, { width = 1280, height = 720, topology = touchDisplay(1280, 720) }, function(game)
       local runtime = game.runtime
@@ -232,75 +236,49 @@ function T.tests.production_start_menu_window_keeps_scale_clip_and_input_while_d
             return assert(pane.placement, "the body pane must carry its placement")
           end
         end
-        error("the windowed plan must carry an interactive body pane", 0)
+        error("the framed plan must carry an interactive body pane", 0)
       end
       local function safeRect()
         return runtime.screenTopology.surfaces[1].safeRect
       end
       local function assertOuterInside(plan, label)
-        local frame = assert(plan.window, "a wide host must frame the menu in a window").outer.frame
+        local frame = assert(plan.frames, "a wide host must frame the menu")[1].placement.frame
         local safe = safeRect()
         Assert.isTrue(
           frame.x >= safe.x
             and frame.y >= safe.y
             and frame.x + frame.width <= safe.x + safe.width
             and frame.y + frame.height <= safe.y + safe.height,
-          label .. ": the whole window stays in the usable bounds"
+          label .. ": the whole frame stays in the usable bounds"
         )
         return frame
       end
       local function pressAt(x, y)
-        runtime.input:pointerDown("acceptance:start-menu:drag", x, y)
+        runtime.input:pointerDown("acceptance:start-menu:tap", x, y)
         game:step()
-        runtime.input:pointerUp("acceptance:start-menu:drag", x, y)
+        runtime.input:pointerUp("acceptance:start-menu:tap", x, y)
         game:step()
       end
 
       openMenu(game)
       local menu, plan = openPlan()
-      local window = assert(plan.window, "a wide host must frame the menu in a window")
-      local grab = assert(window.grabRect, "the window must carry its title-strip grab rectangle")
+      Assert.equal(#assert(plan.frames, "a wide host must frame the menu"), 1, "one static box frames the menu")
       local scale = bodyPlacement(plan).pixelScale
-      Assert.isTrue(scale ~= nil and scale >= 1, "the windowed body must have an integer pixel scale")
-      assertOuterInside(plan, "initial")
+      Assert.isTrue(scale ~= nil and scale >= 1, "the framed body must have an integer pixel scale")
+      local initial = assertOuterInside(plan, "initial")
 
-      -- Drag the title strip to each edge plus one release outside: the
-      -- window follows clamped to the usable bounds, keeps its scale, and
-      -- the header never launches an action.
-      local grabX, grabY = grab.x + grab.width / 2, grab.y + grab.height / 2
+      -- Equivalent resolves never move the frame: rereading the live plan
+      -- after a tick resolves the identical static box.
+      game:step()
+      local _, restated = openPlan()
+      local restatedFrame = assertOuterInside(restated, "restated")
+      Assert.deepEqual(
+        { x = restatedFrame.x, y = restatedFrame.y },
+        { x = initial.x, y = initial.y },
+        "an equivalent resolve never moves the static frame"
+      )
+      Assert.equal(bodyPlacement(restated).pixelScale, scale, "an equivalent resolve never changes the pixel scale")
       local selectedBefore = menu.selectedPosition
-      local safe = safeRect()
-      local targets = {
-        { x = safe.x + safe.width / 2, y = safe.y + 2 },
-        { x = safe.x + safe.width - 2, y = safe.y + safe.height / 2 },
-        { x = safe.x + safe.width / 2, y = safe.y + safe.height - 2 },
-        { x = safe.x + 2, y = safe.y + safe.height / 2 },
-        { x = safe.x + safe.width + 400, y = safe.y + safe.height + 400 },
-      }
-      for index, target in ipairs(targets) do
-        runtime.input:pointerDown("acceptance:start-menu:drag", grabX, grabY)
-        game:step()
-        runtime.input:pointerMove("acceptance:start-menu:drag", target.x, target.y)
-        game:step()
-        runtime.input:pointerUp("acceptance:start-menu:drag", target.x, target.y)
-        game:step()
-        local _, moved = openPlan()
-        assertOuterInside(moved, "drag " .. index)
-        Assert.equal(
-          bodyPlacement(moved).pixelScale,
-          scale,
-          "drag " .. index .. ": dragging never changes the pixel scale"
-        )
-        grab = assert(moved.window, "drag " .. index .. ": the plan keeps its window").grabRect
-        grabX, grabY = grab.x + grab.width / 2, grab.y + grab.height / 2
-      end
-      menu = menuStatus(game)
-      Assert.equal(menu.selectedPosition, selectedBefore, "header drags must never launch or move selection")
-      -- A header click without movement is still a header press, not an
-      -- action activation.
-      pressAt(grabX, grabY)
-      menu = menuStatus(game)
-      Assert.equal(menu.selectedPosition, selectedBefore, "a header click must not launch an action")
 
       -- Body input maps through the same plan exactly once: move off the
       -- initial slot, then click the disabled trainer-card slot and watch
@@ -319,16 +297,17 @@ function T.tests.production_start_menu_window_keeps_scale_clip_and_input_while_d
         "clicking a disabled visible action must not leave the menu"
       )
 
-      -- The dragged position survives close/reopen on the same host, while
-      -- a tall host starts from its own centred default.
+      -- Reopening on the same host resolves the identical centered box:
+      -- no position is remembered between opens, while a tall host
+      -- centers from its own usable bounds.
       local _, dragged = openPlan()
       local remembered = assertOuterInside(dragged, "remembered")
       closeMenu(game)
       openMenu(game)
       local _, reopened = openPlan()
       local frame = assertOuterInside(reopened, "reopened")
-      Assert.equal(frame.x, remembered.x, "the wide position must survive reopen")
-      Assert.equal(frame.y, remembered.y, "the wide position must survive reopen")
+      Assert.equal(frame.x, remembered.x, "the wide box must re-center identically on reopen")
+      Assert.equal(frame.y, remembered.y, "the wide box must re-center identically on reopen")
       game.runtime:resizePresentation(600, 1000, touchDisplay(600, 1000))
       -- The published plan follows the new measurement on the next tick,
       -- not synchronously with the resize.
@@ -341,13 +320,13 @@ function T.tests.production_start_menu_window_keeps_scale_clip_and_input_while_d
       if travelX > 0 then
         Assert.isTrue(
           math.abs((tallFrame.x - tallSafe.x) / travelX - 0.5) < 0.05,
-          "the tall window keeps its own centred default"
+          "the tall frame keeps its own centred default"
         )
       end
       if travelY > 0 then
         Assert.isTrue(
           math.abs((tallFrame.y - tallSafe.y) / travelY - 0.5) < 0.05,
-          "the tall window keeps its own centred default"
+          "the tall frame keeps its own centred default"
         )
       end
       closeMenu(game)

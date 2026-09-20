@@ -314,7 +314,7 @@ function T.tests.start_menu_switch_cancels_stale_press_without_state_loss()
     Assert.equal(placement.logicalWidth, 256, "the native body keeps its canonical width")
     Assert.equal(placement.logicalHeight, 192, "the native body keeps its canonical height")
 
-    -- Hold a press on body content, then switch to a windowed host before
+    -- Hold a press on body content, then switch to a wide host before
     -- the release at the identical host coordinates.
     local hostX, hostY = LayoutGeometry.logicalToHost(placement, 126, 38)
     game.runtime.input:pointerDown("integration:stale", hostX, hostY)
@@ -329,14 +329,18 @@ function T.tests.start_menu_switch_cancels_stale_press_without_state_loss()
       "a release after a configuration switch must not activate a moved control"
     )
     local widePlan = assert(moved.presentation, "the menu must publish a plan after the switch")
-    Assert.notNil(widePlan.window, "a wide host must frame the menu in a window")
+    local wideFrames = assert(widePlan.frames, "a wide host must frame the menu")
+    Assert.equal(#wideFrames, 1, "a wide host frames the menu in one static box")
+    local wideBox = assert(wideFrames[1].contentBox, "the static frame carries its content box")
+    Assert.equal(wideBox.width, 256, "the framed body keeps its canonical width")
+    Assert.equal(wideBox.height, 192, "the framed body keeps its canonical height")
     local widePlacement = interactivePlacement(widePlan, "wide menu")
-    Assert.equal(widePlacement.logicalWidth, 256, "the windowed body keeps its canonical width")
+    Assert.equal(widePlacement.logicalWidth, 256, "the framed body keeps its canonical width")
     Assert.isTrue(
       widePlacement.pixelScale ~= nil
         and widePlacement.pixelScale >= 1
         and widePlacement.pixelScale == math.floor(widePlacement.pixelScale),
-      "the windowed body keeps an integer pixel scale"
+      "the framed body keeps an integer pixel scale"
     )
     -- A fresh press after the switch maps through the new plan: hover a
     -- body point and watch selection follow the pointer once.
@@ -532,7 +536,8 @@ function T.tests.party_inert_close_across_config_switch_issues_no_swap()
     Assert.equal(status.applicationId, PARTY_APPLICATION, "the party must stay open across the switch")
     local view = assert(status.application, "the party must expose its status after the switch")
     local nativePlan = assert(view.presentation, "the party must publish a plan after the switch")
-    Assert.deepEqual(nativePlan.frames, {}, "native-like party is fullscreen, not a frame")
+    local nativeFrames = assert(nativePlan.frames, "the underfilled native party carries its static frame")
+    Assert.equal(#nativeFrames, 1, "an underfilled native pane gets one outer frame")
     Assert.equal(#nativePlan.panes, 1, "native-like party shows its single compact pane")
 
     -- Keyboard navigation stays inside the visible grid, then an inert
@@ -861,9 +866,10 @@ function T.tests.starter_choice_switches_to_compact_and_publishes_once()
 end
 
 -- Oak naming through the production intro composition: reach name editing,
--- draft a name, then reflow and drag the window. The draft, page, and
--- canonical child geometry must survive; dragging must never insert a
--- glyph; submission must carry the single confirmed result.
+-- draft a name, then reflow across a static centered plan. The draft, page,
+-- and canonical child geometry must survive; the plan stays frameless and
+-- deterministic; an outside press inserts no glyph and dismisses nothing;
+-- submission must carry the single confirmed result.
 local function oakCandidate(versionId)
   return NewGame.createCandidate({
     saveService = {
@@ -968,7 +974,7 @@ local function withOakComposed(width, height, fn)
   end
 end
 
-function T.tests.oak_naming_draft_survives_reflow_and_drag_without_glyphs()
+function T.tests.oak_naming_draft_survives_static_reflow_without_glyphs()
   withOakComposed(640, 480, function(state)
     oakDriveToNameEdit(state)
     state:textinput("GOLD")
@@ -983,29 +989,43 @@ function T.tests.oak_naming_draft_survives_reflow_and_drag_without_glyphs()
     local reflowedPlan = assert(reflowed.namingPresentation, "name editing must publish a plan after reflow")
     Assert.equal(#reflowedPlan.panes, 1, "reflow keeps one canonical naming pane")
     Assert.equal(reflowedPlan.panes[1].placement.logicalWidth, 256, "reflow never shrinks the child")
-    local window = assert(reflowedPlan.window, "a wide host must frame naming in a window")
-    local grab = assert(window.grabRect, "the naming window must carry its grab strip")
-    local frame0 = assert(window.outer, "the naming window must carry its outer placement").frame
-    local grabX, grabY = grab.x + grab.width / 2, grab.y + grab.height / 2
-    state:mousepressed(grabX, grabY, 1)
-    Assert.equal(state:view().name, "GOLD", "a header press must never insert a glyph")
-    state:mousemoved(grabX + 30, grabY + 10, 0, 0, false)
-    local frame1 =
-      assert(state:view().namingPresentation, "name editing must publish a plan during the drag").window.outer.frame
-    Assert.isTrue(frame1.x > frame0.x, "the first drag move must displace the window")
-    state:mousemoved(grabX + 60, grabY + 20, 0, 0, false)
-    local frame2 =
-      assert(state:view().namingPresentation, "name editing must publish a plan during the drag").window.outer.frame
-    Assert.isTrue(frame2.x > frame1.x, "the second drag move must extend the same gesture")
-    state:mousereleased(grabX + 60, grabY + 20, 1)
-    local landed =
-      assert(state:view().namingPresentation, "name editing must publish a plan after release").window.outer.frame
     Assert.deepEqual(
-      { x = landed.x, y = landed.y },
-      { x = frame2.x, y = frame2.y },
-      "release must end the drag without snapping the window back"
+      assert(reflowedPlan.frames, "naming publishes its frame list"),
+      {},
+      "naming stays frameless on a wide host"
     )
-    Assert.equal(state:view().name, "GOLD", "window dragging must never insert a glyph")
+    local paneFrame = assert(reflowedPlan.panes[1].placement, "the naming pane carries its placement").frame
+    -- A second identical reflow must resolve the same static geometry:
+    -- no remembered position may shift the pane.
+    state:resize(1280, 720)
+    local restated = assert(state:view().namingPresentation, "name editing must publish a plan after reflow")
+    Assert.deepEqual(
+      assert(restated.panes[1].placement, "the naming pane carries its placement").frame,
+      paneFrame,
+      "an identical reflow resolves identical static geometry"
+    )
+    -- An outside press inserts no glyph and dismisses nothing: naming
+    -- never maps outside input to content or to dismissal.
+    local probeX, probeY = 8, 8
+    if
+      probeX >= paneFrame.x
+      and probeX < paneFrame.x + paneFrame.width
+      and probeY >= paneFrame.y
+      and probeY < paneFrame.y + paneFrame.height
+    then
+      probeX, probeY = 1272, 712
+    end
+    Assert.isFalse(
+      probeX >= paneFrame.x
+        and probeX < paneFrame.x + paneFrame.width
+        and probeY >= paneFrame.y
+        and probeY < paneFrame.y + paneFrame.height,
+      "the probe must fall outside the naming pane"
+    )
+    state:mousepressed(probeX, probeY, 1)
+    state:mousereleased(probeX, probeY, 1)
+    Assert.equal(state:view().name, "GOLD", "an outside press must never insert a glyph")
+    Assert.equal(state:view().phase, "name_edit", "an outside press must never leave name editing")
 
     state:gamepadpressed(nil, "start")
     state:tick(26)
@@ -1323,9 +1343,9 @@ function T.tests.unknown_override_case_key_fails_without_publication()
   Assert.isTrue(type(err) == "string" and #err > 0, "the failure must carry a diagnostic")
 end
 
--- Matte and non-interactive regions never reach content: a fullscreen
--- matte click changes nothing, and a press fully outside all panes is
--- reported without coordinates.
+-- Frame borders and non-interactive panes are application interior: a press
+-- there changes nothing, and a press fully outside all panes and frames is
+-- reported without coordinates for the leaf outside policy.
 local function hostRectContains(rect, x, y)
   return x >= rect.x and x < rect.x + rect.width and y >= rect.y and y < rect.y + rect.height
 end
@@ -1545,23 +1565,27 @@ function T.tests.party_nested_cancel_unwinds_while_outside_press_closes()
   end)
 end
 
-function T.tests.matte_and_outside_input_never_reach_content()
+-- A true outside press dismisses the Trainer Card through the normal host
+-- lifecycle: the framed card closes without any nested cancel step.
+function T.tests.trainer_card_outside_press_dismisses_through_the_host()
   withFieldGame({}, function(game)
-    switchDisplay(game, 640, 480)
-    openStartMenu(game)
-    local menu = menuStatus(game)
-    local selectedBefore = assert(menu.selectedPosition, "menu status must expose its selection")
-    local plan = assert(menu.presentation, "the menu must publish its plan")
-    local placement = interactivePlacement(plan, "fullscreen menu")
-    local frame = placement.frame
-    -- Just outside the body frame but inside the owned coverage: matte.
-    local matteX, matteY = frame.x - 4, frame.y - 4
-    Assert.isTrue(matteX >= 0 and matteY >= 0, "the test needs matte between body and coverage edges")
-    pointerPress(game, "integration:matte", matteX, matteY)
-    local after = menuStatus(game)
-    Assert.equal(after.selectedPosition, selectedBefore, "matte input must not move selection")
-    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "matte input must not leave the menu")
-    closeStartMenu(game)
+    local state = hostCallbacks(game)
+    grantTrainerCard(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openTrainerCard(game, state)
+    local plan = assert(opened.presentation, "the open card must publish its presentation plan")
+    Assert.isTrue(#(plan.frames or {}) >= 1, "the wide card must publish its outer frame")
+    local outsideX, outsideY = outsidePoint(plan, 1280, 720)
+    downOnly(game, "integration:outside", outsideX, outsideY)
+    game:advanceUntil("an outside press dismisses the card", function()
+      local phase = hostPhase(game)
+      return phase == FieldApplicationHost.PHASES.menu or phase == FieldApplicationHost.PHASES.closed
+    end, 120)
+    upOnly(game, "integration:outside", outsideX, outsideY)
+    Assert.isTrue(
+      hostPhase(game) == FieldApplicationHost.PHASES.menu or hostPhase(game) == FieldApplicationHost.PHASES.closed,
+      "dismissal returns through the menu or closed phase without opening anything else"
+    )
   end)
 end
 

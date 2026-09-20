@@ -316,12 +316,13 @@ local function hostPoint(placement, logicalX, logicalY)
   return hostX, hostY
 end
 
--- One windowed journey through the compact grid: keyboard navigation
+-- One static framed journey through the compact grid: keyboard navigation
 -- follows the visible two-column neighbors onto cancel and back, a body
--- tap selects through the same plan, a title-strip drag moves the window
--- without swapping, a keyboard switch reorders exactly once, a native-like
--- reflow preserves the selection, and cancel closes back to the field.
-function T.tests.party_grid_window_and_reflow_journey_preserves_semantics()
+-- tap selects through the same plan, the outer frame never moves between
+-- equivalent resolves, a keyboard switch reorders exactly once, a
+-- native-like reflow preserves the selection, and cancel closes back to
+-- the field.
+function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics()
   withWideGame(function(game)
     local state = hostCallbacks(game)
     giveStarterPair(game)
@@ -341,12 +342,12 @@ function T.tests.party_grid_window_and_reflow_journey_preserves_semantics()
     Assert.isTrue(type(plan.inputKey) == "string", "the party plan names its input geometry")
     local inputKey = plan.inputKey
     local placement = interactivePlacement(plan)
-    local window = assert(plan.window, "a wide host must frame the party in a window")
-    assert(window.grabRect, "the party window must carry its title-strip grab rectangle")
+    local frames = assert(plan.frames, "a wide host must frame the party")
+    Assert.equal(#frames, 1, "a wide host frames the party in one static box")
     local pixelScale = placement.pixelScale
     Assert.isTrue(
       type(pixelScale) == "number" and pixelScale >= 1 and pixelScale % 1 == 0,
-      "the windowed body keeps an integral pixel scale"
+      "the framed body keeps an integral pixel scale"
     )
     Assert.equal(view.cursorNode, 0, "the remembered selection opens on the lead slot")
 
@@ -370,36 +371,32 @@ function T.tests.party_grid_window_and_reflow_journey_preserves_semantics()
     pressCancel(game)
     Assert.equal(partyView(game).action, "browsing", "cancel dismisses the action choice")
 
-    -- A title-strip drag moves the window without touching selection,
-    -- scale, or party order.
-    local moved = partyView(game).presentation
-    local movedGrab = assert(moved.window, "the plan keeps its window").grabRect
-    local safe = game.runtime.screenTopology.surfaces[1].safeRect
-    game.runtime.input:pointerDown(
-      "acceptance:party:drag",
-      movedGrab.x + movedGrab.width / 2,
-      movedGrab.y + movedGrab.height / 2
+    -- The outer frame never moves between equivalent resolves: rereading
+    -- the live plan after a tick resolves the identical static box with
+    -- no selection, scale, or order side effects.
+    local outerBefore = assert(partyView(game).presentation.frames, "the plan keeps its frame")[1].placement.frame
+    game:step()
+    local restated = partyView(game)
+    local outerAfter = assert(restated.presentation.frames, "the plan keeps its frame")[1].placement.frame
+    Assert.deepEqual(
+      { x = outerAfter.x, y = outerAfter.y },
+      { x = outerBefore.x, y = outerBefore.y },
+      "an equivalent resolve never moves the static frame"
     )
-    game:step()
-    game.runtime.input:pointerMove("acceptance:party:drag", safe.x + safe.width - 4, safe.y + 4)
-    game:step()
-    game.runtime.input:pointerUp("acceptance:party:drag", safe.x + safe.width - 4, safe.y + 4)
-    game:step()
-    local dragged = partyView(game)
-    Assert.equal(dragged.cursorNode, 1, "a window drag never moves the selection")
+    Assert.equal(restated.cursorNode, 1, "a static re-resolve never moves the selection")
     Assert.equal(
-      interactivePlacement(dragged.presentation).pixelScale,
+      interactivePlacement(restated.presentation).pixelScale,
       pixelScale,
-      "a window drag never changes the pixel scale"
+      "a static re-resolve never changes the pixel scale"
     )
-    Assert.equal(service:partyRevision(), revision, "a window drag never swaps")
-    local outer = assert(dragged.presentation.window, "the plan keeps its window").outer.frame
+    Assert.equal(service:partyRevision(), revision, "a static re-resolve never swaps")
+    local safe = game.runtime.screenTopology.surfaces[1].safeRect
     Assert.isTrue(
-      outer.x >= safe.x
-        and outer.y >= safe.y
-        and outer.x + outer.width <= safe.x + safe.width
-        and outer.y + outer.height <= safe.y + safe.height,
-      "the dragged window stays in the usable bounds"
+      outerAfter.x >= safe.x
+        and outerAfter.y >= safe.y
+        and outerAfter.x + outerAfter.width <= safe.x + safe.width
+        and outerAfter.y + outerAfter.height <= safe.y + safe.height,
+      "the static frame stays in the usable bounds"
     )
 
     -- A keyboard switch reorders the live party exactly once: choice,
@@ -422,7 +419,7 @@ function T.tests.party_grid_window_and_reflow_journey_preserves_semantics()
     Assert.equal(partyView(game).cursorNode, 1, "the switch lands on the destination slot")
 
     -- A native-like reflow preserves the active selection and order
-    -- while the plan becomes a windowless fullscreen.
+    -- while the underfilled plan keeps its static frame.
     game.runtime:resizePresentation(640, 480, nativeTopology(640, 480))
     game:step()
     Assert.equal(
@@ -433,7 +430,11 @@ function T.tests.party_grid_window_and_reflow_journey_preserves_semantics()
     local reflowed = partyView(game)
     Assert.equal(reflowed.cursorNode, 1, "a reflow preserves the active selection")
     Assert.deepEqual(partyOrder(game), { "CYNDAQUIL", "CHIKORITA" }, "a reflow preserves the party order")
-    Assert.isNil(reflowed.presentation.window, "the native-like plan carries no window")
+    Assert.equal(
+      #assert(reflowed.presentation.frames, "the underfilled native party keeps its static frame"),
+      1,
+      "the native-like plan keeps its one outer frame"
+    )
     Assert.equal(reflowed.presentation.inputKey, inputKey, "a reflow keeps the input geometry")
 
     -- Down onto cancel and confirm closes back through the menu to the

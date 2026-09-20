@@ -486,9 +486,10 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     local view, plan = presentationOf(game, "on the native-like surface")
     Assert.equal(#plan.panes, 1, "the native-like composition shows only its interactive pane")
     Assert.isTrue(plan.panes[1].interactive, "the single native-like pane takes input")
-    Assert.isNil(plan.window, "the native-like fullscreen carries no window chrome")
-    Assert.isTrue(type(plan.coverage) == "table", "the native-like plan owns its coverage")
-    Assert.equal(#plan.coverage, 1, "the native-like fullscreen owns its target region")
+    Assert.isTrue(type(plan.frames) == "table", "the native-like plan carries its static frame list")
+    Assert.deepEqual(plan.frames, {}, "exact native coverage leaves no background to decorate")
+    Assert.isTrue(type(plan.fadeCoverage) == "table", "the native-like plan owns its transition coverage")
+    Assert.equal(#plan.fadeCoverage, 1, "the native-like plan owns its target transition region")
     local content = plan.content
     Assert.isTrue(type(content) == "table", "the native-like plan carries its logical content")
     Assert.equal(content.heroVisible, false, "the native-like plan hides the hero pane")
@@ -538,8 +539,8 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     )
     Assert.equal(
       wideInteractivePlacement.frame.x - (wideHeroPlacement.frame.x + wideHeroPlacement.frame.width),
-      8 * wideInteractivePlacement.scale,
-      "paired wide panes keep one eight logical-pixel gap"
+      0,
+      "paired wide panes touch with no gap"
     )
     Assert.equal(viewPocket(wideView), "medicine", "the wide composition preserves the pocket")
     Assert.equal(selectedKey(wideView), "POTION", "the wide composition preserves the selected item")
@@ -563,8 +564,8 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     )
     Assert.equal(
       tallInteractivePlacement.frame.y - (tallHeroPlacement.frame.y + tallHeroPlacement.frame.height),
-      8 * tallInteractivePlacement.scale,
-      "paired tall panes keep one eight logical-pixel gap"
+      0,
+      "paired tall panes touch with no gap"
     )
     Assert.equal(viewPocket(bagView(game)), "medicine", "the tall composition preserves the pocket")
 
@@ -582,8 +583,8 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
       { x = 100, y = 300, width = 256, height = 192 },
       "interaction on the auxiliary surface"
     )
-    Assert.isTrue(type(dual.coverage) == "table", "the dual plan owns its coverage")
-    Assert.equal(#dual.coverage, 2, "the physical pair covers one region per surface")
+    Assert.isTrue(type(dual.fadeCoverage) == "table", "the dual plan owns its transition coverage")
+    Assert.equal(#dual.fadeCoverage, 2, "the physical pair covers one transition region per surface")
 
     game.runtime:resizePresentation(640, 480, oneDisplay(640, 480, false))
     game:step()

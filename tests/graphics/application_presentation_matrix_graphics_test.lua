@@ -394,6 +394,20 @@ function T.bag_pairs_share_scale_with_no_gap(scope)
     "paired bag panes touch with no gap"
   )
   Assert.equal(#wide.frames, 1, "the pair carries one frame around its envelope")
+  local tall = bag.tall(contextFor(singleDisplay(390, 844), "tall", bag), {})
+  Assert.equal(#tall.panes, 2, "tall stacks hero above interaction")
+  Assert.equal(
+    tall.panes[1].placement.pixelScale,
+    tall.panes[2].placement.pixelScale,
+    "stacked bag panes must share one integer scale"
+  )
+  Assert.near(
+    tall.panes[1].placement.frame.y + tall.panes[1].placement.frame.height,
+    tall.panes[2].placement.frame.y,
+    1e-6,
+    "stacked bag panes touch with no gap"
+  )
+  Assert.equal(#tall.frames, 1, "the stacked pair carries one frame around its envelope")
   local native = bag.nativeLike(contextFor(singleDisplay(640, 480), "nativeLike", bag), {})
   Assert.equal(#native.panes, 1, "native-like bag shows only interaction")
   Assert.notNil(native.content.descriptionFallback, "lower-only bag must carry its description fallback")
@@ -578,6 +592,12 @@ function T.hosted_naming_magnifies_once_across_densities(scope)
   Assert.equal(onePlacement.logicalWidth, 256, "the child stays canonical at 1x")
   Assert.equal(twoPlacement.logicalWidth, 256, "the child stays canonical at 2x")
   Assert.equal(twoPlacement.pixelScale, 2, "the denser host must use the doubled scale")
+  Assert.deepEqual(one.frames, {}, "native-like naming publishes no outer frame")
+  Assert.deepEqual(two.frames, {}, "denser native-like naming publishes no outer frame")
+  local wideNaming = naming.wide(contextFor(singleDisplay(1280, 720), "wide", naming), {})
+  Assert.equal(#wideNaming.panes, 1, "wide naming keeps one canonical pane")
+  Assert.equal(wideNaming.panes[1].placement.logicalWidth, 256, "the wide naming child stays canonical")
+  Assert.deepEqual(wideNaming.frames, {}, "wide naming publishes no outer frame")
   Assert.deepEqual(
     one.content.layout.surface,
     two.content.layout.surface,

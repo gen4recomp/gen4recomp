@@ -822,7 +822,6 @@ local function attachNamingPlan(edit)
     configuration = "nativeLike",
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaces.nativeLike,
   }, edit.namingScreen)
   edit.namingPresentation = plan

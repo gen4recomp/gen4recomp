@@ -3,7 +3,7 @@
 -- genuine world/auxiliary pair is dual; a near-4:3 single surface stays a
 -- fullscreen native surface across decorations (enter within 12 logical
 -- pixels per edge, retain within 14); anything else is a wide or tall
--- surface that frames the application in a draggable window. The band and
+-- surface that frames the application in a static centered box. The band and
 -- its hysteresis are one shared contract, not per-application heuristics.
 
 local Assert = require("tests.support.Assert")
@@ -49,7 +49,7 @@ local function measure(topology, width, height, pixelRatio)
   }
 end
 
-function T.tests.near_native_single_surfaces_stay_fullscreen_instead_of_windowing()
+function T.tests.near_native_single_surfaces_stay_fullscreen_instead_of_framing()
   local policy = sharedPolicy()
   for _, size in ipairs({
     { width = 640, height = 480 },
@@ -64,13 +64,13 @@ end
 function T.tests.far_surfaces_fall_to_wide_or_tall_by_aspect()
   local policy = sharedPolicy()
   local wide = policy.classify(measure(singleSurface(1920, 1080), 1920, 1080))
-  Assert.equal(wide, "wide", "a 16:9 host frames the application in a window")
+  Assert.equal(wide, "wide", "a 16:9 host frames the application in a static box")
   for _, size in ipairs({
     { width = 390, height = 844 },
     { width = 512, height = 512 },
   }) do
     local configuration = policy.classify(measure(singleSurface(size.width, size.height), size.width, size.height))
-    Assert.equal(configuration, "tall", size.width .. "x" .. size.height .. " frames the application in a window")
+    Assert.equal(configuration, "tall", size.width .. "x" .. size.height .. " frames the application in a static box")
   end
 end
 
@@ -96,11 +96,11 @@ function T.tests.native_classification_has_stable_hysteresis()
   Assert.equal(classifyAt(640, 458, held), "nativeLike", "an error inside the entry band stays native")
   -- 640x436 is a ~12.9 error: past entry, inside retain, so it stays native.
   Assert.equal(classifyAt(640, 436, held), "nativeLike", "an error inside the retain band stays native")
-  -- 640x430 is a ~14.9 error: past retain, so it leaves native for a window.
-  local windowed = classifyAt(640, 430, held)
-  Assert.isTrue(windowed == "wide" or windowed == "tall", "an error past the retain band leaves native")
+  -- 640x430 is a ~14.9 error: past retain, so it leaves native for a static frame.
+  local framed = classifyAt(640, 430, held)
+  Assert.isTrue(framed == "wide" or framed == "tall", "an error past the retain band leaves native")
   -- Back at a ~12.9 error without native history, the entry band refuses it.
-  Assert.equal(classifyAt(640, 436, windowed), windowed, "re-entry into native needs the entry band again")
+  Assert.equal(classifyAt(640, 436, framed), framed, "re-entry into native needs the entry band again")
 end
 
 local function selectionFor(topology, width, height, pixelRatio)
@@ -108,7 +108,7 @@ local function selectionFor(topology, width, height, pixelRatio)
   return policy.selectSurfaces(measure(topology, width, height, pixelRatio))
 end
 
-local function layoutContext(measurement, configuration, windowPosition, nativeLikeInterface)
+local function layoutContext(measurement, configuration, nativeLikeInterface)
   local policy = sharedPolicy()
   local selection = policy.selectSurfaces(measurement)
   return {
@@ -116,7 +116,6 @@ local function layoutContext(measurement, configuration, windowPosition, nativeL
     configuration = configuration,
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = windowPosition or { x = 0.5, y = 0.5 },
     nativeLikeInterface = nativeLikeInterface,
   }
 end
@@ -188,7 +187,7 @@ function T.tests.fullscreen_fits_from_ui_bounds_with_integer_pixels()
   Assert.equal(placement.logicalWidth, 256, "the logical surface stays canonical")
   Assert.equal(placement.logicalHeight, 192, "the logical surface stays canonical")
   Assert.equal(#geometry.fadeCoverage, 1, "fullscreen names its transition region")
-  Assert.deepEqual(geometry.frames, {}, "fullscreen carries no window")
+  Assert.deepEqual(geometry.frames, {}, "fullscreen carries no frame")
 end
 
 function T.tests.fullscreen_without_drawable_space_returns_an_empty_geometry()
@@ -315,7 +314,7 @@ function T.tests.stacked_returns_nil_when_the_envelope_cannot_fit()
 end
 
 -- Static single-pane boxes fit the complete rotated outer frame
--- (content plus 8/24/8/16) centered at integer scale with no window
+-- (content plus 8/24/8/16) centered at integer scale with no remembered position
 -- position, title strip, or grab geometry.
 function T.tests.framed_single_pane_centers_the_complete_rotated_frame()
   local policy = sharedPolicy()
@@ -340,7 +339,7 @@ function T.tests.framed_single_pane_centers_the_complete_rotated_frame()
       "the content box sits inside the rotated insets"
     )
     local untyped = geometry --[[@as table<string, unknown>]]
-    Assert.isNil(untyped.window, "static frames carry no window")
+    Assert.isNil(untyped.window, "static frames carry no window state")
     local first = geometry.placements["content"].frame
     local second =
       assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a second resolve places")

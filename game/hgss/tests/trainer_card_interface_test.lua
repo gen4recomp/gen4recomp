@@ -62,7 +62,6 @@ local function contextFor(m, configuration)
   return {
     measurement = m,
     configuration = configuration,
-    windowPosition = { x = 0.5, y = 0.5 },
   }
 end
 
@@ -250,7 +249,6 @@ function T.missing_measurement_fails_without_a_partial_plan()
     configuration = "nativeLike",
     primary = selection.primary,
     secondary = selection.secondary,
-    windowPosition = { x = 0.5, y = 0.5 },
     nativeLikeInterface = interfaces.nativeLike,
   }
   Assert.throws(function()
