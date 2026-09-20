@@ -23,30 +23,10 @@ end
 ---@return { x: number, y: number } origin
 ---@return LayoutGeometry.Rect clip
 local function resolveScope(placement)
-  assert(type(placement) == "table", "a placement record is required")
-  LayoutGeometry.rect(placement.frame, "placement.frame")
-  assert(
-    type(placement.scale) == "number"
-      and placement.scale == placement.scale
-      and placement.scale > 0
-      and placement.scale ~= math.huge,
-    "placement.scale must be a finite positive number"
-  )
+  LayoutGeometry.validatePlacement(placement, "placement")
   local frame = placement.frame
   local origin = placement.origin or frame
-  assert(
-    type(origin.x) == "number"
-      and origin.x == origin.x
-      and origin.x ~= math.huge
-      and origin.x ~= -math.huge
-      and type(origin.y) == "number"
-      and origin.y == origin.y
-      and origin.y ~= math.huge
-      and origin.y ~= -math.huge,
-    "placement.origin must be finite coordinates"
-  )
   local clip = placement.clipRect or frame
-  LayoutGeometry.rect(clip, "placement.clipRect")
   return { x = origin.x, y = origin.y }, { x = clip.x, y = clip.y, width = clip.width, height = clip.height }
 end
 

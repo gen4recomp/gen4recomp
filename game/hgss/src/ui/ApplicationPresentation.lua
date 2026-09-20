@@ -27,6 +27,8 @@ local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 ---@field _cancelled table<string, boolean> pointer ids whose remaining up must be dropped
 ---@field _pendingCancel string? pointer id owed a pointer_cancel before the next mapped batch
 ---@field _resolver (fun(context: ApplicationLayout.Context, view: table<string, unknown>): ApplicationPlan)? the published plan's resolver
+---@field _signature string? measurement signature behind the published plan
+---@field _dragMoved boolean the active header capture moved its window since publication
 ---@field _windowUsable LayoutGeometry.Rect? usable region behind the current windowed geometry
 ---@field _disposed boolean
 local ApplicationPresentation = {}
@@ -50,6 +52,26 @@ local CHROME_GRIP = { 0.80, 0.84, 0.88, 1 }
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }
 
+---@param value unknown
+---@return boolean
+local function isFiniteNumber(value)
+  return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+---@param placement LayoutGeometry.Placement
+---@param what string
+local function assertCompletePlacement(placement, what)
+  LayoutGeometry.validatePlacement(placement, what)
+  assert(
+    isFiniteNumber(placement.logicalWidth) and placement.logicalWidth > 0,
+    what .. " needs finite positive logical dimensions"
+  )
+  assert(
+    isFiniteNumber(placement.logicalHeight) and placement.logicalHeight > 0,
+    what .. " needs finite positive logical dimensions"
+  )
+end
+
 ---@param plan ApplicationPlan
 local function assertValidPlan(plan)
   assert(type(plan) == "table", "a resolver must return a complete plan")
@@ -62,11 +84,7 @@ local function assertValidPlan(plan)
     ids[pane.id] = true
     assert(type(pane.interactive) == "boolean", "a pane needs its interaction flag")
     assert(type(pane.placement) == "table", "a pane needs its placement")
-    LayoutGeometry.rect(pane.placement.frame, "pane placement frame")
-    assert(
-      type(pane.placement.scale) == "number" and pane.placement.scale > 0,
-      "a pane placement needs its positive scale"
-    )
+    assertCompletePlacement(pane.placement, "pane placement")
   end
   assert(type(plan.content) == "table", "the plan needs its content")
   assert(type(plan.inputKey) == "string", "the plan needs its input key")
@@ -85,6 +103,8 @@ local function assertValidPlan(plan)
     assert(type(plan.window) == "table", "the plan window must be a record")
     assert(type(plan.window.outer) == "table", "the window needs its outer placement")
     assert(type(plan.window.body) == "table", "the window needs its body placement")
+    assertCompletePlacement(plan.window.outer, "window outer placement")
+    assertCompletePlacement(plan.window.body, "window body placement")
     LayoutGeometry.rect(plan.window.grabRect, "window.grabRect")
   end
 end
@@ -135,6 +155,9 @@ function ApplicationPresentation.new(interfaces, windowState)
     _capture = nil,
     _cancelled = {},
     _pendingCancel = nil,
+    _resolver = nil,
+    _signature = nil,
+    _dragMoved = false,
     _windowUsable = nil,
     _disposed = false,
   }, ApplicationPresentation)
@@ -193,9 +216,10 @@ end
 -- gameplay: classify with hysteresis, build the context, run the selected
 -- case function, validate the candidate before publishing. A geometry or
 -- resolver change drops any held capture and queues pointer_cancel when a
--- content press was held; resolver failure propagates with the previous
--- plan and remembered position intact. Never copies GPU objects, never
--- renders.
+-- content press was held, except the session's own header-drag translation
+-- under unchanged display facts; resolver failure propagates with the
+-- previous plan and remembered position intact. Never copies GPU objects,
+-- never renders.
 ---@param measurement DisplayMeasurement
 ---@param view table<string, unknown> the current semantic snapshot for content
 ---@return ApplicationPlan
@@ -218,17 +242,37 @@ function ApplicationPresentation:resolve(measurement, view)
   local candidate = resolver(context, view)
   assertValidPlan(candidate)
   local previous = self._plan
-  if previous ~= nil and planIdentity(candidate, resolver) ~= planIdentity(previous, self._resolver or resolver) then
-    local capture = self._capture
+  local capture = self._capture
+  local identityChanged = previous ~= nil
+    and planIdentity(candidate, resolver) ~= planIdentity(previous, self._resolver or resolver)
+  local externalReflow = false
+  if previous ~= nil then
+    local signatureChanged = self._signature ~= nil and measurement.signature ~= self._signature
+    local configurationChanged = self._configuration ~= nil and configuration ~= self._configuration
+    local resolverChanged = self._resolver ~= nil and resolver ~= self._resolver
+    externalReflow = signatureChanged or configurationChanged or resolverChanged
+  end
+  -- A header drag survives only its own translated re-resolution: the
+  -- session moved its window while the display facts, configuration, and
+  -- resolver stayed put and the candidate still carries a window. Every
+  -- other structural change drops the held gesture as before.
+  local keepHeader = capture ~= nil
+    and capture.kind == "header"
+    and self._dragMoved == true
+    and not externalReflow
+    and candidate.window ~= nil
+  if (identityChanged or externalReflow) and not keepHeader then
     self._capture = nil
     if capture ~= nil and capture.kind == "content" then
       self._pendingCancel = capture.pointerId
     end
     self._cancelled = {}
   end
+  self._dragMoved = false
   self._plan = candidate
   self._configuration = configuration
   self._resolver = resolver
+  self._signature = measurement.signature
   if candidate.window ~= nil then
     local usable = selection.primary.usableBounds
     self._windowUsable = usable and { x = usable.x, y = usable.y, width = usable.width, height = usable.height } or nil
@@ -466,11 +510,15 @@ function ApplicationPresentation:_dragHeader(event)
   local frame = window.outer.frame
   local travelX = usable.width - frame.width
   local travelY = usable.height - frame.height
+  local beforeX, beforeY = entry.x, entry.y
   if travelX > 0 then
     entry.x = math.max(0, math.min(1, entry.x + (event.x - (capture.x or event.x)) / travelX))
   end
   if travelY > 0 then
     entry.y = math.max(0, math.min(1, entry.y + (event.y - (capture.y or event.y)) / travelY))
+  end
+  if entry.x ~= beforeX or entry.y ~= beforeY then
+    self._dragMoved = true
   end
   capture.x = event.x
   capture.y = event.y
@@ -482,6 +530,7 @@ end
 function ApplicationPresentation:cancelPointers()
   local capture = self._capture
   self._capture = nil
+  self._dragMoved = false
   if capture ~= nil and capture.kind == "content" then
     self._pendingCancel = capture.pointerId
   end
@@ -495,6 +544,8 @@ function ApplicationPresentation:dispose()
   self._plan = nil
   self._configuration = nil
   self._resolver = nil
+  self._signature = nil
+  self._dragMoved = false
   self._windowUsable = nil
   self._disposed = true
 end

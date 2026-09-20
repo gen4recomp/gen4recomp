@@ -176,6 +176,30 @@ local function checkPlacement(placement)
   assert(isFiniteNumber(placement.scale) and placement.scale > 0, "placement.scale must be a finite positive number")
 end
 
+-- Validates the generic frame/scale/origin/clip contract shared by drawing
+-- and plan publication without mutating or normalizing the record: an
+-- omitted origin means the frame origin and an omitted clip means the full
+-- frame. Application plans layer their own logical-dimension requirements
+-- on top; minimal hit-test records stay valid here.
+---@param placement LayoutGeometry.Placement|LayoutGeometry.HitPlacement
+---@param name string?
+---@return LayoutGeometry.Placement|LayoutGeometry.HitPlacement the original record, unmodified
+function LayoutGeometry.validatePlacement(placement, name)
+  name = name or "placement"
+  assert(type(placement) == "table", name .. " must be a placement record")
+  checkRect(placement.frame, name .. ".frame")
+  assert(isFiniteNumber(placement.scale) and placement.scale > 0, name .. ".scale must be a finite positive number")
+  local origin = placement.origin
+  if origin ~= nil then
+    assert(type(origin) == "table", name .. ".origin must be finite coordinates")
+    assert(isFiniteNumber(origin.x) and isFiniteNumber(origin.y), name .. ".origin must be finite coordinates")
+  end
+  if placement.clipRect ~= nil then
+    checkRect(placement.clipRect, name .. ".clipRect")
+  end
+  return placement
+end
+
 -- The full-frame origin is the single inversion origin: legacy records
 -- without an explicit origin invert through their frame origin, and legacy
 -- records without a clip hit-test the whole frame.

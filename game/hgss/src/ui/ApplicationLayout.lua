@@ -335,9 +335,10 @@ end
 
 -- A draggable window inside the existing drawable: content W x H with a
 -- 1-logical-pixel border and a 12-pixel title/grab strip, so the outer
--- frame is (W+2) x (H+14) fitted with zero crop. The preferred initial size
--- is the largest integer scale inside a centred 80% rectangle; when even
--- that misses 1x the whole available bounds are used. The remembered
+-- frame is (W+2) x (H+14) fitted with zero crop. The initial fit asks the
+-- fixed-surface fitter for the largest physical integer scale inside a
+-- centred 80% rectangle with the current framebuffer ratio; when even that
+-- misses physical 1x the whole available bounds are used. The remembered
 -- normalized position places the frame (default centres); the whole outer
 -- frame stays clamped to the usable bounds with its origin on the physical
 -- grid. Cropping is disabled in windows. Returns nil only when the outer
@@ -357,26 +358,31 @@ function ApplicationLayout.windowed(context, native, options)
   local outerWidth = native.width + 2
   local outerHeight = native.height + 14
   local preferredScale, _, _ = fitOptions(options)
-  local fitBounds = { x = usable.x, y = usable.y, width = usable.width, height = usable.height }
-  if preferredScale == nil then
-    local eightyWidth = usable.width * 0.8
-    local eightyHeight = usable.height * 0.8
-    local eightyScale = math.min(math.floor(eightyWidth / outerWidth), math.floor(eightyHeight / outerHeight))
-    if eightyScale >= 1 then
-      preferredScale = eightyScale
-      fitBounds = {
-        x = usable.x + (usable.width - eightyWidth) / 2,
-        y = usable.y + (usable.height - eightyHeight) / 2,
-        width = eightyWidth,
-        height = eightyHeight,
-      }
-    end
-  end
-  local placement = PixelScale.placeFixed(fitBounds, outerWidth, outerHeight, {
+  local fullBounds = { x = usable.x, y = usable.y, width = usable.width, height = usable.height }
+  local fitBounds = fullBounds
+  local placeOptions = {
     pixelRatio = ratio,
     preferredScale = preferredScale,
     maxOverdraw = { left = 0, right = 0, top = 0, bottom = 0 },
-  })
+  }
+  if preferredScale == nil then
+    local eightyWidth = usable.width * 0.8
+    local eightyHeight = usable.height * 0.8
+    fitBounds = {
+      x = usable.x + (usable.width - eightyWidth) / 2,
+      y = usable.y + (usable.height - eightyHeight) / 2,
+      width = eightyWidth,
+      height = eightyHeight,
+    }
+    placeOptions = {
+      pixelRatio = ratio,
+      maxOverdraw = { left = 0, right = 0, top = 0, bottom = 0 },
+    }
+  end
+  local placement = PixelScale.placeFixed(fitBounds, outerWidth, outerHeight, placeOptions)
+  if preferredScale == nil and (placement == nil or not fitsInteger(placement)) then
+    placement = PixelScale.placeFixed(fullBounds, outerWidth, outerHeight, placeOptions)
+  end
   if placement == nil or not fitsInteger(placement) then
     return nil
   end

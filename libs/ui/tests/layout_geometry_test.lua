@@ -304,4 +304,43 @@ function T.sub_placements_clip_to_the_parent_and_vanish_when_invisible()
   Assert.equal(parent.frame.y, parentSnapshot.y, "subregions never mutate the parent")
 end
 
+function T.placement_validation_accepts_minimal_and_full_records_without_mutation()
+  local minimal = { frame = rect(10, 20, 100, 50), scale = 2 }
+  local returned = LayoutGeometry.validatePlacement(minimal, "placement")
+  Assert.isTrue(returned == minimal, "validation keeps the original record without copying")
+  Assert.deepEqual(minimal, { frame = rect(10, 20, 100, 50), scale = 2 }, "validation never mutates the record")
+  local full = {
+    frame = rect(-9, -8, 768, 576),
+    origin = { x = -9, y = -8 },
+    scale = 3,
+    clipRect = rect(0, 1, 750, 558),
+  }
+  Assert.isTrue(LayoutGeometry.validatePlacement(full, "placement") == full, "a full cropped record validates")
+  Assert.deepEqual(full.origin, { x = -9, y = -8 }, "validation never mutates the origin")
+end
+
+function T.placement_validation_rejects_malformed_origin_and_clip()
+  Assert.throws(function()
+    LayoutGeometry.validatePlacement({
+      frame = rect(0, 0, 100, 50),
+      scale = 2,
+      origin = { x = 0 / 0, y = 0 },
+    }, "placement")
+  end, "a non-finite origin is a programming error")
+  Assert.throws(function()
+    LayoutGeometry.validatePlacement({
+      frame = rect(0, 0, 100, 50),
+      scale = 2,
+      clipRect = rect(0, 0, -4, 10),
+    }, "placement")
+  end, "a malformed clip is a programming error")
+  Assert.throws(function()
+    LayoutGeometry.validatePlacement({ frame = rect(0, 0, 100, 50), scale = 0 }, "placement")
+  end, "a non-positive scale is a programming error")
+  local nothing = nil ---@type any
+  Assert.throws(function()
+    LayoutGeometry.validatePlacement(nothing, "placement")
+  end, "a missing placement is a programming error")
+end
+
 return { tests = T }
