@@ -39,15 +39,14 @@ function StartMenuState.new(opts)
     rememberedActionId = opts.rememberedActionId,
     effect = opts.effect,
   })
-  local session, sessionErr = nil, nil
-  local built = pcall(function()
-    session = ApplicationPresentation.new(StartMenuInterface.withOverrides(opts.overrides), opts.windowState)
+  local built, sessionOrError = pcall(function()
+    return ApplicationPresentation.new(StartMenuInterface.withOverrides(opts.overrides), opts.windowState)
   end)
   if not built then
     controller:dispose()
-    error(sessionErr, 0)
+    error(sessionOrError, 0)
   end
-  local ready = assert(session, "the start menu wrapper requires its presentation session")
+  local ready = assert(sessionOrError, "the start menu wrapper requires its presentation session")
   local self = setmetatable({
     _controller = controller,
     _session = ready,

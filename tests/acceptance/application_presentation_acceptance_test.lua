@@ -9,6 +9,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
+local BagCache = require("libs.assets.src.BagCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
@@ -399,6 +400,112 @@ function T.tests.bag_preserves_browse_state_across_topology_change()
     closeApplication(game)
     local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
     Assert.equal(bag:quantity("POTION"), 5, "reflow and hero presses must issue no inventory mutation")
+  end)
+end
+
+-- A pointer press held on a Bag cell across a field focus loss must not
+-- survive the blur: the stale release activates nothing, and a fresh press
+-- after refocus maps through the live session exactly once.
+function T.tests.bag_blur_cancels_stale_press_and_fresh_input_recovers()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    grantBag(game)
+    stockBasics(game)
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    Assert.isTrue(bag:add("FULL_RESTORE", 3), "setup stocks a second medicine item")
+    switchDisplay(game, 640, 480)
+    openBag(game, state)
+    local function bagView()
+      return assert(
+        game.runtime.applicationHost:status().application,
+        "the bag must stay open through the focus journey"
+      )
+    end
+    local function selectedItem(view)
+      local selected = view.selected
+      if selected == nil then
+        return nil
+      end
+      assert(type(selected) == "table", "the bag selection must be a record")
+      local key = selected.item or selected.itemKey or selected.key
+      assert(type(key) == "string" and key ~= "", "the bag selection must name its item")
+      return key
+    end
+    -- Resolve generated tab/cell geometry through the manifest and the
+    -- published interactive placement.
+    local manifest = BagCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
+    local interactiveManifest = assert(manifest.interactive, "the generated manifest must carry its interactive pane")
+    local slots = assert(
+      interactiveManifest.itemSlots and interactiveManifest.itemSlots.slots,
+      "the generated manifest must carry its item slot geometry"
+    )
+    local tabs = assert(
+      interactiveManifest.pocketTabs and interactiveManifest.pocketTabs.rects,
+      "the generated manifest must carry its pocket tab geometry"
+    )
+    local placement = interactivePlacement(
+      assert(bagView().presentation, "the open bag must publish its presentation plan"),
+      "open bag"
+    )
+    local frame = assert(placement.frame, "the interactive placement must expose its host frame")
+    local scale = assert(placement.scale, "the interactive placement must expose its scale")
+    local function cellCenter(rect)
+      return frame.x + (rect.x + rect.width / 2) * scale, frame.y + (rect.y + rect.height / 2) * scale
+    end
+    -- The stocked medicine lives outside the default items pocket, so
+    -- enter medicine through its tab: tabs follow pocket order.
+    local medicineEntry = assert(tabs[2], "the manifest must carry a medicine tab")
+    local medicineTab = medicineEntry.rect or medicineEntry
+    local tabX, tabY = cellCenter(medicineTab)
+    pointerPress(game, "focus:medicine", tabX, tabY)
+    Assert.equal(bagView().pocket, "medicine", "tapping the medicine tab enters the medicine pocket")
+    Assert.equal(selectedItem(bagView()), "POTION", "the medicine pocket starts on the first stocked cell")
+    local second = assert(slots[2], "the manifest must carry a second item cell").rect
+    local cellX, cellY = cellCenter(second)
+
+    -- Focus the second cell with a complete tap, so the held press below
+    -- starts from a known selection.
+    pointerPress(game, "focus:second", cellX, cellY)
+    Assert.equal(selectedItem(bagView()), "FULL_RESTORE", "tapping the second cell selects its item")
+
+    -- Hold a press on the already-selected cell, then blur and refocus
+    -- through the production focus wiring: the field state clears physical
+    -- input and asks the live host to cancel its capture.
+    local focusState = setmetatable({ runtime = game.runtime }, FieldState)
+    game.runtime.input:pointerDown("focus:stale", cellX, cellY)
+    game:step()
+    focusState:focus(false)
+    focusState:focus(true)
+    game:step()
+    game.runtime.input:pointerUp("focus:stale", cellX, cellY)
+    game:step()
+    game:step()
+    local released = bagView()
+    Assert.equal(
+      hostPhase(game),
+      FieldApplicationHost.PHASES.application,
+      "a stale release must not leave the bag application"
+    )
+    Assert.equal(released.state, "browsing", "a stale release must not open the action menu")
+    Assert.equal(selectedItem(released), "FULL_RESTORE", "a stale release must not move the selection")
+    Assert.equal(bag:quantity("POTION"), 5, "the stale gesture must issue no inventory mutation")
+    Assert.equal(bag:quantity("FULL_RESTORE"), 3, "the stale gesture must issue no inventory mutation")
+
+    -- A fresh press after refocus maps through the live session: tapping
+    -- the selected cell opens the action menu exactly once.
+    game.runtime.input:pointerDown("focus:fresh", cellX, cellY)
+    game:step()
+    game.runtime.input:pointerUp("focus:fresh", cellX, cellY)
+    game:step()
+    Assert.equal(bagView().state, "action_menu", "a fresh press after refocus must activate through the live session")
+    pressCancel(game)
+    Assert.equal(bagView().state, "browsing", "cancelling the menu returns to browsing")
+    closeApplication(game)
+    game:advanceUntil("the start menu returns after the bag closes", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    closeStartMenu(game)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the journey ends back on the field")
   end)
 end
 
