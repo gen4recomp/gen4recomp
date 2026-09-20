@@ -181,6 +181,8 @@ function OakIntroComposition.compose(options)
       textRenderer = textRenderer,
       choiceText = choiceText,
       graphics = graphics,
+      displayContext = options.displayContext,
+      namingOverrides = options.namingOverrides,
       imageLoader = options.imageLoader or generatedImageLoader(cacheFs, graphics),
       textInputHost = options.textInputHost,
       width = options.width,

@@ -314,11 +314,15 @@ end
 
 local function clickNamingCell(state, row, column)
   local view = state:view()
-  local surface = assert(view.pixelSurface)
+  local plan = assert(view.namingPresentation, "Oak name entry publishes its parent-owned naming plan")
+  local pane = assert(plan.panes[1], "the naming plan carries its content pane")
   local naming = assert(view.layout.namingScreen)
-  local origin = assert(naming.surface)
   local cell = assert(naming.cells[row][column])
-  local x, y = LayoutGeometry.logicalToHost(surface.placement, origin.x + cell.x + 1, origin.y + cell.y + 1)
+  local x, y = LayoutGeometry.logicalToHost(
+    assert(pane.placement, "the naming pane carries its host placement"),
+    cell.x + 1,
+    cell.y + 1
+  )
   state:mousepressed(x, y, 1)
 end
 
@@ -345,6 +349,25 @@ T.tests.production_oak_name_entry_routes_pointer_keyboard_and_gamepad_to_one_res
   Assert.equal(state:view().phase, "name_confirm", "pointer OK must publish the same naming result")
   Assert.equal(state:view().name, "GOL")
   state:dispose()
+end
+
+T.tests.production_oak_name_draft_survives_reflow_behind_a_parent_owned_session = function()
+  withComposed(AcceptanceHarness.defaultVersion(), 640, 480, function(state)
+    driveToNameEdit(state)
+    state:textinput("GOLD")
+    Assert.equal(state:view().name, "GOLD", "the typed draft reaches the profile flow")
+    state:resize(960, 720)
+    Assert.equal(state:view().name, "GOLD", "a geometry change must not mutate the draft")
+    local plan = assert(state:view().namingPresentation, "Oak must own a naming presentation session across reflow")
+    Assert.equal(#plan.panes, 1, "the naming session resolves one logical pane after reflow")
+    clickNamingCell(state, 2, 1)
+    Assert.equal(state:view().name, "GOLDA", "pointer routing survives the geometry change")
+    Assert.equal(state:view().phase, "name_edit", "activation must not submit mid-edit")
+    state:gamepadpressed(nil, "start")
+    state:tick(26)
+    Assert.equal(state:view().phase, "name_confirm", "Start submits exactly one naming result")
+    Assert.equal(state:view().name, "GOLDA")
+  end)
 end
 
 return T

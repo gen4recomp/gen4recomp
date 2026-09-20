@@ -4,6 +4,7 @@
 
 local TextButton = require("libs.ui.src.TextButton")
 local ImageButton = require("libs.ui.src.ImageButton")
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 local PixelScale = require("libs.ui.src.PixelScale")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
@@ -300,7 +301,7 @@ function OakIntroRenderer:_ensureLogicalCanvas(surface)
   if self.logicalCanvas and self.logicalCanvasWidth == width and self.logicalCanvasHeight == height then
     return
   end
-  local ok, replacement = pcall(self.graphics.newCanvas, width, height)
+  local ok, replacement = pcall(self.graphics.newCanvas, width, height, { dpiscale = 1 })
   if not ok then
     error(replacement, 0)
   end
@@ -428,9 +429,6 @@ function OakIntroRenderer:_draw(view)
     end
   end
   graphics.setColor(1, 1, 1, 1)
-  if view.phase == "name_edit" then
-    self.namingScreen:draw(assert(view.namingScreen), assert(layout.namingScreen))
-  end
 end
 
 function OakIntroRenderer:draw(view, overlay)
@@ -457,6 +455,18 @@ function OakIntroRenderer:draw(view, overlay)
     graphics.setBlendMode("replace", "premultiplied")
     graphics.draw(self.logicalCanvas, placement.origin.x, placement.origin.y, 0, placement.scale, placement.scale)
   end)
+  -- The reusable naming child composites outside the already-scaled Oak
+  -- root at exactly one host scale: the parent-owned plan carries its own
+  -- placement, so parent and child output scales never multiply.
+  local namingPlan = view.namingPresentation
+  if namingPlan ~= nil then
+    local snapshot = assert(view.namingScreen, "Oak naming draw requires its semantic snapshot")
+    ApplicationPresentation.draw(graphics, {
+      graphics = graphics,
+      namingRenderer = self.namingScreen,
+      text = self.text,
+    }, snapshot, namingPlan)
+  end
 end
 
 function OakIntroRenderer:dispose()
