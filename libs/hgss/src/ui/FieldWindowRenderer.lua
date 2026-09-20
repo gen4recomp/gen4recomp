@@ -92,6 +92,29 @@ function FieldWindowRenderer:frameQuads(frameIndex)
   return quads
 end
 
+-- Draws only the rotated application border around the content box from the
+-- selected frame row: every tile instance of the shared rotated tilemap,
+-- each with its artwork visually quarter-turned counter-clockwise so it
+-- follows the rotated composition. Never fills the content box or the
+-- surrounding host area; callers own the LogicalSurface placement.
+---@param box { x: number, y: number, width: number, height: number } content box in the caller's reference space
+---@param frameIndex integer generated frame index
+function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "drawApplicationFrame requires the content box"
+  )
+  ---@cast box FieldDialogueTheme.Rect
+  local quads = self:frameQuads(frameIndex)
+  local image = assert(self._frameImage)
+  local lg = assert(self._graphics)
+  lg.setColor(1, 1, 1, 1)
+  for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
+    local tile = assert(quads[placement.tile])
+    lg.draw(image, tile, placement.x, placement.y, -math.pi / 2, 1, 1, 8, 0)
+  end
+end
+
 -- Draws the content-background fill and, for a non-nil frame index, the
 -- player frame around the content box. A nil frame index draws the fill only
 -- rather than inventing a frame.

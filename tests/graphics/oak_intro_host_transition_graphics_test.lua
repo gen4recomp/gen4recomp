@@ -319,6 +319,7 @@ local function bootCoveredField(scope)
         end,
       },
       fieldEffectAssets = { effects = terrain },
+      playerData = { options = { textFrame = 0 } },
       fieldTerrainEffectController = FieldTerrainEffectController.new({
         effects = terrain,
         modelFactory = function()

@@ -927,4 +927,45 @@ function T.unframed_messages_use_transparent_background_while_framed_stays_opaqu
   Assert.isNil(manifest.textColors.infoBackground.a, "the manifest info background is not mutated")
 end
 
+-- Published outer frames draw through the already-owned window primitive
+-- with the player-owned frame choice: one border per frame record in plan
+-- order, before content, and nothing when the plan is unframed. No second
+-- window primitive is constructed.
+function T.outer_application_frames_draw_through_the_owned_window_primitive()
+  local presentation = openPresentation(2)
+  local frameCalls = {}
+  presentation._window = {
+    drawWindow = function() end,
+    drawApplicationFrame = function(_, box, frameIndex)
+      frameCalls[#frameCalls + 1] = { box = box, frameIndex = frameIndex }
+    end,
+  }
+  local FakeGraphics = require("tests.support.FakeGraphics").new
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local lg = FakeGraphics({})
+  local first = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 272, 232),
+    "the probe host must admit the framed box"
+  )
+  local second = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 128, 128),
+    "the probe host must admit a second framed box"
+  )
+  local firstBox = { x = 8, y = 24, width = 256, height = 192 }
+  local secondBox = { x = 8, y = 24, width = 112, height = 96 }
+  presentation:_drawOuterFrames(lg, {
+    frames = {
+      { placement = first, contentBox = firstBox },
+      { placement = second, contentBox = secondBox },
+    },
+  })
+  Assert.equal(#frameCalls, 2, "each published outer frame draws once")
+  Assert.deepEqual(frameCalls[1].box, firstBox, "the first border wraps its content box")
+  Assert.equal(frameCalls[1].frameIndex, 2, "the border uses the player-owned frame choice")
+  Assert.deepEqual(frameCalls[2].box, secondBox, "frame records draw in plan order")
+  Assert.equal(frameCalls[2].frameIndex, 2, "every border uses the player-owned frame choice")
+  presentation:_drawOuterFrames(lg, { frames = {} })
+  Assert.equal(#frameCalls, 2, "an unframed plan draws no outer decoration")
+end
+
 return { tests = T }

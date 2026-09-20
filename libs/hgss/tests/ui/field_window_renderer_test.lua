@@ -100,4 +100,54 @@ function T.unknown_frame_index_fails_loudly()
   window:release()
 end
 
+-- The application frame draws only the rotated selected border around the
+-- content box: no content fill, one draw per rotated tile instance from the
+-- shared rotated tilemap, sampling the selected strip row with identity
+-- tint and a visual quarter turn on every tile.
+function T.application_frame_draws_only_the_rotated_selected_border()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local window = openWindow(lg)
+  local box = { x = 8, y = 24, width = 256, height = 192 }
+  window:drawApplicationFrame(box, 0)
+  Assert.equal(#lg.rectangles, 0, "the application frame never fills its content box")
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local expected = FieldDialogueTheme.applicationFrameTilePlacements(box)
+  Assert.equal(#lg.draws, #expected, "every rotated tile instance draws exactly once")
+  for index, call in ipairs(lg.draws) do
+    local want = expected[index]
+    Assert.equal(call.x, want.x, "border tile " .. index .. " keeps its rotated target x")
+    Assert.equal(call.y, want.y, "border tile " .. index .. " keeps its rotated target y")
+    Assert.equal(call.quad.x, want.tile * 8, "border tile samples the selected strip row")
+    Assert.equal(call.quad.y, 0, "frame 0 samples the first strip row")
+    Assert.near(math.abs(call.rotation or 0), math.pi / 2, 1e-9, "border tile art carries a visual quarter turn")
+    Assert.deepEqual(call.color, { 1, 1, 1, 1 }, "border tiles draw with identity tint")
+  end
+  window:release()
+end
+
+-- The selected index moves artwork, not geometry: frame 1 samples the
+-- second strip row at the same rotated targets and still fills nothing.
+function T.application_frame_index_selects_artwork_without_moving_geometry()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local window = openWindow(lg)
+  local box = { x = 8, y = 24, width = 256, height = 192 }
+  window:drawApplicationFrame(box, 1)
+  Assert.equal(#lg.rectangles, 0, "the application frame never fills its content box")
+  Assert.isTrue(#lg.draws > 0, "the selected frame draws its border tiles")
+  for _, call in ipairs(lg.draws) do
+    Assert.equal(call.quad.y, 8, "frame 1 samples the second strip row")
+  end
+  window:release()
+end
+
+function T.application_frame_unknown_index_fails_loudly()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local window = openWindow(lg)
+  local err = Assert.throws(function()
+    window:drawApplicationFrame({ x = 8, y = 24, width = 256, height = 192 }, 9)
+  end)
+  Assert.isTrue(tostring(err):find("outside the generated frame set", 1, true) ~= nil)
+  window:release()
+end
+
 return { tests = T }

@@ -689,6 +689,7 @@ end
 local function stubWindow()
   local window = {}
   function window:drawWindow() end
+  function window:drawApplicationFrame() end
   function window:release() end
   return window
 end
@@ -1609,6 +1610,24 @@ function StarterChoicePresentation:_drawInfoPortrait(snapshot)
   graphics.draw(atlas, quad, portrait.x, portrait.y)
 end
 
+-- Draws every published outer application frame through the already-owned
+-- window primitive with the player-owned frame choice, before content.
+-- Unframed plans draw nothing extra and never touch the primitive.
+---@param graphics table<string, unknown> host graphics namespace
+---@param plan ApplicationPlan the resolved plan
+function StarterChoicePresentation:_drawOuterFrames(graphics, plan)
+  local frames = assert(plan and plan.frames, "starter outer-frame drawing requires the resolved plan frames")
+  local window = assert(self._window, "starter presentation owns no window primitive")
+  for _, frame in ipairs(frames) do
+    LogicalSurface.draw(graphics, assert(frame.placement, "the starter outer frame carries its placement"), function()
+      window:drawApplicationFrame(
+        assert(frame.contentBox, "the starter outer frame carries its content box"),
+        self._frameIndex
+      )
+    end)
+  end
+end
+
 ---@param plan ApplicationPlan the resolved native plan
 ---@param id string the pane identity to locate
 ---@return table<string, unknown> placement of the named pane
@@ -1648,6 +1667,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan)
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
   local surfaces = self._manifest.surfaces
   local infoText, promptText = infoMessageFor(self, snapshot)
+  self:_drawOuterFrames(graphics, plan)
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
     self:_drawMessageLines(
@@ -1758,6 +1778,7 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan)
   local selected = snapshot.selection
   local timing = self._manifest.scene.timing
   local machineAlpha = self._machineFade / timing.machineFadeTicks
+  self:_drawOuterFrames(graphics, plan)
   LogicalSurface.draw(graphics, placement, function()
     self:_drawMessageLines(
       { box = COMPACT_MESSAGE, textOrigin = { x = COMPACT_MESSAGE.x, y = COMPACT_MESSAGE.y }, framed = true },

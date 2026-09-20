@@ -4,7 +4,8 @@
 -- play and compact hosts such as Oak share this renderer. It owns HGSS
 -- frame, glyph text, and continue-cursor drawing, not viewport selection or
 -- host-scale policy. It owns the
--- frame strip image and builds frame quads lazily per frame index; the
+-- frame strip image (or borrows the caller's shared window primitive) and
+-- builds frame quads lazily per frame index; the
 -- shared FieldTextRenderer (owned by FieldState) draws the glyph text. It
 -- draws after the 3D world pass and restores every graphics state it
 -- touches (canvas, shader, scissor, blend, depth, color). Presentation-only
@@ -32,6 +33,7 @@ local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
 ---@field _manifest table<string, unknown> the generated field-UI manifest
 ---@field _focusIndicatorEnabled boolean whether the source focus indicator is composed
 ---@field _window FieldWindowRenderer? shared user-frame image/quads plus content fill
+---@field _ownsWindow boolean whether this renderer owns (and releases) its window primitive
 ---@field _cursorImage love.Image?
 ---@field _cursorQuadCache table<integer, table<integer, love.Quad>>|nil
 local FieldDialogueRenderer = {}
@@ -55,7 +57,7 @@ FieldDialogueRenderer.__index = FieldDialogueRenderer
 -- PNG bytes still enter through love.filesystem.newFileData); opts.theme:
 -- geometry record.
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, theme?: FieldDialogueTheme, graphics?: unknown, drawFocusIndicator?: boolean }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, theme?: FieldDialogueTheme, graphics?: unknown, drawFocusIndicator?: boolean, windowRenderer?: FieldWindowRenderer }
 ---@return FieldDialogueRenderer
 function FieldDialogueRenderer.new(opts)
   assert(
@@ -84,6 +86,16 @@ function FieldDialogueRenderer.new(opts)
   -- below resolves the continuation atlas. The runtime boot already validated
   -- the full manifest, so the renderer only resolves what it draws.
 
+  -- An injected window renderer is borrowed: the caller owns its atlas
+  -- lifetime and this renderer never releases it. Without an injection the
+  -- renderer constructs and owns its own primitive exactly as before.
+  local borrowedWindow = opts.windowRenderer
+  if borrowedWindow ~= nil then
+    assert(
+      type(borrowedWindow) == "table" and type(borrowedWindow.drawWindow) == "function",
+      "FieldDialogueRenderer requires a borrowed window renderer with the shared frame interface"
+    )
+  end
   local self = setmetatable({
     _theme = theme,
     _graphics = graphics,
@@ -91,16 +103,21 @@ function FieldDialogueRenderer.new(opts)
     _manifest = manifest,
     _focusIndicatorEnabled = opts.drawFocusIndicator ~= false,
     _window = nil,
+    _ownsWindow = borrowedWindow == nil,
     _cursorImage = nil,
     _cursorQuadCache = nil,
   }, FieldDialogueRenderer)
 
-  local windowOk, windowErr = pcall(function()
-    self._window = FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest, graphics = graphics })
-  end)
-  if not windowOk then
-    self:release()
-    error(windowErr)
+  if borrowedWindow ~= nil then
+    self._window = borrowedWindow
+  else
+    local windowOk, windowErr = pcall(function()
+      self._window = FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest, graphics = graphics })
+    end)
+    if not windowOk then
+      self:release()
+      error(windowErr)
+    end
   end
   local cursor = assert(manifest.dialogueFrames.continueCursor)
   local cursorAsset = assert(manifest.assets[cursor.asset])
@@ -265,8 +282,10 @@ function FieldDialogueRenderer:draw(controller, presentation)
 end
 
 function FieldDialogueRenderer:release()
-  if self._window ~= nil then
+  if self._ownsWindow and self._window ~= nil then
     self._window:release()
+  end
+  if self._window ~= nil then
     self._window = nil
   end
   if self._cursorImage and self._cursorImage.release then

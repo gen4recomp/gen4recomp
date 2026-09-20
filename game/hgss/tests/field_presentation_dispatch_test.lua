@@ -26,6 +26,7 @@ local CONSTRUCTOR_MODULES = {
   "libs.hgss.src.presentation.FieldTerrainEffectRenderer",
   "libs.hgss.src.presentation.GpuAssetPool",
   "libs.hgss.src.presentation.FieldRenderer",
+  "libs.hgss.src.ui.FieldWindowRenderer",
   "libs.hgss.src.ui.StartMenuRenderer",
   "libs.hgss.src.ui.TrainerCardRenderer",
   "libs.hgss.src.ui.PartyScreenRenderer",
@@ -90,8 +91,23 @@ local function buildDoubles(sink, calls)
       end,
     },
     ["libs.hgss.src.ui.FieldDialogueRenderer"] = {
-      new = function(_)
+      new = function(opts)
+        calls.dialogueWindow = opts and opts.windowRenderer
         return releasable(calls, "dialogue")
+      end,
+    },
+    ["libs.hgss.src.ui.FieldWindowRenderer"] = {
+      new = function(_)
+        calls.window = (calls.window or 0) + 1
+        local instance = {}
+        function instance:drawApplicationFrame(box, frameIndex)
+          sink[#sink + 1] = { "frame", box, frameIndex }
+        end
+        function instance:release()
+          calls.windowReleased = (calls.windowReleased or 0) + 1
+        end
+        calls.windowInstance = instance
+        return instance
       end,
     },
     ["libs.hgss.src.ui.FieldMenuRenderer"] = {
@@ -174,6 +190,7 @@ local function compositionRuntime()
   return {
     cacheFs = {},
     uiManifest = {},
+    playerData = { options = { textFrame = 0 } },
     windowStyles = {},
     fieldEntranceIndicatorAsset = {
       model = {},
@@ -512,6 +529,103 @@ function T.bag_draw_borrows_shared_resources_without_releasing_them()
       Assert.equal(#sink, 1, "exactly one presenter draws")
       Assert.isNil(calls.hero, "drawing never releases the borrowed hero model renderer")
       Assert.isNil(calls.bag, "drawing never releases the borrowed bag renderer")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Construction acquires exactly one frame-strip atlas and lends it to the
+-- dialogue renderer: the dialogue borrower never owns a second copy, the
+-- selected index snapshots the player option, and repeat disposal releases
+-- the shared owner exactly once.
+function T.construction_shares_one_window_renderer_with_the_dialogue_renderer()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.equal(calls.window, 1, "exactly one frame-strip atlas is acquired")
+    Assert.notNil(calls.dialogueWindow, "the dialogue renderer borrows the shared owner")
+    Assert.isTrue(
+      calls.dialogueWindow == calls.windowInstance,
+      "dialogue borrows the resources-owned renderer, not a second copy"
+    )
+    resources:dispose()
+    resources:dispose()
+    Assert.equal(calls.dialogue, 1, "repeat disposal releases the dialogue borrower exactly once")
+    Assert.equal(calls.windowReleased, 1, "repeat disposal releases the shared owner exactly once")
+  end)
+end
+
+-- A framed plan draws its selected border through the shared owner before
+-- application content paints; an unframed plan draws no border.
+function T.framed_plans_draw_selected_borders_before_application_content()
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local placement = assert(
+        PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 272, 232),
+        "the probe host must admit the framed box"
+      )
+      local contentBox = { x = 8, y = 24, width = 256, height = 192 }
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "party",
+          render = function()
+            sink[#sink + 1] = { "content" }
+          end,
+          mapInput = function()
+            return nil
+          end,
+          frames = { { placement = placement, contentBox = contentBox } },
+          fadeCoverage = {},
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      Assert.equal(#sink, 2, "the border and the content each draw once")
+      Assert.equal(sink[1][1], "frame", "the outer border draws before application content")
+      Assert.deepEqual(sink[1][2], contentBox, "the border wraps the published content box")
+      Assert.equal(sink[1][3], 0, "the border uses the selected player frame index")
+      Assert.equal(sink[2][1], "content", "application content still paints")
+      resources:dispose()
+    end)
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.unframed_plans_draw_no_border()
+  local sink, calls = {}, {}
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
+  local ok, err = pcall(function()
+    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+      local presentation = {
+        presentation = {
+          panes = {},
+          content = {},
+          inputKey = "party",
+          render = function()
+            sink[#sink + 1] = { "content" }
+          end,
+          mapInput = function()
+            return nil
+          end,
+          frames = {},
+          fadeCoverage = {},
+        },
+      }
+      resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
+      Assert.equal(#sink, 1, "only application content draws")
+      Assert.equal(sink[1][1], "content", "an unframed plan draws no border")
       resources:dispose()
     end)
   end)

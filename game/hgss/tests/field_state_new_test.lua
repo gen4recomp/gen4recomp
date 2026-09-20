@@ -52,6 +52,7 @@ local function stubPresentationRuntime(cache)
     windowStyles = {
       resolve = function() end,
     },
+    playerData = { options = { textFrame = 0 } },
     menuHost = {
       setScreenTopology = function() end,
       setPresentationMetrics = function() end,

@@ -3,7 +3,11 @@
 -- and no crash when the dialogue-reserved scene region is small.
 
 local Assert = require("tests.support.Assert")
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local FakeGraphics = require("tests.support.FakeGraphics")
+local FieldUiFixture = require("tests.support.FieldUiFixture")
 local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
+local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroState = require("game.hgss.src.newgame.OakIntroState")
 
@@ -192,6 +196,67 @@ function T.tests.name_edit_publishes_a_parent_owned_canonical_naming_plan()
   )
   Assert.isNil(naming.placement, "the naming child must not own a placement")
   Assert.isNil(naming.scale, "the naming child must not own a scale")
+  state:dispose()
+end
+
+function T.tests.name_edit_draws_without_application_frame_artwork()
+  local state = nameEditState(1280, 720)
+  local view = state:view()
+  Assert.equal(view.phase, "name_edit")
+  local plan = assert(view.namingPresentation, "Oak must own a naming presentation plan during name_edit")
+  Assert.deepEqual(plan.frames, {}, "wide naming publishes no outer application frame")
+  local fake = FakeGraphics.new({})
+  local loaded = {}
+  local borrowed = {}
+  local renderer = NamingScreenRenderer.new({
+    graphics = fake,
+    text = {
+      drawText = function(_, _, _, _) end,
+      textWidth = function(_, _)
+        return 8
+      end,
+    },
+    drawSubject = function(_, _, _) end,
+    manifest = FieldUiFixture.namingSemanticsManifest(),
+    imageLoader = function(path)
+      loaded[#loaded + 1] = path
+      local image = { path = path }
+      borrowed[#borrowed + 1] = image
+      function image:release() end
+      return image
+    end,
+  })
+  local grid = {}
+  for row = 1, 6 do
+    grid[row] = {}
+    for column = 1, 13 do
+      grid[row][column] = { kind = "blank" }
+    end
+  end
+  local snapshot = {
+    page = "upper",
+    text = "A",
+    maxLength = 7,
+    cursor = { row = 3, column = 5 },
+    grid = grid,
+    subject = { kind = "player", gender = 0 },
+    presentation = { subjectTick = 0, cursorTick = 0, glowAngle = 180 },
+  }
+  ApplicationPresentation.draw(fake, { graphics = fake, namingRenderer = renderer }, snapshot, plan)
+  Assert.isTrue(#fake.draws > 0, "the naming screen actually draws its source visuals")
+  for _, call in ipairs(fake.draws) do
+    local image = assert(call.image, "every naming draw carries its source visual")
+    Assert.isTrue(image.path ~= FieldUiFixture.STRIP_PATH, "no naming draw sources the dialogue frame strip")
+    local known = false
+    for _, own in ipairs(borrowed) do
+      if own == image then
+        known = true
+        break
+      end
+    end
+    Assert.isTrue(known, "every naming draw uses the borrowed naming visuals, never an outer frame atlas")
+  end
+  renderer:dispose()
   state:dispose()
 end
 

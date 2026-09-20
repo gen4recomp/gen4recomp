@@ -633,6 +633,65 @@ function T.focus_indicator_visibility_follows_renderer_policy()
   Assert.isTrue(#disabledLines > 0, "disabling focus does not suppress dialogue content")
 end
 
+-- A borrowed window renderer stays caller-owned: standard dialogue draws
+-- through it, and releasing the dialogue renderer never releases it.
+function T.injected_window_renderer_is_borrowed_and_never_released()
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local borrowed = {
+    released = false,
+    windowCalls = 0,
+    drawWindow = function(self)
+      self.windowCalls = self.windowCalls + 1
+    end,
+    release = function(self)
+      self.released = true
+    end,
+  }
+  local renderer = FieldDialogueRenderer.new({
+    cacheFs = uiCache(),
+    manifest = MANIFEST,
+    text = withTextRenderer(uiCache(), lg),
+    graphics = lg,
+    windowRenderer = borrowed,
+  })
+  local controller = FieldDialogueFixture.openDialogue("AB", 0)
+  renderer:draw(controller, presentationAtFieldScale(1))
+  Assert.equal(borrowed.windowCalls, 1, "standard dialogue draws through the borrowed window renderer")
+  renderer:release()
+  Assert.isFalse(borrowed.released, "releasing the dialogue renderer never releases the borrowed owner")
+  renderer:release()
+  Assert.isFalse(borrowed.released, "repeat release still never releases the borrowed owner")
+end
+
+-- A construction failure after borrowing must clean only local resources:
+-- the caller's window owner survives a missing continuation cursor.
+function T.borrowed_window_survives_a_later_construction_failure()
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
+  local cache = uiCache()
+  cache:remove(FieldUiFixture.CONTINUE_CURSOR_PATH)
+  local borrowed = {
+    released = false,
+    drawWindow = function() end,
+    release = function(self)
+      self.released = true
+    end,
+  }
+  local err = Assert.throws(function()
+    FieldDialogueRenderer.new({
+      cacheFs = cache,
+      manifest = MANIFEST,
+      text = withTextRenderer(uiCache(), lg),
+      graphics = lg,
+      windowRenderer = borrowed,
+    })
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "FIELD_UI_CONTINUE_CURSOR_MISSING",
+    "raises FIELD_UI_CONTINUE_CURSOR_MISSING"
+  )
+  Assert.isFalse(borrowed.released, "a failed borrow construction never releases the caller-owned window")
+end
+
 -- A closed controller draws nothing and requires no presentation: the
 -- inactive path returns before touching graphics state or validating.
 function T.closed_controller_ignores_a_missing_presentation()
