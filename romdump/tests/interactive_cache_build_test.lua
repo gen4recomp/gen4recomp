@@ -2638,4 +2638,120 @@ function T.sweep_capacity_waiters_wake_fifo_without_array_compaction()
   shutdownEnv(env)
 end
 
+-- The intro progress projection reads only its own retained roster: with
+-- the adopted bank closures fixed, hundreds of unrelated sweep
+-- registrations and state flips leave the returned record identical.
+function T.intro_progress_ignores_unrelated_sweep_interest()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("intro-progress-isolation-generation", pool, backend)
+  session.sourceLoaded = true
+  session.audioBankIds = { 10, 20, 30, 40, 184 }
+  session.adopted = { audioPlan = oakAudioPlan() }
+  local ready, failure = session:requestMilestone("new-game-intro", "required")
+  Assert.isFalse(ready, "the intro closure stays pending while cold")
+  Assert.isNil(failure, "the intro closure reports no failure while pending")
+  for _ = 1, 6 do
+    session:update()
+  end
+  local roster = assert(session.roster["new-game-intro"], "the adopted intro roster is retained")
+  Assert.isTrue(#roster > 0, "the adopted roster names its closure")
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil then
+      entry.ready = true
+    end
+  end
+  local before = session:milestoneStatus("new-game-intro")
+  Assert.deepEqual(
+    { state = before.state, ready = before.ready, total = before.total },
+    { state = "ready", ready = #roster, total = #roster },
+    "the settled intro closure reports its exact membership"
+  )
+  for bankId = 300, 599 do
+    session:requestJob("message-bank", tostring(bankId), "sweep")
+  end
+  for memberId = 1, 200 do
+    session:requestJob("script-member", tostring(memberId), "sweep")
+  end
+  for pageId = 0, 99 do
+    session:requestJob("mon-icon-page", tostring(pageId), "sweep")
+  end
+  for _, entry in pairs(session.byKey) do
+    if type(entry) == "table" and entry.failure == nil and entry.ready ~= true then
+      entry.ready = true
+    end
+  end
+  local after = session:milestoneStatus("new-game-intro")
+  Assert.deepEqual(after, before, "unrelated sweep work never perturbs the intro record")
+end
+
+-- Progress observation is a bounded read-only projection: unrelated
+-- retained entries raise if touched, and pool, cache, and validator
+-- traffic stays at zero across repeated calls.
+function T.intro_progress_observation_touches_only_its_roster()
+  local backend = FakeCache.new()
+  local cacheReads = 0
+  local realBackendRead = backend.read
+  function backend.read(self, path)
+    cacheReads = cacheReads + 1
+    return realBackendRead(self, path)
+  end
+  local innerPool = retryCapablePool()
+  local poolCalls = 0
+  local pool = setmetatable({}, {
+    __index = function(_, key)
+      if key == "request" or key == "status" or key == "update" or key == "retry" then
+        return function(_, ...)
+          poolCalls = poolCalls + 1
+          local real = innerPool[key]
+          assert(type(real) == "function", "pool lacks spied method")
+          return real(innerPool, ...)
+        end
+      end
+      return innerPool[key]
+    end,
+  })
+  local realValidate = ArtifactJobs.validate
+  local validateCalls = 0
+  ArtifactJobs.validate = function(...)
+    validateCalls = validateCalls + 1
+    return realValidate(...)
+  end
+  local ok, failure = pcall(function()
+    local session, _ = isolatedSession("intro-progress-bounds-generation", pool, backend)
+    session.sourceLoaded = true
+    session.audioBankIds = { 10, 20, 30, 40, 184 }
+    session.adopted = { audioPlan = oakAudioPlan() }
+    session:requestMilestone("new-game-intro", "required")
+    for _ = 1, 6 do
+      session:update()
+    end
+    session.byKey["actors:global"] = setmetatable({}, {
+      __index = function()
+        error("progress observation touched an unrelated entry", 0)
+      end,
+    })
+    session.byKey["audio-summary:global"] = setmetatable({}, {
+      __index = function()
+        error("progress observation touched an unrelated entry", 0)
+      end,
+    })
+    cacheReads, poolCalls, validateCalls = 0, 0, 0
+    local first = session:milestoneStatus("new-game-intro")
+    local second = session:milestoneStatus("new-game-intro")
+    local third = session:milestoneStatus("bootstrap")
+    Assert.deepEqual(second, first, "repeated observation is stable")
+    Assert.equal(third.total, nil, "an unbuilt roster reports no denominator")
+    Assert.equal(cacheReads, 0, "observation performs no cache reads")
+    Assert.equal(poolCalls, 0, "observation polls no pool state")
+    Assert.equal(validateCalls, 0, "observation runs no family validation")
+    Assert.isTrue(first.ready <= (first.total or first.ready), "the numerator never exceeds its denominator")
+  end)
+  ArtifactJobs.validate = realValidate
+  backend.read = nil
+  if not ok then
+    error(failure, 0)
+  end
+end
+
 return { metadata = { capabilities = {} }, tests = T }

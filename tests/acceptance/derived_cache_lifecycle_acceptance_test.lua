@@ -321,6 +321,12 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
       end
       return false
     end,
+    milestoneStatus = function(name, _)
+      if name == "new-game-intro" and introReady then
+        return { state = "ready", ready = 1, total = 1 }
+      end
+      return { state = "pending", ready = 0, total = nil }
+    end,
     requestField = function(mapId, _)
       requested.maps[#requested.maps + 1] = mapId
       if geometryReady then

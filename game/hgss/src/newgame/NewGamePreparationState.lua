@@ -15,6 +15,7 @@
 ---@field onReady fun()?
 ---@field onCancel fun()?
 ---@field phase "pending"|"failed"|"done"
+---@field progress { state: string, ready: integer, total: integer|nil, failure: unknown }?
 ---@field error unknown?
 ---@field fired boolean
 ---@field cancelled boolean
@@ -35,6 +36,7 @@ function NewGamePreparationState.new(options)
     onReady = options.onReady,
     onCancel = options.onCancel,
     phase = "pending",
+    progress = nil,
     error = nil,
     fired = false,
     cancelled = false,
@@ -58,6 +60,23 @@ function NewGamePreparationState:update(_)
     self:_fail(ready)
     return
   end
+  -- Progress is a read-only observation of the same milestone: it never
+  -- enrolls work and never substitutes for the readiness request above.
+  local progressOk, progress = pcall(self.derivedAssets.milestoneStatus, "new-game-intro")
+  if not progressOk then
+    self:_fail(progress)
+    return
+  end
+  if type(progress) ~= "table" then
+    self:_fail("derived-asset progress is unavailable")
+    return
+  end
+  self.progress = {
+    state = progress.state,
+    ready = progress.ready,
+    total = progress.total,
+    failure = progress.failure,
+  }
   if failure ~= nil then
     self:_fail(failure)
     return
@@ -85,8 +104,26 @@ function NewGamePreparationState:draw()
     return
   end
   lg.print("Preparing New Game...", 24, 24)
+  local fraction = 0
+  local snapshot = self.progress
+  if type(snapshot) == "table" and type(snapshot.total) == "number" and snapshot.total > 0 then
+    local ready = type(snapshot.ready) == "number" and snapshot.ready or 0
+    if ready < 0 then
+      ready = 0
+    end
+    if ready > snapshot.total then
+      ready = snapshot.total
+    end
+    fraction = ready / snapshot.total
+  end
+  local barX, barY, barWidth, barHeight = 24, 48, 360, 14
+  lg.setColor(0.2, 0.22, 0.28)
+  lg.rectangle("fill", barX, barY, barWidth, barHeight)
+  lg.setColor(0.35, 0.75, 0.55)
+  lg.rectangle("fill", barX, barY, barWidth * fraction, barHeight)
   lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Press escape to cancel.", 24, 48)
+  lg.print(string.format("%d%%", math.floor(fraction * 100 + 0.5)), barX + barWidth + 12, barY - 2)
+  lg.print("Press escape to cancel.", 24, 72)
 end
 
 ---@param key string

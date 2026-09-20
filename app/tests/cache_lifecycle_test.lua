@@ -485,6 +485,10 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
   function fakeSession:status()
     return { bootstrap = "ready" }
   end
+  function fakeSession:milestoneStatus(name)
+    seen.milestoneStatus = name
+    return { state = "pending", ready = 0, total = nil }
+  end
   function fakeSession:retire()
     retired = retired + 1
   end
@@ -518,6 +522,12 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
     Assert.equal(seen.cell.urgency, "near")
     Assert.isTrue(host.requestMonPortraitPage(0, "required"))
     Assert.deepEqual(seen.page, { pageId = 0, urgency = "required" })
+    Assert.deepEqual(
+      host.milestoneStatus("new-game-intro"),
+      { state = "pending", ready = 0, total = nil },
+      "the host forwards the milestone-local progress snapshot"
+    )
+    Assert.equal(seen.milestoneStatus, "new-game-intro")
     Assert.isNil(host.startBackgroundWarmup, "warmup lifecycle stays off the semantic game host")
     Assert.isNil(host.enableSweep, "session authorization stays off the semantic game host")
     provisioner:update()
@@ -528,6 +538,10 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
     Assert.isFalse(retiredOk, "retired host calls reject")
     Assert.isTrue(Errors.is(retiredErr), "the rejection is a structured lifecycle error")
     Assert.equal(retiredErr.code, "DERIVED_ASSETS_RETIRED")
+    local retiredProgressOk, retiredProgressErr = pcall(host.milestoneStatus, "new-game-intro")
+    Assert.isFalse(retiredProgressOk, "retired progress observation rejects")
+    Assert.isTrue(Errors.is(retiredProgressErr), "the progress rejection is a structured lifecycle error")
+    Assert.equal(retiredProgressErr.code, "DERIVED_ASSETS_RETIRED")
   end)
   InteractiveCacheBuild.new = originalNew
   if not ok then

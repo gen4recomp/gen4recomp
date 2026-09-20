@@ -59,6 +59,9 @@ function T.tests.new_game_enters_oak_on_intro_readiness_without_field_core()
       end
       return false
     end,
+    milestoneStatus = function(_)
+      return { state = "pending", ready = 0, total = nil }
+    end,
     requestField = function(_, _)
       return false
     end,

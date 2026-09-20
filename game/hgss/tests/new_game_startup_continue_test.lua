@@ -152,6 +152,9 @@ local function readyHost()
     requestMilestone = function()
       return true
     end,
+    milestoneStatus = function()
+      return { state = "ready", ready = 1, total = 1 }
+    end,
     requestField = function()
       return true
     end,

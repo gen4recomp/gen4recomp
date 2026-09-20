@@ -104,6 +104,11 @@ function DerivedAssetProvisioner.new(options)
       checkFailure()
       return active:requestMonPortraitPage(pageId, urgency)
     end,
+    milestoneStatus = function(name)
+      local active = guard()
+      checkFailure()
+      return active:milestoneStatus(name)
+    end,
     status = function()
       local active = guard()
       checkFailure()

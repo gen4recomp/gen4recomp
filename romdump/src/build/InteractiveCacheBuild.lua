@@ -2711,6 +2711,65 @@ function InteractiveCacheBuild:status()
   }
 end
 
+---@param name string bootstrap, field-core, or new-game-intro
+---@return { state: string, ready: integer, total: integer|nil, failure: string|nil } read-only milestone-local progress snapshot
+function InteractiveCacheBuild:milestoneStatus(name)
+  -- Read-only milestone-local progress projection. It inspects only the
+  -- retained roster for `name` and its referenced entries: no cache IO, no
+  -- validation, no pool polling, no enrollment, no publication, and no
+  -- whole-session scan, so unrelated sweep interest never affects the
+  -- answer. A missing or not-yet-final roster reports pending without a
+  -- denominator instead of inventing one.
+  assert(
+    name == "bootstrap" or name == "field-core" or name == "new-game-intro",
+    "milestones accept only bootstrap, field-core, or new-game-intro"
+  )
+  local members = self.roster[name]
+  local rosterFailure = self.rosterFailure[name]
+  if members == nil then
+    if rosterFailure ~= nil then
+      return { state = "failed", ready = 0, total = nil, failure = rosterFailure }
+    end
+    return { state = "pending", ready = 0, total = nil, failure = nil }
+  end
+  local readyCount = 0
+  ---@type string|nil
+  local memberFailure = nil
+  for _, member in ipairs(members) do
+    local entry = self.byKey[member.kind .. ":" .. member.key]
+    if entry ~= nil then
+      if entry.failure ~= nil then
+        if memberFailure == nil then
+          memberFailure = entry.failure
+        end
+      elseif entry.ready then
+        readyCount = readyCount + 1
+      end
+    end
+  end
+  ---@type string|nil
+  local failure = rosterFailure or memberFailure
+  if failure ~= nil then
+    return { state = "failed", ready = readyCount, total = nil, failure = failure }
+  end
+  -- The denominator is authoritative only once adopted knowledge fixed
+  -- the roster: bootstrap answers from its own roster, while the intro
+  -- closure needs adopted source inventory and field core additionally
+  -- needs adopted page membership. Adoption rebuilds retained rosters
+  -- synchronously, so a retained roster observed after adoption is final.
+  local final = name == "bootstrap"
+    or (name == "new-game-intro" and self.sourceLoaded)
+    or (name == "field-core" and self.sourceLoaded and self.pagesKnown)
+  if not final then
+    return { state = "pending", ready = readyCount, total = nil, failure = nil }
+  end
+  local total = #members
+  if total > 0 and readyCount == total then
+    return { state = "ready", ready = readyCount, total = total, failure = nil }
+  end
+  return { state = "pending", ready = readyCount, total = total, failure = nil }
+end
+
 ---Authorizes exhaustive sweep work for the selected generation. The call
 ---only flips authorization: it never enumerates, validates, or submits
 ---jobs; the next update advances sweep work. Idempotent and safe to repeat.
