@@ -219,7 +219,6 @@ function T.case_override_replaces_one_complete_interface()
       return nil
     end,
     frames = {},
-    fadeCoverage = {},
   }
   local function customWide(_, _)
     return wide

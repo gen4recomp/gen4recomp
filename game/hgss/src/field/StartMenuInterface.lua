@@ -55,7 +55,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = {},
     inputKey = "start-menu-inactive",
     render = noopRender,
@@ -113,7 +112,6 @@ function StartMenuInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = frames,
-    fadeCoverage = geometry.fadeCoverage,
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,
@@ -142,7 +140,6 @@ function StartMenuInterface.framed(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
-    fadeCoverage = geometry.fadeCoverage,
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,

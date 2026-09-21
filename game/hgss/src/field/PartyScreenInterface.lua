@@ -59,7 +59,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = {},
     inputKey = "party-inactive",
     render = noopRender,
@@ -132,7 +131,6 @@ function PartyScreenInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = frames,
-    fadeCoverage = geometry.fadeCoverage,
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,
@@ -160,7 +158,6 @@ function PartyScreenInterface.framed(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
-    fadeCoverage = geometry.fadeCoverage,
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,

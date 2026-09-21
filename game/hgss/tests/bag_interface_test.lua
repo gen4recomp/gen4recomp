@@ -278,7 +278,6 @@ function T.a_case_override_replaces_only_its_own_case()
       return nil
     end,
     frames = baseline.frames,
-    fadeCoverage = baseline.fadeCoverage,
   }
   local interface = BagInterface.withOverrides({
     wide = function(_, _)

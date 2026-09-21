@@ -186,7 +186,8 @@ function T.tests.fullscreen_fits_from_ui_bounds_with_integer_pixels()
   Assert.equal(placement.pixelScale, 2, "640x480 fits the native surface at 2x")
   Assert.equal(placement.logicalWidth, 256, "the logical surface stays canonical")
   Assert.equal(placement.logicalHeight, 192, "the logical surface stays canonical")
-  Assert.equal(#geometry.fadeCoverage, 1, "fullscreen names its transition region")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "fullscreen names no transition region")
   Assert.deepEqual(geometry.frames, {}, "fullscreen carries no frame")
 end
 
@@ -202,7 +203,8 @@ function T.tests.fullscreen_without_drawable_space_returns_an_empty_geometry()
   local context = layoutContext(measure(topology, 100, 100), "nativeLike")
   local geometry = policy.fullscreen(context, { id = "content", width = 256, height = 192 })
   Assert.deepEqual(geometry.placements, {}, "occlusion publishes no panes")
-  Assert.deepEqual(geometry.fadeCoverage, {}, "occlusion publishes no fade coverage")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "occlusion publishes no transition coverage")
 end
 
 function T.tests.framed_static_box_carries_the_complete_rotated_outer_frame()
@@ -220,7 +222,8 @@ function T.tests.framed_static_box_carries_the_complete_rotated_outer_frame()
     { x = 8, y = 24, width = 256, height = 192 },
     "the body starts inside the rotated insets"
   )
-  Assert.deepEqual(geometry.fadeCoverage, {}, "a static frame owns no transition region")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "a static frame owns no transition region")
   local body = assert(geometry.placements["content"], "the framed pane places")
   Assert.deepEqual(
     { body.logicalWidth, body.logicalHeight },
@@ -286,7 +289,8 @@ function T.tests.native_dual_fits_each_surface_independently()
   )
   Assert.notNil(geometry.placements["upper"], "the world pane places")
   Assert.notNil(geometry.placements["lower"], "the auxiliary pane places")
-  Assert.equal(#geometry.fadeCoverage, 2, "dual fade coverage names one region per actual surface")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "dual geometry names no transition region")
 end
 
 function T.tests.side_by_side_shares_one_scale_with_no_gap()
@@ -300,7 +304,8 @@ function T.tests.side_by_side_shares_one_scale_with_no_gap()
   local upper = assert(geometry.placements["upper"], "the upper pane places")
   local lower = assert(geometry.placements["lower"], "the lower pane places")
   Assert.equal(upper.pixelScale, lower.pixelScale, "a pair never fits its panes independently")
-  Assert.equal(#geometry.fadeCoverage, 1, "a composed pair names its single-display region")
+  local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "a composed pair names no transition region")
 end
 
 function T.tests.stacked_returns_nil_when_the_envelope_cannot_fit()
@@ -430,15 +435,15 @@ function T.tests.paired_panes_are_edge_adjacent_with_a_common_envelope()
   Assert.equal(tallEnvelope.logicalHeight, 384, "the vertical envelope spans both panes")
 end
 
--- Fade regions are transition metadata only: geometry names them
--- fadeCoverage and never a settled background contract.
-function T.tests.geometry_names_fade_coverage_instead_of_settled_background()
+-- Geometry names no transition coverage and never a settled background
+-- contract: placement and frames are the whole geometry record.
+function T.tests.geometry_names_no_transition_coverage_and_no_settled_background()
   local policy = sharedPolicy()
   local measurement = measure(singleSurface(640, 480), 640, 480)
   local geometry =
     policy.fullscreen(layoutContext(measurement, "nativeLike"), { id = "content", width = 256, height = 192 })
-  Assert.isTrue(type(geometry.fadeCoverage) == "table", "geometry carries fade coverage")
   local untyped = geometry --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "geometry carries no transition coverage")
   Assert.isNil(untyped.backgroundColor, "geometry carries no settled background color")
 end
 

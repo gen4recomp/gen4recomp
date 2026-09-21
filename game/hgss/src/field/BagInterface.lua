@@ -57,7 +57,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = {},
     inputKey = "bag-inactive",
     render = noopRender,
@@ -69,13 +68,11 @@ end
 ---@param heroVisible boolean true when the resolved panes include the hero
 ---@param panes table<integer, table<string, unknown>> the resolved ordered panes
 ---@param frames table<integer, table<string, unknown>> the static outer-frame geometry
----@param fadeCoverage table<integer, table<string, unknown>> the transition-only host regions
 ---@return ApplicationPlan
-local function bagPlan(manifest, heroVisible, panes, frames, fadeCoverage)
+local function bagPlan(manifest, heroVisible, panes, frames)
   return {
     panes = panes,
     frames = frames,
-    fadeCoverage = fadeCoverage,
     content = BagLayout.resolve({ manifest = manifest, heroVisible = heroVisible }),
     inputKey = INPUT_KEY,
     render = renderBag,
@@ -163,7 +160,7 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, frames, geometry.fadeCoverage)
+    }, frames)
   end
 
   -- NativeLike: only the interaction pane with the canonical description
@@ -190,7 +187,7 @@ local function withManifest(manifest)
     end
     return bagPlan(manifest, false, {
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, frames, geometry.fadeCoverage)
+    }, frames)
   end
   set.nativeLike = nativeLike
 
@@ -215,7 +212,7 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, envelopeFrames(complete, geometry), geometry.fadeCoverage)
+    }, envelopeFrames(complete, geometry))
   end
 
   -- Tall: hero above, interaction below, one shared integer scale with no
@@ -238,7 +235,7 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, envelopeFrames(complete, geometry), geometry.fadeCoverage)
+    }, envelopeFrames(complete, geometry))
   end
 
   set.dualDisplay = dualDisplay

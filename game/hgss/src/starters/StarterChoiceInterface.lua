@@ -83,7 +83,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = {},
     inputKey = "starter-inactive",
     render = noopRender,
@@ -93,16 +92,14 @@ end
 
 ---@param panes table<integer, table<string, unknown>> the resolved ordered panes
 ---@param frames table<integer, table<string, unknown>> the static outer-frame geometry
----@param fadeCoverage table<integer, table<string, unknown>> the transition-only host regions
 ---@param render fun(resources: table<string, unknown>, view: table<string, unknown>, plan: ApplicationPlan)
 ---@param mapInput fun(event: table<string, unknown>, view: table<string, unknown>, plan: ApplicationPlan): table<string, unknown>?
 ---@param inputKey string the stable input-geometry identity
 ---@return ApplicationPlan
-local function starterPlan(panes, frames, fadeCoverage, render, mapInput, inputKey)
+local function starterPlan(panes, frames, render, mapInput, inputKey)
   return {
     panes = panes,
     frames = frames,
-    fadeCoverage = fadeCoverage,
     content = {},
     inputKey = inputKey,
     render = render,
@@ -266,7 +263,7 @@ function StarterChoiceInterface.dualDisplay(context, view)
   return starterPlan({
     { id = INFO_NATIVE.id, placement = info, interactive = false },
     { id = MACHINE_NATIVE.id, placement = machine, interactive = true },
-  }, frames, geometry.fadeCoverage, renderNative, mapNativeInput, INPUT_KEY)
+  }, frames, renderNative, mapNativeInput, INPUT_KEY)
 end
 
 -- NativeLike: one complete compact portrait/action/message interface,
@@ -293,7 +290,7 @@ function StarterChoiceInterface.nativeLike(context, view)
   end
   return starterPlan({
     { id = COMPACT_NATIVE.id, placement = pane, interactive = true },
-  }, frames, geometry.fadeCoverage, renderCompact, mapCompactInput, COMPACT_INPUT_KEY)
+  }, frames, renderCompact, mapCompactInput, COMPACT_INPUT_KEY)
 end
 
 -- Wide: info left, machine right, one shared integer scale with no gap and
@@ -317,7 +314,7 @@ function StarterChoiceInterface.wide(context, view)
   return starterPlan({
     { id = INFO_NATIVE.id, placement = info, interactive = false },
     { id = MACHINE_NATIVE.id, placement = machine, interactive = true },
-  }, envelopeFrames(complete, geometry), geometry.fadeCoverage, renderNative, mapNativeInput, INPUT_KEY)
+  }, envelopeFrames(complete, geometry), renderNative, mapNativeInput, INPUT_KEY)
 end
 
 -- Tall: info above, machine below, one shared integer scale with no gap
@@ -340,7 +337,7 @@ function StarterChoiceInterface.tall(context, view)
   return starterPlan({
     { id = INFO_NATIVE.id, placement = info, interactive = false },
     { id = MACHINE_NATIVE.id, placement = machine, interactive = true },
-  }, envelopeFrames(complete, geometry), geometry.fadeCoverage, renderNative, mapNativeInput, INPUT_KEY)
+  }, envelopeFrames(complete, geometry), renderNative, mapNativeInput, INPUT_KEY)
 end
 
 local CASE_KEYS = { "dualDisplay", "nativeLike", "wide", "tall" }

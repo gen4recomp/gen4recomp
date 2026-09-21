@@ -136,7 +136,7 @@ function T.tests.native_like_case_owns_its_fullscreen_region()
   contentPane(plan, "nativeLike")
   local untyped = plan --[[@as table<string, unknown>]]
   Assert.isNil(untyped.window, "fullscreen naming carries no window chrome")
-  Assert.isTrue(#plan.fadeCoverage > 0, "fullscreen naming names its transition region")
+  Assert.isNil(untyped.fadeCoverage, "fullscreen naming names no transition region")
 end
 
 function T.tests.tiny_host_keeps_complete_canonical_content_without_a_fit_error()
@@ -204,7 +204,6 @@ function T.tests.per_case_override_replaces_the_whole_pair()
       return {
         panes = {},
         frames = {},
-        fadeCoverage = {},
         content = {},
         inputKey = "custom-wide",
         render = wideRender,

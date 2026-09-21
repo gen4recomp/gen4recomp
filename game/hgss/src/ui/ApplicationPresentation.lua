@@ -36,7 +36,6 @@ ApplicationPresentation.__index = ApplicationPresentation
 ---@class ApplicationPlan
 ---@field panes { id: string, placement: LayoutGeometry.Placement, interactive: boolean }[]
 ---@field frames ApplicationFrameGeometry[]
----@field fadeCoverage LayoutGeometry.Rect[]
 ---@field content table<string, unknown> application-owned logical geometry/payload
 ---@field inputKey string stable input-geometry identity
 ---@field render fun(resources: table<string, unknown>, view: table<string, unknown>, plan: ApplicationPlan)
@@ -85,10 +84,6 @@ local function assertValidPlan(plan)
     assertCompletePlacement(frame.placement, "frame placement")
     assert(type(frame.contentBox) == "table", "a frame needs its content box")
     LayoutGeometry.rect(frame.contentBox, "frame.contentBox[" .. index .. "]")
-  end
-  assert(type(plan.fadeCoverage) == "table", "the plan needs its fade coverage")
-  for index, rect in ipairs(plan.fadeCoverage) do
-    LayoutGeometry.rect(rect, "plan.fadeCoverage[" .. index .. "]")
   end
   assert(type(plan.content) == "table", "the plan needs its content")
   assert(type(plan.inputKey) == "string", "the plan needs its input key")
@@ -171,12 +166,6 @@ local function planIdentity(plan, resolver)
       .. placementIdentity(frame.placement)
       .. ":"
       .. table.concat({ tostring(box.x), tostring(box.y), tostring(box.width), tostring(box.height) }, ",")
-  end
-  for index, rect in ipairs(plan.fadeCoverage) do
-    parts[#parts + 1] = "fade"
-      .. index
-      .. ":"
-      .. table.concat({ tostring(rect.x), tostring(rect.y), tostring(rect.width), tostring(rect.height) }, ",")
   end
   return table.concat(parts, "#")
 end

@@ -488,8 +488,7 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
     Assert.isTrue(plan.panes[1].interactive, "the single native-like pane takes input")
     Assert.isTrue(type(plan.frames) == "table", "the native-like plan carries its static frame list")
     Assert.deepEqual(plan.frames, {}, "exact native coverage leaves no background to decorate")
-    Assert.isTrue(type(plan.fadeCoverage) == "table", "the native-like plan owns its transition coverage")
-    Assert.equal(#plan.fadeCoverage, 1, "the native-like plan owns its target transition region")
+    Assert.isNil(plan.fadeCoverage, "the native-like plan owns no transition region")
     local content = plan.content
     Assert.isTrue(type(content) == "table", "the native-like plan carries its logical content")
     Assert.equal(content.heroVisible, false, "the native-like plan hides the hero pane")
@@ -583,8 +582,7 @@ function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_i
       { x = 100, y = 300, width = 256, height = 192 },
       "interaction on the auxiliary surface"
     )
-    Assert.isTrue(type(dual.fadeCoverage) == "table", "the dual plan owns its transition coverage")
-    Assert.equal(#dual.fadeCoverage, 2, "the physical pair covers one transition region per surface")
+    Assert.isNil(dual.fadeCoverage, "the physical pair owns no transition region")
 
     game.runtime:resizePresentation(640, 480, oneDisplay(640, 480, false))
     game:step()

@@ -201,7 +201,8 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         end, 180)
         local shown = hostStatus()
         Assert.equal(shown.applicationId, "pokemon", "confirming the route launches the party screen")
-        Assert.isNil(shown.menu, "the modal application owns the frame, not the menu")
+        Assert.notNil(shown.menu, "the retained menu stays published under the party application")
+        Assert.notNil(shown.menu.presentation, "the retained menu stays drawable while the party owns input")
         local width, height = love.graphics.getDimensions()
         local canvas = scope:own(love.graphics.newCanvas(width, height))
         love.graphics.setCanvas(canvas)
@@ -210,11 +211,13 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         love.graphics.setCanvas()
         local image = scope:own(canvas:newImageData())
         local settle = hostStatus()
-        -- The host fade completes before the destination constructs: the
-        -- application phase holds full cover over the world viewport, so
-        -- the modal surface replaces the field frame with no abrupt cut
-        -- and no stale world/UI underneath it.
-        Assert.equal(settle.fadeAlpha, 1, "the application frame holds full fade cover")
+        -- Launch layers the child over the retained menu with no host
+        -- transition overlay: both surfaces publish on the launch tick, so
+        -- the modal surface draws over the field frame with the menu
+        -- beneath it and no stale world/UI of its own.
+        local untypedSettle = settle --[[@as table<string, unknown>]]
+        Assert.isNil(untypedSettle.fadeAlpha, "the application frame holds no transition field")
+        Assert.notNil(settle.menu, "the retained menu layers under the party application")
         local plan = assert(settle.application.presentation, "the party application presents its plan")
         local pane = assert(plan.panes[1], "the party plan carries its content pane")
         local placement = assert(pane.placement, "the party pane carries its placement")

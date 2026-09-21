@@ -26,7 +26,6 @@ local function planFor(layout, width, height, pixelScale)
   return {
     panes = { { id = "content", placement = covered.placement, interactive = true } },
     frames = {},
-    fadeCoverage = {},
     content = { layout = layout, hostBackgrounds = { { x = 0, y = 0, width = width, height = height } } },
     inputKey = "main-menu-graphics",
     render = function() end,

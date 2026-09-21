@@ -233,7 +233,10 @@ function StartMenuController:_activate(position)
     applicationId = action.targetApplication,
     actionId = action.id,
   }
-  self._closed = true
+  -- A launch is not terminal to this snapshot: the field host retains
+  -- the menu as its drawable background while the child owns input, so
+  -- the menu stays open and presentable until the host disposes it.
+  self._closed = false
 end
 
 function StartMenuController:_close()
@@ -263,9 +266,12 @@ function StartMenuController:updateFixed(uiInput)
   local positions = self._positions
   local cancelHitRect = self._cancelHitRect
   for _, event in ipairs(uiInput) do
-    -- A terminal event (close or a successful activate) ends this tick's
-    -- processing: later events must not overwrite the recorded result.
-    if self._closed then
+    -- A terminal event (close, field action, or a successful activate)
+    -- ends this tick's processing: later events must not overwrite the
+    -- recorded result. A launch stays open for the retained background
+    -- but still ends the batch, so a confirm before a cancel in one tick
+    -- keeps the launch.
+    if self._closed or self._result ~= nil then
       break
     end
     assert(type(event) == "table" and type(event.type) == "string", "start menu events need a type")
@@ -358,7 +364,7 @@ end
 function StartMenuController:takeResult()
   local result = self._result
   self._result = nil
-  if result ~= nil then
+  if result ~= nil and result.kind ~= "launch" then
     self._closed = true
   end
   return result

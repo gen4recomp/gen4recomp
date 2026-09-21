@@ -3949,4 +3949,47 @@ function T.supplied_avatar_state_advances_once_per_fixed_tick_in_every_branch()
   Assert.equal(transitionAvatar.updates, 1, "a transition-owned tick still advances the surf phase")
 end
 
+-- The child-return resume obligation follows the settled host states: a tick
+-- that starts in application and ends in menu or closed queues the field
+-- resume, while a terminal failure or a tick that never ran a child queues
+-- nothing.
+local function sessionWithScriptedHost(firstPhase, lastPhase)
+  local host = applicationHostFake({ active = true })
+  host.phase = firstPhase
+  host.lastPhase = lastPhase
+  function host:status()
+    return { phase = self.phase }
+  end
+  local stepped = host.updateFixed
+  function host:updateFixed(uiInput)
+    stepped(self, uiInput)
+    self.phase = self.lastPhase
+  end
+  return FieldSession.new(baseOptions({ applicationHost = host }))
+end
+
+function T.a_tick_returning_from_application_to_menu_queues_the_child_resume()
+  local session = sessionWithScriptedHost("application", "menu")
+  session:updateFixed({})
+  Assert.isTrue(session.childResumePending, "returning to the menu must queue the field resume")
+end
+
+function T.a_tick_returning_from_application_to_closed_queues_the_child_resume()
+  local session = sessionWithScriptedHost("application", "closed")
+  session:updateFixed({})
+  Assert.isTrue(session.childResumePending, "returning to the field must queue the field resume")
+end
+
+function T.a_tick_failing_from_application_queues_no_child_resume()
+  local session = sessionWithScriptedHost("application", "failed")
+  session:updateFixed({})
+  Assert.isFalse(session.childResumePending, "a terminal failure must never queue the field resume")
+end
+
+function T.a_tick_staying_in_menu_queues_no_child_resume()
+  local session = sessionWithScriptedHost("menu", "menu")
+  session:updateFixed({})
+  Assert.isFalse(session.childResumePending, "a tick that ran no child must not queue the field resume")
+end
+
 return { tests = T }

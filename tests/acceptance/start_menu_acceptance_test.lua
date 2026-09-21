@@ -145,11 +145,11 @@ end
 
 function T.tests.production_start_menu_follows_the_shared_display_policy()
   local cases = {
-    { width = 640, height = 480, framed = true, keepsTransitionRegion = true },
-    { width = 1280, height = 720, framed = true, keepsTransitionRegion = false },
-    { width = 1920, height = 1080, framed = true, keepsTransitionRegion = false },
-    { width = 2560, height = 1440, framed = true, keepsTransitionRegion = false },
-    { width = 1080, height = 1920, framed = true, keepsTransitionRegion = false },
+    { width = 640, height = 480, framed = true },
+    { width = 1280, height = 720, framed = true },
+    { width = 1920, height = 1080, framed = true },
+    { width = 2560, height = 1440, framed = true },
+    { width = 1080, height = 1920, framed = true },
   }
   withEveryVersion(function(harness, versionId)
     local first = cases[1]
@@ -191,11 +191,7 @@ function T.tests.production_start_menu_follows_the_shared_display_policy()
         else
           Assert.isTrue(type(plan.frames) == "table", label .. " carries its static frame list")
         end
-        if size.keepsTransitionRegion then
-          Assert.isTrue(#plan.fadeCoverage >= 1, label .. " names its transition region")
-        else
-          Assert.equal(#(plan.fadeCoverage or {}), 0, label .. " static frame owns no transition region")
-        end
+        Assert.isNil(plan.fadeCoverage, label .. " owns no transition region")
         closeMenu(game)
       end
       -- Application fits follow UI bounds, never the field camera zoom: a

@@ -258,19 +258,12 @@ end
 
 ---@class ApplicationLayout.Geometry
 ---@field placements table<string, LayoutGeometry.Placement> complete placements by native pane id
----@field fadeCoverage LayoutGeometry.Rect[] transition-only host regions, never settled paint
 ---@field frames ApplicationLayout.FrameGeometry[]? pure outer-frame geometry, empty when unframed
 ---@field envelope LayoutGeometry.Placement? common pair-envelope placement for one-display pairs
 
----@param bounds LayoutGeometry.Rect
----@return LayoutGeometry.Rect
-local function copyRect(bounds)
-  return { x = bounds.x, y = bounds.y, width = bounds.width, height = bounds.height }
-end
-
 ---@return ApplicationLayout.Geometry empty geometry for temporarily unavailable space, never nil
 local function emptyGeometry()
-  return { placements = {}, fadeCoverage = {}, frames = {} }
+  return { placements = {}, frames = {} }
 end
 
 ---@param options ApplicationLayout.FixedFitOptions?
@@ -286,9 +279,8 @@ local function fitOptions(options)
 end
 
 -- Fullscreen ownership of one target region: the auxiliary usable region on
--- a genuine pair, the selected single surface otherwise. Fade coverage names
--- the usable region for transition overlays only. Unavailable space yields an
--- empty geometry record the leaf turns into an inactive plan.
+-- a genuine pair, the selected single surface otherwise. Unavailable space
+-- yields an empty geometry record the leaf turns into an inactive plan.
 ---@param context ApplicationLayout.Context
 ---@param native ApplicationLayout.Native
 ---@param options ApplicationLayout.FixedFitOptions?
@@ -314,7 +306,6 @@ function ApplicationLayout.fullscreen(context, native, options)
   end
   return {
     placements = { [native.id] = placement },
-    fadeCoverage = { copyRect(bounds) },
     frames = {},
   }
 end
@@ -368,7 +359,6 @@ function ApplicationLayout.framed(context, native, options)
   }
   return {
     placements = { [native.id] = body },
-    fadeCoverage = {},
     frames = { frame },
   }
 end
@@ -398,7 +388,6 @@ function ApplicationLayout.centered(context, native, options)
   end
   return {
     placements = { [native.id] = placement },
-    fadeCoverage = {},
     frames = {},
   }
 end
@@ -510,7 +499,6 @@ function ApplicationLayout.nativeDual(context, upperNative, lowerNative, options
   end
   return {
     placements = { [upperNative.id] = upper, [lowerNative.id] = lower },
-    fadeCoverage = { copyRect(worldBounds), copyRect(auxBounds) },
     frames = {},
   }
 end
@@ -598,7 +586,6 @@ local function composedPair(context, upperNative, lowerNative, options, horizont
   local lower = assert(LayoutGeometry.subPlacement(envelope, lowerRect), "the lower pane must fit its envelope")
   return {
     placements = { [upperNative.id] = upper, [lowerNative.id] = lower },
-    fadeCoverage = { copyRect(usable) },
     frames = {},
     envelope = envelope,
   }

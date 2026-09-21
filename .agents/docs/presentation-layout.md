@@ -102,15 +102,20 @@ is pure plan geometry until field or Starter presentation draws it
 through the shared frame renderer; application code never invents
 border styling.
 
-Plans publish two separate concepts that must not be confused:
+Plans publish one decorative concept alongside content, input, and render callbacks:
 
 - `frames`: the decorative outer geometry drawn around content.
-- `fadeCoverage`: transition-only metadata naming where open/close
-  fades apply. It is never painted as settled background.
 
 Settled pixels outside application panes and frames stay whatever the
 host already rendered, which is the paused field wherever field
-presentation exists. Applications never paint a matte over the field to
+presentation exists. Field child applications layer directly over the
+retained Start Menu and the paused world with no transition overlay:
+launching a child keeps the already-open menu alive and drawable
+beneath it (the menu re-resolves its plan against fresh display facts
+but takes no semantic input while covered), and closing a child
+atomically composes a fresh menu from current policy with the
+remembered selection, so capability changes are reflected with no
+blank interval. Applications never paint a matte over the field to
 "own" the background; the startup Main Menu is the exception that
 proves the rule, painting its own backdrop because no field exists
 beneath it.

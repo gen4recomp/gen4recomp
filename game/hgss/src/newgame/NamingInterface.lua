@@ -78,7 +78,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = {},
     inputKey = "naming-inactive",
     render = noopRender,
@@ -118,7 +117,6 @@ function NamingInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = {},
-    fadeCoverage = geometry.fadeCoverage,
     content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT) },
     inputKey = INPUT_KEY,
     render = renderNaming,
@@ -147,7 +145,6 @@ function NamingInterface.centered(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = {},
-    fadeCoverage = geometry.fadeCoverage,
     content = { layout = NamingScreenLayout.compute(CANONICAL_VIEWPORT) },
     inputKey = INPUT_KEY,
     render = renderNaming,

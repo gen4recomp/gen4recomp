@@ -1287,7 +1287,6 @@ function T.tests.start_menu_wide_override_replaces_pair_without_leaking()
         return nil
       end,
       frames = fallback.frames,
-      fadeCoverage = fallback.fadeCoverage,
     }
   end
 

@@ -270,7 +270,6 @@ function T.pokemon_routes_only_to_the_party_presenter()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -320,7 +319,6 @@ function T.trainer_card_routes_only_to_the_card_presenter()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.TRAINER_CARD, presentation, drawRuntime())
@@ -362,7 +360,6 @@ function T.bag_routes_only_to_the_bag_presenter()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
@@ -418,7 +415,6 @@ function T.draw_reuses_presenters_without_acquiring_resources()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -465,7 +461,6 @@ function T.dispose_releases_owned_resources_exactly_once()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -522,7 +517,6 @@ function T.bag_draw_borrows_shared_resources_without_releasing_them()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.BAG, presentation, drawRuntime())
@@ -584,7 +578,6 @@ function T.framed_plans_draw_selected_borders_before_application_content()
             return nil
           end,
           frames = { { placement = placement, contentBox = contentBox } },
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -620,7 +613,6 @@ function T.unframed_plans_draw_no_border()
             return nil
           end,
           frames = {},
-          fadeCoverage = {},
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
@@ -683,7 +675,6 @@ function T.start_menu_draw_executes_the_resolved_plan_with_borrowed_resources()
         return nil
       end,
       frames = {},
-      fadeCoverage = { { x = 0, y = 0, width = 640, height = 480 } },
     }
     local graphics = FakeGraphics({})
     resources:drawStartMenu(status, graphics)

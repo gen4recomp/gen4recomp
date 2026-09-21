@@ -72,7 +72,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = {},
     inputKey = "main-menu-inactive",
     render = noopRender,
@@ -179,7 +178,6 @@ function MainMenuInterface.resolve(context, view)
   return {
     panes = { { id = PANE_ID, placement = placement, interactive = true } },
     frames = {},
-    fadeCoverage = {},
     content = { layout = layout, width = viewportWidth, height = viewportHeight, hostBackgrounds = hostBackgrounds },
     inputKey = INPUT_KEY,
     render = renderMenu,

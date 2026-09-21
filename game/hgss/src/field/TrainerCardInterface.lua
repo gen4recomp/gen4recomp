@@ -70,7 +70,6 @@ local function inactivePlan()
   return {
     panes = {},
     frames = {},
-    fadeCoverage = {},
     content = { width = NATIVE.width, height = NATIVE.height },
     inputKey = "trainer-card-inactive",
     render = noopRender,
@@ -139,7 +138,6 @@ function TrainerCardInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = frames,
-    fadeCoverage = geometry.fadeCoverage,
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,
@@ -167,7 +165,6 @@ function TrainerCardInterface.framed(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
-    fadeCoverage = geometry.fadeCoverage,
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,

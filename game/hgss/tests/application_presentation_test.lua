@@ -110,7 +110,6 @@ local function stubInterfaces()
       render = render,
       mapInput = map,
       frames = {},
-      fadeCoverage = {},
     }
   end
   return { dualDisplay = full, nativeLike = full, wide = full, tall = full }
@@ -203,7 +202,6 @@ local function staticInterfaces(spy, spoil)
       clipRect = { x = 100, y = 100, width = 512, height = 384 },
     }
     local frames = {}
-    local fadeCoverage = {}
     if spoil.mode == "origin" then
       body.origin = { x = 0 / 0, y = 100 }
     elseif spoil.mode == "clip" then
@@ -226,8 +224,6 @@ local function staticInterfaces(spy, spoil)
           contentBox = { x = 0, y = 0, width = 1, height = 1 },
         },
       }
-    elseif spoil.mode == "fade" then
-      fadeCoverage = { { x = 0, y = 0, width = -4, height = 10 } }
     end
     return {
       panes = { { id = "content", placement = body, interactive = true } },
@@ -236,7 +232,6 @@ local function staticInterfaces(spy, spoil)
       render = render,
       mapInput = map,
       frames = frames,
-      fadeCoverage = fadeCoverage,
     }
   end
   return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
@@ -245,6 +240,51 @@ end
 local function staticSession(spy, spoil)
   local sessionModule = sharedSession()
   return sessionModule.new(staticInterfaces(spy, spoil))
+end
+
+-- Static content fixtures without any transition coverage: one canonical
+-- interactive pane and no fade region. Plans publish, draw, and map input
+-- with no host-owned fade metadata.
+local function coveragelessInterfaces()
+  local render = function(_, _, _) end
+  local map = function(event, _, _)
+    return event
+  end
+  local function resolver(_, _)
+    return {
+      panes = {
+        {
+          id = "content",
+          placement = {
+            frame = { x = 100, y = 100, width = 512, height = 384 },
+            origin = { x = 100, y = 100 },
+            scale = 2,
+            logicalWidth = 256,
+            logicalHeight = 192,
+            clipRect = { x = 100, y = 100, width = 512, height = 384 },
+          },
+          interactive = true,
+        },
+      },
+      content = {},
+      inputKey = "static-stub",
+      render = render,
+      mapInput = map,
+      frames = {},
+    }
+  end
+  return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
+end
+
+-- Application plans carry no transition coverage: a candidate without the
+-- retired region still validates and publishes.
+function T.tests.plans_publish_without_transition_coverage()
+  local sessionModule = sharedSession()
+  local session = sessionModule.new(coveragelessInterfaces())
+  local plan = session:resolve(stubMeasurement(1280, 720), {})
+  Assert.equal(#plan.panes, 1, "the coverageless candidate publishes its pane")
+  local untyped = plan --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "no transition coverage remains on the plan")
 end
 
 function T.tests.content_capture_survives_consecutive_equivalent_reflows()
@@ -301,7 +341,7 @@ function T.tests.a_failed_candidate_keeps_the_previous_plan()
   local view = {}
   local measurement = stubMeasurement(1280, 720)
   local plan = session:resolve(measurement, view)
-  for _, mode in ipairs({ "origin", "clip", "logical", "pane", "frame", "fade" }) do
+  for _, mode in ipairs({ "origin", "clip", "logical", "pane", "frame" }) do
     spoil.mode = mode
     Assert.throws(function()
       session:resolve(measurement, view)
@@ -334,7 +374,6 @@ local function staticStubInterfaces()
         },
       },
       frames = {},
-      fadeCoverage = {},
       content = {},
       inputKey = "static-stub",
       render = render,
@@ -345,15 +384,15 @@ local function staticStubInterfaces()
 end
 
 -- Static sessions borrow only the interface set: no caller-owned position
--- memory exists, and every plan carries frame plus fade geometry with no
--- window or settled background contract.
-function T.tests.static_session_publishes_frame_and_fade_geometry_without_window_memory()
+-- memory exists, and every plan carries frame geometry with no window,
+-- settled background, or transition coverage contract.
+function T.tests.static_session_publishes_frame_geometry_without_window_memory()
   local sessionModule = sharedSession()
   local session = sessionModule.new(staticStubInterfaces())
   local plan = session:resolve(stubMeasurement(1280, 720), {})
   Assert.isTrue(type(plan.frames) == "table", "the plan carries its frame list")
-  Assert.isTrue(type(plan.fadeCoverage) == "table", "the plan carries its fade coverage")
   local untyped = plan --[[@as table<string, unknown>]]
+  Assert.isNil(untyped.fadeCoverage, "the plan carries no transition coverage")
   Assert.isNil(untyped.window, "static plans carry no window")
   Assert.isNil(untyped.backgroundColor, "static plans carry no settled background color")
   Assert.isNil(untyped.coverage, "the renamed fade coverage leaves no legacy coverage field")
@@ -361,15 +400,13 @@ function T.tests.static_session_publishes_frame_and_fade_geometry_without_window
   Assert.deepEqual(again.panes[1].placement.frame, plan.panes[1].placement.frame, "repeated resolves stay static")
 end
 
--- Settled drawing only invokes the leaf render callback: fade regions
--- never paint, and no chrome fills the host.
-function T.tests.settled_draw_invokes_leaf_render_without_painting_fade_regions()
+-- Settled drawing only invokes the leaf render callback: nothing fills
+-- the host around it.
+function T.tests.settled_draw_invokes_leaf_render_without_host_chrome()
   local sessionModule = sharedSession()
   local session = sessionModule.new(staticStubInterfaces())
-  local sentinelCoverage = { x = 0, y = 0, width = 1280, height = 720 }
   local rendered = 0
   local plan = session:resolve(stubMeasurement(256, 192), {})
-  plan.fadeCoverage = { sentinelCoverage }
   plan.render = function()
     rendered = rendered + 1
   end
@@ -384,7 +421,7 @@ function T.tests.settled_draw_invokes_leaf_render_without_painting_fade_regions(
   }
   sessionModule.draw(stubGraphics, {}, {}, plan)
   Assert.equal(rendered, 1, "settled draw invokes the leaf render exactly once")
-  Assert.equal(fills, 0, "settled draw paints no fade region or chrome")
+  Assert.equal(fills, 0, "settled draw paints no host chrome")
 end
 
 -- Malformed frame geometry fails before publication and keeps the last
@@ -422,7 +459,6 @@ function T.tests.malformed_frame_geometry_never_replaces_the_published_plan()
         },
       },
       frames = frames,
-      fadeCoverage = {},
       content = {},
       inputKey = "static-stub",
       render = function(_, _, _) end,
@@ -491,7 +527,6 @@ local function framedInterfaces(spy)
       frames = {
         { placement = framePlacement, contentBox = { x = 8, y = 24, width = 256, height = 192 } },
       },
-      fadeCoverage = {},
     }
   end
   return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
