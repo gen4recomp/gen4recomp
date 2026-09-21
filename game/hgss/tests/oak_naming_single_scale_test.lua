@@ -223,6 +223,7 @@ function T.tests.name_edit_draws_without_application_frame_artwork()
       local image = { path = path }
       borrowed[#borrowed + 1] = image
       function image:release() end
+      function image:setFilter() end
       return image
     end,
   })

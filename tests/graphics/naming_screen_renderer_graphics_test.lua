@@ -35,6 +35,7 @@ local function imageLoaderFake(loaded)
     loaded[#loaded + 1] = path
     local image = { path = path }
     function image:release() end
+    function image:setFilter() end
     return image
   end
 end

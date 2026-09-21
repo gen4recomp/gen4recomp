@@ -17,7 +17,7 @@ end
 
 local function imageLoader()
   return function(path)
-    return { path = path, release = function() end }
+    return { path = path, release = function() end, setFilter = function() end }
   end
 end
 
@@ -388,7 +388,7 @@ function T.tests.quad_failure_releases_all_acquired_images_including_masks()
   local graphics = FakeGraphics.new({ failOnQuadCall = 1 })
   local acquired = {}
   local loader = function(path)
-    local image = { path = path, releases = 0 }
+    local image = { path = path, releases = 0, setFilter = function() end }
     image.release = function()
       image.releases = image.releases + 1
     end
@@ -422,7 +422,7 @@ function T.tests.failed_acquisition_releases_every_previously_acquired_image()
     if calls == 5 then
       error("injected naming image failure", 0)
     end
-    local image = { path = path, releases = 0 }
+    local image = { path = path, releases = 0, setFilter = function() end }
     image.release = function()
       image.releases = image.releases + 1
     end
@@ -480,6 +480,89 @@ function T.tests.support_backing_draws_before_home_controls_and_focus_draws_last
   local cursor = assert(order[manifest.assets[cursorAsset].image], "the home focus cursor draws")
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
     Assert.isTrue(order[naming.controls[id].image] < cursor, "the focus cursor draws after the " .. id .. " control")
+  end
+end
+
+-- Every owned naming visual is pixel-authored DS imagery, so each unique
+-- acquired image must select nearest-neighbor sampling exactly once while
+-- draw placement stays on integral logical coordinates.
+function T.tests.acquired_naming_images_use_nearest_sampling()
+  local acquired = {}
+  local loader = function(path)
+    local image = { path = path, releases = 0, filters = {} }
+    image.release = function()
+      image.releases = image.releases + 1
+    end
+    image.setFilter = function(_, min, mag)
+      image.filters[#image.filters + 1] = { min = min, mag = mag }
+    end
+    acquired[#acquired + 1] = image
+    return image
+  end
+  local graphics, calls = graphicsFake()
+  local manifest = namingManifest()
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake(),
+    drawSubject = function() end,
+    manifest = manifest,
+    imageLoader = loader,
+  })
+  Assert.isTrue(#acquired > 10, "static, player, cursor, and pulse visuals are all acquired")
+  for _, image in ipairs(acquired) do
+    Assert.equal(#image.filters, 1, "acquired image " .. image.path .. " selects its sampling exactly once")
+    Assert.equal(image.filters[1].min, "nearest", "acquired image " .. image.path .. " uses nearest minification")
+    Assert.equal(image.filters[1].mag, "nearest", "acquired image " .. image.path .. " uses nearest magnification")
+  end
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  renderer:draw(snapshot({ row = 3, column = 5 }), layout)
+  Assert.isTrue(#calls.draws > 0, "the player and cursor snapshot draws")
+  for _, draw in ipairs(calls.draws) do
+    Assert.equal(draw.x, math.floor(draw.x), "draw x stays on an integral logical coordinate")
+    Assert.equal(draw.y, math.floor(draw.y), "draw y stays on an integral logical coordinate")
+  end
+  renderer:dispose()
+end
+
+-- A sampling failure on a later image must fail construction and release
+-- every image acquired up to the failure exactly once, including the image
+-- whose filter step failed, without acquiring anything further.
+function T.tests.filtering_failure_releases_every_acquired_image()
+  local acquired = {}
+  local loads = 0
+  local loader = function(path)
+    loads = loads + 1
+    local image = { path = path, releases = 0 }
+    image.release = function()
+      image.releases = image.releases + 1
+    end
+    if loads == 5 then
+      image.setFilter = function()
+        error("injected naming filter failure", 0)
+      end
+    else
+      image.setFilter = function() end
+    end
+    acquired[#acquired + 1] = image
+    return image
+  end
+  local graphics = graphicsFake()
+  local rendererOrNil = nil
+  local err = Assert.throws(function()
+    rendererOrNil = NamingScreenRenderer.new({
+      graphics = graphics,
+      text = textFake(),
+      drawSubject = function() end,
+      manifest = namingManifest(),
+      imageLoader = loader,
+    })
+  end)
+  Assert.isTrue(tostring(err):find("injected naming filter failure", 1, true) ~= nil, "rethrows the filter failure")
+  Assert.isTrue(rendererOrNil == nil, "no renderer escapes a failed acquisition")
+  Assert.equal(loads, 5, "no image is acquired after the filtering failure")
+  Assert.equal(#acquired, 5, "five visuals were acquired up to the failure")
+  for _, image in ipairs(acquired) do
+    Assert.equal(image.releases, 1, "acquired image " .. image.path .. " is released exactly once")
   end
 end
 

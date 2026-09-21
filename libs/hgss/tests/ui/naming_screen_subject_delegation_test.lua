@@ -17,7 +17,7 @@ local function imageLoader()
   local seen = { loads = {} }
   local loader = function(path)
     seen.loads[#seen.loads + 1] = path
-    return { path = path, release = function() end }
+    return { path = path, release = function() end, setFilter = function() end }
   end
   return loader, seen
 end
