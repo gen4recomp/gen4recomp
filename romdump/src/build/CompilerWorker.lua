@@ -2,9 +2,9 @@
 -- Each job carries its explicit source version, generation, and epoch. The
 -- worker selects its cache context at job boundaries, validates the
 -- published family before opening any source handle, compiles and stages
--- one prepared artifact per invalid family, releases transient scratch
--- after heavy work, and exits after jumbo compilations so the controller
--- can recycle the VM.
+-- one prepared artifact per invalid family, and releases transient
+-- geometry scratch at map job boundaries. The VM persists across jobs:
+-- large compilations never retire it.
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
@@ -33,10 +33,15 @@ local function closeContext(context)
     context.romFs = nil
     context.cacheFs = nil
     context.versionId = nil
-    pcall(romFs.close, romFs)
+    context.generationId = nil
+    -- A failed close propagates with its original failure and emits no
+    -- closure acknowledgement: the controller must never mistake it for
+    -- source closure authorizing an import.
+    romFs:close()
   else
     context.cacheFs = nil
     context.versionId = nil
+    context.generationId = nil
   end
   context.sourcePlanMemo = nil
   context.terrainScratch = {}
@@ -54,10 +59,14 @@ local function switchCacheContext(job, context)
   assert(type(job.versionId) == "string" and job.versionId ~= "", "worker job version is required")
   assert(type(job.generationId) == "string" and job.generationId ~= "", "worker job generation is required")
   assert(type(job.epoch) == "number" and job.epoch % 1 == 0, "worker job epoch must be an integer")
-  if context.versionId ~= job.versionId then
+  -- A same-version generation change replaces the whole source context:
+  -- every family session and ROM reader closes before the new context
+  -- establishes, so no session outlives its generation.
+  if context.versionId ~= job.versionId or context.generationId ~= job.generationId then
     closeContext(context)
     context.cacheFs = CacheFs.forVersion(job.versionId)
     context.versionId = job.versionId
+    context.generationId = job.generationId
   end
   assert(context.cacheFs, "worker context is incomplete")
 end
@@ -80,14 +89,35 @@ local function ensureRomSource(job, context)
 end
 
 ---@param context table<string, unknown>
-local function releaseHeavyScratch(context)
+local function releaseGeometryScratch(context)
+  -- Geometry jobs retain only immutable source sessions across jobs: the
+  -- transient terrain references and the geometry/GX scratch arenas reset
+  -- here at the safe job boundary through the existing constructors,
+  -- every alias updated, the old arenas released by worker-local
+  -- collection. This initial policy favors a measurable plateau over
+  -- retaining unbounded high-water arenas.
   context.terrainScratch = {}
+  context.geometryArena = GxGeometryBuffer.new()
+  context.gxScratch = GxDisplayList.newScratch()
   local scratch = context.fieldCellScratch
   if type(scratch) == "table" then
+    scratch.geometryArena = context.geometryArena
+    scratch.gxScratch = context.gxScratch
     scratch.terrainScratch = context.terrainScratch
     scratch.lastBundle = nil
     scratch.lastDescriptor = nil
+    -- Animation compilers accumulate per-member hashes into every cell
+    -- record they touch, so the memo must not outlive its job: the next
+    -- geometry job rebuilds compilers for the cells it actually compiles.
+    scratch.terrainAnimationCompilers = nil
   end
+  collectgarbage("collect")
+end
+
+---@param job table<string, unknown>
+---@return boolean
+local function isGeometryJob(job)
+  return job.kind == "map" or job.kind == "field-cell"
 end
 
 ---@param job table<string, unknown>
@@ -105,19 +135,8 @@ end
 ---@param stageName string|nil prepared stage, present only for compiled output
 ---@param status string reused, prepared, or failed
 ---@param timingReason string reused or interleaved
----@param retiring boolean the VM exits after this reply
 ---@param workSeconds number wall time spent on validation and compilation
-local function pushCompletion(
-  resultChannel,
-  workerId,
-  job,
-  executeJob,
-  stageName,
-  status,
-  timingReason,
-  retiring,
-  workSeconds
-)
+local function pushCompletion(resultChannel, workerId, job, executeJob, stageName, status, timingReason, workSeconds)
   resultChannel:push({
     workerId = workerId,
     epoch = job.epoch,
@@ -132,7 +151,6 @@ local function pushCompletion(
     workSeconds = workSeconds,
     stagedBytes = nil,
     timingReason = timingReason,
-    retiring = retiring,
   })
 end
 
@@ -195,11 +213,9 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
           job.stageName,
           "reused",
           "reused",
-          false,
           wallSeconds() - startedAt
         )
       else
-        local retiring = job.sizeClass == "jumbo"
         if validOk then
           ensureRomSource(job, context)
           local ok, result = xpcall(function()
@@ -208,8 +224,8 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
             return failure
           end)
           local workSeconds = wallSeconds() - startedAt
-          if job.sizeClass == "heavy" then
-            releaseHeavyScratch(context)
+          if isGeometryJob(executeJob) then
+            releaseGeometryScratch(context)
           end
           if ok then
             pushCompletion(
@@ -220,7 +236,6 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
               result.stageName,
               "prepared",
               "interleaved",
-              retiring,
               workSeconds
             )
           else
@@ -232,16 +247,12 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
               job.stageName,
               "failed",
               "interleaved",
-              retiring,
               workSeconds
             )
           end
-          if retiring then
-            break
-          end
         else
-          if job.sizeClass == "heavy" then
-            releaseHeavyScratch(context)
+          if isGeometryJob(executeJob) then
+            releaseGeometryScratch(context)
           end
           pushCompletion(
             resultChannel,
@@ -251,12 +262,8 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
             job.stageName,
             "failed",
             "interleaved",
-            retiring,
             wallSeconds() - startedAt
           )
-          if retiring then
-            break
-          end
         end
       end
     end

@@ -37,7 +37,16 @@ local function readMember(narc, alias, memberId)
   return assert(narc:readMember(memberId))
 end
 
-local function canonicalPlan(romFs, fieldCellIndex, resolved, producerFingerprint)
+-- The one shared topology selection behind both full content planning
+-- and the lightweight roster projection: the central cell plus its
+-- neighborhood, deduplicated and stably ordered. No leaf planning,
+-- hashing, compilation, or live-cache I/O happens here.
+---@param fieldCellIndex table<string, unknown>
+---@param resolved table<string, unknown>
+---@return table<string, unknown>[] sorted unique cell descriptors
+---@return table<string, unknown>[] placements in selection order
+---@return table<string, unknown> central cell descriptor
+local function selectDescriptors(fieldCellIndex, resolved)
   local central = lookup(fieldCellIndex, resolved.matrixMemberId, resolved.matrixX, resolved.matrixZ)
   local neighbors = NeighborPlan.plan(resolved.matrix, resolved.matrixX, resolved.matrixZ, function(mapHeaderId)
     local record = MapCatalog.areaForMapHeader(mapHeaderId)
@@ -77,6 +86,23 @@ local function canonicalPlan(romFs, fieldCellIndex, resolved, producerFingerprin
   table.sort(descriptors, function(a, b)
     return a.matrixMemberId < b.matrixMemberId or (a.matrixMemberId == b.matrixMemberId and a.index < b.index)
   end)
+  return descriptors, placements, central
+end
+
+---@param romFs table<string, unknown>
+---@param mapId unknown
+---@return table<string, unknown> resolved map
+---@return table<string, unknown> area record
+local function resolveArea(romFs, mapId)
+  local resolved = assert(MapResolver.resolve(romFs, mapId))
+  local areaNarc = assert(romFs:openNarc("area_data"))
+  local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
+  local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
+  return resolved, area
+end
+
+local function canonicalPlan(romFs, fieldCellIndex, resolved, producerFingerprint)
+  local descriptors, placements, central = selectDescriptors(fieldCellIndex, resolved)
   local cellPlans = {}
   for _, descriptor in ipairs(descriptors) do
     cellPlans[#cellPlans + 1] = FieldCellCompiler.planCell(romFs, descriptor, producerFingerprint)
@@ -122,10 +148,7 @@ local function canonicalPlan(romFs, fieldCellIndex, resolved, producerFingerprin
 end
 
 local function plan(romFs, fieldCellIndex, mapId, producerFingerprint)
-  local resolved = assert(MapResolver.resolve(romFs, mapId))
-  local areaNarc = assert(romFs:openNarc("area_data"))
-  local areaBytes = readMember(areaNarc, "area_data", resolved.areaDataMemberId)
-  local area = assert(AreaData.decode(areaBytes, { alias = "area_data", memberId = resolved.areaDataMemberId }))
+  local resolved, area = resolveArea(romFs, mapId)
   local romSha1 = romFs:metadata().sha1
   local fingerprint = producerFingerprint or ""
 
@@ -157,6 +180,36 @@ function MapCompilePlan.plan(romFs, fieldCellIndex, mapId, producerFingerprint)
     return nil, result
   end
   error(result)
+end
+
+-- The topology-only roster projection over the same shared selection as
+-- full planning: the sorted unique canonical matrixMemberId:index keys
+-- for the map, without leaf content planning, hashing, compilation, or
+-- live-cache I/O. Aggregate maps carry no keys. Unknown or bad source
+-- fails with the existing attributed map errors.
+---@param romFs table<string, unknown>
+---@param fieldCellIndex table<string, unknown>
+---@param mapId unknown
+---@return string[]?|nil
+---@return Errors.Error?|nil
+function MapCompilePlan.cellKeys(romFs, fieldCellIndex, mapId)
+  assert(romFs and romFs.openNarc, "map cell enumeration requires RomFs")
+  local ok, resolved, area = pcall(resolveArea, romFs, mapId)
+  if not ok then
+    if Errors.is(resolved) then
+      return nil, resolved --[[@as Errors.Error]]
+    end
+    error(resolved, 0)
+  end
+  if area.areaType ~= "outdoor" then
+    return {}
+  end
+  local descriptors = selectDescriptors(fieldCellIndex, resolved)
+  local keys = {}
+  for _, descriptor in ipairs(descriptors) do
+    keys[#keys + 1] = descriptor.matrixMemberId .. ":" .. descriptor.index
+  end
+  return keys
 end
 
 function MapCompilePlan.isReady(cacheFs, mapPlan)

@@ -152,11 +152,11 @@ end
 -- files, so per-bank jobs never overlap and identical bytes deduplicate at
 -- publication. Publication stays with the caller; a stage failure leaves the
 -- previous live record untouched once the caller aborts the disposable stage.
+---@param source RomFs|AudioCompiler.Session the adopted source reader or the retained worker-generation session
 ---@param artifact PreparedArtifact
----@param romFs RomFs
 ---@param bankPlan AudioCompiler.BankPlan
 ---@return string
-function AudioCacheWriter.stageBank(artifact, romFs, bankPlan)
+function AudioCacheWriter.stageBank(artifact, source, bankPlan)
   assert(artifact and artifact.stageFs and artifact.cacheFs, "bank staging requires a PreparedArtifact")
   local ownedPlan = checkBankPlan(bankPlan)
   local stage = artifact:stageFs()
@@ -175,7 +175,15 @@ function AudioCacheWriter.stageBank(artifact, romFs, bankPlan)
     artifact:addSharedFile(AudioCache.samplePath(key))
     artifact:addSharedFile(AudioCache.sampleMetadataPath(key))
   end
-  local bundle, err = AudioCompiler.compileBank(romFs, ownedPlan, sampleSink)
+  -- A retained session compiles against its one archive acquisition; a
+  -- source reader takes the one-shot path. Both stage identical bytes.
+  local bundle, err
+  if type(source) == "table" and type(source.compileBank) == "function" then
+    local session = source --[[@as AudioCompiler.Session]]
+    bundle, err = session:compileBank(ownedPlan, sampleSink)
+  else
+    bundle, err = AudioCompiler.compileBank(source, ownedPlan, sampleSink)
+  end
   if bundle == nil then
     error(assert(err), 0)
   end
@@ -194,14 +202,25 @@ end
 ---@return Errors.Error?|nil
 function AudioCacheWriter.writeBank(cacheFs, romFs, bankPlan)
   local ownedPlan = checkBankPlan(bankPlan)
+  local identity, identityErr = AudioCompiler.soundIdentity(romFs)
+  if identity == nil then
+    return nil, assert(identityErr) --[[@as Errors.Error]]
+  end
+  -- The standalone caller owns a bounded one-shot session at its existing
+  -- lifetime boundary: one acquisition serves the single closure.
+  local session, sessionErr = AudioCompiler.openSession(romFs, identity)
+  if session == nil then
+    return nil, assert(sessionErr) --[[@as Errors.Error]]
+  end
   local collected = {}
   local collectedMetadata = {}
-  local bundle, err = AudioCompiler.compileBank(romFs, ownedPlan, function(key, metadata, pcm)
+  local bundle, err = session:compileBank(ownedPlan, function(key, metadata, pcm)
     if collected[key] == nil then
       collected[key] = pcm
       collectedMetadata[key] = metadata
     end
   end)
+  session:close()
   if bundle == nil then
     return nil, assert(err) --[[@as Errors.Error]]
   end

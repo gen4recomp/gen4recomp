@@ -17,7 +17,10 @@ local function requirePool()
   return pool
 end
 
-function T.independent_map_jobs_serialize_on_the_exclusive_jumbo_worker(romFs, versionId)
+-- Maps are ordinary jobs on the bounded batch pool: the two independent
+-- maps overlap on the two workers, each publishes a semantically ready
+-- root, and no per-job VM recycling intervenes.
+function T.independent_map_jobs_overlap_on_bounded_batch_workers(romFs, versionId)
   local CompilerPool = requirePool()
   -- Jobs cross the pool boundary under an explicit generation: select it
   -- first and tag every job, exactly as the production session does.
@@ -73,12 +76,11 @@ function T.independent_map_jobs_serialize_on_the_exclusive_jumbo_worker(romFs, v
     local scene = assert(cache:loadLua(MapAssetCache.mapDir(job.mapId) .. "/scene.lua"))
     Assert.equal(scene.mapId, job.mapId, "published scene retains its requested map identity")
   end
-  -- Maps are jumbo jobs: admission serializes them onto the single
-  -- exclusive worker (CompilerPool._idleWorkerFor pins jumbos to
-  -- workers[1]), so independence here means separate jobs, separate
-  -- published roots, and sequential completion -- never parallel placement.
-  Assert.equal(workerIds[1], 1, "the first map runs on the exclusive jumbo worker")
-  Assert.equal(workerIds[2], 1, "the second map follows sequentially on the exclusive jumbo worker")
+  -- Both maps dispatch together onto the two bounded batch workers:
+  -- independence here means separate jobs, separate published roots, and
+  -- parallel placement with identical output.
+  Assert.equal(#workerIds, 2, "both maps report their worker")
+  Assert.isTrue(workerIds[1] ~= workerIds[2], "the independent maps overlap on distinct workers")
   pool:shutdown()
   Assert.isTrue(romFs ~= nil, "the ROM suite keeps the source handle alive")
 end

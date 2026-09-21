@@ -404,26 +404,28 @@ function SourcePlan.compile(romFs, identity)
   for _, record in ipairs(assert(world.maps, "source inventory world carries no maps")) do
     ---@cast record table<string, unknown>
     assert(isInteger(record.id), "source inventory world carries an unidentified map")
-    local ok, planOrErr, planErr = pcall(MapCompilePlan.plan, romFs, fieldCellIndexBundle.index, record.id, producerId)
+    -- Roster enumeration is topology only: no per-map content planning
+    -- and no leaf cell planning. The projection keys translate into the
+    -- unchanged dash-joined mapCellKeys shape the inventory validates.
+    local ok, topologyKeys, topologyErr = pcall(MapCompilePlan.cellKeys, romFs, fieldCellIndexBundle.index, record.id)
     if not ok then
       Errors.raise("SOURCE_PLAN_MAP_FAILED", "loadable map " .. tostring(record.id) .. " cannot be planned", {
         mapId = record.id,
       })
     end
-    if planOrErr == nil then
+    if topologyKeys == nil then
       Errors.raise(
         "SOURCE_PLAN_MAP_FAILED",
-        "loadable map " .. tostring(record.id) .. " cannot be planned: " .. tostring(planErr),
+        "loadable map " .. tostring(record.id) .. " cannot be planned: " .. tostring(topologyErr),
         { mapId = record.id }
       )
     end
-    assert(type(planOrErr) == "table", "loadable map planning must produce its plan")
-    local cellPlans = planOrErr.cellPlans or {}
-    ---@cast cellPlans table[]
+    assert(type(topologyKeys) == "table", "loadable map enumeration must produce its cell keys")
     local keys = {}
-    for _, cellPlan in ipairs(cellPlans) do
-      local descriptor = cellPlan.descriptor --[[@as table<string, unknown> ]]
-      keys[#keys + 1] = descriptor.matrixMemberId .. "-" .. descriptor.index
+    for _, topologyKey in ipairs(topologyKeys) do
+      local matrixMemberId, index = tostring(topologyKey):match("^(%d+):(%d+)$")
+      assert(matrixMemberId ~= nil and index ~= nil, "topology enumeration carries a non-canonical cell key")
+      keys[#keys + 1] = matrixMemberId .. "-" .. index
     end
     mapCellKeys[record.id] = sortedUnique(keys)
   end

@@ -929,23 +929,30 @@ local function inventoryPatches(calls, failingMapId)
         }
       end,
     },
+    -- Roster enumeration is topology only: the inventory consults the
+    -- cell-key projection per loadable map and never runs full per-map
+    -- content planning. The projection keys use the canonical
+    -- matrixMemberId:index shape; the inventory keeps its dash-joined
+    -- membership.
     {
       target = MapCompilePlan,
-      name = "plan",
+      name = "cellKeys",
       replacement = function(_, _, mapId)
-        calls.mapPlans = (calls.mapPlans or 0) + 1
+        calls.mapKeys = (calls.mapKeys or 0) + 1
         if failingMapId ~= nil and mapId == failingMapId then
           error("synthetic planning failure for map " .. tostring(mapId), 0)
         end
         if mapId == 7 then
-          return {
-            cellPlans = {
-              { descriptor = { matrixMemberId = 11, index = 1 } },
-              { descriptor = { matrixMemberId = 11, index = 0 } },
-            },
-          }
+          return { "11:1", "11:0" }
         end
-        return { cellPlans = {} }
+        return {}
+      end,
+    },
+    {
+      target = MapCompilePlan,
+      name = "plan",
+      replacement = function()
+        error("roster enumeration must not run full per-map content planning", 0)
       end,
     },
   }
@@ -980,7 +987,7 @@ function T.inventory_compiles_membership_without_pixel_or_geometry_work()
   Assert.equal(calls.index, 1, "the cell index compiles once")
   Assert.equal(calls.script, 1, "the script corpus plans once")
   Assert.equal(calls.audio, 1, "the audio closures plan once")
-  Assert.equal(calls.mapPlans, 2, "every loadable map plans once")
+  Assert.equal(calls.mapKeys, 2, "every loadable map enumerates its topology once")
   local fields = 0
   for _ in pairs(plan) do
     fields = fields + 1
@@ -2972,6 +2979,99 @@ function T.refused_page_handoff_fails_the_ready_owner_once()
       "adoption never mutates the deterministic marker"
     )
   end)
+end
+
+-- Source inventory enumerates map cell keys through the topology-only
+-- projection: building the roster performs no full per-map content
+-- planning and no leaf cell planning, while membership stays sorted and
+-- unique per map.
+function T.inventory_lists_map_cells_without_full_content_planning()
+  Assert.equal(
+    type(MapCompilePlan.cellKeys),
+    "function",
+    "source inventory must enumerate cells through the topology-only projection"
+  )
+  local calls = { world = 0, index = 0, script = 0, audio = 0, plans = 0, leaves = 0 }
+  local patches = {
+    {
+      target = WorldManifest,
+      name = "compileCatalog",
+      replacement = function()
+        calls.world = calls.world + 1
+        return syntheticWorld()
+      end,
+    },
+    {
+      target = FieldCellCompiler,
+      name = "compileIndex",
+      replacement = function()
+        calls.index = calls.index + 1
+        return syntheticIndexBundle()
+      end,
+    },
+    {
+      target = FieldCellCompiler,
+      name = "planCell",
+      replacement = function()
+        calls.leaves = calls.leaves + 1
+        error("roster enumeration must not plan leaf cells", 0)
+      end,
+    },
+    {
+      target = ScriptCompiler,
+      name = "plan",
+      replacement = function()
+        calls.script = calls.script + 1
+        return { members = { { memberId = 4 } }, generationKey = "synthetic-generation" }
+      end,
+    },
+    {
+      target = AudioCompiler,
+      name = "planSource",
+      replacement = function()
+        calls.audio = calls.audio + 1
+        return {
+          plan = { index = { version = "heartgold" }, bankPlans = {} },
+          identity = { romSha1 = SYNTHETIC_SHA1, sdatSha1 = string.rep("d", 40), sdatFileId = 9 },
+        }
+      end,
+    },
+    {
+      target = MapCompilePlan,
+      name = "plan",
+      replacement = function(_, _, mapId)
+        calls.plans = calls.plans + 1
+        if mapId == 7 then
+          return {
+            cellPlans = {
+              { descriptor = { matrixMemberId = 11, index = 1 } },
+              { descriptor = { matrixMemberId = 11, index = 0 } },
+            },
+          }
+        end
+        return { cellPlans = {} }
+      end,
+    },
+    {
+      target = MapCompilePlan,
+      name = "cellKeys",
+      replacement = function(_, _, mapId)
+        if mapId == 7 then
+          return { "11:1", "11:0" }
+        end
+        return {}
+      end,
+    },
+  }
+  local plan = withPatched(patches, function()
+    return SourcePlan.compile(syntheticRomFs(), identity("topology-generation"))
+  end)
+  Assert.equal(calls.world, 1, "the world catalog still compiles once")
+  Assert.equal(calls.index, 1, "the cell index still compiles once")
+  Assert.equal(calls.plans, 0, "source inventory performs no full per-map content planning")
+  Assert.equal(calls.leaves, 0, "source inventory plans no leaf cells")
+  Assert.deepEqual(plan.mapCellKeys[7], { "11-0", "11-1" }, "map cell keys stay sorted and unique")
+  Assert.deepEqual(plan.mapCellKeys[9], {}, "a map without cells keeps its membership")
 end
 
 return { tests = T }

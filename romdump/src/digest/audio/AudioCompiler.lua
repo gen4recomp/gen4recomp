@@ -11,7 +11,9 @@
 -- (an unsupported command in a referenced sequence is a build failure, never
 -- a placeholder). Catalog planning (plan) enumerates the deterministic
 -- per-bank closures without lowering sequences or decoding waves, and
--- one-bank streaming compilation (compileBank) owns exactly one used bank,
+-- a retained worker-generation session (openSession) acquires the archive
+-- once and compiles every bank of its generation through that one view,
+-- and one-bank streaming compilation (compileBank) owns exactly one used bank,
 -- the used sequences naming it, and their referenced sample closure: each
 -- distinct source wave decodes once per job, its PCM streams through the
 -- caller sink, and the returned bundle holds keys and metadata, never
@@ -577,14 +579,15 @@ local function checkBankPlan(bankPlan)
   return bankPlan
 end
 
-local function _compileBank(romFs, bankPlan, sampleSink)
+-- The one-bank compile core shared by the one-shot entry point and the
+-- retained worker-generation session: the archive view, its symbols, and
+-- the verified source identity are already in hand, so compiling another
+-- closure performs no further source read, archive open, or identity hash.
+-- Each call owns a job-local wave cache; decoded PCM streams through the
+-- sink and no caller buffer is retained.
+local function compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
   local ownedPlan = checkBankPlan(bankPlan)
   assert(type(sampleSink) == "function", "one-bank compilation requires a sample sink")
-  local sdatBytes = openSdatBytes(romFs)
-  local sdat = openSdat(sdatBytes)
-  local symbols = catalogSymbols(sdat)
-  -- Open the archive once, then compile the single closure against it: the
-  -- marker binds the bytes already in hand, so no second archive read.
   local ok, bank, sequences, sampleMetadata = pcall(function()
     local record = sdat.banks[ownedPlan.bankId]
     if record == nil or record.fileId == nil then
@@ -611,11 +614,6 @@ local function _compileBank(romFs, bankPlan, sampleSink)
   if not ok then
     error(bank, 0)
   end
-  local identity = {
-    romSha1 = romFs:metadata().sha1,
-    sdatSha1 = Hashing.sha1hex(sdatBytes),
-    sdatFileId = romFs:fileIdForPath(SDAT_PATH),
-  }
   return {
     bankId = ownedPlan.bankId,
     bank = bank,
@@ -632,6 +630,98 @@ local function _compileBank(romFs, bankPlan, sampleSink)
       },
     },
   }
+end
+
+local function _compileBank(romFs, bankPlan, sampleSink)
+  -- Open the archive once, then compile the single closure against it: the
+  -- marker binds the bytes already in hand, so no second archive read.
+  local sdatBytes = openSdatBytes(romFs)
+  local sdat = openSdat(sdatBytes)
+  local symbols = catalogSymbols(sdat)
+  local identity = {
+    romSha1 = romFs:metadata().sha1,
+    sdatSha1 = Hashing.sha1hex(sdatBytes),
+    sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+  }
+  return compileBankAgainst(sdat, symbols, identity, bankPlan, sampleSink)
+end
+
+---@param identity unknown
+---@return AudioCompiler.SoundIdentity
+local function checkExpectedIdentity(identity)
+  assert(type(identity) == "table", "an audio session requires the adopted sound identity")
+  ---@cast identity AudioCompiler.SoundIdentity
+  assert(
+    type(identity.romSha1) == "string" and identity.romSha1 ~= "",
+    "an audio session requires the adopted ROM identity"
+  )
+  assert(
+    type(identity.sdatSha1) == "string" and identity.sdatSha1 ~= "",
+    "an audio session requires the adopted archive identity"
+  )
+  assert(
+    type(identity.sdatFileId) == "number" and identity.sdatFileId % 1 == 0,
+    "an audio session requires the adopted archive file identity"
+  )
+  return identity
+end
+
+-- One immutable archive session for a worker source generation: a single
+-- source read, a single archive open, and a single identity hash serve
+-- every bank compiled through it. The ROM identity rejects before any
+-- acquisition; the archive digest and file identity verify against the
+-- bytes in hand. Closing drops the retained view and lookup; use after
+-- close refuses.
+local function _openSession(romFs, expectedIdentity)
+  local expected = checkExpectedIdentity(expectedIdentity)
+  assert(
+    romFs and romFs.readSourcePath and romFs.metadata and romFs.version and romFs.fileIdForPath,
+    "audio sessions require a RomFs-shaped object"
+  )
+  local metadata = romFs:metadata()
+  if metadata.sha1 ~= expected.romSha1 then
+    Errors.raise("AUDIO_SOURCE_IDENTITY_MISMATCH", "the adopted audio ROM identity disagrees with the source", {
+      expected = expected.romSha1,
+    })
+  end
+  local sdatBytes = openSdatBytes(romFs)
+  local sdat = openSdat(sdatBytes)
+  local identity = {
+    romSha1 = metadata.sha1,
+    sdatSha1 = Hashing.sha1hex(sdatBytes),
+    sdatFileId = romFs:fileIdForPath(SDAT_PATH),
+  }
+  if identity.sdatSha1 ~= expected.sdatSha1 or identity.sdatFileId ~= expected.sdatFileId then
+    Errors.raise("AUDIO_SOURCE_IDENTITY_MISMATCH", "the adopted audio archive identity disagrees with the source", {
+      expected = expected.sdatSha1,
+    })
+  end
+  local symbols = catalogSymbols(sdat)
+  ---@type table<string, unknown>?
+  local liveSdat = sdat
+  ---@type table<string, table<string, unknown>>?
+  local liveSymbols = symbols
+  local closed = false
+  local session = {}
+  function session:compileBank(bankPlan, sampleSink)
+    if closed then
+      error("the audio session is closed", 0)
+    end
+    local ok, bundle = pcall(compileBankAgainst, assert(liveSdat), assert(liveSymbols), identity, bankPlan, sampleSink)
+    if ok then
+      return bundle
+    end
+    if Errors.is(bundle) then
+      return nil, bundle --[[@as Errors.Error]]
+    end
+    error(bundle, 0)
+  end
+  function session:close()
+    closed = true
+    liveSdat = nil
+    liveSymbols = nil
+  end
+  return session
 end
 
 local function _compile(romFs, sha1hex, hashLua)
@@ -776,6 +866,33 @@ end
 ---@return Errors.Error?|nil
 function AudioCompiler.compileBank(romFs, bankPlan, sampleSink)
   local ok, result = pcall(_compileBank, romFs, bankPlan, sampleSink)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
+end
+
+---@class AudioCompiler.Session
+---@field compileBank fun(self: AudioCompiler.Session, bankPlan: AudioCompiler.BankPlan, sampleSink: AudioCompiler.SampleSink): AudioCompiler.BankBundle?|nil, Errors.Error?|nil
+---@field close fun(self: AudioCompiler.Session)
+
+-- Opens the one immutable archive session for a worker source generation
+-- over the adopted sound identity (the exact SourcePlan.audioIdentity,
+-- never a rederived identity). Exactly one source read, archive open, and
+-- identity hash serve every bank compiled through the session; warm reuse
+-- opens nothing further. A mismatched identity opens no session. The
+-- session owns archive bytes, the parsed view, and the symbol lookup for
+-- its generation; per-bank decoded waves stay job-local and stream
+-- through each call's sink.
+---@param romFs table<string, unknown>
+---@param expectedIdentity AudioCompiler.SoundIdentity
+---@return AudioCompiler.Session?|nil
+---@return Errors.Error?|nil
+function AudioCompiler.openSession(romFs, expectedIdentity)
+  local ok, result = pcall(_openSession, romFs, expectedIdentity)
   if ok then
     return result
   end

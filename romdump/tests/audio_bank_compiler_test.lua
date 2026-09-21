@@ -1054,4 +1054,314 @@ function T.batch_bank_and_summary_publication_matches_staged_closures()
   end)
 end
 
+-- One worker-generation session acquires the archive once no matter how many
+-- banks compile through it: a single source read, a single archive open, and
+-- a single identity hash serve every bank job, warm reuse opens nothing new,
+-- and a new session after close or a generation change acquires exactly
+-- once more. A shared sample still streams per bank job; no cross-bank PCM
+-- memo suppresses the second stream. A mismatched identity fails
+-- structurally, and a closed session refuses further compilation.
+function T.session_compilation_reuses_one_archive_acquisition_across_banks()
+  Assert.equal(
+    type(AudioCompiler.openSession),
+    "function",
+    "one immutable archive session per worker generation must own bank compilation"
+  )
+  withDecoderSeams(function()
+    local reads = {}
+    local romFs = fakeRomFs(reads)
+    local sharedPcm = string.char(1, 0, 2, 0, 3, 0, 4, 0)
+    local sdat = fakeSdat({
+      sequenceCount = 3,
+      bankCount = 8,
+      sequences = {
+        { id = 0, bankId = 4 },
+        { id = 1, bankId = 7 },
+      },
+      banks = {
+        { id = 4, waveArchives = { [0] = 0 } },
+        { id = 7, waveArchives = { [0] = 1 } },
+      },
+      waveArchives = { [0] = 3000, [1] = 3001 },
+    })
+    local counters = { sbnk = 0, swar = 0, swav = {}, lower = 0 }
+    installCompileDoubles(sdat, {
+      ["swav-bytes:3000:0"] = waveHead(sharedPcm),
+      ["swav-bytes:3001:0"] = waveHead(sharedPcm),
+    }, {}, counters)
+    local bankDecode = function(_, _)
+      counters.sbnk = counters.sbnk + 1
+      return { instruments = { [0] = { type = Sbnk.TYPE_PCM, param = pcmLeaf(0, 0).param } } }
+    end
+    Sbnk.decode = bankDecode
+    local Hashing = require("romdump.src.digest.Hashing")
+    local realSha1hex = Hashing.sha1hex
+    local archiveOpens = 0
+    local archiveHashes = 0
+    local installedOpen = Sdat.open
+    Sdat.open = function(bytes, path)
+      archiveOpens = archiveOpens + 1
+      return installedOpen(bytes, path)
+    end
+    Hashing.sha1hex = function(bytes)
+      if bytes == "fake-sdat-bytes" then
+        archiveHashes = archiveHashes + 1
+      end
+      return realSha1hex(bytes)
+    end
+    local bodyOk, bodyErr = pcall(function()
+      local identity = assert(AudioCompiler.soundIdentity(romFs))
+      for key in pairs(reads) do
+        reads[key] = nil
+      end
+      archiveOpens = 0
+      archiveHashes = 0
+      local plan = assert(AudioCompiler.plan(romFs))
+      local byId = planById(plan)
+      Assert.notNil(byId[4], "the first bank is planned")
+      Assert.notNil(byId[7], "the second bank is planned")
+      local sessionReads = reads["data/sound/gs_sound_data.sdat"] or 0
+      local sessionOpens = archiveOpens
+      local sessionHashes = archiveHashes
+      local session = assert(AudioCompiler.openSession(romFs, identity))
+      Assert.equal(
+        (reads["data/sound/gs_sound_data.sdat"] or 0) - sessionReads,
+        1,
+        "opening the session reads the archive bytes once"
+      )
+      Assert.equal(archiveOpens - sessionOpens, 1, "opening the session parses the archive once")
+      Assert.equal(archiveHashes - sessionHashes, 1, "opening the session hashes the archive once")
+      local sunkA = {}
+      local bundleA = assert(session:compileBank(byId[4], function(key, metadata, pcm)
+        sunkA[key] = { metadata = metadata, pcm = pcm }
+      end))
+      local sunkB = {}
+      local bundleB = assert(session:compileBank(byId[7], function(key, metadata, pcm)
+        sunkB[key] = { metadata = metadata, pcm = pcm }
+      end))
+      Assert.equal(
+        reads["data/sound/gs_sound_data.sdat"] or 0,
+        sessionReads + 1,
+        "two bank jobs perform no further archive reads"
+      )
+      Assert.equal(archiveOpens, sessionOpens + 1, "two bank jobs parse the archive no further")
+      Assert.equal(archiveHashes, sessionHashes + 1, "two bank jobs hash the archive no further")
+      Assert.notNil(bundleA.bank, "the first session closure returns its bank")
+      Assert.notNil(bundleB.bank, "the second session closure returns its bank")
+      AudioBank.validate(bundleA.bank)
+      AudioBank.validate(bundleB.bank)
+      local sharedKey = nil
+      for key in pairs(sunkA) do
+        sharedKey = key
+      end
+      Assert.notNil(sharedKey, "the first bank streams its shared sample")
+      Assert.notNil(sunkB[sharedKey], "the shared sample streams again for the second bank job")
+      Assert.equal(sunkB[sharedKey].pcm, sunkA[sharedKey].pcm, "the shared stream carries identical bytes")
+      local warmBundle = assert(session:compileBank(byId[4], function(_, _, _) end))
+      Assert.equal(warmBundle.marker, bundleA.marker, "repeated compilation through the session is stable")
+      Assert.equal(reads["data/sound/gs_sound_data.sdat"] or 0, sessionReads + 1, "warm reuse opens no further archive")
+      Assert.equal(archiveOpens, sessionOpens + 1, "warm reuse parses nothing further")
+      session:close()
+      session:close()
+      local closedOk = pcall(session.compileBank, session, byId[4], function(_, _, _) end)
+      Assert.isFalse(closedOk, "a closed session refuses further compilation")
+      local afterClose = assert(AudioCompiler.openSession(romFs, identity))
+      Assert.equal(
+        reads["data/sound/gs_sound_data.sdat"] or 0,
+        sessionReads + 2,
+        "a new session acquires the archive exactly once more"
+      )
+      Assert.equal(archiveOpens, sessionOpens + 2, "a new session parses the archive exactly once more")
+      Assert.equal(archiveHashes, sessionHashes + 2, "a new session hashes the archive exactly once more")
+      afterClose:close()
+      local wrongIdentity = { romSha1 = "wrong-rom", sdatSha1 = identity.sdatSha1, sdatFileId = 13 }
+      local rejected, rejectErr = AudioCompiler.openSession(romFs, wrongIdentity)
+      Assert.isNil(rejected, "a mismatched source identity opens no session")
+      Assert.isTrue(Errors.is(rejectErr), "the identity mismatch is a structured failure")
+    end)
+    Hashing.sha1hex = realSha1hex
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
+-- A bank staged through the retained session carries byte-identical assets
+-- to the direct one-bank path: bank record, sequences, sample payloads and
+-- metadata, and the completion marker all match. A mismatched identity
+-- fails before staging, and a staging failure still preserves the
+-- previously published bank.
+function T.session_staged_bank_matches_direct_staged_bytes()
+  Assert.equal(
+    type(AudioCompiler.openSession),
+    "function",
+    "one immutable archive session per worker generation must own bank staging"
+  )
+  withDecoderSeams(function()
+    local romFs = fakeRomFs({})
+    local pcm = string.char(1, 0, 2, 0, 3, 0, 4, 0)
+    local sdat = fakeSdat({
+      sequenceCount = 2,
+      bankCount = 6,
+      sequences = { { id = 0, bankId = 4 } },
+      banks = { { id = 4, waveArchives = { [0] = 0 } } },
+      waveArchives = { [0] = 3000 },
+    })
+    local counters = { sbnk = 0, swar = 0, swav = {}, lower = 0 }
+    installCompileDoubles(sdat, {
+      ["swav-bytes:3000:0"] = waveHead(pcm),
+    }, {}, counters)
+    Sbnk.decode = function(bytes, _)
+      counters.sbnk = counters.sbnk + 1
+      Assert.equal(bytes, "sdat-file-2004", "only the selected bank decodes")
+      return { instruments = { [0] = { type = Sbnk.TYPE_PCM, param = pcmLeaf(0, 0).param } } }
+    end
+    local identity = assert(AudioCompiler.soundIdentity(romFs))
+    local plan = assert(AudioCompiler.plan(romFs))
+    local bankPlan = assert(planById(plan)[4], "the bank is planned")
+    local directSunk = {}
+    local directCache = versionCache(FakeCache.new())
+    local directArtifact = PreparedArtifact.new({
+      cacheFs = directCache,
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "audio-bank",
+      key = "4",
+      jobKey = "audio-bank:4",
+      stageName = "audio-bank-4-direct",
+    })
+    local directBundle = assert(AudioCompiler.compileBank(romFs, bankPlan, function(key, metadata, bytes)
+      directSunk[key] = { metadata = metadata, pcm = bytes }
+    end))
+    AudioCacheWriter.stageBank(directArtifact, romFs, bankPlan)
+    local directStage = directArtifact:stageFs()
+    local session = assert(AudioCompiler.openSession(romFs, identity))
+    local sessionSunk = {}
+    local sessionCache = versionCache(FakeCache.new())
+    local sessionArtifact = PreparedArtifact.new({
+      cacheFs = sessionCache,
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "audio-bank",
+      key = "4",
+      jobKey = "audio-bank:4",
+      stageName = "audio-bank-4-session",
+    })
+    local sessionBundle = assert(session:compileBank(bankPlan, function(key, metadata, bytes)
+      sessionSunk[key] = { metadata = metadata, pcm = bytes }
+    end))
+    AudioCacheWriter.stageBank(sessionArtifact, session, bankPlan)
+    local stagedStage = sessionArtifact:stageFs()
+    session:close()
+    Assert.equal(
+      LuaWriter.encode(sessionBundle.bank),
+      LuaWriter.encode(directBundle.bank),
+      "the session closure carries the identical bank record"
+    )
+    Assert.equal(
+      LuaWriter.encode(sessionBundle.sequences),
+      LuaWriter.encode(directBundle.sequences),
+      "the session closure carries the identical sequences"
+    )
+    Assert.equal(
+      LuaWriter.encode(sessionBundle.sampleMetadata),
+      LuaWriter.encode(directBundle.sampleMetadata),
+      "the session closure carries the identical sample metadata"
+    )
+    Assert.equal(sessionBundle.marker, directBundle.marker, "the session closure carries the identical marker")
+    Assert.equal(
+      LuaWriter.encode(stagedStage:loadLua(AudioCache.bankPath(4))),
+      LuaWriter.encode(directStage:loadLua(AudioCache.bankPath(4))),
+      "the staged bank bytes match the direct staged bank"
+    )
+    Assert.equal(
+      LuaWriter.encode(stagedStage:loadLua(AudioCache.sequencePath(0))),
+      LuaWriter.encode(directStage:loadLua(AudioCache.sequencePath(0))),
+      "the staged sequence bytes match the direct staged sequence"
+    )
+    for key, sunk in pairs(directSunk) do
+      Assert.notNil(sessionSunk[key], "the session streams every direct sample " .. key)
+      Assert.equal(sessionSunk[key].pcm, sunk.pcm, "the streamed sample bytes match for " .. key)
+      Assert.equal(
+        stagedStage:read(AudioCache.samplePath(key)),
+        directStage:read(AudioCache.samplePath(key)),
+        "the staged sample payload matches for " .. key
+      )
+      Assert.equal(
+        LuaWriter.encode(stagedStage:loadLua(AudioCache.sampleMetadataPath(key))),
+        LuaWriter.encode(directStage:loadLua(AudioCache.sampleMetadataPath(key))),
+        "the staged sample metadata matches for " .. key
+      )
+    end
+    local directCompletion = assert(directStage:loadLua(bankCompletePath(4)), "the direct stage carries its completion")
+    local stagedCompletion =
+      assert(stagedStage:loadLua(bankCompletePath(4)), "the session stage carries its completion")
+    Assert.equal(stagedCompletion.marker, directCompletion.marker, "both stages attest the identical marker")
+    directArtifact:abort()
+    sessionArtifact:abort()
+    local wrongIdentity = { romSha1 = identity.romSha1, sdatSha1 = "wrong-archive", sdatFileId = 13 }
+    local rejected, rejectErr = AudioCompiler.openSession(romFs, wrongIdentity)
+    Assert.isNil(rejected, "a mismatched archive identity stages nothing")
+    Assert.isTrue(Errors.is(rejectErr), "the archive mismatch is a structured failure")
+  end)
+end
+
+-- A staging failure before publication preserves the previously published
+-- bank: the live bank, sequence, completion, and readiness survive the
+-- aborted stage.
+function T.failed_session_bank_stage_preserves_the_published_bank()
+  withDecoderSeams(function()
+    local romFs = fakeRomFs({})
+    local pcm = string.char(1, 0, 2, 0, 3, 0, 4, 0)
+    local sdat = fakeSdat({
+      sequenceCount = 2,
+      bankCount = 6,
+      sequences = { { id = 0, bankId = 4 } },
+      banks = { { id = 4, waveArchives = { [0] = 0 } } },
+      waveArchives = { [0] = 3000 },
+    })
+    local counters = { sbnk = 0, swar = 0, swav = {}, lower = 0 }
+    installCompileDoubles(sdat, {
+      ["swav-bytes:3000:0"] = waveHead(pcm),
+    }, {}, counters)
+    Sbnk.decode = function(_)
+      return { instruments = { [0] = { type = Sbnk.TYPE_PCM, param = pcmLeaf(0, 0).param } } }
+    end
+    local plan = assert(AudioCompiler.plan(romFs))
+    local bankPlan = assert(planById(plan)[4], "the bank is planned")
+    local backend = FakeCache.new()
+    local cache = versionCache(backend)
+    local marker = stageAndPublishBank(cache, romFs, bankPlan, "audio-bank-4-live")
+    Assert.isTrue(AudioCache.isBankReady(cache, 4, marker), "the published bank reads ready")
+    local liveBank = cache:read(AudioCache.bankPath(4))
+    local liveSequence = cache:read(AudioCache.sequencePath(0))
+    local liveCompletion = cache:read(bankCompletePath(4))
+    local failing = PreparedArtifact.new({
+      cacheFs = cache,
+      generationId = GENERATION,
+      epoch = 1,
+      kind = "audio-bank",
+      key = "4",
+      jobKey = "audio-bank:4",
+      stageName = "audio-bank-4-failing",
+    })
+    local stageBackend = failing:stageFs()
+    local originalWrite = stageBackend.write
+    stageBackend.write = function(self, path, data)
+      if path:find(".pcm16le", 1, true) ~= nil then
+        error("injected sample staging failure")
+      end
+      return originalWrite(self, path, data)
+    end
+    local ok = pcall(AudioCacheWriter.stageBank, failing, romFs, bankPlan)
+    stageBackend.write = originalWrite
+    failing:abort()
+    Assert.isFalse(ok, "the failing stage stages nothing")
+    Assert.equal(cache:read(AudioCache.bankPath(4)), liveBank, "the live bank survives the failed stage")
+    Assert.equal(cache:read(AudioCache.sequencePath(0)), liveSequence, "the live sequence survives")
+    Assert.equal(cache:read(bankCompletePath(4)), liveCompletion, "the live completion survives")
+    Assert.isTrue(AudioCache.isBankReady(cache, 4, marker), "the published bank stays ready")
+  end)
+end
+
 return { tests = T }

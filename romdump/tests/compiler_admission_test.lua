@@ -294,7 +294,10 @@ function T.promotion_reuses_a_single_queued_job()
   shutdownPool(pool, host)
 end
 
-function T.jumbo_work_admits_only_the_first_worker()
+-- The jumbo label admits no exclusivity: the jumbo dispatches first on
+-- priority, the next queued job overlaps it on the second worker, and
+-- only the third job waits.
+function T.jumbo_work_dispatches_like_any_job()
   local host = newThreadHost(3)
   local pool = openPool(host, "batch")
   local generation = "test-generation-jumbo-target"
@@ -340,11 +343,13 @@ function T.jumbo_work_admits_only_the_first_worker()
   )
   updatePool(pool, host)
   local first = inputChannel(host, 1).log
-  Assert.equal(#first, 1, "only the jumbo job may dispatch while it waits")
+  Assert.equal(#first, 1, "the strongest priority dispatches first")
   Assert.equal(first[1].jobKey, "map:60")
-  Assert.equal(#inputChannel(host, 2).log, 0, "the second worker never takes jumbo-adjacent work")
+  local second = inputChannel(host, 2).log
+  Assert.equal(#second, 1, "the second worker overlaps the jumbo immediately")
+  Assert.equal(second[1].jobKey, "map:61")
   Assert.equal(poolStatus(pool, host, "map:60"), "running")
-  Assert.equal(poolStatus(pool, host, "map:61"), "queued")
+  Assert.equal(poolStatus(pool, host, "map:61"), "running")
   Assert.equal(poolStatus(pool, host, "script-member:8"), "queued")
   shutdownPool(pool, host)
 end
@@ -477,7 +482,10 @@ function T.retired_interest_frees_no_phantom_worker()
   shutdownPool(pool, host)
 end
 
-function T.drained_capacity_waits_for_the_blocked_jumbo()
+-- A drained slot takes the next queued job whatever its family: the
+-- jumbo waits only while both workers are physically occupied and takes
+-- the first freed slot without any drain reservation.
+function T.drained_capacity_dispatches_the_waiting_jumbo()
   local host = newThreadHost(3)
   local pool = openPool(host, "batch")
   local generation = "test-generation-jumbo-reservation"
@@ -548,7 +556,8 @@ function T.drained_capacity_waits_for_the_blocked_jumbo()
     })
   )
   updatePool(pool, host, 0)
-  Assert.equal(#inputChannel(host, 1).log, 1, "the drained slot is reserved for the waiting jumbo")
+  Assert.equal(#inputChannel(host, 1).log, 1, "the pinned slot dispatches nothing new")
+  Assert.equal(poolStatus(pool, host, "map:61"), "prepared", "the completion pins its worker")
   Assert.equal(poolStatus(pool, host, "map:60"), "queued")
   Assert.equal(poolStatus(pool, host, "map:63"), "queued")
   pushCompletion(
@@ -563,8 +572,14 @@ function T.drained_capacity_waits_for_the_blocked_jumbo()
     })
   )
   updatePool(pool, host, 0)
+  Assert.equal(poolStatus(pool, host, "map:62"), "prepared", "the second completion pins its worker too")
+  Assert.equal(poolStatus(pool, host, "map:60"), "queued", "no free worker remains")
+  -- Draining settles the pinned results (this harness stages no worker
+  -- bytes, so publication fails them diagnosably) and the jumbo takes
+  -- the first freed slot like any other job.
+  updatePool(pool, host)
   local first = inputChannel(host, 1).log
-  Assert.equal(#first, 2, "the jumbo job takes the fully drained window")
+  Assert.equal(#first, 2, "the jumbo job takes the first drained slot")
   Assert.equal(first[2].jobKey, "map:60")
   Assert.equal(poolStatus(pool, host, "map:63"), "queued")
   shutdownPool(pool, host)
@@ -684,7 +699,9 @@ function T.prepared_results_hold_dispatch_slots()
   shutdownPool(pool, host)
 end
 
-function T.jumbo_completion_retires_its_worker()
+-- A prepared completion never retires its worker: the VM persists, no
+-- replacement thread starts, and the settled worker takes new work.
+function T.prepared_completion_keeps_its_worker_without_replacement()
   local host = newThreadHost(3)
   local pool = openPool(host, "batch")
   local generation = "test-generation-retire-worker"
@@ -716,10 +733,10 @@ function T.jumbo_completion_retires_its_worker()
     })
   )
   updatePool(pool, host)
-  Assert.equal(#inputChannel(host, 1).log, 1, "jumbo work dispatches only to the first worker")
+  Assert.equal(#inputChannel(host, 1).log, 1, "the jumbo dispatches to the first worker")
   Assert.equal(inputChannel(host, 1).log[1].jobKey, "map:60")
-  Assert.equal(#inputChannel(host, 2).log, 0, "no other compiler is admitted beside jumbo")
-  host.threads[1].alive = false
+  Assert.equal(#inputChannel(host, 2).log, 1, "the second worker admits the overlapping job")
+  Assert.equal(inputChannel(host, 2).log[1].jobKey, "map:61")
   pushCompletion(
     host,
     preparedCompletion({
@@ -729,21 +746,38 @@ function T.jumbo_completion_retires_its_worker()
       kind = "map",
       key = "60",
       stageName = dispatchedStage(host, 1, 1),
-      retiring = true,
     })
   )
   updatePool(pool, host, 0)
+  Assert.equal(poolStatus(pool, host, "map:60"), "prepared", "the completion pins its worker")
   updatePool(pool, host, 0)
-  updatePool(pool, host, 0)
-  Assert.equal(host.threads[1].waits, 1, "the retired worker is joined exactly once")
+  Assert.equal(host.threads[1].waits, 0, "the persistent worker is never joined")
   local starts = 0
   for _, thread in ipairs(host.threads) do
     starts = starts + thread.starts
   end
-  Assert.equal(#host.threads, 3, "one replacement worker restarts the retired slot")
-  Assert.equal(starts, 3, "one replacement worker restarts the retired slot")
-  Assert.equal(host.threads[2].waits, 0, "the idle worker is never joined while work remains")
-  Assert.deepEqual(host.dispatched, { "map:60", "map:61" }, "queued work resumes on the replacement slot")
+  Assert.equal(#host.threads, 2, "no replacement worker starts")
+  Assert.equal(starts, 2, "no replacement worker starts")
+  Assert.equal(host.threads[2].waits, 0, "the overlapping worker is never joined")
+  Assert.deepEqual(host.dispatched, { "map:60", "map:61" }, "no completion spawns fresh capacity")
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "62",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(62),
+    })
+  )
+  updatePool(pool, host)
+  Assert.equal(poolStatus(pool, host, "map:60"), "failed", "draining settles the unstaged harness result")
+  Assert.equal(#inputChannel(host, 1).log, 2, "the settled worker takes new work itself")
+  Assert.equal(inputChannel(host, 1).log[2].jobKey, "map:62")
+  Assert.equal(#host.threads, 2, "settling never replaces the worker")
   shutdownPool(pool, host)
 end
 
@@ -1078,15 +1112,17 @@ local function waitForProgress(pool, host)
   end)
 end
 
-function T.demanded_success_is_accepted_before_liveness()
+-- A demanded reply is accepted through the completion validator and
+-- pins its worker: no death is classified, nothing is joined, and no
+-- replacement capacity appears.
+function T.demanded_result_is_accepted_and_pinned()
   local generation = "test-generation-demand-before-death"
   local armed = { ready = false, stage = nil }
   local host = newThreadHost(4, {
-    onDemand = function(_, values, timeout, probe)
+    onDemand = function(_, values, timeout)
       Assert.equal(type(timeout), "number", "progress waits use a finite channel demand")
       if armed.ready then
         armed.ready = false
-        probe.threads[1].alive = false
         values[#values + 1] = preparedCompletion({
           workerId = 1,
           epoch = 1,
@@ -1094,7 +1130,6 @@ function T.demanded_success_is_accepted_before_liveness()
           kind = "map",
           key = "60",
           stageName = armed.stage,
-          retiring = true,
         })
       end
       if #values == 0 then
@@ -1127,22 +1162,21 @@ function T.demanded_success_is_accepted_before_liveness()
   -- stages no worker bytes, so the drained completion settles as a
   -- diagnosable job failure here; production stages make this ready. The
   -- lifecycle facts below are the contract under test: the reply is
-  -- accepted before death classification, the exited worker is joined
-  -- exactly once, and no worker-death error is recorded.
+  -- accepted and settled, the healthy worker is never joined, no
+  -- replacement capacity appears, and no worker-death error is recorded.
   waitForProgress(pool, host)
   updatePool(pool, host, 0)
   Assert.isTrue(poolStatus(pool, host, "map:60") ~= "running", "the demanded reply settles the job")
-  Assert.equal(host.threads[1].waits, 1, "the retired worker is joined exactly once")
-  Assert.equal(#host.threads, 2, "the retiring exit is replaced, not mourned as a death")
+  Assert.equal(host.threads[1].waits, 0, "the healthy worker is never joined")
+  Assert.equal(#host.threads, 1, "no replacement capacity appears")
   Assert.isNil(poolDiagnostics(pool, host).error, "no fatal worker-death error is recorded")
   shutdownPool(pool, host)
 end
 
-function T.empty_pop_followed_by_late_arrival_is_not_a_death()
-  -- The production shape of this race is a retiring worker whose terminal
-  -- reply is queued while its exit is already observable: the reply must be
-  -- accepted before any death classification, and the expected exit is then
-  -- joined rather than mourned.
+-- A reply that arrives late (after an empty drain) is accepted exactly
+-- once on the second drain: the pinned result settles singly, the
+-- healthy worker is never joined, and no fatal error follows.
+function T.delayed_arrival_is_accepted_exactly_once()
   local generation = "test-generation-late-arrival"
   local host = newThreadHost(4)
   local pool = openPool(host, "interactive")
@@ -1170,7 +1204,6 @@ function T.empty_pop_followed_by_late_arrival_is_not_a_death()
   channel.pop = function(self)
     if first then
       first = false
-      host.threads[1].alive = false
       push(
         self,
         preparedCompletion({
@@ -1180,19 +1213,23 @@ function T.empty_pop_followed_by_late_arrival_is_not_a_death()
           kind = "map",
           key = "60",
           stageName = stage,
-          retiring = true,
         })
       )
       return nil
     end
     return origPop(self)
   end
+  -- The first drain observes the empty channel and returns; the reply
+  -- queued behind it waits for the next drain. No death is classified in
+  -- between: the worker is healthy throughout.
+  updatePool(pool, host, 0)
+  Assert.equal(poolStatus(pool, host, "map:60"), "running", "the delayed reply waits for the next drain")
   updatePool(pool, host, 0)
   Assert.equal(poolStatus(pool, host, "map:60"), "prepared", "the second drain accepts the late result")
   updatePool(pool, host, 0)
   Assert.equal(poolStatus(pool, host, "map:60"), "prepared", "the accepted result settles exactly once")
-  Assert.equal(host.threads[1].waits, 1, "the expected exit is joined exactly once")
-  Assert.isNil(poolDiagnostics(pool, host).error, "no fatal error follows a recovered result")
+  Assert.equal(host.threads[1].waits, 0, "the healthy worker is never joined")
+  Assert.isNil(poolDiagnostics(pool, host).error, "no fatal error follows a delayed result")
   shutdownPool(pool, host)
 end
 
@@ -1226,7 +1263,11 @@ function T.missing_reply_with_a_dead_worker_stays_fatal()
   shutdownPool(pool, host)
 end
 
-function T.quiesced_jumbo_is_joined_not_replaced()
+-- A quiesced jumbo closes its barrier without recycling: the prepared
+-- completion pins its worker, the deferred close reaches it, and the
+-- acknowledged close plus the settled result closes the barrier. No
+-- worker exits and none is replaced.
+function T.quiesced_jumbo_closes_its_barrier_without_recycling()
   local generation = "test-generation-quiesce-jumbo"
   local host = newThreadHost(3)
   local pool = openPool(host, "batch")
@@ -1258,25 +1299,27 @@ function T.quiesced_jumbo_is_joined_not_replaced()
       kind = "map",
       key = "60",
       stageName = stage,
-      retiring = true,
     })
   )
-  host.threads[1].alive = false
   updatePool(pool, host, 0)
-  Assert.equal(poolStatus(pool, host, "map:60"), "prepared", "the retiring completion is accepted, not mourned")
+  Assert.equal(poolStatus(pool, host, "map:60"), "prepared", "the completion pins its worker")
   Assert.equal(#host.threads, 2, "no replacement starts during quiescence")
-  Assert.equal(host.threads[1].waits, 1, "the exited worker is joined exactly once")
+  Assert.equal(host.threads[1].waits, 0, "the persistent worker is never joined")
+  local workerClose = inputChannel(host, 1).log[2]
+  Assert.notNil(workerClose, "the completed worker receives its deferred close request")
+  Assert.notNil(workerClose.closeToken, "the deferred close carries its barrier identity")
   -- Draining the accepted completion settles a diagnosable job failure in
   -- this harness (no worker bytes are staged); production stages publish.
   -- The barrier facts below are the contract under test.
   updatePool(pool, host)
-  Assert.isNil(poolDiagnostics(pool, host).error, "settling the retiring job raises no fatal error")
+  Assert.isNil(poolDiagnostics(pool, host).error, "settling the pinned job raises no fatal error")
   local closeMessage = inputChannel(host, 2).log[1]
   Assert.notNil(closeMessage, "the idle worker receives a close request")
   Assert.notNil(closeMessage.closeToken, "the close request carries its barrier identity")
   pushCompletion(host, { status = "context-closed", workerId = 2, closeToken = closeMessage.closeToken })
+  pushCompletion(host, { status = "context-closed", workerId = 1, closeToken = workerClose.closeToken })
   updatePool(pool, host, 0)
-  Assert.isTrue(poolQuiescent(pool, host), "joined exit plus acknowledgement closes the barrier")
+  Assert.isTrue(poolQuiescent(pool, host), "settled result plus both acknowledgements closes the barrier")
   selectGeneration(pool, host, generation, 2)
   requestJob(
     pool,
@@ -1383,7 +1426,11 @@ function T.selection_before_source_closure_is_rejected()
   shutdownPool(pool, host)
 end
 
-function T.retired_worker_replacement_failure_is_terminal()
+-- A worker that dies mid-job is terminal infrastructure failure: the
+-- running job settles with the worker-death attribution, the failure
+-- stays diagnosable, further admission stops, and no replacement thread
+-- silently restores phantom capacity.
+function T.dead_running_worker_is_terminal_without_replacement()
   local generation = "test-generation-replacement-failure"
   local host = newThreadHost(3)
   local pool = openPool(host, "batch")
@@ -1402,35 +1449,22 @@ function T.retired_worker_replacement_failure_is_terminal()
     })
   )
   updatePool(pool, host)
-  pushCompletion(
-    host,
-    preparedCompletion({
-      workerId = 1,
-      epoch = 1,
-      generation = generation,
-      kind = "map",
-      key = "60",
-      stageName = dispatchedStage(host, 1, 1),
-      retiring = true,
-    })
-  )
+  Assert.equal(poolStatus(pool, host, "map:60"), "running", "the job executes")
   host.threads[1].alive = false
-  host.love.thread.newThread = function()
-    error("injected replacement failure")
-  end
   local ok = pcall(function()
     updatePool(pool, host, 0)
   end)
-  Assert.isFalse(ok, "a failed replacement ends the update visibly")
-  Assert.notNil(poolDiagnostics(pool, host).error, "the replacement failure stays diagnosable")
+  Assert.isFalse(ok, "a dead worker ends the update visibly")
+  Assert.equal(poolStatus(pool, host, "map:60"), "failed", "the running job settles with the death attribution")
+  Assert.notNil(poolDiagnostics(pool, host).error, "the worker death stays diagnosable")
   local threadsAfterFailure = #host.threads
   local second = pcall(function()
     updatePool(pool, host, 0)
   end)
   Assert.isFalse(second, "a terminal pool stops further admission")
   Assert.equal(#host.threads, threadsAfterFailure, "no silent reattempt creates phantom capacity")
-  Assert.equal(host.threads[1].waits, 1, "the exited worker is joined exactly once")
   shutdownPool(pool, host)
+  Assert.equal(host.threads[1].waits, 1, "shutdown joins the exited worker exactly once")
   shutdownPool(pool, host)
 end
 
@@ -1543,6 +1577,136 @@ function T.retirement_cancels_interest_without_freeing_the_slot()
   updatePool(pool, host, 0)
   Assert.deepEqual(host.dispatched, { "script-member:7" }, "the late result dispatches nothing new")
   Assert.equal(poolStatus(pool, host, "script-member:7"), "cancelled", "late output never publishes")
+  shutdownPool(pool, host)
+end
+
+-- Worker counts are a fixed physical cap, not a function of job families:
+-- batch runs at most two compilers, interactive runs exactly one, and a
+-- single processor still runs one worker. No family label changes this.
+function T.fixed_worker_counts_bound_batch_and_interactive_pools()
+  local batchHost = newThreadHost(6)
+  local batchPool = openPool(batchHost, "batch")
+  Assert.equal(#batchHost.threads, 2, "a batch pool on six processors runs exactly two workers")
+  shutdownPool(batchPool, batchHost)
+  local interactiveHost = newThreadHost(6)
+  local interactivePool = openPool(interactiveHost, "interactive")
+  Assert.equal(#interactiveHost.threads, 1, "an interactive pool runs exactly one worker")
+  shutdownPool(interactivePool, interactiveHost)
+  local singleHost = newThreadHost(1)
+  local singlePool = openPool(singleHost, "batch")
+  Assert.equal(#singleHost.threads, 1, "a single-processor batch pool still runs one worker")
+  shutdownPool(singlePool, singleHost)
+end
+
+-- Family labels never serialize the bounded workers: two jumbo jobs
+-- dispatch together onto the two batch workers instead of draining the
+-- pool for the first one.
+function T.jumbo_jobs_overlap_on_bounded_batch_workers()
+  local host = newThreadHost(6)
+  local pool = openPool(host, "batch")
+  local generation = "test-generation-jumbo-overlap"
+  selectGeneration(pool, host, generation, 1)
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "60",
+      priority = REQUIRED,
+      sizeClass = "jumbo",
+      payload = mapPayload(60),
+    })
+  )
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "61",
+      priority = REQUIRED,
+      sizeClass = "jumbo",
+      payload = mapPayload(61),
+    })
+  )
+  updatePool(pool, host)
+  updatePool(pool, host)
+  Assert.deepEqual(
+    host.dispatched,
+    { "map:60", "map:61" },
+    "two jumbo jobs dispatch together without family exclusivity"
+  )
+  Assert.equal(poolStatus(pool, host, "map:60"), "running")
+  Assert.equal(poolStatus(pool, host, "map:61"), "running")
+  shutdownPool(pool, host)
+end
+
+-- Independent jobs overlap on the bounded workers and settled workers are
+-- never replaced: completing both jobs spawns no fresh worker.
+function T.independent_jobs_overlap_and_settle_without_worker_replacement()
+  local host = newThreadHost(6)
+  local pool = openPool(host, "batch")
+  local workersAtOpen = #host.threads
+  local generation = "test-generation-overlap-settle"
+  selectGeneration(pool, host, generation, 1)
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "60",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(60),
+    })
+  )
+  requestJob(
+    pool,
+    host,
+    makeJob({
+      generation = generation,
+      epoch = 1,
+      kind = "map",
+      key = "61",
+      priority = REQUIRED,
+      sizeClass = "normal",
+      payload = mapPayload(61),
+    })
+  )
+  updatePool(pool, host)
+  updatePool(pool, host)
+  Assert.deepEqual(host.dispatched, { "map:60", "map:61" }, "two independent jobs overlap")
+  pushCompletion(
+    host,
+    preparedCompletion({
+      workerId = 1,
+      epoch = 1,
+      generation = generation,
+      kind = "map",
+      key = "60",
+      stageName = dispatchedStage(host, 1, 1),
+    })
+  )
+  pushCompletion(
+    host,
+    preparedCompletion({
+      workerId = 2,
+      epoch = 1,
+      generation = generation,
+      kind = "map",
+      key = "61",
+      stageName = dispatchedStage(host, 2, 1),
+    })
+  )
+  updatePool(pool, host, 0)
+  Assert.equal(poolStatus(pool, host, "map:60"), "prepared")
+  Assert.equal(poolStatus(pool, host, "map:61"), "prepared")
+  Assert.equal(#host.threads, workersAtOpen, "settled workers are not replaced")
   shutdownPool(pool, host)
 end
 

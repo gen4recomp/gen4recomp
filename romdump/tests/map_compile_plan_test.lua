@@ -70,4 +70,47 @@ function T.indoor_maps_plan_as_aggregate_without_canonical_cells()
   Assert.equal(plan.jobIdentity, "map:" .. MapRomFixture.MAP_ID)
 end
 
+-- Roster enumeration lists canonical cell keys without leaf content
+-- planning: the topology-only projection returns the same sorted unique
+-- matrixMemberId:index keys as full planning while never invoking leaf
+-- cell planning, hashing, or compilation. Aggregate maps carry no keys.
+function T.roster_enumeration_lists_cell_keys_without_leaf_content_planning()
+  Assert.equal(
+    type(MapCompilePlan.cellKeys),
+    "function",
+    "roster enumeration must use the topology-only cell projection"
+  )
+  local FieldCellCompiler = require("romdump.src.digest.field.FieldCellCompiler")
+  local romFs = MapRomFixture.build({ areaTypeRaw = 1 })
+  local index = indexFor(romFs)
+  local realPlanCell = FieldCellCompiler.planCell
+  local leafCalls = 0
+  FieldCellCompiler.planCell = function(...)
+    leafCalls = leafCalls + 1
+    return realPlanCell(...)
+  end
+  local ok, keys = pcall(MapCompilePlan.cellKeys, romFs, index, MapRomFixture.MAP_SYMBOL)
+  FieldCellCompiler.planCell = realPlanCell
+  if not ok then
+    error(keys, 0)
+  end
+  Assert.equal(leafCalls, 0, "roster enumeration performs no leaf content planning")
+  Assert.equal(type(keys), "table", "roster enumeration returns the key list")
+  local full = assert(MapCompilePlan.plan(romFs, index, MapRomFixture.MAP_SYMBOL, "producer"))
+  local expected = {}
+  local seen = {}
+  for _, cellPlan in ipairs(full.cellPlans) do
+    local key = cellPlan.descriptor.matrixMemberId .. ":" .. cellPlan.descriptor.index
+    if not seen[key] then
+      seen[key] = true
+      expected[#expected + 1] = key
+    end
+  end
+  table.sort(expected)
+  Assert.deepEqual(keys, expected, "topology keys match full planning keys")
+  local indoorFs = MapRomFixture.build({})
+  local indoorKeys = assert(MapCompilePlan.cellKeys(indoorFs, indexFor(indoorFs), MapRomFixture.MAP_SYMBOL))
+  Assert.deepEqual(indoorKeys, {}, "an aggregate map carries no canonical cell keys")
+end
+
 return { tests = T }

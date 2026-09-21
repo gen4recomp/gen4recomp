@@ -387,10 +387,12 @@ function T.queued_jobs_are_deduplicated_and_priority_fifo()
     pool:update()
   end)
 
-  Assert.deepEqual(host.dispatched, { "map:60", "map:61", "map:62" })
+  -- The bounded batch pool runs two workers: the promoted map:60 keeps its
+  -- original sequence ahead of map:61, and map:62 waits for a free worker.
+  Assert.deepEqual(host.dispatched, { "map:60", "map:61" })
   Assert.equal(pool:status("map:60"), "running")
   Assert.equal(pool:status("map:61"), "running")
-  Assert.equal(pool:status("map:62"), "running")
+  Assert.equal(pool:status("map:62"), "queued")
   pool:shutdown()
 end
 
@@ -458,7 +460,7 @@ function T.constructor_failure_joins_started_workers()
     thread = {
       newChannel = channel,
       newThread = function()
-        if #threads == 2 then
+        if #threads == 1 then
           error("injected worker construction failure")
         end
         local thread = { waits = 0 }
@@ -482,7 +484,7 @@ function T.constructor_failure_joins_started_workers()
       CompilerPool.new({ versionId = "heartgold", mode = "batch" })
     end)
   end)
-  Assert.equal(#started, 2, "workers before the failed construction were started")
+  Assert.equal(#started, 1, "workers before the failed construction were started")
   for _, thread in ipairs(threads) do
     Assert.equal(thread.waits, 1, "each acquired worker is joined exactly once")
   end
@@ -915,10 +917,10 @@ function T.large_backlog_dispatch_preserves_order_without_whole_queue_sort()
   pool:shutdown()
 end
 
--- A waiting jumbo reserves the drain window against same/lower priority
--- work while a stronger arrival still dispatches, all without sorting the
--- queued corpus on the dispatch path.
-function T.stronger_priority_bypasses_a_reserved_jumbo_without_sort()
+-- Stronger priority dispatches first while weaker work waits, all without
+-- sorting the queued corpus on the dispatch path. Family labels reserve
+-- nothing: a waiting jumbo takes the next free worker like any other job.
+function T.stronger_priority_dispatches_first_without_sort()
   local CompilerPool = requirePool()
   local host = newThreadHost(3)
   local pool = assert(withLove(host.love, function()
@@ -963,15 +965,15 @@ function T.stronger_priority_bypasses_a_reserved_jumbo_without_sort()
   Assert.deepEqual(
     host.dispatched,
     { "map:32001", "map:32004" },
-    "only the stronger arrival dispatches while the jumbo waits for the drain"
+    "the stronger arrival dispatches on the free worker while weaker work waits"
   )
-  Assert.equal(pool:status("map:32002"), "queued", "the jumbo waits for a full drain")
-  Assert.equal(pool:status("map:32003"), "queued", "reserved same-priority work waits")
+  Assert.equal(pool:status("map:32002"), "queued", "the jumbo waits for a free worker")
+  Assert.equal(pool:status("map:32003"), "queued", "same-priority work waits behind the queue head")
   local _, sweepDetails = pool:status("map:32003")
   Assert.equal(
     type(sweepDetails) == "table" and sweepDetails.waitingOn,
-    "reserved-for-jumbo",
-    "the reservation names its cause"
+    "active-job",
+    "the wait names physical occupancy"
   )
   pool:shutdown()
 end
@@ -1070,7 +1072,12 @@ end
 -- and late terminal replies: a prepared heavy blocks a second heavy, a
 -- jumbo waits for the drain, an old physical heavy keeps blocking across a
 -- new epoch, and its late reply releases exactly once.
-function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_completion()
+-- Physical occupancy pins prepared results across retirement and late
+-- completion: one prepared unpublished result per worker keeps its slot
+-- whatever the family label, retirement never frees a running slot, and a
+-- late terminal reply releases it exactly once. Family labels never
+-- serialize the bounded workers.
+function T.physical_occupancy_pins_prepared_results_across_retirement_and_late_completion()
   local CompilerPool = requirePool()
   local host = newThreadHost(3)
   local pool = assert(withLove(host.love, function()
@@ -1097,7 +1104,7 @@ function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_comple
     Assert.equal(pool:status("map:61"), "running", "the heavy job executes")
     pool:request(mapJob("62", 62, 0, "normal"))
     pool:update()
-    Assert.equal(pool:status("map:62"), "running", "a normal job coexists with the heavy job")
+    Assert.equal(pool:status("map:62"), "running", "a normal job overlaps the heavy job")
     local normalMessage = host.channels[3]:pop()
     assert(type(normalMessage) == "table", "the second worker received the normal job")
     local normalStage = assert(normalMessage.stageName, "dispatched work carries its stage identity")
@@ -1112,23 +1119,21 @@ function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_comple
       status = "failed",
     })
     pool:update()
-    Assert.equal(pool:status("map:62"), "failed", "the normal job settles without holding activity")
+    Assert.equal(pool:status("map:62"), "failed", "the normal job settles and frees its worker")
     Assert.equal(pool:status("map:61"), "running", "the heavy job still executes")
+    -- No family exclusivity: the freed worker takes the next job whatever
+    -- its label, and the jumbo queues only while both workers are busy.
     pool:request(mapJob("63", 63, 0, "heavy"))
-    local secondState, secondDetails = pool:status("map:63")
-    Assert.equal(secondState, "queued", "the second heavy waits")
-    Assert.equal(
-      type(secondDetails) == "table" and secondDetails.waitingOn,
-      "active-job",
-      "the wait names heavy activity"
-    )
     pool:request(mapJob("64", 64, 0, "jumbo"))
-    local jumboState, jumboDetails = pool:status("map:64")
-    Assert.equal(jumboState, "queued", "the jumbo waits for a full drain")
+    pool:update()
+    Assert.equal(pool:status("map:63"), "running", "the freed worker takes the next job")
+    Assert.equal(pool:status("map:64"), "queued", "the jumbo waits while both workers are busy")
+    local busyState, busyDetails = pool:status("map:64")
+    Assert.equal(busyState, "queued", "the jumbo stays queued")
     Assert.equal(
-      type(jumboDetails) == "table" and jumboDetails.waitingOn,
+      type(busyDetails) == "table" and busyDetails.waitingOn,
       "active-job",
-      "the jumbo wait names activity"
+      "the wait names physical occupancy, not a family rule"
     )
     local heavyMessage = host.channels[2]:pop()
     assert(type(heavyMessage) == "table", "the first worker received the heavy job")
@@ -1148,33 +1153,31 @@ function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_comple
       stagedBytes = 8,
     })
     pool:update(0)
-    Assert.equal(pool:status("map:61"), "prepared", "the prepared heavy stays pinned")
-    Assert.equal(pool:status("map:63"), "queued", "a prepared heavy still blocks the next heavy")
-    Assert.equal(pool:status("map:64"), "queued", "a prepared heavy still blocks the jumbo")
+    Assert.equal(pool:status("map:61"), "prepared", "the prepared result stays pinned to its worker")
     pool:update()
     Assert.equal(
       pool:status("map:61"),
       "failed",
-      "the terminal heavy releases admission even when publication finds no staged bytes"
+      "the terminal result releases admission even when publication finds no staged bytes"
     )
-    Assert.equal(pool:status("map:63"), "running", "the second heavy dispatches after the release")
-    Assert.equal(pool:status("map:64"), "queued", "the jumbo still waits while the heavy runs")
+    Assert.equal(pool:status("map:64"), "running", "the freed worker takes the waiting jumbo")
+    Assert.equal(pool:status("map:63"), "running", "the other worker still executes")
     Assert.isTrue(pool:retireSelection(1), "the selection retires while work executes")
     Assert.equal(pool:status("map:63"), "running", "retirement keeps the executing record")
     pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 2)
     pool:request(mapJob("65", 65, 0, "heavy", 2))
     local nextState, nextDetails = pool:status("map:65")
-    Assert.equal(nextState, "queued", "the new epoch heavy waits")
+    Assert.equal(nextState, "queued", "the new epoch job waits")
     Assert.equal(
       type(nextDetails) == "table" and nextDetails.waitingOn,
       "active-job",
-      "the retired physical heavy still counts"
+      "the retired physical occupancy still counts"
     )
-    local retiredMessage = host.channels[2]:pop()
-    assert(type(retiredMessage) == "table", "the retired heavy reached the first worker")
+    local retiredMessage = host.channels[3]:pop()
+    assert(type(retiredMessage) == "table", "the retired job reached the second worker")
     local retiredStage = assert(retiredMessage.stageName, "retired work carries its stage identity")
     host.channels[1]:push({
-      workerId = 1,
+      workerId = 2,
       epoch = 1,
       generationId = generation,
       kind = "map",
@@ -1184,9 +1187,9 @@ function T.heavy_and_jumbo_activity_survives_prepared_retirement_and_late_comple
       status = "failed",
     })
     pool:update()
-    Assert.equal(pool:status("map:65"), "running", "the late reply releases the retired heavy exactly once")
+    Assert.equal(pool:status("map:65"), "running", "the late reply releases the retired slot exactly once")
     pool:request(mapJob("66", 66, 0, "heavy", 2))
-    Assert.equal(pool:status("map:66"), "queued", "a further heavy still waits behind the running one")
+    Assert.equal(pool:status("map:66"), "queued", "further work still waits behind the running jobs")
   end)
   pool:shutdown()
 end

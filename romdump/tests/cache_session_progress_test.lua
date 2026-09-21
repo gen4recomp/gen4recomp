@@ -353,7 +353,7 @@ local function syntheticWorld()
 end
 
 local function compileSynthetic(env, scriptIds)
-  local calls = { world = 0, index = 0, script = 0, audio = 0, mapPlans = 0 }
+  local calls = { world = 0, index = 0, script = 0, audio = 0, mapKeys = 0 }
   local members = {}
   for _, memberId in ipairs(scriptIds or { 4, 6 }) do
     members[#members + 1] = { memberId = memberId }
@@ -399,20 +399,25 @@ local function compileSynthetic(env, scriptIds)
         }
       end,
     },
+    -- Roster enumeration is topology only: the inventory consults the
+    -- cell-key projection per loadable map and never runs full per-map
+    -- content planning.
+    {
+      target = MapCompilePlan,
+      name = "cellKeys",
+      replacement = function(_, _, mapId)
+        calls.mapKeys = calls.mapKeys + 1
+        if mapId == 7 then
+          return { "11:1", "11:0" }
+        end
+        return {}
+      end,
+    },
     {
       target = MapCompilePlan,
       name = "plan",
-      replacement = function(_, _, mapId)
-        calls.mapPlans = calls.mapPlans + 1
-        if mapId == 7 then
-          return {
-            cellPlans = {
-              { descriptor = { matrixMemberId = 11, index = 1 } },
-              { descriptor = { matrixMemberId = 11, index = 0 } },
-            },
-          }
-        end
-        return { cellPlans = {} }
+      replacement = function()
+        error("roster enumeration must not run full per-map content planning", 0)
       end,
     },
   }, function()

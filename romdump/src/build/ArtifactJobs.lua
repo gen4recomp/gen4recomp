@@ -376,6 +376,8 @@ function ArtifactJobs.closeSessions(context)
   context.scriptGenerationKey = nil
   closeFamilySession(context, "messageSession")
   closeFamilySession(context, "mapdataSession")
+  closeFamilySession(context, "audioSession")
+  context.audioSessionKey = nil
 end
 
 local function messageSessionFor(context)
@@ -790,9 +792,47 @@ local function generationAudioSource(context, job, operation)
   return source
 end
 
+--- The one audio archive session for the worker source generation,
+--- selected from the memoized adopted plan like every other family
+--- session: version, generation, and producer scope it, the adopted sound
+--- identity verifies it, and a changed scope closes it before a new one
+--- opens. Decoded waves stay per bank job; the session retains only the
+--- immutable archive view and lookup.
+---@param context table<string, unknown>
+---@param job { generationId: string, producerFingerprint: string|nil, payload: table<string, unknown> }
+---@param source table<string, unknown>
+---@return table<string, unknown>
+local function audioSessionForContext(context, job, source)
+  local AudioCompiler = require("romdump.src.digest.audio.AudioCompiler")
+  local romFs = assert(context.romFs, "audio bank jobs require a source reader")
+  local producerId = assert(job.producerFingerprint, "audio bank jobs require a producer")
+  local payload = job.payload
+  local versionId = (type(payload) == "table" and payload.versionId) or context.versionId
+  assert(type(versionId) == "string" and versionId ~= "", "audio bank jobs require the version")
+  local key = versionId
+    .. "\0"
+    .. assert(job.generationId, "audio bank jobs require a generation")
+    .. "\0"
+    .. producerId
+  local session = context.audioSession
+  if type(session) ~= "table" or context.audioSessionKey ~= key then
+    closeFamilySession(context, "audioSession")
+    context.audioSessionKey = nil
+    local audioIdentity = assert(source.audioIdentity, "audio bank jobs require the published sound identity")
+    ---@cast audioIdentity table<string, unknown>
+    local opened, openErr = AudioCompiler.openSession(romFs, audioIdentity)
+    if opened == nil then
+      error(assert(openErr), 0)
+    end
+    session = opened
+    context.audioSession = session
+    context.audioSessionKey = key
+  end
+  return session
+end
+
 local function executeAudioBank(artifact, context, job, bankId)
   local AudioCacheWriter = require("romdump.src.digest.audio.AudioCacheWriter")
-  local romFs = assert(context.romFs, "audio bank jobs require a source reader")
   local source = generationAudioSource(context, job, "audio bank jobs")
   local audioPlan = assert(source.audioPlan, "audio bank jobs require the published audio membership")
   ---@cast audioPlan table<string, unknown>
@@ -807,7 +847,7 @@ local function executeAudioBank(artifact, context, job, bankId)
   if selected == nil then
     error("audio bank " .. tostring(bankId) .. " is not a member of the published audio plan", 0)
   end
-  return AudioCacheWriter.stageBank(artifact, romFs, selected)
+  return AudioCacheWriter.stageBank(artifact, audioSessionForContext(context, job, source), selected)
 end
 
 local function executeAudioCatalog(artifact, context, job)

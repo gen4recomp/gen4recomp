@@ -31,18 +31,15 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field sequence integer
 ---@field state string
 ---@field node CompilerPool.Node?
----@field resourceActive boolean?
 ---@field details table<string, unknown>?
 ---@field stageName string?
 ---@field workerId integer?
 ---@field timing table<string, unknown>?
----@field retired boolean?
 ---@class CompilerPool.Worker
 ---@field id integer
 ---@field thread table<string, function>
 ---@field input table<string, function>
 ---@field slot CompilerPool.Job?
----@field retiring boolean
 ---@field started boolean
 ---@field joined boolean
 ---@field closeSent boolean
@@ -64,8 +61,6 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field resultChannel table<string, function>
 ---@field lanes table<integer, table<string, CompilerPool.Lane>>
 ---@field queuedCount integer
----@field activeHeavy integer
----@field activeJumbo integer
 ---@field jobs table<string, CompilerPool.Job>
 ---@field workers CompilerPool.Worker[]
 ---@field completions CompilerPool.Completion[]
@@ -114,6 +109,12 @@ local SIZE_ORDER = { "normal", "heavy", "jumbo" }
 ---@return boolean
 local function before(a, b)
   return a.priority < b.priority or (a.priority == b.priority and a.sequence < b.sequence)
+end
+
+---@param worker CompilerPool.Worker
+---@return boolean
+local function workerIdle(worker)
+  return worker.started and not worker.joined and worker.slot == nil
 end
 
 ---@return table<integer, table<string, CompilerPool.Lane>>
@@ -222,37 +223,6 @@ local function resetLanes(self)
   self.queuedCount = 0
 end
 
----@param self CompilerPool
----@param record CompilerPool.Job
-local function activateResource(self, record)
-  if record.sizeClass ~= "heavy" and record.sizeClass ~= "jumbo" then
-    return
-  end
-  assert(not record.resourceActive, "resource activation is exactly once")
-  record.resourceActive = true
-  if record.sizeClass == "heavy" then
-    self.activeHeavy = self.activeHeavy + 1
-  else
-    self.activeJumbo = self.activeJumbo + 1
-  end
-end
-
----@param self CompilerPool
----@param record CompilerPool.Job
-local function deactivateResource(self, record)
-  if not record.resourceActive then
-    return
-  end
-  record.resourceActive = false
-  if record.sizeClass == "heavy" then
-    self.activeHeavy = self.activeHeavy - 1
-    assert(self.activeHeavy >= 0, "heavy activity never releases twice")
-  elseif record.sizeClass == "jumbo" then
-    self.activeJumbo = self.activeJumbo - 1
-    assert(self.activeJumbo >= 0, "jumbo activity never releases twice")
-  end
-end
-
 local function requireFunction(value, name)
   if type(value) ~= "function" then
     error("unsupported compiler pool capability: missing " .. name, 3)
@@ -292,12 +262,14 @@ local function processorCount()
   return 1
 end
 
+-- Fixed physical capacity, not a function of job families: exactly one
+-- interactive compiler, at most two batch compilers. No family label
+-- changes this count.
 local function workerCount(mode)
-  local spare = processorCount() - 1
   if mode == "interactive" then
-    return math.max(1, math.min(4, math.floor(spare / 2)))
+    return 1
   end
-  return math.max(1, math.min(8, spare))
+  return math.max(1, math.min(2, processorCount() - 1))
 end
 
 local function cleanupWorkers(workers)
@@ -338,7 +310,6 @@ local function startWorker(resultChannel, workerId, developmentRepositoryRoot)
     thread = thread,
     input = input,
     slot = nil,
-    retiring = false,
     started = false,
     joined = false,
     closeSent = false,
@@ -378,8 +349,6 @@ local function newPool(options)
     resultChannel = resultChannel,
     lanes = newLanes(),
     queuedCount = 0,
-    activeHeavy = 0,
-    activeJumbo = 0,
     jobs = {},
     workers = {},
     completions = {},
@@ -444,11 +413,9 @@ function CompilerPool:selectGeneration(identity, epoch)
     if self.jobs[completion.record.jobKey] == completion.record then
       completion.record.state = "cancelled"
     end
-    -- A prepared heavy/jumbo result pins its worker until publication drains
-    -- it. Dropping the completion queue must release that pin: the worker
-    -- would otherwise stay busy forever behind a cancelled record, and the
-    -- jumbo exclusivity rule would block all future jumbo dispatch.
-    deactivateResource(self, completion.record)
+    -- A prepared result pins its worker until publication drains it.
+    -- Dropping the completion queue must release that pin: the worker
+    -- would otherwise stay busy forever behind a cancelled record.
     self:_freeSlot(completion.record, completion.workerId)
   end
   self.completions = {}
@@ -507,7 +474,6 @@ function CompilerPool:retireSelection(epoch)
     if self.jobs[completion.record.jobKey] == completion.record then
       completion.record.state = "cancelled"
     end
-    deactivateResource(self, completion.record)
     self:_freeSlot(completion.record, completion.workerId)
   end
   self.completions = {}
@@ -663,7 +629,7 @@ function CompilerPool:status(jobKey)
     return "unknown"
   end
   if record.state == "queued" then
-    local reason = self:_admissionBlockReason(record)
+    local reason = self:_admissionBlockReason()
     if reason then
       return record.state, { waitingOn = reason }
     end
@@ -707,24 +673,11 @@ function CompilerPool:jobOutcome(jobKey)
   return snapshot
 end
 
----@param self CompilerPool
----@return CompilerPool.Node?
-local function laneRoot(self)
-  local root = nil
-  for _, priority in ipairs(PRIORITIES) do
-    for _, sizeClass in ipairs(SIZE_ORDER) do
-      local node = peekLane(self, priority, sizeClass)
-      if node ~= nil and (root == nil or before(node, root)) then
-        root = node
-      end
-    end
-  end
-  return root
-end
-
----@param record CompilerPool.Job
+--- The one physical admission rule: a queued job waits only while every
+--- worker is physically occupied (running or settling its one prepared
+--- result) or the pool is draining. Family labels never serialize work.
 ---@return string?
-function CompilerPool:_admissionBlockReason(record)
+function CompilerPool:_admissionBlockReason()
   if self.fatalError then
     return "infrastructure-failure"
   end
@@ -734,51 +687,12 @@ function CompilerPool:_admissionBlockReason(record)
   if self:_runningCount() + #self.completions > #self.workers then
     return "prepared-backpressure"
   end
-  local heavyActive, jumboActive = self.activeHeavy, self.activeJumbo
-  if record.sizeClass == "jumbo" then
-    if jumboActive > 0 or heavyActive > 0 then
-      return "active-job"
-    end
-    for _, worker in ipairs(self.workers) do
-      if worker.slot ~= nil or worker.retiring then
-        return "active-job"
-      end
-    end
-    return nil
-  end
-  if jumboActive > 0 then
-    return "active-job"
-  end
-  if record.sizeClass == "heavy" and heavyActive > 0 then
-    return "active-job"
-  end
-  local root = laneRoot(self)
-  if root and root.key ~= record.jobKey then
-    local rootRecord = self.jobs[root.key]
-    if rootRecord and rootRecord.sizeClass == "jumbo" and rootRecord.priority <= record.priority then
-      local allIdle = true
-      for _, worker in ipairs(self.workers) do
-        if worker.slot ~= nil or worker.retiring then
-          allIdle = false
-          break
-        end
-      end
-      if not allIdle then
-        return "reserved-for-jumbo"
-      end
-    end
-  end
-  local idle = false
   for _, worker in ipairs(self.workers) do
-    if worker.slot == nil and not worker.retiring then
-      idle = true
-      break
+    if workerIdle(worker) then
+      return nil
     end
   end
-  if not idle then
-    return "active-job"
-  end
-  return nil
+  return "active-job"
 end
 
 ---@return integer
@@ -820,23 +734,6 @@ function CompilerPool:_abortStage(record)
   end
 end
 
----@param worker CompilerPool.Worker
----@return boolean
-local function workerIdle(worker)
-  return worker.started and not worker.joined and worker.slot == nil and not worker.retiring
-end
-
----@param self CompilerPool
----@return boolean
-local function allWorkersIdle(self)
-  for _, worker in ipairs(self.workers) do
-    if not workerIdle(worker) then
-      return false
-    end
-  end
-  return true
-end
-
 ---@param self CompilerPool
 ---@param priority integer
 ---@return CompilerPool.Node[] oldest live head per size class, oldest first
@@ -868,61 +765,29 @@ function CompilerPool:_eligibleRecord()
   if self:_runningCount() + #self.completions > #self.workers then
     return nil
   end
-  local heavyActive, jumboActive = self.activeHeavy, self.activeJumbo
-  if jumboActive > 0 then
-    return nil
-  end
-  local root = laneRoot(self)
-  if root == nil then
-    return nil
-  end
-  local rootRecord = self.jobs[root.key]
-  local reserveJumbo = false
-  if rootRecord and rootRecord.sizeClass == "jumbo" then
-    if not allWorkersIdle(self) or heavyActive > 0 or jumboActive > 0 then
-      reserveJumbo = true
+  local idle = false
+  for _, worker in ipairs(self.workers) do
+    if workerIdle(worker) then
+      idle = true
+      break
     end
+  end
+  if not idle then
+    return nil
   end
   for _, priority in ipairs(PRIORITIES) do
-    if reserveJumbo and rootRecord and priority >= rootRecord.priority then
-      -- The drained window is reserved for the waiting jumbo job; weaker
-      -- work already had its chance at stronger priorities above.
-      return nil
-    end
     for _, node in ipairs(priorityHeads(self, priority)) do
       local record = self.jobs[node.key]
       if record ~= nil and record.node == node and record.state == "queued" then
-        if record.sizeClass == "jumbo" then
-          if allWorkersIdle(self) and heavyActive == 0 and jumboActive == 0 then
-            return record
-          end
-        elseif record.sizeClass == "heavy" and heavyActive > 0 then
-          -- At most one heavy job executes at a time; a compatible normal
-          -- behind it may still dispatch below.
-        else
-          for _, worker in ipairs(self.workers) do
-            if workerIdle(worker) then
-              return record
-            end
-          end
-          return nil
-        end
+        return record
       end
     end
   end
   return nil
 end
 
----@param record CompilerPool.Job
 ---@return CompilerPool.Worker?
-function CompilerPool:_idleWorkerFor(record)
-  if record.sizeClass == "jumbo" then
-    local first = self.workers[1]
-    if first and workerIdle(first) then
-      return first
-    end
-    return nil
-  end
+function CompilerPool:_idleWorkerFor()
   for _, worker in ipairs(self.workers) do
     if workerIdle(worker) then
       return worker
@@ -959,7 +824,7 @@ function CompilerPool:_dispatch()
     if not record then
       return
     end
-    local worker = self:_idleWorkerFor(record)
+    local worker = self:_idleWorkerFor()
     if not worker then
       return
     end
@@ -974,7 +839,6 @@ function CompilerPool:_dispatch()
     record.stageName = stageName
     record.workerId = worker.id
     worker.slot = record
-    activateResource(self, record)
     local ok, pushError = pcall(worker.input.push, worker.input, {
       kind = record.kind,
       key = record.key,
@@ -1007,7 +871,6 @@ function CompilerPool:_dispatch()
       record.details = { error = pushError }
       record.stageName = nil
       record.workerId = nil
-      deactivateResource(self, record)
       self.fatalError = pushError
       error(pushError, 0)
     end
@@ -1017,7 +880,6 @@ end
 function CompilerPool:_settleFailure(record, workerId, failure)
   record.state = "failed"
   record.details = { workerId = workerId, error = failure }
-  deactivateResource(self, record)
 end
 
 ---@param message table<string, unknown>
@@ -1109,10 +971,6 @@ end
 
 function CompilerPool:_collectResults()
   self:_drainAvailable()
-  -- Reaping retired workers cannot wait for unrelated message traffic: once
-  -- every other job settles, no further completion arrives to trigger the
-  -- check above, and jumbo work would stall behind the unreaped worker.
-  self:_replaceRetiredWorkers()
 end
 
 ---@param message table<string, unknown>
@@ -1156,13 +1014,13 @@ function CompilerPool:_acceptCompletion(message)
         or slot.versionId ~= selected.versionId
     end
   end
-  -- A prepared heavy/jumbo result keeps its worker until publication drains
-  -- it. Normal results and recycled workers release the slot at once; the
-  -- queued result keeps counting through the finite prepared backlog instead
-  -- of a pinned worker.
+  -- One prepared unpublished result per physical worker: the worker stays
+  -- pinned until its result is published, reused, failed, aborted, or
+  -- otherwise authoritatively settled. Logical cancellation never frees a
+  -- running slot; retirement only invalidates interest.
   local function release()
     worker.slot = nil
-    if worker.closeAfter and not message.retiring then
+    if worker.closeAfter then
       self:_sendCloseContext(worker)
     end
   end
@@ -1171,16 +1029,9 @@ function CompilerPool:_acceptCompletion(message)
     if obsolete then
       self:_abortStage(slot)
       slot.state = "cancelled"
-      deactivateResource(self, slot)
-      if message.retiring then
-        worker.retiring = true
-      end
       return
     end
     self:_readFailure(slot, message)
-    if message.retiring then
-      worker.retiring = true
-    end
     self:_recordTiming(slot, message)
     return
   end
@@ -1188,15 +1039,10 @@ function CompilerPool:_acceptCompletion(message)
     release()
     self:_abortStage(slot)
     slot.state = "cancelled"
-    deactivateResource(self, slot)
-    if message.retiring then
-      worker.retiring = true
-    end
     return
   end
   -- A worker reuse carries no stage and publishes nothing: the
-  -- current-epoch record is ready at once, its size resource releases,
-  -- and the worker stays available. Reuse never retires a VM.
+  -- current-epoch record is ready at once and the worker stays available.
   if message.status == "reused" then
     release()
     slot.state = "ready"
@@ -1208,7 +1054,6 @@ function CompilerPool:_acceptCompletion(message)
       timingReason = message.timingReason,
     }
     slot.details = { workerId = worker.id }
-    deactivateResource(self, slot)
     self.recentTimings[#self.recentTimings + 1] = {
       jobKey = slot.jobKey,
       workerId = worker.id,
@@ -1233,16 +1078,11 @@ function CompilerPool:_acceptCompletion(message)
     timingReason = message.timingReason,
   }
   self.completions[#self.completions + 1] = { record = slot, workerId = worker.id }
-  if message.retiring then
-    slot.retired = true
-    -- A recycled worker's queued result no longer blocks admission: the
-    -- prepared pin releases here, exactly as the retired exclusion did
-    -- under the scanned accounting.
-    deactivateResource(self, slot)
-    release()
-    worker.retiring = true
-  elseif slot.sizeClass == "normal" then
-    release()
+  -- The worker's terminal reply arrived: its source context may close
+  -- even while the pool-side pin holds the slot until publication drains
+  -- the result. Staging is complete, so closing races nothing.
+  if worker.closeAfter then
+    self:_sendCloseContext(worker)
   end
 end
 
@@ -1274,46 +1114,11 @@ function CompilerPool:_sendCloseContext(worker)
   worker.closeToken = token
 end
 
-function CompilerPool:_replaceRetiredWorkers()
-  for _, worker in ipairs(self.workers) do
-    if worker.retiring and not worker.joined then
-      local threadError = worker.thread:getError()
-      local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
-      if threadError or dead then
-        -- Join exactly once. A failed join is terminal infrastructure
-        -- failure, reported like any other replacement failure below.
-        local joinOk, joinError = pcall(worker.thread.wait, worker.thread)
-        worker.joined = true
-        if not joinOk then
-          self.fatalError = joinError
-          error(joinError, 0)
-        end
-        -- Never restart while quiescing, shut down, terminally failed, or
-        -- without a live selected owner that could use the capacity.
-        if
-          not self.closed
-          and not self.quiescing
-          and self.fatalError == nil
-          and not self.retired
-          and self.selected ~= nil
-        then
-          local created, replacement = pcall(startWorker, self.resultChannel, worker.id, self.developmentRepositoryRoot)
-          if not created then
-            self.fatalError = restoreError(replacement)
-            error(replacement, 0)
-          end
-          self.workers[worker.id] = replacement
-        end
-      end
-    end
-  end
-end
-
 function CompilerPool:_pollWorkerFailures()
   local slotSuspects = {}
   local idleSuspects = {}
   for _, worker in ipairs(self.workers) do
-    if not worker.retiring and not worker.joined and worker.started then
+    if not worker.joined and worker.started then
       local errorText = worker.thread:getError()
       local dead = type(worker.thread.isRunning) == "function" and not worker.thread:isRunning()
       if errorText or dead then
@@ -1374,7 +1179,6 @@ function CompilerPool:_publishOne()
   local record = completion.record
   if record.state ~= "prepared" then
     self:_abortStage(record)
-    deactivateResource(self, record)
     self:_freeSlot(record, completion.workerId)
     return true
   end
@@ -1408,7 +1212,6 @@ function CompilerPool:_publishOne()
   else
     local manifest = artifact:manifest()
     record.state = "ready"
-    deactivateResource(self, record)
     record.details = {
       workerId = completion.workerId,
       result = manifest.result,
@@ -1437,14 +1240,14 @@ function CompilerPool:_freeSlot(record, workerId)
   local worker = self.workers[workerId]
   if worker and worker.slot == record then
     worker.slot = nil
-    if worker.closeAfter and not worker.retiring then
+    if worker.closeAfter then
       self:_sendCloseContext(worker)
     end
   else
     for _, other in ipairs(self.workers) do
       if other.slot == record then
         other.slot = nil
-        if other.closeAfter and not other.retiring then
+        if other.closeAfter then
           self:_sendCloseContext(other)
         end
         break
@@ -1491,7 +1294,7 @@ function CompilerPool:_hasUnsettled()
     end
   end
   for _, worker in ipairs(self.workers) do
-    if worker.slot ~= nil or worker.retiring then
+    if worker.slot ~= nil then
       return true
     end
   end
@@ -1581,7 +1384,7 @@ function CompilerPool:quiesce()
     if worker.joined then
       -- An exited, joined worker needs no acknowledgement: its exit proves
       -- its source context is closed.
-    elseif worker.slot == nil and not worker.retiring then
+    elseif worker.slot == nil then
       worker.closeSent = false
       worker.closeAcked = false
       self:_sendCloseContext(worker)
@@ -1610,7 +1413,7 @@ function CompilerPool:isQuiescent()
   for _, worker in ipairs(self.workers) do
     if worker.joined then
       -- Joined exit satisfies closure without an acknowledgement.
-    elseif worker.slot ~= nil or worker.retiring then
+    elseif worker.slot ~= nil then
       return false
     elseif not worker.closeAcked then
       return false
@@ -1646,7 +1449,7 @@ function CompilerPool:diagnostics()
   end
   local workerStates = {}
   for _, worker in ipairs(self.workers) do
-    if worker.slot ~= nil or worker.retiring then
+    if worker.slot ~= nil then
       workerStates[#workerStates + 1] = "w" .. tostring(worker.id) .. ":busy"
     end
   end
@@ -1728,7 +1531,6 @@ function CompilerPool:shutdown()
       if record.state == "running" or record.state == "prepared" then
         record.state = "failed"
         record.details = { workerId = worker.id, error = "compiler worker stopped during shutdown" }
-        deactivateResource(self, record)
       end
       worker.slot = nil
     end

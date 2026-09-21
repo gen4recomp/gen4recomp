@@ -215,11 +215,58 @@ function T.bank_closures_reproduce_the_baseline_audio_graph()
   end)
 end
 
+-- A bank closure compiled through the retained worker-generation session
+-- carries the identical graph as the direct one-bank path over the real
+-- archive: sequence records, instruments, sample metadata, PCM bytes, and
+-- the completion marker all match.
+function T.session_bank_closure_matches_direct_bank_closure()
+  Assert.equal(
+    type(AudioCompiler.openSession),
+    "function",
+    "one immutable archive session per worker generation must own bank compilation"
+  )
+  forEachVersion(function(ctx)
+    local identity = assert(AudioCompiler.soundIdentity(ctx.romFs))
+    local session = assert(AudioCompiler.openSession(ctx.romFs, identity))
+    local bankPlan = assert(ctx.plan.bankPlans[1], "the archive plans at least one bank closure")
+    local sunkDirect = {}
+    local direct = assert(AudioCompiler.compileBank(ctx.romFs, bankPlan, function(key, metadata, pcm)
+      sunkDirect[key] = { metadata = metadata, pcm = pcm }
+    end))
+    local sunkSession = {}
+    local throughSession = assert(session:compileBank(bankPlan, function(key, metadata, pcm)
+      sunkSession[key] = { metadata = metadata, pcm = pcm }
+    end))
+    session:close()
+    Assert.equal(
+      LuaWriter.encode(throughSession.bank),
+      LuaWriter.encode(direct.bank),
+      "the session bank record matches the direct bank record"
+    )
+    Assert.equal(
+      LuaWriter.encode(throughSession.sequences),
+      LuaWriter.encode(direct.sequences),
+      "the session sequences match the direct sequences"
+    )
+    Assert.equal(
+      LuaWriter.encode(throughSession.sampleMetadata),
+      LuaWriter.encode(direct.sampleMetadata),
+      "the session sample metadata matches the direct sample metadata"
+    )
+    Assert.equal(throughSession.marker, direct.marker, "the session closure carries the identical marker")
+    for key, sunk in pairs(sunkDirect) do
+      Assert.notNil(sunkSession[key], "the session streams every direct sample " .. tostring(key))
+      Assert.equal(sunkSession[key].pcm, sunk.pcm, "the session sample bytes match")
+    end
+  end)
+end
+
 return {
   metadata = { capabilities = { "rom_dump" } },
   beforeAll = T.beforeAll,
   afterAll = T.afterAll,
   tests = {
     bank_closures_reproduce_the_baseline_audio_graph = T.bank_closures_reproduce_the_baseline_audio_graph,
+    session_bank_closure_matches_direct_bank_closure = T.session_bank_closure_matches_direct_bank_closure,
   },
 }
