@@ -791,4 +791,203 @@ function T.masked_chrome_overlaps_the_body_without_a_halo(scope)
   end
 end
 
+-- Framed windows carry readable title chrome: every framed application
+-- draws its fixed title inside the shared title region and every
+-- closable one centers a dash mark in the shared dismiss control, at
+-- wide/tall hosts and at more than one integer scale. The starter choice
+-- draws its title with no dismiss mark. Pixel deltas against the
+-- border-only render separate title/dash ink from frame artwork.
+local function chromeGeometry(box)
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local locate = FieldDialogueTheme.applicationChromeGeometry
+  if type(locate) ~= "function" then
+    error("the shared theme must locate window chrome geometry for drawing", 0)
+  end
+  return locate(box)
+end
+
+local function chromeBagInterface()
+  local tabs = {}
+  for index = 0, 7 do
+    tabs[index + 1] = { x = index * 32, y = 0, width = 32, height = 32 }
+  end
+  local slots = {}
+  for index = 1, 6 do
+    slots[index] = { rect = { x = 0, y = 32 + (index - 1) * 24, width = 128, height = 22 } }
+  end
+  return BagInterface.withOverrides(nil, {
+    interactive = {
+      pocketTabs = { rects = tabs },
+      itemSlots = { slots = slots },
+      cancel = { rect = { x = 192, y = 168, width = 64, height = 24 } },
+      overlays = {
+        descriptionFallback = {
+          frame = { x = 0, y = 144, width = 256, height = 48 },
+          textRect = { x = 20, y = 144, width = 236, height = 48 },
+        },
+        actionMenu = {
+          buttons = {
+            { x = 8, y = 136, width = 80, height = 16 },
+            { x = 104, y = 136, width = 80, height = 16 },
+            { x = 8, y = 168, width = 80, height = 16 },
+            { x = 104, y = 168, width = 80, height = 16 },
+          },
+        },
+      },
+    },
+  })
+end
+
+function T.framed_windows_carry_title_and_dismiss_chrome(scope)
+  local lg = love.graphics
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+  local startMenu = StartMenuInterface.withOverrides(nil)
+  local party = PartyScreenInterface.withOverrides(nil)
+  local card = TrainerCardInterface.withOverrides(nil)
+  local starter = StarterChoiceInterface.withOverrides(nil)
+  local bag = chromeBagInterface()
+  local partyView = { cancellable = true, cursorNode = 0 }
+  local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
+  local wideMeasured = singleDisplay(1280, 720)
+  local apps = {
+    {
+      name = "start menu",
+      plan = startMenu.wide(contextFor(wideMeasured, "wide", startMenu), {}),
+      chrome = { title = "MENU", dismissible = true },
+    },
+    {
+      name = "party",
+      plan = party.wide(contextFor(wideMeasured, "wide", party), partyView),
+      chrome = { title = "POKéMON", dismissible = true },
+    },
+    {
+      name = "bag",
+      plan = bag.wide(contextFor(wideMeasured, "wide", bag), {}),
+      chrome = { title = "BAG", dismissible = true },
+    },
+    {
+      name = "trainer card",
+      plan = card.wide(contextFor(wideMeasured, "wide", card), {}),
+      chrome = { title = "TRAINER CARD", dismissible = true },
+    },
+    {
+      name = "starter choice",
+      plan = starter.wide(contextFor(wideMeasured, "wide", starter), starterView),
+      chrome = { title = "STARTER CHOICE", dismissible = false },
+    },
+  }
+  for _, app in ipairs(apps) do
+    Assert.isTrue(#app.plan.frames >= 1, "the wide " .. app.name .. " must publish its outer frame")
+    local contentBox = assert(app.plan.frames[1].contentBox, "the " .. app.name .. " frame carries its body")
+    -- Real body dimensions anchor the chrome box; the origin stays
+    -- canvas-local so border/title/control pixels stay fully on-canvas.
+    local box = { x = 24, y = 48, width = contentBox.width, height = contentBox.height }
+    local geometry = chromeGeometry(box)
+    local placements = FieldDialogueTheme.applicationFrameTilePlacements(box)
+    local outerMinX, outerMinY, outerMaxX, outerMaxY = math.huge, math.huge, -math.huge, -math.huge
+    for _, placement in ipairs(placements) do
+      outerMinX = math.min(outerMinX, placement.x)
+      outerMinY = math.min(outerMinY, placement.y)
+      outerMaxX = math.max(outerMaxX, placement.x + 8)
+      outerMaxY = math.max(outerMaxY, placement.y + 8)
+    end
+    Assert.isTrue(
+      geometry.title.x - outerMinX >= 32,
+      app.name .. ": the title keeps the generous left margin from the outer edge"
+    )
+    Assert.isTrue(
+      geometry.title.x + geometry.title.width <= geometry.dismiss.x,
+      app.name .. ": the title ends before the dismiss control space"
+    )
+    Assert.isTrue(
+      geometry.dismiss.width >= 16 and geometry.dismiss.width <= 32,
+      app.name .. ": the dismiss control stays near the roughly 24px target"
+    )
+    Assert.isTrue(
+      outerMaxX - (geometry.dismiss.x + geometry.dismiss.width) >= 8,
+      app.name .. ": the dismiss control keeps corner margin from the outer edge"
+    )
+    for _, density in ipairs({ 1, 2 }) do
+      local tag = app.name .. " " .. density .. "x"
+      local shiftX, shiftY = 8 - outerMinX, 8 - outerMinY
+      local canvasWidth = math.ceil(outerMaxX - outerMinX + 16) * density
+      local canvasHeight = math.ceil(outerMaxY - outerMinY + 16) * density
+      local window = scope:own(FieldWindowRenderer.new({
+        cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+        manifest = FieldUiFixture.manifest(),
+      }))
+      local text = FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() })
+      local drawChrome = window.drawApplicationChrome
+      if type(drawChrome) ~= "function" then
+        error(app.name .. ": the window renderer must draw titled dismissible chrome", 0)
+      end
+      local function render(withChrome)
+        return renderToCanvas(scope, canvasWidth, canvasHeight, function()
+          lg.push("all")
+          lg.scale(density, density)
+          lg.translate(shiftX, shiftY)
+          lg.setColor(1, 0, 1, 1)
+          lg.rectangle("fill", box.x, box.y, box.width, box.height)
+          if withChrome then
+            drawChrome(window, box, 0, app.chrome, text)
+          else
+            window:drawApplicationFrame(box, 0)
+          end
+          lg.pop()
+        end)
+      end
+      local borderData = scope:own(render(false):newImageData())
+      local chromeData = scope:own(render(true):newImageData())
+      local function changedInk(rect)
+        local count = 0
+        for ly = math.floor(rect.y), math.ceil(rect.y + rect.height) - 1 do
+          for lx = math.floor(rect.x), math.ceil(rect.x + rect.width) - 1 do
+            local hx, hy = math.floor((lx + shiftX) * density), math.floor((ly + shiftY) * density)
+            local r0, g0, b0, a0 = borderData:getPixel(hx, hy)
+            local r1, g1, b1, a1 = chromeData:getPixel(hx, hy)
+            if math.abs(r1 - r0) + math.abs(g1 - g0) + math.abs(b1 - b0) + math.abs(a1 - a0) > 0.05 then
+              count = count + 1
+            end
+          end
+        end
+        return count
+      end
+      Assert.isTrue(changedInk(geometry.title) > 10, tag .. ": the title paints readable ink inside its region")
+      local dashInk = changedInk(geometry.dismiss)
+      if app.chrome.dismissible then
+        Assert.isTrue(dashInk > 5, tag .. ": the dismiss control paints its mark")
+      else
+        Assert.equal(dashInk, 0, tag .. ": the non-dismissible window paints no control mark")
+      end
+    end
+  end
+end
+
+-- Undecorated surfaces publish no window identity: Oak naming and the
+-- startup main menu resolve frame-free plans with no title metadata at
+-- any density.
+function T.undecorated_surfaces_publish_no_window_identity(scope)
+  local _ = scope
+  local naming = NamingInterface.withOverrides(nil)
+  local menu = MainMenuInterface.withOverrides(nil)
+  local menuView = {
+    globalActions = { { id = "new-game", kind = "new_game" } },
+    saves = { cards = {} },
+    focus = { region = "global", actionId = "new-game" },
+  }
+  for _, host in ipairs({ singleDisplay(320, 240), singleDisplay(1280, 720) }) do
+    local label = host.width .. "x" .. host.height
+    local namingPlan = naming.nativeLike(contextFor(host, "nativeLike", naming), {})
+    Assert.deepEqual(namingPlan.frames, {}, label .. ": naming publishes no outer frame")
+    Assert.isNil(namingPlan.chrome, label .. ": naming publishes no window identity")
+    local wideNaming = naming.wide(contextFor(host, "wide", naming), {})
+    Assert.deepEqual(wideNaming.frames, {}, label .. ": wide naming publishes no outer frame")
+    Assert.isNil(wideNaming.chrome, label .. ": wide naming publishes no window identity")
+    local menuPlan = menu.nativeLike(contextFor(host, "nativeLike", menu), menuView)
+    Assert.deepEqual(menuPlan.frames, {}, label .. ": the startup menu publishes no outer frame")
+    Assert.isNil(menuPlan.chrome, label .. ": the startup menu publishes no window identity")
+  end
+end
+
 return GraphicsSmoke.suite(T)

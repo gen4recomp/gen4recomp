@@ -188,7 +188,7 @@ function T.tests.party_launch_and_inert_close_leave_party_untouched()
     openStartMenu(game)
     navigateTo(game, state, POKEMON_ACTION)
     confirm(game)
-    game:advanceUntil("party application launches through the host fade", function()
+    game:advanceUntil("party application opens over the retained menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
     local status = game.runtime.applicationHost:status()
@@ -332,7 +332,7 @@ function T.tests.party_grid_static_frame_and_reflow_journey_preserves_semantics(
     openStartMenu(game)
     navigateTo(game, state, POKEMON_ACTION)
     confirm(game)
-    game:advanceUntil("party application launches through the host fade", function()
+    game:advanceUntil("party application opens over the retained menu", function()
       return hostPhase(game) == FieldApplicationHost.PHASES.application
     end, 120)
 

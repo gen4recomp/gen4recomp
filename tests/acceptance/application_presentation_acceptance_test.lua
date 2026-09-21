@@ -239,7 +239,7 @@ local function openBag(game, state)
   Assert.isTrue(action ~= nil and action.enabled == true, "the unlocked bag must enable its menu action")
   navigateTo(game, state, BAG_ACTION)
   confirm(game)
-  game:advanceUntil("bag application launches through the host fade", function()
+  game:advanceUntil("bag application opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
   local status = game.runtime.applicationHost:status()
@@ -274,7 +274,7 @@ local function openParty(game, state)
   openStartMenu(game)
   navigateTo(game, state, POKEMON_ACTION)
   confirm(game)
-  game:advanceUntil("party application launches through the host fade", function()
+  game:advanceUntil("party application opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
   local status = game.runtime.applicationHost:status()
@@ -290,9 +290,19 @@ local function openTrainerCard(game, state)
   openStartMenu(game)
   local action = actionById(menuStatus(game), TRAINER_ACTION)
   Assert.isTrue(action ~= nil and action.enabled == true, "the unlocked card must enable its menu action")
+  -- The generated focus graph splits the menu into left/right columns
+  -- that down-only cycling cannot cross (a remembered left-column cursor
+  -- orbits without ever reaching the card), so step into the card's
+  -- column first: left reaches the right column, up reaches the card.
+  state:keypressed("a")
+  game:step()
+  state:keyreleased("a")
+  state:keypressed("w")
+  game:step()
+  state:keyreleased("w")
   navigateTo(game, state, TRAINER_ACTION)
   confirm(game)
-  game:advanceUntil("trainer card launches through the host fade", function()
+  game:advanceUntil("trainer card opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
   local status = game.runtime.applicationHost:status()
@@ -588,7 +598,7 @@ function T.tests.trainer_card_takes_auxiliary_and_closes_once()
     )
 
     pressCancel(game)
-    game:advanceUntil("the card closes through its fade", function()
+    game:advanceUntil("the card closes back to the menu", function()
       local phase = hostPhase(game)
       return phase == FieldApplicationHost.PHASES.menu or phase == FieldApplicationHost.PHASES.closed
     end, 240)
@@ -1564,6 +1574,169 @@ function T.tests.party_nested_cancel_unwinds_while_outside_press_closes()
   end)
 end
 
+-- The shared window-chrome geometry locates the dismiss control in
+-- frame-local pixels for input routing; drawing uses the same record.
+-- The helper takes a frame content box and returns frame-local title and
+-- dismiss rectangles.
+local function chromeGeometry(contentBox)
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local locate = FieldDialogueTheme.applicationChromeGeometry
+  Assert.isTrue(type(locate) == "function", "the shared theme must locate window chrome geometry for input routing")
+  return locate(contentBox)
+end
+
+-- Host coordinates of the dismiss-control center for one framed plan,
+-- through the absolute frame placement the session itself inverts.
+local function dashHostPoint(plan)
+  local frameRecord = assert((plan.frames or {})[1], "the plan must publish an outer frame")
+  local geometry = chromeGeometry(assert(frameRecord.contentBox, "the frame carries its content box"))
+  local dismiss = geometry.dismiss
+  Assert.isTrue(dismiss.width > 0 and dismiss.height > 0, "the dismiss control must be a positive hit target")
+  return LayoutGeometry.logicalToHost(
+    assert(frameRecord.placement, "the frame carries its placement"),
+    dismiss.x + dismiss.width / 2,
+    dismiss.y + dismiss.height / 2
+  )
+end
+
+-- Every framed field application publishes its own window identity:
+-- the fixed title plus a set dismiss flag. The journey opens each
+-- application over the retained menu in one boot.
+function T.tests.framed_field_applications_publish_their_window_identity()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    grantBag(game)
+    stockBasics(game)
+    giveStarterPair(game)
+    grantTrainerCard(game)
+    switchDisplay(game, 1280, 720)
+    openStartMenu(game)
+    local menuPlan = assert(menuStatus(game).presentation, "the menu must publish its plan")
+    Assert.isTrue(#(menuPlan.frames or {}) >= 1, "the wide menu must publish its outer frame")
+    Assert.deepEqual(menuPlan.chrome, { title = "MENU", dismissible = true }, "the menu publishes its window identity")
+    -- The menu key toggles: close the asserted menu before the bag
+    -- journey opens it again, or the second open would dismiss it.
+    closeStartMenu(game)
+    local bagPlan = assert(openBag(game, state).presentation, "the open bag must publish its plan")
+    Assert.deepEqual(bagPlan.chrome, { title = "BAG", dismissible = true }, "the bag publishes its identity")
+    closeApplication(game)
+    -- Closing returns to the retained menu and the menu key toggles:
+    -- leave the field closed before each journey reopens it.
+    closeStartMenu(game)
+    local partyPlan = assert(openParty(game, state).presentation, "the open party must publish its plan")
+    Assert.deepEqual(partyPlan.chrome, { title = "POKéMON", dismissible = true }, "the party publishes its identity")
+    closeApplication(game)
+    closeStartMenu(game)
+    local cardPlan = assert(openTrainerCard(game, state).presentation, "the open card must publish its plan")
+    Assert.deepEqual(cardPlan.chrome, { title = "TRAINER CARD", dismissible = true }, "the card publishes its identity")
+    local outsideX, outsideY = outsidePoint(cardPlan, 1280, 720)
+    downOnly(game, "integration:identity-outside", outsideX, outsideY)
+    game:advanceUntil("an outside press dismisses the identified card", function()
+      local phase = hostPhase(game)
+      return phase == FieldApplicationHost.PHASES.menu or phase == FieldApplicationHost.PHASES.closed
+    end, 120)
+    upOnly(game, "integration:identity-outside", outsideX, outsideY)
+    if hostPhase(game) == FieldApplicationHost.PHASES.menu then
+      closeStartMenu(game)
+    end
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the identity journey ends back on the field")
+  end)
+end
+
+-- The dismiss control closes the nested Bag at once, terminally: unlike
+-- ordinary Cancel it never unwinds one level, and it mutates nothing.
+function T.tests.bag_dash_dismisses_the_nested_action_menu_terminally()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    grantBag(game)
+    stockBasics(game)
+    switchDisplay(game, 1280, 720)
+    openBag(game, state)
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local targetPocket = bag:pocketOf("POTION")
+    local function bagApp()
+      return assert(game.runtime.applicationHost:status().application, "the bag must stay open")
+    end
+    for _ = 1, 160 do
+      local view = bagApp()
+      local pocket = view.pocket ~= nil and view.pocket or view.currentPocket
+      if pocket == targetPocket then
+        break
+      end
+      if view.focus == "tabs" then
+        if view.tabFocusPocket ~= pocket then
+          confirm(game)
+        else
+          state:keypressed("d")
+          game:step()
+          state:keyreleased("d")
+        end
+      else
+        state:keypressed("w")
+        game:step()
+        state:keyreleased("w")
+      end
+    end
+    local stocked = bagApp()
+    local stockedPocket = stocked.pocket ~= nil and stocked.pocket or stocked.currentPocket
+    Assert.equal(stockedPocket, targetPocket, "setup must reach the stocked pocket")
+    if stocked.focus ~= "items" then
+      state:keypressed("s")
+      game:step()
+      state:keyreleased("s")
+    end
+    confirm(game)
+    game:step()
+    local nested = assert(game.runtime.applicationHost:status().application, "the bag must stay open after confirm")
+    Assert.equal(nested.state, "action_menu", "confirming an item opens the nested action menu")
+    local plan = assert(nested.presentation, "the nested bag must publish its plan")
+    Assert.deepEqual(plan.chrome, { title = "BAG", dismissible = true }, "the nested bag keeps its window identity")
+    local dashX, dashY = dashHostPoint(plan)
+    downOnly(game, "integration:dash", dashX, dashY)
+    game:advanceUntil("a dash press closes the nested bag", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
+    upOnly(game, "integration:dash", dashX, dashY)
+    Assert.equal(bag:quantity("POTION"), 5, "dismissal must issue no inventory mutation")
+  end)
+end
+
+-- The dismiss control closes the nested Party at once, terminally:
+-- unlike ordinary Cancel it never returns toward browsing, and the party
+-- keeps its revision and order.
+function T.tests.party_dash_dismisses_the_nested_action_choice_terminally()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    giveStarterPair(game)
+    local service = assert(game.runtime.monService, "field runtime owns the live mon service")
+    local revision = service:partyRevision()
+    local order = partyOrder(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openParty(game, state)
+    Assert.equal(opened.action, "browsing", "the party opens in top-level browsing")
+    confirm(game)
+    game:step()
+    local nested = assert(game.runtime.applicationHost:status().application, "the party must stay open after confirm")
+    Assert.equal(nested.action, "action_choice", "confirming a mon opens the nested action choice")
+    local plan = assert(nested.presentation, "the nested party must publish its plan")
+    Assert.deepEqual(
+      plan.chrome,
+      { title = "POKéMON", dismissible = true },
+      "the nested party keeps its window identity"
+    )
+    local dashX, dashY = dashHostPoint(plan)
+    downOnly(game, "integration:dash", dashX, dashY)
+    game:advanceUntil("a dash press closes the nested party", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.menu, "dismissal returns to the menu")
+    upOnly(game, "integration:dash", dashX, dashY)
+    Assert.equal(service:partyRevision(), revision, "dismissal must not bump the revision")
+    Assert.deepEqual(partyOrder(game), order, "dismissal must not reorder the party")
+  end)
+end
+
 -- A true outside press dismisses the Trainer Card through the normal host
 -- lifecycle: the framed card closes without any nested cancel step.
 function T.tests.trainer_card_outside_press_dismisses_through_the_host()
@@ -1581,6 +1754,35 @@ function T.tests.trainer_card_outside_press_dismisses_through_the_host()
       return phase == FieldApplicationHost.PHASES.menu or phase == FieldApplicationHost.PHASES.closed
     end, 120)
     upOnly(game, "integration:outside", outsideX, outsideY)
+    Assert.isTrue(
+      hostPhase(game) == FieldApplicationHost.PHASES.menu or hostPhase(game) == FieldApplicationHost.PHASES.closed,
+      "dismissal returns through the menu or closed phase without opening anything else"
+    )
+  end)
+end
+
+-- The dismiss control dismisses the Trainer Card through the normal host
+-- lifecycle, exactly like a true outside press.
+function T.tests.trainer_card_dash_dismisses_through_the_host()
+  withFieldGame({}, function(game)
+    local state = hostCallbacks(game)
+    grantTrainerCard(game)
+    switchDisplay(game, 1280, 720)
+    local opened = openTrainerCard(game, state)
+    local plan = assert(opened.presentation, "the open card must publish its presentation plan")
+    Assert.isTrue(#(plan.frames or {}) >= 1, "the wide card must publish its outer frame")
+    Assert.deepEqual(
+      plan.chrome,
+      { title = "TRAINER CARD", dismissible = true },
+      "the card publishes its window identity"
+    )
+    local dashX, dashY = dashHostPoint(plan)
+    downOnly(game, "integration:dash", dashX, dashY)
+    game:advanceUntil("a dash press dismisses the card", function()
+      local phase = hostPhase(game)
+      return phase == FieldApplicationHost.PHASES.menu or phase == FieldApplicationHost.PHASES.closed
+    end, 120)
+    upOnly(game, "integration:dash", dashX, dashY)
     Assert.isTrue(
       hostPhase(game) == FieldApplicationHost.PHASES.menu or hostPhase(game) == FieldApplicationHost.PHASES.closed,
       "dismissal returns through the menu or closed phase without opening anything else"

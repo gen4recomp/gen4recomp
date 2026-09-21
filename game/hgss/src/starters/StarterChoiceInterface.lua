@@ -104,6 +104,9 @@ local function starterPlan(panes, frames, render, mapInput, inputKey)
   return {
     panes = panes,
     frames = frames,
+    -- The blocking choice is titled but never dismissible: outside
+    -- presses stay blocking under the existing mapper.
+    chrome = { title = "STARTER CHOICE", dismissible = false },
     content = {},
     inputKey = inputKey,
     render = render,

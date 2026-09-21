@@ -115,6 +115,60 @@ function FieldDialogueTheme.applicationFrameInsets()
   }
 end
 
+-- Window chrome geometry shared by chrome drawing and dismiss-control hit
+-- testing: the title region and the dismiss control in the caller's
+-- frame-local reference space (the same space as the content box). Both
+-- live in the exterior top bar above the content box, so titles and
+-- controls never move content or affect scale. The title keeps a generous
+-- 32px left margin from the outer edge; the dismiss control is a roughly
+-- 24px hit target with at least 8px corner margin on the right.
+local CHROME_TITLE_LEFT_MARGIN = 32
+local CHROME_DISMISS_WIDTH = 24
+local CHROME_CORNER_MARGIN = 8
+
+---@class FieldDialogueTheme.ChromeGeometry
+---@field title FieldDialogueTheme.Rect
+---@field dismiss FieldDialogueTheme.Rect
+
+---@param box FieldDialogueTheme.Rect the target content box
+---@return FieldDialogueTheme.ChromeGeometry frame-local title and dismiss rectangles
+function FieldDialogueTheme.applicationChromeGeometry(box)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "applicationChromeGeometry requires the content box"
+  )
+  assert(
+    type(box.x) == "number" and type(box.y) == "number" and type(box.width) == "number" and type(box.height) == "number",
+    "applicationChromeGeometry requires numeric box geometry"
+  )
+  assert(
+    box.width > 0 and box.height > 0 and box.width == math.floor(box.width) and box.height == math.floor(box.height),
+    "applicationChromeGeometry requires positive integral content dimensions"
+  )
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local barY = box.y - insets.top
+  local barHeight = insets.top
+  local outerLeft = box.x + insets.left
+  local outerRight = box.x + box.width - insets.right
+  local dismiss = {
+    x = outerRight - CHROME_CORNER_MARGIN - CHROME_DISMISS_WIDTH,
+    y = barY,
+    width = CHROME_DISMISS_WIDTH,
+    height = barHeight,
+  }
+  local title = {
+    x = outerLeft + CHROME_TITLE_LEFT_MARGIN,
+    y = barY,
+    width = dismiss.x - (outerLeft + CHROME_TITLE_LEFT_MARGIN),
+    height = barHeight,
+  }
+  assert(
+    title.width > 0,
+    "applicationChromeGeometry requires room for the title between the left margin and the dismiss control"
+  )
+  return { title = title, dismiss = dismiss }
+end
+
 -- Rotated application-frame tile targets derived from the audited
 -- standard tilemap: the source composition runs around the content box
 -- inset by the 8px application overlap, expands to 8x8 instances, then

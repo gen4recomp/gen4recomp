@@ -1,7 +1,7 @@
 -- Production-composed field Bag topology contract. A real field runtime
 -- owns the live Bag service and cursor: the Start Menu offers the Bag route
 -- once the source Bag flag is set and confirming it opens the Bag
--- application through the host fade. This journey proves a structural
+-- application over the retained menu. This journey proves a structural
 -- topology change preserves the semantic selection and that a pointer press
 -- held across the change cannot activate a moved target. Browse quantities,
 -- cursor memory, and action flows live in the bag actions integration
@@ -214,7 +214,7 @@ local function openBag(game, state)
   )
   navigateTo(game, state, BAG_ACTION)
   confirm(game)
-  game:advanceUntil("bag application launches through the host fade", function()
+  game:advanceUntil("bag application opens over the retained menu", function()
     return hostPhase(game) == FieldApplicationHost.PHASES.application
   end, 120)
   return bagView(game)

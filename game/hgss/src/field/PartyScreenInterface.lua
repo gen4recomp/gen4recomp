@@ -17,6 +17,7 @@ local PartyScreenInterface = {}
 
 local NATIVE = { id = "content", width = 256, height = 192 }
 local INPUT_KEY = "party"
+local CHROME = { title = "POKéMON", dismissible = true }
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -114,6 +115,7 @@ function PartyScreenInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
+    chrome = CHROME,
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,
@@ -141,6 +143,7 @@ function PartyScreenInterface.framed(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
+    chrome = CHROME,
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,

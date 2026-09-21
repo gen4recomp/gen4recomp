@@ -16,6 +16,7 @@ local StartMenuInterface = {}
 
 local NATIVE = { id = "content", width = 256, height = 192 }
 local INPUT_KEY = "start-menu"
+local CHROME = { title = "MENU", dismissible = true }
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
 
 ---@param resources table<string, unknown> borrowed application collaborators
@@ -95,6 +96,7 @@ function StartMenuInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
+    chrome = CHROME,
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,
@@ -123,6 +125,7 @@ function StartMenuInterface.framed(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
+    chrome = CHROME,
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,

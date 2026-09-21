@@ -25,6 +25,13 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = {}
 FieldWindowRenderer.__index = FieldWindowRenderer
 
+-- The borrowed field text surface window chrome draws titles through:
+-- plain-string drawing and measurement plus the generated font
+-- definition carrying the base text height. Structural so production and
+-- test doubles satisfy it without a second font owner.
+---@alias FieldWindowRenderer.ChromeFontDef { maxLetterHeight: number }
+---@alias FieldWindowRenderer.ChromeTextProvider { fontDef: FieldWindowRenderer.ChromeFontDef, drawText: fun(self: table<string, unknown>, text: string, x: number, y: number), textWidth: fun(self: table<string, unknown>, text: string): number }
+
 ---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: love.graphics }
 ---@return FieldWindowRenderer
 function FieldWindowRenderer.new(opts)
@@ -148,6 +155,51 @@ function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
   for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
     local tile = assert(quads[placement.tile])
     lg.draw(image, tile, placement.x, placement.y, -math.pi / 2, 1, 1, 8, 0)
+  end
+end
+
+-- Draws titled dismissible window chrome around the content box: the
+-- masked application border first, then the title text, then the dismiss
+-- mark only when the window is dismissible. The title is drawn with the
+-- borrowed field text renderer and must fit the shared title region; an
+-- oversized title fails before anything paints. The dismiss mark is one
+-- crisp horizontal mark centered in the shared dismiss control. Ordinary
+-- window drawing stays unrelated.
+---@param box { x: number, y: number, width: number, height: number } content box in the caller's reference space
+---@param frameIndex integer generated frame index
+---@param chrome { title: string, dismissible: boolean } window identity record
+---@param text FieldWindowRenderer.ChromeTextProvider borrowed field text renderer
+function FieldWindowRenderer:drawApplicationChrome(box, frameIndex, chrome, text)
+  assert(
+    type(box) == "table" and box.x and box.y and box.width and box.height,
+    "drawApplicationChrome requires the content box"
+  )
+  ---@cast box FieldDialogueTheme.Rect
+  assert(
+    type(chrome) == "table" and type(chrome.title) == "string" and chrome.title ~= "",
+    "drawApplicationChrome requires a nonempty window title"
+  )
+  assert(type(chrome.dismissible) == "boolean", "drawApplicationChrome requires the dismiss flag")
+  assert(
+    text ~= nil and type(text.drawText) == "function" and type(text.textWidth) == "function",
+    "drawApplicationChrome borrows the field text renderer"
+  )
+  local fontDef = assert(text.fontDef, "drawApplicationChrome needs the generated field font definition")
+  local baseHeight = assert(fontDef.maxLetterHeight, "drawApplicationChrome needs the generated field font base height")
+  local geometry = FieldDialogueTheme.applicationChromeGeometry(box)
+  local titleWidth = text:textWidth(chrome.title)
+  assert(titleWidth <= geometry.title.width, "the window title overflows its frame title region: " .. chrome.title)
+  self:drawApplicationFrame(box, frameIndex)
+  local lg = assert(self._graphics)
+  local titleY = geometry.title.y + (geometry.title.height - baseHeight) / 2
+  text:drawText(chrome.title, geometry.title.x, titleY)
+  if chrome.dismissible then
+    local markWidth, markHeight = 12, 2
+    local markX = geometry.dismiss.x + (geometry.dismiss.width - markWidth) / 2
+    local markY = geometry.dismiss.y + (geometry.dismiss.height - markHeight) / 2
+    lg.setColor(16 / 255, 16 / 255, 32 / 255, 1)
+    lg.rectangle("fill", markX, markY, markWidth, markHeight)
+    lg.setColor(1, 1, 1, 1)
   end
 end
 

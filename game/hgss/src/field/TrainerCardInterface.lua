@@ -20,6 +20,7 @@ local TrainerCardInterface = {}
 
 local NATIVE = { id = "content", width = 256, height = 192 }
 local INPUT_KEY = "trainer-card"
+local CHROME = { title = "TRAINER CARD", dismissible = true }
 local FULL_CROP = { left = 4, right = 4, top = 4, bottom = 4 }
 local PROTECTED = { x = 8, y = 8, width = 240, height = 176 }
 
@@ -121,6 +122,7 @@ function TrainerCardInterface.fullscreen(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
+    chrome = CHROME,
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,
@@ -148,6 +150,7 @@ function TrainerCardInterface.framed(context, view)
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
     frames = geometry.frames or {},
+    chrome = CHROME,
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,
