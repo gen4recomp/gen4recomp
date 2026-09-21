@@ -112,6 +112,21 @@ local function drawInset(graphics, rect, selected)
   })
 end
 
+-- The overflow control nested in a save card stays invisible until focused:
+-- every chrome layer matches the card face so only its "..." copy shows,
+-- while selection keeps the shared red rim. Popup and confirmation inlays
+-- sit over dimmed content rather than the card face, so they keep the
+-- neutral inset chrome above.
+local function drawOverflowInlay(graphics, rect, selected)
+  drawColoredCard(graphics, rect, selected, {
+    face = CARD_FACE,
+    border = CARD_FACE,
+    rim = CARD_FACE,
+    selectedRim = CARD_SELECTED_RIM,
+    innerBorder = CARD_FACE,
+  })
+end
+
 local function drawPaletteText(graphics, text, value, x, y, palette)
   graphics.setColor(1, 1, 1, 1)
   local ok, err = pcall(text.drawTextWithPalette, text, value, x, y, palette)
@@ -130,9 +145,10 @@ end
 
 -- Continue-card profile rows in one centered block: labels share the block
 -- left edge while values right-align to the block right edge through the
--- generated-font measure. The vertical area below the heading splits into
--- three equal bands with each row vertically centered by the canonical
--- font line advance. The badge count is presentation-only.
+-- generated-font measure. The vertical area between the heading and the
+-- card's bottom padding splits into three equal bands with each row
+-- vertically centered by the canonical font line advance. The badge count
+-- is presentation-only.
 ---@param graphics love.graphics
 ---@param text table<string, function>
 ---@param body { x: number, y: number, width: number, height: number }
@@ -144,7 +160,8 @@ local function drawProfileRows(graphics, text, body, regionTop, lineHeight, play
   local blockWidth = body.width * PROFILE_BLOCK_WIDTH_FRACTION
   local blockLeft = body.x + (body.width - blockWidth) / 2
   local blockRight = blockLeft + blockWidth
-  local bandHeight = (body.y + body.height - regionTop) / 3
+  local regionBottom = body.y + body.height - CARD_INSET
+  local bandHeight = (regionBottom - regionTop) / 3
   local rows = {
     { label = "PLAYER", value = playerName },
     { label = "TIME", value = playTimeLabel },
@@ -285,7 +302,7 @@ function MainMenuRenderer:draw(view, plan)
               )
             end
             if shapedCard.overflow then
-              drawInset(graphics, shapedCard.overflow, overflowFocused)
+              drawOverflowInlay(graphics, shapedCard.overflow, overflowFocused)
               drawPaletteText(graphics, text, "...", shapedCard.overflow.x + 3, shapedCard.overflow.y + 4, TEXT_PALETTE)
             end
           end

@@ -274,7 +274,6 @@ function T.tests.production_start_menu_frame_stays_static_centered_and_maps_inpu
         "an equivalent resolve never moves the static frame"
       )
       Assert.equal(bodyPlacement(restated).pixelScale, scale, "an equivalent resolve never changes the pixel scale")
-      local selectedBefore = menu.selectedPosition
 
       -- Body input maps through the same plan exactly once: move off the
       -- initial slot, then click the disabled trainer-card slot and watch

@@ -273,7 +273,9 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   local density = planFor(layout, 640, 480, 2).panes[1].placement
   Assert.equal(density.pixelScale, 2)
   local card = assert(layout.saves.cards["save-1"])
-  Assert.equal(card.frame.height, 72)
+  -- Card budget: 10px top inset plus the 16px heading plus three 16px
+  -- profile rows plus the 10px bottom inset the renderer reserves.
+  Assert.equal(card.frame.height, 84)
   local newGame = layout.global.actions["new-game"]
   Assert.equal(newGame.height, 36)
   Assert.isTrue(newGame.y >= layout.saves.viewport.y + layout.saves.viewport.height)

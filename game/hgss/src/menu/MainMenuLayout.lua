@@ -8,7 +8,9 @@ local MainMenuLayout = {}
 
 local BASE_MARGIN = 8
 local BASE_REGION_GAP = 6
-local BASE_CARD_HEIGHT = 72
+-- Card budget: the 10px top inset plus the 16px heading plus three 16px
+-- profile rows plus the 10px bottom inset the renderer reserves below them.
+local BASE_CARD_HEIGHT = 84
 local BASE_CARD_GAP = 6
 local BASE_NEW_GAME_HEIGHT = 36
 local BASE_OVERFLOW_SIZE = 24

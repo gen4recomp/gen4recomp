@@ -2253,7 +2253,7 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
     draw:release()
   end
   do
-    local graphics, content, draw = drawWith(status({
+    local _, content, draw = drawWith(status({
       state = "toss_confirm",
       focus = "items",
       selected = selected,

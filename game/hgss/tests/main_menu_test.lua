@@ -872,6 +872,7 @@ end
 
 local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
 local NEUTRAL_RIM = { 48 / 255, 73 / 255, 97 / 255 }
+local CARD_FACE = { 0xFB / 255, 0xFB / 255, 0xFB / 255 }
 
 local function nearColor(recorded, expected)
   for index = 1, 3 do
@@ -912,27 +913,19 @@ local function hasRimColorOverlapping(rectangles, expected, rect)
 end
 
 -- The selected parent card underpaints the nested overflow region by design;
--- the overflow inset's own neutral chrome is drawn after it and covers that
--- region, so final pixels stay neutral. Assert paint order instead of
--- paint-list region purity: the inset's own neutral rim must exist and no
--- selected-colored record overlapping the inset may come after it.
+-- the unfocused overflow inset is face-colored so only its "..." copy shows,
+-- and that face paint is drawn after the parent chrome and covers the
+-- region. Assert paint order instead of paint-list region purity: the
+-- topmost record over the inset must be the card face, whatever the parent
+-- selection painted beneath it.
 local function overflowInsetCoversParentSelection(rectangles, rect)
-  local insetIndex = nil
-  for index, record in ipairs(rectangles) do
-    if nearColor(record.color, NEUTRAL_RIM) and overlaps(record, rect) then
-      insetIndex = index
+  local last = nil
+  for _, record in ipairs(rectangles) do
+    if overlaps(record, rect) then
+      last = record
     end
   end
-  if insetIndex == nil then
-    return false
-  end
-  for index = insetIndex + 1, #rectangles do
-    local record = rectangles[index]
-    if nearColor(record.color, SELECTED_RIM) and overlaps(record, rect) then
-      return false
-    end
-  end
-  return true
+  return last ~= nil and nearColor(last.color, CARD_FACE)
 end
 
 -- Deterministic source advance shared by every headless text double, matching
@@ -992,7 +985,7 @@ function T.focused_continue_uses_selected_rim_while_other_cards_stay_neutral()
   local focusedCard = assert(drawn.view.layout.saves.cards["save-00000001"])
   Assert.isTrue(
     overflowInsetCoversParentSelection(rectangles, assert(focusedCard.overflow)),
-    "body focus must cover the nested overflow control with its own neutral chrome"
+    "the unfocused overflow control must disappear into the card face, covering the parent selection"
   )
 end
 
@@ -1290,7 +1283,59 @@ function T.body_focus_selects_the_entire_continue_frame()
   )
   Assert.isTrue(
     overflowInsetCoversParentSelection(rectangles, assert(card.overflow)),
-    "body focus must cover the nested overflow control with its own neutral chrome"
+    "the unfocused overflow control must disappear into the card face, covering the parent selection"
+  )
+end
+
+-- Headless text doubles carry no fontDef, so the renderer falls back to the
+-- canonical ROM line advance; profile-row bottoms below add that advance.
+local PROFILE_LINE_HEIGHT = 16
+-- Card chrome depth below the face at the renderer's resolve scale: 1px
+-- border plus the 2px rim plus the 2px inner border. Profile ink must clear
+-- it so the button edge never touches the text.
+local BOTTOM_CHROME = 5
+
+function T.continue_profile_rows_keep_bottom_padding_inside_the_card()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local lastBottom = nil
+  for _, call in ipairs(drawn.calls) do
+    if call.text ~= "..." and call.text ~= "NEW GAME" then
+      local bottom = call.y + PROFILE_LINE_HEIGHT
+      if lastBottom == nil or bottom > lastBottom then
+        lastBottom = bottom
+      end
+    end
+  end
+  lastBottom = assert(lastBottom, "the Continue card must draw profile rows")
+  Assert.isTrue(
+    lastBottom <= card.frame.y + card.frame.height - BOTTOM_CHROME,
+    "the Continue profile rows must keep bottom padding inside the card instead of touching the button edge"
+  )
+end
+
+function T.continue_overflow_inlay_matches_the_card_face()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local overflow = assert(card.overflow, "the Continue card needs its overflow inlay")
+  -- Probe the right rim band: inside the outer border, vertically centered
+  -- to dodge the rounded corners.
+  local probe = {
+    x = overflow.x + overflow.width - 3,
+    y = overflow.y + overflow.height / 2 - 2,
+    width = 2,
+    height = 4,
+  }
+  local last = nil
+  for _, record in ipairs(recordedRectangles(drawn.graphics)) do
+    if overlaps(record, probe) then
+      last = record
+    end
+  end
+  last = assert(last, "the overflow inlay must paint its rim band")
+  Assert.isTrue(
+    nearColor(last.color, CARD_FACE),
+    "the unfocused Continue overflow inlay must disappear into the card face"
   )
 end
 
@@ -1818,7 +1863,7 @@ function T.continue_body_focus_uses_rounded_selected_chrome_without_a_square_rin
   Assert.isTrue(roundedSelected, "body focus must select the Continue card through rounded button chrome")
   Assert.isTrue(
     overflowInsetCoversParentSelection(rectangles, assert(card.overflow)),
-    "body focus must cover the nested overflow control with its own neutral chrome"
+    "the unfocused overflow control must disappear into the card face, covering the parent selection"
   )
 end
 
