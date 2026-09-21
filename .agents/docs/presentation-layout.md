@@ -31,8 +31,8 @@ policy; leaf interfaces supply only their own geometry and callbacks.
   framebuffer-pixels-per-host-unit ratio. It never invents surfaces.
 - `ApplicationLayout` classifies one of four configurations
   (`dualDisplay`, `nativeLike`, `wide`, `tall`) and offers shared
-  placement helpers (fullscreen, single/paired composition, static
-  framed and centered boxes, frame-around-content geometry). It owns
+  placement helpers (fullscreen, cover-or-frame resolution, single/paired
+  composition, static framed and centered boxes). It owns
   no gameplay, resources, or drawing.
 - `ApplicationPresentation` owns one open interface's published plan,
   pointer capture, and ordered cancellation. One plan supplies both
@@ -57,18 +57,25 @@ applications, or game instances.
   requires aspect error at most 12 logical pixels per edge; a session
   retains it through 14 and leaves above 14.
 - Wide/tall single surface: a static centered framed box. The complete
-  outer frame (content plus its HGSS border) fits at the largest integer
-  scale inside the usable bounds; a box that cannot fit at unit scale
-  falls back to the native-like case. Geometry is deterministic: an
-  equivalent re-resolution returns the identical placement.
+  outer frame (content plus the 0/16/0/8 exterior around the overlapped
+  body) fits at the largest integer scale inside the usable bounds; a box
+  that cannot fit at unit scale falls back to the native-like case.
+  Geometry is deterministic: an equivalent re-resolution returns the
+  identical placement.
 - Same-display pairs are contiguous: side-by-side or stacked panes share
-  one integer scale with no synthetic gap, and one outer frame may
-  surround their common envelope.
+  one integer scale with no synthetic gap, and one fitted outer frame
+  surrounds their common envelope as part of scale selection.
 - Integer fitting is the norm: the largest permitted integer fit with
   at most one safe bump. Cropping is budgeted per edge in logical
   pixels (default 4, independently overridable, zero where controls
   reach an edge); edge-critical content uses protected rectangles that
   a bump must keep visible. Crops land on whole source pixels.
+- Cover or frame: the crop budget spends only on a genuine fullscreen
+  cover, and a covering fit publishes no frame. Any visible decorated
+  fit uses zero content overdraw and reserves the complete exterior
+  chrome instead: no plan is both cropped-for-cover and framed. When
+  no complete decorated unit-scale box fits, the constrained
+  native-like fallback applies rather than a clipped frame.
 - Below unit scale, the fitter may still retain physical 1x by cropping
   whole source pixels within the configured overdraw/protection budgets;
   when no safe 1x crop exists, the complete logical viewport draws with
@@ -96,9 +103,13 @@ the same coordinates.
 
 Underfilled field applications are decorated with the player's selected
 HGSS dialogue frame (`playerData.options.textFrame`), rotated so the
-source frame's thick right edge becomes the top edge: 8 logical pixels
-on the left, 24 on top, 8 on the right, and 16 on the bottom. The frame
-is pure plan geometry until field or Starter presentation draws it
+source frame's thick right edge becomes the top edge and drawn from the
+masked application atlas. The innermost 8-logical-pixel frame band
+overlaps application content on every edge, so only the 0/16/0/8
+remainder (left/top/right/bottom) reserves room outside the application:
+opaque decoration may cover edge body pixels while cleared padding
+reveals the body underneath. The frame is pure plan geometry until
+field or Starter presentation draws it after application content
 through the shared frame renderer; application code never invents
 border styling.
 

@@ -317,10 +317,11 @@ local function fitsInteger(placement)
 end
 
 -- Static framed box inside the primary drawable: the complete rotated outer
--- frame (content plus 8/24/8/16) fits with zero crop at the largest allowed
--- physical integer scale, centered. The body derives from the outer frame
--- at the rotated content origin. Returns nil when no complete 1x frame
--- fits and the leaf must fall back to its effective nativeLike case.
+-- frame (content plus the 0/16/0/8 exterior around the overlapped body)
+-- fits with zero crop at the largest allowed physical integer scale,
+-- centered. The body derives from the outer frame at the rotated content
+-- origin. Returns nil when no complete 1x frame fits and the leaf must
+-- fall back to its effective nativeLike case.
 ---@param context ApplicationLayout.Context
 ---@param native ApplicationLayout.Native
 ---@param options ApplicationLayout.FixedFitOptions?
@@ -353,6 +354,8 @@ function ApplicationLayout.framed(context, native, options)
     ),
     "the framed body must fit its outer frame"
   )
+  body.crop = { left = 0, right = 0, top = 0, bottom = 0 }
+  body.visibleLogicalRect = { x = 0, y = 0, width = native.width, height = native.height }
   local frame = {
     placement = outer,
     contentBox = { x = insets.left, y = insets.top, width = native.width, height = native.height },
@@ -392,75 +395,74 @@ function ApplicationLayout.centered(context, native, options)
   }
 end
 
----@param a LayoutGeometry.Rect
----@param b LayoutGeometry.Rect
----@return LayoutGeometry.Rect? the intersection; nil when the rectangles do not overlap
-local function intersectHost(a, b)
-  local x = math.max(a.x, b.x)
-  local y = math.max(a.y, b.y)
-  local farX = math.min(a.x + a.width, b.x + b.width)
-  local farY = math.min(a.y + a.height, b.y + b.height)
-  if farX <= x or farY <= y then
-    return nil
-  end
-  return { x = x, y = y, width = farX - x, height = farY - y }
+---@param placement LayoutGeometry.Placement already-resolved content placement
+---@param bounds LayoutGeometry.Rect target usable bounds
+---@return boolean true when the placement visibly covers the whole target
+local function clipCoversTarget(placement, bounds)
+  local clip = placement.clipRect or placement.frame
+  return clip.x == bounds.x and clip.y == bounds.y and clip.width == bounds.width and clip.height == bounds.height
 end
 
--- Outer frame around an already-resolved content placement at the same
--- scale: nil when the placement's visible clip already equals the target
--- bounds, otherwise the outer frame clipped to the target. Never moves or
--- resizes resolved content; frame clipping may remove decoration only.
----@param bounds LayoutGeometry.Rect target usable bounds
----@param placement LayoutGeometry.Placement already-resolved content placement
----@return ApplicationLayout.FrameGeometry?
-function ApplicationLayout.frameAround(bounds, placement)
-  local target = LayoutGeometry.rect(bounds, "bounds")
-  LayoutGeometry.validatePlacement(placement, "placement")
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local insets = FieldDialogueTheme.applicationFrameInsets()
-  local clip = placement.clipRect or placement.frame
-  if clip.x == target.x and clip.y == target.y and clip.width == target.width and clip.height == target.height then
-    return nil
-  end
-  local scale = assert(placement.scale, "frameAround requires the content scale")
-  local logicalWidth = assert(placement.logicalWidth, "frameAround requires content logical dimensions")
-  local logicalHeight = assert(placement.logicalHeight, "frameAround requires content logical dimensions")
-  local frame = placement.frame
-  local outerFrame = {
-    x = frame.x - insets.left * scale,
-    y = frame.y - insets.top * scale,
-    width = (logicalWidth + insets.left + insets.right) * scale,
-    height = (logicalHeight + insets.top + insets.bottom) * scale,
-  }
-  local outerOrigin = { x = outerFrame.x, y = outerFrame.y }
-  local outerClip = intersectHost(target, outerFrame)
-  if outerClip == nil then
-    return nil
-  end
-  local outer = {
-    frame = outerFrame,
-    origin = outerOrigin,
-    scale = scale,
-    logicalWidth = logicalWidth + insets.left + insets.right,
-    logicalHeight = logicalHeight + insets.top + insets.bottom,
-    clipRect = outerClip,
-  }
-  if placement.pixelScale ~= nil then
-    outer.pixelScale = placement.pixelScale
-  end
-  if placement.pixelRatio ~= nil then
-    outer.pixelRatio = placement.pixelRatio
-  end
+---@param context ApplicationLayout.Context
+---@param target ApplicationLayout.SurfaceSelection the single fitting target
+---@return ApplicationLayout.Context the same measurement narrowed to one target surface
+local function narrowedContext(context, target)
   return {
-    placement = outer,
-    contentBox = { x = insets.left, y = insets.top, width = logicalWidth, height = logicalHeight },
+    measurement = context.measurement,
+    configuration = context.configuration,
+    primary = target,
+    nativeLikeInterface = context.nativeLikeInterface,
   }
+end
+
+-- Single-pane cover-or-frame resolution against the context primary
+-- target: the fullscreen fit spends the leaf overdraw/protected budget,
+-- and a candidate whose visible clip equals the target publishes with no
+-- frame. An underfilled candidate refits as a zero-overdraw decorated box
+-- with complete chrome room. When no complete decorated 1x fit exists the
+-- candidate stands as the constrained fallback, never a clipped frame:
+-- fullscreen overdraw never coexists with visible application chrome.
+---@param context ApplicationLayout.Context
+---@param native ApplicationLayout.Native
+---@param options ApplicationLayout.FixedFitOptions?
+---@return ApplicationLayout.Geometry
+local function coverOrFrameGeometry(context, native, options)
+  local candidate = ApplicationLayout.fullscreen(context, native, options)
+  local placement = candidate.placements[native.id]
+  local primary = assert(context.primary, "cover-or-frame requires its target surface")
+  local bounds = primary.usableBounds
+  if placement ~= nil and bounds ~= nil and clipCoversTarget(placement, bounds) then
+    return candidate
+  end
+  local decorated = ApplicationLayout.framed(context, native, options)
+  if decorated ~= nil then
+    return decorated
+  end
+  return candidate
+end
+
+-- Single-pane cover-or-frame resolution against the owned target region:
+-- the auxiliary usable region on a genuine pair, the selected single
+-- surface otherwise. Either a true target-covering unframed placement or
+-- a fully fitted decorated placement; unavailable space stays empty.
+---@param context ApplicationLayout.Context
+---@param native ApplicationLayout.Native
+---@param options ApplicationLayout.FixedFitOptions?
+---@return ApplicationLayout.Geometry
+function ApplicationLayout.coverOrFrame(context, native, options)
+  assertNative(native, "coverOrFrame")
+  local target = context.secondary or context.primary
+  assert(target ~= nil, "cover-or-frame requires its target surface")
+  return coverOrFrameGeometry(narrowedContext(context, target), native, options)
 end
 
 -- Physical dual mapping: the upper native pane fits the world usable
 -- region and the lower fits the auxiliary region, each with its own
--- integer fit. The two mappings never collapse to one pane merely because
--- their scales differ.
+-- integer fit. A pane spends its allowed crop only to cover its target;
+-- an underfilled pane refits with zero crop and complete frame room, so
+-- each physical target carries at most its own complete decoration. The
+-- two mappings never collapse to one pane merely because their scales
+-- differ.
 ---@param context ApplicationLayout.Context
 ---@param upperNative ApplicationLayout.Native
 ---@param lowerNative ApplicationLayout.Native
@@ -470,7 +472,6 @@ function ApplicationLayout.nativeDual(context, upperNative, lowerNative, options
   assertNative(upperNative, "nativeDual upper")
   assertNative(lowerNative, "nativeDual lower")
   assert(upperNative.id ~= lowerNative.id, "a pair needs distinct pane ids")
-  local ratio = contextRatio(context)
   local primary = assert(context.primary, "nativeDual requires its world surface")
   local secondary = assert(context.secondary, "nativeDual requires its auxiliary surface")
   local worldBounds = primary.usableBounds
@@ -482,24 +483,23 @@ function ApplicationLayout.nativeDual(context, upperNative, lowerNative, options
   assert(type(options) == "table", "nativeDual options must be a record")
   local upperFit = options.upper or {}
   local lowerFit = options.lower or {}
-  local upper = PixelScale.placeFixed(worldBounds, upperNative.width, upperNative.height, {
-    pixelRatio = ratio,
-    preferredScale = upperFit.preferredScale,
-    maxOverdraw = upperFit.maxOverdraw,
-    protectedRect = upperFit.protectedRect,
-  })
-  local lower = PixelScale.placeFixed(auxBounds, lowerNative.width, lowerNative.height, {
-    pixelRatio = ratio,
-    preferredScale = lowerFit.preferredScale,
-    maxOverdraw = lowerFit.maxOverdraw,
-    protectedRect = lowerFit.protectedRect,
-  })
+  local upperGeometry = coverOrFrameGeometry(narrowedContext(context, primary), upperNative, upperFit)
+  local lowerGeometry = coverOrFrameGeometry(narrowedContext(context, secondary), lowerNative, lowerFit)
+  local upper = upperGeometry.placements[upperNative.id]
+  local lower = lowerGeometry.placements[lowerNative.id]
   if upper == nil or lower == nil then
     return emptyGeometry()
   end
+  local frames = {}
+  for _, frame in ipairs(upperGeometry.frames or {}) do
+    frames[#frames + 1] = frame
+  end
+  for _, frame in ipairs(lowerGeometry.frames or {}) do
+    frames[#frames + 1] = frame
+  end
   return {
     placements = { [upperNative.id] = upper, [lowerNative.id] = lower },
-    frames = {},
+    frames = frames,
   }
 end
 
@@ -535,9 +535,13 @@ end
 
 -- One-display pair composition: a single integer fit of the combined
 -- logical envelope (upper left/lower right, or upper above/lower below)
--- with zero crop and no synthetic gap, then subPlacement for each pane. The panes never fit independently and never stretch unequally.
--- Returns nil when the envelope cannot fit 1x and the leaf must fall back
--- to its nativeLike case.
+-- with zero crop and no synthetic gap, then subPlacement for each pane.
+-- The panes never fit independently and never stretch unequally. A raw
+-- envelope that exactly covers its target publishes with no frame;
+-- otherwise the decorated outer envelope fits at one common integer
+-- scale and returns its one complete frame, so chrome is fitted before
+-- publication instead of clipped afterward. Returns nil when the envelope
+-- cannot fit 1x and the leaf must fall back to its nativeLike case.
 ---@param context ApplicationLayout.Context
 ---@param upperNative ApplicationLayout.Native
 ---@param lowerNative ApplicationLayout.Native
@@ -582,12 +586,38 @@ local function composedPair(context, upperNative, lowerNative, options, horizont
     return nil
   end
   local upperRect, lowerRect = pairRects(envelopeWidth, envelopeHeight, upperNative, lowerNative, horizontal)
-  local upper = assert(LayoutGeometry.subPlacement(envelope, upperRect), "the upper pane must fit its envelope")
-  local lower = assert(LayoutGeometry.subPlacement(envelope, lowerRect), "the lower pane must fit its envelope")
+  if clipCoversTarget(envelope, usable) then
+    local upper = assert(LayoutGeometry.subPlacement(envelope, upperRect), "the upper pane must fit its envelope")
+    local lower = assert(LayoutGeometry.subPlacement(envelope, lowerRect), "the lower pane must fit its envelope")
+    return {
+      placements = { [upperNative.id] = upper, [lowerNative.id] = lower },
+      frames = {},
+      envelope = envelope,
+    }
+  end
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local outer = PixelScale.placeFixed(
+    usable,
+    envelopeWidth + insets.left + insets.right,
+    envelopeHeight + insets.top + insets.bottom,
+    {
+      pixelRatio = ratio,
+      preferredScale = cap,
+      maxOverdraw = { left = 0, right = 0, top = 0, bottom = 0 },
+    }
+  )
+  if outer == nil or not fitsInteger(outer) then
+    return nil
+  end
+  local bodyRect = { x = insets.left, y = insets.top, width = envelopeWidth, height = envelopeHeight }
+  local body = assert(LayoutGeometry.subPlacement(outer, bodyRect), "the pair envelope must fit its outer frame")
+  local upper = assert(LayoutGeometry.subPlacement(body, upperRect), "the upper pane must fit its envelope")
+  local lower = assert(LayoutGeometry.subPlacement(body, lowerRect), "the lower pane must fit its envelope")
   return {
     placements = { [upperNative.id] = upper, [lowerNative.id] = lower },
-    frames = {},
-    envelope = envelope,
+    frames = { { placement = outer, contentBox = bodyRect } },
+    envelope = body,
   }
 end
 

@@ -932,7 +932,7 @@ end
 
 -- Published outer frames draw through the already-owned window primitive
 -- with the player-owned frame choice: one border per frame record in plan
--- order, before content, and nothing when the plan is unframed. No second
+-- order, after content, and nothing when the plan is unframed. No second
 -- window primitive is constructed.
 function T.outer_application_frames_draw_through_the_borrowed_window_renderer()
   local presentation = openPresentation(2)

@@ -4,10 +4,11 @@
 -- stacks hero above, sharing one integer scale with no synthetic gap;
 -- nativeLike shows only the interaction pane with the canonical description
 -- fallback. The lower pane never crops (its controls reach the source
--- edges); the hero may use the default four-edge budget on a separate
--- physical display. A pair that cannot fit 1x falls back to the nativeLike
--- case. Underfilled panes carry one static outer frame around the pair
--- envelope or around each underfilled physical pane. Resolvers require the
+-- edges); the hero may use the default four-edge budget only for a true
+-- cover of its own physical display. A pair that cannot fit 1x falls back
+-- to the nativeLike case. Underfilled panes carry fitted chrome: one
+-- complete outer frame around the pair envelope, or one per underfilled
+-- physical pane. Resolvers require the
 -- measured context production sessions supply; helper-derived surface
 -- selections fill the remaining fields.
 
@@ -105,29 +106,10 @@ local function withManifest(manifest)
     }
   end
 
-  -- One static frame around the common pair envelope, attached only when
-  -- the envelope leaves target background visible.
-  ---@param context ApplicationLayout.Context
-  ---@param geometry ApplicationLayout.Geometry
-  ---@return table<integer, table<string, unknown>> frames
-  local function envelopeFrames(context, geometry)
-    local envelope = geometry.envelope
-    local primary = assert(context.primary, "a pair frame needs its primary surface")
-    local usable = primary.usableBounds
-    if envelope == nil or usable == nil then
-      return {}
-    end
-    local frame = ApplicationLayout.frameAround(usable, envelope)
-    if frame == nil then
-      return {}
-    end
-    return { frame }
-  end
-
   -- DualDisplay: hero on the world surface, interaction on auxiliary. The
-  -- hero may use the default four-edge crop budget on its own display;
-  -- the edge-reaching lower pane never crops. Each underfilled physical
-  -- pane carries its own outer frame.
+  -- hero may use the default four-edge crop budget only to cover its own
+  -- display; the edge-reaching lower pane never crops. Each underfilled
+  -- physical pane carries its own complete outer frame.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
@@ -142,52 +124,30 @@ local function withManifest(manifest)
     if hero == nil or interaction == nil then
       return inactivePlan()
     end
-    local frames = {}
-    local primary = assert(complete.primary, "dual frames need the world surface")
-    local secondary = assert(complete.secondary, "dual frames need the auxiliary surface")
-    if primary.usableBounds ~= nil then
-      local heroFrame = ApplicationLayout.frameAround(primary.usableBounds, hero)
-      if heroFrame ~= nil then
-        frames[#frames + 1] = heroFrame
-      end
-    end
-    if secondary.usableBounds ~= nil then
-      local interactionFrame = ApplicationLayout.frameAround(secondary.usableBounds, interaction)
-      if interactionFrame ~= nil then
-        frames[#frames + 1] = interactionFrame
-      end
-    end
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, frames)
+    }, geometry.frames or {})
   end
 
   -- NativeLike: only the interaction pane with the canonical description
   -- fallback carrying the compact information the hidden hero would show.
-  -- A frame is attached only when the pane leaves target background visible.
+  -- A covered target stays unframed; an underfilled one refits as a
+  -- complete decorated box with zero crop.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
   ---@return ApplicationPlan
   local function nativeLike(context, view)
     local _ = view
     local complete = completeContext(context)
-    local geometry = ApplicationLayout.fullscreen(complete, INTERACTION_NATIVE, { maxOverdraw = ZERO_CROP })
+    local geometry = ApplicationLayout.coverOrFrame(complete, INTERACTION_NATIVE, { maxOverdraw = ZERO_CROP })
     local interaction = geometry.placements[INTERACTION_NATIVE.id]
     if interaction == nil then
       return inactivePlan()
     end
-    local frames = {}
-    local target = complete.secondary or complete.primary
-    if target ~= nil and target.usableBounds ~= nil then
-      local frame = ApplicationLayout.frameAround(target.usableBounds, interaction)
-      if frame ~= nil then
-        frames = { frame }
-      end
-    end
     return bagPlan(manifest, false, {
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, frames)
+    }, geometry.frames or {})
   end
   set.nativeLike = nativeLike
 
@@ -212,11 +172,11 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, envelopeFrames(complete, geometry))
+    }, geometry.frames or {})
   end
 
   -- Tall: hero above, interaction below, one shared integer scale with no
-  -- gap and one frame around the common envelope, with the same 1x
+  -- gap and one fitted frame around the common envelope, with the same 1x
   -- fallback as wide.
   ---@param context ApplicationLayout.Context
   ---@param view table<string, unknown>
@@ -235,7 +195,7 @@ local function withManifest(manifest)
     return bagPlan(manifest, true, {
       { id = HERO_NATIVE.id, placement = hero, interactive = false },
       { id = INTERACTION_NATIVE.id, placement = interaction, interactive = true },
-    }, envelopeFrames(complete, geometry))
+    }, geometry.frames or {})
   end
 
   set.dualDisplay = dualDisplay

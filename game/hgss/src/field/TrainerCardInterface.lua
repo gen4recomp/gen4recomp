@@ -1,7 +1,8 @@
 -- The current Trainer Card's four function references with matching
--- render and input callbacks. DualDisplay takes the auxiliary fullscreen
--- and nativeLike the single-surface fullscreen, both with the default
--- four-edge crop budget guarded by the protected text rect; wide and tall
+-- render and input callbacks. DualDisplay and nativeLike resolve
+-- cover-or-frame over the owned target region: the default four-edge
+-- crop budget guarded by the protected text rect spends only on a true
+-- fullscreen cover, and any visible frame means zero crop; wide and tall
 -- center the canonical 256x192 pane in a static framed box with zero
 -- crop and a native-like fallback below 1x. The renderer is the existing
 -- card surface invoked through the resolved placement; input forwards the
@@ -100,21 +101,11 @@ local function cardContent()
   return { width = NATIVE.width, height = NATIVE.height }
 end
 
----@param context ApplicationLayout.Context
----@return LayoutGeometry.Rect? the fullscreen target bounds
-local function fullscreenTarget(context)
-  local target = context.secondary or context.primary
-  if target == nil then
-    return nil
-  end
-  return target.usableBounds
-end
-
 -- Fullscreen card for the dualDisplay and nativeLike cases: one canonical
 -- pane over the owned target region with the default four-edge crop budget
 -- guarded by the protected text rect, so only borders and margins can hide
--- in a near fit. A frame is attached only when the pane leaves target
--- background visible.
+-- in a genuine cover. An underfilled target refits as a complete decorated
+-- box with zero crop instead of a cropped body with a clipped border.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
@@ -122,22 +113,14 @@ function TrainerCardInterface.fullscreen(context, view)
   local _ = view
   local complete = completeContext(context)
   local geometry =
-    ApplicationLayout.fullscreen(complete, NATIVE, { maxOverdraw = FULL_CROP, protectedRect = PROTECTED })
+    ApplicationLayout.coverOrFrame(complete, NATIVE, { maxOverdraw = FULL_CROP, protectedRect = PROTECTED })
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
     return inactivePlan()
   end
-  local frames = {}
-  local target = fullscreenTarget(complete)
-  if target ~= nil then
-    local frame = ApplicationLayout.frameAround(target, placement)
-    if frame ~= nil then
-      frames = { frame }
-    end
-  end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
-    frames = frames,
+    frames = geometry.frames or {},
     content = cardContent(),
     inputKey = INPUT_KEY,
     render = renderCard,

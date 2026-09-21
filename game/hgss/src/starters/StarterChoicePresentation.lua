@@ -1590,8 +1590,10 @@ function StarterChoicePresentation:_drawInfoPortrait(snapshot)
 end
 
 -- Draws every published outer application frame through the already-owned
--- window primitive with the player-owned frame choice, before content.
--- Unframed plans draw nothing extra and never touch the primitive.
+-- window primitive with the player-owned frame choice, after content.
+-- The masked inner band overlaps body pixels, so chrome paints over the
+-- panes it decorates. Unframed plans draw nothing extra and never touch
+-- the primitive.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param plan ApplicationPlan the resolved plan
 ---@param windowRenderer table<string, unknown>? field-borrowed window primitive; required when the plan carries frames
@@ -1654,7 +1656,6 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   local textColors = assert(self._manifest.textColors, "starter presentation requires the generated chooser colors")
   local surfaces = self._manifest.surfaces
   local infoText, promptText = infoMessageFor(self, snapshot)
-  self:_drawOuterFrames(graphics, plan, windowRenderer)
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
     self:_drawMessageLines(
@@ -1681,6 +1682,7 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   LogicalSurface.draw(graphics, machinePlacement, function()
     self:_drawFade(self._machineFade / timing.machineFadeTicks)
   end)
+  self:_drawOuterFrames(graphics, plan, windowRenderer)
   graphics.setColor(1, 1, 1, 1)
 end
 
@@ -1764,7 +1766,6 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windo
   local selected = snapshot.selection
   local timing = self._manifest.scene.timing
   local machineAlpha = self._machineFade / timing.machineFadeTicks
-  self:_drawOuterFrames(graphics, plan, windowRenderer)
   LogicalSurface.draw(graphics, placement, function()
     self:_drawMessageLines(
       { box = COMPACT_MESSAGE, textOrigin = { x = COMPACT_MESSAGE.x, y = COMPACT_MESSAGE.y }, framed = true },
@@ -1790,6 +1791,7 @@ function StarterChoicePresentation:drawCompact(snapshot, view, text, plan, windo
     self:_drawCompactAction(COMPACT_BACK, "BACK", text, backEnabled, windowRenderer)
     self:_drawFade(machineAlpha)
   end)
+  self:_drawOuterFrames(graphics, plan, windowRenderer)
   graphics.setColor(1, 1, 1, 1)
 end
 

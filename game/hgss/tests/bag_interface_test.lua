@@ -216,6 +216,102 @@ function T.dual_maps_roles_to_their_physical_surfaces()
   )
 end
 
+-- Chrome is fitted, not clipped: on the 1100x400 host the raw pair fits
+-- 2x but its complete decoration does not, so the published frame is a
+-- whole unclipped outer box around two contiguous panes that share one
+-- integer scale, and neither body carries crop.
+function T.wide_pair_frame_is_fitted_complete_chrome_around_contiguous_panes()
+  local interface = bagInterface()
+  local measured = singleDisplay(1100, 400)
+  local plan = interface.wide(contextFor(measured, "wide", interface), {})
+  Assert.equal(#plan.panes, 2, "the wide plan pairs both panes")
+  local heroPane
+  for _, pane in ipairs(plan.panes) do
+    if not pane.interactive then
+      heroPane = pane
+    end
+  end
+  local interaction = interactivePane(plan)
+  Assert.isTrue(heroPane ~= nil, "the wide pair carries its hero pane")
+  local heroPlacement = assert(heroPane.placement, "the hero pane carries its placement")
+  local interactionPlacement = assert(interaction.placement, "the interaction pane carries its placement")
+  Assert.equal(heroPlacement.pixelScale, interactionPlacement.pixelScale, "paired panes share one integer scale")
+  Assert.near(
+    interactionPlacement.frame.x - (heroPlacement.frame.x + heroPlacement.frame.width),
+    0,
+    1e-6,
+    "paired panes touch with no synthetic gap"
+  )
+  for _, placement in ipairs({ heroPlacement, interactionPlacement }) do
+    Assert.deepEqual(
+      placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+      { left = 0, right = 0, top = 0, bottom = 0 },
+      "decorated pair bodies never crop"
+    )
+  end
+  local frame = assert(plan.frames, "the wide pair owns its frame list")[1]
+  Assert.notNil(frame, "one outer frame decorates the pair")
+  local outer = assert(frame.placement, "the frame carries its outer placement")
+  Assert.deepEqual(outer.clipRect, outer.frame, "pair chrome is fitted, never clipped")
+  Assert.isTrue(
+    outer.frame.x <= heroPlacement.frame.x
+      and outer.frame.y <= heroPlacement.frame.y
+      and outer.frame.x + outer.frame.width >= interactionPlacement.frame.x + interactionPlacement.frame.width
+      and outer.frame.y + outer.frame.height >= interactionPlacement.frame.y + interactionPlacement.frame.height,
+    "the complete outer frame contains both pane frames"
+  )
+end
+
+-- Physical-dual panes fit their own targets: the world hero covers its
+-- exact surface with no frame while the underfilled auxiliary interaction
+-- refits as an uncropped decorated box with complete chrome room.
+function T.dual_underfilled_pane_refits_with_complete_chrome_on_its_own_target()
+  local interface = bagInterface()
+  local measured = measurement(
+    1024,
+    816,
+    ScreenTopology.dualDisplay({
+      id = "world",
+      rect = { x = 0, y = 0, width = 512, height = 384 },
+      role = "world",
+      touch = false,
+    }, {
+      id = "aux",
+      rect = { x = 0, y = 384, width = 512, height = 432 },
+      role = "auxiliary",
+      touch = true,
+    }),
+    1
+  )
+  local plan = interface.dualDisplay(contextFor(measured, "dualDisplay", interface), {})
+  Assert.equal(#plan.panes, 2, "the dual plan carries both panes")
+  local heroPane
+  for _, pane in ipairs(plan.panes) do
+    if not pane.interactive then
+      heroPane = pane
+    end
+  end
+  local interaction = interactivePane(plan)
+  Assert.isTrue(heroPane ~= nil, "the dual plan carries its hero pane")
+  local interactionPlacement = assert(interaction.placement, "the interaction pane carries its placement")
+  Assert.deepEqual(
+    interactionPlacement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "the decorated dual pane never crops"
+  )
+  Assert.equal(#plan.frames, 1, "only the underfilled pane carries a frame")
+  local frame = assert(plan.frames, "the dual plan owns its frame list")[1]
+  local outer = assert(frame.placement, "the frame carries its outer placement")
+  Assert.equal(outer.logicalWidth, 256, "the dual frame adds no side room")
+  Assert.equal(outer.logicalHeight, 216, "the dual frame reserves the 16px top and 8px bottom")
+  Assert.deepEqual(outer.clipRect, outer.frame, "dual chrome fits its own target unclipped")
+  Assert.deepEqual(
+    frame.contentBox,
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the dual body starts inside the exterior insets"
+  )
+end
+
 function T.a_pair_that_cannot_fit_falls_back_to_the_native_like_case()
   local interface = bagInterface()
   local measured = singleDisplay(300, 200)

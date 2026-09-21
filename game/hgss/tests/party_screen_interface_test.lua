@@ -139,8 +139,8 @@ function T.wide_and_tall_center_a_static_framed_box()
   Assert.notNil(wideFrame, "one outer frame decorates the wide pane")
   Assert.deepEqual(
     wideFrame.contentBox,
-    { x = 8, y = 24, width = 256, height = 192 },
-    "the wide content box sits inside the rotated insets"
+    { x = 0, y = 16, width = 256, height = 192 },
+    "the wide content box sits inside the exterior insets"
   )
   local tall = interfaces.tall(contextFor(singleDisplay(600, 1000), "tall", interfaces), view(true))
   singlePane(tall, "tall")

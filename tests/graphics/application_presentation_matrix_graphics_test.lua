@@ -622,20 +622,32 @@ function T.hosted_naming_magnifies_once_across_densities(scope)
   Assert.equal(math.floor(x2), math.floor(x1) * 2, "one output scale doubles the columns")
 end
 
--- The Trainer Card near-fit bump protects its text: the guarded rect
--- stays fully inside the visible logical area at the cropped 3x.
+-- The Trainer Card near fit never mixes crop with chrome: 750x560 misses
+-- fullscreen, so the card refits as an uncropped decorated box whose
+-- complete surface keeps the guarded text rect fully visible.
 function T.trainer_crop_protects_text_bounds(scope)
   local _ = scope
   local card = TrainerCardInterface.withOverrides(nil)
   local plan = card.nativeLike(contextFor(singleDisplay(750, 560), "nativeLike", card), {})
   local placement = assert(plan.panes[1], "the card plan carries its pane").placement
-  Assert.equal(placement.pixelScale, 3, "750x560 must use the cropped 3x")
-  local visible = assert(placement.visibleLogicalRect, "the cropped placement names its visible area")
+  Assert.equal(placement.pixelScale, 2, "750x560 must use the decorated 2x")
+  Assert.deepEqual(
+    placement.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "a visible frame never coexists with body crop"
+  )
+  local visible = assert(placement.visibleLogicalRect, "the decorated placement names its visible area")
+  Assert.deepEqual(
+    visible,
+    { x = 0, y = 0, width = 256, height = 192 },
+    "the decorated body keeps every source pixel visible"
+  )
   Assert.isTrue(visible.x <= 8 and visible.y <= 8, "the visible area must start at or before the protected rect")
   Assert.isTrue(
     visible.x + visible.width >= 248 and visible.y + visible.height >= 184,
     "the visible area must cover the protected rect"
   )
+  Assert.equal(#plan.frames, 1, "the underfilled card carries its complete frame")
 end
 
 -- The responsive startup menu grows its logical viewport with density
@@ -697,6 +709,85 @@ function T.plan_draw_restores_state_for_every_case(scope)
       1,
       host.name .. " content paints through its plan"
     )
+  end
+end
+
+-- Masked application chrome overlaps body pixels without a halo: opaque
+-- border tiles cover edge body pixels, cleared border tiles reveal the
+-- body underneath, and pixels outside the outer placement keep the host
+-- sentinel. The cleared tile stands in for a style whose inner ring is
+-- padding-connected; the opaque tiles prove decoration is preserved.
+function T.masked_chrome_overlaps_the_body_without_a_halo(scope)
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+  local dialogueRow = FieldUiFixture.framePixels(0)
+  -- The strip atlas is a row-major 144-wide image, so the texel at the
+  -- center of tile `tile`'s 8x8 cell lives at (tile * 8 + 4, 4): the same
+  -- image-space addressing the frame-strip quads use.
+  local function tileColor(tile)
+    local base = (4 * 144 + tile * 8 + 4) * 4
+    return {
+      string.byte(dialogueRow, base + 1) / 255,
+      string.byte(dialogueRow, base + 2) / 255,
+      string.byte(dialogueRow, base + 3) / 255,
+      1,
+    }
+  end
+  local bodyTint = { 1, 0, 1, 1 }
+  for _, density in ipairs({ 1, 2 }) do
+    local tag = density .. "x"
+    local box = { x = 16, y = 32, width = 64, height = 64 }
+    local canvasWidth, canvasHeight = 96 * density, 136 * density
+    local window = scope:own(FieldWindowRenderer.new({
+      cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+      manifest = FieldUiFixture.manifest(),
+    }))
+    local canvas = renderToCanvas(scope, canvasWidth, canvasHeight, function()
+      local lg = love.graphics
+      lg.push("all")
+      lg.scale(density, density)
+      lg.setColor(bodyTint[1], bodyTint[2], bodyTint[3], bodyTint[4])
+      lg.rectangle("fill", box.x, box.y, box.width, box.height)
+      window:drawApplicationFrame(box, 0)
+      lg.pop()
+    end)
+    local data = scope:own(canvas:newImageData())
+    local function sample(lx, ly)
+      return data:getPixel(lx * density, ly * density)
+    end
+    local function assertBodyPixel(lx, ly, label)
+      local r, g, b, a = sample(lx, ly)
+      Assert.near(r, 1, 1e-2, tag .. " " .. label .. " red")
+      Assert.near(g, 0, 1e-2, tag .. " " .. label .. " green")
+      Assert.near(b, 1, 1e-2, tag .. " " .. label .. " blue")
+      Assert.near(a, 1, 1e-2, tag .. " " .. label .. " alpha")
+    end
+    local function assertTilePixel(lx, ly, tile, label)
+      local want = tileColor(tile)
+      local r, g, b, a = sample(lx, ly)
+      Assert.near(r, want[1], 1e-2, tag .. " " .. label .. " red")
+      Assert.near(g, want[2], 1e-2, tag .. " " .. label .. " green")
+      Assert.near(b, want[3], 1e-2, tag .. " " .. label .. " blue")
+      Assert.near(a, want[4], 1e-2, tag .. " " .. label .. " alpha")
+    end
+    local overlaps, reveals = 0, 0
+    for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
+      local cx, cy = placement.x + 4, placement.y + 4
+      if cx >= box.x and cx < box.x + box.width and cy >= box.y and cy < box.y + box.height then
+        if FieldUiFixture.APPLICATION_TRANSPARENT_TILES[placement.tile] then
+          assertBodyPixel(cx, cy, "cleared tile " .. placement.tile .. " reveals the body")
+          reveals = reveals + 1
+        else
+          assertTilePixel(cx, cy, placement.tile, "tile " .. placement.tile .. " covers the body edge")
+          overlaps = overlaps + 1
+        end
+      end
+    end
+    Assert.isTrue(overlaps > 0, tag .. " decoration overlaps body pixels")
+    Assert.isTrue(reveals > 0, tag .. " cleared padding reveals the body")
+    assertBodyPixel(box.x + 32, box.y + 32, "the body center stays uncovered")
+    assertPixelNear(data, 0, 0, 0, 0, 0, 0, tag .. " outside the frame stays sentinel")
+    assertPixelNear(data, canvasWidth - 1, canvasHeight - 1, 0, 0, 0, 0, tag .. " past the frame edge stays sentinel")
   end
 end
 

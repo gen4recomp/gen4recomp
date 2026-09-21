@@ -1,6 +1,6 @@
 -- The current Start Menu's four function references with matching render and
--- input callbacks. Fullscreen owns the auxiliary region on a genuine pair
--- and the single surface otherwise; wide and tall center the canonical
+-- input callbacks. DualDisplay and nativeLike resolve cover-or-frame over
+-- the owned target region; wide and tall center the canonical
 -- 256x192 body in a static framed box with zero crop (the source
 -- header/cancel target reaches the edge). The renderer is the existing
 -- generated surface invoked through the resolved placement; input passes canonical body
@@ -77,41 +77,24 @@ local function completeContext(context)
   }
 end
 
----@param context ApplicationLayout.Context
----@return LayoutGeometry.Rect? the fullscreen target bounds
-local function fullscreenTarget(context)
-  local target = context.secondary or context.primary
-  if target == nil then
-    return nil
-  end
-  return target.usableBounds
-end
-
 -- Fullscreen Start Menu for the dualDisplay and nativeLike cases: one
--- canonical interactive body pane over the owned target region, framed only
--- when the pane leaves target background visible.
+-- canonical interactive body pane over the owned target region. A target
+-- the pane genuinely covers stays unframed; an underfilled target refits
+-- as a complete decorated box with zero crop.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function StartMenuInterface.fullscreen(context, view)
   local complete = completeContext(context)
-  local geometry = ApplicationLayout.fullscreen(complete, NATIVE, { maxOverdraw = ZERO_CROP })
+  local geometry = ApplicationLayout.coverOrFrame(complete, NATIVE, { maxOverdraw = ZERO_CROP })
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
     return inactivePlan()
   end
   local _ = view
-  local frames = {}
-  local target = fullscreenTarget(complete)
-  if target ~= nil then
-    local frame = ApplicationLayout.frameAround(target, placement)
-    if frame ~= nil then
-      frames = { frame }
-    end
-  end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
-    frames = frames,
+    frames = geometry.frames or {},
     content = { body = { x = 0, y = 0, width = NATIVE.width, height = NATIVE.height } },
     inputKey = INPUT_KEY,
     render = renderStartMenu,

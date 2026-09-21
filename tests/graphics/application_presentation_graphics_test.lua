@@ -104,12 +104,14 @@ function T.settled_plan_leaves_fade_regions_untouched(scope)
   end)
   assertStateRestored(before, lg, "fullscreen draw")
   local data = scope:own(canvas:newImageData())
-  -- Body at 2x from (64,48): content paint covers the canonical surface.
-  assertPixelNear(data, 64 + 10, 48 + 10, 0.1, 0.1, 0.8, 1, "content paints inside the body")
+  -- Decorated body at 2x from (64,56): the 512x432 outer frame centers
+  -- in the host and the body starts 16 logical pixels below its top.
+  -- Content paint covers the canonical surface inside that body.
+  assertPixelNear(data, 64 + 10, 56 + 10, 0.1, 0.1, 0.8, 1, "content paints inside the body")
   -- The sentinel survives outside the body frame: no settled matte paints.
   assertPixelNear(data, 630, 470, 0.9, 0.2, 0.2, 1, "fade regions stay unpainted outside the body")
   local pane = assert(plan.panes[1], "the plan needs its body pane")
-  Assert.deepEqual(pane.placement.frame, { x = 64, y = 48, width = 512, height = 384 })
+  Assert.deepEqual(pane.placement.frame, { x = 64, y = 56, width = 512, height = 384 })
 end
 
 function T.static_frame_carries_no_chrome_and_leaves_outside_pixels_clear(scope)
@@ -196,8 +198,9 @@ end
 -- The locked rotated mapping for the 256x192 content box: source right
 -- becomes the target top (tile 10 at the top-band center), source left
 -- becomes the target bottom (tile 6), source top becomes the target left
--- (tile 2), and source bottom becomes the target right (tile 14).
-local BAND_TILES = { top = 10, bottom = 6, left = 2, right = 14 }
+-- (tile 1, beside the masked tile-2 run), and source bottom becomes the
+-- target right (tile 14).
+local BAND_TILES = { top = 10, bottom = 6, left = 1, right = 14 }
 
 function T.selected_frame_choice_drives_the_application_border(scope)
   local lg = love.graphics
@@ -241,14 +244,14 @@ function T.rotated_application_frame_is_top_heavy_and_border_only(scope)
   local insets = FieldDialogueTheme.applicationFrameInsets()
   Assert.deepEqual(
     { insets.left, insets.top, insets.right, insets.bottom },
-    { 8, 24, 8, 16 },
-    "the rotated frame is thick on top"
+    { 0, 16, 0, 8 },
+    "only the exterior past the overlap reserves room"
   )
   local box = assert(frame.contentBox, "the frame carries its content box")
   Assert.deepEqual(
     { box.x, box.y, box.width, box.height },
     { insets.left, insets.top, 256, 192 },
-    "the content box sits under the thick top edge"
+    "the content box sits inside the exterior insets"
   )
   local OUTSIDE = { 1, 0, 1, 1 }
   local CONTENT = { 0, 1, 0, 1 }
@@ -267,9 +270,9 @@ function T.rotated_application_frame_is_top_heavy_and_border_only(scope)
   lg.setCanvas()
   local data = scope:own(canvas:newImageData())
   assertPixel(data, placement, 140, 12, tileTexel(0, BAND_TILES.top, 4, 4), "top band shows source-right artwork")
-  assertPixel(data, placement, 140, 228, tileTexel(0, BAND_TILES.bottom, 4, 4), "bottom band shows source-left artwork")
-  assertPixel(data, placement, 4, 116, tileTexel(0, BAND_TILES.left, 4, 4), "left band shows source-top artwork")
-  assertPixel(data, placement, 268, 116, tileTexel(0, BAND_TILES.right, 4, 4), "right band shows source-bottom artwork")
+  assertPixel(data, placement, 140, 212, tileTexel(0, BAND_TILES.bottom, 4, 4), "bottom band shows source-left artwork")
+  assertPixel(data, placement, 4, 204, tileTexel(0, BAND_TILES.left, 4, 4), "left band shows source-top artwork")
+  assertPixel(data, placement, 252, 116, tileTexel(0, BAND_TILES.right, 4, 4), "right band shows source-bottom artwork")
   assertPixel(data, placement, 136, 120, CONTENT, "the content sentinel survives the border draw")
   local ox, oy = hostPixel(placement, 0, 0)
   Assert.isTrue(ox > 0 and oy > 0, "the framed box leaves a host margin on a wide host")
@@ -291,16 +294,17 @@ function T.settled_field_stays_visible_outside_the_framed_application(scope)
   -- The paused field already painted its host presentation.
   lg.setColor(FIELD[1], FIELD[2], FIELD[3], FIELD[4])
   lg.rectangle("fill", 0, 0, 1280, 720)
-  -- The settled application paints its frame border, then its content.
-  drawApplicationFrame(lg, window, frame, 0)
-  local plan = withContentRender(
+  -- The settled application paints its content, then its frame border
+  -- over the overlapped edge pixels.
+  local settledPlan = withContentRender(
     (function()
       local session = startMenuSession()
       return session:resolve(measurementFor(1280, 720), {})
     end)(),
     paintBlock({ 0.1, 0.1, 0.8, 1 })
   )
-  ApplicationPresentation.draw(lg, {}, {}, plan)
+  ApplicationPresentation.draw(lg, {}, {}, settledPlan)
+  drawApplicationFrame(lg, window, frame, 0)
   lg.setCanvas()
   local data = scope:own(canvas:newImageData())
   local fr, fg, fb, fa = data:getPixel(10, 10)
@@ -337,7 +341,9 @@ function T.application_frame_tiles_carry_rotated_artwork(scope)
   end
   local strip = table.concat(parts) .. FieldUiFixture.framePixels(1)
   local cache = FieldUiFixture.cacheWithFontAndFrames()
-  cache:write(FieldUiFixture.STRIP_PATH, PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, strip))
+  -- Chrome samples the masked application atlas, so the marker addresses
+  -- that strip; the dialogue strip stays unpatched.
+  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, strip))
   local window = scope:own(openFrameAtlas(cache))
   local placement = assert(frame.placement, "the frame carries its host placement")
   local canvas = scope:own(lg.newCanvas(1280, 720))

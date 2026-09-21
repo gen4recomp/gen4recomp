@@ -73,9 +73,10 @@ FieldPresentationResources.__index = FieldPresentationResources
 -- release them. An id without a presenter is a composition error, never a
 -- fallback to another application surface.
 -- Draws every published outer frame through the shared selected-frame owner
--- before application content: one logical scope per frame record, border
--- tiles only, never content or host pixels. Plans without frames draw
--- nothing extra.
+-- after application content: one logical scope per frame record, border
+-- tiles only, never content or host pixels. The masked inner band overlaps
+-- body pixels, so opaque decoration must paint over content while cleared
+-- padding reveals it. Plans without frames draw nothing extra.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param owner FieldPresentationResources
 ---@param plan table<string, unknown> the resolved application plan
@@ -109,32 +110,31 @@ local function buildPresenters(owner)
     local plan = assert(status.presentation, "the party application presents its plan")
     local hostGraphics = love and love.graphics
     assert(type(hostGraphics) == "table", "party drawing requires its host graphics namespace")
-    drawApplicationFrames(hostGraphics, owner, plan)
     ApplicationPresentation.draw(hostGraphics, {
       graphics = hostGraphics,
       partyScreenRenderer = assert(owner.partyScreenRenderer, "party screen renderer is unavailable"),
       icons = assert(owner.monIconProvider, "party icon provider is unavailable"),
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   local function drawTrainerCard(presentation, _)
     local status = assert(presentation, "the card application presents its status")
     local plan = assert(status.presentation, "the card application presents its plan")
     local hostGraphics = love and love.graphics
     assert(type(hostGraphics) == "table", "card drawing requires its host graphics namespace")
-    drawApplicationFrames(hostGraphics, owner, plan)
     ApplicationPresentation.draw(hostGraphics, {
       graphics = hostGraphics,
       trainerCardRenderer = assert(owner.trainerCardRenderer, "trainer card renderer is unavailable"),
       text = assert(owner.textRenderer, "card text renderer is unavailable"),
     }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   local function drawBag(presentation, _)
     local status = assert(presentation, "the bag application presents its status")
     local plan = assert(status.presentation, "the bag application presents its plan")
     local hostGraphics = love and love.graphics
     assert(type(hostGraphics) == "table", "bag drawing requires its host graphics namespace")
-    drawApplicationFrames(hostGraphics, owner, plan)
     ApplicationPresentation.draw(hostGraphics, {
       graphics = hostGraphics,
       bagRenderer = assert(owner.bagRenderer, "bag renderer is unavailable"),
@@ -142,6 +142,7 @@ local function buildPresenters(owner)
       icons = assert(owner.itemIconProvider, "bag icon provider is unavailable"),
       text = assert(owner.textRenderer, "bag text renderer is unavailable"),
     }, status, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
   end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,
@@ -293,11 +294,11 @@ function FieldPresentationResources:drawStartMenu(status, graphics)
   local presentation = assert(status and status.presentation, "the start menu draws through its presentation plan")
   local hostGraphics = graphics or (love and love.graphics)
   assert(type(hostGraphics) == "table", "start menu drawing requires its host graphics namespace")
-  drawApplicationFrames(hostGraphics, self, presentation)
   ApplicationPresentation.draw(hostGraphics, {
     graphics = hostGraphics,
     startMenuRenderer = assert(self.startMenuRenderer, "start menu renderer is unavailable"),
   }, status, presentation)
+  drawApplicationFrames(hostGraphics, self, presentation)
 end
 
 function FieldPresentationResources:dispose()

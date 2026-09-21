@@ -150,4 +150,66 @@ function T.application_frame_unknown_index_fails_loudly()
   window:release()
 end
 
+-- The renderer owns both generated atlases: the dialogue strip beside the
+-- masked application strip, each sampled with nearest filtering so frame
+-- pixels stay crisp at integer scales.
+function T.constructor_acquires_dialogue_and_application_atlases_with_nearest_sampling()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 }, { 144, 16 } } })
+  local window = openWindow(lg)
+  Assert.equal(#lg.images, 2, "dialogue and application strips are both acquired")
+  for index, image in ipairs(lg.images) do
+    Assert.deepEqual(
+      image.filters[#image.filters],
+      { min = "nearest", mag = "nearest" },
+      "atlas " .. index .. " samples with nearest filtering"
+    )
+  end
+  window:release()
+end
+
+-- Atlas selection follows the presentation path: ordinary windows sample
+-- the original dialogue strip while application chrome samples the masked
+-- strip through the same shared row rectangles.
+function T.application_chrome_samples_the_masked_atlas_while_dialogue_uses_the_original()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 }, { 144, 16 } } })
+  local window = openWindow(lg)
+  local box = { x = 8, y = 24, width = 256, height = 192 }
+  window:drawWindow({ x = 16, y = 152, width = 216, height = 32 }, 0, { 0, 0, 0, 1 })
+  window:drawApplicationFrame(box, 0)
+  local dialogueImage, applicationImage = nil, nil
+  for _, call in ipairs(lg.draws) do
+    if call.quad ~= nil then
+      if dialogueImage == nil then
+        dialogueImage = call.image
+      elseif call.image ~= dialogueImage and applicationImage == nil then
+        applicationImage = call.image
+      end
+    end
+  end
+  Assert.notNil(dialogueImage, "window drawing samples an atlas")
+  Assert.notNil(applicationImage, "application chrome samples a second atlas")
+  Assert.isTrue(dialogueImage ~= applicationImage, "chrome never falls back to the dialogue strip")
+  Assert.isTrue(dialogueImage == lg.images[1], "dialogue keeps the first atlas")
+  Assert.isTrue(applicationImage == lg.images[2], "chrome uses the masked atlas")
+  window:release()
+end
+
+-- A missing application strip is the same typed atlas failure as a missing
+-- dialogue strip: construction fails loudly and the already-acquired
+-- dialogue image is released exactly once, never kept half-valid.
+function T.missing_application_strip_is_a_typed_error_releasing_the_dialogue_image()
+  local FieldWindowRenderer = windowRenderer()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 }, { 144, 16 } } })
+  local cache = FieldUiFixture.cacheWithFontAndFrames()
+  cache:remove(FieldUiFixture.APPLICATION_STRIP_PATH)
+  local err = Assert.throws(function()
+    FieldWindowRenderer.new({ cacheFs = cache, manifest = FieldUiFixture.manifest(), graphics = lg })
+  end)
+  local Errors = require("libs.errors.src.Errors")
+  Assert.isTrue(Errors.is(err) and err.code == "FIELD_UI_FRAME_ATLAS_MISSING", "raises FIELD_UI_FRAME_ATLAS_MISSING")
+  Assert.equal(#lg.images, 1, "only the dialogue image was acquired before the failure")
+  Assert.isTrue(lg.images[1].released, "the dialogue image is released on partial failure")
+  Assert.equal(lg.images[1].releaseCount, 1, "the dialogue image is released exactly once")
+end
+
 return { tests = T }

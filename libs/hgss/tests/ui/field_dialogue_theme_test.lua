@@ -224,19 +224,23 @@ function T.resolved_substitutions_contribute_replacement_glyph_widths()
 end
 
 -- Static application boxes decorate content with the user frame rotated so
--- the thick source-right edge sits on top: 8 left, 24 top, 8 right,
--- 16 bottom in logical pixels.
+-- the thick source-right edge sits on top, then overlap the whole inner
+-- 8px band onto the application: no room is reserved on the left/right,
+-- 16 on top, 8 on the bottom in logical pixels.
 function T.application_frame_insets_follow_rotated_thickness()
   local insets = FieldDialogueTheme.applicationFrameInsets()
-  Assert.deepEqual(insets, { left = 8, top = 24, right = 8, bottom = 16 }, "rotated frame thickness")
+  Assert.deepEqual(insets, { left = 0, top = 16, right = 0, bottom = 8 }, "exterior room past the overlap")
   Assert.isTrue(insets ~= FieldDialogueTheme.applicationFrameInsets(), "insets are fresh records")
 end
 
 -- Rotated tile targets derive from the audited standard tilemap: source
 -- right-side tiles land on the target top, source left on target bottom,
--- source top on target left, source bottom on target right.
+-- source top on target left, source bottom on target right. The inner 8px
+-- band overlaps the application on every edge, so the outer decoration
+-- spans exactly the content box plus the 0/16/0/8 exterior insets and no
+-- tile sits left or right of the body.
 function T.application_frame_tiles_remap_standard_sides_onto_rotated_targets()
-  local box = { x = 8, y = 24, width = 256, height = 192 }
+  local box = { x = 0, y = 16, width = 256, height = 192 }
   local placements = FieldDialogueTheme.applicationFrameTilePlacements(box)
   Assert.isTrue(#placements > 0, "the rotated frame places tiles")
   local standardByTile = {}
@@ -244,32 +248,56 @@ function T.application_frame_tiles_remap_standard_sides_onto_rotated_targets()
     standardByTile[entry.tile] = entry
   end
   local seen = {}
+  local minX, minY = math.huge, math.huge
+  local maxX, maxY = -math.huge, -math.huge
   for _, entry in ipairs(placements) do
     Assert.isTrue(standardByTile[entry.tile] ~= nil, "every rotated tile reuses a standard tile identity")
     Assert.isTrue(type(entry.x) == "number" and type(entry.y) == "number", "tiles carry target positions")
     Assert.isTrue((entry.x - 0) % 8 == 0 and (entry.y - 0) % 8 == 0, "tiles sit on 8px cells")
     seen[entry.tile] = true
+    minX = math.min(minX, entry.x)
+    minY = math.min(minY, entry.y)
+    maxX = math.max(maxX, entry.x + 8)
+    maxY = math.max(maxY, entry.y + 8)
   end
+  Assert.equal(minX, box.x, "no tile reserves room left of the body")
+  Assert.equal(maxX, box.x + box.width, "no tile reserves room right of the body")
+  Assert.equal(minY, box.y - 16, "the top decoration reserves 16px")
+  Assert.equal(maxY, box.y + box.height + 8, "the bottom decoration reserves 8px")
   -- The thick-edge families must survive the rotation: right-edge tiles
-  -- (4/5/10/11/16/17 in the standard map) appear on the 24px target top,
-  -- and top-edge tiles (0/1/3/4) appear on the 8px target left.
+  -- (4/5/10/11/16/17 in the standard map) appear on the 16px target top.
   local topIds = {}
-  local leftIds = {}
   for _, entry in ipairs(placements) do
     if entry.y < box.y then
       topIds[entry.tile] = true
-    end
-    if entry.x < box.x then
-      leftIds[entry.tile] = true
     end
   end
   for _, tile in ipairs({ 4, 5, 10, 11, 16, 17 }) do
     Assert.isTrue(topIds[tile] == true, "source right tile " .. tile .. " lands on the target top")
   end
-  for _, tile in ipairs({ 0, 1, 3, 4 }) do
-    Assert.isTrue(leftIds[tile] == true, "source top tile " .. tile .. " lands on the target left")
-  end
   Assert.isTrue(seen[4] == true and seen[11] == true, "both thick-edge families are represented")
+  -- The side bands overlap the body instead of flanking it: an inner-band
+  -- tile lands fully inside the body columns.
+  local overlapIds = {}
+  for _, entry in ipairs(placements) do
+    if
+      entry.x >= box.x
+      and entry.x + 8 <= box.x + box.width
+      and entry.y >= box.y
+      and entry.y + 8 <= box.y + box.height
+    then
+      overlapIds[entry.tile] = true
+    end
+  end
+  Assert.isTrue(overlapIds[2] == true, "an inner-band tile overlaps body pixels")
+end
+
+-- The inset frame box is only valid for bodies larger than two tiles:
+-- narrower content cannot carry the 8px overlap on every edge.
+function T.application_frame_tiles_reject_bodies_without_overlap_room()
+  Assert.throws(function()
+    FieldDialogueTheme.applicationFrameTilePlacements({ x = 0, y = 0, width = 16, height = 16 })
+  end, "a two-tile body cannot carry the 8px overlap")
 end
 
 return { tests = T }

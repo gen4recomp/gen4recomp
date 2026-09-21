@@ -552,9 +552,10 @@ function T.construction_shares_one_window_renderer_with_the_dialogue_renderer()
   end)
 end
 
--- A framed plan draws its selected border through the shared owner before
--- application content paints; an unframed plan draws no border.
-function T.framed_plans_draw_selected_borders_before_application_content()
+-- A framed plan paints application content before its selected border
+-- through the shared owner, so opaque decoration may intentionally cover
+-- edge pixels while masked padding reveals the content beneath.
+function T.framed_plans_draw_application_content_before_selected_borders()
   local PixelScale = require("libs.ui.src.PixelScale")
   local sink, calls = {}, {}
   local savedLove = rawget(_G, "love")
@@ -581,11 +582,11 @@ function T.framed_plans_draw_selected_borders_before_application_content()
         },
       }
       resources:drawApplication(FieldApplicationIds.POKEMON, presentation, drawRuntime())
-      Assert.equal(#sink, 2, "the border and the content each draw once")
-      Assert.equal(sink[1][1], "frame", "the outer border draws before application content")
-      Assert.deepEqual(sink[1][2], contentBox, "the border wraps the published content box")
-      Assert.equal(sink[1][3], 0, "the border uses the selected player frame index")
-      Assert.equal(sink[2][1], "content", "application content still paints")
+      Assert.equal(#sink, 2, "the content and the border each draw once")
+      Assert.equal(sink[1][1], "content", "application content paints before its chrome")
+      Assert.equal(sink[2][1], "frame", "the outer border draws after application content")
+      Assert.deepEqual(sink[2][2], contentBox, "the border wraps the published content box")
+      Assert.equal(sink[2][3], 0, "the border uses the selected player frame index")
       resources:dispose()
     end)
   end)

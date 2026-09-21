@@ -96,18 +96,34 @@ function FieldDialogueTheme.frameTilePlacements(box)
   }
 end
 
+-- Application chrome overlaps the innermost 8px frame band onto the content
+-- on every edge instead of reserving the whole nominal frame outside it:
+-- nominal 8/24/8/16 minus the overlap leaves 0/16/0/8 exterior room.
+local APPLICATION_FRAME_OVERLAP = 8
+local NOMINAL_FRAME = { left = 8, top = 24, right = 8, bottom = 16 }
+
+-- Exterior room the application frame reserves outside the content box:
+-- the whole inner 8px band overlaps body pixels, so only the remaining
+-- 0 left, 16 top, 0 right, 8 bottom stay outside the application.
 ---@return { left: integer, top: integer, right: integer, bottom: integer }
 function FieldDialogueTheme.applicationFrameInsets()
-  return { left = 8, top = 24, right = 8, bottom = 16 }
+  return {
+    left = NOMINAL_FRAME.left - APPLICATION_FRAME_OVERLAP,
+    top = NOMINAL_FRAME.top - APPLICATION_FRAME_OVERLAP,
+    right = NOMINAL_FRAME.right - APPLICATION_FRAME_OVERLAP,
+    bottom = NOMINAL_FRAME.bottom - APPLICATION_FRAME_OVERLAP,
+  }
 end
 
 -- Rotated application-frame tile targets derived from the audited
--- standard tilemap: the source composition around swapped content
--- dimensions expands to 8x8 instances, then the whole composition
--- rotates so source right becomes target top, source left becomes
--- target bottom, source top becomes target left, and source bottom
--- becomes target right. Returns tile identities with target positions;
--- drawing and artwork rotation stay with the frame renderer.
+-- standard tilemap: the source composition runs around the content box
+-- inset by the 8px application overlap, expands to 8x8 instances, then
+-- the whole composition rotates so source right becomes target top,
+-- source left becomes target bottom, source top becomes target left,
+-- and source bottom becomes target right. The inner band therefore lands
+-- on body pixels while only the 0/16/0/8 exterior stays outside the
+-- application. Returns tile identities with target positions; drawing
+-- and artwork rotation stay with the frame renderer.
 ---@param box FieldDialogueTheme.Rect the target content box
 ---@return { tile: integer, x: number, y: number }[]
 function FieldDialogueTheme.applicationFrameTilePlacements(box)
@@ -124,10 +140,19 @@ function FieldDialogueTheme.applicationFrameTilePlacements(box)
     "applicationFrameTilePlacements requires positive integral content dimensions"
   )
   assert(box.width % 8 == 0 and box.height % 8 == 0, "applicationFrameTilePlacements requires 8px-compatible content")
-  local insets = FieldDialogueTheme.applicationFrameInsets()
-  local targetOuterX = box.x - insets.left
-  local targetOuterY = box.y - insets.top
-  local sourceBox = { x = 16, y = 8, width = box.height, height = box.width }
+  assert(
+    box.width > 2 * APPLICATION_FRAME_OVERLAP and box.height > 2 * APPLICATION_FRAME_OVERLAP,
+    "applicationFrameTilePlacements requires room for the 8px overlap on every edge"
+  )
+  local frameBox = {
+    x = box.x + APPLICATION_FRAME_OVERLAP,
+    y = box.y + APPLICATION_FRAME_OVERLAP,
+    width = box.width - 2 * APPLICATION_FRAME_OVERLAP,
+    height = box.height - 2 * APPLICATION_FRAME_OVERLAP,
+  }
+  local targetOuterX = frameBox.x - NOMINAL_FRAME.left
+  local targetOuterY = frameBox.y - NOMINAL_FRAME.top
+  local sourceBox = { x = 16, y = 8, width = frameBox.height, height = frameBox.width }
   local sourceOuterWidth = sourceBox.width + 16 + 24
   local placements = {}
   for _, entry in ipairs(FieldDialogueTheme.frameTilePlacements(sourceBox)) do

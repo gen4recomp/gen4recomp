@@ -1,6 +1,6 @@
 -- The current party screen's four function references with matching
--- render and input callbacks. DualDisplay takes the auxiliary fullscreen
--- and nativeLike the single-surface fullscreen, both uncropped; wide and
+-- render and input callbacks. DualDisplay and nativeLike resolve
+-- cover-or-frame over the owned target region, both uncropped; wide and
 -- tall center the canonical 256x192 pane in a static framed box with
 -- a native-like fallback below 1x. The content is the canonical compact
 -- grid resolved against the controller's cancel permission; input passes
@@ -97,40 +97,23 @@ local function partyContent(view)
   return PartyScreenLayout.resolve({ width = NATIVE.width, height = NATIVE.height, cancellable = cancellable })
 end
 
----@param context ApplicationLayout.Context
----@return LayoutGeometry.Rect? the fullscreen target bounds
-local function fullscreenTarget(context)
-  local target = context.secondary or context.primary
-  if target == nil then
-    return nil
-  end
-  return target.usableBounds
-end
-
 -- Fullscreen party for the dualDisplay and nativeLike cases: one canonical
--- interactive pane over the owned target region, never cropped, framed only
--- when the pane leaves target background visible.
+-- interactive pane over the owned target region, never cropped. A target
+-- the pane genuinely covers stays unframed; an underfilled target refits
+-- as a complete decorated box with zero crop.
 ---@param context ApplicationLayout.Context
 ---@param view table<string, unknown>
 ---@return ApplicationPlan
 function PartyScreenInterface.fullscreen(context, view)
   local complete = completeContext(context)
-  local geometry = ApplicationLayout.fullscreen(complete, NATIVE, { maxOverdraw = ZERO_CROP })
+  local geometry = ApplicationLayout.coverOrFrame(complete, NATIVE, { maxOverdraw = ZERO_CROP })
   local placement = geometry.placements[NATIVE.id]
   if placement == nil then
     return inactivePlan()
   end
-  local frames = {}
-  local target = fullscreenTarget(complete)
-  if target ~= nil then
-    local frame = ApplicationLayout.frameAround(target, placement)
-    if frame ~= nil then
-      frames = { frame }
-    end
-  end
   return {
     panes = { { id = NATIVE.id, placement = placement, interactive = true } },
-    frames = frames,
+    frames = geometry.frames or {},
     content = partyContent(view),
     inputKey = INPUT_KEY,
     render = renderParty,
