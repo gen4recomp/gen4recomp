@@ -588,7 +588,10 @@ function FieldState:draw()
   if starter ~= nil and starter:isActive() then
     local ready = type(starter.isPresentationReady) ~= "function" or starter:isPresentationReady()
     if ready then
-      starter:drawPresentation(assert(resources.textRenderer, "field text renderer is unavailable"))
+      starter:drawPresentation(
+        assert(resources.textRenderer, "field text renderer is unavailable"),
+        assert(resources.windowRenderer, "field presentation owns no window renderer")
+      )
     end
   end
   if self.development and self._developmentOverlayVisible then

@@ -566,7 +566,6 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
       return 192
     end,
   }
-  presentation._window = { drawWindow = function() end }
   presentation._staticDraws = {}
   presentation._renderMeshes = {
     turntable = {},
@@ -798,7 +797,7 @@ function T.surface_messages_draw_through_the_generated_chooser_colors()
       return { 0.11, 0.22, 0.33, 1 }
     end,
   }
-  presentation._window = {
+  local window = {
     drawWindow = function(_, box, frameIndex, fill)
       windowCalls[#windowCalls + 1] = { box = box, frameIndex = frameIndex, fill = fill }
     end,
@@ -809,13 +808,15 @@ function T.surface_messages_draw_through_the_generated_chooser_colors()
     surfaces.machine.prompt,
     manifest.messages.bottom.normal,
     provider,
-    { r = machine.r, g = machine.g, b = machine.b, a = 0 }
+    { r = machine.r, g = machine.g, b = machine.b, a = 0 },
+    window
   )
   presentation:_drawMessageLines(
     surfaces.info.message,
     manifest.messages.topInitial,
     provider,
-    manifest.textColors.infoBackground
+    manifest.textColors.infoBackground,
+    window
   )
 
   Assert.equal(
@@ -890,7 +891,7 @@ function T.unframed_messages_use_transparent_background_while_framed_stays_opaqu
       variantCalls[#variantCalls + 1] = { line = line, x = x, y = y, variants = variants, background = background }
     end,
   }
-  presentation._window = {
+  local window = {
     drawWindow = function() end,
   }
   local surfaces = manifest.surfaces
@@ -899,13 +900,15 @@ function T.unframed_messages_use_transparent_background_while_framed_stays_opaqu
     surfaces.machine.prompt,
     manifest.messages.bottom.normal,
     provider,
-    { r = machine.r, g = machine.g, b = machine.b, a = 0 }
+    { r = machine.r, g = machine.g, b = machine.b, a = 0 },
+    window
   )
   presentation:_drawMessageLines(
     surfaces.info.message,
     manifest.messages.topInitial,
     provider,
-    manifest.textColors.infoBackground
+    manifest.textColors.infoBackground,
+    window
   )
   local promptLines = #manifest.messages.bottom.normal.lines
   Assert.isTrue(#variantCalls == promptLines + #manifest.messages.topInitial.lines, "both regions draw")
@@ -931,10 +934,10 @@ end
 -- with the player-owned frame choice: one border per frame record in plan
 -- order, before content, and nothing when the plan is unframed. No second
 -- window primitive is constructed.
-function T.outer_application_frames_draw_through_the_owned_window_primitive()
+function T.outer_application_frames_draw_through_the_borrowed_window_renderer()
   local presentation = openPresentation(2)
   local frameCalls = {}
-  presentation._window = {
+  local window = {
     drawWindow = function() end,
     drawApplicationFrame = function(_, box, frameIndex)
       frameCalls[#frameCalls + 1] = { box = box, frameIndex = frameIndex }
@@ -958,7 +961,7 @@ function T.outer_application_frames_draw_through_the_owned_window_primitive()
       { placement = first, contentBox = firstBox },
       { placement = second, contentBox = secondBox },
     },
-  })
+  }, window)
   Assert.equal(#frameCalls, 2, "each published outer frame draws once")
   Assert.deepEqual(frameCalls[1].box, firstBox, "the first border wraps its content box")
   Assert.equal(frameCalls[1].frameIndex, 2, "the border uses the player-owned frame choice")
@@ -966,6 +969,140 @@ function T.outer_application_frames_draw_through_the_owned_window_primitive()
   Assert.equal(frameCalls[2].frameIndex, 2, "every border uses the player-owned frame choice")
   presentation:_drawOuterFrames(lg, { frames = {} })
   Assert.equal(#frameCalls, 2, "an unframed plan draws no outer decoration")
+end
+
+-- The starter chooser shares the field-owned dialogue-frame atlas: preparing
+-- the presentation acquires no second window primitive, outer frames draw
+-- through the renderer the field lends at draw time, and disposing the
+-- chooser releases no window primitive. The field resource aggregate stays
+-- the single owner of the frame-strip image.
+function T.starter_frames_draw_through_the_borrowed_field_window_primitive()
+  local FieldUiFixture = require("tests.support.FieldUiFixture")
+  local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+  local windowModule =
+    assert(require("libs.hgss.src.ui.FieldWindowRenderer"), "the shared window-frame primitive is available")
+  local realNew = assert(windowModule.new, "the shared window-frame primitive constructs")
+  local constructions = 0
+  windowModule.new = function(opts)
+    constructions = constructions + 1
+    return realNew(opts)
+  end
+  local previousLove = rawget(_G, "love")
+  local FakeGraphics = require("tests.support.FakeGraphics").new
+  local lg = FakeGraphics({ imageSizes = { { 144, 16 } } })
+  rawset(_G, "love", {
+    graphics = lg,
+    filesystem = assert(previousLove and previousLove.filesystem, "the suite runs under the love filesystem"),
+  })
+  local ok, err = pcall(function()
+    local presentation = openPresentation(2)
+    local manifest = presentation._manifest
+    presentation._backend = {
+      stats = {},
+      worldRasterScale = 7,
+      draw = function() end,
+      release = function() end,
+      play = function()
+        return { player = { completed = false, updateFixed = function() end } }
+      end,
+      stop = function() end,
+    }
+    local function image(width, height)
+      return {
+        getWidth = function()
+          return width
+        end,
+        getHeight = function()
+          return height
+        end,
+      }
+    end
+    presentation._imageEntries = {
+      [manifest.backgrounds.host.image .. "|clamp|clamp"] = image(512, 192),
+      [manifest.backgrounds.info.base.image .. "|clamp|clamp"] = image(256, 192),
+      [manifest.backgrounds.info.overlay.image .. "|clamp|clamp"] = image(256, 192),
+      ["assets/generated/mon/portraits.png|clamp|clamp"] = image(80, 80),
+    }
+    presentation._cacheFs.loadLua = function(_, path)
+      if path == "data/generated/mon/portraits.lua" then
+        return {
+          entries = {
+            a = { x = 0, y = 0, width = 80, height = 80 },
+            b = { x = 0, y = 0, width = 80, height = 80 },
+            c = { x = 0, y = 0, width = 80, height = 80 },
+          },
+        }
+      end
+      if path == FieldUiAssetCache.manifestPath() then
+        local uiManifest = FieldUiFixture.manifest()
+        uiManifest.reference = { width = 256, height = 192 }
+        FieldUiFixture.addStartMenuIconContract(uiManifest)
+        FieldUiFixture.addNamingSemantics(uiManifest)
+        return uiManifest
+      end
+      return nil
+    end
+    presentation._cacheFs.read = function(_, _)
+      return FieldUiFixture.stripBytes()
+    end
+    presentation._staticBatches = {}
+    presentation._instances = {}
+    presentation._renderMeshes = {}
+    for _, role in ipairs({ "turntable", "ballEffect", "ball1", "ball2", "ball3" }) do
+      presentation._instances[role] = {
+        evaluatePose = function() end,
+        drawItems = function()
+          return {}
+        end,
+        play = function()
+          return { player = { completed = false, updateFixed = function() end } }
+        end,
+        stop = function() end,
+      }
+      presentation._renderMeshes[role] = {}
+    end
+    presentation:_finishPreparation()
+    Assert.equal(constructions, 0, "preparing the chooser acquires no second window primitive")
+    local frameCalls = {}
+    local borrowerReleases = 0
+    local borrowed = {
+      drawApplicationFrame = function(_, box, frameIndex)
+        frameCalls[#frameCalls + 1] = { box = box, frameIndex = frameIndex }
+      end,
+      release = function()
+        borrowerReleases = borrowerReleases + 1
+      end,
+    }
+    local PixelScale = require("libs.ui.src.PixelScale")
+    local first = assert(
+      PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 272, 232),
+      "the probe host must admit the framed box"
+    )
+    local second = assert(
+      PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 128, 128),
+      "the probe host must admit a second framed box"
+    )
+    local firstBox = { x = 8, y = 24, width = 256, height = 192 }
+    local secondBox = { x = 8, y = 24, width = 112, height = 96 }
+    presentation:_drawOuterFrames(lg, {
+      frames = {
+        { placement = first, contentBox = firstBox },
+        { placement = second, contentBox = secondBox },
+      },
+    }, borrowed)
+    Assert.equal(#frameCalls, 2, "each published outer frame draws through the borrowed renderer")
+    Assert.deepEqual(frameCalls[1].box, firstBox, "the first border wraps its content box")
+    Assert.equal(frameCalls[1].frameIndex, 2, "the border uses the player-owned frame choice")
+    Assert.deepEqual(frameCalls[2].box, secondBox, "frame records draw in plan order")
+    presentation:dispose()
+    Assert.equal(borrowerReleases, 0, "disposing the chooser releases no borrowed window primitive")
+    Assert.equal(constructions, 0, "the chooser lifetime acquires no window primitive")
+  end)
+  windowModule.new = realNew
+  rawset(_G, "love", previousLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }

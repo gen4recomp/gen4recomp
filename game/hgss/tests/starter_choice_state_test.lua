@@ -1165,4 +1165,84 @@ function T.input_before_open_fails_and_cancel_after_close_is_safe()
   Assert.isFalse(host:isActive(), "disposal after close stays idle")
 end
 
+-- Draw-time borrowing: the modal threads the field-owned window renderer
+-- into the render resources untouched, and drawing without one fails
+-- before any surface draws.
+function T.drawing_borrows_the_field_window_renderer_through_render_resources()
+  local StarterChoiceState = requireState()
+  local state = StarterChoiceState.new({
+    catalog = {},
+    cacheFs = {},
+    frameIndex = 2,
+    measureDisplay = function()
+      return {}
+    end,
+  })
+  state._controller = {
+    snapshot = function()
+      return {
+        selection = 0,
+        selectionState = "null",
+        transition = "idle",
+        direction = nil,
+        done = false,
+        result = nil,
+      }
+    end,
+  }
+  state._presentation = {
+    isReady = function()
+      return true
+    end,
+  }
+  state._candidates = {}
+  state._names = {}
+  local seen = {}
+  local plan = {
+    panes = {},
+    frames = {},
+    content = {},
+    inputKey = "starter-borrow-probe",
+    render = function(resources)
+      seen[#seen + 1] = resources
+    end,
+    mapInput = function()
+      return nil
+    end,
+  }
+  state._session = {
+    resolve = function() end,
+    plan = function()
+      return plan
+    end,
+  }
+  local text = { drawLine = function() end }
+  local previousLove = rawget(_G, "love")
+  rawset(_G, "love", {
+    graphics = {
+      push = function() end,
+      pop = function() end,
+    },
+  })
+  local ok, err = pcall(function()
+    local missingErr = Assert.throws(function()
+      state:drawPresentation(text)
+    end, "drawing without the field renderer fails instead of drawing")
+    Assert.isTrue(
+      tostring(missingErr):find("window renderer", 1, true) ~= nil,
+      "the state names the missing borrower: " .. tostring(missingErr)
+    )
+    Assert.equal(#seen, 0, "no surface draws without the borrowed renderer")
+    local borrowed = { drawApplicationFrame = function() end }
+    state:drawPresentation(text, borrowed)
+    Assert.equal(#seen, 1, "the borrowed draw reaches the render callback")
+    Assert.isTrue(seen[1].windowRenderer == borrowed, "the render lends the field renderer untouched")
+    Assert.isTrue(seen[1].text == text, "the render keeps its text provider beside the borrower")
+  end)
+  rawset(_G, "love", previousLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

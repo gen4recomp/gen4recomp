@@ -43,14 +43,16 @@ local COMPACT_BACK = { x = 136, y = 164, width = 112, height = 24 }
 local function renderNative(resources, view, plan)
   local presentation = assert(resources.presentation, "the starter render borrows its presentation")
   local text = assert(resources.text, "the starter render borrows its text provider")
+  local windowRenderer = assert(resources.windowRenderer, "the starter render borrows the field window renderer")
   assert(type(view.selectionState) == "string", "the starter render reads the controller snapshot")
   local snapshot = view
-  presentation --[[@as { drawNative: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>) }]].drawNative(
+  presentation --[[@as { drawNative: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>, windowRenderer: table<string, unknown>) }]].drawNative(
     presentation,
     snapshot,
     view,
     text,
-    plan
+    plan,
+    windowRenderer
   )
 end
 
@@ -60,14 +62,16 @@ end
 local function renderCompact(resources, view, plan)
   local presentation = assert(resources.presentation, "the starter render borrows its presentation")
   local text = assert(resources.text, "the starter render borrows its text provider")
+  local windowRenderer = assert(resources.windowRenderer, "the starter render borrows the field window renderer")
   assert(type(view.selectionState) == "string", "the starter render reads the controller snapshot")
   local snapshot = view
-  presentation --[[@as { drawCompact: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>) }]].drawCompact(
+  presentation --[[@as { drawCompact: fun(self: table<string, unknown>, snapshot: table<string, unknown>, view: table<string, unknown>, text: table<string, unknown>, plan: table<string, unknown>, windowRenderer: table<string, unknown>) }]].drawCompact(
     presentation,
     snapshot,
     view,
     text,
-    plan
+    plan,
+    windowRenderer
   )
 end
 

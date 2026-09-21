@@ -2,6 +2,8 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
@@ -97,6 +99,16 @@ local function loadManifest(cacheModule, cacheFs)
   local manifest =
     assert(cacheFs:loadLua(cacheModule.manifestPath()), "the starter application cache carries its normalized manifest")
   Assert.isTrue(cacheModule.validateManifest(manifest), "the starter manifest validates read-only")
+end
+
+-- The draw-time frame borrower: a real field window renderer built from
+-- the generated field-UI manifest, mirroring the production field
+-- composition seam. Test-local owner; the caller releases it.
+local function openWindowBorrower(cacheFs, versionId)
+  local manifest =
+    assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " the generated field-UI manifest loads")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest), versionId .. " the field-UI manifest validates read-only")
+  return FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest })
 end
 
 -- The default measured facts for the migrated native scene tests: one
@@ -223,7 +235,7 @@ local function stepHostUntil(host, predicate, bound)
   return false
 end
 
-local function drawFrame(scope, host, width, height)
+local function drawFrame(scope, host, window, width, height)
   local canvas = love.graphics.newCanvas(width, height)
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 1)
@@ -239,7 +251,7 @@ local function drawFrame(scope, host, width, height)
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }
     end,
-  }, width, height)
+  }, window)
   love.graphics.setCanvas()
   local image = scope:own(canvas:newImageData())
   canvas:release()
@@ -298,7 +310,8 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     Assert.isFalse(host:status().done, versionId .. " opens an active chooser")
 
     local backend = prepareHost(host, cacheFs)
-    local initial = drawFrame(scope, host, 520, 192)
+    local window = openWindowBorrower(cacheFs, versionId)
+    local initial = drawFrame(scope, host, window, 520, 192)
     Assert.isTrue(brightPixels(initial, 520, 192) > 20, versionId .. " initial chooser state leaves visible pixels")
 
     local seen = {}
@@ -320,7 +333,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
 
     host:move("right")
     host:update()
-    local rotating = drawFrame(scope, host, 520, 192)
+    local rotating = drawFrame(scope, host, window, 520, 192)
     Assert.isTrue(
       frameDistance(initial, rotating, 520, 192) > 10,
       versionId .. " rotation realizes an intermediate scene"
@@ -331,7 +344,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       end, 1024),
       versionId .. " rotation reaches its semantic boundary"
     )
-    local rotated = drawFrame(scope, host, 520, 192)
+    local rotated = drawFrame(scope, host, window, 520, 192)
     Assert.isNil(host:confirm(), versionId .. " first activation enters inspection")
     Assert.equal(snapshotOf(host, versionId).selectionState, "inspect", versionId .. " enters inspection state")
     Assert.isNil(host:confirm(), versionId .. " second activation starts the confirmation view")
@@ -342,12 +355,13 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
       versionId .. " confirmation view reaches its semantic boundary"
     )
     Assert.isFalse(host:status().done, versionId .. " confirmation view does not complete early")
-    local zoomed = drawFrame(scope, host, 520, 192)
+    local zoomed = drawFrame(scope, host, window, 520, 192)
     Assert.isTrue(
       frameDistance(rotated, zoomed, 520, 192) > 10,
       versionId .. " confirmation view changes the realized scene"
     )
     host:dispose()
+    window:release()
     backend:release()
   end
 end
@@ -386,16 +400,18 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
     Assert.isFalse(status.done, versionId .. " inspecting keeps the chooser active")
     Assert.equal(status.cursor, 1, versionId .. " the middle candidate remains selected")
     local backend = prepareHost(host, cacheFs)
-    local middleFrame = drawFrame(scope, host, 520, 192)
+    local window = openWindowBorrower(cacheFs, versionId)
+    local middleFrame = drawFrame(scope, host, window, 520, 192)
     Assert.isTrue(brightPixels(middleFrame, 520, 192) > 0, versionId .. " portrait is visible")
 
     host:focus(0)
-    local neighboringFrame = drawFrame(scope, host, 520, 192)
+    local neighboringFrame = drawFrame(scope, host, window, 520, 192)
     Assert.isTrue(
       frameDistance(middleFrame, neighboringFrame, 520, 192) > 10,
       versionId .. " inspected portraits follow their generated candidates"
     )
     host:dispose()
+    window:release()
     backend:release()
   end
 end
@@ -456,7 +472,7 @@ function T.surface_text_leaves_the_scene_visible_unframed_and_fills_framed(scope
     g = machineBackground.g,
     b = machineBackground.b,
     a = 0,
-  })
+  }, host._window)
   love.graphics.setCanvas()
   local unframedFrame = scope:own(canvas:newImageData())
   Assert.equal(#backgrounds, 1, "the unframed prompt draws its line")
@@ -479,7 +495,7 @@ function T.surface_text_leaves_the_scene_visible_unframed_and_fills_framed(scope
   end
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0.1, 0.7, 0.5, 1)
-  host:_drawMessageLines(framed, message, provider, infoBackground)
+  host:_drawMessageLines(framed, message, provider, infoBackground, host._window)
   love.graphics.setCanvas()
   local framedFrame = scope:own(canvas:newImageData())
   Assert.equal(#backgrounds, 2, "the framed message draws its line")
@@ -652,9 +668,10 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
     Assert.equal(compactPlacement.logicalWidth, 256, versionId .. " compact keeps native logical width")
     Assert.equal(compactPlacement.logicalHeight, 192, versionId .. " compact keeps native logical height")
     local backend = prepareHost(compact, cacheFs)
+    local window = openWindowBorrower(cacheFs, versionId)
     local before = snapshotOf(compact, versionId)
-    drawFrame(scope, compact, 640, 480)
-    local second = drawFrame(scope, compact, 640, 480)
+    drawFrame(scope, compact, window, 640, 480)
+    local second = drawFrame(scope, compact, window, 640, 480)
     local after = snapshotOf(compact, versionId)
     Assert.equal(after.selection, before.selection, versionId .. " repeated draws never reselect")
     Assert.equal(after.selectionState, before.selectionState, versionId .. " repeated draws never transition")
@@ -677,6 +694,7 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_compact(scope
       Assert.isTrue(bright > 20, versionId .. " compact paints its message, portrait, and action regions")
     end
     compact:dispose()
+    window:release()
     backend:release()
   end
 end

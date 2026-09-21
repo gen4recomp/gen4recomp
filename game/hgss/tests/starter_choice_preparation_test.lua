@@ -533,7 +533,7 @@ function T.drawing_before_preparation_finishes_fails_loudly()
     "the presentation names the missing preparation: " .. tostring(presentationErr)
   )
   local stateErr = Assert.throws(function()
-    host:drawPresentation(text, 256, 192)
+    host:drawPresentation(text)
   end, "drawing the unprepared modal fails instead of realizing it")
   Assert.isTrue(
     tostring(stateErr):find("not prepared", 1, true) ~= nil,

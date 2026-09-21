@@ -230,7 +230,6 @@ function T.tests.a_wide_only_override_replaces_rendering_and_input_together()
         return { type = "confirm" }
       end,
       frames = {},
-      fadeCoverage = {},
     }
   end
   local merged = {
@@ -365,6 +364,50 @@ function T.tests.clipped_input_cannot_reach_offscreen_controls()
     compact.mapInput({ type = "pointer_down", pointerId = "touch:1", outside = true }, nullView(), compact),
     "compact outside downs map to nothing"
   )
+end
+
+-- Both render callbacks draw framed surfaces through the field-owned
+-- window renderer: a resources record without it fails before any draw,
+-- and a supplied renderer reaches the presentation entrypoint untouched.
+function T.tests.render_callbacks_borrow_the_field_window_renderer()
+  local interface = starterChoiceInterface()
+  local view = nullView()
+  local native = interface.wide(contextFor(wideMeasurement(), "wide", interface), view)
+  local compact = interface.nativeLike(contextFor(nativeLikeMeasurement(), "nativeLike", interface), view)
+  local nativeCalls, compactCalls = {}, {}
+  local resources = {
+    presentation = {
+      drawNative = function(_, _, _, _, _, windowRenderer)
+        nativeCalls[#nativeCalls + 1] = windowRenderer
+      end,
+      drawCompact = function(_, _, _, _, _, windowRenderer)
+        compactCalls[#compactCalls + 1] = windowRenderer
+      end,
+    },
+    text = {},
+  }
+  local nativeErr = Assert.throws(function()
+    native.render(resources, view, native)
+  end, "native rendering without the field renderer fails instead of drawing")
+  Assert.isTrue(
+    tostring(nativeErr):find("window renderer", 1, true) ~= nil,
+    "the native render names the missing borrower: " .. tostring(nativeErr)
+  )
+  local compactErr = Assert.throws(function()
+    compact.render(resources, view, compact)
+  end, "compact rendering without the field renderer fails instead of drawing")
+  Assert.isTrue(
+    tostring(compactErr):find("window renderer", 1, true) ~= nil,
+    "the compact render names the missing borrower: " .. tostring(compactErr)
+  )
+  local borrowed = {}
+  resources.windowRenderer = borrowed
+  native.render(resources, view, native)
+  compact.render(resources, view, compact)
+  Assert.equal(#nativeCalls, 1, "the native render reaches its presentation entrypoint")
+  Assert.isTrue(nativeCalls[1] == borrowed, "the native render lends the field renderer untouched")
+  Assert.equal(#compactCalls, 1, "the compact render reaches its presentation entrypoint")
+  Assert.isTrue(compactCalls[1] == borrowed, "the compact render lends the field renderer untouched")
 end
 
 return T

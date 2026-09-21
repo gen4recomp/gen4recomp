@@ -427,15 +427,21 @@ end
 
 -- Draws the modal through the field text provider. Reconciles the
 -- presentation geometry through the state-owned session, then executes
--- the resolved plan with the borrowed presentation and text. Drawing
+-- the resolved plan with the borrowed presentation, text, and field window
+-- renderer. Drawing
 -- before preparation completes is a composition error and fails loudly;
 -- the field draws the starter surface only once ready. Repeated draws
 -- never advance semantic clocks.
 ---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
-function StarterChoiceState:drawPresentation(text)
+---@param windowRenderer table<string, unknown> field-borrowed window primitive for framed surfaces
+function StarterChoiceState:drawPresentation(text, windowRenderer)
   activeController(self)
   assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   assert(self:isPresentationReady(), "starter presentation is not prepared")
+  assert(
+    windowRenderer ~= nil and type(windowRenderer.drawApplicationFrame) == "function",
+    "starter presentation borrows the field window renderer at draw time"
+  )
   local session = assert(self._session, "an open choice owns its presentation session")
   local view = self:_sessionView()
   session:resolve(self:_measured(), view)
@@ -444,6 +450,7 @@ function StarterChoiceState:drawPresentation(text)
     graphics = graphics,
     presentation = activePresentation(self),
     text = text,
+    windowRenderer = windowRenderer,
   }, view, session:plan())
 end
 
