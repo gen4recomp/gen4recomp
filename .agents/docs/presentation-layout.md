@@ -113,13 +113,10 @@ field or Starter presentation draws it after application content
 through the shared frame renderer; application code never invents
 border styling.
 
-Plans publish one decorative concept alongside content, input, and render callbacks:
+Plans publish their decorative geometry alongside content, input, and render callbacks:
 
-- `frames`: the decorative outer geometry drawn around content.
-- `chrome`: the optional window identity drawn on visible frames,
-  `{ title, dismissible }`. Titles are leaf presentation policy
-  (`MENU`, `POKéMON`, `BAG`, `TRAINER CARD`, `STARTER CHOICE`);
-  identity without a frame draws and exposes nothing.
+- `frames`: the decorative outer geometry drawn around content, carrying
+  no embedded controls or window identity.
 
 Settled pixels outside application panes and frames stay whatever the
 host already rendered, which is the paused field wherever field
@@ -136,17 +133,13 @@ proves the rule, painting its own backdrop because no field exists
 beneath it.
 
 A decorative frame is part of the application: presses on the border or
-on non-interactive panes are consumed as interior and do nothing. Every
-visible frame carries its title at the left of the top bar; closable
-field windows additionally carry a dash control at the right. A
-pointer-down on the dash dismisses through the same terminal edge as an
-outside press, without acquiring pointer capture; any other border
-press stays inert interior. A pointer-down fully outside every pane and
-frame dismisses the closable field applications (Start Menu, Bag,
-Party, Trainer Card) at once. This dismissal is terminal and bypasses
+on non-interactive panes are consumed as interior and do nothing. Framed
+application borders contain no embedded controls. A pointer-down fully
+outside every pane and frame is the sole pointer dismissal affordance
+for the closable field applications (Start Menu, Bag, Party, Trainer
+Card): it dismisses at once. This dismissal is terminal and bypasses
 nested cancel/unwind behavior; it is not ordinary Cancel and it never
-clicks through to the paused field. The dash is visual chrome only:
-there is no minimized state.
+clicks through to the paused field.
 
 Three surfaces never gain an outer frame or outside dismissal:
 
@@ -155,9 +148,8 @@ Three surfaces never gain an outer frame or outside dismissal:
   name editing.
 - The startup Main Menu is a responsive fullscreen surface with its
   own backdrop and no HGSS frame.
-- Starter Choice draws an outer frame when underfilled and carries its
-  title, but stays blocking: it shows no dash control and outside
-  presses never dismiss it.
+- Starter Choice draws an outer frame when underfilled but stays
+  blocking: outside presses never dismiss it.
 
 ## Feature-local layout responsibility
 

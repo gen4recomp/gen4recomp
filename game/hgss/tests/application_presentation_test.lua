@@ -581,41 +581,6 @@ function T.tests.a_captured_move_leaving_its_pane_cancels_instead_of_dismissing(
   Assert.equal(moved[1].type, "pointer_cancel", "the gesture cancels rather than dismissing")
 end
 
--- Window identity and dismiss-control routing. A framed plan may carry a
--- title plus a dismiss flag; the shared theme geometry locates the title
--- region and the dismiss control in frame-local pixels, and a press on the
--- control maps terminal dismiss without acquiring content capture. Any
--- other border press stays inert interior, and identity without a frame
--- creates no dismiss target.
-
--- The frozen chrome-geometry seam shared by drawing and hit testing: the
--- theme helper takes a frame content box and returns frame-local title
--- and dismiss rectangles.
----@param contentBox table<string, number>
----@return { title: table<string, number>, dismiss: table<string, number> }
-local function chromeGeometry(contentBox)
-  local theme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local locate = theme.applicationChromeGeometry
-  Assert.isTrue(type(locate) == "function", "the shared theme must locate window identity geometry for routing")
-  local geometry = locate(contentBox)
-  Assert.isTrue(type(geometry) == "table", "window identity geometry must be a record")
-  for _, key in ipairs({ "title", "dismiss" }) do
-    local rect = geometry[key]
-    Assert.isTrue(type(rect) == "table", "window identity geometry carries its " .. key .. " region")
-    Assert.isTrue(
-      type(rect.x) == "number"
-        and type(rect.y) == "number"
-        and type(rect.width) == "number"
-        and type(rect.height) == "number"
-        and rect.width > 0
-        and rect.height > 0,
-      "the " .. key .. " region must be a positive frame-local rectangle"
-    )
-  end
-  ---@cast geometry { title: table<string, number>, dismiss: table<string, number> }
-  return geometry
-end
-
 local function wideMenuSession()
   local sessionModule = sharedSession()
   local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
@@ -636,130 +601,21 @@ local function frameLocalToHost(frame, lx, ly)
   return LayoutGeometry.logicalToHost(placement, lx, ly)
 end
 
--- A framed stub plan carrying caller-owned window identity for
--- validation/identity routing. The identity record is read at resolve
--- time so one session can publish, hold, change, and reject candidates.
-local function chromeInterfaces(spy, holder)
-  local render = function(_, _, _) end
-  local map = function(event, _, _)
-    spy.calls[#spy.calls + 1] = event
-    return event
-  end
-  local function resolver(_, _)
-    return {
-      panes = {
-        {
-          id = "content",
-          placement = {
-            frame = { x = 100, y = 100, width = 512, height = 384 },
-            origin = { x = 100, y = 100 },
-            scale = 2,
-            logicalWidth = 256,
-            logicalHeight = 192,
-            clipRect = { x = 100, y = 100, width = 512, height = 384 },
-          },
-          interactive = true,
-        },
-      },
-      content = {},
-      inputKey = "chrome-stub",
-      render = render,
-      mapInput = map,
-      frames = {},
-      chrome = holder.value,
-    }
-  end
-  return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
-end
-
-function T.tests.window_identity_validates_and_enters_plan_identity()
-  local sessionModule = sharedSession()
-  local spy = { calls = {} }
-  local holder = { value = { title = "BAG", dismissible = true } }
-  local session = sessionModule.new(chromeInterfaces(spy, holder))
-  local view = {}
-  local measurement = stubMeasurement(1280, 720)
-  local plan = session:resolve(measurement, view)
-  Assert.equal(plan.chrome.title, "BAG", "the published plan carries its window identity")
-  session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = 200, y = 200 } }, view)
-  Assert.equal(#spy.calls, 1, "a content press reaches the leaf mapper")
-  holder.value = { title = "MENU", dismissible = true }
-  session:resolve(measurement, view)
-  local cancelled = session:mapInput({}, view)
-  Assert.equal(#cancelled, 1, "a window-identity change invalidates the held press")
-  Assert.equal(cancelled[1].type, "pointer_cancel", "the held press cancels in order")
-  local published = session:plan()
-  for _, bad in ipairs({
-    { title = "", dismissible = true },
-    { title = 42, dismissible = true },
-    { title = "BAG", dismissible = "yes" },
-    { title = "BAG" },
-  }) do
-    holder.value = bad
-    local err = Assert.throws(function()
-      session:resolve(measurement, view)
-    end, "malformed window identity must fail validation")
-    Assert.notNil(err, "the rejection carries a diagnostic")
-    Assert.isTrue(session:plan() == published, "a rejected candidate never replaces the published plan")
-  end
-end
-
-function T.tests.a_press_on_the_dismiss_control_emits_terminal_dismiss_without_capture()
+-- A press on the production top frame band stays inert interior: the
+-- band is decorative frame above the content box, outside the
+-- interactive pane but inside the published frame placement.
+function T.tests.a_press_on_the_top_frame_band_stays_interior()
   local session, plan = wideMenuSession()
-  plan.chrome = { title = "MENU", dismissible = true }
   local frame = assert(plan.frames[1], "the wide menu carries its frame record")
-  local dismiss = chromeGeometry(assert(frame.contentBox, "the frame carries its content box")).dismiss
-  local hx, hy = frameLocalToHost(frame, dismiss.x + dismiss.width / 2, dismiss.y + dismiss.height / 2)
-  local view = {}
-  local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = hx, y = hy } }, view)
-  Assert.equal(#mapped, 1, "the control press maps exactly one leaf event")
-  Assert.equal(mapped[1].type, "dismiss", "the control emits terminal dismiss")
-  local release = session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = hx, y = hy } }, view)
-  Assert.deepEqual(release, {}, "the control acquires no capture, so its release maps to nothing")
-end
-
-function T.tests.a_press_on_the_title_bar_beside_the_control_stays_interior()
-  local session, plan = wideMenuSession()
-  plan.chrome = { title = "MENU", dismissible = true }
-  local frame = assert(plan.frames[1], "the wide menu carries its frame record")
-  local geometry = chromeGeometry(assert(frame.contentBox, "the frame carries its content box"))
-  local probeX, probeY = geometry.title.x + 8, geometry.title.y + geometry.title.height / 2
-  Assert.isFalse(
-    probeX >= geometry.dismiss.x
-      and probeX <= geometry.dismiss.x + geometry.dismiss.width
-      and probeY >= geometry.dismiss.y
-      and probeY <= geometry.dismiss.y + geometry.dismiss.height,
-    "the title probe must sit clear of the dismiss control"
-  )
-  local hx, hy = frameLocalToHost(frame, probeX, probeY)
+  local contentBox = assert(frame.contentBox, "the frame carries its content box")
+  local hx, hy =
+    frameLocalToHost(frame, contentBox.x + contentBox.width / 4, contentBox.y - 8)
   local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = hx, y = hy } }, {})
-  Assert.deepEqual(mapped, {}, "a title-bar press maps to no leaf event")
+  Assert.deepEqual(mapped, {}, "a top-band press maps to no leaf event")
   local release = session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = hx, y = hy } }, {})
-  Assert.deepEqual(release, {}, "a title-bar press acquires no capture")
+  Assert.deepEqual(release, {}, "a top-band press acquires no capture")
 end
 
-function T.tests.window_identity_without_a_frame_creates_no_dismiss_target()
-  local sessionModule = sharedSession()
-  local spy = { calls = {} }
-  local holder = { value = { title = "BAG", dismissible = true } }
-  local session = sessionModule.new(chromeInterfaces(spy, holder))
-  local view = {}
-  session:resolve(stubMeasurement(1280, 720), view)
-  local held = session:mapInput({ { type = "pointer_down", pointerId = "mouse:1", x = 200, y = 200 } }, view)
-  Assert.equal(#held, 1, "identity without a frame leaves content capture intact")
-  Assert.equal(held[1].type, "pointer_down", "the content press still maps")
-  local released = session:mapInput({ { type = "pointer_up", pointerId = "mouse:1", x = 200, y = 200 } }, view)
-  Assert.equal(#released, 1, "the content release still maps")
-  Assert.equal(released[1].type, "pointer_up", "no dismiss target interferes with content gestures")
-  local outside = session:mapInput({ { type = "pointer_down", pointerId = "mouse:2", x = 10, y = 10 } }, view)
-  Assert.equal(#outside, 1, "a true outside press still reaches the leaf mapper")
-  Assert.equal(outside[1].outside, true, "the leaf still sees the outside marker")
-end
-
--- Every framed field application publishes its own window identity as
--- leaf presentation policy: the fixed title plus whether the window is
--- closable. The blocking starter choice publishes a title with no
--- dismiss flag.
 local function leafMeasurement(width, height)
   return stubMeasurement(width, height)
 end
@@ -808,79 +664,82 @@ local function bagManifest()
   }
 end
 
-function T.tests.resolved_field_applications_publish_their_window_identity()
+local function hostRectOwnsPoint(rect, x, y)
+  return rect ~= nil
+    and x >= rect.x
+    and x < rect.x + rect.width
+    and y >= rect.y
+    and y < rect.y + rect.height
+end
+
+local function planOwnsPoint(plan, x, y)
+  for _, pane in ipairs(plan.panes or {}) do
+    local placement = pane.placement
+    if hostRectOwnsPoint(placement and placement.frame, x, y) then
+      return true
+    end
+  end
+  for _, frame in ipairs(plan.frames or {}) do
+    local placement = frame.placement
+    if hostRectOwnsPoint(placement and placement.frame, x, y) then
+      return true
+    end
+  end
+  return false
+end
+
+local function assertOutsidePoint(plan)
+  for _, candidate in ipairs({ { 8, 8 }, { 1272, 8 }, { 8, 712 }, { 1272, 712 } }) do
+    if not planOwnsPoint(plan, candidate[1], candidate[2]) then
+      return candidate[1], candidate[2]
+    end
+  end
+  error("the framed plan leaves no outside margin on this host", 0)
+end
+
+-- Framed plans publish outer frames, and the blocking starter choice
+-- still ignores outside presses instead of dismissing.
+function T.tests.framed_plans_publish_outer_frames_and_starter_ignores_outside_presses()
   local StartMenuInterface = require("game.hgss.src.field.StartMenuInterface")
   local BagInterface = require("game.hgss.src.field.BagInterface")
   local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
   local TrainerCardInterface = require("game.hgss.src.field.TrainerCardInterface")
+  local StarterChoiceInterface = require("game.hgss.src.starters.StarterChoiceInterface")
+  local measured = leafMeasurement(1280, 720)
   local startMenu = StartMenuInterface.withOverrides(nil)
   local bag = BagInterface.withOverrides(nil, bagManifest())
   local party = PartyScreenInterface.withOverrides(nil)
   local card = TrainerCardInterface.withOverrides(nil)
-  local measured = leafMeasurement(1280, 720)
+  local starter = StarterChoiceInterface.withOverrides(nil)
+  local starterView = { selection = 0, selectionState = "null", transition = "idle", done = false }
   local cases = {
-    {
-      name = "start menu",
-      plan = startMenu.wide(leafContext(measured, "wide", startMenu), {}),
-      title = "MENU",
-    },
-    {
-      name = "bag",
-      plan = bag.wide(leafContext(measured, "wide", bag), {}),
-      title = "BAG",
-    },
+    { name = "start menu", plan = startMenu.wide(leafContext(measured, "wide", startMenu), {}) },
+    { name = "bag", plan = bag.wide(leafContext(measured, "wide", bag), {}) },
     {
       name = "party",
       plan = party.wide(leafContext(measured, "wide", party), { cancellable = true, cursorNode = 0 }),
-      title = "POKéMON",
     },
-    {
-      name = "trainer card",
-      plan = card.wide(leafContext(measured, "wide", card), {}),
-      title = "TRAINER CARD",
-    },
+    { name = "trainer card", plan = card.wide(leafContext(measured, "wide", card), {}) },
+    { name = "starter choice", plan = starter.wide(leafContext(measured, "wide", starter), starterView) },
   }
   for _, case in ipairs(cases) do
     Assert.isTrue(#case.plan.frames >= 1, "the wide " .. case.name .. " must publish its outer frame")
-    Assert.deepEqual(
-      case.plan.chrome,
-      { title = case.title, dismissible = true },
-      "the wide " .. case.name .. " publishes its closable window identity"
-    )
   end
-end
-
-function T.tests.the_blocking_starter_choice_publishes_identity_without_dismiss()
-  local StarterChoiceInterface = require("game.hgss.src.starters.StarterChoiceInterface")
-  local starter = StarterChoiceInterface.withOverrides(nil)
-  local measured = leafMeasurement(1280, 720)
-  local view = { selection = 0, selectionState = "null", transition = "idle", done = false }
-  local plan = starter.wide(leafContext(measured, "wide", starter), view)
-  Assert.isTrue(#plan.frames >= 1, "the wide starter choice must publish its outer frame")
-  Assert.deepEqual(
-    plan.chrome,
-    { title = "STARTER CHOICE", dismissible = false },
-    "the starter choice publishes a titled but non-dismissible identity"
-  )
-  local frame = assert(plan.frames[1], "the starter choice carries its frame record")
-  local geometry = chromeGeometry(assert(frame.contentBox, "the frame carries its content box"))
-  local dismiss = geometry.dismiss
-  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-  local hx, hy = LayoutGeometry.logicalToHost(
-    assert(frame.placement, "the frame carries its placement"),
-    dismiss.x + dismiss.width / 2,
-    dismiss.y + dismiss.height / 2
-  )
+  local starterPlan = cases[#cases].plan
   local sessionModule = sharedSession()
   local session = sessionModule.new((function()
     local function resolver(_, _)
-      return plan
+      return starterPlan
     end
     return { dualDisplay = resolver, nativeLike = resolver, wide = resolver, tall = resolver }
   end)())
-  session:resolve(leafMeasurement(1280, 720), view)
-  local mapped = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = hx, y = hy } }, view)
-  Assert.deepEqual(mapped, {}, "the starter dismiss spot stays inert interior")
+  session:resolve(leafMeasurement(1280, 720), starterView)
+  local outsideX, outsideY = assertOutsidePoint(starterPlan)
+  local mapped =
+    session:mapInput({ { type = "pointer_down", pointerId = "touch:9", x = outsideX, y = outsideY } }, starterView)
+  for _, event in ipairs(mapped) do
+    Assert.isTrue(event.type ~= "dismiss", "an outside press never dismisses the blocking choice")
+  end
 end
 
 return T

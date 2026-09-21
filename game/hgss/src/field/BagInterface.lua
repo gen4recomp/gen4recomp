@@ -22,7 +22,6 @@ local HERO_NATIVE = { id = "hero", width = 256, height = 192 }
 local INTERACTION_NATIVE = { id = "interaction", width = 256, height = 192 }
 local INPUT_KEY = "bag"
 local ZERO_CROP = { left = 0, right = 0, top = 0, bottom = 0 }
-local CHROME = { title = "BAG", dismissible = true }
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> the wrapper semantic snapshot
@@ -75,7 +74,6 @@ local function bagPlan(manifest, heroVisible, panes, frames)
   return {
     panes = panes,
     frames = frames,
-    chrome = CHROME,
     content = BagLayout.resolve({ manifest = manifest, heroVisible = heroVisible }),
     inputKey = INPUT_KEY,
     render = renderBag,

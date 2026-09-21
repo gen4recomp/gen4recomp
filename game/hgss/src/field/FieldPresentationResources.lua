@@ -73,12 +73,11 @@ FieldPresentationResources.__index = FieldPresentationResources
 -- release them. An id without a presenter is a composition error, never a
 -- fallback to another application surface.
 -- Draws every published outer frame through the shared selected-frame owner
--- after application content: one logical scope per frame record, masked
--- border plus the plan's window identity, never content or host pixels.
--- The masked inner band overlaps body pixels, so opaque decoration must
--- paint over content while cleared padding reveals it. Plans without
--- frames draw nothing extra; a framed plan without window identity keeps
--- the border-only draw.
+-- after application content: one logical scope per frame record, the
+-- border-only selected frame, never content or host pixels. The masked
+-- inner band overlaps body pixels, so opaque decoration must paint over
+-- content while cleared padding reveals it. Plans without frames draw
+-- nothing extra.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param owner FieldPresentationResources
 ---@param plan table<string, unknown> the resolved application plan
@@ -89,19 +88,13 @@ local function drawApplicationFrames(graphics, owner, plan)
   end
   local window = assert(owner.windowRenderer, "field presentation owns no window renderer")
   local frameIndex = assert(owner.applicationFrameIndex, "field presentation owns no application frame index")
-  local chrome = plan.chrome
   assert(type(graphics) == "table", "application frame drawing requires its graphics namespace")
   graphics.push("all")
   local ok, err = pcall(function()
     for _, frame in ipairs(frames) do
       LogicalSurface.draw(graphics, assert(frame.placement, "the outer frame carries its placement"), function()
         local contentBox = assert(frame.contentBox, "the outer frame carries its content box")
-        if chrome ~= nil then
-          local text = assert(owner.textRenderer, "field presentation owns no field text renderer")
-          window:drawApplicationChrome(contentBox, frameIndex, chrome, text)
-        else
-          window:drawApplicationFrame(contentBox, frameIndex)
-        end
+        window:drawApplicationFrame(contentBox, frameIndex)
       end)
     end
   end)

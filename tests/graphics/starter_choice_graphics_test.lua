@@ -249,8 +249,8 @@ local function drawFrame(scope, host, window, width, height)
     textWidth = function()
       return 0
     end,
-    -- Window-chrome drawing centers titles on the generated font base
-    -- height, so the stub carries the production metric value.
+    -- Starter content keeps its text provider shaped like production; the
+    -- stub carries the generated font base height alongside its metrics.
     fontDef = { maxLetterHeight = 16 },
     windowBackgroundColor = function()
       return { 0, 0, 0, 1 }

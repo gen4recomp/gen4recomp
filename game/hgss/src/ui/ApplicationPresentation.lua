@@ -9,7 +9,6 @@
 -- and never release them.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 
 ---@class ApplicationPresentation.Capture
@@ -37,7 +36,6 @@ ApplicationPresentation.__index = ApplicationPresentation
 ---@class ApplicationPlan
 ---@field panes { id: string, placement: LayoutGeometry.Placement, interactive: boolean }[]
 ---@field frames ApplicationFrameGeometry[]
----@field chrome { title: string, dismissible: boolean }? window identity drawn on visible frames only
 ---@field content table<string, unknown> application-owned logical geometry/payload
 ---@field inputKey string stable input-geometry identity
 ---@field render fun(resources: table<string, unknown>, view: table<string, unknown>, plan: ApplicationPlan)
@@ -86,11 +84,6 @@ local function assertValidPlan(plan)
     assertCompletePlacement(frame.placement, "frame placement")
     assert(type(frame.contentBox) == "table", "a frame needs its content box")
     LayoutGeometry.rect(frame.contentBox, "frame.contentBox[" .. index .. "]")
-  end
-  if plan.chrome ~= nil then
-    assert(type(plan.chrome) == "table", "plan chrome must be its window identity record")
-    assert(type(plan.chrome.title) == "string" and plan.chrome.title ~= "", "plan chrome needs a nonempty window title")
-    assert(type(plan.chrome.dismissible) == "boolean", "plan chrome needs its dismiss flag")
   end
   assert(type(plan.content) == "table", "the plan needs its content")
   assert(type(plan.inputKey) == "string", "the plan needs its input key")
@@ -173,10 +166,6 @@ local function planIdentity(plan, resolver)
       .. placementIdentity(frame.placement)
       .. ":"
       .. table.concat({ tostring(box.x), tostring(box.y), tostring(box.width), tostring(box.height) }, ",")
-  end
-  local chrome = plan.chrome
-  if chrome ~= nil then
-    parts[#parts + 1] = "chrome:" .. chrome.title .. ":" .. tostring(chrome.dismissible)
   end
   return table.concat(parts, "#")
 end
@@ -331,39 +320,6 @@ local function hitApplicationRegion(plan, hostX, hostY)
   return false
 end
 
--- A press on a dismissible window's dismiss control maps the leaf's
--- terminal dismiss edge without acquiring content capture. Every other
--- border press stays inert interior; transparent chrome pixels never make
--- holes in frame ownership.
----@param plan ApplicationPlan
----@param hostX number
----@param hostY number
----@return boolean true when the host point lands on a dismissible dismiss control
-local function hitDismissControl(plan, hostX, hostY)
-  local chrome = plan.chrome
-  if chrome == nil or chrome.dismissible ~= true or #plan.frames == 0 then
-    return false
-  end
-  for _, frame in ipairs(plan.frames) do
-    local contentBox = frame.contentBox
-    if contentBox ~= nil then
-      local logicalX, logicalY = LayoutGeometry.hostToLogical(frame.placement, hostX, hostY)
-      if logicalX ~= nil and logicalY ~= nil then
-        local dismiss = FieldDialogueTheme.applicationChromeGeometry(contentBox).dismiss
-        if
-          logicalX >= dismiss.x
-          and logicalX <= dismiss.x + dismiss.width
-          and logicalY >= dismiss.y
-          and logicalY <= dismiss.y + dismiss.height
-        then
-          return true
-        end
-      end
-    end
-  end
-  return false
-end
-
 ---@param plan ApplicationPlan
 ---@param view table<string, unknown>
 ---@param event table<string, unknown>
@@ -378,13 +334,6 @@ function ApplicationPresentation:_mapDown(plan, view, event, out)
   end
   local pane, hitX, hitY = hitPane(plan, event.x, event.y)
   if pane == nil then
-    if hitDismissControl(plan, event.x, event.y) then
-      local mapped = plan.mapInput({ type = "dismiss", pointerId = pointerId }, view, plan)
-      if mapped ~= nil then
-        out[#out + 1] = mapped
-      end
-      return
-    end
     -- Decorative frame borders and noninteractive panes are visible
     -- application interior: the press is consumed with no leaf event and
     -- no capture. Only a press outside every frame and pane reaches the
