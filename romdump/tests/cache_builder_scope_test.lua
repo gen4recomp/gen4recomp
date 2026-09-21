@@ -84,11 +84,11 @@ local function canonicalPlans()
   }
 end
 
-local function makeSession(pool, identity, sweepEnabled)
+local function makeSession(pool, identity)
   local session = {
     pool = pool,
     identity = identity,
-    sweepEnabled = sweepEnabled,
+    completeRequested = nil,
     requested = {},
     requestedSet = {},
     retired = false,
@@ -142,6 +142,12 @@ local function makeSession(pool, identity, sweepEnabled)
       return false, failures[1]
     end
     return ready, nil
+  end
+  function session:requestComplete(urgency)
+    assert(not self.retired, "generation session is retired")
+    assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
+    self.completeRequested = urgency
+    return false, nil
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -346,8 +352,8 @@ local function makeFakes()
       assert(type(options.identity) == "table", "generation session identity is required")
       assert(type(options.epoch) == "number", "generation session epoch is required")
       assert(type(options.pool) == "table", "generation session requires the process-owned pool")
-      assert(type(options.sweepEnabled) == "boolean", "generation session sweep choice is required")
-      local session = makeSession(options.pool, options.identity, options.sweepEnabled)
+      Assert.isNil(options.sweepEnabled, "exhaustive intent travels as an explicit request, never a construction flag")
+      local session = makeSession(options.pool, options.identity)
       env.sessions[#env.sessions + 1] = session
       return session
     end,
@@ -489,7 +495,7 @@ function T.targeted_map_request_runs_only_its_closure_without_full_attestation()
   Assert.isTrue(report.requestedReady, "the requested closure must be ready")
   Assert.isFalse(report.complete, "a targeted scope must never report a complete cache")
   Assert.equal(#env.sessions, 1, "one common session serves the targeted scope")
-  Assert.isFalse(env.sessions[1].sweepEnabled, "a targeted client must not start an unrelated sweep")
+  Assert.isNil(env.sessions[1].completeRequested, "a targeted client must not request an unrelated complete build")
   local requested = {}
   for _, jobKey in ipairs(env.sessions[1].requested) do
     requested[jobKey] = true

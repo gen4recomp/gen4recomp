@@ -1466,6 +1466,15 @@ end
 -- yields one logical job per call without building, sorting, or copying
 -- the corpus, so interactive sweep can advance a bounded chunk per
 -- update; draining it reproduces the complete list below.
+-- Aggregate summaries enumerate last: registering one before its leaves
+-- would expand the whole leaf family through ordinary dependency edges.
+local COMPLETE_TRAIL_SUMMARIES = {
+  "mon-summary",
+  "message-summary",
+  "audio-summary",
+  "script-summary",
+}
+
 local COMPLETE_STATIC_GLOBALS = {
   "world-catalog",
   "field-cell-index",
@@ -1483,11 +1492,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "bag",
   "mon-catalog",
   "mon-layout",
-  "mon-summary",
-  "message-summary",
   "audio-catalog",
-  "audio-summary",
-  "script-summary",
 }
 
 -- Producer-internal generation source-plan memo for compiler-worker
@@ -1744,6 +1749,17 @@ function ArtifactJobs.completeIterator(plans)
           local mapId = mapIds[position]
           position = position + 1
           return identify("map", tostring(mapId))
+        end
+        phase, position = 10, 1
+      elseif phase == 10 then
+        -- Aggregate summaries close the enumeration so background
+        -- registration meets already-ready leaves instead of expanding
+        -- whole families at once. The enumerated set is unchanged; only
+        -- the deterministic order moves.
+        if position <= #COMPLETE_TRAIL_SUMMARIES then
+          local kind = COMPLETE_TRAIL_SUMMARIES[position]
+          position = position + 1
+          return identify(kind, "global")
         end
         return nil
       else

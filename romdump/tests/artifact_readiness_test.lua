@@ -1839,8 +1839,11 @@ local module = {
         assert(type(options.identity) == "table", "generation session identity is required")
         assert(type(options.epoch) == "number", "generation session epoch is required")
         assert(type(options.pool) == "table", "generation session requires the process-owned pool")
-        assert(type(options.sweepEnabled) == "boolean", "generation session sweep choice is required")
-        local session = { requested = {}, completed = {}, retired = false }
+        assert(
+          options.sweepEnabled == nil,
+          "exhaustive intent travels as an explicit request, never a construction flag"
+        )
+        local session = { requested = {}, completed = {}, retired = false, completeRequested = nil }
         function session:requestJob(kind, key, urgency)
           assert(type(kind) == "string" and type(key) == "string", "job needs its canonical kind and key")
           assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
@@ -1852,6 +1855,11 @@ local module = {
         function session:requestMilestone(name, urgency)
           assert(name == "bootstrap" or name == "field-core", "milestones accept only bootstrap or field-core")
           assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
+          return true, nil
+        end
+        function session:requestComplete(urgency)
+          assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
+          self.completeRequested = urgency
           return true, nil
         end
         function session:update()

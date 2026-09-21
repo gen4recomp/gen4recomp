@@ -249,7 +249,6 @@ local function openSession(generation, pool, epoch)
     identity = identity(generation),
     epoch = epoch or 1,
     pool = pool,
-    sweepEnabled = false,
   })
 end
 
@@ -764,7 +763,7 @@ function T.warm_selection_reuses_published_plans_without_compiling_sources()
   Assert.isFalse(result.grammarOk, "an invalid target is still rejected immediately on the warm selection")
 end
 
-function T.exhaustive_scheduling_covers_every_current_family_exactly_once()
+function T.demand_enrolls_only_its_roster_without_automatic_summaries()
   local calls = freshCalls()
   local backend = FakeCache.new()
   local realForVersion = CacheFs.forVersion
@@ -801,7 +800,6 @@ function T.exhaustive_scheduling_covers_every_current_family_exactly_once()
       identity = identity("exhaustive-generation"),
       epoch = 1,
       pool = pool,
-      sweepEnabled = true,
     })
     local ready, failure = session:requestMilestone("bootstrap", "required")
     -- Enrollment is update-owned: the admitted roster drains through the
@@ -842,11 +840,18 @@ function T.exhaustive_scheduling_covers_every_current_family_exactly_once()
   end)
   Assert.isFalse(result.ready, "bootstrap stays pending until its jobs publish")
   Assert.isNil(result.failure, "bootstrap reports no failure while its jobs are pending")
-  Assert.equal(result.counts["mon-summary:global"], 1, "exhaustive scheduling covers the mon summary once")
-  Assert.equal(result.counts["items:global"], 1, "exhaustive scheduling covers the item catalog once")
-  Assert.equal(result.counts["bag:global"], 1, "exhaustive scheduling covers the bag presentation once")
-  Assert.equal(result.counts["message-summary:global"], 1, "exhaustive scheduling covers the message summary once")
-  Assert.equal(result.counts["script-summary:global"], 1, "exhaustive scheduling covers the script summary once")
+  for _, job in ipairs(ArtifactJobs.bootstrapJobs()) do
+    Assert.equal(
+      result.counts[job.kind .. ":" .. job.key],
+      1,
+      "demand enrolls its roster once: " .. job.kind .. ":" .. job.key
+    )
+  end
+  Assert.isNil(result.counts["mon-summary:global"], "bootstrap enrolls no mon summary")
+  Assert.isNil(result.counts["items:global"], "bootstrap enrolls no item catalog")
+  Assert.isNil(result.counts["bag:global"], "bootstrap enrolls no bag presentation")
+  Assert.isNil(result.counts["message-summary:global"], "bootstrap enrolls no message summary")
+  Assert.isNil(result.counts["script-summary:global"], "bootstrap enrolls no script summary")
   Assert.isFalse(result.complete, "no complete attestation precedes published output")
   Assert.isTrue(result.enumerationComplete == false, "enumeration is not complete before plans publish")
 end
@@ -2685,7 +2690,6 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
         identity = identity(generation),
         epoch = 1,
         pool = pool,
-        sweepEnabled = true,
       })
       session:requestMilestone("field-core", "near")
       pool.states["source-plan:global"] = "ready"
@@ -2723,12 +2727,7 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
             end
           end
         end
-        if
-          session.byKey["mon-icon-page:0"] ~= nil
-          and session.sweepCursor == nil
-          and session.enrollCursor == nil
-          and not outstanding
-        then
+        if session.byKey["mon-icon-page:0"] ~= nil and session.enrollCursor == nil and not outstanding then
           drained = true
           break
         end

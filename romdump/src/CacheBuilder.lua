@@ -826,8 +826,10 @@ local function collectVersionFacts(
       identity = identity,
       epoch = epoch,
       pool = pool,
-      sweepEnabled = exhaustive,
     })
+    if exhaustive then
+      session:requestComplete("required")
+    end
     for _, entry in ipairs(parsed) do
       if entry.scope == "bootstrap" or entry.scope == "field-core" then
         local scope = assert(entry.scope, "parsed requirements are scopes or canonical jobs")

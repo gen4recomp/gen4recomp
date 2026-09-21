@@ -107,7 +107,9 @@ end
 
 -- Launches the menu on the current provisioner without touching source
 -- ownership: menu/Oak/field transitions within one selection never rotate
--- the epoch or restart the sweep.
+-- the epoch. Background corpus completion is authorized once the menu
+-- game owns the process state; the authorization itself performs no
+-- cache work.
 function App._launchMenuWithProvisioner(versionId)
   local provisioner = assert(App.provisioner, "selection has no provisioner")
   local function onExit(result)
@@ -126,8 +128,6 @@ function App._launchMenuWithProvisioner(versionId)
     error(game, 0)
   end
   App.setState(game)
-  -- Exhaustive warmup authorizes only after the menu game owns the process
-  -- state: the next producer pump may enroll sweep work, never this call.
   provisioner:startBackgroundWarmup()
 end
 

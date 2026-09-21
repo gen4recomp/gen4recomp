@@ -145,7 +145,7 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     Assert.isNil(host.dispose, "the game must not receive producer disposal control")
     Assert.isNil(host.startBackgroundWarmup, "the game must not receive warmup lifecycle control")
     Assert.isNil(host.enableSweep, "the game must not receive session authorization control")
-    Assert.equal(result.warmups or 0, 1, "menu installation authorizes exactly one background warmup")
+    Assert.equal(result.warmups or 0, 1, "menu installation authorizes background completion once after handoff")
   end)
 end
 

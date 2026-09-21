@@ -71,11 +71,11 @@ local function splitJobKey(jobKey)
   return kind, key
 end
 
-local function makeSession(pool, identity, sweepEnabled)
+local function makeSession(pool, identity)
   local session = {
     pool = pool,
     identity = identity,
-    sweepEnabled = sweepEnabled,
+    completeRequested = nil,
     requested = {},
     retired = false,
   }
@@ -123,6 +123,12 @@ local function makeSession(pool, identity, sweepEnabled)
       return false, failures[1]
     end
     return ready, nil
+  end
+  function session:requestComplete(urgency)
+    assert(not self.retired, "generation session is retired")
+    assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
+    self.completeRequested = urgency
+    return false, nil
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -318,8 +324,8 @@ local function makeFakes()
       assert(type(options.identity) == "table", "generation session identity is required")
       assert(type(options.epoch) == "number", "generation session epoch is required")
       assert(type(options.pool) == "table", "generation session requires the process-owned pool")
-      assert(type(options.sweepEnabled) == "boolean", "generation session sweep choice is required")
-      local session = makeSession(options.pool, options.identity, options.sweepEnabled)
+      Assert.isNil(options.sweepEnabled, "exhaustive intent travels as an explicit request, never a construction flag")
+      local session = makeSession(options.pool, options.identity)
       env.sessions[#env.sessions + 1] = session
       return session
     end,
@@ -392,7 +398,11 @@ function T.complete_scope_delegates_to_one_common_session_per_version()
   Assert.isNil(err)
   Assert.deepEqual(report, { published = true, complete = true, exclusionCount = 0 })
   Assert.equal(#env.sessions, 1, "one common session serves the version")
-  Assert.isTrue(env.sessions[1].sweepEnabled, "an exhaustive client drains the sweep")
+  Assert.equal(
+    env.sessions[1].completeRequested,
+    "required",
+    "an exhaustive client requests the explicit complete build"
+  )
   local requested = requestedSet(env.sessions[1])
   Assert.isTrue(requested["world-catalog:global"], "field core is requested")
   Assert.isTrue(requested["actors:global"], "field core is requested")

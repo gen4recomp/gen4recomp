@@ -94,11 +94,11 @@ local function splitJobKey(jobKey)
   return kind, key
 end
 
-local function makeSession(pool, identity, sweepEnabled)
+local function makeSession(pool, identity)
   local session = {
     pool = pool,
     identity = identity,
-    sweepEnabled = sweepEnabled,
+    completeRequested = nil,
     requested = {},
     requestedSet = {},
     completed = {},
@@ -164,6 +164,12 @@ local function makeSession(pool, identity, sweepEnabled)
       return false, failures[1]
     end
     return ready, nil
+  end
+  function session:requestComplete(urgency)
+    assert(not self.retired, "generation session is retired")
+    assert(urgency == "required" or urgency == "near" or urgency == "sweep", "unknown urgency")
+    self.completeRequested = urgency
+    return false, nil
   end
   function session:update()
     assert(not self.retired, "generation session is retired")
@@ -425,8 +431,8 @@ local function makeFakes()
       assert(type(options.identity) == "table", "generation session identity is required")
       assert(type(options.epoch) == "number", "generation session epoch is required")
       assert(type(options.pool) == "table", "generation session requires the process-owned pool")
-      assert(type(options.sweepEnabled) == "boolean", "generation session sweep choice is required")
-      local session = makeSession(options.pool, options.identity, options.sweepEnabled)
+      assert(options.sweepEnabled == nil, "exhaustive intent travels as an explicit request, never a construction flag")
+      local session = makeSession(options.pool, options.identity)
       env.sessions[#env.sessions + 1] = session
       return session
     end,

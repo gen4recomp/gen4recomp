@@ -56,7 +56,6 @@ function DerivedAssetProvisioner.new(options)
     identity = sessionIdentity(options),
     epoch = options.epoch,
     pool = options.pool,
-    sweepEnabled = false,
   })
   local self = setmetatable(
     { session = session, pool = options.pool, retired = false, failure = nil, host = nil },
@@ -124,15 +123,14 @@ function DerivedAssetProvisioner:gameHost()
   return assert(self.host, "derived-asset host is unavailable")
 end
 
----Authorizes exhaustive background warmup for the selected generation.
----Owner-only app lifecycle: call only after the menu game is installed.
----Idempotent; never part of the semantic game host.
+-- Owner-only lifecycle authorization for background corpus completion.
+-- Delegates to the session contract, which stays idempotent and performs
+-- no cache work in the call itself. Never exposed through gameHost:
+-- gameplay code requests concrete artifacts, never corpus policy.
 function DerivedAssetProvisioner:startBackgroundWarmup()
   assert(not self.retired, "derived-asset provisioner is retired")
-  if self.failure ~= nil then
-    error(self.failure, 0)
-  end
-  assert(self.session, "derived-asset session is unavailable"):enableSweep()
+  assert(self.session, "derived-asset session is unavailable")
+  self.session:enableSweep()
 end
 
 function DerivedAssetProvisioner:update()

@@ -1,10 +1,11 @@
 -- Census over the common generation session through the real ROM-derived
 -- plans: bootstrap requests only the menu font with no inventory, field core
--- keeps its decoupled closure, and sweep still converges afterward.
+-- keeps its decoupled closure, and an explicit background storm still
+-- converges afterward.
 -- arrives as near work while geometry stays cold, demand promotes
--- dependencies, the sweep frontier stays bounded while every canonical key
--- is accounted for, failures stay visible without global collapse, and a
--- restarted generation reuses ready jobs.
+-- dependencies, every canonical key submits exactly once while the pool
+-- owns physical dispatch, failures stay visible without global collapse,
+-- and a restarted generation reuses ready jobs.
 
 local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
@@ -65,7 +66,7 @@ end
 -- records survive only in the append-only epoch-labeled history, which
 -- never answers lookups or counts toward the frontier.
 local function FakePool()
-  local pool = { records = {}, order = {}, history = {}, selected = nil, peakSweep = 0 }
+  local pool = { records = {}, order = {}, history = {}, selected = nil }
   local function archiveCurrent(event)
     local epoch = pool.selected ~= nil and pool.selected.epoch or 0
     for _, jobKey in ipairs(pool.order) do
@@ -144,10 +145,6 @@ local function FakePool()
     record.state = "queued"
     self.records[job.jobKey] = record
     self.order[#self.order + 1] = job.jobKey
-    local outstanding = self:outstandingSweep()
-    if outstanding > self.peakSweep then
-      self.peakSweep = outstanding
-    end
     return record.state
   end
   function pool:status(jobKey)
@@ -194,15 +191,6 @@ local function FakePool()
     record.state = "ready"
     record.details = nil
   end
-  function pool:outstandingSweep()
-    local count = 0
-    for _, record in pairs(self.records) do
-      if record.priority == 100 and (record.state == "queued" or record.state == "running") then
-        count = count + 1
-      end
-    end
-    return count
-  end
   function pool:requestSet()
     local set = {}
     for _, jobKey in ipairs(self.order) do
@@ -224,7 +212,7 @@ local function FakePool()
   return pool
 end
 
-local function openSession(identity, epoch, pool, sweepEnabled)
+local function openSession(identity, epoch, pool)
   -- Resolved at call time so the suite hooks' filesystem routing applies to
   -- the session's internally built owner.
   local SessionBuild = require("romdump.src.build.InteractiveCacheBuild")
@@ -232,7 +220,6 @@ local function openSession(identity, epoch, pool, sweepEnabled)
     identity = identity,
     epoch = epoch,
     pool = pool,
-    sweepEnabled = sweepEnabled,
   })
   if not ok then
     error("common generation session is unavailable: " .. tostring(session), 0)
@@ -420,7 +407,7 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
   return result
 end
 
-function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
+function T.common_session_drives_bootstrap_core_and_background_storm(romFs, versionId)
   -- Writer isolation: the census borrows the real dump read-only while every
   -- receipt, milestone, and publication lands in the owned backend the suite
   -- hooks installed, so the shared prepared fixture never changes under
@@ -435,7 +422,6 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   local pool = FakePool()
   local context = workerContextFor(romFs, versionId, cache)
   -- Milestone files live in the private backend.
-  local bound = processorBound()
   local stageSeq = 0
   local function complete(jobKey)
     stageSeq = stageSeq + 1
@@ -503,7 +489,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   Assert.isTrue(#resolvedMapIds > 0, "the geometry census must be non-empty")
 
   -- Targeted client: bootstrap plans its exact set with sweep disabled.
-  local targeted = openSession(identity, 1, pool, false)
+  local targeted = openSession(identity, 1, pool)
   -- Readiness the session observes is the owned backend's state, so work the
   -- session itself completes is never resubmitted. Snapshot current-generation
   -- receipts for the whole field-core membership before the session runs so
@@ -546,7 +532,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     local status = targeted:status()
     Assert.keySet(
       status,
-      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,fieldCore,generationId,planningPending,queued,ready,running,settled"
+      "bootstrap,complete,enumerated,enumerationComplete,epoch,failed,failures,fieldCore,generationId,planningPending,queued,ready,running,settled,sweepState"
     )
     Assert.equal(status.generationId, generationId)
     Assert.isFalse(status.complete, "an untouched session completes nothing")
@@ -642,7 +628,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   end
 
   -- Full client: field core arrives as near work while geometry stays cold.
-  local session = openSession(identity, 2, pool, true)
+  local session = openSession(identity, 2, pool)
   do
     -- The new selection archives the superseded epoch: history keeps the
     -- epoch-labeled trace while current lookup starts empty.
@@ -870,7 +856,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   -- storm below proves exhaustive cursor enrollment at scale. Cursor extras
   -- (cells, maps, portraits) are cold here and never asserted, so they would
   -- only burn frontier turns without proving reuse.
-  local resumed = openSession(identity, 3, pool, false)
+  local resumed = openSession(identity, 3, pool)
   do
     local first, second = resumed:requestMilestone("bootstrap", "required")
     checkPending(first, second, "resumed bootstrap")
@@ -924,13 +910,12 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     Assert.equal(failedCount(status), 0, "no failure has been injected yet")
   end
 
-  -- The sweep storm: every canonical key is accounted for while the frontier
-  -- stays bounded. Everything arrives as sweep urgency, so the session's
-  -- acknowledged frontier paces physical dispatch while logical enrollment
-  -- still covers the corpus: membership is proved against logical outcomes,
-  -- dispatch against accepted current-epoch requests. Enrollment is never
-  -- counted as compilation, and no family is forced to required to drive
-  -- coverage.
+  -- The background storm: every canonical key submits exactly once while
+  -- the pool owns physical dispatch. Everything arrives as background
+  -- urgency and the session submits without parking: membership is proved
+  -- against logical outcomes, dispatch against accepted current-epoch
+  -- requests. Enrollment is never counted as compilation, and no family
+  -- is forced to required to drive coverage.
   --
   -- Backend isolation: the storm runs on a fresh owned backend, not the epoch
   -- 1-3 shared backend (which holds every published bank/member/summary, so a
@@ -945,7 +930,7 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   activeBackend = FakeCache.new()
   cache = CacheFs.forVersion(versionId, activeBackend)
   context = workerContextFor(romFs, versionId, cache)
-  local storm = openSession(identity, 4, pool, true)
+  local storm = openSession(identity, 4, pool)
   do
     -- Structural prerequisites arrive required (never sweep dispatch): the
     -- source inventory, mon catalog, mon layout, world catalog, and cell
@@ -1035,10 +1020,18 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
   for _, mapId in ipairs(mapDataIds) do
     requestSweep("map-data", tostring(mapId))
   end
+  -- Families with no explicit request above (message banks, script
+  -- members, summaries) enroll through the explicit complete demand at
+  -- background urgency: same registration logic, no required forcing.
   do
-    -- Bounded planning converges with no external completions: parked
-    -- capacity waiters hold no runnable ticket, so quiescence is reached
-    -- instead of spinning past the round cap. The bound is node-derived:
+    local completeReady, completeFailure = storm:requestComplete("sweep")
+    Assert.isFalse(completeReady, "the complete build stays pending until the pump runs")
+    Assert.isNil(completeFailure, "complete registration reports no failure")
+  end
+  do
+    -- Bounded planning converges with no external completions: submitted
+    -- work holds no runnable ticket, so quiescence is reached instead of
+    -- spinning past the round cap. The bound is node-derived:
     -- ~30k planning turns (per-edge expansion over the 3660-entry corpus
     -- plus plans, reuses, and submits) at 32 units per update need at least
     -- ~940 updates before setup and calm margin, so 1200 carries the census
@@ -1046,14 +1039,18 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
     -- metadata. Calm here proves local quiescence only; the census below
     -- certifies membership separately.
     settle(storm, pool, 1200)
-    Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
+    local seenOrder = {}
+    for _, jobKey in ipairs(pool.order) do
+      Assert.isTrue(seenOrder[jobKey] == nil, "no identity submits twice: " .. jobKey)
+      seenOrder[jobKey] = true
+    end
   end
   do
     -- Membership census against logical outcomes: enrollment covers every
-    -- canonical key while most work stays pending on the held frontier.
-    -- Accepted current-epoch requests prove bounded dispatch only: every
-    -- accepted key is canonical sweep work and the peak never exceeds the
-    -- bound. Neither enrollment nor pool history counts as compilation.
+    -- canonical key while most work stays pending on the held pool queue.
+    -- Accepted current-epoch requests prove exact-once submission: every
+    -- accepted key is canonical background work. Neither enrollment nor
+    -- pool history counts as compilation.
     local canonical = {}
     for _, memberId in ipairs(scriptMemberIds) do
       canonical["script-member:" .. tostring(memberId)] = true
@@ -1128,13 +1125,16 @@ function T.common_session_drives_bootstrap_core_and_sweep(romFs, versionId)
         Assert.equal(priority, 100, "storm dispatch stays sweep work: " .. identityKey)
       end
     end
-    Assert.isTrue(pool.peakSweep <= bound, "accepted dispatch stays bounded")
   end
   do
     -- Accepted current-epoch requests plus published receipts account for
     -- every canonical key: warm members resubmit for worker proof while
     -- receipts count alongside pool records.
-    Assert.isTrue(pool.peakSweep <= bound, "the sweep frontier never exceeds twice the worker count")
+    local resubmissions = {}
+    for _, jobKey in ipairs(pool.order) do
+      Assert.isTrue(resubmissions[jobKey] == nil, "no identity submits twice: " .. jobKey)
+      resubmissions[jobKey] = true
+    end
     local union = pool:requestSet()
     -- Accounted for means planned this run or published by an earlier
     -- run under the same generation: warm resubmissions carry worker

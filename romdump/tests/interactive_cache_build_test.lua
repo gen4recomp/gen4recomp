@@ -64,10 +64,6 @@ function T.session_options_are_validated_before_any_side_effect()
       options = { identity = identity(), epoch = 1 },
       message = "process-owned pool",
     },
-    {
-      options = { identity = identity(), epoch = 1, pool = untouchedPool(), sweepEnabled = "yes" },
-      message = "must be a boolean",
-    },
   }
   for _, case in ipairs(cases) do
     local ok, err = pcall(InteractiveCacheBuild.new, case.options)
@@ -79,7 +75,7 @@ function T.session_options_are_validated_before_any_side_effect()
   end
 end
 
-function T.urgency_maps_once_to_pool_priorities()
+function T.urgency_maps_to_three_fixed_pool_priorities()
   Assert.equal(ArtifactJobs.priorityFor("required"), 0)
   Assert.equal(ArtifactJobs.priorityFor("near"), 10)
   Assert.equal(ArtifactJobs.priorityFor("sweep"), 100)
@@ -312,7 +308,6 @@ local function summarySession(pool, cacheFs, bankIds)
       identity = { versionId = "heartgold", generationId = SUMMARY_GENERATION, producerId = "d" .. string.rep("3", 64) },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
   end)
   CacheFs.forVersion = realForVersion
@@ -448,6 +443,10 @@ local function retryCapablePool()
   function pool:selectGeneration(_, _)
     self.selects = self.selects + 1
   end
+  function pool:retireSelection(epoch)
+    self.retiredEpoch = epoch
+    return true
+  end
   function pool:update() end
   function pool:status(jobKey)
     local state = self.states[jobKey]
@@ -492,7 +491,6 @@ local function isolatedSession(generation, pool, backend)
       identity = { versionId = "heartgold", generationId = generation, producerId = PRODUCER_ID },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
   end)
   CacheFs.forVersion = realForVersion
@@ -528,53 +526,33 @@ local function submissionCount(pool, jobKey)
   return count
 end
 
--- Sweep admission reads a construction-time worker bound: after
--- construction the scheduler never consults pool diagnostics again, so
--- replacing diagnostics with a raising stub cannot disturb capacity
--- waits, wakeups, or sweep convergence.
-function T.sweep_admission_uses_the_construction_time_worker_bound()
+-- Construction performs no pool census: replacing diagnostics with a
+-- raising stub cannot disturb demand enrollment, submission, or
+-- settlement, because no scheduler path consults pool diagnostics.
+function T.construction_performs_no_pool_census()
   local backend = FakeCache.new()
   local pool = recordingPool()
-  local diagnosticsCalls = 0
-  local realDiagnostics = pool.diagnostics
-  pool.diagnostics = function(self)
-    diagnosticsCalls = diagnosticsCalls + 1
-    return realDiagnostics(self)
-  end
-  local session, _ = isolatedSession("sweep-bound-generation", pool, backend)
-  Assert.equal(diagnosticsCalls, 1, "construction captures the worker count once")
+  local session, _ = isolatedSession("no-census-generation", pool, backend)
   pool.diagnostics = function()
     error("scheduler census must not run on the game thread")
   end
-  session.adopted = {
-    indexBundle = { index = { matrices = {} }, indexMarker = "bound-index-marker" },
-    scriptPlan = { members = {}, generationKey = "bound-script-generation" },
-    audioPlan = { index = {}, bankPlans = {} },
-    messageBankIds = {},
-    audioBankIds = {},
-    scriptMemberIds = {},
-    iconPageIds = {},
-    portraitPageIds = {},
-    mapDataIds = {},
-    mapIds = {},
-    mapCellKeys = {},
-    world = { maps = {} },
-  }
-  session.sourceLoaded = true
-  session.pagesKnown = true
-  session:enableSweep()
-  for _ = 1, 30 do
+  pool.states["field-font:global"] = "ready"
+  local ready, failure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "demand stays pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
     session:update()
   end
-  local outcomes = session:outcomes()
-  Assert.isTrue(#outcomes > 0, "sweep enrollment converges without scheduler census")
+  local again, againFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(again, "demand settles without pool census")
+  Assert.isNil(againFailure, "settlement reports no failure")
 end
 
--- Loaded sweep enrolls a bounded chunk per update without materializing
--- the complete corpus: with the materialized inventory patched to raise,
--- one update visits only a small prefix, while many updates still cover
--- exactly the canonical union.
-function T.loaded_sweep_enrolls_incrementally_without_materializing_the_corpus()
+-- Explicit complete enrollment advances a bounded chunk per update
+-- without materializing the complete corpus: with the materialized
+-- inventory patched to raise, one update visits only a small prefix,
+-- while many updates still cover exactly the canonical union.
+function T.complete_enrollment_advances_bounded_chunks_without_materializing_the_corpus()
   local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
   local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
   local matrices = {}
@@ -621,14 +599,16 @@ function T.loaded_sweep_enrolls_incrementally_without_materializing_the_corpus()
   local backend = FakeCache.new()
   local pool = recordingPool()
   pool.diagnostics = nil
-  local session, _ = isolatedSession("incremental-sweep-generation", pool, backend)
+  local session, _ = isolatedSession("incremental-complete-generation", pool, backend)
   session.adopted = plans
   session.sourceLoaded = true
   session.pagesKnown = true
-  session:enableSweep()
+  local requested, requestFailure = session:requestComplete("required")
+  Assert.isFalse(requested, "the complete build stays pending until the pump runs")
+  Assert.isNil(requestFailure, "registration reports no failure")
   local realCompleteJobs = ArtifactJobs.completeJobs
   ArtifactJobs.completeJobs = function()
-    error("interactive sweep must not materialize the complete corpus")
+    error("explicit complete enrollment must not materialize the complete corpus")
   end
   local ok, failure = pcall(function()
     session:update()
@@ -654,13 +634,13 @@ function T.loaded_sweep_enrolls_incrementally_without_materializing_the_corpus()
       end
     end
     local outcomes = session:outcomes()
-    Assert.equal(#outcomes, #expected, "sweep enrollment covers the canonical union")
+    Assert.equal(#outcomes, #expected, "complete enrollment covers the canonical union")
     local seen = {}
     for _, outcome in ipairs(outcomes) do
       seen[outcome.jobKey] = true
     end
     for _, job in ipairs(expected) do
-      Assert.isTrue(seen[job.jobKey] == true, "sweep enrolls " .. job.jobKey)
+      Assert.isTrue(seen[job.jobKey] == true, "complete enrollment covers " .. job.jobKey)
     end
   end)
   ArtifactJobs.completeJobs = realCompleteJobs
@@ -764,7 +744,6 @@ function T.public_observations_register_without_cache_or_validation_io()
       identity = { versionId = "heartgold", generationId = generation, producerId = PRODUCER_ID },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
     cacheReads = 0
     calls.validate, calls.dependencies, calls.planRead, calls.publishedPlans = 0, 0, 0, 0
@@ -1177,7 +1156,6 @@ local function openLiveSession(options)
       identity = { versionId = "heartgold", generationId = options.generation, producerId = PRODUCER_ID },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
     CacheFs.forVersion = realForVersion
     assert(ok, created)
@@ -1265,6 +1243,58 @@ local function dispatchedStage(env, workerId, jobKey, occurrence)
     end
   end
   error("no dispatched stage for " .. jobKey .. " occurrence " .. tostring(occurrence), 0)
+end
+
+---@param env table
+---@param jobKey string
+---@return integer workerId first worker that dispatched the job
+local function dispatchedWorker(env, jobKey)
+  for workerId = 1, math.max(1, #env.host.channels - 1) do
+    for _, message in ipairs(inputChannel(env, workerId).log) do
+      if type(message) == "table" and message.jobKey == jobKey and message.stageName ~= nil then
+        return workerId
+      end
+    end
+  end
+  error("no dispatched worker for " .. jobKey, 0)
+end
+
+---@param env table
+---@param jobKey string
+---@param knownStage string already-consumed stage name
+---@return string stageName a later dispatch of the same job
+local function nextDispatchedStage(env, jobKey, knownStage)
+  for workerId = 1, math.max(1, #env.host.channels - 1) do
+    for _, message in ipairs(inputChannel(env, workerId).log) do
+      if
+        type(message) == "table"
+        and message.jobKey == jobKey
+        and message.stageName ~= nil
+        and message.stageName ~= knownStage
+      then
+        return message.stageName
+      end
+    end
+  end
+  error("no redispatched stage for " .. jobKey, 0)
+end
+
+---@param env table
+---@param jobKey string
+---@return string stageName the most recently dispatched stage for the job
+local function latestDispatchedStage(env, jobKey)
+  local latest = nil
+  for workerId = 1, math.max(1, #env.host.channels - 1) do
+    for _, message in ipairs(inputChannel(env, workerId).log) do
+      if type(message) == "table" and message.jobKey == jobKey and message.stageName ~= nil then
+        latest = message.stageName
+      end
+    end
+  end
+  if latest == nil then
+    error("no dispatched stage for " .. jobKey, 0)
+  end
+  return latest
 end
 
 ---@param env table
@@ -1926,13 +1956,12 @@ function T.bootstrap_finishes_without_pages_or_geometry()
   local ready, failure = session:requestMilestone("bootstrap", "required")
   Assert.isFalse(ready, "bootstrap stays pending until its own members are ready")
   Assert.isNil(failure, "bootstrap reports no failure while pending")
-  -- Enrollment is update-owned: admit the roster before staging readiness
-  -- through the backdoor. The scope assertions below are unchanged.
-  session:update()
-  for _, entry in pairs(session.byKey) do
-    if type(entry) == "table" and entry.failure == nil then
-      entry.ready = true
-    end
+  -- Readiness arrives through the owned pool transition: the staged ready
+  -- reply stands in for worker proof. The scope assertions below are
+  -- unchanged.
+  pool.states["field-font:global"] = "ready"
+  for _ = 1, 4 do
+    session:update()
   end
   local again, againFailure = session:requestMilestone("bootstrap", "required")
   Assert.isTrue(again, "bootstrap succeeds from its own scope without page membership")
@@ -2073,8 +2102,7 @@ function T.bootstrap_registers_no_source_or_page_metadata()
 end
 
 -- Bootstrap readiness must not enroll field-core interest on its own:
--- explicit field preparation owns that demand. The automatic promotion
--- lived behind sweep authorization, so this drives a sweep-authorized
+-- explicit field preparation owns that demand. This drives a demand-only
 -- session to readiness and proves no field-core intent appears.
 function T.bootstrap_readiness_registers_no_automatic_field_core()
   local backend = FakeCache.new()
@@ -2091,7 +2119,6 @@ function T.bootstrap_readiness_registers_no_automatic_field_core()
       identity = { versionId = "heartgold", generationId = "bootstrap-autocore-generation", producerId = PRODUCER_ID },
       epoch = 1,
       pool = pool,
-      sweepEnabled = true,
     })
   end)
   CacheFs.forVersion = realForVersion
@@ -2099,12 +2126,7 @@ function T.bootstrap_readiness_registers_no_automatic_field_core()
     error(err, 0)
   end
   session:requestMilestone("bootstrap", "required")
-  session:update()
-  for _, entry in pairs(session.byKey) do
-    if type(entry) == "table" and entry.failure == nil then
-      entry.ready = true
-    end
-  end
+  pool.states["field-font:global"] = "ready"
   for _ = 1, 4 do
     session:update()
   end
@@ -2114,26 +2136,26 @@ function T.bootstrap_readiness_registers_no_automatic_field_core()
   Assert.isNil(session.milestones["field-core"], "ready bootstrap never auto-requests field core")
 end
 
--- Sweep authorization is an explicit idempotent owner operation: it flips
--- the flag, performs no pool or cache work synchronously, and rejects on
--- a retired session.
-function T.sweep_enable_is_idempotent_and_performs_no_synchronous_work()
+-- Explicit complete intent is an idempotent owner operation: it records
+-- the demand, performs no pool or cache work synchronously, and rejects
+-- on a retired session.
+function T.complete_request_is_idempotent_and_performs_no_synchronous_work()
   local backend = FakeCache.new()
   local pool = recordingPool()
-  local session = isolatedSession("sweep-enable-generation", pool, backend)
+  local session = isolatedSession("complete-request-generation", pool, backend)
   session:update()
-  Assert.isTrue(session.sweepCursor == nil, "a demand-only session enumerates no sweep")
   local submittedBefore = #pool.submitted
-  session:enableSweep()
-  Assert.isTrue(session.sweepEnabled, "enabling authorizes sweep")
-  Assert.equal(#pool.submitted, submittedBefore, "enabling submits no work synchronously")
-  Assert.isTrue(session.sweepCursor == nil, "enabling enumerates nothing synchronously")
-  session:enableSweep()
-  Assert.isTrue(session.sweepEnabled, "repeated enabling stays authorized")
-  Assert.equal(#pool.submitted, submittedBefore, "repeated enabling stays work-free")
+  local first, firstFailure = session:requestComplete("required")
+  Assert.isFalse(first, "the complete build stays pending until the pump runs")
+  Assert.isNil(firstFailure, "registration reports no failure")
+  Assert.equal(#pool.submitted, submittedBefore, "requesting enrolls nothing synchronously")
+  local second, secondFailure = session:requestComplete("required")
+  Assert.isFalse(second, "a repeated request stays pending")
+  Assert.isNil(secondFailure, "a repeated request reports no failure")
+  Assert.equal(#pool.submitted, submittedBefore, "repeated requesting stays work-free")
   session:retire()
-  local ok, err = pcall(session.enableSweep, session)
-  Assert.isFalse(ok, "enabling a retired session rejects")
+  local ok, err = pcall(session.requestComplete, session, "required")
+  Assert.isFalse(ok, "requesting on a retired session rejects")
   Assert.isTrue(tostring(err):find("retired", 1, true) ~= nil, "the rejection names retirement")
 end
 
@@ -2206,6 +2228,25 @@ function T.new_game_intro_resolves_exact_bank_closures_after_adoption()
   local ready, failure = session:requestMilestone("new-game-intro", "required")
   Assert.isFalse(ready, "the intro milestone stays pending while cold")
   Assert.isNil(failure, "the intro milestone reports no failure while pending")
+  -- The hand-adopted inventory stands in for the published source record,
+  -- so its owner is retained ready without a worker round trip. Member
+  -- readiness below still arrives through the owned pool transition.
+  session.byKey["source-plan:global"] = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "required",
+    priority = 0,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+  session.interest[#session.interest + 1] = session.byKey["source-plan:global"]
   for _ = 1, 6 do
     session:update()
   end
@@ -2225,10 +2266,13 @@ function T.new_game_intro_resolves_exact_bank_closures_after_adoption()
   end
   Assert.isNil(set["audio-summary:global"], "the full summary stays out of the intro roster")
   Assert.isNil(set["actors:global"], "field actors stay out of the intro roster")
-  for _, entry in pairs(session.byKey) do
-    if type(entry) == "table" and entry.failure == nil then
-      entry.ready = true
-    end
+  -- Readiness arrives through the owned pool transition: staged ready
+  -- replies stand in for worker proof for every enrolled member.
+  for _, member in ipairs(roster) do
+    pool.states[member.kind .. ":" .. member.key] = "ready"
+  end
+  for _ = 1, 10 do
+    session:update()
   end
   local again, againFailure = session:requestMilestone("new-game-intro", "required")
   Assert.isTrue(again, "the intro scope certifies once its own members are ready")
@@ -2322,20 +2366,20 @@ function T.first_milestone_demand_promotes_existing_members()
   shutdownEnv(env)
 end
 
--- A sweep-urgency retry passes through sweep admission like any other
--- waiter: it joins behind older capacity waiters instead of requeueing
--- ahead of them.
-function T.sweep_retry_waits_behind_older_capacity_waiters()
-  local env = openLiveSession({ generation = "retry-admission-generation", bankIds = { 3, 5, 7 } })
+-- A background retry re-enters through the single admission point: the
+-- failed leaf retries promptly while older queued work keeps its order
+-- and every leaf dispatches exactly once.
+function T.background_retry_readmits_through_the_single_admission_point()
+  local env = openLiveSession({ generation = "retry-admission-generation", bankIds = { 3, 5 } })
   requestJob(env, "message-bank", "3", "sweep")
   requestJob(env, "message-bank", "5", "sweep")
-  pumpSession(env, 2)
-  Assert.equal(poolStatus(env, "message-bank", "3"), "running", "the first sweep job executes")
-  Assert.equal(poolStatus(env, "message-bank", "5"), "queued", "the second sweep job waits its turn")
-  requestJob(env, "message-bank", "7", "sweep")
-  pumpSession(env, 2)
-  Assert.equal(poolStatus(env, "message-bank", "7"), "unknown", "a full frontier parks the waiter")
-  pushWorkerReply(env, 1, "message-bank", "3", dispatchedStage(env, 1, "message-bank:3", 1), "failed")
+  pumpSession(env, 3)
+  Assert.isTrue(poolStatus(env, "message-bank", "3") ~= "unknown", "background demand submits without parking")
+  Assert.isTrue(poolStatus(env, "message-bank", "5") ~= "unknown", "queued background work submits in turn")
+  Assert.equal(dispatchCount(env, "message-bank", "3"), 1, "the single worker takes the first leaf")
+  local worker = dispatchedWorker(env, "message-bank:3")
+  local firstStage = dispatchedStage(env, worker, "message-bank:3", 1)
+  pushWorkerReply(env, worker, "message-bank", "3", firstStage, "failed")
   pumpSession(env, 2)
   local failed, failedFailure = requestJob(env, "message-bank", "3", "sweep")
   Assert.isFalse(failed, "the failed job answers false")
@@ -2350,24 +2394,27 @@ function T.sweep_retry_waits_behind_older_capacity_waiters()
     return env.session:retry("message-bank", "3", "sweep")
   end)
   Assert.isTrue(retried == true or retried == false, "the retry registers")
-  Assert.equal(retryCalls, 0, "a sweep retry waits behind older capacity waiters")
-  Assert.equal(poolStatus(env, "message-bank", "7"), "queued", "the older waiter holds the freed credit")
+  Assert.equal(retryCalls, 0, "the retry reaches the pool through the pump, not the call")
+  pumpSession(env, 2)
+  Assert.equal(retryCalls, 1, "the pump readmits the failed leaf once")
+  -- FIFO order holds the readmitted leaf behind the earlier queued bank:
+  -- the worker takes bank 5 first, then the retry.
+  pumpSession(env, 3)
   publishBankLive(env, 5, "synthetic:romshape:005")
-  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 1))
+  stageBankReply(env, 5, "synthetic:romshape:005", latestDispatchedStage(env, "message-bank:5"))
   pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the release publishes")
-  Assert.equal(dispatchCount(env, "message-bank", "7"), 1, "the older waiter dispatches exactly once")
-  Assert.equal(retryCalls, 1, "the release credit admits the retried waiter next")
-  publishBankLive(env, 7, "synthetic:romshape:007")
-  stageBankReply(env, 7, "synthetic:romshape:007", dispatchedStage(env, 1, "message-bank:7", 1))
+  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the earlier leaf publishes")
   pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "7"), "ready", "the older waiter publishes")
-  Assert.equal(retryCalls, 1, "the next freed credit admits the retried waiter")
   publishBankLive(env, 3, "synthetic:romshape:003")
-  stageBankReply(env, 3, "synthetic:romshape:003", dispatchedStage(env, 1, "message-bank:3", 2))
+  stageBankReply(env, 3, "synthetic:romshape:003", nextDispatchedStage(env, "message-bank:3", firstStage))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the retried leaf publishes")
   pumpSession(env, 3)
   local repaired, repairedFailure = requestJob(env, "message-bank", "3", "sweep")
   Assert.isTrue(repaired, "the retried leaf succeeds: " .. tostring(repairedFailure))
+  Assert.equal(dispatchCount(env, "message-bank", "3"), 2, "the retry dispatches the failed leaf once more")
+  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the queued leaf still publishes in turn")
+  Assert.equal(dispatchCount(env, "message-bank", "5"), 1, "the queued leaf dispatches exactly once")
   env.pool.retry = realRetry
   shutdownEnv(env)
 end
@@ -2528,7 +2575,6 @@ function T.settled_updates_reuse_retained_membership_without_new_work()
       identity = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("3", 64) },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
     local cold, coldFailure = session:requestMilestone("bootstrap", "required")
     Assert.isFalse(cold, "bootstrap stays pending until the pump admits its roster")
@@ -2609,7 +2655,6 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
       identity = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("3", 64) },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
     local cold, coldFailure = session:requestMilestone("bootstrap", "required")
     Assert.isFalse(cold, "the first request registers pending demand")
@@ -2638,15 +2683,11 @@ function T.repeated_scope_polls_observe_retained_answers_without_new_work()
     Assert.equal(counts.backendRead, before.backendRead, "polls perform no cache reads")
     Assert.equal(counts.backendWrite, before.backendWrite, "polls publish no milestone record")
     Assert.equal(#pool.submitted, before.submitted, "polls submit no worker jobs")
-    -- Enrollment is update-owned: admit the roster first so the backdoor
-    -- covers enrolled members, then establish through the pump. The poll
-    -- contract below is unchanged.
+    -- Enrollment is update-owned: admit the roster first, then establish
+    -- readiness through the owned pool transition. The poll contract
+    -- below is unchanged.
+    pool.states["field-font:global"] = "ready"
     session:update()
-    for _, entry in pairs(session.byKey) do
-      if type(entry) == "table" and entry.failure == nil then
-        entry.ready = true
-      end
-    end
     session:update()
     local established, establishedFailure = session:requestMilestone("bootstrap", "required")
     Assert.isTrue(established, "the pump-established scope answers ready")
@@ -2722,34 +2763,29 @@ function T.required_promotion_reaches_paused_near_enrollment()
       identity = { versionId = "heartgold", generationId = generation, producerId = "d" .. string.rep("3", 64) },
       epoch = 1,
       pool = pool,
-      sweepEnabled = false,
     })
     for _, memberId in ipairs(scriptIds) do
       session:requestJob("script-member", tostring(memberId), "near")
     end
     -- The inventory proves through one staged pool reply, so adoption
-    -- populates membership and the bounded passes submit members
-    -- incrementally while later members still wait.
+    -- populates membership and every member submits: the session holds no
+    -- admission gate, the pool owns physical queueing.
     pool.states["source-plan:global"] = "ready"
-    local submitted, unsubmitted = 0, 0
     for _ = 1, 8 do
       session:update()
-      submitted, unsubmitted = 0, 0
-      for _, memberId in ipairs(scriptIds) do
-        local entry = session.byKey["script-member:" .. tostring(memberId)]
-        Assert.notNil(entry, "near demand registers every member")
-        if entry.submitted then
-          submitted = submitted + 1
-        elseif entry.failure == nil and not entry.ready then
-          unsubmitted = unsubmitted + 1
-        end
-      end
-      if submitted > 0 and unsubmitted > 0 then
-        break
+    end
+    local submitted, unsubmitted = 0, 0
+    for _, memberId in ipairs(scriptIds) do
+      local entry = session.byKey["script-member:" .. tostring(memberId)]
+      Assert.notNil(entry, "near demand registers every member")
+      if entry.submitted then
+        submitted = submitted + 1
+      elseif entry.failure == nil and not entry.ready then
+        unsubmitted = unsubmitted + 1
       end
     end
-    Assert.isTrue(submitted > 0, "bounded passes queue some near work")
-    Assert.isTrue(unsubmitted > 0, "bounded passes leave near work paused")
+    Assert.equal(submitted, #scriptIds, "demand submits every member without session parking")
+    Assert.equal(unsubmitted, 0, "no member waits on session admission")
     for _, memberId in ipairs(scriptIds) do
       local entry = session.byKey["script-member:" .. tostring(memberId)]
       Assert.equal(entry.urgency, "near", "paused demand keeps its near urgency")
@@ -2833,78 +2869,57 @@ function T.normal_update_polls_only_submitted_frontier_entries()
   Assert.equal(frontierSize, 1, "the frontier holds only submitted work")
 end
 
--- Sweep capacity waiters wake in registration order with tombstoned FIFO
--- semantics: a promoted waiter never reawakens and no removal compacts
--- the remaining queue.
-function T.sweep_capacity_waiters_wake_fifo_without_array_compaction()
-  local env = openLiveSession({ generation = "capacity-fifo-generation", bankIds = { 3, 5, 7, 9, 11 } })
+-- Background demand submits without session parking: every requested leaf
+-- reaches the pool, required promotion strengthens the retained entry
+-- without resubmission, and every leaf publishes exactly once.
+-- Background demand submits without session parking: every requested leaf
+-- reaches the pool while physical execution stays single-worker bound.
+-- Required promotion jumps the pool queue without resubmission, and every
+-- leaf publishes exactly once.
+function T.background_demand_submits_without_session_parking()
+  local env = openLiveSession({ generation = "background-order-generation", bankIds = { 3, 5, 7 } })
   requestJob(env, "message-bank", "3", "sweep")
   requestJob(env, "message-bank", "5", "sweep")
   requestJob(env, "message-bank", "7", "sweep")
-  requestJob(env, "message-bank", "9", "sweep")
-  requestJob(env, "message-bank", "11", "sweep")
   pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "3"), "running", "the first sweep job executes")
-  Assert.equal(poolStatus(env, "message-bank", "5"), "queued", "the second sweep job holds frontier credit")
-  Assert.equal(poolStatus(env, "message-bank", "7"), "unknown", "a full frontier parks the waiter")
-  Assert.equal(poolStatus(env, "message-bank", "9"), "unknown", "later waiters park behind")
-  Assert.equal(poolStatus(env, "message-bank", "11"), "unknown", "later waiters park behind")
-  local waiters = env.session.capacityWaiters
-  Assert.equal(type(waiters), "table", "capacity waiters use a queue record")
-  Assert.equal(type(waiters.items), "table", "the waiter queue keeps its items")
-  Assert.equal(type(waiters.live), "table", "the waiter queue tracks live entries")
-  Assert.isTrue(waiters.live["message-bank:7"], "the first waiter is live")
-  Assert.isTrue(waiters.live["message-bank:9"], "the promoted waiter starts live")
-  Assert.isTrue(waiters.live["message-bank:11"], "the last waiter is live")
-  requestJob(env, "message-bank", "9", "near")
-  pumpSession(env, 2)
-  Assert.equal(poolStatus(env, "message-bank", "9"), "queued", "promotion admits outside frontier credit")
-  Assert.isNil(
-    env.session.capacityWaiters.live["message-bank:9"],
-    "promotion tombstones the waiter instead of compacting the queue"
-  )
-  publishBankLive(env, 3, "synthetic:romshape:003")
-  stageBankReply(env, 3, "synthetic:romshape:003", dispatchedStage(env, 1, "message-bank:3", 1))
-  pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the release publishes")
-  Assert.equal(poolStatus(env, "message-bank", "7"), "queued", "the oldest live waiter wakes first")
-  Assert.equal(poolStatus(env, "message-bank", "11"), "unknown", "the younger waiter stays parked while credit is held")
-  Assert.equal(dispatchCount(env, "message-bank", "11"), 0, "the parked waiter never dispatches early")
-  publishBankLive(env, 9, "synthetic:romshape:009")
-  stageBankReply(env, 9, "synthetic:romshape:009", dispatchedStage(env, 1, "message-bank:9", 1))
-  pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "9"), "ready", "the promoted waiter publishes")
-  publishBankLive(env, 5, "synthetic:romshape:005")
-  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, 1, "message-bank:5", 1))
-  pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the credit holder publishes")
-  publishBankLive(env, 7, "synthetic:romshape:007")
-  stageBankReply(env, 7, "synthetic:romshape:007", dispatchedStage(env, 1, "message-bank:7", 1))
-  pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "7"), "ready", "the woken waiter publishes")
-  Assert.isTrue(
-    poolStatus(env, "message-bank", "11") ~= "unknown",
-    "the last waiter leaves the park once credit frees again"
-  )
-  publishBankLive(env, 11, "synthetic:romshape:011")
-  stageBankReply(env, 11, "synthetic:romshape:011", dispatchedStage(env, 1, "message-bank:11", 1))
-  pumpSession(env, 3)
-  Assert.equal(poolStatus(env, "message-bank", "11"), "ready", "the last waiter publishes")
-  for _, bankId in ipairs({ 3, 5, 7, 9, 11 }) do
+  -- Submission is the session contract: every requested leaf reaches the
+  -- pool instead of parking behind session-side credit. The single
+  -- interactive worker executes one leaf while the rest queue at the pool.
+  for _, bankId in ipairs({ 3, 5, 7 }) do
     local key = tostring(bankId)
-    Assert.equal(dispatchCount(env, "message-bank", key), 1, "sweep bank dispatches exactly once: " .. key)
+    Assert.isTrue(
+      poolStatus(env, "message-bank", key) ~= "unknown",
+      "background demand submits without parking: " .. key
+    )
   end
-  local order = {}
-  for _, jobKey in ipairs(env.host.dispatched) do
-    order[#order + 1] = jobKey
+  Assert.equal(dispatchCount(env, "message-bank", "3"), 1, "the first leaf dispatches")
+  requestJob(env, "message-bank", "7", "required")
+  pumpSession(env, 2)
+  local entry = assert(env.session.byKey["message-bank:7"], "the promoted leaf keeps its retained entry")
+  Assert.equal(entry.urgency, "required", "promotion strengthens the retained entry")
+  local worker3 = dispatchedWorker(env, "message-bank:3")
+  publishBankLive(env, 3, "synthetic:romshape:003")
+  stageBankReply(env, 3, "synthetic:romshape:003", dispatchedStage(env, worker3, "message-bank:3", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "3"), "ready", "the first leaf publishes")
+  Assert.equal(dispatchCount(env, "message-bank", "7"), 1, "promotion jumps the pool queue without resubmission")
+  local worker7 = dispatchedWorker(env, "message-bank:7")
+  publishBankLive(env, 7, "synthetic:romshape:007")
+  stageBankReply(env, 7, "synthetic:romshape:007", dispatchedStage(env, worker7, "message-bank:7", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "7"), "ready", "the promoted leaf publishes")
+  local worker5 = dispatchedWorker(env, "message-bank:5")
+  publishBankLive(env, 5, "synthetic:romshape:005")
+  stageBankReply(env, 5, "synthetic:romshape:005", dispatchedStage(env, worker5, "message-bank:5", 1))
+  pumpSession(env, 3)
+  Assert.equal(poolStatus(env, "message-bank", "5"), "ready", "the last leaf publishes")
+  for _, bankId in ipairs({ 3, 5, 7 }) do
+    Assert.equal(
+      dispatchCount(env, "message-bank", tostring(bankId)),
+      1,
+      "the leaf dispatches exactly once: " .. bankId
+    )
   end
-  Assert.deepEqual(order, {
-    "message-bank:3",
-    "message-bank:9",
-    "message-bank:5",
-    "message-bank:7",
-    "message-bank:11",
-  }, "promotion jumps the queue once while parked waiters keep FIFO")
   shutdownEnv(env)
 end
 
@@ -2921,15 +2936,34 @@ function T.intro_progress_ignores_unrelated_sweep_interest()
   local ready, failure = session:requestMilestone("new-game-intro", "required")
   Assert.isFalse(ready, "the intro closure stays pending while cold")
   Assert.isNil(failure, "the intro closure reports no failure while pending")
+  -- The hand-adopted inventory stands in for the published source record;
+  -- member readiness below arrives through the owned pool transition.
+  session.byKey["source-plan:global"] = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "required",
+    priority = 0,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+  session.interest[#session.interest + 1] = session.byKey["source-plan:global"]
   for _ = 1, 6 do
     session:update()
   end
   local roster = assert(session.roster["new-game-intro"], "the adopted intro roster is retained")
   Assert.isTrue(#roster > 0, "the adopted roster names its closure")
-  for _, entry in pairs(session.byKey) do
-    if type(entry) == "table" and entry.failure == nil then
-      entry.ready = true
-    end
+  for _, member in ipairs(roster) do
+    pool.states[member.kind .. ":" .. member.key] = "ready"
+  end
+  for _ = 1, 10 do
+    session:update()
   end
   local before = session:milestoneStatus("new-game-intro")
   Assert.deepEqual(
@@ -2946,10 +2980,8 @@ function T.intro_progress_ignores_unrelated_sweep_interest()
   for pageId = 0, 99 do
     session:requestJob("mon-icon-page", tostring(pageId), "sweep")
   end
-  for _, entry in pairs(session.byKey) do
-    if type(entry) == "table" and entry.failure == nil and entry.ready ~= true then
-      entry.ready = true
-    end
+  for _ = 1, 4 do
+    session:update()
   end
   local after = session:milestoneStatus("new-game-intro")
   Assert.deepEqual(after, before, "unrelated sweep work never perturbs the intro record")
@@ -3022,6 +3054,696 @@ function T.intro_progress_observation_touches_only_its_roster()
   if not ok then
     error(failure, 0)
   end
+end
+
+-- Idle demand enrolls nothing: an interactive session with no explicit
+-- requests submits no worker jobs across sustained pumping and never
+-- materializes the complete corpus. A later explicit near-cell demand
+-- then submits only its own dependency closure.
+function T.idle_session_without_requests_submits_no_work()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local session, _ = isolatedSession("idle-without-requests", pool, backend)
+  session.adopted = {
+    indexBundle = {
+      index = {
+        matrices = {
+          {
+            matrixMemberId = 1,
+            cells = {
+              {
+                matrixMemberId = 1,
+                index = 0,
+                x = 0,
+                z = 0,
+                mapHeaderId = 0,
+                altitude = 0,
+                landDataMemberId = 1,
+                areaDataMemberId = 2,
+              },
+            },
+          },
+        },
+      },
+      indexMarker = "idle-index-marker",
+    },
+  }
+  session.sourceLoaded = true
+  session.byKey["source-plan:global"] = {
+    kind = "source-plan",
+    key = "global",
+    jobKey = "source-plan:global",
+    urgency = "sweep",
+    priority = 100,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+  session.interest[#session.interest + 1] = session.byKey["source-plan:global"]
+  pool.states["field-cell-index:global"] = "ready"
+  local realCompleteJobs = ArtifactJobs.completeJobs
+  ArtifactJobs.completeJobs = function()
+    error("an idle interactive session must not materialize the complete corpus", 0)
+  end
+  local ok, failure = pcall(function()
+    for _ = 1, 50 do
+      session:update()
+    end
+    Assert.equal(#pool.submitted, 0, "idle updates with no requests submit no jobs")
+    local ready, requestFailure = session:requestCell({ matrixMemberId = 1, index = 0 }, "near")
+    Assert.isFalse(ready, "the cold cell answers pending until the pump runs")
+    Assert.isNil(requestFailure, "registration reports no failure")
+    for _ = 1, 50 do
+      session:update()
+    end
+    local submitted = submittedSet(pool)
+    Assert.isTrue(submitted["field-cell:1-0"] == true, "the explicit cell dispatches")
+    Assert.isTrue(
+      #pool.submitted < 20,
+      "the cell closure stays bounded, never the corpus: " .. tostring(#pool.submitted)
+    )
+  end)
+  ArtifactJobs.completeJobs = realCompleteJobs
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+-- A scoped demand never attests exhaustive completion: bootstrap
+-- enrollment covers only its own roster while the complete flag stays
+-- down. Explicit complete builds alone may attest it.
+function T.scoped_demand_covers_only_its_roster_without_complete_attestation()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local session, _ = isolatedSession("scoped-without-complete", pool, backend)
+  pool.states["field-font:global"] = "ready"
+  local ready, requestFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(ready, "the scope stays pending until the pump runs")
+  Assert.isNil(requestFailure, "registration reports no failure")
+  for _ = 1, 20 do
+    session:update()
+  end
+  local again, againFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isTrue(again, "the satisfied scope answers ready")
+  Assert.isNil(againFailure, "the satisfied scope reports no failure")
+  for _, outcome in ipairs(session:outcomes()) do
+    Assert.equal(outcome.jobKey, "field-font:global", "the scope enrolls only its roster")
+  end
+  Assert.isFalse(session:status().complete, "a runtime subset never attests complete")
+end
+
+-- Required and background are the only scheduling classes: required
+-- runs first while near and sweep spellings share the background lane.
+function T.required_near_and_sweep_use_three_scheduling_lanes()
+  Assert.equal(ArtifactJobs.priorityFor("required"), 0)
+  Assert.equal(ArtifactJobs.priorityFor("near"), 10)
+  Assert.equal(ArtifactJobs.priorityFor("sweep"), 100)
+  Assert.throws(function()
+    ArtifactJobs.priorityFor("eventually")
+  end)
+end
+
+-- Scope settlement follows the scope's own dependencies: a required
+-- milestone settles while an unrelated blocked background leaf stays
+-- pending, each key submits once, and repeated notifications settle
+-- nothing twice.
+function T.required_scope_settles_while_unrelated_background_waits()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("scope-settlement-generation", pool, backend)
+  session.messageBankIds = { 31511 }
+  pool.states["field-font:global"] = "ready"
+  local coldKey = "message-bank:31511"
+  local ready, requestFailure = session:requestJob("message-bank", "31511", "near")
+  Assert.isFalse(ready, "the cold background bank answers pending")
+  Assert.isNil(requestFailure, "registration reports no failure")
+  local milestoneReady, milestoneFailure = session:requestMilestone("bootstrap", "required")
+  Assert.isFalse(milestoneReady, "the milestone stays pending until the pump runs")
+  Assert.isNil(milestoneFailure, "the milestone reports no failure while pending")
+  local settled = false
+  for _ = 1, 100 do
+    session:update()
+    local again = session:requestMilestone("bootstrap", "required")
+    local coldAgain = session:requestJob("message-bank", "31511", "near")
+    if again and not coldAgain then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "the required scope settles while the unrelated leaf waits")
+  Assert.equal(submissionCount(pool, coldKey), 1, "the blocked leaf submits exactly once")
+  for _ = 1, 20 do
+    session:update()
+    session:requestMilestone("bootstrap", "required")
+    session:requestJob("message-bank", "31511", "near")
+  end
+  Assert.equal(submissionCount(pool, coldKey), 1, "repeated notifications resubmit nothing")
+  local stillPending = session:requestJob("message-bank", "31511", "near")
+  Assert.isFalse(stillPending, "the unreplied leaf never borrows the scope's readiness")
+end
+
+-- An unproven wait stays pending: only a genuine dependency back-edge
+-- fails, and it names the concrete key path. A failed child settles
+-- its dependent once with the original cause.
+function T.unproven_wait_stays_pending_without_a_cycle_path()
+  local originalDependencies = ArtifactJobs.dependencies
+  ArtifactJobs.dependencies = function(kind, key, plans)
+    if kind == "message-bank" then
+      return { { kind = "message-summary", key = "global" } }, true
+    end
+    return originalDependencies(kind, key, plans)
+  end
+  local pool = recordingPool()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local session = summarySession(pool, cacheFs, { 3, 5 })
+  local callOk, ready, failure = pcall(session.requestJob, session, "message-summary", "global", "required")
+  Assert.isTrue(callOk, "registration answers instead of overflowing: " .. tostring(ready))
+  Assert.isFalse(ready, "a cyclic plan stays pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  session:update()
+  local again, againFailure = session:requestJob("message-summary", "global", "required")
+  ArtifactJobs.dependencies = originalDependencies
+  Assert.isFalse(again, "a cyclic plan never answers ready")
+  Assert.isTrue(
+    tostring(againFailure):find("cycle", 1, true) ~= nil,
+    "the cyclic plan names its cycle: " .. tostring(againFailure)
+  )
+  Assert.isTrue(
+    tostring(againFailure):find("message-bank", 1, true) ~= nil,
+    "the cycle names the concrete key path: " .. tostring(againFailure)
+  )
+end
+
+function T.unexpanded_inventory_waits_without_a_cycle()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local session, _ = isolatedSession("unexpanded-inventory", pool, backend)
+  local ready, requestFailure = session:requestMilestone("field-core", "required")
+  Assert.isFalse(ready, "the core stays pending until its inventory arrives")
+  Assert.isNil(requestFailure, "registration reports no failure")
+  for _ = 1, 20 do
+    session:update()
+  end
+  local again, againFailure = session:requestMilestone("field-core", "required")
+  Assert.isFalse(again, "unexpanded inventory never answers ready")
+  Assert.isNil(againFailure, "a wait for inventory is pending, never a cycle")
+end
+
+function T.failed_child_settles_its_dependent_once_with_its_cause()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session, _ = isolatedSession("failed-child-cause", pool, backend)
+  local ready, requestFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(ready, "the summary stays pending until the pump runs")
+  Assert.isNil(requestFailure, "registration reports no failure")
+  session:update()
+  pool.states["message-bank:3"] = { state = "failed", details = { error = "synthetic bank failure" } }
+  session:update()
+  local again, againFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(again, "a failed child never answers ready")
+  Assert.isTrue(
+    tostring(againFailure):find("synthetic bank failure", 1, true) ~= nil,
+    "the dependent carries the original cause: " .. tostring(againFailure)
+  )
+  for _ = 1, 10 do
+    session:update()
+  end
+  local repeated, repeatedFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(repeated, "the failure is terminal")
+  Assert.equal(tostring(repeatedFailure), tostring(againFailure), "repeated polls settle nothing twice")
+end
+
+-- Opportunistic background corpus completion over the canonical demand
+-- graph. A synthetic fully adopted inventory lets the background cursor
+-- enumerate every corpus artifact through the same registration path as
+-- explicit demand: the source and layout owners below are already ready,
+-- so discovery is satisfied and the cursor itself is the only new work.
+local function readyOwnerEntry(kind)
+  return {
+    kind = kind,
+    key = "global",
+    jobKey = kind .. ":global",
+    urgency = "sweep",
+    priority = 100,
+    submitted = false,
+    ready = true,
+    failure = nil,
+    phase = "ready",
+    finalDeps = {},
+    depsFinal = true,
+    depIndex = 1,
+    pendingDeps = {},
+  }
+end
+
+local function warmingAdopted()
+  return {
+    messageBankIds = { 1, 2 },
+    audioBankIds = { 3 },
+    scriptMemberIds = { 4 },
+    iconPageIds = { 0 },
+    portraitPageIds = { 1 },
+    mapDataIds = {},
+    mapIds = { 7 },
+    mapCellKeys = { [7] = {} },
+    indexBundle = { index = { matrices = {} }, indexMarker = "warming-index-marker" },
+    scriptPlan = { members = { { memberId = 4 } }, generationKey = "warming-generation" },
+    audioPlan = { index = { version = "heartgold" }, bankPlans = { { bankId = 3 } } },
+  }
+end
+
+local function warmingSession(generation, pool, backend)
+  local session, _ = isolatedSession(generation, pool, backend)
+  session.adopted = warmingAdopted()
+  session.sourceLoaded = true
+  session.pagesKnown = true
+  session.messageBankIds = { 1, 2 }
+  session.audioBankIds = { 3 }
+  session.scriptMemberIds = { 4 }
+  session.iconPageIds = { 0 }
+  session.portraitPageIds = { 1 }
+  session.mapDataIds = {}
+  session.mapIds = { 7 }
+  session.mapCellKeys = { [7] = {} }
+  for _, kind in ipairs({ "source-plan", "mon-layout" }) do
+    local owner = readyOwnerEntry(kind)
+    session.byKey[owner.jobKey] = owner
+    session.interest[#session.interest + 1] = owner
+  end
+  return session
+end
+
+local function expectedWarmingCoverage()
+  local covered = {}
+  local iterate = ArtifactJobs.completeIterator(warmingAdopted())
+  while true do
+    local job = iterate()
+    if job == nil then
+      break
+    end
+    if job.jobKey ~= "source-plan:global" and job.jobKey ~= "mon-layout:global" then
+      covered[job.jobKey] = true
+    end
+  end
+  return covered
+end
+
+local function pumpUntilSubmitted(session, pool, rounds)
+  for _ = 1, rounds do
+    session:update()
+    if #pool.submitted > 0 then
+      return pool.submitted[1]
+    end
+  end
+  error("background warmup submitted no candidate", 0)
+end
+
+-- Idle authorized play converges on full corpus coverage, but the corpus
+-- is never enrolled at once: a later candidate appears only after the
+-- previous sweep-origin candidate settles.
+function T.authorized_warmup_eventually_covers_the_corpus_one_candidate_at_a_time()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-coverage-generation", pool, backend)
+  session:enableSweep()
+  local seen = {}
+  local outstanding = nil
+  local rounds = 0
+  while session:status().sweepState ~= "exhausted" and rounds < 600 do
+    rounds = rounds + 1
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if not seen[jobKey] then
+        seen[jobKey] = true
+        Assert.isNil(outstanding, "a later candidate enrolls only after the previous one settles: " .. jobKey)
+        outstanding = jobKey
+      end
+    end
+    if outstanding ~= nil then
+      pool.states[outstanding] = "ready"
+      outstanding = nil
+    end
+  end
+  Assert.equal(session:status().sweepState, "exhausted", "idle warmup drains the corpus cursor")
+  local covered = expectedWarmingCoverage()
+  local readyCount = 0
+  for jobKey in pairs(covered) do
+    local entry = session.byKey[jobKey]
+    Assert.notNil(entry, "every corpus artifact registers: " .. jobKey)
+    Assert.isTrue(entry.ready, "every corpus artifact reaches ready: " .. jobKey)
+    readyCount = readyCount + 1
+  end
+  local submittedCount = 0
+  for _ in pairs(seen) do
+    submittedCount = submittedCount + 1
+  end
+  Assert.equal(submittedCount, readyCount, "warmup submits exactly the corpus coverage")
+end
+
+-- Required demand submits ahead of a queued background candidate, and
+-- requesting the queued candidate itself promotes the same record.
+function T.required_demand_overtakes_a_queued_background_candidate()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-overtake-generation", pool, backend)
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  local submittedAfter = false
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey == "script-member:4" then
+      submittedAfter = true
+    end
+  end
+  Assert.isTrue(submittedAfter, "required demand submits while the background candidate waits")
+  Assert.isNil(pool.states[candidate], "the background candidate still awaits execution")
+  pool.states["script-member:4"] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey["script-member:4"].ready, "required demand settles first")
+  Assert.isNil(session.byKey[candidate].ready or nil, "the background candidate stays outstanding")
+  pool.states[candidate] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey[candidate].ready, "background progression resumes after required work")
+end
+
+function T.required_request_promotes_the_queued_background_record()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local session = warmingSession("warming-promotion-generation", pool, backend)
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  local kind, key = candidate:match("^([^:]+):(.+)$")
+  local ready, failure = session:requestJob(kind, key, "required")
+  Assert.isFalse(ready, "the queued candidate answers pending")
+  Assert.isNil(failure, "promotion reports no failure")
+  local entry = assert(session.byKey[candidate], "the candidate keeps its canonical record")
+  Assert.equal(entry.urgency, "required", "promotion strengthens the same record")
+  Assert.equal(entry.priority, 0, "promotion moves the same record to the required lane")
+  for _ = 1, 10 do
+    session:update()
+  end
+  local submissions = 0
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey == candidate then
+      submissions = submissions + 1
+    end
+  end
+  Assert.equal(submissions, 1, "promotion never duplicates the background job")
+end
+
+-- Near prefetch submits before queued exhaustive work on its own lane.
+function T.near_prefetch_submits_before_queued_sweep_work()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-near-generation", pool, backend)
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  local ready, failure = session:requestJob("audio-bank", "3", "near")
+  Assert.isFalse(ready, "near prefetch answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  local nearSubmitted = false
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey == "audio-bank:3" then
+      nearSubmitted = true
+    end
+  end
+  Assert.isTrue(nearSubmitted, "near prefetch submits while sweep work waits")
+  Assert.isNil(pool.states[candidate], "the sweep candidate still awaits execution")
+  local nearEntry = assert(session.byKey["audio-bank:3"], "near demand keeps its record")
+  Assert.equal(nearEntry.priority, 10, "near demand runs on its own middle lane")
+end
+
+-- A background candidate already executing is never cancelled: required
+-- work queues behind it and no second sweep candidate jumps ahead.
+function T.running_background_work_is_never_preempted()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-preemption-generation", pool, backend)
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  pool.states[candidate] = "running"
+  for _ = 1, 5 do
+    session:update()
+  end
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  local requiredSubmitted = false
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey == "script-member:4" then
+      requiredSubmitted = true
+    end
+  end
+  Assert.isTrue(requiredSubmitted, "required demand submits behind the running background job")
+  Assert.equal(pool.states[candidate], "running", "the running background job is never cancelled")
+  local submissionsBefore = #pool.submitted
+  pool.states[candidate] = "ready"
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey[candidate].ready, "the running job completes normally")
+  local laterSubmissions = {}
+  for index = submissionsBefore + 1, #pool.submitted do
+    laterSubmissions[#laterSubmissions + 1] = pool.submitted[index]
+  end
+  Assert.equal(#laterSubmissions, 0, "no second sweep candidate jumps ahead of required work")
+end
+
+-- Aggregate summaries never bulk-enroll their leaf families: every leaf
+-- submits before its summary does.
+function T.background_warmup_registers_leaves_before_summaries()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-leaves-generation", pool, backend)
+  session:enableSweep()
+  local rounds = 0
+  while session:status().sweepState ~= "exhausted" and rounds < 600 do
+    rounds = rounds + 1
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+    end
+  end
+  Assert.equal(session:status().sweepState, "exhausted", "warmup drains with leaves first")
+  local position = {}
+  for index, jobKey in ipairs(pool.submitted) do
+    if position[jobKey] == nil then
+      position[jobKey] = index
+    end
+  end
+  local families = {
+    ["message-summary:global"] = { "message-bank:1", "message-bank:2" },
+    ["audio-summary:global"] = { "audio-bank:3" },
+    ["script-summary:global"] = { "script-member:4" },
+    ["mon-summary:global"] = { "mon-icon-page:0", "mon-portrait-page:1" },
+  }
+  for summary, leaves in pairs(families) do
+    local summaryAt = assert(position[summary], "the summary submits: " .. summary)
+    for _, leaf in ipairs(leaves) do
+      local leafAt = assert(position[leaf], "the leaf submits: " .. leaf)
+      Assert.isTrue(leafAt < summaryAt, leaf .. " submits before " .. summary)
+    end
+  end
+end
+
+-- The complete inventory still enumerates every corpus artifact with
+-- summaries ordered after their leaves.
+function T.complete_inventory_yields_summaries_after_their_leaves()
+  local order = {}
+  local iterate = ArtifactJobs.completeIterator(warmingAdopted())
+  while true do
+    local job = iterate()
+    if job == nil then
+      break
+    end
+    order[#order + 1] = job.jobKey
+  end
+  local position = {}
+  for index, jobKey in ipairs(order) do
+    if position[jobKey] == nil then
+      position[jobKey] = index
+    end
+  end
+  local families = {
+    ["message-summary:global"] = { "message-bank:1", "message-bank:2" },
+    ["audio-summary:global"] = { "audio-bank:3" },
+    ["script-summary:global"] = { "script-member:4" },
+    ["mon-summary:global"] = { "mon-icon-page:0", "mon-portrait-page:1" },
+  }
+  for summary, leaves in pairs(families) do
+    local summaryAt = assert(position[summary], "the inventory yields " .. summary)
+    for _, leaf in ipairs(leaves) do
+      local leafAt = assert(position[leaf], "the inventory yields " .. leaf)
+      Assert.isTrue(leafAt < summaryAt, "the inventory yields " .. leaf .. " before " .. summary)
+    end
+  end
+  local covered = expectedWarmingCoverage()
+  local count, matched = 0, 0
+  for _, jobKey in ipairs(order) do
+    count = count + 1
+    if covered[jobKey] then
+      matched = matched + 1
+    end
+  end
+  local expected = 0
+  for _ in pairs(covered) do
+    expected = expected + 1
+  end
+  Assert.equal(count, expected + 2, "the inventory still enumerates the whole corpus")
+  Assert.equal(matched, expected, "every corpus artifact stays enumerated")
+end
+
+-- Authorization itself performs no cache work: no submission, no corpus
+-- materialization.
+function T.sweep_authorization_itself_enqueues_no_work()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-authorization-generation", pool, backend)
+  local realCompleteJobs = ArtifactJobs.completeJobs
+  ArtifactJobs.completeJobs = function()
+    error("authorization must not materialize the corpus", 0)
+  end
+  local ok, err = pcall(function()
+    session:enableSweep()
+  end)
+  ArtifactJobs.completeJobs = realCompleteJobs
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(#pool.submitted, 0, "authorization submits nothing by itself")
+  session:enableSweep()
+  Assert.equal(#pool.submitted, 0, "repeated authorization stays quiet")
+end
+
+-- Explicit complete builds keep bulk enrollment: several candidates enroll
+-- before the first settles, without any warmup authorization.
+function T.explicit_complete_build_enrolls_without_background_throttle()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-batch-generation", pool, backend)
+  local ready, failure = session:requestComplete("required")
+  Assert.isFalse(ready, "the complete build answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 3 do
+    session:update()
+  end
+  Assert.isTrue(#pool.submitted >= 2, "explicit complete enrolls several candidates before the first settles")
+  Assert.equal(session:status().sweepState, "idle", "batch completion needs no warmup authorization")
+  for _, jobKey in ipairs(pool.submitted) do
+    pool.states[jobKey] = "ready"
+  end
+  for _ = 1, 60 do
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+    end
+  end
+  local done, doneFailure = session:requestComplete("required")
+  Assert.isTrue(done, "the complete build attests once drained")
+  Assert.isNil(doneFailure, "attestation reports no failure")
+end
+
+-- Retirement drops the background cursor and authorization: no further
+-- enrollment follows and authorization calls reject.
+function T.retirement_stops_background_enrollment()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-retirement-generation", pool, backend)
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  session:retire()
+  Assert.equal(pool.retiredEpoch, 1, "retirement releases the pool selection")
+  local status = session:status()
+  Assert.equal(status.enumerated, 0, "retirement drops every retained record")
+  Assert.equal(status.sweepState, "idle", "retirement clears background authorization")
+  local enableOk = pcall(function()
+    session:enableSweep()
+  end)
+  Assert.isFalse(enableOk, "authorization after retirement rejects")
+  local requestOk = pcall(function()
+    session:requestJob("message-bank", "1", "sweep")
+  end)
+  Assert.isFalse(requestOk, "requests after retirement reject")
+  pool.states[candidate] = "ready"
+  Assert.equal(#pool.submitted, 1, "no enrollment follows retirement")
+end
+
+-- A failed background candidate stays an attributed terminal record, the
+-- cursor moves on without retrying it, and exhaustion reports the
+-- incomplete state instead of failing unrelated scopes.
+function T.failed_background_candidate_advances_the_cursor_once()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("warming-failure-generation", pool, backend)
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  pool.states[candidate] = { state = "failed", details = { error = "synthetic warming failure" } }
+  for _ = 1, 10 do
+    session:update()
+  end
+  local entry = assert(session.byKey[candidate], "the failed candidate keeps its record")
+  Assert.isTrue(
+    tostring(entry.failure):find("synthetic warming failure", 1, true) ~= nil,
+    "the failure stays attributed: " .. tostring(entry.failure)
+  )
+  local submissions = 0
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey == candidate then
+      submissions = submissions + 1
+    end
+  end
+  Assert.equal(submissions, 1, "the failed background job never retries itself")
+  local advanced = false
+  for _, jobKey in ipairs(pool.submitted) do
+    if jobKey ~= candidate then
+      advanced = true
+    end
+  end
+  Assert.isTrue(advanced, "the cursor moves past the failed candidate")
+  local rounds = 0
+  while session:status().sweepState == "warming" and rounds < 600 do
+    rounds = rounds + 1
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+    end
+  end
+  Assert.equal(session:status().sweepState, "incomplete", "exhaustion reports the background failure")
+  Assert.isTrue(
+    tostring(session:status().sweepFailure):find("synthetic warming failure", 1, true) ~= nil,
+    "the incomplete state names its cause"
+  )
+  Assert.equal(
+    session.byKey[candidate].failure,
+    session:status().sweepFailure,
+    "the reported cause is the canonical record failure"
+  )
 end
 
 return { metadata = { capabilities = {} }, tests = T }
