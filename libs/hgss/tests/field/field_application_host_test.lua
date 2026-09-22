@@ -9,12 +9,10 @@
 -- registry entry: the host builds it through its own required menuFactory
 -- (the runtime's composition step), and the immutable application registry
 -- dispatches child destinations only. Fakes are the registry/input/
--- controller boundaries; the pointer mapping is exercised through the real
--- StartMenuLayout placement record.
+-- controller boundaries; the host forwards normalized events to the menu
+-- wrapper unchanged, so pointer mapping is the wrapper's contract.
 
 local Assert = require("tests.support.Assert")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldApplicationHost = require("libs.hgss.src.field.FieldApplicationHost")
 
 local T = {
@@ -187,21 +185,6 @@ function T.tests.field_action_failure_releases_menu_ownership_and_surfaces_error
   Assert.equal(input.clearUiCalls, 1)
   Assert.equal(menu.disposeCount, 1)
   Assert.deepEqual(registry.created, {})
-end
-
--- The canonical 256x192 placement: the identity record the pointer tests map
--- through.
-local function canonicalPlacement()
-  return StartMenuLayout.resolve(
-    ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = 256, height = 192 },
-      role = "world",
-      touch = false,
-    }),
-    { x = 0, y = 0, width = 256, height = 192 },
-    1
-  )
 end
 
 function T.tests.construction_requires_the_registry_menu_factory_and_input()
@@ -720,43 +703,47 @@ function T.tests.dispose_twice_never_double_disposes_or_double_clears()
   Assert.equal(host:error(), nil)
 end
 
-function T.tests.set_menu_placement_cancels_the_menu_pointer_capture()
+function T.tests.cancel_delegates_to_the_active_menu_controller_only_in_the_menu_phase()
   local host, _, registry = fixture()
   local menu = openMenu(host, _, registry)
   host:updateFixed({})
-  host:setMenuPlacement(canonicalPlacement())
-  Assert.equal(menu.cancelPointerCaptureCalls, 1, "a placement change cancels an active menu pointer capture")
+  host:cancelPointerCapture()
+  Assert.equal(menu.cancelPointerCaptureCalls, 1, "focus loss delegates cancellation to the open menu")
+  menu.result = { kind = "close" }
+  host:updateFixed({})
+  host:cancelPointerCapture()
+  Assert.equal(menu.cancelPointerCaptureCalls, 1, "a closed host cancels nothing")
+  local keyboardOnly = fakeController()
+  keyboardOnly.cancelPointerCapture = nil
+  registry.controllers.trainer_card = keyboardOnly
+  openMenu(host, _, registry)
+  local menu2 = registry.menuControllers[#registry.menuControllers]
+  menu2.result = { kind = "launch", applicationId = "trainer_card", actionId = "vanilla.trainer_card" }
+  host:updateFixed({})
+  for _ = 1, FieldApplicationHost.FADE_TICKS + 1 do
+    host:updateFixed({})
+  end
+  host:cancelPointerCapture()
+  Assert.equal(host:status().phase, "application", "cancelling without the capability changes nothing")
 end
 
-function T.tests.pointer_events_are_mapped_through_the_placement_for_the_menu_controller()
+function T.tests.menu_controllers_receive_raw_normalized_events_unchanged()
   local host, _, registry = fixture()
   local menu = openMenu(host, _, registry)
   host:updateFixed({})
-  host:setMenuPlacement(canonicalPlacement())
-  host:updateFixed({
+  local batch = {
     { type = "pointer_down", pointerId = "p1", x = 64, y = 48 },
-    { type = "pointer_move", x = 400, y = 100 },
+    { type = "pointer_move", pointerId = "p1", x = 400, y = 100 },
     { type = "pointer_up", pointerId = "p1", x = 64, y = 48 },
     { type = "pointer_scroll", pointerId = "p1", dx = 0, dy = -1 },
-  })
+  }
+  host:updateFixed(batch)
   local events = assert(menu.receivedEvents)
-  Assert.equal(events[1].type, "pointer_down")
-  Assert.equal(events[1].x, 64, "host coordinates map to canonical logical coordinates")
+  Assert.equal(#events, 4, "the host forwards the whole normalized batch")
+  Assert.equal(events[1].x, 64, "host coordinates reach the wrapper unmapped")
   Assert.equal(events[1].y, 48)
-  Assert.equal(events[2].type, "pointer_up", "an event outside the menu frame is dropped")
-  Assert.equal(events[2].x, 64)
-  Assert.equal(events[3], nil, "pointer scroll events are not forwarded to the start menu")
-end
-
-function T.tests.pointer_events_are_dropped_without_a_placement()
-  local host, _, registry = fixture()
-  local menu = openMenu(host, _, registry)
-  host:updateFixed({})
-  host:updateFixed({
-    { type = "pointer_down", pointerId = "p1", x = 64, y = 48 },
-    { type = "pointer_scroll", pointerId = "p1", dx = 0, dy = -1 },
-  })
-  Assert.equal(menu.receivedEvents[1], nil, "no placement means no pointer support in the non-rendering composition")
+  Assert.equal(events[2].type, "pointer_move", "nothing is dropped outside a frame the host no longer owns")
+  Assert.equal(events[4].type, "pointer_scroll", "scroll reaches the wrapper, which decides")
 end
 
 function T.tests.destination_controllers_receive_events_passthrough()
@@ -766,8 +753,7 @@ function T.tests.destination_controllers_receive_events_passthrough()
   menu.result = { kind = "launch", applicationId = "trainer_card", actionId = "vanilla.trainer_card" }
   local destination = fakeController()
   registry.controllers.trainer_card = destination
-  host:setMenuPlacement(canonicalPlacement())
-  for _ = 12, 12 + FieldApplicationHost.FADE_TICKS do
+  for _ = 1, FieldApplicationHost.FADE_TICKS + 1 do
     host:updateFixed({})
   end
   host:updateFixed({ { type = "cancel" }, { type = "pointer_down", pointerId = "p1", x = 0, y = 0 } })

@@ -459,7 +459,6 @@ function T.draw_passes_the_scene_runtime_and_queries_the_menu_host()
           return nil
         end,
       },
-      startMenuPlacement = nil,
       resizePresentation = function() end,
     },
     _pollPresentationTopology = true,
@@ -663,7 +662,6 @@ function T.draw_without_a_menu_host_is_a_programming_error()
           return { phase = "closed", fadeAlpha = 0 }
         end,
       },
-      startMenuPlacement = nil,
       resizePresentation = function() end,
     },
     _pollPresentationTopology = true,

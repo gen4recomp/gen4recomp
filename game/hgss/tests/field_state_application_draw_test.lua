@@ -4,18 +4,19 @@
 -- active modal surface is drawn: a menu phase never draws the card surface
 -- or the world-attached dialogue/signpost, and an application phase never
 -- draws the menu. The application fade covers the surface being transitioned
--- (the world viewport plus the Start Menu placement frame), so an auxiliary
+-- (the world viewport plus the Start Menu plan coverage), so an auxiliary
 -- menu surface can never stay visible while only the world viewport goes
--- black. The Start Menu surface renders through the runtime-owned placement
--- record -- the same record the host maps hit-test points through.
+-- black. The Start Menu surface renders through its resolved presentation
+-- plan -- the same plan pointer input maps through.
 
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
+local PixelScale = require("libs.ui.src.PixelScale")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 
 local T = {}
 
@@ -84,16 +85,14 @@ end
 -- recording into the sink, a fake runtime carrying every field draw touches,
 -- and the topology provider under test. The player visual record is
 -- invisible, so the actor assembly never touches a real asset provider.
----@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table }
+---@param options { hostStatus: table, dialogueModal?: boolean, signpostModal?: boolean, development?: boolean, topology?: ScreenTopology, worldViewport?: table, menuCoverage?: table }
 ---@return FieldState state
 ---@return table[] sink
 local function drawableState(options)
   local sink = {}
   local topology = options.topology or worldTopology()
   local worldViewport = options.worldViewport or { x = 0, y = 0, width = 640, height = 480 }
-  -- The runtime owns the one Start Menu placement record the draw path
-  -- consumes; the fake supplies it exactly like the production runtime does.
-  local placement = StartMenuLayout.resolve(topology, { x = 0, y = 0, width = 640, height = 480 }, 2)
+  local menuCoverage = options.menuCoverage or {}
   local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
   viewport.worldViewport = worldViewport
   local runtime = {
@@ -154,13 +153,19 @@ local function drawableState(options)
       status = function()
         return options.hostStatus
       end,
+      menuCoverage = function()
+        local copied = {}
+        for _, rect in ipairs(menuCoverage) do
+          copied[#copied + 1] = { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+        end
+        return copied
+      end,
     },
     menuHost = {
       presentation = function()
         return nil
       end,
     },
-    startMenuPlacement = placement,
     resizePresentation = function() end,
   }
   local state = setmetatable({
@@ -181,6 +186,15 @@ local function drawableState(options)
       partyScreenRenderer = recordingRenderer("party", sink),
       monIconProvider = { id = "test-icon-provider" },
       menuRenderer = recordingRenderer("script-menu", sink),
+      -- The Start Menu dispatch seam mirrors production: the resolved plan
+      -- executes through the real shared presentation draw with borrowed
+      -- collaborators, so coverage, chrome, and render routing are real.
+      drawStartMenu = function(self, status)
+        ApplicationPresentation.draw(love.graphics, {
+          graphics = love.graphics,
+          startMenuRenderer = assert(self.startMenuRenderer, "the start menu renderer is unavailable"),
+        }, status, assert(status.presentation, "the start menu draws through its presentation plan"))
+      end,
       -- The harness-side dispatch seam mirrors the production presenter map:
       -- explicit ids only, no fallback surface.
       drawApplication = function(self, applicationId, presentation, hostRuntime)
@@ -292,13 +306,35 @@ function T.draw_orders_world_then_signpost_then_hud_when_the_signpost_is_modal()
   Assert.equal(signpostCall[4], 0.5, "the signpost renderer receives the session render alpha")
 end
 
--- Menu phase: only the Start Menu surface is drawn, through the placement
--- record resolved for the current topology. The world-attached dialogue and
--- signpost are not drawn even if they report modal (the session's
--- at-most-one-owner assert guarantees they cannot be, so the draw path must
--- never composite them underneath the menu).
-function T.menu_phase_draws_only_the_start_menu_surface_through_the_placement_record()
+-- Menu phase: only the Start Menu surface is drawn, through its resolved
+-- presentation plan. The world-attached dialogue and signpost are not
+-- drawn even if they report modal (the session's at-most-one-owner assert
+-- guarantees they cannot be, so the draw path must never composite them
+-- underneath the menu).
+function T.menu_phase_draws_only_the_start_menu_surface_through_its_plan()
+  local bodyPlacement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 256, 192),
+    "the menu test host fits the canonical body"
+  )
+  Assert.deepEqual(bodyPlacement.frame, { x = 64, y = 48, width = 512, height = 384 })
+  Assert.equal(bodyPlacement.scale, 2)
   local menuStatus = { selectedPosition = 0, actions = {} }
+  menuStatus.presentation = {
+    panes = { { id = "content", placement = bodyPlacement, interactive = true } },
+    content = {},
+    inputKey = "start-menu",
+    render = function(resources, view, plan)
+      assert(resources.startMenuRenderer, "the menu render borrows its renderer"):draw(
+        view,
+        assert(plan.panes[1], "the menu plan needs its body pane").placement
+      )
+    end,
+    mapInput = function()
+      return nil
+    end,
+    coverage = { { x = 0, y = 0, width = 640, height = 480 } },
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+  }
   local state, sink = drawableState({
     hostStatus = { phase = "menu", fadeAlpha = 0, menu = menuStatus },
     dialogueModal = true,
@@ -313,14 +349,16 @@ function T.menu_phase_draws_only_the_start_menu_surface_through_the_placement_re
     error(err, 0)
   end
 
-  Assert.deepEqual(labels(sink), { "world", "menu" })
-  local menuCall = sink[2]
+  Assert.deepEqual(labels(sink), { "world", "rect", "menu" })
+  local matteCall = sink[2]
+  Assert.deepEqual(
+    { matteCall[6], matteCall[7], matteCall[8], matteCall[9], matteCall[10] },
+    { "fill", 0, 0, 640, 480 },
+    "the fullscreen plan owns its target region before the menu draws"
+  )
+  local menuCall = sink[3]
   Assert.equal(menuCall[2], menuStatus, "the start menu renderer receives the host's menu presentation")
-  local expectedLayout = StartMenuLayout.resolve(worldTopology(), { x = 0, y = 0, width = 640, height = 480 }, 2)
-  Assert.deepEqual(menuCall[3], expectedLayout, "the menu draws through the runtime's placement record")
-  Assert.equal(menuCall[3].surfaceId, "main")
-  Assert.deepEqual(menuCall[3].frame, { x = 64, y = 48, width = 512, height = 384 })
-  Assert.equal(menuCall[3].scale, 2)
+  Assert.deepEqual(menuCall[3], bodyPlacement, "the menu draws through the plan body placement")
 end
 
 -- Application phase: the world stays fully faded (fadeAlpha 1) and only the
@@ -396,7 +434,7 @@ function T.application_phase_draws_the_party_surface_through_the_presentation_di
 end
 
 -- The application fade covers the actual union of the world viewport and the
--- Start Menu placement frame: disjoint surfaces are painted as separate
+-- Start Menu plan coverage: disjoint surfaces are painted as separate
 -- rectangles, so the gap between them is never covered and no region is
 -- painted twice (a bounding box would paint the gap; blindly drawing both
 -- rects would double the alpha where they overlap).
@@ -405,10 +443,10 @@ function T.the_application_fade_paints_disjoint_surfaces_separately_and_never_th
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = dualTopology(),
     worldViewport = { x = 0, y = 0, width = 256, height = 192 },
+    -- Separate the menu surface from the world with a real gap: the fade
+    -- follows the retained plan coverage exactly.
+    menuCoverage = { { x = 320, y = 0, width = 256, height = 192 } },
   })
-  -- Separate the menu surface from the world with a real gap: the placement
-  -- record is runtime-owned, but the draw path must follow it exactly.
-  state.runtime.startMenuPlacement.frame = { x = 320, y = 0, width = 256, height = 192 }
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
     state:draw()
@@ -454,8 +492,8 @@ function T.the_application_fade_never_doubles_alpha_for_a_contained_menu_frame()
   local state, sink = drawableState({
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = worldTopology(),
+    menuCoverage = { { x = 64, y = 48, width = 320, height = 240 } },
   })
-  state.runtime.startMenuPlacement.frame = { x = 64, y = 48, width = 320, height = 240 }
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
     state:draw()
@@ -482,8 +520,8 @@ function T.the_application_fade_paints_only_the_non_overlapping_strip_of_a_parti
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = worldTopology(),
     worldViewport = { x = 0, y = 0, width = 256, height = 192 },
+    menuCoverage = { { x = 128, y = 0, width = 384, height = 192 } },
   })
-  state.runtime.startMenuPlacement.frame = { x = 128, y = 0, width = 384, height = 192 }
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
     state:draw()
@@ -525,8 +563,8 @@ function T.the_application_fade_paints_the_strips_around_a_corner_overlap()
     hostStatus = { phase = "fading_out", fadeAlpha = 0.5 },
     topology = worldTopology(),
     worldViewport = { x = 0, y = 0, width = 256, height = 192 },
+    menuCoverage = { { x = 128, y = -64, width = 384, height = 320 } },
   })
-  state.runtime.startMenuPlacement.frame = { x = 128, y = -64, width = 384, height = 320 }
   local restore = spyGraphics(sink)
   local ok, err = pcall(function()
     state:draw()

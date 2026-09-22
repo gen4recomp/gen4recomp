@@ -1,5 +1,4 @@
--- Renders the Start Menu SUB selector through the placement record from
--- StartMenuLayout. Entry art is OBJ icon sprites, never baked background
+-- Renders the Start Menu SUB selector through a resolved placement record. Entry art is OBJ icon sprites, never baked background
 -- rects: the generated field-UI manifest's `startMenu` section carries the
 -- retail icon table (per-row art kind with source-composed normal/selected
 -- visual records, label-bank data, the conditional female variant), the
@@ -14,10 +13,9 @@
 -- repeats source coordinates. An open menu always has a selection, so the
 -- presentation requires the selected source position; the nil presentation
 -- is the closed-menu no-op. Drawing and hit testing consume the same
--- StartMenuLayout placement record (hostToLogical): the surface draws under
--- translate(frame origin) + scale(placement scale)
--- in canonical coordinates, so rendering and hit testing share one record
--- with no second set of scaled rectangles. The surface is not a generic
+-- resolved placement record: the surface draws inside its logical
+-- coordinate space through the shared surface scope, so rendering and hit
+-- testing share one record with no second set of scaled rectangles. The surface is not a generic
 -- list menu: only the generated images are drawn, at identity tint, with no
 -- theme colors or styled primitives. Construction is failure-safe: a missing
 -- asset is a typed error, a later acquisition/quad failure releases every
@@ -28,6 +26,7 @@
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldDrawState = require("libs.hgss.src.presentation.FieldDrawState")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class StartMenuRenderer
 ---@field _graphics love.graphics
@@ -273,15 +272,16 @@ end
 -- Draws the canonical menu surface through the placement record: the SUB
 -- chrome at the canonical origin, then per-action icons and labels keyed by
 -- the same generated position records pointer input and navigation consume,
--- all under translate(frame origin) + scale(record scale) so the record's
--- frame is exactly where the surface lands and hostToLogical's inverse
--- transform maps hit points back onto the same canonical coordinates.
+-- all inside the placement's logical coordinate space through the shared
+-- surface scope, so the record's frame is exactly where the surface lands
+-- and hostToLogical's inverse transform maps hit points back onto the same
+-- canonical coordinates.
 -- No-op (and no state touched) when this renderer has no images. Restores
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
 ---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[] }?
----@param placement StartMenuLayout.Placement
+---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
     return
@@ -292,54 +292,59 @@ function StartMenuRenderer:draw(presentation, placement)
   )
   local lg = assert(self._graphics)
   FieldDrawState.protectedDraw(lg, function()
-    -- Everything draws in canonical coordinates under the placement record's
-    -- transform: translate(frame origin) + scale(record scale). The manifest
-    -- rects are canonical, so nothing is scaled twice. An open menu always
-    -- has a selection, so the presentation's selected position is validated
-    -- before anything reaches the graphics namespace.
-    lg.translate(placement.frame.x, placement.frame.y)
-    lg.scale(placement.scale, placement.scale)
-    lg.setColor(1, 1, 1, 1)
-    assert(
-      type(presentation.selectedPosition) == "number" and presentation.selectedPosition % 1 == 0,
-      "the start menu presentation requires the selected source position"
-    )
-    local positions = assert(
-      self.menu.interactive and self.menu.interactive.positions,
-      "the start menu presentation requires the generated positions"
-    )
-    assert(
-      positions[presentation.selectedPosition] ~= nil,
-      "selected position " .. tostring(presentation.selectedPosition) .. " is outside the generated position set"
-    )
-    local actions = presentation.actions
-    if actions ~= nil then
-      assert(type(actions) == "table", "the start menu presentation actions must be a table")
-    end
-    -- Presentation-dependent faults (unknown positions, unknown icons) are
-    -- rejected before anything reaches the graphics namespace: a rejected
-    -- draw draws nothing.
-    if actions ~= nil then
-      local iconTable = assert(self.menu.iconTable, "the start menu presentation requires the icon table")
-      for _, action in ipairs(actions) do
-        assert(
-          type(action.position) == "number" and positions[action.position] ~= nil,
-          "action position " .. tostring(action.position) .. " is outside the generated position set"
-        )
-        assert(
-          type(action.icon) == "number" and iconTable[action.icon + 1] ~= nil,
-          "action icon " .. tostring(action.icon) .. " is outside the icon table"
-        )
-      end
-    end
-    lg.draw(assert(self._subImage), assert(self._subQuad), 0, 0)
-    if actions ~= nil then
-      for _, action in ipairs(actions) do
-        self:_drawActionIcon(action, presentation.selectedPosition, presentation.trainerGender)
-        self:_drawActionLabel(action)
-      end
-    end
+    LogicalSurface.draw(lg, placement, function()
+      self:_drawSurface(presentation)
+    end)
   end)
+end
+
+-- The source draws in canonical coordinates: validation first (a rejected
+-- draw draws nothing), then the SUB chrome at the canonical origin plus
+-- per-action icons and labels. The manifest rects are canonical, so
+-- nothing is scaled twice.
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[] }
+function StartMenuRenderer:_drawSurface(presentation)
+  local lg = assert(self._graphics)
+  lg.setColor(1, 1, 1, 1)
+  assert(
+    type(presentation.selectedPosition) == "number" and presentation.selectedPosition % 1 == 0,
+    "the start menu presentation requires the selected source position"
+  )
+  local positions = assert(
+    self.menu.interactive and self.menu.interactive.positions,
+    "the start menu presentation requires the generated positions"
+  )
+  assert(
+    positions[presentation.selectedPosition] ~= nil,
+    "selected position " .. tostring(presentation.selectedPosition) .. " is outside the generated position set"
+  )
+  local actions = presentation.actions
+  if actions ~= nil then
+    assert(type(actions) == "table", "the start menu presentation actions must be a table")
+  end
+  -- Presentation-dependent faults (unknown positions, unknown icons) are
+  -- rejected before anything reaches the graphics namespace: a rejected
+  -- draw draws nothing.
+  if actions ~= nil then
+    local iconTable = assert(self.menu.iconTable, "the start menu presentation requires the icon table")
+    for _, action in ipairs(actions) do
+      assert(
+        type(action.position) == "number" and positions[action.position] ~= nil,
+        "action position " .. tostring(action.position) .. " is outside the generated position set"
+      )
+      assert(
+        type(action.icon) == "number" and iconTable[action.icon + 1] ~= nil,
+        "action icon " .. tostring(action.icon) .. " is outside the icon table"
+      )
+    end
+  end
+  lg.draw(assert(self._subImage), assert(self._subQuad), 0, 0)
+  if actions ~= nil then
+    for _, action in ipairs(actions) do
+      self:_drawActionIcon(action, presentation.selectedPosition, presentation.trainerGender)
+      self:_drawActionLabel(action)
+    end
+  end
 end
 
 function StartMenuRenderer:release()

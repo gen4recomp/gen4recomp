@@ -81,7 +81,6 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
         return nil
       end,
     },
-    startMenuPlacement = { frame = { x = 0, y = 0, width = windowWidth, height = windowHeight } },
     resizePresentation = function() end,
   }
   local state = setmetatable({

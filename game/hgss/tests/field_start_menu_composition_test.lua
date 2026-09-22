@@ -14,6 +14,7 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = { tests = {} }
 
@@ -83,9 +84,25 @@ end
 
 -- The minimal fake runtime composition: real policy, real icon contract,
 -- real message provider, and fakes only at the true host boundaries (world
--- flags, installed applications, live services).
+-- flags, installed applications, live services). The menu wrapper reads
+-- the current display facts and its window memory, so the fake carries the
+-- same measurement closure and per-application memory the production
+-- runtime supplies.
 local function composeSelf(overrides)
   overrides = overrides or {}
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    touch = false,
+    role = "world",
+  })
+  local display = {
+    width = 640,
+    height = 480,
+    topology = topology,
+    pixelRatio = 1,
+    signature = "composition",
+  }
   return {
     scripts = { worldState = overrides.worldState or worldWith(ALL_FLAGS) },
     uiManifest = overrides.uiManifest or manifestWithIcons(),
@@ -106,6 +123,10 @@ local function composeSelf(overrides)
     itemCatalog = {},
     saveStore = {},
     audio = nil,
+    presentationDisplay = display,
+    presentationWindows = {
+      start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+    },
   }
 end
 

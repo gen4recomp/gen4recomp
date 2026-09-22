@@ -63,7 +63,6 @@ local function stubPresentationRuntime(cache)
       collectSpriteIds = function() end,
     },
     playerVisual = { spriteId = 0 },
-    startMenuPlacement = nil,
     resizePresentation = function() end,
     dispose = function() end,
   }, FieldRuntime)
@@ -112,7 +111,9 @@ end
 -- Only the documented runtime contract crosses the state boundary: adding a
 -- state-only option must not silently become a runtime option. The
 -- development flag is a state-only presentation option (the playtest HUD and
--- developer binds), so it stays behind the boundary.
+-- developer binds), so it stays behind the boundary. The shared display
+-- context always crosses so the state and the runtime measure the same
+-- actual display.
 function T.only_documented_runtime_options_reach_the_runtime()
   local options = fieldStateOptions()
   local saveValidation = GameSaveValidation.new({
@@ -128,6 +129,7 @@ function T.only_documented_runtime_options_reach_the_runtime()
     fieldScaleConfig = { mode = "test" },
     presentation = true,
     saveValidation = saveValidation,
+    displayContext = state.displayContext,
   })
   Assert.equal(captured.game, game)
   Assert.equal(state.development, true, "the state keeps the development flag for its own presentation")

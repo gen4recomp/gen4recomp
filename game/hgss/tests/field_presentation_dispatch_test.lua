@@ -356,4 +356,75 @@ function T.bag_draw_borrows_shared_resources_without_releasing_them()
   end)
 end
 
+-- The Start Menu dispatch executes the resolved plan's render callback with
+-- the borrowed renderer and never releases it: the plan owns geometry,
+-- the resources own the GPU objects.
+function T.start_menu_draw_executes_the_resolved_plan_with_borrowed_resources()
+  local sink, calls = {}, {}
+  local doubles = buildDoubles(sink, calls)
+  doubles["libs.hgss.src.ui.StartMenuRenderer"] = {
+    new = function(_)
+      return {
+        draw = function(_, presentation, placement)
+          sink[#sink + 1] = { "menu", presentation, placement }
+        end,
+        release = function(_)
+          calls.menu = (calls.menu or 0) + 1
+        end,
+      }
+    end,
+  }
+  local saved = {}
+  for _, name in ipairs(CONSTRUCTOR_MODULES) do
+    saved[name] = package.loaded[name]
+    package.loaded[name] = doubles[name]
+  end
+  package.loaded[TARGET_MODULE] = nil
+  local PixelScale = require("libs.ui.src.PixelScale")
+  local FakeGraphics = require("tests.support.FakeGraphics").new
+  local ok, err = pcall(function()
+    local FieldPresentationResources = require(TARGET_MODULE)
+    local resources = FieldPresentationResources.new(compositionRuntime())
+    local body = assert(
+      PixelScale.placeFixed({ x = 0, y = 0, width = 640, height = 480 }, 256, 192),
+      "the dispatch test host fits the canonical body"
+    )
+    local status = { selectedPosition = 0, actions = {} }
+    status.presentation = {
+      panes = { { id = "content", placement = body, interactive = true } },
+      content = {},
+      inputKey = "start-menu",
+      render = function(borrowed, view, plan)
+        assert(borrowed.startMenuRenderer, "the menu render borrows its renderer"):draw(
+          view,
+          assert(plan.panes[1], "the menu plan needs its body pane").placement
+        )
+      end,
+      mapInput = function()
+        return nil
+      end,
+      coverage = { { x = 0, y = 0, width = 640, height = 480 } },
+      backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+    }
+    local graphics = FakeGraphics({})
+    resources:drawStartMenu(status, graphics)
+    Assert.equal(#sink, 1, "exactly the chosen render callback draws")
+    Assert.equal(sink[1][1], "menu", "the menu draws through the owned renderer")
+    Assert.equal(sink[1][2], status, "the renderer receives the wrapper snapshot")
+    Assert.deepEqual(sink[1][3], body, "the renderer draws at the plan body placement")
+    Assert.isNil(calls.menu, "drawing never releases the borrowed renderer")
+    Assert.throws(function()
+      resources:drawStartMenu({ selectedPosition = 0 })
+    end, "drawing without a published plan fails instead of drawing stale content")
+    resources:dispose()
+  end)
+  for _, name in ipairs(CONSTRUCTOR_MODULES) do
+    package.loaded[name] = saved[name]
+  end
+  package.loaded[TARGET_MODULE] = nil
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }

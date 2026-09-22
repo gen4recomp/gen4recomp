@@ -168,7 +168,6 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
@@ -210,13 +209,6 @@ local function bootCoveredField(scope)
   local hostWidth, hostHeight = love.graphics.getDimensions()
   local viewport = FieldViewport.new(hostWidth, hostHeight, { mode = "expanded" })
   viewport.worldViewport = { x = 0, y = 0, width = hostWidth, height = hostHeight }
-  local bootTopology = ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = hostWidth, height = hostHeight },
-    touch = false,
-    role = "world",
-  })
-  local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight }, 1)
   local cache = FieldStatePresentationFixture.cache()
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
   -- The draw path renders through the real field renderer, which needs a
@@ -282,7 +274,6 @@ local function bootCoveredField(scope)
           return { visible = false }
         end,
       },
-      startMenuPlacement = placement,
       resizePresentation = function() end,
       dispose = function() end,
       update = function() end,

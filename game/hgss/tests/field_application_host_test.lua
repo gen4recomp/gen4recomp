@@ -85,18 +85,17 @@ local function ensureTouchPlacement(game, width, height)
   game.runtime:resizePresentation(width, height, touchTopology(width, height))
 end
 
--- The published placement record carries frame/scale/logical dimensions; the
--- shared logical mapper additionally requires an origin, which is exactly
--- the frame origin on this host. Synthesized here for readout only.
-local function readablePlacement(runtime)
-  local placement = assert(runtime.startMenuPlacement, "the runtime must publish the start menu placement record")
-  return {
-    frame = placement.frame,
-    origin = placement.origin or { x = placement.frame.x, y = placement.frame.y },
-    scale = placement.scale,
-    logicalWidth = placement.logicalWidth,
-    logicalHeight = placement.logicalHeight,
-  }
+-- The published plan's interactive body placement: the single record the
+-- session draws and inverts through. Read out for test pointing only.
+local function readablePlacement(game)
+  local menu = assert(game.runtime.applicationHost:status().menu, "the start menu must be open")
+  local plan = assert(menu.presentation, "the open menu must publish its presentation plan")
+  for _, pane in ipairs(assert(plan.panes, "the plan must carry its panes")) do
+    if pane.interactive then
+      return assert(pane.placement, "the body pane must carry its placement")
+    end
+  end
+  error("the windowed plan must carry an interactive body pane", 0)
 end
 
 local function findMenuAction(game, id)
@@ -118,7 +117,7 @@ local function hostPointForPosition(game, position)
   local rect = record.hitRect
   local centerX = rect.x + rect.width / 2
   local centerY = rect.y + rect.height / 2
-  return LayoutGeometry.logicalToHost(readablePlacement(runtime), centerX, centerY)
+  return LayoutGeometry.logicalToHost(readablePlacement(game), centerX, centerY)
 end
 
 local function activateActionById(game, id)
@@ -379,10 +378,14 @@ function T.tests.resize_cancels_an_active_menu_pointer_capture()
     local preX, preY = hostPointForPosition(game, chosenPosition --[[@as integer]])
     runtime.input:pointerDown("touch:1", preX, preY)
     game:step()
-    -- The capture is held across the resize; the release lands on the same
-    -- canonical slot at the new scale and must be discarded by the
-    -- cancellation (a press before a resize cannot activate post-resize).
+    -- The capture is held across the resize. The published plan follows
+    -- on the next tick (not synchronously), so one step re-resolves through
+    -- the new measurement and discards the held press; the release then
+    -- lands on the same canonical slot at the new scale and must be
+    -- discarded by the cancellation (a press before a resize cannot
+    -- activate post-resize).
     runtime:resizePresentation(1024, 768, touchTopology(1024, 768))
+    game:step()
     local postX, postY = hostPointForPosition(game, chosenPosition --[[@as integer]])
     runtime.input:pointerUp("touch:1", postX, postY)
     game:step()
@@ -474,6 +477,105 @@ function T.tests.normal_menu_presents_only_icon_backed_visual_actions()
       "menu",
       "confirming the disabled entry " .. tostring(targetId) .. " keeps the menu open"
     )
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Presentation changes must not change application lifetime: one modal input
+-- lifetime spans menu, child, and return; both fades keep their twelve-tick
+-- cadence; the modal never leaks ticks into world simulation; the published
+-- plan owns drawing and input together, with fullscreen matte on a native
+-- host and an empty coverage on a windowed host that leaves the paused
+-- world visible outside itself.
+function T.tests.menu_child_return_keeps_one_lifetime_twelve_tick_fades_and_plan_coverage()
+  local game = bootGame()
+  local ok, err = xpcall(function()
+    local runtime = game.runtime
+    local input = runtime.input
+    local begun, cleared = 0, 0
+    local beginUi = input.beginUi
+    local clearUi = input.clearUi
+    input.beginUi = function(self, tick)
+      begun = begun + 1
+      return beginUi(self, tick)
+    end
+    input.clearUi = function(self)
+      cleared = cleared + 1
+      return clearUi(self)
+    end
+    local function phase()
+      return runtime.applicationHost:status().phase
+    end
+    local function stepTo(next, cap, label)
+      local ticks = 0
+      while phase() ~= next and ticks < cap do
+        game:step()
+        ticks = ticks + 1
+      end
+      Assert.equal(phase(), next, label)
+      return ticks
+    end
+
+    ensureTouchPlacement(game, 640, 480)
+    openMenu(game)
+    Assert.equal(begun, 1, "opening the menu must begin the modal input lifetime once")
+    local hostStatus = runtime.applicationHost:status()
+    local plan = assert(hostStatus.menu.presentation, "the open menu must publish its presentation plan")
+    Assert.isTrue(
+      (plan.coverage ~= nil and #plan.coverage >= 1) or plan.window == nil,
+      "a fullscreen native plan must own its target region"
+    )
+    local session = assert(runtime.session, "the field session must exist")
+    local playerX, playerZ = session.player.fieldX, session.player.fieldZ
+    local edge = "modality-probe:south"
+    runtime.input:pressDirection("south", edge)
+    game:step()
+    runtime.input:releaseDirection(edge)
+    game:step()
+    Assert.equal(session.player.fieldX, playerX, "modal ticks must not move the player")
+    Assert.equal(session.player.fieldZ, playerZ, "modal ticks must not move the player")
+    Assert.equal(
+      runtime.applicationHost:status().menu.selectedPosition,
+      5,
+      "the kept navigation must still drive the modal"
+    )
+    edge = "modality-probe:north"
+    runtime.input:pressDirection("north", edge)
+    game:step()
+    runtime.input:releaseDirection(edge)
+    game:step()
+
+    activateActionById(game, "vanilla.trainer_card")
+    Assert.equal(phase(), "fading_out", "launching a destination must start the fade-out")
+    Assert.equal(stepTo("application", 16, "the fade-out must reach the child"), 12, "the fade-out keeps twelve ticks")
+    Assert.equal(begun, 1, "the child must not begin a second input lifetime")
+    game.runtime:pressCancel()
+    game:step()
+    game.runtime:releaseCancel()
+    Assert.equal(phase(), "fading_in", "closing the child must start the fade-in")
+    Assert.equal(stepTo("menu", 16, "the fade-in must return to the menu"), 12, "the fade-in keeps twelve ticks")
+    Assert.equal(
+      runtime.applicationHost:status().menu.selectedPosition,
+      4,
+      "the return must remember the launched selection"
+    )
+    Assert.equal(begun, 1, "the return must not begin a second input lifetime")
+    Assert.equal(cleared, 0, "the return must not release the input lifetime early")
+    pressMenuEdge(game)
+    stepTo("closed", 16, "the menu must close")
+    Assert.equal(cleared, 1, "closing the menu must release the input lifetime once")
+
+    ensureTouchPlacement(game, 1280, 720)
+    openMenu(game)
+    local wide = runtime.applicationHost:status()
+    local widePlan = assert(wide.menu.presentation, "the wide host must publish its presentation plan")
+    Assert.notNil(widePlan.window, "a wide host must frame the menu in a window")
+    Assert.equal(#(widePlan.coverage or {}), 0, "a window must not clear pixels outside itself")
+    pressMenuEdge(game)
+    stepTo("closed", 16, "the windowed menu must close")
   end, debug.traceback)
   game:close()
   if not ok then

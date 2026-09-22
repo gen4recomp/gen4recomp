@@ -17,8 +17,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PngWriter = require("libs.assets.src.PngWriter")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 
 local T = {}
@@ -26,18 +25,12 @@ local T = {}
 local CANONICAL_WIDTH = 256
 local CANONICAL_HEIGHT = 192
 
--- The placement record for a canonical 256x192 host, resolved through the
--- real pure layout module: the same record hit testing maps through.
+-- The placement record for a canonical 256x192 host, fitted through the
+-- real shared pixel policy: the same record hit testing maps through.
 local function canonicalPlacement()
-  return StartMenuLayout.resolve(
-    ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
-      touch = false,
-      role = "world",
-    }),
-    { x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT },
-    1
+  return assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = CANONICAL_WIDTH, height = CANONICAL_HEIGHT }, 256, 192),
+    "the canonical host fits the canonical surface"
   )
 end
 
@@ -141,7 +134,7 @@ end
 ---@param cacheFs CacheFs
 ---@param manifest table
 ---@param selectedPosition integer
----@param placement StartMenuLayout.Placement
+---@param placement LayoutGeometry.Placement
 ---@param width integer
 ---@param height integer
 ---@return love.ImageData
@@ -270,15 +263,9 @@ end
 -- layout module -- the record's frame and scale drive the draw, and the
 -- canonical surface never reflows internally.
 function T.scaled_selector_matches_through_the_record_transform(scope)
-  local placement = StartMenuLayout.resolve(
-    ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = 512, height = 384 },
-      touch = false,
-      role = "world",
-    }),
-    { x = 0, y = 0, width = 512, height = 384 },
-    2
+  local placement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 512, height = 384 }, 256, 192),
+    "the 512x384 host fits the canonical surface"
   )
   Assert.equal(placement.scale, 2, "the 512x384 host resolves an integer scale of 2")
   Assert.deepEqual(placement.frame, { x = 0, y = 0, width = 512, height = 384 })
@@ -474,15 +461,9 @@ function T.restores_graphics_state_after_draw(scope)
       selectedPosition = 0,
       actions = { { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" } },
     },
-    StartMenuLayout.resolve(
-      ScreenTopology.oneDisplay({
-        id = "main",
-        rect = { x = 0, y = 0, width = 1280, height = 720 },
-        touch = false,
-        role = "world",
-      }),
-      { x = 0, y = 0, width = 1280, height = 720 },
-      3
+    assert(
+      PixelScale.placeFixed({ x = 0, y = 0, width = 1280, height = 720 }, 256, 192, { preferredScale = 3 }),
+      "the 720p host fits the canonical surface"
     )
   )
 

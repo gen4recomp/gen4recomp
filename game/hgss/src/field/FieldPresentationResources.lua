@@ -17,6 +17,7 @@ local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerr
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local TrainerCardRenderer = require("libs.hgss.src.ui.TrainerCardRenderer")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
@@ -221,6 +222,22 @@ function FieldPresentationResources:drawApplication(applicationId, presentation,
   end
   local draw = assert(presenter, "the application presenter is unavailable")
   draw(presentation, runtime)
+end
+
+-- Draws the Start Menu through its resolved plan: one borrowed resource
+-- record (the owned renderer plus the host graphics namespace) executes
+-- the interface's chosen render callback. Ownership stays here; the
+-- callback borrows and never releases.
+---@param status table<string, unknown> the menu wrapper status carrying presentation=plan
+---@param graphics table<string, unknown>? host graphics namespace for coverage/chrome (defaults to love.graphics)
+function FieldPresentationResources:drawStartMenu(status, graphics)
+  local presentation = assert(status and status.presentation, "the start menu draws through its presentation plan")
+  local hostGraphics = graphics or (love and love.graphics)
+  assert(type(hostGraphics) == "table", "start menu drawing requires its host graphics namespace")
+  ApplicationPresentation.draw(hostGraphics, {
+    graphics = hostGraphics,
+    startMenuRenderer = assert(self.startMenuRenderer, "start menu renderer is unavailable"),
+  }, status, presentation)
 end
 
 function FieldPresentationResources:dispose()

@@ -12,7 +12,6 @@ local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 
@@ -36,13 +35,6 @@ local function boot(withCover)
   local viewport = FieldViewport.new(hostWidth, hostHeight, { mode = "expanded" })
   viewport.worldViewport = { x = 0, y = 0, width = hostWidth, height = hostHeight }
   local dims = { width = hostWidth, height = hostHeight }
-  local bootTopology = ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = hostWidth, height = hostHeight },
-    touch = false,
-    role = "world",
-  })
-  local placement = StartMenuLayout.resolve(bootTopology, { x = 0, y = 0, width = hostWidth, height = hostHeight }, 1)
   local cache = FieldStatePresentationFixture.cache()
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
   local originalNew = FieldRuntime.new
@@ -98,7 +90,6 @@ local function boot(withCover)
           return { visible = false }
         end,
       },
-      startMenuPlacement = placement,
       resizePresentation = function(_, width, height)
         viewport.worldViewport = { x = 0, y = 0, width = width, height = height }
         dims.width, dims.height = width, height

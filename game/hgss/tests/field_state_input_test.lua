@@ -436,4 +436,75 @@ function T.menu_button_edges_reach_the_runtime_input_source_aware_model()
   Assert.deepEqual(input:snapshot(), { heldDirection = nil, actionDown = false, cancelDown = false, menuDown = false })
 end
 
+function T.focus_loss_clears_physical_input_and_cancels_presentation_capture()
+  local cleared, cancelled = 0, 0
+  local state = setmetatable({
+    runtime = {
+      input = {
+        clearAll = function()
+          cleared = cleared + 1
+        end,
+      },
+      applicationHost = {
+        cancelPointerCapture = function()
+          cancelled = cancelled + 1
+        end,
+      },
+    },
+  }, FieldState)
+  state:focus(false)
+  Assert.equal(cleared, 1, "blur clears held and edge state")
+  Assert.equal(cancelled, 1, "blur delegates presentation capture cancellation")
+  state:focus(true)
+  Assert.equal(cleared, 1, "regaining focus clears nothing")
+  Assert.equal(cancelled, 1, "regaining focus cancels nothing")
+end
+
+function T.update_refreshes_the_display_before_runtime_ticks()
+  local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+  local topology = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 640, height = 480 },
+    role = "world",
+    touch = false,
+  })
+  local displayContext = DisplayContext.new({
+    graphics = {
+      getDimensions = function()
+        return 640, 480
+      end,
+      getDPIScale = function()
+        return 1
+      end,
+    },
+    topologyProvider = function()
+      return topology
+    end,
+  })
+  local updates, resizes = 0, {}
+  local state = setmetatable({
+    runtime = {
+      update = function()
+        updates = updates + 1
+        Assert.equal(#resizes, 1, "the display refreshes before the first runtime tick")
+      end,
+      resizePresentation = function(_, width, height, measured)
+        resizes[#resizes + 1] = { width, height, measured }
+      end,
+      starterChoice = nil,
+    },
+    displayContext = displayContext,
+    actorPresentation = {
+      sync = function() end,
+    },
+  }, FieldState)
+  state:update(0.016)
+  Assert.equal(updates, 1, "the runtime ticks after the refresh")
+  Assert.equal(#resizes, 1, "one structural sync reaches the runtime")
+  Assert.equal(resizes[1][1], 640, "the refresh measures the actual drawable")
+  Assert.equal(resizes[1][2], 480, "the refresh measures the actual drawable")
+  state:update(0.016)
+  Assert.equal(#resizes, 1, "an unchanged display never re-syncs")
+end
+
 return { tests = T }

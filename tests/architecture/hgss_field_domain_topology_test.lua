@@ -80,7 +80,6 @@ local FIELD_COORDINATION = {
   "FollowingMonController",
   "FollowingMonTransitionController",
   "MapInitScriptController",
-  "StartMenuLayout",
 }
 
 local PRESENTATION = { "BillboardTransform" }

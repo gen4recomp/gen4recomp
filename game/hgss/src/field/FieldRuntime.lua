@@ -57,9 +57,9 @@ local MapProps = require("libs.hgss.src.world.MapProps")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
 local FieldWeatherResolver = require("libs.hgss.src.world.FieldWeatherResolver")
-local StartMenuController = require("libs.hgss.src.ui.StartMenuController")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")
+local StartMenuState = require("game.hgss.src.field.StartMenuState")
+local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local TrainerCardController = require("libs.hgss.src.ui.TrainerCardController")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local FieldAudio = require("game.hgss.src.audio.FieldAudio")
@@ -98,6 +98,9 @@ end
 ---@field viewportWidth integer?
 ---@field viewportHeight integer?
 ---@field screenTopology ScreenTopology?
+---@field displayContext DisplayContext? shared actual-display measurement owner (defaults to a runtime-owned context)
+---@field displayGraphics table<string, unknown>? graphics namespace for the default display context
+---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field overrideFs table<string, unknown>? read-shaped repository filesystem override
 ---@field presentation boolean?
 ---@field scriptHosts table<string, unknown>? deterministic host boundaries for script effects
@@ -167,7 +170,11 @@ end
 ---@field transitionPanel "exit"|"enter"|nil
 ---@field applications FieldApplicationRegistry the immutable per-runtime destination application catalogue
 ---@field applicationHost FieldApplicationHost the one application modal owner the session steps
----@field startMenuPlacement StartMenuLayout.Placement? the one Start Menu placement record rendering and pointer mapping share
+---@field displayContext DisplayContext the actual-display measurement owner (shared or runtime-owned)
+---@field presentationDisplay DisplayMeasurement? the complete measured display rendering and menu input share
+---@field _displayTopology ScreenTopology? the latest resize topology tracked by the default display context
+---@field presentationWindows table<string, table<string, { x: number, y: number }>>? per-application session-only window memory
+---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field dayNight fun(): string?
 ---@field audioOutput table<string, unknown>?
 ---@field derivedAssets table<string, function>?
@@ -530,9 +537,27 @@ function FieldRuntime.new(game, options)
     savePublished = false,
     localClock = options.localClock or LocalClock.system(),
     weatherClock = options.weatherClock,
+    presentationOverrides = options.presentationOverrides,
     errorText = nil,
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
   }, FieldRuntime)
+  -- The actual-display measurement owner: shared when the product root
+  -- supplies one, otherwise a runtime-owned context whose provider tracks
+  -- the latest resize topology (or the context default without one). The
+  -- runtime never acquires graphics itself.
+  self._displayTopology = options.screenTopology
+  if options.displayContext ~= nil then
+    self.displayContext = options.displayContext
+  else
+    local function displayTopologyProvider()
+      return self._displayTopology
+    end
+    local provider
+    if options.screenTopology ~= nil then
+      provider = displayTopologyProvider
+    end
+    self.displayContext = DisplayContext.new({ graphics = options.displayGraphics, topologyProvider = provider })
+  end
   self.saveCoordinator = FieldSaveCoordinator.new(self)
   self.worldSwapCoordinator = FieldWorldSwapCoordinator.new(self)
   self.weatherClock = self.weatherClock or defaultWeatherClock(self.localClock)
@@ -912,16 +937,14 @@ function FieldRuntime:_load()
       fieldAction = fieldAction,
       effect = playSequence,
     })
-    -- The one Start Menu placement record: the runtime computes it from the
-    -- boot topology (so pointer input works before any resize) and re-applies
-    -- it on presentation-geometry changes; rendering and the host's pointer
-    -- mapper consume this exact record.
-    self.startMenuPlacement = nil
-    if self.screenTopology ~= nil then
-      self.startMenuPlacement =
-        StartMenuLayout.resolve(self.screenTopology, self.viewport.referenceFrame, self.fieldPixelScale:resolvedScale())
-      self.applicationHost:setMenuPlacement(self.startMenuPlacement)
-    end
+    -- The initial display measurement and per-application window memory:
+    -- the runtime measures from the boot topology (or the actual default)
+    -- so pointer input works before any resize; the menu wrapper consumes
+    -- this exact record through its measurement closure.
+    self.presentationWindows = {
+      start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+    }
+    self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
 
     -- Interaction discovery: the resolver is pure and consults the same
     -- live-or-probe actor lookup movement collision uses, so both agree about
@@ -1410,7 +1433,7 @@ function FieldRuntime:_applicationDescriptors()
 end
 
 ---@param rememberedActionId string?
----@return StartMenuController? nil when the source has no present actions
+---@return StartMenuState? nil when the source has no present actions
 function FieldRuntime:_composeStartMenu(rememberedActionId)
   local world = self.scripts.worldState
   local flags = FieldScriptSymbols.flagsByName
@@ -1501,14 +1524,24 @@ function FieldRuntime:_composeStartMenu(rememberedActionId)
     return nil
   end
 
-  return StartMenuController.new({
+  local startMenuInteractive =
+    assert(startMenuSection.interactive, "the field UI manifest must carry the start menu interactive record")
+  local windowMemory = assert(
+    self.presentationWindows and self.presentationWindows.start_menu,
+    "the start menu wrapper requires its runtime window memory"
+  )
+  local startMenuOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.start_menu or nil
+  local function measureDisplay()
+    return self.presentationDisplay
+  end
+  return StartMenuState.new({
     entries = entries,
-    interactive = assert(
-      startMenuSection.interactive,
-      "the field UI manifest must carry the start menu interactive record"
-    ),
+    interactive = startMenuInteractive,
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
+    measureDisplay = measureDisplay,
+    windowState = windowMemory,
+    overrides = startMenuOverrides,
   })
 end
 
@@ -1765,11 +1798,9 @@ function FieldRuntime:applyFieldPixelScaleChange()
 end
 
 -- Presentation geometry sync owned by the runtime: the viewport and menu
--- host geometry, the new screen topology, the one Start Menu placement
--- record (recomputed from the topology and the viewport's world reference
--- frame and handed to the application host for pointer mapping), and the
--- camera projection update together. FieldState calls this exactly once per
--- structural presentation-geometry change.
+-- host geometry, the new screen topology, the complete measured display,
+-- and the camera projection update together. FieldState calls this exactly
+-- once per structural presentation-geometry change.
 ---@param width integer
 ---@param height integer
 ---@param screenTopology ScreenTopology
@@ -1779,9 +1810,8 @@ function FieldRuntime:resizePresentation(width, height, screenTopology)
   self.menuHost:resize(width, height)
   self.menuHost:setScreenTopology(screenTopology)
   self:_updateCameraProjection()
-  self.startMenuPlacement =
-    StartMenuLayout.resolve(screenTopology, self.viewport.referenceFrame, self.fieldPixelScale:resolvedScale())
-  self.applicationHost:setMenuPlacement(self.startMenuPlacement)
+  self._displayTopology = screenTopology
+  self.presentationDisplay = self.displayContext:measure(width, height)
 end
 
 -- The one teardown path shared by reset and dispose: release every owned
@@ -1808,7 +1838,10 @@ function FieldRuntime:_releaseAll()
   if self.applicationHost then
     self.applicationHost:dispose()
   end
-  self.applicationHost, self.applications, self.startMenuPlacement = nil, nil, nil
+  self.applicationHost, self.applications = nil, nil
+  self.displayContext, self.presentationDisplay, self.presentationWindows, self.presentationOverrides =
+    nil, nil, nil, nil
+  self._displayTopology = nil
   if self.messageProvider then
     self.messageProvider:dispose()
   end

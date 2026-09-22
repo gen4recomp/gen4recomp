@@ -7,7 +7,7 @@
 -- records) and never repeats source coordinates; an acquisition or quad
 -- failure after images exist must release everything acquired so far, and a
 -- missing manifest, SUB chrome, or icon atlas is a typed error. Drawing the
--- surface consumes the StartMenuLayout placement record -- the same record
+-- surface consumes the resolved placement record -- the same record
 -- hit testing maps through -- so rendering and hit testing share one
 -- transform and there is never a second set of scaled rectangles; the
 -- surface uses only the generated images -- no generic field-menu theme
@@ -22,8 +22,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
-local StartMenuLayout = require("libs.hgss.src.field.StartMenuLayout")
+local PixelScale = require("libs.ui.src.PixelScale")
 local StartMenuRenderer = require("libs.hgss.src.ui.StartMenuRenderer")
 
 local T = {}
@@ -43,20 +42,14 @@ end
 -- record is part of the surface contract.
 local fakeGraphics = require("tests.support.FakeGraphics").new
 
--- The canonical placement record through the real pure layout module: the
--- 256x192 surface resolved onto a canonical 256x192 host. Rendering and hit
+-- The canonical placement record through the real shared pixel policy: the
+-- 256x192 surface fitted onto a canonical 256x192 host. Rendering and hit
 -- testing consume the same record shape, so a draw regression against the
 -- transform is a mismatch.
 local function canonicalPlacement()
-  return StartMenuLayout.resolve(
-    ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = 256, height = 192 },
-      touch = false,
-      role = "world",
-    }),
-    { x = 0, y = 0, width = 256, height = 192 },
-    1
+  return assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192),
+    "the canonical host fits the canonical surface"
   )
 end
 
@@ -505,7 +498,7 @@ end
 -- The record transform is the render placement: the surface draws under
 -- translate(frame origin) + scale(placement scale), with the draw
 -- coordinates staying canonical. The record's inverse is exactly what hit
--- testing maps through (StartMenuLayout.hostToLogical), so rendering and
+-- testing maps through (LayoutGeometry.hostToLogical), so rendering and
 -- hit testing share one transform with no second set of scaled rectangles.
 function T.draw_consumes_the_placement_record_transform()
   local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
