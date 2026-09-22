@@ -33,10 +33,23 @@ local BAG_ACTION = "vanilla.bag"
 local BAG_APPLICATION = FieldApplicationIds.BAG
 
 local function withGame(fn)
+  -- Boot with an explicit single-display topology matching the drawable
+  -- so the runtime installs its resize-tracking provider: later
+  -- resizePresentation calls (including physical pairs) then measure
+  -- through the resized topology instead of the context default.
+  local bootWidth, bootHeight = love.graphics.getDimensions()
   local game = AcceptanceHarness.new():boot({
     versionId = AcceptanceHarness.defaultVersion(),
     map = "MAP_BURNED_TOWER_1F",
     save = "fresh",
+    fieldOptions = {
+      screenTopology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = bootWidth, height = bootHeight },
+        touch = false,
+        role = "world",
+      }),
+    },
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
@@ -293,11 +306,15 @@ function T.tests.bag_topology_change_preserves_selection_and_stale_capture()
     -- Stale capture: press inside the interactive pane, change the topology
     -- again, then release at the identical host coordinates. The release
     -- must not activate the target that moved under the pointer.
-    local layout = resized.layout
-    Assert.isTrue(type(layout) == "table", "the bag status must carry its resolved layout")
-    local interactive = layout.interactive
-    Assert.isTrue(type(interactive) == "table", "the bag layout must place its interactive pane")
-    local frame = interactive.frame
+    local resizedPlan = assert(resized.presentation, "the bag status must carry its presentation plan")
+    local interactivePane
+    for _, pane in ipairs(resizedPlan.panes) do
+      if pane.interactive then
+        interactivePane = pane
+      end
+    end
+    Assert.isTrue(type(interactivePane) == "table", "the bag plan must place its interactive pane")
+    local frame = assert(interactivePane.placement, "the interactive pane carries its placement").frame
     Assert.isTrue(
       type(frame) == "table" and type(frame.width) == "number" and type(frame.height) == "number",
       "the interactive placement must expose its host frame"
@@ -336,6 +353,250 @@ function T.tests.bag_topology_change_preserves_selection_and_stale_capture()
   end)
 end
 
+local function pressMenuOnce(game)
+  game.runtime:pressMenu()
+  game:step()
+  game.runtime:releaseMenu()
+end
+
+local function translatedDual()
+  return ScreenTopology.dualDisplay({
+    id = "main",
+    rect = { x = 400, y = 100, width = 256, height = 192 },
+    touch = false,
+    role = "world",
+  }, {
+    id = "sub",
+    rect = { x = 100, y = 300, width = 256, height = 192 },
+    touch = true,
+    role = "auxiliary",
+  })
+end
+
+-- The bag publishes one shared presentation plan beside its semantic
+-- snapshot: a stable input key, matched render/input callbacks, ordered
+-- panes with complete placements, and logical content.
+local function presentationOf(game, what)
+  local view = bagView(game)
+  local plan = view.presentation
+  Assert.isTrue(type(plan) == "table", "the bag publishes its presentation plan " .. what)
+  Assert.equal(type(plan.inputKey), "string", "the bag plan names its stable input geometry " .. what)
+  Assert.isTrue(type(plan.render) == "function", "the bag plan carries its render callback " .. what)
+  Assert.isTrue(type(plan.mapInput) == "function", "the bag plan carries its input callback " .. what)
+  Assert.isTrue(type(plan.panes) == "table", "the bag plan orders its panes " .. what)
+  return view, plan
+end
+
+local function interactivePane(plan, what)
+  local found
+  for _, pane in ipairs(plan.panes) do
+    if pane.interactive then
+      Assert.isNil(found, "the bag plan carries exactly one interactive pane " .. what)
+      found = pane
+    end
+  end
+  Assert.isTrue(type(found) == "table", "the bag plan carries its interactive pane " .. what)
+  return found
+end
+
+local function heroPane(plan, what)
+  local found
+  for _, pane in ipairs(plan.panes) do
+    if not pane.interactive then
+      Assert.isNil(found, "the bag plan carries exactly one hero pane " .. what)
+      found = pane
+    end
+  end
+  Assert.isTrue(type(found) == "table", "the bag plan carries its hero pane " .. what)
+  return found
+end
+
+local function frameInside(frame, rect, what)
+  Assert.isTrue(
+    frame.x >= rect.x
+      and frame.y >= rect.y
+      and frame.x + frame.width <= rect.x + rect.width
+      and frame.y + frame.height <= rect.y + rect.height,
+    "the pane frame stays inside its surface " .. what
+  )
+end
+
+-- Drive from the boot pocket to medicine with POTION selected through
+-- directional input only: climb to the tab strip, step the tab candidate
+-- to medicine, and commit it.
+local function driveToMedicine(game, state)
+  for _ = 1, 160 do
+    local view = bagView(game)
+    if viewPocket(view) == "medicine" and selectedKey(view) == "POTION" then
+      return
+    end
+    local focus = view.focus
+    Assert.isTrue(
+      focus == "items" or focus == "tabs" or focus == "cancel",
+      "the bag status must expose its focus region"
+    )
+    if focus == "tabs" then
+      local candidate = view.tabFocusPocket
+      Assert.isTrue(type(candidate) == "string" and candidate ~= "", "the bag status must name its focused tab")
+      if candidate == "medicine" then
+        confirm(game)
+      else
+        tapDirection(game, state, "d")
+      end
+    elseif focus == "cancel" then
+      tapDirection(game, state, "w")
+    else
+      tapDirection(game, state, "w")
+    end
+  end
+  error("bag browse never reaches medicine with POTION selected through directional input", 0)
+end
+
+-- Commit the selected item's toss with one quantity step through the
+-- composed host: open the action menu, enter the quantity picker, step
+-- once, confirm twice, and land back in browsing.
+local function tossSelectedWithSingleCopyStep(game, state)
+  confirm(game)
+  Assert.equal(bagView(game).state, "action_menu", "confirming the composed selection opens the action menu")
+  confirm(game)
+  Assert.equal(bagView(game).state, "toss_quantity", "confirming toss enters the quantity picker")
+  tapDirection(game, state, "d")
+  confirm(game)
+  Assert.equal(bagView(game).state, "toss_confirm", "confirming a quantity asks for confirmation")
+  confirm(game)
+  Assert.equal(bagView(game).state, "browsing", "a committed toss returns to browsing")
+end
+
+-- The display matrix through the real field factory: native-like shows
+-- only the interactive pane with its compact description fallback,
+-- wide/tall pair both panes with one shared integer scale, and a
+-- translated physical pair maps the hero to the world surface and the
+-- interaction to the auxiliary surface. Description and toss
+-- confirmation stay reachable in the lower-only composition, and one
+-- composed toss mutates exactly once.
+function T.tests.bag_display_matrix_uses_a_shared_plan_with_compact_lower_only_information()
+  withGame(function(game)
+    local state = hostCallbacks(game)
+    stockTwoPockets(game)
+    grantBag(game)
+    openBag(game, state)
+
+    game.runtime:resizePresentation(512, 384, oneDisplay(512, 384, false))
+    game:step()
+    local view, plan = presentationOf(game, "on the native-like surface")
+    Assert.equal(#plan.panes, 1, "the native-like composition shows only its interactive pane")
+    Assert.isTrue(plan.panes[1].interactive, "the single native-like pane takes input")
+    Assert.isNil(plan.window, "the native-like fullscreen carries no window chrome")
+    Assert.isTrue(type(plan.coverage) == "table", "the native-like plan owns its coverage")
+    Assert.equal(#plan.coverage, 1, "the native-like fullscreen owns its target region")
+    local content = plan.content
+    Assert.isTrue(type(content) == "table", "the native-like plan carries its logical content")
+    Assert.equal(content.heroVisible, false, "the native-like plan hides the hero pane")
+    Assert.isTrue(type(content.descriptionFallback) == "table", "the lower-only plan keeps its description fallback")
+    Assert.isNil(view.layout, "the migrated status carries no stale host layout")
+
+    driveToMedicine(game, state)
+    -- Keyboard pocket switching keeps tab focus by preserved controller
+    -- semantics, while the info key needs an occupied cell focus: step
+    -- once into the grid so the menu key has a described selection.
+    tapDirection(game, state, "s")
+    Assert.equal(bagView(game).focus, "items", "setup focuses the stocked cell before describing it")
+    Assert.equal(selectedKey(bagView(game)), "POTION", "setup keeps the stocked selection")
+    pressMenuOnce(game)
+    game:step()
+    Assert.equal(
+      bagView(game).state,
+      "description_overlay",
+      "the lower-only composition opens the item description through its menu key"
+    )
+    pressMenuOnce(game)
+    game:step()
+    Assert.equal(bagView(game).state, "browsing", "the menu key dismisses the description overlay")
+
+    local bag = assert(game.runtime.bagService, "field runtime owns the live bag service")
+    local revision = bag:revision()
+    tossSelectedWithSingleCopyStep(game, state)
+    Assert.equal(bag:quantity("POTION"), 3, "the composed toss removes the picked copies")
+    Assert.equal(bag:revision(), revision + 1, "one composed toss mutates exactly once")
+
+    game.runtime:resizePresentation(1280, 720, oneDisplay(1280, 720, false))
+    game:step()
+    local wideView, wide = presentationOf(game, "on the wide surface")
+    Assert.equal(#wide.panes, 2, "the wide composition pairs both panes")
+    local wideHero = heroPane(wide, "wide")
+    local wideInteractive = interactivePane(wide, "wide")
+    local wideHeroPlacement = assert(wideHero.placement, "the wide hero pane carries its placement")
+    local wideInteractivePlacement = assert(wideInteractive.placement, "the wide pane carries its placement")
+    Assert.equal(
+      wideHeroPlacement.pixelScale,
+      wideInteractivePlacement.pixelScale,
+      "paired wide panes share one integer scale"
+    )
+    Assert.isTrue(
+      wideHeroPlacement.frame.x + wideHeroPlacement.frame.width <= wideInteractivePlacement.frame.x,
+      "the wide hero pane sits left of the interaction pane"
+    )
+    Assert.equal(
+      wideInteractivePlacement.frame.x - (wideHeroPlacement.frame.x + wideHeroPlacement.frame.width),
+      8 * wideInteractivePlacement.scale,
+      "paired wide panes keep one eight logical-pixel gap"
+    )
+    Assert.equal(viewPocket(wideView), "medicine", "the wide composition preserves the pocket")
+    Assert.equal(selectedKey(wideView), "POTION", "the wide composition preserves the selected item")
+
+    game.runtime:resizePresentation(600, 1000, oneDisplay(600, 1000, true))
+    game:step()
+    local _, tall = presentationOf(game, "on the tall surface")
+    Assert.equal(#tall.panes, 2, "the tall composition pairs both panes")
+    local tallHero = heroPane(tall, "tall")
+    local tallInteractive = interactivePane(tall, "tall")
+    local tallHeroPlacement = assert(tallHero.placement, "the tall hero pane carries its placement")
+    local tallInteractivePlacement = assert(tallInteractive.placement, "the tall pane carries its placement")
+    Assert.equal(
+      tallHeroPlacement.pixelScale,
+      tallInteractivePlacement.pixelScale,
+      "paired tall panes share one integer scale"
+    )
+    Assert.isTrue(
+      tallHeroPlacement.frame.y + tallHeroPlacement.frame.height <= tallInteractivePlacement.frame.y,
+      "the tall hero pane sits above the interaction pane"
+    )
+    Assert.equal(
+      tallInteractivePlacement.frame.y - (tallHeroPlacement.frame.y + tallHeroPlacement.frame.height),
+      8 * tallInteractivePlacement.scale,
+      "paired tall panes keep one eight logical-pixel gap"
+    )
+    Assert.equal(viewPocket(bagView(game)), "medicine", "the tall composition preserves the pocket")
+
+    game.runtime:resizePresentation(800, 600, translatedDual())
+    game:step()
+    local _, dual = presentationOf(game, "on the translated physical pair")
+    Assert.equal(#dual.panes, 2, "the physical pair shows both panes")
+    local dualHero = heroPane(dual, "dual")
+    local dualInteractive = interactivePane(dual, "dual")
+    local dualHeroFrame = assert(dualHero.placement, "the dual hero pane carries its placement").frame
+    local dualInteractiveFrame = assert(dualInteractive.placement, "the dual pane carries its placement").frame
+    frameInside(dualHeroFrame, { x = 400, y = 100, width = 256, height = 192 }, "hero on the world surface")
+    frameInside(
+      dualInteractiveFrame,
+      { x = 100, y = 300, width = 256, height = 192 },
+      "interaction on the auxiliary surface"
+    )
+    Assert.isTrue(type(dual.coverage) == "table", "the dual plan owns its coverage")
+    Assert.equal(#dual.coverage, 2, "the physical pair covers one region per surface")
+
+    game.runtime:resizePresentation(640, 480, oneDisplay(640, 480, false))
+    game:step()
+    Assert.equal(viewPocket(bagView(game)), "medicine", "restoring the topology preserves the pocket")
+    pressCancel(game)
+    game:advanceUntil("bag closes back to the start menu", function()
+      return hostPhase(game) == FieldApplicationHost.PHASES.menu
+    end, 120)
+    closeStartMenu(game)
+    Assert.equal(hostPhase(game), FieldApplicationHost.PHASES.closed, "the matrix journey must end back on the field")
+  end)
+end
+
 -- Raw host-coordinate Cancel activation through the production host: a
 -- pointer press and release on separate fixed ticks over the generated
 -- Cancel affordance closes the Bag back to the Start Menu. The unit
@@ -350,10 +611,17 @@ function T.tests.bag_cancel_pointer_closes_through_the_host()
     openBag(game, state)
 
     local view = bagView(game)
-    local layout = assert(view.layout, "the bag status must carry its resolved layout")
-    local interactive = assert(layout.interactive, "the bag layout must place its interactive pane")
-    local frame = assert(interactive.frame, "the interactive placement must expose its host frame")
-    local scale = assert(interactive.scale, "the interactive placement must expose its scale")
+    local plan = assert(view.presentation, "the bag status must carry its presentation plan")
+    local interactive
+    for _, pane in ipairs(plan.panes) do
+      if pane.interactive then
+        interactive = pane
+      end
+    end
+    interactive = assert(interactive, "the bag plan must place its interactive pane")
+    local placement = assert(interactive.placement, "the interactive pane must carry its placement")
+    local frame = assert(placement.frame, "the interactive placement must expose its host frame")
+    local scale = assert(placement.scale, "the interactive placement must expose its scale")
     local manifest = BagCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
     local cancelGeometry = assert(
       manifest.interactive and manifest.interactive.cancel,

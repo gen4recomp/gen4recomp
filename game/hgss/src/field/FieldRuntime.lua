@@ -943,6 +943,7 @@ function FieldRuntime:_load()
     -- this exact record through its measurement closure.
     self.presentationWindows = {
       start_menu = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
+      bag = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
     }
     self.presentationDisplay = self.displayContext:measure(self.viewportWidth, self.viewportHeight)
 
@@ -1401,19 +1402,22 @@ function FieldRuntime:_applicationDescriptors()
     local avatar = assert(self.avatar, "the bag application requires the player avatar")
     assert(avatar.gender == 0 or avatar.gender == 1, "the bag hero gender is unsupported")
     local heroGender = avatar.gender == 0 and "male" or "female"
-    local function measureBagViewport()
-      return self.viewport.width, self.viewport.height
-    end
-    local function measureBagTopology()
-      return { topology = self.screenTopology, referenceFrame = self.viewport.referenceFrame }
+    local windowMemory = assert(
+      self.presentationWindows and self.presentationWindows.bag,
+      "the bag wrapper requires its runtime window memory"
+    )
+    local bagOverrides = self.presentationOverrides ~= nil and self.presentationOverrides.bag or nil
+    local function measureDisplay()
+      return self.presentationDisplay
     end
     return BagScreenState.new({
       service = bagService,
       cursor = bagCursor,
       manifest = manifest,
       heroGender = heroGender,
-      measureViewport = measureBagViewport,
-      measureTopology = measureBagTopology,
+      measureDisplay = measureDisplay,
+      windowState = windowMemory,
+      overrides = bagOverrides,
     })
   end
   return {

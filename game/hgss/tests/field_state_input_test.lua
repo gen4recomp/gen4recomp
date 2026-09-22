@@ -330,7 +330,10 @@ function T.open_bag_stays_controllable_across_window_blur()
           textRect = { x = 192, y = 168, width = 56, height = 16 },
         },
         overlays = {
-          descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
+          descriptionFallback = {
+            frame = { x = 0, y = 144, width = 256, height = 48 },
+            textRect = { x = 20, y = 144, width = 236, height = 48 },
+          },
           actionMenu = {
             buttons = {
               { x = 8, y = 136, width = 80, height = 16 },
@@ -343,12 +346,16 @@ function T.open_bag_stays_controllable_across_window_blur()
       },
     },
     heroGender = "male",
-    measureViewport = function()
-      return box.width, box.height
+    measureDisplay = function()
+      return {
+        width = box.width,
+        height = box.height,
+        topology = box.topologyObject,
+        pixelRatio = 1,
+        signature = "field-state-input-test:" .. box.width .. "x" .. box.height,
+      }
     end,
-    measureTopology = function()
-      return { topology = box.topologyObject }
-    end,
+    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   })
   screen:updateFixed({})
   Assert.equal(screen:status().selected.item, "POKE_BALL", "setup browses the stocked pocket")

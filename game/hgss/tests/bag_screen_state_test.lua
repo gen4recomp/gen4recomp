@@ -76,7 +76,10 @@ local function manifest()
         labelRect = { x = 200, y = 168, width = 48, height = 16 },
       },
       overlays = {
-        descriptionFallback = { frame = { x = 0, y = 144, width = 256, height = 48 } },
+        descriptionFallback = {
+          frame = { x = 0, y = 144, width = 256, height = 48 },
+          textRect = { x = 20, y = 144, width = 236, height = 48 },
+        },
         actionMenu = {
           buttons = {
             { x = 8, y = 136, width = 80, height = 16 },
@@ -99,6 +102,16 @@ local function topology(width, height)
   })
 end
 
+local function measurementFor(box)
+  return {
+    width = box.width,
+    height = box.height,
+    topology = box.topologyObject,
+    pixelRatio = 1,
+    signature = "bag-screen-state-test:" .. box.width .. "x" .. box.height,
+  }
+end
+
 local function composition(overrides)
   overrides = overrides or {}
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
@@ -111,12 +124,10 @@ local function composition(overrides)
     cursor = BagCursor.new(),
     manifest = manifest(),
     heroGender = "male",
-    measureViewport = function()
-      return box.width, box.height
+    measureDisplay = function()
+      return measurementFor(box)
     end,
-    measureTopology = function()
-      return { topology = box.topologyObject }
-    end,
+    windowState = { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } },
   }
   for key, value in pairs(overrides) do
     options[key] = value
@@ -132,6 +143,18 @@ local function selectedKey(status)
   return selected.item
 end
 
+---@param state table<string, unknown> the wrapper under test
+---@return table<string, unknown> the interactive pane placement
+local function interactivePlacement(state)
+  local plan = assert(state:status().presentation, "the status carries its presentation plan")
+  for _, pane in ipairs(plan.panes) do
+    if pane.interactive then
+      return pane.placement
+    end
+  end
+  error("the plan carries its interactive pane", 0)
+end
+
 function T.status_carries_browse_state_layout_and_hero_facts()
   local options = composition()
   local state = BagScreenState.new(options)
@@ -140,8 +163,10 @@ function T.status_carries_browse_state_layout_and_hero_facts()
   Assert.isTrue(status.open)
   Assert.equal(status.pocket, "items")
   Assert.isNil(status.selected, "the default pocket starts empty")
-  Assert.equal(status.layout.mode, "horizontal")
-  Assert.isTrue(status.layout.interactive.frame ~= nil, "the status carries its resolved layout")
+  local plan = assert(status.presentation, "the status carries its presentation plan")
+  Assert.equal(#plan.panes, 1, "the native-like composition shows only its interactive pane")
+  Assert.equal(plan.content.heroVisible, false, "the native-like plan hides the hero pane")
+  Assert.isNil(status.layout, "the migrated status carries no stale host layout")
   Assert.equal(status.heroGender, "male")
   Assert.equal(status.hero.pocket, "items", "the hero follows the browsed pocket")
   Assert.equal(status.hero.frame, 1, "one fixed tick advances one animation frame")
@@ -217,8 +242,9 @@ function T.pointer_only_register_flows_through_the_live_service()
   state:updateFixed({})
   local revision = bag:revision()
   local function tapLogical(logicalX, logicalY)
-    local frame = state:status().layout.interactive.frame
-    local scale = state:status().layout.interactive.scale
+    local placement = interactivePlacement(state)
+    local frame = placement.frame
+    local scale = placement.scale
     local x = frame.x + logicalX * scale
     local y = frame.y + logicalY * scale
     state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
@@ -240,30 +266,28 @@ function T.pointer_only_register_flows_through_the_live_service()
 end
 
 local function cancelCenter(state)
-  local placement = state:status().layout.interactive
+  local placement = interactivePlacement(state)
   local cancelRect = manifest().interactive.cancel.rect
   return placement.frame.x + (cancelRect.x + cancelRect.width / 2) * placement.scale,
     placement.frame.y + (cancelRect.y + cancelRect.height / 2) * placement.scale
 end
 
-function T.fallback_topology_keeps_item_capture_across_ticks()
-  local options = composition({
-    measureTopology = function()
-      return {}
-    end,
-  })
+function T.fresh_equivalent_measurement_keeps_item_capture_across_ticks()
+  local options, box = composition()
   options.cursor:setPocket("balls")
   local state = BagScreenState.new(options)
   state:updateFixed({})
   local revision = state:status().revision
   local function tapLogical(logicalX, logicalY)
-    local placement = state:status().layout.interactive
+    local placement = interactivePlacement(state)
     local frame, scale = placement.frame, placement.scale
     local x = frame.x + logicalX * scale
     local y = frame.y + logicalY * scale
     state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
     state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
   end
+  box.topologyObject = topology(512, 384)
+  tapLogical(76, 56)
   tapLogical(76, 56)
   Assert.equal(
     state:status().state,
@@ -275,15 +299,13 @@ function T.fallback_topology_keeps_item_capture_across_ticks()
 end
 
 function T.wide_cancel_tap_closes_exactly_once()
-  local options, box = composition({
-    measureTopology = function()
-      return {}
-    end,
-  })
+  local options, box = composition()
   box.width, box.height = 960, 540
+  box.topologyObject = topology(960, 540)
   local state = BagScreenState.new(options)
   state:updateFixed({})
-  Assert.equal(state:status().layout.mode, "horizontal", "the wide composition keeps its side-by-side arrangement")
+  local widePlan = assert(state:status().presentation, "the wide composition publishes its plan")
+  Assert.equal(#widePlan.panes, 2, "the wide composition pairs both panes")
   local x, y = cancelCenter(state)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
@@ -300,8 +322,8 @@ function T.viewport_change_between_press_and_release_cancels_capture()
   state:updateFixed({})
   local x, y = cancelCenter(state)
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
-  box.width, box.height = 390, 844
-  box.topologyObject = topology(390, 844)
+  box.width, box.height = 1280, 720
+  box.topologyObject = topology(1280, 720)
   state:updateFixed({})
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
   local after = state:status()
@@ -316,7 +338,7 @@ function T.cancel_center_closes_in_every_responsive_mode()
       name = "dual",
       width = 512,
       height = 384,
-      mode = "dual",
+      panes = 2,
       topologyObject = ScreenTopology.dualDisplay({
         id = "main",
         rect = { x = 0, y = 0, width = 256, height = 192 },
@@ -329,13 +351,13 @@ function T.cancel_center_closes_in_every_responsive_mode()
         role = "auxiliary",
       }),
     },
-    { name = "horizontal", width = 512, height = 384, mode = "horizontal", topologyObject = topology(512, 384) },
-    { name = "vertical", width = 390, height = 844, mode = "vertical", topologyObject = topology(390, 844) },
+    { name = "wide", width = 1280, height = 720, panes = 2, topologyObject = topology(1280, 720) },
+    { name = "tall", width = 600, height = 1000, panes = 2, topologyObject = topology(600, 1000) },
     {
-      name = "interactive_only",
+      name = "native_like",
       width = 320,
       height = 240,
-      mode = "interactive_only",
+      panes = 1,
       topologyObject = topology(320, 240),
     },
   }
@@ -345,7 +367,8 @@ function T.cancel_center_closes_in_every_responsive_mode()
     box.topologyObject = case.topologyObject
     local state = BagScreenState.new(options)
     state:updateFixed({})
-    Assert.equal(state:status().layout.mode, case.mode, "the " .. case.name .. " composition keeps its arrangement")
+    local casePlan = assert(state:status().presentation, "the " .. case.name .. " composition publishes its plan")
+    Assert.equal(#casePlan.panes, case.panes, "the " .. case.name .. " composition keeps its arrangement")
     local x, y = cancelCenter(state)
     state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
     state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
@@ -364,7 +387,7 @@ function T.safe_area_change_at_the_same_viewport_cancels_capture()
   options.cursor:setPocket("balls")
   local state = BagScreenState.new(options)
   state:updateFixed({})
-  local placement = state:status().layout.interactive
+  local placement = interactivePlacement(state)
   local x = placement.frame.x + 76 * placement.scale
   local y = placement.frame.y + 56 * placement.scale
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
@@ -388,9 +411,9 @@ function T.resize_cancels_capture_but_preserves_semantic_selection()
   options.cursor:setPocket("balls")
   local state = BagScreenState.new(options)
   state:updateFixed({})
-  local before = state:status()
-  local frame = before.layout.interactive.frame
-  local scale = before.layout.interactive.scale
+  local placement = interactivePlacement(state)
+  local frame = placement.frame
+  local scale = placement.scale
   local x = frame.x + 76 * scale
   local y = frame.y + 56 * scale
   state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
@@ -402,7 +425,8 @@ function T.resize_cancels_capture_but_preserves_semantic_selection()
   Assert.isTrue(after.open, "a stale release never leaves the application")
   Assert.equal(after.pocket, "balls", "resizing preserves the pocket")
   Assert.equal(selectedKey(after), "POKE_BALL", "resizing preserves the selected item")
-  Assert.equal(after.layout.mode, "vertical", "the new geometry resolves its own mode")
+  local resizedPlan = assert(after.presentation, "the resized status publishes its plan")
+  Assert.equal(#resizedPlan.panes, 2, "the new geometry resolves its own pair")
   state:dispose()
 end
 
@@ -672,13 +696,16 @@ end
 
 function T.production_bag_draws_pocket_specific_presentation()
   local manifested = composedManifest()
-  local options = composition({ manifest = manifested })
+  local options, box = composition({ manifest = manifested })
+  box.width, box.height = 1280, 720
+  box.topologyObject = topology(1280, 720)
   options.cursor:setPocket("balls")
   local state = BagScreenState.new(options)
   state:updateFixed({})
   local view = state:status()
   Assert.equal(view.pocket, "balls", "the composed status browses the selected pocket")
-  Assert.equal(view.layout.mode, "horizontal", "the wide composition keeps its arrangement")
+  local plan = assert(view.presentation, "the wide composition publishes its presentation plan")
+  Assert.equal(#plan.panes, 2, "the wide composition pairs both panes")
   local graphics = FakeGraphics({})
   local content = composedText()
   local hero = composedHeroSpy()
@@ -690,7 +717,7 @@ function T.production_bag_draws_pocket_specific_presentation()
     heroRenderer = hero,
   })
   local icons = composedIcons()
-  draw:draw(view, assert(view.layout, "the composed status carries its resolved layout"), { icons = icons })
+  draw:draw(view, assert(view.presentation, "the composed status carries its presentation plan"), { icons = icons })
   local ballsBackground = draw._images["background:browse:balls:2"]
   local medicineBackground = draw._images["background:browse:medicine:1"]
   Assert.notNil(ballsBackground, "the balls background is bound")
@@ -716,7 +743,7 @@ function T.production_bag_draws_pocket_specific_presentation()
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
-  draw:draw(menu, assert(menu.layout, "the menu status carries its layout"), { icons = icons })
+  draw:draw(menu, assert(menu.presentation, "the menu status carries its presentation plan"), { icons = icons })
   local actionFocus = manifested.interactive.focus.actions
   local selectedAction = assert(tonumber(menu.selectedAction), "the menu status carries its selected action")
   local actionTarget = assert(actionFocus.targets[selectedAction + 1], "the menu selection resolves a target")
@@ -735,7 +762,11 @@ function T.production_bag_draws_pocket_specific_presentation()
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
-  draw:draw(switched, assert(switched.layout, "the switched status carries its layout"), { icons = icons })
+  draw:draw(
+    switched,
+    assert(switched.presentation, "the switched status carries its presentation plan"),
+    { icons = icons }
+  )
   Assert.isTrue(wasDrawn(graphics, medicineBackground), "the switched pocket draws its own background")
   Assert.isFalse(wasDrawn(graphics, ballsBackground), "the switched pocket never falls back to balls")
   Assert.equal(graphics.pushDepth(), 0, "the composed draws keep the transform stack balanced")
@@ -753,7 +784,7 @@ end
 
 function T.missing_capabilities_fail_at_construction()
   local options = composition()
-  for _, key in ipairs({ "service", "cursor", "manifest", "heroGender", "measureViewport", "measureTopology" }) do
+  for _, key in ipairs({ "service", "cursor", "manifest", "heroGender", "measureDisplay", "windowState" }) do
     local broken = {}
     for optionKey, value in pairs(options) do
       broken[optionKey] = value
@@ -787,6 +818,252 @@ function T.hero_framing_settles_to_the_profile_gender_record()
     Assert.near(framing.modelY, expected.modelY, 1e-9, gender .. " settles its own model height")
     state:dispose()
   end
+end
+
+-- The migrated contract publishes one shared presentation plan beside the
+-- semantic snapshot: ordered panes with complete placements, canonical
+-- logical content, a stable input key, and the matched render/input
+-- callbacks. The stale host-specific layout record is gone.
+function T.status_publishes_a_shared_presentation_plan_beside_semantics()
+  local options = composition()
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local status = state:status()
+  Assert.equal(selectedKey(status), "POKE_BALL", "setup selects the stocked ball")
+  local plan = status.presentation
+  Assert.isTrue(type(plan) == "table", "the bag status publishes its presentation plan beside its semantic snapshot")
+  Assert.equal(type(plan.inputKey), "string", "the plan names its stable input geometry")
+  Assert.isTrue(#plan.inputKey > 0, "the plan input key is nonempty")
+  Assert.isTrue(type(plan.render) == "function", "the plan carries its render callback")
+  Assert.isTrue(type(plan.mapInput) == "function", "the plan carries its input callback")
+  Assert.isTrue(type(plan.panes) == "table", "the plan orders its panes")
+  Assert.equal(#plan.panes, 1, "the native-like composition shows only its interactive pane")
+  local pane = plan.panes[1]
+  Assert.isTrue(pane.interactive, "the single native-like pane takes input")
+  local placement = pane.placement
+  Assert.isTrue(
+    type(placement) == "table" and type(placement.frame) == "table" and type(placement.scale) == "number",
+    "the pane carries its complete placement"
+  )
+  local content = plan.content
+  Assert.isTrue(type(content) == "table", "the plan carries its canonical logical content")
+  Assert.equal(content.heroVisible, false, "the native-like plan hides the hero pane")
+  Assert.isTrue(type(content.descriptionFallback) == "table", "the lower-only plan keeps its description fallback")
+  Assert.isNil(status.layout, "the migrated status carries no stale host layout")
+  state:dispose()
+end
+
+-- Paired single-display panes share one integer pixel scale with a single
+-- eight logical-pixel gap, and exactly one pane takes input.
+function T.wide_pairs_share_one_integer_scale_across_an_eight_pixel_gap()
+  local options, box = composition()
+  box.width, box.height = 1280, 720
+  box.topologyObject = topology(1280, 720)
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local plan = state:status().presentation
+  Assert.isTrue(type(plan) == "table", "the wide composition resolves through the shared plan")
+  Assert.isTrue(type(plan.panes) == "table", "the wide plan orders its panes")
+  Assert.equal(#plan.panes, 2, "the wide composition pairs both panes")
+  local heroPane, interactivePane
+  for _, pane in ipairs(plan.panes) do
+    if pane.interactive then
+      interactivePane = pane
+    else
+      heroPane = pane
+    end
+  end
+  Assert.isTrue(type(heroPane) == "table", "the wide pair carries its hero pane")
+  Assert.isTrue(type(interactivePane) == "table", "the wide pair carries its interactive pane")
+  local heroPlacement = heroPane.placement
+  local wideInteraction = interactivePane.placement
+  Assert.isTrue(
+    type(heroPlacement) == "table" and type(wideInteraction) == "table",
+    "both panes carry complete placements"
+  )
+  Assert.equal(heroPlacement.pixelScale, wideInteraction.pixelScale, "paired panes share one integer scale")
+  Assert.equal(heroPlacement.pixelScale % 1, 0, "the shared paired scale stays integral")
+  Assert.isTrue(
+    heroPlacement.frame.x + heroPlacement.frame.width <= wideInteraction.frame.x,
+    "the hero pane sits left of the interaction pane"
+  )
+  local gap = wideInteraction.frame.x - (heroPlacement.frame.x + heroPlacement.frame.width)
+  Assert.equal(gap, 8 * wideInteraction.scale, "paired panes keep one eight logical-pixel gap")
+  Assert.isNil(state:status().layout, "the migrated status carries no stale host layout")
+  state:dispose()
+end
+
+function T.tall_stacks_the_hero_above_the_interaction_pane()
+  local options, box = composition()
+  box.width, box.height = 600, 1000
+  box.topologyObject = topology(600, 1000)
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local plan = state:status().presentation
+  Assert.isTrue(type(plan) == "table", "the tall composition resolves through the shared plan")
+  Assert.equal(#plan.panes, 2, "the tall composition pairs both panes")
+  local heroPane, interactivePane
+  for _, pane in ipairs(plan.panes) do
+    if pane.interactive then
+      interactivePane = pane
+    else
+      heroPane = pane
+    end
+  end
+  Assert.isTrue(type(heroPane) == "table", "the tall pair carries its hero pane")
+  Assert.isTrue(type(interactivePane) == "table", "the tall pair carries its interactive pane")
+  local heroPlacement = heroPane.placement
+  local stackedInteraction = interactivePane.placement
+  Assert.equal(heroPlacement.pixelScale, stackedInteraction.pixelScale, "stacked panes share one integer scale")
+  Assert.isTrue(
+    heroPlacement.frame.y + heroPlacement.frame.height <= stackedInteraction.frame.y,
+    "the hero pane sits above the interaction pane"
+  )
+  local gap = stackedInteraction.frame.y - (heroPlacement.frame.y + heroPlacement.frame.height)
+  Assert.equal(gap, 8 * stackedInteraction.scale, "stacked panes keep one eight logical-pixel gap")
+  state:dispose()
+end
+
+-- Pointer input on the hero display pane or on the matte never selects an
+-- item: only the visible interactive pane maps pointer input.
+function T.hero_and_matte_pointer_input_never_selects_an_item()
+  local options, box = composition()
+  box.width, box.height = 1280, 720
+  box.topologyObject = topology(1280, 720)
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local revision = state:status().revision
+  local plan = state:status().presentation
+  Assert.isTrue(type(plan) == "table", "the wide composition resolves through the shared plan")
+  local heroPane, interactivePane
+  for _, pane in ipairs(plan.panes) do
+    if pane.interactive then
+      interactivePane = pane
+    else
+      heroPane = pane
+    end
+  end
+  local heroFrame = heroPane.placement.frame
+  local interactiveFrame = interactivePane.placement.frame
+  local function tapHost(x, y)
+    state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+    state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  end
+  tapHost(heroFrame.x + heroFrame.width / 2, heroFrame.y + heroFrame.height / 2)
+  local afterHero = state:status()
+  Assert.equal(afterHero.state, "browsing", "a hero-pane tap never opens the action menu")
+  Assert.equal(afterHero.revision, revision, "a hero-pane tap issues no inventory mutation")
+  local matteX, matteY = 5, 5
+  Assert.isTrue(matteX < math.min(heroFrame.x, interactiveFrame.x), "the matte probe sits outside every pane")
+  tapHost(matteX, matteY)
+  local afterMatte = state:status()
+  Assert.equal(afterMatte.state, "browsing", "a matte tap never opens the action menu")
+  Assert.equal(afterMatte.revision, revision, "a matte tap issues no inventory mutation")
+  Assert.equal(selectedKey(afterMatte), "POKE_BALL", "off-pane taps preserve the selection")
+  state:dispose()
+end
+
+-- A press held across a display-measurement change cancels through the
+-- presentation session: the stale release cannot activate the target that
+-- moved under the pointer, semantic state survives, and a fresh press on
+-- Cancel still closes exactly once.
+function T.held_press_across_a_measurement_change_cancels_through_the_session()
+  local options, box = composition()
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local revision = state:status().revision
+  local plan = state:status().presentation
+  Assert.isTrue(type(plan) == "table", "the held-press journey resolves through the shared plan")
+  local pane = plan.panes[1]
+  Assert.isTrue(type(pane) == "table" and pane.interactive, "the plan carries its interactive pane")
+  local frame, scale = pane.placement.frame, pane.placement.scale
+  local x = frame.x + 76 * scale
+  local y = frame.y + 56 * scale
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+  box.width, box.height = 390, 844
+  box.topologyObject = topology(390, 844)
+  state:updateFixed({})
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  local after = state:status()
+  Assert.isTrue(after.open, "a release after a measurement change never leaves the application")
+  Assert.equal(after.pocket, "balls", "the session preserves the pocket across the change")
+  Assert.equal(selectedKey(after), "POKE_BALL", "the session preserves the selected item across the change")
+  Assert.equal(after.revision, revision, "a stale release issues no inventory mutation")
+  Assert.isNil(state:takeResult(), "a stale release reports no close")
+  local fresh = after.presentation
+  Assert.isTrue(type(fresh) == "table", "the session publishes its plan after the change")
+  local freshPane
+  for _, candidate in ipairs(fresh.panes) do
+    if candidate.interactive then
+      freshPane = candidate
+    end
+  end
+  Assert.isTrue(type(freshPane) == "table", "the fresh plan carries its interactive pane")
+  local freshFrame, freshScale = freshPane.placement.frame, freshPane.placement.scale
+  local cancel = manifest().interactive.cancel.rect
+  local cx = freshFrame.x + (cancel.x + cancel.width / 2) * freshScale
+  local cy = freshFrame.y + (cancel.y + cancel.height / 2) * freshScale
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = cx, y = cy } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = cx, y = cy } })
+  Assert.deepEqual(state:takeResult(), { kind = "close" }, "a fresh press on Cancel still closes the bag")
+  Assert.isNil(state:takeResult(), "the close reports exactly once")
+  state:dispose()
+end
+
+-- Capture cancellation forwards to the presentation session: a held press
+-- dropped by the session never activates on release.
+function T.capture_cancellation_forwards_to_the_presentation_session()
+  local options = composition()
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local revision = state:status().revision
+  local plan = state:status().presentation
+  Assert.isTrue(type(plan) == "table", "the cancellation journey resolves through the shared plan")
+  local frame, scale = plan.panes[1].placement.frame, plan.panes[1].placement.scale
+  local x = frame.x + 76 * scale
+  local y = frame.y + 56 * scale
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+  -- Capability probe through a permissive view: the session-owned method
+  -- does not exist before migration, and the probe names exactly that.
+  local cancel = (state --[[@as table<string, unknown>]]).cancelPointerCapture
+  Assert.isTrue(type(cancel) == "function", "the bag wrapper forwards capture cancellation through its session")
+  local cancelFn = cancel --[[@as fun(self: table<string, unknown>)]]
+  cancelFn(state)
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  local after = state:status()
+  Assert.equal(after.state, "browsing", "a cancelled press never opens the action menu")
+  Assert.equal(after.revision, revision, "a cancelled press issues no inventory mutation")
+  Assert.isNil(state:takeResult(), "a cancelled press reports no close")
+  state:dispose()
+end
+
+-- Ordered pointer cancellation reaches the controller in batch order: the
+-- press it cancels never activates a target.
+function T.ordered_pointer_cancellation_reaches_the_controller_without_activation()
+  local options = composition()
+  options.cursor:setPocket("balls")
+  local state = BagScreenState.new(options)
+  state:updateFixed({})
+  local revision = state:status().revision
+  local plan = state:status().presentation
+  Assert.isTrue(type(plan) == "table", "the cancellation journey resolves through the shared plan")
+  local frame, scale = plan.panes[1].placement.frame, plan.panes[1].placement.scale
+  local x = frame.x + 76 * scale
+  local y = frame.y + 56 * scale
+  state:updateFixed({ { type = "pointer_down", pointerId = "touch:0", x = x, y = y } })
+  state:updateFixed({ { type = "pointer_cancel", pointerId = "touch:0" } })
+  state:updateFixed({ { type = "pointer_up", pointerId = "touch:0", x = x, y = y } })
+  local after = state:status()
+  Assert.equal(after.state, "browsing", "a cancelled press never opens the action menu")
+  Assert.equal(after.revision, revision, "a cancelled press issues no inventory mutation")
+  Assert.isNil(state:takeResult(), "a cancelled press reports no close")
+  state:dispose()
 end
 
 return { tests = T }

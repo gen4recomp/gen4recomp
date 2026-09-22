@@ -23,8 +23,8 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
+local PixelScale = require("libs.ui.src.PixelScale")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
@@ -69,21 +69,52 @@ end
 
 -- The single-surface horizontal composition: two 256x192 panes side by side
 -- at unit scale, so canonical pane coordinates map 1:1 into host pixels
--- offset by the placement frame.
+-- offset by the placement frame. The placements compose through the
+-- production fitting contract; the content carries the canonical logical
+-- geometry with the hero pane visible.
 local function twoPaneLayout(manifest)
-  local layout = BagLayout.resolve({
-    topology = ScreenTopology.oneDisplay({
-      id = "main",
-      rect = { x = 0, y = 0, width = CANVAS_WIDTH, height = CANVAS_HEIGHT },
-      touch = false,
-      role = "world",
-    }),
-    manifest = manifest,
-  })
-  Assert.equal(layout.mode, "horizontal", "the 512x192 surface composes both panes side by side")
-  Assert.equal(layout.hero.scale, 1, "the smoke canvas keeps canonical coordinates")
-  Assert.equal(layout.interactive.scale, 1, "the smoke canvas keeps canonical coordinates")
-  return layout
+  local hero = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192),
+    "the smoke canvas fits its hero pane at unit scale"
+  )
+  local interaction = assert(
+    PixelScale.placeFixed({ x = 256, y = 0, width = 256, height = 192 }, 256, 192),
+    "the smoke canvas fits its interaction pane at unit scale"
+  )
+  Assert.equal(hero.pixelScale, 1, "the smoke canvas keeps canonical coordinates")
+  Assert.equal(interaction.pixelScale, 1, "the smoke canvas keeps canonical coordinates")
+  return {
+    panes = {
+      { id = "hero", placement = hero, interactive = false },
+      { id = "interaction", placement = interaction, interactive = true },
+    },
+    content = BagLayout.resolve({ manifest = manifest, heroVisible = true }),
+    inputKey = "bag",
+    render = function(_, _, _) end,
+    mapInput = function()
+      return nil
+    end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+  }
+end
+
+local function heroFrameOf(plan, versionId)
+  for _, pane in ipairs(plan.panes) do
+    if not pane.interactive then
+      return assert(pane.placement.frame, versionId .. " places the hero pane")
+    end
+  end
+  error(versionId .. " places the hero pane", 0)
+end
+
+local function interactiveFrameOf(plan, versionId)
+  for _, pane in ipairs(plan.panes) do
+    if pane.interactive then
+      return assert(pane.placement.frame, versionId .. " places the interactive pane")
+    end
+  end
+  error(versionId .. " places the interactive pane", 0)
 end
 
 local function iconKeys(cacheFs, versionId)
@@ -488,7 +519,7 @@ function T.hero_pane_renders_the_model_and_tracks_the_pocket(scope, context)
     local owned = owners(cacheFs, manifest, scope)
     local pocketA, pocketB = twoPockets(manifest, versionId)
     local textRect = assert(manifest.hero.description.textRect, versionId .. " carries its description text rectangle")
-    local heroFrame = assert(layout.hero.frame, versionId .. " places the hero pane")
+    local heroFrame = heroFrameOf(layout, versionId)
 
     local maleStatus = heroStatusAt(manifest, pocketA, 40)
     local male = render(scope, owned, presentation(firstIcon, secondIcon, maleStatus), layout)
@@ -540,7 +571,7 @@ function T.action_quantity_and_confirmation_render_distinct_states(scope, contex
     local owned = owners(cacheFs, manifest, scope)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
 
     local labels = assert(
       manifest.interactive.text and manifest.interactive.text.actions,
@@ -629,7 +660,7 @@ function T.registration_slots_render_distinct_markers(scope, context)
     local cell =
       assert(manifest.interactive.itemSlots.slots[1].rect, versionId .. " carries its first item-cell rectangle")
     local offset = assert(registration.offset, versionId .. " carries its marker offset")
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local markerRegion = {
       x = interactiveFrame.x + cell.x + offset.x,
       y = interactiveFrame.y + cell.y + offset.y,
@@ -663,7 +694,7 @@ function T.all_pocket_tabs_render_the_source_focus_visual_at_their_targets(scope
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local tabs = assert(interactive.pocketTabs, versionId .. " carries the pocket tabs")
     local strips = assert(tabs.strips, versionId .. " carries one strip per active pocket")
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     Assert.isNil(tabs.normal, versionId .. " carries no retired per-tab normal array")
     for _, pocket in ipairs(pockets()) do
       local strip = assert(strips[pocket.pocket], versionId .. " carries the " .. pocket.pocket .. " strip")
@@ -763,7 +794,7 @@ function T.browse_lower_pane_composites_source_derived_chrome(scope, context)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local record = presentation(firstIcon, secondIcon, heroStatus)
     local composed = render(scope, owned, record, layout)
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
 
     local browse = browseVariant(manifest, record.pocket, 2, versionId)
     local backdrop = decodeImage(scope, cacheFs, browse.image, versionId .. " browse background")
@@ -932,7 +963,7 @@ function T.mixed_occupancy_uses_its_own_count_chrome(scope, context)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local slots = assert(interactive.itemSlots.slots, versionId .. " carries item slot rectangles")
     local focus = assert(interactive.focus, versionId .. " carries its generated focus")
     local itemFocus = assert(focus.items, versionId .. " carries its item focus")
@@ -1029,7 +1060,7 @@ function T.foreground_tab_cursor_covers_the_strip_at_its_own_target(scope, conte
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
     local owned = owners(cacheFs, manifest, scope)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local tabFocus = assert(
       assert(interactive.focus, versionId .. " carries its generated focus").tabs,
       versionId .. " carries its tab focus"
@@ -1113,7 +1144,7 @@ function T.cancel_label_paints_centered_on_its_source_label_area(scope, context)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local cancelGeometry = assert(interactive.cancel, versionId .. " carries its cancel geometry")
     local labelRect = assert(cancelGeometry.labelRect, versionId .. " carries its cancel label area")
     Assert.equal(labelRect.x * 2 + labelRect.width, 448, versionId .. " centers its Cancel label area on X=224")
@@ -1184,7 +1215,7 @@ function T.action_focus_follows_the_selected_action(scope, context)
     local focus = assert(interactive.focus, versionId .. " carries its generated focus")
     local actionFocus = assert(focus.actions, versionId .. " carries its action focus")
     Assert.equal(#actionFocus.targets, 4, versionId .. " targets one action focus per button")
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local first = render(
@@ -1234,7 +1265,7 @@ function T.item_row_paints_icon_and_name_inside_their_own_geometry(scope, contex
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
     local owned = owners(cacheFs, manifest, scope)
     local interactive = assert(manifest.interactive, versionId .. " carries the interactive pane")
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local pocket = twoPockets(manifest, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local occupied = render(scope, owned, presentation(firstIcon, secondIcon, heroStatus), layout)
@@ -1611,7 +1642,7 @@ function T.active_pocket_strip_survives_item_focus(scope, context)
     Assert.equal(strip.width, 256, versionId .. " sizes the strip to the canonical strip width")
     Assert.equal(strip.height, 32, versionId .. " sizes the strip to the canonical strip height")
     local stripImage = decodeImage(scope, cacheFs, strip.image, versionId .. " " .. pocket .. " strip")
-    local interactiveFrame = assert(layout.interactive.frame, versionId .. " places the interactive pane")
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local itemFocused =
       render(scope, owned, presentation(firstIcon, secondIcon, heroStatus, { focus = "items" }), layout)
@@ -1701,6 +1732,271 @@ function T.active_pocket_strip_survives_item_focus(scope, context)
       width = 256,
       height = 32,
     }, 1) > 0, versionId .. " distinct pockets carry distinct selected strips")
+  end
+end
+
+-- The hero model raster composites exactly once through its resolved
+-- placement: the canonical 256x192 target lands at the full frame origin
+-- with no second scaling, the visible clip hides cropped margins instead
+-- of stretching them, and the source camera never compensates for the
+-- crop. The canonical capture and the cropped translated capture share one
+-- semantic frame, so equal source texels match under integer magnification
+-- while cropped-away margins stay clear.
+function T.hero_model_composites_once_at_full_origin_under_the_visible_clip(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local hero = owned.heroRenderer
+    local pocket = twoPockets(manifest, versionId)
+    local status = heroStatusAt(manifest, pocket, 40)
+
+    local unit = assert(
+      PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192),
+      versionId .. " fits its canonical hero surface at unit scale"
+    )
+    Assert.equal(unit.pixelScale, 1, versionId .. " keeps the canonical capture integral")
+    local unitCanvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setScissor()
+    love.graphics.setCanvas(unitCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    hero:draw("male", status, unit)
+    love.graphics.setCanvas()
+    local canonical = scope:own(unitCanvas:newImageData())
+    local projectionAfterUnit = {}
+    for index, entry in ipairs(hero._projection) do
+      projectionAfterUnit[index] = entry
+    end
+
+    local placed = assert(
+      PixelScale.placeFixed({ x = 100, y = 60, width = 750, height = 560 }, 256, 192),
+      versionId .. " fits its translated hero surface with a safe crop"
+    )
+    Assert.equal(placed.pixelScale, 3, versionId .. " takes the admissible integer bump")
+    local frame = assert(placed.frame, versionId .. " carries its full frame")
+    local clip = assert(placed.clipRect, versionId .. " carries its visible clip")
+    local visible = assert(placed.visibleLogicalRect, versionId .. " carries its visible source rectangle")
+    local composedCanvas = scope:own(love.graphics.newCanvas(960, 700, { format = "rgba8", readable = true }))
+    love.graphics.setScissor()
+    love.graphics.setCanvas(composedCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    hero:draw("male", status, placed)
+    love.graphics.setCanvas()
+    local composed = scope:own(composedCanvas:newImageData())
+
+    local targetWidth, targetHeight = hero._modelCanvas:getDimensions()
+    Assert.equal(targetWidth, 256, versionId .. " keeps its canonical model target width")
+    Assert.equal(targetHeight, 192, versionId .. " keeps its canonical model target height")
+    Assert.deepEqual(
+      hero._projection,
+      projectionAfterUnit,
+      versionId .. " never reshapes its source camera against the crop"
+    )
+
+    local function channelDistance(first, second)
+      return math.abs(first.red - second.red)
+        + math.abs(first.green - second.green)
+        + math.abs(first.blue - second.blue)
+        + math.abs(first.alpha - second.alpha)
+    end
+    local function canonicalPixel(x, y)
+      local red, green, blue, alpha = canonical:getPixel(x, y)
+      return { red = red, green = green, blue = blue, alpha = alpha }
+    end
+    local function composedPixel(x, y)
+      local red, green, blue, alpha = composed:getPixel(x, y)
+      return { red = red, green = green, blue = blue, alpha = alpha }
+    end
+    -- Visible source texels magnify uniformly from the full origin: every
+    -- sampled host pixel inside the clip matches its cropped source texel.
+    local checked = 0
+    local sourceY = visible.y
+    while sourceY < visible.y + visible.height do
+      local sourceX = visible.x
+      while sourceX < visible.x + visible.width do
+        local hostX = clip.x + (sourceX - visible.x) * placed.pixelScale
+        local hostY = clip.y + (sourceY - visible.y) * placed.pixelScale
+        Assert.isTrue(
+          channelDistance(composedPixel(hostX, hostY), canonicalPixel(sourceX, sourceY)) < 0.004,
+          versionId .. " magnifies its visible hero texel once at " .. sourceX .. "," .. sourceY
+        )
+        checked = checked + 1
+        sourceX = sourceX + 7
+      end
+      sourceY = sourceY + 7
+    end
+    Assert.isTrue(checked > 100, versionId .. " samples its visible hero region densely")
+    -- Cropped margins hide: host pixels inside the full frame but outside
+    -- the visible clip stay clear wherever the canonical stage paints.
+    local hidden = 0
+    local hostY = frame.y
+    while hostY < frame.y + frame.height do
+      local hostX = frame.x
+      while hostX < frame.x + frame.width do
+        local insideClip = hostX >= clip.x
+          and hostX < clip.x + clip.width
+          and hostY >= clip.y
+          and hostY < clip.y + clip.height
+        if not insideClip then
+          local marginSourceX = (hostX - frame.x) / placed.pixelScale
+          local marginSourceY = (hostY - frame.y) / placed.pixelScale
+          if marginSourceX % 1 == 0 and marginSourceY % 1 == 0 then
+            local painted = canonicalPixel(marginSourceX, marginSourceY)
+            if painted.alpha > 0.5 then
+              hidden = hidden + 1
+              local actual = composedPixel(hostX, hostY)
+              Assert.equal(actual.alpha, 0, versionId .. " hides its cropped hero margin at " .. hostX .. "," .. hostY)
+            end
+          end
+        end
+        hostX = hostX + 1
+      end
+      hostY = hostY + 1
+    end
+    Assert.isTrue(hidden >= 3, versionId .. " paints its cropped margins in the canonical stage")
+  end
+end
+
+-- The single-pane compact description reuses the source Bag description
+-- frame and the generated fallback text rectangle: the selected item text
+-- inks across three 16 px rows inside the generated text rectangle while
+-- the frame border matches the decoded source frame art. Tab focus hides
+-- the ordinary description entirely, while a move prompt from the same
+-- selection still paints. Every rectangle and visual comes from the
+-- generated manifest; row positions derive from the generated text
+-- rectangle, never from fixed screen coordinates.
+local function singlePaneLayout(manifest, versionId)
+  local single = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192),
+    versionId .. " fits its single pane at unit scale"
+  )
+  Assert.equal(single.pixelScale, 1, versionId .. " keeps canonical coordinates")
+  return {
+    panes = {
+      { id = "interaction", placement = single, interactive = true },
+    },
+    content = BagLayout.resolve({ manifest = manifest, heroVisible = false }),
+    inputKey = "bag",
+    render = function(_, _, _) end,
+    mapInput = function()
+      return nil
+    end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+  }
+end
+
+local function threeLineSelected(firstIcon)
+  return {
+    item = "SMOKE_ITEM_A",
+    nativeId = 1,
+    name = "Smoke A",
+    quantity = 5,
+    description = "Smoke line one\nSmoke line two\nSmoke line three",
+    icon = firstIcon,
+  }
+end
+
+function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_gating(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = singlePaneLayout(manifest, versionId)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local fallback = assert(
+      manifest.interactive.overlays.descriptionFallback,
+      versionId .. " carries its generated description fallback"
+    )
+    local frameRect = assert(fallback.frame, versionId .. " carries its fallback frame")
+    local textRect = assert(fallback.textRect, versionId .. " carries its fallback text rectangle")
+    Assert.isTrue(textRect.height >= 48, versionId .. " sizes the fallback text for three 16 px lines")
+    local selected = threeLineSelected(firstIcon)
+    local lined = render(scope, owned, presentation(firstIcon, secondIcon, heroStatus, { selected = selected }), layout)
+    local emptyRecord = presentation(firstIcon, secondIcon, heroStatus)
+    emptyRecord.selected = nil
+    local empty = render(scope, owned, emptyRecord, layout)
+    local frameRegion = {
+      x = interactiveFrame.x + frameRect.x,
+      y = interactiveFrame.y + frameRect.y,
+      width = frameRect.width,
+      height = frameRect.height,
+    }
+    Assert.isTrue(
+      regionDistance(lined, empty, frameRegion, 2) > 20,
+      versionId .. " the ordinary description paints inside the fallback frame"
+    )
+    for row = 0, 2 do
+      Assert.isTrue(regionDistance(lined, empty, {
+        x = interactiveFrame.x + textRect.x,
+        y = interactiveFrame.y + textRect.y + row * 16,
+        width = textRect.width,
+        height = 16,
+      }, 1) > 0, versionId .. " description row " .. (row + 1) .. " inks inside the generated text rectangle")
+    end
+    local sourceFrame = decodeImage(
+      scope,
+      cacheFs,
+      assert(manifest.hero.description.frame.image, versionId .. " carries its description frame art"),
+      versionId .. " description frame"
+    )
+    local matched = 0
+    for y = frameRect.y, frameRect.y + frameRect.height - 1 do
+      for x = frameRect.x, frameRect.x + frameRect.width - 1 do
+        local inText = x >= textRect.x - 1
+          and x < textRect.x + textRect.width + 1
+          and y >= textRect.y - 1
+          and y < textRect.y + textRect.height + 1
+        if not inText and x < sourceFrame:getWidth() and y < sourceFrame:getHeight() then
+          local sr, sg, sb, sa = sourceFrame:getPixel(x, y)
+          if sa > 0.5 then
+            matched = matched + 1
+            local cr, cg, cb, ca = lined:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+            Assert.equal(quantize(cr), quantize(sr), versionId .. " keeps the source frame red")
+            Assert.equal(quantize(cg), quantize(sg), versionId .. " keeps the source frame green")
+            Assert.equal(quantize(cb), quantize(sb), versionId .. " keeps the source frame blue")
+            Assert.equal(quantize(ca), quantize(sa), versionId .. " keeps the source frame alpha")
+          end
+        end
+      end
+    end
+    Assert.isTrue(matched > 50, versionId .. " the source frame contributes border pixels")
+    local tabbed = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, { selected = selected, focus = "tabs" }),
+      layout
+    )
+    Assert.equal(
+      regionDistance(tabbed, empty, frameRegion, 1),
+      0,
+      versionId .. " tab focus hides the ordinary compact description"
+    )
+    local moved = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        selected = selected,
+        state = "move_select",
+        focus = "tabs",
+        moveTarget = 1,
+        visibleStart = 0,
+      }),
+      layout
+    )
+    Assert.isTrue(
+      regionDistance(moved, empty, frameRegion, 2) > 0,
+      versionId .. " the move prompt survives while item focus is elsewhere"
+    )
   end
 end
 
