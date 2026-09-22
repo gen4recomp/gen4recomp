@@ -335,6 +335,29 @@ local function readyHeadlessCache()
   return cacheFs
 end
 
+-- The required display collaborators: a fixed single-display measurement
+-- plus caller-owned window memory. Opening resolves the shared plan
+-- through these facts; headless compositions never draw.
+local function headlessBox()
+  local ScreenTopology = assert(require("libs.hgss.src.ui.ScreenTopology"))
+  return {
+    width = 640,
+    height = 400,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 640, height = 400 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "starter-headless-default",
+  }
+end
+
+local function headlessMemory()
+  return { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
+end
+
 local function openHeadlessChoice()
   local StarterChoiceState = requireModule(STATE_MODULE, "the starter state owns the modal choice surface")
   local catalog = CatalogFixture.makeCatalog()
@@ -356,7 +379,13 @@ local function openHeadlessChoice()
     mapSection = 7,
     date = CatalogFixture.metDate(),
   })
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyHeadlessCache(), frameIndex = 3 })
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyHeadlessCache(),
+    frameIndex = 3,
+    measureDisplay = headlessBox,
+    windowState = headlessMemory(),
+  })
   return host, service
 end
 

@@ -113,6 +113,31 @@ local function controllerHost()
   return host
 end
 
+-- A serving host for the migrated task: the legacy controller double
+-- plus an explicit handleInput entrypoint interpreting semantic and tap
+-- events through the unchanged controller. Raw pointer movement,
+-- release, and scroll carry no semantics without host geometry.
+local function servingHost()
+  local host = controllerHost()
+  function host:handleInput(events)
+    assert(type(events) == "table", "the choice host requires the event batch")
+    for _, event in ipairs(events) do
+      if event.type == "navigate" then
+        if event.direction == "left" or event.direction == "right" then
+          self.controller:move(event.direction)
+        end
+      elseif event.type == "confirm" then
+        self.controller:confirm()
+      elseif event.type == "cancel" then
+        self.controller:cancel()
+      elseif event.type == "tap" then
+        self.controller:tap(event.index)
+      end
+    end
+  end
+  return host
+end
+
 local function screenFake()
   local screen = { started = {}, done = false }
   function screen:startFade(spec)
@@ -167,7 +192,7 @@ function T.navigation_rotates_one_step_and_settles_without_rerolling()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
+  local host = servingHost()
   local state = generate(task, service, host, nil)
   local calls = service:capture().rng.calls
 
@@ -190,7 +215,7 @@ function T.confirmation_walks_inspect_zoom_lock_through_events()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
+  local host = servingHost()
   local state = generate(task, service, host, nil)
 
   local opening = ctxFor(service, host, { { type = "confirm" } }, nil)
@@ -235,18 +260,11 @@ function T.pointer_taps_rotate_toward_the_tapped_ball()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
-  function host:hitTest(x, _)
-    if x == 10 then
-      return { kind = "ball", index = 1 }
-    end
-    return nil
-  end
+  local host = servingHost()
   local state = generate(task, service, host, nil)
 
   local tap = ctxFor(service, host, {
-    { type = "pointer_down", x = 10, y = 4 },
-    { type = "pointer_up", x = 10, y = 4 },
+    { type = "tap", index = 1 },
   }, nil)
   local outcome = task.poll(state, tap)
   Assert.isFalse(outcome.complete, "tapping another ball never publishes")
@@ -254,8 +272,7 @@ function T.pointer_taps_rotate_toward_the_tapped_ball()
   Assert.equal(host:status().cursor, 1, "the settled tap selects the tapped ball")
 
   local away = ctxFor(service, host, {
-    { type = "pointer_down", x = 900, y = 900 },
-    { type = "pointer_up", x = 900, y = 900 },
+    { type = "tap", index = nil },
   }, nil)
   task.poll(state, away)
   settle(host)
@@ -266,49 +283,28 @@ function T.pointer_down_on_another_ball_rotates_without_release()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
-  function host:hitTest(x, _)
-    if x == 10 then
-      return { kind = "ball", index = 1 }
-    end
-    return nil
-  end
+  local host = servingHost()
   local state = generate(task, service, host, nil)
 
   local tap = ctxFor(service, host, {
-    { type = "pointer_down", x = 10, y = 4 },
+    { type = "tap", index = 1 },
   }, nil)
   local outcome = task.poll(state, tap)
   Assert.isFalse(outcome.complete, "tapping another ball never publishes")
   local started = host.controller:snapshot()
-  Assert.equal(started.transition, "rotate", "the press edge starts rotation without waiting for release")
-  Assert.equal(started.direction, "right", "the press edge rotates toward the tapped ball")
+  Assert.equal(started.transition, "rotate", "the tap starts rotation immediately")
+  Assert.equal(started.direction, "right", "the tap rotates toward the tapped ball")
   Assert.equal(started.selection, 0, "semantic selection waits for rotation settlement")
 
-  local lift = ctxFor(service, host, {
-    { type = "pointer_up", x = 10, y = 4 },
-  }, nil)
-  task.poll(state, lift)
-  local afterLift = host.controller:snapshot()
-  Assert.equal(afterLift.transition, "rotate", "release after the press edge starts no second transition")
-
   settle(host)
-  Assert.equal(host:status().cursor, 1, "the settled press-edge tap selects the tapped ball")
+  Assert.equal(host:status().cursor, 1, "the settled tap selects the tapped ball")
 end
 
 function T.pointer_move_and_release_without_press_change_nothing()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
-  function host:hitTest(x, _)
-    if x == 10 then
-      return { kind = "ball", index = 1 }
-    elseif x == 11 then
-      return { kind = "ball", index = 2 }
-    end
-    return nil
-  end
+  local host = servingHost()
   local state = generate(task, service, host, nil)
   local before = host.controller:snapshot()
 
@@ -337,48 +333,29 @@ function T.pointer_down_on_current_ball_advances_choice_without_release()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
-  function host:hitTest(x, _)
-    if x == 11 then
-      return { kind = "ball", index = host.controller:snapshot().selection }
-    end
-    return nil
-  end
+  local host = servingHost()
   local state = generate(task, service, host, nil)
 
   local firstTap = ctxFor(service, host, {
-    { type = "pointer_down", x = 11, y = 4 },
+    { type = "tap", index = 0 },
   }, nil)
   task.poll(state, firstTap)
-  Assert.equal(
-    host.controller:snapshot().selectionState,
-    "inspect",
-    "the press edge on the current ball inspects without waiting for release"
-  )
-  local firstLift = ctxFor(service, host, {
-    { type = "pointer_up", x = 11, y = 4 },
-  }, nil)
-  task.poll(state, firstLift)
-  Assert.equal(host.controller:snapshot().selectionState, "inspect", "release after inspection changes nothing")
+  Assert.equal(host.controller:snapshot().selectionState, "inspect", "the tap on the current ball inspects immediately")
 
   local secondTap = ctxFor(service, host, {
-    { type = "pointer_down", x = 11, y = 4 },
+    { type = "tap", index = 0 },
   }, nil)
   task.poll(state, secondTap)
-  Assert.equal(
-    host.controller:snapshot().transition,
-    "zoomIn",
-    "the press edge on the inspected ball starts confirmation without release"
-  )
+  Assert.equal(host.controller:snapshot().transition, "zoomIn", "the tap on the inspected ball starts confirmation")
   settle(host)
   Assert.equal(host.controller:snapshot().selectionState, "confirm", "the zoom path settles into confirmation")
 
   local confirmTap = ctxFor(service, host, {
-    { type = "pointer_down", x = 11, y = 4 },
+    { type = "tap", index = 0 },
   }, nil)
   local locking = task.poll(state, confirmTap)
-  Assert.isFalse(locking.complete, "the final press edge starts the lock, not the report")
-  Assert.equal(host.controller:snapshot().transition, "lockExit", "confirmation press locks on the press edge")
+  Assert.isFalse(locking.complete, "the final tap starts the lock, not the report")
+  Assert.equal(host.controller:snapshot().transition, "lockExit", "confirmation tap locks immediately")
   settle(host)
   local published = task.poll(state, ctxFor(service, host, {}, nil))
   Assert.isTrue(published.complete, "the settled lock completes the task")
@@ -389,7 +366,7 @@ function T.fade_legs_run_around_the_modal_when_a_screen_is_composed()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
+  local host = servingHost()
   local screen = screenFake()
   local ctx = ctxFor(service, host, {}, screen)
   local state = task.create({ node = { op = "choose_starter" } }, ctx)
@@ -429,7 +406,7 @@ function T.cancel_releases_an_open_host_exactly_once()
   local task = requireTask()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, 0x12345678)
-  local host = controllerHost()
+  local host = servingHost()
   local state = generate(task, service, host, nil)
   local ctx = ctxFor(service, host, {}, nil)
   task.cancel(state, "test teardown", ctx)
@@ -461,6 +438,60 @@ function T.invalid_task_state_fails_validation()
     "a well-formed choose phase validates"
   )
   Assert.isTrue(Errors.is(task.validate({ phase = "choose" })), "a phaseless husk never validates")
+end
+
+-- The task no longer assumes ball-shaped
+-- input. It hands exactly one normalized batch to the choice host's
+-- handleInput and never interprets pointer geometry itself: hitTest is
+-- never consulted and tap is never called directly by the task.
+local function delegatingHost()
+  local host = controllerHost()
+  host.batches = {}
+  host.tapCalls = 0
+  host.hitTestCalls = 0
+  function host:handleInput(events)
+    self.batches[#self.batches + 1] = events
+  end
+  function host:hitTest(_, _)
+    self.hitTestCalls = self.hitTestCalls + 1
+    return nil
+  end
+  local directTap = host.tap
+  function host:tap(index)
+    self.tapCalls = self.tapCalls + 1
+    return directTap(self, index)
+  end
+  return host
+end
+
+function T.task_delegates_one_batch_to_host_handle_input_without_hit_testing()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = delegatingHost()
+  local state = generate(task, service, host, nil)
+  local events = {
+    { type = "navigate", direction = "right" },
+    { type = "pointer_down", pointerId = "touch:1", x = 128, y = 100 },
+    { type = "pointer_up", pointerId = "touch:1", x = 128, y = 100 },
+    { type = "confirm" },
+  }
+  local outcome = task.poll(state, ctxFor(service, host, events, nil))
+  Assert.isFalse(outcome.complete, "delegation never completes the task by itself")
+  Assert.equal(#host.batches, 1, "the task delegates exactly one normalized batch to host handleInput")
+  Assert.deepEqual(host.batches[1], events, "delegation preserves the batch order and contents")
+  Assert.equal(host.hitTestCalls, 0, "the task never interprets pointer geometry through hitTest")
+  Assert.equal(host.tapCalls, 0, "the task never taps the controller directly")
+end
+
+function T.host_without_handle_input_fails_task_validation()
+  local task = requireTask()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, 0x12345678)
+  local host = controllerHost()
+  Assert.isNil(host.handleInput, "the legacy double carries no host input entrypoint")
+  local ok = pcall(generate, task, service, host, nil)
+  Assert.isFalse(ok, "a host without handleInput cannot serve the migrated task")
 end
 
 return { tests = T }

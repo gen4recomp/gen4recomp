@@ -84,6 +84,13 @@ local function choiceHost(ctx)
       { scriptId = ctx.instance and ctx.instance.scriptId }
     )
   end
+  if type(host.handleInput) ~= "function" then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "the starter choice host must interpret its own input through handleInput",
+      { scriptId = ctx.instance and ctx.instance.scriptId }
+    )
+  end
   return host
 end
 
@@ -121,63 +128,21 @@ local function fadeReady(state, ctx, leg)
   return screen:fadeDone()
 end
 
----@param host table<string, unknown>
----@param event table<string, unknown>
-local function applyPointerEvent(host, event)
-  if event.type ~= "pointer_down" then
-    return
-  end
-  local hit = nil
-  if type(host.hitTest) == "function" and type(event.x) == "number" and type(event.y) == "number" then
-    hit = host:hitTest(event.x, event.y)
-  end
-  local index = nil
-  if type(hit) == "table" and type(hit.index) == "number" then
-    index = hit.index
-  end
-  host:tap(index)
-end
-
--- Maps one tick of normalized UI events onto the choice host. The host owns
--- the cursor and confirmation state; the task only carries the candidate
--- cursor for reopening after a restore.
+-- Delegates one tick of normalized UI events to the choice host, which
+-- interprets its own input geometry. The host owns the cursor and
+-- confirmation state; the task only carries the candidate cursor for
+-- reopening after a restore. An empty batch carries no input, so the
+-- task delegates exactly the ticks that do.
 ---@param state table<string, unknown>
 ---@param host table<string, unknown>
 ---@param ctx table<string, unknown>
 local function applyEvents(state, host, ctx)
+  local _ = state
   local input = ctx.input or {}
   local events = input.uiEvents or {}
   assert(type(events) == "table", "starter choice UI events must be a table")
-  for _, event in ipairs(events) do
-    assert(type(event) == "table" and type(event.type) == "string", "starter choice UI event is invalid")
-    local eventType = event.type
-    if eventType == "navigate" then
-      local direction = event.direction
-      if direction == "left" or direction == "right" then
-        if type(host.move) == "function" then
-          host:move(direction)
-        else
-          if direction == "left" then
-            state.cursor = (state.cursor - 1) % 3
-          else
-            state.cursor = (state.cursor + 1) % 3
-          end
-          host:focus(state.cursor)
-        end
-      elseif direction ~= "up" and direction ~= "down" then
-        assert(false, "unknown starter choice navigation " .. tostring(direction))
-      end
-    elseif eventType == "confirm" then
-      host:confirm()
-    elseif eventType == "cancel" then
-      host:cancel()
-    elseif eventType == "pointer_down" then
-      applyPointerEvent(host, event)
-    elseif eventType == "pointer_move" or eventType == "pointer_up" or eventType == "pointer_scroll" then
-      -- Starter pointer movement, release, and scroll carry no semantics.
-    else
-      assert(false, "unknown starter choice UI event " .. eventType)
-    end
+  if #events > 0 then
+    host:handleInput(events)
   end
 end
 

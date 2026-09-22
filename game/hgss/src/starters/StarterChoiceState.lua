@@ -13,11 +13,12 @@
 -- release exactly once on close/dispose while the candidate records stay
 -- with the task.
 
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
 local MonCache = require("libs.assets.src.MonCache")
 local Personality = require("libs.mons.src.gen4.Personality")
-local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local StarterChoiceController = require("libs.hgss.src.ui.StarterChoiceController")
+local StarterChoiceInterface = require("game.hgss.src.starters.StarterChoiceInterface")
 local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoicePresentation")
 
 ---@class StarterChoiceState
@@ -29,21 +30,24 @@ local StarterChoicePresentation = require("game.hgss.src.starters.StarterChoiceP
 ---@field _portraits table[]|nil per-candidate portrait descriptors while open
 ---@field _manifest table<string, unknown>? immutable validated application manifest while open
 ---@field _presentation StarterChoicePresentation? game-local scene presentation while open
----@field _topology ScreenTopology? dual-surface host topology for the current drawable size
----@field _machine table<string, unknown>? machine surface record for draw/hit mapping
----@field _info table<string, unknown>? info surface record for draw mapping
 ---@field _frameIndex integer player-owned text-frame choice carried into the presentation
 ---@field _doneIndex integer? completed candidate once the lock settles
----@field _width number last drawable width
----@field _height number last drawable height
+---@field _measureDisplay fun(): DisplayMeasurement the live display facts
+---@field _windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
+---@field _overrides table<string, unknown>? per-case function overrides for this application
+---@field _session ApplicationPresentation? the per-open presentation session beside the controller
 local StarterChoiceState = {}
 StarterChoiceState.__index = StarterChoiceState
 
--- Host gap between the machine and info surfaces; placement only, never a
--- semantic coordinate.
-local SURFACE_GAP = 8
+---@class StarterChoiceState.Options
+---@field catalog MonCatalog generated mon catalog for names
+---@field cacheFs CacheFs generated-asset filesystem for the application cache
+---@field frameIndex integer player-owned text-frame choice
+---@field measureDisplay fun(): DisplayMeasurement the live display facts
+---@field windowState table<string, { x: number, y: number }> borrowed caller-owned normalized window memory
+---@field overrides table<string, unknown>? per-case function overrides for this application
 
----@param opts { catalog: MonCatalog, cacheFs: CacheFs, frameIndex: integer }
+---@param opts StarterChoiceState.Options
 ---@return StarterChoiceState
 function StarterChoiceState.new(opts)
   assert(type(opts) == "table", "starter choice requires its composition")
@@ -53,22 +57,23 @@ function StarterChoiceState.new(opts)
     type(opts.frameIndex) == "number" and opts.frameIndex % 1 == 0 and opts.frameIndex >= 0,
     "starter choice requires the player-owned frame index"
   )
+  assert(type(opts.measureDisplay) == "function", "starter choice requires the display facts")
+  assert(type(opts.windowState) == "table", "starter choice borrows its window memory")
   return setmetatable({
     _catalog = opts.catalog,
     _cacheFs = opts.cacheFs,
     _frameIndex = opts.frameIndex,
+    _measureDisplay = opts.measureDisplay,
+    _windowState = opts.windowState,
+    _overrides = opts.overrides,
     _controller = nil,
     _candidates = nil,
     _names = nil,
     _portraits = nil,
     _manifest = nil,
     _presentation = nil,
-    _topology = nil,
-    _machine = nil,
-    _info = nil,
+    _session = nil,
     _doneIndex = nil,
-    _width = 256,
-    _height = 192,
   }, StarterChoiceState)
 end
 
@@ -200,20 +205,33 @@ function StarterChoiceState:open(cursor, candidates)
   })
   presentation:reset()
   self._presentation = presentation
-  self:resize(self._width, self._height)
+  local session = ApplicationPresentation.new(StarterChoiceInterface.withOverrides(self._overrides), self._windowState)
+  self._session = session
+  local resolveOk, resolveErr = pcall(function()
+    session:resolve(self:_measured(), self:_sessionView())
+  end)
+  if not resolveOk then
+    session:dispose()
+    self._session = nil
+    self:_releasePresentation()
+    self._controller = nil
+    self._candidates = nil
+    self._names = nil
+    self._portraits = nil
+    self._manifest = nil
+    error(resolveErr, 0)
+  end
 end
 
 function StarterChoiceState:close()
   assert(self:isActive(), "no starter choice is active")
+  self:_disposeSession()
   self:_releasePresentation()
   self._controller = nil
   self._candidates = nil
   self._names = nil
   self._portraits = nil
   self._manifest = nil
-  self._topology = nil
-  self._machine = nil
-  self._info = nil
   self._doneIndex = nil
 end
 
@@ -242,21 +260,7 @@ function StarterChoiceState:update()
   local snapshot = controller:snapshot()
   local observation = self._presentation and self._presentation:update(snapshot) or EMPTY_OBSERVATION
   controller:update(observation)
-end
-
----@return { done: boolean, cursor: integer?, index: integer? }|nil
-function StarterChoiceState:status()
-  local controller = self._controller
-  if controller == nil then
-    return nil
-  end
-  local snapshot = controller:snapshot()
-  if snapshot.done then
-    local index = snapshot.result ~= nil and snapshot.result.index or nil
-    self._doneIndex = assert(index, "a completed choice names its candidate")
-    return { done = true, index = self._doneIndex }
-  end
-  return { done = false, cursor = snapshot.selection }
+  assert(self._session, "an open choice owns its presentation session"):resolve(self:_measured(), self:_sessionView())
 end
 
 ---@param self StarterChoiceState
@@ -273,6 +277,99 @@ local function activePresentation(self)
   local presentation = self._presentation
   assert(presentation ~= nil, "no starter choice is active")
   return presentation
+end
+
+---@return DisplayMeasurement the current display facts for plan resolution
+function StarterChoiceState:_measured()
+  local measurement = self._measureDisplay()
+  return assert(measurement, "starter choice requires current display facts")
+end
+
+-- The session view: the flat controller snapshot fields plus the
+-- semantic candidates and names for renderers and the state-owned scene
+-- presentation for source-space hit mapping. The snapshot shape matches
+-- what resolvers and mappers read directly. Fresh tables per call.
+---@return table<string, unknown>
+---@class StarterChoiceSessionView : StarterChoiceController.Snapshot
+---@field candidates table<string, unknown>[] borrowed task-owned candidate records for renderers
+---@field names string[] candidate display names for renderers
+---@field presentation table<string, unknown> state-owned scene presentation for source-space hit mapping
+
+---@return StarterChoiceSessionView
+function StarterChoiceState:_sessionView()
+  local controller = activeController(self)
+  local snapshot = controller:snapshot()
+  ---@type StarterChoiceSessionView
+  local view = {
+    selection = snapshot.selection,
+    selectionState = snapshot.selectionState,
+    transition = snapshot.transition,
+    direction = snapshot.direction,
+    done = snapshot.done,
+    result = snapshot.result,
+    candidates = assert(self._candidates, "starter choice requires its candidates"),
+    names = assert(self._names, "starter choice requires its candidate names"),
+    presentation = activePresentation(self),
+  }
+  return view
+end
+
+---@return { done: boolean, cursor: integer?, index: integer?, presentation: table<string, unknown> }|nil
+function StarterChoiceState:status()
+  local controller = self._controller
+  if controller == nil then
+    return nil
+  end
+  local session = assert(self._session, "an open choice owns its presentation session")
+  local snapshot = controller:snapshot()
+  if snapshot.done then
+    local index = snapshot.result ~= nil and snapshot.result.index or nil
+    self._doneIndex = assert(index, "a completed choice names its candidate")
+    return { done = true, index = self._doneIndex, presentation = session:plan() }
+  end
+  return { done = false, cursor = snapshot.selection, presentation = session:plan() }
+end
+
+-- One input batch through the published plan: resolve against fresh host
+-- facts, map once through the session, then dispatch the resulting app
+-- events to the unchanged controller. pointer_cancel carries no
+-- semantic cancel meaning and is discarded after gesture invalidation.
+-- The plan is resolved again for the resulting snapshot so status and draw publish the post-input interface.
+---@param events table<string, unknown>[] the normalized UI event batch
+function StarterChoiceState:handleInput(events)
+  local controller = activeController(self)
+  assert(type(events) == "table", "starter input requires the event batch")
+  local session = assert(self._session, "an open choice owns its presentation session")
+  session:resolve(self:_measured(), self:_sessionView())
+  local mapped = session:mapInput(events, self:_sessionView())
+  for _, event in ipairs(mapped) do
+    local eventType = event.type
+    if eventType == "tap" then
+      controller:tap(event.index)
+    elseif eventType == "confirm" then
+      controller:confirm()
+    elseif eventType == "cancel" then
+      controller:cancel()
+    elseif eventType == "navigate" then
+      if event.direction == "left" or event.direction == "right" then
+        controller:move(event.direction)
+      end
+    elseif eventType == "pointer_cancel" then
+      -- A cancelled gesture invalidates the press without touching choice semantics.
+    else
+      assert(false, "unknown starter choice app event " .. tostring(eventType))
+    end
+  end
+  session:resolve(self:_measured(), self:_sessionView())
+end
+
+-- Cancels a held presentation press without touching choice semantics:
+-- the session drops its capture so a stale release never activates.
+function StarterChoiceState:cancelPointerCapture()
+  local session = self._session
+  if session ~= nil then
+    session:cancelPointers()
+  end
 end
 
 ---@param itemIndex integer
@@ -316,67 +413,6 @@ function StarterChoiceState:ballAt(x, y, snapshot)
   return presentation:ballAt(x, y, snapshot)
 end
 
--- Maps a host pointer position through the machine surface only onto its
--- 256x192 reference frame, then onto the rendered balls: { kind = "ball",
--- index } zero-based, nil outside every region. Points on the info surface
--- or the host backdrop never hit a ball.
----@param x number
----@param y number
----@return { kind: string, index: integer }|nil
-function StarterChoiceState:hitTest(x, y)
-  local presentation = self._presentation
-  if presentation == nil then
-    return nil
-  end
-  local machine = self._machine
-  if machine == nil then
-    return nil
-  end
-  local referenceX, referenceY = presentation:toMachineReference(x, y)
-  if referenceX == nil or referenceY == nil then
-    return nil
-  end
-  local ball = presentation:ballAt(referenceX, referenceY, activeController(self):snapshot())
-  if ball == nil then
-    return nil
-  end
-  return { kind = "ball", index = ball - 1 }
-end
-
--- Recomputes the dual-surface host layout without touching controller
--- state so resizes never reroll or reselect; hit projection follows the
--- machine surface of the same layout.
----@param width number
----@param height number
-function StarterChoiceState:resize(width, height)
-  assert(type(width) == "number" and width > 0, "starter resize requires a positive width")
-  assert(type(height) == "number" and height > 0, "starter resize requires a positive height")
-  self._width = width
-  self._height = height
-  local scale = math.min(height / 192, (width - SURFACE_GAP) / 512)
-  assert(scale > 0, "starter resize requires a non-degenerate drawable size")
-  local surfaceWidth, surfaceHeight = 256 * scale, 192 * scale
-  local originX = (width - (surfaceWidth * 2 + SURFACE_GAP)) / 2
-  local originY = (height - surfaceHeight) / 2
-  local topology = ScreenTopology.dualDisplay({
-    id = "machine",
-    rect = { x = originX, y = originY, width = surfaceWidth, height = surfaceHeight },
-    role = "world",
-    touch = true,
-  }, {
-    id = "info",
-    rect = { x = originX + surfaceWidth + SURFACE_GAP, y = originY, width = surfaceWidth, height = surfaceHeight },
-    role = "auxiliary",
-    touch = false,
-  })
-  self._topology = topology
-  self._machine = assert(topology.surfaces[1], "starter presentation requires the machine surface")
-  self._info = assert(topology.surfaces[2], "starter presentation requires the info surface")
-  if self._presentation ~= nil then
-    self._presentation:resize(width, height, self._machine.rect, self._info.rect)
-  end
-end
-
 function StarterChoiceState:_releasePresentation()
   local presentation = self._presentation
   self._presentation = nil
@@ -385,34 +421,44 @@ function StarterChoiceState:_releasePresentation()
   end
 end
 
--- Draws the modal through the field text provider. Refreshes the scene fit
--- from the current drawable size and delegates the frame to the retail
--- presentation. Drawing before preparation completes is a composition error
--- and fails loudly; the field draws the starter surface only once ready.
+function StarterChoiceState:_disposeSession()
+  local session = self._session
+  self._session = nil
+  if session ~= nil then
+    session:dispose()
+  end
+end
+
+-- Draws the modal through the field text provider. Reconciles the
+-- presentation geometry through the state-owned session, then executes
+-- the resolved plan with the borrowed presentation and text. Drawing
+-- before preparation completes is a composition error and fails loudly;
+-- the field draws the starter surface only once ready. Repeated draws
+-- never advance semantic clocks.
 ---@param text table<string, unknown> text provider ({ drawLine, windowBackgroundColor })
----@param width number
----@param height number
-function StarterChoiceState:drawPresentation(text, width, height)
-  local controller = activeController(self)
+function StarterChoiceState:drawPresentation(text)
+  activeController(self)
   assert(text ~= nil and type(text.drawLine) == "function", "starter presentation requires the text provider")
   assert(self:isPresentationReady(), "starter presentation is not prepared")
-  self:resize(width, height)
-  activePresentation(self):draw(controller:snapshot(), {
-    candidates = assert(self._candidates, "starter presentation requires its candidates"),
-    names = assert(self._names, "starter presentation requires its candidate names"),
-  }, text)
+  local session = assert(self._session, "an open choice owns its presentation session")
+  local view = self:_sessionView()
+  session:resolve(self:_measured(), view)
+  local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
+  ApplicationPresentation.draw(graphics, {
+    graphics = graphics,
+    presentation = activePresentation(self),
+    text = text,
+  }, view, session:plan())
 end
 
 function StarterChoiceState:dispose()
+  self:_disposeSession()
   self:_releasePresentation()
   self._controller = nil
   self._candidates = nil
   self._names = nil
   self._portraits = nil
   self._manifest = nil
-  self._topology = nil
-  self._machine = nil
-  self._info = nil
   self._doneIndex = nil
 end
 

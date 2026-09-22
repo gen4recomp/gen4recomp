@@ -585,28 +585,38 @@ function T.draw_borrows_the_configured_backend_without_changing_its_raster_polic
     }
   end
 
+  local canvases = {}
   local previousLove = rawget(_G, "love")
   rawset(_G, "love", {
     graphics = {
       setColor = function() end,
       draw = function() end,
       push = function() end,
+      origin = function() end,
       translate = function() end,
       scale = function() end,
       pop = function() end,
+      getCanvas = function() end,
+      setCanvas = function() end,
+      getScissor = function() end,
+      setScissor = function() end,
+      newCanvas = function(_, _, _)
+        local canvas = {
+          setFilter = function() end,
+        }
+        canvases[#canvases + 1] = canvas
+        return canvas
+      end,
     },
   })
   local ok, err = pcall(function()
-    presentation:draw(
-      snapshot(),
-      { candidates = {}, names = { "a", "b", "c" } },
-      { drawLineWithColorVariants = function() end }
-    )
+    presentation:_renderMachineTarget(snapshot())
   end)
   rawset(_G, "love", previousLove)
   if not ok then
     error(err, 0)
   end
+  Assert.equal(#canvases, 1, "the machine raster realizes exactly one owned target")
 
   Assert.equal(backend.worldRasterScale, 7, "drawing leaves the borrowed backend configuration unchanged")
   Assert.equal(captured.cameraZoom, 1, "Starter's fixed camera zoom reaches the renderer frame")
@@ -794,13 +804,19 @@ function T.surface_messages_draw_through_the_generated_chooser_colors()
     end,
   }
   local surfaces = manifest.surfaces
-  presentation:_drawSurfaceMessage(
-    presentation._machine,
+  local machine = manifest.textColors.machineBackground
+  presentation:_drawMessageLines(
     surfaces.machine.prompt,
     manifest.messages.bottom.normal,
-    provider
+    provider,
+    { r = machine.r, g = machine.g, b = machine.b, a = 0 }
   )
-  presentation:_drawSurfaceMessage(presentation._info, surfaces.info.message, manifest.messages.topInitial, provider)
+  presentation:_drawMessageLines(
+    surfaces.info.message,
+    manifest.messages.topInitial,
+    provider,
+    manifest.textColors.infoBackground
+  )
 
   Assert.equal(
     #lineCalls,
@@ -815,10 +831,10 @@ function T.surface_messages_draw_through_the_generated_chooser_colors()
   end
   for index = 1, promptLines do
     local background = variantCalls[index].background
-    local machine = manifest.textColors.machineBackground
+    local machineBg = manifest.textColors.machineBackground
     Assert.deepEqual(
       background,
-      { r = machine.r, g = machine.g, b = machine.b, a = 0 },
+      { r = machineBg.r, g = machineBg.g, b = machineBg.b, a = 0 },
       "prompt line " .. index .. " keeps the machine RGB with a transparent background so the scene stays visible"
     )
   end
@@ -878,13 +894,19 @@ function T.unframed_messages_use_transparent_background_while_framed_stays_opaqu
     drawWindow = function() end,
   }
   local surfaces = manifest.surfaces
-  presentation:_drawSurfaceMessage(
-    presentation._machine,
+  local machine = manifest.textColors.machineBackground
+  presentation:_drawMessageLines(
     surfaces.machine.prompt,
     manifest.messages.bottom.normal,
-    provider
+    provider,
+    { r = machine.r, g = machine.g, b = machine.b, a = 0 }
   )
-  presentation:_drawSurfaceMessage(presentation._info, surfaces.info.message, manifest.messages.topInitial, provider)
+  presentation:_drawMessageLines(
+    surfaces.info.message,
+    manifest.messages.topInitial,
+    provider,
+    manifest.textColors.infoBackground
+  )
   local promptLines = #manifest.messages.bottom.normal.lines
   Assert.isTrue(#variantCalls == promptLines + #manifest.messages.topInitial.lines, "both regions draw")
   for index = 1, promptLines do

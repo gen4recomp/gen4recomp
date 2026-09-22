@@ -9,9 +9,11 @@ local BoxCodec = require("libs.mons.src.gen4.BoxCodec")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeCache = require("tests.support.FakeCache")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 
 local T = {}
 
@@ -301,6 +303,29 @@ local function readyCacheFs()
   return cacheFs
 end
 
+-- The required display collaborators every construction supplies: current
+-- facts from a fixed single-display measurement plus caller-owned window
+-- memory. Headless compositions never draw, but opening resolves the
+-- shared plan through these facts.
+local function defaultBox()
+  return {
+    width = 640,
+    height = 400,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 640, height = 400 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "starter-state-default",
+  }
+end
+
+local function displayMemory()
+  return { wide = { x = 0.5, y = 0.5 }, tall = { x = 0.5, y = 0.5 } }
+end
+
 local function hostStatus(host)
   return host:status()
 end
@@ -394,7 +419,13 @@ function T.blocking_task_publishes_exactly_the_selected_candidate()
   local task = assert(require(TASK_MODULE))
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs(), frameIndex = 3 })
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = defaultBox,
+    windowState = displayMemory(),
+  })
   local ctx = taskCtx(service, TRIO, host)
   local state = task.create({ node = { op = "choose_starter" } }, ctx)
 
@@ -419,7 +450,10 @@ function T.blocking_task_publishes_exactly_the_selected_candidate()
   Assert.isNil(host:confirm(), "final activation starts the lock/exit, not the report")
   Assert.isFalse(hostStatus(host).done, "the report waits for the lock/exit to settle")
   settle(host)
-  Assert.deepEqual(hostStatus(host), { done = true, index = 1 }, "the settled lock reports the second candidate")
+  local settled = hostStatus(host)
+  Assert.isTrue(settled.done, "the settled lock reports the second candidate")
+  Assert.equal(settled.index, 1, "the settled lock names the second candidate")
+  Assert.isTrue(type(settled.presentation) == "table", "the settled lock publishes its presentation plan")
 
   local outcome = task.poll(state, ctx)
   Assert.isTrue(outcome.complete, "semantic confirmation completes the task")
@@ -438,11 +472,17 @@ function T.blocking_task_publishes_exactly_the_selected_candidate()
   Assert.equal(service:partyCount(), 1, "re-polling never inserts twice")
 end
 
-function T.open_close_and_resize_follow_the_task_contract_without_gpu()
+function T.open_close_and_reresolve_follow_the_task_contract_without_gpu()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs(), frameIndex = 3 })
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = defaultBox,
+    windowState = displayMemory(),
+  })
   Assert.isFalse(host:isActive(), "the host starts idle")
 
   local first = service:buildStarter("CHIKORITA")
@@ -455,9 +495,14 @@ function T.open_close_and_resize_follow_the_task_contract_without_gpu()
   Assert.equal(statusSelection(waiting), 0, "the choice opens on the task cursor")
   Assert.isNil(waiting.confirmIndex, "the fresh choice carries no yes/no cursor")
 
-  host:resize(390, 844)
-  Assert.equal(statusSelection(hostStatus(host)), 0, "resizing preserves the cursor without reselecting")
-  Assert.isNil(host:hitTest(100000, 100000), "far points hit nothing")
+  host:handleInput({})
+  Assert.equal(statusSelection(hostStatus(host)), 0, "re-resolving preserves the cursor without reselecting")
+  Assert.isTrue(type(hostStatus(host).presentation) == "table", "re-resolving republishes the presentation plan")
+  host:handleInput({
+    { type = "pointer_down", pointerId = "touch:1", x = 100000, y = 100000 },
+    { type = "pointer_up", pointerId = "touch:1", x = 100000, y = 100000 },
+  })
+  Assert.equal(statusSelection(hostStatus(host)), 0, "far points activate nothing")
 
   host:close()
   Assert.isFalse(host:isActive(), "closing releases the modal surface")
@@ -496,7 +541,13 @@ local function ballCenters(host)
 end
 
 local function openTrio(StarterChoiceState, catalog, service, cacheFs)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = cacheFs, frameIndex = 3 })
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = cacheFs,
+    frameIndex = 3,
+    measureDisplay = defaultBox,
+    windowState = displayMemory(),
+  })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
     service:buildStarter("TOTODILE"),
@@ -558,15 +609,14 @@ function T.hit_mapping_resolves_every_ball_without_reselecting()
     Assert.equal(host:ballAt(center.x, center.y), ball, "each projected center resolves to its ball")
   end
   Assert.isNil(host:ballAt(-1, -1), "outside points hit no ball")
-  Assert.isNil(host:hitTest(100000, 100000), "far host points hit nothing")
+  Assert.isNil(host:ballAt(100000, 100000), "far reference points hit no ball")
 
   local seen = {}
   for y = 0, 191, 8 do
     for x = 0, 255, 8 do
-      local hit = host:hitTest(x, y)
-      if hit ~= nil then
-        Assert.equal(hit.kind, "ball", "host hit testing resolves to a rendered ball")
-        seen[hit.index] = true
+      local ball = host:ballAt(x, y)
+      if ball ~= nil then
+        seen[ball - 1] = true
       end
     end
   end
@@ -652,7 +702,10 @@ function T.transitions_follow_source_semantic_boundaries()
     timing.infoFadeTicks + timing.machineFadeTicks,
     "the lock lasts exactly the info fade then the machine fade"
   )
-  Assert.deepEqual(hostStatus(host), { done = true, index = 1 }, "the settled lock reports the second candidate")
+  local transitioned = hostStatus(host)
+  Assert.isTrue(transitioned.done, "the settled lock reports the second candidate")
+  Assert.equal(transitioned.index, 1, "the settled lock names the second candidate")
+  Assert.isTrue(type(transitioned.presentation) == "table", "the settled lock publishes its presentation plan")
   host:close()
   host:dispose()
 end
@@ -684,29 +737,72 @@ function T.close_during_a_transition_and_repeated_dispose_stay_safe()
   Assert.isFalse(host:isActive(), "closing and disposing after reopen stays idle")
 end
 
-function T.resize_reprojects_hit_testing_without_reselecting()
+function T.remeasured_display_reprojects_hit_testing_without_reselecting()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local host = openTrio(StarterChoiceState, catalog, service, readyCacheFs())
+  local cell = { box = defaultBox() }
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = function()
+      return cell.box
+    end,
+    windowState = displayMemory(),
+  })
+  host:open(0, {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("TOTODILE"),
+    service:buildStarter("EEVEE"),
+  })
 
-  host:resize(390, 844)
-  Assert.equal(statusSelection(hostStatus(host)), 0, "resizing preserves the cursor without reselecting")
-  local seen = {}
-  for y = 0, 843, 12 do
-    for x = 0, 389, 12 do
-      local hit = host:hitTest(x, y)
-      if hit ~= nil then
-        Assert.equal(hit.kind, "ball", "resized hit testing resolves to a rendered ball")
-        seen[hit.index] = true
-      end
+  cell.box = (function()
+    local box = defaultBox()
+    box.width = 300
+    box.height = 700
+    box.topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 300, height = 700 },
+      role = "world",
+      touch = false,
+    })
+    box.signature = "starter-state-remeasured"
+    return box
+  end)()
+  host:handleInput({})
+  Assert.equal(statusSelection(hostStatus(host)), 0, "remeasuring preserves the cursor without reselecting")
+  local machinePane = nil
+  for _, pane in ipairs(assert(hostStatus(host).presentation, "remeasuring republishes the plan").panes) do
+    if pane.id == "machine" then
+      machinePane = pane
     end
   end
-  local balls = 0
-  for _ in pairs(seen) do
-    balls = balls + 1
+  local placement = assert(machinePane, "the tall plan carries its machine pane").placement
+  local centers = ballCenters(host)
+  local regions = 0
+  for _ in pairs(centers) do
+    regions = regions + 1
   end
-  Assert.equal(balls, 3, "the resized scene exposes all three ball hit regions")
+  Assert.equal(regions, 3, "the remeasured scene keeps three projected ball regions")
+  for index = 1, 2 do
+    local center = assert(centers[index + 1], "ball region " .. index .. " projects a center")
+    local hx, hy = LayoutGeometry.logicalToHost(placement, center.x, center.y)
+    Assert.notNil(hx, "the tapped ball center stays inside the visible machine clip")
+    Assert.notNil(hy, "the tapped ball center stays inside the visible machine clip")
+    host:focus(0)
+    settle(host)
+    host:handleInput({
+      { type = "pointer_down", pointerId = "touch:1", x = hx, y = hy },
+      { type = "pointer_up", pointerId = "touch:1", x = hx, y = hy },
+    })
+    settle(host)
+    Assert.equal(
+      statusSelection(hostStatus(host)),
+      index,
+      "the remeasured machine pane taps its projected ball " .. index
+    )
+  end
   host:close()
   host:dispose()
 end
@@ -761,7 +857,10 @@ function T.final_lock_publishes_result_only_after_sequential_fade_ticks()
     infoTicks + machineTicks,
     "the result publishes only after the info fade and the machine fade complete in sequence"
   )
-  Assert.deepEqual(hostStatus(host), { done = true, index = 1 }, "the settled lock reports the second candidate")
+  local faded = hostStatus(host)
+  Assert.isTrue(faded.done, "the settled lock reports the second candidate")
+  Assert.equal(faded.index, 1, "the settled lock names the second candidate")
+  Assert.isTrue(type(faded.presentation) == "table", "the settled lock publishes its presentation plan")
   host:close()
   host:dispose()
 end
@@ -770,7 +869,13 @@ function T.player_frame_choice_reaches_presentation_unchanged()
   local StarterChoiceState = requireState()
   local catalog = CatalogFixture.makeCatalog()
   local service = openService(catalog, SEED)
-  local host = StarterChoiceState.new({ catalog = catalog, cacheFs = readyCacheFs(), frameIndex = 5 })
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 5,
+    measureDisplay = defaultBox,
+    windowState = displayMemory(),
+  })
   host:open(0, {
     service:buildStarter("CHIKORITA"),
     service:buildStarter("TOTODILE"),
@@ -783,6 +888,296 @@ function T.player_frame_choice_reaches_presentation_unchanged()
 
   local ok = pcall(StarterChoiceState.new, { catalog = catalog, cacheFs = readyCacheFs() })
   Assert.isFalse(ok, "a missing frame index fails instead of hiding a wiring gap behind frame 0")
+end
+
+-- A complete caller-owned measurement for one drawable: host-unit bounds,
+-- actual topology, uniform pixel ratio, and a stable signature.
+local function wideMeasurement()
+  return {
+    width = 1280,
+    height = 720,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 100, y = 50, width = 1280, height = 720 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "starter-state-wide",
+  }
+end
+
+local function compactMeasurement()
+  return {
+    width = 640,
+    height = 480,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 640, height = 480 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "starter-state-compact",
+  }
+end
+
+local function tripleOf(host)
+  local controller = assert(host._controller, "the open chooser owns its retail controller")
+  local snapshot = controller:snapshot()
+  return { snapshot.selection, snapshot.selectionState, snapshot.transition }
+end
+
+local function selectionStateOf(host)
+  return tripleOf(host)[2]
+end
+
+-- Completion is independent of which interface is visible. Two
+-- identically seeded choosers run in lockstep; one switches to the compact
+-- interface mid-zoom. Clocks advance exactly once per tick on both, the
+-- same observation settles both into confirmation, and the compact run
+-- publishes exactly the pre-created candidate once.
+function T.compact_display_preserves_clocks_observations_and_single_publication()
+  local StarterChoiceState = requireState()
+  local task = assert(require(TASK_MODULE))
+  local catalog = CatalogFixture.makeCatalog()
+  local wide = wideMeasurement()
+  local compact = compactMeasurement()
+  local cellA = { box = wide }
+  local cellB = { box = wide }
+  local serviceA = openService(catalog, SEED)
+  local serviceB = openService(catalog, SEED)
+  local hostA = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = function()
+      return cellA.box
+    end,
+    windowState = displayMemory(),
+  })
+  local hostB = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = function()
+      return cellB.box
+    end,
+    windowState = displayMemory(),
+  })
+  local ctxA = taskCtx(serviceA, TRIO, hostA)
+  local stateA = task.create({ node = { op = "choose_starter" } }, ctxA)
+  local ctxB = taskCtx(serviceB, TRIO, hostB)
+  local stateB = task.create({ node = { op = "choose_starter" } }, ctxB)
+  driveToChoose(task, stateA, ctxA, hostA)
+  driveToChoose(task, stateB, ctxB, hostB)
+  Assert.isTrue(type(hostB.handleInput) == "function", "the migrated host interprets its own input through handleInput")
+
+  moveHost(hostA, "right")
+  moveHost(hostB, "right")
+  settle(hostA)
+  settle(hostB)
+  Assert.deepEqual(tripleOf(hostB), tripleOf(hostA), "rotation settles identically on both displays")
+  Assert.equal(statusSelection(hostStatus(hostB)), 1, "rotation settles on the second candidate")
+  hostA:confirm()
+  hostB:confirm()
+  settle(hostA)
+  settle(hostB)
+  Assert.deepEqual(tripleOf(hostB), tripleOf(hostA), "inspection matches across displays")
+
+  cellB.box = compact
+  hostA:confirm()
+  hostB:confirm()
+  for _ = 1, 512 do
+    hostA:update()
+    hostB:update()
+    Assert.deepEqual(tripleOf(hostB), tripleOf(hostA), "hidden-model ticks advance the same observation stream")
+    if tripleOf(hostA)[3] == "idle" then
+      break
+    end
+  end
+  Assert.equal(selectionStateOf(hostB), "confirm", "the compact run reaches confirmation on the same observation")
+  local planB = hostB:status().presentation
+  Assert.isTrue(type(planB) == "table", "the compact choice publishes its presentation plan")
+  Assert.equal(#planB.panes, 1, "the compact interface is one complete pane")
+
+  hostA:confirm()
+  hostB:confirm()
+  settle(hostA)
+  settle(hostB)
+  local doneB = hostStatus(hostB)
+  Assert.isTrue(doneB.done, "the compact lock completes")
+  Assert.equal(doneB.index, 1, "the compact lock reports the second candidate")
+
+  local expected = stateB.candidates[2]
+  Assert.notNil(expected, "the task pre-creates the second candidate")
+  local expectedBytes = BoxCodec.encode(expected, CatalogFixture.domainContext(catalog))
+  local outcome = task.poll(stateB, ctxB)
+  Assert.isTrue(outcome.complete, "semantic confirmation completes the task")
+  Assert.equal(serviceB:partyCount(), 1, "exactly the chosen mon enters the party")
+  Assert.equal(
+    BoxCodec.encode(serviceB:partyMon(0), CatalogFixture.domainContext(catalog)),
+    expectedBytes,
+    "publication transfers the exact pre-created instance without rerolling"
+  )
+  local again = task.poll(stateB, ctxB)
+  Assert.isTrue(again.complete, "a restored done phase stays complete")
+  Assert.equal(serviceB:partyCount(), 1, "re-polling never inserts twice")
+end
+
+-- The compact interface routes logical portrait,
+-- primary, and Back regions to the unchanged controller. Presses outside
+-- confirmation leave Back inert, and commands during an active transition
+-- never alter the selection.
+function T.compact_logical_input_dispatches_portrait_primary_and_guarded_back()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local cell = { box = compactMeasurement() }
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = function()
+      return cell.box
+    end,
+    windowState = displayMemory(),
+  })
+  local first = service:buildStarter("CHIKORITA")
+  local second = service:buildStarter("TOTODILE")
+  local third = service:buildStarter("EEVEE")
+  host:open(0, { first, second, third })
+  Assert.isTrue(type(host.handleInput) == "function", "the migrated host interprets its own input through handleInput")
+  local plan = assert(host:status().presentation, "the compact choice publishes its presentation plan")
+  local placement = assert(plan.panes[1].placement, "the compact plan carries its single placement")
+  local function press(lx, ly)
+    local hx, hy = LayoutGeometry.logicalToHost(placement, lx, ly)
+    Assert.notNil(hx, "the compact target stays inside the visible clip")
+    host:handleInput({
+      { type = "pointer_down", pointerId = "touch:1", x = hx, y = hy },
+      { type = "pointer_up", pointerId = "touch:1", x = hx, y = hy },
+    })
+  end
+  press(128, 100)
+  settle(host)
+  Assert.equal(statusSelection(hostStatus(host)), 1, "a portrait press taps its candidate")
+  press(64, 176)
+  settle(host)
+  Assert.equal(selectionStateOf(host), "inspect", "primary activates inspection from null")
+  press(192, 176)
+  Assert.deepEqual(tripleOf(host), { 1, "inspect", "idle" }, "Back outside confirmation changes nothing")
+  press(64, 176)
+  Assert.equal(tripleOf(host)[3], "zoomIn", "primary starts the zoom path from inspection")
+  press(48, 100)
+  Assert.deepEqual(tripleOf(host), { 1, "inspect", "zoomIn" }, "transition-conflicting commands do not alter selection")
+  settle(host)
+  Assert.equal(selectionStateOf(host), "confirm", "the zoom path settles into confirmation")
+  press(192, 176)
+  settle(host)
+  Assert.equal(selectionStateOf(host), "inspect", "Back in confirmation returns to inspection")
+  host:close()
+  host:dispose()
+end
+
+-- A held press across a geometry change cannot activate a moved
+-- target: the next batch carries pointer_cancel first and the stale
+-- release never taps.
+function T.reflow_with_a_held_press_cancels_before_release()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local cell = { box = defaultBox() }
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = function()
+      return cell.box
+    end,
+    windowState = displayMemory(),
+  })
+  host:open(0, {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("TOTODILE"),
+    service:buildStarter("EEVEE"),
+  })
+  local placement = assert(hostStatus(host).presentation, "the open choice publishes its plan").panes[2].placement
+  local hx, hy = LayoutGeometry.logicalToHost(placement, 10, 10)
+  Assert.notNil(hx, "the press starts inside the visible machine clip")
+  host:handleInput({ { type = "pointer_down", pointerId = "touch:9", x = hx, y = hy } })
+  cell.box = (function()
+    local box = defaultBox()
+    box.width = 700
+    box.topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 700, height = 400 },
+      role = "world",
+      touch = false,
+    })
+    box.signature = "starter-state-reflowed"
+    return box
+  end)()
+  local triple = tripleOf(host)
+  host:handleInput({ { type = "pointer_up", pointerId = "touch:9", x = hx, y = hy } })
+  Assert.deepEqual(tripleOf(host), triple, "the cancelled release changes no choice state")
+  Assert.equal(statusSelection(hostStatus(host)), 0, "the cancelled release selects nothing")
+  host:close()
+  host:dispose()
+end
+
+-- A failing resolver publishes no partial plan: opening fails loudly
+-- with no active choice and no status behind it.
+function T.failing_resolvers_publish_no_partial_plan()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = defaultBox,
+    windowState = displayMemory(),
+    overrides = {
+      wide = function()
+        error("starter resolver failure probe", 0)
+      end,
+    },
+  })
+  local ok = pcall(host.open, host, 0, {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("TOTODILE"),
+    service:buildStarter("EEVEE"),
+  })
+  Assert.isFalse(ok, "a failing resolver fails opening loudly")
+  Assert.isFalse(host:isActive(), "a failed open leaves no active choice")
+  Assert.isNil(host:status(), "a failed open publishes no status")
+  host:dispose()
+end
+
+-- Input before opening is a programming error, never a silent no-op;
+-- capture cancellation after close is safe.
+function T.input_before_open_fails_and_cancel_after_close_is_safe()
+  local StarterChoiceState = requireState()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = openService(catalog, SEED)
+  local host = StarterChoiceState.new({
+    catalog = catalog,
+    cacheFs = readyCacheFs(),
+    frameIndex = 3,
+    measureDisplay = defaultBox,
+    windowState = displayMemory(),
+  })
+  Assert.isFalse(pcall(host.handleInput, host, {}), "input with no open choice fails instead of vanishing")
+  host:open(0, {
+    service:buildStarter("CHIKORITA"),
+    service:buildStarter("TOTODILE"),
+    service:buildStarter("EEVEE"),
+  })
+  host:close()
+  host:cancelPointerCapture()
+  host:dispose()
+  host:cancelPointerCapture()
+  Assert.isFalse(host:isActive(), "disposal after close stays idle")
 end
 
 return { tests = T }
