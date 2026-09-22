@@ -2704,10 +2704,17 @@ function T.adopted_page_membership_enrolls_once_at_retained_urgency()
         end
       end
       Assert.isTrue(adopted, "the staged layout is adopted through the pump")
+      -- Selective page demand enrolls the adopted page: blanket icon pages
+      -- are no longer part of field-core, so the page joins only through
+      -- the fixed demand path, once, at the retained urgency.
+      session:requestIconPage(0, "near")
       -- Drain every other demand without touching the still-cold page, so
       -- later idle updates have no legitimate enrollment left to perform.
       -- The retained cursors drain one planning node per member under the
       -- shared per-update slice, so a full corpus needs many bounded passes.
+      -- The budget matches the pre-selective-demand drain: dependency
+      -- expansion order varies per process, and the exit condition (not
+      -- the count) decides convergence.
       local drained = false
       for _ = 1, 1200 do
         for _, entry in pairs(session.byKey) do

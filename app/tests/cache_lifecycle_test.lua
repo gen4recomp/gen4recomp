@@ -545,6 +545,11 @@ function T.provisioner_wraps_a_selected_service_with_string_urgencies_and_retire
     Assert.isTrue(host.requestMonPortraitPage(0, "required"))
     local page = assert(seen.requests[#seen.requests]).selector
     Assert.deepEqual(page, { requestKind = "portrait", pageId = 0, urgency = "required" })
+    Assert.isTrue(host.requestIconPage(3, "required"))
+    local iconPage = assert(seen.requests[#seen.requests]).selector
+    Assert.deepEqual(iconPage, { requestKind = "icon-page", pageId = 3, urgency = "required" })
+    local iconBadOk, _ = pcall(host.requestIconPage, -1, "required")
+    Assert.isFalse(iconBadOk, "a negative icon page is rejected at the facade")
     scripted.ready, scripted.failure = nil, nil
     Assert.deepEqual(
       host.milestoneStatus("new-game-intro"),
@@ -1603,6 +1608,39 @@ function T.only_the_live_pending_selection_fires_and_quit_joins_once()
     App.quit()
     Assert.equal(context.joins, 1, "a repeated quit never rejoins the service")
   end)
+end
+
+-- The fixed icon-page dispatch reaches the selected session without a
+-- parallel scheduler: unknown pages fail through the session cause and
+-- unknown kinds never dispatch.
+function T.icon_page_dispatch_reaches_the_selected_session()
+  local Worker = require("romdump.src.build.CacheControllerWorker").Worker
+  local control = {
+    pop = function()
+      return nil
+    end,
+  }
+  local replies = {}
+  local reply = {
+    push = function(_, packet)
+      replies[#replies + 1] = packet
+    end,
+  }
+  local worker = Worker.new(control, reply)
+  local seen = {}
+  worker.session = {
+    requestIconPage = function(_, pageId, urgency)
+      seen[#seen + 1] = { pageId = pageId, urgency = urgency }
+      return true
+    end,
+  }
+  local ready = worker:_invoke({ requestKind = "icon-page", pageId = 3, urgency = "required" })
+  Assert.isTrue(ready, "the selected session answers the icon dispatch")
+  Assert.deepEqual(seen, { { pageId = 3, urgency = "required" } }, "icon dispatch carries its scalar selectors")
+  local unknownOk, _ = pcall(function()
+    return worker:_invoke({ requestKind = "sticker-page", pageId = 3, urgency = "required" })
+  end)
+  Assert.isFalse(unknownOk, "an unlisted kind never dispatches")
 end
 
 return { tests = T }

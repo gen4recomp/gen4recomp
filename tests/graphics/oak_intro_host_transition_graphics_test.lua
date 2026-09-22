@@ -232,6 +232,7 @@ local function bootCoveredField(scope)
   FieldRuntime.new = function(_, _)
     return setmetatable({
       cacheFs = cache,
+      derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.addStartMenuIconContract(FieldUiFixture.manifest()),
       fieldEntranceIndicatorAsset = {
         model = { batches = {}, materials = {} },

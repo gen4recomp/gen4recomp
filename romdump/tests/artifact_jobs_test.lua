@@ -561,4 +561,37 @@ function T.audio_leaf_jobs_consume_the_published_generation_plan()
   end
 end
 
+-- Field entry keeps the icon layout/catalog prerequisites but never the
+-- icon pages themselves: party views demand their own pages later, so a
+-- blanket page list must not gate (or ride along with) field readiness.
+-- The complete mon summary still covers every declared page for batch.
+function T.field_core_carries_layout_without_blanket_icon_pages()
+  local jobs = ArtifactJobs.fieldCoreJobs({
+    audioBankIds = { 7 },
+    messageBankIds = { 219 },
+    scriptMemberIds = { 149 },
+    iconPageIds = { 3, 4 },
+    mapDataIds = { 7 },
+  })
+  local kinds = {}
+  for _, job in ipairs(jobs) do
+    kinds[job.kind .. ":" .. job.key] = true
+  end
+  for identity in pairs(kinds) do
+    Assert.isNil(identity:match("^mon%-icon%-page:"), "field entry requests no blanket icon page: " .. identity)
+  end
+  Assert.isTrue(kinds["mon-layout:global"] == true, "field core keeps the icon layout prerequisite")
+  Assert.isTrue(kinds["mon-catalog:global"] == true, "field core keeps the icon catalog prerequisite")
+  local summaryDeps = ArtifactJobs.dependencies("mon-summary", "global", {
+    iconPageIds = { 3, 4 },
+    portraitPageIds = { 5 },
+  })
+  local summary = {}
+  for _, dep in ipairs(summaryDeps) do
+    summary[dep.kind .. ":" .. dep.key] = true
+  end
+  Assert.isTrue(summary["mon-icon-page:3"] == true, "the complete summary still covers page 3")
+  Assert.isTrue(summary["mon-icon-page:4"] == true, "the complete summary still covers page 4")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

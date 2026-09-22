@@ -48,6 +48,59 @@ local function iconCache()
   return cache
 end
 
+local function decodingQueue(cache)
+  local nextToken = 0
+  local live = {}
+  local queue = {}
+  function queue:request(kind, path, priority)
+    assert(kind == "image", "icon pages decode as images")
+    assert(priority == "demand", "visible party pages decode as demand")
+    nextToken = nextToken + 1
+    live[nextToken] = path
+    return nextToken
+  end
+  function queue:poll(token)
+    assert(live[token], "poll observes a live token")
+    return "ready"
+  end
+  function queue:take(token)
+    local path = assert(live[token], "take transfers a live token once")
+    live[token] = nil
+    local bytes = assert(cache:read(path), "the compiled icon page is present")
+    local fileData = assert(love.filesystem.newFileData(bytes, "icon-page.png"), "page bytes form a file")
+    return { imageData = assert(love.image.newImageData(fileData), "page bytes decode") }
+  end
+  function queue:cancel(token)
+    live[token] = nil
+  end
+  return queue
+end
+
+local function readyDerivedAssets()
+  return {
+    requestIconPage = function(pageId, _)
+      assert(type(pageId) == "number", "icon demand carries its page")
+      return true
+    end,
+  }
+end
+
+local function preparedProvider(cache, keys)
+  local provider = MonIconAssetProvider.new(cache, {
+    preparationQueue = decodingQueue(cache),
+    derivedAssets = readyDerivedAssets(),
+  })
+  local ready, failure
+  for _ = 1, 8 do
+    ready, failure = provider:prepareKeys(keys)
+    if ready or failure ~= nil then
+      break
+    end
+  end
+  Assert.isTrue(ready, "demanded icon pages prepare: " .. tostring(failure))
+  return provider
+end
+
 ---@param slot0 integer
 ---@param overrides table<string, any>?
 ---@return table<string, any>
@@ -99,7 +152,7 @@ function T.party_view_paints_frame_slots_icons_hp_and_cursor(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   for _, size in ipairs({ { width = 320, height = 240 }, { width = 640, height = 480 } }) do
     local layout = PartyScreenLayout.resolve({ width = size.width, height = size.height, cancellable = true })
-    local provider = MonIconAssetProvider.new(iconCache())
+    local provider = preparedProvider(iconCache(), { "MON0/f0" })
     local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
     local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
     love.graphics.setCanvas(canvas)
@@ -131,7 +184,7 @@ function T.action_overlay_covers_the_frame(scope)
   local width, height = 640, 480
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local layout = PartyScreenLayout.resolve({ width = width, height = height, cancellable = true })
-  local provider = MonIconAssetProvider.new(iconCache())
+  local provider = preparedProvider(iconCache(), { "MON0/f0" })
   local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
   local canvas = scope:own(love.graphics.newCanvas(width, height))
   love.graphics.setCanvas(canvas)
@@ -280,7 +333,7 @@ end
 
 function T.compact_native_cards_render_all_slots_text_and_hp_without_overlap(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-  local provider = MonIconAssetProvider.new(iconCache())
+  local provider = preparedProvider(iconCache(), { "MON0/f0" })
   local image = drawCompact(scope, text, provider, false, 256, 192)
   local cr, cg, cb = image:getPixel(0, 0)
   local cornerR, cornerG, cornerB = quantize(cr), quantize(cg), quantize(cb)
@@ -320,7 +373,7 @@ end
 
 function T.compact_native_cards_render_cancel_and_magnify_uniformly_at_two_x(scope)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-  local provider = MonIconAssetProvider.new(iconCache())
+  local provider = preparedProvider(iconCache(), { "MON0/f0" })
   local cancellable = drawCompact(scope, text, provider, true, 256, 192)
   local cr, cg, cb = cancellable:getPixel(0, 0)
   local cornerR, cornerG, cornerB = quantize(cr), quantize(cg), quantize(cb)

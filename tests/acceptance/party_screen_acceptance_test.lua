@@ -34,6 +34,11 @@ local function withGame(fn)
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- Headless composition binds the explicit no-image preparation fake:
+    -- the party reports ready without realizing GPU icons it never draws.
+    game.runtime:bindPartyIconPreparation(function(_)
+      return true
+    end, function() end)
     fn(game)
     Assert.equal(game:renderAttempts(), 0, "party acceptance must stop before GPU rendering")
   end, debug.traceback)

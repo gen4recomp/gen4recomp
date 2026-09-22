@@ -55,7 +55,7 @@ function CacheControllerWorker.bootstrap()
   return bootstrapSource()
 end
 
-local VALID_KINDS = { milestone = true, field = true, cell = true, portrait = true }
+local VALID_KINDS = { milestone = true, field = true, cell = true, portrait = true, ["icon-page"] = true }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
 ---@class CacheControllerSelection
@@ -146,6 +146,10 @@ local function validateSelectors(params)
     if type(params.pageId) ~= "number" or params.pageId % 1 ~= 0 or params.pageId < 0 then
       return "portrait request needs a non-negative integer pageId"
     end
+  elseif kind == "icon-page" then
+    if type(params.pageId) ~= "number" or params.pageId % 1 ~= 0 or params.pageId < 0 then
+      return "icon request needs a non-negative integer pageId"
+    end
   end
   return nil
 end
@@ -164,6 +168,8 @@ function Worker:_invoke(params)
     return session:requestCell({ matrixMemberId = params.matrixMemberId, index = params.index }, urgency)
   elseif kind == "portrait" then
     return session:requestMonPortraitPage(params.pageId, urgency)
+  elseif kind == "icon-page" then
+    return session:requestIconPage(params.pageId, urgency)
   end
   error("unknown cache request kind: " .. tostring(kind), 0)
 end

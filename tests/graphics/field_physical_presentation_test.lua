@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -49,7 +50,11 @@ local function freshGame(versionId)
 end
 
 local function boot(versionId)
-  local ok, state = pcall(FieldState.new, freshGame(versionId), {})
+  local ok, state = pcall(
+    FieldState.new,
+    freshGame(versionId),
+    { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets }
+  )
   if not ok then
     error(state, 0)
   end

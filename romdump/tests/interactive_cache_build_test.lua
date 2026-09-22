@@ -2014,11 +2014,11 @@ function T.field_core_contains_bootstrap_without_geometry_or_portraits()
     "message-summary:global",
     "script-member:149",
     "script-summary:global",
-    "mon-icon-page:3",
     "map-data:7",
   }) do
     Assert.isTrue(core[name] == true, "core carries " .. name)
   end
+  Assert.isNil(core["mon-icon-page:3"], "party views demand icon pages; field entry carries none")
   for identityKey in pairs(core) do
     local kind = identityKey:match("^([^:]+):")
     Assert.isTrue(
@@ -2065,12 +2065,12 @@ function T.field_core_preserves_the_decoupled_closure()
     "message-summary:global",
     "script-member:149",
     "script-summary:global",
-    "mon-icon-page:3",
     "map-data:7",
   }
   for _, name in ipairs(expected) do
     Assert.isTrue(core[name] == true, "decoupled core keeps " .. name)
   end
+  Assert.isNil(core["mon-icon-page:3"], "party views demand icon pages; field entry carries none")
   local count = 0
   for _ in pairs(core) do
     count = count + 1
@@ -3744,6 +3744,26 @@ function T.failed_background_candidate_advances_the_cursor_once()
     session:status().sweepFailure,
     "the reported cause is the canonical record failure"
   )
+end
+
+-- Icon pages register through the same canonical record path as other
+-- demand: pending while the layout is cold, rejected for malformed
+-- selectors, without enrolling anything eagerly.
+function T.icon_page_demand_registers_through_the_canonical_record()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = isolatedSession("icon-page-demand-generation", pool, backend)
+  local ready, failure = session:requestIconPage(2, "required")
+  Assert.isFalse(ready, "the icon page stays pending while its layout is cold")
+  Assert.isNil(failure, "the icon page reports no failure while its layout is pending")
+  local ok, _ = pcall(function()
+    return session:requestIconPage(-1, "required")
+  end)
+  Assert.isFalse(ok, "a negative icon page is rejected")
+  local urgencyOk, _ = pcall(function()
+    return session:requestIconPage(2, "eventually")
+  end)
+  Assert.isFalse(urgencyOk, "an unknown urgency is rejected")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

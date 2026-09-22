@@ -11,7 +11,7 @@ local ORDINARY_PER_UPDATE = 8
 local POLL_IDS_PER_ROUND = 8
 local ABSORB_PER_UPDATE = 32
 
-local VALID_KINDS = { milestone = true, field = true, cell = true, portrait = true }
+local VALID_KINDS = { milestone = true, field = true, cell = true, portrait = true, ["icon-page"] = true }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 
@@ -117,9 +117,9 @@ local function selectorKey(selector)
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
-      "portrait request requires a non-negative integer pageId"
+      kind .. " request requires a non-negative integer pageId"
     )
-    return "portrait:" .. tostring(selector.pageId)
+    return kind .. ":" .. tostring(selector.pageId)
   end
 end
 
@@ -521,6 +521,8 @@ function CacheService:_absorbObservation(packet)
     key = "cell:" .. tostring(packet.matrixMemberId) .. ":" .. tostring(packet.index)
   elseif packet.requestKind == "portrait" then
     key = "portrait:" .. tostring(packet.pageId)
+  elseif packet.requestKind == "icon-page" then
+    key = "icon-page:" .. tostring(packet.pageId)
   else
     return
   end

@@ -234,7 +234,10 @@ function ArtifactJobs.fieldCoreJobs(lists)
   local audioBankIds = assert(lists.audioBankIds, "field-core needs the audio closures")
   local messageBankIds = assert(lists.messageBankIds, "field-core needs the required message banks")
   local scriptMemberIds = assert(lists.scriptMemberIds, "field-core needs the nonempty script members")
-  local iconPageIds = assert(lists.iconPageIds, "field-core needs the icon pages")
+  -- Icon pages stay out of field core: the layout/catalog prerequisites
+  -- remain, but pages are demanded later by the party views that show
+  -- them. The lists.iconPageIds selection is still accepted so the
+  -- mon-summary dependency can cover every declared page for batch.
   local mapDataIds = assert(lists.mapDataIds, "field-core needs the supported field records")
   local jobs = fixedJobs(FIELD_CORE_COARSE)
   for _, bankId in ipairs(audioBankIds) do
@@ -251,9 +254,6 @@ function ArtifactJobs.fieldCoreJobs(lists)
   end
   for _, memberId in ipairs(scriptMemberIds) do
     jobs[#jobs + 1] = { kind = "script-member", key = tostring(memberId) }
-  end
-  for _, pageId in ipairs(iconPageIds) do
-    jobs[#jobs + 1] = { kind = "mon-icon-page", key = tostring(pageId) }
   end
   for _, mapId in ipairs(mapDataIds) do
     jobs[#jobs + 1] = { kind = "map-data", key = tostring(mapId) }

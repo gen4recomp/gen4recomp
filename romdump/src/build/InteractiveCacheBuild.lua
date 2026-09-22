@@ -1944,6 +1944,33 @@ end
 ---@param urgency string
 ---@return boolean
 ---@return string|nil
+function InteractiveCacheBuild:requestIconPage(pageId, urgency)
+  assert(not self.retired, "generation session is retired")
+  assert(isInteger(pageId) and pageId >= 0, "icon page ID must be a non-negative integer")
+  ArtifactJobs.priorityFor(urgency)
+  if not self.pagesKnown then
+    return self:_answer(self:_requestDirect("mon-icon-page", tostring(pageId), urgency))
+  end
+  local supported = false
+  for _, candidate in ipairs(self.iconPageIds) do
+    if candidate == pageId then
+      supported = true
+      break
+    end
+  end
+  if not supported then
+    return self:_exclude(
+      self:_requestDirect("mon-icon-page", tostring(pageId), urgency),
+      self.generationId .. " mon-icon-page " .. tostring(pageId) .. ": source has no such page"
+    )
+  end
+  return self:_answer(self:_requestDirect("mon-icon-page", tostring(pageId), urgency))
+end
+
+---@param pageId integer
+---@param urgency string
+---@return boolean
+---@return string|nil
 function InteractiveCacheBuild:requestMonPortraitPage(pageId, urgency)
   assert(not self.retired, "generation session is retired")
   assert(isInteger(pageId) and pageId >= 0, "portrait page ID must be a non-negative integer")

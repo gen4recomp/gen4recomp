@@ -172,6 +172,39 @@ function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
 end
 
+-- Icon-page preparation reuses this exact worker path: an icon-page-sized
+-- PNG decodes on the worker thread into ImageData the main thread later
+-- realizes exactly once, with no GPU object created by preparation itself.
+function T.icon_sized_image_decodes_through_the_real_worker_without_graphics()
+  local AssetPreparationQueue = requireQueue()
+  local cache = CacheFs.forVersion(VERSION_ID)
+  local pixels = {}
+  for _ = 1, 256 * 128 do
+    pixels[#pixels + 1] = string.char(40, 120, 200, 255)
+  end
+  cache:write("party/page-0.png", PngWriter.encode(256, 128, table.concat(pixels)))
+  local statsBefore = love.graphics.getStats()
+
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache)
+    local token = queue:request("image", "party/page-0.png", "demand")
+    local image = queue:wait(token)
+    Assert.isNil(image.image, "the worker never realizes a love Image")
+    Assert.notNil(image.imageData, "the worker replies with decoded ImageData")
+    Assert.equal(image.imageData:getWidth(), 256)
+    Assert.equal(image.imageData:getHeight(), 128)
+    queue:release()
+  end)
+
+  local statsAfter = love.graphics.getStats()
+  cache:removeTree("")
+
+  if not runOk then
+    error(runErr, 0)
+  end
+  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
 return {
   metadata = { capabilities = { "graphics" } },
   tests = T,

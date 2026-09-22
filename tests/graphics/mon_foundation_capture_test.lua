@@ -18,6 +18,55 @@ local PngWriter = require("libs.assets.src.PngWriter")
 
 local T = {}
 
+local function decodingQueue(cache)
+  local nextToken = 0
+  local live = {}
+  local queue = {}
+  function queue:request(kind, path, priority)
+    assert(kind == "image", "icon pages decode as images")
+    assert(priority == "demand", "visible party pages decode as demand")
+    nextToken = nextToken + 1
+    live[nextToken] = path
+    return nextToken
+  end
+  function queue:poll(token)
+    assert(live[token], "poll observes a live token")
+    return "ready"
+  end
+  function queue:take(token)
+    local path = assert(live[token], "take transfers a live token once")
+    live[token] = nil
+    local bytes = assert(cache:read(path), "the compiled icon page is present")
+    local fileData = assert(love.filesystem.newFileData(bytes, "icon-page.png"), "page bytes form a file")
+    return { imageData = assert(love.image.newImageData(fileData), "page bytes decode") }
+  end
+  function queue:cancel(token)
+    live[token] = nil
+  end
+  return queue
+end
+
+local function preparedProvider(cache, keys)
+  local provider = MonIconAssetProvider.new(cache, {
+    preparationQueue = decodingQueue(cache),
+    derivedAssets = {
+      requestIconPage = function(pageId, _)
+        assert(type(pageId) == "number", "icon demand carries its page")
+        return true
+      end,
+    },
+  })
+  local ready, failure
+  for _ = 1, 8 do
+    ready, failure = provider:prepareKeys(keys)
+    if ready or failure ~= nil then
+      break
+    end
+  end
+  Assert.isTrue(ready, "demanded icon pages prepare: " .. tostring(failure))
+  return provider
+end
+
 local function iconCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:writeLua(MonCache.iconManifestPath(), {
@@ -120,7 +169,7 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
         )
       end
     end
-    local provider = MonIconAssetProvider.new(iconCache())
+    local provider = preparedProvider(iconCache(), { "MON0/f0" })
     local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
     local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
     love.graphics.setCanvas(canvas)
@@ -157,7 +206,7 @@ function T.mixed_six_slot_party_paints_every_slot(scope)
   local status = sixSlotView(0)
   status.mode = "select"
   status.view.slots[2].eligible = false
-  local provider = MonIconAssetProvider.new(iconCache())
+  local provider = preparedProvider(iconCache(), { "MON0/f0" })
   local renderer = PartyScreenRenderer.new({ graphics = love.graphics, text = text })
   local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
   love.graphics.setCanvas(canvas)

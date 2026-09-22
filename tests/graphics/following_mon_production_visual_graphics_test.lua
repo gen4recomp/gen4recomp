@@ -18,6 +18,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
@@ -290,7 +291,9 @@ function T.stationary_follower_idles_without_player_input(scope)
     local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
-    local state = assert(FieldState.new(giftedGame(versionId), {}))
+    local state = assert(
+      FieldState.new(giftedGame(versionId), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
+    )
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
       runtime.scripts.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_PLAYERS_HOUSE_1F, 1)
@@ -393,7 +396,9 @@ function T.real_starter_follower_trails_east_then_south_with_directional_walk_fr
     local catalog = MonBucket.openCatalogs(versionId)
     local descriptor =
       assert(catalog:followerSelection({ species = "CYNDAQUIL", form = 0 }), "cyndaquil carries a follower descriptor")
-    local state = assert(FieldState.new(giftedGame(versionId), {}))
+    local state = assert(
+      FieldState.new(giftedGame(versionId), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
+    )
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
       -- Skip the source opening scene the way unrelated field scenarios do:
@@ -477,7 +482,9 @@ function T.follower_moves_while_the_player_step_is_in_flight()
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "a ready imported game version is required")
   for _, versionId in ipairs(versions) do
-    local state = assert(FieldState.new(giftedGame(versionId), {}))
+    local state = assert(
+      FieldState.new(giftedGame(versionId), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
+    )
     local ok, err = xpcall(function()
       local runtime = assert(state.runtime, "field state owns its runtime")
       runtime.scripts.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_PLAYERS_HOUSE_1F, 1)

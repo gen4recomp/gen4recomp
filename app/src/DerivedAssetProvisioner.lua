@@ -113,6 +113,10 @@ function DerivedAssetProvisioner.new(options)
       assert(type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0, "portrait request requires its page")
       return ask("portrait", urgency, { pageId = pageId })
     end,
+    requestIconPage = function(pageId, urgency)
+      assert(type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0, "icon request requires its page")
+      return ask("icon-page", urgency, { pageId = pageId })
+    end,
     milestoneStatus = function(name)
       assert(type(name) == "string" and name ~= "", "milestone progress requires its name")
       local active = guard()

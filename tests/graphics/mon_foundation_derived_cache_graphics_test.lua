@@ -146,7 +146,42 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         mons = service:capture(),
         bag = BagSave.empty(),
       }
-      local state = assert(FieldState.new(game, {}))
+      -- Presented composition demands the semantic icon host: the
+      -- warmed cache already carries the compiled pages, so readiness
+      -- is immediate and the real queue decodes the real page bytes.
+      -- Other host calls report ready: the generated cache is present,
+      -- so no readiness gate may block this frame-cycle test.
+      local readyHost = {
+        requestMilestone = function(_, _)
+          return true
+        end,
+        requestField = function(_, _)
+          return true
+        end,
+        ensureField = function(_)
+          return true
+        end,
+        requestCell = function(_, _)
+          return true
+        end,
+        ensureCell = function(_)
+          return true
+        end,
+        requestMonPortraitPage = function(_, _)
+          return true
+        end,
+        requestIconPage = function(pageId, _)
+          assert(type(pageId) == "number", "icon demand carries its page")
+          return true
+        end,
+        milestoneStatus = function(_)
+          return { state = "ready" }
+        end,
+        status = function()
+          return { bootstrap = "ready" }
+        end,
+      }
+      local state = assert(FieldState.new(game, { derivedAssets = readyHost }))
       local ok, err = xpcall(function()
         local runtime = assert(state.runtime)
         local function step()
@@ -215,6 +250,12 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         Assert.equal(shown.applicationId, "pokemon", "confirming the route launches the party screen")
         Assert.notNil(shown.menu, "the retained menu stays published under the party application")
         Assert.notNil(shown.menu.presentation, "the retained menu stays drawable while the party owns input")
+        -- Icon pages prepare on demand after launch: capture only once
+        -- the party reports its own pages ready.
+        waitFor("party icons", function()
+          local application = hostStatus().application
+          return application ~= nil and application.preparationState == "ready"
+        end, 300)
         local width, height = love.graphics.getDimensions()
         local canvas = scope:own(love.graphics.newCanvas(width, height))
         love.graphics.setCanvas(canvas)

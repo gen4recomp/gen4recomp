@@ -534,4 +534,57 @@ function FieldStatePresentationFixture.terrainEffects(cache)
   }
 end
 
+-- Explicit headless semantic host for presentation fixtures: mirrors the
+-- production derived-asset shapes, records every demand in the returned log,
+-- and reports ready without compiling, decoding, or touching the GPU.
+-- Fixtures boot from prepared caches where demanded artifacts are already
+-- compiled, so ready mirrors successful reuse; demand stays visible in the
+-- log instead of silently succeeding, so blanket enrollment would fail loudly.
+---@return { derivedAssets: table<string, function>, demands: table<integer, table<string, unknown>> }
+function FieldStatePresentationFixture.iconHost()
+  local host = { demands = {} }
+  local function note(kind, detail)
+    host.demands[#host.demands + 1] = { kind = kind, detail = detail }
+  end
+  host.derivedAssets = {
+    requestMilestone = function(name, _)
+      note("milestone", name)
+      return true
+    end,
+    milestoneStatus = function(name)
+      note("milestone-status", name)
+      return { state = "ready", ready = 1, total = 1, failure = nil }
+    end,
+    requestField = function(mapId, _)
+      note("field", mapId)
+      return true
+    end,
+    ensureField = function(mapId)
+      note("ensure-field", mapId)
+      return true
+    end,
+    requestCell = function(descriptor, _)
+      note("cell", descriptor)
+      return true
+    end,
+    ensureCell = function(descriptor)
+      note("ensure-cell", descriptor)
+      return true
+    end,
+    requestMonPortraitPage = function(pageId, _)
+      note("portrait", pageId)
+      return true
+    end,
+    requestIconPage = function(pageId, urgency)
+      assert(type(pageId) == "number", "icon demand carries its page")
+      note("icon-page", { pageId = pageId, urgency = urgency })
+      return true
+    end,
+    status = function()
+      return { bootstrap = "ready" }
+    end,
+  }
+  return host
+end
+
 return FieldStatePresentationFixture

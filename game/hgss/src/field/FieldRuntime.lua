@@ -1391,10 +1391,14 @@ function FieldRuntime:_applicationDescriptors()
     local function measureDisplay()
       return self.presentationDisplay
     end
+    local binding =
+      assert(self._partyIconPreparation, "the presented party screen requires its icon preparation binding")
     return PartyScreenState.new({
       service = self.monService,
       measureDisplay = measureDisplay,
       overrides = partyOverrides,
+      prepareIcons = binding.prepare,
+      cancelIconPreparation = binding.cancel,
     })
   end
   local function bagFactory()
@@ -1434,6 +1438,29 @@ function FieldRuntime:_applicationDescriptors()
       factory = bagFactory,
     },
   }
+end
+
+---@param prepare fun(iconKeys: string[]): boolean, string? presented icon preparation
+---@param cancel fun() presented preparation release
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindPartyIconPreparation(prepare, cancel)
+  assert(type(prepare) == "function", "icon preparation binding requires its prepare function")
+  assert(type(cancel) == "function", "icon preparation binding requires its cancel function")
+  assert(self._partyIconPreparation == nil, "one party preparation binding owns the presented lifetime")
+  self._partyIconBindingId = (self._partyIconBindingId or 0) + 1
+  self._partyIconPreparation = { id = self._partyIconBindingId, prepare = prepare, cancel = cancel }
+  return self._partyIconBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a
+-- replacement presentation, and party factories created after disposal
+-- fail at launch instead of drawing without icons.
+---@param binding integer binding identity from bindPartyIconPreparation
+function FieldRuntime:unbindPartyIconPreparation(binding)
+  local current = self._partyIconPreparation
+  if current ~= nil and current.id == binding then
+    self._partyIconPreparation = nil
+  end
 end
 
 ---@param rememberedActionId string?

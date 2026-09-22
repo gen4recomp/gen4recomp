@@ -109,7 +109,7 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     local host = assert(launch.derivedAssets, "the running game must receive a derived-asset host")
     Assert.keySet(
       host,
-      "ensureCell,ensureField,milestoneStatus,requestCell,requestField,requestMilestone,requestMonPortraitPage,status"
+      "ensureCell,ensureField,milestoneStatus,requestCell,requestField,requestIconPage,requestMilestone,requestMonPortraitPage,status"
     )
     Assert.equal(type(host.requestField), "function")
     Assert.equal(type(host.ensureField), "function")

@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldState = require("game.hgss.src.field.FieldState")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 
 local T = {
   metadata = {
@@ -44,7 +45,8 @@ end
 local function withPresentationState(fn)
   local state
   local ok, err = xpcall(function()
-    state = FieldState.new(stableGameRecord(), {})
+    state =
+      FieldState.new(stableGameRecord(), { derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets })
     fn(state)
   end, debug.traceback)
   local closed, closeError = pcall(function()
