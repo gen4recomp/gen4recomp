@@ -2,7 +2,6 @@
 -- placement relationships, never a fixed render surface.
 
 local OakProfileLayout = require("game.hgss.src.newgame.OakProfileLayout")
-local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 local OakSceneLayout = require("game.hgss.src.newgame.OakSceneLayout")
 local PixelScale = require("libs.ui.src.PixelScale")
 local TextButton = require("libs.ui.src.TextButton")
@@ -367,9 +366,9 @@ local function profileLayout(
   if view.phase == "name_confirm" and view.confirmationChoice and view.confirmationChoice.kind == "name" then
     result.confirmationButtons = integerConfirmationEntries(assert(nameChoiceRegion), assert(preferredScale), true)
   end
-  if view.phase == "name_edit" then
-    result.namingScreen = NamingScreenLayout.compute(result.viewport)
-  end
+  -- The reusable Naming Screen child is placed by the parent-owned naming
+  -- session, never by scene composition: OakIntroState publishes the
+  -- canonical child geometry beside its resolved presentation plan.
 end
 
 ---@param width number

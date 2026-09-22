@@ -134,6 +134,8 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
       candidate = candidate,
       versionId = versionId,
       onComplete = onOakComplete,
+      displayContext = displayContext,
+      namingOverrides = presentationOverrides ~= nil and presentationOverrides.naming or nil,
     }))
   end
 

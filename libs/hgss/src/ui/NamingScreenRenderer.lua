@@ -290,8 +290,11 @@ function NamingScreenRenderer.new(options)
   local order = acquireOrder(naming)
   local ok, failure = pcall(function()
     for _, key in ipairs(order) do
-      acquired[key] = options.imageLoader(paths[key])
-      assert(acquired[key] ~= nil, "naming image loader returned no image for " .. key)
+      local image = options.imageLoader(paths[key])
+      assert(image ~= nil, "naming image loader returned no image for " .. key)
+      acquired[key] = image
+      assert(type(image.setFilter) == "function", "naming image filtering is unavailable for " .. key)
+      image:setFilter("nearest", "nearest")
     end
     for _, record in ipairs(animatedRecords) do
       for _, frame in ipairs(record.frames) do

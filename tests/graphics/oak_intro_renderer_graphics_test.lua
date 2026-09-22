@@ -1,10 +1,12 @@
 local Assert = require("tests.support.Assert")
+local ApplicationLayout = require("game.hgss.src.ui.ApplicationLayout")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
+local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
+local ScreenTopology = require("libs.hgss.src.ui.ScreenTopology")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
@@ -796,6 +798,37 @@ T.constructor_rejects_missing_confirmation_widget = function()
   Assert.isTrue(ok, "renderer must not require confirmation widgets after migration")
 end
 
+-- The parent-owned naming plan behind a renderer-level name_edit view:
+-- a real interface resolution over the fixture host, so the composite
+-- path under test is the production one. The child stays canonical; the
+-- fake records raw draw coordinates, so canvas-local assertions hold.
+local function attachNamingPlan(edit)
+  local interfaces = NamingInterface.withOverrides(nil)
+  local measured = {
+    width = 160,
+    height = 120,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 160, height = 120 },
+      role = "world",
+      touch = false,
+    }),
+    pixelRatio = 1,
+    signature = "oak-renderer-graphics-test:160x120",
+  }
+  local selection = ApplicationLayout.selectSurfaces(measured)
+  local plan = interfaces.nativeLike({
+    measurement = measured,
+    configuration = "nativeLike",
+    primary = selection.primary,
+    secondary = selection.secondary,
+    windowPosition = { x = 0.5, y = 0.5 },
+    nativeLikeInterface = interfaces.nativeLike,
+  }, edit.namingScreen)
+  edit.namingPresentation = plan
+  edit.layout.namingScreen = assert(plan.content.layout, "the naming plan carries its canonical child layout")
+end
+
 -- Oak name editing composes the generated naming visuals through the
 -- reusable Naming Screen: the opaque base draws first, the selected page
 -- overlay draws at its canonical placement, and the player subject draws
@@ -824,7 +857,7 @@ function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
   end
   local edit = view()
   edit.phase = "name_edit"
-  edit.layout.namingScreen = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  attachNamingPlan(edit)
   edit.namingScreen = {
     page = "lower",
     cursor = { row = 2, column = 1 },
@@ -981,7 +1014,7 @@ function T.oak_hosts_naming_without_duplicate_player_subject_art()
   end
   local edit = view()
   edit.phase = "name_edit"
-  edit.layout.namingScreen = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  attachNamingPlan(edit)
   edit.namingScreen = {
     page = "upper",
     cursor = { row = 2, column = 1 },

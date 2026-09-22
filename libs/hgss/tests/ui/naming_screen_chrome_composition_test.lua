@@ -67,6 +67,7 @@ local function imageLoaderFake(failOn)
       error("injected image failure for " .. path, 0)
     end
     local image = { path = path, released = false, releaseCount = 0 }
+    function image:setFilter() end
     function image:release()
       self.released = true
       self.releaseCount = self.releaseCount + 1

@@ -3,12 +3,14 @@
 -- finalized unpublished candidate to its caller.
 
 local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local DisplayContext = require("game.hgss.src.ui.DisplayContext")
+local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
-local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 
 ---@class OakIntroStateController: OakIntroController
 ---@field start fun(self: OakIntroStateController): boolean
@@ -77,6 +79,7 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field choiceLabels table<integer, string>?
 ---@field layout OakIntroStateLayout?
 ---@field pixelSurface PixelScale.Surface?
+---@field namingPresentation table<string, unknown>?
 
 ---@class OakIntroStateLayoutView: OakIntroStateView
 ---@field layout OakIntroStateLayout
@@ -97,6 +100,8 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field audioLifetime table<string, unknown>?
 ---@field textRenderer table<string, unknown>
 ---@field choiceText table<string, unknown>
+---@field displayContext table<string, unknown>?
+---@field namingOverrides table<string, table<string, unknown>>?
 ---@field dialogueController table<string, unknown>?
 ---@field dialogueRenderer table<string, unknown>?
 ---@field dialogueText table<string, unknown>?
@@ -130,6 +135,10 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field dialoguePresentation DialoguePresentationLayout.Presentation?
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
 ---@field disposed boolean
+---@field _displayContext DisplayContext
+---@field _namingOverrides table<string, table<string, unknown>>?
+---@field _namingSession ApplicationPresentation? the per-entry naming session beside the profile controller
+---@field _namingWindowState table<string, { x: number, y: number }>
 ---@field _blackHandoffPresented boolean
 ---@field _frozenStatus table<string, unknown>?
 ---@field _frozenAdapter table<string, unknown>?
@@ -137,6 +146,9 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field _acknowledgePresentedHandoff fun(self: OakIntroState)
 ---@field _clearFrozen fun(self: OakIntroState)
 ---@field _stepDialogue fun(self: OakIntroState, snapshot: table<string, unknown>?): table<string, unknown>?
+---@field _measured fun(self: OakIntroState): table<string, unknown>
+---@field _ensureNamingSession fun(self: OakIntroState): table<string, unknown>
+---@field _disposeNamingSession fun(self: OakIntroState)
 ---@field _sync fun(self: OakIntroState): OakIntroStateView
 ---@field update fun(self: OakIntroState, dt: number)
 ---@field tick fun(self: OakIntroState, frames: integer)
@@ -147,9 +159,15 @@ local NamingScreenLayout = require("libs.hgss.src.ui.NamingScreenLayout")
 ---@field press fun(self: OakIntroState, action: string): boolean
 ---@field textinput fun(self: OakIntroState, text: string)
 ---@field gamepadpressed fun(self: OakIntroState, joystick: unknown, button: string)
----@field _pointer fun(self: OakIntroState, x: number, y: number)
+---@field _pointer fun(self: OakIntroState, x: number, y: number, pointerId: unknown)
+---@field _applyNamingEvent fun(self: OakIntroState, event: { type: string, pointerId: unknown, x: number?, y: number? })
 ---@field mousepressed fun(self: OakIntroState, x: number, y: number, button: integer)
+---@field mousemoved fun(self: OakIntroState, x: number, y: number, dx: number?, dy: number?, istouch: boolean?)
+---@field mousereleased fun(self: OakIntroState, x: number, y: number, button: integer)
 ---@field touchpressed fun(self: OakIntroState, id: unknown, x: number, y: number)
+---@field touchmoved fun(self: OakIntroState, id: unknown, x: number, y: number)
+---@field touchreleased fun(self: OakIntroState, id: unknown, x: number, y: number)
+---@field focus fun(self: OakIntroState, focused: boolean)
 ---@field dispose fun(self: OakIntroState)
 local OakIntroState = {}
 OakIntroState.__index = OakIntroState
@@ -233,6 +251,10 @@ function OakIntroState.new(options)
   if width == nil or height == nil then
     width, height = love.graphics.getDimensions()
   end
+  local displayContext = options.displayContext
+  if displayContext == nil then
+    displayContext = DisplayContext.new({})
+  end
   local self
   local ok, result = pcall(function()
     local renderer = options.renderer
@@ -268,6 +290,10 @@ function OakIntroState.new(options)
       choiceLabels = options.dialogueFormatter and options.dialogueFormatter:choiceLabels() or nil,
       dialogueText = options.dialogueText,
       choiceText = options.choiceText,
+      _displayContext = displayContext,
+      _namingOverrides = options.namingOverrides,
+      _namingSession = nil,
+      _namingWindowState = {},
       dialoguePresentation = nil,
       dialogueMessageKey = nil,
       dialogueCursorPlacement = options.dialogueCursorPlacement,
@@ -423,19 +449,64 @@ function OakIntroState:tick(frames)
   self:_sync()
 end
 
+---@return table<string, unknown> the current display facts
+function OakIntroState:_measured()
+  return self._displayContext:measure(self.width, self.height)
+end
+
+---@return ApplicationPresentation the owned naming session, created on first name_edit use
+function OakIntroState:_ensureNamingSession()
+  if self._namingSession ~= nil then
+    return self._namingSession
+  end
+  local session =
+    ApplicationPresentation.new(NamingInterface.withOverrides(self._namingOverrides), self._namingWindowState)
+  self._namingSession = session
+  return session
+end
+
+function OakIntroState:_disposeNamingSession()
+  local session = self._namingSession
+  self._namingSession = nil
+  if session ~= nil then
+    session.dispose(session)
+  end
+end
+
 function OakIntroState:view()
   local view = self.controller:view()
   ---@cast view OakIntroStateView
   local surface = resolvePixelSurface(self.width, self.height)
   view.pixelSurface = surface
+  local rootScale = assert(surface.placement.pixelScale, "Oak root surface keeps its integer physical scale")
+  assert(rootScale == math.floor(rootScale), "Oak root compositing keeps an integer physical scale")
   view.layout = OakIntroLayout.compute(
     surface.logicalViewport.width,
     surface.logicalViewport.height,
     view,
     {},
     self.manifest,
-    surface.placement.scale --[[@as integer]]
+    rootScale --[[@as integer]]
   )
+  if view.phase == "name_edit" then
+    local session = self:_ensureNamingSession()
+    local snapshot = assert(view.namingScreen, "Oak name editing requires its Naming Screen snapshot")
+    local measurement = assert(self:_measured(), "Oak naming needs its display facts")
+    local resolved
+    local ok, planOrErr = pcall(function()
+      return session:resolve(measurement, snapshot)
+    end)
+    if not ok then
+      self:_disposeNamingSession()
+      error(planOrErr, 0)
+    end
+    resolved = assert(planOrErr, "Oak naming resolution returned no plan")
+    view.namingPresentation = resolved
+    local content = assert(resolved.content, "the naming plan needs its canonical content")
+    view.layout.namingScreen = assert(content.layout, "the naming plan needs its canonical child layout")
+  else
+    self:_disposeNamingSession()
+  end
   if self.dialogueController then
     view.dialogueStatus = self.dialogueController:status()
     view.dialoguePresentation = view.layout.dialogue
@@ -553,8 +624,42 @@ function OakIntroState:gamepadpressed(_, button)
   self:_sync()
 end
 
-function OakIntroState:_pointer(x, y)
+-- Forwards one host pointer event to the owned naming session and applies
+-- the semantic hit it returns. Presses activate cells and controls through
+-- the leaf mapper; header moves drag the window inside the shared session
+-- and releases end whichever capture the session holds. Never invents drag
+-- state here: the session owns capture, translation, and cancellation.
+---@param event { type: string, pointerId: unknown, x: number?, y: number? }
+function OakIntroState:_applyNamingEvent(event)
   local view = self:view()
+  if self.dialogueController and self.dialogueController:isModal() then
+    self:_sync()
+    return
+  end
+  assert(view.phase == "name_edit", "Oak naming pointer events require the name editor")
+  local session = self:_ensureNamingSession()
+  local snapshot = assert(view.namingScreen, "Oak name editing requires its Naming Screen snapshot")
+  local mapped = session:mapInput({ event }, snapshot)
+  for _, result in ipairs(mapped) do
+    if result.type == "name_control" then
+      self.controller:activateNameControl(result.id)
+    elseif result.type == "name_cell" then
+      self.controller:activateNameCell(result.row, result.column)
+    end
+  end
+  self:_sync()
+end
+
+function OakIntroState:_pointer(x, y, pointerId)
+  if self.controller:view().phase == "name_edit" then
+    self:_applyNamingEvent({ type = "pointer_down", pointerId = pointerId, x = x, y = y })
+    return
+  end
+  local view = self:view()
+  if self.dialogueController and self.dialogueController:isModal() then
+    self:_sync()
+    return
+  end
   local layout = assert(view.layout)
   local surface = assert(view.pixelSurface)
   local logicalX, logicalY = LayoutGeometry.hostToLogical(surface.placement, x, y)
@@ -562,10 +667,7 @@ function OakIntroState:_pointer(x, y)
     self:_sync()
     return
   end
-  if self.dialogueController and self.dialogueController:isModal() then
-    self:_sync()
-    return
-  elseif layout.confirmationButtons then
+  if layout.confirmationButtons then
     for choice = 0, 1 do
       local entry = layout.confirmationButtons[choice]
       if entry and OakIntroLayout.contains(entry.rect, logicalX, logicalY) then
@@ -583,38 +685,58 @@ function OakIntroState:_pointer(x, y)
         return
       end
     end
-  elseif view.phase == "name_edit" then
-    local naming = assert(layout.namingScreen, "Oak naming layout is missing")
-    local origin = assert(naming.surface, "Oak naming surface is missing")
-    local namingX, namingY = logicalX - origin.x, logicalY - origin.y
-    for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
-      if NamingScreenLayout.contains(naming.controls[id], namingX, namingY) then
-        self.controller:activateNameControl(id)
-        self:_sync()
-        return
-      end
-    end
-    for row = 1, 6 do
-      for column = 1, 13 do
-        if NamingScreenLayout.contains(naming.cells[row][column], namingX, namingY) then
-          self.controller:activateNameCell(row, column)
-          self:_sync()
-          return
-        end
-      end
-    end
   end
   self:_sync()
 end
 
 function OakIntroState:mousepressed(x, y, button)
   if button == 1 then
-    self:_pointer(x, y)
+    self:_pointer(x, y, "mouse")
   end
 end
 
-function OakIntroState:touchpressed(_, x, y)
-  self:_pointer(x, y)
+function OakIntroState:mousemoved(x, y, _, _, istouch)
+  if istouch then
+    return
+  end
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_move", pointerId = "mouse", x = x, y = y })
+end
+
+function OakIntroState:mousereleased(x, y, button)
+  if button ~= 1 then
+    return
+  end
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_up", pointerId = "mouse", x = x, y = y })
+end
+
+function OakIntroState:touchpressed(id, x, y)
+  self:_pointer(x, y, id)
+end
+
+function OakIntroState:touchmoved(id, x, y)
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_move", pointerId = id, x = x, y = y })
+end
+
+function OakIntroState:touchreleased(id, x, y)
+  if self.controller:view().phase ~= "name_edit" then
+    return
+  end
+  self:_applyNamingEvent({ type = "pointer_up", pointerId = id, x = x, y = y })
+end
+
+function OakIntroState:focus(focused)
+  if not focused and self._namingSession ~= nil then
+    self._namingSession:cancelPointers()
+  end
 end
 
 function OakIntroState:dispose()
@@ -622,6 +744,7 @@ function OakIntroState:dispose()
     return
   end
   self.disposed = true
+  self:_disposeNamingSession()
   self:_clearFrozen()
   self:_setTextInput(false)
   self.controller:dispose()
