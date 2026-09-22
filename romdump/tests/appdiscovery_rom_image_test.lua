@@ -178,6 +178,18 @@ function T.rom_image_overlay_uncompressed_reports_raw_normalization()
   Assert.equal(overlay.decodedSize, #RAW_OVERLAY_CONTENT)
 end
 
+function T.rom_image_arm9_overlays_returns_sorted_memoized_records()
+  local rom = buildFixture()
+  local image = RomImage.new(rom)
+  local overlays = image:arm9Overlays()
+
+  Assert.equal(#overlays, 2)
+  Assert.equal(overlays[1].id, "arm9-overlay:0")
+  Assert.equal(overlays[2].id, "arm9-overlay:1")
+  Assert.isTrue(overlays[1] == image:overlay("arm9", 0))
+  Assert.isTrue(overlays[2] == image:overlay("arm9", 1))
+end
+
 function T.rom_image_never_touches_cache_state()
   -- RomImage.new accepts only the ROM: there is no cache/backend parameter
   -- for it to read or mutate, and images are memoized purely in-memory.

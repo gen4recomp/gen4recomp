@@ -10,6 +10,35 @@ local ThumbDecoder = require("romdump.src.appdiscovery.ThumbDecoder")
 
 local ApplicationAnalyzer = {}
 
+---@class ApplicationAnalyzer.BlockEvidence
+---@field start integer
+---@field endExclusive integer
+---@field instructionCount integer
+
+---@class ApplicationAnalyzer.FunctionEvidence
+---@field entry integer
+---@field instructionCount integer
+---@field blocks ApplicationAnalyzer.BlockEvidence[]
+
+---@class ApplicationAnalyzer.DisassemblyFunction
+---@field entry integer
+---@field instructions ThumbDecoder.Instruction[]
+
+---@class ApplicationAnalyzer.Disassembly
+---@field functions ApplicationAnalyzer.DisassemblyFunction[]
+
+---@class ApplicationAnalyzer.Evidence
+---@field schema "g4-app-analysis-1"
+---@field target table<string, unknown>
+---@field entrypointCandidates table[]
+---@field functions ApplicationAnalyzer.FunctionEvidence[]
+---@field switches table[]
+---@field calls table[]
+---@field literals table[]
+---@field pointers table[]
+---@field gaps table[]
+---@field coverage table<string, integer>
+
 local CALL_CLOBBER_REGISTERS = { 0, 1, 2, 3, 12 }
 
 local function maskThumb(value)
@@ -29,10 +58,13 @@ local function cloneState(state)
   for k, v in pairs(state.stack) do
     stack[k] = v
   end
-  return { registers = registers, stack = stack }
+  return { registers = registers, stack = stack, spDelta = state.spDelta }
 end
 
 local function statesEqual(a, b)
+  if a.spDelta ~= b.spDelta then
+    return false
+  end
   for r = 0, 12 do
     if a.registers[r] ~= b.registers[r] then
       return false
@@ -52,7 +84,7 @@ local function statesEqual(a, b)
 end
 
 local function joinStates(a, b)
-  local result = { registers = {}, stack = {} }
+  local result = { registers = {}, stack = {}, spDelta = a.spDelta == b.spDelta and a.spDelta or nil }
   for r = 0, 12 do
     if a.registers[r] ~= nil and a.registers[r] == b.registers[r] then
       result.registers[r] = a.registers[r]
@@ -87,6 +119,13 @@ local function transfer(instr, stateIn)
     return stateIn.registers[r]
   end
 
+  local function stableStackOffset(immediate)
+    if newState.spDelta == nil then
+      return nil
+    end
+    return newState.spDelta + immediate
+  end
+
   if m == "mov" then
     if operands.rs ~= nil then
       setReg(operands.rd, getReg(operands.rs))
@@ -95,7 +134,14 @@ local function transfer(instr, stateIn)
     end
   elseif m == "add" or m == "sub" then
     if operands.base == "sp" then
-      setReg(operands.rd, nil)
+      if operands.rd == nil then
+        if newState.spDelta ~= nil then
+          local amount = operands.immediate
+          newState.spDelta = m == "add" and newState.spDelta + amount or newState.spDelta - amount
+        end
+      else
+        setReg(operands.rd, nil)
+      end
     elseif operands.rs ~= nil then
       local rsVal = getReg(operands.rs)
       local rhs = operands.immediate
@@ -132,19 +178,71 @@ local function transfer(instr, stateIn)
   elseif m == "adr" then
     setReg(operands.rd, operands.address)
   elseif (m == "ldr" or m == "str") and operands.base == "sp" then
-    if m == "ldr" then
-      setReg(operands.rd, newState.stack[operands.immediate])
+    local stableOffset = stableStackOffset(operands.immediate)
+    if stableOffset == nil then
+      if m == "ldr" then
+        setReg(operands.rd, nil)
+      else
+        newState.stack = {}
+      end
+    elseif m == "ldr" then
+      setReg(operands.rd, newState.stack[stableOffset])
     else
-      newState.stack[operands.immediate] = getReg(operands.rd)
+      newState.stack[stableOffset] = getReg(operands.rd)
     end
-  elseif m == "pop" or m == "ldmia" then
+  elseif m == "push" then
+    local rlist = operands.registerList or 0
+    local wordCount = 0
+    for r = 0, 7 do
+      if math.floor(rlist / 2 ^ r) % 2 == 1 then
+        wordCount = wordCount + 1
+      end
+    end
+    if operands.includesPcOrLr then
+      wordCount = wordCount + 1
+    end
+    if newState.spDelta == nil then
+      newState.stack = {}
+    else
+      newState.spDelta = newState.spDelta - wordCount * 4
+      local wordIndex = 0
+      for r = 0, 7 do
+        if math.floor(rlist / 2 ^ r) % 2 == 1 then
+          newState.stack[newState.spDelta + wordIndex * 4] = getReg(r)
+          wordIndex = wordIndex + 1
+        end
+      end
+      if operands.includesPcOrLr then
+        newState.stack[newState.spDelta + wordIndex * 4] = nil
+      end
+    end
+  elseif m == "pop" then
+    local rlist = operands.registerList or 0
+    if newState.spDelta == nil then
+      for r = 0, 7 do
+        if math.floor(rlist / 2 ^ r) % 2 == 1 then
+          setReg(r, nil)
+        end
+      end
+      newState.stack = {}
+    else
+      local wordIndex = 0
+      for r = 0, 7 do
+        if math.floor(rlist / 2 ^ r) % 2 == 1 then
+          setReg(r, stateIn.stack[stateIn.spDelta + wordIndex * 4])
+          wordIndex = wordIndex + 1
+        end
+      end
+      newState.spDelta = newState.spDelta + wordIndex * 4
+    end
+  elseif m == "ldmia" then
     local rlist = operands.registerList or 0
     for r = 0, 7 do
       if math.floor(rlist / 2 ^ r) % 2 == 1 then
         setReg(r, nil)
       end
     end
-  elseif m == "push" or m == "stmia" then
+  elseif m == "stmia" then
     -- source registers unaffected; memory writes are not tracked
   else
     if operands.rd ~= nil then
@@ -154,7 +252,11 @@ local function transfer(instr, stateIn)
   return newState
 end
 
-local function _analyze(romImage, overlayId)
+---@param romImage RomImage
+---@param overlayId integer
+---@return ApplicationAnalyzer.Evidence
+---@return ApplicationAnalyzer.Disassembly
+function ApplicationAnalyzer.analyze(romImage, overlayId)
   assert(type(overlayId) == "number", "overlayId must be a number")
 
   local targetImage = romImage:overlay("arm9", overlayId)
@@ -415,7 +517,7 @@ local function _analyze(romImage, overlayId)
     local successors = {}
     for _, target in ipairs(targets) do
       joinTargets[target] = true
-      successors[#successors + 1] = { addr = target, state = { registers = {}, stack = {} } }
+      successors[#successors + 1] = { addr = target, state = { registers = {}, stack = {}, spDelta = nil } }
     end
     recognizedSwitches[addPcAddress] = successors
     return successors
@@ -451,18 +553,30 @@ local function _analyze(romImage, overlayId)
       end
     end
     local stackSnapshot = {}
-    for k, v in pairs(state.stack) do
-      stackSnapshot[k] = v
+    if state.spDelta ~= nil then
+      for stableOffset, value in pairs(state.stack) do
+        local currentOffset = stableOffset - state.spDelta
+        if currentOffset >= 0 then
+          stackSnapshot[currentOffset] = value
+        end
+      end
     end
+    local targetState = instr.flow.targetState
     calls[address] = {
       site = address,
       target = target,
       targetRegion = region,
       knownArgs = { registers = registersSnapshot, stack = stackSnapshot },
     }
-    if region == "target" then
+    if targetState ~= nil then
+      calls[address].targetState = targetState
+    end
+    if region == "target" and targetState ~= "arm" then
       joinTargets[target] = true
       enqueueFunction(target)
+    end
+    if targetState == "arm" then
+      addGap("arm_call_target_unsupported", address, { target = target, region = region })
     end
     return { { addr = address + instr.size, state = clobberForCall(state) } }
   end
@@ -519,10 +633,11 @@ local function _analyze(romImage, overlayId)
   end
 
   local function analyzeFunction(rootAddress)
-    local entryState = { [rootAddress] = { registers = {}, stack = {} } }
+    local entryState = { [rootAddress] = { registers = {}, stack = {}, spDelta = 0 } }
     local pending = { [rootAddress] = true }
     local queue = { rootAddress }
     local functionAddrs = {}
+    local functionMembers = {}
     while #queue > 0 do
       local address = table.remove(queue, 1)
       pending[address] = nil
@@ -530,7 +645,10 @@ local function _analyze(romImage, overlayId)
       if region == "target" then
         local instr = getOrDecode(image, address)
         if instr then
-          functionAddrs[#functionAddrs + 1] = address
+          if not functionMembers[address] then
+            functionMembers[address] = true
+            functionAddrs[#functionAddrs + 1] = address
+          end
           local successors = processInstruction(address, instr, entryState[address])
           for _, successor in ipairs(successors) do
             local existing = entryState[successor.addr]
@@ -557,6 +675,7 @@ local function _analyze(romImage, overlayId)
 
   local function buildBlocks(addrs)
     local blocks = {}
+    ---@type ApplicationAnalyzer.BlockEvidence|nil
     local current = nil
     local prevAddr, prevInstr = nil, nil
     for _, addr in ipairs(addrs) do
@@ -566,11 +685,13 @@ local function _analyze(romImage, overlayId)
         startNew = (prevAddr + prevInstr.size ~= addr) or BLOCK_TERMINAL_FLOW[prevInstr.flow.kind] == true
       end
       if startNew then
-        current = { start = addr, instructions = {} }
+        current = { start = addr, endExclusive = addr + instr.size, instructionCount = 1 }
         blocks[#blocks + 1] = current
+      else
+        assert(current ~= nil)
+        current.endExclusive = addr + instr.size
+        current.instructionCount = current.instructionCount + 1
       end
-      ---@cast current -nil
-      current.instructions[#current.instructions + 1] = instr
       prevAddr, prevInstr = addr, instr
     end
     return blocks
@@ -597,7 +718,9 @@ local function _analyze(romImage, overlayId)
             mainTarget = w2,
             exitTarget = w3,
             overlayId = w4,
-            state = isThumbPointer(w2) and "thumb" or "arm",
+            initState = isThumbPointer(w1) and "thumb" or "arm",
+            mainState = isThumbPointer(w2) and "thumb" or "arm",
+            exitState = isThumbPointer(w3) and "thumb" or "arm",
           }
         end
       end
@@ -610,8 +733,10 @@ local function _analyze(romImage, overlayId)
   for _, candidate in ipairs(scanCandidates(mainImage)) do
     entrypointCandidates[#entrypointCandidates + 1] = candidate
   end
-  for _, candidate in ipairs(scanCandidates(targetImage)) do
-    entrypointCandidates[#entrypointCandidates + 1] = candidate
+  for _, image in ipairs(romImage:arm9Overlays()) do
+    for _, candidate in ipairs(scanCandidates(image)) do
+      entrypointCandidates[#entrypointCandidates + 1] = candidate
+    end
   end
   table.sort(entrypointCandidates, function(a, b)
     if a.sourceRegion ~= b.sourceRegion then
@@ -626,18 +751,24 @@ local function _analyze(romImage, overlayId)
 
   local armRootCount, thumbRootCount = 0, 0
   for _, candidate in ipairs(entrypointCandidates) do
-    if candidate.state == "arm" then
-      armRootCount = armRootCount + 1
-      addGap("arm_root_unsupported", maskThumb(candidate.mainTarget))
-    else
-      thumbRootCount = thumbRootCount + 1
-      enqueueFunction(maskThumb(candidate.initTarget))
-      enqueueFunction(maskThumb(candidate.mainTarget))
-      enqueueFunction(maskThumb(candidate.exitTarget))
+    for _, root in ipairs({
+      { target = candidate.initTarget, state = candidate.initState },
+      { target = candidate.mainTarget, state = candidate.mainState },
+      { target = candidate.exitTarget, state = candidate.exitState },
+    }) do
+      local address = maskThumb(root.target)
+      if root.state == "arm" then
+        armRootCount = armRootCount + 1
+        addGap("arm_root_unsupported", address)
+      else
+        thumbRootCount = thumbRootCount + 1
+        enqueueFunction(address)
+      end
     end
   end
 
   local functions = {}
+  local disassemblyFunctions = {}
   while #functionQueue > 0 do
     local address = table.remove(functionQueue, 1)
     functionPending[address] = nil
@@ -651,12 +782,16 @@ local function _analyze(romImage, overlayId)
       end
       functions[#functions + 1] = {
         entry = address,
+        instructionCount = #instructions,
         blocks = buildBlocks(addrs),
-        instructions = instructions,
       }
+      disassemblyFunctions[#disassemblyFunctions + 1] = { entry = address, instructions = instructions }
     end
   end
   table.sort(functions, function(a, b)
+    return a.entry < b.entry
+  end)
+  table.sort(disassemblyFunctions, function(a, b)
     return a.entry < b.entry
   end)
 
@@ -710,11 +845,11 @@ local function _analyze(romImage, overlayId)
 
   local instructionCount, blockCount = 0, 0
   for _, fn in ipairs(functions) do
-    instructionCount = instructionCount + #fn.instructions
+    instructionCount = instructionCount + fn.instructionCount
     blockCount = blockCount + #fn.blocks
   end
 
-  return {
+  local evidence = {
     schema = "g4-app-analysis-1",
     target = { overlayId = overlayId, ramAddress = targetImage.ramAddress, size = #targetImage.bytes },
     entrypointCandidates = entrypointCandidates,
@@ -735,25 +870,7 @@ local function _analyze(romImage, overlayId)
       computedFlowGapCount = computedFlowGapCount,
     },
   }
-end
-
----@class ApplicationAnalyzer.Evidence
----@field schema string
----@field target table<string, unknown>
----@field entrypointCandidates table[]
----@field functions table[]
----@field switches table[]
----@field calls table[]
----@field literals table[]
----@field pointers table[]
----@field gaps table[]
----@field coverage table<string, integer>
-
----@param romImage RomImage
----@param overlayId integer
----@return ApplicationAnalyzer.Evidence
-function ApplicationAnalyzer.analyze(romImage, overlayId)
-  return _analyze(romImage, overlayId)
+  return evidence, { functions = disassemblyFunctions }
 end
 
 return ApplicationAnalyzer

@@ -23,6 +23,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 ---@class RomImage.Source
 ---@field header fun(self: RomImage.Source): { arm9: { offset: integer, size: integer, ramAddress: integer, entryAddress: integer } }
 ---@field read fun(self: RomImage.Source, offset: integer, size: integer): string
+---@field arm9Overlays fun(self: RomImage.Source): table[]
 ---@field readOverlay fun(self: RomImage.Source, cpu: string, overlayId: integer): string?, ({ fileId: integer, ramAddress: integer, isCompressed: boolean }|Errors.Error)?
 ---@field readFatFile fun(self: RomImage.Source, fileId: integer): string
 
@@ -127,6 +128,21 @@ function RomImage:overlay(cpu, overlayId)
   }
   self._images[id] = record
   return record
+end
+
+---@return RomImage.Record[]
+function RomImage:arm9Overlays()
+  local overlayIds = {}
+  for _, overlay in ipairs(self._rom:arm9Overlays()) do
+    overlayIds[#overlayIds + 1] = overlay.overlayId
+  end
+  table.sort(overlayIds)
+
+  local records = {}
+  for _, overlayId in ipairs(overlayIds) do
+    records[#records + 1] = self:overlay("arm9", overlayId)
+  end
+  return records
 end
 
 return RomImage

@@ -7,6 +7,7 @@
 -- game's resources or addresses.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local NdsRom = require("romdump.src.source.NdsRom")
 local RomSource = require("romdump.src.source.RomSource")
@@ -220,7 +221,8 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
   Assert.equal(#evidence.files, 3)
   Assert.equal(evidence.coverage.namedFileCount, 3)
   Assert.equal(evidence.coverage.scannedFileCount, 3)
-  Assert.isFalse(evidence.coverage.complete, "a malformed NARC must mark coverage incomplete")
+  Assert.isFalse(evidence.coverage.enumerationComplete, "a malformed NARC must mark enumeration incomplete")
+  Assert.isNil(rawget(evidence.coverage, "complete"))
 
   local narcFile = assert(byPath(evidence, "archive.narc"))
   Assert.equal(narcFile.kind, "narc")
@@ -237,6 +239,7 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
   Assert.equal(narc.fileId, narcFile.fileId)
   Assert.equal(narc.memberCount, 4)
   Assert.equal(#narc.members, 4)
+  Assert.isNil(rawget(evidence, "previews"))
 
   local members = byMemberId(narc.members)
   for id = 0, 3 do
@@ -251,7 +254,9 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
   Assert.equal(m0.rawSha1, Hashing.sha1hex(ncgrBytes))
   Assert.notNil(m0.summary)
   Assert.equal(m0.summary.depth, 3)
-  Assert.equal(m0.previewKey, "narc-" .. narcFile.fileId .. "-member-0-ncgr")
+  Assert.equal(m0.summary.tileCount, 2)
+  Assert.keySet(m0.summary, "depth,tileCount")
+  Assert.isNil(m0.previewKey)
 
   local m1 = members[1]
   Assert.equal(m1.compression, "none")
@@ -270,22 +275,22 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
   Assert.equal(m2.kind, "nclr")
   Assert.equal(m2.status, "decoded")
   Assert.notNil(m2.summary)
-  Assert.equal(#m2.summary.colors, 3)
-  Assert.equal(m2.previewKey, "narc-" .. narcFile.fileId .. "-member-2-nclr")
+  Assert.equal(m2.summary.colorCount, 3)
+  Assert.keySet(m2.summary, "colorCount")
+  Assert.isNil(m2.previewKey)
 
   local m3 = members[3]
   Assert.equal(m3.compression, "lz11")
   Assert.equal(m3.kind, "unknown")
+  Assert.equal(m3.status, "compression-unsupported")
   Assert.equal(m3.rawSize, #lz11Bytes)
   Assert.equal(m3.rawSha1, Hashing.sha1hex(lz11Bytes))
   Assert.isNil(m3.decodedSize)
   Assert.isNil(m3.decodedSha1)
   Assert.isNil(m3.previewKey)
 
-  -- Coverage member counters reconcile with the members array itself, so
-  -- this stays true regardless of which bucket an unsupported-compression
-  -- member is folded into.
-  local decoded, unknown, failed = 0, 0, 0
+  -- Every member belongs to exactly one status counter.
+  local decoded, unknown, failed, unsupported = 0, 0, 0, 0
   for _, m in ipairs(narc.members) do
     if m.status == "decoded" then
       decoded = decoded + 1
@@ -293,6 +298,8 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
       unknown = unknown + 1
     elseif m.status == "decode-failed" then
       failed = failed + 1
+    elseif m.status == "compression-unsupported" then
+      unsupported = unsupported + 1
     end
   end
   Assert.equal(evidence.coverage.narcCount, 1)
@@ -300,8 +307,12 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
   Assert.equal(evidence.coverage.decodedMemberCount, decoded)
   Assert.equal(evidence.coverage.unknownMemberCount, unknown)
   Assert.equal(evidence.coverage.failedMemberCount, failed)
+  Assert.equal(evidence.coverage.unsupportedMemberCount, unsupported)
   Assert.equal(decoded, 2)
   Assert.equal(unknown, 1)
+  Assert.equal(failed, 0)
+  Assert.equal(unsupported, 1)
+  Assert.equal(decoded + unknown + failed + unsupported, evidence.coverage.narcMemberCount)
 
   local lz11Gap = nil
   for _, g in ipairs(evidence.gaps) do
@@ -311,17 +322,105 @@ function T.every_named_file_and_narc_member_is_accounted_for_exactly_once()
   end
   Assert.notNil(lz11Gap, "expected an unsupported_lz11 gap for the LZ11 member")
   Assert.isTrue(#evidence.gaps >= 2, "expected gaps for both the LZ11 member and the malformed NARC")
+end
 
-  Assert.equal(#evidence.previews, 2)
-  local previewKeys = {}
-  for _, p in ipairs(evidence.previews) do
-    previewKeys[p.key] = p
-    Assert.isTrue(#p.png > 0)
-    Assert.isTrue(p.width > 0)
-    Assert.isTrue(p.height > 0)
+function T.marker_only_values_are_not_compression_evidence()
+  local narcBytes = NarcBuilder.build({ string.char(0x10), string.char(0x11) })
+  local rom = buildRom({ tree = { files = { { name = "markers.narc", content = narcBytes } } } })
+  local evidence = ResourceCatalog.scan(rom, RomImage.new(rom))
+  local members = byMemberId(evidence.narcs[1].members)
+
+  for id = 0, 1 do
+    Assert.equal(members[id].compression, "none")
+    Assert.equal(members[id].status, "unknown")
+    Assert.isNil(members[id].compressionCandidate)
   end
-  Assert.notNil(previewKeys["narc-" .. narcFile.fileId .. "-member-0-ncgr"])
-  Assert.notNil(previewKeys["narc-" .. narcFile.fileId .. "-member-2-nclr"])
+  for _, gap in ipairs(evidence.gaps) do
+    Assert.isFalse(gap.kind == "decode_failed" or gap.kind == "unsupported_lz11")
+  end
+end
+
+function T.failed_plausible_lz10_is_an_unconfirmed_candidate()
+  local invalid = string.char(0x10, 1, 0, 0, 0x80)
+  local narcBytes = NarcBuilder.build({ literalLz10(nclrMember({ 0x7FFF })), invalid })
+  local rom = buildRom({ tree = { files = { { name = "candidates.narc", content = narcBytes } } } })
+  local evidence = ResourceCatalog.scan(rom, RomImage.new(rom))
+  local members = byMemberId(evidence.narcs[1].members)
+
+  Assert.equal(members[0].compression, "lz10")
+  Assert.equal(members[0].status, "decoded")
+  Assert.notNil(members[0].decodedSize)
+  Assert.equal(members[1].compression, "none")
+  Assert.equal(members[1].compressionCandidate, "lz10")
+  Assert.equal(members[1].status, "unknown")
+  Assert.isNil(members[1].decodedSize)
+  Assert.isNil(members[1].decodedSha1)
+
+  local candidateGap = nil
+  for _, gap in ipairs(evidence.gaps) do
+    if gap.kind == "decode_failed" and gap.format == "lz10" then
+      candidateGap = gap
+    end
+  end
+  Assert.notNil(candidateGap)
+end
+
+function T.only_complete_lz11_envelopes_are_unsupported()
+  local short = string.char(0x11)
+  local truncatedExtended = string.char(0x11, 0, 0, 0)
+  local complete = string.char(0x11, 1, 0, 0, 0x00)
+  local extended = string.char(0x11, 0, 0, 0) .. u32(1) .. string.char(0x00)
+  local extendedHeaderOnly = string.char(0x11, 0, 0, 0) .. u32(1)
+  local narcBytes = NarcBuilder.build({ short, complete, extended, truncatedExtended, extendedHeaderOnly })
+  local rom = buildRom({ tree = { files = { { name = "lz11.narc", content = narcBytes } } } })
+  local evidence = ResourceCatalog.scan(rom, RomImage.new(rom))
+  local members = byMemberId(evidence.narcs[1].members)
+
+  Assert.equal(members[0].compression, "none")
+  Assert.equal(members[0].status, "unknown")
+  Assert.equal(members[1].compression, "lz11")
+  Assert.equal(members[1].status, "compression-unsupported")
+  Assert.equal(members[2].compression, "lz11")
+  Assert.equal(members[2].status, "compression-unsupported")
+  Assert.equal(members[3].compression, "none")
+  Assert.equal(members[3].status, "unknown")
+  Assert.equal(members[4].compression, "none")
+  Assert.equal(members[4].status, "unknown")
+
+  local unsupported = 0
+  for _, gap in ipairs(evidence.gaps) do
+    if gap.kind == "unsupported_lz11" then
+      unsupported = unsupported + 1
+    end
+  end
+  Assert.equal(unsupported, 2)
+end
+
+function T.coverage_status_counters_form_a_complete_partition()
+  local narcBytes = NarcBuilder.build({
+    ncgrMember(),
+    "unknown",
+    corruptedNcgrMember(),
+    string.char(0x11, 1, 0, 0, 0),
+  })
+  local rom = buildRom({ tree = { files = { { name = "coverage.narc", content = narcBytes } } } })
+  local evidence = ResourceCatalog.scan(rom, RomImage.new(rom))
+  local coverage = evidence.coverage
+
+  Assert.isTrue(coverage.enumerationComplete)
+  Assert.isNil(rawget(coverage, "complete"))
+  Assert.equal(coverage.narcMemberCount, 4)
+  Assert.equal(coverage.decodedMemberCount, 1)
+  Assert.equal(coverage.unknownMemberCount, 1)
+  Assert.equal(coverage.failedMemberCount, 1)
+  Assert.equal(coverage.unsupportedMemberCount, 1)
+  Assert.equal(
+    coverage.decodedMemberCount
+      + coverage.unknownMemberCount
+      + coverage.failedMemberCount
+      + coverage.unsupportedMemberCount,
+    coverage.narcMemberCount
+  )
 end
 
 --------------------------------------------------------------------------
@@ -338,6 +437,18 @@ local function assertNoOpaqueState(value, path)
     end
   elseif t == "function" or t == "userdata" or t == "thread" or t == "cdata" then
     error("summary retains a " .. t .. " value at " .. path, 0)
+  end
+end
+
+local function assertScalarSummary(member, expectedKeys)
+  local summary = assert(member.summary)
+  Assert.keySet(summary, expectedKeys)
+  for key, value in pairs(summary) do
+    local valueType = type(value)
+    Assert.isTrue(
+      valueType == "boolean" or valueType == "number" or valueType == "string",
+      "summary field " .. tostring(key) .. " must be scalar"
+    )
   end
 end
 
@@ -405,9 +516,49 @@ function T.every_supported_format_is_classified_with_a_closed_summary()
     [10] = { frameCount = 60, targetCount = 1 },
   }
   for id, expected in pairs(expectedAnimationCounts) do
-    local counts = narcMembers[id].summary.animationCounts[1]
-    Assert.equal(counts.frameCount, expected.frameCount, "member " .. id .. " frameCount")
-    Assert.equal(counts.targetCount, expected.targetCount, "member " .. id .. " targetCount")
+    local summary = narcMembers[id].summary
+    Assert.equal(summary.frameCount, expected.frameCount, "member " .. id .. " frameCount")
+    Assert.equal(summary.targetCount, expected.targetCount, "member " .. id .. " targetCount")
+  end
+
+  assertScalarSummary(narcMembers[0], "depth,tileCount")
+  Assert.equal(narcMembers[0].summary.depth, 3)
+  Assert.equal(narcMembers[0].summary.tileCount, 2)
+  assertScalarSummary(narcMembers[1], "colorCount")
+  Assert.equal(narcMembers[1].summary.colorCount, 2)
+  assertScalarSummary(
+    narcMembers[2],
+    "entryCount,hFlipCount,height,maxReferencedPalette,maxReferencedTile,vFlipCount,width"
+  )
+  Assert.deepEqual(narcMembers[2].summary, {
+    width = 16,
+    height = 8,
+    entryCount = 2,
+    maxReferencedTile = 1,
+    maxReferencedPalette = 0,
+    hFlipCount = 0,
+    vFlipCount = 0,
+  })
+  assertScalarSummary(narcMembers[3], "cellCount,objectCount")
+  Assert.deepEqual(narcMembers[3].summary, { cellCount = 1, objectCount = 1 })
+  assertScalarSummary(narcMembers[4], "animationCount,frameCount,totalDuration")
+  Assert.deepEqual(narcMembers[4].summary, { animationCount = 1, frameCount = 1, totalDuration = 4 })
+  assertScalarSummary(narcMembers[5], "materialCount,modelCount,nodeCount,shapeCount,totalTriangles,totalVertices")
+  Assert.deepEqual(narcMembers[5].summary, {
+    modelCount = 1,
+    nodeCount = 1,
+    materialCount = 1,
+    shapeCount = 1,
+    totalVertices = 3,
+    totalTriangles = 1,
+  })
+  assertScalarSummary(narcMembers[6], "paletteCount,textureCount")
+  Assert.deepEqual(narcMembers[6].summary, { textureCount = 1, paletteCount = 0 })
+
+  local expectedFormats = { [7] = "NSBCA", [8] = "NSBTA", [9] = "NSBTP", [10] = "NSBMA" }
+  for id, format in pairs(expectedFormats) do
+    assertScalarSummary(narcMembers[id], "animationCount,format,frameCount,targetCount")
+    Assert.equal(narcMembers[id].summary.format, format, "member " .. id .. " format")
   end
 
   for id, member in pairs(narcMembers) do
@@ -415,6 +566,137 @@ function T.every_supported_format_is_classified_with_a_closed_summary()
       assertNoOpaqueState(member.summary, "member" .. id)
     end
   end
+end
+
+local function detailsByMemberId(details)
+  local result = {}
+  for _, detail in ipairs(details) do
+    result[detail.memberId] = detail
+  end
+  return result
+end
+
+function T.selected_decoded_members_retain_closed_detail_and_leave_unselected_members_compact()
+  local ncgrBytes = ncgrMember()
+  local nclrBytes = nclrMember({ 0x7FFF, 0x0000 })
+  local nscrBytes = nscrMember()
+  local ncerBytes = ncerMember()
+  local nanrBytes = nanrMember()
+  local narcBytes = NarcBuilder.build({ ncgrBytes, nclrBytes, nscrBytes, ncerBytes, nanrBytes })
+  local rom = buildRom({ tree = { files = { { name = "selected.narc", content = narcBytes } } } })
+
+  local selected = {
+    { fileId = 0, memberId = 4 },
+    { fileId = 0, memberId = 0 },
+    { fileId = 0, memberId = 3 },
+  }
+  local evidence = ResourceCatalog.scan(rom, RomImage.new(rom), selected)
+  Assert.notNil(evidence.details)
+  Assert.equal(#evidence.details, 3)
+
+  local details = detailsByMemberId(evidence.details)
+  Assert.equal(evidence.details[1].memberId, 0)
+  Assert.equal(evidence.details[2].memberId, 3)
+  Assert.equal(evidence.details[3].memberId, 4)
+
+  local ncgr = assert(details[0])
+  Assert.equal(ncgr.fileId, 0)
+  Assert.equal(ncgr.narcPath, "selected.narc")
+  Assert.equal(ncgr.kind, "ncgr")
+  Assert.equal(ncgr.status, "decoded")
+  Assert.equal(ncgr.compression, "none")
+  Assert.equal(ncgr.payloadBasis, "raw")
+  Assert.equal(ncgr.payload, ncgrBytes)
+  Assert.equal(ncgr.payloadSize, #ncgrBytes)
+  Assert.equal(ncgr.payloadSha1, Hashing.sha1hex(ncgrBytes))
+  Assert.deepEqual(ncgr.structure, { depth = 3, tileByteCount = 64, tileCount = 2 })
+  Assert.equal(ncgr.structure.tileByteCount, ncgr.structure.tileCount * 32)
+
+  local ncer = assert(details[3])
+  Assert.equal(ncer.kind, "ncer")
+  Assert.equal(ncer.structure.cellCount, 1)
+  Assert.equal(ncer.structure.cells[1].objectCount, 1)
+  Assert.notNil(ncer.structure.cells[1].objects[1].width)
+  Assert.notNil(ncer.structure.cells[1].objects[1].height)
+  assertNoOpaqueState(ncer.structure, "ncer.detail")
+
+  local nanr = assert(details[4])
+  Assert.equal(nanr.kind, "nanr")
+  Assert.equal(nanr.structure.animationCount, 1)
+  Assert.equal(nanr.structure.animations[1].frameCount, 1)
+  Assert.notNil(nanr.structure.animations[1].frames[1].cell)
+  Assert.notNil(nanr.structure.animations[1].frames[1].duration)
+  assertNoOpaqueState(nanr.structure, "nanr.detail")
+
+  local compact = byMemberId(evidence.narcs[1].members)
+  Assert.isNil(compact[1].structure)
+  Assert.isNil(compact[1].payload)
+  Assert.isNil(compact[1].payloadSha1)
+  Assert.isNil(compact[2].structure)
+  Assert.isNil(compact[2].payload)
+  Assert.isNil(compact[2].payloadSha1)
+
+  local reordered = ResourceCatalog.scan(rom, RomImage.new(rom), {
+    { fileId = 0, memberId = 3 },
+    { fileId = 0, memberId = 4 },
+    { fileId = 0, memberId = 0 },
+  })
+  Assert.deepEqual(reordered.details, evidence.details)
+end
+
+function T.selected_payloads_follow_compression_state_and_match_compact_classification()
+  local decodedPayload = nclrMember({ 0x7FFF })
+  local rawUnknown = "unknown-resource"
+  local rawLz11 = string.char(0x11, 1, 0, 0, 0)
+  local narcBytes = NarcBuilder.build({ literalLz10(decodedPayload), rawUnknown, rawLz11 })
+  local rom = buildRom({ tree = { files = { { name = "payloads.narc", content = narcBytes } } } })
+  local evidence = ResourceCatalog.scan(rom, RomImage.new(rom), {
+    { fileId = 0, memberId = 2 },
+    { fileId = 0, memberId = 0 },
+    { fileId = 0, memberId = 1 },
+  })
+  Assert.notNil(evidence.details)
+  local details = detailsByMemberId(evidence.details)
+  local compact = byMemberId(evidence.narcs[1].members)
+
+  local lz10 = assert(details[0])
+  Assert.equal(lz10.compression, compact[0].compression)
+  Assert.equal(lz10.status, compact[0].status)
+  Assert.equal(lz10.payloadBasis, "lz10-decoded")
+  Assert.equal(lz10.payload, decodedPayload)
+  Assert.equal(lz10.payloadSize, #decodedPayload)
+  Assert.equal(lz10.payloadSha1, Hashing.sha1hex(decodedPayload))
+  Assert.equal(lz10.kind, "nclr")
+  Assert.equal(lz10.structure.colorCount, 1)
+  Assert.equal(lz10.structure.colors[1].r, 255)
+  Assert.equal(lz10.structure.colors[1].g, 255)
+  Assert.equal(lz10.structure.colors[1].b, 255)
+
+  local unknown = assert(details[1])
+  Assert.equal(unknown.compression, compact[1].compression)
+  Assert.equal(unknown.status, compact[1].status)
+  Assert.equal(unknown.payloadBasis, "raw")
+  Assert.equal(unknown.payload, rawUnknown)
+  Assert.isNil(unknown.structure)
+
+  local unsupported = assert(details[2])
+  Assert.equal(unsupported.compression, compact[2].compression)
+  Assert.equal(unsupported.status, compact[2].status)
+  Assert.equal(unsupported.payloadBasis, "raw")
+  Assert.equal(unsupported.payload, rawLz11)
+  Assert.isNil(unsupported.structure)
+end
+
+function T.selected_resource_details_reject_missing_physical_members_with_context()
+  local rom =
+    buildRom({ tree = { files = { { name = "available.narc", content = NarcBuilder.build({ ncgrMember() }) } } } })
+  local err = Assert.throws(function()
+    ResourceCatalog.scan(rom, RomImage.new(rom), { { fileId = 0, memberId = 7 } })
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "APPDISCOVERY_RESOURCE_DETAIL_NOT_FOUND")
+  Assert.equal(err.context.fileId, 0)
+  Assert.equal(err.context.memberId, 7)
 end
 
 --------------------------------------------------------------------------

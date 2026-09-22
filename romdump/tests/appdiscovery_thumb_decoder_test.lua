@@ -161,6 +161,13 @@ function T.decodes_store_multiple()
   Assert.equal(instr.flow.kind, "sequential")
 end
 
+function T.decodes_load_multiple_with_r7_as_sequential_data()
+  local instr = assert(ThumbDecoder.decode(bytesOf(0xC880), 0, BASE))
+  Assert.equal(instr.mnemonic, "ldmia")
+  Assert.equal(instr.operands.registerList, 0x80)
+  Assert.equal(instr.flow.kind, "sequential")
+end
+
 -- Format 16: conditional branch. BEQ with SOffset8=2 -> target = PC+4+4.
 function T.decodes_conditional_branch_with_exact_target()
   local instr = assert(ThumbDecoder.decode(bytesOf(0xD002), 0, BASE))
@@ -189,6 +196,16 @@ function T.decodes_long_branch_with_link_pair_with_exact_target()
   Assert.equal(instr.mnemonic, "bl")
   Assert.equal(instr.flow.kind, "call")
   Assert.equal(instr.flow.target, BASE + 4 + 10)
+  Assert.equal(instr.flow.targetState, "thumb")
+end
+
+function T.decodes_long_branch_exchange_with_arm_target_state()
+  local bytes = bytesOf(0xF000, 0xE806)
+  local instr = assert(ThumbDecoder.decode(bytes, 0, BASE))
+  Assert.equal(instr.mnemonic, "blx")
+  Assert.equal(instr.flow.kind, "call")
+  Assert.equal(instr.flow.target, BASE + 16)
+  Assert.equal(instr.flow.targetState, "arm")
 end
 
 -- A valid first halfword with no matching second halfword (an ordinary

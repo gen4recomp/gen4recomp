@@ -517,6 +517,109 @@ function T.test_paths_remain_unclassified_when_scanner_roots_are_broadened()
   end
 end
 
+--------------------------------------------------------------------------
+-- appdiscovery is a ROM-only leaf: production files under
+-- romdump/src/appdiscovery/ may never acquire curated HGSS/decomp
+-- configuration, the imported/derived-cache reader, the cache build
+-- pipeline, or runtime game packages through a normal require, regardless
+-- of the ordinary romdump package rule above (which otherwise permits
+-- romdump -> romdump requires freely).
+--------------------------------------------------------------------------
+
+local APPDISCOVERY_PREFIX = "romdump/src/appdiscovery/"
+
+local APPDISCOVERY_FORBIDDEN_PREFIXES = {
+  "romdump.src.config.",
+  "romdump.src.reference.",
+  "libs.hgss.",
+  "game.",
+  "app.",
+}
+
+local APPDISCOVERY_FORBIDDEN_EXACT = {
+  ["romdump.src.source.RomFs"] = true,
+  ["romdump.src.CacheBuilder"] = true,
+}
+
+local function appdiscoveryForbiddenReason(module)
+  if APPDISCOVERY_FORBIDDEN_EXACT[module] then
+    return "forbidden appdiscovery dependency"
+  end
+  for _, prefix in ipairs(APPDISCOVERY_FORBIDDEN_PREFIXES) do
+    if module:sub(1, #prefix) == prefix then
+      return "forbidden appdiscovery dependency"
+    end
+  end
+  return nil
+end
+
+local function appdiscoveryViolations(files)
+  local violations = {}
+  for _, file in ipairs(sortedFiles(files)) do
+    if file:sub(1, #APPDISCOVERY_PREFIX) == APPDISCOVERY_PREFIX then
+      for _, module in ipairs(files[file]) do
+        local reason = appdiscoveryForbiddenReason(module)
+        if reason ~= nil then
+          violations[#violations + 1] = file .. " requires " .. module .. " (" .. reason .. ")"
+        end
+      end
+    end
+  end
+  return violations
+end
+
+function T.appdiscovery_production_graph_has_no_forbidden_import()
+  local violations = appdiscoveryViolations(scannedFiles())
+  table.sort(violations)
+  Assert.isTrue(#violations == 0, violationMessage("appdiscovery forbidden imports:\n", violations))
+end
+
+function T.appdiscovery_forbidden_import_fixtures_are_rejected_for_every_category()
+  local forbiddenFixtures = {
+    "romdump.src.config.BagSources",
+    "romdump.src.reference.SomeSourceReference",
+    "libs.hgss.src.field.FieldSession",
+    "game.src.Game",
+    "game.hgss.src.HgssGame",
+    "app.src.App",
+    "romdump.src.source.RomFs",
+    "romdump.src.CacheBuilder",
+  }
+  local mismatches = {}
+  for _, module in ipairs(forbiddenFixtures) do
+    local violations = appdiscoveryViolations({ [APPDISCOVERY_PREFIX .. "Fixture.lua"] = { module } })
+    if #violations == 0 then
+      mismatches[#mismatches + 1] = "not rejected: " .. module
+    end
+  end
+
+  -- The general romdump/nds/codec/errors/assets seams the leaf legitimately
+  -- uses must remain unaffected by this narrower rule.
+  local allowedModules = {
+    "romdump.src.source.RomSource",
+    "romdump.src.source.NdsRom",
+    "romdump.src.digest.Hashing",
+    "libs.nds.src.rom.Cartridge",
+    "libs.codec.src.BinaryReader",
+    "libs.errors.src.Errors",
+  }
+  for _, module in ipairs(allowedModules) do
+    local violations = appdiscoveryViolations({ [APPDISCOVERY_PREFIX .. "Fixture.lua"] = { module } })
+    if #violations ~= 0 then
+      mismatches[#mismatches + 1] = "wrongly rejected: " .. module
+    end
+  end
+
+  -- Files outside the appdiscovery prefix are ungoverned by this rule, even
+  -- when they require the same forbidden modules.
+  local outside = appdiscoveryViolations({ ["romdump/src/CacheBuilder.lua"] = { "libs.hgss.src.field.FieldSession" } })
+  if #outside ~= 0 then
+    mismatches[#mismatches + 1] = "rule leaked outside romdump/src/appdiscovery/"
+  end
+
+  Assert.isTrue(#mismatches == 0, violationMessage("appdiscovery fixture mismatches:\n", mismatches))
+end
+
 function T.package_policy_matches_actual_production_graph()
   local violations = {}
   for _, packageName in ipairs(GOVERNED_PACKAGES) do

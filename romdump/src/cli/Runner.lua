@@ -42,8 +42,57 @@ function Runner.load(opts)
   if command == "check-derived-cache" then
     return Runner._runCheckDerivedCache()
   end
-  print("romdump: no command given (expected --import-rom, --check-dump, --check-derived-cache, or --build-cache)")
+  if command == "discover-app" then
+    return Runner._runDiscoverApp()
+  end
+  print(
+    "romdump: no command given (expected --import-rom, --check-dump, --check-derived-cache, --build-cache, or --discover-app)"
+  )
   love.event.quit(Cli.EXIT_USAGE)
+end
+
+-- Direct ROM-only discovery: never touches the import/cache pipeline.
+-- AppDiscovery is lazy-required so no other command pays for loading it.
+function Runner._runDiscoverApp()
+  local opts = Runner.opts
+  local AppDiscovery = require("romdump.src.appdiscovery.AppDiscovery")
+  local result, err = AppDiscovery.runPath({
+    romPath = opts.romPath,
+    overlayId = opts.overlayId,
+    outputPath = opts.outputPath,
+    resourceDetails = opts.resourceDetails,
+  })
+  if not result then
+    print("appdiscovery failed [" .. tostring(err and err.code or "ERROR") .. "]: " .. Errors.format(err))
+    return love.event.quit(1)
+  end
+  local s = result.summary
+  print("app discovery complete: " .. result.outputPath)
+  print(
+    "  overlay "
+      .. s.overlayId
+      .. " ("
+      .. s.versionId
+      .. "): "
+      .. s.entrypointCandidateCount
+      .. " entrypoint candidate(s), "
+      .. s.functionCount
+      .. " function(s), "
+      .. s.applicationGapCount
+      .. " application gap(s)"
+  )
+  print(
+    "  resources: "
+      .. s.resourceFileCount
+      .. " file(s), "
+      .. s.narcCount
+      .. " NARC(s), "
+      .. s.narcMemberCount
+      .. " member(s), "
+      .. s.resourceGapCount
+      .. " gap(s)"
+  )
+  love.event.quit(0)
 end
 
 -- Build the derived cache from every ready dump; with --forcedump (or an

@@ -277,14 +277,13 @@ local function decodeFormat15(address, raw, hw1)
   local rb = bits(hw1, 10, 8)
   local rlist = bits(hw1, 7, 0)
   local mnemonic = l == 1 and "ldmia" or "stmia"
-  local loadsPc = l == 1 and bits(rlist, 7, 7) == 1
   return {
     address = address,
     size = 2,
     raw = raw,
     mnemonic = mnemonic,
     operands = { rb = rb, registerList = rlist },
-    flow = { kind = loadsPc and "indirect" or "sequential" },
+    flow = { kind = "sequential" },
   }
 end
 
@@ -348,7 +347,7 @@ local function decodeFormat19(address, hw1, hw2)
     raw = { hw1, hw2 },
     mnemonic = isBlx and "blx" or "bl",
     operands = {},
-    flow = { kind = "call", target = target },
+    flow = { kind = "call", target = target, targetState = isBlx and "arm" or "thumb" },
   }
 end
 
