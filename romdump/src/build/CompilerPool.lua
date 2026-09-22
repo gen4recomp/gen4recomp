@@ -286,6 +286,25 @@ local function cleanupWorkers(workers)
   end
 end
 
+local function startWorkerThread(threadApi)
+  -- Worker Lua states resolve thread sources as filenames only, while the
+  -- game thread also accepts code strings: FileData carries the identical
+  -- bootstrap into compiler workers spawned below the cache controller.
+  -- The FileData path runs only where the direct bootstrap is rejected, so
+  -- existing hosts and their fakes keep their exact behavior.
+  local ok, thread = pcall(threadApi.newThread, BOOTSTRAP)
+  if ok then
+    return thread
+  end
+  if type(threadApi.newFileData) == "function" then
+    local dataOk, data = pcall(threadApi.newFileData, BOOTSTRAP, "compiler-worker-bootstrap.lua")
+    if dataOk then
+      return threadApi.newThread(data)
+    end
+  end
+  error(thread, 0)
+end
+
 ---@param resultChannel table<string, function>
 ---@param workerId integer
 ---@param developmentRepositoryRoot string?
@@ -298,7 +317,7 @@ local function startWorker(resultChannel, workerId, developmentRepositoryRoot)
   requireFunction(threadApi.newChannel, "love.thread.newChannel")
   local input = threadApi.newChannel()
   validateChannel(input, "worker input channel")
-  local thread = threadApi.newThread(BOOTSTRAP)
+  local thread = startWorkerThread(threadApi)
   requireFunction(thread.start, "Thread:start")
   requireFunction(thread.wait, "Thread:wait")
   requireFunction(thread.getError, "Thread:getError")

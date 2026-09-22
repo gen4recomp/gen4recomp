@@ -8,7 +8,8 @@
 ---@field kind "bootstrap"|"quiescence"
 ---@field epoch integer selected source epoch guarded against stale completion
 ---@field provisioner? table<string, function> bootstrap only: the borrowed selected session host
----@field pool table<string, unknown>? quiescence only: the borrowed process pool, required
+---@field service table<string, function>? quiescence only: the process cache service, required
+---@field barrier integer? quiescence only: the exact source-close barrier token
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
 ---@field onReady fun() exactly-once transfer on readiness
 ---@field onCancel fun() return to the owning selection
@@ -17,7 +18,8 @@
 ---@field kind string
 ---@field epoch integer
 ---@field provisioner table<string, function>?
----@field pool table<string, unknown>?
+---@field service table<string, function>?
+---@field barrier integer?
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onReady fun()
 ---@field onCancel fun()
@@ -43,14 +45,18 @@ function CachePreparationState.new(options)
   if options.kind == "bootstrap" then
     assert(type(options.provisioner) == "table", "bootstrap preparation requires the selected session host")
   else
-    assert(type(options.pool) == "table", "quiescence preparation requires the process pool")
-    assert(type(options.pool.isQuiescent) == "function", "quiescence preparation requires pool quiescence")
+    assert(type(options.service) == "table", "quiescence preparation requires the process cache service")
+    assert(
+      type(options.barrier) == "number" and options.barrier % 1 == 0 and options.barrier >= 1,
+      "quiescence preparation requires its exact barrier token"
+    )
   end
   return setmetatable({
     kind = options.kind,
     epoch = options.epoch,
     provisioner = options.provisioner,
-    pool = options.pool,
+    service = options.service,
+    barrier = options.barrier,
     isCurrent = options.isCurrent,
     onReady = options.onReady,
     onCancel = options.onCancel,
@@ -93,25 +99,19 @@ function CachePreparationState:_pollBootstrap()
 end
 
 function CachePreparationState:_pollQuiescence()
-  local pool = assert(self.pool, "quiescence preparation requires the process pool")
-  -- A recorded infrastructure failure stays visible instead of waiting out a
-  -- barrier that can never complete; raw import never starts past it.
-  local diagnosticsFn = pool.diagnostics
-  if type(diagnosticsFn) == "function" then
-    local diagOk, diagnostics = pcall(diagnosticsFn, pool)
-    if diagOk and type(diagnostics) == "table" and diagnostics.error ~= nil then
-      self.error = diagnostics.error
-      return
-    end
+  local service = assert(self.service, "quiescence preparation requires the process cache service")
+  local barrier = assert(self.barrier, "quiescence preparation requires its exact barrier token")
+  -- Only the exact acknowledged barrier transfers: a stale barrier, an
+  -- empty queue, or elapsed time never counts as source closure, and raw
+  -- import never starts past a recorded failure.
+  local statusOk, status = pcall(service.barrierStatus, service, self.epoch, barrier)
+  if not statusOk then
+    error(status, 0)
   end
-  local isQuiescent = assert(pool.isQuiescent, "quiescence preparation requires pool quiescence")
-  -- The pool reports quiescence through a plain dot-called operation.
-  local quiescentOk, quiescent = pcall(isQuiescent, pool)
-  if not quiescentOk then
-    error(quiescent, 0)
-  end
-  if quiescent then
+  if status == "ready" then
     self:_fire()
+  elseif status == "failed" then
+    self.error = "cache source closure failed"
   end
 end
 

@@ -9,7 +9,6 @@
 local Assert = require("tests.support.Assert")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
-local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local defaultAppBackend = ProducerFingerprint.appBackend
 local defaultCheckoutBackend = ProducerFingerprint.checkoutBackend
@@ -65,12 +64,13 @@ local function fresh()
   App.state = nil
   App.importer = nil
   App.provisioner = nil
-  if App.pool ~= nil then
+  if App.service ~= nil then
     pcall(function()
-      App.pool:shutdown()
+      App.service:shutdown()
     end)
   end
-  App.pool = nil
+  App.service = nil
+  App.pendingQuiesce = nil
   App.epoch = 0
   App.drawableWidth = nil
   App.drawableHeight = nil
@@ -84,7 +84,7 @@ end
 ---@field prints integer
 ---@field state table
 ---@field launches table[]
----@field provisionerOptions table[]
+---@field selectOptions table[]
 ---@field quitCodes integer[]
 ---@field provisionerDisposals integer
 ---@field warmups integer
@@ -101,7 +101,6 @@ local function withAppHarness(opts, ready, fn)
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
   local originalQuit = love.event.quit
-  local originalBuildNew = InteractiveCacheBuild.new
   local harnessAppBackend = ProducerFingerprint.appBackend
   local harnessCheckoutBackend = ProducerFingerprint.checkoutBackend
   if harnessAppBackend == defaultAppBackend then
@@ -116,11 +115,43 @@ local function withAppHarness(opts, ready, fn)
     prints = 0,
     state = countingState(),
     launches = {},
-    provisionerOptions = {},
+    selectOptions = {},
     quitCodes = {},
     provisionerDisposals = 0,
     warmups = 0,
   }
+  local epoch = 0
+  local service = {}
+  function service:select(options)
+    epoch = epoch + 1
+    result.selectOptions[#result.selectOptions + 1] = options
+    return epoch
+  end
+  function service:request(_, _) end
+  function service:observe(_, selector)
+    if selector.requestKind == "milestone" and selector.name == "bootstrap" then
+      return true, nil
+    end
+    return nil, nil
+  end
+  function service:enableSweep(_)
+    result.warmups = result.warmups + 1
+  end
+  function service:update() end
+  function service:retire(_)
+    result.provisionerDisposals = result.provisionerDisposals + 1
+  end
+  function service:quiesce(_)
+    return 1
+  end
+  function service:barrierStatus(_, _)
+    return "pending"
+  end
+  function service:importSource(_, _)
+    return false, "unacknowledged"
+  end
+  function service:shutdown() end
+  result.service = service
   local unownedOption = {}
   App.opts = setmetatable(opts or { dev = false }, {
     __index = function(_, key)
@@ -130,6 +161,7 @@ local function withAppHarness(opts, ready, fn)
       return unownedOption
     end,
   })
+  App.service = service
   RomImporter.isReady = ready
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
@@ -144,36 +176,6 @@ local function withAppHarness(opts, ready, fn)
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
-  InteractiveCacheBuild.new = function(options)
-    result.provisionerOptions[#result.provisionerOptions + 1] = options
-    return {
-      update = function() end,
-      retire = function()
-        result.provisionerDisposals = result.provisionerDisposals + 1
-      end,
-      enableSweep = function()
-        result.warmups = result.warmups + 1
-      end,
-      requestMilestone = function()
-        return true
-      end,
-      status = function()
-        return { bootstrap = "ready", fieldCore = "ready" }
-      end,
-      requestField = function()
-        return true
-      end,
-      ensureField = function()
-        return true
-      end,
-      requestCell = function()
-        return true
-      end,
-      ensureCell = function()
-        return true
-      end,
-    }
-  end
   local ok, err = pcall(fn, result)
   App.opts = originalOpts
   RomImporter.isReady = originalIsReady
@@ -181,7 +183,6 @@ local function withAppHarness(opts, ready, fn)
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   love.event.quit = originalQuit
-  InteractiveCacheBuild.new = originalBuildNew
   ProducerFingerprint.appBackend = harnessAppBackend
   ProducerFingerprint.checkoutBackend = harnessCheckoutBackend
   if not ok then
@@ -382,7 +383,7 @@ function T.boot_existing_with_one_ready_version_enters_the_main_menu()
     Assert.isFalse(launch.development)
     Assert.equal(App.state, result.state)
     Assert.equal(result.provisionerDisposals, 0, "launch must not dispose its new provisioner")
-    Assert.equal(result.warmups, 0, "entering the menu authorizes no background work")
+    Assert.equal(result.warmups, 1, "menu installation authorizes background completion once")
   end)
 end
 
@@ -450,15 +451,15 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       return id == "heartgold"
     end, function(result)
       App._bootExisting()
-      local options = assert(result.provisionerOptions[1])
-      Assert.keySet(options, "epoch,identity,pool")
-      Assert.equal(options.epoch, 1)
-      Assert.notNil(options.pool)
+      local options = assert(result.selectOptions[1])
+      Assert.keySet(options, "development,versionId")
+      Assert.equal(options.versionId, "heartgold")
+      Assert.isFalse(options.development)
+      Assert.isNil(
+        options.developmentRepositoryRoot,
+        "release selection passes no checkout root; identity is derived below the controller"
+      )
       Assert.isNil(options.sweepEnabled, "exhaustive intent travels as an explicit request, never a construction flag")
-      local identity = assert(options.identity)
-      Assert.equal(identity.versionId, "heartgold")
-      Assert.equal(identity.producerId, "r1")
-      Assert.equal(type(identity.generationId), "string")
       Assert.equal(touches, 0)
       Assert.equal(#result.launches, 1)
       Assert.equal(App.state, result.state)
@@ -468,7 +469,6 @@ end
 
 -- The release counter is selected per game from the explicit release table.
 function T.release_startup_selects_the_per_game_release_counter()
-  local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
   withProducerBackends(function()
     error("release startup must not use the product source")
   end, function()
@@ -478,22 +478,24 @@ function T.release_startup_selects_the_per_game_release_counter()
       return id == "soulsilver"
     end, function(result)
       App._bootExisting()
-      local options = assert(result.provisionerOptions[1])
-      Assert.keySet(options, "epoch,identity,pool")
-      Assert.equal(options.epoch, 1)
-      local identity = assert(options.identity)
-      Assert.equal(identity.versionId, "soulsilver")
-      Assert.equal(identity.producerId, "r" .. tostring(DerivedCacheVersions.soulsilver))
+      local options = assert(result.selectOptions[1])
+      Assert.keySet(options, "development,versionId")
+      Assert.equal(options.versionId, "soulsilver")
+      Assert.isFalse(options.development)
+      Assert.isNil(
+        options.developmentRepositoryRoot,
+        "release selection passes no checkout root; the release counter is derived below the controller"
+      )
       Assert.equal(#result.launches, 1)
     end)
   end)
 end
 
--- Explicit development mode selects the checkout adapter, keeps its root
--- available for worker bootstrap, and freezes the digest for the process: a
--- second boot keeps the first digest even after checkout bytes change, and
--- the checkout is enumerated once.
-function T.development_startup_freezes_the_checkout_digest_for_the_process()
+-- Explicit development mode passes the checkout root through frozen
+-- selectors: the game thread never scans the checkout itself, identity is
+-- derived below the controller, and a second boot resends the selectors
+-- unchanged even after checkout bytes change.
+function T.development_startup_passes_frozen_checkout_selectors_without_scanning()
   local files = {
     ["build/Compiler.lua"] = "checkout compiler",
     ["build/Readers.lua"] = "checkout readers",
@@ -516,27 +518,22 @@ function T.development_startup_freezes_the_checkout_digest_for_the_process()
         return id == "heartgold"
       end, function(result)
         App._bootExisting()
-        local first = assert(result.provisionerOptions[1])
-        local firstProducer = assert(assert(first.identity).producerId)
-        files["build/Compiler.lua"] = "edited checkout compiler"
-        App._bootMainMenu({ "heartgold" })
-        local second = assert(result.provisionerOptions[2])
-        Assert.equal(checkoutCalls, 1, "the frozen process digest must not rescan the checkout")
-        Assert.equal(appBackendCalls, 0)
+        local first = assert(result.selectOptions[1])
+        Assert.equal(first.versionId, "heartgold")
+        Assert.isTrue(first.development)
         Assert.equal(
-          assert(assert(second.identity).producerId),
-          firstProducer,
-          "checkout edits wait for a process restart"
+          first.repositoryRoot,
+          checkoutRoot,
+          "development selection passes the checkout root instead of a digest"
         )
-        Assert.equal(second.epoch, 2, "each selection mints a new epoch on the shared pool")
-        Assert.equal(second.pool, first.pool, "selections share the process pool")
-        Assert.notNil(App.pool, "the process pool stays available for worker bootstrap")
-        Assert.equal(
-          firstProducer,
-          ProducerFingerprint.compute(fakeSourceBackend({
-            ["build/Compiler.lua"] = "checkout compiler",
-            ["build/Readers.lua"] = "checkout readers",
-          }))
+        App._bootMainMenu({ "heartgold" })
+        local second = assert(result.selectOptions[2])
+        Assert.equal(checkoutCalls, 0, "no checkout scan happens on the game thread")
+        Assert.equal(appBackendCalls, 0)
+        Assert.deepEqual(
+          { second.versionId, second.development, second.repositoryRoot },
+          { first.versionId, first.development, first.repositoryRoot },
+          "reselection passes the same frozen selectors without rescanning"
         )
         Assert.equal(#result.launches, 2)
       end)

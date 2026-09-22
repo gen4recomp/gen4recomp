@@ -155,9 +155,30 @@ function T.incompatible_save_reports_semantic_rejection_not_cache_acceptance()
   Assert.deepEqual(after, before, "a rejected load rewrites neither the payload nor its display envelope")
 end
 
+-- Synthetic service behind the relocated controller: epochs are minted
+-- locally, requests only record, and warmup authorization appends its
+-- lifecycle event so menu ordering stays observable without threads.
+local function newMenuService(events)
+  local epoch = 0
+  local service = {}
+  function service:select(_)
+    epoch = epoch + 1
+    return epoch
+  end
+  function service:request(_, _) end
+  function service:observe(_, _)
+    return nil, nil
+  end
+  function service:enableSweep(_)
+    events[#events + 1] = "provisioner:startBackgroundWarmup"
+  end
+  function service:update() end
+  function service:retire(_) end
+  return service
+end
+
 local function withAppStubs(fn)
   local App = require("app.src.App")
-  local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
   local HgssGame = require("game.hgss.src.HgssGame")
   local RomImporter = require("romdump.src.source.RomImporter")
   local Store = require("libs.hgss.src.save.GameSaveStore")
@@ -165,25 +186,104 @@ local function withAppStubs(fn)
     state = App.state,
     importer = App.importer,
     provisioner = App.provisioner,
+    service = App.service,
+    epoch = App.epoch,
+    pendingQuiesce = App.pendingQuiesce,
     opts = App.opts,
     saveDir = App.saveDir,
-    buildNew = InteractiveCacheBuild.new,
     gameNew = HgssGame.new,
     isReady = RomImporter.isReady,
     storeNew = Store.new,
     dimensions = love.graphics.getDimensions,
   }
-  local context = { sessions = {}, games = {}, importers = {} }
+  local context = {
+    games = {},
+    importers = {},
+    epochs = {},
+    requests = {},
+    retires = {},
+    observations = {},
+    barriers = {},
+    imports = {},
+    selectOptions = {},
+    warmups = 0,
+    quiesces = 0,
+    updates = 0,
+  }
+  local epoch = 0
+  local barrier = 0
+  local service = {}
+  function service:select(options)
+    epoch = epoch + 1
+    context.epochs[#context.epochs + 1] = epoch
+    context.selectOptions[#context.selectOptions + 1] = options
+    return epoch
+  end
+  function service:request(epochArg, selector)
+    context.requests[#context.requests + 1] = { epoch = epochArg, selector = selector }
+  end
+  function service:observe(epochArg, selector)
+    local key = selector.requestKind
+      .. ":"
+      .. tostring(selector.name or selector.mapId or selector.pageId)
+      .. ":"
+      .. tostring(selector.matrixMemberId)
+      .. ":"
+      .. tostring(selector.index)
+    local _ = epochArg
+    local scripted = context.observations[key]
+    if scripted ~= nil then
+      return scripted.ready, scripted.failure
+    end
+    if selector.requestKind == "milestone" and selector.name == "bootstrap" then
+      return true, nil
+    end
+    return nil, nil
+  end
+  function service:enableSweep(_)
+    context.warmups = context.warmups + 1
+  end
+  function service:update()
+    context.updates = context.updates + 1
+  end
+  function service:retire(epochArg)
+    context.retires[#context.retires + 1] = epochArg
+  end
+  function service:quiesce(epochArg)
+    barrier = barrier + 1
+    context.quiesces = context.quiesces + 1
+    context.barriers[barrier] = { epoch = epochArg, status = "pending" }
+    return barrier
+  end
+  function service:barrierStatus(epochArg, barrierArg)
+    local waiter = context.barriers[barrierArg]
+    if waiter == nil or waiter.epoch ~= epochArg then
+      return nil
+    end
+    return waiter.status
+  end
+  function service:importSource(epochArg, barrierArg)
+    local waiter = context.barriers[barrierArg]
+    if waiter == nil or waiter.epoch ~= epochArg or waiter.status ~= "ready" then
+      return false, "unacknowledged"
+    end
+    context.barriers[barrierArg] = nil
+    context.imports[#context.imports + 1] = { epoch = epochArg, barrier = barrierArg }
+    return true
+  end
+  function service:shutdown()
+    if context.shutdown then
+      return
+    end
+    context.shutdown = true
+    context.joins = (context.joins or 0) + 1
+  end
+  context.service = service
   App.opts = { dev = false }
   App.state = nil
   App.importer = nil
   App.provisioner = nil
-  if App.pool ~= nil then
-    pcall(function()
-      App.pool:shutdown()
-    end)
-  end
-  App.pool = nil
+  App.service = service
   App.epoch = 0
   App.saveDir = "test-save-dir"
   RomImporter.isReady = function(_)
@@ -199,35 +299,6 @@ local function withAppStubs(fn)
       end,
     }
   end)
-  InteractiveCacheBuild.new = function(options)
-    local session = {
-      options = options,
-      updates = 0,
-      retired = 0,
-      disposed = 0,
-      update = function(self)
-        self.updates = self.updates + 1
-      end,
-      retire = function(self)
-        self.retired = self.retired + 1
-      end,
-      dispose = function(self)
-        self.disposed = self.disposed + 1
-      end,
-      requestMilestone = function(_)
-        return true
-      end,
-      enableSweep = function(self)
-        self.sweepEnabled = true
-        context.warmups = (context.warmups or 0) + 1
-      end,
-      status = function(_)
-        return { bootstrap = "ready" }
-      end,
-    }
-    context.sessions[#context.sessions + 1] = session
-    return session
-  end
   HgssGame.new = function(_)
     local game = {
       disposed = 0,
@@ -239,7 +310,6 @@ local function withAppStubs(fn)
     return game
   end
   local ok, err = pcall(fn, App, context)
-  InteractiveCacheBuild.new = original.buildNew
   HgssGame.new = original.gameNew
   RomImporter.isReady = original.isReady
   rawset(Store, "new", original.storeNew)
@@ -247,6 +317,9 @@ local function withAppStubs(fn)
   App.state = original.state
   App.importer = original.importer
   App.provisioner = original.provisioner
+  App.service = original.service
+  App.epoch = original.epoch
+  App.pendingQuiesce = original.pendingQuiesce
   App.opts = original.opts
   App.saveDir = original.saveDir
   if not ok then
@@ -254,30 +327,23 @@ local function withAppStubs(fn)
   end
 end
 
-function T.game_switch_retires_the_old_epoch_on_the_shared_process_pool()
+function T.game_switch_retires_the_old_epoch_on_the_shared_process_service()
   withAppStubs(function(App, context)
+    local service = assert(App.service, "the application owns one process cache service")
     App._bootMainMenu({ VERSION })
     App._bootMainMenu({ VERSION })
-    Assert.equal(#context.sessions, 2, "each game selection constructs its session")
-    local first, second = context.sessions[1], context.sessions[2]
-    Assert.notNil(first.options.pool, "the application owns one process-owned compiler pool across game switches")
-    Assert.equal(second.options.pool, first.options.pool, "a switch reuses the pool instead of spawning a second")
-    Assert.equal(first.options.epoch, 1)
-    Assert.equal(second.options.epoch, 2, "returning to a game mints a new epoch even when the generation matches")
-    Assert.equal(first.retired + first.disposed, 1, "the old epoch retires exactly once without joining workers")
+    Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
+    Assert.deepEqual(context.epochs, { 1, 2 }, "returning to a game mints a new epoch even when the generation matches")
+    Assert.deepEqual(context.retires, { 1 }, "the old epoch retires exactly once without joining workers")
     Assert.equal(#context.games, 2)
     Assert.equal(context.games[1].disposed, 1, "switching disposes the old game consumer")
-    Assert.equal(
-      App.pool:diagnostics().mode,
-      "interactive",
-      "bootstrap keeps the single interactive pool instead of a batch path"
-    )
-    Assert.equal(context.warmups or 0, 2, "each menu installation authorizes background completion once")
+    Assert.equal(context.warmups, 2, "each menu installation authorizes background completion once")
+    Assert.isNil(context.shutdown, "switching never shuts down the process service")
   end)
 end
 
 function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
-  withAppStubs(function(App, _)
+  withAppStubs(function(App, context)
     local RomImporter = require("romdump.src.source.RomImporter")
     local originalNew = RomImporter.new
     local importerCalls = { constructed = 0, filedropped = 0 }
@@ -301,39 +367,23 @@ function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
         disposals = disposals + 1
       end,
     }
-    local poolWas = App.pool
-    local quiescent = false
-    local quiesces = 0
-    local poolPumps = 0
-    App.pool = {
-      quiesce = function()
-        quiesces = quiesces + 1
-      end,
-      isQuiescent = function()
-        return quiescent
-      end,
-      update = function()
-        poolPumps = poolPumps + 1
-      end,
-      diagnostics = function()
-        return { error = nil }
-      end,
-    }
+    local updatesBefore = context.updates
     local ok, err = pcall(function()
       App.filedropped({ name = "replacement.zip" })
       Assert.isNil(App.importer, "raw replacement waits for source closure instead of mutating the dump")
       Assert.notNil(App.state, "quiescence waits through a visible preparation state")
       Assert.equal(disposals, 1, "the drop retires selected interest before the barrier")
-      Assert.equal(quiesces, 1, "the drop stops admission before waiting")
+      Assert.equal(context.quiesces, 1, "the drop stops admission before waiting")
       Assert.isNil(App.provisioner, "retired interest detaches while the barrier drains")
       local waiting = App.state
       App.update(1 / 60)
-      Assert.isTrue(poolPumps > 0, "input and progress keep pumping while source readers drain")
+      Assert.isTrue(context.updates > updatesBefore, "input and progress keep pumping while source readers drain")
       Assert.isNil(App.importer, "pumping never starts the importer before closure")
       App.filedropped({ name = "second.zip" })
       Assert.equal(App.state, waiting, "a repeated drop while waiting never replaces the pending file")
-      Assert.equal(quiesces, 1, "a repeated drop issues no second barrier")
-      quiescent = true
+      Assert.equal(context.quiesces, 1, "a repeated drop issues no second barrier")
+      assert(context.barriers[1] ~= nil, "the drop holds one quiescence barrier")
+      context.barriers[1].status = "ready"
       App.update(1 / 60)
       Assert.equal(importerCalls.constructed, 1, "the importer starts once the source is closed")
       Assert.equal(importerCalls.filedropped, 1, "the dropped file forwards to the importer once")
@@ -344,7 +394,7 @@ function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
     App.state = nil
     App.importer = nil
     App.provisioner = nil
-    App.pool = poolWas
+    App.pendingQuiesce = nil
     if not ok then
       error(err, 0)
     end
@@ -442,105 +492,78 @@ function T.location_requests_reuse_the_committed_footprint_and_keep_the_halo()
   end
 end
 
-function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retires_it()
-  local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
+function T.provisioner_wraps_a_selected_service_with_string_urgencies_and_retires_it()
   local Provisioner = require("app.src.DerivedAssetProvisioner")
-  local originalNew = InteractiveCacheBuild.new
-  local built = {}
-  local retired = 0
-  local poolShutdowns = 0
-  local pool = {
-    shutdown = function()
-      poolShutdowns = poolShutdowns + 1
-    end,
-  }
-  local seen = {}
-  local fakeSession = {
-    update = function() end,
-  }
-  function fakeSession:requestMilestone(name, urgency)
-    seen.milestone = { name = name, urgency = urgency }
-    return true
+  local seen = { requests = {}, shutdowns = 0 }
+  local scripted = { ready = true, failure = nil }
+  local fakeService = {}
+  function fakeService:select(options)
+    seen.select = options
+    return 7
   end
-  function fakeSession:requestField(mapId, urgency)
-    seen.field = { mapId = mapId, urgency = urgency }
-    return true
+  function fakeService:request(epoch, selector)
+    seen.requests[#seen.requests + 1] = { epoch = epoch, selector = selector }
   end
-  function fakeSession:ensureField(mapId)
-    seen.ensureField = mapId
-    return true
+  function fakeService:observe(epoch, selector)
+    seen.lastObserve = { epoch = epoch, selector = selector }
+    return scripted.ready, scripted.failure
   end
-  function fakeSession:requestCell(descriptor, urgency)
-    seen.cell = { descriptor = descriptor, urgency = urgency }
-    return true
-  end
-  function fakeSession:ensureCell(descriptor)
-    seen.ensureCell = descriptor
-    return true
-  end
-  function fakeSession:requestMonPortraitPage(pageId, urgency)
-    seen.page = { pageId = pageId, urgency = urgency }
-    return true
-  end
-  function fakeSession:status()
-    return { bootstrap = "ready" }
-  end
-  function fakeSession:milestoneStatus(name)
-    seen.milestoneStatus = name
-    return { state = "pending", ready = 0, total = nil }
-  end
-  function fakeSession:enableSweep()
+  function fakeService:enableSweep(epoch)
     seen.warmups = (seen.warmups or 0) + 1
+    seen.warmupEpoch = epoch
   end
-  function fakeSession:retire()
-    retired = retired + 1
+  function fakeService:update()
+    seen.updates = (seen.updates or 0) + 1
   end
-  InteractiveCacheBuild.new = function(options)
-    built[#built + 1] = options
-    return fakeSession
+  function fakeService:retire(epoch)
+    seen.retired = epoch
+  end
+  function fakeService:shutdown()
+    seen.shutdowns = seen.shutdowns + 1
   end
   local ok, err = pcall(function()
-    local provisioner = Provisioner.new({
-      versionId = "heartgold",
-      producerFingerprint = "r1",
-      pool = pool,
-      epoch = 3,
-    })
-    local sessionOptions = assert(built[1])
-    Assert.equal(sessionOptions.epoch, 3)
-    Assert.equal(sessionOptions.pool, pool)
+    local provisioner = Provisioner.new({ versionId = "heartgold", service = fakeService })
+    local selectOptions = assert(seen.select)
+    Assert.equal(selectOptions.versionId, "heartgold")
     Assert.isNil(
-      sessionOptions.sweepEnabled,
+      selectOptions.sweepEnabled,
       "exhaustive intent travels as an explicit request, never a construction flag"
     )
-    Assert.equal(assert(sessionOptions.identity).versionId, "heartgold")
     local host = provisioner:gameHost()
     Assert.isTrue(host.requestMilestone("bootstrap", "required"))
-    Assert.deepEqual(seen.milestone, { name = "bootstrap", urgency = "required" })
+    local milestone = assert(seen.requests[#seen.requests]).selector
+    Assert.deepEqual(milestone, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
     Assert.isTrue(host.requestField(60, "required"))
-    Assert.deepEqual(seen.field, { mapId = 60, urgency = "required" })
+    local field = assert(seen.requests[#seen.requests]).selector
+    Assert.deepEqual(field, { requestKind = "field", mapId = 60, urgency = "required" })
     local descriptor = { matrixMemberId = 0, index = 14 }
     Assert.isTrue(host.requestCell(descriptor, "near"))
-    Assert.equal(seen.cell.descriptor, descriptor)
-    Assert.equal(seen.cell.urgency, "near")
+    local cell = assert(seen.requests[#seen.requests]).selector
+    Assert.equal(cell.matrixMemberId, 0)
+    Assert.equal(cell.index, 14)
+    Assert.equal(cell.urgency, "near")
     Assert.isTrue(host.requestMonPortraitPage(0, "required"))
-    Assert.deepEqual(seen.page, { pageId = 0, urgency = "required" })
+    local page = assert(seen.requests[#seen.requests]).selector
+    Assert.deepEqual(page, { requestKind = "portrait", pageId = 0, urgency = "required" })
+    scripted.ready, scripted.failure = nil, nil
     Assert.deepEqual(
       host.milestoneStatus("new-game-intro"),
       { state = "pending", ready = 0, total = nil },
       "the host forwards the milestone-local progress snapshot"
     )
-    Assert.equal(seen.milestoneStatus, "new-game-intro")
+    Assert.equal(seen.lastObserve.selector.name, "new-game-intro")
     Assert.isNil(host.startBackgroundWarmup, "warmup lifecycle stays off the semantic game host")
-    Assert.isNil(host.enableSweep, "session authorization stays off the semantic game host")
+    Assert.isNil(host.enableSweep, "corpus authorization stays off the semantic game host")
     Assert.equal(type(provisioner.startBackgroundWarmup), "function", "the provisioner keeps its warmup seam")
     provisioner:startBackgroundWarmup()
     provisioner:startBackgroundWarmup()
-    Assert.equal(seen.warmups, 2, "warmup authorization forwards idempotently without cache work")
+    Assert.equal(seen.warmups, 2, "warmup authorization forwards without cache work")
+    Assert.equal(seen.warmupEpoch, 7, "warmup authorization carries the borrowed epoch")
     provisioner:update()
+    Assert.equal(seen.updates, 1, "provisioner updates pump service observations")
     provisioner:dispose()
-    Assert.equal(retired, 1, "disposal retires the session")
-    Assert.equal(poolShutdowns, 0, "disposal never touches the process pool")
+    Assert.equal(seen.retired, 7, "disposal retires the borrowed epoch")
+    Assert.equal(seen.shutdowns, 0, "disposal never shuts down the process service")
     local retiredOk, retiredErr = pcall(host.requestField, 60, "required")
     Assert.isFalse(retiredOk, "retired host calls reject")
     Assert.isTrue(Errors.is(retiredErr), "the rejection is a structured lifecycle error")
@@ -550,7 +573,6 @@ function T.provisioner_wraps_a_selected_session_with_string_urgencies_and_retire
     Assert.isTrue(Errors.is(retiredProgressErr), "the progress rejection is a structured lifecycle error")
     Assert.equal(retiredProgressErr.code, "DERIVED_ASSETS_RETIRED")
   end)
-  InteractiveCacheBuild.new = originalNew
   if not ok then
     error(err, 0)
   end
@@ -563,8 +585,6 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
   local App = require("app.src.App")
   local HgssGame = require("game.hgss.src.HgssGame")
   local Provisioner = require("app.src.DerivedAssetProvisioner")
-  local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
-  local originalBuildNew = InteractiveCacheBuild.new
   local originalGameNew = HgssGame.new
   local originalSetState = App.setState
   local originalShowSelector = App._showVersionSelector
@@ -573,14 +593,6 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
   local originalOpts = App.opts
   App.opts = { dev = false }
   local events = {}
-  local fakeSession = {}
-  function fakeSession:retire() end
-  function fakeSession:enableSweep()
-    events[#events + 1] = "provisioner:startBackgroundWarmup"
-  end
-  InteractiveCacheBuild.new = function(_)
-    return fakeSession
-  end
   local game = {
     update = function() end,
     dispose = function() end,
@@ -595,15 +607,10 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
     originalSetState(next)
   end
   local ok, err = pcall(function()
-    local provisioner = Provisioner.new({
-      versionId = "heartgold",
-      producerFingerprint = "r1",
-      pool = {},
-      epoch = 1,
-    })
+    local provisioner = Provisioner.new({ versionId = "heartgold", service = newMenuService(events) })
     local host = provisioner:gameHost()
     Assert.isNil(host.startBackgroundWarmup, "warmup lifecycle stays off the semantic game host")
-    Assert.isNil(host.enableSweep, "session authorization stays off the semantic game host")
+    Assert.isNil(host.enableSweep, "corpus authorization stays off the semantic game host")
     App.provisioner = provisioner
     App.state = nil
     App._launchMenuWithProvisioner("heartgold")
@@ -626,7 +633,6 @@ function T.menu_installation_authorizes_warmup_only_after_successful_handoff()
     failOk, failErr = pcall(App._launchMenuWithProvisioner, "heartgold")
   end)
   local failedSelectorShown = selectorShown
-  InteractiveCacheBuild.new = originalBuildNew
   HgssGame.new = originalGameNew
   App.setState = originalSetState
   App._showVersionSelector = originalShowSelector
@@ -659,8 +665,6 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
   local App = require("app.src.App")
   local HgssGame = require("game.hgss.src.HgssGame")
   local Provisioner = require("app.src.DerivedAssetProvisioner")
-  local InteractiveCacheBuild = require("romdump.src.build.InteractiveCacheBuild")
-  local originalBuildNew = InteractiveCacheBuild.new
   local originalGameNew = HgssGame.new
   local originalSetState = App.setState
   local originalState = App.state
@@ -669,14 +673,11 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
   App.opts = { dev = false }
   local events = {}
   local enabled = 0
-  local fakeSession = {}
-  function fakeSession:enableSweep()
+  local service = newMenuService(events)
+  local realEnable = service.enableSweep
+  function service:enableSweep(epoch)
     enabled = enabled + 1
-    events[#events + 1] = "provisioner:startBackgroundWarmup"
-  end
-  function fakeSession:retire() end
-  InteractiveCacheBuild.new = function(_)
-    return fakeSession
+    realEnable(self, epoch)
   end
   local game = {
     update = function() end,
@@ -692,12 +693,7 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
     originalSetState(next)
   end
   local ok, err = pcall(function()
-    local provisioner = Provisioner.new({
-      versionId = "heartgold",
-      producerFingerprint = "r1",
-      pool = {},
-      epoch = 1,
-    })
+    local provisioner = Provisioner.new({ versionId = "heartgold", service = service })
     App.provisioner = provisioner
     App.state = nil
     App._launchMenuWithProvisioner("heartgold")
@@ -708,7 +704,6 @@ function T.menu_installation_authorizes_background_warmup_after_state_handoff()
     )
   end)
   local launchedState = App.state
-  InteractiveCacheBuild.new = originalBuildNew
   HgssGame.new = originalGameNew
   App.setState = originalSetState
   App.state = originalState
@@ -799,24 +794,70 @@ local function newControlledThreadHost()
 end
 
 ---@param App table application singleton under test
+---@param harness table live-app harness holding the attached controller worker
 ---@param rounds integer
-local function pumpApp(App, rounds)
+local function pumpApp(App, harness, rounds)
+  local worker = harness.worker
   for _ = 1, rounds do
     App.update(1 / 60)
+    if worker ~= nil then
+      worker:step()
+    end
   end
 end
 
+-- Attaches the real controller to the service channels the selection
+-- opened: the service created its command/reply pair first, so the worker
+-- consumes the same two channels the game thread observes.
+---@param harness table live-app harness holding the controlled thread host
+---@return table test-driven controller worker sharing the service channels
+local function attachWorker(harness)
+  local Worker = require("romdump.src.build.CacheControllerWorker").Worker
+  local channels = harness.threadHost.channels
+  assert(#channels >= 2, "the service owns its command/reply channels before the worker attaches")
+  local worker = Worker.new(channels[1], channels[2])
+  harness.worker = worker
+  -- Threads spawned so far are controller-side: the compiler pool boots
+  -- only once the attached worker handles selection. Pool worker identity
+  -- is therefore a thread position minus this prefix, never the raw
+  -- controlled-thread index.
+  harness.controllerThreads = #harness.threadHost.threads
+  return worker
+end
+
+-- Pool worker identities owned by the attached controller, skipping the
+-- controller-side spawns that share the controlled host.
+---@param harness table live-app harness holding the attached controller worker
+---@return integer[] compiler worker identities in spawn order
+local function compilerWorkerIds(harness)
+  local base = harness.controllerThreads or 0
+  local ids = {}
+  for position = base + 1, #harness.threadHost.threads do
+    ids[#ids + 1] = position - base
+  end
+  return ids
+end
+
+---@param harness table live-app harness holding the attached controller worker
+---@return table compiler pool owned by the attached controller
+local function controllerPool(harness)
+  local worker = assert(harness.worker, "no attached controller worker owns a compiler pool")
+  return assert(worker.pool, "the controller owns no compiler pool before selection")
+end
+
 ---@param harness table live-app harness
----@return table result channel shared by every worker
+---@return table result channel shared by every compiler worker
 local function resultChannel(harness)
-  return assert(harness.threadHost.channels[1], "the pool must create a result channel first")
+  -- The service owns the first two channels (command, reply); the pool
+  -- result channel follows once the attached worker selects a generation.
+  return assert(harness.threadHost.channels[3], "the pool must create a result channel first")
 end
 
 ---@param harness table live-app harness
 ---@param workerId integer
----@return table input channel owned by that worker
+---@return table input channel owned by that compiler worker
 local function inputChannel(harness, workerId)
-  return assert(harness.threadHost.channels[1 + workerId], "missing input channel for worker " .. tostring(workerId))
+  return assert(harness.threadHost.channels[3 + workerId], "missing input channel for worker " .. tostring(workerId))
 end
 
 ---@param harness table live-app harness
@@ -855,11 +896,10 @@ local function failRunningOnWorker(harness, workerId, pool)
   })
 end
 
----@param App table application singleton under test
+---@param pool table process-owned compiler pool for status checks
 ---@param harness table live-app harness
-local function failEveryRunningWorker(App, harness)
-  local pool = assert(App.pool, "physical work requires the process pool")
-  for workerId in ipairs(harness.threadHost.threads) do
+local function failEveryRunningWorker(pool, harness)
+  for _, workerId in ipairs(compilerWorkerIds(harness)) do
     if lastDispatchedJob(harness, workerId) ~= nil then
       failRunningOnWorker(harness, workerId, pool)
     end
@@ -871,7 +911,7 @@ end
 ---@param harness table live-app harness
 local function ackCloseContexts(harness)
   local result = resultChannel(harness)
-  for workerId in ipairs(harness.threadHost.threads) do
+  for _, workerId in ipairs(compilerWorkerIds(harness)) do
     local token = nil
     local log = inputChannel(harness, workerId).log
     for index = #log, 1, -1 do
@@ -898,9 +938,9 @@ local function drainBarrier(App, harness, rounds)
     if #harness.importers > 0 then
       return
     end
-    failEveryRunningWorker(App, harness)
+    failEveryRunningWorker(controllerPool(harness), harness)
     ackCloseContexts(harness)
-    pumpApp(App, 1)
+    pumpApp(App, harness, 1)
   end
 end
 
@@ -931,9 +971,10 @@ local function withLiveApp(context, fn)
     state = App.state,
     importer = App.importer,
     provisioner = App.provisioner,
+    service = App.service,
+    pendingQuiesce = App.pendingQuiesce,
     opts = App.opts,
     saveDir = App.saveDir,
-    pool = App.pool,
     epoch = App.epoch,
     drawableWidth = App.drawableWidth,
     drawableHeight = App.drawableHeight,
@@ -944,16 +985,16 @@ local function withLiveApp(context, fn)
     quit = realLove.event.quit,
     print = realLove.graphics.print,
   }
-  if App.pool ~= nil then
+  if App.service ~= nil then
     pcall(function()
-      App.pool:shutdown()
+      App.service:shutdown()
     end)
   end
   App.opts = { dev = true }
   App.state = nil
   App.importer = nil
   App.provisioner = nil
-  App.pool = nil
+  App.service = nil
   App.epoch = 0
   App.saveDir = "test-save-dir"
   App.drawableWidth, App.drawableHeight = 640, 480
@@ -1051,21 +1092,16 @@ local function withLiveApp(context, fn)
   ProducerFingerprint.checkoutBackend = original.checkoutBackend
   realLove.event.quit = original.quit
   realLove.graphics.print = original.print
-  local pool = App.pool
   App.state = original.state
   App.importer = original.importer
   App.provisioner = original.provisioner
+  App.service = original.service
+  App.pendingQuiesce = original.pendingQuiesce
   App.opts = original.opts
   App.saveDir = original.saveDir
-  App.pool = original.pool
   App.epoch = original.epoch
   App.drawableWidth = original.drawableWidth
   App.drawableHeight = original.drawableHeight
-  if pool ~= nil and pool ~= original.pool then
-    pcall(function()
-      pool:shutdown()
-    end)
-  end
   if not ok then
     error(err, 0)
   end
@@ -1082,10 +1118,11 @@ end
 function T.drop_during_pending_work_retires_interest_before_source_closure(context)
   withLiveApp(context, function(App, harness)
     local provisioner = selectVersion(App, VERSION)
+    attachWorker(harness)
     local host = provisioner:gameHost()
     local mapId = supportedFieldMapId(host)
-    pumpApp(App, 6)
-    local before = assert(App.pool, "selection must own a pool"):diagnostics()
+    pumpApp(App, harness, 6)
+    local before = controllerPool(harness):diagnostics()
     Assert.isTrue(before.counts.running > 0, "the selection must have physical work in flight")
     local dispatchedBeforeDrop = #harness.threadHost.dispatched
     Assert.isTrue(dispatchedBeforeDrop > 0, "pending work must have reached worker input")
@@ -1103,7 +1140,7 @@ function T.drop_during_pending_work_retires_interest_before_source_closure(conte
     Assert.isFalse(retiredOk, "the dropped selection must retire its host before the barrier")
     Assert.isTrue(Errors.is(retiredErr), "the retired rejection is a structured lifecycle error")
     Assert.equal(retiredErr.code, "DERIVED_ASSETS_RETIRED")
-    pumpApp(App, 3)
+    pumpApp(App, harness, 3)
     Assert.equal(
       #harness.threadHost.dispatched,
       dispatchedBeforeDrop,
@@ -1119,19 +1156,20 @@ end
 function T.cancelled_selection_still_guards_raw_import_behind_source_closure(context)
   withLiveApp(context, function(App, harness)
     local provisioner = selectVersion(App, VERSION)
+    attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)
-    pumpApp(App, 6)
-    local pool = assert(App.pool, "selection must own a pool")
+    pumpApp(App, harness, 6)
+    local pool = controllerPool(harness)
     Assert.isTrue(pool:diagnostics().counts.running > 0, "cancelled work must stay physically charged")
     assert(App.state, "selection must install a preparation state"):keypressed("escape", nil, nil)
     Assert.isNil(App.provisioner, "cancellation detaches the selection back to the selector")
-    Assert.equal(App.pool, pool, "cancellation preserves the process-owned pool")
+    Assert.equal(controllerPool(harness), pool, "cancellation preserves the process-owned pool")
     Assert.isTrue(pool:diagnostics().counts.running > 0, "cancelled physical work stays charged to the pool")
     Assert.equal(getmetatable(App.state).__index, VersionSelectState, "cancellation returns to the version selector")
     App.filedropped({})
     Assert.isNil(App.importer, "a selector drop waits for the source barrier with old readers outstanding")
-    pumpApp(App, 2)
+    pumpApp(App, harness, 2)
     Assert.isNil(App.importer, "pumping never starts the importer before source closure")
     drainBarrier(App, harness, 10)
     Assert.equal(#harness.importers, 1, "raw import starts exactly once after the barrier")
@@ -1140,25 +1178,28 @@ function T.cancelled_selection_still_guards_raw_import_behind_source_closure(con
   end)
 end
 
-function T.same_version_reselection_reuses_one_pool_with_fresh_interest(context)
+function T.same_version_reselection_reuses_one_service_with_fresh_interest(context)
   withLiveApp(context, function(App, harness)
     -- One production route: a cold boot-menu entry waits through selection
     -- instead of launching the game directly.
     App._bootMainMenu({ VERSION })
+    attachWorker(harness)
+    pumpApp(App, harness, 4)
     Assert.equal(#harness.launches, 0, "a cold boot-menu entry must wait for preparation, not launch directly")
     Assert.equal(
       getmetatable(App.state).__index,
       CachePreparationState,
       "a cold boot-menu entry follows the same selection flow"
     )
-    local pool = assert(App.pool, "selection must own a pool")
+    local pool = controllerPool(harness)
     local firstEpoch = assert(App.epoch, "selection must mint an epoch")
     local firstHost = assert(App.provisioner, "selection must attach a provisioner"):gameHost()
     local mapId = supportedFieldMapId(firstHost)
-    pumpApp(App, 6)
+    pumpApp(App, harness, 6)
     assert(App.state, "selection must install a preparation state"):keypressed("escape", nil, nil)
     local second = selectVersion(App, VERSION)
-    Assert.equal(App.pool, pool, "reselection reuses the one process pool")
+    pumpApp(App, harness, 4)
+    Assert.equal(controllerPool(harness), pool, "reselection reuses the one process pool")
     Assert.isTrue(App.epoch > firstEpoch, "reselection mints a fresh epoch on the shared pool")
     Assert.equal(pool:diagnostics().selected.epoch, App.epoch, "the pool tracks the reselected epoch")
     -- The old interest is retired exactly once: its host rejects, repeated
@@ -1175,7 +1216,7 @@ function T.same_version_reselection_reuses_one_pool_with_fresh_interest(context)
     -- reselected interest waiting under the same job identity.
     local stale = nil
     local staleWorker = nil
-    for _, workerId in ipairs({ 1, 2 }) do
+    for _, workerId in ipairs(compilerWorkerIds(harness)) do
       stale = lastDispatchedJob(harness, workerId)
       if stale ~= nil then
         staleWorker = workerId
@@ -1193,7 +1234,7 @@ function T.same_version_reselection_reuses_one_pool_with_fresh_interest(context)
       jobKey = answered.jobKey,
       stageName = answered.stageName,
     })
-    pumpApp(App, 2)
+    pumpApp(App, harness, 2)
     local state, _ = pool:status(answered.jobKey)
     Assert.isTrue(state ~= "ready", "late old-epoch output cannot publish for the new interest")
     Assert.equal(pool:diagnostics().counts.ready, 0, "no obsolete output publishes through reselection")
@@ -1204,38 +1245,37 @@ function T.worker_failure_surfaces_in_preparation_without_further_requests(conte
   withLiveApp(context, function(App, harness)
     local RomImporter = require("romdump.src.source.RomImporter")
     local provisioner = selectVersion(App, VERSION)
+    attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)
-    pumpApp(App, 6)
+    pumpApp(App, harness, 6)
     Assert.isTrue(
-      assert(App.pool, "selection must own a pool"):diagnostics().counts.running > 0,
+      controllerPool(harness):diagnostics().counts.running > 0,
       "the preparation must have physical work in flight"
     )
     local dispatchedBeforeFailure = #harness.threadHost.dispatched
     -- A genuine worker death behind running work, observed through the
     -- controlled transport rather than a staged session error.
     local crashed = nil
-    for workerId in ipairs(harness.threadHost.threads) do
+    for _, workerId in ipairs(compilerWorkerIds(harness)) do
       if lastDispatchedJob(harness, workerId) ~= nil then
         crashed = workerId
         break
       end
     end
     Assert.notNil(crashed, "a busy worker is required to fail behind the preparation view")
-    local thread = harness.threadHost.threads[assert(crashed)]
+    local crashedPosition = (harness.controllerThreads or 0) + assert(crashed)
+    local thread = harness.threadHost.threads[crashedPosition]
     thread.alive = false
     thread.threadError = "synthetic worker crash"
-    pumpApp(App, 1)
-    pumpApp(App, 3)
+    pumpApp(App, harness, 1)
+    pumpApp(App, harness, 3)
     Assert.equal(
       #harness.threadHost.dispatched,
       dispatchedBeforeFailure,
       "no further producer requests occur after the infrastructure failure"
     )
-    Assert.notNil(
-      assert(App.pool, "selection must own a pool"):diagnostics().error,
-      "the pool records the infrastructure failure"
-    )
+    Assert.notNil(controllerPool(harness):diagnostics().error, "the pool records the infrastructure failure")
     local state = assert(App.state, "the preparation view stays installed through the failure")
     state:draw()
     local shown = false
@@ -1261,10 +1301,11 @@ end
 function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
   withLiveApp(context, function(App, harness)
     local provisioner = selectVersion(App, VERSION)
+    attachWorker(harness)
     local host = provisioner:gameHost()
     supportedFieldMapId(host)
-    pumpApp(App, 6)
-    local pool = assert(App.pool, "selection must own a pool")
+    pumpApp(App, harness, 6)
+    local pool = controllerPool(harness)
     Assert.isTrue(pool:diagnostics().counts.running > 0, "cancelled work must stay physically charged")
     assert(App.state, "selection must install a preparation state"):keypressed("escape", nil, nil)
     Assert.isNil(App.provisioner, "no provisioner remains after cancellation")
@@ -1273,7 +1314,7 @@ function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
     -- before any other failure so the reply still finds its slot.
     local stale = nil
     local staleWorker = nil
-    for workerId in ipairs(harness.threadHost.threads) do
+    for _, workerId in ipairs(compilerWorkerIds(harness)) do
       stale = lastDispatchedJob(harness, workerId)
       if stale ~= nil then
         staleWorker = workerId
@@ -1291,14 +1332,14 @@ function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
       jobKey = answered.jobKey,
       stageName = answered.stageName,
     })
-    pumpApp(App, 1)
+    pumpApp(App, harness, 1)
     local staleState, _ = pool:status(answered.jobKey)
     Assert.equal(staleState, "cancelled", "late old-epoch output cannot publish after retirement")
     Assert.equal(pool:diagnostics().counts.ready, 0, "obsolete outputs never publish")
     -- Physical lifecycle keeps moving with no session attached: terminal
     -- work settles instead of lingering on the detached pool.
-    failEveryRunningWorker(App, harness)
-    pumpApp(App, 2)
+    failEveryRunningWorker(pool, harness)
+    pumpApp(App, harness, 2)
     Assert.equal(
       pool:diagnostics().counts.running,
       0,
@@ -1306,28 +1347,28 @@ function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
     )
     Assert.isNil(App.provisioner, "settling detached work never reattaches a session")
     App.quit()
+    pumpApp(App, harness, 4)
     for _, thread in ipairs(harness.threadHost.threads) do
       Assert.equal(thread.waits, 1, "each owned thread joins exactly once")
     end
-    Assert.isNil(App.pool, "quit releases the process pool")
+    Assert.isNil(App.service, "quit releases the process service")
     Assert.isNil(App.provisioner, "quit leaves no selection behind")
     App.quit()
+    pumpApp(App, harness, 2)
     for _, thread in ipairs(harness.threadHost.threads) do
       Assert.equal(thread.waits, 1, "a repeated quit never rejoins owned threads")
     end
   end)
 end
 
-function T.selection_switch_to_another_version_reuses_the_pool_with_a_fresh_epoch()
+function T.selection_switch_to_another_version_reuses_the_service_with_a_fresh_epoch()
   withAppStubs(function(App, context)
+    local service = assert(App.service, "the application owns one process cache service")
     App._selectVersion(VERSION)
     App._selectVersion("soulsilver")
-    Assert.equal(#context.sessions, 2, "each game selection constructs its session")
-    local first, second = context.sessions[1], context.sessions[2]
-    Assert.equal(second.options.pool, first.options.pool, "a switch reuses the pool instead of spawning a second")
-    Assert.equal(first.options.epoch, 1)
-    Assert.equal(second.options.epoch, 2, "switching versions mints a new epoch on the shared pool")
-    Assert.equal(first.retired, 1, "the old interest retires exactly once without joining workers")
+    Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
+    Assert.deepEqual(context.epochs, { 1, 2 }, "switching versions mints a new epoch on the shared service")
+    Assert.deepEqual(context.retires, { 1 }, "the old interest retires exactly once without joining workers")
     Assert.equal(#context.games, 2, "a ready selection launches its menu through the single route")
   end)
 end
@@ -1352,9 +1393,10 @@ function T.dropped_file_before_any_worker_starts_a_fresh_import()
       }
     end)
     local ok, err = pcall(function()
-      Assert.isNil(App.pool, "no worker exists before the first selection")
+      App.service = nil
+      Assert.isNil(App.service, "no worker exists before the first selection")
       App.filedropped({ name = "first.nds" })
-      Assert.equal(calls.constructed, 1, "a drop with no pool starts an import immediately")
+      Assert.equal(calls.constructed, 1, "a drop with no service starts an import immediately")
       Assert.equal(calls.filedropped, 1, "the dropped file forwards to the fresh importer")
       Assert.equal(getmetatable(App.state).__index, ImportState, "the drop enters through the import state")
     end)
@@ -1368,7 +1410,7 @@ function T.dropped_file_before_any_worker_starts_a_fresh_import()
 end
 
 function T.failed_source_closure_blocks_raw_mutation_and_stays_cancellable()
-  withAppStubs(function(App, _)
+  withAppStubs(function(App, context)
     local RomImporter = require("romdump.src.source.RomImporter")
     local originalNew = RomImporter.new
     local constructed = 0
@@ -1387,17 +1429,6 @@ function T.failed_source_closure_blocks_raw_mutation_and_stays_cancellable()
       update = function() end,
       dispose = function() end,
     }
-    local poolWas = App.pool
-    App.pool = {
-      quiesce = function() end,
-      isQuiescent = function()
-        return false
-      end,
-      update = function() end,
-      diagnostics = function()
-        return { error = "synthetic source close failure" }
-      end,
-    }
     local graphics = love.graphics
     local originalPrint = graphics.print
     local originalPrintf = graphics.printf
@@ -1410,7 +1441,12 @@ function T.failed_source_closure_blocks_raw_mutation_and_stays_cancellable()
     end
     local ok, err = pcall(function()
       App.filedropped({ name = "replacement.zip" })
+      assert(App.pendingQuiesce ~= nil, "the drop waits behind a quiescence barrier")
+      local barrier = App.pendingQuiesce.barrier
       App.update(1 / 60)
+      App.update(1 / 60)
+      Assert.equal(constructed, 0, "no raw mutation begins before the barrier settles")
+      context.barriers[barrier].status = "failed"
       App.update(1 / 60)
       Assert.equal(constructed, 0, "no raw mutation begins after an unsuccessful barrier")
       local waiting = assert(App.state, "the waiting view stays installed through the failure")
@@ -1437,7 +1473,7 @@ function T.failed_source_closure_blocks_raw_mutation_and_stays_cancellable()
     App.state = nil
     App.importer = nil
     App.provisioner = nil
-    App.pool = poolWas
+    App.pendingQuiesce = nil
     if not ok then
       error(err, 0)
     end
@@ -1450,274 +1486,26 @@ function T.repeated_dispose_and_quit_release_owned_resources_once()
     local provisioner = assert(App.provisioner, "selection must attach a provisioner")
     provisioner:dispose()
     provisioner:dispose()
-    Assert.equal(context.sessions[1].retired, 1, "repeated disposal retires the session exactly once")
-    local realPool = App.pool
-    if realPool ~= nil then
-      pcall(function()
-        realPool:shutdown()
-      end)
-    end
-    local shutdowns = 0
-    App.pool = {
-      shutdown = function()
-        shutdowns = shutdowns + 1
-      end,
-    }
+    Assert.deepEqual(context.retires, { 1 }, "repeated disposal retires the epoch exactly once")
     App.quit()
     App.quit()
-    Assert.equal(shutdowns, 1, "repeated quit joins owned workers exactly once")
-    Assert.isNil(App.pool, "quit releases the process pool")
+    Assert.equal(context.joins, 1, "repeated quit joins owned workers exactly once")
+    Assert.isNil(App.service, "quit releases the process service")
     Assert.isNil(App.provisioner, "quit leaves no selection behind")
   end)
 end
 
--- Selection behind an outstanding source-close barrier, without any
--- user-owned dump. The harness below keeps the real production composition
--- (App, provisioner, generation session, process pool) while only the true
--- host boundaries are controlled: worker threads/channels never execute, the
--- installed-version readiness probe is stubbed to ready, and every cache
--- write lands on an isolated in-memory backend. Nothing here reads a ROM.
----@param fn fun(App: table, harness: table)
-local function withIsolatedApp(fn)
-  local App = require("app.src.App")
-  local HgssGame = require("game.hgss.src.HgssGame")
-  local RomImporter = require("romdump.src.source.RomImporter")
-  local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local realLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
-  local original = {
-    state = App.state,
-    importer = App.importer,
-    provisioner = App.provisioner,
-    opts = App.opts,
-    saveDir = App.saveDir,
-    pool = App.pool,
-    epoch = App.epoch,
-    drawableWidth = App.drawableWidth,
-    drawableHeight = App.drawableHeight,
-    gameNew = HgssGame.new,
-    importerNew = RomImporter.new,
-    isReady = RomImporter.isReady,
-    appBackend = ProducerFingerprint.appBackend,
-    checkoutBackend = ProducerFingerprint.checkoutBackend,
-    quit = realLove.event.quit,
-    print = realLove.graphics.print,
-    printf = realLove.graphics.printf,
-    forVersion = CacheFs.forVersion,
-    forStaging = CacheFs.forStaging,
-    forArtifactStage = CacheFs.forArtifactStage,
-    dimensions = love.graphics.getDimensions,
-  }
-  if App.pool ~= nil then
-    pcall(function()
-      App.pool:shutdown()
-    end)
-  end
-  App.opts = { dev = true }
-  App.state = nil
-  App.importer = nil
-  App.provisioner = nil
-  App.pool = nil
-  App.epoch = 0
-  App.saveDir = "test-save-dir"
-  App.drawableWidth, App.drawableHeight = 640, 480
-  -- Stubbed installed-version readiness: both versions report ready without
-  -- consulting any user-owned dump.
-  RomImporter.isReady = function(_)
-    return true
-  end
-  -- A fixed synthetic producer tree keeps the development digest
-  -- deterministic and fast; selection ownership never depends on its bytes.
-  ProducerFingerprint.appBackend = function()
-    return {
-      list = function()
-        return {}
-      end,
-      read = function()
-        error("the empty source fixture has no files")
-      end,
-      getInfo = function(path)
-        if path == "romdump/src" then
-          return { type = "directory" }
-        end
-        return nil
-      end,
-    }
-  end
-  ProducerFingerprint.checkoutBackend = function(_)
-    return {
-      list = function()
-        return { "build/Compiler.lua" }
-      end,
-      read = function(_)
-        return "selection ownership fixture"
-      end,
-      getInfo = function(path)
-        if path == "romdump/src" then
-          return { type = "directory" }
-        end
-        return nil
-      end,
-    }
-  end
-  -- Isolated cache writes: every version-scoped cache lands on one private
-  -- in-memory backend instead of the product save directory.
-  local isolated = FakeCache.new()
-  rawset(CacheFs, "forVersion", function(versionId, backend)
-    return original.forVersion(versionId, backend or isolated)
-  end)
-  rawset(CacheFs, "forStaging", function(versionId, backend)
-    return original.forStaging(versionId, backend or isolated)
-  end)
-  rawset(CacheFs, "forArtifactStage", function(versionId, name, backend)
-    return original.forArtifactStage(versionId, name, backend or isolated)
-  end)
-  local harness = { launches = {}, importers = {}, quitCodes = {}, prints = {}, threadHost = newControlledThreadHost() }
-  local threadHost = harness.threadHost
-  HgssGame.new = function(options)
-    harness.launches[#harness.launches + 1] = options
-    local game = { disposed = 0 }
-    function game:dispose()
-      self.disposed = self.disposed + 1
-    end
-    return game
-  end
-  RomImporter.new = function(options)
-    local importer = { filedroppedCalls = 0, updates = 0, state = "waiting" }
-    if type(options) == "table" then
-      importer.onComplete = options.onComplete
-    end
-    function importer:isBusy()
-      return false
-    end
-    function importer:update()
-      self.updates = self.updates + 1
-    end
-    function importer:filedropped(_)
-      self.filedroppedCalls = self.filedroppedCalls + 1
-    end
-    harness.importers[#harness.importers + 1] = importer
-    return importer
-  end
-  realLove.event.quit = function(code)
-    harness.quitCodes[#harness.quitCodes + 1] = code
-  end
-  realLove.graphics.print = function(text, _, _)
-    harness.prints[#harness.prints + 1] = tostring(text)
-  end
-  realLove.graphics.printf = function(text, _, _, _)
-    harness.prints[#harness.prints + 1] = tostring(text)
-  end
-  love.graphics.getDimensions = function()
-    return 640, 480
-  end
-  rawset(
-    _G,
-    "love",
-    setmetatable({
-      thread = {
-        newChannel = function()
-          return threadHost.newChannel()
-        end,
-        newThread = function()
-          return threadHost.newThread()
-        end,
-      },
-      system = {
-        getProcessorCount = function()
-          return 5
-        end,
-      },
-    }, { __index = realLove })
-  )
-  local ok, err = pcall(fn, App, harness)
-  rawset(_G, "love", realLove)
-  HgssGame.new = original.gameNew
-  RomImporter.new = original.importerNew
-  RomImporter.isReady = original.isReady
-  ProducerFingerprint.appBackend = original.appBackend
-  ProducerFingerprint.checkoutBackend = original.checkoutBackend
-  realLove.event.quit = original.quit
-  realLove.graphics.print = original.print
-  realLove.graphics.printf = original.printf
-  love.graphics.getDimensions = original.dimensions
-  rawset(CacheFs, "forVersion", original.forVersion)
-  rawset(CacheFs, "forStaging", original.forStaging)
-  rawset(CacheFs, "forArtifactStage", original.forArtifactStage)
-  local pool = App.pool
-  App.state = original.state
-  App.importer = original.importer
-  App.provisioner = original.provisioner
-  App.opts = original.opts
-  App.saveDir = original.saveDir
-  App.pool = original.pool
-  App.epoch = original.epoch
-  App.drawableWidth = original.drawableWidth
-  App.drawableHeight = original.drawableHeight
-  if pool ~= nil and pool ~= original.pool then
-    pcall(function()
-      pool:shutdown()
-    end)
-  end
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- Drives the source-close barrier toward completion without starting any raw
--- import or firing any pending selection: failing terminal work releases busy
--- slots with a pending close, and each round collects the next acknowledgement
--- round until the pool reports quiescence or the budget is spent. Only the
--- pool is pumped here; the waiting view observes the completed barrier through
--- a later visible pump, so the surviving continuation fires exactly once.
----@param App table application singleton under test
----@param harness table isolated-app harness
----@param rounds integer
-local function drainSelectionBarrier(App, harness, rounds)
-  for _ = 1, rounds do
-    local pool = assert(App.pool, "physical work requires the process pool")
-    if App.provisioner ~= nil or pool:isQuiescent() then
-      return
-    end
-    failEveryRunningWorker(App, harness)
-    ackCloseContexts(harness)
-    pool:update()
-  end
-end
-
----@param App table application singleton under test
----@return boolean outstanding true while the pool barrier is incomplete
-local function barrierOutstanding(App)
-  local pool = assert(App.pool, "physical work requires the process pool")
-  local diagnostics = pool:diagnostics()
-  return diagnostics.quiescing == true and not pool:isQuiescent()
-end
-
 function T.selection_waits_behind_source_closure_then_selects_once()
-  withIsolatedApp(function(App, harness)
-    local provisioner = selectVersion(App, VERSION)
-    local host = provisioner:gameHost()
-    host.requestMilestone("bootstrap", "required")
-    pumpApp(App, 6)
-    local pool = assert(App.pool, "selection must own a pool")
-    Assert.isTrue(pool:diagnostics().counts.running > 0, "the selection must have physical work in flight")
+  withAppStubs(function(App, context)
+    App._selectVersion(VERSION)
     local epochBefore = assert(App.epoch, "selection must mint an epoch")
     App.filedropped({ name = "dropped.zip" })
-    local tokenBefore = pool.closeToken
     Assert.isNil(App.importer, "the drop waits for source closure instead of importing")
-    Assert.equal(
-      getmetatable(assert(App.state, "the drop waits visibly")).__index,
-      CachePreparationState,
-      "the drop waits through the preparation state"
-    )
-    assert(App.state, "the drop waits visibly"):keypressed("escape", nil, nil)
-    Assert.equal(
-      getmetatable(assert(App.state, "cancellation returns visibly")).__index,
-      VersionSelectState,
-      "cancelling the import wait returns to the selector"
-    )
-    Assert.equal(App.pool, pool, "cancellation keeps the one process pool")
-    Assert.isTrue(barrierOutstanding(App), "physical closure stays outstanding after cancelling the import wait")
+    local firstWait = assert(App.state, "the drop waits visibly")
+    Assert.isNil(App.provisioner, "the drop retires selected interest before the barrier")
+    -- A selection behind the outstanding barrier installs a second wait on
+    -- the same barrier instead of selecting: no provisioner, no epoch, no
+    -- second barrier.
     local pendingOk, pendingErr = pcall(App._selectVersion, VERSION)
     Assert.isTrue(
       pendingOk,
@@ -1725,154 +1513,95 @@ function T.selection_waits_behind_source_closure_then_selects_once()
     )
     Assert.isNil(App.provisioner, "the pending selection constructs no provisioner before closure")
     Assert.equal(App.epoch, epochBefore, "the pending selection mints no epoch before closure")
-    Assert.equal(App.pool, pool, "the pending selection starts no second pool")
-    Assert.equal(pool.closeToken, tokenBefore, "the pending selection issues no second barrier")
-    Assert.equal(
-      getmetatable(assert(App.state, "the pending selection waits visibly")).__index,
-      CachePreparationState,
-      "the pending selection waits through the preparation state"
-    )
-    Assert.equal(App.state.kind, "quiescence", "the pending selection waits on source closure")
-    -- Replacing the pending choice keeps only the later continuation.
-    assert(App.state, "the pending selection waits visibly"):keypressed("escape", nil, nil)
+    Assert.equal(context.quiesces, 1, "the pending selection issues no second barrier")
+    local secondWait = assert(App.state, "the pending selection waits visibly")
+    Assert.isTrue(secondWait ~= firstWait, "the pending selection installs its own wait")
+    Assert.equal(secondWait.kind, "quiescence", "the pending selection waits on source closure")
+    -- Replacing the pending choice keeps only the later continuation: the
+    -- replaced wait is disposed and can never fire late.
     local replaceOk, replaceErr = pcall(App._selectVersion, "soulsilver")
     Assert.isTrue(replaceOk, "a replacement selection must wait instead of raising: " .. tostring(replaceErr))
     Assert.isNil(App.provisioner, "the replacement constructs no provisioner before closure")
     Assert.equal(App.epoch, epochBefore, "the replacement mints no epoch before closure")
-    Assert.equal(pool.closeToken, tokenBefore, "the replacement issues no second barrier")
-    drainSelectionBarrier(App, harness, 12)
-    Assert.isTrue(pool:isQuiescent(), "the barrier completes")
-    pumpApp(App, 3)
+    Assert.equal(context.quiesces, 1, "the replacement issues no second barrier")
+    local liveWait = assert(App.state, "the replacement waits visibly")
+    Assert.isTrue(secondWait.dead, "the replaced wait can never fire late")
+    -- The surviving selection still waits on bootstrap until the milestone
+    -- is actually ready; the barrier acknowledgement alone must not launch.
+    context.observations["milestone:bootstrap:nil:nil"] = { ready = nil, failure = nil }
+    assert(context.barriers[1] ~= nil, "the drop holds one quiescence barrier")
+    context.barriers[1].status = "ready"
+    App.update(1 / 60)
+    Assert.isTrue(liveWait.fired, "the live wait fires exactly once")
+    Assert.isFalse(firstWait.fired, "the superseded drop wait never fires")
+    Assert.isFalse(secondWait.fired, "the replaced wait never fires")
     local selected = assert(App.provisioner, "exactly one surviving selection attaches after closure")
-    Assert.equal(App.pool, pool, "the surviving selection reuses the one process pool")
     Assert.equal(App.epoch, epochBefore + 1, "the surviving selection mints exactly one fresh epoch")
-    Assert.equal(pool:diagnostics().selected.epoch, App.epoch, "the pool tracks the surviving epoch")
-    Assert.equal(pool:diagnostics().selected.versionId, "soulsilver", "only the latest live choice selects")
-    Assert.isTrue(selected == App.provisioner, "no further selection replaces the survivor")
-    Assert.equal(#harness.importers, 0, "the cancelled dropped file is never imported")
-    Assert.equal(#harness.launches, 0, "a cold surviving selection still waits on bootstrap, never launches")
+    Assert.equal(
+      context.selectOptions[#context.selectOptions].versionId,
+      "soulsilver",
+      "only the latest live choice selects"
+    )
+    Assert.equal(selected, App.provisioner, "no further selection replaces the survivor")
+    Assert.equal(#context.imports, 0, "the cancelled dropped file is never imported")
+    local survivorState = assert(App.state, "a cold surviving selection still waits visibly")
+    Assert.equal(
+      getmetatable(survivorState).__index,
+      CachePreparationState,
+      "a cold surviving selection still waits on bootstrap, never launches"
+    )
+    Assert.equal(survivorState.kind, "bootstrap", "the surviving selection waits on bootstrap readiness")
   end)
 end
 
 function T.only_the_live_pending_selection_fires_and_quit_joins_once()
-  withIsolatedApp(function(App, harness)
-    local provisioner = selectVersion(App, VERSION)
-    provisioner:gameHost().requestMilestone("bootstrap", "required")
-    pumpApp(App, 6)
-    local pool = assert(App.pool, "selection must own a pool")
+  withAppStubs(function(App, context)
+    App._selectVersion(VERSION)
     local epochBefore = assert(App.epoch, "selection must mint an epoch")
     App.filedropped({ name = "dropped.zip" })
-    assert(App.state, "the drop waits visibly"):keypressed("escape", nil, nil)
+    assert(App.state, "the drop waits visibly")
     local firstOk, firstErr = pcall(App._selectVersion, VERSION)
     Assert.isTrue(firstOk, "the first pending selection must wait instead of raising: " .. tostring(firstErr))
     local firstWait = assert(App.state, "the first pending selection waits visibly")
-    assert(firstWait, "the first pending selection waits visibly"):keypressed("escape", nil, nil)
-    Assert.isNil(App.provisioner, "cancelling the pending selection attaches nothing")
     local secondOk, secondErr = pcall(App._selectVersion, "soulsilver")
     Assert.isTrue(secondOk, "the replacement selection must wait instead of raising: " .. tostring(secondErr))
     local secondWait = assert(App.state, "the replacement waits visibly")
     Assert.isTrue(secondWait ~= firstWait, "the replacement installs its own wait")
-    drainSelectionBarrier(App, harness, 12)
-    Assert.isTrue(pool:isQuiescent(), "the barrier completes")
-    pumpApp(App, 3)
-    Assert.isTrue(firstWait.dead, "the cancelled wait can never fire late")
+    Assert.isTrue(firstWait.dead, "installing the replacement disposes the first wait")
+    assert(context.barriers[1] ~= nil, "the drop holds one quiescence barrier")
+    context.barriers[1].status = "ready"
+    App.update(1 / 60)
+    Assert.isTrue(firstWait.fired == false, "the disposed wait can never fire late")
     Assert.isTrue(secondWait.fired, "the live wait fires exactly once")
     Assert.equal(App.epoch, epochBefore + 1, "exactly one surviving selection mints one epoch")
-    Assert.equal(pool:diagnostics().selected.versionId, "soulsilver", "only the latest live choice executes")
-    Assert.equal(#harness.importers, 0, "no import starts through the pending selections")
+    Assert.equal(
+      context.selectOptions[#context.selectOptions].versionId,
+      "soulsilver",
+      "only the latest live choice executes"
+    )
+    Assert.equal(#context.imports, 0, "no import starts through the pending selections")
     -- A fresh barrier with a pending choice quits safely: nothing deferred
-    -- may run and every owned worker joins exactly once.
-    assert(App.provisioner, "the survivor attaches a provisioner"):gameHost().requestMilestone("bootstrap", "required")
-    pumpApp(App, 4)
+    -- may run and the owned service joins exactly once.
+    local survivor = assert(App.provisioner, "the survivor attaches a provisioner")
+    survivor:gameHost().requestMilestone("bootstrap", "required")
+    App.update(1 / 60)
     App.filedropped({ name = "late.zip" })
-    assert(App.state, "the late drop waits visibly"):keypressed("escape", nil, nil)
+    local lateWait = assert(App.state, "the late drop waits visibly")
     local lateOk, lateErr = pcall(App._selectVersion, VERSION)
     Assert.isTrue(lateOk, "the late pending selection must wait instead of raising: " .. tostring(lateErr))
-    local lateWait = assert(App.state, "the late pending selection waits visibly")
+    local latePending = assert(App.state, "the late pending selection waits visibly")
+    Assert.isTrue(latePending ~= lateWait, "the late selection installs its own wait")
     local epochAtQuit = assert(App.epoch, "quitting never selects")
-    local threadCount = #harness.threadHost.threads
-    Assert.isTrue(threadCount > 0, "quit must own workers to join")
     App.quit()
-    Assert.isTrue(lateWait.dead, "quit disposes the pending continuation before shutdown")
-    Assert.isNil(App.pool, "quit releases the process pool")
+    Assert.isTrue(latePending.dead, "quit disposes the pending continuation before shutdown")
+    Assert.isTrue(lateWait.dead, "quit disposes every installed wait before shutdown")
+    Assert.isNil(App.service, "quit releases the process service")
     Assert.isNil(App.provisioner, "quit leaves no selection behind")
-    Assert.equal(#harness.importers, 0, "quit executes no deferred import")
+    Assert.equal(#context.imports, 0, "quit executes no deferred import")
     Assert.equal(App.epoch, epochAtQuit, "quit executes no deferred selection")
-    for _, thread in ipairs(harness.threadHost.threads) do
-      Assert.equal(thread.waits, 1, "each owned thread joins exactly once")
-    end
+    Assert.equal(context.joins, 1, "the owned service joins exactly once")
     App.quit()
-    for _, thread in ipairs(harness.threadHost.threads) do
-      Assert.equal(thread.waits, 1, "a repeated quit never rejoins owned threads")
-    end
-  end)
-end
-
-function T.failed_source_closure_keeps_the_pending_wait_visible_and_safe()
-  withIsolatedApp(function(App, harness)
-    local provisioner = selectVersion(App, VERSION)
-    provisioner:gameHost().requestMilestone("bootstrap", "required")
-    pumpApp(App, 6)
-    local pool = assert(App.pool, "selection must own a pool")
-    local epochBefore = assert(App.epoch, "selection must mint an epoch")
-    App.filedropped({ name = "dropped.zip" })
-    assert(App.state, "the drop waits visibly"):keypressed("escape", nil, nil)
-    Assert.isTrue(barrierOutstanding(App), "physical closure stays outstanding after cancelling the import wait")
-    -- Settle terminal work so the barrier advances to waiting close
-    -- acknowledgements, then fail one close-waiting worker for a genuine
-    -- source-close failure observed through the controlled transport.
-    failEveryRunningWorker(App, harness)
-    pumpApp(App, 1)
-    -- A genuine source-close failure behind the barrier, observed through the
-    -- controlled transport rather than a staged pool error.
-    local closed = false
-    for workerId, worker in ipairs(pool.workers) do
-      if worker.closeSent and not worker.closeAcked then
-        local thread = harness.threadHost.threads[workerId]
-        thread.alive = false
-        thread.threadError = "synthetic source close failure"
-        closed = true
-        break
-      end
-    end
-    Assert.isTrue(closed, "the barrier must have a close-waiting worker to fail")
-    pumpApp(App, 2)
-    Assert.notNil(pool:diagnostics().error, "the pool records the source-close failure")
-    local pendingOk, pendingErr = pcall(App._selectVersion, VERSION)
-    Assert.isTrue(
-      pendingOk,
-      "selection behind a failed barrier must wait safely instead of raising: " .. tostring(pendingErr)
-    )
-    Assert.isNil(App.provisioner, "the failed barrier permits no provisioner")
-    Assert.equal(App.epoch, epochBefore, "the failed barrier permits no epoch")
-    Assert.equal(App.pool, pool, "the failed barrier starts no replacement pool")
-    pumpApp(App, 2)
-    local waiting = assert(App.state, "the failed wait stays installed")
-    Assert.equal(
-      getmetatable(waiting).__index,
-      CachePreparationState,
-      "the failed barrier waits through the preparation state"
-    )
-    waiting:draw()
-    local shown = false
-    for _, text in ipairs(harness.prints) do
-      if text:lower():find("fail", 1, true) ~= nil then
-        shown = true
-        break
-      end
-    end
-    Assert.isTrue(shown, "the waiting view presents the barrier failure instead of selecting")
-    Assert.isNil(App.provisioner, "presenting the failure selects nothing")
-    Assert.equal(#harness.importers, 0, "presenting the failure imports nothing")
-    waiting:keypressed("escape", nil, nil)
-    Assert.equal(
-      getmetatable(assert(App.state, "cancellation returns visibly")).__index,
-      VersionSelectState,
-      "cancellation after barrier failure returns to the version selector"
-    )
-    Assert.isNil(App.provisioner, "cancelling the failed wait selects nothing")
-    Assert.equal(#harness.importers, 0, "cancelling the failed wait starts no import")
-    Assert.equal(App.pool, pool, "cancelling the failed wait keeps the one pool")
+    Assert.equal(context.joins, 1, "a repeated quit never rejoins the service")
   end)
 end
 

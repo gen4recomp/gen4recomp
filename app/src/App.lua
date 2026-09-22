@@ -3,9 +3,7 @@
 local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
-local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
-local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
-local CompilerPool = require("romdump.src.build.CompilerPool")
+local CacheService = require("app.src.CacheService")
 local HgssGame = require("game.hgss.src.HgssGame")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
@@ -17,8 +15,9 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 ---@field state table<string, unknown>|nil
 ---@field importer RomImporter|nil
 ---@field provisioner DerivedAssetProvisioner|nil
----@field pool CompilerPool|nil process-owned compiler pool shared by every selection
----@field epoch integer latest selected source epoch, monotonically increasing
+---@field service CacheService|nil process-owned cache controller service shared by every selection
+---@field epoch integer latest borrowed controller epoch, monotonically increasing
+---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 local App = {}
@@ -37,66 +36,32 @@ local function readyVersions()
   return out
 end
 
--- The process development digest, frozen on first selection: a developer
--- restarts the process to consume producer edits. The frozen selection
--- records which checkout factory produced it, so a backend swap (a different
--- process configuration) reselects instead of reusing a stale digest.
-local frozenDevelopment = nil
-
-local function developmentProducerId(repositoryRoot)
-  local factory = ProducerFingerprint.checkoutBackend
-  if frozenDevelopment ~= nil and frozenDevelopment.root == repositoryRoot and frozenDevelopment.factory == factory then
-    return frozenDevelopment.producerId
-  end
-  local producerId = ProducerFingerprint.compute(factory(repositoryRoot))
-  frozenDevelopment = { root = repositoryRoot, factory = factory, producerId = producerId }
-  return producerId
-end
-
-local function releaseProducerId(versionId)
-  local counter = DerivedCacheVersions[versionId]
-  assert(
-    type(counter) == "number" and counter == math.floor(counter) and counter >= 1,
-    "release counter must be a positive integer for version: " .. tostring(versionId)
-  )
-  return "r" .. tostring(counter)
-end
-
 local function provisionerOptions(versionId)
-  -- Every selection mints a new epoch on the one process pool, even when
-  -- the logical generation is unchanged. Old physical jobs retain their
-  -- capacity until their actual completion; no second pool is spawned.
-  App.epoch = (App.epoch or 0) + 1
-  App._ensurePool()
+  -- Every selection borrows a fresh controller epoch, even when the
+  -- logical generation is unchanged. Only selectors cross the channel:
+  -- the development producer digest and the generation identity are
+  -- derived below the controller thread, never on the game thread.
+  App._ensureService()
   local options = {
     versionId = versionId,
-    pool = assert(App.pool, "process compiler pool is unavailable"),
-    epoch = App.epoch,
+    service = assert(App.service, "process cache service is unavailable"),
+    development = App.opts.dev == true,
   }
-  if App.opts.dev == true then
-    local repositoryRoot = love.filesystem.getSourceBaseDirectory()
-    options.producerFingerprint = developmentProducerId(repositoryRoot)
-    options.developmentRepositoryRoot = repositoryRoot
-    return options
-  end
-
-  options.producerFingerprint = releaseProducerId(versionId)
-  return options
-end
-
-function App._ensurePool()
-  if App.pool ~= nil then
-    return
-  end
-  local options = { mode = "interactive" }
   if App.opts.dev == true then
     options.developmentRepositoryRoot = love.filesystem.getSourceBaseDirectory()
   end
-  App.pool = CompilerPool.new(options)
+  return options
 end
 
--- Retires the selected source interest without joining long compiler jobs.
--- The process pool is reused; stale results cannot publish afterwards.
+function App._ensureService()
+  if App.service ~= nil then
+    return
+  end
+  App.service = CacheService.new()
+end
+
+-- Retires the selected source interest without joining controller work.
+-- The process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
   local provisioner = App.provisioner
   App.provisioner = nil
@@ -143,37 +108,55 @@ function App._showVersionSelector()
   end))
 end
 
--- Selects a game version: constructs its session on the process pool, then
--- launches the menu immediately when bootstrap is already ready or waits
--- through a visible preparation state otherwise. A ready bootstrap never
--- recompiles; broader warming starts only after the menu is installed.
+-- A pending source-close barrier blocks new selections behind a visible
+-- wait: no new session writes shared version roots before the controller
+-- acknowledges that every source reader closed successfully.
+---@param versionId string newly selected game version
+---@return boolean
+function App._waitForQuiescence(versionId)
+  local pending = App.pendingQuiesce
+  local service = App.service
+  if pending == nil or service == nil then
+    return false
+  end
+  if service:barrierStatus(pending.epoch, pending.barrier) == "ready" then
+    App.pendingQuiesce = nil
+    return false
+  end
+  App.setState(CachePreparationState.new({
+    kind = "quiescence",
+    epoch = pending.epoch,
+    service = service,
+    barrier = pending.barrier,
+    isCurrent = function(_)
+      return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == pending.barrier
+    end,
+    onReady = function()
+      App.pendingQuiesce = nil
+      App._selectVersion(versionId)
+    end,
+    onCancel = function()
+      App.pendingQuiesce = nil
+      App._showVersionSelector()
+    end,
+  }))
+  return true
+end
+
+-- Selects a game version: borrows a controller epoch through its
+-- provisioner, then launches the menu immediately when bootstrap is
+-- already ready or waits through a visible preparation state otherwise.
+-- A ready bootstrap never recompiles; broader warming starts only after
+-- the menu is installed.
 function App._selectVersion(versionId)
-  local pool = App.pool
-  if pool ~= nil then
-    local diagnostics = pool:diagnostics()
-    if diagnostics.quiescing and not pool:isQuiescent() then
-      local pendingEpoch = App.epoch or 0
-      App.setState(CachePreparationState.new({
-        kind = "quiescence",
-        epoch = pendingEpoch,
-        pool = pool,
-        isCurrent = function(selected)
-          return App.epoch == selected
-        end,
-        onReady = function()
-          App._selectVersion(versionId)
-        end,
-        onCancel = function()
-          App._showVersionSelector()
-        end,
-      }))
-      return
-    end
+  if App._waitForQuiescence(versionId) then
+    return
   end
   App._retireSelection()
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
-  local epoch = assert(App.epoch, "selection has no epoch")
+  App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
+  local epoch = App.epoch
   local host = provisioner:gameHost()
   local checkOk, ready = pcall(host.requestMilestone, "bootstrap", "required")
   if checkOk and ready then
@@ -203,8 +186,9 @@ function App.load(opts)
   App.drawableWidth, App.drawableHeight = love.graphics.getDimensions()
   App.importer = nil
   App.provisioner = nil
-  App.pool = nil
+  App.service = nil
   App.epoch = 0
+  App.pendingQuiesce = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -264,23 +248,11 @@ function App.update(dt)
   if App.importer and not App.importer:isBusy() and App.importer.state == RomImporter.STATES.ERROR then
     App.importer = nil
   end
+  if App.service then
+    App.service:update()
+  end
   if App.provisioner then
     App.provisioner:update()
-  elseif App.pool then
-    -- No session is attached (selector, waiting view, cancelled preparation):
-    -- keep the process pool's physical lifecycle moving exactly once so old
-    -- work settles and the source-close barrier progresses. A recorded
-    -- infrastructure failure stays for the waiting view to display instead
-    -- of raising here; anything else keeps propagating.
-    local ok, err = pcall(function()
-      App.pool:update()
-    end)
-    if not ok then
-      local diagOk, diagnostics = pcall(App.pool.diagnostics, App.pool)
-      if not (diagOk and type(diagnostics) == "table" and diagnostics.error ~= nil) then
-        error(err, 0)
-      end
-    end
   end
   if App.state and App.state.update then
     App.state:update(dt)
@@ -329,33 +301,43 @@ function App.filedropped(file)
     -- reentering import here would retire the selection under the wait.
     return
   end
-  if App.pool ~= nil then
+  if App.service ~= nil then
     -- Retire selected interest before the barrier so no new admission can
-    -- enter the quiescing pool, then wait visibly for actual source closure.
-    -- The import starts exactly once from successful barrier completion, on
-    -- every raw path including the selector with no attached provisioner.
-    -- Progress and input keep pumping while the readers drain.
+    -- enter the quiescing controller, then wait visibly for actual source
+    -- closure. The import starts exactly once from successful barrier
+    -- completion, on every raw path including the selector with no
+    -- attached provisioner. Progress and input keep pumping while the
+    -- readers drain.
     App._retireSelection()
-    App.pool:quiesce()
     local epoch = App.epoch or 0
-    App.setState(CachePreparationState.new({
-      kind = "quiescence",
-      epoch = epoch,
-      pool = App.pool,
-      isCurrent = function(selected)
-        return App.epoch == selected
-      end,
-      onReady = function()
-        App._startImport()
-        if App.importer then
-          App.importer:filedropped(file)
-        end
-      end,
-      onCancel = function()
-        App._showVersionSelector()
-      end,
-    }))
-    return
+    local barrier = App.service:quiesce(epoch)
+    if barrier ~= nil then
+      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
+      App.setState(CachePreparationState.new({
+        kind = "quiescence",
+        epoch = epoch,
+        service = App.service,
+        barrier = barrier,
+        isCurrent = function(_)
+          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
+        end,
+        onReady = function()
+          App.pendingQuiesce = nil
+          local ok = App.service:importSource(epoch, barrier)
+          if ok then
+            App._startImport()
+            if App.importer then
+              App.importer:filedropped(file)
+            end
+          end
+        end,
+        onCancel = function()
+          App.pendingQuiesce = nil
+          App._showVersionSelector()
+        end,
+      }))
+      return
+    end
   end
   App._startImport()
   App.importer:filedropped(file)
@@ -458,12 +440,14 @@ end
 function App.quit()
   App.setState(nil)
   App._retireSelection()
-  -- Process shutdown alone joins the physical workers; game switching
-  -- leaves actual old jobs counted on the shared pool.
-  local pool = App.pool
-  App.pool = nil
-  if pool then
-    pool:shutdown()
+  -- Process shutdown alone joins the controller thread; selection
+  -- switching only retires epochs while actual old work stays counted
+  -- below the controller.
+  local service = App.service
+  App.service = nil
+  App.pendingQuiesce = nil
+  if service then
+    service:shutdown()
   end
 end
 

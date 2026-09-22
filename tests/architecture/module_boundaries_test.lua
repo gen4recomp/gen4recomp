@@ -264,6 +264,7 @@ local APP_ROMDUMP_IMPORTS = {
   ["romdump.src.source.RomImporter"] = true,
   ["romdump.src.build.InteractiveCacheBuild"] = true,
   ["romdump.src.build.CompilerPool"] = true,
+  ["romdump.src.build.CacheControllerWorker"] = true,
   ["romdump.src.DerivedCacheState"] = true,
   ["romdump.src.ProducerFingerprint"] = true,
   ["romdump.src.config.DerivedCacheVersions"] = true,
