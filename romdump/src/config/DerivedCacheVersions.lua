@@ -5,8 +5,8 @@
 -- counters are independent per game and unrelated to ROM validation or the
 -- generated-format schema.
 local DerivedCacheVersions = {
-  heartgold = 1,
-  soulsilver = 1,
+  heartgold = 2,
+  soulsilver = 2,
 }
 
 return DerivedCacheVersions

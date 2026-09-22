@@ -129,7 +129,6 @@ local function compileCell(romFs, descriptor, scratch, producerFingerprint)
     landDataMemberId = descriptor.landDataMemberId,
     areaDataMemberId = descriptor.areaDataMemberId,
     buildingModelShas = building.buildingModelShas,
-    terrainAnimation = terrainAnimationCompiler:dependencies(),
   }
   return {
     cell = {
