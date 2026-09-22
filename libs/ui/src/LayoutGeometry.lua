@@ -12,11 +12,16 @@ local LayoutGeometry = {}
 ---@alias LayoutGeometry.Rect { x: number, y: number, width: number, height: number }
 
 ---@class LayoutGeometry.Placement
----@field frame LayoutGeometry.Rect
----@field origin { x: number, y: number }? the render translate point; required for logical mapping only
----@field scale number
+---@field frame LayoutGeometry.Rect the complete transformed logical surface, possibly outside the target bounds
+---@field origin { x: number, y: number }? the render translate point; defaults to the frame origin for legacy mapping-only records
+---@field scale number host units per logical pixel
 ---@field logicalWidth number
 ---@field logicalHeight number
+---@field clipRect LayoutGeometry.Rect? the visible host region; defaults to the frame for legacy mapping-only records
+---@field pixelScale number? framebuffer pixels per logical pixel
+---@field pixelRatio number? framebuffer pixels per host unit
+---@field visibleLogicalRect LayoutGeometry.Rect? the visible logical region
+---@field crop { left: number, right: number, top: number, bottom: number }? whole source pixels hidden per edge
 
 -- The minimal placement `hostToLogical` consumes: the exact hit-test frame
 -- plus the uniform render scale. Structural so sibling layout records share
@@ -171,8 +176,32 @@ local function checkPlacement(placement)
   assert(isFiniteNumber(placement.scale) and placement.scale > 0, "placement.scale must be a finite positive number")
 end
 
+-- The full-frame origin is the single inversion origin: legacy records
+-- without an explicit origin invert through their frame origin, and legacy
+-- records without a clip hit-test the whole frame.
+---@alias LayoutGeometry.Point { x: number, y: number }
+
+---@param placement LayoutGeometry.Placement
+---@return LayoutGeometry.Point
+local function placementOrigin(placement)
+  local origin = placement.origin or placement.frame
+  assert(isFiniteNumber(origin.x) and isFiniteNumber(origin.y), "placement.origin must be finite coordinates")
+  return { x = origin.x, y = origin.y }
+end
+
+---@param placement LayoutGeometry.Placement
+---@return LayoutGeometry.Rect
+local function placementClip(placement)
+  if placement.clipRect == nil then
+    return LayoutGeometry.rect(placement.frame, "placement.frame")
+  end
+  return LayoutGeometry.rect(placement.clipRect, "placement.clipRect")
+end
+
 -- Inverse of the render placement (translate(origin) + scale): nil outside
--- the half-open frame, exact logical coordinates inside.
+-- the half-open intersection of the full frame and the visible clip, exact
+-- logical coordinates inside. Cropping never moves the inversion origin, so
+-- a visible point near a cropped edge maps to its true logical coordinate.
 ---@param placement LayoutGeometry.HitPlacement
 ---@param hostX number
 ---@param hostY number
@@ -185,7 +214,12 @@ function LayoutGeometry.hostToLogical(placement, hostX, hostY)
   if not LayoutGeometry.containsPoint(frame, hostX, hostY) then
     return nil
   end
-  return (hostX - frame.x) / placement.scale, (hostY - frame.y) / placement.scale
+  local clip = placementClip(placement --[[@as LayoutGeometry.Placement]])
+  if not LayoutGeometry.containsPoint(clip, hostX, hostY) then
+    return nil
+  end
+  local origin = placementOrigin(placement --[[@as LayoutGeometry.Placement]])
+  return (hostX - origin.x) / placement.scale, (hostY - origin.y) / placement.scale
 end
 
 ---@param placement LayoutGeometry.Placement
@@ -195,10 +229,87 @@ end
 ---@return number hostY
 function LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
   checkPlacement(placement)
-  local origin = assert(placement.origin, "logical mapping requires a placement origin")
-  assert(isFiniteNumber(origin.x) and isFiniteNumber(origin.y), "placement.origin must be finite coordinates")
+  local origin = placementOrigin(placement)
   assert(isFiniteNumber(logicalX) and isFiniteNumber(logicalY), "logical coordinates must be finite numbers")
   return origin.x + logicalX * placement.scale, origin.y + logicalY * placement.scale
+end
+
+-- Full, un-clipped transformed extents of a logical rectangle: the forward
+-- transform of its edges through the placement origin and scale. Never
+-- selects a scale and never mutates either record.
+---@param placement LayoutGeometry.Placement
+---@param rect LayoutGeometry.Rect
+---@return LayoutGeometry.Rect
+function LayoutGeometry.logicalRectToHost(placement, rect)
+  checkPlacement(placement)
+  local source = LayoutGeometry.rect(rect, "rect")
+  local origin = placementOrigin(placement)
+  return {
+    x = origin.x + source.x * placement.scale,
+    y = origin.y + source.y * placement.scale,
+    width = source.width * placement.scale,
+    height = source.height * placement.scale,
+  }
+end
+
+---@param a LayoutGeometry.Rect
+---@param b LayoutGeometry.Rect
+---@return LayoutGeometry.Rect? the intersection; nil when the rectangles do not overlap
+local function intersectRects(a, b)
+  local x = math.max(a.x, b.x)
+  local y = math.max(a.y, b.y)
+  local farX = math.min(a.x + a.width, b.x + b.width)
+  local farY = math.min(a.y + a.height, b.y + b.height)
+  if farX <= x or farY <= y then
+    return nil
+  end
+  return { x = x, y = y, width = farX - x, height = farY - y }
+end
+
+-- A child placement for a logical subregion of its parent: the child's
+-- logical origin is the subregion's top-left in parent space, its logical
+-- dimensions are the subregion dimensions, and its clip is the intersection
+-- of the parent clip with the child full frame. Returns nil when the child
+-- is wholly invisible instead of a malformed zero-size placement.
+---@param parent LayoutGeometry.Placement
+---@param rect LayoutGeometry.Rect a logical subregion in parent coordinates
+---@return LayoutGeometry.Placement?
+function LayoutGeometry.subPlacement(parent, rect)
+  checkPlacement(parent --[[@as LayoutGeometry.HitPlacement]])
+  assert(
+    isFiniteNumber(parent.logicalWidth)
+      and parent.logicalWidth > 0
+      and isFiniteNumber(parent.logicalHeight)
+      and parent.logicalHeight > 0,
+    "subPlacement requires a parent with finite positive logical dimensions"
+  )
+  local source = LayoutGeometry.rect(rect, "rect")
+  local origin = placementOrigin(parent)
+  local frame = {
+    x = origin.x + source.x * parent.scale,
+    y = origin.y + source.y * parent.scale,
+    width = source.width * parent.scale,
+    height = source.height * parent.scale,
+  }
+  local clip = intersectRects(placementClip(parent), frame)
+  if clip == nil then
+    return nil
+  end
+  local child = {
+    frame = frame,
+    origin = { x = frame.x, y = frame.y },
+    scale = parent.scale,
+    logicalWidth = source.width,
+    logicalHeight = source.height,
+    clipRect = clip,
+  }
+  if parent.pixelScale ~= nil then
+    child.pixelScale = parent.pixelScale
+  end
+  if parent.pixelRatio ~= nil then
+    child.pixelRatio = parent.pixelRatio
+  end
+  return child
 end
 
 return LayoutGeometry
