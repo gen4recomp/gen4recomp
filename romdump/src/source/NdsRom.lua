@@ -5,6 +5,9 @@
 local Errors = require("libs.errors.src.Errors")
 local Cartridge = require("libs.nds.src.rom.Cartridge")
 local GameVersion = require("romdump.src.source.GameVersion")
+local OverlayCompression = require("libs.nds.src.rom.OverlayCompression")
+
+local COMPRESSED_SIZE_BITS = 24
 
 local NdsRom = {}
 NdsRom.__index = NdsRom
@@ -132,6 +135,66 @@ function NdsRom:fileMap()
     map[fileId] = dest
   end
   return map
+end
+
+-- Direct source-facing overlay-table lookup, normalized to the same flag
+-- convention as RomFs:overlayInfo, for callers that read overlays straight
+-- from the cartridge rather than through the imported cache.
+function NdsRom:overlayInfo(cpu, overlayId)
+  local overlays
+  if cpu == "arm9" then
+    overlays = self:arm9Overlays()
+  elseif cpu == "arm7" then
+    overlays = self:arm7Overlays()
+  else
+    return nil,
+      Errors.new(
+        "NDS_OVERLAY_UNKNOWN_CPU",
+        "unknown overlay CPU " .. tostring(cpu),
+        { cpu = cpu, overlayId = overlayId }
+      )
+  end
+  for _, entry in ipairs(overlays) do
+    if entry.overlayId == overlayId then
+      return {
+        cpu = cpu,
+        overlayId = entry.overlayId,
+        fileId = entry.fileId,
+        ramAddress = entry.ramAddress,
+        ramSize = entry.ramSize,
+        bssSize = entry.bssSize,
+        staticInitStart = entry.staticInitStart,
+        staticInitEnd = entry.staticInitEnd,
+        flags = entry.flags,
+        compressedSize = entry.flags % (2 ^ COMPRESSED_SIZE_BITS),
+        isCompressed = math.floor(entry.flags / (2 ^ COMPRESSED_SIZE_BITS)) % 2 == 1,
+      }
+    end
+  end
+  return nil,
+    Errors.new(
+      "NDS_OVERLAY_UNKNOWN_ID",
+      "no " .. cpu .. " overlay for overlayId " .. tostring(overlayId),
+      { cpu = cpu, overlayId = overlayId }
+    )
+end
+
+-- Direct source-facing overlay read: FAT bytes plus, when the overlay-table
+-- flags mark it compressed, the existing backwards-LZ codec.
+function NdsRom:readOverlay(cpu, overlayId)
+  local info, err = self:overlayInfo(cpu, overlayId)
+  if not info then
+    return nil, err
+  end
+  local bytes = self:readFatFile(info.fileId)
+  if info.isCompressed then
+    local decoded, decodeErr = OverlayCompression.decode(bytes, info.ramSize)
+    if not decoded then
+      return nil, decodeErr
+    end
+    bytes = decoded
+  end
+  return bytes, info
 end
 
 function NdsRom:release()

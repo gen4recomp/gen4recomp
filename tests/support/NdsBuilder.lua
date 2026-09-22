@@ -6,6 +6,8 @@
 -- spec = {
 --   gameCode=, title=, makerCode=, unitCode=, romVersion=,
 --   overlays9 = { "content", ... },   -- arm9 overlays, fileIds 0..
+--     entries may also be tables: { content=, ramAddress=, ramSize=,
+--     bssSize=, staticInitStart=, staticInitEnd=, flags= }
 --   unmapped  = { "content", ... },   -- unreferenced FAT entries, next ids
 --   tree = { files = { {name=, content=} }, dirs = { ... } },  -- named files
 --   corrupt = { fatNotDiv8=, sectionOutOfRange= },
@@ -28,8 +30,20 @@ local function collectContents(node, prefix, out)
   end
 end
 
-local function overlayEntry(overlayId, fileId)
-  return u32(overlayId) .. u32(0) .. u32(0) .. u32(0) .. u32(0) .. u32(0) .. u32(fileId) .. u32(0)
+local function overlayContent(entry)
+  return type(entry) == "table" and entry.content or entry
+end
+
+local function overlayEntry(overlayId, fileId, entry)
+  local meta = type(entry) == "table" and entry or {}
+  return u32(overlayId)
+    .. u32(meta.ramAddress or 0)
+    .. u32(meta.ramSize or 0)
+    .. u32(meta.bssSize or 0)
+    .. u32(meta.staticInitStart or 0)
+    .. u32(meta.staticInitEnd or 0)
+    .. u32(fileId)
+    .. u32(meta.flags or 0)
 end
 
 function NdsBuilder.build(spec)
@@ -47,7 +61,7 @@ function NdsBuilder.build(spec)
   collectContents(tree, "", pathContent)
   local payloads = {}
   for i = 1, #overlays9 do
-    payloads[i - 1] = overlays9[i]
+    payloads[i - 1] = overlayContent(overlays9[i])
   end
   for i = 1, #unmapped do
     payloads[#overlays9 + i - 1] = unmapped[i]
@@ -63,7 +77,7 @@ function NdsBuilder.build(spec)
   -- Overlay tables.
   local ov9Parts = {}
   for i = 1, #overlays9 do
-    ov9Parts[i] = overlayEntry(i - 1, i - 1)
+    ov9Parts[i] = overlayEntry(i - 1, i - 1, overlays9[i])
   end
   local ov9Bytes = table.concat(ov9Parts)
   local ov7Bytes = ""
