@@ -1,6 +1,6 @@
 -- Real-driver proof for shared presentation drawing: a settled plan leaves
 -- fade regions untouched while invoking the chosen render callback, a
--- static framed plan carries geometry with no chrome while leaving outside
+-- static framed plan carries border-only geometry while leaving outside
 -- pixels untouched, and borrowed graphics state survives callback failure.
 -- Plans resolve through the real Start Menu interface and session; only
 -- solid fills are compared, with every painted edge on whole host pixels.
@@ -104,17 +104,17 @@ function T.settled_plan_leaves_fade_regions_untouched(scope)
   end)
   assertStateRestored(before, lg, "fullscreen draw")
   local data = scope:own(canvas:newImageData())
-  -- Decorated body at 2x from (64,56): the 512x432 outer frame centers
-  -- in the host and the body starts 16 logical pixels below its top.
+  -- Decorated body at 2x from (64,48): the 544x480 outer frame centers
+  -- in the host and the body starts 24 logical pixels below its top.
   -- Content paint covers the canonical surface inside that body.
-  assertPixelNear(data, 64 + 10, 56 + 10, 0.1, 0.1, 0.8, 1, "content paints inside the body")
+  assertPixelNear(data, 64 + 10, 48 + 10, 0.1, 0.1, 0.8, 1, "content paints inside the body")
   -- The sentinel survives outside the body frame: no settled matte paints.
   assertPixelNear(data, 630, 470, 0.9, 0.2, 0.2, 1, "fade regions stay unpainted outside the body")
   local pane = assert(plan.panes[1], "the plan needs its body pane")
-  Assert.deepEqual(pane.placement.frame, { x = 64, y = 56, width = 512, height = 384 })
+  Assert.deepEqual(pane.placement.frame, { x = 64, y = 48, width = 512, height = 384 })
 end
 
-function T.static_frame_carries_no_chrome_and_leaves_outside_pixels_clear(scope)
+function T.static_frame_carries_border_only_decoration_and_leaves_outside_pixels_clear(scope)
   local lg = love.graphics
   local session = startMenuSession()
   local measurement = measurementFor(1280, 720)
@@ -196,11 +196,10 @@ local function assertPixel(data, placement, lx, ly, expected, label)
 end
 
 -- The locked rotated mapping for the 256x192 content box: source right
--- becomes the target top (tile 10 at the top-band center), source left
--- becomes the target bottom (tile 6), source top becomes the target left
--- (tile 1, beside the masked tile-2 run), and source bottom becomes the
--- target right (tile 14).
-local BAND_TILES = { top = 10, bottom = 6, left = 1, right = 14 }
+-- becomes the target top (tile 10 at the top-band center, drawn again
+-- mirrored as the bottom cap), source top becomes the target left
+-- (tile 1) and source bottom becomes the target right (tile 14).
+local TOP_BAND_TILE = 10
 
 function T.selected_frame_choice_drives_the_application_border(scope)
   local lg = love.graphics
@@ -219,8 +218,8 @@ function T.selected_frame_choice_drives_the_application_border(scope)
   local second = renderAt(1)
   -- The top-band center carries the selected row's artwork: frame 0 shows
   -- its blue-family tile, frame 1 its cream-family tile.
-  assertPixel(first, placement, 140, 12, tileTexel(0, BAND_TILES.top, 4, 4), "selected frame 0 border")
-  assertPixel(second, placement, 140, 12, tileTexel(1, BAND_TILES.top, 4, 4), "selected frame 1 border")
+  assertPixel(first, placement, 140, 12, tileTexel(0, TOP_BAND_TILE, 4, 4), "selected frame 0 border")
+  assertPixel(second, placement, 140, 12, tileTexel(1, TOP_BAND_TILE, 4, 4), "selected frame 1 border")
   local fx0, fy0 = hostPixel(placement, 140, 12)
   local r0, g0, b0 = first:getPixel(fx0, fy0)
   local r1, g1, b1 = second:getPixel(fx0, fy0)
@@ -236,30 +235,97 @@ function T.selected_frame_choice_drives_the_application_border(scope)
   Assert.near(c0[4], 0, 1e-2, "the content box stays transparent to its own renderer")
 end
 
-function T.rotated_application_frame_is_top_heavy_and_border_only(scope)
+-- Both horizontal caps are the same selected-frame decoration: every
+-- sampled top-cap pixel equals the pixel vertically reflected across the
+-- body midline, for more than one frame style at 1x and 2x, while the two
+-- styles stay visibly distinct. The reflection is exact target-space
+-- mirroring about the body midline: rows are 8px cells, so the counterpart
+-- of row y is 2 * axis - y - 1 with axis = box.y + box.height / 2, and
+-- the probes stay valid whatever exterior depth the geometry reserves.
+
+function T.framed_application_caps_mirror_the_selected_top_band(scope)
   local lg = love.graphics
-  local _, frame = wideStartMenuFrame()
+  local box = { x = 16, y = 32, width = 256, height = 192 }
+  local axis = box.y + box.height / 2
+  local probeX = { box.x + 2, box.x + 10, box.x + 128, box.x + 246, box.x + 254 }
+  local topSamples = {}
+  for _, density in ipairs({ 1, 2 }) do
+    for _, frameIndex in ipairs({ 0, 1 }) do
+      local tag = density .. "x style " .. frameIndex
+      local window = scope:own(openFrameAtlas())
+      local canvas = scope:own(lg.newCanvas(320 * density, 320 * density))
+      lg.setCanvas(canvas)
+      lg.clear(0, 0, 0, 0)
+      lg.push("all")
+      lg.scale(density, density)
+      window:drawApplicationFrame(box, frameIndex)
+      lg.pop()
+      lg.setCanvas()
+      local data = scope:own(canvas:newImageData())
+      local function sample(lx, ly)
+        return data:getPixel(lx * density, ly * density)
+      end
+      for _, lx in ipairs(probeX) do
+        for i = 0, 23 do
+          local topY = box.y - 1 - i
+          local bottomY = 2 * axis - topY - 1
+          local tr, tg, tb, ta = sample(lx, topY)
+          Assert.near(ta, 1, 1e-2, tag .. " top cap is opaque decoration at " .. lx .. "," .. topY)
+          local br, bg, bb, ba = sample(lx, bottomY)
+          Assert.near(tr, br, 1e-2, tag .. " mirrored red at " .. lx .. "," .. topY)
+          Assert.near(tg, bg, 1e-2, tag .. " mirrored green at " .. lx .. "," .. topY)
+          Assert.near(tb, bb, 1e-2, tag .. " mirrored blue at " .. lx .. "," .. topY)
+          Assert.near(ta, ba, 1e-2, tag .. " mirrored alpha at " .. lx .. "," .. topY)
+        end
+      end
+      local cr, cg, cb = sample(box.x + 128, box.y - 4)
+      topSamples[density .. ":" .. frameIndex] = { cr, cg, cb }
+    end
+  end
+  for _, density in ipairs({ 1, 2 }) do
+    local first = topSamples[density .. ":0"]
+    local second = topSamples[density .. ":1"]
+    Assert.isTrue(
+      math.abs(first[1] - second[1]) + math.abs(first[2] - second[2]) + math.abs(first[3] - second[3]) > 0.05,
+      density .. "x: the two selected frames paint visibly distinct caps"
+    )
+  end
+end
+
+-- The framed body sits fully inside real exterior room on every edge:
+-- a canonical single pane reserves 8px sides and 24px caps, so the
+-- outer logical frame is 272x240 with the body at (8, 24). The host is
+-- sized so the integer-scaled frame leaves a real margin on both axes.
+function T.framed_application_body_sits_inside_full_exterior_room(scope)
+  local lg = love.graphics
+  local session = startMenuSession()
+  local plan = session:resolve(measurementFor(1600, 900), {})
+  local frames = assert(plan.frames, "a wide host frames the menu")
+  Assert.equal(#frames, 1, "one outer frame decorates the menu")
+  local frame = frames[1]
   local window = scope:own(openFrameAtlas())
   local placement = assert(frame.placement, "the frame carries its host placement")
   local insets = FieldDialogueTheme.applicationFrameInsets()
   Assert.deepEqual(
     { insets.left, insets.top, insets.right, insets.bottom },
-    { 0, 16, 0, 8 },
-    "only the exterior past the overlap reserves room"
+    { 8, 24, 8, 24 },
+    "the full exterior frame reserves room on every edge"
   )
   local box = assert(frame.contentBox, "the frame carries its content box")
   Assert.deepEqual(
     { box.x, box.y, box.width, box.height },
-    { insets.left, insets.top, 256, 192 },
-    "the content box sits inside the exterior insets"
+    { 8, 24, 256, 192 },
+    "the content box starts inside the exterior frame"
   )
+  Assert.equal(placement.logicalWidth, 272, "the outer frame adds left and right room")
+  Assert.equal(placement.logicalHeight, 240, "the outer frame adds top and bottom room")
   local OUTSIDE = { 1, 0, 1, 1 }
   local CONTENT = { 0, 1, 0, 1 }
-  local canvas = scope:own(lg.newCanvas(1280, 720))
+  local canvas = scope:own(lg.newCanvas(1600, 900))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
   lg.setColor(OUTSIDE[1], OUTSIDE[2], OUTSIDE[3], OUTSIDE[4])
-  lg.rectangle("fill", 0, 0, 1280, 720)
+  lg.rectangle("fill", 0, 0, 1600, 900)
   do
     local bx, by = hostPixel(placement, box.x, box.y)
     local ex, ey = hostPixel(placement, box.x + box.width, box.y + box.height)
@@ -269,14 +335,10 @@ function T.rotated_application_frame_is_top_heavy_and_border_only(scope)
   drawApplicationFrame(lg, window, frame, 0)
   lg.setCanvas()
   local data = scope:own(canvas:newImageData())
-  assertPixel(data, placement, 140, 12, tileTexel(0, BAND_TILES.top, 4, 4), "top band shows source-right artwork")
-  assertPixel(data, placement, 140, 212, tileTexel(0, BAND_TILES.bottom, 4, 4), "bottom band shows source-left artwork")
-  assertPixel(data, placement, 4, 204, tileTexel(0, BAND_TILES.left, 4, 4), "left band shows source-top artwork")
-  assertPixel(data, placement, 252, 116, tileTexel(0, BAND_TILES.right, 4, 4), "right band shows source-bottom artwork")
   assertPixel(data, placement, 136, 120, CONTENT, "the content sentinel survives the border draw")
   local ox, oy = hostPixel(placement, 0, 0)
   Assert.isTrue(ox > 0 and oy > 0, "the framed box leaves a host margin on a wide host")
-  local or_, og, ob, oa = data:getPixel(10, 10)
+  local or_, og, ob, oa = data:getPixel(math.max(0, ox - 4), math.max(0, oy - 4))
   Assert.near(or_, OUTSIDE[1], 1e-2, "outside sentinel red")
   Assert.near(og, OUTSIDE[2], 1e-2, "outside sentinel green")
   Assert.near(ob, OUTSIDE[3], 1e-2, "outside sentinel blue")
@@ -295,7 +357,7 @@ function T.settled_field_stays_visible_outside_the_framed_application(scope)
   lg.setColor(FIELD[1], FIELD[2], FIELD[3], FIELD[4])
   lg.rectangle("fill", 0, 0, 1280, 720)
   -- The settled application paints its content, then its frame border
-  -- over the overlapped edge pixels.
+  -- around the fully exterior silhouette.
   local settledPlan = withContentRender(
     (function()
       local session = startMenuSession()
@@ -312,7 +374,7 @@ function T.settled_field_stays_visible_outside_the_framed_application(scope)
   Assert.near(fg, FIELD[2], 1e-2, "field green outside the frame")
   Assert.near(fb, FIELD[3], 1e-2, "field blue outside the frame")
   Assert.near(fa, FIELD[4], 1e-2, "field alpha outside the frame")
-  assertPixel(data, placement, 140, 12, tileTexel(0, BAND_TILES.top, 4, 4), "the frame border renders above the field")
+  assertPixel(data, placement, 140, 12, tileTexel(0, TOP_BAND_TILE, 4, 4), "the frame border renders above the field")
   assertPixel(data, placement, 136, 120, { 0.1, 0.1, 0.8, 1 }, "the application content renders inside its body")
 end
 
@@ -330,7 +392,7 @@ function T.application_frame_tiles_carry_rotated_artwork(scope)
   for ty = 0, 7 do
     for tx = 0, 7 do
       local color = ty < 4 and { 255, 0, 0, 255 } or { 0, 0, 255, 255 }
-      local offset = (ty * 144 + BAND_TILES.top * 8 + tx) * 4
+      local offset = (ty * 144 + TOP_BAND_TILE * 8 + tx) * 4
       bytes[offset + 1], bytes[offset + 2], bytes[offset + 3], bytes[offset + 4] =
         color[1], color[2], color[3], color[4]
     end
@@ -341,9 +403,9 @@ function T.application_frame_tiles_carry_rotated_artwork(scope)
   end
   local strip = table.concat(parts) .. FieldUiFixture.framePixels(1)
   local cache = FieldUiFixture.cacheWithFontAndFrames()
-  -- Chrome samples the masked application atlas, so the marker addresses
-  -- that strip; the dialogue strip stays unpatched.
-  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, strip))
+  -- Application decoration samples the dialogue atlas, so the marker
+  -- addresses that strip directly.
+  cache:write(FieldUiFixture.STRIP_PATH, PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, strip))
   local window = scope:own(openFrameAtlas(cache))
   local placement = assert(frame.placement, "the frame carries its host placement")
   local canvas = scope:own(lg.newCanvas(1280, 720))

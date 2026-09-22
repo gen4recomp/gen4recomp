@@ -96,36 +96,39 @@ function FieldDialogueTheme.frameTilePlacements(box)
   }
 end
 
--- Application chrome overlaps the innermost 8px frame band onto the content
--- on every edge instead of reserving the whole nominal frame outside it:
--- nominal 8/24/8/16 minus the overlap leaves 0/16/0/8 exterior room.
-local APPLICATION_FRAME_OVERLAP = 8
-local NOMINAL_FRAME = { left = 8, top = 24, right = 8, bottom = 16 }
+-- Application frame room is fully exterior: the body sits inside the
+-- decorative silhouette, so no application pixel hides beneath frame art.
+-- The 8px sides flank the body while the 24px caps mirror the source
+-- frame's thick right edge top and bottom.
+local APPLICATION_FRAME_INSETS = {
+  left = 8,
+  top = 24,
+  right = 8,
+  bottom = 24,
+}
 
--- Exterior room the application frame reserves outside the content box:
--- the whole inner 8px band overlaps body pixels, so only the remaining
--- 0 left, 16 top, 0 right, 8 bottom stay outside the application.
+-- Exterior room the application frame reserves outside the content box.
 ---@return { left: integer, top: integer, right: integer, bottom: integer }
 function FieldDialogueTheme.applicationFrameInsets()
   return {
-    left = NOMINAL_FRAME.left - APPLICATION_FRAME_OVERLAP,
-    top = NOMINAL_FRAME.top - APPLICATION_FRAME_OVERLAP,
-    right = NOMINAL_FRAME.right - APPLICATION_FRAME_OVERLAP,
-    bottom = NOMINAL_FRAME.bottom - APPLICATION_FRAME_OVERLAP,
+    left = APPLICATION_FRAME_INSETS.left,
+    top = APPLICATION_FRAME_INSETS.top,
+    right = APPLICATION_FRAME_INSETS.right,
+    bottom = APPLICATION_FRAME_INSETS.bottom,
   }
 end
 
 -- Rotated application-frame tile targets derived from the audited
--- standard tilemap: the source composition runs around the content box
--- inset by the 8px application overlap, expands to 8x8 instances, then
--- the whole composition rotates so source right becomes target top,
--- source left becomes target bottom, source top becomes target left,
--- and source bottom becomes target right. The inner band therefore lands
--- on body pixels while only the 0/16/0/8 exterior stays outside the
--- application. Returns tile identities with target positions; drawing
--- and artwork rotation stay with the frame renderer.
+-- standard tilemap: the source composition runs around the content box,
+-- expands to 8x8 instances, then the whole composition rotates so source
+-- right becomes target top, source top becomes target left, and source
+-- bottom becomes target right. Cells above the body form the top group;
+-- cells flanking the body form the sides group. The source-left cells
+-- below the body are discarded: the renderer mirrors the top group down
+-- instead. Returns tile identities with target positions; drawing,
+-- artwork rotation, and the bottom mirror stay with the frame renderer.
 ---@param box FieldDialogueTheme.Rect the target content box
----@return { tile: integer, x: number, y: number }[]
+---@return { top: { tile: integer, x: number, y: number }[], sides: { tile: integer, x: number, y: number }[] }
 function FieldDialogueTheme.applicationFrameTilePlacements(box)
   assert(
     type(box) == "table" and box.x and box.y and box.width and box.height,
@@ -140,21 +143,12 @@ function FieldDialogueTheme.applicationFrameTilePlacements(box)
     "applicationFrameTilePlacements requires positive integral content dimensions"
   )
   assert(box.width % 8 == 0 and box.height % 8 == 0, "applicationFrameTilePlacements requires 8px-compatible content")
-  assert(
-    box.width > 2 * APPLICATION_FRAME_OVERLAP and box.height > 2 * APPLICATION_FRAME_OVERLAP,
-    "applicationFrameTilePlacements requires room for the 8px overlap on every edge"
-  )
-  local frameBox = {
-    x = box.x + APPLICATION_FRAME_OVERLAP,
-    y = box.y + APPLICATION_FRAME_OVERLAP,
-    width = box.width - 2 * APPLICATION_FRAME_OVERLAP,
-    height = box.height - 2 * APPLICATION_FRAME_OVERLAP,
-  }
-  local targetOuterX = frameBox.x - NOMINAL_FRAME.left
-  local targetOuterY = frameBox.y - NOMINAL_FRAME.top
-  local sourceBox = { x = 16, y = 8, width = frameBox.height, height = frameBox.width }
+  local targetOuterX = box.x - APPLICATION_FRAME_INSETS.left
+  local targetOuterY = box.y - APPLICATION_FRAME_INSETS.top
+  local sourceBox = { x = 16, y = 8, width = box.height, height = box.width }
   local sourceOuterWidth = sourceBox.width + 16 + 24
-  local placements = {}
+  local top = {}
+  local sides = {}
   for _, entry in ipairs(FieldDialogueTheme.frameTilePlacements(sourceBox)) do
     local countX = entry.spanX or 1
     local countY = entry.spanY or 1
@@ -164,11 +158,18 @@ function FieldDialogueTheme.applicationFrameTilePlacements(box)
         local sy = entry.y + iy * 8
         local tx = targetOuterX + sy
         local ty = targetOuterY + (sourceOuterWidth - sx - 8)
-        placements[#placements + 1] = { tile = entry.tile, x = tx, y = ty }
+        local placement = { tile = entry.tile, x = tx, y = ty }
+        if ty + 8 <= box.y then
+          top[#top + 1] = placement
+        elseif ty >= box.y and ty + 8 <= box.y + box.height then
+          sides[#sides + 1] = placement
+        end
+        -- Cells below the body (the source-left band) are discarded; the
+        -- mirrored top group forms the bottom cap instead.
       end
     end
   end
-  return placements
+  return { top = top, sides = sides }
 end
 
 -- Reference-to-screen mapping for one viewport. The canonical 256x192

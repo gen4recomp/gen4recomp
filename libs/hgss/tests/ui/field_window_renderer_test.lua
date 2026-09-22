@@ -101,9 +101,11 @@ function T.unknown_frame_index_fails_loudly()
 end
 
 -- The application frame draws only the rotated selected border around the
--- content box: no content fill, one draw per rotated tile instance from the
--- shared rotated tilemap, sampling the selected strip row with identity
--- tint and a visual quarter turn on every tile.
+-- content box: one draw per side/top tile instance from the shared grouped
+-- tilemap, sampling the selected dialogue strip row with identity tint
+-- and a visual quarter turn on every tile, then the top group again under
+-- a scoped vertical reflection so the bottom mirrors the top. The
+-- borrowed transform stack is balanced on success.
 function T.application_frame_draws_only_the_rotated_selected_border()
   local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
   local window = openWindow(lg)
@@ -111,17 +113,55 @@ function T.application_frame_draws_only_the_rotated_selected_border()
   window:drawApplicationFrame(box, 0)
   Assert.equal(#lg.rectangles, 0, "the application frame never fills its content box")
   local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local expected = FieldDialogueTheme.applicationFrameTilePlacements(box)
-  Assert.equal(#lg.draws, #expected, "every rotated tile instance draws exactly once")
-  for index, call in ipairs(lg.draws) do
-    local want = expected[index]
-    Assert.equal(call.x, want.x, "border tile " .. index .. " keeps its rotated target x")
-    Assert.equal(call.y, want.y, "border tile " .. index .. " keeps its rotated target y")
-    Assert.equal(call.quad.x, want.tile * 8, "border tile samples the selected strip row")
-    Assert.equal(call.quad.y, 0, "frame 0 samples the first strip row")
-    Assert.near(math.abs(call.rotation or 0), math.pi / 2, 1e-9, "border tile art carries a visual quarter turn")
-    Assert.deepEqual(call.color, { 1, 1, 1, 1 }, "border tiles draw with identity tint")
+  local groups = FieldDialogueTheme.applicationFrameTilePlacements(box)
+  Assert.equal(
+    #lg.draws,
+    #groups.sides + 2 * #groups.top,
+    "sides and top draw once, the mirrored bottom redraws the top"
+  )
+  local cursor = 0
+  local function assertDraws(list, label)
+    for _, want in ipairs(list) do
+      cursor = cursor + 1
+      local call = lg.draws[cursor]
+      Assert.isTrue(call.image == lg.images[1], label .. " samples the dialogue strip")
+      Assert.equal(call.x, want.x, label .. " keeps its rotated target x")
+      Assert.equal(call.y, want.y, label .. " keeps its rotated target y")
+      Assert.equal(call.quad.x, want.tile * 8, label .. " samples the selected strip row")
+      Assert.equal(call.quad.y, 0, "frame 0 samples the first strip row")
+      Assert.near(math.abs(call.rotation or 0), math.pi / 2, 1e-9, label .. " art carries a visual quarter turn")
+      Assert.deepEqual(call.color, { 1, 1, 1, 1 }, label .. " draws with identity tint")
+    end
   end
+  assertDraws(groups.sides, "side tile")
+  assertDraws(groups.top, "top tile")
+  Assert.deepEqual(
+    lg.transforms,
+    { { "translate", 0, 2 * (box.y + box.height / 2) }, { "scale", 1, -1 } },
+    "the bottom redraws the top under one scoped vertical reflection"
+  )
+  assertDraws(groups.top, "mirrored bottom tile")
+  Assert.equal(lg.pushDepth(), 0, "the borrowed transform stack is balanced")
+  window:release()
+end
+
+-- A tile failure inside the mirrored pass still restores the borrowed
+-- graphics state: the reflection scope pops and the defect propagates
+-- instead of leaking a flipped transform into later draws.
+function T.application_frame_mirror_failure_restores_state_and_propagates()
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local groups =
+    FieldDialogueTheme.applicationFrameTilePlacements({ x = 8, y = 24, width = 256, height = 192 })
+  local lg = fakeGraphics({
+    imageSizes = { { 144, 16 } },
+    failOnDrawCall = #groups.sides + #groups.top + 1,
+  })
+  local window = openWindow(lg)
+  local err = Assert.throws(function()
+    window:drawApplicationFrame({ x = 8, y = 24, width = 256, height = 192 }, 0)
+  end, "the mirrored tile failure propagates")
+  Assert.isTrue(tostring(err):find("injected draw failure", 1, true) ~= nil)
+  Assert.equal(lg.pushDepth(), 0, "the reflection scope pops on failure")
   window:release()
 end
 
@@ -150,20 +190,18 @@ function T.application_frame_unknown_index_fails_loudly()
   window:release()
 end
 
--- The renderer owns both generated atlases: the dialogue strip beside the
--- masked application strip, each sampled with nearest filtering so frame
--- pixels stay crisp at integer scales.
-function T.constructor_acquires_dialogue_and_application_atlases_with_nearest_sampling()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 }, { 144, 16 } } })
+-- The renderer owns the one generated dialogue atlas: the dialogue strip
+-- is acquired with nearest filtering so frame pixels stay crisp at
+-- integer scales, and no second strip is acquired.
+function T.constructor_acquires_the_dialogue_atlas_with_nearest_sampling()
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
   local window = openWindow(lg)
-  Assert.equal(#lg.images, 2, "dialogue and application strips are both acquired")
-  for index, image in ipairs(lg.images) do
-    Assert.deepEqual(
-      image.filters[#image.filters],
-      { min = "nearest", mag = "nearest" },
-      "atlas " .. index .. " samples with nearest filtering"
-    )
-  end
+  Assert.equal(#lg.images, 1, "only the dialogue strip is acquired")
+  Assert.deepEqual(
+    lg.images[1].filters[#lg.images[1].filters],
+    { min = "nearest", mag = "nearest" },
+    "the atlas samples with nearest filtering"
+  )
   window:release()
 end
 
@@ -181,19 +219,30 @@ function T.ordinary_window_drawing_samples_only_the_dialogue_strip()
   window:release()
 end
 
-function T.missing_application_strip_is_a_typed_error_releasing_the_dialogue_image()
+-- The application border builds from the dialogue atlas alone: a manifest
+-- with no application record constructs, acquires one strip image, and
+-- the selected row still drives the border artwork.
+function T.application_frame_builds_from_the_dialogue_atlas_alone()
   local FieldWindowRenderer = windowRenderer()
-  local lg = fakeGraphics({ imageSizes = { { 144, 16 }, { 144, 16 } } })
-  local cache = FieldUiFixture.cacheWithFontAndFrames()
-  cache:remove(FieldUiFixture.APPLICATION_STRIP_PATH)
-  local err = Assert.throws(function()
-    FieldWindowRenderer.new({ cacheFs = cache, manifest = FieldUiFixture.manifest(), graphics = lg })
-  end)
-  local Errors = require("libs.errors.src.Errors")
-  Assert.isTrue(Errors.is(err) and err.code == "FIELD_UI_FRAME_ATLAS_MISSING", "raises FIELD_UI_FRAME_ATLAS_MISSING")
-  Assert.equal(#lg.images, 1, "only the dialogue image was acquired before the failure")
-  Assert.isTrue(lg.images[1].released, "the dialogue image is released on partial failure")
-  Assert.equal(lg.images[1].releaseCount, 1, "the dialogue image is released exactly once")
+  local lg = fakeGraphics({ imageSizes = { { 144, 16 } } })
+  local manifest = FieldUiFixture.manifest()
+  Assert.isNil(manifest.dialogueFrames.application, "no application record is published")
+  Assert.isNil(manifest.assets["hgss.application_frame.tiles"], "no second atlas is indexed")
+  local window = FieldWindowRenderer.new({
+    cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+    manifest = manifest,
+    graphics = lg,
+  })
+  Assert.equal(#lg.images, 1, "only the dialogue strip is acquired")
+  local box = { x = 8, y = 24, width = 256, height = 192 }
+  window:drawApplicationFrame(box, 1)
+  Assert.equal(#lg.rectangles, 0, "the application frame never fills its content box")
+  Assert.isTrue(#lg.draws > 0, "the selected frame draws its border tiles")
+  for _, call in ipairs(lg.draws) do
+    Assert.isTrue(call.image == lg.images[1], "every border tile samples the dialogue strip")
+    Assert.equal(call.quad.y, 8, "frame 1 samples the second strip row")
+  end
+  window:release()
 end
 
 return { tests = T }

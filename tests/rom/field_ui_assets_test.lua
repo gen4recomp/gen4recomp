@@ -197,36 +197,18 @@ function T.dialogue_frame_styles_are_distinct_artwork_with_identical_geometry(ro
   Assert.isTrue(r0 ~= r1 or g0 ~= g1 or b0 ~= b1, "frame 0 and frame 1 tile 6 colors differ")
 end
 
--- The application frame strip is derived from the same indexed source as
--- the dialogue strip: it is indexed beside the dialogue asset with
--- identical dimensions and row rectangles, its window-interior seed tile
--- (tile 8, the third tile of the middle frame row) is transparent, and the
--- row retains opaque decoration elsewhere, so overlay chrome reveals the
--- application through the interior while preserving border art.
-function T.application_frame_strip_masks_the_interior_seed(romFs, _)
+-- The compiled field UI carries no application frame record: the dialogue
+-- strip is the only frame atlas, so no second strip is indexed or emitted.
+function T.compiled_field_ui_has_no_application_frame_record(romFs, _)
   local bundle = assert(FieldUiCompiler.compile(romFs))
   local frames = assert(bundle.manifest.dialogueFrames)
-  local application = assert(frames.application, "the compiled field UI must publish the application frame record")
-  local dialogueEntry = assert(bundle.manifest.assets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES])
-  local applicationEntry = assert(bundle.manifest.assets[application.asset])
-  Assert.equal(applicationEntry.width, dialogueEntry.width)
-  Assert.equal(applicationEntry.height, dialogueEntry.height)
-  Assert.equal(applicationEntry.width, 144)
-  Assert.equal(applicationEntry.height, frames.count * 8)
-  local row = assert(frames.frameTiles[0])
-  Assert.isTrue(row.x + row.width <= applicationEntry.width)
-  Assert.isTrue(row.y + row.height <= applicationEntry.height)
-  local applicationWidth, _, applicationRgba = PngReader.rgba(assert(bundle.assets[applicationEntry.image]))
-  local _, _, _, seedAlpha = PngReader.pixel(applicationRgba, applicationWidth, 8 * 8 + 4, row.y + 4)
-  Assert.equal(seedAlpha, 0, "the interior seed tile is transparent in the application strip")
-  local opaque = 0
-  for x = 0, applicationEntry.width - 1 do
-    local _, _, _, a = PngReader.pixel(applicationRgba, applicationWidth, x, row.y + 4)
-    if a ~= 0 then
-      opaque = opaque + 1
-    end
+  Assert.isNil(frames.application, "the compiled field UI carries no application frame record")
+  for path in pairs(bundle.assets) do
+    Assert.isFalse(
+      path:find("application-frame-tiles", 1, true) ~= nil,
+      "no generated payload is an application frame strip"
+    )
   end
-  Assert.isTrue(opaque > 0, "the application strip retains opaque decoration")
 end
 
 -- The field printer's continuation cursor is a source-derived, precolored

@@ -49,7 +49,6 @@ FieldUiAssetCache.GEOMETRY = {
 -- strings.
 FieldUiAssetCache.ASSET = {
   DIALOGUE_FRAME_TILES = "hgss.dialogue_frame.tiles",
-  APPLICATION_FRAME_TILES = "hgss.application_frame.tiles",
   DIALOGUE_CONTINUE_CURSOR = "hgss.dialogue_continue_cursor",
   SIGNPOST_TILES = "hgss.signpost.tiles",
   SIGNPOST_WAYFINDING = "hgss.signpost.wayfinding",
@@ -239,35 +238,9 @@ function FieldUiAssetCache.validateManifest(manifest)
         return false, err
       end
     end
-    -- The application strip is a required part of the generated class: it
-    -- shares the dialogue atlas dimensions, so the same row rectangles
-    -- index both images. A class without the record, or with a mismatched
-    -- application atlas, is stale and must fail readiness.
-    local dialogueAtlas = atlasSizes[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES]
-    local application = s.application
-    if type(application) ~= "table" or application.asset ~= FieldUiAssetCache.ASSET.APPLICATION_FRAME_TILES then
-      return false,
-        Errors.new(MANIFEST_INVALID, "dialogueFrames.application must reference the application frame atlas", {})
-    end
-    local applicationAtlas = atlasSizes[application.asset]
-    if not applicationAtlas then
-      return false,
-        Errors.new(MANIFEST_INVALID, "dialogueFrames.application asset is not indexed", {
-          asset = application.asset,
-        })
-    end
-    if
-      dialogueAtlas == nil
-      or applicationAtlas.width ~= dialogueAtlas.width
-      or applicationAtlas.height ~= dialogueAtlas.height
-    then
-      return false,
-        Errors.new(
-          MANIFEST_INVALID,
-          "dialogueFrames.application atlas must match the dialogue frame atlas dimensions",
-          {}
-        )
-    end
+    -- The single dialogue strip is the only frame authority: the same
+    -- row rectangles index the one atlas for ordinary windows and
+    -- application decoration alike.
     local cursor = s.continueCursor
     if type(cursor) ~= "table" then
       return false, Errors.new(MANIFEST_INVALID, "dialogueFrames.continueCursor must be a table", {})

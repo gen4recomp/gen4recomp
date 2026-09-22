@@ -215,11 +215,11 @@ function T.tests.framed_static_box_carries_the_complete_rotated_outer_frame()
     assert(policy.framed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames the content")
   local frame = assert(geometry.frames, "wide carries its frame list")[1]
   Assert.notNil(frame, "one outer frame decorates the pane")
-  Assert.equal(frame.placement.logicalWidth, 256, "the overlapped outer frame adds no side room")
-  Assert.equal(frame.placement.logicalHeight, 216, "the outer frame adds the 16px top and 8px bottom")
+  Assert.equal(frame.placement.logicalWidth, 272, "the outer frame adds left and right room")
+  Assert.equal(frame.placement.logicalHeight, 240, "the outer frame adds the 24px top and bottom")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 0, y = 16, width = 256, height = 192 },
+    { x = 8, y = 24, width = 256, height = 192 },
     "the body starts inside the exterior insets"
   )
   local untyped = geometry --[[@as table<string, unknown>]]
@@ -232,15 +232,20 @@ function T.tests.framed_static_box_carries_the_complete_rotated_outer_frame()
   )
   Assert.near(
     (body.origin.x - frame.placement.origin.x) / frame.placement.scale,
-    0,
+    8,
     1e-9,
-    "the body starts at the left frame edge through the overlap"
+    "the body starts inside the left frame edge"
   )
   Assert.near(
     (body.origin.y - frame.placement.origin.y) / frame.placement.scale,
-    16,
+    24,
     1e-9,
     "the body starts below the top frame edge"
+  )
+  Assert.deepEqual(
+    body.crop or { left = 0, right = 0, top = 0, bottom = 0 },
+    { left = 0, right = 0, top = 0, bottom = 0 },
+    "a visible frame never coexists with body crop"
   )
 end
 
@@ -263,8 +268,8 @@ function T.tests.framed_selects_physical_integer_scale_through_the_framebuffer_r
       1e-9,
       "the host scale is the physical scale over the framebuffer ratio"
     )
-    Assert.equal(outer.logicalWidth, 256, "the outer frame keeps its overlapped width")
-    Assert.equal(outer.logicalHeight, 216, "the outer frame keeps its overlapped height")
+    Assert.equal(outer.logicalWidth, 272, "the outer frame keeps its exterior width")
+    Assert.equal(outer.logicalHeight, 240, "the outer frame keeps its exterior height")
   end
 end
 
@@ -318,10 +323,9 @@ function T.tests.stacked_returns_nil_when_the_envelope_cannot_fit()
   )
 end
 
--- Static single-pane boxes fit the complete rotated outer frame
--- (content plus the 0/16/0/8 exterior around the overlapped body)
+-- Static single-pane boxes fit the complete symmetric outer frame
+-- (content plus the 8/24/8/24 exterior around the body)
 -- centered at integer scale with no remembered position
--- position, title strip, or grab geometry.
 function T.tests.framed_single_pane_centers_the_complete_rotated_frame()
   local policy = sharedPolicy()
   for _, size in ipairs({ { width = 1280, height = 720 }, { width = 390, height = 844 } }) do
@@ -341,7 +345,7 @@ function T.tests.framed_single_pane_centers_the_complete_rotated_frame()
     Assert.notNil(frame, "one outer frame decorates the pane")
     Assert.deepEqual(
       frame.contentBox,
-      { x = 0, y = 16, width = 256, height = 192 },
+      { x = 8, y = 24, width = 256, height = 192 },
       "the content box sits inside the exterior insets"
     )
     local bodyPlacement = assert(geometry.placements["content"], "the framed pane places")
@@ -368,6 +372,40 @@ function T.tests.framed_returns_nil_when_no_complete_frame_fits()
   Assert.isNil(
     policy.framed(context, { id = "content", width = 256, height = 192 }),
     "a tiny host needs the nativeLike fallback"
+  )
+end
+
+-- Same-display pairs frame their common envelope once: one 16x48 exterior
+-- around the combined envelope, never once per pane.
+function T.tests.same_display_pair_frames_its_envelope_once()
+  local policy = sharedPolicy()
+  local wide = layoutContext(measure(singleSurface(1280, 720), 1280, 720), "wide")
+  local side = assert(
+    policy.sideBySide(wide, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 256, height = 192 }),
+    "a 720p host pairs two native panes"
+  )
+  local frame = assert(side.frames, "the pair carries its frame list")[1]
+  Assert.notNil(frame, "one outer frame decorates the pair envelope")
+  Assert.equal(frame.placement.logicalWidth, 528, "the pair frame adds side room once")
+  Assert.equal(frame.placement.logicalHeight, 240, "the pair frame adds caps once")
+  Assert.deepEqual(
+    frame.contentBox,
+    { x = 8, y = 24, width = 512, height = 192 },
+    "the pair envelope starts inside the full exterior frame"
+  )
+  local tall = layoutContext(measure(singleSurface(390, 844), 390, 844), "tall")
+  local stacked = assert(
+    policy.stacked(tall, { id = "upper", width = 256, height = 192 }, { id = "lower", width = 256, height = 192 }),
+    "a tall host stacks two native panes"
+  )
+  local vertical = assert(stacked.frames, "the stack carries its frame list")[1]
+  Assert.notNil(vertical, "one outer frame decorates the stacked envelope")
+  Assert.equal(vertical.placement.logicalWidth, 272, "the stacked frame adds side room once")
+  Assert.equal(vertical.placement.logicalHeight, 432, "the stacked frame adds caps once")
+  Assert.deepEqual(
+    vertical.contentBox,
+    { x = 8, y = 24, width = 256, height = 384 },
+    "the stacked envelope starts inside the full exterior frame"
   )
 end
 
@@ -406,11 +444,11 @@ function T.tests.cover_or_frame_prefers_full_coverage_then_decoration()
   )
   local frame = assert(decorated.frames, "the refit owns its frame list")[1]
   Assert.notNil(frame, "one outer frame decorates the refit pane")
-  Assert.equal(frame.placement.logicalWidth, 256, "the refit frame adds no side room")
-  Assert.equal(frame.placement.logicalHeight, 216, "the refit frame reserves the top and bottom")
+  Assert.equal(frame.placement.logicalWidth, 272, "the refit frame adds side room")
+  Assert.equal(frame.placement.logicalHeight, 240, "the refit frame reserves the top and bottom")
   Assert.deepEqual(
     frame.contentBox,
-    { x = 0, y = 16, width = 256, height = 192 },
+    { x = 8, y = 24, width = 256, height = 192 },
     "the refit body starts inside the exterior insets"
   )
   local tiny = layoutContext(measure(singleSurface(200, 150), 200, 150), "nativeLike")

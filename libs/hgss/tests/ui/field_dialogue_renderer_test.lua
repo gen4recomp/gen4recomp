@@ -258,19 +258,19 @@ end
 -- strips, creates no third slice source image, and draws the frame from the
 -- generated strip tiles.
 function T.no_nine_slice_assets_are_built()
-  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 }, { 144, 16 } } })
+  local lg = fakeGraphics({ imageSizes = { { 16, 16 }, { 16, 16 }, { 96, 32 }, { 144, 16 } } })
   local renderer = FieldDialogueRenderer.new({
     cacheFs = uiCache(),
     manifest = MANIFEST,
     text = withTextRenderer(uiCache(), lg),
     graphics = lg,
   })
-  Assert.equal(#lg.images, 6, "the font atlases, frame strips, and continuation cursor are created")
+  Assert.equal(#lg.images, 5, "the font atlases, frame strip, and continuation cursor are created")
 
   local controller = FieldDialogueFixture.openDialogue("AB", 0)
   local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
-  Assert.equal(#lg.images, 6, "drawing creates no slice image")
+  Assert.equal(#lg.images, 5, "drawing creates no slice image")
   renderer:release()
 end
 
@@ -366,7 +366,7 @@ function T.waiting_dialogue_draws_the_generated_cursor_phase_without_blinking()
   local fieldScale = 1
   renderer:draw(controller, presentationAtFieldScale(fieldScale))
   local first = lg.draws[#lg.draws]
-  Assert.equal(first.image, lg.images[6], "the continuation uses the generated cursor atlas")
+  Assert.equal(first.image, lg.images[5], "the continuation uses the generated cursor atlas")
   local expected = cursorManifest().dialogueFrames.continueCursor.styles[3].phases[status.cursorPhase]
   Assert.deepEqual({ first.quad.x, first.quad.y, first.quad.w, first.quad.h }, {
     expected.x,
@@ -411,7 +411,7 @@ function T.compact_presentation_places_the_cursor_inside_its_window()
   renderer:draw(controller, presentation)
   local cursor = lg.draws[#lg.draws]
   local expected = cursorManifest().dialogueFrames.continueCursor.styles[3].phases[status.cursorPhase]
-  Assert.equal(cursor.image, lg.images[6], "the compact presentation uses the generated cursor atlas")
+  Assert.equal(cursor.image, lg.images[5], "the compact presentation uses the generated cursor atlas")
   Assert.deepEqual({ cursor.quad.x, cursor.quad.y, cursor.quad.w, cursor.quad.h }, {
     expected.x,
     expected.y,

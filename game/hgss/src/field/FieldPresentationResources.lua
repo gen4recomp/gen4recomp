@@ -74,9 +74,9 @@ FieldPresentationResources.__index = FieldPresentationResources
 -- fallback to another application surface.
 -- Draws every published outer frame through the shared selected-frame owner
 -- after application content: one logical scope per frame record, the
--- border-only selected frame, never content or host pixels. The masked
--- inner band overlaps body pixels, so opaque decoration must paint over
--- content while cleared padding reveals it. Plans without frames draw
+-- border-only selected frame, never content or host pixels. The application body
+-- sits fully inside the exterior frame room, so no body pixel hides beneath
+-- frame art. Plans without frames draw
 -- nothing extra.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param owner FieldPresentationResources

@@ -1591,8 +1591,8 @@ end
 
 -- Draws every published outer application frame through the already-owned
 -- window primitive with the player-owned frame choice, after content.
--- The masked inner band overlaps body pixels, so the border paints over
--- the panes it decorates. Every published frame keeps the border-only
+-- The body sits fully inside the exterior frame room, so the border
+-- never hides body pixels. Every published frame keeps the border-only
 -- draw. Unframed plans draw nothing extra and never touch the primitive.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param plan ApplicationPlan the resolved plan

@@ -44,11 +44,6 @@ local function validManifest()
         width = 144,
         height = 160,
       },
-      ["hgss.application_frame.tiles"] = {
-        image = "assets/generated/field/ui/application-frame-tiles.png",
-        width = 144,
-        height = 160,
-      },
       ["hgss.signpost.tiles"] = { image = "assets/generated/field/ui/signpost-tiles.png", width = 288, height = 16 },
       ["hgss.signpost.wayfinding"] = {
         image = "assets/generated/field/ui/wayfinding-tiles.png",
@@ -106,7 +101,6 @@ local function validManifest()
     dialogueFrames = {
       count = 20,
       frameTiles = frameTiles,
-      application = { asset = "hgss.application_frame.tiles" },
       continueCursor = {
         asset = "hgss.dialogue_continue_cursor",
         cycle = { 0, 1, 2, 1 },
@@ -428,32 +422,17 @@ function T.ui_row_geometry_must_match_the_hgss_strip_contract()
   end, "FIELD_UI_MANIFEST_INVALID")
 end
 
--- The second frame strip is a required part of the generated class: the
--- manifest carries the application record beside the dialogue rows, with
--- identical atlas dimensions so the same row rectangles index both images.
--- A class without the record, or with a mismatched application atlas, is
--- stale and must fail readiness rather than render through the old atlas.
-function T.application_frame_record_is_required_with_matching_dimensions()
-  Assert.isTrue(FieldUiAssetCache.validateManifest(validManifest()))
-  reject(function(m)
-    m.dialogueFrames.application = nil
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.dialogueFrames.application.asset = "hgss.dialogue_frame.tiles"
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.assets["hgss.application_frame.tiles"] = nil
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.assets["hgss.application_frame.tiles"].height = 8
-  end, "FIELD_UI_MANIFEST_INVALID")
-  reject(function(m)
-    m.assets["hgss.application_frame.tiles"].width = 136
-  end, "FIELD_UI_MANIFEST_INVALID")
-end
-
 -- A complete cursor contract passes, while each independently malformed
 -- cursor field is rejected before runtime can consume the generated class.
+-- The single dialogue strip is the only frame authority: a manifest with
+-- no application record and no second atlas index validates cleanly.
+function T.single_atlas_manifest_without_application_record_validates()
+  local manifest = validManifest()
+  Assert.isNil(manifest.dialogueFrames.application, "no application record is published")
+  Assert.isNil(manifest.assets["hgss.application_frame.tiles"], "no second atlas is indexed")
+  Assert.isTrue(FieldUiAssetCache.validateManifest(manifest))
+end
+
 function T.continuation_cursor_contract_rejects_incomplete_manifests()
   local complete = validManifest()
   Assert.isTrue(FieldUiAssetCache.validateManifest(complete))

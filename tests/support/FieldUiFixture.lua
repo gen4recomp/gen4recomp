@@ -1,6 +1,6 @@
 -- Synthetic field-UI fixtures for the dialogue frame, window style, signpost,
 -- and Start Menu surface work: a generated-shape `ui.lua` manifest carrying
--- two dialogue frame strips (18 tiles of 8x8 stacked per frame, like the
+-- one dialogue frame strip (18 tiles of 8x8 stacked per frame, like the
 -- compiled class), the signpost frame strip and wayfinding atlas (one
 -- per-(type,map) row, map 0 and map 1 visibly distinct), the signpost
 -- source-type map (the full 25-type corpus set, types 0/1 with per-map
@@ -23,7 +23,6 @@ local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = {}
 
 FieldUiFixture.STRIP_PATH = "assets/generated/field/ui/dialogue-frame-tiles.png"
-FieldUiFixture.APPLICATION_STRIP_PATH = "assets/generated/field/ui/application-frame-tiles.png"
 FieldUiFixture.CONTINUE_CURSOR_PATH = "assets/generated/field/ui/dialogue-continue-cursor.png"
 FieldUiFixture.TILES_PER_FRAME = 18
 FieldUiFixture.FRAME_COUNT = 2
@@ -109,41 +108,6 @@ end
 ---@return string rgba
 function FieldUiFixture.framePixels(frame)
   return frameRowBytes(frame == 0 and paletteA or paletteB)
-end
-
--- Border tiles the synthetic application strip clears entirely: the
--- window-interior seed tile plus one content-adjacent border tile. A real
--- compiler clears every interior-connected padding cell even when the
--- connected region spans a whole tile (a thin-border style whose inner
--- ring is padding-colored), so a fully cleared border tile is faithful
--- synthetic coverage for the masked overlap seam: cleared tiles reveal the
--- application underneath while every other tile stays opaque decoration.
--- Clearing addresses whole 8x8 image cells, the same units the renderer
--- samples, so a cleared tile reveals the application at every texel.
-FieldUiFixture.APPLICATION_TRANSPARENT_TILES = { [2] = true, [8] = true }
-
--- The application frame strip: the same rows as the dialogue strip, but
--- with each row's window-interior seed tile (tile 8) and one
--- content-adjacent border tile cleared to transparent, mirroring the
--- compiled class where interior-connected padding reveals the application
--- underneath while the surrounding decoration stays opaque.
----@return string png
-function FieldUiFixture.applicationStripBytes()
-  local rgba = {}
-  for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
-    local palette = frame == 0 and paletteA or paletteB
-    for _ = 0, 7 do
-      for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
-        if FieldUiFixture.APPLICATION_TRANSPARENT_TILES[tile] then
-          rgba[#rgba + 1] = string.rep(string.char(0, 0, 0, 0), 8)
-        else
-          local r, g, b = palette(tile)
-          rgba[#rgba + 1] = string.rep(string.char(r, g, b, 255), 8)
-        end
-      end
-    end
-  end
-  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rgba))
 end
 
 ---@return string png
@@ -532,11 +496,6 @@ function FieldUiFixture.manifest()
         width = 144,
         height = FieldUiFixture.FRAME_COUNT * 8,
       },
-      ["hgss.application_frame.tiles"] = {
-        image = FieldUiFixture.APPLICATION_STRIP_PATH,
-        width = 144,
-        height = FieldUiFixture.FRAME_COUNT * 8,
-      },
       [FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR] = {
         image = FieldUiFixture.CONTINUE_CURSOR_PATH,
         width = 48,
@@ -574,7 +533,6 @@ function FieldUiFixture.manifest()
         [0] = { x = 0, y = 0, width = 144, height = 8 },
         [1] = { x = 0, y = 8, width = 144, height = 8 },
       },
-      application = { asset = "hgss.application_frame.tiles" },
       continueCursor = {
         asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
         cycle = { 0, 1, 2, 1 },
@@ -615,7 +573,6 @@ function FieldUiFixture.cacheWithFontAndFrames()
   local cache = FieldDialogueFixture.cacheWithFont()
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
-  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, FieldUiFixture.applicationStripBytes())
   cache:write(FieldUiFixture.CONTINUE_CURSOR_PATH, FieldUiFixture.continueCursorBytes())
   cache:write(FieldUiFixture.SIGNPOST_TILES_PATH, FieldUiFixture.signpostTilesBytes())
   cache:write(FieldUiFixture.WAYFINDING_PATH, FieldUiFixture.wayfindingBytes())
@@ -638,7 +595,6 @@ function FieldUiFixture.trainerCardCache(fontDef)
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
-  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, FieldUiFixture.applicationStripBytes())
   return cache
 end
 
@@ -650,7 +606,6 @@ function FieldUiFixture.startMenuCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
-  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, FieldUiFixture.applicationStripBytes())
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
   cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
   return cache

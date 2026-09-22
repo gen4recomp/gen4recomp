@@ -57,8 +57,8 @@ applications, or game instances.
   requires aspect error at most 12 logical pixels per edge; a session
   retains it through 14 and leaves above 14.
 - Wide/tall single surface: a static centered framed box. The complete
-  outer frame (content plus the 0/16/0/8 exterior around the overlapped
-  body) fits at the largest integer scale inside the usable bounds; a box
+  outer frame (content plus the 8/24/8/24 exterior frame around the body)
+  fits at the largest integer scale inside the usable bounds; a box
   that cannot fit at unit scale falls back to the native-like case.
   Geometry is deterministic: an equivalent re-resolution returns the
   identical placement.
@@ -103,12 +103,15 @@ the same coordinates.
 
 Underfilled field applications are decorated with the player's selected
 HGSS dialogue frame (`playerData.options.textFrame`), rotated so the
-source frame's thick right edge becomes the top edge and drawn from the
-masked application atlas. The innermost 8-logical-pixel frame band
-overlaps application content on every edge, so only the 0/16/0/8
-remainder (left/top/right/bottom) reserves room outside the application:
-opaque decoration may cover edge body pixels while cleared padding
-reveals the body underneath. The frame is pure plan geometry until
+source frame's thick right edge becomes the top edge. The body sits fully
+inside the exterior frame room: 8 logical pixels on each side and 24 on
+top and bottom. The bottom cap is the exact vertical mirror of the top
+cap, so both horizontal edges carry the same selected-frame decoration.
+Transparent corner and edge pixels reveal the already-rendered
+field behind the application, never body content. Application decoration
+samples the same generated dialogue-frame atlas as ordinary dialogue
+windows; no derived mask or second frame asset exists. The frame is pure
+plan geometry until
 field or Starter presentation draws it after application content
 through the shared frame renderer; application code never invents
 border styling.

@@ -1,10 +1,9 @@
 -- Shared static HGSS user-frame presentation primitive: the generated
--- dialogue frame-strip image, its lazily built per-frame tile quads, the
--- masked application frame-strip image, and the content-background fill
--- behind a supplied content box. The frame tiles are composed by the
--- audited DrawFrameAndWindow2 tilemap owned by FieldDialogueTheme.
--- Ordinary windows sample the original strip while the application border
--- samples only the masked strip through the same shared row rectangles.
+-- dialogue frame-strip image, its lazily built per-frame tile quads, and
+-- the content-background fill behind a supplied content box. The frame
+-- tiles are composed by the audited DrawFrameAndWindow2 tilemap owned by
+-- FieldDialogueTheme. Ordinary windows and the application border both
+-- sample the original strip through the same shared row rectangles.
 -- This primitive owns no modal, controller, cursor, or text lifecycle;
 -- callers supply the frame index (or nil for fill only), the content box,
 -- and the background color. Construction is failure-safe: a missing frame
@@ -20,7 +19,6 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 ---@field _manifest table<string, unknown> the runtime-validated generated field-UI manifest
 ---@field _graphics love.graphics
 ---@field _frameImage love.Image?
----@field _applicationFrameImage love.Image?
 ---@field _frameQuadCache table<integer, love.Quad[]>|nil per-frame tile quads, built lazily
 local FieldWindowRenderer = {}
 FieldWindowRenderer.__index = FieldWindowRenderer
@@ -44,24 +42,11 @@ function FieldWindowRenderer.new(opts)
     "the field-UI manifest must carry the dialogue frame strip asset"
   )
   local frameImagePath = assert(frameAsset.image, "the dialogue frame strip asset must name an image path")
-  local dialogueFrames = assert(manifest.dialogueFrames, "the field-UI manifest must carry dialogue frames")
-  local application =
-    assert(dialogueFrames.application, "the field-UI manifest must carry the application frame record")
-  assert(
-    application.asset == FieldUiAssetCache.ASSET.APPLICATION_FRAME_TILES,
-    "the application frame record must reference the application frame atlas"
-  )
-  local applicationAsset = assert(
-    manifest.assets[FieldUiAssetCache.ASSET.APPLICATION_FRAME_TILES],
-    "the field-UI manifest must carry the application frame strip asset"
-  )
-  local applicationImagePath =
-    assert(applicationAsset.image, "the application frame strip asset must name an image path")
+  assert(manifest.dialogueFrames, "the field-UI manifest must carry dialogue frames")
   local self = setmetatable({
     _manifest = manifest,
     _graphics = graphics,
     _frameImage = nil,
-    _applicationFrameImage = nil,
     _frameQuadCache = nil,
   }, FieldWindowRenderer)
   local frameData = opts.cacheFs:read(frameImagePath)
@@ -81,24 +66,6 @@ function FieldWindowRenderer.new(opts)
   if not ok then
     self:release()
     error(err)
-  end
-  local applicationData = opts.cacheFs:read(applicationImagePath)
-  if not applicationData then
-    self:release()
-    Errors.raise(
-      FieldErrors.FIELD_UI_FRAME_ATLAS_MISSING,
-      "application frame strip missing at " .. applicationImagePath,
-      { path = applicationImagePath }
-    )
-  end
-  applicationData = assert(applicationData)
-  local applicationOk, applicationErr = pcall(function()
-    self._applicationFrameImage = graphics.newImage(love.filesystem.newFileData(applicationData, applicationImagePath))
-    self._applicationFrameImage:setFilter("nearest", "nearest")
-  end)
-  if not applicationOk then
-    self:release()
-    error(applicationErr)
   end
   return self
 end
@@ -128,11 +95,14 @@ function FieldWindowRenderer:frameQuads(frameIndex)
   return quads
 end
 
--- Draws only the rotated application border around the content box from the
--- selected frame row: every tile instance of the shared rotated tilemap,
--- each with its artwork visually quarter-turned counter-clockwise so it
--- follows the rotated composition. Never fills the content box or the
--- surrounding host area; callers own the LogicalSurface placement.
+-- Draws the rotated application border around the content box from the
+-- selected frame row: the side bands plus the top cap, each tile with its
+-- artwork visually quarter-turned counter-clockwise so it follows the
+-- rotated composition, then the top cap again under a scoped vertical
+-- reflection across the body midline so the bottom mirrors the top.
+-- Never fills the content box or the surrounding host area; callers own
+-- the LogicalSurface placement. The borrowed graphics transform is
+-- restored even when a tile draw raises.
 ---@param box { x: number, y: number, width: number, height: number } content box in the caller's reference space
 ---@param frameIndex integer generated frame index
 function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
@@ -142,12 +112,27 @@ function FieldWindowRenderer:drawApplicationFrame(box, frameIndex)
   )
   ---@cast box FieldDialogueTheme.Rect
   local quads = self:frameQuads(frameIndex)
-  local image = assert(self._applicationFrameImage)
+  local image = assert(self._frameImage, "the window renderer owns no frame strip")
   local lg = assert(self._graphics)
+  local groups = FieldDialogueTheme.applicationFrameTilePlacements(box)
   lg.setColor(1, 1, 1, 1)
-  for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
-    local tile = assert(quads[placement.tile])
-    lg.draw(image, tile, placement.x, placement.y, -math.pi / 2, 1, 1, 8, 0)
+  local function drawTiles(list)
+    for _, placement in ipairs(list) do
+      local tile = assert(quads[placement.tile])
+      lg.draw(image, tile, placement.x, placement.y, -math.pi / 2, 1, 1, 8, 0)
+    end
+  end
+  drawTiles(groups.sides)
+  drawTiles(groups.top)
+  lg.push()
+  local ok, err = pcall(function()
+    lg.translate(0, 2 * (box.y + box.height / 2))
+    lg.scale(1, -1)
+    drawTiles(groups.top)
+  end)
+  lg.pop()
+  if not ok then
+    error(err)
   end
 end
 
@@ -188,10 +173,6 @@ function FieldWindowRenderer:release()
     self._frameImage:release()
   end
   self._frameImage = nil
-  if self._applicationFrameImage and self._applicationFrameImage.release then
-    self._applicationFrameImage:release()
-  end
-  self._applicationFrameImage = nil
   self._frameQuadCache = nil
 end
 

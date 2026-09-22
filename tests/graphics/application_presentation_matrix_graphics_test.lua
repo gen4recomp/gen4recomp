@@ -712,82 +712,116 @@ function T.plan_draw_restores_state_for_every_case(scope)
   end
 end
 
--- Masked application chrome overlaps body pixels without a halo: opaque
--- border tiles cover edge body pixels, cleared border tiles reveal the
--- body underneath, and pixels outside the outer placement keep the host
--- sentinel. The cleared tile stands in for a style whose inner ring is
--- padding-connected; the opaque tiles prove decoration is preserved.
-function T.masked_chrome_overlaps_the_body_without_a_halo(scope)
-  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
-  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
-  local dialogueRow = FieldUiFixture.framePixels(0)
-  -- The strip atlas is a row-major 144-wide image, so the texel at the
-  -- center of tile `tile`'s 8x8 cell lives at (tile * 8 + 4, 4): the same
-  -- image-space addressing the frame-strip quads use.
-  local function tileColor(tile)
-    local base = (4 * 144 + tile * 8 + 4) * 4
-    return {
-      string.byte(dialogueRow, base + 1) / 255,
-      string.byte(dialogueRow, base + 2) / 255,
-      string.byte(dialogueRow, base + 3) / 255,
-      1,
-    }
-  end
-  local bodyTint = { 1, 0, 1, 1 }
-  for _, density in ipairs({ 1, 2 }) do
-    local tag = density .. "x"
-    local box = { x = 16, y = 32, width = 64, height = 64 }
-    local canvasWidth, canvasHeight = 96 * density, 136 * density
-    local window = scope:own(FieldWindowRenderer.new({
-      cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
-      manifest = FieldUiFixture.manifest(),
-    }))
-    local canvas = renderToCanvas(scope, canvasWidth, canvasHeight, function()
-      local lg = love.graphics
-      lg.push("all")
-      lg.scale(density, density)
-      lg.setColor(bodyTint[1], bodyTint[2], bodyTint[3], bodyTint[4])
-      lg.rectangle("fill", box.x, box.y, box.width, box.height)
-      window:drawApplicationFrame(box, 0)
-      lg.pop()
-    end)
-    local data = scope:own(canvas:newImageData())
-    local function sample(lx, ly)
-      return data:getPixel(lx * density, ly * density)
-    end
-    local function assertBodyPixel(lx, ly, label)
-      local r, g, b, a = sample(lx, ly)
-      Assert.near(r, 1, 1e-2, tag .. " " .. label .. " red")
-      Assert.near(g, 0, 1e-2, tag .. " " .. label .. " green")
-      Assert.near(b, 1, 1e-2, tag .. " " .. label .. " blue")
-      Assert.near(a, 1, 1e-2, tag .. " " .. label .. " alpha")
-    end
-    local function assertTilePixel(lx, ly, tile, label)
-      local want = tileColor(tile)
-      local r, g, b, a = sample(lx, ly)
-      Assert.near(r, want[1], 1e-2, tag .. " " .. label .. " red")
-      Assert.near(g, want[2], 1e-2, tag .. " " .. label .. " green")
-      Assert.near(b, want[3], 1e-2, tag .. " " .. label .. " blue")
-      Assert.near(a, want[4], 1e-2, tag .. " " .. label .. " alpha")
-    end
-    local overlaps, reveals = 0, 0
-    for _, placement in ipairs(FieldDialogueTheme.applicationFrameTilePlacements(box)) do
-      local cx, cy = placement.x + 4, placement.y + 4
-      if cx >= box.x and cx < box.x + box.width and cy >= box.y and cy < box.y + box.height then
-        if FieldUiFixture.APPLICATION_TRANSPARENT_TILES[placement.tile] then
-          assertBodyPixel(cx, cy, "cleared tile " .. placement.tile .. " reveals the body")
-          reveals = reveals + 1
-        else
-          assertTilePixel(cx, cy, placement.tile, "tile " .. placement.tile .. " covers the body edge")
-          overlaps = overlaps + 1
-        end
+-- The rectangular body never bleeds through exterior side transparency:
+-- side-band pixels where the selected frame is transparent reveal the
+-- already-rendered field, never body ink, while the body stays fully
+-- painted from its own origin. Probe columns derive from the published
+-- exterior insets, so they track the side bands whatever room the
+-- geometry reserves. The test-local strip clears tile 2 (a side-band
+-- tile) in both rows; the shared solid-tile fixture stays untouched so
+-- dialogue goldens keep their opaque top edge.
+local function stripWithTransparentSideTile()
+  local rows = {}
+  for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
+    local bytes = { FieldUiFixture.framePixels(frame):byte(1, -1) }
+    for ty = 0, 7 do
+      for tx = 0, 7 do
+        local offset = (ty * 144 + 2 * 8 + tx) * 4
+        bytes[offset + 1], bytes[offset + 2], bytes[offset + 3], bytes[offset + 4] = 0, 0, 0, 0
       end
     end
-    Assert.isTrue(overlaps > 0, tag .. " decoration overlaps body pixels")
-    Assert.isTrue(reveals > 0, tag .. " cleared padding reveals the body")
-    assertBodyPixel(box.x + 32, box.y + 32, "the body center stays uncovered")
-    assertPixelNear(data, 0, 0, 0, 0, 0, 0, tag .. " outside the frame stays sentinel")
-    assertPixelNear(data, canvasWidth - 1, canvasHeight - 1, 0, 0, 0, 0, tag .. " past the frame edge stays sentinel")
+    local cells = {}
+    for index = 1, #bytes do
+      cells[index] = string.char(bytes[index])
+    end
+    rows[#rows + 1] = table.concat(cells)
+  end
+  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rows))
+end
+
+function T.application_body_never_bleeds_through_exterior_transparency(scope)
+  local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
+  local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
+  local insets = FieldDialogueTheme.applicationFrameInsets()
+  local FIELD = { 0.2, 0.5, 0.9, 1 }
+  local BODY = { 0.9, 0.7, 0.1, 1 }
+  for _, density in ipairs({ 1, 2 }) do
+    for _, frameIndex in ipairs({ 0, 1 }) do
+      local tag = density .. "x style " .. frameIndex
+      local box = { x = 16, y = 32, width = 64, height = 64 }
+      local cache = FieldUiFixture.cacheWithFontAndFrames()
+      cache:write(FieldUiFixture.STRIP_PATH, stripWithTransparentSideTile())
+      local window = scope:own(FieldWindowRenderer.new({
+        cacheFs = cache,
+        manifest = FieldUiFixture.manifest(),
+      }))
+      local canvasWidth, canvasHeight = 128 * density, 160 * density
+      local function render(fieldFill, bodyFill)
+        return renderToCanvas(scope, canvasWidth, canvasHeight, function()
+          local lg = love.graphics
+          lg.push("all")
+          lg.scale(density, density)
+          if fieldFill then
+            lg.setColor(FIELD[1], FIELD[2], FIELD[3], FIELD[4])
+            lg.rectangle("fill", 0, 0, 128, 160)
+          end
+          if bodyFill then
+            lg.setColor(BODY[1], BODY[2], BODY[3], BODY[4])
+            lg.rectangle("fill", box.x, box.y, box.width, box.height)
+          end
+          window:drawApplicationFrame(box, frameIndex)
+          lg.pop()
+        end)
+      end
+      -- Transparent side-band cells, located by scanning the frame-alone
+      -- render across both side bands derived from the published insets.
+      local bare = scope:own(render(false, false):newImageData())
+      local probes = {}
+      local bandX = {
+        box.x - insets.left,
+        box.x - insets.left + 1,
+        box.x - insets.left + 2,
+        box.x - insets.left + 3,
+        box.x - insets.left + 4,
+        box.x - insets.left + 5,
+        box.x - insets.left + 6,
+        box.x - insets.left + 7,
+        box.x + box.width + insets.right - 8,
+        box.x + box.width + insets.right - 7,
+        box.x + box.width + insets.right - 6,
+        box.x + box.width + insets.right - 5,
+        box.x + box.width + insets.right - 4,
+        box.x + box.width + insets.right - 3,
+        box.x + box.width + insets.right - 2,
+        box.x + box.width + insets.right - 1,
+      }
+      for _, lx in ipairs(bandX) do
+        for ly = box.y, box.y + box.height - 1 do
+          local _, _, _, a = bare:getPixel(lx * density, ly * density)
+          if a < 0.5 then
+            probes[#probes + 1] = { x = lx, y = ly }
+          end
+        end
+      end
+      Assert.isTrue(#probes > 0, tag .. ": the side bands carry transparent frame cells")
+      local data = scope:own(render(true, true):newImageData())
+      for _, probe in ipairs(probes) do
+        local r, g, b, a = data:getPixel(probe.x * density, probe.y * density)
+        Assert.near(r, FIELD[1], 1e-2, tag .. " exterior red at " .. probe.x .. "," .. probe.y)
+        Assert.near(g, FIELD[2], 1e-2, tag .. " exterior green at " .. probe.x .. "," .. probe.y)
+        Assert.near(b, FIELD[3], 1e-2, tag .. " exterior blue at " .. probe.x .. "," .. probe.y)
+        Assert.near(a, FIELD[4], 1e-2, tag .. " exterior alpha at " .. probe.x .. "," .. probe.y)
+      end
+      local function assertBody(lx, ly, label)
+        local r, g, b, a = data:getPixel(lx * density, ly * density)
+        Assert.near(r, BODY[1], 1e-2, tag .. " " .. label .. " red")
+        Assert.near(g, BODY[2], 1e-2, tag .. " " .. label .. " green")
+        Assert.near(b, BODY[3], 1e-2, tag .. " " .. label .. " blue")
+        Assert.near(a, BODY[4], 1e-2, tag .. " " .. label .. " alpha")
+      end
+      assertBody(box.x + 32, box.y + 32, "the body center stays fully painted")
+      assertBody(box.x + 1, box.y + 1, "body ink starts at the body origin")
+    end
   end
 end
 
