@@ -471,7 +471,7 @@ local function retryCapablePool()
   return pool
 end
 
-local function isolatedSession(generation, pool, backend)
+local function isolatedSession(generation, pool, backend, extra)
   local realForVersion = CacheFs.forVersion
   local cacheFs = realForVersion("heartgold", backend)
   CacheFs.forVersion = function(versionId)
@@ -480,11 +480,15 @@ local function isolatedSession(generation, pool, backend)
   end
   local session
   local ok, err = pcall(function()
-    session = InteractiveCacheBuild.new({
+    local options = {
       identity = { versionId = "heartgold", generationId = generation, producerId = PRODUCER_ID },
       epoch = 1,
       pool = pool,
-    })
+    }
+    if extra ~= nil and extra.clock ~= nil then
+      options.clock = extra.clock
+    end
+    session = InteractiveCacheBuild.new(options)
   end)
   CacheFs.forVersion = realForVersion
   if not ok then
@@ -3301,8 +3305,12 @@ local function warmingAdopted()
   }
 end
 
-local function warmingSession(generation, pool, backend)
-  local session, _ = isolatedSession(generation, pool, backend)
+-- Warming sessions accept an optional monotonic clock for background
+-- admission: tests that expect prompt sweep dispatch pass a fake clock
+-- already advanced past the one-second foreground quiet window, keeping
+-- them deterministic instead of wall-clock dependent.
+local function warmingSession(generation, pool, backend, clock)
+  local session, _ = isolatedSession(generation, pool, backend, { clock = clock })
   session.adopted = warmingAdopted()
   session.sourceLoaded = true
   session.pagesKnown = true
@@ -3353,8 +3361,12 @@ end
 function T.authorized_warmup_eventually_covers_the_corpus_one_candidate_at_a_time()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-coverage-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-coverage-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local seen = {}
   local outstanding = nil
   local rounds = 0
@@ -3394,8 +3406,12 @@ end
 function T.required_demand_overtakes_a_queued_background_candidate()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-overtake-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-overtake-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   local ready, failure = session:requestJob("script-member", "4", "required")
   Assert.isFalse(ready, "required demand answers pending until the pump runs")
@@ -3427,8 +3443,12 @@ end
 function T.required_request_promotes_the_queued_background_record()
   local backend = FakeCache.new()
   local pool = recordingPool()
-  local session = warmingSession("warming-promotion-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-promotion-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   local kind, key = candidate:match("^([^:]+):(.+)$")
   local ready, failure = session:requestJob(kind, key, "required")
@@ -3453,8 +3473,12 @@ end
 function T.near_prefetch_submits_before_queued_sweep_work()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-near-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-near-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   local ready, failure = session:requestJob("audio-bank", "3", "near")
   Assert.isFalse(ready, "near prefetch answers pending until the pump runs")
@@ -3479,8 +3503,12 @@ end
 function T.running_background_work_is_never_preempted()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-preemption-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-preemption-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   pool.states[candidate] = "running"
   for _ = 1, 5 do
@@ -3513,13 +3541,276 @@ function T.running_background_work_is_never_preempted()
   Assert.equal(#laterSubmissions, 0, "no second sweep candidate jumps ahead of required work")
 end
 
+-- Fresh background authorization does not dispatch in the same tick:
+-- the first sweep-origin candidate waits for one continuous quiet
+-- second with no required/near activity. The session consults an
+-- injected monotonic clock so the admission window stays deterministic.
+local function newFakeClock()
+  local state = { now = 0 }
+  local function clock()
+    return state.now
+  end
+  return state, clock
+end
+
+local function warmingSessionWithClock(generation, pool, backend, clock)
+  local session, cacheFs = isolatedSession(generation, pool, backend, { clock = clock })
+  session.adopted = warmingAdopted()
+  session.sourceLoaded = true
+  session.pagesKnown = true
+  session.messageBankIds = { 1, 2 }
+  session.audioBankIds = { 3 }
+  session.scriptMemberIds = { 4 }
+  session.iconPageIds = { 0 }
+  session.portraitPageIds = { 1 }
+  session.mapDataIds = {}
+  session.mapIds = { 7 }
+  session.mapCellKeys = { [7] = {} }
+  for _, kind in ipairs({ "source-plan", "mon-layout" }) do
+    local owner = readyOwnerEntry(kind)
+    session.byKey[owner.jobKey] = owner
+    session.interest[#session.interest + 1] = owner
+  end
+  return session, cacheFs
+end
+
+local function newSubmissions(pool, before)
+  local out = {}
+  for index = before + 1, #pool.submitted do
+    out[#out + 1] = pool.submitted[index]
+  end
+  return out
+end
+
+local function assertOnlyForegroundSubmitted(pool, before, allowed, context)
+  for _, jobKey in ipairs(newSubmissions(pool, before)) do
+    Assert.isTrue(allowed[jobKey] == true, context .. ": " .. jobKey)
+  end
+end
+
+local function pumpUntilForeignSubmission(session, pool, before, allowed, rounds)
+  for _ = 1, rounds do
+    session:update()
+    for _, jobKey in ipairs(newSubmissions(pool, before)) do
+      if allowed[jobKey] ~= true then
+        return jobKey
+      end
+    end
+  end
+  return nil
+end
+
+local function settleRequiredDemand(session, pool)
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(submissionCount(pool, "script-member:4") >= 1, "foreground demand submits first")
+  pool.states["script-member:4"] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey["script-member:4"].ready, "foreground demand settles")
+  Assert.equal(session.foregroundPendingCount, 0, "no foreground interest remains outstanding")
+  assertOnlyForegroundSubmitted(
+    pool,
+    0,
+    { ["script-member:4"] = true },
+    "no background candidate submits during foreground work"
+  )
+end
+
+function T.authorized_sweep_waits_for_a_quiet_second_before_dispatch()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-authorization-generation", pool, backend, clock)
+  session:enableSweep()
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.equal(#pool.submitted, 0, "authorization alone dispatches no background candidate")
+  tick.now = 0.999
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.equal(#pool.submitted, 0, "background dispatch waits out the quiet window")
+  tick.now = 1.0
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  Assert.notNil(candidate, "one quiet second admits the first background candidate")
+end
+
+function T.sweep_stays_quiet_while_foreground_work_is_pending()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-foreground-generation", pool, backend, clock)
+  session:enableSweep()
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  tick.now = 5.0
+  for _ = 1, 10 do
+    session:update()
+  end
+  for _, jobKey in ipairs(pool.submitted) do
+    Assert.equal(jobKey, "script-member:4", "only foreground demand submits while it is pending: " .. jobKey)
+  end
+end
+
+function T.foreground_completion_restarts_the_quiet_window()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-completion-generation", pool, backend, clock)
+  session:enableSweep()
+  settleRequiredDemand(session, pool)
+  local settledCount = #pool.submitted
+  tick.now = 0.999
+  for _ = 1, 5 do
+    session:update()
+  end
+  assertOnlyForegroundSubmitted(
+    pool,
+    settledCount,
+    { ["script-member:4"] = true },
+    "background dispatch waits for a full quiet second"
+  )
+  tick.now = 1.0
+  local candidate = pumpUntilForeignSubmission(session, pool, settledCount, { ["script-member:4"] = true }, 20)
+  Assert.notNil(candidate, "one quiet second after foreground work admits background dispatch")
+end
+
+function T.a_new_near_request_restarts_the_quiet_window()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-restart-generation", pool, backend, clock)
+  session:enableSweep()
+  settleRequiredDemand(session, pool)
+  tick.now = 0.9
+  local ready, failure = session:requestJob("audio-bank", "3", "near")
+  Assert.isFalse(ready, "near prefetch answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  pool.states["audio-bank:3"] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey["audio-bank:3"].ready, "near prefetch settles")
+  local settledCount = #pool.submitted
+  assertOnlyForegroundSubmitted(
+    pool,
+    0,
+    { ["script-member:4"] = true, ["audio-bank:3"] = true },
+    "no background candidate submits during near work"
+  )
+  tick.now = 1.8
+  for _ = 1, 5 do
+    session:update()
+  end
+  assertOnlyForegroundSubmitted(
+    pool,
+    settledCount,
+    { ["script-member:4"] = true, ["audio-bank:3"] = true },
+    "near activity restarts the quiet window"
+  )
+  tick.now = 1.9
+  local candidate =
+    pumpUntilForeignSubmission(session, pool, settledCount, { ["script-member:4"] = true, ["audio-bank:3"] = true }, 20)
+  Assert.notNil(candidate, "one quiet second after the near request admits background dispatch")
+end
+
+function T.a_running_sweep_job_survives_foreground_arrival()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-preemption-generation", pool, backend, clock)
+  session:enableSweep()
+  tick.now = 1.0
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  pool.states[candidate] = "running"
+  for _ = 1, 5 do
+    session:update()
+  end
+  local ready, failure = session:requestJob("script-member", "4", "required")
+  Assert.isFalse(ready, "required demand answers pending")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.equal(pool.states[candidate], "running", "foreground arrival never cancels the running background job")
+  Assert.isTrue(submissionCount(pool, "script-member:4") >= 1, "required demand still submits behind it")
+  pool.states[candidate] = "ready"
+  pool.states["script-member:4"] = "ready"
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(session.byKey[candidate].ready, "the running background job completes normally")
+  Assert.isTrue(session.byKey["script-member:4"].ready, "foreground demand completes normally")
+end
+
+function T.foreground_dispatch_ignores_the_background_quiet_window()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-capacity-generation", pool, backend, clock)
+  session:enableSweep()
+  settleRequiredDemand(session, pool)
+  tick.now = 0.25
+  local ready, failure = session:requestJob("audio-bank", "3", "required")
+  Assert.isFalse(ready, "required demand answers pending until the pump runs")
+  Assert.isNil(failure, "registration reports no failure")
+  for _ = 1, 10 do
+    session:update()
+  end
+  Assert.isTrue(
+    submissionCount(pool, "audio-bank:3") >= 1,
+    "foreground demand submits without waiting out the quiet window"
+  )
+end
+
+function T.an_idle_quiet_window_eventually_drains_the_corpus()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local tick, clock = newFakeClock()
+  local session = warmingSessionWithClock("settle-exhaustion-generation", pool, backend, clock)
+  session:enableSweep()
+  tick.now = 1.0
+  local seen = {}
+  local rounds = 0
+  while session:status().sweepState ~= "exhausted" and rounds < 600 do
+    rounds = rounds + 1
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+      seen[jobKey] = true
+    end
+  end
+  Assert.equal(session:status().sweepState, "exhausted", "the quiet window still converges on full corpus coverage")
+  local covered = expectedWarmingCoverage()
+  for jobKey in pairs(covered) do
+    Assert.isTrue(seen[jobKey], "every corpus artifact submits across the idle run: " .. jobKey)
+  end
+end
+
 -- Aggregate summaries never bulk-enroll their leaf families: every leaf
 -- submits before its summary does.
 function T.background_warmup_registers_leaves_before_summaries()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-leaves-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-leaves-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local rounds = 0
   while session:status().sweepState ~= "exhausted" and rounds < 600 do
     rounds = rounds + 1
@@ -3656,8 +3947,12 @@ end
 function T.retirement_stops_background_enrollment()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-retirement-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-retirement-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   session:retire()
   Assert.equal(pool.retiredEpoch, 1, "retirement releases the pool selection")
@@ -3682,8 +3977,14 @@ end
 function T.failed_background_candidate_advances_the_cursor_once()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("warming-failure-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("warming-failure-generation", pool, backend, function()
+    return tick.now
+  end)
   session:enableSweep()
+  -- The failed sweep candidate settles without touching the foreground
+  -- clock, so one advance covers the failure and the drain that follows.
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   pool.states[candidate] = { state = "failed", details = { error = "synthetic warming failure" } }
   for _ = 1, 10 do
@@ -3755,10 +4056,14 @@ end
 function T.foreground_demand_blocks_new_background_registration_until_settled()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("foreground-exclusion-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("foreground-exclusion-generation", pool, backend, function()
+    return tick.now
+  end)
   Assert.equal(type(session.hasRunnablePlanning), "function", "the session exposes retained runnable planning")
   Assert.equal(session.foregroundPendingCount, 0, "no foreground demand is retained before authorization")
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   local kind, key = candidate:match("^([^:]+):(.+)$")
   assert(kind ~= nil, "the background candidate keeps its canonical identity")
@@ -3822,6 +4127,9 @@ function T.foreground_demand_blocks_new_background_registration_until_settled()
   pool.states[alternateJobKey] = "ready"
   local resumed = false
   for _ = 1, 30 do
+    -- Wall time passes across pumps: each round outlasts part of the
+    -- foreground quiet window so background dispatch resumes on its own.
+    tick.now = tick.now + 0.2
     session:update()
     for _, jobKey in ipairs(pool.submitted) do
       if jobKey ~= candidate and jobKey ~= alternateJobKey then
@@ -3902,9 +4210,13 @@ end
 function T.running_background_candidate_reports_no_runnable_planning_until_settled()
   local backend = FakeCache.new()
   local pool = retryCapablePool()
-  local session = warmingSession("running-sweep-wait-generation", pool, backend)
+  local tick = { now = 0 }
+  local session = warmingSession("running-sweep-wait-generation", pool, backend, function()
+    return tick.now
+  end)
   Assert.equal(type(session.hasRunnablePlanning), "function", "the session exposes retained runnable planning")
   session:enableSweep()
+  tick.now = 1.0
   local candidate = pumpUntilSubmitted(session, pool, 20)
   pool.states[candidate] = "running"
   session:update()
@@ -3914,6 +4226,7 @@ function T.running_background_candidate_reports_no_runnable_planning_until_settl
   pool.states[candidate] = "ready"
   local advanced = false
   for _ = 1, 30 do
+    tick.now = tick.now + 0.2
     session:update()
     if #pool.submitted >= 2 then
       advanced = true

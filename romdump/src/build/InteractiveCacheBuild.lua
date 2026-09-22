@@ -105,6 +105,8 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field sweepExhausted boolean canonical corpus enumeration reached its end
 ---@field sweepFailure string|nil first background candidate failure when present
 ---@field foregroundPendingCount integer retained nonterminal required/near interest count
+---@field clock fun(): number monotonic seconds source for background admission
+---@field lastForegroundActivity number monotonic time of the latest required/near request, promotion, or settlement
 ---@field planningPending boolean runnable local planning remains from the last pump
 ---@field followerMemo string|nil retained follower diagnostic
 ---@field followerChecked boolean
@@ -129,6 +131,17 @@ local MILESTONE_FILES = {
 -- read is indivisible and never preempted by the slice below.
 local UPDATE_NODE_BUDGET = 32
 local UPDATE_TIME_SLICE_SECONDS = 0.002
+
+-- Fresh sweep-origin enrollment waits out one continuous quiet second
+-- after foreground cache demand. The window only gates new background
+-- candidates; explicit demand dispatches without consulting it and
+-- running jobs are never preempted. It guards against starting heavy
+-- work on the heels of a transition, not a performance target.
+local SWEEP_SETTLE_SECONDS = 1.0
+-- Binary64 seconds cannot represent most decimal boundaries exactly
+-- (1.9 - 0.9 reads 0.9999999999999999), so the quiet comparison
+-- tolerates a nanosecond-scale epsilon far below any clock resolution.
+local SWEEP_SETTLE_EPSILON = 1e-9
 
 local function isInteger(value)
   return type(value) == "number" and value % 1 == 0
@@ -186,6 +199,11 @@ function InteractiveCacheBuild.new(options)
   assert(isInteger(epoch) and epoch >= 1, "generation session epoch must be a positive integer")
   local pool = options.pool
   assert(type(pool) == "table", "generation session requires the process-owned pool")
+  -- Session-local monotonic source for background admission: production
+  -- reads the host wall clock while tests inject a fake. Never a global
+  -- timing service and never frame timing.
+  local clock = options.clock or nowSeconds
+  assert(type(clock) == "function", "generation session clock must be a function")
 
   local cacheFs = CacheFs.forVersion(versionId)
   cacheFs:recoverPublication()
@@ -243,6 +261,8 @@ function InteractiveCacheBuild.new(options)
     sweepExhausted = false,
     sweepFailure = nil,
     foregroundPendingCount = 0,
+    clock = clock,
+    lastForegroundActivity = clock(),
     planningPending = false,
     followerMemo = nil,
     followerChecked = false,
@@ -546,6 +566,11 @@ function InteractiveCacheBuild:_refreshForegroundPending(entry)
     self.foregroundPendingCount = self.foregroundPendingCount + (shouldCount and 1 or -1)
     assert(self.foregroundPendingCount >= 0, "foreground cache interest count underflow")
     entry.foregroundCounted = shouldCount
+    -- Every countedness edge is foreground activity: new enrollment and
+    -- promotion into the required/near lanes on the way in, terminal
+    -- settlement on the way out. Each restarts the background quiet
+    -- window from now.
+    self.lastForegroundActivity = self.clock()
   end
 end
 
@@ -615,6 +640,14 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       end
     end
     self:_refreshForegroundPending(entry)
+    -- Promotion to required/near restarts the background quiet window
+    -- even when the record was already counted there (near-to-required
+    -- keeps its count while still expressing stronger fresh demand).
+    -- The countedness edge above already covers promotion from the
+    -- sweep lane with an equivalent timestamp.
+    if priority < 100 then
+      self.lastForegroundActivity = self.clock()
+    end
   end
   return entry
 end
@@ -1776,6 +1809,15 @@ end
 function InteractiveCacheBuild:enableSweep()
   assert(not self.retired, "generation session is retired")
   self.sweepAuthorized = true
+  -- Authorization itself starts the quiet window: even an otherwise
+  -- idle session waits one continuous second before its first
+  -- background candidate instead of dispatching in the same tick.
+  self.lastForegroundActivity = self.clock()
+end
+
+---@return boolean a fresh sweep-origin candidate must wait out foreground quiet
+function InteractiveCacheBuild:_sweepQuietPending()
+  return self.clock() - self.lastForegroundActivity < SWEEP_SETTLE_SECONDS - SWEEP_SETTLE_EPSILON
 end
 
 ---@param budget InteractiveCacheBuild.Budget|nil
@@ -1842,6 +1884,12 @@ function InteractiveCacheBuild:_advanceSweep(budget)
     end
   end
   if not self.sourceLoaded or not self.pagesKnown then
+    return
+  end
+  -- Only fresh enrollment waits: settling an already-running candidate
+  -- above stays bookkeeping, and required/near promotion still reuses
+  -- the same ticket identity while the window runs.
+  if self:_sweepQuietPending() then
     return
   end
   if self.sweepNext == nil then
