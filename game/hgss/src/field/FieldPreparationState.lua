@@ -1,14 +1,19 @@
 -- Pending field-entry ownership for Continue and the New Game handoff.
--- It requests field core as required, then validates through the existing
--- store/initializer boundary (Continue only: the unchanged strict load),
--- then requests the entry location geometry through the borrowed
--- metadata-only loader, and finally transfers to the already-composed field
--- exactly once. Failures are visible and cancellable; no invalid candidate
--- or save is repaired or published, and cancellation publishes nothing.
+-- It tracks three independent readiness interests instead of one global
+-- gate: entry planning, the static field runtime, and the entry target
+-- location. New Game derives and demands its target as soon as planning
+-- is ready even while the runtime is still pending, and transfers only
+-- once both the target and the runtime are ready. Continue validates
+-- through the existing store boundary (the unchanged strict load) once
+-- its runtime prerequisite is ready, then demands its target location
+-- through the borrowed metadata-only loader, and transfers to the
+-- already-composed field exactly once. Failures are visible and
+-- cancellable; no invalid candidate or save is repaired or published,
+-- and cancellation publishes nothing.
 
 ---@class FieldPreparationOptions
 ---@field kind "continue"|"newgame"
----@field saveId string? Continue only: the catalog-visible save to load after core
+---@field saveId string? Continue only: the catalog-visible save to load after runtime readiness
 ---@field candidate table<string, unknown>? New Game only: the finalized Oak candidate
 ---@field versionId string selected game version, carried for diagnostics
 ---@field derivedAssets table<string, function> semantic derived-asset host
@@ -25,10 +30,12 @@
 ---@field derivedAssets table<string, function>
 ---@field saveStore table<string, unknown>?
 ---@field createLoader fun(): table<string, unknown>
----@field loader table<string, unknown>? retained planning loader, built once after core readiness
+---@field loader table<string, unknown>? retained planning loader, built once planning is ready
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?)
 ---@field onCancel fun()?
----@field phase "core"|"load"|"geometry"|"done"|"failed"
+---@field phase "planning"|"location"|"done"|"failed"
+---@field planningReady boolean entry planning observed ready
+---@field runtimeReady boolean static field runtime observed ready
 ---@field record table<string, unknown>?
 ---@field target { idOrSymbol: integer|string, fieldX: integer, fieldZ: integer }?
 ---@field error unknown?
@@ -36,6 +43,36 @@
 ---@field cancelled boolean
 local FieldPreparationState = {}
 FieldPreparationState.__index = FieldPreparationState
+
+---@param loader table<string, unknown>|nil retained planning loader
+---@param idOrSymbol integer|string destination identity
+---@return integer|nil numeric map id, or nil when the loader carries no world metadata
+local function resolveTargetMapId(loader, idOrSymbol)
+  if type(idOrSymbol) == "number" then
+    if idOrSymbol % 1 == 0 and idOrSymbol >= 0 then
+      return math.floor(idOrSymbol)
+    end
+    return nil
+  end
+  if type(idOrSymbol) ~= "string" then
+    return nil
+  end
+  local world = loader ~= nil and loader.world or nil
+  if type(world) ~= "table" then
+    return nil
+  end
+  if type(world.bySymbol) == "table" and type(world.bySymbol[idOrSymbol]) == "number" then
+    return world.bySymbol[idOrSymbol]
+  end
+  if type(world.maps) == "table" then
+    for _, candidate in ipairs(world.maps) do
+      if type(candidate) == "table" and candidate.mapCode == idOrSymbol and type(candidate.id) == "number" then
+        return candidate.id
+      end
+    end
+  end
+  return nil
+end
 
 ---@param options FieldPreparationOptions
 ---@return FieldPreparationState
@@ -63,7 +100,9 @@ function FieldPreparationState.new(options)
     loader = nil,
     enterField = options.enterField,
     onCancel = options.onCancel,
-    phase = "core",
+    phase = "planning",
+    planningReady = false,
+    runtimeReady = false,
     record = nil,
     target = nil,
     error = nil,
@@ -79,9 +118,14 @@ function FieldPreparationState:_fail(err)
   end
 end
 
-function FieldPreparationState:_pollCore()
+---@param name string milestone interest to observe
+---@param kind string "planning"|"runtime"
+function FieldPreparationState:_pollMilestone(name, kind)
   -- The semantic host is a plain function table (dot calls, no self).
-  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, "field-core", "required")
+  -- Repeating the required interest re-affirms it; the host answers with
+  -- current readiness, so a pending prerequisite is simply observed again
+  -- on the next update.
+  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, name, "required")
   if not ok then
     self:_fail(ready)
     return
@@ -91,14 +135,40 @@ function FieldPreparationState:_pollCore()
     return
   end
   if ready then
-    self.phase = "load"
+    if kind == "planning" then
+      self.planningReady = true
+    else
+      self.runtimeReady = true
+    end
+  end
+end
+
+function FieldPreparationState:_buildAndAim()
+  if self.kind == "continue" then
+    -- Continue keeps strict validation after its runtime prerequisite:
+    -- the persisted fingerprint it validates against needs the runtime.
+    if not (self.planningReady and self.runtimeReady) then
+      return
+    end
+  elseif not self.planningReady then
+    return
+  end
+  if not self:_ensureLoader() then
+    return
+  end
+  if self.kind == "continue" then
+    self:_strictLoad()
+  else
+    self:_planNewGameTarget()
   end
 end
 
 function FieldPreparationState:_ensureLoader()
-  -- The planning loader is legal only after the field-core gate: build it
-  -- exactly once, then reuse the retained loader for every later update.
-  -- A failed build is a visible preparation failure, never a retried probe.
+  -- The planning loader is legal once entry planning is ready (Continue
+  -- additionally waits for its runtime prerequisite in _buildAndAim):
+  -- build it exactly once, then reuse the retained loader for every later
+  -- update. A failed build is a visible preparation failure, never a
+  -- retried probe.
   if self.loader ~= nil then
     return true
   end
@@ -131,7 +201,7 @@ function FieldPreparationState:_strictLoad()
   end
   self.record = record
   self.target = { idOrSymbol = record.mapId, fieldX = record.fieldX, fieldZ = record.fieldZ }
-  self.phase = "geometry"
+  self.phase = "location"
 end
 
 function FieldPreparationState:_planNewGameTarget()
@@ -158,7 +228,7 @@ function FieldPreparationState:_planNewGameTarget()
   local position = assert(positionOrError)
   self.record = candidate
   self.target = { idOrSymbol = location.mapSymbol, fieldX = position.x, fieldZ = position.z }
-  self.phase = "geometry"
+  self.phase = "location"
 end
 
 function FieldPreparationState:_pollGeometry()
@@ -174,7 +244,33 @@ function FieldPreparationState:_pollGeometry()
     self:_fail(failure)
     return
   end
+  -- Warm the destination logical channel alongside location demand: the
+  -- transfer's load ensures the logical field first, and on the async path
+  -- that ensure is the first logical-field observation unless preparation
+  -- enrolls it here. A pending channel holds the transfer; a failure fails
+  -- it with the underlying cause. Targets the loader cannot resolve to a
+  -- numeric id leave warming to the location demand alone.
+  local logicalId = resolveTargetMapId(loader, target.idOrSymbol)
+  if logicalId ~= nil then
+    local warmOk, warmReady, warmFailure = pcall(self.derivedAssets.requestLogicalField, logicalId, "required")
+    if not warmOk then
+      self:_fail(warmReady)
+      return
+    end
+    if warmFailure ~= nil then
+      self:_fail(warmFailure)
+      return
+    end
+    if not warmReady then
+      return
+    end
+  end
   if not ready then
+    return
+  end
+  if not self.runtimeReady then
+    -- New Game demands its target while the runtime is still pending, but
+    -- the transfer waits until both closures are ready.
     return
   end
   local record = assert(self.record, "field transfer requires its record")
@@ -197,30 +293,26 @@ function FieldPreparationState:update(_)
   if self.transferred or self.cancelled or self.phase == "failed" or self.phase == "done" then
     return
   end
-  if self.phase == "core" then
-    self:_pollCore()
-    if self.phase ~= "core" then
-      self:update(0)
-    end
-    return
-  end
-  if self.phase == "load" then
-    if not self:_ensureLoader() then
+  if not self.planningReady then
+    self:_pollMilestone("field-planning", "planning")
+    if self.phase == "failed" then
       return
     end
-    if self.kind == "continue" then
-      self:_strictLoad()
-    else
-      self:_planNewGameTarget()
-    end
-    if self.phase == "geometry" then
-      self:update(0)
-    end
-    return
   end
-  if self.phase == "geometry" then
-    self:_pollGeometry()
+  if not self.runtimeReady then
+    self:_pollMilestone("field-runtime", "runtime")
+    if self.phase == "failed" then
+      return
+    end
   end
+  if self.target == nil then
+    self:_buildAndAim()
+    if self.phase == "failed" or self.target == nil then
+      return
+    end
+    self.phase = "location"
+  end
+  self:_pollGeometry()
 end
 
 function FieldPreparationState:draw()

@@ -140,11 +140,11 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
       return assert(options.fieldMapLoader)
     end
     local cacheFs = CacheFs.forVersion(versionId)
-    -- This factory runs only after field core reports ready, so a missing
+    -- This factory runs once entry planning is ready, so a missing
     -- manifest is a cache/preparation failure, not a manual prerequisite.
     local world = assert(
       cacheFs:loadLua(MapAssetCache.worldPath()),
-      "field world metadata is unavailable although field core is ready"
+      "field world metadata is unavailable although entry planning is ready"
     )
     return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
   end
@@ -171,6 +171,10 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
 
   local function bootOakIntro()
     local candidate = newGameCandidate(saveStore, versionId)
+    -- Speculative warmth for the later field handoff: the runtime closure
+    -- builds while the intro plays. Readiness is ignored here; the handoff
+    -- promotes the same work to required interest when it runs.
+    derivedAssets.requestMilestone("field-runtime", "near")
     game:setState(OakIntroComposition.compose({
       candidate = candidate,
       versionId = versionId,
@@ -193,8 +197,9 @@ local function installRoutes(options, game, saveStore, saveValidation, versionId
         onCancel = backToMenu,
       }))
     elseif result.kind == "continue" then
-      -- Continue is a save intent, not a loaded record: field core, strict
-      -- validation and location geometry gate the transfer.
+      -- Continue is a save intent, not a loaded record: entry planning,
+      -- the field runtime, strict validation and location geometry gate
+      -- the transfer.
       enterPreparation({ kind = "continue", saveId = assert(result.saveId) })
     end
   end

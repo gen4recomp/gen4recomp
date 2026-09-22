@@ -77,6 +77,9 @@ local function readyHost()
     ensureField = function()
       return true
     end,
+    ensureLogicalField = function()
+      return true
+    end,
     requestCell = function()
       return true
     end,
@@ -326,7 +329,7 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     Assert.equal(#context.storeCalls, 1)
 
     game.state:keypressed("return")
-    Assert.equal(#context.fieldCalls, 0, "Continue waits for core and geometry before strict load")
+    Assert.equal(#context.fieldCalls, 0, "Continue waits for planning, runtime, and geometry before strict load")
     settle(game)
     Assert.equal(#context.fieldCalls, 1)
     Assert.equal(context.fieldCalls[1].game, continueRecord)
@@ -354,7 +357,11 @@ function T.hgss_entry_owns_menu_continue_new_game_oak_and_quit_routing()
     context.oakCalls[1].onComplete(finalized)
     Assert.equal(#context.applyCalls, 1)
     Assert.equal(context.applyCalls[1], finalized)
-    Assert.equal(#context.fieldCalls, 1, "the handoff requests core and geometry before constructing field")
+    Assert.equal(
+      #context.fieldCalls,
+      1,
+      "the handoff requests planning, runtime, and geometry before constructing field"
+    )
     settle(newGame)
     Assert.equal(#context.fieldCalls, 2)
     Assert.equal(context.fieldCalls[2].game, finalized)
@@ -472,7 +479,7 @@ end
 -- Production loader observation for the cold-cache sequencing contract below.
 -- The fake version cache answers only the world-manifest read with a canned
 -- manifest; every other generated read fails loudly so the tests prove the
--- composition never reaches past the manifest before field-core readiness.
+-- composition never reaches past the manifest before field-runtime readiness.
 local function cannedWorld()
   return {
     maps = {
@@ -509,11 +516,12 @@ local function withProductionLoaderObservation(worldOrNil, fn)
   end
 end
 
--- Cold Continue must not touch generated world metadata before field core
--- reports ready: selecting Continue with a pending core constructs
--- preparation without reading the world, and the production loader is
--- built exactly once after readiness before geometry is requested.
-function T.cold_continue_defers_world_read_until_field_core_is_ready()
+-- Cold Continue must not touch generated world metadata before entry
+-- planning reports ready: selecting Continue with pending planning
+-- constructs preparation without reading the world, and the production
+-- loader is built exactly once after readiness before geometry is
+-- requested.
+function T.cold_continue_defers_world_read_until_field_planning_is_ready()
   withCompositionSpies(function(modules, _)
     withProductionLoaderObservation(cannedWorld(), function(observation)
       local continueRecord = saveRecord("save-00000002")
@@ -524,10 +532,13 @@ function T.cold_continue_defers_world_read_until_field_core_is_ready()
         return contextStores[1]
       end)
       local ok, err = pcall(function()
-        local coreReady = false
+        local planningReady = false
         local host = readyHost()
-        host.requestMilestone = function()
-          return coreReady
+        host.requestMilestone = function(name, _)
+          if name == "field-planning" then
+            return planningReady
+          end
+          return true
         end
         local game = modules.hgssGame.new({
           versionId = READY_VERSION,
@@ -538,9 +549,9 @@ function T.cold_continue_defers_world_read_until_field_core_is_ready()
         Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
         Assert.equal(observation.loaderBuilds, 0, "selecting Continue builds no planning loader")
         settle(game)
-        Assert.equal(observation.worldReads, 0, "pending core never reads world metadata")
-        Assert.equal(observation.loaderBuilds, 0, "pending core never builds the planning loader")
-        coreReady = true
+        Assert.equal(observation.worldReads, 0, "pending planning never reads world metadata")
+        Assert.equal(observation.loaderBuilds, 0, "pending planning never builds the planning loader")
+        planningReady = true
         settle(game)
         Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
         Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
@@ -558,9 +569,9 @@ function T.cold_continue_defers_world_read_until_field_core_is_ready()
 end
 
 -- Cold New Game must survive the Oak handoff without world metadata: the
--- finalized candidate waits on field core with zero world reads, then
+-- finalized candidate waits on entry planning with zero world reads, then
 -- builds the production loader exactly once after readiness.
-function T.cold_new_game_handoff_defers_world_read_until_field_core_is_ready()
+function T.cold_new_game_handoff_defers_world_read_until_field_planning_is_ready()
   withCompositionSpies(function(modules, context)
     withProductionLoaderObservation(cannedWorld(), function(observation)
       context.stores[1] = fakeStore({})
@@ -577,11 +588,11 @@ function T.cold_new_game_handoff_defers_world_read_until_field_core_is_ready()
         location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
       }
       context.oakState = disposableState("oak")
-      local coreReady = false
+      local planningReady = false
       local host = readyHost()
       host.requestMilestone = function(name, _)
-        if name == "field-core" then
-          return coreReady
+        if name == "field-planning" then
+          return planningReady
         end
         return true
       end
@@ -597,24 +608,24 @@ function T.cold_new_game_handoff_defers_world_read_until_field_core_is_ready()
       Assert.equal(observation.worldReads, 0, "the Oak handoff reads no world metadata")
       Assert.equal(observation.loaderBuilds, 0, "the Oak handoff builds no planning loader")
       settle(game)
-      Assert.equal(observation.worldReads, 0, "pending core never reads world metadata after the handoff")
-      Assert.equal(#context.fieldCalls, 0, "field never constructs before core readiness")
-      coreReady = true
+      Assert.equal(observation.worldReads, 0, "pending planning never reads world metadata after the handoff")
+      Assert.equal(#context.fieldCalls, 0, "field never constructs before planning readiness")
+      planningReady = true
       settle(game)
       Assert.equal(observation.worldReads, 1, "readiness reads the world manifest exactly once")
       Assert.equal(observation.loaderBuilds, 1, "readiness builds the planning loader exactly once")
       settle(game)
-      Assert.equal(#context.fieldCalls, 1, "field constructs once core and geometry are ready")
+      Assert.equal(#context.fieldCalls, 1, "field constructs once planning, runtime, and geometry are ready")
       Assert.equal(context.fieldCalls[1].game, finalized)
       game:setState(nil)
     end)
   end)
 end
 
--- A world manifest that is still unavailable after field core reports ready
--- is a visible preparation failure, never an escaped composition error and
+-- A world manifest that is still unavailable after entry readiness is a
+-- visible preparation failure, never an escaped composition error and
 -- never a manual full-cache instruction.
-function T.missing_world_after_core_readiness_fails_preparation_visibly()
+function T.missing_world_after_readiness_fails_preparation_visibly()
   withCompositionSpies(function(modules, _)
     withProductionLoaderObservation(nil, function(observation)
       local continueRecord = saveRecord("save-00000002")
@@ -848,7 +859,7 @@ function T.menu_installation_prefetches_the_new_game_closure_at_near()
     Assert.equal(getmetatable(game.state).__index, modules.menu, "construction installs the menu")
     local prefetch = 0
     for _, request in ipairs(requests) do
-      Assert.isTrue(request.name ~= "field-core", "menu installation prefetches no field core")
+      Assert.isTrue(request.name ~= "field-runtime", "menu installation prefetches no field demand")
       if request.name == "new-game-intro" then
         prefetch = prefetch + 1
         Assert.equal(request.urgency, "near", "the New Game prefetch stays speculative")
@@ -856,6 +867,135 @@ function T.menu_installation_prefetches_the_new_game_closure_at_near()
     end
     Assert.equal(prefetch, 1, "menu installation prefetches the New Game closure exactly once")
     game:dispose()
+  end)
+end
+
+-- Booting the Oak intro prefetches the static field runtime at near
+-- without waiting for it: Oak is composed while the runtime is still
+-- pending, the intro gate never demands the runtime as required, and the
+-- prewarm happens exactly once.
+function T.oak_boot_prefetches_field_runtime_without_waiting_for_it()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.candidate = candidate
+    context.oakState = disposableState("oak")
+    local requests = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      requests[#requests + 1] = { name = name, urgency = urgency }
+      if name == "new-game-intro" then
+        return true
+      end
+      return false
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.oakCalls, 1, "Oak is composed while field runtime is still pending")
+    local preOoakRuntime = {}
+    for _, request in ipairs(requests) do
+      if request.name == "field-runtime" then
+        preOoakRuntime[#preOoakRuntime + 1] = request
+      end
+      if request.name == "field-core" then
+        error("the Oak path must never demand a removed milestone", 0)
+      end
+    end
+    Assert.equal(#preOoakRuntime, 1, "Oak boot prefetches the field runtime exactly once")
+    Assert.equal(preOoakRuntime[1].urgency, "near", "the Oak prewarm stays speculative")
+    for _, request in ipairs(requests) do
+      if request.name == "field-runtime" and request.urgency == "required" then
+        error("the intro gate must not demand field runtime as required", 0)
+      end
+    end
+    game:setState(nil)
+  end)
+end
+
+-- Completing Oak promotes the runtime prewarm to required interest through
+-- the handoff preparation: planning and runtime are demanded as required
+-- exactly once each, initialization still applies exactly once while the
+-- handoff waits, and no second candidate is created by later updates.
+function T.oak_completion_promotes_the_runtime_prewarm_to_required()
+  withCompositionSpies(function(modules, context)
+    context.stores[1] = fakeStore({})
+    local candidate = {
+      saveId = "save-00000003",
+      versionId = READY_VERSION,
+      playerData = nil,
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    local finalized = {
+      saveId = candidate.saveId,
+      versionId = READY_VERSION,
+      playerData = {},
+      location = { mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F", fieldX = 6, fieldZ = 6 },
+    }
+    context.candidate = candidate
+    context.oakState = disposableState("oak")
+    local requests = {}
+    local host = readyHost()
+    host.requestMilestone = function(name, urgency)
+      requests[#requests + 1] = { name = name, urgency = urgency }
+      if name == "new-game-intro" then
+        return true
+      end
+      return false
+    end
+    local game = modules.hgssGame.new({
+      versionId = READY_VERSION,
+      onExit = function() end,
+      derivedAssets = host,
+      fieldMapLoader = planningLoader(),
+    })
+    game.state:keypressed("return")
+    settle(game)
+    Assert.equal(#context.oakCalls, 1, "Oak is composed before the handoff")
+    local oakCallCount = #context.oakCalls
+    context.oakCalls[oakCallCount].onComplete(finalized)
+    settle(game)
+    Assert.equal(#context.applyCalls, 1, "initialization applies exactly once")
+    local requiredPlanning = 0
+    local requiredRuntime = 0
+    local nearRuntime = 0
+    for _, request in ipairs(requests) do
+      if request.name == "field-planning" and request.urgency == "required" then
+        requiredPlanning = requiredPlanning + 1
+      end
+      if request.name == "field-runtime" and request.urgency == "required" then
+        requiredRuntime = requiredRuntime + 1
+      end
+      if request.name == "field-runtime" and request.urgency == "near" then
+        nearRuntime = nearRuntime + 1
+      end
+    end
+    Assert.equal(nearRuntime, 1, "the Oak prewarm fired exactly once")
+    Assert.isTrue(requiredPlanning >= 1, "the handoff demands planning as required")
+    Assert.isTrue(requiredRuntime >= 1, "the handoff promotes runtime to required")
+    for _, request in ipairs(requests) do
+      if request.name == "field-planning" then
+        Assert.equal(request.urgency, "required", "planning interest stays required while pending")
+      end
+      if request.name == "field-runtime" and request.urgency ~= "near" then
+        Assert.equal(request.urgency, "required", "runtime interest stays required once demanded")
+      end
+    end
+    Assert.equal(#context.fieldCalls, 0, "pending closures never construct the field")
+    settle(game)
+    Assert.equal(#context.applyCalls, 1, "waiting never reapplies initialization")
+    Assert.equal(#context.candidateCalls, 1, "waiting never reserves a second candidate")
+    game:setState(nil)
   end)
 end
 

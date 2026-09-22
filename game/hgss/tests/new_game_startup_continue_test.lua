@@ -161,6 +161,9 @@ local function readyHost()
     ensureField = function()
       return true
     end,
+    ensureLogicalField = function()
+      return true
+    end,
     requestCell = function()
       return true
     end,

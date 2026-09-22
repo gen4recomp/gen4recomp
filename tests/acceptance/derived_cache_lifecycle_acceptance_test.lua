@@ -1,8 +1,8 @@
 -- Cold-cache application lifecycle through production composition.
--- Continue waits for field core before strict load and for location
+-- Continue waits for entry readiness before strict load and for location
 -- geometry before field entry; New Game waits in preparation until the
 -- intro closure is ready, then enters Oak and holds the finalized handoff
--- until core plus initial geometry are ready; warps hold their cover while the destination compiles and commit once;
+-- until planning, runtime, and initial geometry are ready; warps hold their cover while the destination compiles and commit once;
 -- the starter chooser demand-loads its actual portrait pages and drops
 -- closed interest. Real ROM-derived caches stay in the path; only host
 -- boundaries (audio output, clocks, save-root location) are faked, and
@@ -142,7 +142,7 @@ function T.tests.fixture_records_carry_independently_owned_bag_state()
   Assert.isTrue(first.bag.registered ~= second.bag.registered, "fixture records never share bag registration")
 end
 
-function T.tests.continue_waits_for_core_then_validates_before_field()
+function T.tests.continue_waits_for_readiness_then_validates_before_field()
   local versionId = AcceptanceHarness.defaultVersion()
   local store = isolatedStore()
   local saveId = store:reserve()
@@ -157,7 +157,7 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
 
   local fieldCalls = {}
   local entered = nil
-  local coreReady, geometryReady = false, false
+  local entryReady, geometryReady = false, false
   local requestedMaps = {}
   local requestedMilestones = {}
   local host = {
@@ -165,11 +165,14 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
       requestedMilestones[#requestedMilestones + 1] = name
       if name == "new-game-intro" then
         -- Menu-installed speculative prefetch stays pending here: Continue
-        -- must reach field on field-core readiness alone.
+        -- must reach field on entry readiness alone.
         return false
       end
-      Assert.equal(name, "field-core")
-      if coreReady then
+      Assert.isTrue(
+        name == "field-planning" or name == "field-runtime",
+        "Continue awaits only entry planning and the field runtime"
+      )
+      if entryReady then
         return true
       end
       return false
@@ -202,22 +205,22 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
     local ok, err = pcall(function()
       local card = game.state:view().saves[1]
       Assert.equal(card.saveId, saveId)
-      Assert.isTrue(card.canContinue, "a displayed record stays continuable while field core is cold")
+      Assert.isTrue(card.canContinue, "a displayed record stays continuable while entry readiness is pending")
       Assert.isNil(card.errorSummary, "a pending cache never reads as a corrupt save")
       game.state:keypressed("return")
-      Assert.equal(#fieldCalls, 0, "Continue waits for field core before strict load")
-      Assert.deepEqual(loads, {}, "strict load runs only after core readiness")
+      Assert.equal(#fieldCalls, 0, "Continue waits for entry readiness before strict load")
+      Assert.deepEqual(loads, {}, "strict load runs only after entry readiness")
       pumpGame(game, 5)
-      Assert.equal(#fieldCalls, 0, "the menu stays responsive without entering field while core is pending")
-      Assert.deepEqual(loads, {}, "pumping never loads before core readiness")
-      Assert.equal(loaderBuilds(), 0, "pending core never constructs the production planning loader")
-      coreReady = true
+      Assert.equal(#fieldCalls, 0, "the menu stays responsive without entering field while readiness is pending")
+      Assert.deepEqual(loads, {}, "pumping never loads before entry readiness")
+      Assert.equal(loaderBuilds(), 0, "pending readiness never constructs the production planning loader")
+      entryReady = true
       local waited = 0
       while #loads == 0 and waited < 60 do
         game:update(1 / 60)
         waited = waited + 1
       end
-      Assert.deepEqual(loads, { saveId }, "exactly one strict load follows core readiness")
+      Assert.deepEqual(loads, { saveId }, "exactly one strict load follows entry readiness")
       Assert.equal(loaderBuilds(), 1, "readiness constructs the production planning loader exactly once")
       Assert.equal(#fieldCalls, 0, "field begins only after location geometry is current")
       waited = 0
@@ -225,7 +228,7 @@ function T.tests.continue_waits_for_core_then_validates_before_field()
         game:update(1 / 60)
         waited = waited + 1
       end
-      Assert.isTrue(#requestedMaps >= 1, "the saved location geometry is requested once core is ready")
+      Assert.isTrue(#requestedMaps >= 1, "the saved location geometry is requested once entry is ready")
       for _, mapId in ipairs(requestedMaps) do
         Assert.equal(mapId, 60, "only the saved location geometry is awaited")
       end
@@ -304,19 +307,22 @@ local function completeOak(game, oakState)
   return completed
 end
 
-function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_are_ready()
+function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geometry_are_ready()
   local versionId = AcceptanceHarness.defaultVersion()
   local store = isolatedStore()
   local fieldCalls = {}
   local requested = { milestones = {}, maps = {}, pages = 0 }
-  local coreReady, geometryReady, introReady = false, false, false
+  local planningReady, runtimeReady, geometryReady, introReady = false, false, false, false
   local host = {
     requestMilestone = function(name, _)
       requested.milestones[#requested.milestones + 1] = name
       if name == "new-game-intro" and introReady then
         return true
       end
-      if name == "field-core" and coreReady then
+      if name == "field-planning" and planningReady then
+        return true
+      end
+      if name == "field-runtime" and runtimeReady then
         return true
       end
       return false
@@ -394,25 +400,22 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
           Assert.equal(#applyCalls, 1, "finalization applies exactly once to the Oak candidate")
           local finalized = applyCalls[1]
           Assert.equal(assert(finalized.playerData and finalized.playerData.profile).name, "GOLD")
-          Assert.equal(#fieldCalls, 0, "the handoff requests field core before constructing field")
-          Assert.equal(loaderBuilds(), 0, "the finalized handoff builds no planning loader before core")
+          Assert.equal(#fieldCalls, 0, "the handoff requests entry readiness before constructing field")
+          Assert.equal(loaderBuilds(), 0, "the finalized handoff builds no planning loader before planning")
           for _, name in ipairs(requested.milestones) do
-            Assert.isTrue(name ~= "field-core", "only the intro closure is awaited before the finalized handoff")
+            Assert.isTrue(name ~= "field-planning", "entry planning is demanded only by the finalized handoff")
           end
-          coreReady = true
+          planningReady = true
           waited = 0
-          local sawCore = false
-          while not sawCore and waited < 60 do
+          while loaderBuilds() == 0 and waited < 60 do
             game:update(1 / 60)
             waited = waited + 1
-            for _, name in ipairs(requested.milestones) do
-              if name == "field-core" then
-                sawCore = true
-              end
-            end
           end
-          Assert.isTrue(sawCore, "field core is awaited beyond the finalized candidate")
-          Assert.equal(loaderBuilds(), 1, "core readiness builds the planning loader exactly once")
+          Assert.equal(loaderBuilds(), 1, "planning readiness builds the planning loader exactly once")
+          Assert.equal(#fieldCalls, 0, "the handoff demands its target while the runtime is still pending")
+          runtimeReady = true
+          pumpGame(game, 5)
+          Assert.equal(#fieldCalls, 0, "the handoff still waits while initial location geometry is pending")
           waited = 0
           while #requested.maps == 0 and waited < 60 do
             game:update(1 / 60)
@@ -435,7 +438,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_core_and_geometry_ar
             game:update(1 / 60)
             waited = waited + 1
           end
-          Assert.equal(#fieldCalls, 1, "field entry commits once core and geometry are ready")
+          Assert.equal(#fieldCalls, 1, "field entry commits once readiness and geometry are ready")
           Assert.equal(#applyCalls, 1, "waiting never applies initialization again")
           Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")
         end)
