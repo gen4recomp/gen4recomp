@@ -3,8 +3,8 @@
 -- once per open through the generated-asset cache, the per-candidate
 -- portrait descriptors resolved through the mon portrait contract, and the
 -- game-local presentation that realizes that manifest across two logical
--- DS surfaces: the machine surface (world role, the only touch surface)
--- and the info surface (auxiliary role). The three pre-created candidates
+-- DS surfaces: the info surface (world role) and the machine surface
+-- (auxiliary interaction role). The three pre-created candidates
 -- are borrowed read-only for display; the task owns publication authority.
 -- The presentation prepares its graphics resources in bounded steps once
 -- the field advances it after opening, and draws only once prepared: open,

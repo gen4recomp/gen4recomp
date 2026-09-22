@@ -337,17 +337,19 @@ function FieldApplicationHost:menuCoverage()
   return copied
 end
 
--- Delegates capture cancellation to the active menu wrapper, which drops
--- its session and controller presses so a stale release never activates.
--- Controllers without the capability (keyboard-only destinations) stay
--- valid without it.
+-- Delegates capture cancellation to whichever controller is live, which
+-- drops its session and controller presses so a stale release never
+-- activates. Controllers without the capability (keyboard-only
+-- destinations) stay valid without it, and a host with no live controller
+-- cancels nothing.
 function FieldApplicationHost:cancelPointerCapture()
-  if self._phase ~= FieldApplicationHost.PHASES.menu or self._controller == nil then
+  local controller = self._controller
+  if controller == nil then
     return
   end
-  local cancel = self._controller.cancelPointerCapture
+  local cancel = controller.cancelPointerCapture
   if type(cancel) == "function" then
-    cancel(self._controller)
+    cancel(controller)
   end
 end
 

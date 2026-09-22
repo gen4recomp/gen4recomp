@@ -703,28 +703,59 @@ function T.tests.dispose_twice_never_double_disposes_or_double_clears()
   Assert.equal(host:error(), nil)
 end
 
-function T.tests.cancel_delegates_to_the_active_menu_controller_only_in_the_menu_phase()
+-- Focus-loss capture cancellation follows the live controller, not the phase
+-- name: the open menu, the menu retained through fade-out, and a
+-- destination exposing the optional method all receive exactly one
+-- delegation; a controller without the capability and a closed host are
+-- no-ops that change nothing.
+function T.tests.cancel_delegates_to_the_live_controller_in_any_phase()
   local host, _, registry = fixture()
   local menu = openMenu(host, _, registry)
   host:updateFixed({})
   host:cancelPointerCapture()
   Assert.equal(menu.cancelPointerCaptureCalls, 1, "focus loss delegates cancellation to the open menu")
-  menu.result = { kind = "close" }
+  menu.result = { kind = "launch", applicationId = "trainer_card", actionId = "vanilla.trainer_card" }
+  local destination = fakeController()
+  registry.controllers.trainer_card = destination
   host:updateFixed({})
+  Assert.equal(host:status().phase, "fading_out")
   host:cancelPointerCapture()
-  Assert.equal(menu.cancelPointerCaptureCalls, 1, "a closed host cancels nothing")
+  Assert.equal(menu.cancelPointerCaptureCalls, 2, "focus loss during fade-out still cancels the retained live menu")
+  for _ = 1, FieldApplicationHost.FADE_TICKS do
+    host:updateFixed({})
+  end
+  Assert.equal(host:status().phase, "application")
+  host:cancelPointerCapture()
+  Assert.equal(destination.cancelPointerCaptureCalls, 1, "focus loss delegates cancellation to the live destination")
+  Assert.equal(host:status().phase, "application", "cancellation changes neither phase nor controller")
+end
+
+function T.tests.cancel_without_the_optional_capability_is_a_noop()
+  local host, _, registry = fixture()
+  local menu = openMenu(host, _, registry)
+  host:updateFixed({})
+  menu.result = { kind = "launch", applicationId = "trainer_card", actionId = "vanilla.trainer_card" }
   local keyboardOnly = fakeController()
   keyboardOnly.cancelPointerCapture = nil
   registry.controllers.trainer_card = keyboardOnly
-  openMenu(host, _, registry)
-  local menu2 = registry.menuControllers[#registry.menuControllers]
-  menu2.result = { kind = "launch", applicationId = "trainer_card", actionId = "vanilla.trainer_card" }
   host:updateFixed({})
   for _ = 1, FieldApplicationHost.FADE_TICKS + 1 do
     host:updateFixed({})
   end
+  Assert.equal(host:status().phase, "application")
   host:cancelPointerCapture()
   Assert.equal(host:status().phase, "application", "cancelling without the capability changes nothing")
+end
+
+function T.tests.cancel_on_a_closed_host_cancels_nothing()
+  local host, _, registry = fixture()
+  local menu = openMenu(host, _, registry)
+  host:updateFixed({})
+  menu.result = { kind = "close" }
+  host:updateFixed({})
+  Assert.equal(host:status().phase, "closed")
+  host:cancelPointerCapture()
+  Assert.equal(menu.cancelPointerCaptureCalls, 0, "a closed host cancels nothing")
 end
 
 function T.tests.menu_controllers_receive_raw_normalized_events_unchanged()

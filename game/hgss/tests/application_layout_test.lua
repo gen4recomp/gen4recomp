@@ -228,6 +228,38 @@ function T.tests.windowed_frames_content_with_border_title_and_grab_rect()
   Assert.isTrue(math.abs(bodyOriginY / window.outer.scale - 13) < 1e-9, "the body starts below the title strip")
 end
 
+function T.tests.windowed_selects_physical_integer_scale_through_the_framebuffer_ratio()
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local policy = sharedPolicy()
+  local cases = {
+    { pixelRatio = 2, expectedScale = 5 },
+    { pixelRatio = 1.25, expectedScale = 3 },
+  }
+  for _, case in ipairs(cases) do
+    local measurement = measure(singleSurface(1280, 720), 1280, 720, case.pixelRatio)
+    local context = layoutContext(measurement, "wide")
+    local geometry =
+      assert(policy.windowed(context, { id = "content", width = 256, height = 192 }), "a 720p host frames a window")
+    local window = assert(geometry.window, "wide carries a window")
+    Assert.equal(
+      window.outer.pixelScale,
+      case.expectedScale,
+      "ratio " .. case.pixelRatio .. " fits the 80 percent framebuffer in physical pixels"
+    )
+    Assert.near(
+      window.outer.scale,
+      case.expectedScale / case.pixelRatio,
+      1e-9,
+      "the host scale is the physical scale over the framebuffer ratio"
+    )
+    local eighty = { x = 128, y = 72, width = 1024, height = 576 }
+    Assert.isTrue(
+      LayoutGeometry.contains(eighty, window.outer.frame),
+      "ratio " .. case.pixelRatio .. " stays inside the centered 80 percent bounds"
+    )
+  end
+end
+
 function T.tests.windowed_falls_back_when_no_integer_frame_fits()
   local policy = sharedPolicy()
   local measurement = measure(singleSurface(200, 150), 200, 150)

@@ -129,6 +129,25 @@ function T.tests.cancellation_delegates_to_the_session_and_controller()
   state:dispose()
 end
 
+-- A session-construction failure inside the protected override/session
+-- closure must surface the original diagnostic after controller cleanup:
+-- an invalid override value fails with its own assertion, not nil, and a
+-- later valid construction still succeeds.
+function T.tests.session_construction_failure_rethrows_the_original_diagnostic()
+  local StartMenuState = startMenuState()
+  local ok, err = pcall(function()
+    return StartMenuState.new(options({ overrides = { wide = 42 } }))
+  end)
+  Assert.isTrue(ok == false, "an invalid override must fail wrapper construction")
+  Assert.isTrue(
+    tostring(err):find("must be a function", 1, true) ~= nil,
+    "construction must surface the original override diagnostic, got: " .. tostring(err)
+  )
+  local state = StartMenuState.new(options())
+  Assert.notNil(state:status().presentation, "a later valid construction still succeeds")
+  state:dispose()
+end
+
 function T.tests.construction_is_failure_safe_and_disposal_is_exactly_once()
   local StartMenuState = startMenuState()
   Assert.throws(function()

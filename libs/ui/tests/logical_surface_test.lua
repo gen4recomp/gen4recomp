@@ -169,4 +169,15 @@ function T.malformed_placements_are_rejected_before_any_push()
   Assert.equal(lg:pushDepth(), 0, "rejected scopes never push")
 end
 
+function T.malformed_origins_are_rejected_before_any_push()
+  local Surface = logicalSurfaceFor("scope validation")
+  local lg = FakeGraphics.new()
+  local placement = croppedPlacement()
+  placement.origin = { x = 0 / 0, y = 0 }
+  Assert.throws(function()
+    Surface.draw(lg, placement, function() end)
+  end, "a non-finite origin is a programming error")
+  Assert.equal(lg:pushDepth(), 0, "rejected scopes never push")
+end
+
 return { tests = T }
