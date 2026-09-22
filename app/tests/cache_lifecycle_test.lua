@@ -1183,6 +1183,44 @@ function T.cancelled_selection_still_guards_raw_import_behind_source_closure(con
   end)
 end
 
+function T.cancelled_preparation_leaves_persisted_save_bytes_unchanged(context)
+  withLiveApp(context, function(App, harness)
+    local saveFs = SaveFs.global()
+    local store = GameSaveStore.new(saveFs, {
+      recordValidate = function(candidate)
+        return GameSave.validate(candidate)
+      end,
+    })
+    local catalogBefore = saveFs:read(GameSaveStore.CATALOG_PATH)
+    local saveId = store:reserve()
+    store:publishFirst(record(saveId))
+    local gamePath = "games/" .. saveId .. ".lua"
+    local catalogSeeded = assert(saveFs:read(GameSaveStore.CATALOG_PATH), "seeding publishes a catalog")
+    local gameSeeded = assert(saveFs:read(gamePath), "seeding publishes the save body")
+    local provisioner = selectVersion(App, VERSION)
+    attachWorker(harness)
+    local host = provisioner:gameHost()
+    supportedFieldMapId(host)
+    pumpApp(App, harness, 6)
+    assert(App.state, "selection must install a preparation state"):keypressed("escape", nil, nil)
+    Assert.isNil(App.provisioner, "cancellation detaches the selection back to the selector")
+    selectVersion(App, VERSION)
+    pumpApp(App, harness, 4)
+    Assert.equal(
+      saveFs:read(GameSaveStore.CATALOG_PATH),
+      catalogSeeded,
+      "cancel and reselection rewrite no save catalog bytes"
+    )
+    Assert.equal(saveFs:read(gamePath), gameSeeded, "cancel and reselection rewrite no save body bytes")
+    saveFs:remove(gamePath)
+    if catalogBefore == nil then
+      saveFs:remove(GameSaveStore.CATALOG_PATH)
+    else
+      saveFs:write(GameSaveStore.CATALOG_PATH, catalogBefore)
+    end
+  end)
+end
+
 function T.same_version_reselection_reuses_one_service_with_fresh_interest(context)
   withLiveApp(context, function(App, harness)
     -- One production route: a cold boot-menu entry waits through selection
