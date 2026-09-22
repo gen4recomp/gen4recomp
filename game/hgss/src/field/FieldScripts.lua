@@ -225,9 +225,6 @@ end
 ---@field player ScriptPlayerFacade
 ---@field cacheFs table<string, unknown> CacheFs-shaped
 ---@field overrideFs table<string, unknown> read-shaped filesystem for data/scripts/overrides
----@field registrySnapshotKey string|nil key the live registry was built under
----@field registrySnapshotUsed boolean true when a matching snapshot skipped per-use validation
----@field warmup RegistryWarmup|nil background warm-up after a snapshot miss
 ---@field taskRegistry TaskRegistry the live registered-task registry
 ---@field initController MapInitScriptController
 ---@field compatibility FieldScriptCompatibility
@@ -260,12 +257,11 @@ function FieldScripts.new(opts)
   )
 
   -- The registry is always installed lazily: only the generated layer's
-  -- presence comes from the index, and each script decodes on first use. A
-  -- matching snapshot proves the corpus unchanged since the cache build
-  -- validated it (skip per-use validation) and restores the memoized
-  -- fingerprint; on a miss the background warm-up decodes, hashes, and
-  -- publishes the snapshot while the game plays, and the first save finishes
-  -- it. The override layer is always loaded and validated eagerly.
+  -- presence comes from the index, and each script decodes on first use.
+  -- The published index hashes seed the registry fingerprint, so no
+  -- gameplay pass decodes the corpus or publishes snapshots; a hashless
+  -- index is a stale cache and fails at compatibility construction. The
+  -- override layer is always loaded and validated eagerly.
   local compatibility = FieldScriptCompatibility.new({ cacheFs = opts.cacheFs, overrideFs = opts.overrideFs })
   local registry = compatibility.registry
   local composition = compatibility.composition
@@ -333,9 +329,6 @@ function FieldScripts.new(opts)
   local platform = setmetatable({
     compatibility = compatibility,
     registry = registry,
-    registrySnapshotKey = compatibility.registrySnapshotKey,
-    registrySnapshotUsed = compatibility.registrySnapshotUsed,
-    warmup = compatibility.warmup,
     cacheFs = opts.cacheFs,
     overrideFs = opts.overrideFs,
     composition = composition,

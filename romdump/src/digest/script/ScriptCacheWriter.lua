@@ -15,6 +15,9 @@ local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local Errors = require("libs.errors.src.Errors")
+local LuaWriter = require("libs.codec.src.LuaWriter")
+local Sha256 = require("libs.script.src.Sha256")
+local Validate = require("libs.assets.src.Validate")
 
 local ScriptCacheWriter = {}
 
@@ -219,6 +222,65 @@ local function readbackResource(reader, plan, entry)
       id = entry.id,
     })
   end
+  return resource
+end
+
+-- The canonical content hash: exactly what the runtime registry fingerprint
+-- computes for the same decoded resource, so published hashes seed it
+-- without decoding bodies again.
+local function canonicalResourceHash(resource)
+  return Sha256.hex(LuaWriter.encode(resource))
+end
+
+-- Validate a staged or published hash sidecar against its planned member:
+-- current schema, generation, member identity and marker, plus an exact
+-- bijection between the sidecar records and the planned member resources.
+-- Returns the sidecar's hashes keyed by resource id, or nil plus a cause
+-- when the sidecar cannot attest this member.
+local function checkSidecar(plan, memberId, memberMarker, sidecar)
+  if type(sidecar) ~= "table" then
+    return nil, "script member " .. tostring(memberId) .. " has no published resource hashes"
+  end
+  if sidecar.schema ~= ScriptCache.HASHES_SCHEMA then
+    return nil, "script member " .. tostring(memberId) .. " resource hashes use an unknown schema"
+  end
+  if sidecar.generation ~= plan.generationKey or sidecar.memberId ~= memberId or sidecar.marker ~= memberMarker then
+    return nil, "script member " .. tostring(memberId) .. " resource hashes are not current"
+  end
+  if not Validate.isArray(sidecar.resources) then
+    return nil, "script member " .. tostring(memberId) .. " resource hashes are malformed"
+  end
+  local expected = memberResourceIndex(plan, memberId)
+  if #sidecar.resources ~= #expected then
+    return nil, "script member " .. tostring(memberId) .. " resource hash coverage is incomplete"
+  end
+  local expectedById = {}
+  for _, candidate in ipairs(expected) do
+    expectedById[candidate.id] = candidate
+  end
+  local byId = {}
+  for _, record in ipairs(sidecar.resources) do
+    if type(record) ~= "table" or type(record.id) ~= "string" then
+      return nil, "script member " .. tostring(memberId) .. " resource hash identity is invalid"
+    end
+    local planned = expectedById[record.id]
+    if planned == nil or record.scriptIndex ~= planned.scriptIndex then
+      return nil, "script member " .. tostring(memberId) .. " resource hash is not in the plan"
+    end
+    if byId[record.id] ~= nil or not Validate.isSha256Key(record.resourceHash) then
+      return nil, "script member " .. tostring(memberId) .. " resource hash is invalid"
+    end
+    byId[record.id] = record.resourceHash
+  end
+  return byId
+end
+
+local function loadSidecar(reader, plan, memberId, memberMarker)
+  local ok, sidecar = pcall(reader.loadLua, reader, ScriptCache.memberHashesPath(plan.generationKey, memberId))
+  if not ok then
+    return nil, "script member " .. tostring(memberId) .. " has no published resource hashes"
+  end
+  return checkSidecar(plan, memberId, memberMarker, sidecar)
 end
 
 -- A staging handle is a worker-owned preparation, never a live cache: the
@@ -249,11 +311,29 @@ local function persistMember(stage, plan, member)
     romSha1 = plan.romSha1,
     game = plan.version,
   }
+  local hashes = {}
   for _, entry in ipairs(member.resources) do
     local path = ScriptCache.scriptPath(plan.generationKey, member.memberId, entry.id)
     stage:write(path, ScriptCompiler.emit(entry, emitOpts))
-    readbackResource(stage, plan, entry)
+    local resource = readbackResource(stage, plan, entry)
+    hashes[#hashes + 1] =
+      { id = entry.id, scriptIndex = entry.scriptIndex, resourceHash = canonicalResourceHash(resource) }
   end
+  table.sort(hashes, function(a, b)
+    if a.id ~= b.id then
+      return a.id < b.id
+    end
+    return a.scriptIndex < b.scriptIndex
+  end)
+  stage:writeLua(ScriptCache.memberHashesPath(plan.generationKey, member.memberId), {
+    schema = ScriptCache.HASHES_SCHEMA,
+    generation = plan.generationKey,
+    memberId = member.memberId,
+    marker = member.marker,
+    resources = hashes,
+  })
+  local stagedHashes = assert(stage:loadLua(ScriptCache.memberHashesPath(plan.generationKey, member.memberId)))
+  assert(checkSidecar(plan, member.memberId, member.marker, stagedHashes))
   stage:writeLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId), member.coverage)
   validateCoverage(
     plan,
@@ -384,15 +464,59 @@ local function checkPlan(plan)
   return expectedIndex
 end
 
+-- Join every planned resource's published canonical hash into the
+-- generation index: each current member's sidecar must attest exactly its
+-- planned resources, so the published index describes precisely the current
+-- member bodies with no missing, extra, or duplicate records. Every
+-- member passed the same proof through memberIsComplete above; the join
+-- only carries the attested hashes into the index the runtime consumes.
+local function joinResourceHashes(liveFs, plan, expectedIndex)
+  local hashesByMember = {}
+  for _, member in ipairs(orderedMembers(plan)) do
+    local ok, sidecar = pcall(liveFs.loadLua, liveFs, ScriptCache.memberHashesPath(plan.generationKey, member.memberId))
+    if not ok then
+      Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses a member without published hashes", {
+        generation = plan.generationKey,
+        missingMemberIds = { member.memberId },
+      })
+    end
+    local hashes, hashesErr = checkSidecar(plan, member.memberId, member.marker, sidecar)
+    if hashes == nil then
+      Errors.raise(
+        "SCRIPT_SUMMARY_INCOMPLETE",
+        "script summary refuses invalid published hashes: " .. tostring(hashesErr),
+        {
+          generation = plan.generationKey,
+          missingMemberIds = { member.memberId },
+        }
+      )
+    end
+    hashesByMember[member.memberId] = hashes
+  end
+  for _, entry in ipairs(expectedIndex.resources) do
+    local memberHashes = hashesByMember[entry.member]
+    local resourceHash = memberHashes and memberHashes[entry.id]
+    if resourceHash == nil then
+      Errors.raise("SCRIPT_SUMMARY_INCOMPLETE", "script summary refuses an unattested resource", {
+        generation = plan.generationKey,
+        id = entry.id,
+      })
+    end
+    entry.resourceHash = resourceHash
+  end
+end
+
 local function memberIsComplete(liveFs, plan, member)
   return ScriptCacheWriter.isMemberReady(liveFs, plan, member.memberId) == true
 end
 
 -- Proves one planned member is usable in the live cache under its planned
 -- marker: the exact marker, the expected resource identities and the coverage
--- metadata, all read back with the current generation identity. This is the
--- same proof the generation summary demands of every member before staging,
--- exposed so readiness checks cannot drift from it.
+-- metadata, the published canonical resource hashes, all read back with the
+-- current generation identity. The sidecar hashes are validated against the
+-- current emitted bodies, never trusted blindly. This is the same proof the
+-- generation summary demands of every member before staging, exposed so
+-- readiness checks cannot drift from it.
 ---@param cacheFs CacheFs
 ---@param plan { generationKey: string, members: unknown[], resources: unknown[] }
 ---@param memberId integer|string
@@ -418,10 +542,19 @@ function ScriptCacheWriter.isMemberReady(cacheFs, plan, memberId)
   if not coverageValid then
     return false, "script member " .. tostring(id) .. " coverage is not usable: " .. tostring(coverageErr)
   end
+  local hashes, hashesErr = loadSidecar(cacheFs, plan, id, member.marker)
+  if hashes == nil then
+    return false, tostring(hashesErr)
+  end
   for _, entry in ipairs(memberResourceIndex(plan, id)) do
-    local readOk, readErr = pcall(readbackResource, cacheFs, plan, entry)
+    local readOk, resource = pcall(readbackResource, cacheFs, plan, entry)
     if not readOk then
-      return false, "script member " .. tostring(id) .. " resource is not usable: " .. tostring(readErr)
+      return false, "script member " .. tostring(id) .. " resource is not usable: " .. tostring(resource)
+    end
+    if
+      canonicalResourceHash(resource --[[@as table<string, unknown>]]) ~= hashes[entry.id]
+    then
+      return false, "script member " .. tostring(id) .. " resource hash does not match its body"
     end
   end
   return true
@@ -451,6 +584,7 @@ local function persistSummary(stage, liveFs, plan)
   for _, member in ipairs(orderedMembers(plan)) do
     records[#records + 1] = assert(liveFs:loadLua(ScriptCache.memberCoveragePath(plan.generationKey, member.memberId)))
   end
+  joinResourceHashes(liveFs, plan, expectedIndex)
   local coverage = aggregateCoverage(records, plan)
   local coverageJson = jsonValue(coverage) .. "\n"
   local coverageMd = Coverage.markdown(coverage)

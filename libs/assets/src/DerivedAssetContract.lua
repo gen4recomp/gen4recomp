@@ -208,6 +208,10 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
+  -- v6 keeps the v5 layout and requires every complete-index resource
+  -- entry to carry its canonical decoded-resource hash (published per
+  -- member beside the bodies, joined into the index by the summary), so a
+  -- hashless older index rebuilds instead of reading as ready.
   -- v5 moves the generation summary (index, provenance, coverage, marker)
   -- under a `metadata/` child of the generation directory, disjoint from
   -- the `members/` payload roots, so one summary publication can own the
@@ -215,7 +219,7 @@ DerivedAssetContract.scripts = {
   -- v4 shards the generated corpus into immutable generations and member
   -- roots. The active selector is separate from the generation contents.
   cacheFormat = "script-cache-v5",
-  indexSchema = "g4-script-index-v2",
+  indexSchema = "g4-script-index-v3",
   provenanceSchema = "g4-script-provenance-v2",
 }
 

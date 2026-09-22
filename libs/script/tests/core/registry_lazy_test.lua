@@ -1,9 +1,8 @@
 -- Lazy registry tests: deferred base layers decode through the registry's
 -- resource loader on first access, presence semantics (ids/duplicates) work
--- without decoding, the fingerprint consumes pre-stashed per-resource hashes
--- without touching the loader, and the RegistryWarmup background pass slices
--- decode+hash work, records failures, and publishes the snapshot on
--- completion.
+-- without decoding, and the fingerprint consumes pre-stashed per-resource
+-- hashes without touching the loader. Published index hashes are seeded by
+-- the loader; no gameplay pass decodes the corpus or publishes snapshots.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -13,8 +12,6 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptLoader = require("libs.script.src.ScriptLoader")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 local Registry = require("libs.script.src.Registry")
-local RegistrySnapshot = require("libs.script.src.RegistrySnapshot")
-local RegistryWarmup = require("libs.script.src.RegistryWarmup")
 local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
@@ -219,164 +216,6 @@ T["stashed hashes are invalidated on mutation"] = function()
   local fingerprint = registry:fingerprint()
   Assert.isTrue(#calls > 0, "the mutation forces a live recompute")
   Assert.equal(fingerprint, registry:fingerprint())
-end
-
--- 9. The warm-up completes, restores the memo, and publishes a loadable
--- snapshot; the digest equals an eager build's.
-T["warmup completes and writes a loadable snapshot"] = function()
-  local cache = scriptCache()
-  local fs = overrideFs({})
-  local key = RegistrySnapshot.key(cache, fs)
-  Assert.notNil(key)
-  local publicationCount = 0
-  local originalWriteLua = cache.writeLua
-  cache.writeLua = function(self, path, value)
-    publicationCount = publicationCount + 1
-    return originalWriteLua(self, path, value)
-  end
-  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
-  local warmup = RegistryWarmup.new({
-    registry = registry,
-    cacheFs = cache,
-    overrideFs = fs,
-    snapshotKey = key,
-    selection = selection,
-  })
-  Assert.isFalse(warmup:isComplete())
-  local failure = warmup:finish()
-  Assert.isNil(failure, tostring(failure and failure.message))
-  Assert.isTrue(warmup:isComplete())
-  Assert.equal(publicationCount, 1, "warm-up publishes one snapshot artifact")
-  local snapshot = cache:loadLua(RegistrySnapshot.FILE)
-  Assert.notNil(snapshot, "warm-up must publish a loadable snapshot")
-  ---@cast snapshot table
-  Assert.equal(snapshot.schema, "g4-registry-snapshot-v1")
-  Assert.equal(snapshot.key, key)
-  Assert.equal(snapshot.fingerprint, registry:fingerprint())
-  local eager = ScriptLoader.buildRegistry(cache, fs, requireShim)
-  Assert.equal(snapshot.fingerprint, eager:fingerprint(), "the warm-up digest matches a fresh eager build")
-end
-
--- 10. A zero-budget update processes nothing: the pass is sliced, and the
--- blocking finish completes the remainder.
-T["warmup slices by time budget and finish completes the remainder"] = function()
-  local cache = scriptCache()
-  local fs = overrideFs({})
-  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
-  local warmup = RegistryWarmup.new({
-    registry = registry,
-    cacheFs = cache,
-    overrideFs = fs,
-    snapshotKey = assert(RegistrySnapshot.key(cache, fs)),
-    selection = selection,
-    budget = 0,
-  })
-  warmup:update()
-  Assert.isFalse(warmup:isComplete(), "a zero-budget update must not complete the pass")
-  Assert.isNil(warmup:finish())
-  Assert.isTrue(warmup:isComplete())
-end
-
-T["warmup uses the two millisecond default budget"] = function()
-  local files = {}
-  for index = 1, 3 do
-    local id = string.format("warmup.default.%d", index)
-    files[id] = string.format(
-      'local S = require("gen4.script")\nreturn S.script { api = 1, id = %q, steps = { S.stop() } }\n',
-      id
-    )
-  end
-  local cache = scriptCache(files)
-  local fs = overrideFs({})
-  local clock = 0
-  local processed = 0
-  local registry = {
-    cacheScriptHash = function()
-      processed = processed + 1
-    end,
-    fingerprint = function()
-      return ("0"):rep(64)
-    end,
-    restoreFingerprint = function() end,
-  }
-  local warmup = RegistryWarmup.new({
-    registry = registry,
-    cacheFs = cache,
-    overrideFs = fs,
-    snapshotKey = assert(RegistrySnapshot.key(cache, fs)),
-    selection = ScriptCache.loadActive(cache),
-    clock = function()
-      clock = clock + 0.001
-      return clock
-    end,
-  })
-  warmup:update()
-  Assert.equal(processed, 2, "the default budget must process two 1 ms work units")
-  Assert.isFalse(warmup:isComplete(), "the default budget must leave remaining work for a later update")
-end
-
--- 11. An unparsable generated file fails the warm-up loudly: no snapshot is
--- written and the failure is returned.
-T["warmup records a failure on unparsable content"] = function()
-  local cache = scriptCache({ ["new_bark.lab_sign"] = "return { broken" })
-  local fs = overrideFs({})
-  local key = assert(RegistrySnapshot.key(cache, fs))
-  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
-  local warmup = RegistryWarmup.new({
-    registry = registry,
-    cacheFs = cache,
-    overrideFs = fs,
-    snapshotKey = key,
-    selection = selection,
-  })
-  local failure = assert(warmup:finish())
-  Assert.equal(failure.code, "SCRIPT_LOAD_FAILED")
-  Assert.isNil(cache:read(RegistrySnapshot.FILE), "a failed warm-up must not publish a snapshot")
-end
-
--- A failed snapshot publication must remain visible and must not mark the
--- warm-up complete.
-T["warmup raises and remains incomplete when snapshot publication fails"] = function()
-  local cache = scriptCache()
-  local fs = overrideFs({})
-  local key = assert(RegistrySnapshot.key(cache, fs))
-  cache.backend.write = function()
-    return false, "injected write failure"
-  end
-  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
-  local warmup = RegistryWarmup.new({
-    registry = registry,
-    cacheFs = cache,
-    overrideFs = fs,
-    snapshotKey = key,
-    selection = selection,
-  })
-
-  local err = Assert.throws(function()
-    warmup:finish()
-  end)
-
-  Assert.notNil(err)
-  Assert.isFalse(warmup:isComplete())
-end
-
--- 12. Finish is idempotent: the second call returns nil and the digest is
--- unchanged.
-T["warmup finish is idempotent"] = function()
-  local cache = scriptCache()
-  local fs = overrideFs({})
-  local registry, selection = ScriptLoader.buildRegistry(cache, fs, requireShim, { lazy = true })
-  local warmup = RegistryWarmup.new({
-    registry = registry,
-    cacheFs = cache,
-    overrideFs = fs,
-    snapshotKey = assert(RegistrySnapshot.key(cache, fs)),
-    selection = selection,
-  })
-  Assert.isNil(warmup:finish())
-  local fingerprint = registry:fingerprint()
-  Assert.isNil(warmup:finish())
-  Assert.equal(registry:fingerprint(), fingerprint)
 end
 
 -- 13. buildRegistry returns a sealed registry: the post-load registry is

@@ -1272,7 +1272,9 @@ end
 
 function T.script_generation_readiness_does_not_require_active_selection()
   local c = cache()
-  writeGenerationIndex(c, SCRIPT_GENERATION, "m", { { id = "a.b", member = 1, scriptIndex = 0 } })
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", {
+    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) },
+  })
   writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
 
   Assert.isTrue(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
@@ -1317,6 +1319,28 @@ function T.script_generation_with_missing_or_malformed_resource_is_not_ready()
   Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"))
 end
 
+function T.script_generation_without_resource_hashes_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0 } }
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(
+    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
+    "published resource hashes are required for readiness"
+  )
+end
+
+function T.script_generation_with_duplicate_entries_is_not_ready()
+  local c = cache()
+  local resources = {
+    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("1", 64) },
+    { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("1", 64) },
+  }
+  writeGenerationIndex(c, SCRIPT_GENERATION, "m", resources)
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"), "duplicate index entries are not ready")
+end
+
 function T.script_index_missing_resources_is_not_ready()
   local c = cache()
   c:writeLua(ScriptCache.activeIndexPath(), {
@@ -1359,7 +1383,7 @@ end
 
 function T.script_valid_artifact_is_ready()
   local c = cache()
-  writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0 } })
+  writeScriptIndex(c, { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } })
   c:write(
     ScriptCache.scriptPath(SCRIPT_GENERATION, 1, "a.b"),
     'local S = require("gen4.script")\nreturn S.script { api = 1, id = "a.b", steps = { S.stop() } }\n'

@@ -108,6 +108,17 @@ function ScriptCache.memberMarkerPath(generation, memberId)
   return ScriptCache.memberDir(generation, memberId) .. "/complete"
 end
 
+-- Canonical per-resource hashes published alongside one member: the writer
+-- stages this sidecar (validated there) before the member marker lands, so
+-- a member without it is an incompatible older artifact, never a ready one.
+ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v1"
+
+function ScriptCache.memberHashesPath(generation, memberId)
+  assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
+  assert(type(memberId) == "number" and memberId % 1 == 0 and memberId >= 0, "member id must be a non-negative integer")
+  return ScriptCache.memberDir(generation, memberId) .. "/resource-hashes.lua"
+end
+
 function ScriptCache.scriptPath(generation, memberId, id)
   assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
   assert(type(memberId) == "number" and memberId % 1 == 0 and memberId >= 0, "member id must be a non-negative integer")
@@ -156,10 +167,21 @@ local function resourceFilesReady(cacheFs, generation, index)
   if not Validate.isArray(index.resources) then
     return false
   end
+  local seenIds = {}
   for _, entry in ipairs(index.resources) do
     if type(entry) ~= "table" or type(entry.id) ~= "string" or entry.id == "" or type(entry.member) ~= "number" then
       return false
     end
+    -- Every indexed resource carries its published canonical hash; a
+    -- hashless entry belongs to an incompatible older index, and a repeated
+    -- id would attest the same resource twice.
+    if not Validate.isSha256Key(entry.resourceHash) then
+      return false
+    end
+    if seenIds[entry.id] then
+      return false
+    end
+    seenIds[entry.id] = true
     local script = cacheFs:loadModule(ScriptCache.scriptPath(generation, entry.member, entry.id))
     if type(script) ~= "table" or script.kind ~= "field_script" or script.id ~= entry.id then
       return false

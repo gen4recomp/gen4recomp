@@ -1216,11 +1216,6 @@ function FieldRuntime:update(dt)
     self.residency:updatePrefetch()
   end
 
-  -- The background registry warm-up (snapshot-miss boot) runs one time
-  -- slice per frame; the first save finishes whatever it has not.
-  if self.scripts.warmup then
-    self.scripts.warmup:update()
-  end
   self.session.accumulator = self.session.accumulator + acceptedDt
   local FIXED_DT = FieldSession.FIXED_DT
   local MAX_CATCH_UP = FieldSession.MAX_CATCH_UP_TICKS

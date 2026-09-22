@@ -7,7 +7,9 @@ local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local LuaWriter = require("libs.codec.src.LuaWriter")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
 local GENERATION_A = string.rep("a", 40)
@@ -318,6 +320,119 @@ T["member readiness proves the live member body"] = function()
   )
   cache:write(ScriptCache.memberCoveragePath(GENERATION_A, 3), "not a lua coverage{{{")
   Assert.isFalse(ScriptCacheWriter.isMemberReady(cache, currentPlan, 3), "a member with corrupt coverage is not ready")
+end
+
+-- A member whose published resource hashes are absent cannot attest its
+-- content: readiness must refuse it even though every body decodes. The
+-- sidecar removal below reconstructs the incompatible older artifact the
+-- scenario specifies (a plain publish always attests its hashes).
+T["a member without published resource hashes is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "hashless", "outer-a")
+  cache:remove(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua")
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "a member without published resource hashes is not ready")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
+end
+
+-- A hash record staged for another generation must not attest this member.
+T["a member hash record from another generation is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "foreign-hash", "outer-a")
+  cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
+    schema = "g4-script-resource-hashes-v1",
+    generation = GENERATION_B,
+    memberId = 3,
+    marker = "other-marker",
+    resources = {},
+  })
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "a foreign generation hash record must not attest this member")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
+end
+
+-- A summary over index entries without published hashes is refused before
+-- publication, and the previous live member survives the refusal.
+T["a summary over hashless index entries is refused and keeps the previous member"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  publishGeneration(cache, GENERATION_A, marker, "refused-summary", "outer-a")
+  local currentPlan = plan(GENERATION_A, marker)
+  cache:remove(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua")
+  local beforeMarker = cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 3))
+  local beforeBody = cache:read(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost"))
+  local err = Assert.throws(function()
+    ScriptCacheWriter.writeSummary(cache, currentPlan)
+  end)
+  Assert.notNil(err, "a hashless summary must be refused")
+  Assert.equal(
+    cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 3)),
+    beforeMarker,
+    "the previous member marker survives a refused summary"
+  )
+  Assert.equal(
+    cache:read(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")),
+    beforeBody,
+    "the previous member body survives a refused summary"
+  )
+end
+
+-- A body that no longer matches its published hash is not ready: the
+-- sidecar is validated against the current emitted bodies, never trusted.
+T["a member whose body drifted from its published hash is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "drifted", "outer-a")
+  local path = ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")
+  local body = assert(cache:read(path))
+  local drifted, replacements = body:gsub("complete = true", "complete = false", 1)
+  Assert.equal(replacements, 1, "the drift edits emitted coverage metadata")
+  cache:write(path, drifted)
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "a drifted body must not match its published hash")
+  Assert.isTrue(
+    type(reason) == "string" and reason:find("hash", 1, true) ~= nil,
+    "the refusal names the hash mismatch: " .. tostring(reason)
+  )
+end
+
+-- A sidecar carrying another marker cannot attest this member, even when
+-- its hashes are well-formed.
+T["a member hash record with the wrong marker is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "wrong-marker", "outer-a")
+  local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")))
+  cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
+    schema = "g4-script-resource-hashes-v1",
+    generation = GENERATION_A,
+    memberId = 3,
+    marker = "stale-marker",
+    resources = { { id = "common.signpost", scriptIndex = 0, resourceHash = Sha256.hex(LuaWriter.encode(resource)) } },
+  })
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "a stale marker must not attest this member")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
+end
+
+-- A hand-published sidecar with valid hashes attests its member: readiness
+-- validates the sidecar against the plan and the current bodies, not its
+-- provenance, and record order never matters to the bijection.
+T["a hand-published hash record attests its member"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "unordered", "outer-a")
+  local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 843, "new_bark.lab_sign")))
+  cache:writeLua(ScriptCache.memberDir(GENERATION_A, 843) .. "/resource-hashes.lua", {
+    schema = "g4-script-resource-hashes-v1",
+    generation = GENERATION_A,
+    memberId = 843,
+    marker = GENERATION_A .. ":member:843",
+    resources = { { id = "new_bark.lab_sign", scriptIndex = 9, resourceHash = Sha256.hex(LuaWriter.encode(resource)) } },
+  })
+  Assert.isTrue(ScriptCacheWriter.isMemberReady(cache, currentPlan, 843))
 end
 
 return { tests = T }
