@@ -805,6 +805,42 @@ function CompilerPool:_eligibleRecord()
   return nil
 end
 
+---@return string "runnable" when pool work can advance now, "waiting" while progress needs an external compiler or close result, else "idle"
+function CompilerPool:activityState()
+  -- Read-only projection over bounded physical facts for the controller
+  -- drive: a fatal condition surfaces through the next pump, a queued
+  -- reply or prepared publication advances locally, dispatch eligibility
+  -- stays with the single admission authority, and only occupied slots,
+  -- held-back queues, or unacknowledged close barriers count as external
+  -- waits. Retained job history is never scanned and nothing is consumed.
+  if self.fatalError ~= nil then
+    return "runnable"
+  end
+  if self.resultChannel:getCount() > 0 then
+    return "runnable"
+  end
+  if #self.completions > 0 then
+    return "runnable"
+  end
+  if self:_eligibleRecord() ~= nil then
+    return "runnable"
+  end
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil then
+      return "waiting"
+    end
+  end
+  if self.queuedCount > 0 then
+    return "waiting"
+  end
+  for _, worker in ipairs(self.workers) do
+    if worker.closeSent and not worker.closeAcked and not worker.joined then
+      return "waiting"
+    end
+  end
+  return "idle"
+end
+
 ---@return CompilerPool.Worker?
 function CompilerPool:_idleWorkerFor()
   for _, worker in ipairs(self.workers) do

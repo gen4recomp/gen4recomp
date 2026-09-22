@@ -3766,4 +3766,184 @@ function T.icon_page_demand_registers_through_the_canonical_record()
   Assert.isFalse(urgencyOk, "an unknown urgency is rejected")
 end
 
+-- Required and near demand blocks new background registration until it
+-- settles, across promotion and retry transitions.
+function T.foreground_demand_blocks_new_background_registration_until_settled()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("foreground-exclusion-generation", pool, backend)
+  Assert.equal(type(session.hasRunnablePlanning), "function", "the session exposes retained runnable planning")
+  Assert.equal(session.foregroundPendingCount, 0, "no foreground demand is retained before authorization")
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  local kind, key = candidate:match("^([^:]+):(.+)$")
+  assert(kind ~= nil, "the background candidate keeps its canonical identity")
+  local ready, failure = session:requestJob(kind, key, "required")
+  Assert.isFalse(ready, "the promoted candidate answers pending until the pump runs")
+  Assert.isNil(failure, "promotion reports no failure")
+  local entry = assert(session.byKey[candidate], "the candidate keeps its canonical record")
+  Assert.equal(entry.priority, 0, "promotion moves the same record to the required lane")
+  Assert.equal(session.foregroundPendingCount, 1, "sweep-to-required promotion counts exactly once")
+  local alternateKind = nil
+  local alternateKey = nil
+  for _, member in ipairs({
+    { kind = "audio-bank", key = "3" },
+    { kind = "script-member", key = "4" },
+    { kind = "message-bank", key = "1" },
+  }) do
+    if member.kind .. ":" .. member.key ~= candidate then
+      alternateKind, alternateKey = member.kind, member.key
+      break
+    end
+  end
+  assert(alternateKey ~= nil, "the warming corpus holds a second foreground member")
+  local alternateJobKey = alternateKind .. ":" .. alternateKey
+  local nearReady, nearFailure = session:requestJob(alternateKind, alternateKey, "near")
+  Assert.isFalse(nearReady, "near demand answers pending until the pump runs")
+  Assert.isNil(nearFailure, "near registration reports no failure")
+  Assert.equal(session.foregroundPendingCount, 2, "near demand counts its own record")
+  local promotedReady, promotedFailure = session:requestJob(alternateKind, alternateKey, "required")
+  Assert.isFalse(promotedReady, "the promoted near record answers pending")
+  Assert.isNil(promotedFailure, "near-to-required promotion reports no failure")
+  Assert.equal(session.foregroundPendingCount, 2, "near-to-required promotion never double counts")
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.equal(session.foregroundPendingCount, 2, "pumping never recounts tracked demand")
+  for _, jobKey in ipairs(pool.submitted) do
+    Assert.isTrue(
+      jobKey == candidate or jobKey == alternateJobKey,
+      "no new background candidate enrolls while foreground is outstanding: " .. jobKey
+    )
+  end
+  pool.states[candidate] = { state = "failed", details = { error = "synthetic foreground failure" } }
+  for _ = 1, 5 do
+    session:update()
+  end
+  local failedEntry = assert(session.byKey[candidate], "the failed record stays retained")
+  Assert.isTrue(
+    tostring(failedEntry.failure):find("synthetic foreground failure", 1, true) ~= nil,
+    "the failure stays attributed: " .. tostring(failedEntry.failure)
+  )
+  Assert.equal(session.foregroundPendingCount, 1, "terminal failure decrements exactly once")
+  local retryReady, retryFailure = session:retry(kind, key, "required")
+  Assert.isFalse(retryReady, "the retried leaf answers pending")
+  Assert.isNil(retryFailure, "retry reports no failure")
+  Assert.equal(session.foregroundPendingCount, 2, "failed leaf retry increments exactly once")
+  -- The retry admission runs on the next pump and re-queues through the
+  -- pool; fake outcomes flip only after that pump, or the re-queue
+  -- overwrites them back to queued with no worker to advance them.
+  session:update()
+  pool.states[candidate] = "ready"
+  pool.states[alternateJobKey] = "ready"
+  local resumed = false
+  for _ = 1, 30 do
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if jobKey ~= candidate and jobKey ~= alternateJobKey then
+        resumed = true
+      end
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+    end
+    if resumed and session.foregroundPendingCount == 0 then
+      break
+    end
+  end
+  Assert.isTrue(resumed, "sweep resumes once the final foreground entry settles")
+  Assert.equal(session.foregroundPendingCount, 0, "settled foreground leaves no retained count")
+end
+
+-- A failed aggregate parent reopens through retry without recounting:
+-- the failed leaf counts again once and the blocked parent counts
+-- again once, while healthy siblings never move.
+function T.failed_parent_reopens_through_retry_without_double_counting()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("parent-reopen-generation", pool, backend)
+  Assert.equal(type(session.hasRunnablePlanning), "function", "the session exposes retained runnable planning")
+  local ready, failure = session:requestJob("message-summary", "global", "required")
+  Assert.isFalse(ready, "the summary answers pending while its banks are cold")
+  Assert.isNil(failure, "registration reports no failure")
+  Assert.equal(session.foregroundPendingCount, 1, "only the requested parent counts before expansion")
+  for _ = 1, 5 do
+    session:update()
+  end
+  Assert.equal(session.foregroundPendingCount, 3, "the parent plus its two cold leaves count once each after expansion")
+  pool.states["message-bank:1"] = { state = "failed", details = { error = "synthetic leaf failure" } }
+  for _ = 1, 5 do
+    session:update()
+  end
+  local leaf = assert(session.byKey["message-bank:1"], "the failed leaf stays retained")
+  Assert.isTrue(
+    tostring(leaf.failure):find("synthetic leaf failure", 1, true) ~= nil,
+    "the leaf failure stays attributed: " .. tostring(leaf.failure)
+  )
+  local parent = assert(session.byKey["message-summary:global"], "the blocked parent stays retained")
+  Assert.notNil(parent.failure, "the parent settles with its blocked dependency failure")
+  Assert.equal(session.foregroundPendingCount, 1, "only the healthy leaf still counts")
+  local retryReady, retryFailure = session:retry("message-summary", "global", "required")
+  Assert.isFalse(retryReady, "the reopened parent answers pending")
+  Assert.isNil(retryFailure, "parent retry reports no failure")
+  Assert.equal(session.foregroundPendingCount, 3, "leaf repair plus parent reopen count once each")
+  -- The retry admission runs on the next pump and re-queues through the
+  -- pool; fake outcomes flip only after that pump, or the re-queue
+  -- overwrites them back to queued with no worker to advance them.
+  session:update()
+  pool.states["message-bank:1"] = "ready"
+  pool.states["message-bank:2"] = "ready"
+  pool.states["message-summary:global"] = "ready"
+  for _ = 1, 30 do
+    session:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+    end
+    if session.foregroundPendingCount == 0 then
+      break
+    end
+  end
+  Assert.equal(session.foregroundPendingCount, 0, "settled parent and leaves leave no retained count")
+  local done, doneFailure = session:requestJob("message-summary", "global", "required")
+  Assert.isTrue(done, "the repaired summary settles")
+  Assert.isNil(doneFailure, "settlement reports no failure")
+end
+
+-- A running background candidate is a wait, not runnable local
+-- planning: the retained flag reads false while the only outstanding
+-- work is the nonterminal sweep candidate, and the cursor advances
+-- once the candidate settles.
+function T.running_background_candidate_reports_no_runnable_planning_until_settled()
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  local session = warmingSession("running-sweep-wait-generation", pool, backend)
+  Assert.equal(type(session.hasRunnablePlanning), "function", "the session exposes retained runnable planning")
+  session:enableSweep()
+  local candidate = pumpUntilSubmitted(session, pool, 20)
+  pool.states[candidate] = "running"
+  session:update()
+  Assert.equal(session:hasRunnablePlanning(), false, "a running sweep candidate is a wait, not runnable planning")
+  Assert.equal(session.foregroundPendingCount, 0, "background work never enters the foreground count")
+  Assert.equal(#pool.submitted, 1, "no second candidate enrolls while the first runs")
+  pool.states[candidate] = "ready"
+  local advanced = false
+  for _ = 1, 30 do
+    session:update()
+    if #pool.submitted >= 2 then
+      advanced = true
+    end
+    for _, jobKey in ipairs(pool.submitted) do
+      if pool.states[jobKey] == nil then
+        pool.states[jobKey] = "ready"
+      end
+    end
+    if advanced then
+      break
+    end
+  end
+  Assert.isTrue(advanced, "the cursor advances once the candidate settles")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

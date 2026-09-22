@@ -47,6 +47,7 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field ready boolean
 ---@field failure string|nil
 ---@field failureClass string|nil source-exclusion, dependency, job, validation or planning on failed rows
+---@field foregroundCounted boolean retained foreground accounting: true while this entry counts toward the session foreground total
 ---@field causeJobKey string|nil deepest failed leaf identity when a dependency failed
 ---@field poolState string|nil last observed pool state
 ---@field direct boolean|nil true once a public single-request method claims this entry; milestone enrollment never sets it
@@ -102,6 +103,7 @@ local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler
 ---@field sweepCandidate string|nil current sweep-origin candidate awaiting settlement
 ---@field sweepExhausted boolean canonical corpus enumeration reached its end
 ---@field sweepFailure string|nil first background candidate failure when present
+---@field foregroundPendingCount integer retained nonterminal required/near interest count
 ---@field planningPending boolean runnable local planning remains from the last pump
 ---@field followerMemo string|nil retained follower diagnostic
 ---@field followerChecked boolean
@@ -236,6 +238,7 @@ function InteractiveCacheBuild.new(options)
     sweepCandidate = nil,
     sweepExhausted = false,
     sweepFailure = nil,
+    foregroundPendingCount = 0,
     planningPending = false,
     followerMemo = nil,
     followerChecked = false,
@@ -524,6 +527,24 @@ function InteractiveCacheBuild:_controlNeeded(op, milestone)
   return false
 end
 
+-- Retained foreground accounting: the session total counts exactly the
+-- nonterminal required/near entries. Every transition that can change an
+-- entry's countedness reconciles it here, so background eligibility never
+-- rescans retained interest.
+function InteractiveCacheBuild:_refreshForegroundPending(entry)
+  -- Registration always seeds the flag false; entries hand-built outside
+  -- it carry no flag yet and start uncounted, matching that seed.
+  if entry.foregroundCounted == nil then
+    entry.foregroundCounted = false
+  end
+  local shouldCount = not entry.ready and entry.failure == nil and entry.priority < 100
+  if shouldCount ~= entry.foregroundCounted then
+    self.foregroundPendingCount = self.foregroundPendingCount + (shouldCount and 1 or -1)
+    assert(self.foregroundPendingCount >= 0, "foreground cache interest count underflow")
+    entry.foregroundCounted = shouldCount
+  end
+end
+
 ---@param kind string
 ---@param key string
 ---@param urgency string
@@ -554,9 +575,11 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
       pendingDeps = {},
       propagateIndex = nil,
       retryPending = false,
+      foregroundCounted = false,
     }
     self.byKey[jobKey] = entry
     self.interest[#self.interest + 1] = entry
+    self:_refreshForegroundPending(entry)
     self:_enqueueEntry(entry)
   elseif priority < entry.priority then
     entry.urgency = urgency
@@ -587,6 +610,7 @@ function InteractiveCacheBuild:_register(kind, key, urgency)
         end
       end
     end
+    self:_refreshForegroundPending(entry)
   end
   return entry
 end
@@ -803,6 +827,7 @@ function InteractiveCacheBuild:_failEntry(entry, message, failureClass, causeJob
   entry.phase = "failed"
   entry.await = nil
   entry.retryPending = false
+  self:_refreshForegroundPending(entry)
   self:_invalidateTicket(entry.jobKey)
   self:_noteTerminal(entry)
   self:_notifyParents(entry.jobKey)
@@ -843,6 +868,7 @@ function InteractiveCacheBuild:_succeedEntry(entry, plan)
   entry.phase = "ready"
   entry.await = nil
   entry.retryPending = false
+  self:_refreshForegroundPending(entry)
   self:_invalidateTicket(entry.jobKey)
   if plan ~= nil then
     self:_adoptValidated(plan)
@@ -1626,6 +1652,7 @@ function InteractiveCacheBuild:_publishMilestone(name)
         entry.failure = self.generationId .. " actors global: " .. tostring(followersErr)
         entry.failureClass = "validation"
         entry.causeJobKey = nil
+        self:_refreshForegroundPending(entry)
       end
       return
     end
@@ -1806,6 +1833,9 @@ function InteractiveCacheBuild:_advanceSweep(budget)
   if self.retired or not self.sweepAuthorized or self.sweepExhausted then
     return
   end
+  if self.foregroundPendingCount > 0 then
+    return
+  end
   local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
   if candidate ~= nil then
     if candidate.failure ~= nil then
@@ -1816,11 +1846,6 @@ function InteractiveCacheBuild:_advanceSweep(budget)
     elseif candidate.ready then
       self.sweepCandidate = nil
     else
-      return
-    end
-  end
-  for _, entry in ipairs(self.interest) do
-    if not entry.ready and entry.failure == nil and entry.priority < 100 then
       return
     end
   end
@@ -2201,6 +2226,7 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
       leaf.urgency = urgency
       leaf.priority = priority
       self:_invalidateTicket(leaf.jobKey)
+      self:_refreshForegroundPending(leaf)
       if poolFailed then
         leaf.retryPending = true
         leaf.phase = "admit"
@@ -2228,6 +2254,7 @@ function InteractiveCacheBuild:retry(kind, key, urgency)
         parent.priority = priority
         self:_invalidateTicket(parent.jobKey)
       end
+      self:_refreshForegroundPending(parent)
       if not parent.ready then
         parent.phase = "plan"
         self:_enqueueEntry(parent)
@@ -2616,6 +2643,11 @@ function InteractiveCacheBuild:outcomes()
   return list
 end
 
+---@return boolean retained runnable local planning remains; no cache IO, pool polling, or scans
+function InteractiveCacheBuild:hasRunnablePlanning()
+  return self.planningPending
+end
+
 ---@return boolean runnable local planning remains from retained state
 function InteractiveCacheBuild:_hasRunnablePlanning()
   -- The worklist is the runnable authority: a live valid ticket means
@@ -2641,7 +2673,17 @@ end
 
 ---@return boolean unexpanded background completion can advance now
 function InteractiveCacheBuild:_sweepExpansionReady()
-  return self.sweepAuthorized and not self.sweepExhausted and self.sourceLoaded and self.pagesKnown
+  if not self.sweepAuthorized or self.sweepExhausted or not self.sourceLoaded or not self.pagesKnown then
+    return false
+  end
+  -- Retained foreground exclusion first: required/near demand owns the
+  -- next background candidate. A running candidate is an external wait,
+  -- not runnable local planning.
+  if self.foregroundPendingCount > 0 then
+    return false
+  end
+  local candidate = self.sweepCandidate ~= nil and self.byKey[self.sweepCandidate] or nil
+  return candidate == nil or candidate.ready or candidate.failure ~= nil
 end
 
 ---@return boolean unexpanded explicit complete demand can advance now

@@ -23,14 +23,22 @@ local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 
 local CacheControllerWorker = {}
 
--- Idle wake cadence while a generation session is selected. Compiler
--- completions arrive on the pool's private result channel, invisible to the
--- control channel the worker blocks on, so a live session polls on a short
--- sleep-dominated tick rather than blocking indefinitely. With no selected
--- session and settled pool work the worker blocks on the control channel
--- with no timeout. This is a static conservative cadence, not a frame
--- governor: it never inspects frame timing.
+-- Bounded wait cadence while progress depends on an external compiler or
+-- source-close result. Those completions arrive on the pool's private
+-- result channel, invisible to the control channel the worker blocks on,
+-- so a waiting session polls on a short sleep-dominated tick rather than
+-- blocking indefinitely. A fully idle controller (no selected session, or
+-- a selected session with no runnable planning and no outstanding
+-- worker/close result) blocks on the control channel with no timeout.
+-- This is a static conservative cadence, not a frame governor: it never
+-- inspects frame timing.
 local LIVE_TICK_SECONDS = 0.005
+
+-- Fallback sleep when no LOVE timer is present. Named (not inline
+-- anonymous) per repository source policy; run's fallback semantics
+-- are unchanged.
+---@param _ number ignored sleep duration
+local function idleSleep(_) end
 
 -- Single-shot code bootstrap for love.thread.newThread on the game thread.
 -- Code strings boot on the game thread; the development search path is
@@ -676,26 +684,61 @@ function Worker:step()
   end
 end
 
--- Thread entry: block on the command channel when fully idle, poll on a
--- short sleep-dominated tick while a session is selected so compiler
--- completions (which arrive on pool-private channels) are observed
--- promptly. Exits only on shutdown.
+-- One wait/drive decision: an already-queued command outranks every wait
+-- choice, immediately runnable local work pumps with no sleep, an
+-- external compiler or close wait keeps one bounded sleep before polling,
+-- and only a fully idle controller blocks on its control channel. A
+-- quiescence barrier that can settle now pumps at once; one still waiting
+-- on worker or close results keeps polling instead of blocking, since
+-- those results arrive on pool-private channels. The injected timer
+-- exists only for deterministic tests; production passes love.timer.
+---@param timer table<string, function> provides sleep(seconds)
+function Worker:driveOnce(timer)
+  assert(type(timer) == "table" and type(timer.sleep) == "function", "controller drive needs its sleep timer")
+  local command = self.control:pop()
+  if command ~= nil then
+    self:_handle(command)
+    if not self.exiting then
+      self:step()
+    end
+    return
+  end
+  local activity = "idle"
+  if self.pool ~= nil then
+    activity = self.pool:activityState()
+  end
+  local quiesceSettleable = self.pendingQuiesce ~= nil and (self.pool == nil or activity == "idle")
+  local sessionRunnable = self.session ~= nil and self.session:hasRunnablePlanning()
+  if quiesceSettleable or sessionRunnable or activity == "runnable" then
+    self:step()
+    return
+  end
+  if activity == "waiting" then
+    timer.sleep(LIVE_TICK_SECONDS)
+    self:step()
+    return
+  end
+  local awakened = self.control:demand()
+  self:_handle(awakened)
+  if not self.exiting then
+    self:step()
+  end
+end
+
+-- Thread entry: every loop iteration is one drive decision above, so a
+-- selected settled session blocks on its control channel instead of
+-- polling on a fixed tick. Exits only on shutdown.
 ---@param control table<string, function>
 ---@param reply table<string, function>
 function CacheControllerWorker.run(control, reply)
   local worker = Worker.new(control, reply)
   while not worker.exiting do
-    if worker.session == nil and worker.pendingQuiesce == nil then
-      local command = control:demand()
-      worker:_handle(command)
-    else
-      local host = rawget(_G, "love")
-      local timer = host and host.timer
-      if timer ~= nil and type(timer.sleep) == "function" then
-        pcall(timer.sleep, LIVE_TICK_SECONDS)
-      end
-      worker:step()
+    local host = rawget(_G, "love")
+    local timer = host and host.timer
+    if type(timer) ~= "table" or type(timer.sleep) ~= "function" then
+      timer = { sleep = idleSleep }
     end
+    worker:driveOnce(timer)
   end
   worker:_shutdown()
 end

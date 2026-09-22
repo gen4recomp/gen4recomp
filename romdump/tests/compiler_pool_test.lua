@@ -1444,4 +1444,165 @@ function T.controller_publication_moves_payload_without_byte_copies()
   Assert.equal(cache:read("geometry/shared"), shared, "the shared install lands intact")
 end
 
+local function selectedInteractivePool(host, generation)
+  local CompilerPool = requirePool()
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+  end))
+  withLove(host.love, function()
+    pool:selectGeneration({ versionId = "heartgold", generationId = generation }, 1)
+  end)
+  return pool
+end
+
+local function activityMapJob(generation, key, mapId, priority)
+  return {
+    generationId = generation,
+    epoch = 1,
+    versionId = "heartgold",
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    priority = priority,
+    sizeClass = "normal",
+    payload = { mapId = mapId },
+  }
+end
+
+local function observeActivity(host, pool)
+  return withLove(host.love, function()
+    return pool:activityState()
+  end)
+end
+
+-- A fresh selected pool holds no local work and waits on no worker, so
+-- it reads idle without scanning queued interest.
+function T.fresh_selected_pool_reports_idle_with_no_work_outstanding()
+  local host = newThreadHost(4)
+  local pool = selectedInteractivePool(host, "activity-idle-generation")
+  Assert.equal(observeActivity(host, pool), "idle", "a fresh selected pool holds no runnable or waiting work")
+  pool:shutdown()
+end
+
+-- Queued work that can dispatch immediately reads runnable.
+function T.queued_dispatchable_work_reports_runnable()
+  local generation = "activity-dispatchable-generation"
+  local host = newThreadHost(4)
+  local pool = selectedInteractivePool(host, generation)
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "60", 60, 0))
+  end)
+  Assert.equal(observeActivity(host, pool), "runnable", "dispatchable queued work can advance now")
+  pool:shutdown()
+end
+
+-- A worker reply already waiting on the result channel reads runnable,
+-- and classification consumes nothing.
+function T.queued_worker_reply_reports_runnable_without_consuming_it()
+  local generation = "activity-reply-generation"
+  local host = newThreadHost(4)
+  local pool = selectedInteractivePool(host, generation)
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "60", 60, 0))
+    pool:update()
+  end)
+  local dispatched = assert(host.channels[2]:pop(), "the worker received its job record")
+  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  host.channels[1]:push({
+    workerId = 1,
+    epoch = 1,
+    generationId = generation,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = stageName,
+    status = "failed",
+  })
+  Assert.equal(host.channels[1]:getCount(), 1, "the reply waits on the result channel")
+  Assert.equal(observeActivity(host, pool), "runnable", "a queued worker reply can advance now")
+  Assert.equal(host.channels[1]:getCount(), 1, "classification consumes no worker reply")
+  pool:shutdown()
+end
+
+-- A prepared but unpublished completion reads runnable: publication can
+-- advance without any new worker reply.
+function T.prepared_completion_reports_runnable_before_publication()
+  local generation = "activity-prepared-generation"
+  local host = newThreadHost(4)
+  local pool = selectedInteractivePool(host, generation)
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "60", 60, 0))
+    pool:update()
+  end)
+  local dispatched = assert(host.channels[2]:pop(), "the worker received its job record")
+  local stageName = assert(dispatched.stageName, "dispatched work carries its stage identity")
+  host.channels[1]:push({
+    workerId = 1,
+    epoch = 1,
+    generationId = generation,
+    kind = "map",
+    key = "60",
+    jobKey = "map:60",
+    stageName = stageName,
+    status = "prepared",
+  })
+  withLove(host.love, function()
+    pool:update(0)
+  end)
+  Assert.equal(pool:status("map:60"), "prepared", "the completion waits for publication")
+  Assert.equal(observeActivity(host, pool), "runnable", "an unpublished prepared result can advance now")
+  pool:shutdown()
+end
+
+-- A busy worker with queued work behind it reads waiting: nothing local
+-- can advance, but progress depends on the outstanding worker reply.
+function T.occupied_worker_with_blocked_queue_reports_waiting()
+  local generation = "activity-blocked-generation"
+  local host = newThreadHost(4)
+  local pool = selectedInteractivePool(host, generation)
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "60", 60, 0))
+    pool:update()
+    pool:request(activityMapJob(generation, "61", 61, 0))
+  end)
+  Assert.equal(pool:status("map:60"), "running", "the first job occupies the worker")
+  Assert.equal(pool:status("map:61"), "queued", "the second job waits on the busy worker")
+  Assert.equal(observeActivity(host, pool), "waiting", "blocked queued work waits on its worker")
+  pool:shutdown()
+end
+
+-- A source-close barrier without its acknowledgement reads waiting:
+-- the controller must keep polling, never block indefinitely.
+function T.close_barrier_without_acknowledgement_reports_waiting()
+  local host = newThreadHost(4)
+  local pool = selectedInteractivePool(host, "activity-close-generation")
+  withLove(host.love, function()
+    pool:quiesce()
+  end)
+  Assert.isFalse(pool:isQuiescent(), "the close acknowledgement is still outstanding")
+  Assert.equal(observeActivity(host, pool), "waiting", "an unacknowledged close waits on its worker")
+  pool:shutdown()
+end
+
+-- A fatal pool condition never reads idle: the next drive must pump
+-- and surface it through the failure path.
+function T.fatal_pool_condition_never_reports_idle()
+  local generation = "activity-fatal-generation"
+  local host = newThreadHost(4)
+  host.control.stopOnDispatch = true
+  local pool = selectedInteractivePool(host, generation)
+  withLove(host.love, function()
+    pool:request(activityMapJob(generation, "60", 60, 0))
+    pool:update()
+  end)
+  local ok, _ = pcall(function()
+    withLove(host.love, function()
+      pool:update()
+    end)
+  end)
+  Assert.isFalse(ok, "the stopped worker surfaces its fatal condition")
+  Assert.equal(observeActivity(host, pool), "runnable", "a fatal pool condition never reads idle")
+  pool:shutdown()
+end
+
 return { tests = T }
