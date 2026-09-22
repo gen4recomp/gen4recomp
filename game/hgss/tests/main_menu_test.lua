@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MainMenuController = require("game.hgss.src.menu.MainMenuController")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
@@ -49,6 +50,18 @@ local function state(options)
   options.height = options.height or 480
   options.renderer = options.renderer or fakeRenderer()
   return MainMenuState.new(options)
+end
+
+-- Pointer input arrives in host units while layout geometry is logical:
+-- forward layout points through the published placement like production.
+-- A press pairs down with its release so session capture never leaks
+-- across clicks the way production event pairs do not.
+local function pressAt(menu, logicalX, logicalY)
+  local published = menu:view()
+  local placement = assert(published.presentation.panes[1].placement, "pointer input needs the published placement")
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+  menu:mousepressed(hostX, hostY, 1)
+  menu:mousereleased(hostX, hostY, 1)
 end
 
 function T.controller_defaults_to_existing_save_and_reaches_global_action()
@@ -256,15 +269,21 @@ function T.pointer_overflow_focuses_the_lane_without_continuing()
       results[#results + 1] = result
     end,
   })
-  local card = assert(menu:view().layout.saves.cards["save-00000001"])
-  menu:mousepressed(card.overflow.x + 1, card.overflow.y + 1, 1)
-  Assert.deepEqual(results, {})
-  Assert.deepEqual(menu:view().focus, { region = "saves", saveId = "save-00000001", lane = "overflow" })
-  Assert.deepEqual(menu:hitTest(card.overflow.x + 1, card.overflow.y + 1), {
+  local published = menu:view()
+  local card = assert(published.layout.saves.cards["save-00000001"])
+  -- Query before pressing: once the overflow popup opens, the shared hit
+  -- test truthfully reports the modal, so the underlying save hit must
+  -- be established first.
+  local placement = assert(published.presentation.panes[1].placement, "the menu plan carries its placement")
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, card.overflow.x + 1, card.overflow.y + 1)
+  Assert.deepEqual(menu:hitTest(hostX, hostY), {
     region = "saves",
     saveId = "save-00000001",
     lane = "overflow",
   })
+  pressAt(menu, card.overflow.x + 1, card.overflow.y + 1)
+  Assert.deepEqual(results, {})
+  Assert.deepEqual(menu:view().focus, { region = "saves", saveId = "save-00000001", lane = "overflow" })
 end
 
 function T.clipped_save_cards_cannot_be_pointer_activated()
@@ -490,7 +509,6 @@ function T.deep_saves_scroll_while_new_game_stays_fixed_and_direct()
   controller:focusSave("save-12", "body")
   local layout =
     MainMenuLayout.compute(globalActions(), list, controller:snapshot().focus, 640, 480, 0, nil, nil, false)
-  Assert.equal(layout.uiScale, 2)
   local newGame = layout.global.actions["new-game"]
   Assert.isTrue(newGame.y >= layout.saves.viewport.y + layout.saves.viewport.height)
   Assert.notNil(layout.saves.scrollIndicators)
@@ -560,10 +578,10 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   menu:keypressed("right")
   Assert.equal(menu.controller.confirmation.focusedAction, "delete")
   local confirmation = assert(menu:layout().confirmation)
-  menu:mousepressed(
+  pressAt(
+    menu,
     confirmation.delete.x + confirmation.delete.width / 2,
-    confirmation.delete.y + confirmation.delete.height / 2,
-    1
+    confirmation.delete.y + confirmation.delete.height / 2
   )
   Assert.equal(deleted, 1)
   Assert.isNil(menu.controller.confirmation)
@@ -593,11 +611,7 @@ function T.pointer_confirmation_click_activates_the_clicked_action()
   cancelMenu:keypressed("right")
   Assert.equal(cancelMenu.controller.confirmation.focusedAction, "delete")
   local cancelBox = assert(cancelMenu:layout().confirmation)
-  cancelMenu:mousepressed(
-    cancelBox.cancel.x + cancelBox.cancel.width / 2,
-    cancelBox.cancel.y + cancelBox.cancel.height / 2,
-    1
-  )
+  pressAt(cancelMenu, cancelBox.cancel.x + cancelBox.cancel.width / 2, cancelBox.cancel.y + cancelBox.cancel.height / 2)
   Assert.isNil(cancelMenu.controller.confirmation)
   Assert.notNil(cancelMenu.controller.popup)
 end
@@ -762,7 +776,7 @@ function T.pointer_click_on_focused_delete_action_confirms_deletion()
   Assert.equal(menu:view().confirmation.focusedAction, "delete")
   local confirmation = assert(menu:view().layout.confirmation, "confirmation needs hit geometry")
   local deleteRect = confirmation.delete
-  menu:mousepressed(deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2, 1)
+  pressAt(menu, deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2)
   Assert.equal(deleted, 1, "clicking the focused Delete action must delete without toggling selection")
   Assert.deepEqual(results, {}, "deletion must not publish Continue")
   Assert.isNil(menu:view().layout.saves.cards["save-00000001"])
@@ -858,6 +872,7 @@ end
 
 local SELECTED_RIM = { 1, 58 / 255, 58 / 255 }
 local NEUTRAL_RIM = { 48 / 255, 73 / 255, 97 / 255 }
+local CARD_FACE = { 0xFB / 255, 0xFB / 255, 0xFB / 255 }
 
 local function nearColor(recorded, expected)
   for index = 1, 3 do
@@ -898,34 +913,26 @@ local function hasRimColorOverlapping(rectangles, expected, rect)
 end
 
 -- The selected parent card underpaints the nested overflow region by design;
--- the overflow inset's own neutral chrome is drawn after it and covers that
--- region, so final pixels stay neutral. Assert paint order instead of
--- paint-list region purity: the inset's own neutral rim must exist and no
--- selected-colored record overlapping the inset may come after it.
+-- the unfocused overflow inset is face-colored so only its "..." copy shows,
+-- and that face paint is drawn after the parent chrome and covers the
+-- region. Assert paint order instead of paint-list region purity: the
+-- topmost record over the inset must be the card face, whatever the parent
+-- selection painted beneath it.
 local function overflowInsetCoversParentSelection(rectangles, rect)
-  local insetIndex = nil
-  for index, record in ipairs(rectangles) do
-    if nearColor(record.color, NEUTRAL_RIM) and overlaps(record, rect) then
-      insetIndex = index
+  local last = nil
+  for _, record in ipairs(rectangles) do
+    if overlaps(record, rect) then
+      last = record
     end
   end
-  if insetIndex == nil then
-    return false
-  end
-  for index = insetIndex + 1, #rectangles do
-    local record = rectangles[index]
-    if nearColor(record.color, SELECTED_RIM) and overlaps(record, rect) then
-      return false
-    end
-  end
-  return true
+  return last ~= nil and nearColor(last.color, CARD_FACE)
 end
 
 -- Deterministic source advance shared by every headless text double, matching
 -- the production textWidth boundary the renderer right-aligns against.
 local GLYPH_ADVANCE = 7
 
-local function recordingText(calls, graphics)
+local function recordingText(calls)
   return {
     textWidth = function(_, value)
       return #value * GLYPH_ADVANCE
@@ -934,20 +941,9 @@ local function recordingText(calls, graphics)
       calls[#calls + 1] = { text = text, x = x, y = y }
     end,
     drawTextWithPalette = function(_, text, x, y, palette)
-      -- Launcher copy draws at identity through a translated/scaled graphics
-      -- frame, so the fake resolves the active translation to keep the
-      -- recorded position on the same observable boundary as real pixels.
-      local resolvedX, resolvedY = x, y
-      if graphics then
-        for index = #graphics.transforms, 1, -1 do
-          local transform = graphics.transforms[index]
-          if transform[1] == "translate" then
-            resolvedX, resolvedY = transform[2], transform[3]
-            break
-          end
-        end
-      end
-      calls[#calls + 1] = { text = text, x = resolvedX, y = resolvedY, palette = palette }
+      -- Launcher copy draws at logical coordinates under one root
+      -- placement: record the logical point as passed.
+      calls[#calls + 1] = { text = text, x = x, y = y, palette = palette }
     end,
   }
 end
@@ -961,7 +957,7 @@ end
 local function drawnMenu(entries, width, height, setup)
   local graphics = FakeGraphics.new()
   local calls = {}
-  local renderer = menuRenderer(recordingText(calls, graphics), graphics)
+  local renderer = menuRenderer(recordingText(calls), graphics)
   local menu = state({
     saveStore = {
       list = function()
@@ -976,7 +972,7 @@ local function drawnMenu(entries, width, height, setup)
     setup(menu)
   end
   local current = menu:view()
-  renderer:draw(current)
+  renderer:draw(current, current.presentation)
   return { graphics = graphics, calls = calls, view = current, menu = menu }
 end
 
@@ -989,7 +985,7 @@ function T.focused_continue_uses_selected_rim_while_other_cards_stay_neutral()
   local focusedCard = assert(drawn.view.layout.saves.cards["save-00000001"])
   Assert.isTrue(
     overflowInsetCoversParentSelection(rectangles, assert(focusedCard.overflow)),
-    "body focus must cover the nested overflow control with its own neutral chrome"
+    "the unfocused overflow control must disappear into the card face, covering the parent selection"
   )
 end
 
@@ -1043,7 +1039,8 @@ end
 
 function T.principal_copy_tracks_the_menu_scale_and_restores_transforms()
   local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
-  local menuScale = assert(drawn.view.layout.uiScale)
+  local placement = assert(drawn.view.presentation.panes[1].placement, "the menu plan carries its placement")
+  local menuScale = assert(placement.pixelScale, "the menu placement carries its integer scale")
   local foundMenuScale = false
   for _, transform in ipairs(drawn.graphics.transforms) do
     if transform[1] == "scale" then
@@ -1123,7 +1120,7 @@ function T.scroll_indicators_track_viewport_edge_availability()
     local renderer = menuRenderer(recordingText({}), graphics)
     local shaped = scrolled.view
     shaped.layout.saves.scrollIndicators = { up = up, down = down }
-    renderer:draw(shaped)
+    renderer:draw(shaped, shaped.presentation)
     return recordedRectangles(graphics)
   end
   local indicated = rectListSnapshot(drawWithMarks(marks.up, marks.down))
@@ -1160,14 +1157,9 @@ function T.scroll_indicators_track_viewport_edge_availability()
   Assert.isTrue(foundEdgeMark, "the scroll mark must sit near the save viewport right edge")
 end
 
-function T.layout_reports_integer_scale_and_full_scroll_availability()
+function T.layout_reports_full_scroll_availability()
   local one = saves({ "one" })
   local body = { region = "saves", saveId = "one", lane = "body" }
-  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 320, 240, 0, nil, nil, false).uiScale, 1)
-  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 640, 480, 0, nil, nil, false).uiScale, 2)
-  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 1280, 720, 0, nil, nil, false).uiScale, 3)
-  Assert.equal(MainMenuLayout.compute(globalActions(), one, body, 2560, 1440, 0, nil, nil, false).uiScale, 3)
-
   local fitted = MainMenuLayout.compute(globalActions(), one, body, 640, 480, 0, nil, nil, false)
   Assert.isNil(fitted.saves.canScrollUp, "edge availability has a single shape")
   Assert.isNil(fitted.saves.canScrollDown, "edge availability has a single shape")
@@ -1291,7 +1283,59 @@ function T.body_focus_selects_the_entire_continue_frame()
   )
   Assert.isTrue(
     overflowInsetCoversParentSelection(rectangles, assert(card.overflow)),
-    "body focus must cover the nested overflow control with its own neutral chrome"
+    "the unfocused overflow control must disappear into the card face, covering the parent selection"
+  )
+end
+
+-- Headless text doubles carry no fontDef, so the renderer falls back to the
+-- canonical ROM line advance; profile-row bottoms below add that advance.
+local PROFILE_LINE_HEIGHT = 16
+-- Card chrome depth below the face at the renderer's resolve scale: 1px
+-- border plus the 2px rim plus the 2px inner border. Profile ink must clear
+-- it so the button edge never touches the text.
+local BOTTOM_CHROME = 5
+
+function T.continue_profile_rows_keep_bottom_padding_inside_the_card()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local lastBottom = nil
+  for _, call in ipairs(drawn.calls) do
+    if call.text ~= "..." and call.text ~= "NEW GAME" then
+      local bottom = call.y + PROFILE_LINE_HEIGHT
+      if lastBottom == nil or bottom > lastBottom then
+        lastBottom = bottom
+      end
+    end
+  end
+  lastBottom = assert(lastBottom, "the Continue card must draw profile rows")
+  Assert.isTrue(
+    lastBottom <= card.frame.y + card.frame.height - BOTTOM_CHROME,
+    "the Continue profile rows must keep bottom padding inside the card instead of touching the button edge"
+  )
+end
+
+function T.continue_overflow_inlay_matches_the_card_face()
+  local drawn = drawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, 640, 480)
+  local card = assert(drawn.view.layout.saves.cards["save-00000001"])
+  local overflow = assert(card.overflow, "the Continue card needs its overflow inlay")
+  -- Probe the right rim band: inside the outer border, vertically centered
+  -- to dodge the rounded corners.
+  local probe = {
+    x = overflow.x + overflow.width - 3,
+    y = overflow.y + overflow.height / 2 - 2,
+    width = 2,
+    height = 4,
+  }
+  local last = nil
+  for _, record in ipairs(recordedRectangles(drawn.graphics)) do
+    if overlaps(record, probe) then
+      last = record
+    end
+  end
+  last = assert(last, "the overflow inlay must paint its rim band")
+  Assert.isTrue(
+    nearColor(last.color, CARD_FACE),
+    "the unfocused Continue overflow inlay must disappear into the card face"
   )
 end
 
@@ -1373,18 +1417,18 @@ function T.popup_and_confirmation_geometry_scales_with_the_menu_scale()
       { saveId = "one", focusedAction = "cancel" },
       false
     )
-    Assert.equal(layout.uiScale, case.scale, "viewport must select menu scale " .. case.scale)
-    local popup = assert(layout.popup, "popup geometry is required at scale " .. case.scale)
-    Assert.equal(popup.box.width, 144 * case.scale, "popup width must scale with the menu")
-    Assert.equal(popup.box.height, 56 * case.scale, "popup height must scale with the menu")
+    Assert.isNil(layout.uiScale, "logical layout carries no presentation scale")
+    local popup = assert(layout.popup, "popup geometry is required")
+    Assert.equal(popup.box.width, 144, "popup width is logical")
+    Assert.equal(popup.box.height, 56, "popup height is logical")
     Assert.isTrue(popup.box.x >= 0 and popup.box.y >= 0, "popup must stay inside the viewport")
     Assert.isTrue(
       popup.box.x + popup.box.width <= case.width and popup.box.y + popup.box.height <= case.height,
       "popup must stay contained in the viewport"
     )
-    local confirmation = assert(layout.confirmation, "confirmation geometry is required at scale " .. case.scale)
-    Assert.equal(confirmation.cancel.height, 36 * case.scale, "confirmation cancel height must scale with the menu")
-    Assert.equal(confirmation.delete.height, 36 * case.scale, "confirmation delete height must scale with the menu")
+    local confirmation = assert(layout.confirmation, "confirmation geometry is required")
+    Assert.equal(confirmation.cancel.height, 36, "confirmation cancel height is logical")
+    Assert.equal(confirmation.delete.height, 36, "confirmation delete height is logical")
     Assert.isTrue(confirmation.box.x >= 0 and confirmation.box.y >= 0, "confirmation must stay inside the viewport")
     Assert.isTrue(
       confirmation.box.x + confirmation.box.width <= case.width
@@ -1541,7 +1585,6 @@ function T.launcher_cards_use_white_faces_blue_inner_borders_and_roomy_content()
     "save cards must use the blue inner border"
   )
   local card = assert(drawn.view.layout.saves.cards["save-00000001"])
-  local scale = assert(drawn.view.layout.uiScale)
   local headingX
   for _, call in ipairs(drawn.calls) do
     if call.text == "CONTINUE" then
@@ -1550,7 +1593,7 @@ function T.launcher_cards_use_white_faces_blue_inner_borders_and_roomy_content()
   end
   Assert.notNil(headingX, "the Continue card must draw its heading")
   assert(headingX)
-  Assert.equal(headingX, card.frame.x + 10 * scale, "card content must sit 10 logical pixels inside the card")
+  Assert.equal(headingX, card.frame.x + 10, "card content must sit 10 logical pixels inside the card")
 end
 
 function T.launcher_copy_uses_neutral_gray_text_shadow()
@@ -1571,10 +1614,6 @@ end
 
 local function versionedBackgroundDraw(versionId)
   local graphics = FakeGraphics.new()
-  local clears = {}
-  graphics.clear = function(r, g, b, a)
-    clears[#clears + 1] = { r, g, b, a }
-  end
   local calls = {}
   local renderer = MainMenuRenderer.new({
     text = recordingText(calls),
@@ -1590,21 +1629,16 @@ local function versionedBackgroundDraw(versionId)
     width = 640,
     height = 480,
   })
-  renderer:draw(menu:view())
-  return clears
+  local current = menu:view()
+  renderer:draw(current, current.presentation)
+  return recordedRectangles(graphics)
 end
 
 function T.launcher_background_follows_the_active_game_version()
   local heartgold = versionedBackgroundDraw("heartgold")
-  Assert.isTrue(#heartgold > 0, "drawing the launcher must clear the background")
-  Assert.near(heartgold[1][1], 255 / 255, 1 / 255)
-  Assert.near(heartgold[1][2], 214 / 255, 1 / 255)
-  Assert.near(heartgold[1][3], 148 / 255, 1 / 255)
+  Assert.isTrue(hasRimColor(heartgold, { 255 / 255, 214 / 255, 148 / 255 }), "heartgold must own its backdrop fill")
   local soulsilver = versionedBackgroundDraw("soulsilver")
-  Assert.isTrue(#soulsilver > 0, "drawing the launcher must clear the background")
-  Assert.near(soulsilver[1][1], 97 / 255, 1 / 255)
-  Assert.near(soulsilver[1][2], 97 / 255, 1 / 255)
-  Assert.near(soulsilver[1][3], 251 / 255, 1 / 255)
+  Assert.isTrue(hasRimColor(soulsilver, { 97 / 255, 97 / 255, 251 / 255 }), "soulsilver must own its backdrop fill")
 end
 
 function T.launcher_rejects_an_unknown_game_version()
@@ -1775,17 +1809,17 @@ local function scaledRecordingText(calls, graphics)
       return #value * GLYPH_ADVANCE
     end,
     drawTextWithPalette = function(_, value, x, y, palette)
-      local resolvedX, resolvedY, activeScale, foundScale = x, y, 1, false
+      -- Text draws at logical coordinates under one root placement: record
+      -- the logical point as passed plus the active root scale behind it.
+      local activeScale = 1
       for index = #graphics.transforms, 1, -1 do
         local transform = graphics.transforms[index]
-        if transform[1] == "scale" and not foundScale then
-          activeScale, foundScale = transform[2], true
-        elseif transform[1] == "translate" then
-          resolvedX, resolvedY = transform[2], transform[3]
+        if transform[1] == "scale" then
+          activeScale = transform[2]
           break
         end
       end
-      calls[#calls + 1] = { text = value, x = resolvedX, y = resolvedY, scale = activeScale, palette = palette }
+      calls[#calls + 1] = { text = value, x = x, y = y, scale = activeScale, palette = palette }
     end,
   }
 end
@@ -1806,7 +1840,7 @@ local function scaledDrawnMenu(entries, width, height)
     renderer = { draw = function() end, dispose = function() end },
   })
   local current = menu:view()
-  renderer:draw(current)
+  renderer:draw(current, current.presentation)
   return { graphics = graphics, calls = calls, view = current }
 end
 
@@ -1829,7 +1863,7 @@ function T.continue_body_focus_uses_rounded_selected_chrome_without_a_square_rin
   Assert.isTrue(roundedSelected, "body focus must select the Continue card through rounded button chrome")
   Assert.isTrue(
     overflowInsetCoversParentSelection(rectangles, assert(card.overflow)),
-    "body focus must cover the nested overflow control with its own neutral chrome"
+    "the unfocused overflow control must disappear into the card face, covering the parent selection"
   )
 end
 
@@ -1841,7 +1875,8 @@ function T.continue_text_scales_exactly_with_the_menu_scale()
   }
   for _, case in ipairs(cases) do
     local drawn = scaledDrawnMenu({ catalogEntry("save-00000001", "PLAYER", 60) }, case.width, case.height)
-    Assert.equal(drawn.view.layout.uiScale, case.scale, "viewport must select menu scale " .. case.scale)
+    local placement = assert(drawn.view.presentation.panes[1].placement, "the menu plan carries its placement")
+    Assert.equal(placement.pixelScale, case.scale, "viewport must select menu scale " .. case.scale)
     Assert.isTrue(#drawn.calls > 0, "the menu must draw copy at scale " .. case.scale)
     for _, call in ipairs(drawn.calls) do
       Assert.equal(call.scale, math.floor(call.scale), "menu text scaling must never be fractional")
@@ -1853,7 +1888,6 @@ end
 function T.continue_card_shows_cased_profile_rows_in_retail_blue()
   local drawn = scaledDrawnMenu({ catalogEntry("save-00000001", "Goldie", 4980) }, 640, 480)
   Assert.equal(drawn.view.saves[1].playTimeLabel, "1:23")
-  local scale = assert(drawn.view.layout.uiScale)
   local card = assert(drawn.view.layout.saves.cards["save-00000001"])
   local body = assert(card.body)
   local positions = {}
@@ -1898,7 +1932,7 @@ function T.continue_card_shows_cased_profile_rows_in_retail_blue()
     Assert.equal(value.palette.foreground.b, PROFILE_BLUE.foreground.b, "profile values use retail blue")
     Assert.near(label.x, blockLeft, 0.51, "profile labels share the centered block left edge")
     Assert.near(
-      value.x + #wanted[(row - 1) * 2 + 2] * GLYPH_ADVANCE * scale,
+      value.x + #wanted[(row - 1) * 2 + 2] * GLYPH_ADVANCE,
       blockRight,
       0.51,
       "profile values share the centered block right edge"
@@ -1906,7 +1940,7 @@ function T.continue_card_shows_cased_profile_rows_in_retail_blue()
     Assert.equal(label.y, value.y, "each profile label shares its value baseline")
     Assert.isTrue(label.y >= body.y and value.y >= body.y, "profile rows must stay inside the Continue body")
     Assert.isTrue(
-      label.x >= body.x and value.x + #wanted[(row - 1) * 2 + 2] * GLYPH_ADVANCE * scale <= body.x + body.width,
+      label.x >= body.x and value.x + #wanted[(row - 1) * 2 + 2] * GLYPH_ADVANCE <= body.x + body.width,
       "profile rows must stay inside the Continue body"
     )
     if previousY ~= nil then
@@ -1941,7 +1975,7 @@ end
 function T.overflow_focus_keeps_the_parent_card_neutral()
   local graphics = FakeGraphics.new()
   local calls = {}
-  local renderer = menuRenderer(recordingText(calls, graphics), graphics)
+  local renderer = menuRenderer(recordingText(calls), graphics)
   local menu = state({
     saveStore = {
       list = function()
@@ -1955,7 +1989,7 @@ function T.overflow_focus_keeps_the_parent_card_neutral()
   menu:keypressed("right")
   local current = menu:view()
   Assert.deepEqual(current.focus, { region = "saves", saveId = "save-00000001", lane = "overflow" })
-  renderer:draw(current)
+  renderer:draw(current, current.presentation)
   local rectangles = recordedRectangles(graphics)
   local card = assert(current.layout.saves.cards["save-00000001"])
   Assert.isFalse(
@@ -1987,7 +2021,8 @@ function T.profile_rows_stay_inside_the_continue_body_at_supported_scales()
   local wanted = { "PLAYER", "Goldie", "TIME", "1:23", "BADGES", "0" }
   for _, case in ipairs(cases) do
     local drawn = scaledDrawnMenu({ catalogEntry("save-00000001", "Goldie", 4980) }, case.width, case.height)
-    Assert.equal(drawn.view.layout.uiScale, case.scale, "viewport must select menu scale " .. case.scale)
+    local placement = assert(drawn.view.presentation.panes[1].placement, "the menu plan carries its placement")
+    Assert.equal(placement.pixelScale, case.scale, "viewport must select menu scale " .. case.scale)
     local body = assert(drawn.view.layout.saves.cards["save-00000001"].body)
     local overflow = assert(drawn.view.layout.saves.cards["save-00000001"].overflow)
     local previousY = nil
@@ -2001,7 +2036,7 @@ function T.profile_rows_stay_inside_the_continue_body_at_supported_scales()
       end
       Assert.notNil(found, "the Continue card must draw " .. text .. " at scale " .. case.scale)
       assert(found)
-      local right = found.x + #text * GLYPH_ADVANCE * case.scale
+      local right = found.x + #text * GLYPH_ADVANCE
       Assert.isTrue(found.x >= body.x, "profile copy must stay inside the Continue body: " .. text)
       Assert.isTrue(right <= body.x + body.width, "profile copy must stay inside the Continue body: " .. text)
       Assert.isTrue(found.y >= body.y, "profile rows must stay inside the Continue body: " .. text)
@@ -2016,6 +2051,92 @@ function T.profile_rows_stay_inside_the_continue_body_at_supported_scales()
       previousY = found.y
     end
   end
+end
+
+function T.layout_result_carries_no_presentation_scale()
+  local layout = MainMenuLayout.compute(
+    globalActions(),
+    saves({ "one" }),
+    { region = "saves", saveId = "one", lane = "body" },
+    640,
+    480,
+    0,
+    nil,
+    nil,
+    false
+  )
+  Assert.isNil(layout.uiScale, "logical layout must not carry a presentation scale")
+end
+
+function T.state_view_publishes_a_presentation_plan()
+  local menu = state({ width = 640, height = 480 })
+  local published = menu:view()
+  local plan =
+    assert(published.presentation, "Main Menu must publish its presentation plan beside its semantic snapshot")
+  Assert.isTrue(type(plan.panes) == "table" and #plan.panes >= 1, "the menu plan must carry its content panes")
+  Assert.isTrue(
+    type(plan.render) == "function" and type(plan.mapInput) == "function",
+    "the menu plan must carry its matched render and input callbacks"
+  )
+end
+
+function T.hit_test_resolves_confirmation_modal_precedence()
+  local menu = state({
+    saveStore = {
+      list = function()
+        return {
+          {
+            saveId = "save-00000001",
+            versionId = "heartgold",
+            playerData = { profile = { name = "PLAYER" } },
+            playTimeSeconds = 60,
+          },
+        }
+      end,
+    },
+    width = 640,
+    height = 480,
+  })
+  menu:keypressed("right")
+  menu:keypressed("return")
+  Assert.notNil(menu:view().popup, "overflow activation must open the save popup")
+  menu:keypressed("return")
+  Assert.notNil(menu:view().confirmation, "popup activation must open the delete confirmation")
+  local published = menu:view()
+  local deleteRect = assert(published.layout.confirmation).delete
+  local placement = assert(published.presentation.panes[1].placement, "the menu plan carries its placement")
+  local hostX, hostY =
+    LayoutGeometry.logicalToHost(placement, deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2)
+  local hit = menu:hitTest(hostX, hostY)
+  Assert.equal(hit.region, "confirmation", "the confirmation delete control must win hit precedence")
+  Assert.equal(hit.saveId, "save-00000001", "the confirmation hit must name its owning save")
+end
+
+function T.pointer_transition_during_dispatch_does_not_resolve_after_dispose()
+  -- Production replaces (and disposes) the menu synchronously inside
+  -- onResult via Game:setState; the in-flight pointer dispatch must stop
+  -- instead of resolving again against the released session.
+  local results = {}
+  local menu = nil
+  menu = state({
+    saveStore = {
+      list = function()
+        return {}
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+      assert(menu ~= nil, "menu must exist when the result fires")
+      menu:dispose()
+    end,
+  })
+  local published = menu:view()
+  local action = assert(published.layout.global.actions["new-game"], "New Game needs hit geometry")
+  pressAt(menu, action.x + action.width / 2, action.y + action.height / 2)
+  Assert.deepEqual(results, { { kind = "new_game" } })
+  menu:mousepressed(1, 1, 1)
+  menu:mousereleased(1, 1, 1)
+  menu:keypressed("return")
 end
 
 return { tests = T }

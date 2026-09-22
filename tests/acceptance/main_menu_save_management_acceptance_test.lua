@@ -5,6 +5,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local GameSaveValidation = require("game.hgss.src.save.GameSaveValidation")
 local MainMenuState = require("game.hgss.src.menu.MainMenuState")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
@@ -200,6 +201,18 @@ local function view(menu)
   return assert(menu:view(), "Main Menu must publish a production view")
 end
 
+-- Pointer input arrives in host units while layout geometry is logical:
+-- forward layout points through the published placement like production.
+-- A press pairs down with its release so session capture never leaks
+-- across clicks the way production event pairs do not.
+local function press(menu, logicalX, logicalY)
+  local published = view(menu)
+  local placement = assert(published.presentation.panes[1].placement, "pointer input needs the published placement")
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+  menu:mousepressed(hostX, hostY, 1)
+  menu:mousereleased(hostX, hostY, 1)
+end
+
 local function center(rect)
   return rect.x + rect.width / 2, rect.y + rect.height / 2
 end
@@ -354,13 +367,13 @@ function T.tests.overflow_delete_confirmation_is_input_independent_and_never_con
     local initial = view(menu)
     local card = assert(initial.layout.saves.cards[saveIds[3]], "pointer run needs the visible save overflow")
     local x, y = center(card.overflow)
-    menu:mousepressed(x, y, 1)
+    press(menu, x, y)
     Assert.equal(view(menu).popup.saveId, saveIds[3], "pointer overflow must focus its owning save")
     Assert.deepEqual(results, {}, "pointer overflow must not activate Continue")
 
     local deleteRect = assert(view(menu).layout.popup.actions.delete)
     x, y = center(deleteRect)
-    menu:mousepressed(x, y, 1)
+    press(menu, x, y)
     Assert.notNil(view(menu).confirmation)
     menu:keypressed("escape")
     Assert.notNil(view(menu).popup)
@@ -385,7 +398,7 @@ function T.tests.keyboard_focused_delete_action_activates_by_pointer_click()
     menu:keypressed("right")
     Assert.equal(view(menu).confirmation.focusedAction, "delete")
     local deleteRect = assert(view(menu).layout.confirmation).delete
-    menu:mousepressed(deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2, 1)
+    press(menu, deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2)
     Assert.deepEqual(results, {}, "pointer confirmation must not publish Continue")
     Assert.isNil(
       view(menu).layout.saves.cards[saveIds[1]],
@@ -428,6 +441,52 @@ function T.tests.new_game_vertical_wrap_reaches_edge_saves_through_keyboard()
     Assert.equal(view(menu).focusedId, "new-game")
     menu:keypressed("right")
     Assert.equal(view(menu).focusedId, catalogFirst, "right from New Game must still restore the remembered save")
+  end)
+end
+
+function T.tests.scroll_offset_stays_logical_across_a_host_scale_change()
+  local versionId = AcceptanceHarness.defaultVersion()
+  if templateRecord == nil then
+    templateRecord = freshRecord(versionId)
+  end
+
+  withMenu(12, 320, 180, nil, function(menu, saveIds, results)
+    for _ = 1, #saveIds - 1 do
+      menu:keypressed("down")
+    end
+    Assert.equal(view(menu).focusedId, saveIds[1], "setup must focus the oldest save")
+    Assert.isTrue(assert(view(menu).layout.saves).offset > 0, "setup must scroll the save viewport")
+    menu:keypressed("left")
+    Assert.equal(view(menu).focusedId, "new-game", "setup must park focus on New Game")
+    local function firstVisible()
+      local layout = view(menu).layout
+      for _, saveId in ipairs(saveIds) do
+        local body = layout.saves.cards[saveId].body
+        if
+          body.y >= layout.saves.viewport.y
+          and body.y + body.height <= layout.saves.viewport.y + layout.saves.viewport.height
+        then
+          return saveId
+        end
+      end
+      error("a scrolled menu must keep at least one save fully visible", 0)
+    end
+    local parked = firstVisible()
+    menu:resize(640, 480)
+    Assert.equal(view(menu).focusedId, "new-game", "a host scale change must not move focus")
+    Assert.equal(firstVisible(), parked, "scroll position must survive a host scale change in logical units")
+    menu:keypressed("down")
+    local target = view(menu).focusedId
+    Assert.isTrue(target ~= "new-game", "setup must focus a save for deletion")
+    menu:keypressed("right")
+    menu:keypressed("return")
+    Assert.notNil(view(menu).popup, "overflow must own the focused save at the new scale")
+    menu:keypressed("return")
+    Assert.notNil(view(menu).confirmation, "popup activation must open the delete confirmation")
+    local deleteRect = assert(view(menu).layout.confirmation).delete
+    press(menu, deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2)
+    Assert.isNil(view(menu).layout.saves.cards[target], "the confirmation delete button must delete once")
+    Assert.deepEqual(results, {}, "deletion must not publish a route result")
   end)
 end
 

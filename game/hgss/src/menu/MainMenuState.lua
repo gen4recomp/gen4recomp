@@ -1,9 +1,19 @@
 -- Product Main Menu state for save catalog publication and semantic input.
+-- The startup menu owns its presentation session beside its existing
+-- controller: every pointer dispatch resolves a complete plan against
+-- fresh display facts, maps one ordered batch, advances through the
+-- existing controller pathways once, then resolves again for the
+-- resulting snapshot. Scroll offsets stay logical across resizes;
+-- keyboard, gamepad and wheel keep their direct controller paths.
 
+local ApplicationPresentation = require("game.hgss.src.ui.ApplicationPresentation")
+local DisplayContext = require("game.hgss.src.ui.DisplayContext")
 local Errors = require("libs.errors.src.Errors")
 local HgssInputBindings = require("game.hgss.src.HgssInputBindings")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MainMenuController = require("game.hgss.src.menu.MainMenuController")
+local MainMenuInterface = require("game.hgss.src.menu.MainMenuInterface")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 
 ---@class MainMenuSaveStore
@@ -15,14 +25,19 @@ local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 ---@field saveStore MainMenuSaveStore
 ---@field readyVersions table<string, boolean>
 ---@field onResult fun(result: table<string, unknown>)|nil
----@field width number
----@field height number
+---@field width number host drawable width behind the current measurement
+---@field height number host drawable height behind the current measurement
 ---@field renderer table<string, unknown>
 ---@field globalActions table[]
 ---@field saves table[]
 ---@field catalogError string|nil
 ---@field controller MainMenuController
----@field scrollOffset number
+---@field scrollOffset number logical scroll offset retained across layouts
+---@field _measurement DisplayMeasurement|nil fixed facts for direct unit invocation
+---@field _displayContext DisplayContext|nil shared actual-display owner from the product route
+---@field _windowState table<string, { x: number, y: number }> borrowed normalized window memory
+---@field _session ApplicationPresentation|nil the per-open presentation session
+---@field _disposed boolean
 local MainMenuState = {}
 MainMenuState.__index = MainMenuState
 
@@ -147,10 +162,75 @@ function MainMenuState.new(options)
     saves = {},
     catalogError = nil,
     scrollOffset = 0,
+    _windowState = {},
+    _disposed = false,
   }, MainMenuState)
+  if options.displayMeasurement ~= nil then
+    self._measurement = options.displayMeasurement --[[@as DisplayMeasurement]]
+  else
+    local displayContext = options.displayContext --[[@as DisplayContext|nil]]
+    if displayContext == nil then
+      displayContext = DisplayContext.new({})
+    end
+    self._displayContext = displayContext
+  end
   self.controller = MainMenuController.new(self.globalActions, self.saves)
   self:refresh()
+  local overrides = options.overrides --[[@as table<string, unknown>|nil]]
+  local session
+  local built, buildErr = pcall(function()
+    session = ApplicationPresentation.new(MainMenuInterface.withOverrides(overrides), self._windowState)
+  end)
+  if not built then
+    error(buildErr, 0)
+  end
+  self._session = assert(session, "Main Menu needs its presentation session")
+  local resolveOk, resolveErr = pcall(function()
+    self:_resolve(self:_snapshot())
+  end)
+  if not resolveOk then
+    self._session:dispose()
+    error(resolveErr, 0)
+  end
   return self
+end
+
+---@return table<string, unknown> the controller snapshot resolvers and renderers consume
+function MainMenuState:_snapshot()
+  return {
+    kind = "main_menu",
+    globalActions = self.globalActions,
+    saves = self.saves,
+    focus = self.controller:snapshot().focus,
+    popup = self.controller.popup,
+    confirmation = self.controller.confirmation,
+    catalogError = self.catalogError,
+    scrollOffset = self.scrollOffset,
+  }
+end
+
+---@return DisplayMeasurement|nil the current display facts
+function MainMenuState:_measured()
+  if self._measurement ~= nil then
+    return self._measurement
+  end
+  local displayContext = assert(self._displayContext, "Main Menu needs its display facts")
+  return displayContext:measure(self.width, self.height)
+end
+
+---@param snapshot table<string, unknown>
+---@return ApplicationPlan the resolved interface plan
+function MainMenuState:_resolve(snapshot)
+  local session = assert(self._session, "Main Menu session is disposed")
+  local plan = session:resolve(assert(self:_measured(), "Main Menu needs its display facts"), snapshot)
+  local content = plan.content
+  if type(content) == "table" and type(content.layout) == "table" then
+    local shaped = content.layout --[[@as { saves: { offset: number } }]]
+    if type(shaped.saves) == "table" and type(shaped.saves.offset) == "number" then
+      self.scrollOffset = shaped.saves.offset
+    end
+  end
+  return plan
 end
 
 function MainMenuState:_readSaves()
@@ -252,6 +332,88 @@ function MainMenuState:_backOrQuit()
   end
 end
 
+-- Dispatches one session-mapped semantic hit through the existing
+-- controller pathways. Confirmation buttons focus-then-act exactly as the
+-- keyboard flow does; anything else only clears presentation capture.
+---@param hit table<string, string|nil>
+function MainMenuState:_dispatchHit(hit)
+  if hit.region == "confirmation" then
+    if hit.lane == "delete" then
+      self.controller:focusConfirmation("delete")
+      self:_activate()
+    elseif hit.lane == "cancel" then
+      self.controller:focusConfirmation("cancel")
+      self.controller:back()
+    end
+    return
+  end
+  if hit.region == "popup" then
+    if hit.lane == "delete" then
+      self:_activate()
+    else
+      self.controller:back()
+    end
+    return
+  end
+  if hit.region == "global" then
+    if hit.actionId ~= nil then
+      self.controller:focusGlobal(hit.actionId)
+      self:_activate()
+    end
+    return
+  end
+  if hit.region == "saves" then
+    if hit.saveId == nil then
+      return
+    end
+    if hit.lane == "overflow" then
+      self.controller:openOverflow(hit.saveId)
+    elseif hit.lane == "body" then
+      self.controller:focusSave(hit.saveId, "body")
+      self:_activate()
+    end
+  end
+end
+
+-- Maps one ordered pointer batch through the current plan and dispatches
+-- the resulting semantic hits. Cancellation clears presentation capture
+-- only and never cancels or confirms a dialog semantically.
+---@param events table<string, unknown>[]
+function MainMenuState:_dispatchPointer(events)
+  if self._disposed then
+    return
+  end
+  local snapshot = self:_snapshot()
+  self:_resolve(snapshot)
+  local session = assert(self._session, "Main Menu session is disposed")
+  local mapped = session:mapInput(events, snapshot)
+  for _, event in ipairs(mapped) do
+    if self._disposed then
+      return
+    end
+    if type(event) == "table" and event.type ~= "pointer_cancel" and event.region ~= nil then
+      self:_dispatchHit(event)
+    end
+  end
+  if self._disposed then
+    return
+  end
+  self:_resolve(self:_snapshot())
+end
+
+-- Forwards release/move batches so session capture stays consistent; the
+-- click fires on press, so releases and moves never dispatch hits.
+---@param events table<string, unknown>[]
+function MainMenuState:_trackPointer(events)
+  if self._disposed then
+    return
+  end
+  local snapshot = self:_snapshot()
+  self:_resolve(snapshot)
+  local session = assert(self._session, "Main Menu session is disposed")
+  session:mapInput(events, snapshot)
+end
+
 function MainMenuState:_key(key)
   if HgssInputBindings.isCancelKey(key) then
     self:_backOrQuit()
@@ -267,10 +429,16 @@ function MainMenuState:_key(key)
 end
 
 function MainMenuState:keypressed(key)
+  if self._disposed then
+    return
+  end
   self:_key(key)
 end
 
 function MainMenuState:gamepadpressed(_, button)
+  if self._disposed then
+    return
+  end
   local keys = {
     dpup = "up",
     dpdown = "down",
@@ -288,105 +456,66 @@ function MainMenuState:gamepadpressed(_, button)
   end
 end
 
-function MainMenuState:_pointer(x, y)
-  local layout = self:layout()
-  if self.controller.confirmation then
-    if layout.confirmation and MainMenuLayout.contains(layout.confirmation.cancel, x, y) then
-      self.controller:focusConfirmation("cancel")
-      self.controller:back()
-    elseif layout.confirmation and MainMenuLayout.contains(layout.confirmation.delete, x, y) then
-      self.controller:focusConfirmation("delete")
-      self:_activate()
-    end
-    return
-  end
-  if self.controller.popup then
-    if layout.popup and MainMenuLayout.contains(layout.popup.actions.delete, x, y) then
-      self:_activate()
-    elseif not layout.popup or not MainMenuLayout.contains(layout.popup.box, x, y) then
-      self.controller:back()
-    end
-    return
-  end
-  for _, action in ipairs(self.globalActions) do
-    local rect = layout.global.actions[action.id]
-    if MainMenuLayout.contains(rect, x, y) then
-      self.controller:focusGlobal(action.id)
-      self:_activate()
-      return
-    end
-  end
-  for _, save in ipairs(self.saves) do
-    local card = layout.saves.cards[save.saveId or save.id]
-    if
-      save.saveId
-      and card
-      and card.overflow
-      and MainMenuLayout.contains(layout.saves.viewport, x, y)
-      and MainMenuLayout.contains(card.overflow, x, y)
-    then
-      self.controller:openOverflow(save.saveId)
-      return
-    end
-    if
-      save.saveId
-      and card
-      and MainMenuLayout.contains(layout.saves.viewport, x, y)
-      and MainMenuLayout.contains(card.body, x, y)
-    then
-      self.controller:focusSave(save.saveId, "body")
-      self:_activate()
-      return
-    end
-  end
-end
-
 function MainMenuState:mousepressed(x, y, button)
+  if self._disposed then
+    return
+  end
   if button == 1 then
-    self:_pointer(x, y)
+    self:_dispatchPointer({ { type = "pointer_down", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
-function MainMenuState:touchpressed(_, x, y)
-  self:_pointer(x, y)
+function MainMenuState:mousemoved(x, y, _, _, istouch)
+  if self._disposed then
+    return
+  end
+  if not istouch then
+    self:_trackPointer({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+  end
 end
 
----@param x number
----@param y number
----@return table<string, string|nil>
-function MainMenuState:hitTest(x, y)
-  local layout = self:layout()
-  for _, action in ipairs(self.globalActions) do
-    if MainMenuLayout.contains(layout.global.actions[action.id], x, y) then
-      return { region = "global", actionId = action.id }
-    end
+function MainMenuState:mousereleased(x, y, button)
+  if self._disposed then
+    return
   end
-  for _, save in ipairs(self.saves) do
-    local card = layout.saves.cards[save.saveId or save.id]
-    if
-      save.saveId
-      and card
-      and card.overflow
-      and MainMenuLayout.contains(layout.saves.viewport, x, y)
-      and MainMenuLayout.contains(card.overflow, x, y)
-    then
-      return { region = "saves", saveId = save.saveId, lane = "overflow" }
-    end
-    if
-      save.saveId
-      and card
-      and MainMenuLayout.contains(layout.saves.viewport, x, y)
-      and MainMenuLayout.contains(card.body, x, y)
-    then
-      return { region = "saves", saveId = save.saveId, lane = "body" }
-    end
+  if button == 1 then
+    self:_trackPointer({ { type = "pointer_up", pointerId = "mouse:1", x = x, y = y } })
   end
-  return { region = nil, actionId = nil, saveId = nil, lane = nil }
+end
+
+function MainMenuState:touchpressed(id, x, y)
+  if self._disposed then
+    return
+  end
+  self:_dispatchPointer({ { type = "pointer_down", pointerId = "touch:" .. tostring(id), x = x, y = y } })
+end
+
+function MainMenuState:touchmoved(id, x, y)
+  if self._disposed then
+    return
+  end
+  self:_trackPointer({ { type = "pointer_move", pointerId = "touch:" .. tostring(id), x = x, y = y } })
+end
+
+function MainMenuState:touchreleased(id, x, y)
+  if self._disposed then
+    return
+  end
+  self:_trackPointer({ { type = "pointer_up", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function MainMenuState:wheelmoved(_, y)
+  if self._disposed then
+    return
+  end
   if not self.controller.popup and not self.controller.confirmation then
     self.controller:move(y > 0 and "up" or "down")
+  end
+end
+
+function MainMenuState:focus(focused)
+  if not focused and self._session ~= nil then
+    self._session:cancelPointers()
   end
 end
 
@@ -396,43 +525,75 @@ function MainMenuState:resize(width, height)
 end
 
 function MainMenuState:layout()
-  return MainMenuLayout.compute(
-    self.globalActions,
-    self.saves,
-    self.controller.focus,
-    self.width,
-    self.height,
-    self.scrollOffset,
-    self.controller.popup,
-    self.controller.confirmation,
-    type(self.catalogError) == "string" and self.catalogError ~= ""
-  )
+  return self:view().layout
+end
+
+-- Host-coordinate hit query over the current plan: inverts once through
+-- the resolved placement, then resolves the shared logical hit test.
+-- Outside the visible clip or without a content pane there is no target.
+---@param x number host x
+---@param y number host y
+---@return table<string, string|nil> the current caller-visible hit information
+function MainMenuState:hitTest(x, y)
+  local snapshot = self:_snapshot()
+  local plan = self:_resolve(snapshot)
+  local function miss()
+    return { region = nil, actionId = nil, saveId = nil, lane = nil }
+  end
+  local panes = plan.panes
+  if type(panes) ~= "table" or type(panes[1]) ~= "table" then
+    return miss()
+  end
+  local placement = panes[1].placement
+  if type(placement) ~= "table" then
+    return miss()
+  end
+  local logicalX, logicalY = LayoutGeometry.hostToLogical(placement, x, y)
+  if logicalX == nil or logicalY == nil then
+    return miss()
+  end
+  local content = plan.content
+  if type(content) ~= "table" or type(content.layout) ~= "table" then
+    return miss()
+  end
+  return MainMenuLayout.hitTest(content.layout, snapshot, logicalX, logicalY)
 end
 
 function MainMenuState:view()
-  local layout = self:layout()
-  self.scrollOffset = layout.saves.offset
-  return {
-    kind = "main_menu",
-    globalActions = self.globalActions,
-    saves = self.saves,
-    focusedId = self.controller:focusedId(),
-    focus = self.controller:snapshot().focus,
-    scroll = { offset = layout.saves.offset },
-    layout = layout,
-    popup = self.controller.popup,
-    confirmation = self.controller.confirmation,
-    catalogError = self.catalogError,
-  }
+  local snapshot = self:_snapshot()
+  local plan = self:_resolve(snapshot)
+  local content = plan.content
+  local layout = type(content) == "table" and content.layout or nil
+  snapshot.layout = layout
+  snapshot.focusedId = self.controller:focusedId()
+  snapshot.scroll = { offset = self.scrollOffset }
+  snapshot.presentation = plan
+  return snapshot
 end
 
 function MainMenuState:draw()
-  self.renderer:draw(self:view())
+  local snapshot = self:view()
+  local plan = assert(snapshot.presentation, "Main Menu draws its resolved presentation plan")
+  local renderer = assert(self.renderer, "Main Menu draws its renderer")
+  local graphics = renderer.graphics or love.graphics
+  ApplicationPresentation.draw(graphics, {
+    graphics = graphics,
+    renderer = renderer,
+    text = renderer.text,
+  }, snapshot, plan)
 end
 
 function MainMenuState:update() end
 
 function MainMenuState:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  if self._session ~= nil then
+    self._session:dispose()
+    self._session = nil
+  end
   if self.renderer and self.renderer.dispose then
     self.renderer:dispose()
   end

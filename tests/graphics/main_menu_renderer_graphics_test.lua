@@ -8,8 +8,31 @@ local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local IntroAssetCache = require("libs.assets.src.newgame.IntroAssetCache")
 local MainMenuLayout = require("game.hgss.src.menu.MainMenuLayout")
 local MainMenuRenderer = require("game.hgss.src.menu.MainMenuRenderer")
+local PixelScale = require("libs.ui.src.PixelScale")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {}
+
+-- Interface-shaped plan around a computed or hand-built logical layout:
+-- the placement is the single root transform the renderer consumes,
+-- built through the real cover policy so tests never emulate fitting.
+---@param layout table<string, unknown>
+---@param width number host canvas width
+---@param height number host canvas height
+---@param pixelScale integer physical pixels per logical pixel
+---@return ApplicationPlan
+local function planFor(layout, width, height, pixelScale)
+  local covered = PixelScale.cover({ x = 0, y = 0, width = width, height = height }, pixelScale, 1)
+  return {
+    panes = { { id = "content", placement = covered.placement, interactive = true } },
+    content = { layout = layout },
+    inputKey = "main-menu-graphics",
+    render = function() end,
+    mapInput = function() end,
+    coverage = {},
+    backgroundColor = { r = 0, g = 0, b = 0, a = 1 },
+  }
+end
 
 local CARD_TONE = { r = 123, g = 45, b = 67 }
 
@@ -148,7 +171,7 @@ function T.cards_are_clipped_to_the_save_viewport_and_scissor_is_restored(scope)
   lg.clear(0, 0, 0, 0)
   lg.setScissor(0, 0, 160, 120)
   local menuRenderer = renderer(scope)
-  menuRenderer:draw(current)
+  menuRenderer:draw(current, planFor(current.layout, 160, 120, 1))
 
   local sx, sy, sw, sh = lg.getScissor()
   Assert.equal(sx, 0)
@@ -171,7 +194,7 @@ function T.catalog_errors_are_drawn_inside_the_returned_error_rectangle(scope)
   lg.setCanvas(canvas)
   lg.clear(0.08, 0.1, 0.15, 1)
   local menuRenderer = renderer(scope)
-  menuRenderer:draw(current)
+  menuRenderer:draw(current, planFor(current.layout, 160, 120, 1))
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
   local foundErrorPixel = false
@@ -201,7 +224,7 @@ function T.unavailable_catalog_rows_without_delete_actions_are_renderable(scope)
     },
   }
   local menuRenderer = renderer(scope)
-  menuRenderer:draw(current)
+  menuRenderer:draw(current, planFor(current.layout, 160, 120, 1))
 end
 
 function T.focus_lanes_have_distinct_visual_regions(scope)
@@ -221,12 +244,12 @@ function T.focus_lanes_have_distinct_visual_regions(scope)
   current.focus = { region = "saves", saveId = "save-1", lane = "body" }
   current.focusedId = "save-1"
   local menuRenderer = renderer(scope)
-  menuRenderer:draw(current)
+  menuRenderer:draw(current, planFor(current.layout, 160, 120, 1))
   lg.setCanvas()
   local bodyFocused = scope:own(canvas:newImageData()):getPixel(18, 82)
   current.focus = { region = "saves", saveId = "save-1", lane = "overflow" }
   lg.setCanvas(canvas)
-  menuRenderer:draw(current)
+  menuRenderer:draw(current, planFor(current.layout, 160, 120, 1))
   lg.setCanvas()
   local overflowFocused = scope:own(canvas:newImageData()):getPixel(100, 92)
   Assert.isTrue(bodyFocused ~= overflowFocused, "body and overflow focus must render differently")
@@ -245,15 +268,17 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
     },
   }
   local bodyFocus = { region = "saves", saveId = "save-1", lane = "body" }
-  local layout = MainMenuLayout.compute(globals, one, bodyFocus, 640, 480, 0, nil, nil, false)
-  Assert.equal(layout.uiScale, 2)
-  Assert.equal(MainMenuLayout.compute(globals, one, bodyFocus, 320, 240, 0, nil, nil, false).uiScale, 1)
-  Assert.equal(MainMenuLayout.compute(globals, one, bodyFocus, 1280, 720, 0, nil, nil, false).uiScale, 3)
-  Assert.equal(MainMenuLayout.compute(globals, one, bodyFocus, 2560, 1440, 0, nil, nil, false).uiScale, 3)
+  -- The logical viewport behind the desktop presentation: identical
+  -- cards at unit scale, magnified by the 2x root placement below.
+  local layout = MainMenuLayout.compute(globals, one, bodyFocus, 320, 240, 0, nil, nil, false)
+  local density = planFor(layout, 640, 480, 2).panes[1].placement
+  Assert.equal(density.pixelScale, 2)
   local card = assert(layout.saves.cards["save-1"])
-  Assert.equal(card.frame.height, 72 * layout.uiScale)
+  -- Card budget: 10px top inset plus the 16px heading plus three 16px
+  -- profile rows plus the 10px bottom inset the renderer reserves.
+  Assert.equal(card.frame.height, 84)
   local newGame = layout.global.actions["new-game"]
-  Assert.equal(newGame.height, 36 * layout.uiScale)
+  Assert.equal(newGame.height, 36)
   Assert.isTrue(newGame.y >= layout.saves.viewport.y + layout.saves.viewport.height)
 
   local many = {}
@@ -319,8 +344,8 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
     globals,
     {},
     { region = "global", actionId = "new-game" },
-    640,
-    480,
+    320,
+    240,
     0,
     nil,
     nil,
@@ -330,47 +355,66 @@ function T.save_selection_uses_large_integer_cards_with_fixed_new_game_and_cues(
   lg.setCanvas(emptyCanvas)
   lg.clear(0, 0, 0, 0)
   local menuRenderer, _ = renderer(scope)
-  menuRenderer:draw(composed(emptyLayout, { region = "global", actionId = "new-game" }, {}))
+  local emptyPlan = planFor(emptyLayout, 640, 480, 2)
+  menuRenderer:draw(composed(emptyLayout, { region = "global", actionId = "new-game" }, {}), emptyPlan)
   lg.setCanvas()
   local emptyPixels = scope:own(emptyCanvas:newImageData())
   local viewport = emptyLayout.saves.viewport
-  for y = viewport.y, math.min(viewport.y + 24, viewport.y + viewport.height - 1) do
-    for x = viewport.x, math.min(viewport.x + 120, viewport.x + viewport.width - 1) do
+  for logicalY = viewport.y, math.min(viewport.y + 24, viewport.y + viewport.height - 1) do
+    for logicalX = viewport.x, math.min(viewport.x + 120, viewport.x + viewport.width - 1) do
+      local x, y = LayoutGeometry.logicalToHost(assert(emptyPlan.panes[1].placement), logicalX, logicalY)
       local r, g, b = emptyPixels:getPixel(x, y)
       Assert.isTrue(isBackground(r, g, b), "empty save viewport must not carry header copy at " .. x .. "," .. y)
     end
   end
 
+  local plan = planFor(layout, 640, 480, 2)
   local canvas = scope:own(lg.newCanvas(640, 480))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
-  menuRenderer:draw(composed(layout, bodyFocus, one))
+  menuRenderer:draw(composed(layout, bodyFocus, one), plan)
   lg.setCanvas()
   local bodyPixels = scope:own(canvas:newImageData())
-  local bodyRimX = card.frame.x + math.floor(card.frame.width / 2)
-  local bodyRimY = card.frame.y + 5
+  local placement = assert(plan.panes[1].placement)
+  -- Probe depths stay host pixels: map each card origin once, then step
+  -- the original host offsets into rim and chrome bands.
+  local cardX, cardY = LayoutGeometry.logicalToHost(placement, card.frame.x, card.frame.y)
+  local cardFarX, _ = LayoutGeometry.logicalToHost(placement, card.frame.x + card.frame.width, card.frame.y)
+  local bodyRimX = cardX + math.floor((cardFarX - cardX) / 2)
+  local bodyRimY = cardY + 5
   local overflow = assert(card.overflow)
-  local overflowX = overflow.x + math.floor(overflow.width / 2)
-  local overflowY = overflow.y + 5
+  local overflowX, overflowY = LayoutGeometry.logicalToHost(placement, overflow.x, overflow.y)
+  local overflowFarX, _ = LayoutGeometry.logicalToHost(placement, overflow.x + overflow.width, overflow.y)
+  overflowX = overflowX + math.floor((overflowFarX - overflowX) / 2)
+  overflowY = overflowY + 5
   local r, g, b = bodyPixels:getPixel(bodyRimX, bodyRimY)
   Assert.isTrue(isSelectedRed(r, g, b), "focused save body must carry the selected red rim")
   local or_, og, ob = bodyPixels:getPixel(overflowX, overflowY)
   Assert.isFalse(isSelectedRed(or_, og, ob), "unfocused overflow must stay neutral while the body is focused")
 
   local overflowFocus = { region = "saves", saveId = "save-1", lane = "overflow" }
-  local overflowLayout = MainMenuLayout.compute(globals, one, overflowFocus, 640, 480, 0, nil, nil, false)
+  local overflowLayout = MainMenuLayout.compute(globals, one, overflowFocus, 320, 240, 0, nil, nil, false)
   local overflowCard = assert(overflowLayout.saves.cards["save-1"])
   local overflowControl = assert(overflowCard.overflow)
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
-  menuRenderer:draw(composed(overflowLayout, overflowFocus, one))
+  local overflowPlan = planFor(overflowLayout, 640, 480, 2)
+  menuRenderer:draw(composed(overflowLayout, overflowFocus, one), overflowPlan)
   lg.setCanvas()
   local overflowPixels = scope:own(canvas:newImageData())
-  local br, bg, bb =
-    overflowPixels:getPixel(overflowCard.frame.x + math.floor(overflowCard.frame.width / 2), overflowCard.frame.y + 5)
+  local overflowPlacement = assert(overflowPlan.panes[1].placement)
+  local frameX, frameY = LayoutGeometry.logicalToHost(overflowPlacement, overflowCard.frame.x, overflowCard.frame.y)
+  local frameFarX, _ = LayoutGeometry.logicalToHost(
+    overflowPlacement,
+    overflowCard.frame.x + overflowCard.frame.width,
+    overflowCard.frame.y
+  )
+  local controlX, controlY = LayoutGeometry.logicalToHost(overflowPlacement, overflowControl.x, overflowControl.y)
+  local controlFarX, _ =
+    LayoutGeometry.logicalToHost(overflowPlacement, overflowControl.x + overflowControl.width, overflowControl.y)
+  local br, bg, bb = overflowPixels:getPixel(frameX + math.floor((frameFarX - frameX) / 2), frameY + 5)
   Assert.isFalse(isSelectedRed(br, bg, bb), "save body must return to neutral while overflow is focused")
-  local cr, cg, cb =
-    overflowPixels:getPixel(overflowControl.x + math.floor(overflowControl.width / 2), overflowControl.y + 5)
+  local cr, cg, cb = overflowPixels:getPixel(controlX + math.floor((controlFarX - controlX) / 2), controlY + 5)
   Assert.isTrue(isSelectedRed(cr, cg, cb), "focused overflow must carry its own selected red rim")
 end
 
@@ -403,7 +447,9 @@ function T.menu_player_copy_tracks_the_menu_scale(scope)
     },
   }
   local focus = { region = "saves", saveId = "save-1", lane = "body" }
-  local layout = MainMenuLayout.compute(globals, items, focus, 640, 480, 0, nil, nil, false)
+  local layout = MainMenuLayout.compute(globals, items, focus, 320, 240, 0, nil, nil, false)
+  local plan = planFor(layout, 640, 480, 2)
+  local menuScale = assert(plan.panes[1].placement.pixelScale, "the menu placement carries its integer scale")
   local cache = FieldUiFixture.cacheWithFontAndFrames()
   cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
   local menuRenderer =
@@ -415,7 +461,7 @@ function T.menu_player_copy_tracks_the_menu_scale(scope)
     saves = items,
     catalogError = nil,
     layout = layout,
-  })
+  }, plan)
   local foundPromoted = false
   for _, transform in ipairs(graphics.transforms) do
     if transform[1] == "scale" then
@@ -432,7 +478,7 @@ function T.menu_player_copy_tracks_the_menu_scale(scope)
   Assert.isFalse(foundPromoted, "desktop menu copy must track the menu scale instead of promoting it")
   local foundMenuScale = false
   for _, transform in ipairs(graphics.transforms) do
-    if transform[1] == "scale" and transform[2] == layout.uiScale and transform[3] == layout.uiScale then
+    if transform[1] == "scale" and transform[2] == menuScale and transform[3] == menuScale then
       foundMenuScale = true
     end
   end
@@ -447,7 +493,7 @@ function T.card_faces_use_the_white_launcher_face(scope)
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
   local menuRenderer = renderer(scope)
-  menuRenderer:draw(current)
+  menuRenderer:draw(current, planFor(current.layout, 160, 120, 1))
   lg.setCanvas()
   -- Inside the focused New Game card face, right of and below the label copy.
   local pixels = scope:own(canvas:newImageData())
@@ -507,7 +553,7 @@ function T.menu_text_uses_palette_path_at_identity_tint()
     saves = items,
     catalogError = nil,
     layout = layout,
-  })
+  }, planFor(layout, 320, 240, 1))
   Assert.isTrue(#paletteCalls > 0, "menu copy must draw through the palette path")
   Assert.equal(#plainCalls, 0, "menu copy must not use tinted plain text draws")
   for _, call in ipairs(paletteCalls) do
@@ -557,13 +603,15 @@ function T.neutral_cards_keep_a_dark_exterior_with_a_full_cyan_inner_border(scop
   -- Focus the save body so the sampled New Game card renders its neutral
   -- chrome instead of the selected red rim.
   local focus = { region = "saves", saveId = "save-1", lane = "body" }
-  local layout = MainMenuLayout.compute(globals, saves, focus, 640, 480, 0, nil, nil, false)
+  local layout = MainMenuLayout.compute(globals, saves, focus, 320, 240, 0, nil, nil, false)
   local newGame = assert(layout.global.actions["new-game"])
   local lg = love.graphics
   local canvas = scope:own(lg.newCanvas(640, 480))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
   local menuRenderer = renderer(scope, "soulsilver")
+  local plan = planFor(layout, 640, 480, 2)
+  local placement = assert(plan.panes[1].placement)
   menuRenderer:draw({
     focusedId = "save-1",
     focus = focus,
@@ -571,28 +619,37 @@ function T.neutral_cards_keep_a_dark_exterior_with_a_full_cyan_inner_border(scop
     saves = saves,
     catalogError = nil,
     layout = layout,
-  })
+  }, plan)
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
-  local cx = newGame.x + math.floor(newGame.width / 2)
+  -- Sample through the root placement: map the card origin once, then
+  -- step the original host-pixel depths into border, rim, inner and
+  -- face bands at the desktop presentation scale.
+  local hostX, hostY = LayoutGeometry.logicalToHost(placement, newGame.x, newGame.y)
+  local hostFarX, _ = LayoutGeometry.logicalToHost(placement, newGame.x + newGame.width, newGame.y)
+  local function sample(dx, dy)
+    return pixels:getPixel(hostX + dx, hostY + dy)
+  end
+  local cx = math.floor((hostFarX - hostX) / 2)
   -- At desktop scale the card insets double: 2px border, 4px rim, 4px inner border.
-  local r, g, b = pixels:getPixel(cx, newGame.y + 1)
+  local r, g, b = sample(cx, 1)
   nearByte(r, 0x30, 4)
   nearByte(g, 0x49, 4)
   nearByte(b, 0x61, 4)
-  r, g, b = pixels:getPixel(cx, newGame.y + 4)
+  r, g, b = sample(cx, 4)
   nearByte(r, 0x30, 4)
   nearByte(g, 0x49, 4)
   nearByte(b, 0x61, 4)
-  r, g, b = pixels:getPixel(cx, newGame.y + 8)
+  r, g, b = sample(cx, 8)
   nearByte(r, 0xA2, 4)
   nearByte(g, 0xE3, 4)
   nearByte(b, 0xDB, 4)
-  r, g, b = pixels:getPixel(cx, newGame.y + newGame.height - 8)
+  local hostHeight = select(2, LayoutGeometry.logicalToHost(placement, newGame.x, newGame.y + newGame.height)) - hostY
+  r, g, b = sample(cx, hostHeight - 8)
   nearByte(r, 0xA2, 4)
   nearByte(g, 0xE3, 4)
   nearByte(b, 0xDB, 4)
-  r, g, b = pixels:getPixel(newGame.x + 14, newGame.y + 14)
+  r, g, b = sample(14, 14)
   nearByte(r, 0xFB, 4)
   nearByte(g, 0xFB, 4)
   nearByte(b, 0xFB, 4)
@@ -612,13 +669,14 @@ function T.inset_actions_use_the_face_color_for_the_inner_border(scope)
   }
   local focus = { region = "global", actionId = "new-game" }
   local popup = { saveId = "save-1" }
-  local layout = MainMenuLayout.compute(globals, saves, focus, 640, 480, 0, popup, nil, false)
+  local layout = MainMenuLayout.compute(globals, saves, focus, 320, 240, 0, popup, nil, false)
   local delete = assert(layout.popup.actions.delete)
   local lg = love.graphics
   local canvas = scope:own(lg.newCanvas(640, 480))
   lg.setCanvas(canvas)
   lg.clear(0, 0, 0, 0)
   local menuRenderer = renderer(scope)
+  local plan = planFor(layout, 640, 480, 2)
   menuRenderer:draw({
     focusedId = "new-game",
     focus = focus,
@@ -627,13 +685,14 @@ function T.inset_actions_use_the_face_color_for_the_inner_border(scope)
     catalogError = nil,
     popup = popup,
     layout = layout,
-  })
+  }, plan)
   lg.setCanvas()
   local pixels = scope:own(canvas:newImageData())
   -- Bottom inner-border band of the inset delete action: below the label
   -- copy and centered horizontally so rounded corners never intrude.
   local cx = delete.x + math.floor(delete.width / 2)
-  local r, g, b = pixels:getPixel(cx, delete.y + delete.height - 8)
+  local placement = assert(plan.panes[1].placement)
+  local r, g, b = pixels:getPixel(LayoutGeometry.logicalToHost(placement, cx, delete.y + delete.height - 8))
   nearByte(r, 0xFB, 4)
   nearByte(g, 0xFB, 4)
   nearByte(b, 0xFB, 4)
@@ -648,13 +707,15 @@ function T.version_backgrounds_use_the_bright_launcher_field(scope)
     local expected = cases[versionId]
     local globals = { { id = "new-game", kind = "new_game" } }
     local focus = { region = "global", actionId = "new-game" }
-    local layout = MainMenuLayout.compute(globals, {}, focus, 640, 480, 0, nil, nil, false)
+    local layout = MainMenuLayout.compute(globals, {}, focus, 320, 240, 0, nil, nil, false)
     local newGame = assert(layout.global.actions["new-game"])
     local lg = love.graphics
     local canvas = scope:own(lg.newCanvas(640, 480))
     lg.setCanvas(canvas)
     lg.clear(0, 0, 0, 0)
     local menuRenderer = renderer(scope, versionId)
+    local plan = planFor(layout, 640, 480, 2)
+    local placement = assert(plan.panes[1].placement)
     menuRenderer:draw({
       focusedId = "new-game",
       focus = focus,
@@ -662,15 +723,19 @@ function T.version_backgrounds_use_the_bright_launcher_field(scope)
       saves = {},
       catalogError = nil,
       layout = layout,
-    })
+    }, plan)
     lg.setCanvas()
     local pixels = scope:own(canvas:newImageData())
     local found = false
     for _, point in ipairs({ { 8, 8 }, { 632, 8 }, { 8, 472 }, { 632, 472 } }) do
-      local outside = point[1] < newGame.x
-        or point[1] >= newGame.x + newGame.width
-        or point[2] < newGame.y
-        or point[2] >= newGame.y + newGame.height
+      -- Candidate points are host pixels: invert to the logical card
+      -- geometry before testing membership, then sample the host pixel.
+      local logicalX, logicalY =
+        assert(LayoutGeometry.hostToLogical(placement, point[1], point[2]), "background probes stay visible")
+      local outside = logicalX < newGame.x
+        or logicalX >= newGame.x + newGame.width
+        or logicalY < newGame.y
+        or logicalY >= newGame.y + newGame.height
       if outside then
         local r, g, b = pixels:getPixel(point[1], point[2])
         nearByte(r, expected[1], 4)
@@ -685,21 +750,21 @@ end
 
 function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
   local measure = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-  local function renderAt(width, height, saves)
+  local function renderAt(logicalWidth, logicalHeight, hostScale, saves)
     local graphics = FakeGraphics.new()
     local draws = {}
     local textDouble = {
       textWidth = function(_, value)
         return measure:textWidth(value)
       end,
-      drawTextWithPalette = function(_, value, _, _, _)
-        local x, y, s = 0, 0, 1
+      drawTextWithPalette = function(_, value, x, y, _)
+        -- Copy draws at logical coordinates under one root placement:
+        -- record the logical point plus the active root scale.
+        local s = 1
         for index = #graphics.transforms, 1, -1 do
           local entry = graphics.transforms[index]
-          if entry[1] == "scale" and s == 1 then
+          if entry[1] == "scale" then
             s = entry[2]
-          elseif entry[1] == "translate" then
-            x, y = entry[2], entry[3]
             break
           end
         end
@@ -710,7 +775,7 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
     cache:writeLua(IntroAssetCache.manifestPath(), introManifest())
     local globals = { { id = "new-game", kind = "new_game" } }
     local focus = { region = "saves", saveId = saves[1].saveId or saves[1].id, lane = "body" }
-    local layout = MainMenuLayout.compute(globals, saves, focus, width, height, 0, nil, nil, false)
+    local layout = MainMenuLayout.compute(globals, saves, focus, logicalWidth, logicalHeight, 0, nil, nil, false)
     local menuRenderer =
       MainMenuRenderer.new({ text = textDouble, graphics = graphics, cacheFs = cache, versionId = "heartgold" })
     menuRenderer:draw({
@@ -720,7 +785,7 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
       saves = saves,
       catalogError = nil,
       layout = layout,
-    })
+    }, planFor(layout, logicalWidth * hostScale, logicalHeight * hostScale, hostScale))
     return draws, layout
   end
   local saves = {
@@ -741,7 +806,7 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
       canDelete = false,
     },
   }
-  local draws, layout = renderAt(640, 480, saves)
+  local draws, layout = renderAt(320, 240, 2, saves)
   Assert.isTrue(#draws >= 5, "the launcher must draw principal copy through the generated font path")
   local presentationLabels = {
     CONTINUE = true,
@@ -755,7 +820,7 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
   for _, draw in ipairs(draws) do
     seen[draw.value] = true
     Assert.equal(draw.scale, math.floor(draw.scale), "launcher text scaling stays integral")
-    Assert.equal(draw.scale, layout.uiScale, "launcher copy must track the menu scale: " .. draw.value)
+    Assert.equal(draw.scale, 2, "launcher copy must track the menu scale: " .. draw.value)
   end
   for label in pairs(presentationLabels) do
     Assert.isTrue(seen[label], "the launcher must draw presentation copy: " .. label)
@@ -789,19 +854,112 @@ function T.launcher_copy_scales_with_the_menu_and_preserves_player_casing(scope)
         region = assert(card.frame, "save frame is required")
       end
     end
-    local right = draw.x + measure:textWidth(draw.value) * draw.scale
+    local right = draw.x + measure:textWidth(draw.value)
     Assert.isTrue(
       draw.x >= region.x and right <= region.x + region.width,
       "launcher copy must stay inside its owning card: " .. draw.value
     )
   end
   local smallDraws = (function()
-    local result = { renderAt(320, 240, saves) }
+    local result = { renderAt(320, 240, 1, saves) }
     return result[1]
   end)()
   for _, draw in ipairs(smallDraws) do
     Assert.equal(draw.scale, 1, "the canonical small layout keeps single-scale text")
   end
+end
+
+function T.headings_and_chrome_magnify_together_across_integer_scales(scope)
+  local globals = { { id = "new-game", kind = "new_game" } }
+  local items = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      canDelete = true,
+    },
+  }
+  local focus = { region = "saves", saveId = "save-1", lane = "body" }
+  -- One logical layout: the presentation scale lives only in the plan
+  -- placement, never in layout fields.
+  local layout = MainMenuLayout.compute(globals, items, focus, 320, 240, 0, nil, nil, false)
+  Assert.isNil(layout.uiScale, "the logical layout carries no presentation scale")
+
+  local lg = love.graphics
+  local function render(layoutArg, width, height, pixelScale)
+    local canvas = scope:own(lg.newCanvas(width, height))
+    lg.setCanvas(canvas)
+    lg.clear(0, 0, 0, 0)
+    local menuRenderer, _ = renderer(scope)
+    menuRenderer:draw({
+      focusedId = "save-1",
+      focus = focus,
+      globalActions = globals,
+      saves = items,
+      catalogError = nil,
+      layout = layoutArg,
+    }, planFor(layoutArg, width, height, pixelScale))
+    lg.setCanvas()
+    return scope:own(canvas:newImageData())
+  end
+  local smallPixels = render(layout, 320, 240, 1)
+  local largePixels = render(layout, 640, 480, 2)
+
+  local function isInk(data, x, y)
+    local r, g, b, a = data:getPixel(x, y)
+    if a < 0.5 then
+      return false
+    end
+    return math.max(r, g, b) < 0.7
+  end
+  local function inkHeight(data, frame)
+    local top, bottom = nil, nil
+    for y = math.floor(frame.y), math.floor(frame.y + frame.height) - 1 do
+      for x = math.floor(frame.x), math.floor(frame.x + frame.width) - 1 do
+        if isInk(data, x, y) then
+          if top == nil or y < top then
+            top = y
+          end
+          if bottom == nil or y > bottom then
+            bottom = y
+          end
+        end
+      end
+    end
+    Assert.notNil(top, "the focused card must carry text ink")
+    assert(top and bottom)
+    return bottom - top + 1
+  end
+  local card = assert(layout.saves.cards["save-1"])
+  local smallInk = inkHeight(smallPixels, card.frame)
+  -- The doubled canvas carries host pixels: scale the logical frame once.
+  local largeFrame =
+    { x = card.frame.x * 2, y = card.frame.y * 2, width = card.frame.width * 2, height = card.frame.height * 2 }
+  local largeInk = inkHeight(largePixels, largeFrame)
+  Assert.equal(largeInk, smallInk * 2, "card text ink must magnify exactly with its card: one shared root scale")
+
+  local function rimThickness(data, frame)
+    local midY = math.floor(frame.y + frame.height / 2)
+    local run = 0
+    local best = 0
+    for x = math.floor(frame.x), math.floor(frame.x + frame.width) - 1 do
+      local r, g, b, a = data:getPixel(x, midY)
+      local red = a > 0.5 and r > 0.9 and (r - g) > 0.5 and (r - b) > 0.5
+      if red then
+        run = run + 1
+        best = math.max(best, run)
+      else
+        run = 0
+      end
+    end
+    return best
+  end
+  local smallRim = rimThickness(smallPixels, card.frame)
+  local largeRim = rimThickness(largePixels, largeFrame)
+  Assert.isTrue(smallRim > 0, "the focused card must carry a measurable rim at unit scale")
+  Assert.equal(largeRim, smallRim * 2, "card chrome must magnify exactly with its text")
 end
 
 return GraphicsSmoke.suite(T)
