@@ -23,6 +23,7 @@ local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
 local FieldUiFixture = {}
 
 FieldUiFixture.STRIP_PATH = "assets/generated/field/ui/dialogue-frame-tiles.png"
+FieldUiFixture.APPLICATION_STRIP_PATH = "assets/generated/field/ui/application-frame-tiles.png"
 FieldUiFixture.CONTINUE_CURSOR_PATH = "assets/generated/field/ui/dialogue-continue-cursor.png"
 FieldUiFixture.TILES_PER_FRAME = 18
 FieldUiFixture.FRAME_COUNT = 2
@@ -104,6 +105,27 @@ function FieldUiFixture.framePixels(frame)
     rows[#rows + 1] = tileBytes(tile, palette)
   end
   return table.concat(rows)
+end
+
+-- The application frame strip: the same rows as the dialogue strip, but
+-- with each row's window-interior seed tile (tile 8, the third tile of the
+-- middle frame row) cleared to transparent, mirroring the compiled class
+-- where interior-connected padding reveals the application underneath
+-- while the surrounding decoration stays opaque.
+---@return string png
+function FieldUiFixture.applicationStripBytes()
+  local rgba = {}
+  for frame = 0, FieldUiFixture.FRAME_COUNT - 1 do
+    local palette = frame == 0 and paletteA or paletteB
+    for tile = 0, FieldUiFixture.TILES_PER_FRAME - 1 do
+      if tile == 8 then
+        rgba[#rgba + 1] = string.rep(string.char(0, 0, 0, 0), 64)
+      else
+        rgba[#rgba + 1] = tileBytes(tile, palette)
+      end
+    end
+  end
+  return PngWriter.encode(144, FieldUiFixture.FRAME_COUNT * 8, table.concat(rgba))
 end
 
 ---@return string png
@@ -492,6 +514,11 @@ function FieldUiFixture.manifest()
         width = 144,
         height = FieldUiFixture.FRAME_COUNT * 8,
       },
+      ["hgss.application_frame.tiles"] = {
+        image = FieldUiFixture.APPLICATION_STRIP_PATH,
+        width = 144,
+        height = FieldUiFixture.FRAME_COUNT * 8,
+      },
       [FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR] = {
         image = FieldUiFixture.CONTINUE_CURSOR_PATH,
         width = 48,
@@ -529,6 +556,7 @@ function FieldUiFixture.manifest()
         [0] = { x = 0, y = 0, width = 144, height = 8 },
         [1] = { x = 0, y = 8, width = 144, height = 8 },
       },
+      application = { asset = "hgss.application_frame.tiles" },
       continueCursor = {
         asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
         cycle = { 0, 1, 2, 1 },
@@ -569,6 +597,7 @@ function FieldUiFixture.cacheWithFontAndFrames()
   local cache = FieldDialogueFixture.cacheWithFont()
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
+  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, FieldUiFixture.applicationStripBytes())
   cache:write(FieldUiFixture.CONTINUE_CURSOR_PATH, FieldUiFixture.continueCursorBytes())
   cache:write(FieldUiFixture.SIGNPOST_TILES_PATH, FieldUiFixture.signpostTilesBytes())
   cache:write(FieldUiFixture.WAYFINDING_PATH, FieldUiFixture.wayfindingBytes())
@@ -590,6 +619,8 @@ function FieldUiFixture.trainerCardCache(fontDef)
   cache:write(FieldDialogueFixture.FOCUS_INDICATOR_PATH, FieldDialogueFixture.focusIndicatorBytes())
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.TRAINER_CARD_PATH, FieldUiFixture.cardBytes())
+  cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
+  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, FieldUiFixture.applicationStripBytes())
   return cache
 end
 
@@ -600,6 +631,8 @@ end
 function FieldUiFixture.startMenuCache()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
+  cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
+  cache:write(FieldUiFixture.APPLICATION_STRIP_PATH, FieldUiFixture.applicationStripBytes())
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
   cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
   return cache

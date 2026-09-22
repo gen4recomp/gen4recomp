@@ -30,6 +30,11 @@ local function baseManifest()
         width = 144,
         height = 160,
       },
+      ["hgss.application_frame.tiles"] = {
+        image = "assets/generated/field/ui/application-frame-tiles.png",
+        width = 144,
+        height = 160,
+      },
       ["hgss.dialogue_continue_cursor"] = {
         image = "assets/generated/field/ui/dialogue-continue-cursor.png",
         width = 48,
@@ -87,6 +92,7 @@ local function baseManifest()
     dialogueFrames = {
       count = 20,
       frameTiles = frameTiles,
+      application = { asset = "hgss.application_frame.tiles" },
       continueCursor = {
         asset = "hgss.dialogue_continue_cursor",
         cycle = { 0, 1, 2, 1 },

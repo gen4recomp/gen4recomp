@@ -48,6 +48,13 @@
 -- background-class pixels reveal already-rendered chrome instead of
 -- repainting it). A stale cache without that record must fail readiness.
 --
+-- fieldUi schema 14: the generated class carries the application frame
+-- strip beside the dialogue strip. Both atlases share dimensions and the
+-- same row rectangles index both images; the application strip clears
+-- source index 0 plus the interior-connected padding so overlay chrome
+-- reveals application content while disconnected decoration stays opaque.
+-- A stale cache without that record must fail readiness.
+--
 -- fieldUi schema 12: the normal naming section carries full generated
 -- subject/cursor animations with corrected source geometry (the page
 -- overlay rests at x=11, home controls carry their post-parent-transform
@@ -220,7 +227,7 @@ DerivedAssetContract.fieldEmotes = {
 
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v13",
+  schema = "g4-field-ui-v14",
 }
 
 DerivedAssetContract.intro = {

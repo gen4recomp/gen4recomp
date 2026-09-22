@@ -25,6 +25,7 @@ local FieldUiCompiler = {}
 
 ---@alias FieldUiCompiler.CharData { depth: integer, tiles: string }
 ---@alias FieldUiCompiler.PaletteData { colors: { r: integer, g: integer, b: integer }[] }
+---@alias FieldUiCompiler.SourceRef { asset: string, member: integer }
 ---@alias FieldUiCompiler.ScreenData { width: integer, height: integer, entries: table[] }
 ---@alias FieldUiCompiler.CellData { cells: table[] }
 ---@alias FieldUiCompiler.AnimationData { anims: table[] }
@@ -72,17 +73,19 @@ local function decodeMember(archive, memberId, label)
   return bytes
 end
 
--- Blit one tile's pixels into an RGBA buffer. 4bpp tiles hold two pixel
--- values per byte (low nibble first); 8bpp tiles hold one. Pixel value 0 is
--- the reserved transparency slot: the HGSS UI palettes fill it with a pink
--- chroma color that the DS window/OBJ presentation never displays. Values
--- >= 1 map to palette color `value` — colors is 1-based (colors[i] = color
--- i-1), so the lookup is value + 1 within the tile's palette bank. A tile
--- index beyond the decoded tiles, or a palette entry the decoded palette
--- cannot cover, is malformed source, never silent transparency.
--- `source` names the asset/member/cell/obj that produced the reference for
--- the typed error context.
-local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, palIndex, colors, flipH, flipV, source)
+-- Authoritative raw source-pixel reader: one interpretation of 4bpp/8bpp
+-- tile data shared by ordinary blits and indexed mask derivation. 4bpp
+-- tiles hold two pixel values per byte (low nibble first); 8bpp tiles hold
+-- one. A tile index beyond the decoded tiles is malformed source, never
+-- silent transparency. `source` names the asset/member/cell/obj that
+-- produced the reference for the typed error context.
+---@param charData FieldUiCompiler.CharData
+---@param tileIndex integer
+---@param x integer
+---@param y integer
+---@param source FieldUiCompiler.SourceRef
+---@return integer
+local function tilePixelIndex(charData, tileIndex, x, y, source)
   local depth = charData.depth
   local tileBytes = depth == 3 and 32 or 64
   local tileCount = math.floor(#charData.tiles / tileBytes)
@@ -93,6 +96,28 @@ local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, pal
       { tile = tileIndex, available = tileCount, source = source }
     )
   end
+  local base = tileIndex * tileBytes
+  if depth == 3 then
+    local byte = string.byte(charData.tiles, base + y * 4 + math.floor(x / 2) + 1)
+    if x % 2 == 0 then
+      return byte % 16
+    end
+    return math.floor(byte / 16)
+  end
+  return string.byte(charData.tiles, base + y * 8 + x + 1)
+end
+
+-- Blit one tile's pixels into an RGBA buffer. Pixel value 0 is
+-- the reserved transparency slot: the HGSS UI palettes fill it with a pink
+-- chroma color that the DS window/OBJ presentation never displays. Values
+-- >= 1 map to palette color `value` — colors is 1-based (colors[i] = color
+-- i-1), so the lookup is value + 1 within the tile's palette bank. A tile
+-- index beyond the decoded tiles, or a palette entry the decoded palette
+-- cannot cover, is malformed source, never silent transparency.
+-- `source` names the asset/member/cell/obj that produced the reference for
+-- the typed error context.
+local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, palIndex, colors, flipH, flipV, source)
+  local depth = charData.depth
   local palBase = depth == 3 and palIndex * 16 or palIndex * 256
   local function put(x, y, v)
     if v == 0 then
@@ -115,20 +140,9 @@ local function blitTile(rgba, atlasWidth, destX, destY, charData, tileIndex, pal
     local px = ((destY + y) * atlasWidth + destX + x) * 4
     rgba[px + 1], rgba[px + 2], rgba[px + 3], rgba[px + 4] = c.r, c.g, c.b, 255
   end
-  local base = tileIndex * tileBytes
-  if depth == 3 then
-    for y = 0, 7 do
-      for x = 0, 3 do
-        local byte = string.byte(charData.tiles, base + y * 4 + x + 1)
-        put(x * 2, y, byte % 16)
-        put(x * 2 + 1, y, math.floor(byte / 16))
-      end
-    end
-  else
-    for y = 0, 7 do
-      for x = 0, 7 do
-        put(x, y, string.byte(charData.tiles, base + y * 8 + x + 1))
-      end
+  for y = 0, 7 do
+    for x = 0, 7 do
+      put(x, y, tilePixelIndex(charData, tileIndex, x, y, source))
     end
   end
 end
@@ -771,17 +785,105 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   }
 end
 
+-- Dialogue frames use the fixed 18-tile HGSS frame grid: six conceptual
+-- columns by three rows, with tile 8 as the window-interior seed cell the
+-- retail border drawing never places. The canonical mask grid lays tile `t`
+-- at column `t % 6`, row `floor(t / 6)`, forming a 48x24 index canvas.
+local FRAME_GRID_COLUMNS = 6
+local FRAME_GRID_WIDTH = 48
+local FRAME_GRID_HEIGHT = 24
+local FRAME_INTERIOR_TILE = 8
+
+-- Derive the per-style interior mask from raw tile indices, before palette
+-- conversion: the single palette index filling all 64 pixels of tile 8 is
+-- the interior index, and every four-connected equal-index cell reachable
+-- from tile 8 across the canonical grid is interior-connected padding.
+-- Returns the reached set as a 1-based boolean array over the canonical
+-- grid. A nonuniform tile 8 cannot supply a seed, so it is malformed
+-- source; no dominant-index guess is ever made. `source` carries the
+-- asset/member context for the typed error.
+---@param frameChar FieldUiCompiler.CharData
+---@param frame integer
+---@param member integer
+---@param tiles integer
+---@param source FieldUiCompiler.SourceRef
+---@return boolean[]
+local function deriveInteriorMask(frameChar, frame, member, tiles, source)
+  local indices = {}
+  for tile = 0, tiles - 1 do
+    local originX = (tile % FRAME_GRID_COLUMNS) * 8
+    local originY = math.floor(tile / FRAME_GRID_COLUMNS) * 8
+    for y = 0, 7 do
+      for x = 0, 7 do
+        indices[(originY + y) * FRAME_GRID_WIDTH + originX + x + 1] = tilePixelIndex(frameChar, tile, x, y, source)
+      end
+    end
+  end
+  local seedX = (FRAME_INTERIOR_TILE % FRAME_GRID_COLUMNS) * 8
+  local seedY = math.floor(FRAME_INTERIOR_TILE / FRAME_GRID_COLUMNS) * 8
+  local interiorIndex = indices[seedY * FRAME_GRID_WIDTH + seedX + 1]
+  for y = 0, 7 do
+    for x = 0, 7 do
+      if indices[(seedY + y) * FRAME_GRID_WIDTH + seedX + x + 1] ~= interiorIndex then
+        Errors.raise(
+          FieldUiCompiler.ERROR.SOURCE_INVALID,
+          "dialogue frame " .. frame .. " interior tile must carry one palette index",
+          { frame = frame, style = frame, member = member, tile = FRAME_INTERIOR_TILE }
+        )
+      end
+    end
+  end
+  local reached = {}
+  local queue = {}
+  for y = seedY, seedY + 7 do
+    for x = seedX, seedX + 7 do
+      local cell = y * FRAME_GRID_WIDTH + x + 1
+      reached[cell] = true
+      queue[#queue + 1] = cell
+    end
+  end
+  local head = 1
+  while head <= #queue do
+    local cell = queue[head]
+    head = head + 1
+    local cx = (cell - 1) % FRAME_GRID_WIDTH
+    local cy = math.floor((cell - 1) / FRAME_GRID_WIDTH)
+    local neighbors = {
+      { x = cx - 1, y = cy },
+      { x = cx + 1, y = cy },
+      { x = cx, y = cy - 1 },
+      { x = cx, y = cy + 1 },
+    }
+    for _, neighbor in ipairs(neighbors) do
+      if neighbor.x >= 0 and neighbor.x < FRAME_GRID_WIDTH and neighbor.y >= 0 and neighbor.y < FRAME_GRID_HEIGHT then
+        local next = neighbor.y * FRAME_GRID_WIDTH + neighbor.x + 1
+        if not reached[next] and indices[next] == interiorIndex then
+          reached[next] = true
+          queue[#queue + 1] = next
+        end
+      end
+    end
+  end
+  return reached
+end
+
 local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAssets)
   local archive, archiveBytes = loadArchive(romFs, manifestConfig.dialogueFrames.alias)
   local cfg = manifestConfig.dialogueFrames
   local tilesPath = FieldUiAssetCache.assetDir() .. "/dialogue-frame-tiles.png"
+  local applicationPath = FieldUiAssetCache.assetDir() .. "/application-frame-tiles.png"
   -- Pack all frames: each frame's tiles in a row, frames stacked, each frame
   -- rendered with its own palette. The strip width is the fixed generated
   -- contract (18 tiles per frame in the real dump); a frame carrying any
-  -- other count is malformed source the renderer could never place.
+  -- other count is malformed source the renderer could never place. A second
+  -- application strip shares the row layout: it keeps the dialogue pixels
+  -- but clears source index 0 plus the interior-connected padding, so
+  -- overlay chrome reveals the application underneath while disconnected
+  -- decoration reusing the interior index stays opaque.
   local atlasWidth = FieldUiAssetCache.GEOMETRY.FRAME_TILES * 8
   local atlasHeight = cfg.frameCount * 8
   local rgba = newRgba(atlasWidth, atlasHeight)
+  local applicationRgba = newRgba(atlasWidth, atlasHeight)
   local frameTiles = {}
   local cursorCharBytes = decodeMember(archive, cfg.continueCursorMember, "dialogue continuation cursor")
   local cursorChar, cursorErr = G2dDecoder.decodeChar(cursorCharBytes, { label = "dialogue continuation cursor" })
@@ -814,6 +916,30 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
         member = cfg.firstFrameMember + frame,
       })
     end
+    local frameSource = { asset = "dialogue frame " .. frame, member = cfg.firstFrameMember + frame }
+    local reached = deriveInteriorMask(frameChar, frame, cfg.firstFrameMember + frame, tiles, frameSource)
+    for tile = 0, tiles - 1 do
+      local originX = (tile % FRAME_GRID_COLUMNS) * 8
+      local originY = math.floor(tile / FRAME_GRID_COLUMNS) * 8
+      for y = 0, 7 do
+        for x = 0, 7 do
+          local value = tilePixelIndex(frameChar, tile, x, y, frameSource)
+          if value ~= 0 and not reached[(originY + y) * FRAME_GRID_WIDTH + originX + x + 1] then
+            local c = framePal.colors[value + 1]
+            if not c then
+              Errors.raise(
+                FieldUiCompiler.ERROR.SOURCE_INVALID,
+                "pixel references a palette entry the decoded palette cannot cover",
+                { value = value, palette = 0, available = #framePal.colors, source = frameSource }
+              )
+            end
+            local px = ((frame * 8 + y) * atlasWidth + tile * 8 + x) * 4
+            applicationRgba[px + 1], applicationRgba[px + 2], applicationRgba[px + 3], applicationRgba[px + 4] =
+              c.r, c.g, c.b, 255
+          end
+        end
+      end
+    end
     for phase = 0, 2 do
       composeCursorPhase(
         cursorRgba,
@@ -840,6 +966,9 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   assets[tilesPath] = PngWriter.encode(atlasWidth, atlasHeight, concatChars(rgba))
   manifestAssets[FieldUiAssetCache.ASSET.DIALOGUE_FRAME_TILES] =
     { image = tilesPath, width = atlasWidth, height = atlasHeight }
+  assets[applicationPath] = PngWriter.encode(atlasWidth, atlasHeight, concatChars(applicationRgba))
+  manifestAssets[FieldUiAssetCache.ASSET.APPLICATION_FRAME_TILES] =
+    { image = applicationPath, width = atlasWidth, height = atlasHeight }
   local cursorPath = FieldUiAssetCache.assetDir() .. "/dialogue-continue-cursor.png"
   assets[cursorPath] = PngWriter.encode(cursorWidth, cursorHeight, concatChars(cursorRgba))
   manifestAssets[FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR] =
@@ -852,6 +981,7 @@ local function compileDialogueFrames(romFs, sha1hex, deps, assets, manifestAsset
   return {
     count = cfg.frameCount,
     frameTiles = frameTiles,
+    application = { asset = FieldUiAssetCache.ASSET.APPLICATION_FRAME_TILES },
     continueCursor = {
       asset = FieldUiAssetCache.ASSET.DIALOGUE_CONTINUE_CURSOR,
       cycle = { 0, 1, 2, 1 },
