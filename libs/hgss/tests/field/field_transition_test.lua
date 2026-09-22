@@ -1503,6 +1503,91 @@ end
 -- a valid "headless, no choreography" composition. It must not degrade to a
 -- plain fade while still emitting the door-open sound and completing the
 -- swap, because that observes audio without proving semantic door ingress.
+-- A door-kind warp from a scene-less active map waits for the source
+-- visual instead of failing door resolution: the wait locks the field
+-- without fading, and once the visual realizes the full source map
+-- resolves the door and the fade begins. A source visual failure aborts
+-- to idle before any ownership changes.
+function T.door_warp_from_a_sceneless_source_waits_for_its_visual()
+  local sourceDoor = doorStub()
+  local fullSource = { mapId = 61, scene = { type = "indoor" } }
+  local visualReady = false
+  local visualFailure = nil
+  local demands = {}
+  local loads = 0
+  local transition, source = transitionFixture({
+    loader = {
+      protectMap = function() end,
+      requestWarp = function()
+        return true
+      end,
+      derivedAssets = {
+        requestField = function(mapId, urgency)
+          demands[#demands + 1] = { mapId = mapId, urgency = urgency }
+          return visualReady, visualFailure
+        end,
+      },
+      load = function(_, mapId)
+        Assert.equal(mapId, 61, "the wait realizes the source visual")
+        if not visualReady then
+          error("field 61 is not ready", 0)
+        end
+        loads = loads + 1
+        return fullSource
+      end,
+    },
+    doorAt = function(runtimeMap)
+      if runtimeMap == fullSource then
+        return sourceDoor
+      end
+      return nil
+    end,
+    player = stubPlayer(),
+  })
+  Assert.isNil(source.scene, "the fixture source starts scene-less")
+  transition:start(source, makeTrigger("door", DOOR_WARP), "south")
+  Assert.equal(transition.phase, "await_source_visual", "a scene-less door source waits for its visual")
+  Assert.isTrue(transition.locked, "the visual wait locks the field")
+  Assert.equal(#demands, 1, "the wait enrolls the source visual once")
+  Assert.equal(demands[1].mapId, 61, "the wait names the source map")
+  Assert.equal(demands[1].urgency, "required", "the wait holds required urgency")
+  Assert.equal(transition.fadeAlpha, 0, "no fade starts while the visual is pending")
+  step(transition)
+  Assert.equal(transition.phase, "await_source_visual", "a pending visual keeps waiting")
+  Assert.equal(loads, 0, "no visual load runs while pending")
+  visualReady = true
+  step(transition)
+  Assert.equal(transition.phase, "fade_out", "the fade begins once the visual realizes")
+  Assert.equal(loads, 1, "the realized source loads exactly once")
+  Assert.equal(transition.sourceDoor, sourceDoor, "the realized source resolves its door")
+  Assert.equal(sourceDoor.opened, 1, "the source door opens at transition start")
+end
+
+function T.door_visual_wait_failure_aborts_before_ownership_changes()
+  local transition, source = transitionFixture({
+    loader = {
+      protectMap = function() end,
+      requestWarp = function()
+        return true
+      end,
+      derivedAssets = {
+        requestField = function()
+          return false, "injected visual failure"
+        end,
+      },
+      load = function()
+        error("no visual load runs behind a failed visual", 0)
+      end,
+    },
+    player = stubPlayer(),
+  })
+  local ok, err = pcall(transition.start, transition, source, makeTrigger("door", DOOR_WARP), "south")
+  Assert.isFalse(ok, "a failed source visual fails the warp loudly")
+  Assert.isTrue(string.find(tostring(err), "injected visual failure", 1, true) ~= nil, "the visual cause is preserved")
+  Assert.equal(transition.phase, "idle", "a failed visual wait returns to idle")
+  Assert.isFalse(transition.locked, "a failed visual wait releases the field")
+end
+
 function T.absent_door_resolver_is_a_data_contract_failure_not_a_synthetic_success()
   local transition, source, _, swaps, sounds = transitionFixture({ player = stubPlayer() })
   local ok, err = pcall(transition.start, transition, source, makeTrigger("door", DOOR_WARP), "north")

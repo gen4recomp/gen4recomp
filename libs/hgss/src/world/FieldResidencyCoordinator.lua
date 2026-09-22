@@ -11,8 +11,8 @@
 ---@field mapLoader FieldMapLoader
 ---@field actors FieldActorManager
 ---@field zoneController FieldZoneController
----@field composeMap fun(runtimeMap: RuntimeFieldMap, coverage: FieldCoverage?): RuntimeFieldMap
----@field onPreparedMap fun(runtimeMap: RuntimeFieldMap)?
+---@field composeMap fun(runtimeMap: RuntimeFieldMap|LogicalFieldMap, coverage: FieldCoverage?): RuntimeFieldMap|LogicalFieldMap
+---@field onPreparedMap fun(runtimeMap: RuntimeFieldMap|LogicalFieldMap)?
 ---@field residents table<integer, FieldResidencyCoordinator.Resident>
 ---@field synchronousLogicalFallbackLoads integer
 ---@field initialized boolean
@@ -21,8 +21,11 @@ local FieldResidencyCoordinator = {}
 FieldResidencyCoordinator.__index = FieldResidencyCoordinator
 
 ---@class FieldResidencyCoordinator.Resident
----@field logicalMap RuntimeFieldMap
----@field runtimeMap RuntimeFieldMap
+--- A staged resident pairs the scene-free semantic acquisition with its
+--- published runtime view. Halo residents publish the semantic map
+--- directly; only the active destination carries a fully realized view.
+---@field logicalMap RuntimeFieldMap|LogicalFieldMap
+---@field runtimeMap RuntimeFieldMap|LogicalFieldMap
 
 ---@class FieldResidencyCoordinator.ComposedRuntimeMap : RuntimeFieldMap
 ---@field logicalMap RuntimeFieldMap
@@ -107,15 +110,18 @@ end
 
 function FieldResidencyCoordinator:_acquireResident(mapId)
   assert(not self.residents[mapId], "logical map is already resident")
-  local logicalMap = self.mapLoader:load(mapId)
+  local logicalMap = self.mapLoader:loadLogical(mapId)
   local protected = false
-  local runtimeMap
+  -- Compose the shared physical window over outdoor maps (scene-less or
+  -- not) so permission, projection, and camera math keep working; indoor
+  -- maps stay logical-only. The composed view is disposable.
+  local composedMap ---@type RuntimeFieldMap|LogicalFieldMap?
   local ok, result = pcall(function()
     self:_protect(mapId, true)
     protected = true
-    runtimeMap = self.composeMap(logicalMap, self.coverage)
+    composedMap = self.composeMap(logicalMap, self.coverage)
     if self.onPreparedMap then
-      self.onPreparedMap(assert(runtimeMap))
+      self.onPreparedMap(assert(composedMap))
     end
   end)
   if not ok then
@@ -126,7 +132,7 @@ function FieldResidencyCoordinator:_acquireResident(mapId)
   end
   self.residents[mapId] = {
     logicalMap = logicalMap,
-    runtimeMap = assert(runtimeMap),
+    runtimeMap = assert(composedMap),
   }
 end
 
@@ -197,14 +203,25 @@ function FieldResidencyCoordinator:initialize()
   return self
 end
 
--- Nonblocking near demand for a prefetched logical map: the loader plans the
--- logical map and its committed footprint around the current coverage anchor
--- without acquiring scenes or GPU resources. Readiness never loads; the
--- synchronous acquisition stays the loud path. A loader without the demand
--- operation reads as ready.
+-- Nonblocking near demand for a prefetched logical map: the logical field
+-- closure is demanded as near and gates acquisition, while the full visual
+-- field is enrolled as near opportunistically without gating anything.
+-- Readiness never loads; the synchronous acquisition stays the loud path.
+-- A loader without the demand operations reads as ready.
 ---@param mapId integer
 ---@return boolean
 function FieldResidencyCoordinator:_demandPrefetchMap(mapId)
+  local host = self.mapLoader.derivedAssets
+  if host ~= nil and type(host.requestLogicalField) == "function" then
+    local ready, failure = host.requestLogicalField(mapId, "near")
+    if failure ~= nil then
+      error(failure, 0)
+    end
+    if type(host.requestField) == "function" then
+      host.requestField(mapId, "near")
+    end
+    return ready
+  end
   if type(self.mapLoader.requestLocation) ~= "function" then
     return true
   end
@@ -250,7 +267,7 @@ function FieldResidencyCoordinator:_release(mapId)
 end
 
 ---@param mapId integer
----@return RuntimeFieldMap?
+---@return RuntimeFieldMap|LogicalFieldMap|nil
 function FieldResidencyCoordinator:mapForId(mapId)
   assert(not self.disposed, "field residency coordinator is disposed")
   local resident = self.residents[mapId]
@@ -274,20 +291,22 @@ function FieldResidencyCoordinator:mapForPreflight(mapId)
 end
 
 ---@param mapId integer
----@param targetCoverage FieldCoverage?
----@param suppliedRuntimeMap RuntimeFieldMap?
+---@param suppliedRuntimeMap RuntimeFieldMap|LogicalFieldMap?
 ---@return FieldResidencyCoordinator.StagedResident
-function FieldResidencyCoordinator:_stageResident(mapId, targetCoverage, suppliedRuntimeMap)
+function FieldResidencyCoordinator:_stageResident(mapId, suppliedRuntimeMap)
   assert(not self.residents[mapId], "logical map is already resident")
   local logicalMap
   if suppliedRuntimeMap then
     local composedRuntimeMap = suppliedRuntimeMap --[[@as FieldResidencyCoordinator.ComposedRuntimeMap]]
     logicalMap = composedRuntimeMap.logicalMap or suppliedRuntimeMap
   else
-    logicalMap = self.mapLoader:load(mapId)
+    logicalMap = self.mapLoader:loadLogical(mapId)
   end
   assert(logicalMap.mapId == mapId, "staged logical map identity mismatch")
-  local runtimeMap = suppliedRuntimeMap or self.composeMap(logicalMap, targetCoverage)
+  -- A non-destination halo resident publishes its semantic map directly:
+  -- composing a visual state here would reintroduce the visual-readiness
+  -- coupling logical residency just dropped.
+  local runtimeMap = suppliedRuntimeMap or logicalMap
   assert(runtimeMap.mapId == mapId, "staged runtime map identity mismatch")
   local protected = false
   local ok, result = pcall(function()
@@ -374,7 +393,7 @@ function FieldResidencyCoordinator:prepareTransition(destinationRuntimeMap, dest
         }
       else
         local supplied = mapId == destinationMapId and destinationRuntimeMap or nil
-        local staged = self:_stageResident(mapId, destinationCoverage, supplied)
+        local staged = self:_stageResident(mapId, supplied)
         transaction.staged[#transaction.staged + 1] = staged
         transaction.targetResidents[mapId] = staged.resident
       end
@@ -412,7 +431,7 @@ function FieldResidencyCoordinator:discardTransition(transaction)
 end
 
 ---@param transaction FieldResidencyCoordinator.Transition
----@return RuntimeFieldMap
+---@return RuntimeFieldMap|LogicalFieldMap
 function FieldResidencyCoordinator:commitTransition(transaction)
   assert(transaction and transaction.coordinator == self, "foreign field residency transition")
   assert(transaction.state == "prepared", "field residency transition is not committable")

@@ -48,6 +48,11 @@ local function behaviorOf(map, player)
     return nil
   end
   local playerMap = player.currentMap or map
+  -- A scene-less logical halo carries no collision grid: no entrance tile
+  -- behavior is knowable until its visual map realizes.
+  if playerMap.collision == nil then
+    return nil
+  end
   local localX, localZ = FieldCoordinates.fieldToLocal(playerMap, player.fieldX, player.fieldZ)
   return playerMap.collision:getLocal(localX, localZ).behavior
 end

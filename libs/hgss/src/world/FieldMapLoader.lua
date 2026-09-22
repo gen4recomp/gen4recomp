@@ -17,6 +17,36 @@ local ModelDoorMetadata = require("libs.hgss.src.world.ModelDoorMetadata")
 local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 
+---@class LogicalFieldMap
+--- A scene-free semantic map acquisition: identity, zone, audio/script
+--- selection, interaction, transition, and coordinate fields from the
+--- structural world record plus the generated field record. It owns no
+--- scene, collision, terrain, door resolver, presentation runtime, or
+--- physical window; consumers needing those must use a fully realized map.
+---@field mapId integer
+---@field mapSymbol string
+---@field mapSection string
+---@field mapSectionNativeId integer exact numeric MAPSEC_* identity; never the header id
+---@field followMode string source map-header follow policy: ALLOW, HEIGHT_RESTRICT, or PREVENT
+---@field fieldData table<string, unknown>
+---@field cameraType integer
+---@field coordinateOrigin { x: integer, z: integer }
+---@field released boolean
+---@field release fun(self: LogicalFieldMap)
+---@field updateAnimated fun(self: LogicalFieldMap)
+---@field probePhysicalCell fun(self: LogicalFieldMap, fieldX: integer, fieldZ: integer): nil
+---@field syncPhysicalFields fun(self: RuntimeFieldMap|LogicalFieldMap)|nil semantic maps never set this hook; it stays nil
+--- The visual realization fields below are absent on a semantic map. They
+--- are declared optional so the absence is part of the type: only a fully
+--- realized map carries scene, collision, terrain, the door resolver,
+--- presentation runtime, or a physical window.
+---@field scene table<string, unknown>?
+---@field collision table<string, unknown>?
+---@field terrain TerrainSurface?
+---@field mapProps MapProps?
+---@field sceneRuntime table<string, unknown>?
+---@field coverage FieldCoverage?
+
 ---@class FieldMapLoader
 ---@field cacheFs CacheFs
 ---@field world table<string, unknown>
@@ -56,7 +86,7 @@ FieldMapLoader.__index = FieldMapLoader
 ---@field probePhysicalCell fun(self: RuntimeFieldMap, fieldX: integer, fieldZ: integer, context: PhysicalProbeContext?): table<string, unknown>?|nil
 ---@field release fun(self: RuntimeFieldMap)
 ---@field updateAnimated fun(self: RuntimeFieldMap)
----@field syncPhysicalFields fun(self: RuntimeFieldMap)|nil
+---@field syncPhysicalFields fun(self: RuntimeFieldMap|LogicalFieldMap)|nil
 
 ---@param world table<string, unknown>
 ---@param idOrSymbol string|integer
@@ -137,6 +167,74 @@ local function releaseAggregate(runtimeMap)
   if runtimeMap.sceneRuntime then
     runtimeMap.sceneRuntime:release()
   end
+end
+
+-- Shared structural validation for both semantic and full acquisition: the
+-- generated world manifest is the sole source of map compatibility
+-- metadata. A stale world without the exact native section identity and
+-- source follow mode fails here; the header id is never a substitute.
+---@param record table<string, unknown>
+local function checkWorldIdentity(record)
+  local FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
+  if
+    type(record.mapSectionNativeId) ~= "number"
+    or record.mapSectionNativeId % 1 ~= 0
+    or record.mapSectionNativeId < 0
+    or record.mapSectionNativeId > 65535
+  then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest map section native identity is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if FOLLOW_MODES[record.followMode] ~= true then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_WORLD_INVALID,
+      "world manifest follow mode is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+end
+
+-- Shared generated field-record acquisition and validation for both
+-- semantic and full paths: identity, event collections, init scripts, and
+-- transition environment. Visual realization never revalidates these.
+---@param cacheFs CacheFs
+---@param record table<string, unknown>
+---@return table<string, unknown>
+local function loadSemanticFieldData(cacheFs, record)
+  local fieldData =
+    loadRequired(cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
+  if fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA or fieldData.mapId ~= record.id then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache identity or schema mismatch",
+      { mapId = record.id, schema = fieldData.schema }
+    )
+  end
+  if not FieldMapDataCache.hasRequiredEvents(fieldData.events) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache event collections are missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if not FieldMapDataCache.hasRequiredInitScripts(fieldData) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache initScripts array is missing or malformed; rebuild the derived cache",
+      { mapId = record.id }
+    )
+  end
+  if not FieldMapDataCache.isTransitionEnvironment(fieldData.transitionEnvironment) then
+    Errors.raise(
+      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
+      "field cache transition environment is missing or malformed; rebuild the derived cache",
+      { mapId = record.id, transitionEnvironment = fieldData.transitionEnvironment }
+    )
+  end
+  return fieldData
 end
 
 -- The terrain artifact's source record is part of the map dependency identity
@@ -325,6 +423,68 @@ function FieldMapLoader:_evict(skipMapId)
   end
 end
 
+-- Shared semantic acquisition for both logical and full paths: structural
+-- world validation, the semantic derived-asset readiness edge, and the
+-- validated generated field record. Reads no scene, collision, terrain,
+-- model, presentation, or physical resource.
+---@param record table<string, unknown>
+---@return table<string, unknown>
+function FieldMapLoader:_acquireSemantic(record)
+  checkWorldIdentity(record)
+  if self.derivedAssets then
+    self.derivedAssets.ensureLogicalField(record.id)
+  end
+  return loadSemanticFieldData(self.cacheFs, record)
+end
+
+-- Acquires the scene-free semantic map for logical residency: scripts,
+-- actors, zone identity, weather/audio selection, interactions, transition
+-- metadata, and world coordinates. Consults only the semantic readiness
+-- edge, never the full visual one, and caches nothing: every call
+-- reasserts readiness and builds a fresh semantic owner. The caller owns
+-- reuse; the loader's entry cache holds fully realized maps only.
+---@param idOrSymbol string|integer
+---@return LogicalFieldMap
+function FieldMapLoader:loadLogical(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  local fieldData = self:_acquireSemantic(record)
+  -- The coordinate origin comes from the structural world record alone:
+  -- semantic acquisition must never fall back to the visual scene matrix.
+  -- Records without a manifest origin degrade to the field-domain origin;
+  -- the generated world schema requires finite numeric origins, so
+  -- production records always carry the real one.
+  local originX, originZ = record.worldOriginX, record.worldOriginZ
+  if type(originX) ~= "number" then
+    originX = 0
+  end
+  if type(originZ) ~= "number" then
+    originZ = 0
+  end
+  local logicalMap = {
+    mapId = record.id,
+    mapSymbol = record.symbol,
+    mapSection = record.mapSection,
+    mapSectionNativeId = record.mapSectionNativeId,
+    followMode = record.followMode,
+    fieldData = fieldData,
+    cameraType = fieldData.cameraType,
+    coordinateOrigin = { x = originX, z = originZ },
+    released = false,
+  }
+  function logicalMap:release()
+    self.released = true
+  end
+  -- A semantic map owns no stepped presentation or neighbor state, but it
+  -- keeps the runtime-map fixed-tick and probe shape so resident maps stay
+  -- interchangeable where only semantic fields are consumed.
+  function logicalMap:updateAnimated() end
+  function logicalMap:probePhysicalCell(_, _)
+    return nil
+  end
+  return logicalMap
+end
+
 function FieldMapLoader:load(idOrSymbol, _)
   assert(not self.released, "field map loader is released")
   local record = worldRecord(self.world, idOrSymbol)
@@ -333,38 +493,13 @@ function FieldMapLoader:load(idOrSymbol, _)
     self:_touch(existing)
     return existing.runtimeMap
   end
+  local fieldData = self:_acquireSemantic(record)
   if self.derivedAssets then
     self.derivedAssets.ensureField(record.id)
   end
 
-  -- The generated world manifest is the sole source of map compatibility
-  -- metadata. A stale world without the exact native section identity and
-  -- source follow mode fails here; the header id is never a substitute.
-  local FOLLOW_MODES = { ALLOW = true, HEIGHT_RESTRICT = true, PREVENT = true }
-  if
-    type(record.mapSectionNativeId) ~= "number"
-    or record.mapSectionNativeId % 1 ~= 0
-    or record.mapSectionNativeId < 0
-    or record.mapSectionNativeId > 65535
-  then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_WORLD_INVALID,
-      "world manifest map section native identity is missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-  if FOLLOW_MODES[record.followMode] ~= true then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_WORLD_INVALID,
-      "world manifest follow mode is missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-
   local mapDir = MapAssetCache.mapDir(record.id)
   local scene = loadRequired(self.cacheFs, mapDir .. "/scene.lua", FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING)
-  local fieldData =
-    loadRequired(self.cacheFs, FieldMapDataCache.fieldPath(record.id), FieldErrors.FIELD_MAP_DATA_CACHE_MISSING)
   local terrainArtifact
   if scene.schema ~= MapAssetCache.SCENE_SCHEMA or scene.mapId ~= record.id then
     Errors.raise(
@@ -378,34 +513,6 @@ function FieldMapLoader:load(idOrSymbol, _)
       FieldErrors.FIELD_MAP_VISUAL_CACHE_INVALID,
       "scene neighbors record is missing or malformed; rebuild the derived cache",
       { mapId = record.id }
-    )
-  end
-  if fieldData.schema ~= FieldMapDataCache.FIELD_SCHEMA or fieldData.mapId ~= record.id then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache identity or schema mismatch",
-      { mapId = record.id, schema = fieldData.schema }
-    )
-  end
-  if not FieldMapDataCache.hasRequiredEvents(fieldData.events) then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache event collections are missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-  if not FieldMapDataCache.hasRequiredInitScripts(fieldData) then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache initScripts array is missing or malformed; rebuild the derived cache",
-      { mapId = record.id }
-    )
-  end
-  if not FieldMapDataCache.isTransitionEnvironment(fieldData.transitionEnvironment) then
-    Errors.raise(
-      FieldErrors.FIELD_MAP_DATA_CACHE_INVALID,
-      "field cache transition environment is missing or malformed; rebuild the derived cache",
-      { mapId = record.id, transitionEnvironment = fieldData.transitionEnvironment }
     )
   end
   if fieldData.cameraType ~= scene.cameraType then

@@ -387,6 +387,11 @@ function FieldSession:_emitTerrainResponse()
   if not self.terrainEffects then
     return
   end
+  -- A scene-less logical halo carries no collision grid: there is no tile
+  -- terrain to respond to until its visual map realizes.
+  if self.currentMap.collision == nil then
+    return
+  end
   local origin = assert(self.currentMap.coordinateOrigin, "terrain response map origin is required")
   local localX, localZ = self.player.fieldX - origin.x, self.player.fieldZ - origin.z
   local cell = self.currentMap.collision:getLocal(localX, localZ)

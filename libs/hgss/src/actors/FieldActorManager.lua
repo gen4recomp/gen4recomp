@@ -155,7 +155,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field clearPartner fun(self: FieldActorManager): string?
 ---@field setPosition fun(self: FieldActorManager, actorId: string, position: FieldActorManager.Position, options: { scripted?: boolean }?)
 ---@field getAt fun(self: FieldActorManager, mapId: integer, candidate: FieldOccupancyCandidate): FieldActorManager.Actor?
----@field probeAt fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap, eventState: FieldEventState, candidate: FieldOccupancyCandidate): FieldActorManager.ProbeResult?
+---@field probeAt fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap|LogicalFieldMap, eventState: FieldEventState, candidate: FieldOccupancyCandidate): FieldActorManager.ProbeResult?
 ---@field actorsOf fun(self: FieldActorManager, mapId: integer): FieldActorManager.Actor[]
 ---@field actorIdForMapIndex fun(self: FieldActorManager, index: integer): string?
 ---@field beginScriptedAction fun(self: FieldActorManager, actorId: string, action: table<string, unknown>)
@@ -380,7 +380,7 @@ end
 local function publishResolvedPosition(entry, actor, position)
   local state = actor:numericState()
   local oldKey
-  if state.resident == 1 and state.solid == 1 then
+  if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
     oldKey = entry.occupancy:key(candidateForActor(actor))
   end
   local newKey
@@ -450,6 +450,12 @@ local function resolveSurfaceAt(runtimeMap, fieldX, fieldZ, sourceY, actorId)
 end
 
 local function resolveSurface(runtimeMap, event, actorId)
+  -- A scene-less logical map carries no collision or terrain: actors
+  -- instantiate without surface positioning (the existing nil-surface
+  -- path) and resolve it on visual realization.
+  if runtimeMap.collision == nil or runtimeMap.terrain == nil then
+    return nil
+  end
   return resolveSurfaceAt(runtimeMap, event.x, event.z, event.y, actorId)
 end
 
@@ -634,7 +640,9 @@ function FieldActorManager:_instantiate(entry, event, eventState)
     }) --[[@as FieldActorManager.Actor]]
 
     assignManagerSlot(entry, actor)
-    if actor:isResident() then
+    -- Occupancy models physical cell blocking: a scene-less logical map
+    -- has no surface to block, so its actors instantiate without it.
+    if actor:isResident() and surface ~= nil then
       local key = entry.occupancy:key(candidateForActor(actor))
       local occupant = entry.occupancy:winnerByKey(key)
       local state = actor:numericState()
@@ -666,7 +674,7 @@ function FieldActorManager:_instantiate(entry, event, eventState)
   if not ok then
     if actor then
       local state = actor:numericState()
-      if state.resident == 1 and state.solid == 1 then
+      if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
         local key = entry.occupancy:key(candidateForActor(actor))
         occupancyRemove(entry, key, actor)
       end
@@ -708,7 +716,7 @@ function FieldActorManager:_destroy(entry, actor)
   -- vacate it: a non-solid or stale actor must never erase another actor's
   -- occupancy entry by coordinate.
   local state = actor:numericState()
-  if state.resident == 1 and state.solid == 1 then
+  if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
     local key = entry.occupancy:key(candidateForActor(actor))
     occupancyRemove(entry, key, actor)
   end
@@ -1364,6 +1372,11 @@ local function resolveAutonomousDestination(self, entry, actor, direction, conte
   end
 
   local runtimeMap = entry.runtimeMap
+  -- Autonomous movement is physical: on a scene-less logical map there is
+  -- no collision or terrain to step on, so the actor waits out the tick.
+  if runtimeMap.collision == nil or runtimeMap.terrain == nil then
+    return nil
+  end
   local ok, destination = pcall(function()
     local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
     local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
@@ -1937,6 +1950,11 @@ end
 function FieldActorManager:probeAt(runtimeMap, eventState, candidate)
   assert(runtimeMap and runtimeMap.fieldData, "probeAt requires a runtime map")
   assert(eventState, "probeAt requires a field event state")
+  -- Surface probing needs collision and terrain: a scene-less logical map
+  -- has no occupant to find.
+  if runtimeMap.collision == nil or runtimeMap.terrain == nil then
+    return nil
+  end
   local targetKind, targetFirst, targetSecond = stableSurfaceIdentity(runtimeMap, candidate)
   local occupant
   for _, event in ipairs(runtimeMap.fieldData.events.objects) do
@@ -1947,7 +1965,9 @@ function FieldActorManager:probeAt(runtimeMap, eventState, candidate)
       and event.solid ~= false
     then
       local actorId = FieldObjectActor.actorId(runtimeMap.mapId, event.objectEventId)
-      local sample = resolveSurface(runtimeMap, event, actorId)
+      -- Reachable only with collision and terrain (guarded above), where
+      -- surface resolution either samples or raises.
+      local sample = assert(resolveSurface(runtimeMap, event, actorId), "occupant search requires its surface")
       local eventKind, eventFirst, eventSecond = stableSurfaceIdentity(runtimeMap, {
         fieldX = event.x,
         fieldZ = event.z,
@@ -2349,7 +2369,7 @@ function FieldActorManager:setPosition(actorId, position, options)
   end
   local newKey = newCandidate and entry.occupancy:key(newCandidate) or nil
   local oldKey
-  if state.resident == 1 and state.solid == 1 then
+  if state.resident == 1 and state.solid == 1 and state.hasSurfaceId == 1 then
     oldKey = entry.occupancy:key(candidateForActor(actor))
   end
   local scripted = options ~= nil and options.scripted == true

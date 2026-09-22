@@ -65,7 +65,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field escalatorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>?
 ---@field onPanel fun(...: unknown)?
 ---@field player table<string, unknown>|nil -- FieldPlayer, bound by the owner across the swap
----@field phase "idle"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"
+---@field phase "idle"|"await_source_visual"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"
 ---@field fadeAlpha number
 ---@field fade FieldTransitionFade|nil
 ---@field fadeStarted boolean
@@ -99,6 +99,7 @@ FieldTransition.__index = FieldTransition
 
 FieldTransition.PHASES = {
   idle = "idle",
+  await_source_visual = "await_source_visual",
   fade_out = "fade_out",
   fade_in = "fade_in",
   load_destination = "load_destination",
@@ -725,13 +726,41 @@ end
 -- ({ warp = warp }) from scripted warps, which carry no classification. The
 -- kind is authoritative -- the transition never re-reads the permission grid
 -- to classify the warp tile.
-function FieldTransition:start(sourceMap, trigger, facing)
-  beginTransition(self, sourceMap, trigger, facing)
-  self.profileId, self.transitionMode = selectProfile(self, sourceMap, trigger)
-  if not runOnStart(self, sourceMap, trigger, facing) then
-    return
+-- Door choreography resolves the source door placement, which lives in
+-- the source visual: a scene-less active map must realize before the
+-- choreography runs. A warm cache realizes synchronously through the
+-- loader; otherwise demand is enrolled and the wait below keeps the field
+-- locked without starting any fade or movement. Hostless loaders keep the
+-- legacy behavior (a loud unresolved-door failure, never a silent fade).
+---@return boolean source visual is realized
+local function realizeSourceVisual(self)
+  local sourceMap = assert(self.sourceMap, "door visual wait requires its source map")
+  if sourceMap.scene ~= nil or sourceMap.sceneRuntime ~= nil then
+    return true
   end
+  local mapId = sourceMap.mapId
+  local ok, full = pcall(self.loader.load, self.loader, mapId)
+  if ok and type(full) == "table" and (full.scene ~= nil or full.sceneRuntime ~= nil) then
+    self.sourceMap = full
+    return true
+  end
+  local host = self.loader.derivedAssets
+  if host == nil or type(host.requestField) ~= "function" then
+    return true
+  end
+  local ready, failure = host.requestField(mapId, "required")
+  if failure ~= nil then
+    self:_abort(failure)
+    error(failure, 0)
+  end
+  if not ready then
+    return false
+  end
+  self.sourceMap = assert(self.loader:load(mapId), "realized source visual is required")
+  return true
+end
 
+local function beginFadeOut(self)
   self.phase = FieldTransition.PHASES.fade_out
   self.locked = true
   self.fadeAlpha = 0
@@ -741,6 +770,21 @@ function FieldTransition:start(sourceMap, trigger, facing)
     end
   end
   runChoreo(self, beginSourceChoreography)
+end
+
+function FieldTransition:start(sourceMap, trigger, facing)
+  beginTransition(self, sourceMap, trigger, facing)
+  self.profileId, self.transitionMode = selectProfile(self, sourceMap, trigger)
+  if not runOnStart(self, sourceMap, trigger, facing) then
+    return
+  end
+
+  if self.sourceKind == "door" and not realizeSourceVisual(self) then
+    self.phase = FieldTransition.PHASES.await_source_visual
+    self.locked = true
+    return
+  end
+  beginFadeOut(self)
 end
 
 -- Begin a covered scripted map swap: the caller (ScriptMapsService) has
@@ -796,6 +840,16 @@ end
 -- clock advance on every locked tick regardless.
 function FieldTransition:updateFixed()
   if self.phase == FieldTransition.PHASES.idle then
+    return false
+  end
+  if self.phase == FieldTransition.PHASES.await_source_visual then
+    -- Door-kind wait: the source visual compiles in the background while
+    -- the field stays locked. Realization swaps the full source map in,
+    -- then the fade begins.
+    if not realizeSourceVisual(self) then
+      return false
+    end
+    beginFadeOut(self)
     return false
   end
   if self.phase == FieldTransition.PHASES.fade_out then

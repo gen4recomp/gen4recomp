@@ -865,6 +865,293 @@ function T.reloading_an_evicted_map_builds_a_fresh_map_props()
   loader:release()
 end
 
+local function readinessHost(calls, options)
+  options = options or {}
+  return {
+    ensureLogicalField = function(mapId)
+      calls[#calls + 1] = { kind = "logical", mapId = mapId }
+      if options.logicalFailsFor and options.logicalFailsFor[mapId] then
+        error("logical field " .. tostring(mapId) .. " is not ready", 0)
+      end
+      return true
+    end,
+    ensureField = function(mapId)
+      calls[#calls + 1] = { kind = "full", mapId = mapId }
+      if options.fullFailsFor and options.fullFailsFor[mapId] then
+        error("field " .. tostring(mapId) .. " is not ready", 0)
+      end
+      return true
+    end,
+  }
+end
+
+local function requireSemanticAcquisition(loader)
+  Assert.isTrue(
+    type(loader.loadLogical) == "function",
+    "the loader exposes semantic map acquisition without visual readiness"
+  )
+end
+
+-- Semantic acquisition carries exactly the runtime-owned identity, zone,
+-- audio/script selection, interaction, transition, and coordinate fields:
+-- no scene, collision, terrain, door resolver, presentation runtime, or
+-- physical coverage may be read or built, and only the semantic readiness
+-- edge is consulted.
+function T.logical_load_publishes_semantic_fields_without_visual_assets()
+  local cache, world, _, _, files = fixture(1)
+  local scenePath = "data/generated/maps/0000/scene.lua"
+  local terrainPath = "data/generated/maps/0000/terrain.lua"
+  local collisionPath = "data/generated/maps/0000/collision.g4collision"
+  files[scenePath] = nil
+  files[terrainPath] = nil
+  files[collisionPath] = nil
+  world.maps[1].worldOriginX = 96
+  world.maps[1].worldOriginZ = 64
+  local realLoadLua, realRead = cache.loadLua, cache.read
+  local readPaths = {}
+  cache.loadLua = function(_, path)
+    readPaths[#readPaths + 1] = path
+    return realLoadLua(cache, path)
+  end
+  cache.read = function(_, path)
+    readPaths[#readPaths + 1] = path
+    return realRead(cache, path)
+  end
+  local sceneLoader = {
+    load = function()
+      error("semantic acquisition must not acquire representative scene geometry", 0)
+    end,
+    loadEnvironment = function()
+      error("semantic acquisition must not acquire an environment shell", 0)
+    end,
+  }
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(0)
+  local bySymbol = loader:loadLogical("MAP_0")
+
+  Assert.equal(map.mapId, 0)
+  Assert.equal(bySymbol.mapId, 0)
+  Assert.equal(map.mapSymbol, "MAP_0")
+  Assert.equal(map.mapSection, "TEST_SECTION")
+  Assert.equal(map.mapSectionNativeId, 7)
+  Assert.equal(map.followMode, "ALLOW")
+  Assert.equal(map.fieldData.schema, "g4-field-map-v9")
+  Assert.equal(map.cameraType, map.fieldData.cameraType)
+  Assert.deepEqual(map.coordinateOrigin, { x = 96, z = 64 })
+  Assert.isNil(map.scene)
+  Assert.isNil(map.collision)
+  Assert.isNil(map.terrain)
+  Assert.isNil(map.mapProps)
+  Assert.isNil(map.sceneRuntime)
+  Assert.isNil(map.coverage)
+  Assert.equal(#calls, 2)
+  for _, call in ipairs(calls) do
+    Assert.equal(call.kind, "logical")
+    Assert.equal(call.mapId, 0)
+  end
+  for _, path in ipairs(readPaths) do
+    Assert.isTrue(
+      tostring(path):find("scene.lua", 1, true) == nil
+        and tostring(path):find("terrain", 1, true) == nil
+        and tostring(path):find("collision", 1, true) == nil
+        and tostring(path):find("model", 1, true) == nil,
+      "semantic acquisition reads no visual asset: " .. tostring(path)
+    )
+  end
+  map:release()
+  map:release()
+  loader:release()
+end
+
+function T.logical_load_rejects_unknown_and_malformed_records()
+  local cache, world, sceneLoader = fixture(1)
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+  local unknown = Assert.throws(function()
+    loader:loadLogical(999)
+  end)
+  Assert.isTrue(Errors.is(unknown) and unknown.code == "FIELD_MAP_UNKNOWN", "unknown maps fail loudly")
+  loader:release()
+
+  local worldCases = {
+    { nativeId = nil, followMode = "ALLOW", label = "missing native identity" },
+    { nativeId = 126.5, followMode = "ALLOW", label = "fractional native identity" },
+    { nativeId = 126, followMode = "SOMETIMES", label = "unknown follow mode" },
+  }
+  for _, case in ipairs(worldCases) do
+    local caseCache, caseWorld, caseSceneLoader = fixture(1)
+    caseWorld.maps[1].mapSectionNativeId = case.nativeId
+    caseWorld.maps[1].followMode = case.followMode
+    local caseLoader = FieldMapLoader.new(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
+    local err = Assert.throws(function()
+      caseLoader:loadLogical(0)
+    end, case.label)
+    Assert.isTrue(
+      Errors.is(err) and err.code == "FIELD_MAP_WORLD_INVALID",
+      case.label .. " must raise FIELD_MAP_WORLD_INVALID"
+    )
+    caseLoader:release()
+  end
+
+  local fieldCases = {
+    {
+      mutate = function(record)
+        record.schema = "wrong-schema"
+      end,
+      label = "schema mismatch",
+    },
+    {
+      mutate = function(record)
+        record.mapId = 7
+      end,
+      label = "identity mismatch",
+    },
+    {
+      mutate = function(record)
+        record.events = { background = {}, warps = {}, coordinates = {} }
+      end,
+      label = "missing object events",
+    },
+    {
+      mutate = function(record)
+        record.initScripts = nil
+      end,
+      label = "missing init scripts",
+    },
+    {
+      mutate = function(record)
+        record.transitionEnvironment = "unknown"
+      end,
+      label = "unknown transition environment",
+    },
+  }
+  for _, case in ipairs(fieldCases) do
+    local caseCache, caseWorld, caseSceneLoader, _, caseFiles = fixture(1)
+    case.mutate(caseFiles["data/generated/field/maps/0000/field.lua"])
+    local caseLoader = FieldMapLoader.new(caseCache, caseWorld, { sceneLoader = caseSceneLoader })
+    local err = Assert.throws(function()
+      caseLoader:loadLogical(0)
+    end, case.label)
+    Assert.isTrue(
+      Errors.is(err) and err.code == "FIELD_MAP_DATA_CACHE_INVALID",
+      case.label .. " must raise FIELD_MAP_DATA_CACHE_INVALID"
+    )
+    caseLoader:release()
+  end
+end
+
+-- A missing visual map artifact blocks full realization but never semantic
+-- acquisition: the visual failure stays attached to the full edge while the
+-- semantic edge for the same map succeeds.
+function T.visual_readiness_failure_does_not_block_semantic_acquisition()
+  local cache, world, sceneLoader = fixture(32)
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, { fullFailsFor = { [31] = true } }),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(31)
+  Assert.equal(map.mapId, 31)
+  Assert.equal(map.mapSymbol, "MAP_31")
+
+  local ok, err = pcall(loader.load, loader, 31)
+  Assert.isFalse(ok, "full realization still demands the visual artifact")
+  Assert.isTrue(
+    tostring(err):find("field 31 is not ready", 1, true) ~= nil,
+    "the visual failure propagates with its own identity"
+  )
+  local kinds = {}
+  for _, call in ipairs(calls) do
+    kinds[#kinds + 1] = call.kind .. ":" .. call.mapId
+  end
+  Assert.deepEqual(kinds, { "logical:31", "logical:31", "full:31" })
+  loader:release()
+end
+
+function T.full_load_still_demands_visual_scene_assets()
+  local cache, world, sceneLoader, _, files = fixture(1)
+  files["data/generated/maps/0000/scene.lua"] = nil
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(0)
+  Assert.equal(map.mapId, 0)
+
+  local err = Assert.throws(function()
+    loader:load(0)
+  end)
+  Assert.isTrue(
+    Errors.is(err) and err.code == "FIELD_MAP_VISUAL_CACHE_MISSING",
+    "full realization without a scene fails at the visual boundary"
+  )
+  loader:release()
+end
+
+function T.logical_load_propagates_an_unready_semantic_closure()
+  local cache, world, sceneLoader = fixture(1)
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, { logicalFailsFor = { [0] = true } }),
+  })
+  requireSemanticAcquisition(loader)
+  local ok, err = pcall(loader.loadLogical, loader, 0)
+  Assert.isFalse(ok, "an unready semantic closure never reads as acquired")
+  Assert.isTrue(
+    tostring(err):find("logical field 0 is not ready", 1, true) ~= nil,
+    "the semantic failure propagates with its own identity"
+  )
+  loader:release()
+end
+
+-- An outdoor semantic map owns no physical window: coverage, collision, and
+-- representative geometry stay absent, and building the physical window
+-- from it fails instead of improvising presentation state.
+function T.outdoor_semantic_map_does_not_own_physical_coverage()
+  local cache, world = fixture(1)
+  world.maps[1].worldOriginX = 672
+  world.maps[1].worldOriginZ = 384
+  cache.loadLua(cache, "data/generated/maps/0000/scene.lua").type = "outdoor"
+  local sceneLoader = {
+    load = function()
+      error("semantic acquisition must not acquire representative scene geometry", 0)
+    end,
+    loadEnvironment = function()
+      error("semantic acquisition must not acquire an environment shell", 0)
+    end,
+  }
+  local calls = {}
+  local loader = FieldMapLoader.new(cache, world, {
+    sceneLoader = sceneLoader,
+    derivedAssets = readinessHost(calls, {}),
+  })
+  requireSemanticAcquisition(loader)
+
+  local map = loader:loadLogical(0)
+  Assert.isNil(map.coverage)
+  Assert.isNil(map.collision)
+  Assert.isNil(map.scene)
+  local ok = pcall(loader.createPhysicalCoverage, loader, map, { fieldX = 0, fieldZ = 0 })
+  Assert.isFalse(ok, "physical coverage still requires a fully realized outdoor map")
+  loader:release()
+end
+
 local function planningHost(calls, fieldReady, cellReady)
   return {
     requestField = function(mapId, urgency)

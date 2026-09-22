@@ -559,6 +559,14 @@ function FieldStatePresentationFixture.iconHost()
       note("field", mapId)
       return true
     end,
+    requestLogicalField = function(mapId, _)
+      note("logical-field", mapId)
+      return true
+    end,
+    ensureLogicalField = function(mapId)
+      note("ensure-logical-field", mapId)
+      return true
+    end,
     ensureField = function(mapId)
       note("ensure-field", mapId)
       return true
